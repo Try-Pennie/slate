@@ -254,6 +254,24 @@ async function main() {
     assert(lastServed(b.served)?.line === "shared", "two isolates: B was served by the shared line");
   }
 
+  // --- #3338: a lead turn says whether it waited behind another confirm ----------
+  // A lead the object answers at once did not wait; one promoted from a ticket did.
+  {
+    const w = world();
+    const a = w.client();
+    const b = w.client();
+    const lead = (await w.settle(a.line.enter(KEY, 10_000))) as LineTurn<string>;
+    if (lead.kind !== "lead") throw new Error("queued: A did not lead");
+    assert(lead.queued === false, "queued: a lead answered at once did not wait");
+    await w.settle(lead.seat.claimFirst(["p0"]));
+    const follower = b.line.enter(KEY, 10_000);
+    await w.advance(200);
+    await w.settle(lead.done({ full: false }));
+    const r = (await w.settle(follower)) as LineTurn<string>;
+    assert(r.kind === "lead" && r.queued === true, `queued: B, promoted from its ticket, says it waited (got ${JSON.stringify(r.kind === "lead" ? { queued: r.queued } : r)})`);
+    if (r.kind === "lead") await w.settle(r.done({ full: false }));
+  }
+
   // --- #3354: a traced confirm stamps every call, by the stage it was sent in -------
   // The load run joins the object's side of a confirm to the confirm's own line by this
   // trace, and splits the wait from the turn by the stage. Everything sent before the

@@ -1673,7 +1673,8 @@ export async function GET(req: NextRequest) {
     // --- Are confirms losing the overlap race (#2838)? ---
     //
     // Since #2281 a confirm that loses the race is handed to the next free advisor
-    // in the same rung, and the loss was recorded only in a trace field and a log
+    // in the same rung (and since #3338 on down the tier ladder when nobody after
+    // it there is free), and the loss was recorded only in a trace field and a log
     // line nobody reads. This counts both halves (handed on, and refused) from the
     // day's outcome tally and whispers once a day when the share of confirms that
     // lost one is above what the busiest measured traffic could produce, a

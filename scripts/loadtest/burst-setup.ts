@@ -40,6 +40,16 @@
 // the confirm itself makes on each rung. What the setup measured travels in the plan to
 // the report, so a reader knows what each control was worth (#2278).
 //
+// #3338 changed what that control can promise. A confirm in a crowd, or one that
+// loses the insert race, now walks the tier ladder like any confirm (Dan,
+// 2026-10-06), so a pool of one is "exactly one 200" only when it is the code's
+// whole LADDER. The pool chosen here is the requested rung's; when rungs below it
+// have people free, the crowd books them too (one 200 per free advisor across the
+// ladder), or is told to retry when the line cannot serve it inside its wait, and
+// is told SLOT_TAKEN only once a confirm found every rung spent. The judge's burst bar is
+// rebuilt for that in #3429; until it is, read a burst's extra 200s on lower rungs
+// as the ladder working, not a double booking.
+//
 // Finding nothing to burst at is NEVER a pass (L98). Every way of learning nothing
 // exits non-zero on its own code with the reason, because the alternative is a burst
 // leg that produced an empty file and a judge that reads it as a run with no burst.

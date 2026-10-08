@@ -2,7 +2,7 @@ import { OpenBookingLink } from "@/components/OpenBookingLink";
 import ViewerTime from "@/components/ViewerTime";
 import { proseCls } from "@/components/ui/styles";
 import { backendHeading, backendShownAs } from "@/lib/availability/pool-label";
-import type { TierDropCause, TierDropTally } from "@/lib/routing/tier-drop-counts";
+import type { DropBehindTally, TierDropCause, TierDropCounts, TierDropTally } from "@/lib/routing/tier-drop-counts";
 import type { TierDropReport } from "@/lib/admin/tier-drops-load";
 
 /** How many of the recent drops are listed by name; the rest are counted. */
@@ -36,6 +36,45 @@ function Count({ tally, of, cause }: { tally: TierDropTally; of: number; cause?:
   );
 }
 
+const BEHIND_LABEL: Record<keyof DropBehindTally, string> = {
+  race: "Lost their advisor to a lead confirming at the same moment",
+  line: "Waited behind leads confirming the same time",
+};
+
+/**
+ * #3338: leads booked further down their routing because other leads confirmed
+ * the same time first. Its own table, apart from the tier drops above it, because
+ * it counts a different population: every move down the routing, a sideways one
+ * inside a tier included (the Low pilot's whole routing sits in one tier). Both
+ * rows are drawn at zero, since a zero is how a branch that never fires is seen.
+ */
+function DropsBehind({ behind }: { behind: TierDropCounts["behind"] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left text-xs">
+        <thead className="text-fg-muted">
+          <tr>
+            <th className="py-1 pr-3 font-semibold">Booked further down their routing while other leads confirmed the same time</th>
+            <th className="py-1 pr-3 text-right font-semibold">Last 7 days</th>
+            <th className="py-1 pr-3 text-right font-semibold">Last 30 days</th>
+          </tr>
+        </thead>
+        <tbody>
+          {(["race", "line"] as const).map((how) => (
+            <tr key={how} className="border-t border-border">
+              <th scope="row" className="py-1.5 pr-3 font-normal">
+                {BEHIND_LABEL[how]}
+              </th>
+              <td className="py-1.5 pr-3 text-right tabular-nums">{behind.week[how]}</td>
+              <td className="py-1.5 pr-3 text-right tabular-nums">{behind.month[how]}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /**
  * How often a lead drops a debt tier at confirm, by cause (2026-10-02). A drop
  * no longer pages: sales ops chose that a lead keeps the time they picked and
@@ -50,9 +89,12 @@ export function TierDropPanel({ report, showCodes }: { report: TierDropReport; s
   // of zeros (L610).
   if (counts.month.total === 0) {
     return (
-      <p className="text-sm text-fg-muted">
-        No lead has dropped a tier in the last 30 days, out of {booked.month} routed bookings.
-      </p>
+      <div className="space-y-4">
+        <p className="text-sm text-fg-muted">
+          No lead has dropped a tier in the last 30 days, out of {booked.month} routed bookings.
+        </p>
+        <DropsBehind behind={counts.behind} />
+      </div>
     );
   }
   // "Not recorded" exists only for bookings made before the shown tier was saved
@@ -98,6 +140,7 @@ export function TierDropPanel({ report, showCodes }: { report: TierDropReport; s
           </tbody>
         </table>
       </div>
+      <DropsBehind behind={counts.behind} />
       {counts.unreadableStamps > 0 && (
         <p className="text-xs text-fg-muted">
           {counts.unreadableStamps} more {counts.unreadableStamps === 1 ? "drop has" : "drops have"} a

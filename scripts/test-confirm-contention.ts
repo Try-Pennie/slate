@@ -32,6 +32,7 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-confirm-contention.ts
 import { refusalTraceOf } from "../src/lib/booking/refusal-trace.ts";
+import { tierLadder } from "../src/lib/routing/tiers.ts";
 import {
   bookViaApi,
   createBooking,
@@ -52,10 +53,22 @@ import { makeConfirmQueue, isolateLine, CONFIRM_QUEUE_WAIT_MS, CONFIRM_LINE_LOOK
 import type { Booking, User } from "../src/lib/db/types.ts";
 import type { BookingContext } from "../src/lib/booking/orchestration.ts";
 import { createAsserter, makeDeps, makeBooking, input, users, bucket as fakeBucket, eventType as fakeEventType } from "./lib/booking-fakes.ts";
-import { VirtualClock, SharedResource, onSharedCapacity, type CallRecord } from "./lib/confirm-contention-sim.ts";
+import { VirtualClock, SharedResource, onSharedCapacity, occupy, objectOnClock, type CallRecord } from "./lib/confirm-contention-sim.ts";
+import {
+  classifyDeps,
+  ON_DATABASE,
+  OFF_DATABASE,
+  databaseCosts,
+  LOAD_MODEL_ADVISORS,
+  LOAD_RUN_PROFILE,
+  PRODUCTION_PROFILE,
+  RUN_37640583621,
+  type Arrival,
+  type BurstShape,
+  type LoadProfile,
+} from "./lib/confirm-load-model.ts";
 import { makeConfirmLineHost, makeConfirmLineObject } from "../src/lib/booking/confirm-line-object.ts";
 import { makeSharedConfirmLine } from "../src/lib/booking/shared-confirm-line.ts";
-import { tierLadder } from "../src/lib/routing/tiers.ts";
 import { CONFIRM_CROWD_RULE, type ConfirmCrowdRule } from "../src/lib/confirm-crowd-rule.ts";
 import { makeCommitCostLog } from "../src/lib/booking/commit-cost.ts";
 import { ladderGroupOf } from "../src/lib/booking/line-key.ts";
@@ -75,12 +88,15 @@ const { assert, finish } = createAsserter();
 
 /** #3257: a pool of twenty, the size of a popular bucket. */
 const BIG_POOL = Array.from({ length: 20 }, (_, i) => `p${i}`);
-for (const id of BIG_POOL) (users as Record<string, User>)[id] = { id, name: `Agent ${id}`, email: `${id}@x.com` } as unknown as User;
+for (const id of [...BIG_POOL, ...LOAD_MODEL_ADVISORS]) (users as Record<string, User>)[id] = { id, name: `Agent ${id}`, email: `${id}@x.com` } as unknown as User;
 
 /** One isolate's share: one unit of work at a time, 12ms each (see the header). */
 const CAPACITY = 1;
 const SERVICE_MS = 12;
 const BURST = 100;
+/** #3489: how long a background lane keeps the database busy in a modelled burst: past
+ *  the last arrival (1.8s) plus a whole budget and its cleanup allowance (14s). */
+const BACKGROUND_UNTIL_MS = 20_000;
 /** Not I/O, so they stay synchronous in the wrapped deps. */
 const SYNCHRONOUS = new Set(["newManageToken", "newIdempotencyKey", "newBookingId", "pageRaceBoundHit", "deferSend", "deadlineTimer", "appBaseUrl", "lineGroupOf"]);
 
@@ -117,9 +133,20 @@ const NO_QUEUE: ConfirmLine<never> = {
   release: async () => {},
 };
 
+/**
+ * #3338: the code the crowds below confirm into, unless a case names its own. Its
+ * tier ladder is ONE rung, so the pool a case gives is the whole ladder, and "the
+ * last advisor of the pool" is the last of the ladder, where a leader that books
+ * it settles everybody waiting (`createHeld`). The shared fixture's 411 has three
+ * rungs; a crowd there drops down them, which the #3338 cases at the end drive on
+ * purpose with a pool for each rung.
+ */
+const ONE_RUNG = "110";
+
 function lead(i: number, over: Partial<CreateBookingInput> = {}): CreateBookingInput {
   return {
     ...input,
+    bucketCode: ONE_RUNG,
     externalId: `burst-${i}`,
     salesforceId: `sf-${i}`,
     attendee: { name: `Lead ${i}`, email: `lead${i}@example.com`, phone: `+1203555${String(1000 + i)}` },
@@ -137,9 +164,10 @@ async function burst(opts: {
   inputs: CreateBookingInput[];
   pool: string[];
   /**
-   * #3429: one pool per rung of the tier ladder, by bucket code, in place of `pool`,
-   * so a crowd can meet a shallow top rung with a staffed rung below it. The candidate
-   * read leaves out the booked the same way.
+   * #3338: a pool for each rung of the requested code's tier ladder, read by the
+   * code the confirm asks about, so a confirm that drops a rung books from that
+   * rung's advisors. A code absent here has no bucket row, so the ladder skips it,
+   * as it does a lower tier nobody created. Unset, every code reads `pool`.
    */
   poolByCode?: Record<string, string[]>;
   queue: "real" | "off";
@@ -194,18 +222,38 @@ async function burst(opts: {
     snapshot: GroupingSnapshot | null;
     fetch: boolean;
   };
+  /**
+   * #3489: the calibrated load model (`scripts/lib/confirm-load-model.ts`) in place of
+   * the one unit of capacity every call costs otherwise. The database is the profile's
+   * slots, each call its measured latency; the shared line's object is reached with a
+   * round trip and answers nothing until it is up; and confirm i arrives at
+   * `arrivals[i]`: its budget starts at the route's start, it reaches the line after
+   * the route's checks, and it reads the switch when the run says it did. What each
+   * request does on the database AFTER it answered is queued there too. Google's time is
+   * still `slowGoogleMs` / `slowEventMs`, which the profile sets.
+   */
+  model?: {
+    profile: LoadProfile;
+    arrivals: readonly Arrival[];
+    firstAnswerMs: number;
+    /** Other work on the database through the burst (the run's own sync lane): this
+     *  many callers, each running one statement after another. */
+    backgroundCallers?: number;
+  };
 }) {
   const clock = new VirtualClock(Date.parse("2026-06-01T00:00:00.000Z"));
   const burstStart = clock.now;
   const realNow = Date.now;
   Date.now = () => clock.now;
   try {
-    const resource = new SharedResource(clock, CAPACITY, opts.serviceMs ?? SERVICE_MS);
-    const everyone = [...opts.pool, ...Object.values(opts.poolByCode ?? {}).flat()];
+    const model = opts.model;
+    const resource = model
+      ? new SharedResource(clock, model.profile.database.slots, model.profile.database.statementMs)
+      : new SharedResource(clock, CAPACITY, opts.serviceMs ?? SERVICE_MS);
+    const everyone = opts.poolByCode ? [...new Set(Object.values(opts.poolByCode).flat())] : opts.pool;
+    const poolFor = (code: string): string[] => (opts.poolByCode ? (opts.poolByCode[code] ?? []) : opts.pool);
     const { deps: base, calls } = makeDeps({
       candidates: opts.pool,
-      // So resolveBucketByCode answers a bucket carrying each rung's own code.
-      candidatesByCode: opts.poolByCode,
       freeEmails: new Set(everyone.map((id) => users[id].email)),
       existing: opts.existingContext,
     });
@@ -253,15 +301,30 @@ async function burst(opts: {
         }
         return host;
       };
+      // #3489: under the load model each group's object is reached across the network,
+      // and starts on its first message.
+      const reached = new Map<string, (m: Record<string, unknown>) => Promise<Record<string, unknown>>>();
+      const sendTo = (group: string) => {
+        let send = reached.get(group);
+        if (!send) {
+          send = model
+            ? objectOnClock(clock, { roundTripMs: model.profile.line.roundTripMs, firstAnswerMs: model.firstAnswerMs }, (m) => hostFor(group).handle(m))
+            : async (m) => JSON.parse(await hostFor(group).handle(m)) as Record<string, unknown>;
+          reached.set(group, send);
+        }
+        return send;
+      };
       for (let k = 0; k < opts.isolates.count; k++) {
         const own = isolateLine(makeConfirmQueue({ timer: timerOnClock, leaseTimer: timerOnClock, now: () => clock.now }));
         isolateLines.push(
           opts.isolates.line === "isolate"
             ? own
             : makeSharedConfirmLine<unknown>({
-                // The object is reached in no time at all: the simulation cannot see
-                // network latency, which is why the load run measures it (#3325).
-                namespace: { stubFor: (group) => ({ send: async (m) => JSON.parse(await hostFor(group).handle(m)) as Record<string, unknown> }) },
+                // Without the load model the object is reached in no time at all, so
+                // network latency is the load run's to measure (#3325); with it
+                // (#3489) the object is reached through `objectOnClock`, a round trip
+                // on every message and a first answer once the object is up.
+                namespace: { stubFor: (group) => ({ send: sendTo(group) }) },
                 fallback: own,
                 enabled: async () => ({ on: true, source: "read" }),
                 record: () => {},
@@ -352,12 +415,24 @@ async function burst(opts: {
         return base.createEvent(...args);
       },
       confirmQueue: queue as BookingDeps["confirmQueue"],
+      // #3338: the bucket carries the code it was asked for, so the ladder walked is
+      // that code's own. With a pool per rung, each rung is its own bucket with its
+      // own id, so a booking made on a lower rung can be told apart from one on the
+      // top rung, and a code with no pool has no bucket row. Without one, the
+      // requested code keeps the fixture's bucket id, so a lead holding a call in
+      // it is in the same bucket.
+      resolveBucketByCode: async (code: string) => {
+        if (!opts.poolByCode) return { bucket: { ...fakeBucket, code } as typeof fakeBucket, eventType: fakeEventType };
+        return opts.poolByCode[code]
+          ? { bucket: { ...fakeBucket, code, id: `bkt-${code}` } as typeof fakeBucket, eventType: fakeEventType }
+          : null;
+      },
       roundRobinCandidates: async (b, _e, startMs) => {
         const taken = (id: string) => {
           const slot = `${id}|${new Date(startMs).toISOString()}`;
           return bySlot.has(slot) && !unseen.has(slot);
         };
-        const pool = opts.poolByCode ? (opts.poolByCode[b.code] ?? []) : opts.pool;
+        const pool = poolFor(b.code);
         return { candidates: pool.filter((id) => !taken(id)), memberCount: pool.length };
       },
       findBookingByIdempotencyKey: async (key) => {
@@ -398,7 +473,43 @@ async function burst(opts: {
     };
     const runs: Run[] = opts.inputs.map(() => ({ calls: [] }));
     const t0 = clock.now;
-    opts.inputs.forEach((one, i) => clock.at(t0 + (opts.arriveAtMs?.[i] ?? 0), () => {
+    // #3489: what each call costs under the load model. The candidate read costs more
+    // the more of its rung the cache shows free, which the bookings table here knows.
+    const costOf = model
+      ? databaseCosts(model.profile.database, (code, startMs) => {
+          const instant = new Date(startMs).toISOString();
+          return poolFor(code).filter((id) => {
+            const slot = `${id}|${instant}`;
+            return !(bySlot.has(slot) && !unseen.has(slot));
+          }).length;
+        })
+      : undefined;
+    // #3489: the deferred work after an answer, and the first answer on each isolate.
+    const answeredOn = new Set<number>();
+    const afterAnswer = (i: number, outcome: Outcome) => {
+      if (!model) return;
+      const d = model.profile.deferred;
+      void occupy(clock, resource, d.tally, "booking-api-tally");
+      if (outcome === "503") void occupy(clock, resource, d.failurePage, "booking-failure-page");
+      if (outcome === "created") void occupy(clock, resource, d.recompute, "post-confirm-recompute");
+      const isolate = opts.isolates ? i % opts.isolates.count : 0;
+      if (!answeredOn.has(isolate)) {
+        answeredOn.add(isolate);
+        void occupy(clock, resource, d.callerSeen, "api-caller-seen");
+      }
+    };
+    // #3489: another lane's statements, one after another per caller, for as long as
+    // any confirm could still be working (its budget and cleanup allowance), so a
+    // confirm that never answers still ends the run as a hang rather than looping.
+    for (let k = 0; k < (model?.backgroundCallers ?? 0); k++) {
+      void (async () => {
+        while (clock.now - t0 < BACKGROUND_UNTIL_MS) {
+          await occupy(clock, resource, { latencyMs: model!.profile.database.meanStatementMs, queries: 1 }, "background-lane");
+        }
+      })();
+    }
+    const arrivalOf = (i: number) => (model ? model.arrivals[i]![0] : (opts.arriveAtMs?.[i] ?? 0));
+    opts.inputs.forEach((one, i) => clock.at(t0 + arrivalOf(i), () => {
       const run = runs[i];
       const grouping = opts.isolates ? groupings[i % opts.isolates.count] : undefined;
       const onIsolate = opts.isolates
@@ -420,16 +531,24 @@ async function burst(opts: {
             commitCosts: isolateCosts[i % opts.isolates.count],
           }
         : shared;
-      const deps = onSharedCapacity(onIsolate, resource, clock, run.calls, SYNCHRONOUS);
+      const deps = onSharedCapacity(onIsolate, resource, clock, run.calls, SYNCHRONOUS, costOf);
       const startedAt = clock.now;
+      // #3489: the route's own checks (the key, the ceilings) run inside the budget
+      // before the confirm reaches its line, and a cold switch cache reads the switch
+      // from the database meanwhile, which the confirm does not wait on past its deadline.
+      const arrival = model?.arrivals[i];
+      if (arrival && arrival[2] === 1) void occupy(clock, resource, model!.profile.deferred.switchRead, "shared-line-switch");
+      const beforeLine = arrival ? () => clock.sleep(Math.max(0, arrival[1] - arrival[0])) : null;
       // #3460: the route awaits the grouping before the line key, as production does.
-      const book = opts.viaApi === false ? () => createBooking(one, deps) : () => bookViaApi(one, deps);
+      const bookNow = opts.viaApi === false ? () => createBooking(one, deps) : () => bookViaApi(one, deps);
+      const book = beforeLine ? async () => (await beforeLine(), bookNow()) : bookNow;
       const work = grouping?.ensure ? async () => (await grouping.ensure!(), book()) : book;
       void withinBookingConfirmBudget(work as () => Promise<unknown>).then(
         (res) => {
           run.outcome = (res as { outcome?: string }).outcome ?? "created";
           run.result = res as BookingResult;
           run.answeredMs = clock.now - startedAt;
+          afterAnswer(i, run.outcome);
         },
         (err: unknown) => {
           run.error = err;
@@ -442,13 +561,42 @@ async function burst(opts: {
                   ? "EXISTING_CALL"
                   : `unexpected ${(err as Error)?.name}: ${(err as Error)?.message}`;
           run.answeredMs = clock.now - startedAt;
+          afterAnswer(i, run.outcome);
         },
       );
     }));
     await clock.runUntil(() => runs.every((r) => r.outcome !== undefined));
     const tally: Record<string, number> = {};
     for (const r of runs) tally[r.outcome!] = (tally[r.outcome!] ?? 0) + 1;
-    return { runs, tally, bySlot, calls, seatedReads, raceLosses, cleanupEndedMs: cleanup.endedMs };
+    // #3338: what the crowd left behind in its line once every confirm answered. A
+    // confirm that enters now must lead at once and find nobody's claim still held;
+    // a line still held, or a claim still in it, is a confirm that never let go.
+    let heldLines = 0;
+    let claimsLeft = 0;
+    if (opts.queue === "real") {
+      let probed = false;
+      const key = confirmQueueKey(opts.inputs[0].bucketCode, opts.inputs[0].startIso, undefined);
+      void (async () => {
+        for (const line of opts.isolates ? isolateLines : [queue]) {
+          const turn = await line.enter(key, 0);
+          if (turn.kind !== "lead") {
+            heldLines++;
+            continue;
+          }
+          claimsLeft += (await turn.seat.claimedByOthers()).size;
+          await turn.done({ full: false });
+        }
+        probed = true;
+      })();
+      await clock.runUntil(() => probed);
+    }
+    // A reservation a confirm wrote and never removed is one the drain will finish.
+    const reservationsLeftBy = (r: Run) =>
+      r.calls.filter((c) => c.name === "insertReservation" && c.served).length -
+      r.calls.filter((c) => c.name === "deleteReservation" && c.served).length;
+    // #3489: when each confirm was answered, from the burst's moment rather than its own.
+    const answeredAtMs = runs.map((r, i) => arrivalOf(i) + r.answeredMs!);
+    return { runs, tally, bySlot, calls, seatedReads, raceLosses, heldLines, claimsLeft, reservationsLeftBy, cleanupEndedMs: cleanup.endedMs, answeredAtMs };
   } finally {
     Date.now = realNow;
   }
@@ -475,7 +623,192 @@ function quiet(followers: Run[]): boolean {
   );
 }
 
+/** #3489: one burst of load run 37640583621 replayed under a profile, and what it gave. */
+interface Replayed {
+  /** Each booking: when it was answered from the burst's moment, and how many rungs it dropped. */
+  booked: { atMs: number; rungsDropped: number }[];
+  /** Everyone else, by how they were answered: count, first, median and last answer. */
+  others: Record<string, { count: number; firstMs: number; p50Ms: number; maxMs: number }>;
+  doubleBooked: boolean;
+}
+
+const p50 = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor((xs.length - 1) / 2)]!;
+
+/**
+ * #3489: one burst of load run 37640583621 replayed under a profile. `over` changes the
+ * database for a control: `slots` keeps the measured drain rate (slots over statement
+ * time) and splits it differently; `statementMs` changes the drain rate itself;
+ * `latencyScale` scales every call's own latency (what a call takes with nothing queued).
+ */
+async function replay(
+  shape: BurstShape,
+  profile: LoadProfile,
+  line: "shared" | "isolate",
+  over: { slots?: number; statementMs?: number; latencyScale?: number } = {},
+): Promise<Replayed> {
+  const poolByCode = Object.fromEntries(Object.entries(shape.rungs).map(([code, r]) => [code, [...r.free, ...r.busy]]));
+  // An advisor the cache shows busy holds the instant with a lead of their own.
+  const busy = [...new Set(Object.values(shape.rungs).flatMap((r) => r.busy))];
+  const held = busy.map((id, k) =>
+    makeBooking({
+      id: `busy-${id}`,
+      assigned_user_id: id,
+      agent_name: `Agent ${id}`,
+      agent_email: `${id}@x.com`,
+      starts_at: input.startIso,
+      external_id: `already-${k}`,
+      salesforce_id: `sf-already-${k}`,
+      attendee_email: `already${k}@example.com`,
+      attendee_phone: `+1203559${String(1000 + k)}`,
+      manage_token: `tok-already-${k}`,
+    } as Partial<Booking>),
+  );
+  const split = over.slots
+    ? { ...profile.database, slots: over.slots, statementMs: (profile.database.statementMs * over.slots) / profile.database.slots }
+    : profile.database;
+  const rated = over.statementMs ? { ...split, statementMs: over.statementMs } : split;
+  const s = over.latencyScale;
+  const database = s
+    ? {
+        ...rated,
+        meanStatementMs: rated.meanStatementMs * s,
+        callMs: Object.fromEntries(Object.entries(rated.callMs).map(([k, v]) => [k, v * s])),
+        candidateReadMs: { noneFree: rated.candidateReadMs.noneFree * s, oneFree: rated.candidateReadMs.oneFree * s, manyFree: rated.candidateReadMs.manyFree * s },
+      }
+    : rated;
+  const r = await burst({
+    inputs: shape.arrivals.map((_, i) => lead(i, { bucketCode: shape.code })),
+    pool: [],
+    poolByCode,
+    held,
+    queue: "real",
+    isolates: { count: shape.isolates, line },
+    slowGoogleMs: profile.googleCheckMs || undefined,
+    slowEventMs: profile.googleWriteMs || undefined,
+    model: {
+      profile: { ...profile, database },
+      arrivals: shape.arrivals,
+      firstAnswerMs: shape.firstAnswerMs,
+      backgroundCallers: shape.syncLaneRunning ? profile.database.syncLaneCallers : 0,
+    },
+  });
+  const booked = r.runs
+    .map((run, i) => ({ run, atMs: r.answeredAtMs[i]! }))
+    .filter(({ run }) => run.outcome === "created")
+    .map(({ run, atMs }) => ({ atMs, rungsDropped: run.result?.booking.routing_trace?.rungs_dropped ?? -1 }))
+    .sort((a, b) => a.atMs - b.atMs);
+  const byOutcome: Record<string, number[]> = {};
+  r.runs.forEach((run, i) => {
+    if (run.outcome !== "created") (byOutcome[run.outcome!] ??= []).push(r.answeredAtMs[i]!);
+  });
+  const others = Object.fromEntries(
+    Object.entries(byOutcome).map(([k, xs]) => [k, { count: xs.length, firstMs: Math.min(...xs), p50Ms: p50(xs), maxMs: maxOf(xs) }]),
+  );
+  const newRows = [...r.bySlot.values()].filter((b) => !String(b.id).startsWith("busy-"));
+  const doubleBooked = new Set(newRows.map((b) => b.assigned_user_id)).size !== newRows.length;
+  return { booked, others, doubleBooked };
+}
+
+const describe = (x: Replayed) =>
+  `booked ${x.booked.map((b) => `${(b.atMs / 1000).toFixed(1)}s/rung${b.rungsDropped}`).join(", ") || "none"}; ` +
+  Object.entries(x.others).map(([k, o]) => `${o.count} ${k} at ${(o.firstMs / 1000).toFixed(1)}..${(o.maxMs / 1000).toFixed(1)}s (p50 ${(o.p50Ms / 1000).toFixed(1)}s)`).join("; ");
+
 async function main() {
+  // --- #3489 step 0: every dependency the model prices is classified, by name ---
+  //
+  // The model charges a call to the database only when it is listed ON_DATABASE and
+  // charges nothing for one listed OFF_DATABASE (Google, Salesforce, Slack), and it
+  // refuses a name in neither. So every function dependency the confirm path can call
+  // must be in exactly one of the two, or in this suite's SYNCHRONOUS set (not I/O at
+  // all), and nothing may be listed that is not a dependency: a stale entry is a
+  // classification of nothing, and a missing one is the next Google call silently
+  // billed to the database (L96). Derived from the deps themselves, so a dependency
+  // added to `BookingDeps` and its fakes fails here until somebody classifies it.
+  {
+    const { deps } = makeDeps({ candidates: ["p0"], freeEmails: new Set() });
+    const names = Object.entries(deps).filter(([, v]) => typeof v === "function").map(([k]) => k);
+    const sets = { onDatabase: ON_DATABASE, offDatabase: OFF_DATABASE, synchronous: SYNCHRONOUS };
+    const got = classifyDeps(names, sets);
+    assert(got.unclassified.length === 0, `load model: every dependency is classified (unclassified: ${got.unclassified.join(", ")})`);
+    assert(got.twice.length === 0, `load model: no dependency is classified twice (${got.twice.join(", ")})`);
+    // Stale is asked of the model's own two lists: the suite's synchronous set also names
+    // optional dependencies the base fake leaves out (`lineGroupOf`, `deferSend`).
+    const modelStale = classifyDeps(names, { onDatabase: ON_DATABASE, offDatabase: OFF_DATABASE }).stale;
+    assert(modelStale.length === 0, `load model: nothing the model classifies is missing from the deps (stale: ${modelStale.join(", ")})`);
+    // Control (L1): a dependency nobody classified is caught by name.
+    const planted = classifyDeps([...names, "readSomethingNew"], sets);
+    assert(JSON.stringify(planted.unclassified) === JSON.stringify(["readSomethingNew"]), `load model control: a new dependency is reported unclassified (got ${JSON.stringify(planted.unclassified)})`);
+    let refused = "";
+    try {
+      databaseCosts(LOAD_RUN_PROFILE.database, () => 0)("readSomethingNew", []);
+    } catch (err) {
+      refused = (err as Error).message;
+    }
+    assert(refused.includes("readSomethingNew"), `load model control: pricing an unclassified call throws by name (got ${JSON.stringify(refused)})`);
+  }
+
+  // --- #3489 step 0: the load model, calibrated against load run 37640583621 --
+  //
+  // CALIBRATION, not a target. The model (`scripts/lib/confirm-load-model.ts`) replays
+  // each burst of that run on #3437's crowd rule (walks), on the shared line the run
+  // used, and must give the run's SHAPE: who booked and on which rung, how everybody
+  // else was answered, and when, within a second. A second is about the spread of the
+  // run's own answers inside one outcome (burst 1's 99 SLOT_TAKEN spread 0.2s, burst 3's
+  // 98 retries 3.8s), so matching closer would be fitting noise. These cases describe the
+  // behaviour #3489 exists to change; its later steps REPLACE them with the burst bar's
+  // target (every free advisor booked, the rest told taken within 2s), never keep both.
+  {
+    const TOLERANCE_MS = 1_000;
+    const near = (a: number, b: number) => Math.abs(a - b) <= TOLERANCE_MS;
+    const shapeOf = (x: Replayed) => `${x.booked.map((b) => b.rungsDropped).join(",")} | ${Object.entries(x.others).map(([k, o]) => `${o.count} ${k}`).join(", ")}`;
+    for (const shape of RUN_37640583621) {
+      const tag = `#3489 calibration, ${shape.label}`;
+      const m = shape.measured;
+      const got = await replay(shape, LOAD_RUN_PROFILE, "shared");
+      assert(!got.doubleBooked, `${tag}: no advisor is booked twice`);
+      assert(
+        JSON.stringify(got.booked.map((b) => b.rungsDropped)) === JSON.stringify(m.booked.map((b) => b.rungsDropped)),
+        `${tag}: books as many as the run did, on the same rungs (got ${describe(got)})`,
+      );
+      got.booked.forEach((b, k) => {
+        const want = m.booked[k];
+        assert(want !== undefined && near(b.atMs, want.atMs), `${tag}: booking ${k + 1} answered within ${TOLERANCE_MS}ms of the run's ${want?.atMs}ms (got ${b.atMs}ms)`);
+      });
+      const others = got.others[m.others.outcome];
+      assert(
+        Object.keys(got.others).length === 1 && others?.count === m.others.count,
+        `${tag}: every other confirm answered ${m.others.outcome}, ${m.others.count} of them (got ${describe(got)})`,
+      );
+      assert(
+        others !== undefined && near(others.firstMs, m.others.firstMs) && near(others.p50Ms, m.others.p50Ms),
+        `${tag}: their first and median answers within ${TOLERANCE_MS}ms of the run's ${m.others.firstMs} and ${m.others.p50Ms}ms (got ${others?.firstMs} and ${others?.p50Ms})`,
+      );
+      // The split of the database's measured drain rate (slots over statement time) is
+      // the one TUNED figure, so what the other whole split gives is recorded beside it
+      // (`DatabaseModel.slots` says what it moves).
+      const oneSlot = await replay(shape, LOAD_RUN_PROFILE, "shared", { slots: 1 });
+      console.log(`${tag}: ${describe(got)}; with one slot at the same drain rate: ${shapeOf(oneSlot)}`);
+    }
+    // Control (L1): the calibration can fail. The tier drop burst's twelve confirms barely
+    // queue, so what decides how many book is each call's own latency, one call after
+    // another: at half the measured latencies the line serves more of the free ladder
+    // than the run did, and the cases above would refuse that shape.
+    const drop = RUN_37640583621[1]!;
+    const fast = await replay(drop, LOAD_RUN_PROFILE, "shared", { latencyScale: 0.5 });
+    assert(
+      fast.booked.length > drop.measured.booked.length,
+      `#3489 calibration control: at half the measured call latency the tier drop burst books more than the run's ${drop.measured.booked.length} (got ${describe(fast)})`,
+    );
+    // What the same model says about the configurations the run did not measure,
+    // recorded and not asserted (#3489's PR carries them): the per isolate line, which
+    // production runs today, and production's Google time.
+    for (const shape of RUN_37640583621) {
+      for (const [profile, line] of [[LOAD_RUN_PROFILE, "isolate"], [PRODUCTION_PROFILE, "shared"], [PRODUCTION_PROFILE, "isolate"]] as const) {
+        console.log(`#3489 model, ${shape.label}, ${profile.name}, ${line} line: ${describe(await replay(shape, profile, line))}`);
+      }
+    }
+  }
+
   // --- CONTROL: the incident, reproduced with the queue switched off ----------
   {
     const { runs, tally, bySlot } = await burst({
@@ -631,12 +964,22 @@ async function main() {
       const { runs, tally, bySlot } = await burst({ inputs: siblings, pool: ["a"], queue: "real", isolates, grouping: { states, snapshot: fresh, fetch: true } });
       const groups = groupsOf(runs);
       assert(groups.length === 1 && groups[0]!.startsWith("ladder:"), `siblings, snapshot: every confirm on every server joins ONE ladder line (got ${groups.join(", ")})`);
+      // #3338: 120's ladder has rungs below the top one, every one of them the same one
+      // advisor here, so the winner's booking does not settle the line: the next
+      // confirm leads, walks the rest of the ladder, finds it spent, and that verdict
+      // answers everybody else. Two leaders, on ONE line, where main's split elected
+      // one per line before any of them walked.
       const leaders = leadersOf(runs);
-      assert(leaders.length === 1, `siblings, snapshot: which elects ONE leader (got ${leaders.length})`);
+      assert(leaders.length === 2, `siblings, snapshot: which elects the winner and the one confirm that walks the ladder to find it spent (got ${leaders.length})`);
       assert(tally.created === 1 && bySlot.size === 1, `siblings, snapshot: exactly one confirm is booked (got ${JSON.stringify(tally)})`);
-      assert(tally.SLOT_TAKEN === BURST - 1, `siblings, snapshot: and every follower is answered SLOT_TAKEN from it (got ${JSON.stringify(tally)})`);
+      assert(tally.SLOT_TAKEN === BURST - 1, `siblings, snapshot: and every other confirm is answered SLOT_TAKEN (got ${JSON.stringify(tally)})`);
       assert(!tally["503"], `siblings, snapshot: none is answered 503 (got ${tally["503"] ?? 0})`);
-      assert(quiet(runs.filter((r) => r.outcome === "SLOT_TAKEN")), "siblings, snapshot: no follower runs a chain of its own");
+      const walker = leaders.find((r) => r.outcome === "SLOT_TAKEN");
+      assert(walker !== undefined, "siblings, snapshot: the second leader is the one told the ladder is spent");
+      assert(
+        quiet(runs.filter((r) => r.outcome === "SLOT_TAKEN" && r !== walker)),
+        "siblings, snapshot: and no other follower runs a chain of its own",
+      );
     }
 
     // Every refusal keeps today's behaviour: the code's own line, never a guess.
@@ -1394,6 +1737,277 @@ async function main() {
     assert(bySlot.size === 1, `last advisor move: no new booking beside the move (got ${bySlot.size} rows)`);
   }
 
+  // --- #3338: a crowd behind the TOP rung's last advisor, with free advisors below ---
+  //
+  // Sales ops decided on 2026-10-02 that a lead whose tier has nobody free at
+  // confirm keeps their time with the next tier down, and Dan settled on
+  // 2026-10-06 that a confirm in a crowd walks the ladder "Same as a normal
+  // confirm". Before this, a leader that booked the last advisor of the rung it
+  // booked from told every confirm waiting behind it the time was taken, while the
+  // tier below still had people free. 411's ladder is 411, 311, 211; here 411 has
+  // one advisor, 311 has three, and 211 has no bucket at all, so the ladder skips it.
+  assert(tierLadder(ONE_RUNG).length === 1, `fixture: ${ONE_RUNG} is a one rung ladder (got ${tierLadder(ONE_RUNG).join(",")})`);
+  const LADDERED = "411";
+  assert(JSON.stringify(tierLadder(LADDERED)) === JSON.stringify(["411", "311", "211"]), `fixture: ${LADDERED} walks 411, 311, 211`);
+  const LADDER: Record<string, string[]> = { "411": ["a"], "311": ["c", "d", "e"] };
+  const LOWER = LADDER["311"];
+  const onLadder = (i: number) => lead(i, { bucketCode: LADDERED });
+  // Whether anybody was told the time is taken while an advisor on the rung below
+  // was still free: the defect, judged from what was booked when the crowd ended.
+  const takenWhileFreeBelow = (tally: Record<string, number>, bySlot: Map<string, Booking>) =>
+    (tally.SLOT_TAKEN ?? 0) > 0 && LOWER.some((id) => !bySlot.has(`${id}|${input.startIso}`));
+  const lineKinds = [
+    { label: "per isolate line", isolates: undefined },
+    { label: "shared line", isolates: { count: 10, line: "shared" as const } },
+  ];
+
+  // Positive control first (L159): when the rung below has nobody free (its one
+  // advisor already holds the time), the crowd still has exactly one winner and
+  // everybody else is told the time is taken. What the ladder costs it is ONE hop:
+  // the leader booked a rung that is not the ladder's last, so the next confirm in
+  // line walks the ladder from the top, finds it spent from the cache alone, and
+  // its own refusal settles everybody else. Nobody asks Google or writes anything.
+  const cHolds = makeBooking({
+    id: "held-c",
+    assigned_user_id: "c",
+    agent_name: "Agent C",
+    agent_email: "c@x.com",
+    starts_at: input.startIso,
+    external_id: "someone-else",
+    salesforce_id: "sf-someone-else",
+    attendee_email: "someone@example.com",
+    attendee_phone: "+12035569999",
+    manage_token: "tok-c",
+  } as Partial<Booking>);
+  const WRITES_OR_GOOGLE = new Set(["verifyFree", "createEvent", "insertReservation", "insertBooking"]);
+  for (const { label, isolates } of lineKinds) {
+    for (const viaApi of [true, false]) {
+      const tag = `#3338 control, ${label}, ${viaApi ? "booking API" : "booker confirm"}`;
+      const { runs, tally, bySlot } = await burst({
+        inputs: Array.from({ length: BURST }, (_, i) => onLadder(i)),
+        pool: ["a"],
+        poolByCode: { "411": ["a"], "311": ["c"] },
+        held: [cHolds],
+        queue: "real",
+        isolates,
+        viaApi,
+        slowGoogleMs: 3_000,
+        slowEventMs: 5_000,
+      });
+      assert(tally.created === 1 && bySlot.size === 2, `${tag}: exactly one winner (got ${JSON.stringify(tally)})`);
+      assert(tally.SLOT_TAKEN === BURST - 1, `${tag}: everybody else is told the time is taken (got ${JSON.stringify(tally)})`);
+      const losers = runs.filter((r) => r.outcome === "SLOT_TAKEN");
+      const walkers = losers.filter((r) => r.calls.some((c) => !LOOKAHEAD_READS.has(c.name)));
+      assert(walkers.length === 1, `${tag}: one confirm walks the spent ladder, the rest are answered from it (got ${walkers.length})`);
+      assert(
+        walkers.every((r) => r.calls.every((c) => !WRITES_OR_GOOGLE.has(c.name))),
+        `${tag}: that walk asks Google nothing and writes nothing`,
+      );
+      assert(quiet(losers.filter((r) => !walkers.includes(r))), `${tag}: the rest stay inside the lookahead bound`);
+    }
+  }
+
+  // The defect, at production speed: a second wave of leads arrives five seconds
+  // after the first, so the confirm ahead of them finishes inside their budget.
+  // Every advisor on the rung below must be booked, by leads who were told before
+  // this that the time was taken.
+  for (const { label, isolates } of lineKinds) {
+    for (const viaApi of [true, false]) {
+      const tag = `#3338 second wave, ${label}, ${viaApi ? "booking API" : "booker confirm"}`;
+      const { runs, tally, bySlot } = await burst({
+        inputs: Array.from({ length: 5 }, (_, i) => onLadder(i)),
+        pool: ["a"],
+        poolByCode: LADDER,
+        queue: "real",
+        isolates,
+        viaApi,
+        slowGoogleMs: 3_000,
+        slowEventMs: 5_000,
+        arriveAtMs: [0, 5_000, 5_000, 5_000, 5_000],
+      });
+      assert(runs[0].outcome === "created", `${tag}: the first in books the top rung (got ${runs[0].outcome})`);
+      const lower = LOWER.filter((id) => bySlot.has(`${id}|${input.startIso}`));
+      assert(
+        lower.length === LOWER.length,
+        `${tag}: every advisor on the rung below is booked (got ${lower.join(",") || "none"}, ${JSON.stringify(tally)})`,
+      );
+      assert(!takenWhileFreeBelow(tally, bySlot), `${tag}: nobody is told the time is taken while the rung below has somebody free`);
+      const dropped = [...bySlot.values()].filter((b) => (b.routing_trace as { bucket_code?: string } | null)?.bucket_code === "311");
+      assert(
+        dropped.length === LOWER.length &&
+          dropped.every((b) => b.bucket_id === "bkt-311" && (b.routing_trace as { rungs_dropped?: number }).rungs_dropped === 1),
+        `${tag}: each booking below names the rung it was made on`,
+      );
+      // #3338: and says it dropped behind the confirm ahead of it in line, so the
+      // branch is counted on /admin/routing (L551).
+      assert(
+        dropped.every((b) => (b.routing_trace as { dropped_behind?: string }).dropped_behind === "line"),
+        `${tag}: each booking below says it dropped behind the line (got ${dropped.map((b) => (b.routing_trace as { dropped_behind?: string }).dropped_behind).join(",")})`,
+      );
+      const top = bySlot.get(`a|${input.startIso}`);
+      assert(top !== undefined && (top.routing_trace as { dropped_behind?: string }).dropped_behind === undefined, `${tag}: the top rung's booking dropped nothing`);
+      assert(
+        runs.every((r) => r.outcome === "created" || r.outcome === "SLOT_TAKEN" || r.outcome === "503"),
+        `${tag}: every confirm is booked, told the time is taken, or told to retry (got ${JSON.stringify(tally)})`,
+      );
+    }
+  }
+
+  // The same crowd arriving all at once at production speed. The confirm ahead
+  // holds the line for its whole eight seconds (it is booking the top rung's last
+  // advisor, #3257), so those behind it cannot all walk down inside their budget.
+  // Dan's rule for that (2026-10-06): they are told to retry, never that the time
+  // is taken while the rung below has somebody free (L11).
+  for (const { label, isolates } of lineKinds) {
+    for (const viaApi of [true, false]) {
+      const tag = `#3338 crowd at once, ${label}, ${viaApi ? "booking API" : "booker confirm"}`;
+      const { runs, tally, bySlot, heldLines, claimsLeft, reservationsLeftBy } = await burst({
+        inputs: Array.from({ length: BURST }, (_, i) => onLadder(i)),
+        pool: ["a"],
+        poolByCode: LADDER,
+        queue: "real",
+        isolates,
+        viaApi,
+        slowGoogleMs: 3_000,
+        slowEventMs: 5_000,
+      });
+      assert(runs[0].outcome === "created", `${tag}: the first in books the top rung (got ${runs[0].outcome})`);
+      assert(!takenWhileFreeBelow(tally, bySlot), `${tag}: nobody is told the time is taken while the rung below has somebody free (got ${JSON.stringify(tally)})`);
+      assert(
+        runs.every((r) => r.outcome === "created" || r.outcome === "SLOT_TAKEN" || r.outcome === "503"),
+        `${tag}: every confirm is booked, told the time is taken, or told to retry (got ${JSON.stringify(tally)})`,
+      );
+      assert(tally.created === bySlot.size, `${tag}: one booking per advisor, never a double`);
+      // A lead told to retry must have had nothing started for them (L12): no
+      // calendar event and no reservation the drain would later finish into a
+      // booking they were told had failed, and no claim left held in the line.
+      const retried = runs.filter((r) => r.outcome === "503");
+      const wrote = retried.filter((r) => r.calls.some((c) => c.name === "createEvent" || c.name === "insertReservation"));
+      assert(wrote.length === 0, `${tag}: no lead told to retry had an event or a reservation started (got ${wrote.length} of ${retried.length})`);
+      const left = runs.reduce((n, r) => n + reservationsLeftBy(r), 0);
+      assert(left === 0, `${tag}: no reservation is left for the drain (got ${left})`);
+      assert(heldLines === 0 && claimsLeft === 0, `${tag}: no line held and no claim left in it (got ${heldLines} held, ${claimsLeft} claims)`);
+      console.log(`${tag}: booked ${tally.created ?? 0}, told retry ${tally["503"] ?? 0}, told taken ${tally.SLOT_TAKEN ?? 0}, reservations left ${left}`);
+    }
+  }
+
+  // The same crowd at a speed the line can serve inside the wait (a 1s live check
+  // and a 1s calendar write): every advisor on the ladder is booked, and the
+  // confirms left once it is spent are told the time is taken.
+  for (const { label, isolates } of lineKinds) {
+    const tag = `#3338 crowd the line can serve, ${label}`;
+    const { tally, bySlot } = await burst({
+      inputs: Array.from({ length: 20 }, (_, i) => onLadder(i)),
+      pool: ["a"],
+      poolByCode: LADDER,
+      queue: "real",
+      isolates,
+      slowGoogleMs: 1_000,
+      slowEventMs: 1_000,
+    });
+    const lower = LOWER.filter((id) => bySlot.has(`${id}|${input.startIso}`));
+    assert(
+      bySlot.has(`a|${input.startIso}`) && lower.length === LOWER.length,
+      `${tag}: the top rung and every advisor below are booked (got ${[...bySlot.keys()].map((k) => k.split("|")[0]).join(",")}, ${JSON.stringify(tally)})`,
+    );
+    assert(tally.created === 1 + LOWER.length && tally.created === bySlot.size, `${tag}: one booking per advisor, never a double (got ${JSON.stringify(tally)})`);
+    assert(!takenWhileFreeBelow(tally, bySlot), `${tag}: nobody is told the time is taken while the rung below has somebody free`);
+  }
+
+  // A confirm that LOSES the insert race on a rung's last advisor walks on down
+  // too. Two confirms on two isolates, each with its own line (what production
+  // runs, `shared_confirm_line` off), both take the top rung's one advisor and race
+  // at the insert. The loser goes on to the rung below and books there.
+  {
+    const { runs, tally, bySlot } = await burst({
+      inputs: [onLadder(0), onLadder(1)],
+      pool: ["a"],
+      poolByCode: LADDER,
+      queue: "real",
+      isolates: { count: 2, line: "isolate" },
+      viaApi: false,
+    });
+    assert(
+      runs.every((r) => r.outcome === "created") && bySlot.has(`a|${input.startIso}`) && bySlot.has(`c|${input.startIso}`),
+      `#3338 lost race: both are booked, the loser on the rung below (got ${JSON.stringify(tally)}, ${[...bySlot.keys()].join(",")})`,
+    );
+    const rescued = runs.find((r) => (r.result?.booking.routing_trace?.race_lost?.length ?? 0) > 0)?.result?.booking;
+    assert(
+      rescued?.assigned_user_id === "c" &&
+        rescued.bucket_id === "bkt-311" &&
+        rescued.routing_trace?.bucket_code === "311" &&
+        rescued.routing_trace?.rungs_dropped === 1 &&
+        JSON.stringify(rescued.routing_trace?.race_lost) === JSON.stringify(["a"]) &&
+        rescued.routing_trace?.dropped_behind === "race",
+      `#3338 lost race: the loser's booking names the rung below, the advisor it lost above, and that it dropped behind a race (got ${JSON.stringify(rescued?.routing_trace)})`,
+    );
+  }
+
+  // A lost race never drops a rung for an advisor that was merely CLAIMED (#3257).
+  // Confirm 0 claims a and hands on; confirm 1 books b, the only one left unclaimed,
+  // and loses the insert race for it to a booking another isolate made. Confirm 0's
+  // calendar write then fails, which frees a. Confirm 1 never asked about a (it was
+  // claimed when it read the rung), so before it walks down it reads that rung
+  // again: a is free now, and it books a on the requested rung rather than dropping.
+  {
+    const elsewhereB = makeBooking({
+      id: "elsewhere-b",
+      assigned_user_id: "b",
+      agent_name: "Agent B",
+      agent_email: "b@x.com",
+      starts_at: input.startIso,
+      external_id: "other-isolate-b",
+      salesforce_id: "sf-other-b",
+      attendee_email: "otherb@example.com",
+      attendee_phone: "+12035571111",
+    } as Partial<Booking>);
+    const { runs, bySlot } = await burst({
+      inputs: [onLadder(0), onLadder(1)],
+      pool: ["a", "b"],
+      poolByCode: { "411": ["a", "b"], "311": ["c"] },
+      queue: "real",
+      viaApi: false,
+      heldElsewhere: [elsewhereB],
+      slowGoogleMs: 1_000,
+      slowEventMs: 2_000,
+      failFirstEventFor: "a@x.com",
+    });
+    assert(runs[0].outcome !== "created", `claimed advisor: confirm 0 fails on its calendar write (got ${runs[0].outcome})`);
+    const theirs = runs[1].result?.booking;
+    assert(
+      runs[1].outcome === "created" && theirs?.assigned_user_id === "a" && theirs.routing_trace?.rungs_dropped === 0,
+      `claimed advisor: confirm 1 books the freed advisor on the requested rung, not a rung below (got ${runs[1].outcome}, ${theirs?.assigned_user_id}, dropped ${theirs?.routing_trace?.rungs_dropped})`,
+    );
+    assert(!bySlot.has(`c|${input.startIso}`), "claimed advisor: nobody is dropped to the rung below");
+  }
+
+  // The same race at production speed: the attempt that lost took about eight of
+  // the twelve seconds, so the loser has too little left to walk down and is told
+  // to retry, never that the time is taken while the rung below has somebody free.
+  {
+    const { runs, tally, bySlot } = await burst({
+      inputs: [onLadder(0), onLadder(1)],
+      pool: ["a"],
+      poolByCode: LADDER,
+      queue: "real",
+      isolates: { count: 2, line: "isolate" },
+      viaApi: false,
+      slowGoogleMs: 3_000,
+      slowEventMs: 5_000,
+    });
+    assert(tally.created === 1 && tally["503"] === 1, `#3338 slow lost race: one booked, the loser told to retry (got ${JSON.stringify(tally)})`);
+    const loser = runs.find((r) => r.outcome === "503");
+    assert(
+      loser?.error instanceof DependencyTimeoutError && loser.error.neededMs !== undefined,
+      `#3338 slow lost race: the retry says it did not start the walk down for want of time (got ${String(loser?.error)})`,
+    );
+    assert(!bySlot.has(`c|${input.startIso}`), "#3338 slow lost race: nothing below was booked");
+    assert(
+      !(loser?.calls ?? []).some((c, i, all) => c.name === "verifyFree" && all.slice(0, i).filter((x) => x.name === "verifyFree").length > 0),
+      "#3338 slow lost race: the loser never asks Google about the rung below",
+    );
+  }
+
   // --- #3429: the crowd rule this build DECLARES is the one its confirm path RUNS ---
   //
   // `CONFIRM_CROWD_RULE` is what /api/smoke/version reports and what the load run's
@@ -1427,7 +2041,7 @@ async function main() {
       shown === declared ? null : `the confirm path ${shown === "stops" || shown === "walks" ? shown : `shows ${shown}`}, and CONFIRM_CROWD_RULE declares "${declared}"`;
 
     const crowd = await burst({
-      inputs: Array.from({ length: 6 }, (_, i) => lead(200 + i)),
+      inputs: Array.from({ length: 6 }, (_, i) => lead(200 + i, { bucketCode: top })),
       pool: [],
       poolByCode,
       queue: "real",
@@ -1451,7 +2065,7 @@ async function main() {
     //    one crowd each lead and walk the ladder on their own, under either rule, so
     //    the same pools read as walking, and a stops declaration is refused over it.
     const alone = await burst({
-      inputs: Array.from({ length: 6 }, (_, i) => lead(210 + i)),
+      inputs: Array.from({ length: 6 }, (_, i) => lead(210 + i, { bucketCode: top })),
       pool: [],
       poolByCode,
       queue: "real",

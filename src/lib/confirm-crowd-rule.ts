@@ -15,7 +15,7 @@
  * that says it walks. The load test deployment reports this value from
  * `/api/smoke/version`, and every burst driver records what it said.
  *
- * #3437 sets this to `walks` in the change that makes a crowd walk the ladder. A build
+ * #3437 set this to `walks` in the change that made a crowd walk the ladder. A build
  * whose behaviour and declaration disagree does not pass quietly in either direction:
  * a build that walks while saying `stops` gives a drop burst that cannot show the
  * defect it declares, which the judge reports as unconcluded, and a build that stops
@@ -33,4 +33,4 @@ export const CONFIRM_CROWD_RULES = ["stops", "walks"] as const;
 
 export type ConfirmCrowdRule = (typeof CONFIRM_CROWD_RULES)[number];
 
-export const CONFIRM_CROWD_RULE: ConfirmCrowdRule = "stops";
+export const CONFIRM_CROWD_RULE: ConfirmCrowdRule = "walks";

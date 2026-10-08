@@ -27,9 +27,14 @@ import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
  * - `verify_unreadable`: live Google could not answer for at least one candidate and
  *   nobody it could answer for was free.
  * - `race_lost`: an advisor was free, the insert lost the overlap race, and nobody
- *   after them in the rung could be booked instead.
+ *   could be booked instead: nobody after them in the rung, and since #3338 nobody
+ *   on any rung below it either (the walk down's rungs follow it in `rungs`), or the
+ *   rest could not be asked (the reassign bound, a live check that could not answer,
+ *   a named link, an adopted pin). A lost race with free advisors below no longer
+ *   ends here: it walks on down the ladder like any confirm.
  * - `follower`: a confirm waiting in the slot's line was answered from the verdict of
- *   the confirm ahead of it, without running any of the above itself.
+ *   the confirm ahead of it, without running any of the above itself. Since #3338 a
+ *   leader settles the line only once its whole ladder is spent.
  *
  * Being claimed by another confirm in the line is NOT a stage: when every candidate
  * is claimed, none is left out (`claimFromLine`), so it can never refuse by itself.
