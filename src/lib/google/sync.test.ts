@@ -70,6 +70,7 @@ import {
   purgeVanished,
   ensureWatches,
   runIncrementalSync,
+  loadAgentSyncFacts,
   loadSyncAgents,
   loadFailingAgents,
   cleanupOnPoolExit,
@@ -1265,6 +1266,118 @@ describe("loadFailingAgents per-kind paging thresholds (#916)", () => {
 // agents at once now makes the rotation lane QUIETER, not noisier. The lane has
 // to report the size of the population it is skipping, or the scale of a
 // revocation is unreportable.
+describe("runIncrementalSync with the tick's advisor facts (#3489)", () => {
+  // The cron tick read every advisor's email and zone with two requests EACH, every
+  // minute, before reading their calendars: 180 requests a minute for 90 advisors in
+  // the load test, front loaded into the tick that slowed bookings in the first half
+  // of each minute (load run 37739581575). The tick now reads them once for everybody
+  // and hands each advisor's sync its own. The calendar rows are still read per
+  // advisor, because they carry the sync token and the claims another pass holds
+  // (#2411), which must be read fresh.
+  const calendar = {
+    id: "cal-1",
+    user_id: "agent-1",
+    calendar_id: "primary",
+    sync_token: "tok",
+    consecutive_failures: 0,
+    last_success_at: null,
+    last_sync_error: null,
+  };
+  const counted = (db: ReturnType<typeof syncFlowDb>["db"]) => {
+    const reads: string[] = [];
+    const from = (db as unknown as { from: (t: string) => unknown }).from;
+    (db as unknown as { from: (t: string) => unknown }).from = (t: string) => {
+      reads.push(t);
+      return from(t);
+    };
+    return reads;
+  };
+
+  it("reads neither the advisor's email nor zone, and syncs with the ones it was given", async () => {
+    const { db } = syncFlowDb({ email: "stale@x.com", timezone: "America/New_York", calendars: [calendar] });
+    admin.current = db;
+    const reads = counted(db);
+    await runIncrementalSync("agent-1", null, { email: "agent@x.com", timeZone: "America/Phoenix" });
+    expect(reads).not.toContain("users");
+    expect(reads).not.toContain("availability_schedules");
+    expect(reads).toContain("agent_calendars");
+    expect((calMock.syncEvents.mock.calls[0] as unknown[] | undefined)?.[0]).toBe("agent@x.com");
+  });
+
+  it("syncs nothing for an advisor the tick found with no email, as before", async () => {
+    const { db } = syncFlowDb({ email: "agent@x.com", calendars: [calendar] });
+    admin.current = db;
+    const reads = counted(db);
+    const out = await runIncrementalSync("agent-1", null, { email: null, timeZone: "America/New_York" });
+    expect(out.events).toBe(0);
+    expect(reads).toEqual([]);
+    expect(calMock.syncEvents).not.toHaveBeenCalled();
+  });
+
+  it("control: without them it reads both, as the push path still does", async () => {
+    const { db } = syncFlowDb({ email: "agent@x.com", calendars: [calendar] });
+    admin.current = db;
+    const reads = counted(db);
+    await runIncrementalSync("agent-1");
+    expect(reads).toContain("users");
+    expect(reads).toContain("availability_schedules");
+  });
+});
+
+describe("loadAgentSyncFacts (#3489)", () => {
+  function factsDb(opts: { users: Record<string, unknown>[]; schedules: Record<string, unknown>[]; fail?: string }) {
+    const reads: string[] = [];
+    const db = {
+      from: (table: string) => {
+        reads.push(table);
+        const b: Record<string, unknown> = {
+          select: () => b,
+          in: () => b,
+          then: (resolve: (v: unknown) => unknown) =>
+            Promise.resolve(
+              opts.fail === table
+                ? { data: null, error: { message: "statement timeout" } }
+                : { data: table === "users" ? opts.users : opts.schedules, error: null },
+            ).then(resolve),
+        };
+        return b;
+      },
+    };
+    return { db, reads };
+  }
+
+  it("reads every advisor's email and zone in two reads, defaulting a missing zone and a missing advisor", async () => {
+    const { db, reads } = factsDb({
+      users: [
+        { id: "a", email: "a@x.com" },
+        { id: "b", email: null },
+      ],
+      schedules: [{ user_id: "a", timezone: "America/Phoenix" }],
+    });
+    admin.current = db;
+    const facts = await loadAgentSyncFacts(["a", "b", "gone"]);
+    expect(reads.sort()).toEqual(["availability_schedules", "users"]);
+    expect(facts?.get("a")).toEqual({ email: "a@x.com", timeZone: "America/Phoenix" });
+    expect(facts?.get("b")).toEqual({ email: null, timeZone: "America/New_York" });
+    expect(facts?.get("gone")).toEqual({ email: null, timeZone: "America/New_York" });
+  });
+
+  it("answers null on a failed read, never an empty or partial map read as advisors with no email", async () => {
+    for (const fail of ["users", "availability_schedules"]) {
+      const { db } = factsDb({ users: [{ id: "a", email: "a@x.com" }], schedules: [], fail });
+      admin.current = db;
+      expect(await loadAgentSyncFacts(["a"])).toBeNull();
+    }
+  });
+
+  it("reads nothing for no advisors", async () => {
+    const { db, reads } = factsDb({ users: [], schedules: [] });
+    admin.current = db;
+    expect((await loadAgentSyncFacts([]))?.size).toBe(0);
+    expect(reads).toEqual([]);
+  });
+});
+
 describe("runIncrementalSync reports the calendars it backed off (#1187)", () => {
   /**
    * A wall-clock ms value at which `id` is NOT due for its once-per-interval

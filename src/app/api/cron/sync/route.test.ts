@@ -24,6 +24,7 @@ const admin = vi.hoisted(() => ({
 }));
 const sync = vi.hoisted(() => ({
   runIncrementalSync: vi.fn(async () => ({ events: 0, truncated: false, goneSkipped: 0 })),
+  loadAgentSyncFacts: vi.fn(async (): Promise<Map<string, { email: string | null; timeZone: string }> | null> => new Map()),
   loadSyncAgents: vi.fn(async () => []),
   markAgentsSynced: vi.fn(async () => {}),
   loadFailingAgents: vi.fn(async () => []),
@@ -136,6 +137,39 @@ describe("the sync lane lease (#3120)", () => {
     await GET(req());
     expect(sync.runIncrementalSync).toHaveBeenCalledTimes(2);
     expect(sync.markAgentsSynced).toHaveBeenCalledWith(["u1", "u2"]);
+  });
+
+  // #3489: the advisors' emails and zones are read ONCE for the tick, never per advisor,
+  // and each advisor's sync is handed its own; a failed read hands none, and each sync
+  // reads its own as before.
+  it("reads every advisor's email and zone once for the tick and hands each sync its own", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    sync.loadSyncAgents.mockResolvedValueOnce(twoAgents as never);
+    sync.loadAgentSyncFacts.mockResolvedValueOnce(
+      new Map([
+        ["u1", { email: "u1@x.com", timeZone: "America/Phoenix" }],
+        ["u2", { email: "u2@x.com", timeZone: "America/Chicago" }],
+      ]),
+    );
+    pace.mapWithConcurrency.mockImplementationOnce(runTasks as never);
+    await GET(req());
+    expect(sync.loadAgentSyncFacts).toHaveBeenCalledTimes(1);
+    expect(sync.loadAgentSyncFacts).toHaveBeenCalledWith(["u1", "u2"]);
+    const calls = sync.runIncrementalSync.mock.calls as unknown as [string, unknown, unknown][];
+    expect(calls.map((c) => [c[0], c[2]])).toEqual([
+      ["u1", { email: "u1@x.com", timeZone: "America/Phoenix" }],
+      ["u2", { email: "u2@x.com", timeZone: "America/Chicago" }],
+    ]);
+  });
+
+  it("hands no facts when the tick's read failed, so each sync reads its own", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    sync.loadSyncAgents.mockResolvedValueOnce(twoAgents as never);
+    sync.loadAgentSyncFacts.mockResolvedValueOnce(null);
+    pace.mapWithConcurrency.mockImplementationOnce(runTasks as never);
+    await GET(req());
+    const calls = sync.runIncrementalSync.mock.calls as unknown as [string, unknown, unknown][];
+    expect(calls.map((c) => c[2])).toEqual([undefined, undefined]);
   });
 });
 
