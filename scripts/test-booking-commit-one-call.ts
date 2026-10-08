@@ -153,6 +153,41 @@ async function main() {
       `the read back is one more lookup by the lead's key (got ${made.calls.idempotencyLookups.length}, an ordinary booking makes ${lookupsBeforeSave})`);
   }
 
+  // --- no answer, and the read back fails too: still a retryable failure, but never a silent one --
+  // Whether the booking landed is unknown, so the lead is told it failed (their retry
+  // finds it by key if it did); the read back's own failure must be in the log, since
+  // otherwise it reads exactly like a read that found nothing.
+  {
+    const made = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    let saveAttempted = false;
+    made.deps.commitFreshBooking = async () => {
+      saveAttempted = true;
+      throw new Error("the connection closed before the answer");
+    };
+    const lookup = made.deps.findBookingByIdempotencyKey;
+    made.deps.findBookingByIdempotencyKey = async (key) => {
+      if (saveAttempted) throw new Error("read back refused");
+      return lookup(key);
+    };
+    const lines: string[] = [];
+    const [origWarn, origError] = [console.warn, console.error];
+    console.warn = (...args: unknown[]) => void lines.push(args.map(String).join(" "));
+    console.error = (...args: unknown[]) => void lines.push(args.map(String).join(" "));
+    let threw: unknown = null;
+    try {
+      await createBooking(input, made.deps);
+    } catch (err) {
+      threw = err;
+    } finally {
+      console.warn = origWarn;
+      console.error = origError;
+    }
+    assert(threw instanceof Error && /Failed to persist booking/.test(threw.message), `the confirm still fails retryably (got ${String(threw)})`);
+    assert(made.calls.enqueueEventDeletion.length === 1, "and queues the event's deletion, held while the reservation is pending");
+    const said = lines.filter((l) => /could not be read back/.test(l));
+    assert(said.length === 1 && /read back refused/.test(said[0]!), `and logs that the save could not be read back, with why (got ${JSON.stringify(lines)})`);
+  }
+
   // --- no answer, and nothing committed: fail as a refused commit does -------------------------
   {
     const made = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });

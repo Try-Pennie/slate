@@ -5282,7 +5282,13 @@ async function attemptReservation(
     // back by their key, under the cleanup allowance since the budget may be spent.
     // A refusal Postgres answered wrote nothing, and needs no read (red team 3).
     if (!(err instanceof CommitRefusedError) && key) {
-      const found = await withinOwedCleanup(() => deps.findBookingByIdempotencyKey(key)).catch(() => null);
+      // A read back that fails leaves it UNKNOWN whether the booking landed. The lead
+      // is still told it failed, retryably (their retry finds it by key if it did),
+      // but the failure is logged, or it reads exactly like a read that found nothing.
+      const found = await withinOwedCleanup(() => deps.findBookingByIdempotencyKey(key)).catch((readErr: unknown) => {
+        log.error("booking", { msg: "the save got no answer and could not be read back, so whether it landed is unknown", booking_id: bookingId }, readErr);
+        return null;
+      });
       if (found) {
         // Ours: the work after the save is run for it. Another request's, with the
         // lead's own key: it is the answer, exactly as a conflict's winner is.
