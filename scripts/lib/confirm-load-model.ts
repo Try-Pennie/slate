@@ -97,7 +97,13 @@ export const ON_DATABASE: ReadonlySet<string> = new Set([
   "getAgentByEmail",
   "getBookingEventId",
   "hasBookingEvent",
+  // The fake's separate insert, which the one call save (#3495) is modelled over. It is
+  // reached only on the UNWRAPPED deps from inside `commitFreshBooking`, so it is never
+  // charged on its own; it stays classified because it is still a dependency the fakes
+  // carry.
   "insertBooking",
+  "commitFreshBooking",
+  "readBookingByIdempotencyKey",
   "insertBookingEvent",
   "insertBusyBlocks",
   "insertOwnerAlert",
@@ -203,7 +209,16 @@ export interface DatabaseModel {
  *   idempotency-lookup 82..138, median 90          inflight-lookup 81..94, median 87
  *   displayed-tier 186..296, median 262            routing-trace 85..160, median 118
  *   load-advisor 77..163, median 87                reserve 86..125, median 93
- *   complete-reservation 754..969, median 916, over the ten database calls it makes (90)
+ *   complete-reservation 754..969, median 916, over the ten database calls it made (90).
+ *     Since #3495 seven of those calls are ONE (`commitFreshBooking`): the insert, the
+ *     busy block, the bucket and advisor reads for the webhook and the routing record,
+ *     the webhook, the routing record and the reservation's delete. The slot refresh and
+ *     the stray mirror's delete are still their own calls. So the code the run ran is
+ *     replayed by pricing the one call at the seven it replaced, 7 x 90 = 630: the price
+ *     of the CODE THE RUN RAN, never a measurement of the one call (`STACK_DATABASE`
+ *     below carries that). Pricing it from the stage instead (916 less the slot refresh)
+ *     counted the two calls that stayed separate twice, and moved burst 3's second
+ *     booking 1.3s later than the code the run ran, measured against #3437's own head.
  *   line-report 39 (the object's round trip alone) and 142 with the seat read (90)
  *
  * The candidate read, by how many the cache shows free, from what the walk took:
@@ -230,6 +245,8 @@ export const LOAD_RUN_DATABASE: DatabaseModel = {
     findActiveBookingsForPerson: 260,
     resolveBucketByCode: 90,
     findBookingByIdempotencyKey: 90,
+    readBookingByIdempotencyKey: 90,
+    commitFreshBooking: 630,
     loadReservationByKey: 87,
     displayedTier: 262,
     resolveBucketPool: 118,
@@ -239,6 +256,31 @@ export const LOAD_RUN_DATABASE: DatabaseModel = {
   },
   candidateReadMs: { noneFree: 360, oneFree: 570, manyFree: 755 },
   syncLaneCallers: 1,
+};
+
+/**
+ * The database cost of the STACK (#3495's one call save, #3476's one request person
+ * read), where `LOAD_RUN_DATABASE` prices the code run 37640583621 ran. Everything is
+ * the calibrated model except the two calls that changed:
+ *
+ *   - `commitFreshBooking`: MEASURED, by the same rule as the calibration (a booking
+ *     leader's stage under a burst, divided among the calls it makes). The two burst
+ *     leaders on #3514 whose confirms carried a stage profile, burst 1 of runs
+ *     37689851365 and 37716759688, spent 491 and 742ms in `complete-reservation`,
+ *     median 617, less the slot refresh beside the save (90): 527. Two samples; the
+ *     stack's own run replaces them.
+ *   - `findActiveBookingsForPerson`: ESTIMATED, not measured. One request where four
+ *     ran at once (each strong id on two columns, the email, the phone), so it is
+ *     priced as one statement call (90) until a run on the stack measures the
+ *     person decision stage.
+ */
+export const STACK_DATABASE: DatabaseModel = {
+  ...LOAD_RUN_DATABASE,
+  callMs: {
+    ...LOAD_RUN_DATABASE.callMs,
+    commitFreshBooking: 527,
+    findActiveBookingsForPerson: 90,
+  },
 };
 
 /** The shared line object as the run reached it. */
@@ -285,7 +327,7 @@ export const LOAD_RUN_DEFERRED: DeferredModel = {
 };
 
 export interface LoadProfile {
-  name: "load run" | "production";
+  name: "load run" | "production" | "stack load run" | "stack production";
   database: DatabaseModel;
   line: LineObjectModel;
   deferred: DeferredModel;
@@ -316,6 +358,20 @@ export const PRODUCTION_PROFILE: LoadProfile = {
   name: "production",
   googleCheckMs: 3_000,
   googleWriteMs: 5_000,
+};
+
+/** The load run's profile with the stack's database cost (`STACK_DATABASE`). */
+export const STACK_LOAD_RUN_PROFILE: LoadProfile = {
+  ...LOAD_RUN_PROFILE,
+  name: "stack load run",
+  database: STACK_DATABASE,
+};
+
+/** Production's Google with the stack's database cost. */
+export const STACK_PRODUCTION_PROFILE: LoadProfile = {
+  ...PRODUCTION_PROFILE,
+  name: "stack production",
+  database: STACK_DATABASE,
 };
 
 /**

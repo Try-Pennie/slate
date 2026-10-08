@@ -169,6 +169,12 @@ export interface CallRecord {
   queuedMs: number;
   served: boolean;
   timedOut: boolean;
+  /**
+   * What the call resolved with, so a check can read what a dependency SAID rather than
+   * which of its inner steps ran: the one call save (#3495) deletes its reservation
+   * inside itself, which is no recorded call, and reports whether it did.
+   */
+  answer?: unknown;
 }
 
 /** A call record for `name`, asked for at this instant and not yet served. */
@@ -376,12 +382,14 @@ export function onSharedCapacity(
       // request, so its inner steps must not each be charged a unit as well.
       if (!costOf) {
         await resource.use(record, clock.now + waitMs, missed);
-        return original.apply(deps, args);
+      } else {
+        const cost = costOf(name, args);
+        if (cost) await spend(clock, resource, cost, record, clock.now + waitMs, missed);
+        record.served = true;
       }
-      const cost = costOf(name, args);
-      if (cost) await spend(clock, resource, cost, record, clock.now + waitMs, missed);
-      record.served = true;
-      return original.apply(deps, args);
+      const answer = await original.apply(deps, args);
+      record.answer = answer;
+      return answer;
     };
   }
   return wrapped as unknown as BookingDeps;

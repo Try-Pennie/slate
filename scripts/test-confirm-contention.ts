@@ -62,6 +62,8 @@ import {
   LOAD_MODEL_ADVISORS,
   LOAD_RUN_PROFILE,
   PRODUCTION_PROFILE,
+  STACK_LOAD_RUN_PROFILE,
+  STACK_PRODUCTION_PROFILE,
   RUN_37640583621,
   type Arrival,
   type BurstShape,
@@ -590,10 +592,17 @@ async function burst(opts: {
       })();
       await clock.runUntil(() => probed);
     }
-    // A reservation a confirm wrote and never removed is one the drain will finish.
+    // A reservation a confirm wrote and never removed is one the drain will finish. The
+    // one call save (#3495) deletes it INSIDE itself, which is no recorded call, so its
+    // own answer says whether it did.
+    const savedAndDeleted = (c: { name: string; answer?: unknown }) => {
+      const a = c.answer as { kind?: string; reservationDeleted?: boolean } | undefined;
+      return c.name === "commitFreshBooking" && a?.kind === "committed" && a.reservationDeleted === true;
+    };
     const reservationsLeftBy = (r: Run) =>
       r.calls.filter((c) => c.name === "insertReservation" && c.served).length -
-      r.calls.filter((c) => c.name === "deleteReservation" && c.served).length;
+      r.calls.filter((c) => c.name === "deleteReservation" && c.served).length -
+      r.calls.filter(savedAndDeleted).length;
     // #3489: when each confirm was answered, from the burst's moment rather than its own.
     const answeredAtMs = runs.map((r, i) => arrivalOf(i) + r.answeredMs!);
     return { runs, tally, bySlot, calls, seatedReads, raceLosses, heldLines, claimsLeft, reservationsLeftBy, cleanupEndedMs: cleanup.endedMs, answeredAtMs };
@@ -803,7 +812,14 @@ async function main() {
     // recorded and not asserted (#3489's PR carries them): the per isolate line, which
     // production runs today, and production's Google time.
     for (const shape of RUN_37640583621) {
-      for (const [profile, line] of [[LOAD_RUN_PROFILE, "isolate"], [PRODUCTION_PROFILE, "shared"], [PRODUCTION_PROFILE, "isolate"]] as const) {
+      for (const [profile, line] of [
+        [LOAD_RUN_PROFILE, "isolate"],
+        [PRODUCTION_PROFILE, "shared"],
+        [PRODUCTION_PROFILE, "isolate"],
+        // The stack's database cost (#3495's one call save, #3476's one request person read).
+        [STACK_LOAD_RUN_PROFILE, "shared"],
+        [STACK_PRODUCTION_PROFILE, "shared"],
+      ] as const) {
         console.log(`#3489 model, ${shape.label}, ${profile.name}, ${line} line: ${describe(await replay(shape, profile, line))}`);
       }
     }
@@ -1779,7 +1795,8 @@ async function main() {
     attendee_phone: "+12035569999",
     manage_token: "tok-c",
   } as Partial<Booking>);
-  const WRITES_OR_GOOGLE = new Set(["verifyFree", "createEvent", "insertReservation", "insertBooking"]);
+  // The save is one recorded call since #3495; the insert inside it is never recorded.
+  const WRITES_OR_GOOGLE = new Set(["verifyFree", "createEvent", "insertReservation", "commitFreshBooking"]);
   for (const { label, isolates } of lineKinds) {
     for (const viaApi of [true, false]) {
       const tag = `#3338 control, ${label}, ${viaApi ? "booking API" : "booker confirm"}`;
