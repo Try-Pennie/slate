@@ -20,7 +20,7 @@ import {
   type Theme,
 } from "./lib/scan-rose-pairings.ts";
 import { sourceFiles } from "./lib/source-files.ts";
-import { WARNING_NOTICE_CLASS } from "@/components/ui/warning-notice-paint";
+import { WARNING_NOTICE_CLASS } from "../src/components/ui/warning-notice-paint.ts";
 
 // --- Token parsing ----------------------------------------------------------
 const TOKEN_FILE = join("src", "app", "globals.css");
