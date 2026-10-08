@@ -2332,6 +2332,46 @@ async function main() {
     assert(!bySlot.has(`d|${input.startIso}`), "handed below: nobody is booked with the advisor Google found busy");
   }
 
+  // #3529: a handed confirm whose handed advisor Google found busy, which then books
+  // another on the same rung and loses that race, walks down without asking Google about
+  // the handed advisor again. Confirm 0 claims a on a rung of three and hands on; confirm
+  // 1 is handed b, whom Google finds busy, so it reads the rung, takes c and loses the
+  // insert to a booking another isolate made. Its walk down re-reads that rung, and b
+  // must be left out of it as an advisor it already asked.
+  {
+    const elsewhereC = makeBooking({
+      id: "elsewhere-c2",
+      assigned_user_id: "c",
+      agent_name: "Agent C",
+      agent_email: "c@x.com",
+      starts_at: input.startIso,
+      external_id: "other-isolate-c2",
+      salesforce_id: "sf-other-c2",
+      attendee_email: "otherc2@example.com",
+      attendee_phone: "+12035573333",
+    } as Partial<Booking>);
+    const { runs, calls } = await burst({
+      inputs: [onLadder(0), onLadder(1)],
+      pool: ["a", "b", "c"],
+      poolByCode: { "411": ["a", "b", "c"] },
+      queue: "real",
+      viaApi: false,
+      heldElsewhere: [elsewhereC],
+      busyAtGoogle: ["b"],
+      slowGoogleMs: 1_000,
+      slowEventMs: 2_000,
+    });
+    // Every live check, by the emails it asked about. Confirm 0's one check is a wave
+    // over its whole rung, the only one naming a; confirm 1 never asks about a (claimed,
+    // then booked), so every other check naming b or c is confirm 1's.
+    const ownChecks = calls.verifyFree.filter((emails) => !emails.includes("a@x.com"));
+    const asksAboutB = ownChecks.filter((emails) => emails.includes("b@x.com")).length;
+    const asksAboutC = ownChecks.filter((emails) => emails.includes("c@x.com")).length;
+    assert(runs[0].outcome === "created" && runs[0].result?.booking.assigned_user_id === "a", `handed busy: confirm 0 books a (got ${runs[0].outcome})`);
+    assert(asksAboutC >= 1, `handed busy: confirm 1 asked about c, the advisor it lost the race on (got ${asksAboutC})`);
+    assert(asksAboutB === 1, `handed busy: confirm 1 asked Google about its handed advisor b exactly once (got ${asksAboutB})`);
+  }
+
 
   // The same race at production speed: the attempt that lost took about eight of
   // the twelve seconds, so the loser has too little left to walk down and is told

@@ -1106,6 +1106,28 @@ async function main() {
     await tick();
     assert(behind.length === 1 && behind[0]!.kind === "refused", `walk stands: its full verdict answers the confirm behind it (got ${JSON.stringify(behind)})`);
   }
+  // #3529: a host drops a parked confirm whose caller stopped polling by cancelling its
+  // wait. Handed straight back as spent, that wait is already a lead turn holding the
+  // line, so cancelling it must end the turn and hand the line on, as cancelling any
+  // answered lead does, rather than hold everybody behind it until its lease lapses.
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    const walker = leadOf(await q.enter("slot"));
+    walker.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    const behind: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => behind.push(t));
+    first.done({ full: false }, "booked", "s");
+    await tick();
+    const parked = walker.parkNow();
+    assert((await parked.turn).kind === "lead", "spent cancel: the walk stands, handed back as a lead");
+    parked.cancel();
+    await tick();
+    assert(behind.length === 1 && behind[0]!.kind === "lead", `spent cancel: cancelling it hands the line to the confirm behind (got ${JSON.stringify(behind.map((t) => t.kind))})`);
+    leadOf(behind[0]!).done({ full: false });
+  }
   // Control: the claim it skipped ended WITHOUT a booking, so an advisor may be free again
   // and its walk proves nothing: it reads again, unmarked.
   {

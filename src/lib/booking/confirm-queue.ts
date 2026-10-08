@@ -750,7 +750,10 @@ export function makeConfirmQueue<T>(
         // to report the ladder full (`spent`).
         if (spentAt !== null && spentAt === line.epoch && line.claims.size === 0) {
           line.pending = null;
-          return { kind: "wait", turn: Promise.resolve(leadTurn(key, line, undefined, true, true)), cancel() {} };
+          const again = leadTurn(key, line, undefined, true, true);
+          // #3529: already a lead holding the line, so a caller gone ends it as settling
+          // nothing, as cancelling any answered lead does (`waitIn`), and the line moves on.
+          return { kind: "wait", turn: Promise.resolve(again), cancel: () => again.done({ full: false }) };
         }
         if (line.pending === null || line.pending.epoch !== line.epoch) line.pending = { refusal: "race", epoch: line.epoch };
         const parked = waitIn(key, line, ownWaitMs);

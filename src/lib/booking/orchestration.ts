@@ -254,6 +254,12 @@ export class LadderSpentByClaimsError extends Error {
    * says its walk stands (`LineTurn.spent`).
    */
   readonly refusal: unknown;
+  /**
+   * #3529: writes the routing decision row `refusal` would have written, set by the
+   * confirm that knows its bucket. Parking writes none, since the confirm may yet book;
+   * a walk that then stands calls this before it refuses, so the refusal is on record.
+   */
+  recordRefusal?: () => Promise<void>;
   constructor(refusal: unknown) {
     super("every rung this confirm could book is held by confirms still in flight");
     this.name = "LadderSpentByClaimsError";
@@ -2965,6 +2971,12 @@ interface TierAssignResult {
    */
   unreadAbove?: boolean;
   /**
+   * #3529: advisors on this rung this confirm already asked about and found unable to
+   * take the time, beyond `candidates`: the advisor the line handed it, when that one
+   * could not. A walk down after a lost race leaves them out with the rest it asked.
+   */
+  alsoAsked?: string[];
+  /**
    * #3489: the ladder read the walk judged its rungs from, so the booking takes the
    * advisor's row and the routing trace's pool from it rather than reading them again.
    */
@@ -3102,6 +3114,8 @@ async function assignAgentWithTierFallback(
       // The same rule the display cascade judged this rung by (#2842).
       const excludeLow = rungExcludesLow(requested.bucket.code, rungCode);
       let exclude = !resume ? [] : i === resume.rung ? [...resume.askedOnRung, ...resume.taken] : resume.taken;
+      // #3529: the handed advisor, once it was asked and could not take the time.
+      let handedRefused: string | null = null;
       // #3489: the advisor the line handed, tried alone first. One that cannot take the
       // time (the narrowed read finds them busy or out of the pool, or Google does) is
       // left out and THIS rung read in full below, never a rung dropped while it may
@@ -3122,6 +3136,7 @@ async function assignAgentWithTierFallback(
             throw rung ? traced(err, trace(rung.stage)) : err;
           }
           exclude = [...exclude, handed.advisor];
+          handedRefused = handed.advisor;
         }
       }
       try {
@@ -3130,7 +3145,18 @@ async function assignAgentWithTierFallback(
         );
         return {
           hit: true,
-          value: { bucket: resolved.bucket, eventType: resolved.eventType, startIso, endIso, userId, email, candidates, read, rungStartedAtMs },
+          value: {
+            bucket: resolved.bucket,
+            eventType: resolved.eventType,
+            startIso,
+            endIso,
+            userId,
+            email,
+            candidates,
+            read,
+            rungStartedAtMs,
+            ...(handedRefused ? { alsoAsked: [handedRefused] } : {}),
+          },
         };
       } catch (err) {
         // #3489 step 3: claimed through, not spent: remembered, never the reason.
@@ -4502,6 +4528,8 @@ async function inConfirmTurn<R>(
     // runs, and its own person decision answers them from the call they hold.
     if (lead.spent && walkedPast && !(await personMayHoldInstant(deps, line))) {
       const refusal = walkedPast.refusal;
+      // #3529: on record like any refusal; best effort, the recorder never throws.
+      await walkedPast.recordRefusal?.();
       await report(verdictForRefusal(refusal), claimOutcomeOf(refusal));
       throw refusal;
     }
@@ -4977,23 +5005,11 @@ async function createHeld(
       }
     },
   };
-  // Fresh create: cascade down the tier ladder if the requested bucket has no
-  // agent free for the slot. A crash before the reservation strands nothing.
-  let tier: TierAssignResult;
-  try {
-    tier = await profile.time("assign-and-verify", () =>
-      agentLinkUserId !== undefined
-        ? assignNamedAgent(checked, { bucket, eventType }, input.startIso, agentLinkUserId)
-        : assignAgentWithTierFallback(checked, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false, false, seat, null, start ?? null, !move),
-    );
-  } catch (err) {
-    // #2073: a named link records no routing decision, refused or not: the
-    // routing decision log is what the catch all rate and the routing analytics
-    // count, and nothing was routed.
-    if (agentLinkUserId !== undefined) throw err;
-    // Best-effort: record no-booking attempts so "why did this lead get no slots"
-    // is answerable. Awaited so the write is not dropped by the CF runtime; the
-    // outer try/catch ensures the original error still propagates unchanged.
+  // Best-effort: record no-booking attempts so "why did this lead get no slots"
+  // is answerable. Awaited so the write is not dropped by the CF runtime; the
+  // caller's try/catch ensures the original error still propagates unchanged.
+  // #3529: a closure, so a walk that parks and later stands records with it too.
+  const recordRefusal = async (err: unknown): Promise<void> => {
     if (
       err instanceof NoEligibleAgentsError ||
       err instanceof VerifyUnavailableError ||
@@ -5044,6 +5060,25 @@ async function createHeld(
         // best-effort: never change the thrown booking error
       }
     }
+  };
+  // Fresh create: cascade down the tier ladder if the requested bucket has no
+  // agent free for the slot. A crash before the reservation strands nothing.
+  let tier: TierAssignResult;
+  try {
+    tier = await profile.time("assign-and-verify", () =>
+      agentLinkUserId !== undefined
+        ? assignNamedAgent(checked, { bucket, eventType }, input.startIso, agentLinkUserId)
+        : assignAgentWithTierFallback(checked, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false, false, seat, null, start ?? null, !move),
+    );
+  } catch (err) {
+    // #2073: a named link records no routing decision, refused or not: the
+    // routing decision log is what the catch all rate and the routing analytics
+    // count, and nothing was routed.
+    if (agentLinkUserId !== undefined) throw err;
+    // #3529: a walk that parks records nothing yet (it may still book); it carries the
+    // recorder, for a walk that later stands.
+    if (err instanceof LadderSpentByClaimsError) err.recordRefusal ??= () => recordRefusal(err.refusal);
+    else await recordRefusal(err);
     throw err;
   }
   // #3338: when the attempt this confirm is on began: the start of the rung that
@@ -5372,7 +5407,8 @@ async function createHeld(
             rung: tier.rungsDropped,
             // #3489: a handed confirm asked only the advisors it lost on (`taken`), never the
             // rest of the read it was handed, which others were booking; those are read again.
-            askedOnRung: tier.handed ? [] : candidates,
+            // #3529: and never the advisor it was handed and already found unable.
+            askedOnRung: tier.handed ? [] : [...candidates, ...(tier.alsoAsked ?? [])],
             taken: [...raceLost, userId],
             // #3529: only what is true ABOVE the rung; its own claimed advisors are offered
             // again by the walk itself (`askedOnRung`).
@@ -5380,6 +5416,8 @@ async function createHeld(
           }, !move),
         );
       } catch (err) {
+        // #3529: a walk down that parks carries the recorder too, for a walk that stands.
+        if (err instanceof LadderSpentByClaimsError && agentLinkUserId === undefined) err.recordRefusal ??= () => recordRefusal(err.refusal);
         // The walk's failure is the answer; a rollback that also failed is logged,
         // never lost.
         await rollingBack.catch((rollbackErr: unknown) =>

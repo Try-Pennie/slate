@@ -123,9 +123,16 @@ async function main() {
   // spent turn stopped refusing.
   {
     const scripted = scriptedLine();
-    const { deps } = makeDeps({ personBookings: [], candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    const { deps, calls } = makeDeps({ personBookings: [], candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
     const got = await answer(bookViaApi({ ...input, confirmReschedule: false } as ApiBookingInput, { ...deps, confirmQueue: scripted.line }));
     assert(scripted.parks() === 1, `stands control: the walk parked once (got ${scripted.parks()})`);
+    // #3529: the refusal is recorded like any other, so "why was this lead turned away"
+    // has an answer; and only once, since the park itself recorded nothing.
+    const refused = calls.recordRoutingDecision.filter((r) => r.outcome === "no_availability");
+    assert(
+      calls.recordRoutingDecision.length === 1 && refused.length === 1 && refused[0]!.bookingId === null,
+      `stands control: the refusal writes exactly one routing decision row, as no availability (got ${JSON.stringify(calls.recordRoutingDecision.map((r) => r.outcome))})`,
+    );
     assert(got.err !== undefined && got.result === undefined, `stands control: nobody of theirs holds the time, so the walk stands and refuses (got ${got.result?.outcome ?? String(got.err)})`);
     assert(scripted.reports.length === 1 && scripted.reports[0]?.full === true, `stands control: and tells the line the ladder is full (got ${JSON.stringify(scripted.reports)})`);
   }
