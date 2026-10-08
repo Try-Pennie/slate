@@ -784,6 +784,29 @@ async function main() {
     assert(refused.includes("readSomethingNew"), `load model control: pricing an unclassified call throws by name (got ${JSON.stringify(refused)})`);
   }
 
+  // --- #3489: a call is charged the REQUESTS it makes, not its latency over a statement --
+  //
+  // The database's limit is the request: Postgres spent 0.4% of wall time executing
+  // statements while the app saw each call take 90 to 200ms (#3492's comment), and the
+  // crowd drained at one REQUEST every ~35ms. So a call that is one request, however long
+  // it takes, holds the drain for one request. The stack's two one request calls (#3495's
+  // save, #3476's person read) were charged by their latency instead, six units and one,
+  // which priced the save's cut as almost nothing (#3489's 2026-10-08 comment said 7%).
+  {
+    const price = databaseCosts(STACK_LOAD_RUN_PROFILE.database, () => 0);
+    for (const name of ["commitFreshBooking", "findActiveBookingsForPerson"]) {
+      const cost = price(name, []);
+      assert(cost?.queries === 1, `load model: the stack's ${name} is ONE request (charged ${cost?.queries})`);
+    }
+    // Control (L1): a call with no stated count is still charged from its latency, so the
+    // stated counts are what moved the two above (the displayed tier: 262ms, three).
+    assert(price("displayedTier", [])?.queries === 3, `load model control: an uncounted call is charged by its latency (got ${price("displayedTier", [])?.queries})`);
+    // And the calibration's database replays the code run 37640583621 ran: the seven
+    // calls the save replaced, seven requests.
+    const ran = databaseCosts(LOAD_RUN_PROFILE.database, () => 0)("commitFreshBooking", []);
+    assert(ran?.queries === 7, `load model: the calibration prices the save as the seven requests it replaced (got ${ran?.queries})`);
+  }
+
   // --- #3489 step 0: the load model, calibrated against load run 37640583621 --
   //
   // CALIBRATION, not a target. The model (`scripts/lib/confirm-load-model.ts`) replays

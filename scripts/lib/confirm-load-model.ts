@@ -187,6 +187,14 @@ export interface DatabaseModel {
   /** Each call's latency alone, by dependency. Unlisted calls take `meanStatementMs`. */
   callMs: Readonly<Record<string, number>>;
   /**
+   * How many requests a call makes, where that is KNOWN. The drain is a request (#3492:
+   * Postgres spent 0.4% of wall time executing statements while each call took 90 to
+   * 200ms), so a call that is one request holds it for one, however long it takes. An
+   * unlisted call is charged its latency over `meanStatementMs`, which is right for a call
+   * that is several requests one after another and wrong for one long request.
+   */
+  requests?: Readonly<Record<string, number>>;
+  /**
    * The candidate read (`roundRobinCandidates`) costs more the more of the rung the
    * cache says is free: with one free it also reads the reroute holds, with two or more
    * it also ranks them by booking share (`src/lib/availability/service.ts`).
@@ -261,14 +269,17 @@ export const LOAD_RUN_DATABASE: DatabaseModel = {
 /**
  * The database cost of the STACK (#3495's one call save, #3476's one request person
  * read), where `LOAD_RUN_DATABASE` prices the code run 37640583621 ran. Everything is
- * the calibrated model except the two calls that changed:
+ * the calibrated model except the two calls that changed, and each is ONE request, so
+ * each is charged one (`DatabaseModel.requests`), never its latency over a statement:
  *
  *   - `commitFreshBooking`: MEASURED, by the same rule as the calibration (a booking
- *     leader's stage under a burst, divided among the calls it makes). The two burst
- *     leaders on #3514 whose confirms carried a stage profile, burst 1 of runs
- *     37689851365 and 37716759688, spent 491 and 742ms in `complete-reservation`,
- *     median 617, less the slot refresh beside the save (90): 527. Two samples; the
- *     stack's own run replaces them.
+ *     leader's stage under a burst, divided among the requests it makes). On #3514's runs
+ *     37689851365 and 37716759688 three attempts timed `complete-reservation` at 491,
+ *     371 and 204ms (the 742ms of two attempts, one lost to a race, split evenly). That
+ *     stage holds three requests on the booking API (the idempotency read, the save and
+ *     the slot refresh; the stray mirror's delete waits for the answer), so the median,
+ *     371, is 124 a request. Pricing it instead as the stage less the slot refresh (527)
+ *     and charging that as six requests made the save's cut read as almost nothing.
  *   - `findActiveBookingsForPerson`: ESTIMATED, not measured. One request where four
  *     ran at once (each strong id on two columns, the email, the phone), so it is
  *     priced as one statement call (90) until a run on the stack measures the
@@ -278,9 +289,10 @@ export const STACK_DATABASE: DatabaseModel = {
   ...LOAD_RUN_DATABASE,
   callMs: {
     ...LOAD_RUN_DATABASE.callMs,
-    commitFreshBooking: 527,
+    commitFreshBooking: 124,
     findActiveBookingsForPerson: 90,
   },
+  requests: { commitFreshBooking: 1, findActiveBookingsForPerson: 1 },
 };
 
 /** The shared line object as the run reached it. */
@@ -398,7 +410,7 @@ export function databaseCosts(
       return { latencyMs, queries: statementsFor(latencyMs) };
     }
     const latencyMs = db.callMs[name] ?? db.meanStatementMs;
-    return { latencyMs, queries: statementsFor(latencyMs) };
+    return { latencyMs, queries: db.requests?.[name] ?? statementsFor(latencyMs) };
   };
 }
 
