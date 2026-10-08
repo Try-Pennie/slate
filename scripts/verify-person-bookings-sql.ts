@@ -108,6 +108,16 @@ function oldReads(s: Signals, isTest: boolean | null): string[] {
   return out === "" ? [] : out.split(",");
 }
 
+/** The function asked in the world of the bucket with this code (#3489). */
+function lookupInBucket(s: Signals, code: string) {
+  const out = sql(
+    `select find_active_bookings_for_person(
+       p_ids => ${arr(s.ids ?? [])}, p_email_like => ${text(s.email ? likeOf(s.email) : null)},
+       p_phone => ${text(s.phone ?? null)}, p_world => 'bucket', p_bucket_code => ${text(code)})::text;`,
+  );
+  return readPersonBookings(JSON.parse(out));
+}
+
 const ids = (rows: { id: string }[]) => rows.map((r) => r.id).sort();
 const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -209,6 +219,24 @@ try {
   assert(/Scan (?:using \w+ )?on bookings \w+ \(cost=(?:(?!->).)*?(?:Filter|Index Cond|Recheck Cond): \(attendee_email ~~\* /.test(flat),
     "and an email is judged on a bookings scan of its own");
   assert(!/CTE Scan/.test(plan), `and nothing scans a materialized set of every active booking (plan: ${plan.replace(/\s+/g, " ").slice(0, 600)})`);
+
+  // --- the world of a BUCKET, so the person read runs beside the bucket read (#3489) ----------
+  // The confirm read the bucket, waited, then asked for the person's bookings in its world:
+  // two round trips one after the other on every confirm. Named by the bucket's code, the
+  // function finds the world itself, so both reads go out at once. Same rows as naming the
+  // world, for every shape.
+  for (const [label, s] of shapes) {
+    for (const [code, world] of [["100", "real"], ["SMOKE", "test"]] as const) {
+      const got = ids(lookupInBucket(s, code));
+      const want = ids(lookup(s, world));
+      assert(same(got, want), `${label}, bucket ${code}: the ${world} world's rows (want ${JSON.stringify(want)}, got ${JSON.stringify(got)})`);
+    }
+  }
+  assert(ids(lookupInBucket({ ids: ["00QLEAD000001"] }, "SMOKE")).join() === testWorld, "control: the test bucket's world finds only the test booking");
+  for (const [what, code] of [["a code no bucket has", "'NOPE'"], ["no code", "null"]] as const) {
+    const e = pg.verboseError(`select find_active_bookings_for_person(p_ids => array['00QLEAD000001']::text[], p_email_like => null, p_phone => null, p_world => 'bucket', p_bucket_code => ${code});`);
+    assert(e !== null && /22023/.test(e), `the bucket world with ${what} is refused, never read as no bookings (got ${e?.split("\n")[0] ?? "a result"})`);
+  }
 
   // --- the world is named, never defaulted (L168) -----------------------------------------------
   for (const bad of ["", "everything"]) {

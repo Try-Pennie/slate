@@ -526,7 +526,9 @@ export interface Database {
           p_ids: string[];
           p_email_like: string | null;
           p_phone: string | null;
-          p_world: "real" | "test" | "both";
+          /** #3489: `bucket` reads in the world of the bucket named by `p_bucket_code`. */
+          p_world: "real" | "test" | "both" | "bucket";
+          p_bucket_code?: string;
         };
         Returns: unknown;
       };

@@ -16,6 +16,11 @@
 --   - only the world asked for (#2660): 'real' or 'test' by the booking's bucket, or
 --     'both' for the lookup API, which reports each row's world. The world is NAMED,
 --     never defaulted: a forgotten one must not read as every booking (L168).
+--   - or 'bucket' with p_bucket_code (#3489): the world of the bucket with that code,
+--     found here, so a confirm sends this read AT THE SAME TIME as its bucket read
+--     rather than waiting for the bucket to learn its world: one round trip fewer on
+--     every confirm. A code no bucket has, or none, is refused, never read as no
+--     bookings.
 --
 -- Every value arrives as a PARAMETER, never as filter text: an id inside a PostgREST
 -- `or` filter would be parsed as syntax, which is why the reads were separate.
@@ -29,10 +34,11 @@
 -- caller could not already read. The server calls it with the secret key; execute is
 -- still revoked from the web roles, so it is not a public endpoint at all.
 create or replace function find_active_bookings_for_person(
-  p_ids        text[],
-  p_email_like text,
-  p_phone      text,
-  p_world      text
+  p_ids         text[],
+  p_email_like  text,
+  p_phone       text,
+  p_world       text,
+  p_bucket_code text default null
 )
 returns jsonb
 language plpgsql
@@ -41,10 +47,20 @@ security invoker
 set search_path = public, pg_catalog
 as $$
 declare
-  v_answer jsonb;
+  v_answer  jsonb;
+  -- The world as the bucket test flag rows must carry; null is both worlds.
+  v_is_test boolean;
 begin
-  if p_world is null or p_world not in ('real', 'test', 'both') then
-    raise exception 'find_active_bookings_for_person needs a world of real, test or both, not %', coalesce(p_world, 'none') using errcode = '22023';
+  if p_world is null or p_world not in ('real', 'test', 'both', 'bucket') then
+    raise exception 'find_active_bookings_for_person needs a world of real, test, both or bucket, not %', coalesce(p_world, 'none') using errcode = '22023';
+  end if;
+  if p_world = 'bucket' then
+    select b.is_test into v_is_test from buckets b where b.code = p_bucket_code;
+    if not found then
+      raise exception 'find_active_bookings_for_person: no bucket has the code %', coalesce(p_bucket_code, 'none') using errcode = '22023';
+    end if;
+  elsif p_world <> 'both' then
+    v_is_test := (p_world = 'test');
   end if;
 
   -- NOT MATERIALIZED, or a CTE referenced more than once is built in full first: every
@@ -56,7 +72,7 @@ begin
       from bookings b
       join buckets bu on bu.id = b.bucket_id
      where b.status in ('confirmed', 'rescheduled')
-       and (p_world = 'both' or bu.is_test = (p_world = 'test'))
+       and (v_is_test is null or bu.is_test = v_is_test)
   ),
   hits as (
     select h.id
@@ -81,8 +97,8 @@ begin
 end;
 $$;
 
-comment on function find_active_bookings_for_person(text[], text, text, text) is
-  'A lead''s active bookings for every signal at once (#3476): each strong id against external_id and salesforce_id, the email by escaped ilike, the phone exactly, at most 20 rows per signal, in the named world (real, test or both). Answers a jsonb array of bookings rows with is_test.';
+comment on function find_active_bookings_for_person(text[], text, text, text, text) is
+  'A lead''s active bookings for every signal at once (#3476): each strong id against external_id and salesforce_id, the email by escaped ilike, the phone exactly, at most 20 rows per signal, in the named world (real, test, both, or the world of the bucket named by p_bucket_code). Answers a jsonb array of bookings rows with is_test.';
 
-revoke execute on function find_active_bookings_for_person(text[], text, text, text)
+revoke execute on function find_active_bookings_for_person(text[], text, text, text, text)
   from public, anon, authenticated;
