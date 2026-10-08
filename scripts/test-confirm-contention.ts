@@ -494,8 +494,10 @@ async function main() {
     const queued = runs.reduce((a, r) => a + r.calls.reduce((s, c) => s + c.queuedMs, 0), 0);
     const share = queued / (BURST * BOOKING_CONFIRM_BUDGET_MS);
     assert(share > 0.85, `control: most of each request's time was spent queued for the shared capacity (${Math.round(share * 100)}%)`);
-    const reachedInsert = runs.filter((r) => r.calls.some((c) => c.name === "insertBooking" && c.served)).length;
-    assert(reachedInsert === 0, `control: no request got as far as the insert before the budget ran out (got ${reachedInsert})`);
+    // The save is ONE recorded call since #3495 (`commitFreshBooking`); the insert inside
+    // it is the fake's own step and is never recorded, so it is the save that is counted.
+    const reachedInsert = runs.filter((r) => r.calls.some((c) => c.name === "commitFreshBooking" && c.served)).length;
+    assert(reachedInsert === 0, `control: no request got as far as the save before the budget ran out (got ${reachedInsert})`);
     const stoppedAt: Record<string, number> = {};
     for (const r of runs) {
       const last = r.calls.find((c) => c.timedOut)?.name ?? "none";
@@ -516,6 +518,12 @@ async function main() {
     assert(!tally["503"], `burst: none is answered 503 (got ${tally["503"] ?? 0})`);
     assert(bySlot.size === 1, "burst: one booking row, so never a double booking");
     assert(runs[0].outcome === "created", "burst: the FIRST confirm in is the one booked");
+    // Positive control for the two checks that count the save by name (L1): the booked
+    // confirm's own calls carry it, served, so a check for its absence can fail.
+    assert(
+      runs[0].calls.some((c) => c.name === "commitFreshBooking" && c.served),
+      "burst: the booked confirm's save is recorded as commitFreshBooking, served",
+    );
     const loserTimes = runs.filter((r) => r.outcome === "SLOT_TAKEN").map((r) => r.answeredMs!);
     assert(
       maxOf(loserTimes) < BOOKING_CONFIRM_BUDGET_MS / 2,
@@ -1001,8 +1009,8 @@ async function main() {
       `slower leader: the first in is told to retry, for want of time to write (got ${runs[0].outcome}, ${String(runs[0].error)})`,
     );
     assert(
-      runs[0].calls.every((c) => c.name !== "createEvent" && c.name !== "insertReservation" && c.name !== "insertBooking"),
-      "slower leader: it started nothing: no reservation, no event, no insert",
+      runs[0].calls.every((c) => c.name !== "createEvent" && c.name !== "insertReservation" && c.name !== "commitFreshBooking"),
+      "slower leader: it started nothing: no reservation, no event, no save",
     );
     assert(tally["503"] === BURST, `slower leader: the rest are answered the retryable 503 (got ${JSON.stringify(tally)})`);
     assert(quiet(runs.slice(1)), "slower leader: no follower reads beyond the bounded lookahead");
