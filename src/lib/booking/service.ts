@@ -25,7 +25,7 @@ import {
   leaseReservationRow,
   releaseReservationLeaseRow,
 } from "@/lib/booking/outbox-lease";
-import { unwrap, unwrapCount, type DbResult } from "@/lib/db/result";
+import { unwrap, unwrapCount } from "@/lib/db/result";
 import { settleDrainStuckAlert } from "@/lib/booking/drain-stuck-alert";
 import { whereStillInPool } from "@/lib/bookable/left-pool";
 import { gatedWriteApplied, gatedWriteRows } from "@/lib/booking/gated-write";
@@ -157,6 +157,7 @@ import { callingNumberWithinDeadline, readCallingNumberLive } from "@/lib/salesf
 import { bookingLeadId } from "@/lib/booking/lookup-identity";
 import { toE164 } from "@/lib/phone";
 import { escapeLike } from "@/lib/sql-like";
+import { readPersonBookings, type PersonBookingRow } from "@/lib/booking/person-bookings-answer";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { afterEnqueue, emitWebhook, suppressionByFormat, type WebhookSendScheduler } from "@/lib/webhooks/emit";
 import { WEBHOOK_FORMATS } from "@/lib/webhooks/formats";
@@ -596,78 +597,73 @@ export async function agentActiveBookingStartsMs(
 }
 
 /**
- * Every ACTIVE booking that could belong to this person (#357), fetched once per
- * identity signal the caller supplied and merged by booking id.
+ * Every ACTIVE booking that could belong to this person (#357), for every identity
+ * signal the caller supplied, in ONE request (#3476).
  *
- * **Each result is unwrapped on its own (#1641).** This used to read the wave as
- * `for (const r of results) ... (r.data ?? [])`, which turned a failed query into
- * an empty candidate list. Empty here is not "no failure", it is the specific
- * answer "this lead has no call booked", and that is the one answer that lets a
- * SECOND booking be created for somebody who already has one: the dedupe gate
+ * It used to send one request per signal: each strong id against `external_id` and
+ * again against `salesforce_id`, the email and the phone, so a typical confirm sent
+ * four and a 100 confirm crowd about 400, and request count is what queues a crowd in
+ * the API layer (#3492). `find_active_bookings_for_person` (migration 0175) answers
+ * them all with the same rules, proved against the old reads signal by signal in a
+ * real Postgres (scripts/verify-person-bookings-sql.ts): each strong id against BOTH
+ * id columns (#2663), the email case insensitively with its LIKE metacharacters
+ * escaped (#620), the phone exactly as E.164, active statuses, at most 20 rows per
+ * signal. The values travel as parameters, never as filter text.
+ *
+ * **It throws on a failed read (#1641).** Empty here is not "no failure", it is the
+ * specific answer "this lead has no call booked", and that is the one answer that
+ * lets a SECOND booking be created for somebody who already has one: the dedupe gate
  * passes, the round robin assigns an agent, a calendar invite goes out, and the
- * webhooks fire. It is the #277 / #1165 class on the path with a customer at the
- * end of it, so it fails loud and the callers decide what to do with the throw.
+ * webhooks fire. So an answer that cannot be read is refused too (`readPersonBookings`).
  *
- * The shape also hid it from every static guard: the result objects are never
- * given a name, so neither the original `const { data } =` scan nor the
- * result-object scan added in #1629 could reach them. That is the third shape
- * `scripts/lib/scan-swallowed-error-reads.ts` now covers.
- *
- * Which bookings MATCH is decided downstream by `findPersonMatch`; this only
- * decides which rows are fetched, and #1641 changed neither the four signals nor
- * their filters. Since #2663 each strong id is read against BOTH id columns, the
- * rule the lookup took in #2657, and the ids are the same set the grader uses
+ * Which bookings MATCH is decided downstream by `findPersonMatch`; this only decides
+ * which rows are fetched, and the ids are the same set the grader uses
  * (`personStrongIds`), so the fetch and the grade cannot disagree.
  *
- * **Scoped to ONE world (#2660).** Every query joins the booking's bucket and
- * keeps only the rows whose `is_test` equals the world the caller is in, the
- * same `buckets!inner(is_test)` shape the reminders lane and the volume alarm
- * use. A test booking (the canary's, or a partner's on the public test bucket)
- * and a real booking are never the same person's calls: without this a tester
- * who typed a real lead's id was shown that lead's name, number and a Cancel on
- * their real call, and a test booking under an address refused the real lead
- * who owns it. The canary's cross bucket dedupe (SMOKE against SMOKE2, both
- * test) still sees both, because both are in the test world.
+ * **Scoped to ONE world (#2660).** Only bookings whose bucket's `is_test` equals the
+ * world the caller is in. A test booking (the canary's, or a partner's on the public
+ * test bucket) and a real booking are never the same person's calls: without this a
+ * tester who typed a real lead's id was shown that lead's name, number and a Cancel on
+ * their real call, and a test booking under an address refused the real lead who owns
+ * it. The canary's cross bucket dedupe (SMOKE against SMOKE2, both test) still sees
+ * both, because both are in the test world.
  */
 export async function findActiveBookingsForPerson(
   identity: PersonIdentity,
   world: PersonWorld,
 ): Promise<Booking[]> {
-  const active = ["confirmed", "rescheduled"] as const;
-  const base = () =>
-    supabaseAdmin()
-      .from("bookings")
-      .select("*, buckets!inner(is_test)")
-      .eq("buckets.is_test", world.isTest)
-      .in("status", active)
-      .limit(20);
-  const queries: PromiseLike<DbResult<unknown>>[] = [];
-  // A strong id is one value that may sit in EITHER column (#2663): an embed
-  // booking holds the lead id in salesforce_id with external_id null, so a
-  // caller sending only externalId must read salesforce_id too, or the grader
-  // never sees the row and a second call is booked. One plain equality read per
-  // id per column, for the reason given on findActiveBookingsByStrongIds.
-  for (const strongId of personStrongIds(identity)) {
-    queries.push(base().eq("external_id", strongId));
-    queries.push(base().eq("salesforce_id", strongId));
-  }
-  const email = identity.email?.trim();
-  // Escape LIKE metacharacters (#620): an email's `_`/`%` must not act as an
-  // ilike wildcard, or a `john_doe@` address would also fetch `johnXdoe@` and
-  // an unordered limit(20) could crowd out the true row. Still case-insensitive
-  // (matches the lowercased grader) and still served by the trigram index.
-  if (email) queries.push(base().ilike("attendee_email", escapeLike(email)));
-  const phone = toE164(identity.phone);
-  if (phone) queries.push(base().eq("attendee_phone", phone));
-  if (queries.length === 0) return [];
+  const ids = personStrongIds(identity);
+  const email = identity.email?.trim() || null;
+  const phone = toE164(identity.phone) ?? null;
+  if (ids.length === 0 && !email && !phone) return [];
+  const rows = await activeBookingsBySignals(
+    { ids, emailLike: email ? escapeLike(email) : null, phone },
+    world.isTest ? "test" : "real",
+    "person booking lookup",
+  );
+  // The world did its work in the read; the callers grade a Booking (#2660).
+  return rows.map(({ isTest: _world, ...booking }) => booking as unknown as Booking);
+}
 
-  const results = await Promise.all(queries);
-  const byId = new Map<string, Booking>();
-  for (const r of results) {
-    const rows = unwrap(r, "person booking lookup") as Booking[] | null;
-    for (const row of rows ?? []) byId.set(row.id, withoutJoinedBucket(row));
-  }
-  return [...byId.values()];
+/**
+ * The one read behind the person check and the lookup API (#3476): every signal at
+ * once, in the named world, refused rather than guessed when it fails or cannot be read.
+ */
+async function activeBookingsBySignals(
+  signals: { ids: readonly string[]; emailLike: string | null; phone: string | null },
+  world: "real" | "test" | "both",
+  context: string,
+): Promise<PersonBookingRow[]> {
+  const data = unwrap(
+    await supabaseAdmin().rpc("find_active_bookings_for_person", {
+      p_ids: [...signals.ids],
+      p_email_like: signals.emailLike,
+      p_phone: signals.phone,
+      p_world: world,
+    }),
+    context,
+  );
+  return readPersonBookings(data);
 }
 
 /**
@@ -721,63 +717,24 @@ export async function findActiveBookingsStartingAt(startIso: string): Promise<Bo
   return seated;
 }
 
-/** The joined bucket did its work in the world filter; the callers grade a
- *  Booking, so it does not ride along (#2660). */
-function withoutJoinedBucket(row: Booking): Booking {
-  const { buckets: _joined, ...booking } = row as Booking & { buckets?: unknown };
-  return booking as Booking;
-}
-
 /**
- * Every ACTIVE booking whose `external_id` OR `salesforce_id` is any of `ids`,
- * for the lookup API (#2657). One equality read per id per column, merged by
- * booking id, rather than a single `.or(...)` filter: a lookup id is caller
- * supplied text, and PostgREST parses an `or` filter as an expression, so the
- * value would become part of the filter's syntax. An `.eq` sends it as a plain
- * value. The columns are the two the dedupe fetch above already reads, so the
- * same indexes serve it (`scripts/test-person-lookup-indexes.ts`).
+ * Every ACTIVE booking whose `external_id` OR `salesforce_id` is any of `ids`, for the
+ * lookup API (#2657), in ONE request through the same function as the person check
+ * (#3476), with each id matched against both columns as a plain value, never as filter
+ * text. Deliberately in BOTH worlds: a key holder asked for one person's bookings by a
+ * strong id, and a partner's key reading its own test booking is the whole point, so
+ * each row says which world it is in (#2660).
  *
- * Each result is unwrapped on its own for the reason given above (#1641): a
- * failed read here would arrive at the caller as "this lead has no call", which
- * is the answer the booking confirmed page renders as not found. The wave is
- * written out here rather than shared with the function above on purpose: the
- * swallowed read guard sees an awaited query wave and its loop in one place, and
- * a helper taking the results as a parameter would put a future `r.data` revert
- * out of its reach (`scripts/test-swallowed-error-reads.ts` reverts both waves).
+ * It throws on a failed read for the reason given above (#1641): a failed read here
+ * would arrive at the caller as "this lead has no call", which is the answer the
+ * booking confirmed page renders as not found.
  */
 export async function findActiveBookingsByStrongIds(
   ids: readonly string[],
 ): Promise<orchestration.BookingWithWorld[]> {
   if (ids.length === 0) return [];
-  const active = ["confirmed", "rescheduled"] as const;
-  // The bucket's flag rides along (#2660), so the lookup view can say whether a
-  // booking is a test one without a second read. Deliberately NOT filtered by
-  // world: a key holder asked for one person's bookings by a strong id, and a
-  // partner's key reading its own test booking is the whole point.
-  const base = () =>
-    supabaseAdmin()
-      .from("bookings")
-      .select("*, buckets!inner(is_test)")
-      .in("status", active)
-      .limit(20);
-  const queries: PromiseLike<DbResult<unknown>>[] = [];
-  for (const id of ids) {
-    queries.push(base().eq("external_id", id));
-    queries.push(base().eq("salesforce_id", id));
-  }
-  const results = await Promise.all(queries);
-  const byId = new Map<string, orchestration.BookingWithWorld>();
-  for (const r of results) {
-    const rows = unwrap(r, "strong id booking lookup") as Booking[] | null;
-    for (const row of rows ?? []) byId.set(row.id, withWorld(row));
-  }
-  return [...byId.values()];
-}
-
-/** The joined bucket's flag lifted onto the row as `isTest` (#2660). */
-function withWorld(row: Booking): orchestration.BookingWithWorld {
-  const { buckets, ...booking } = row as Booking & { buckets?: { is_test?: boolean } | null };
-  return { ...(booking as Booking), isTest: buckets?.is_test === true };
+  const rows = await activeBookingsBySignals({ ids, emailLike: null, phone: null }, "both", "strong id booking lookup");
+  return rows.map((row) => row as unknown as orchestration.BookingWithWorld);
 }
 
 /**

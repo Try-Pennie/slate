@@ -58,6 +58,9 @@ on:
       # The fresh booking commit suite reads its answer with the Worker's reader too.
       - "src/lib/booking/commit-answer.ts"
       - "scripts/fixtures/commit-fresh-booking-answer.json"
+      # #3476: so does the person booking lookup suite.
+      - "src/lib/booking/person-bookings-answer.ts"
+      - "scripts/fixtures/person-bookings-answer.json"
       - "scripts/fixtures/stored-webhook-time-format.json"
       # The audit chain suite recomputes hashes with the Worker's own code.
       - "scripts/lib/audit-chain-vector.ts"

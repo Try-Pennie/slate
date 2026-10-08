@@ -516,6 +516,21 @@ export interface Database {
         Returns: unknown;
       };
       /**
+       * #3476, migration 0175: a lead's active bookings for every signal at once (each
+       * strong id against both id columns, the escaped email, the E.164 phone) in the
+       * named world, `real`, `test` or `both`. Answers a jsonb array of bookings rows
+       * with `is_test`, read by `readPersonBookings`.
+       */
+      find_active_bookings_for_person: {
+        Args: {
+          p_ids: string[];
+          p_email_like: string | null;
+          p_phone: string | null;
+          p_world: "real" | "test" | "both";
+        };
+        Returns: unknown;
+      };
+      /**
        * #3495, migration 0173: one delivery per active endpoint subscribed to the event,
        * deduped on (endpoint, event, dedupe_key), suppression decided by the caller per
        * format. Answers {subscribers, deliveries}, read by `readEnqueueAnswer`.

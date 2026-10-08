@@ -13,7 +13,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 //
 // It is one test rather than two because a test of either half alone cannot see
 // the defect. The WRITE is really run (the orchestration function the manage route
-// calls, with its deps faked) and the LOOKUP is really run (the shipped query, with
+// calls, with its deps faked) and the LOOKUP is really run (the shipped call, with
 // only the Supabase client faked), and the only thing passing between them is the
 // string the write produced, exactly as the column passes it in production. A test
 // that computed the expected stored value for itself would prove only that this
@@ -32,9 +32,9 @@ interface Row {
 /** The fake bookings table the lookup reads. Seeded per test. */
 const rows: Row[] = [];
 
-const from = vi.hoisted(() => vi.fn());
+const rpc = vi.hoisted(() => vi.fn());
 
-vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
+vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ rpc }) }));
 
 import { findActiveBookingsForPerson } from "@/lib/booking/service";
 import { updateBookingPhone, type BookingDeps } from "@/lib/booking/orchestration";
@@ -86,39 +86,23 @@ function manageDeps(stored: { phone: string | null }) {
 }
 
 /**
- * A chainable Supabase shaped builder over `rows`. `eq` and `ilike` are applied as
- * real filters rather than recorded, because the whole question here is whether the
- * VALUE the query asks for is the value the column holds.
+ * `find_active_bookings_for_person` (#3476) over `rows`, applying the function's own
+ * matching rules as plain equalities: the phone exactly, each strong id against both
+ * id columns. Applied rather than recorded, because the whole question here is whether
+ * the VALUE the lookup asks for is the value the column holds. Every row here is a real
+ * booking (#2660), so the real world sees them all and the test world none. What the
+ * real function matches, signal by signal, is proved in Postgres by
+ * scripts/verify-person-bookings-sql.ts.
  */
-function builder(): Record<string, unknown> {
-  let matched = rows.slice();
-  const q: Record<string, unknown> = {};
-  q.select = () => q;
-  q.limit = () => q;
-  q.order = () => q;
-  q.in = (column: string, values: string[]) => {
-    matched = matched.filter((r) => values.includes(String(r[column as keyof Row] ?? "")));
-    return q;
-  };
-  q.eq = (column: string, value: string | boolean) => {
-    // #2660: the lookup joins the booking's bucket and asks for one world. Every
-    // row here is a real booking, so the join filter matches when the real world
-    // is asked for and nothing when the test world is.
-    if (column === "buckets.is_test") {
-      matched = matched.filter((r) => ((r as { is_test?: boolean }).is_test ?? false) === value);
-      return q;
-    }
-    matched = matched.filter((r) => r[column as keyof Row] === value);
-    return q;
-  };
-  q.ilike = (column: string, value: string) => {
-    const want = value.toLowerCase();
-    matched = matched.filter((r) => String(r[column as keyof Row] ?? "").toLowerCase() === want);
-    return q;
-  };
-  q.then = (resolve: (r: { data: unknown; error: null }) => unknown) =>
-    Promise.resolve({ data: matched, error: null }).then(resolve);
-  return q;
+async function lookupRpc(fn: string, args: { p_ids: string[]; p_phone: string | null; p_world: string }) {
+  expect(fn).toBe("find_active_bookings_for_person");
+  const matched = rows.filter(
+    (r) =>
+      args.p_world !== "test" &&
+      ((args.p_phone !== null && r.attendee_phone === args.p_phone) ||
+        args.p_ids.some((id) => r.external_id === id || r.salesforce_id === id)),
+  );
+  return { data: matched.map((r) => ({ ...r, is_test: false })), error: null };
 }
 
 /** Runs the REAL manage page write and returns the string it put in the column. */
@@ -133,8 +117,8 @@ async function correctPhoneOnManagePage(typed: string): Promise<string> {
 describe("a phone corrected on the manage page (#2390)", () => {
   beforeEach(() => {
     rows.length = 0;
-    from.mockReset();
-    from.mockImplementation(() => builder());
+    rpc.mockReset();
+    rpc.mockImplementation(lookupRpc);
   });
 
   // Each punctuation a person really types. The route takes whatever it is sent, so

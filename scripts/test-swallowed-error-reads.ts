@@ -718,52 +718,18 @@ assert(
   `the finding names the /me schedule read (got: ${meFindings[0]?.snippet})`,
 );
 
-// A control on the two UNNAMED shapes (#1641), driven off the real file the issue
-// was filed about. booking/service.ts now unwraps both the weak-match wave and the
-// bucket join in queryBookings; put each back the way it was and the guard must
-// catch it, and catch it as the shape that was blind to it. Without this the new
-// shapes are indistinguishable from a scanner that reads nothing: the tree is
-// clean either way (L1, L98).
-const loopReverted = serviceSrc.replace(
-  /const rows = unwrap\(r, "person booking lookup"\) as Booking\[\] \| null;\n(\s*)for \(const row of rows \?\? \[\]\)/,
-  "const rows = r.data as Booking[] | null;\n$1for (const row of rows ?? [])",
-);
-assert(
-  loopReverted !== serviceSrc,
-  "the weak-match revert control actually changed service.ts (else it proves nothing)",
-);
-const loopFindings = scanSwallowedErrorReads(loopReverted, servicePath);
-assert(
-  loopFindings.length === 1 && loopFindings[0].shape === "result-loop",
-  `positive control: the reverted weak-match lookup is caught as result-loop (got ${JSON.stringify(
-    loopFindings.map((f) => f.shape),
-  )})`,
-);
-assert(
-  loopFindings[0].binding === "r.data",
-  `the result-loop finding names the loop variable it is about (got ${loopFindings[0].binding})`,
-);
-
-// The lookup API's own wave (#2657) is the same shape one function down, with its
-// own context string, so the regex above cannot reach it. A failed read there is
-// the 404 the booking confirmed page was getting, so it gets its own control.
-const strongIdReverted = serviceSrc.replace(
-  /const rows = unwrap\(r, "strong id booking lookup"\) as Booking\[\] \| null;\n(\s*)for \(const row of rows \?\? \[\]\)/,
-  "const rows = r.data as Booking[] | null;\n$1for (const row of rows ?? [])",
-);
-assert(
-  strongIdReverted !== serviceSrc,
-  "the strong id revert control actually changed service.ts (else it proves nothing)",
-);
-const strongIdFindings = scanSwallowedErrorReads(strongIdReverted, servicePath);
-assert(
-  strongIdFindings.length === 1 &&
-    strongIdFindings[0].shape === "result-loop" &&
-    strongIdFindings[0].binding === "r.data",
-  `positive control: the reverted strong id lookup is caught as result-loop (got ${JSON.stringify(
-    strongIdFindings.map((f) => [f.shape, f.binding]),
-  )})`,
-);
+// The result-loop shape (#1641) used to have a control driven off booking/service.ts:
+// put the weak-match wave's and the lookup API's wave's per result unwrap back the way
+// #1641 and #2657 found them, and require the guard to catch each. Both waves became ONE
+// request in #3476 (`find_active_bookings_for_person`), so service.ts no longer holds
+// the shape and there is nothing there to revert. The shape itself is still proved: the
+// cases above carry the weak-match wave verbatim ("a loop over an awaited Promise.all
+// wave") and the array literal form, each required to be flagged.
+//
+// The one real wave of this shape left in the scanned paths, the admin booking search's
+// per column text read (src/lib/booking/search.ts), cannot stand in: it is built with
+// `.map(...)` rather than pushes or a literal, and the result-loop detector resolves
+// neither, so the guard cannot see it at all.
 
 const inlineReverted = serviceSrc.replace(
   /\(\(unwrap\(\n(\s*)await supabaseAdmin\(\)\.from\("buckets"\)\.select\("\*"\)\.in\("id", bucketIds\),\n\s*"queryBookings bucket join",\n\s*\) \?\? \[\]\) as Bucket\[\]\)/,
