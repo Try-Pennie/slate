@@ -279,10 +279,10 @@ const EXPECTED_PINNED = [
   "cancel_duplicate_named_refusal",
   // #3247: the first step of a reroute confirm.
   "claim_reroute_hold",
-  // #3265: the gated reschedule and its outbox row in one transaction.
   // #3495: a fresh booking's save after its calendar event, in one transaction;
   // definer, pinned to public, pg_catalog built ins only, execute revoked.
   "commit_fresh_booking",
+  // #3265: the gated reschedule and its outbox row in one transaction.
   "commit_reschedule",
   "count_bookings_per_local_day",
   // #2447: reports which definer functions the web roles can execute. Security INVOKER

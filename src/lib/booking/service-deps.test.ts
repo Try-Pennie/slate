@@ -232,6 +232,25 @@ describe("a fresh booking's one call save (#3495)", () => {
     }
   });
 
+  it("control: a code shaped like a lettered class Postgres does not define is NOT a refusal", async () => {
+    for (const code of ["PROTO", "HPEAA", "FATAL", "XERR1"]) {
+      rpcResult = { data: null, error: { code, message: "refused" } };
+      const err = await realDeps().commitFreshBooking(req).catch((e: unknown) => e);
+      expect(err, code).not.toBeInstanceOf(CommitRefusedError);
+    }
+  });
+
+  it("control: a lost connection or a shutdown is NOT a refusal, since the save may have committed before it", async () => {
+    // Class 08 (connection exception) and 57P (the server shutting down) are the
+    // codes Postgres can report for a transaction whose COMMIT it never confirmed.
+    for (const code of ["08006", "08003", "57P01", "57P02"]) {
+      rpcResult = { data: null, error: { code, message: "terminating connection" } };
+      const err = await realDeps().commitFreshBooking(req).catch((e: unknown) => e);
+      expect(err, code).toBeInstanceOf(Error);
+      expect(err, code).not.toBeInstanceOf(CommitRefusedError);
+    }
+  });
+
   it("reads every class of SQLSTATE, a lettered one included, and PostgREST's own codes as answered", async () => {
     for (const code of ["23505", "XX000", "P0001", "HV000", "F0000", "PGRST116"]) {
       rpcResult = { data: null, error: { code, message: "refused" } };
