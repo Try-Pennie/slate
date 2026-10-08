@@ -57,4 +57,13 @@ eq(readPersonBookings([]).length, 0, "no bookings is an empty list");
   }
 }
 
+// --- the arguments' world and bucket code are one value (#3489, L544) ------------------
+// `tsc` holds them to it (`src/lib/db/person-lookup-args.type-test.ts`): the bucket world
+// without a code, or a named world with one, fails the typecheck. This keeps that guard
+// from being deleted quietly, since a guard nobody runs protects nothing.
+{
+  const guard = readFileSync(join(import.meta.dirname, "..", "src", "lib", "db", "person-lookup-args.type-test.ts"), "utf8");
+  eq((guard.match(/^\/\/ @ts-expect-error /gm) ?? []).length, 2, "the type test refuses both mismatched shapes of the person lookup's world");
+}
+
 finish();

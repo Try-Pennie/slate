@@ -522,14 +522,15 @@ export interface Database {
        * with `is_test`, read by `readPersonBookings`.
        */
       find_active_bookings_for_person: {
+        // A world and the code it needs are one value (L544): `bucket` (#3489) reads in
+        // the world of the bucket named by `p_bucket_code`, which a named world never
+        // carries. The database refuses either mismatch (22023);
+        // `person-lookup-args.type-test.ts` keeps the types refusing them too.
         Args: {
           p_ids: string[];
           p_email_like: string | null;
           p_phone: string | null;
-          /** #3489: `bucket` reads in the world of the bucket named by `p_bucket_code`. */
-          p_world: "real" | "test" | "both" | "bucket";
-          p_bucket_code?: string;
-        };
+        } & ({ p_world: "real" | "test" | "both"; p_bucket_code?: never } | { p_world: "bucket"; p_bucket_code: string });
         Returns: unknown;
       };
       /**
