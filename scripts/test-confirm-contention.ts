@@ -2322,6 +2322,44 @@ async function main() {
     assert(bySlot.has(`a|${input.startIso}`), `past claims, lost race: a holds the time (got ${[...bySlot.keys()].join(",")})`);
   }
 
+  // #3529: load run 37822382352, burst 1. A walker passes a claimed rung, then loses the
+  // insert race on the last rung to a booking another line made, and parks. A lost race
+  // frees nobody, so once the claim it walked past has booked its
+  // walk stands: it refuses, and the two confirms waiting behind it are told the time is
+  // taken without either walking the ladder again. Before the fix its lost race moved the
+  // line's epoch, the walk could not stand, and a confirm behind it walked the whole ladder
+  // (in the run, too late: 95 of the crowd timed out).
+  {
+    const held = (id: string, who: string): Booking =>
+      makeBooking({
+        id,
+        assigned_user_id: who,
+        agent_name: `Agent ${who.toUpperCase()}`,
+        agent_email: `${who}@x.com`,
+        starts_at: input.startIso,
+        external_id: `other-line-${who}`,
+        salesforce_id: `sf-other-line-${who}`,
+        attendee_email: `otherline${who}@example.com`,
+        attendee_phone: who === "c" ? "+12035574441" : "+12035574442",
+      } as Partial<Booking>);
+    const { runs, tally } = await burst({
+      inputs: [onLadder(0), onLadder(1), onLadder(2), onLadder(3)],
+      pool: ["a"],
+      poolByCode: { "411": ["a"], "211": ["c"] },
+      queue: "real",
+      viaApi: false,
+      heldElsewhere: [held("other-c", "c")],
+      slowGoogleMs: 500,
+      slowEventMs: 500,
+    });
+    const booked = runs.filter((r) => r.outcome === "created").map((r) => r.result?.booking.assigned_user_id);
+    const refused = runs.filter((r) => r.outcome === "SLOT_TAKEN");
+    assert(JSON.stringify(booked) === JSON.stringify(["a"]) && refused.length === 3, `lost races past claims: a is booked and the other three are told the time is taken (got ${JSON.stringify(tally)})`);
+    const walker = refused.find((r) => r.calls.some((c) => c.name === "verifyFree"));
+    const behind = refused.filter((r) => r !== walker);
+    assert(walker !== undefined && behind.length === 2 && quiet(behind), `lost races past claims: the two behind the walker are answered without walking the ladder (got calls ${behind.map((r) => r.calls.map((c) => c.name).join(",")).join(" | ")})`);
+  }
+
   // #3529: a confirm the line HANDS an advisor on a lower rung never read the rungs
   // above it; the leader whose read it was handed may have passed them only for claims.
   // Confirm 0 claims a on 411 and hands on; confirm 1 walks past 411 to 211 and claims

@@ -88,8 +88,13 @@ object leaves each field out, and the line keeps its rules from before):
   follower. A full verdict reported while claims are in flight is HELD (`pending`), and
   applied to everybody waiting when the last of them ends booked, answered with the
   settlement that booking read as it ended (who sits at the instant). Any claim ending
-  WITHOUT a booking bumps the line's `epoch`, which discards the held verdict and lets
-  one confirm read again, since an advisor may be free. A walker that parks once every
+  in a way that may have left its advisor free (untried, unknown, lapsed) bumps the
+  line's `epoch`, which discards the held verdict and lets one confirm read again. A claim
+  ending booked, found busy by Google or lost to a booking already there frees nobody and
+  moves nothing (#3529: load run 37822382352's burst 1 timed out a crowd because a walker's
+  own lost races voided its walk). A confirm the line hands a lower rung inherits the epoch
+  at which the confirm whose read it was handed first read, since that walk is what stands
+  for the rungs above it. A walker that parks once every
   claim it skipped has already BOOKED (no claim in flight, the epoch unmoved since it
   met the first spent rung) leads again at once marked `spent`: its own walk proves the
   ladder spent, so it refuses with what it found rather than the next confirm walking

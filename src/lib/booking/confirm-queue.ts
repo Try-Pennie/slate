@@ -413,13 +413,29 @@ interface Line<T> {
    * and when it was read. Advisors leave it as their claims end anything but `untried`;
    * what nobody in flight has claimed is what the line can hand out.
    */
-  frontier: { rung: number; read: string[]; at: number; below: boolean } | null;
+  frontier: {
+    rung: number;
+    read: string[];
+    at: number;
+    below: boolean;
+    /**
+     * #3529: the line's epoch when the confirm whose read this is first read through the
+     * line. A confirm handed a lower rung never read the rungs above it, that confirm did,
+     * so this is what vouches for them (`spentAt` of a handed turn).
+     */
+    readAt: number;
+  } | null;
   /** Cheap reads in flight ahead of joining this line (`lookahead`). */
   looking: number;
   /**
-   * #3489 step 3: bumped by every claim on an advisor that ends WITHOUT a booking (found
-   * busy, lost its race, untried, unknown, lapsed, or replaced by another), so a pending
-   * verdict can tell whether anything that could free an advisor has happened since.
+   * #3489 step 3: bumped by every claim on an advisor that ends in a way that may have left
+   * the advisor FREE, so a pending verdict can tell whether anything that could free an
+   * advisor has happened since. #3529: that is a claim ending untried or unknown (lapsed,
+   * replaced untried, or a confirm that never said), and never one ending booked, found
+   * busy or lost its race: Google said that advisor cannot take the time, or a booking
+   * already holds them, so nobody else could book them either. Counting those (load run
+   * 37822382352, burst 1) let a walker's own lost races void its walk, and a crowd timed out
+   * while a second confirm walked the ladder again to find what the line already knew.
    */
   epoch: number;
   /**
@@ -513,7 +529,8 @@ export function makeConfirmQueue<T>(
     const known = reported === "booked" || reported === "advisor-busy" || reported === "lost-race";
     const outcome: ClaimOutcome = known ? reported : c.returnable && !c.tried ? "untried" : "unknown";
     // #3489 step 3: an advisor may be free again, so a pending verdict no longer holds.
-    if (outcome !== "booked") line.epoch++;
+    // #3529: only an ending that may have left them free (see `Line.epoch`).
+    if (outcome === "untried" || outcome === "unknown") line.epoch++;
     if (outcome === "untried") return line.frontier !== null && line.frontier.read.includes(c.userId);
     if (line.frontier) line.frontier.read = line.frontier.read.filter((id) => id !== c.userId);
     return false;
@@ -599,7 +616,9 @@ export function makeConfirmQueue<T>(
     let reported = false;
     // #3489 step 3: the line's epoch when this confirm first met a rung spent by claims,
     // so a park can tell whether everything it walked past has since booked.
-    let spentAt: number | null = null;
+    // #3529: a confirm handed a rung inherits the epoch at which the confirm whose read it
+    // was handed first read, since that confirm's walk is what stands for the rungs above.
+    let spentAt: number | null = start ? (line.frontier?.readAt ?? null) : null;
     // #3529: the line's epoch at this confirm's first read through it, which vouches for
     // a full verdict that holds only `unlessFreed`.
     let readAt: number | null = null;
@@ -690,7 +709,7 @@ export function makeConfirmQueue<T>(
           const pool = unclaimed.length > 0 ? unclaimed : [...candidates];
           // #3489: a caller that names its rung makes its read the line's frontier, so
           // handing the line on releases one waiter per advisor it left unclaimed.
-          if (place && live()) line.frontier = { rung: place.rung, read: [...candidates], at: now(), below: place.below === true };
+          if (place && live()) line.frontier = { rung: place.rung, read: [...candidates], at: now(), below: place.below === true, readAt: readAt ?? line.epoch };
           // A walker on a rung's LAST unclaimed advisor hands on too when there is a rung
           // below, so the confirms behind it walk down at once rather than wait out its
           // whole confirm (step 3).

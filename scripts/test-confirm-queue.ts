@@ -1180,18 +1180,66 @@ async function main() {
     assert(behind.length === 1 && behind[0]!.kind === "lead", `spent cancel: cancelling it hands the line to the confirm behind (got ${JSON.stringify(behind.map((t) => t.kind))})`);
     leadOf(behind[0]!).done({ full: false });
   }
-  // Control: the claim it skipped ended WITHOUT a booking, so an advisor may be free again
-  // and its walk proves nothing: it reads again, unmarked.
+  // Control: the claim it skipped ended in a way that may have left its advisor free (its
+  // confirm never said how it ended), so its walk proves nothing: it reads again, unmarked.
   {
     const { timer } = manualTimer();
     const q = makeConfirmQueue<string>({ timer });
     const first = leadOf(await q.enter("slot"));
     first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    first.seat.trying("a");
     const walker = leadOf(await q.enter("slot"));
     walker.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
-    first.done({ full: false }, "advisor-busy");
+    first.done({ full: false }, "unknown");
     const parked = await walker.park();
-    assert(parked.kind === "lead" && parked.spent === undefined, `walk control: a claim it skipped ended without booking, so it reads again, unmarked (got ${JSON.stringify(parked)})`);
+    assert(parked.kind === "lead" && parked.spent === undefined, `walk control: a claim it skipped ended unknown, so it reads again, unmarked (got ${JSON.stringify(parked)})`);
+    leadOf(parked).done({ full: true, refusal: "taken", settled: null });
+  }
+  // #3529: a claim that ended BUSY or LOST ITS RACE frees nobody (Google said the advisor
+  // cannot take the time, or a booking already holds them), so a walk past it still
+  // stands. Load run 37822382352, burst 1: a walker's own two lost races moved the epoch,
+  // its walk could not stand when it parked, and the crowd behind it timed out while a
+  // second confirm walked the ladder again to learn what the line already knew.
+  for (const ending of ["advisor-busy", "lost-race"] as const) {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    first.seat.trying("a");
+    const walker = leadOf(await q.enter("slot"));
+    walker.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    // Its own claim below that it lost too, then moved on from: no freeing either.
+    walker.seat.claimFirst(["c", "d"], { rung: 2, canWalk: true, below: false });
+    walker.seat.trying("c");
+    walker.seat.claimFirst(["d"], { rung: 2, canWalk: true, below: false });
+    walker.seat.trying("d");
+    first.done({ full: false }, ending);
+    const parked = await walker.park();
+    assert(parked.kind === "lead" && parked.spent === true, `walk stands, ${ending}: nothing it skipped or tried was freed, so its walk stands (got ${JSON.stringify(parked)})`);
+    leadOf(parked).done({ full: true, refusal: "taken", settled: null });
+  }
+  // #3529: a confirm the line HANDS an advisor on a lower rung never read the rungs above;
+  // the leader whose read it was handed did. When nothing has been freed since that
+  // leader first read, and the claims are done, the handed confirm's walk stands too.
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const holder = leadOf(await q.enter("slot"));
+    holder.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    const leader = leadOf(await q.enter("slot"));
+    const released: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => released.push(t));
+    await tick();
+    leader.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    leader.seat.claimFirst(["c", "d"], { rung: 2, canWalk: true, below: false });
+    await tick();
+    const handed = leadOf(released[0]!);
+    assert(handed.start?.rung === 2 && handed.start.advisor === "d", `handed: d on the lower rung is handed out (got ${JSON.stringify(handed.start)})`);
+    handed.seat.trying("d");
+    holder.done({ full: false }, "booked", "s");
+    leader.done({ full: false }, "booked", "s");
+    const parked = await handed.park();
+    assert(parked.kind === "lead" && parked.spent === true, `handed stands: the leader's walk vouches for the rungs above it, so it stands (got ${JSON.stringify(parked)})`);
     leadOf(parked).done({ full: true, refusal: "taken", settled: null });
   }
   // Control: a walker that never met a spent rung (no claim to walk past) and parks is not
