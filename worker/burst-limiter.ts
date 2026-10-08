@@ -35,6 +35,16 @@ const STORAGE_KEY = "window";
 
 export class BurstLimiter {
   private readonly state: DurableState;
+  /**
+   * #3529: the window as last written, held between requests so a hit is decided with no
+   * await between reading it and writing the next. `undefined` until this instance has read
+   * storage once; `null` once it has and found nothing.
+   */
+  private window: { windowStartMs: number; count: number } | null | undefined = undefined;
+  /** #3529: the alarm this instance last set, so it is moved only when it falls behind. */
+  private alarmAtMs: number | null = null;
+  /** The one storage read a fresh instance makes, shared by every request that needs it. */
+  private loading: Promise<void> | null = null;
 
   constructor(state: DurableState) {
     this.state = state;
@@ -69,12 +79,32 @@ export class BurstLimiter {
       // as an unreachable counter and fails open, loudly, as it does on any other failure.
       return Response.json({ error: asked.detail }, { status: 400 });
     }
-    const stored =
-      (await this.state.storage.get<{ windowStartMs: number; count: number }>(STORAGE_KEY)) ??
-      null;
-    const step = applyCounterRequest(stored, asked, Date.now());
-    await this.state.storage.put(STORAGE_KEY, step.next);
-    await this.state.storage.setAlarm(step.alarmAtMs);
+    // #3529: a crowd of one caller's hits queued here at three awaited storage calls a hit
+    // (load run 37854326187: 1.4 to 1.75s each for a hundred at once). Storage is read once
+    // per instance; after that the window lives in memory, and everything from reading it to
+    // writing the next is synchronous, so no request can interleave and each hit is counted
+    // exactly once. The write is not awaited: the platform holds this response until it is
+    // durable (the output gate) and coalesces a burst's writes into one, so an eviction
+    // resumes from the last count answered.
+    if (this.window === undefined) {
+      this.loading ??= this.state.storage.get<{ windowStartMs: number; count: number }>(STORAGE_KEY).then((got) => {
+        if (this.window === undefined) this.window = got ?? null;
+      });
+      await this.loading;
+    }
+    const now = Date.now();
+    const step = applyCounterRequest(this.window ?? null, asked, now);
+    this.window = step.next;
+    void this.state.storage.put(STORAGE_KEY, step.next);
+    // The alarm deletes an idle count. It is moved only when it would fire less than one
+    // and a half windows after this hit, so it always fires between one and a half and two
+    // windows after the last one: never while a window is open, and set about once a window
+    // rather than once a hit.
+    const window = step.alarmAtMs - now;
+    if (this.alarmAtMs === null || this.alarmAtMs < now + 0.75 * window) {
+      this.alarmAtMs = step.alarmAtMs;
+      void this.state.storage.setAlarm(step.alarmAtMs);
+    }
     // The window is reported alongside the count for the verification command (#1564), which
     // proves the counter ANSWERS by reporting twice and requiring the count to rise. Two
     // reports either side of a boundary are two separate counts, and without the object saying
@@ -87,6 +117,8 @@ export class BurstLimiter {
 
   /** Nothing has reported for two windows, so this address is no longer hot. */
   async alarm(): Promise<void> {
+    this.window = null;
+    this.alarmAtMs = null;
     await this.state.storage.deleteAll();
   }
 }

@@ -167,23 +167,43 @@ const BOOKING_API_HOURLY_RULES = [
 }
 
 // --- the Durable Object itself, around a fake storage ---------------------------
-async function objectRuns() {
+/**
+ * A fake object storage. Every operation yields before it answers, as a real one's I/O does,
+ * so a counter that awaited storage between reading its window and writing the next would
+ * interleave here and double count (#3529). Calls are counted.
+ */
+function fakeStorage() {
   const stored = new Map<string, unknown>();
+  const calls = { get: 0, put: 0, setAlarm: 0 };
   let alarmAt: number | null = null;
-  const object = new BurstLimiter({
-    storage: {
-      get: async <T>(k: string) => stored.get(k) as T | undefined,
-      put: async <T>(k: string, v: T) => {
-        stored.set(k, v);
-      },
-      setAlarm: async (t: number) => {
-        alarmAt = t;
-      },
-      deleteAll: async () => {
-        stored.clear();
-      },
+  const tick = () => new Promise((r) => setImmediate(r));
+  const storage = {
+    get: async <T>(k: string) => {
+      calls.get++;
+      await tick();
+      return stored.get(k) as T | undefined;
     },
-  });
+    put: async <T>(k: string, v: T) => {
+      calls.put++;
+      stored.set(k, v);
+      await tick();
+    },
+    setAlarm: async (t: number) => {
+      calls.setAlarm++;
+      alarmAt = t;
+      await tick();
+    },
+    deleteAll: async () => {
+      stored.clear();
+      await tick();
+    },
+  };
+  return { stored, calls, storage, alarmAt: () => alarmAt };
+}
+
+async function objectRuns() {
+  const fake = fakeStorage();
+  const object = new BurstLimiter({ storage: fake.storage });
   const realNow = Date.now;
   let now = T0;
   Date.now = () => now;
@@ -203,24 +223,59 @@ async function objectRuns() {
     }
     eq(hits.map((h) => (h as { count: number }).count), [1, 2, 3], "the object counts every hit, exactly once each");
     eq((hits[2] as { windowMs: number }).windowMs, HOUR, "and answers which window it counted");
-    eq(alarmAt, T0 + 2 + 2 * HOUR, "and holds the hour's count until two hours after the last hit");
+    assert((fake.alarmAt() ?? 0) >= T0 + 2 + 1.5 * HOUR && (fake.alarmAt() ?? Infinity) <= T0 + 2 + 2 * HOUR, `and holds the hour's count between one and a half and two hours after the last hit (alarm at ${fake.alarmAt()})`);
     now = T0 + HOUR + 1;
     eq((await ask({ hit: { windowMs: HOUR } })).body.count, 1, "the window resets once strictly older than an hour");
 
     // A malformed hit is refused and counts nothing.
-    stored.clear();
+    const putsBefore = fake.calls.put;
     const refused = await ask({ hit: { windowMs: -5 } });
     eq(refused.status, 400, "a hit with no usable window is answered 400");
-    eq(stored.size, 0, "and nothing is stored for it");
+    eq(fake.calls.put, putsBefore, "and nothing is stored for it");
 
-    // The burst tracker's report, unchanged.
+    // The burst tracker's report, unchanged. Its own object: the two kinds of caller use
+    // disjoint key spaces, so no object ever holds both.
+    const burstFake = fakeStorage();
+    const burst = new BurstLimiter({ storage: burstFake.storage });
+    const askBurst = async (body: unknown) => {
+      const res = await burst.fetch(new Request("https://burst-limiter.slate/count", { method: "POST", body: typeof body === "string" ? body : JSON.stringify(body) }));
+      return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+    };
     now = T0;
-    const b1 = await ask({ bump: 21 });
-    const b2 = await ask({ bump: 5 });
+    const b1 = await askBurst({ bump: 21 });
+    const b2 = await askBurst({ bump: 5 });
     eq([b1.body.count, b2.body.count], [21, 26], "the burst tracker's reports add up as they always did");
     eq(Object.keys(b2.body).sort(), ["count", "windowStartMs"], "and are answered in the shape the verification command reads");
-    eq(alarmAt, T0 + 2 * BURST_WINDOW_MS, "and the burst object is still deleted two minutes later");
-    eq((await ask("not json")).body.count, 27, "an unreadable report still counts as one request");
+    assert((burstFake.alarmAt() ?? 0) >= T0 + 1.5 * BURST_WINDOW_MS && (burstFake.alarmAt() ?? Infinity) <= T0 + 2 * BURST_WINDOW_MS, "and the burst object is still deleted within two minutes");
+    eq((await askBurst("not json")).body.count, 27, "an unreadable report still counts as one request");
+
+    // #3529: a crowd of hits at once. Load run 37854326187 queued a hundred confirms of one
+    // caller on its one ceiling object for 1.4 to 1.75s each, at three awaited storage calls a
+    // hit. The count lives in the object's memory between reads and writes, so a hundred at
+    // once are counted exactly once each without leaning on the input gate, storage is read
+    // once per object life, and the cleanup alarm is moved only when it has fallen behind.
+    const crowdFake = fakeStorage();
+    const crowd = new BurstLimiter({ storage: crowdFake.storage });
+    now = T0;
+    const answers = await Promise.all(
+      Array.from({ length: 100 }, async () => {
+        const res = await crowd.fetch(new Request("https://burst-limiter.slate/count", { method: "POST", body: JSON.stringify({ hit: { windowMs: HOUR } }) }));
+        return ((await res.json()) as { count: number }).count;
+      }),
+    );
+    eq([...answers].sort((a, b) => a - b).join(","), Array.from({ length: 100 }, (_, i) => i + 1).join(","), "a hundred hits at once are counted 1 to 100, each exactly once");
+    eq(crowdFake.calls.get, 1, "storage is read once for the crowd, never once a hit");
+    eq(crowdFake.calls.put, 100, "every hit is still written, so a count survives the object being evicted");
+    eq(crowdFake.calls.setAlarm, 1, "and the alarm is set once, not once a hit");
+    eq(crowdFake.stored.get("window") && (crowdFake.stored.get("window") as { count: number }).count, 100, "the stored count is the last one answered");
+    // A fresh instance over the same storage (an eviction) resumes from what was written.
+    const resumed = new BurstLimiter({ storage: crowdFake.storage });
+    const after = await resumed.fetch(new Request("https://burst-limiter.slate/count", { method: "POST", body: JSON.stringify({ hit: { windowMs: HOUR } }) }));
+    eq(((await after.json()) as { count: number }).count, 101, "an instance after an eviction resumes the stored count");
+    // The alarm's deletion is the end of the count: the next hit starts a new one.
+    await resumed.alarm();
+    const fresh = await resumed.fetch(new Request("https://burst-limiter.slate/count", { method: "POST", body: JSON.stringify({ hit: { windowMs: HOUR } }) }));
+    eq(((await fresh.json()) as { count: number }).count, 1, "after its alarm deletes it, the next hit counts from one");
   } finally {
     Date.now = realNow;
   }
