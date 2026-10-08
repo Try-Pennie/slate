@@ -16,7 +16,7 @@ import { regalSendsNothingFor } from "@/lib/webhooks/regal";
 import { payloadForSend, type CurrentRoutableRead } from "@/lib/webhooks/agent-trait";
 import type { WebhookEndpoint, WebhookEvent, WebhookFormat } from "@/lib/db/types";
 import { WEBHOOK_FORMATS } from "@/lib/webhooks/formats";
-import { readEnqueueAnswer } from "@/lib/webhooks/enqueue-answer";
+import { readEnqueueAnswer, type EnqueueAnswer } from "@/lib/webhooks/enqueue-answer";
 import { gatedWriteApplied } from "@/lib/booking/gated-write";
 import { webhookLoadtestFault } from "@/lib/loadtest-fault";
 
@@ -67,7 +67,7 @@ const SUPPRESSED_AGENT_RESPONSE = "suppressed: is_test agent, external POST skip
  * it as "send" (L42); derived from `WEBHOOK_FORMATS` so a new format is decided
  * here the day it exists.
  */
-function suppressionByFormat(event: WebhookEvent, payload: WebhookPayload, suppressed: boolean): Record<WebhookFormat, string | null> {
+export function suppressionByFormat(event: WebhookEvent, payload: WebhookPayload, suppressed: boolean): Record<WebhookFormat, string | null> {
   return Object.fromEntries(
     (Object.keys(WEBHOOK_FORMATS) as WebhookFormat[]).map((format) => [format, suppressionFor(format, event, payload, suppressed)]),
   ) as Record<WebhookFormat, string | null>;
@@ -355,6 +355,22 @@ export async function emitWebhook<E extends WebhookEvent>(
     throw err;
   }
 
+  await afterEnqueue(orgId, event, enqueued, suppressed, deferSend);
+}
+
+/**
+ * What follows writing a webhook's deliveries, wherever they were written (#3495):
+ * `emitWebhook`, and a fresh booking's save, which writes its booking.created inside
+ * `commit_fresh_booking`. One copy, so a delivery written either way is logged and
+ * first sent the same way (L613).
+ */
+export async function afterEnqueue<E extends WebhookEvent>(
+  orgId: string,
+  event: E,
+  enqueued: EnqueueAnswer,
+  suppressed: boolean,
+  deferSend?: WebhookSendScheduler,
+): Promise<void> {
   // #1459: a zero fan-out is silent. Nothing downstream can tell it apart from a
   // delivered event, so say it here: the monitor lane's subscriber-coverage check
   // is what pages, and this is what a forensic log read needs to confirm which
@@ -368,6 +384,7 @@ export async function emitWebhook<E extends WebhookEvent>(
     });
   }
 
+  const db = supabaseAdmin();
   await Promise.all(
     enqueued.deliveries.map(async (delivery) => {
       // #459: the row is recorded (so the exactly-once dedupe stays observable on

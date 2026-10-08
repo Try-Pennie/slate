@@ -138,6 +138,60 @@ async function main() {
     assert(markerOf(decision?.chosenAttributes) === markerOf({ marker: "a" }), `drain finish: the routing decision carries the advisor it read (got ${markerOf(decision?.chosenAttributes)})`);
   }
 
+  // The two reads the drain makes only feed the webhook and the routing record, which
+  // never decided whether a booking is made: before the one call save they ran after
+  // the insert, where a failure cost that part alone. So neither may fail the booking.
+  const drainable = () =>
+    ({
+      ...written,
+      id: "resv-finish",
+      status: "pending",
+      lease_until: null,
+      attempts: 0,
+      last_error: null,
+      next_attempt_at: null,
+      created_at: "",
+      updated_at: "",
+    }) as unknown as BookingReservation;
+  // An advisor that will not read: the routing record goes in without the advisor's
+  // attributes (the misroute check judges nothing it cannot read), and the booking is made.
+  {
+    const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]), drainableReservations: [drainable()] });
+    const res = await processBookingReservations(
+      {
+        ...deps,
+        getUser: async () => {
+          throw new Error("advisor read refused");
+        },
+      },
+      15,
+    );
+    assert(res.completed === 1, `drain finish, advisor unreadable: the booking is made (got ${JSON.stringify(res)})`);
+    assert(calls.insertBooking.length === 1, `and saved once (got ${calls.insertBooking.length})`);
+    const decision = calls.recordRoutingDecision.at(-1);
+    assert(decision !== undefined && decision.chosenAttributes === null, `and its routing record carries no attributes rather than none at all (got ${JSON.stringify(decision?.chosenAttributes)})`);
+    assert(calls.webhooks.filter((w) => w.event === "booking.created").length === 1, "and booking.created goes in");
+  }
+  // A bucket that will not read: the booking is saved without its webhook, and the
+  // reservation STAYS, so the next drain, which reads the bucket again, sends it.
+  {
+    const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]), drainableReservations: [drainable()] });
+    const res = await processBookingReservations(
+      {
+        ...deps,
+        resolveBucketByCode: async () => {
+          throw new Error("bucket read refused");
+        },
+      },
+      15,
+    );
+    assert(calls.insertBooking.length === 1, `drain finish, bucket unreadable: the booking is saved (got ${calls.insertBooking.length})`);
+    assert(calls.webhooks.length === 0, `with no webhook sent at all yet, since it could not be built (got ${JSON.stringify(calls.webhooks.map((w) => w.event))})`);
+    assert(calls.deletedReservations.length === 0, "and the reservation stays, so the next drain sends it");
+    assert(res.failed === 1, `and the drain counts the unfinished webhook against the reservation, to back off and retry (got ${JSON.stringify(res)})`);
+    assert(calls.recordRoutingDecision.length === 0, "a routing record needs the bucket, so none is written, as before");
+  }
+
   finish();
 }
 

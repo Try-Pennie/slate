@@ -1002,21 +1002,57 @@ export interface CreateEventArgs {
 }
 
 /**
- * insertBooking outcome. `conflict` means the slot is taken: another booking won
- * the verify-on-book race for this agent. EITHER guard can say so, and they are
- * not the same question (#2274). `bookings_active_slot_uniq` refuses a second
- * booking at the same START, and `bookings_active_no_overlap` refuses one
- * OVERLAPPING an existing booking for that agent, which is the case uniqueness
- * cannot see: appointments are longer than the grid they are offered on, so
- * adjacent offered times overlap. The caller turns either into
- * SlotUnavailableError, because both mean the same thing to a lead.
+ * #3495: what a fresh booking's save hands `commit_fresh_booking` (migration 0174),
+ * which writes the booking, its busy block, its webhook deliveries, its routing
+ * record and the reservation's delete in ONE call, where they were six.
  */
-export type InsertBookingResult =
-  | { ok: true; booking: Booking }
-  | { ok: false; conflict: true }
-  /** `error` is what the store said, carried so a deadline in it still reaches
-   *  the route as the retryable outage rather than a generic 500 (#3215). */
-  | { ok: false; conflict: false; error: unknown };
+export interface CommitFreshInput {
+  /** The row built for the reservation, with the id this confirm minted (the
+   *  webhook names it, and its dedupe key IS it) and the event it wrote or adopted. */
+  booking: BookingInsert & { id: string };
+  reservationId: string;
+  /** `booking.created`, built by the builder fire() uses; the function takes the
+   *  booking id and times from the row as stored. Or, when the bucket it is built
+   *  from would not read, the reason: the save then commits without it and keeps
+   *  the reservation, so the drain, which reads the bucket again, sends it. */
+  webhook: { payload: BookingEventPayload; dedupeKey: string; suppressed: boolean } | { unbuilt: string };
+  /** The routing record for a routed booking; null for an agent link one (#2073). */
+  routing: RecordRoutingDecisionInput | null;
+}
+
+/**
+ * What the save came to. `conflict`: a guard refused the insert (another booking at
+ * the start, `bookings_active_slot_uniq`; one overlapping it,
+ * `bookings_active_no_overlap`, #2274; an advisor held for a reroute, the 0166
+ * trigger; the lead's own key), NOTHING was written, and `winner` is the active
+ * booking holding the lead's key, or null when the slot went to somebody else.
+ * `committed`: the booking, and each optional step that failed and why, none of
+ * which undid it; the reservation is kept when the webhook step failed, so the drain
+ * re-runs the side effects and the webhook is not lost.
+ */
+export type CommitFreshResult =
+  | {
+      kind: "committed";
+      booking: Booking;
+      failed: { busy?: string; webhook?: string; routing?: string };
+      reservationDeleted: boolean;
+    }
+  | { kind: "conflict"; winner: Booking | null };
+
+/**
+ * #3495: Postgres refused the save call, answering with an error, so NOTHING was
+ * written (the function is one transaction). Any OTHER failure of the call, a deadline,
+ * a dropped connection, an answer that could not be read, may have COMMITTED, and the
+ * confirm reads the booking back before telling a lead it failed.
+ */
+export class CommitRefusedError extends Error {
+  readonly refusal: { code?: string; message: string };
+  constructor(refusal: { code?: string; message: string }) {
+    super(`the booking commit was refused: ${refusal.message}`);
+    this.name = "CommitRefusedError";
+    this.refusal = refusal;
+  }
+}
 
 export type BookingUpdate = {
   starts_at?: string;
@@ -1371,7 +1407,15 @@ export interface BookingDeps {
   getUser(userId: string): Promise<User>;
   /** Batched userId -> email resolver for a verify-on-book wave (skips emailless). */
   loadEmails(userIds: string[]): Promise<Map<string, string>>;
+  /** The pre-save idempotency probe: fails OPEN to null on a read error, which the
+   *  unique key index backs (a missed hit re-drives an insert the index refuses). */
   findBookingByIdempotencyKey(key: string): Promise<Booking | null>;
+  /**
+   * #3495: the same read, THROWING on a read error, for the one caller to whom "not
+   * there" and "could not tell" must differ: the read back after a save whose answer
+   * was lost, where null tells the lead their booking failed.
+   */
+  readBookingByIdempotencyKey(key: string): Promise<Booking | null>;
   /**
    * #1341: write a lead's corrected phone onto their booking. Scoped to the one
    * field on purpose, so a manage-token edit can never reach anything else on
@@ -1390,7 +1434,12 @@ export interface BookingDeps {
       attendee_phone?: string;
     },
   ): Promise<void>;
-  insertBooking(row: BookingInsert): Promise<InsertBookingResult>;
+  /**
+   * #3495: a fresh booking's save after its calendar event, in ONE call
+   * (`commit_fresh_booking`). Throws `CommitRefusedError` when Postgres refused, which
+   * wrote nothing; any other throw may have committed.
+   */
+  commitFreshBooking(input: CommitFreshInput): Promise<CommitFreshResult>;
   /** One write for many blocks (#762). The reconcile-missing sweep can re-create up
    *  to RECONCILE_LIMIT rows, and a write per row was that many serial round-trips
    *  on the shared every-minute invocation. The create/reschedule paths do NOT use
@@ -1726,6 +1775,9 @@ export interface BookingDeps {
    *  so their bounded fan-out still caps simultaneous connections. */
   deferSend?: WebhookSendScheduler;
   newManageToken(): string;
+  /** #3495: a fresh booking's id, minted before its save because the webhook built
+   *  for it names the booking and its dedupe key IS the id. */
+  newBookingId(): string;
   /** A fresh, unique synthetic idempotency key for a keyless (anonymous) booking
    *  (#666), so it still gets the reservation-backed crash-safe create every keyed
    *  booking has. Random per call: there's no stable identity to dedupe on, so it
@@ -4703,19 +4755,19 @@ async function createHeld(
     // The insert, the exclusion index write and the cache write through, which is
     // where the overlap constraint (#2280) and the in request pool recompute both
     // land: two of the three candidates #2321 names.
-    // #3338: the insert's answer closes the chain's measurement; the work after a
-    // commit is the drain's if it is cut off (#3263), so it is not part of what a
-    // confirm must have the time for. Only a chain that COMMITTED with budget still
-    // left is what a chain costs: one cut off at the insert, failed, lost to a race
-    // or answered after the budget was spent measured only what a budget allowed,
-    // and recording it could hold every later confirm on this isolate out (L465).
+    // #3338: the commit's answer closes the chain's measurement. Since #3495 that one
+    // call carries the side effects the drain used to finish after the insert, so the
+    // chain is the whole save. Only a chain that COMMITTED with budget still left is
+    // what a chain costs: one cut off at the commit, failed, lost to a race or
+    // answered after the budget was spent measured only what a budget allowed, and
+    // recording it could hold every later confirm on this isolate out (L465).
     let committedChainMs: number | null = null;
     const measured: BookingDeps = {
       ...deps,
-      insertBooking: async (row) => {
-        const answer = await deps.insertBooking(row);
+      commitFreshBooking: async (req) => {
+        const answer = await deps.commitFreshBooking(req);
         const leftMs = budgetLeftMs();
-        if (answer.ok && (leftMs === null || leftMs > 0)) committedChainMs = Date.now() - chainFromMs;
+        if (answer.kind === "committed" && (leftMs === null || leftMs > 0)) committedChainMs = Date.now() - chainFromMs;
         return answer;
       },
     };
@@ -5067,7 +5119,7 @@ async function attemptReservation(
   /** #3495: what a fresh confirm already holds (`CommitKnown`); absent on the drain. */
   known?: CommitKnown,
 ): Promise<ReservationAttempt> {
-  const { booking: bookingInsert, event, bucketCode } = reservation.payload;
+  const { booking: bookingInsert, event, bucketCode, requestedCode } = reservation.payload;
   const key = bookingInsert.idempotency_key;
 
   // A resume after the booking was inserted but before the reservation was
@@ -5126,58 +5178,183 @@ async function attemptReservation(
     throw new AttendeeEmailRefusedError(err);
   });
 
-  const inserted = await deps.insertBooking({ ...bookingInsert, gcal_event_id: gcalEventId });
-  if (!inserted.ok) {
-    if (inserted.conflict) {
-      // A concurrent duplicate won the idempotency race, or the slot was taken.
-      if (key) {
-        const winner = await deps.findBookingByIdempotencyKey(key);
-        if (winner) {
-          // The winner committed, so its booking is the answer however this
-          // cleanup goes (#3263); a reservation left behind is the drain's.
-          const unfinished = await finishCommitted(() => deps.deleteReservation(reservation.id));
-          return {
-            kind: "completed",
-            completed: { result: { booking: winner, manageUrl: manageUrl(deps, winner.manage_token) }, unfinished },
-          };
-        }
+  // #3495: the booking, its busy block, its webhook deliveries, its routing record and
+  // the reservation's delete in ONE call (`commit_fresh_booking`), where they were
+  // six. Built here from the reservation exactly as the separate calls were: the
+  // bucket the booking lands in, the webhook fire() would send, and the routing
+  // record, which a crash resume never writes (it is not re-run, as before).
+  const bookingId = deps.newBookingId();
+  const row = { ...bookingInsert, id: bookingId, gcal_event_id: gcalEventId };
+  // On a tier drop the trace records the booked (lower) bucket, so the webhook, the
+  // slot refresh and the routing record all name the bucket whose times changed.
+  const bookedCode = bookingInsert.routing_trace?.bucket_code ?? bucketCode;
+  const routed = bookingInsert.kind !== "agent_link";
+  // Nothing was written. The reservation stays PENDING, so the drain, or the lead's
+  // own retry, resumes it and adopts THIS event through its deterministic id
+  // (#3215). The event is therefore NOT deleted live: a deleted event keeps its id,
+  // so the resume would be handed a cancelled event and confirm a booking with
+  // nothing on the agent's calendar. Its deletion is queued instead, and the drain
+  // holds it while the reservation is pending, drops it once a booking adopts the
+  // event, and deletes it only once neither does. Queued under the cleanup
+  // allowance, because the commonest cause is the confirm budget running out. The
+  // store's own error rides along as the cause, so a deadline in it still reaches
+  // the route as the retryable outage (`timeoutAsRetryable`).
+  const failNothingWritten = async (err: unknown): Promise<never> => {
+    await queueOwedEventDeletion(deps, reservation.pinned_agent_email, gcalEventId, null);
+    throw new Error("Failed to persist booking", { cause: err });
+  };
+
+  // The two reads behind the webhook and the routing record. A fresh confirm holds
+  // both (`known`); only the drain's resume reads them. They feed those two parts
+  // alone, which never decided whether a booking is made: before the one call save
+  // they ran after the insert, where a failure cost that part and nothing else. So a
+  // failed read degrades its part here, and never fails the booking.
+  let resolved: Awaited<ReturnType<BookingDeps["resolveBucketByCode"]>> = null;
+  let unbuilt: string | null = null;
+  try {
+    resolved =
+      known && known.bucket.code === bookedCode
+        ? { bucket: known.bucket, eventType: known.eventType }
+        : await deps.resolveBucketByCode(bookedCode);
+    if (!resolved) unbuilt = `the booked bucket ${bookedCode} no longer resolves`;
+  } catch (err) {
+    unbuilt = `the booked bucket ${bookedCode} would not read (${err instanceof Error ? err.message : String(err)})`;
+    log.warn("booking", { msg: "the booked bucket would not read; saving the booking without its webhook, which the drain sends", booking_id: bookingId, bucket_code: bookedCode }, err);
+  }
+  // #3495: the advisor the confirm read before writing, when it is this booking's.
+  // Unread, the routing record goes in without their attributes, which the misroute
+  // check then does not judge (`alertIfMisroute`).
+  let chosenAgent: User | null = null;
+  if (routed && resolved) {
+    try {
+      chosenAgent =
+        known && known.agent.id === row.assigned_user_id ? known.agent : await deps.getUser(row.assigned_user_id);
+    } catch (err) {
+      log.warn("routing", { msg: "the advisor would not read; the routing record goes in without their attributes", booking_id: bookingId }, err);
+    }
+  }
+
+  // Everything else the save needs is built from what is held. A failure here sent
+  // nothing, so it is today's failure before the insert, with no read back.
+  let request: CommitFreshInput;
+  try {
+    const asBooking = row as unknown as Booking;
+    const rt = bookingInsert.routing_trace;
+    request = {
+      booking: row,
+      reservationId: reservation.id,
+      webhook: !resolved
+        ? { unbuilt: unbuilt ?? `the booked bucket ${bookedCode} no longer resolves` }
+        : {
+            payload: webhookPayload(deps, asBooking, resolved.bucket, resolved.eventType, null, null),
+            // The one rule for a booking webhook's key (#436): booking.created keys on the id.
+            dedupeKey: webhookDedupeKey("booking.created", { bookingId, bookingEventId: null }) ?? bookingId,
+            // #459: a test bucket's delivery is recorded and never sent.
+            suppressed: resolved.bucket.is_test,
+          },
+      // #2073: a named link booking logs no routing decision, and one whose bucket
+      // would not read has nothing to log it against (as before the one call save).
+      routing: !routed || !resolved
+        ? null
+        : {
+            orgId: row.org_id,
+            bookingId,
+            bucketCode: resolved.bucket.code,
+            bucketId: resolved.bucket.id,
+            criteria: resolved.bucket.criteria,
+            considered: rt?.considered ?? [],
+            excluded: rt?.excluded ?? [],
+            chosenUserId: row.assigned_user_id,
+            chosenAttributes: chosenAgent?.attributes ?? null,
+            emptyPoolFallback: rt?.fallback_applied ?? false,
+            tierFallback: rt?.tier_fallback ?? false,
+            rungsDropped: rt?.rungs_dropped ?? 0,
+            requestedTier: rt?.requested_tier ?? null,
+            bookedTier: rt?.booked_tier ?? null,
+            // Judged against the bucket actually booked, never against the raw value
+            // alone: the raw one comes from the client (#1908).
+            ...catchallRecord(requestedCode, resolved.bucket.code, rt?.code_source),
+            outcome: "booked",
+          },
+    };
+  } catch (err) {
+    return failNothingWritten(err);
+  }
+
+  let answer: CommitFreshResult;
+  try {
+    answer = await deps.commitFreshBooking(request);
+  } catch (err) {
+    // A call with no answer (a deadline, a dropped connection, an unreadable answer)
+    // may have COMMITTED, so before a lead is told their booking failed it is read
+    // back by their key, under the cleanup allowance since the budget may be spent.
+    // A refusal Postgres answered wrote nothing, and needs no read (red team 3).
+    if (!(err instanceof CommitRefusedError) && key) {
+      // A read back that fails leaves it UNKNOWN whether the booking landed. The lead
+      // is still told it failed, retryably (their retry finds it by key if it did),
+      // but the failure is logged, or it reads exactly like a read that found nothing.
+      const found = await withinOwedCleanup(() => deps.readBookingByIdempotencyKey(key)).catch((readErr: unknown) => {
+        log.error("booking", { msg: "the save got no answer and could not be read back, so whether it landed is unknown", booking_id: bookingId }, readErr);
+        return null;
+      });
+      if (found) {
+        // Ours: the work after the save is run for it. Another request's, with the
+        // lead's own key: it is the answer, exactly as a conflict's winner is.
+        const unfinished = await finishCommitted(async () => {
+          if (found.id === bookingId) await afterFreshCommit(deps, found, gcalEventId, bookedCode, bucketCode, routed);
+          else await deps.deleteReservation(reservation.id);
+        });
+        log.warn("booking", { msg: "the save's answer was lost and the booking was read back", booking_id: found.id }, err);
+        return {
+          kind: "completed",
+          completed: {
+            result: { booking: found, manageUrl: manageUrl(deps, found.manage_token), ...(found.id === bookingId ? { newlyInserted: true } : {}) },
+            unfinished,
+          },
+        };
       }
-      // Genuinely unavailable: the event + reservation are owed a rollback, under
-      // the cleanup allowance, since this failure can arrive with the confirm budget
-      // spent (#3215). Handed back rather than run (#3462, `ReservationAttempt`).
+    }
+    return failNothingWritten(err);
+  }
+
+  if (answer.kind === "conflict") {
+    if (answer.winner) {
+      // The lead's own key won (a concurrent duplicate): its booking is the answer
+      // however this cleanup goes (#3263); a reservation left behind is the drain's.
+      const winner = answer.winner;
+      const unfinished = await finishCommitted(() => deps.deleteReservation(reservation.id));
       return {
-        kind: "lost",
-        rollBack: () =>
-          withinOwedCleanup(async () => {
-            await compensateEvent(deps, reservation.pinned_agent_email, gcalEventId, null);
-            await deps.deleteReservation(reservation.id);
-          }),
+        kind: "completed",
+        completed: { result: { booking: winner, manageUrl: manageUrl(deps, winner.manage_token) }, unfinished },
       };
     }
-    // Generic (likely transient) failure. The reservation stays PENDING, so the
-    // drain, or the lead's own retry, resumes it and adopts THIS event through
-    // its deterministic id (#3215). The event is therefore NOT deleted live: a
-    // deleted event keeps its id, so the resume would be handed a cancelled
-    // event and confirm a booking with nothing on the agent's calendar. Its
-    // deletion is queued instead, and the drain holds it while the reservation
-    // is pending, drops it once a booking adopts the event, and deletes it only
-    // once neither does. Queued under the cleanup allowance, because the commonest
-    // cause is the confirm budget running out, which refused this write at 0ms.
-    await queueOwedEventDeletion(deps, reservation.pinned_agent_email, gcalEventId, null);
-    // The store's own error rides along as the cause, so a deadline in it still
-    // reaches the route as the retryable outage (`timeoutAsRetryable`) rather than
-    // the generic 500 this used to be.
-    throw new Error("Failed to persist booking", { cause: inserted.error });
+    // Genuinely unavailable: the event + reservation are owed a rollback, under
+    // the cleanup allowance, since this failure can arrive with the confirm budget
+    // spent (#3215). Handed back rather than run (#3462, `ReservationAttempt`).
+    return {
+      kind: "lost",
+      rollBack: () =>
+        withinOwedCleanup(async () => {
+          await compensateEvent(deps, reservation.pinned_agent_email, gcalEventId, null);
+          await deps.deleteReservation(reservation.id);
+        }),
+    };
   }
-  const booking = inserted.booking;
 
-  // #3263: the booking has COMMITTED. From here on a failure, the commonest being
-  // the confirm budget running out in the work below, is returned as unfinished
-  // rather than thrown, so the lead is answered with the booking that exists and
-  // the reservation is left for the drain to finish.
-  const unfinished = await finishCommitted(() => afterCreateCommitted(deps, booking, reservation, gcalEventId, known));
-  // #2838: the one return where THIS call's own insert made the booking. Every
-  // other return hands back a booking an earlier or racing confirm made.
+  const booking = answer.booking;
+  // #3263: the booking has COMMITTED. From here on a failure is returned as
+  // unfinished rather than thrown, so the lead is answered with the booking that
+  // exists. A webhook step that failed left the reservation pending, so the drain
+  // re-runs the side effects and the webhook is not lost, which is today's rule.
+  const failedWebhook = answer.failed.webhook;
+  const unfinished = await finishCommitted(async () => {
+    await afterFreshCommit(deps, booking, gcalEventId, bookedCode, bucketCode, routed);
+    if (failedWebhook !== undefined) {
+      throw new Error(`the booking committed and its webhook did not go in (${failedWebhook}); the reservation drain finishes it`);
+    }
+  });
+  // #2838: the one return where THIS call's own save made the booking. Every other
+  // return hands back a booking an earlier or racing confirm made.
   return {
     kind: "completed",
     completed: { result: { booking, manageUrl: manageUrl(deps, booking.manage_token), newlyInserted: true }, unfinished },
@@ -5185,96 +5362,71 @@ async function attemptReservation(
 }
 
 /**
- * Everything a fresh create does once its booking row has committed: the side
- * effects, the best effort routing record and tier alert, and last the
- * reservation's delete, so a failure anywhere before it leaves the reservation
- * for the drain (#3263).
+ * The work after a fresh booking's save that is not the database's (#3495): the
+ * slot refresh, the stray mirror's delete, and the tier alert. The busy block, the
+ * webhook, the routing record and the reservation are inside the save itself.
  */
-async function afterCreateCommitted(
+async function afterFreshCommit(
   deps: BookingDeps,
   booking: Booking,
-  reservation: BookingReservation,
-  /** The event this create wrote or adopted, as before #3263, never re-read off
-   *  the returned row, so the #586 mirror cleanup keys on the id actually used. */
+  /** The event this create wrote or adopted, never re-read off the row (#586). */
   gcalEventId: string,
-  /** #3495: what a fresh confirm already holds (`CommitKnown`); absent on the drain. */
-  known?: CommitKnown,
+  /** The bucket whose times changed: the booked one, a rung down on a tier drop. */
+  bookedCode: string,
+  /** The bucket the lead asked for, which the tier alert compares against. */
+  requestedBucketCode: string,
+  routed: boolean,
 ): Promise<void> {
-  const { booking: bookingInsert, bucketCode, requestedCode } = reservation.payload;
-
-  // #586: the booking now owns this event id, so any source=gcal block for it is a
-  // stray mirror a push-sync cached while racing the create (before the booking
-  // committed). Delete it, else it would outlive a later cancel (which removes
-  // blocks by booking_id, not the null-booking_id mirror) and over-block the freed
-  // slot until a full resync. Idempotent (no-op when no mirror exists). Best-effort:
-  // the booking has already committed, so a transient cleanup failure must NOT fail
-  // it. The sync's slate-id delete and the full-resync purge are the backstops.
-  if (booking.assigned_user_id && gcalEventId) {
-    try {
-      await deps.deleteGcalMirrorBlock(booking.assigned_user_id, gcalEventId);
-    } catch {
-      // best-effort
-    }
+  // #3324: after the busy block committed (inside the save), so the splice's fence
+  // is stamped no earlier than the block every later compute will read.
+  //
+  // The save has already deleted the reservation, so nothing re-runs these three
+  // steps: each has its own boundary, so one that throws cannot take the others with
+  // it (L73), and none reports itself as work the drain will finish. A refresh that
+  // fails leaves the time offered until the every minute recompute lane reconverges
+  // the bucket, so it is logged as the error it is.
+  try {
+    await deps.invalidateSlots(
+      bookedCode,
+      booking.assigned_user_id
+        ? { userId: booking.assigned_user_id, startsAt: booking.starts_at, endsAt: booking.ends_at }
+        : undefined,
+    );
+  } catch (err) {
+    log.error("booking", { msg: "the slot refresh after a booking failed; the recompute lane reconverges the bucket", booking_id: booking.id, bucket: bookedCode }, err);
   }
 
-  // On a tier-drop the routing_trace records the booked (lower) bucket; on a
-  // non-fallback booking it equals bucketCode. Use the persisted value so that
-  // invalidateSlots, the webhook, and the routing-decision log all attribute
-  // side-effects to the bucket whose availability actually changed.
-  const bookedCode = booking.routing_trace?.bucket_code ?? bucketCode;
+  // #586: the booking now owns this event id, so any source=gcal block for it is a
+  // stray mirror a push-sync cached while racing the create. Deleted AFTER the commit
+  // (inside it, a sync could write the mirror between the delete and the commit, red
+  // team 4), and after the lead's answer when there is a scheduler to hand it to,
+  // since it is best effort: the sync's slate-id delete and the full-resync purge are
+  // the backstops.
+  const userId = booking.assigned_user_id;
+  if (userId && gcalEventId) {
+    const clearMirror = async () => {
+      try {
+        await deps.deleteGcalMirrorBlock(userId, gcalEventId);
+      } catch {
+        // best-effort
+      }
+    };
+    if (deps.deferSend) deps.deferSend(clearMirror);
+    else await clearMirror();
+  }
 
-  // Deliver the busyblock/recompute/notify side effects idempotently — the SAME
-  // path a crash-resume takes, so booking.created can't be dropped (#613).
-  const resolved = await deliverCreatedSideEffects(deps, booking, bookedCode, known);
-  // #2073: a named link booking logs no routing decision and raises no tier
-  // alert. Read off the ROW written, so a crash resume from the reservation drain
-  // decides exactly as the fresh create did.
-  const routed = (booking.kind ?? bookingInsert.kind) !== "agent_link";
-  if (resolved && routed) {
-    // Best-effort routing decision log. Awaited so the write is not dropped by the
-    // CF runtime; try/catch keeps any transient failure out of the booking response.
-    try {
-      // #3495: the advisor the confirm read before writing, when it is this booking's.
-      const chosenAgent = !booking.assigned_user_id
-        ? null
-        : known && known.agent.id === booking.assigned_user_id
-          ? known.agent
-          : await deps.getUser(booking.assigned_user_id);
-      const rt = booking.routing_trace;
-      await deps.recordRoutingDecision({
-        orgId: booking.org_id,
-        bookingId: booking.id,
-        bucketCode: resolved.bucket.code,
-        bucketId: resolved.bucket.id,
-        criteria: resolved.bucket.criteria,
-        considered: rt?.considered ?? [],
-        excluded: rt?.excluded ?? [],
-        chosenUserId: booking.assigned_user_id,
-        chosenAttributes: chosenAgent?.attributes ?? null,
-        emptyPoolFallback: rt?.fallback_applied ?? false,
-        tierFallback: rt?.tier_fallback ?? false,
-        rungsDropped: rt?.rungs_dropped ?? 0,
-        requestedTier: rt?.requested_tier ?? null,
-        bookedTier: rt?.booked_tier ?? null,
-        // Judged against the bucket actually booked, never against the raw value
-        // alone: the raw one comes from the client (#1908).
-        ...catchallRecord(requestedCode, resolved.bucket.code, bookingInsert.routing_trace?.code_source),
-        outcome: "booked",
-      });
-    } catch {
-      // best-effort
-    }
-    // Best-effort routing fallback alert. Throttled via alert_state, and sent only
-    // for a drop of two or more debt tiers. The rung COUNT is deliberately not
-    // passed: since #1909 a rung is not a tier, so the alert derives it from the
-    // two codes itself.
-    //
-    // Everything smaller SENDS NOTHING HERE: a sideways overflow (#2228), a top
-    // tier cascade (#2843), and a single tier drop (2026-10-02), each the ladder
-    // working as designed. The reasons are in tier-alert.ts.
+  // Best-effort routing fallback alert. Throttled via alert_state, and sent only
+  // for a drop of two or more debt tiers. The rung COUNT is deliberately not
+  // passed: since #1909 a rung is not a tier, so the alert derives it from the
+  // two codes itself.
+  //
+  // Everything smaller SENDS NOTHING HERE: a sideways overflow (#2228), a top
+  // tier cascade (#2843), and a single tier drop (2026-10-02), each the ladder
+  // working as designed. The reasons are in tier-alert.ts.
+  if (routed) {
     const tierAlert = tierFallbackAlert({
-      requestedCode: bucketCode,
-      effectiveCode: booking.routing_trace?.bucket_code ?? bucketCode,
+      requestedCode: requestedBucketCode,
+      effectiveCode: booking.routing_trace?.bucket_code ?? requestedBucketCode,
     });
     if (tierAlert) {
       // alert-key: tier_fallback_deep:*
@@ -5283,8 +5435,6 @@ async function afterCreateCommitted(
       );
     }
   }
-
-  await deps.deleteReservation(reservation.id);
 }
 
 /**

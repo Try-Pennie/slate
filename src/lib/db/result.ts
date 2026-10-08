@@ -80,41 +80,6 @@ export function isUniqueViolation(
   return error?.code === UNIQUE_VIOLATION;
 }
 
-/** Postgres `exclusion_violation`, raised by an EXCLUDE constraint. */
-export const EXCLUSION_VIOLATION = "23P01";
-
-/**
- * Whether a write was refused because the SLOT is already taken (#2274).
- *
- * TWO codes, because two guards answer that one question about bookings and they
- * are not interchangeable:
- *
- *   `bookings_active_slot_uniq` refuses a second booking at the SAME start for one
- *   agent, and raises 23505;
- *
- *   `bookings_active_no_overlap` refuses a second booking OVERLAPPING an existing
- *   one for that agent, and raises 23P01. Appointments are longer than the grid
- *   they are offered on (20 minutes every 10 in production), so adjacent offered
- *   times overlap and uniqueness on the start cannot see it. That is the defect
- *   the first concurrent load run found.
- *
- * Both mean the same thing to a lead, and the distinction must not reach them: a
- * caller getting either has LOST a race it was always allowed to lose, and the
- * honest answer is to offer another time. Mapping only one of them would make a
- * real race answer a server error instead, which is a failure that is both louder
- * and wronger than the one it replaced.
- *
- * Matched on the SQLSTATE and never on the message, so a differently worded
- * refusal is still caught and an unrelated error is never mistaken for one. Every
- * other code stays a real failure: telling a lead to pick another time when the
- * write never had a chance is a lie about what happened (L11).
- */
-export function isSlotClash(
-  error: { code?: string } | null | undefined,
-): boolean {
-  return error?.code === UNIQUE_VIOLATION || error?.code === EXCLUSION_VIOLATION;
-}
-
 /**
  * Report a write that was allowed to fail, so its failure is at least VISIBLE (#2482).
  *

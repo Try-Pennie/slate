@@ -502,6 +502,20 @@ export interface Database {
         Returns: number;
       };
       /**
+       * #3495, migration 0174: a fresh booking's save after its calendar event, in one
+       * transaction. Answers {status: committed, booking, enqueue, failed,
+       * reservation_deleted} or {status: conflict, winner}, read by `readCommitAnswer`.
+       */
+      commit_fresh_booking: {
+        Args: {
+          p_booking: unknown;
+          p_reservation_id: string;
+          p_webhook: unknown;
+          p_routing: unknown;
+        };
+        Returns: unknown;
+      };
+      /**
        * #3495, migration 0173: one delivery per active endpoint subscribed to the event,
        * deduped on (endpoint, event, dedupe_key), suppression decided by the caller per
        * format. Answers {subscribers, deliveries}, read by `readEnqueueAnswer`.

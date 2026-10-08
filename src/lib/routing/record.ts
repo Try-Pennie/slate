@@ -44,41 +44,58 @@ export interface RecordRoutingDecisionInput {
   outcome: RoutingDecision["outcome"];
 }
 
+/**
+ * The `routing_decisions` row a decision is stored as. One mapper (#3495): the
+ * separate insert below and a fresh booking's save (`commit_fresh_booking`, which
+ * inserts this same row inside its transaction) both store exactly this.
+ */
+export function routingDecisionRow(input: RecordRoutingDecisionInput): Record<string, unknown> {
+  return {
+    org_id: input.orgId,
+    booking_id: input.bookingId,
+    bucket_code: input.bucketCode,
+    bucket_id: input.bucketId,
+    requested_tier: input.requestedTier,
+    booked_tier: input.bookedTier,
+    chosen_user_id: input.chosenUserId,
+    considered: input.considered,
+    excluded: input.excluded,
+    empty_pool_fallback: input.emptyPoolFallback,
+    // #1908: what the lead's link actually carried, and whether the catch-all
+    // had to rescue it. Kept as its own column rather than inferred from
+    // bucket_code, because a rescued lead and a lead who genuinely asked for the
+    // Low pool land in the same bucket and only this tells them apart.
+    requested_code: input.requestedCode ?? null,
+    catchall_applied: input.catchallApplied ?? false,
+    tier_fallback: input.tierFallback,
+    rungs_dropped: input.rungsDropped,
+    outcome: input.outcome,
+    // #3272: null on a booked decision, so the refusal lookup index stays small.
+    requested_start: input.requestedStart ?? null,
+    refusal_stage: input.refusalStage ?? null,
+    stage_counts: input.stageCounts ?? null,
+    lead_id: input.leadId ?? null,
+  };
+}
+
 /** Persist one routing decision and fire a misroute alert if the chosen agent
  *  fails criteria with no intentional fallback. Best-effort; never throws. */
 export async function recordRoutingDecision(input: RecordRoutingDecisionInput): Promise<void> {
   try {
     // write-ok: the decision log is evidence, not control flow: a refused insert loses one row from the routing report and changes no booking. The report's own count is what would show it.
-    await supabaseAdmin().from("routing_decisions").insert({
-      org_id: input.orgId,
-      booking_id: input.bookingId,
-      bucket_code: input.bucketCode,
-      bucket_id: input.bucketId,
-      requested_tier: input.requestedTier,
-      booked_tier: input.bookedTier,
-      chosen_user_id: input.chosenUserId,
-      considered: input.considered,
-      excluded: input.excluded,
-      empty_pool_fallback: input.emptyPoolFallback,
-      // #1908: what the lead's link actually carried, and whether the catch-all
-      // had to rescue it. Kept as its own column rather than inferred from
-      // bucket_code, because a rescued lead and a lead who genuinely asked for the
-      // Low pool land in the same bucket and only this tells them apart.
-      requested_code: input.requestedCode ?? null,
-      catchall_applied: input.catchallApplied ?? false,
-      tier_fallback: input.tierFallback,
-      rungs_dropped: input.rungsDropped,
-      outcome: input.outcome,
-      // #3272: null on a booked decision, so the refusal lookup index stays small.
-      requested_start: input.requestedStart ?? null,
-      refusal_stage: input.refusalStage ?? null,
-      stage_counts: input.stageCounts ?? null,
-      lead_id: input.leadId ?? null,
-    });
+    await supabaseAdmin().from("routing_decisions").insert(routingDecisionRow(input));
   } catch (err) {
     log.error("routing", { msg: "routing_decisions insert failed" }, err);
   }
+  await alertIfMisroute(input);
+}
 
+/**
+ * The misroute alert for a stored decision whose chosen agent fails the bucket's
+ * criteria with no intentional fallback. Its own step (#3495), so a decision stored
+ * inside a booking's save is alerted on exactly as one stored on its own.
+ */
+export async function alertIfMisroute(input: RecordRoutingDecisionInput): Promise<void> {
   if (
     input.chosenAttributes &&
     isMisroute({

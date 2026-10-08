@@ -10,7 +10,7 @@
 //
 // This suite is the OFFLINE half. It reads the migration and pins the two things
 // that make the guard correct rather than merely present: that it is scoped to
-// exactly the rows the existing unique index is scoped to, and that the app maps
+// exactly the rows the existing unique index is scoped to, and that the save maps
 // its refusal to a slot clash rather than to a server error.
 //
 // The BEHAVIOURAL half is the load run's preflight, which plants an OVERLAPPING
@@ -29,7 +29,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
-import { isSlotClash, UNIQUE_VIOLATION, EXCLUSION_VIOLATION } from "../src/lib/db/result.ts";
 
 const DIR = "supabase/migrations";
 const files = readdirSync(DIR).filter((f) => f.endsWith(".sql")).sort();
@@ -110,30 +109,21 @@ const guard = guardFile ? sql(guardFile) : "";
   );
 }
 
-// --- the app maps the refusal to a clash, not a server error -------------------
+// --- the save maps the refusal to a clash, not a server error ------------------
 
 {
   // The half that decides what a LEAD sees. An exclusion constraint raises 23P01,
-  // and the insert path treated only 23505 as a slot clash, so without this a real
-  // race would answer a 500 instead of "pick another time": the failure would get
-  // louder and wronger at the same time.
-  eq(UNIQUE_VIOLATION, "23505", "the unique violation code is what Postgres actually raises");
-  eq(EXCLUSION_VIOLATION, "23P01", "and so is the exclusion violation code");
-  assert(isSlotClash({ code: UNIQUE_VIOLATION }), "a duplicate start is a slot clash");
-  assert(isSlotClash({ code: EXCLUSION_VIOLATION }), "and so is an overlapping range");
-}
-
-{
-  // The other direction, which is the one that matters (L159). Everything else
-  // must stay a real failure: a clash is the caller losing a race it was allowed
-  // to lose, and scoring an unrelated error as one would tell a lead to pick
-  // another time when the booking never had a chance to be written.
-  for (const code of ["23503", "23502", "42P01", "40001", "", "23P0", "123P01"]) {
-    assert(!isSlotClash({ code }), `${JSON.stringify(code)} is NOT a slot clash`);
-  }
-  assert(!isSlotClash(null), "a null error is not a clash");
-  assert(!isSlotClash(undefined), "and neither is an absent one");
-  assert(!isSlotClash({}), "nor an error carrying no code at all");
+  // and an insert path that read only 23505 as a slot clash would answer a real race
+  // with a 500 instead of "pick another time". Since #3495 the save is one database
+  // function, and it is the function that tells a clash from a failure: it must
+  // catch BOTH conditions, by name, and nothing else. What each does in a real
+  // database, both directions, is proved by scripts/verify-commit-fresh-booking-sql.ts.
+  const save = sql(files.find((f) => /_commit_fresh_booking\.sql$/.test(f)) ?? "");
+  assert(
+    /exception when unique_violation or exclusion_violation then/.test(save),
+    "the fresh booking save catches the start index's 23505 AND the overlap guard's 23P01 as a clash",
+  );
+  assert(!/exception when others then\s+select \* into v_winner/.test(save), "and no catch all is read as one");
 }
 
 finish();

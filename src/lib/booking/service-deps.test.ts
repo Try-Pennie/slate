@@ -29,9 +29,18 @@ let readRows: unknown[] = [];
 const readTables: string[] = [];
 /** What a `select(...).eq(...).single()` read answers (#3477). */
 let singleResult: { data: unknown; error: { message: string } | null } = { data: null, error: null };
+/** #3495: what a read by idempotency key answers. */
+let keyResult: { data: unknown; error: { message: string; code?: string } | null } = { data: null, error: null };
+/** #3495: what the next `rpc(...)` answers, and every rpc asked. */
+let rpcResult: { data: unknown; error: { message: string; code?: string } | null } = { data: null, error: null };
+const rpcCalls: { fn: string; args: Record<string, unknown> }[] = [];
 
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
+    rpc: async (fn: string, args: Record<string, unknown>) => {
+      rpcCalls.push({ fn, args });
+      return rpcResult;
+    },
     from: (table: string) => ({
       upsert: (row: unknown) => {
         upserted.push(row);
@@ -45,7 +54,12 @@ vi.mock("@/lib/supabase/admin", () => ({
       }),
       insert: () => ({ select: () => ({ single: async () => result() }) }),
       select: () => ({
-        eq: () => ({ maybeSingle: async () => ({ data: null, error: null }), single: async () => singleResult }),
+        eq: () => ({
+          maybeSingle: async () => ({ data: null, error: null }),
+          single: async () => singleResult,
+          // #3495: the read by idempotency key, `.eq(key).in(status).maybeSingle()`.
+          in: () => ({ maybeSingle: async () => keyResult }),
+        }),
         in: async () => {
           readTables.push(table);
           return readError ? { data: null, error: readError } : { data: readRows, error: null };
@@ -56,7 +70,14 @@ vi.mock("@/lib/supabase/admin", () => ({
   }),
 }));
 
+const alertIfMisroute = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("@/lib/routing/record", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/routing/record")>()),
+  alertIfMisroute,
+}));
+
 import { realDeps } from "./service";
+import { CommitRefusedError, type CommitFreshInput } from "./orchestration";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 
 beforeEach(() => {
@@ -151,31 +172,167 @@ describe("writeReschedulePin (#2482)", () => {
   });
 });
 
-describe("insertBooking and a reroute hold (#3251)", () => {
-  // The bookings trigger refuses a lead's call on an advisor an admin is holding
-  // for a bucket correction, with the SAME SQLSTATE an overlap race raises (23P01),
-  // so the booker reads it as a lost race and offers the next advisor rather than
-  // failing the lead (audit 1). `pnpm verify:reroute-holds-sql` proves the trigger
-  // raises exactly this in a real Postgres; this proves the live insert reads it as
-  // the lost race, which is where the next advisor branch starts.
-  const row = { assigned_user_id: "A", starts_at: "2031-03-04T15:00:00Z", ends_at: "2031-03-04T15:20:00Z" };
+describe("a fresh booking's one call save (#3495)", () => {
+  // What the save writes is proved in a real Postgres (scripts/verify-commit-fresh-booking-sql.ts),
+  // including that the reroute hold trigger's 23P01 (#3251) and both slot guards are
+  // answered as a conflict with nothing written. What is pinned here is how the live
+  // dependency reads the call's answer and its refusals.
+  const booking = {
+    id: "10000000-0000-4000-8000-000000000001",
+    org_id: "o1",
+    status: "confirmed",
+    starts_at: "2031-03-04T15:00:00+00:00",
+    ends_at: "2031-03-04T15:20:00+00:00",
+    manage_token: "tok",
+    assigned_user_id: "A",
+  };
+  const req = {
+    booking: { ...booking, starts_at: "2031-03-04T15:00:00.000Z" },
+    reservationId: "r1",
+    webhook: { payload: { booking_id: booking.id }, dedupeKey: booking.id, suppressed: false },
+    routing: null,
+  } as unknown as CommitFreshInput;
+  const endpoint = {
+    id: "ep1", org_id: "o1", url: "https://receiver.example/hook", secret: null, events: ["booking.created"],
+    format: "generic", auth_header: null, active: true, created_at: "2031-03-01T00:00:00+00:00",
+  };
 
-  it("reads the hold trigger's refusal as a lost race", async () => {
-    writeError = {
-      code: "23P01",
-      message: "agent A is held for a bucket correction until 2031-03-04 15:05:00+00",
-      details: "held_until=2031-03-04T15:05:00Z",
-      hint: "A reroute hold is a lost race for this agent and window; route to another agent.",
-    };
-    const r = await realDeps().insertBooking(row as never);
-    expect(r).toEqual({ ok: false, conflict: true });
+  beforeEach(() => {
+    rpcCalls.length = 0;
   });
 
-  it("control: a refusal that is not a clash is not read as one", async () => {
-    writeError = { code: "42501", message: "permission denied for table bookings" };
-    const r = await realDeps().insertBooking(row as never);
-    expect(r.ok).toBe(false);
-    expect(r.ok === false && r.conflict).toBe(false);
+  it("reads a conflict as the lost race the next advisor branch starts from, a reroute hold's included (#3251)", async () => {
+    rpcResult = { data: { status: "conflict", winner: null }, error: null };
+    const r = await realDeps().commitFreshBooking(req);
+    expect(r).toEqual({ kind: "conflict", winner: null });
+    expect(rpcCalls[0]?.fn).toBe("commit_fresh_booking");
+  });
+
+  it("decides the webhook's suppression for every format, in the call itself", async () => {
+    rpcResult = { data: { status: "conflict", winner: null }, error: null };
+    await realDeps().commitFreshBooking(req);
+    const hook = rpcCalls[0]?.args.p_webhook as { event: string; dedupe_key: string; suppression: Record<string, unknown> };
+    expect(hook.event).toBe("booking.created");
+    expect(hook.dedupe_key).toBe(booking.id);
+    expect(Object.keys(hook.suppression).sort()).toEqual(["generic", "regal"]);
+  });
+
+  it("throws CommitRefusedError for a refusal Postgres answered, which wrote nothing", async () => {
+    rpcResult = { data: null, error: { code: "42501", message: "permission denied for function commit_fresh_booking" } };
+    await expect(realDeps().commitFreshBooking(req)).rejects.toBeInstanceOf(CommitRefusedError);
+  });
+
+  it("control: a deadline is NOT a refusal, so the confirm reads the booking back, and the deadline still reaches the route", async () => {
+    rpcResult = {
+      data: null,
+      error: { code: "ABORT_ERR", message: "DeadlineExceededError: writing the booking did not answer within 900ms" },
+    };
+    const err = await realDeps().commitFreshBooking(req).catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(CommitRefusedError);
+    expect(isDeadlineExceeded(err)).toBe(true);
+  });
+
+  it("control: a failed fetch is NOT a refusal, whatever code rides along with it", async () => {
+    // postgrest-js folds a failed fetch into an error with an empty code; a system
+    // error's own code (EPIPE, EPERM: five capitals, like a SQLSTATE) must not read as
+    // Postgres answering if a client ever passes it through, or a commit whose answer
+    // was lost is never read back.
+    for (const code of ["", "EPIPE", "EPERM"]) {
+      rpcResult = { data: null, error: { code, message: "TypeError: fetch failed" } };
+      const err = await realDeps().commitFreshBooking(req).catch((e: unknown) => e);
+      expect(err, `code ${JSON.stringify(code)}`).toBeInstanceOf(Error);
+      expect(err, `code ${JSON.stringify(code)}`).not.toBeInstanceOf(CommitRefusedError);
+    }
+  });
+
+  it("control: a code shaped like a lettered class Postgres does not define is NOT a refusal", async () => {
+    for (const code of ["PROTO", "HPEAA", "FATAL", "XERR1"]) {
+      rpcResult = { data: null, error: { code, message: "refused" } };
+      const err = await realDeps().commitFreshBooking(req).catch((e: unknown) => e);
+      expect(err, code).toBeInstanceOf(Error);
+      expect(err, code).not.toBeInstanceOf(CommitRefusedError);
+    }
+  });
+
+  it("control: a lost connection or a shutdown is NOT a refusal, since the save may have committed before it", async () => {
+    // Class 08 (connection exception), 57P (the server shutting down) and 40003
+    // (statement completion unknown) are the codes Postgres can report for a
+    // transaction whose COMMIT it never confirmed.
+    for (const code of ["08006", "08003", "57P01", "57P02", "40003"]) {
+      rpcResult = { data: null, error: { code, message: "terminating connection" } };
+      const err = await realDeps().commitFreshBooking(req).catch((e: unknown) => e);
+      expect(err, code).toBeInstanceOf(Error);
+      expect(err, code).not.toBeInstanceOf(CommitRefusedError);
+    }
+  });
+
+  it("reads every class of SQLSTATE, a lettered one included, and PostgREST's own codes as answered", async () => {
+    for (const code of ["23505", "XX000", "P0001", "HV000", "F0000", "PGRST116"]) {
+      rpcResult = { data: null, error: { code, message: "refused" } };
+      await expect(realDeps().commitFreshBooking(req), code).rejects.toBeInstanceOf(CommitRefusedError);
+    }
+  });
+
+  it("sends a webhook it could not build as the reason alone, so the save keeps the reservation for the drain", async () => {
+    rpcResult = { data: { status: "conflict", winner: null }, error: null };
+    await realDeps().commitFreshBooking({ ...req, webhook: { unbuilt: "the bucket 100 would not read" } });
+    expect(rpcCalls[0]?.args.p_webhook).toEqual({ unbuilt: "the bucket 100 would not read" });
+  });
+
+  it("still runs the misroute check when the routing record failed to store", async () => {
+    // Before the one call save, recordRoutingDecision caught a failed insert and still
+    // called the misroute alert, so a lost record never silenced a misroute page.
+    const routing = { orgId: "o1", bookingId: booking.id, bucketCode: "100", chosenAttributes: { tier: ["low"] } };
+    alertIfMisroute.mockClear();
+    for (const failed of [{ routing: "planted refusal" }, {}]) {
+      rpcResult = {
+        data: { status: "committed", booking, enqueue: { subscribers: 0, deliveries: [] }, failed, reservation_deleted: true },
+        error: null,
+      };
+      await realDeps().commitFreshBooking({ ...req, routing } as unknown as CommitFreshInput);
+    }
+    expect(alertIfMisroute).toHaveBeenCalledTimes(2);
+    expect(alertIfMisroute.mock.calls[0]).toEqual([routing]);
+  });
+
+  it("reads a booking back by its key with a read that THROWS when it fails, so a failed read back is never 'not there'", async () => {
+    keyResult = { data: null, error: { message: "statement timeout", code: "57014" } };
+    await expect(realDeps().readBookingByIdempotencyKey("k1")).rejects.toThrow(/statement timeout/);
+    keyResult = { data: { id: "bk-1" }, error: null };
+    expect((await realDeps().readBookingByIdempotencyKey("k1"))?.id).toBe("bk-1");
+    keyResult = { data: null, error: null };
+    expect(await realDeps().readBookingByIdempotencyKey("k1")).toBeNull();
+  });
+
+  it("control: the pre-save idempotency probe still fails open to null, which the unique index backs", async () => {
+    keyResult = { data: null, error: { message: "statement timeout", code: "57014" } };
+    expect(await realDeps().findBookingByIdempotencyKey("k1")).toBeNull();
+  });
+
+  it("returns the committed booking and hands each delivery's first send to the scheduler", async () => {
+    rpcResult = {
+      data: {
+        status: "committed",
+        booking,
+        enqueue: { subscribers: 1, deliveries: [{ id: "d1", suppressed: false, payload: { booking_id: booking.id }, endpoint }] },
+        failed: {},
+        reservation_deleted: true,
+      },
+      error: null,
+    };
+    const scheduled: (() => Promise<void>)[] = [];
+    const r = await realDeps((work) => {
+      scheduled.push(work);
+    }).commitFreshBooking(req);
+    expect(r.kind).toBe("committed");
+    expect(r.kind === "committed" && r.booking.id).toBe(booking.id);
+    expect(r.kind === "committed" && r.reservationDeleted).toBe(true);
+    expect(scheduled).toHaveLength(1);
+  });
+
+  it("refuses an answer it cannot read, rather than reading it as a conflict or a commit", async () => {
+    rpcResult = { data: { status: "maybe" }, error: null };
+    await expect(realDeps().commitFreshBooking(req)).rejects.toThrow(/status/);
   });
 });
 

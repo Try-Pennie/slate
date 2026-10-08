@@ -21,10 +21,9 @@
 // named test-*.ts: it needs Docker. No Docker is exit 2, never a pass (L98).
 //
 // Run: node --experimental-strip-types scripts/verify-webhook-enqueue-sql.ts
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
-import { CLI_HISTORY_TABLE_SQL, migrationPlan, replayMigrations } from "./lib/migration-replay.ts";
+import { replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { readEnqueueAnswer } from "../src/lib/webhooks/enqueue-answer.ts";
 
@@ -33,14 +32,8 @@ const FIXTURE = join(import.meta.dirname, "fixtures", "webhook-enqueue-answer.js
 const IMAGE = process.env.WEBHOOK_ENQUEUE_PG_IMAGE ?? "supabase/postgres:17.6.1.175";
 const NAME = `slate-webhook-enqueue-${process.pid}`;
 
-const plan = migrationPlan(readdirSync(DIR));
-if (!plan.ok) {
-  console.error(`FAIL: ${plan.error}`);
-  process.exit(1);
-}
-
 const pg = startThrowawayPostgres(NAME, IMAGE);
-const { sql, sqlError } = pg;
+const { sql } = pg;
 
 const ORG = "00000000-0000-0000-0000-0000000000a0";
 const ORG2 = "00000000-0000-0000-0000-0000000000b0";
@@ -65,9 +58,6 @@ function enqueue(opts: { event?: string; dedupe?: string | null; suppression?: s
   return JSON.parse(out);
 }
 
-/** The error text a call raises, verbose, so the SQLSTATE shows. */
-const refusal = (text: string, role = "service_role"): string | null => sqlError(`\\set VERBOSITY verbose\n${text}`, role);
-
 /** The formats this suite seeded its endpoints with, which the reader accepts. */
 const SEEDED_FORMATS = ["generic", "regal"];
 const read = (answer: unknown) => readEnqueueAnswer(answer, SEEDED_FORMATS);
@@ -76,13 +66,8 @@ const deliveries = (where = "true") => sql(`select count(*) from webhook_deliver
 
 try {
   // --- every migration, from empty, as db push applies them ----------------------------
-  sql(CLI_HISTORY_TABLE_SQL);
-  const applied = replayMigrations(
-    plan.files,
-    (file) => readFileSync(join(DIR, file), "utf8"),
-    (batch) => void sql(batch, undefined, { singleTransaction: true }),
-  );
-  assert(applied === plan.files.length && applied > 170, `every migration applied to an empty database (${applied})`);
+  const applied = replayEveryMigration(pg, DIR);
+  assert(applied > 170, `the schema for the webhook fan out: every migration applied to an empty database (${applied})`);
 
   sql(`
     insert into organizations (id, name) values ('${ORG}', 'Webhook org'), ('${ORG2}', 'Other org');
@@ -145,7 +130,7 @@ try {
 
   // --- refused: nothing is written, and the same call with the gap filled succeeds ------------
   const before = deliveries();
-  const unmapped = refusal(`select enqueue_webhook_deliveries(p_org_id => '${ORG}', p_event => 'booking.created',
+  const unmapped = pg.verboseError(`select enqueue_webhook_deliveries(p_org_id => '${ORG}', p_event => 'booking.created',
       p_payload => ${PAYLOAD}, p_dedupe_key => 'bk-4', p_suppression => '{"generic":null}'::jsonb);`);
   assert(unmapped !== null && /22023/.test(unmapped) && /regal/.test(unmapped),
     `a format with no suppression decision is refused by name, never read as not suppressed (got ${unmapped?.split("\n")[0] ?? "a result"})`);
@@ -157,7 +142,7 @@ try {
     ["a payload that is not an object", `p_event => 'booking.created', p_payload => '[1]'::jsonb, p_suppression => ${BOTH_SENT}`],
     ["no suppression map", `p_event => 'booking.created', p_payload => ${PAYLOAD}, p_suppression => null`],
   ] as const) {
-    const err = refusal(`select enqueue_webhook_deliveries(p_org_id => '${ORG}', ${call}, p_dedupe_key => 'bk-5');`);
+    const err = pg.verboseError(`select enqueue_webhook_deliveries(p_org_id => '${ORG}', ${call}, p_dedupe_key => 'bk-5');`);
     assert(err !== null && /22023/.test(err), `${label} is refused (got ${err?.split("\n")[0] ?? "a result"})`);
   }
   eq(deliveries("dedupe_key = 'bk-5'"), "0", "and none of those refusals wrote a row");
@@ -180,7 +165,7 @@ try {
 
   // --- who may call it -------------------------------------------------------------------------
   for (const role of ["anon", "authenticated"]) {
-    const err = refusal(`select enqueue_webhook_deliveries(p_org_id => '${ORG}', p_event => 'booking.created',
+    const err = pg.verboseError(`select enqueue_webhook_deliveries(p_org_id => '${ORG}', p_event => 'booking.created',
         p_payload => ${PAYLOAD}, p_dedupe_key => 'bk-8', p_suppression => ${BOTH_SENT});`, role);
     assert(err !== null && /permission denied/.test(err), `${role} cannot execute it (got ${err?.split("\n")[0] ?? "a result"})`);
   }

@@ -52,7 +52,8 @@ export type RerouteSwapRefusal = (typeof REROUTE_SWAP_REFUSALS)[number];
 
 /**
  * The constraint name the bookings trigger raises a held advisor under, with
- * SQLSTATE 23P01 (exclusion_violation), so `isSlotClash` reads it as a lost race
- * exactly as it reads the overlap constraint.
+ * SQLSTATE 23P01 (exclusion_violation), so a fresh booking's save
+ * (`commit_fresh_booking`, #3495) answers it as a conflict, a lost race, exactly as
+ * it answers the overlap constraint.
  */
 export const REROUTE_HOLD_CONSTRAINT = "reroute_hold";

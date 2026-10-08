@@ -25,7 +25,7 @@ import {
   leaseReservationRow,
   releaseReservationLeaseRow,
 } from "@/lib/booking/outbox-lease";
-import { unwrap, unwrapCount, isSlotClash, type DbResult } from "@/lib/db/result";
+import { unwrap, unwrapCount, type DbResult } from "@/lib/db/result";
 import { settleDrainStuckAlert } from "@/lib/booking/drain-stuck-alert";
 import { whereStillInPool } from "@/lib/bookable/left-pool";
 import { gatedWriteApplied, gatedWriteRows } from "@/lib/booking/gated-write";
@@ -56,7 +56,7 @@ import {
 } from "@/lib/booking/known-lead";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { postConfirmRecomputeMode, postConfirmRefresh } from "@/lib/booking/post-confirm-recompute";
-import { recordRoutingDecision } from "@/lib/routing/record";
+import { alertIfMisroute, recordRoutingDecision, routingDecisionRow } from "@/lib/routing/record";
 import {
   createEvent,
   createEventOnCalendar,
@@ -158,7 +158,9 @@ import { bookingLeadId } from "@/lib/booking/lookup-identity";
 import { toE164 } from "@/lib/phone";
 import { escapeLike } from "@/lib/sql-like";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
-import { emitWebhook, type WebhookSendScheduler } from "@/lib/webhooks/emit";
+import { afterEnqueue, emitWebhook, suppressionByFormat, type WebhookSendScheduler } from "@/lib/webhooks/emit";
+import { WEBHOOK_FORMATS } from "@/lib/webhooks/formats";
+import { readCommitAnswer } from "@/lib/booking/commit-answer";
 import { afterResponse, deferWebhookSend } from "@/lib/after-response";
 import { DeadlineExceededError, findDeadlineExceeded, isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { sendThrottledAlert, sendThrottledInfo, resolveRecovered } from "@/lib/notify/dispatch";
@@ -669,6 +671,21 @@ export async function findActiveBookingsForPerson(
 }
 
 /**
+ * The active booking holding an idempotency key, at most one by the partial unique
+ * index. Active only, matching that index, so a cancelled booking never blocks (or
+ * gets returned for) a fresh rebook of the same slot. One query behind both readers:
+ * the probe that fails open and the read back that throws (#3495).
+ */
+function activeBookingByIdempotencyKey(key: string) {
+  return supabaseAdmin()
+    .from("bookings")
+    .select("*")
+    .eq("idempotency_key", key)
+    .in("status", ["confirmed", "rescheduled"])
+    .maybeSingle();
+}
+
+/**
  * The most active bookings one instant can hold and still be read whole (#3257).
  * The bookings unique index allows one active booking per advisor per start, so
  * this is a roster bound (100 to 200 advisors by design) with room to spare.
@@ -1015,6 +1032,40 @@ const ISOLATE_LINE = isolateLine(ISOLATE_CONFIRM_QUEUE);
 const ISOLATE_COMMIT_COSTS = makeCommitCostLog();
 
 /**
+ * Whether a refused database call was Postgres ANSWERING (#3495): a SQLSTATE or
+ * PostgREST's own PGRST code, refused before or inside the statement, so a one
+ * transaction function wrote nothing. Anything else may have committed and is read
+ * back. The client gives a failed fetch an EMPTY code today, but a SQLSTATE is also
+ * five capitals, exactly like a system error's own code (EPIPE, EPERM), so one
+ * passed through would read a commit whose answer was lost as one that never
+ * happened. So the class is held to the ones Postgres defines: two characters starting
+ * with a digit, or F0, HV, P0 and XX. Three are answers that do NOT say nothing was
+ * written: 08, the connection failing, 57P, the server shutting down, and 40003,
+ * statement completion unknown, can each arrive for a transaction whose COMMIT was
+ * never confirmed, so they are read back. A deadline is never an answer, however it
+ * arrives.
+ */
+function postgresAnswered(error: { code?: string; message: string }): boolean {
+  if (isDeadlineExceeded(error) || typeof error.code !== "string") return false;
+  if (/^PGRST\d+$/.test(error.code)) return true;
+  return /^(?:[0-9][0-9A-Z]|F0|HV|P0|XX)[0-9A-Z]{3}$/.test(error.code) && !/^(?:08|57P|40003$)/.test(error.code);
+}
+
+/**
+ * A booking's busy block that did not move: logged and paged, never failing the
+ * booking, which has already happened. One copy (#3495), for the separate move and
+ * for the one inside a fresh booking's save.
+ */
+async function reportBusyBlockMoveFailure(bookingId: string, reason: string, err?: unknown): Promise<void> {
+  log.error("booking", { msg: "busy_blocks move failed", booking_id: bookingId }, err ?? new Error(reason));
+  await sendThrottledAlert(
+    "busy_block_write_through",
+    CACHE_ALERT_COOLDOWN_MS,
+    busyBlockWriteThroughAlert("move", bookingId, shortFailureReason(reason) ?? "no detail"),
+  ).catch(logAlertSendFailure("busy_block_write_through"));
+}
+
+/**
  * `lineFacts`, when given, receives which confirm line served this request's turn
  * (#3325), for the route's `confirm answered` line.
  */
@@ -1302,6 +1353,8 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     emitWebhook,
     appBaseUrl: appUrl,
     newManageToken: () => nanoid(24),
+    // #3495: minted before the save, since the webhook built for it names the booking.
+    newBookingId: () => crypto.randomUUID(),
     // Keyless (anonymous) bookings synthesize a unique key so they still get the
     // reservation-backed crash-safe create (#666). "anon_" prefix + nanoid can
     // never contain a "|", so it can't collide with a derived contact key.
@@ -1432,52 +1485,83 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     },
 
     findBookingByIdempotencyKey: async (key) => {
-      // Active only — matches the partial unique index, so a cancelled booking
-      // never blocks (or gets returned for) a fresh rebook of the same slot.
       // error-ok: idempotency probe on the crash-safe create path; a null (incl. a read error) re-drives the unique-key-guarded insert, so it can never double-book.
-      const { data } = await supabaseAdmin()
-        .from("bookings")
-        .select("*")
-        .eq("idempotency_key", key)
-        .in("status", ["confirmed", "rescheduled"])
-        .maybeSingle();
+      const { data } = await activeBookingByIdempotencyKey(key);
       return (data as Booking | null) ?? null;
     },
 
-    insertBooking: async (row) => {
-      const { data, error } = await supabaseAdmin()
-        .from("bookings")
-        .insert(row)
-        .select("*")
-        .single();
-      if (error || !data) {
-        // The slot was taken by a racing confirm. TWO guards can say so and both
-        // mean the same thing to a lead (#2274): `bookings_active_slot_uniq`
-        // refuses a second booking at the same START (23505), and
-        // `bookings_active_no_overlap` refuses one OVERLAPPING an existing booking
-        // for that agent (23P01), which is the case uniqueness cannot see because
-        // appointments are longer than the grid they are offered on. Either way
-        // this caller lost a race it was allowed to lose, so it becomes a
-        // SlotUnavailableError and the lead is offered another time. Reading only
-        // one of them would answer a real race with a 500.
-        const conflict = isSlotClash(error);
-        // #1047: carry what identifies the ATTEMPT. There is no booking id yet (the
-        // row was never written), so the joinable facts are the slot and the agent,
-        // which is what ties this line to the confirm that produced it and to the
-        // busy_blocks and calendar work around it. Never the attendee: contact data
-        // does not go in logs (docs/pii.md).
-        if (conflict) return { ok: false, conflict: true };
+    // #3495: the read back after a save whose answer was lost. A failed read THROWS,
+    // so the confirm can tell "not there" from "could not tell" and say so.
+    readBookingByIdempotencyKey: async (key) => {
+      return (unwrap(await activeBookingByIdempotencyKey(key), "booking read back by idempotency key") as Booking | null) ?? null;
+    },
+
+    // #3495: a fresh booking's save after its calendar event, in ONE call. The booking,
+    // its busy block, its webhook deliveries, its routing record and the reservation's
+    // delete are one transaction (`commit_fresh_booking`, migration 0174); a clash on
+    // any guard is answered as a conflict with nothing written, which is how the hold
+    // trigger's 23P01 (#3251) and the two slot guards (#2274) still reach the next
+    // advisor branch. What follows the writes is each step's own, as it was when they
+    // were separate calls: the busy block's failure alert, the routing record's log
+    // and misroute alert, the webhook's first send.
+    commitFreshBooking: async ({ booking, reservationId, webhook, routing }) => {
+      const { data, error } = await supabaseAdmin().rpc("commit_fresh_booking", {
+        p_booking: booking,
+        p_reservation_id: reservationId,
+        p_webhook:
+          "unbuilt" in webhook
+            ? { unbuilt: webhook.unbuilt }
+            : {
+                event: "booking.created",
+                payload: webhook.payload,
+                dedupe_key: webhook.dedupeKey,
+                suppression: suppressionByFormat("booking.created", webhook.payload, webhook.suppressed),
+              },
+        p_routing: routing ? routingDecisionRow(routing) : null,
+      });
+      if (error) {
+        const answered = postgresAnswered(error);
+        // #1047: what identifies the ATTEMPT, the slot and the advisor, never the
+        // attendee (contact data does not go in logs, docs/pii.md).
         log.error(
           "booking",
-          { msg: "insertBooking failed", ...insertFailureLogFields(row) },
+          { msg: answered ? "booking commit refused" : "booking commit got no answer", ...insertFailureLogFields(booking) },
           error,
         );
-        // #3215: the error goes back with the refusal, so a deadline in it (the
-        // confirm budget running out at the insert) still reaches the route as
-        // the retryable outage rather than a generic 500.
-        return { ok: false, conflict: false, error: error ?? new Error("insert returned no row") };
+        if (answered) throw new orchestration.CommitRefusedError({ code: error.code, message: error.message });
+        // No answer at all (a deadline, a dropped connection): it may have committed,
+        // and the caller reads the booking back. The error rides along as the cause, so
+        // a deadline in it still reaches the route as the retryable outage (#3215).
+        throw new Error(`the booking commit got no answer: ${error.message}`, { cause: error });
       }
-      return { ok: true, booking: data as Booking };
+      // An answer that cannot be read throws too, and the caller reads the booking back.
+      const answer = readCommitAnswer(data, Object.keys(WEBHOOK_FORMATS));
+      if (answer.status === "conflict") {
+        return { kind: "conflict", winner: answer.winner as unknown as Booking | null };
+      }
+      const failed = answer.failed;
+      if (failed.busy !== undefined) await reportBusyBlockMoveFailure(booking.id, failed.busy);
+      if (failed.routing !== undefined) {
+        log.error("routing", { msg: "routing_decisions insert failed", booking_id: booking.id }, new Error(failed.routing));
+      }
+      // Whether or not its record stored, as recordRoutingDecision always did: a lost
+      // record must never also silence a misroute page.
+      if (routing) await alertIfMisroute(routing);
+      // An unbuilt webhook failed its step, so the reader has already refused any
+      // deliveries beside it (`readCommitAnswer`); the check here is the type's.
+      if (answer.enqueue && !("unbuilt" in webhook)) {
+        await afterEnqueue(booking.org_id, "booking.created", answer.enqueue, webhook.suppressed, deferSend);
+      }
+      return {
+        kind: "committed",
+        booking: answer.booking as unknown as Booking,
+        failed: {
+          ...(failed.busy !== undefined ? { busy: failed.busy } : {}),
+          ...(failed.webhook !== undefined ? { webhook: failed.webhook } : {}),
+          ...(failed.routing !== undefined ? { routing: failed.routing } : {}),
+        },
+        reservationDeleted: answer.reservationDeleted,
+      };
     },
 
     // The booking/cancel itself already succeeded when these run, so a cache
@@ -1505,14 +1589,7 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
         p_starts_at: startIso,
         p_ends_at: endIso,
       });
-      if (error) {
-        log.error("booking", { msg: "busy_blocks move failed", booking_id: bookingId }, error);
-        await sendThrottledAlert(
-          "busy_block_write_through",
-          CACHE_ALERT_COOLDOWN_MS,
-          busyBlockWriteThroughAlert("move", bookingId, shortFailureReason(error.message) ?? "no detail"),
-        ).catch(logAlertSendFailure("busy_block_write_through"));
-      }
+      if (error) await reportBusyBlockMoveFailure(bookingId, error.message, error);
     },
 
     reassignSwap: async ({
