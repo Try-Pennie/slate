@@ -83,6 +83,8 @@ interface Scenario {
   interfereDuring?: "upload" | "probe:canary" | "heal";
   /** The log tail worker deploy result (default true); "throw" makes it throw. */
   tailWorker?: boolean | "throw";
+  /** #3500: the confirm line worker deploy result (default true); "throw" makes it throw. */
+  lineWorker?: boolean | "throw";
   /** Every status read after the first THROWS. */
   statusThrowsLater?: boolean;
 }
@@ -141,6 +143,11 @@ async function drive(s: Scenario): Promise<Run> {
       calls.push("tail-worker");
       if (s.tailWorker === "throw") throw new Error("planted tail worker throw");
       return s.tailWorker ?? true;
+    },
+    lineWorker: async () => {
+      calls.push("line-worker");
+      if (s.lineWorker === "throw") throw new Error("planted line worker throw");
+      return s.lineWorker ?? true;
     },
     upload: async (kind) => {
       calls.push(`upload:${kind}`);
@@ -212,6 +219,7 @@ async function drive(s: Scenario): Promise<Run> {
     r.calls.join(" | "),
     [
       "status",
+      "line-worker",
       "upload:canary",
       "upload:release",
       "wait",
@@ -222,7 +230,7 @@ async function drive(s: Scenario): Promise<Run> {
       "triggers",
       "tail-worker",
     ].join(" | "),
-    "the order: read what serves, upload both, wait out the cron window, split 10/90, probe the canary, promote, probe, apply triggers, then deploy the log tail worker whole",
+    "the order: read what serves, deploy the line worker (#3500), upload both, wait out the cron window, split 10/90, probe the canary, promote, probe, apply triggers, then deploy the log tail worker whole",
   );
   eq(r.probes[0].canaryId, CANARY, "the canary probe is pinned to the CANARY version, by its id");
   eq(r.probes[1].canaryId, null, "the promotion probe is not pinned: it asks production as a whole");
@@ -236,6 +244,25 @@ async function drive(s: Scenario): Promise<Run> {
     !r.calls.some((c) => c === `deploy:${CANARY}@100%`),
     "the canary (which runs no cron lane) is never put at 100%; the release build without cron standby is",
   );
+}
+
+// --- #3500: the confirm line worker goes FIRST, before anything of Slate's is uploaded --
+//
+// Slate's CONFIRM_LINE binding names it by script, so a Slate version uploaded before it
+// exists would bind nothing. Its failure stops the run with nothing of Slate's changed.
+{
+  const r = await drive(HAPPY);
+  const at = r.calls.indexOf("line-worker");
+  assert(at >= 0 && at < r.calls.indexOf("upload:canary"), `the line worker is deployed before the first upload (calls ${r.calls.join(" > ")})`);
+  eq(r.calls.filter((c) => c === "line-worker").length, 1, "and exactly once");
+  eq(r.result.exit, EXIT.promoted, "a run whose line worker deployed promotes as before");
+}
+for (const line of [false, "throw"] as const) {
+  const r = await drive({ ...HAPPY, lineWorker: line });
+  eq(r.result.exit, line === false ? EXIT.lineWorkerFailed : EXIT.threwBeforeSplit, `a line worker deploy that ${line === "throw" ? "throws" : "fails"} ends the run before Slate`);
+  eq(r.result.end, "unchanged", "with Slate unchanged");
+  assert(!r.calls.some((c) => c.startsWith("upload:") || c.startsWith("deploy:")), `nothing of Slate's was uploaded or deployed (calls ${r.calls.join(" > ")})`);
+  if (line === false) assert(r.result.message.includes("slate-confirm-line"), "and the message names the line worker");
 }
 
 // --- the log tail worker goes LAST, after Slate is promoted and healthy (#3191) ------
@@ -296,6 +323,7 @@ for (const bad of [
     probe: async () => outcome("release"),
     triggers: async () => true,
     tailWorker: async () => true,
+    lineWorker: async () => true,
     isCronStandby: async () => false,
     record: () => {},
     waitForCronWindow: async () => {},

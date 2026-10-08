@@ -280,6 +280,7 @@ exits, and the exit code says which (`EXIT` in `scripts/lib/gradual-deploy.ts`, 
 | 23 | promoted and healthy, and the log tail worker (`slate-log-tail`) could not be deployed after it; Slate is not rolled back | new |
 | 24 | the deploy script itself failed outside its own handling | unknown: the settle step reads what the run recorded |
 | 25 | the release changes a Durable Object class, which Cloudflare refuses to upload as a version (#3352); ship it by hand, and until then every later deploy ends here too | unchanged |
+| 26 | the confirm line worker (`slate-confirm-line`, #3500) could not be deployed; Slate's `CONFIRM_LINE` binding names it, so nothing of Slate's was uploaded. Deploy it with `npx wrangler deploy -c wrangler.confirm-line.jsonc` and re-run | unchanged |
 
 Any non-zero exit fails the job, and a failed job on a push to `main` posts a Slack alert
 (`.github/workflows/deploy-alert.yml`). A job cancelled or timed out mid-run cannot end the

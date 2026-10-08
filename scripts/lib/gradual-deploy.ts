@@ -466,6 +466,9 @@ export const EXIT = {
    *  version (#3352). Nothing changed; it ships by hand, and until it does every later
    *  deploy ends here too. */
   classChange: 25,
+  /** #3500: the confirm line worker (slate-confirm-line) could not be deployed, so
+   *  nothing of Slate's was uploaded: Slate's binding names it. Nothing changed. */
+  lineWorkerFailed: 26,
 } as const;
 
 export type EndState = "new" | "old" | "unchanged" | "unknown";
@@ -493,6 +496,7 @@ export const EXIT_END: Record<keyof typeof EXIT, EndState> = {
   tailWorkerFailed: "new",
   scriptFailed: "unknown",
   classChange: "unchanged",
+  lineWorkerFailed: "unchanged",
 };
 
 export interface GradualResult {
@@ -520,6 +524,12 @@ export interface GradualOps {
    * (`shouldDeployTailWorker`).
    */
   tailWorker(): Promise<boolean>;
+  /**
+   * #3500: deploy the confirm line worker (`wrangler deploy -c wrangler.confirm-line.jsonc`)
+   * whole, BEFORE anything of Slate's is uploaded: Slate binds CONFIRM_LINE to it by script
+   * name. True when it succeeded. Idempotent, so every run deploys it.
+   */
+  lineWorker(): Promise<boolean>;
   /** Whether a version was uploaded in cron standby (a canary): read from its
    *  annotation. Null when it could not be read. */
   isCronStandby(versionId: string): Promise<boolean | null>;
@@ -682,6 +692,16 @@ async function runUntilSplit(ops: GradualOps): Promise<GradualResult> {
     ops.record("ended");
   }
   ops.log(`production is serving ${stable} at 100%`);
+
+  // #3500: the line worker Slate's binding names, before any version of Slate exists.
+  if (!(await ops.lineWorker())) {
+    return {
+      exit: EXIT.lineWorkerFailed,
+      end: "unchanged",
+      message:
+        "Not deployed: the confirm line worker (slate-confirm-line) could not be deployed, and Slate's CONFIRM_LINE binding names it, so nothing of Slate's was uploaded and the previous version is still serving 100%. Deploy it by hand with `npx wrangler deploy -c wrangler.confirm-line.jsonc`, then re-run the deploy.",
+    };
+  }
 
   // Both versions are uploaded BEFORE the split opens, so the split lasts only as long as
   // the probe, and a failed upload has changed nothing anybody is served.

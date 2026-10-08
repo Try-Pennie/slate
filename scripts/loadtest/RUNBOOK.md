@@ -659,6 +659,12 @@ NEXT_PUBLIC_APP_URL=https://slate-loadtest.<subdomain>.workers.dev \
 pnpm cf:build && npx wrangler deploy --env loadtest
 ```
 
+Before the FIRST deploy of a fresh setup, deploy the confirm line worker the load test
+binds (#3500): `npx wrangler deploy -c wrangler.confirm-line.jsonc --env loadtest`. The
+load test Worker's `CONFIRM_LINE` names `slate-confirm-line-loadtest` by script, so a
+Slate deployed without it has no line object to reach. The run's arm job deploys it again
+each run; it is idempotent.
+
 ### Three refusals, and no one of them answers for the others
 
 - **the database**, in `publicSupabaseUrl()` (`src/lib/env.ts`): under
