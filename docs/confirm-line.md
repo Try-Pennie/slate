@@ -94,6 +94,19 @@ object leaves each field out, and the line keeps its rules from before):
   met the first spent rung) leads again at once marked `spent`: its own walk proves the
   ladder spent, so it refuses with what it found rather than the next confirm walking
   the whole ladder again. A booking reads who is seated only when it saw a crowd.
+- **A full verdict that a freed claim voids (#3529).** A booking on the ladder's last
+  advisor does not prove the slot full when the walk skipped an advisor only for a
+  claim, since that claim may have ended without a booking and freed them. Before #3529
+  it was reported full anyway, and the line refused everybody waiting while an advisor
+  was free. Now it is full only `unlessFreed`: the line applies it when no claim has
+  ended unbooked since that confirm's first read through the line (its `epoch` then),
+  which in a crowd is the usual case, and otherwise hands one confirm the turn to walk.
+  A confirm that skipped a rung it never read (handed a lower rung, or a walk down
+  resumed below one it passed for claims) has nothing to vouch with, so its booking is
+  never full and a walk that finds nobody parks rather than refusing. One judge,
+  `claimsMayFree`, decides both the full verdict and whether a lost race has nowhere
+  left to walk. A bucket move never walks past claims (`HeldTurn.move`), and a walk
+  that stands asks whether the person already sits at the instant before refusing.
 
 **One read for the whole ladder.** Each rung used to cost its walker seven to nine
 database requests and each lower rung a bucket read, and request COUNT is what queues a

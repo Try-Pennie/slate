@@ -123,10 +123,11 @@ const isStringList = (x: unknown): x is string[] => Array.isArray(x) && x.length
 /** A leader's verdict as it arrives over the wire, or null when it is not one. */
 function readVerdict(x: unknown): LeaderVerdict<unknown> | null {
   if (!x || typeof x !== "object") return null;
-  const v = x as { full?: unknown; refusal?: unknown; settled?: unknown };
+  const v = x as { full?: unknown; refusal?: unknown; settled?: unknown; unlessFreed?: unknown };
   if (v.full === false) return { full: false };
   if (v.full === true && (v.refusal === "race" || v.refusal === "taken")) {
-    return { full: true, refusal: v.refusal, settled: v.settled ?? null };
+    // #3529: dropped, a conditional verdict would read as plainly full.
+    return { full: true, refusal: v.refusal, settled: v.settled ?? null, ...(v.unlessFreed === true ? { unlessFreed: true as const } : {}) };
   }
   return null;
 }

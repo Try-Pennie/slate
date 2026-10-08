@@ -5598,13 +5598,22 @@ async function createHeld(
   const lastRung = tier.rungsDropped >= ladderRungs - 1;
   const at = candidates.indexOf(result.booking.assigned_user_id ?? chosen.userId);
   //
-  // #3529: and never when the walk passed a rung above only because it was claimed: the
-  // confirm holding it may have failed, so the next in line walks from the top.
-  const full = lastRung && at >= 0 && at === candidates.length - 1 && !claimsMayFree(tier);
-  return {
-    result,
-    verdict: full ? { full: true, refusal: "race", settled: { idempotencyKey, result } } : { full: false, booked: { idempotencyKey, result } },
-  };
+  // #3529: and never outright when an advisor it skipped for a claim may have been freed
+  // since (`claimsMayFree`). When it skipped them only through its own reads of the line
+  // (a rung passed for claims, or claimed advisors left out of the rung it booked), the
+  // line can tell, by whether any claim has ended unbooked since this confirm first read
+  // (`unlessFreed`): in a crowd that is the usual case, and everybody waiting is answered
+  // at once. A rung it never read (handed, or skipped unread) nothing can vouch for.
+  const lastAdvisor = lastRung && at >= 0 && at === candidates.length - 1;
+  const settled = { idempotencyKey, result };
+  const verdict: LeaderVerdict<ConfirmTaker> = !lastAdvisor
+    ? { full: false, booked: settled }
+    : !claimsMayFree(tier)
+      ? { full: true, refusal: "race", settled }
+      : tier.handed !== true && tier.unreadAbove !== true
+        ? { full: true, refusal: "race", settled, unlessFreed: true }
+        : { full: false, booked: settled };
+  return { result, verdict };
 }
 
 /**

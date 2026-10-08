@@ -214,7 +214,18 @@ export type LeaderVerdict<T> =
    * its own booking for a double submit, who already sits at the instant for a lead
    * who holds the time (#3257).
    */
-  | { full: true; refusal: "race" | "taken"; settled: T | null };
+  | {
+      full: true;
+      refusal: "race" | "taken";
+      settled: T | null;
+      /**
+       * #3529: full only if no claim has ended without a booking since this confirm
+       * first read through the line (its first `claimFirst`). A confirm that walked past
+       * claimed advisors cannot know whether one was freed since; the line can, by its
+       * `epoch`. Void otherwise, and for a confirm that never read through the line.
+       */
+      unlessFreed?: true;
+    };
 
 /**
  * A leader's place among the confirms in flight for its slot (#3257).
@@ -589,6 +600,9 @@ export function makeConfirmQueue<T>(
     // #3489 step 3: the line's epoch when this confirm first met a rung spent by claims,
     // so a park can tell whether everything it walked past has since booked.
     let spentAt: number | null = null;
+    // #3529: the line's epoch at this confirm's first read through it, which vouches for
+    // a full verdict that holds only `unlessFreed`.
+    let readAt: number | null = null;
     // #3325: a host that requires acknowledgement gives a new lead only the ack
     // window; `ack` and `renew` extend it by a full lease from then.
     let until = now() + (ackMs ?? leaseMs);
@@ -665,6 +679,7 @@ export function makeConfirmQueue<T>(
         claim,
         claimFirst(candidates, place) {
           const others = claimedByOthers();
+          if (readAt === null && live()) readAt = line.epoch;
           const unclaimed = candidates.filter((id) => !others.has(id));
           // #3489 step 3: to a confirm that can walk, a rung every candidate of which is
           // claimed is spent. It claims nothing here and leaves the frontier as it was.
@@ -707,7 +722,8 @@ export function makeConfirmQueue<T>(
         if (mine) endAdvisor(line, mine, outcome ?? "unknown");
         line.claims.delete(me);
         if (line.holder === me) line.holder = null;
-        if (verdict.full) {
+        // #3529: a verdict that holds only while nothing was freed since this confirm read.
+        if (verdict.full && (verdict.unlessFreed !== true || (readAt !== null && readAt === line.epoch))) {
           // No other confirm is still booking in the slot: it settles the waiting now.
           if (line.claims.size === 0) {
             refuseAll(key, line, verdict.refusal, verdict.settled);

@@ -104,6 +104,23 @@ async function main() {
     assert(again.ok === true, "done: a repeated report is accepted and changes nothing");
   }
 
+  // --- #3529: a verdict full only `unlessFreed` keeps that condition over the wire ----
+  // Dropped in transit it would read as plainly full and refuse everybody waiting. Sent
+  // by a lead that never read through the line, nothing vouches for it, so the line
+  // must hand the next waiter a turn to read for itself instead.
+  {
+    const { send } = host();
+    const lead = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    await send({ op: "ack", turn: lead.turn });
+    const w = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    const polled = send({ op: "poll", ticket: w.ticket });
+    await tick();
+    await send({ op: "done", turn: lead.turn, verdict: { full: true, refusal: "race", settled: null, unlessFreed: true }, outcome: "booked" });
+    const r = await polled;
+    assert(r.kind === "lead", `wire: an unless freed verdict nothing vouches for refuses nobody (got ${JSON.stringify(r)})`);
+    await send({ op: "done", turn: r.turn, verdict: { full: false } });
+  }
+
   // --- a poll with nothing to report comes back after one poll length -----------
   {
     const { send, advance } = host();

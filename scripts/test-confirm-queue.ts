@@ -1106,6 +1106,58 @@ async function main() {
     await tick();
     assert(behind.length === 1 && behind[0]!.kind === "refused", `walk stands: its full verdict answers the confirm behind it (got ${JSON.stringify(behind)})`);
   }
+  // #3529: a full verdict from a confirm that walked past a claim holds only while no
+  // claim has ended without a booking since that confirm first read (`unlessFreed`). In
+  // a crowd that is the usual case, and everybody waiting is answered at once rather
+  // than one of them walking the whole ladder again to find what the line already knew.
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    const walker = leadOf(await q.enter("slot"));
+    const behind: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => behind.push(t));
+    walker.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    walker.seat.claimFirst(["c"], { rung: 2, canWalk: true, below: false });
+    first.done({ full: false }, "booked", "s");
+    walker.done({ full: true, refusal: "race", settled: "w", unlessFreed: true }, "booked");
+    await tick();
+    assert(behind.length === 1 && behind[0]!.kind === "refused", `unless freed: nothing freed since it read, so the waiting are answered at once (got ${JSON.stringify(behind.map((t) => t.kind))})`);
+  }
+  // Control: the claim it walked past ended WITHOUT a booking after it read, so its
+  // advisor may be free: the verdict is void and the confirm behind reads for itself.
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    first.seat.trying("a");
+    const walker = leadOf(await q.enter("slot"));
+    const behind: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => behind.push(t));
+    walker.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    walker.seat.claimFirst(["c"], { rung: 2, canWalk: true, below: false });
+    first.done({ full: false }, "unknown");
+    walker.done({ full: true, refusal: "race", settled: "w", unlessFreed: true }, "booked");
+    await tick();
+    assert(behind.length === 1 && behind[0]!.kind === "lead", `unless freed control: a claim ended unbooked since it read, so one confirm reads again (got ${JSON.stringify(behind.map((t) => t.kind))})`);
+    leadOf(behind[0]!).done({ full: false });
+  }
+  // Control: a confirm that never read through the line has nothing to vouch for its
+  // verdict with, so `unlessFreed` never settles anybody from it.
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const lone = leadOf(await q.enter("slot"));
+    const behind: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => behind.push(t));
+    lone.done({ full: true, refusal: "race", settled: "l", unlessFreed: true }, "booked");
+    await tick();
+    assert(behind.length === 1 && behind[0]!.kind === "lead", `unless freed, unread: no read to vouch with, so one confirm reads (got ${JSON.stringify(behind.map((t) => t.kind))})`);
+    leadOf(behind[0]!).done({ full: false });
+  }
+
   // #3529: a host drops a parked confirm whose caller stopped polling by cancelling its
   // wait. Handed straight back as spent, that wait is already a lead turn holding the
   // line, so cancelling it must end the turn and hand the line on, as cancelling any

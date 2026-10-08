@@ -2263,6 +2263,29 @@ async function main() {
     assert(bySlot.has(`a|${input.startIso}`) && bySlot.has(`c|${input.startIso}`), `past claims: both advisors hold the time (got ${[...bySlot.keys()].join(",")})`);
   }
 
+  // #3529 control (L159): the same crowd where every claim walked past BOOKS. Then the
+  // last booking does settle the slot, at once: the line saw no claim end unbooked since
+  // confirm 1 read (`unlessFreed`), so the two behind it are told the time is taken
+  // without either walking the ladder again to find what the line already knew.
+  {
+    const { runs, tally } = await burst({
+      inputs: [onLadder(0), onLadder(1), onLadder(2), onLadder(3)],
+      pool: ["a"],
+      poolByCode: { "411": ["a"], "211": ["c"] },
+      queue: "real",
+      viaApi: false,
+      slowGoogleMs: 1_000,
+      slowEventMs: 2_000,
+    });
+    const booked = runs.filter((r) => r.outcome === "created").map((r) => r.result?.booking.assigned_user_id).sort();
+    const refused = runs.filter((r) => r.outcome === "SLOT_TAKEN");
+    assert(JSON.stringify(booked) === JSON.stringify(["a", "c"]), `past claims, all booked: a and c are booked (got ${JSON.stringify(tally)}, ${JSON.stringify(booked)})`);
+    assert(
+      refused.length === 2 && quiet(refused),
+      `past claims, all booked: the two behind are told the time is taken without walking the ladder (got ${refused.length} refused, calls ${refused.map((r) => r.calls.map((c) => c.name).join(",")).join(" | ")})`,
+    );
+  }
+
   // #3529: the same walk past a claimed rung, ending in a LOST RACE on the last rung's
   // only advisor. Nobody is left after c on 211, but the ladder is not spent: a was
   // only claimed, and confirm 0's failed calendar write has since freed it. So confirm
