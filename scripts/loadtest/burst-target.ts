@@ -234,6 +234,27 @@ export function dropSlotFit(
 }
 
 /**
+ * #3565: how many advisors one refusal crowd of each run must meet free across its ladder.
+ * The case the whole ladder release (#3529) exists for is many free over several rungs, and
+ * it is the one that failed (14 free on run 37871606406: all booked, 85 told to retry); a
+ * slot with 3 free passes without reaching it, so a run that drew only easy slots could
+ * pass three times while the hard case regressed. The refusal ladder holds 16, so ten is
+ * reachable on a seeded roster and still several rungs' worth.
+ */
+export const HARD_REFUSAL_MIN_FREE = 10;
+
+/**
+ * Why a slot cannot host the hard refusal crowd (#3565), or null when it can: at least `min`
+ * free across the ladder, and some of them free only below the requested rung, or nothing
+ * walks and the ladder release is never exercised.
+ */
+export function hardRefusalFit(free: { rung0Free: number; ladderFree: number }, min: number): string | null {
+  if (free.ladderFree < min) return `the ladder has ${free.ladderFree} free, under the ${min} the hard refusal crowd needs`;
+  if (free.ladderFree <= free.rung0Free) return "every free advisor is on the requested rung, so nobody below it would be walked to";
+  return null;
+}
+
+/**
  * The plan every driver fires (#3429): one burst per entry of the run's sequence, each at
  * its own moment, the refusal bursts taking the refusal slots in order and the drop
  * burst the drop slot, each with its own ladder's two codes, its kind's share and the

@@ -71,6 +71,7 @@ import {
   BURST_SEQUENCE,
   BURST_SLOT_GAP_MS,
   DROP_SLOTS_TO_MEASURE,
+  REFUSAL_SLOTS_TO_MEASURE,
   BURST_SPACING_MS,
   DROP_CAPACITY_HEADROOM,
   type BurstCapacity,
@@ -79,6 +80,8 @@ import {
   assembleBurstPlan,
   dropLadders,
   dropSlotFit,
+  hardRefusalFit,
+  HARD_REFUSAL_MIN_FREE,
   ladderCandidates,
   ladderFreeFrom,
   refusalLadders,
@@ -303,6 +306,7 @@ if (refusalAsk.length === 0) {
 }
 
 const refusalReads: string[] = [];
+const hardMisses: string[] = [];
 let refusal: LadderCandidate | null = null;
 let refusalSlots: string[] | null = null;
 let refusalTiers: [string | null, string | null] = [null, null];
@@ -312,13 +316,42 @@ for (const c of refusalAsk) {
     refusalReads.push(shared.why);
     continue;
   }
-  const chosen = chooseBurstSlots(shared.times, REFUSAL_BURSTS, BURST_SLOT_GAP_MS);
-  if (chosen !== null) {
+  // #3565: the FIRST refusal crowd meets many advisors free across the ladder, so every run
+  // exercises the whole ladder release; the furthest such time first, as every slot is
+  // chosen. The rest take the furthest times at least the gap from it and each other.
+  const times = shared.times
+    .filter((t) => Number.isFinite(Date.parse(t)))
+    .sort((a, b) => Date.parse(b) - Date.parse(a))
+    .slice(0, REFUSAL_SLOTS_TO_MEASURE);
+  let hard: string | null = null;
+  for (const t of times) {
+    const capacity = await measuredCapacity(c, t);
+    const why = hardRefusalFit({ rung0Free: capacity.rung0Free!, ladderFree: capacity.ladderFree! }, HARD_REFUSAL_MIN_FREE);
+    if (why === null) {
+      hard = t;
+      break;
+    }
+    hardMisses.push(`${c.code} at ${t}: ${why}`);
+  }
+  if (hard === null) continue;
+  const apart = shared.times.filter((t) => Math.abs(Date.parse(t) - Date.parse(hard!)) >= BURST_SLOT_GAP_MS);
+  const rest = REFUSAL_BURSTS > 1 ? chooseBurstSlots(apart, REFUSAL_BURSTS - 1, BURST_SLOT_GAP_MS) : [];
+  if (rest !== null) {
     refusal = c;
-    refusalSlots = chosen;
+    refusalSlots = [hard, ...rest];
     refusalTiers = shared.shownTiers;
     break;
   }
+}
+if ((refusal === null || refusalSlots === null) && hardMisses.length > 0 && refusalReads.length < refusalAsk.length) {
+  // Its own exit code: the ladders answered, and no time offered the hard crowd's free
+  // advisors, which is the seed or the roster rather than the deployment (L11).
+  console.error(
+    `FAILED: no offered time on the refusal control's ladders has ${HARD_REFUSAL_MIN_FREE} or more advisors free ` +
+      `across the ladder with some below the requested rung, so the hard crowd (#3565) has nothing to meet. Measured: ` +
+      `${hardMisses.slice(0, 6).join("; ")}${hardMisses.length > 6 ? `; and ${hardMisses.length - 6} more` : ""}.`,
+  );
+  process.exit(11);
 }
 if (refusal === null || refusalSlots === null) {
   // TWO exit codes, because a ladder offering nothing and an availability read that

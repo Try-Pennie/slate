@@ -24,6 +24,8 @@ import {
   assembleBurstPlan,
   dropLadders,
   dropSlotFit,
+  hardRefusalFit,
+  HARD_REFUSAL_MIN_FREE,
   ladderCandidates,
   ladderFreeFrom,
   ladderRosterIds,
@@ -256,6 +258,19 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
     DROP_SLOTS_TO_MEASURE >= TWO_WORKING_DAYS_OF_SLOTS,
     `the drop burst's planner measures at least ${TWO_WORKING_DAYS_OF_SLOTS} offered times (got ${DROP_SLOTS_TO_MEASURE})`,
   );
+}
+
+// #3565: one refusal crowd a run must meet many advisors free across the ladder, the case
+// the whole ladder release exists for and the one that failed with 14 free (run
+// 37871606406). A slot fits when at least HARD_REFUSAL_MIN_FREE are free across the ladder
+// and some of them only below the requested rung; a crowd of 100 is always larger.
+{
+  eq(hardRefusalFit({ rung0Free: 4, ladderFree: 14 }, HARD_REFUSAL_MIN_FREE), null, "hard refusal: 14 free with 10 below the top rung fits");
+  const few = hardRefusalFit({ rung0Free: 2, ladderFree: 5 }, HARD_REFUSAL_MIN_FREE);
+  assert(few !== null && few.includes("5 free"), `hard refusal: 5 free across the ladder does not fit, and says how many (got ${few})`);
+  const topOnly = hardRefusalFit({ rung0Free: 12, ladderFree: 12 }, HARD_REFUSAL_MIN_FREE);
+  assert(topOnly !== null && topOnly.includes("below"), `hard refusal: every free advisor on the requested rung does not fit, since nothing walks (got ${topOnly})`);
+  assert(HARD_REFUSAL_MIN_FREE >= 10, `hard refusal: the floor is at least ten free (got ${HARD_REFUSAL_MIN_FREE})`);
 }
 
 finish();
