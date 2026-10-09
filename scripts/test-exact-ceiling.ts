@@ -363,13 +363,13 @@ async function objectRuns() {
       for (let lag = 0; lag < 8; lag++) {
         const raceFake = fakeStorage();
         raceFake.stored.set("window", { windowStartMs: now, count: 40 });
-        let raceObj!: BurstLimiter;
+        const held: { obj?: BurstLimiter } = {};
         let planted = false;
         const forgetLater = (n: number) => {
-          if (n === 0) (raceObj as unknown as { forget(op: string, err: unknown): void }).forget("put", new Error("planted"));
+          if (n === 0) (held.obj as unknown as { forget(op: string, err: unknown): void }).forget("put", new Error("planted"));
           else queueMicrotask(() => forgetLater(n - 1));
         };
-        raceObj = new BurstLimiter({
+        const raceObj = new BurstLimiter({
           storage: {
             ...raceFake.storage,
             get: async <T>(k: string) => {
@@ -384,6 +384,7 @@ async function objectRuns() {
             },
           },
         });
+        held.obj = raceObj;
         const pendingHit = raceObj.fetch(new Request("https://burst-limiter.slate/count", { method: "POST", body: JSON.stringify({ hit: { windowMs: HOUR } }) }));
         const count = ((await (await pendingHit).json()) as { count: number }).count;
         eq(count, 41, `a failed write landing ${lag} steps into a waiting read still counts on from the stored 40`);
