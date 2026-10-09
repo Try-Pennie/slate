@@ -122,9 +122,11 @@ object leaves each field out, and the line keeps its rules from before):
   was free. Now it is full only `unlessFreed`: the line applies it when no claim has
   ended unbooked since that confirm's first read through the line (its `epoch` then),
   which in a crowd is the usual case, and otherwise hands one confirm the turn to walk.
-  A confirm that skipped a rung it never read (handed a lower rung, or a walk down
-  resumed below one it passed for claims) has nothing to vouch with, so its booking is
-  never full and a walk that finds nobody parks rather than refusing. One judge,
+  A confirm that skipped a rung it never read vouches with the read that did see it: a
+  confirm handed a lower rung inherits the epoch of the read it was handed from, and a
+  walk down resumed below a rung it passed for claims keeps its own first read's, so
+  either is full `unlessFreed` like any other; the line voids the verdict when it holds no
+  read to vouch with, and then a walk that finds nobody parks rather than refusing. One judge,
   `claimsMayFree`, decides both the full verdict and whether a lost race has nowhere
   left to walk. A bucket move never walks past claims (`HeldTurn.move`), and a walk
   that stands asks whether the person already sits at the instant before refusing.
