@@ -280,8 +280,12 @@ server whose directory answer is not fresh reads the grouping itself at once
 (`readOwn`, the coalesced `warmPoolKeys` it already ran after the response), inside the
 confirm's own wait, and keys by ladder; its `line_group_source` says `local`, as for any
 grouping the server read itself. The same reads, earlier, under a local read's own minute,
-so no staleness is extended. It starts only once the directory has answered, so a slow
-directory can still leave it too late (#3558).
+so no staleness is extended. It starts as soon as the directory answers with nothing
+fresh, or once the directory has not answered within its head start
+(`POOL_GROUPING_OWN_READ_AFTER_MS`, 150ms), whichever comes first, and whichever of the two
+lands a fresh grouping first answers (#3558). Load run 37952874789 is why: the directory
+held nothing fresh and answered slowly, own reads started 0.1 to 1.2s in, and 56 of a
+crowd's 100 confirms ran out of their wait and keyed by code.
 
 Every confirm's `confirm answered` line carries `line_group_source`, its own wait for
 the fetch (counted from its line key, so a fetch that answered during the ceilings reads

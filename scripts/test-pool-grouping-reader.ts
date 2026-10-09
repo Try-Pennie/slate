@@ -23,6 +23,7 @@ import {
   POOL_GROUPING_FETCH_GIVE_UP_MS,
   POOL_GROUPING_FUTURE_TOLERANCE_MS,
   POOL_GROUPING_RETRY_MS,
+  POOL_GROUPING_OWN_READ_AFTER_MS,
   makeGroupingStore,
   makeGroupingReader,
   lineGroupSourceOf,
@@ -94,6 +95,8 @@ function readerWorld(opts: {
   retryMs?: number;
   /** #3529: the server's own read, run when the directory has nothing fresh: how long it takes, and whether it lands. */
   ownRead?: { ms: number; lands: boolean };
+  /** #3558: how long the directory takes to answer. */
+  answerAfterMs?: number;
 } = {}) {
   let now = T0;
   const pending: { at: number; fire: () => void; live: boolean }[] = [];
@@ -112,6 +115,7 @@ function readerWorld(opts: {
   const directoryStub: DirectoryStub = {
     async send(m) {
       sent.push(m);
+      if (opts.answerAfterMs) await new Promise<void>((resolve) => timer(opts.answerAfterMs!, resolve));
       const a = opts.answer ? await opts.answer(m) : { kind: "grouping", snapshot: null };
       return JSON.parse(JSON.stringify(a)) as Message;
     },
@@ -519,6 +523,33 @@ async function ownReadFallback() {
     assert(!w.store.fresh(), "own read: and installs nothing");
     // #3529 review: and says so, so a read that keeps failing is not just another absent.
     assert(warned.some((l) => l.includes("tag=pool-grouping") && l.includes("own read")), `own read: a failed read is logged (got ${JSON.stringify(warned)})`);
+  }
+  {
+    // #3558: a directory slow to answer must not hold the own read back. Load run
+    // 37952874789 met a crowd when the directory held nothing fresh and answered slowly; its
+    // servers started their own reads only once it answered, and 56 of 100 confirms timed out
+    // and keyed by code. The own read starts once the directory has not answered within
+    // its head start, alongside it, and lands inside the confirm's wait.
+    const w = readerWorld({ answer: answering(null), answerAfterMs: 450, ownRead: { ms: 200, lands: true } });
+    const reading = w.reader.ensure();
+    await w.advance(POOL_GROUPING_FETCH_MS);
+    eq((await reading).source, "read", "slow directory: the own read lands inside the confirm's wait");
+    eq(w.ownReads[0], T0 + POOL_GROUPING_OWN_READ_AFTER_MS, "slow directory: started once the directory had not answered within its head start");
+  }
+  {
+    // A directory that answers fresh inside the head start costs no own read at all.
+    const w = readerWorld({ answer: answering(groupingSnapshotOf(ENTRIES, T0 - 5_000)), answerAfterMs: 40, ownRead: { ms: 200, lands: true } });
+    const reading = w.reader.ensure();
+    await w.advance(POOL_GROUPING_FETCH_MS);
+    eq((await reading).source, "installed", "fast directory: its fresh answer installs");
+    eq(w.ownReads.length, 0, "fast directory: and no own read is made");
+  }
+  {
+    // A directory slow to answer with something fresh still installs when it lands first.
+    const w = readerWorld({ answer: answering(groupingSnapshotOf(ENTRIES, T0 - 5_000)), answerAfterMs: 250, ownRead: { ms: 400, lands: true } });
+    const reading = w.reader.ensure();
+    await w.advance(POOL_GROUPING_FETCH_MS);
+    eq((await reading).source, "installed", "slow fresh directory: whichever lands first answers, here the directory");
   }
   {
     // Control: a fresh snapshot needs no read of its own.

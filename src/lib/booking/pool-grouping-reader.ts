@@ -73,6 +73,15 @@ export { POOL_GROUPING_FUTURE_TOLERANCE_MS };
  * later at worst.
  */
 export const POOL_GROUPING_RETRY_MS = 1_000;
+/**
+ * #3558: how long the directory has to answer before a server starts its own read beside
+ * it. A warm directory answers in about 45ms (the line object's round trip), so a fresh
+ * snapshot nearly always lands first and no read is made; a cold or busy one no longer holds
+ * the own read back until it answers. Load run 37952874789 met a crowd while the directory
+ * held nothing fresh and answered slowly: own reads started 0.1 to 1.2s in, and 56 of 100
+ * confirms ran out of their wait and keyed by code.
+ */
+export const POOL_GROUPING_OWN_READ_AFTER_MS = 150;
 
 /** Where a server's grouping came from. */
 export type GroupingOrigin = "read" | "snapshot";
@@ -193,12 +202,15 @@ export function makeGroupingReader(deps: {
   /**
    * #3529: this server's own read of the grouping, installing it into `store`, coalesced
    * however many ask and rejecting when it fails (`warmPoolKeys`). Run as soon as the
-   * directory answers with nothing fresh, so a confirm in the minute's gap between one
+   * directory answers with nothing fresh, or once it has not answered within its head
+   * start (`ownReadAfterMs`, #3558), so a confirm in the minute's gap between one
    * snapshot expiring and the next landing keys by ladder rather than by code. It is the
    * read a server already made after the response; started here, it is the same read,
    * earlier, and a local read's own minute bounds it, so it extends no staleness.
    */
   readOwn?: () => Promise<void>;
+  /** #3558: the directory's head start before the own read begins beside it (`POOL_GROUPING_OWN_READ_AFTER_MS`). */
+  ownReadAfterMs?: number;
 }): { start(): GroupingStart; wait(started: GroupingStart): Promise<GroupingReading>; ensure(): Promise<GroupingReading> } {
   let inFlight: { startedAt: number; settled: Promise<Fetched> } | null = null;
   // When the last fetch that installed nothing settled, or null after one that did.
@@ -224,6 +236,53 @@ export function makeGroupingReader(deps: {
     return { source: deps.store.fresh() ? "held" : "stale", ageMs };
   };
 
+  // #3558: the directory's answer, raced against the server's own read once the directory
+  // has not answered within its head start (or at once, when it answers with nothing fresh).
+  // Settles on whichever installs a fresh grouping first; with neither fresh, on the
+  // directory's own answer, said as itself.
+  const withOwnRead = (directory: Promise<Fetched>, readOwn: () => Promise<void>): Promise<Fetched> =>
+    new Promise<Fetched>((resolve) => {
+      let answered: Fetched | null = null;
+      let own: "idle" | "running" | "done" = "idle";
+      let settledOnce = false;
+      const settle = (f: Fetched) => {
+        if (settledOnce) return;
+        settledOnce = true;
+        cancelHeadStart();
+        resolve(f);
+      };
+      const freshRead = (): Fetched | null => {
+        const held = deps.store.held();
+        return deps.store.fresh() && held ? { source: "read", ageMs: deps.now() - held.readAtMs } : null;
+      };
+      const startOwn = () => {
+        if (own !== "idle" || settledOnce) return;
+        own = "running";
+        readOwn().then(
+          () => {
+            own = "done";
+            const read = freshRead();
+            if (read) settle(read);
+            else if (answered) settle(answered);
+          },
+          (err: unknown) => {
+            own = "done";
+            // The directory's answer stands, said as itself; the log is what tells a read
+            // that keeps failing from a directory that simply had nothing.
+            log.warn("pool-grouping", { msg: "own read failed; the directory's answer stands", directory: answered?.source ?? "unanswered" }, err);
+            if (answered) settle(answered);
+          },
+        );
+      };
+      const cancelHeadStart = deps.timer(deps.ownReadAfterMs ?? POOL_GROUPING_OWN_READ_AFTER_MS, startOwn);
+      void directory.then((got) => {
+        answered = got;
+        if (got.source === "installed" || got.source === "held") return settle(got);
+        if (own === "done") return settle(freshRead() ?? got);
+        startOwn();
+      });
+    });
+
   const start = (): GroupingStart => {
     const startedAt = deps.now();
     if (deps.store.fresh()) return { decided: { source: "held", waitedMs: null, ageMs: null } };
@@ -233,21 +292,8 @@ export function makeGroupingReader(deps: {
     if (!joined || startedAt - joined.startedAt > deps.boundMs) {
       if (fruitlessAt !== null && startedAt - fruitlessAt < deps.retryMs) return { decided: { source: "backoff", waitedMs: null, ageMs: null } };
       // Never rejects: a fault in reading the answer is a failed call, said as one.
-      const settled = fetchOnce(stub)
-        .catch((): Fetched => ({ source: "unreachable", ageMs: null }))
-        .then(async (got): Promise<Fetched> => {
-          if (got.source === "installed" || got.source === "held" || !deps.readOwn) return got;
-          try {
-            await deps.readOwn();
-          } catch (err) {
-            // The directory's answer stands, said as itself; the log is what tells a read
-            // that keeps failing from a directory that simply had nothing.
-            log.warn("pool-grouping", { msg: "own read failed; the directory's answer stands", directory: got.source }, err);
-            return got;
-          }
-          const held = deps.store.held();
-          return deps.store.fresh() && held ? { source: "read", ageMs: deps.now() - held.readAtMs } : got;
-        });
+      const directory = fetchOnce(stub).catch((): Fetched => ({ source: "unreachable", ageMs: null }));
+      const settled = deps.readOwn ? withOwnRead(directory, deps.readOwn) : directory;
       const mine = { startedAt, settled };
       inFlight = joined = mine;
       void settled.then((got) => {
