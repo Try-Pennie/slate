@@ -246,8 +246,8 @@
 	"durable_objects": {
 		"bindings": [
 			// #3555: served by its own small Worker (wrangler.burst-limiter.jsonc), deployed
-			// before this one, so waking a counter does not load the whole app and a Slate
-			// deploy does not restart every counter. The class stays exported and its
+			// before this one, so waking a counter does not load the whole app. (Every Slate
+			// deploy still redeploys it, which restarts the counters, #3561.) The class stays exported and its
 			// migration kept here until a deleted_classes migration retires it.
 			{
 				"name": "BURST_LIMITER",
