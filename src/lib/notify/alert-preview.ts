@@ -590,7 +590,8 @@ const AGENT_MANY: FailingAgent[] = [
 // ever failed to parse the preview output would be visibly broken, not silently healthy.
 const NOW_MS = Date.parse("2026-07-29T12:00:00.000Z");
 
-/** #3037: the Ultra High tier's first offered time as of 2026-10-02, Monday Oct 5 at 11:30am ET. */
+/** #3037: the Ultra High tier's first offered time as of 2026-10-02, past the Friday,
+ *  Saturday and Monday the booker shows (#3559): Tuesday Oct 6 at 11:30am ET. */
 const PREVIEW_TIER_FIRST_SLOT = Date.parse("2026-10-06T15:30:00.000Z"); // parse-ok: a literal
 /** #3559: the days a tier page was judged over, the booker's strip on Friday 2026-10-02. */
 const PREVIEW_TIER_DAYS = ["2026-10-02", "2026-10-03", "2026-10-05"];

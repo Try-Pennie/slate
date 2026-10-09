@@ -961,6 +961,19 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
     "overflowing to a different pool is a different reading",
   );
   assert(!sameSupplyReading(base, { ...base, code: "121", offeredLater: true }, AUG_4_1119_ET), "being offered later days is part of the reading");
+  // #3559: the nearly full notice judges a group over its first row's days.
+  assert(
+    !sameSupplyReading({ ...base, offeredDays: ["2026-08-04"] }, { ...base, code: "121", offeredDays: ["2026-08-05"] }, AUG_4_1119_ET),
+    "the days the booker shows are part of the reading",
+  );
+  assert(
+    !sameSupplyReading({ ...base, offeredDays: [] }, { ...base, code: "121", offeredDays: null }, AUG_4_1119_ET),
+    "and an unreadable window is not the same reading as an empty one",
+  );
+  assert(
+    sameSupplyReading({ ...base, offeredDays: ["2026-08-04"] }, { ...base, code: "121", offeredDays: ["2026-08-04"] }, AUG_4_1119_ET),
+    "while the same days are",
+  );
   assert(sameSupplyReading(base, { ...base, code: "121" }, AUG_4_1119_ET), "the same reading is the same");
 }
 

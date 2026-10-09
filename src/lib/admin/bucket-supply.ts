@@ -870,6 +870,10 @@ export function sameSupplyReading(a: BucketSupplyRow, b: BucketSupplyRow, nowMs:
     a.cacheState === b.cacheState &&
     a.freshness === b.freshness &&
     a.offeredLater === b.offeredLater &&
+    // #3559: the nearly full notice judges a group by its first row's days, so
+    // codes whose booker shows different days are different readings.
+    (a.offeredDays ?? []).join() === (b.offeredDays ?? []).join() &&
+    (a.offeredDays === null) === (b.offeredDays === null) &&
     computedAtLabel(a.freshness, a.computedAtMs, nowMs).label ===
       computedAtLabel(b.freshness, b.computedAtMs, nowMs).label &&
     a.cells.length === b.cells.length &&
