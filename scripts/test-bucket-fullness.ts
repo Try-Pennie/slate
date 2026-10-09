@@ -1,23 +1,27 @@
-// #1256: a quiet whisper when a pool is nearly full for the day, before it hits zero.
+// #1256: a quiet whisper when a pool is nearly full, before it hits zero.
 //
 // What this suite holds down:
 //
 //   1. The measurement is the supply page's own (#1254): the share is read off the
-//      `counted` cell `bucketSupplyReport` produced for TODAY, never recomputed. A
-//      pool's codes carry one reading, so a pool is judged and named ONCE.
-//   2. The threshold is Dan's, and the edge is pinned both ways: fewer than 10% of
-//      the day's possible starts still open whispers, exactly 10% does not.
-//   3. The zero case is not notified twice (#1412): a pool the booked solid page is
+//      `counted` cells `bucketSupplyReport` produced, never recomputed. A pool's
+//      codes carry one reading, so a pool is judged and named ONCE.
+//   2. The window is the booker's (#3559): the days `offeredDays` names, POOLED.
+//      Dan, 2026-10-09: judge "the next x days, x being the number of days shown
+//      the booker", adding the days up, so a full today alone is not a finding
+//      while a lead can still book Saturday or Monday. A day outside the window,
+//      or closed, counts for nothing.
+//   3. The threshold is a setting (default 10%), and the edge is pinned both ways:
+//      fewer than the share open whispers, exactly the share does not.
+//   4. The zero case is not notified twice (#1412): a pool the booked solid page is
 //      already about is left to that page. With the scan's answer unknown, a pool
 //      with nothing open is held back too, because it may be on that page.
-//   4. Every state that is not a measurement stays quiet and says so: an
-//      unmeasurable report, an unknown cell, a closed day, a day with nothing left.
-//   5. It is a whisper: info channel, never a page, and never an all clear.
+//   5. Every state that is not a measurement stays quiet: an unmeasurable report, a
+//      pool with no window, a window day the report cannot read or does not hold.
+//   6. It is a whisper: info channel, never a page, and never an all clear.
 //
 // Run: node --experimental-strip-types scripts/test-bucket-fullness.ts
 import {
   POOL_NEARLY_FULL_KEY,
-  POOL_NEARLY_FULL_OPEN_SHARE,
   formatPoolNearlyFullNotice,
   judgePoolFullness,
   runPoolFullnessCheck,
@@ -29,10 +33,30 @@ import type {
 } from "../src/lib/admin/bucket-supply.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
-const TODAY = "2026-10-02";
 const NOW_MS = Date.parse("2026-10-02T15:00:00.000Z");
+// The report's columns: Friday to Tuesday, Sunday shut.
+const DAYS = ["2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05", "2026-10-06"];
+// What the booker shows on Friday morning: Friday, Saturday and Monday.
+const WINDOW = ["2026-10-02", "2026-10-03", "2026-10-05"];
+const SHARE = 0.1;
 
-function row(code: string, poolKey: string, poolLabel: string | null, today: SupplyCell): BucketSupplyRow {
+const counted = (booked: number, capacity: number): SupplyCell => ({
+  kind: "counted",
+  booked,
+  capacity,
+  share: booked / capacity,
+});
+const CLOSED: SupplyCell = { kind: "closed" };
+
+/** A row by its Friday, Saturday and Monday cells; Sunday is shut and Tuesday,
+ *  past the window, is wide open so it would dilute any share that counted it. */
+function row(
+  code: string,
+  poolKey: string,
+  poolLabel: string | null,
+  [fri, sat, mon]: [SupplyCell, SupplyCell, SupplyCell],
+  offeredDays: string[] | null = WINDOW,
+): BucketSupplyRow {
   return {
     code,
     name: code,
@@ -44,93 +68,97 @@ function row(code: string, poolKey: string, poolLabel: string | null, today: Sup
     computedAtMs: NOW_MS,
     freshness: "fresh",
     offeredLater: false,
-    cells: [today, { kind: "counted", booked: 0, capacity: 20, share: 0 }],
+    offeredDays,
+    cells: [fri, sat, CLOSED, mon, counted(0, 100)],
   };
 }
-
-const counted = (booked: number, capacity: number): SupplyCell => ({
-  kind: "counted",
-  booked,
-  capacity,
-  share: booked / capacity,
-});
 
 function report(rows: BucketSupplyRow[]): BucketSupplyReport {
   return {
     measurable: true,
     zone: "America/New_York",
-    horizonDays: 7,
+    horizonDays: 4,
     nowMs: NOW_MS,
-    days: [
-      { iso: TODAY, weekday: 5 },
-      { iso: "2026-10-03", weekday: 6 },
-    ],
+    days: DAYS.map((iso, i) => ({ iso, weekday: [5, 6, 7, 1, 2][i] })),
     rows,
     bucketListReadable: true,
     depthReadable: true,
   };
 }
 
-// The constant is Dan's number, and the module must not quietly drift from it.
-eq(POOL_NEARLY_FULL_OPEN_SHARE, 0.1, "the threshold is 10% of the day's possible starts still open");
-
-// --- 1 and 2: one reading per pool, the edge pinned both ways ------------------
+// --- 1 and 2: one pooled reading per pool, over the booker's days -------------
+{
+  // Dan's example: today full, Saturday 20 of 50 open, Monday 45 of 50 open. 65
+  // of 148 is 44% open, so a lead can still book and nothing is said.
+  const out = judgePoolFullness({
+    report: report([row("111", "pool:low", "Low", [counted(48, 48), counted(30, 50), counted(5, 50)])]),
+    bookedSolidCodes: [],
+    openShare: SHARE,
+  });
+  assert(out.status === "measured", "a readable report is a measurement");
+  if (out.status === "measured") {
+    eq(out.nearlyFull.length, 0, "a full today alone is not nearly full when the strip has room");
+    eq(out.judged, 1, "and the pool was judged");
+  }
+}
 {
   const out = judgePoolFullness({
     report: report([
-      // A pool of two codes, 2 of 21 open: under 10%, so it is named once.
-      row("111", "pool:low", "Low", counted(19, 21)),
-      row("112", "pool:low", "Low", counted(19, 21)),
-      // Exactly 10% open is NOT fewer than 10%.
-      row("211", "pool:mid", "Medium", counted(18, 20)),
-      // Healthy.
-      row("311", "pool:high", "High", counted(3, 20)),
+      // A pool of two codes, 5 of 148 open across the three days: named once.
+      row("111", "pool:low", "Low", [counted(48, 48), counted(48, 50), counted(47, 50)]),
+      row("112", "pool:low", "Low", [counted(48, 48), counted(48, 50), counted(47, 50)]),
+      // Exactly 10% open (6 of 60) is NOT fewer than 10%.
+      row("211", "pool:mid", "Medium", [counted(18, 20), counted(18, 20), counted(18, 20)]),
+      // One fewer open start (5 of 60) is, which pins the edge from the other side.
+      row("311", "pool:high", "High", [counted(19, 20), counted(18, 20), counted(18, 20)]),
     ]),
-    todayIso: TODAY,
     bookedSolidCodes: [],
+    openShare: SHARE,
   });
-  assert(out.status === "measured", "a readable report with today in it is a measurement");
+  assert(out.status === "measured", "measured");
   if (out.status === "measured") {
-    eq(out.nearlyFull.length, 1, "only the pool under the threshold is named");
-    eq(out.nearlyFull[0]?.label, "Low", "named by the pool, in words");
+    eq(out.nearlyFull.map((p) => p.label), ["Low", "High"], "only the pools under the threshold are named");
     eq(out.nearlyFull[0]?.codes, ["111", "112"], "one entry for the pool, carrying both codes");
-    eq(out.nearlyFull[0]?.open, 2, "open is capacity less booked");
-    eq(out.nearlyFull[0]?.capacity, 21, "capacity is the supply page's own");
-    eq(out.judged, 3, "three pools were measured today");
+    eq(out.nearlyFull[0]?.open, 5, "open is summed over the window's days");
+    eq(out.nearlyFull[0]?.capacity, 148, "and so is capacity; the shut Sunday and Tuesday past the window add nothing");
+    eq(out.nearlyFull[0]?.days, WINDOW, "and it carries the days it was judged over");
+    eq(out.judged, 3, "three pools were measured");
   }
 }
 
-// --- 3: the zero case belongs to the booked solid page (#1412) -----------------
+// --- 3: the threshold is the setting's, not a constant --------------------------
 {
+  const rows = [row("211", "pool:mid", "Medium", [counted(18, 20), counted(18, 20), counted(18, 20)])];
+  const at10 = judgePoolFullness({ report: report(rows), bookedSolidCodes: [], openShare: 0.1 });
+  const at20 = judgePoolFullness({ report: report(rows), bookedSolidCodes: [], openShare: 0.2 });
+  eq(at10.status === "measured" ? at10.nearlyFull.length : -1, 0, "10% open is not under a 10% line");
+  eq(at20.status === "measured" ? at20.nearlyFull.length : -1, 1, "and is under a 20% line");
+}
+
+// --- 4: the zero case belongs to the booked solid page (#1412) -----------------
+{
+  const full: [SupplyCell, SupplyCell, SupplyCell] = [counted(21, 21), counted(20, 20), counted(20, 20)];
   const rows = [
-    row("111", "pool:low", "Low", counted(21, 21)),
-    row("211", "pool:mid", "Medium", counted(19, 20)),
+    row("111", "pool:low", "Low", full),
+    row("211", "pool:mid", "Medium", [counted(20, 20), counted(19, 20), counted(20, 20)]),
   ];
-  const known = judgePoolFullness({ report: report(rows), todayIso: TODAY, bookedSolidCodes: ["111"] });
-  assert(known.status === "measured", "measured");
+  const known = judgePoolFullness({ report: report(rows), bookedSolidCodes: ["111"], openShare: SHARE });
   if (known.status === "measured") {
-    eq(
-      known.nearlyFull.map((p) => p.label),
-      ["Medium"],
-      "a pool the booked solid page already names is not whispered about as well",
-    );
+    eq(known.nearlyFull.map((p) => p.label), ["Medium"], "a pool the booked solid page already names is not whispered about as well");
+  } else {
+    assert(false, "measured");
   }
   // Positive control for the same fixture: when the page is NOT about it, a full
-  // day IS fewer than 10% open, and the whisper names it. Without this the line
-  // above could pass because full pools were never judged at all.
-  const notPaged = judgePoolFullness({ report: report(rows), todayIso: TODAY, bookedSolidCodes: [] });
+  // window IS fewer than 10% open, and the whisper names it.
+  const notPaged = judgePoolFullness({ report: report(rows), bookedSolidCodes: [], openShare: SHARE });
   if (notPaged.status === "measured") {
-    eq(
-      notPaged.nearlyFull.map((p) => p.label),
-      ["Low", "Medium"],
-      "a full day the booked solid page is not about is still worth the whisper",
-    );
+    eq(notPaged.nearlyFull.map((p) => p.label), ["Low", "Medium"], "a full window the booked solid page is not about is still worth the whisper");
   } else {
     assert(false, "measured");
   }
   // The scan's answer unknown: a pool with nothing open may be on that page, so it
   // is held back, and a pool with something open is still named.
-  const unknown = judgePoolFullness({ report: report(rows), todayIso: TODAY, bookedSolidCodes: null });
+  const unknown = judgePoolFullness({ report: report(rows), bookedSolidCodes: null, openShare: SHARE });
   if (unknown.status === "measured") {
     eq(unknown.nearlyFull.map((p) => p.label), ["Medium"], "unknown scan: a full pool is held back");
   } else {
@@ -138,48 +166,50 @@ eq(POOL_NEARLY_FULL_OPEN_SHARE, 0.1, "the threshold is 10% of the day's possible
   }
 }
 
-// --- 4: nothing that is not a measurement whispers -------------------------------
+// --- 5: nothing that is not a measurement whispers -------------------------------
 {
   const unmeasurable = judgePoolFullness({
     report: { measurable: false, reason: "business-hours" },
-    todayIso: TODAY,
     bookedSolidCodes: [],
+    openShare: SHARE,
   });
   eq(unmeasurable.status, "unmeasured", "an unmeasurable report is unmeasured, never an empty finding");
 
+  const nearlyFull: [SupplyCell, SupplyCell, SupplyCell] = [counted(20, 20), counted(20, 20), counted(19, 20)];
   const quiet = judgePoolFullness({
     report: report([
-      row("111", "pool:a", "A", { kind: "unknown" }),
-      row("211", "pool:b", "B", { kind: "closed" }),
-      row("311", "pool:c", "C", { kind: "no-capacity" }),
-      row("411", "pool:d", "D", { kind: "nobody-available" }),
-      row("511", "pool:e", "E", { kind: "other-days" }),
+      // No window: the booker could not say which days it shows.
+      row("111", "pool:a", "A", nearlyFull, null),
+      // One window day unreadable: a share over the other two would be a guess.
+      row("211", "pool:b", "B", [counted(20, 20), { kind: "unknown" }, counted(19, 20)]),
+      // A window day the report does not hold at all.
+      row("311", "pool:c", "C", nearlyFull, ["2026-10-02", "2026-10-03", "2026-10-09"]),
+      // Nothing countable on any window day.
+      row("411", "pool:d", "D", [{ kind: "no-capacity" }, { kind: "nobody-available" }, { kind: "other-days" }]),
     ]),
-    todayIso: TODAY,
     bookedSolidCodes: [],
+    openShare: SHARE,
   });
   if (quiet.status === "measured") {
-    eq(quiet.nearlyFull.length, 0, "no state but a counted share can be nearly full");
+    eq(quiet.nearlyFull.length, 0, "no pool without a full reading of its window is named");
     eq(quiet.judged, 0, "and none of them counts as a pool judged");
   } else {
     assert(false, "measured");
   }
-
-  const noToday = judgePoolFullness({
-    report: report([row("111", "pool:a", "A", counted(20, 21))]),
-    todayIso: "2026-10-09",
-    bookedSolidCodes: [],
-  });
-  eq(noToday.status, "unmeasured", "a report that does not hold today has nothing to say about today");
+  // Control: the same nearly full cells over a readable window ARE named, so the
+  // silence above is the missing reading and not the cells.
+  const control = judgePoolFullness({ report: report([row("111", "pool:a", "A", nearlyFull)]), bookedSolidCodes: [], openShare: SHARE });
+  eq(control.status === "measured" ? control.nearlyFull.length : -1, 1, "the same cells over a readable window are named");
 }
 
-// --- 5: a whisper, on the info channel, never resolved -------------------------
+// --- 6: a whisper, on the info channel, never resolved -------------------------
+const nearlyFullLow = () => report([row("111", "pool:low", "Low", [counted(48, 48), counted(48, 50), counted(47, 50)])]);
 {
   const sent: { key: string; cooldown: number; text: string }[] = [];
   const result = await runPoolFullnessCheck({
-    loadReport: async () => report([row("111", "pool:low", "Low", counted(19, 21))]),
-    todayIso: TODAY,
+    loadReport: async () => nearlyFullLow(),
     bookedSolidCodes: [],
+    openShare: SHARE,
     notify: async (key, cooldown, text) => {
       sent.push({ key, cooldown, text });
     },
@@ -189,20 +219,20 @@ eq(POOL_NEARLY_FULL_OPEN_SHARE, 0.1, "the threshold is 10% of the day's possible
   eq(sent.length, 1, "one whisper");
   eq(sent[0]?.key, POOL_NEARLY_FULL_KEY, "on the nearly full key");
   eq(sent[0]?.cooldown, 1234, "on the configured cooldown");
-  assert(sent[0]?.text.includes("Low") === true, "naming the pool");
+  assert(sent[0]?.text.includes("Low: 5 of 148 starts still open.") === true, `naming the pool and its total: ${sent[0]?.text}`);
 
   // Nothing nearly full: nothing sent, and nothing to resolve (an info never ends).
   const silent: string[] = [];
   await runPoolFullnessCheck({
-    loadReport: async () => report([row("111", "pool:low", "Low", counted(2, 21))]),
-    todayIso: TODAY,
+    loadReport: async () => report([row("111", "pool:low", "Low", [counted(2, 21), counted(2, 21), counted(2, 21)])]),
     bookedSolidCodes: [],
+    openShare: SHARE,
     notify: async (key) => {
       silent.push(key);
     },
     cooldownMs: 1,
   });
-  eq(silent.length, 0, "a healthy day sends nothing");
+  eq(silent.length, 0, "a healthy window sends nothing");
 
   // A failed load is unmeasured and sends nothing, never "no pool is nearly full".
   const failed: string[] = [];
@@ -210,8 +240,8 @@ eq(POOL_NEARLY_FULL_OPEN_SHARE, 0.1, "the threshold is 10% of the day's possible
     loadReport: async () => {
       throw new Error("bookings read failed");
     },
-    todayIso: TODAY,
     bookedSolidCodes: [],
+    openShare: SHARE,
     notify: async (key) => {
       failed.push(key);
     },
@@ -223,9 +253,9 @@ eq(POOL_NEARLY_FULL_OPEN_SHARE, 0.1, "the threshold is 10% of the day's possible
   // A refused Slack post must not fail the tick.
   const refusedLog: Record<string, unknown>[] = [];
   const refused = await runPoolFullnessCheck({
-    loadReport: async () => report([row("111", "pool:low", "Low", counted(19, 21))]),
-    todayIso: TODAY,
+    loadReport: async () => nearlyFullLow(),
     bookedSolidCodes: [],
+    openShare: SHARE,
     notify: async () => {
       throw new Error("slack 500");
     },
@@ -241,18 +271,27 @@ eq(POOL_NEARLY_FULL_OPEN_SHARE, 0.1, "the threshold is 10% of the day's possible
 
 // --- copy --------------------------------------------------------------------
 {
-  const one = formatPoolNearlyFullNotice([{ label: "Low", codes: ["111", "112"], open: 2, capacity: 21 }]);
-  assert(one.startsWith("1 pool has"), `singular agrees with its count: ${one}`);
-  assert(one.includes("2 of today's 21 starts"), "states the measurement");
-  assert(!/[\u2014\u2013]/.test(one), "no dashes in the copy");
-  const two = formatPoolNearlyFullNotice([
-    { label: "Low", codes: ["111"], open: 0, capacity: 21 },
-    { label: null, codes: ["999"], open: 1, capacity: 20 },
-  ]);
-  assert(two.startsWith("2 pools have"), `plural agrees with its count: ${two}`);
-  assert(two.includes("none of today's 21"), "a full day says none rather than 0 of");
-  assert(two.includes("999"), "a pool with no name falls back to its code");
-  eq(formatPoolNearlyFullNotice([]), "", "nothing to say is an empty string, so nothing is sent");
+  const one = formatPoolNearlyFullNotice([{ label: "Low", codes: ["111", "112"], open: 5, capacity: 148, days: WINDOW }], SHARE);
+  eq(
+    one,
+    "1 pool has fewer than 10% of its possible starts still open across the days leads can book " +
+      "(Fri Oct 2, Sat Oct 3, Mon Oct 5). Nothing is broken: the calendars are filling up, so this " +
+      "is a nudge to add coverage before leads run out of times.\n" +
+      "Low: 5 of 148 starts still open.",
+    "the days are named once, and the pool gets one total",
+  );
+  const two = formatPoolNearlyFullNotice(
+    [
+      { label: "Low", codes: ["111"], open: 0, capacity: 148, days: WINDOW },
+      { label: null, codes: ["999"], open: 1, capacity: 20, days: ["2026-10-03", "2026-10-05", "2026-10-06"] },
+    ],
+    0.2,
+  );
+  assert(two.startsWith("2 pools have fewer than 20% of their possible starts"), `plural agrees, at the set line: ${two}`);
+  assert(two.includes("(Fri Oct 2, Sat Oct 3, Mon Oct 5, Tue Oct 6)"), `every pool's days are named, once each, in order: ${two}`);
+  assert(two.includes("Low: none of 148 starts still open."), "a full window says none rather than 0 of");
+  assert(two.includes("bucket 999"), "a pool with no name falls back to its code");
+  eq(formatPoolNearlyFullNotice([], SHARE), "", "nothing to say is an empty string, so nothing is sent");
 }
 
 finish();

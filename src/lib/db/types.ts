@@ -336,6 +336,10 @@ export interface MonitorAlertConfig {
   /** #3227: minutes the tier must hold that many before the all clear. Null =
    *  unset (the coded 30). */
   empty_tier_recovery_hold_min: number | null;
+  /** #3559: the nearly full pool line, in whole percent: a pool is named when
+   *  fewer than this share of its starts across the days the booker shows are
+   *  still open. Null = unset (the coded 10). */
+  pool_nearly_full_open_pct: number | null;
   /** #1454: UI arm/disarm for the roster-coverage page. Null = unset (fall
    *  through to the disarmed default, which here is about the roster being dark
    *  before cutover rather than about calibration: see migration 0102). */

@@ -17,7 +17,15 @@
  * offers no Saturday and the lead books Monday. An alarm on it would be red on
  * the healthy day, which is how a gate stops being read (L36). So the trigger is
  * what a LEAD CAN ACTUALLY GET: does this debt tier offer a bookable time inside
- * the next open business day?
+ * the days the booker shows?
+ *
+ * THOSE DAYS ARE THE BOOKER'S OWN (#3559). The window was the rest of today plus
+ * the next open day, which paged Low at 8:11am on Friday 2026-10-09 while it had
+ * times on Monday, a day every lead was being shown. Dan, that morning: judge "the
+ * next x days, x being the number of days shown the booker at the time of the
+ * check". So each tier is judged over `offeredWindowFor`, the function the booker
+ * cuts its strip with, from that tier's own pool notice, and a change to the
+ * number of offered days moves this alarm with it.
  *
  * PER TIER, IGNORING THE LADDER, and that is load bearing rather than an
  * oversight. After #2486 a lead whose tier is dry falls to a lower one, so "can
@@ -42,6 +50,7 @@
  * Pure, and no `@/` imports, so the node suite drives it directly. The reads (the
  * roster, the cached slot rows, the org's week) belong to the monitor lane.
  */
+import { DateTime } from "luxon";
 import { formatSlotDay, formatSlotTime } from "../booking/slot-label.ts";
 import type { DayTally, TierCauseReading } from "./tier-cause.ts";
 import type { AlertResolve } from "./alert-deps";
@@ -89,6 +98,13 @@ export type SlotReading =
       offeredMs: number[];
     };
 
+/**
+ * The days the booker shows a lead in this tier, and where they end, or that they
+ * could not be worked out (#3559). From `offeredWindowFor` over the tier pool's
+ * own minimum notice, so the alarm judges exactly the strip a lead sees.
+ */
+export type WindowReading = { measured: false } | { measured: true; endMs: number; days: string[] };
+
 export interface TierReading {
   /** The first XBC digit, "1" to "5". */
   tier: string;
@@ -96,6 +112,7 @@ export interface TierReading {
   label: string;
   agents: AgentReading;
   slots: SlotReading;
+  window: WindowReading;
 }
 
 export type TierVerdict =
@@ -111,7 +128,7 @@ export type TierVerdict =
   | { kind: "unmeasured"; why: string };
 
 /**
- * Judge one debt tier against the window.
+ * Judge one debt tier against its window.
  *
  * The order is deliberate. A tier OFFERING a time inside the window is `serving`
  * before anything else is asked, including when the roster read says it has
@@ -120,10 +137,11 @@ export type TierVerdict =
  * a call would be an alarm about our own bookkeeping dressed as a customer
  * outage (L11).
  */
-export function judgeTier(r: TierReading, windowEndMs: number): TierVerdict {
+export function judgeTier(r: TierReading): TierVerdict {
   const unread: string[] = [];
   if (!r.agents.measured) unread.push("the roster");
   if (!r.slots.measured) unread.push("the offered times");
+  if (!r.window.measured) unread.push("the booker's window");
   // EVERY unread input, not just the first: naming one sends the reader back for
   // a second tick to discover the rest (L679).
   if (unread.length > 0) {
@@ -132,6 +150,7 @@ export function judgeTier(r: TierReading, windowEndMs: number): TierVerdict {
   // Narrowed by the guard above; restated so the compiler can see it.
   const slots = r.slots as { measured: true; firstSlotMs: number | null; offeredMs: number[] };
   const agents = r.agents as { measured: true; count: number };
+  const { endMs: windowEndMs } = r.window as { measured: true; endMs: number; days: string[] };
   if (slots.firstSlotMs !== null && slots.firstSlotMs <= windowEndMs) {
     return { kind: "serving", openTimes: slots.offeredMs.filter((ms) => ms <= windowEndMs).length };
   }
@@ -152,6 +171,10 @@ export interface TierPage {
   /** The tier's first offered time past the window (#3037), or null when it is
    *  offering nothing at all. Always null on an unstaffed page. */
   firstSlotMs: number | null;
+  /** The days the tier was judged over, which the copy names (#3559). */
+  days: string[];
+  /** Where that window ends, which the diagnosis reads to. */
+  windowEndMs: number;
 }
 
 export interface TierAlertPlan {
@@ -183,17 +206,26 @@ export interface TierAlertPlan {
  * would announce a recovery off a run that never looked, which is #1134 and
  * #1152, and paging it would accuse a tier that may be perfectly well.
  */
-export function planTierAlerts(readings: TierReading[], windowEndMs: number): TierAlertPlan {
+export function planTierAlerts(readings: TierReading[]): TierAlertPlan {
   const page: TierPage[] = [];
   const recovered: { tier: string; label: string; openTimes: number }[] = [];
   const unmeasured: string[] = [];
   for (const r of readings) {
-    const v = judgeTier(r, windowEndMs);
-    if (v.kind === "unmeasured") unmeasured.push(r.tier);
-    else if (v.kind === "serving") recovered.push({ tier: r.tier, label: r.label, openTimes: v.openTimes });
-    else if (v.kind === "unstaffed")
-      page.push({ tier: r.tier, label: r.label, kind: "unstaffed", agents: 0, firstSlotMs: null });
-    else page.push({ tier: r.tier, label: r.label, kind: "no-slots", agents: v.agents, firstSlotMs: v.firstSlotMs });
+    const v = judgeTier(r);
+    if (v.kind === "unmeasured") {
+      unmeasured.push(r.tier);
+      continue;
+    }
+    if (v.kind === "serving") {
+      recovered.push({ tier: r.tier, label: r.label, openTimes: v.openTimes });
+      continue;
+    }
+    // Measured by the guard in `judgeTier`, so the window is there.
+    const w = r.window as { measured: true; endMs: number; days: string[] };
+    const where = { days: w.days, windowEndMs: w.endMs };
+    if (v.kind === "unstaffed")
+      page.push({ tier: r.tier, label: r.label, kind: "unstaffed", agents: 0, firstSlotMs: null, ...where });
+    else page.push({ tier: r.tier, label: r.label, kind: "no-slots", agents: v.agents, firstSlotMs: v.firstSlotMs, ...where });
   }
   return { page, recovered, unmeasured, measuredAny: page.length + recovered.length > 0 };
 }
@@ -378,57 +410,48 @@ function etWhen(ms: number): string {
   return `${formatSlotDay(iso, ALERT_ZONE)} at ${formatSlotTime(iso, ALERT_ZONE)} ET`;
 }
 
-const capitalise = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-
-/** What a day's state is called in a sentence. */
-const STATE_WORDS = {
-  slate: "fully booked with Slate calls",
-  outside: "held by other meetings or time off",
-  open: "showing an opening the offered times do not have yet",
-} as const;
-
-/**
- * One sentence about one open day: how many of the agents work it, and what
- * stops each of the working ones taking a call.
- *
- * `others` is set when some agents were left out because their sync stopped, so
- * every count says "of the other N" rather than reading as the whole tier.
- */
-function daySentence(d: DayTally, others: boolean): string {
-  const pool = d.off + d.slate + d.outside + d.open;
-  const working = pool - d.off;
-  const of = others ? `of the other ${pool}` : `of ${pool}`;
-  const day = capitalise(d.label);
-  if (working === 0) {
-    if (pool === 1) return `${day}, ${others ? "the other agent" : "the one agent"} does not work.`;
-    return `${day}, none of the ${others ? "other " : ""}${pool} works.`;
-  }
-  let who: string;
-  if (working < pool) who = `only ${working} ${of} ${working === 1 ? "works" : "work"}`;
-  else if (pool === 1) who = others ? "the other agent works" : "the one agent works";
-  else if (pool === 2) who = others ? "both of the other 2 work" : "both work";
-  else who = others ? `all the other ${pool} work` : `all ${pool} work`;
-  const parts = (["slate", "outside", "open"] as const).filter((k) => d[k] > 0);
-  if (parts.length === 1) {
-    let subject: string;
-    if (working === 1) subject = "they are";
-    else if (working === 2) subject = "both are";
-    else if (working === pool) subject = "every one is";
-    else subject = `all ${working} are`;
-    return `${day}, ${who}, and ${subject} ${STATE_WORDS[parts[0]]}.`;
-  }
-  const items = parts.map((k) => `${d[k]} ${d[k] === 1 ? "is" : "are"} ${STATE_WORDS[k]}`);
-  const list = `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
-  return `${day}, ${who}: ${list}.`;
+/** "Fri, Sat or Mon": the days a tier was judged over, as a lead's strip names
+ *  them. The dates are the org's own, so the weekday needs no zone. */
+function dayList(days: string[]): string {
+  const names = days.map((iso) => DateTime.fromISO(iso).toFormat("ccc"));
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
 }
 
-/** Whose sync has stopped, as a sentence, or null when nobody's has. */
-function syncSentence(stopped: number, total: number): string | null {
-  if (stopped === 0) return null;
-  let whom: string;
-  if (stopped < total) whom = `${stopped} of the ${total} agents`;
-  else whom = total === 1 ? "its only agent" : `all ${total} agents`;
-  return `The calendar sync has stopped for ${whom}, so their busy times are out of date and should be repaired first.`;
+/** What each state of an agent's day is called, after "are" or after a comma. */
+const STATE_WORDS = {
+  slate: "booked with Slate calls",
+  outside: "held by other meetings and time off",
+  off: "not working those days",
+  open: "showing openings the offered times do not have yet",
+} as const;
+type DayState = keyof typeof STATE_WORDS;
+
+/**
+ * The cause over the WHOLE window, in a few words (Dan, 2026-10-09: one total,
+ * not a sentence per day). Counted in agent days: every state holding at least a
+ * quarter of them is named, largest first, so the word that leads is what most
+ * of the window was lost to. "mostly" only when the named states leave some out,
+ * and "all" when one state is the whole of it. Null when no agent day was judged.
+ */
+function causeSummary(days: DayTally[], agents: number): string | null {
+  const totals: Record<DayState, number> = { slate: 0, outside: 0, off: 0, open: 0 };
+  for (const d of days) for (const k of Object.keys(totals) as DayState[]) totals[k] += d[k];
+  const sum = Object.values(totals).reduce((a, b) => a + b, 0);
+  if (sum === 0) return null;
+  const ranked = (Object.keys(totals) as DayState[])
+    .filter((k) => totals[k] > 0)
+    .sort((a, b) => totals[b] - totals[a]);
+  const named = ranked.filter((k, i) => i === 0 || totals[k] * 4 >= sum);
+  const phrases = named.map((k) => STATE_WORDS[k]);
+  const words =
+    phrases.length <= 2 ? phrases.join(" or ") : `${phrases.slice(0, -1).join(", ")} or ${phrases[phrases.length - 1]}`;
+  if (named.length === ranked.length) {
+    if (named.length > 1 || agents === 1) return words;
+    // "all not working" reads as a typo; nobody working is said as that.
+    return named[0] === "off" ? "none working those days" : `all ${words}`;
+  }
+  return `mostly ${words}`;
 }
 
 /**
@@ -436,10 +459,11 @@ function syncSentence(stopped: number, total: number): string | null {
  *
  * A different repair from an unstaffed tier entirely, so a different sentence
  * (L11). Since #3037 it names the cause that ACTUALLY applies over the window,
- * per day and with the agents' counts, and the tier's next offered time, rather
- * than listing three possibilities for the reader to investigate. The cause is
- * worked out by `diagnoseTierCause` from reads the lane makes only on a tick about
- * to page.
+ * worked out by `diagnoseTierCause` from reads the lane makes only on a tick
+ * about to page. Since #3559 it is short: the days a lead can see, the next
+ * offered time, and the cause in one clause over the whole window. A stopped
+ * calendar sync LEADS (Dan, 2026-10-09: "it's buried right now"), because it is
+ * the one cause with its own repair and it makes the rest of the page unreliable.
  *
  * When those reads failed, the cause is UNMEASURED and the page keeps the three
  * possibilities, plus one clause saying which applies could not be read. Never
@@ -447,7 +471,7 @@ function syncSentence(stopped: number, total: number): string | null {
  * names every site that builds this page.
  */
 export function tierNoSlotsMessage(
-  t: { tier: string; label: string; agents: number; firstSlotMs: number | null },
+  t: { tier: string; label: string; agents: number; firstSlotMs: number | null; days: string[] },
   cause: TierCauseReading,
 ): string {
   // Every clause agrees with the count, including the ones several words away. A
@@ -456,34 +480,36 @@ export function tierNoSlotsMessage(
   // hat (L11, and the 2026-07-28 page this rule comes from).
   const one = t.agents === 1;
   const who = one ? "1 agent" : `${t.agents} agents`;
-  const tail = `Leads asking for ${t.label} are being served by a lower tier until it clears.`;
+  const none =
+    t.firstSlotMs === null
+      ? `The ${t.label} debt tier has no booking times on ${dayList(t.days)}, and none later either.`
+      : `The ${t.label} debt tier has no booking times on ${dayList(t.days)}. The next is ${etWhen(t.firstSlotMs)}.`;
+  const tail = `Leads asking for ${t.label} go to a lower tier until it clears.`;
   if (!cause.measured) {
     const whose = one ? "their calendar is full, their" : "their calendars are full, their";
-    const next =
-      t.firstSlotMs === null
-        ? "It is offering no times anywhere in the booking window."
-        : `Its next offered time is ${etWhen(t.firstSlotMs)}.`;
     return (
-      `The ${t.label} debt tier is offering no booking times before the end of the ` +
-      `next working day. It has ${who}, so this is not a staffing gap: ${whose} ` +
-      `working hours do not reach the window, or their calendar sync has stopped. ` +
-      `${next} Which of those applies could not be read on this tick. ${tail}`
+      `${none} It has ${who}, so this is not a staffing gap: ${whose} working hours ` +
+      `do not reach those days, or their calendar sync has stopped. Which of those ` +
+      `applies could not be read on this tick. ${tail}`
     );
   }
   const c = cause.cause;
-  const lead =
-    t.firstSlotMs === null
-      ? `The ${t.label} debt tier has no booking times anywhere in the booking window.`
-      : `The ${t.label} debt tier has no booking times until ${etWhen(t.firstSlotMs)}.`;
-  const sentences = [lead, `It has ${who}.`];
-  const sync = syncSentence(c.syncStopped, c.total);
-  if (sync) sentences.push(sync);
-  const others = c.syncStopped > 0;
-  if (c.total > c.syncStopped) for (const d of c.days) sentences.push(daySentence(d, others));
+  const sentences: string[] = [];
+  if (c.syncStopped > 0) {
+    let whom: string;
+    if (c.syncStopped < c.total) whom = `${c.syncStopped} of the ${c.total} ${t.label} agents`;
+    else whom = c.total === 1 ? `the only ${t.label} agent` : `all ${c.total} ${t.label} agents`;
+    sentences.push(`Calendar sync has stopped for ${whom}, so their busy times are out of date. Fix that first.`);
+  }
+  sentences.push(none);
+  const rest = c.total - c.syncStopped;
+  const summary = rest > 0 ? causeSummary(c.days, rest) : null;
+  if (summary === null) sentences.push(`It has ${who}.`);
+  else if (c.syncStopped > 0)
+    sentences.push(`It has ${who}; ${rest === 1 ? "the other one is" : `the other ${rest} are`} ${summary}.`);
+  else sentences.push(`It has ${who}, ${summary}.`);
   if (c.days.some((d) => d.open > 0)) {
-    sentences.push(
-      "An agent showing an opening means the offered times are behind the calendars, and the next recompute should bring them back.",
-    );
+    sentences.push("Some calendars show openings, so the offered times are behind and the next recompute should bring them back.");
   }
   sentences.push(tail);
   return sentences.join(" ");

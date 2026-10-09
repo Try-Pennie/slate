@@ -1,5 +1,6 @@
 /**
- * Why a debt tier has no times inside the window (#3037).
+ * Why a debt tier has no times inside the window (#3037), the days the booker
+ * shows (#3559).
  *
  * The tier alarm used to end on three possible causes, "their calendars are
  * full, their working hours do not reach the window, or their calendar sync has
@@ -89,6 +90,10 @@ export interface TierCauseInput {
   businessHours: BusinessHoursRules;
   nowMs: number;
   windowEndMs: number;
+  /** The org local dates the booker shows (#3559), from the same window as
+   *  `windowEndMs`. Only these are tallied, so the cause covers exactly the days
+   *  the page names. */
+  days: string[];
 }
 
 /** One open business day of the window, with every agent whose sync runs counted
@@ -96,8 +101,6 @@ export interface TierCauseInput {
 export interface DayTally {
   /** The org's local date, `2026-10-03`. */
   isoDate: string;
-  /** How the day is named in a sentence: "the rest of today", or a weekday. */
-  label: string;
   off: number;
   slate: number;
   outside: number;
@@ -137,27 +140,26 @@ export function isCalendarSyncStopped(calendars: CauseCalendar[], nowMs: number)
 }
 
 /**
- * The org's open days inside the window, each with how it is named.
- *
- * A day counts only if a call can still start in it: today after the close, or
- * inside the minimum notice of it, is not a day anybody could have been offered.
+ * The days of the window that are tallied: the ones the booker shows, and of
+ * those only the ones a call can still start in. Today after the close, or inside
+ * the minimum notice of it, is not a day anybody could have been offered.
  */
-function openDays(input: TierCauseInput): { isoDate: string; label: string }[] {
+function openDays(input: TierCauseInput): { isoDate: string }[] {
   const zone = input.businessHours.zone;
   const today = DateTime.fromMillis(input.nowMs, { zone }).startOf("day");
   const lastDay = DateTime.fromMillis(input.windowEndMs, { zone }).startOf("day");
   const earliestStart = input.nowMs + input.slot.minNoticeMin * MIN;
-  const days: { isoDate: string; label: string }[] = [];
+  const shown = new Set(input.days);
+  const days: { isoDate: string }[] = [];
   for (let day = today; day <= lastDay; day = day.plus({ days: 1 })) {
     const isoDate = day.toISODate();
-    if (isoDate === null) continue;
+    if (isoDate === null || !shown.has(isoDate)) continue;
     const window = windowOnDate(input.businessHours, isoDate, day.weekday);
     if (!window) continue;
     const open = wallClock(day, window.start_minute);
     const close = Math.min(wallClock(day, window.end_minute), input.windowEndMs);
     if (Math.max(open, earliestStart) + input.slot.durationMin * MIN > close) continue;
-    const label = day.hasSame(today, "day") ? "the rest of today" : day.toFormat("cccc");
-    days.push({ isoDate, label });
+    days.push({ isoDate });
   }
   return days;
 }
@@ -299,7 +301,7 @@ export function tierCauseAgents(input: {
  * the page itself (L215, L11), so nothing in the diagnosis can throw past here.
  */
 export async function tierNoSlotsPageText(
-  page: { tier: string; label: string; agents: number; firstSlotMs: number | null },
+  page: { tier: string; label: string; agents: number; firstSlotMs: number | null; days: string[] },
   deps: {
     isDue: () => Promise<boolean>;
     loadCauseInput: () => Promise<TierCauseInput>;

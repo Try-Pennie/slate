@@ -19,6 +19,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 
 const NOW = Date.UTC(2026, 8, 17, 14, 0);
 const WINDOW_END = NOW + 36 * 3600_000;
+const DAYS = ["2026-09-17", "2026-09-18", "2026-09-19"];
 
 function reading(over: Partial<TierReading> = {}): TierReading {
   return {
@@ -26,6 +27,7 @@ function reading(over: Partial<TierReading> = {}): TierReading {
     label: "Ultra High",
     agents: { measured: true, count: 5 },
     slots: { measured: true, firstSlotMs: NOW + 3600_000, offeredMs: [NOW + 3600_000] },
+    window: { measured: true, endMs: WINDOW_END, days: DAYS },
     ...over,
   };
 }
@@ -35,18 +37,18 @@ function reading(over: Partial<TierReading> = {}): TierReading {
 // This is the case that must stay silent, and it is also the case that makes the
 // alarm indistinguishable from a broken one, which is why every branch below is
 // driven in BOTH directions (L1).
-eq(judgeTier(reading(), WINDOW_END).kind, "serving", "a tier offering a time inside the window is serving");
+eq(judgeTier(reading()).kind, "serving", "a tier offering a time inside the window is serving");
 
 // A slot beyond the window is not a slot in the window.
 eq(
-  judgeTier(reading({ slots: { measured: true, firstSlotMs: WINDOW_END + 60_000, offeredMs: [WINDOW_END + 60_000] } }), WINDOW_END).kind,
+  judgeTier(reading({ slots: { measured: true, firstSlotMs: WINDOW_END + 60_000, offeredMs: [WINDOW_END + 60_000] } })).kind,
   "no-slots",
   "a tier whose first time is past the window is not serving",
 );
 // And the boundary itself counts as inside, so a tier offering the very last
 // minute of the next open day is not paged about.
 eq(
-  judgeTier(reading({ slots: { measured: true, firstSlotMs: WINDOW_END, offeredMs: [WINDOW_END] } }), WINDOW_END).kind,
+  judgeTier(reading({ slots: { measured: true, firstSlotMs: WINDOW_END, offeredMs: [WINDOW_END] } })).kind,
   "serving",
   "the window end is inside the window",
 );
@@ -58,16 +60,14 @@ eq(
 // send half the readers to do the wrong thing.
 eq(
   judgeTier(
-    reading({ agents: { measured: true, count: 0 }, slots: { measured: true, firstSlotMs: null, offeredMs: [] } }),
-    WINDOW_END,
+    reading({ agents: { measured: true, count: 0 }, slots: { measured: true, firstSlotMs: null, offeredMs: [] } })
   ).kind,
   "unstaffed",
   "a tier with nobody assigned is unstaffed",
 );
 eq(
   judgeTier(
-    reading({ agents: { measured: true, count: 4 }, slots: { measured: true, firstSlotMs: null, offeredMs: [] } }),
-    WINDOW_END,
+    reading({ agents: { measured: true, count: 4 }, slots: { measured: true, firstSlotMs: null, offeredMs: [] } })
   ).kind,
   "no-slots",
   "a tier with agents and no times is a different finding",
@@ -78,7 +78,7 @@ eq(
 // disagreeing is a fault, but it is not one a lead is suffering from, and paging
 // on it would be an alarm about our own bookkeeping worded as a customer outage.
 eq(
-  judgeTier(reading({ agents: { measured: true, count: 0 } }), WINDOW_END).kind,
+  judgeTier(reading({ agents: { measured: true, count: 0 } })).kind,
   "serving",
   "a tier offering times is serving even when the roster read says nobody",
 );
@@ -93,16 +93,44 @@ for (const [over, want] of [
   [{ agents: { measured: false } as const }, "roster"],
   [{ slots: { measured: false } as const }, "times"],
 ] as const) {
-  const v = judgeTier(reading(over), WINDOW_END);
+  const v = judgeTier(reading(over));
   eq(v.kind, "unmeasured", `an unreadable ${want} read concludes nothing`);
   assert(
     v.kind === "unmeasured" && v.why.includes(want),
     `and the reason names ${want} (got ${v.kind === "unmeasured" ? v.why : v.kind})`,
   );
 }
+// #3559: the window is the booker's own, read off the tier's cached event type. A
+// tier whose window could not be worked out is judged against nothing, so it
+// concludes nothing either way, and the reason says so.
+{
+  const v = judgeTier(reading({ window: { measured: false } }));
+  eq(v.kind, "unmeasured", "an unreadable window concludes nothing");
+  assert(v.kind === "unmeasured" && v.why.includes("window"), `and the reason names the window (got ${JSON.stringify(v)})`);
+  // Even a tier with no times at all: paging it against a guessed window would
+  // hold it to days nobody can see (L215).
+  eq(
+    judgeTier(reading({ window: { measured: false }, slots: { measured: true, firstSlotMs: null, offeredMs: [] } })).kind,
+    "unmeasured",
+    "an unreadable window never pages",
+  );
+}
+// Each tier carries its OWN window, as the booker computes one per pool from that
+// pool's notice. A time inside one tier's window is past another's.
+{
+  const t = NOW + 30 * 3600_000;
+  const slots = { measured: true, firstSlotMs: t, offeredMs: [t] } as const;
+  const plan = planTierAlerts([
+    reading({ tier: "1", label: "Low", slots }),
+    reading({ tier: "2", label: "Medium", slots, window: { measured: true, endMs: NOW + 20 * 3600_000, days: DAYS.slice(0, 1) } }),
+  ]);
+  eq(plan.recovered.map((r) => r.tier).join(","), "1", "the tier whose window reaches the time is serving");
+  eq(plan.page.map((p) => p.tier).join(","), "2", "and the tier whose window stops short of it pages");
+}
+
 // Both unreadable names both, rather than the first it happened to check (L679).
 {
-  const v = judgeTier(reading({ agents: { measured: false }, slots: { measured: false } }), WINDOW_END);
+  const v = judgeTier(reading({ agents: { measured: false }, slots: { measured: false } }));
   assert(
     v.kind === "unmeasured" && v.why.includes("roster") && v.why.includes("times"),
     "both unreadable names both reads",
@@ -127,8 +155,7 @@ for (const [over, want] of [
         slots: { measured: true, firstSlotMs: null, offeredMs: [] },
       }),
       reading({ tier: "3", label: "High", agents: { measured: false } }),
-    ],
-    WINDOW_END,
+    ]
   );
   eq(plan.page.map((p) => p.tier).sort().join(","), "4,5", "the two findings page");
   eq(plan.recovered.map((c) => c.tier).join(","), "1", "only the MEASURED healthy tier clears");
@@ -146,8 +173,7 @@ for (const [over, want] of [
 // A run where NOTHING could be read pages nothing and clears nothing.
 {
   const plan = planTierAlerts(
-    ["1", "2", "3", "4", "5"].map((t) => reading({ tier: t, agents: { measured: false } })),
-    WINDOW_END,
+    ["1", "2", "3", "4", "5"].map((t) => reading({ tier: t, agents: { measured: false } }))
   );
   eq(plan.page.length, 0, "a blind run pages nothing");
   eq(plan.recovered.length, 0, "and clears nothing");
@@ -155,7 +181,7 @@ for (const [over, want] of [
   assert(!plan.measuredAny, "a blind run reports that it measured nothing");
 }
 // And the control the other way, so `measuredAny` is not hard wired (L1).
-assert(planTierAlerts([reading()], WINDOW_END).measuredAny, "a run that measured a tier says so");
+assert(planTierAlerts([reading()]).measuredAny, "a run that measured a tier says so");
 
 // --- the key space ----------------------------------------------------------
 eq(TIER_STAFFING_ALERT_KEY, "empty_tier", "one constant for the key");
@@ -171,8 +197,8 @@ assert(!/^[1-5][0-3][0-2]$/.test("5"), "a tier digit is not a bucket code");
 // the word Slate.
 const messages = [
   tierUnstaffedMessage({ tier: "5", label: "Ultra High" }),
-  tierNoSlotsMessage({ tier: "5", label: "Ultra High", agents: 5, firstSlotMs: null }, { measured: false }),
-  tierNoSlotsMessage({ tier: "1", label: "Low", agents: 1, firstSlotMs: null }, { measured: false }),
+  tierNoSlotsMessage({ tier: "5", label: "Ultra High", agents: 5, firstSlotMs: null, days: DAYS }, { measured: false }),
+  tierNoSlotsMessage({ tier: "1", label: "Low", agents: 1, firstSlotMs: null, days: DAYS }, { measured: false }),
   tierRecoveredMessage({ tier: "5", label: "Ultra High" }),
 ];
 for (const m of messages) {
@@ -185,17 +211,17 @@ for (const m of messages) {
 // The two findings must not read alike, or the distinction above is cosmetic.
 assert(
   tierUnstaffedMessage({ tier: "5", label: "Ultra High" }) !==
-    tierNoSlotsMessage({ tier: "5", label: "Ultra High", agents: 5, firstSlotMs: null }, { measured: false }),
+    tierNoSlotsMessage({ tier: "5", label: "Ultra High", agents: 5, firstSlotMs: null, days: DAYS }, { measured: false }),
   "the two findings have different copy",
 );
 // The agent count agrees with its verb, which is the 2026-07-28 page this rule
 // comes from ("1 of 97 bookable agent").
 assert(
-  /\b1 agent\b/.test(tierNoSlotsMessage({ tier: "1", label: "Low", agents: 1, firstSlotMs: null }, { measured: false })),
+  /\b1 agent\b/.test(tierNoSlotsMessage({ tier: "1", label: "Low", agents: 1, firstSlotMs: null, days: DAYS }, { measured: false })),
   "one agent reads as one agent",
 );
 assert(
-  /\b5 agents\b/.test(tierNoSlotsMessage({ tier: "5", label: "Ultra High", agents: 5, firstSlotMs: null }, { measured: false })),
+  /\b5 agents\b/.test(tierNoSlotsMessage({ tier: "5", label: "Ultra High", agents: 5, firstSlotMs: null, days: DAYS }, { measured: false })),
   "five agents read as five agents",
 );
 // The recovery must not claim somebody was hired when the tier simply has times
@@ -222,7 +248,8 @@ assert(
     ]),
   );
 
-  const healthy = tierReadings({ agentCounts: counts, slotByCode: health });
+  const windows = new Map(["1", "2", "3", "4", "5"].map((t) => [t, { measured: true as const, endMs: WINDOW_END, days: DAYS }]));
+  const healthy = tierReadings({ agentCounts: counts, slotByCode: health, windows });
   eq(healthy.length, 5, "one reading per debt tier");
   eq(healthy[4].label, "Ultra High", "the label comes from the shared vocabulary");
   assert(
@@ -230,15 +257,15 @@ assert(
     "a run where both reads came back measures every tier",
   );
   eq(
-    planTierAlerts(healthy, WINDOW_END).page.length,
+    planTierAlerts(healthy).page.length,
     0,
     "today's production shape pages nothing",
   );
 
   // An unreadable ROSTER measures no tier, and must not arrive as zero agents.
-  const noRoster = tierReadings({ agentCounts: null, slotByCode: health });
+  const noRoster = tierReadings({ agentCounts: null, slotByCode: health, windows });
   assert(noRoster.every((r) => !r.agents.measured), "a failed roster read measures no tier");
-  const blindRoster = planTierAlerts(noRoster, WINDOW_END);
+  const blindRoster = planTierAlerts(noRoster);
   eq(blindRoster.page.length, 0, "and pages nothing");
   // THE SILENT PATH: a tick that could not read its signal announces no recovery
   // (#1134, #1152). This is the assertion `test-all-clear-failure-coverage.ts`
@@ -246,7 +273,7 @@ assert(
   eq(blindRoster.recovered.length, 0, "and clears nothing");
 
   // An unreadable SLOT map is the same, by the other half.
-  const noSlots = tierReadings({ agentCounts: counts, slotByCode: null });
+  const noSlots = tierReadings({ agentCounts: counts, slotByCode: null, windows });
   assert(noSlots.every((r) => !r.slots.measured), "a failed slot read measures no tier");
 
   // A tier with no cached row for its pool code is UNMEASURED, not "offering
@@ -254,11 +281,12 @@ assert(
   const missingRow = tierReadings({
     agentCounts: counts,
     slotByCode: new Map([...health].filter(([c]) => c !== "511")),
+    windows,
   });
   const ultra = missingRow.find((r) => r.tier === "5")!;
   assert(!ultra.slots.measured, "a tier with no cached row is unmeasured");
   eq(
-    planTierAlerts(missingRow, WINDOW_END).unmeasured.join(","),
+    planTierAlerts(missingRow).unmeasured.join(","),
     "5",
     "and is named as unmeasured rather than paged",
   );
@@ -268,6 +296,7 @@ assert(
   const unjudgeable = tierReadings({
     agentCounts: counts,
     slotByCode: new Map([...health, ["511", { slotCount: null, computedAtMs: NOW, firstSlotMs: null, offeredMs: null, slotCountWithoutLow: null }]]),
+    windows,
   });
   assert(
     !unjudgeable.find((r) => r.tier === "5")!.slots.measured,
@@ -279,9 +308,46 @@ assert(
   const ultraEmpty = tierReadings({
     agentCounts: new Map([...counts].filter(([t]) => t !== "5")),
     slotByCode: new Map([...health, ["511", { slotCount: 0, computedAtMs: NOW, firstSlotMs: null, offeredMs: [], slotCountWithoutLow: null }]]),
+    windows,
   });
-  const plan = planTierAlerts(ultraEmpty, WINDOW_END);
+  const plan = planTierAlerts(ultraEmpty);
   eq(plan.page.map((p) => `${p.tier}:${p.kind}`).join(","), "5:unstaffed", "an absent tier reads as unstaffed");
+
+  // A tier missing from the window map is unmeasured, never judged against a
+  // neighbour's window or a guess.
+  const noWindow = tierReadings({ agentCounts: counts, slotByCode: health, windows: new Map([...windows].filter(([t]) => t !== "5")) });
+  eq(planTierAlerts(noWindow).unmeasured.join(","), "5", "a tier with no window is unmeasured");
+}
+
+// --- the window each tier is judged over, from its cached pool row (#3559) ---
+{
+  const { tierWindows } = await import("../src/lib/monitor/tier-staffing-load.ts");
+  const HOURS = {
+    zone: "America/New_York",
+    rules: [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_minute: 480, end_minute: 1200 })),
+    exceptions: [],
+  };
+  // Friday 2026-10-09 at 8:11am EDT, the morning Low paged with times on Monday.
+  const FRI = Date.parse("2026-10-09T12:11:00.000Z");
+  const row = (code: string, minNotice: unknown) => ({ bucket_code: code, payload: { eventType: { min_notice_min: minNotice } } });
+  const w = tierWindows({
+    rows: [row("111", 120), row("211", 120), row("311", "soon"), row("411", 120)],
+    hours: HOURS,
+    nowMs: FRI,
+  });
+  const low = w.get("1");
+  assert(low?.measured === true && low.days.join(",") === "2026-10-09,2026-10-10,2026-10-12", `Low is judged Friday, Saturday and Monday (got ${JSON.stringify(low)})`);
+  // Monday 9:10am, Low's next time on 2026-10-09, is INSIDE that window, so the
+  // page that fired that morning does not fire now.
+  const monday = Date.parse("2026-10-12T13:10:00.000Z");
+  assert(low?.measured === true && monday <= low.endMs, "Monday 9:10am is inside Low's window");
+  eq(w.get("3")?.measured, false, "an unreadable notice is no window");
+  eq(w.get("5")?.measured, false, "a tier with no cached row is no window");
+  eq(
+    tierWindows({ rows: [row("111", 120)], hours: { ...HOURS, rules: [] }, nowMs: FRI }).get("1")?.measured,
+    false,
+    "an org never open is no window",
+  );
 }
 
 // --- how many open times a tier offers inside the window (#3227) ------------
@@ -296,11 +362,10 @@ assert(
         firstSlotMs: NOW + 3600_000,
         offeredMs: [NOW + 3600_000, NOW + 7200_000, WINDOW_END, WINDOW_END + 60_000],
       },
-    }),
-    WINDOW_END,
+    })
   );
   assert(v.kind === "serving" && v.openTimes === 3, `times inside the window are counted, the one past it is not (got ${JSON.stringify(v)})`);
-  const plan = planTierAlerts([reading({ tier: "1", label: "Low" })], WINDOW_END);
+  const plan = planTierAlerts([reading({ tier: "1", label: "Low" })]);
   eq(plan.recovered[0]?.openTimes, 1, "the recovered list carries the count");
 }
 
@@ -334,7 +399,7 @@ function lane(policy: TierRecoveryPolicy = POLICY) {
   return {
     st,
     tick(nowMs: number, r: TierReading) {
-      const plan = planTierAlerts([r], WINDOW_END);
+      const plan = planTierAlerts([r]);
       for (const p of plan.page) {
         void p;
         if (nowMs >= st.cooldownUntil) {
@@ -445,7 +510,7 @@ function lane(policy: TierRecoveryPolicy = POLICY) {
 // No page open: nothing to clear and nothing to hold, and a stale hold is dropped.
 {
   const out = planTierRecovery(
-    planTierAlerts([low(5)], WINDOW_END),
+    planTierAlerts([low(5)]),
     { readable: true, firing: new Set(), holdSinceMs: new Map([["1", NOW - 60 * MIN]]) },
     POLICY,
     NOW,
@@ -464,7 +529,7 @@ function lane(policy: TierRecoveryPolicy = POLICY) {
 // Below N with a page open is reported, so the log says why the page is still up.
 {
   const out = planTierRecovery(
-    planTierAlerts([low(1)], WINDOW_END),
+    planTierAlerts([low(1)]),
     { readable: true, firing: new Set(["1"]), holdSinceMs: new Map() },
     POLICY,
     NOW,
@@ -502,7 +567,7 @@ assert(!tierHoldKey("1").startsWith(`${TIER_STAFFING_ALERT_KEY}:`), "the hold ke
       },
     };
   }
-  const healthy = planTierAlerts([low(4)], WINDOW_END);
+  const healthy = planTierAlerts([low(4)]);
 
   // The good path: held long enough, the notice goes out and its hold is dropped.
   {
@@ -534,7 +599,7 @@ assert(!tierHoldKey("1").startsWith(`${TIER_STAFFING_ALERT_KEY}:`), "the hold ke
   // A run that measured no tier does not spend the read at all.
   {
     const f = fakes();
-    await settleTierRecovery(planTierAlerts([low("unmeasured")], WINDOW_END), POLICY, NOW, f.deps);
+    await settleTierRecovery(planTierAlerts([low("unmeasured")]), POLICY, NOW, f.deps);
     eq(f.calls.reads, 0, "a blind run does not read the alert state");
     eq(f.calls.resolved.length, 0, "and clears nothing");
   }

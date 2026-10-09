@@ -11,7 +11,7 @@
  * Pure (luxon and relative imports only), so the node suite drives it directly.
  */
 import { DateTime } from "luxon";
-import { openDaysWindowEndMs, type BusinessWindow, type BusinessHoursException } from "../booking/business-hours.ts";
+import { openDaysWindow, type BusinessWindow, type BusinessHoursException } from "../booking/business-hours.ts";
 import { OFFERED_OPEN_DAYS } from "./bookable-days.ts";
 import { rungExcludesLow } from "../routing/tiers.ts";
 
@@ -51,13 +51,28 @@ export function offeredWindowEndFor(
   nowMs: number,
   minNoticeMin: number,
 ): number | null {
+  return offeredWindowFor(hours, nowMs, minNoticeMin)?.endMs ?? null;
+}
+
+/**
+ * The offered window with the org local dates it COUNTS (#3559), from the same
+ * walk as `offeredWindowEndFor`. The monitor judges a tier and a pool over these
+ * days and names them, so what a page says a lead can see is what the booker
+ * shows. After the cutoff today is not among them, although any time it still
+ * holds is served: those leftovers are not one of the days a lead is offered.
+ */
+export function offeredWindowFor(
+  hours: { zone: string; rules: BusinessWindow[]; exceptions: BusinessHoursException[] },
+  nowMs: number,
+  minNoticeMin: number,
+): { endMs: number; days: string[] } | null {
   const earliestStartMs = nowMs + minNoticeMin * 60_000;
   const local = DateTime.fromMillis(nowMs, { zone: TODAY_COUNTS_UNTIL.zone });
   const pastCutoff = local.hour * 60 + local.minute >= TODAY_COUNTS_UNTIL.minute;
   const countFromMs = pastCutoff
     ? Math.max(earliestStartMs, local.plus({ days: 1 }).startOf("day").toMillis())
     : earliestStartMs;
-  return openDaysWindowEndMs(hours, countFromMs, OFFERED_OPEN_DAYS);
+  return openDaysWindow(hours, countFromMs, OFFERED_OPEN_DAYS);
 }
 
 /**

@@ -26,7 +26,6 @@ import { isOrgOpen, slotsWithinBusinessHours } from "../src/lib/availability/com
 import { emptyReason } from "../src/lib/availability/empty-reason.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DateTime } from "luxon";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const root = join(import.meta.dirname, "..");
@@ -220,95 +219,6 @@ const hours = { rules: SEEDED_BUSINESS_HOURS, exceptions: [] as BusinessHoursExc
   assert(
     /slotsWithinBusinessHours[\s\S]{0,400}isOrgOpen\(/.test(compute),
     "and so does the read-time filter",
-  );
-}
-
-
-
-// --- the next OPEN business day's end (#2505) ---------------------------------
-//
-// The window the debt tier alarm judges against. It starts at TOMORROW, so the
-// answer is always the rest of today plus one whole open day: taking the end of
-// TODAY would shrink to a minute at 19:59 and page about a tier with nothing left
-// in the last minute of the evening, which is a healthy tier (L36).
-{
-  const { nextOpenDayEndMs } = await import("../src/lib/booking/business-hours.ts");
-  const zone = "America/New_York";
-  // Mon to Sat 08:00 to 20:00, Sunday closed: the live week, measured 2026-09-17.
-  const week = [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_minute: 480, end_minute: 1200 }));
-  const hours = { zone, rules: week, exceptions: [] };
-
-  const asEt = (iso: string) => DateTime.fromISO(iso, { zone }).toMillis();
-  const et = (ms: number) => DateTime.fromMillis(ms, { zone }).toISO({ suppressMilliseconds: true });
-
-  // A Thursday morning looks to Friday evening, NOT to the end of Thursday.
-  eq(
-    et(nextOpenDayEndMs(hours, asEt("2026-09-17T09:00"))!),
-    "2026-09-18T20:00:00-04:00",
-    "a weekday morning reaches the end of the next open day",
-  );
-  // Late on Thursday still reaches Friday, so the window never collapses.
-  eq(
-    et(nextOpenDayEndMs(hours, asEt("2026-09-17T19:59"))!),
-    "2026-09-18T20:00:00-04:00",
-    "the window does not shrink at the end of the day",
-  );
-  // SATURDAY SKIPS SUNDAY. This is the case Dan named: "obviously there would be
-  // no slots on sunday". A flat 24 hours would ask about a closed day and page.
-  eq(
-    et(nextOpenDayEndMs(hours, asEt("2026-09-19T10:00"))!),
-    "2026-09-21T20:00:00-04:00",
-    "Saturday looks past the closed Sunday to Monday",
-  );
-  eq(
-    et(nextOpenDayEndMs(hours, asEt("2026-09-20T10:00"))!),
-    "2026-09-21T20:00:00-04:00",
-    "Sunday looks to Monday",
-  );
-  // A holiday exception moves the window, asked of `windowOnDate` rather than of
-  // the weekly rules, so a closure cannot be answered by the pattern (L107).
-  eq(
-    et(
-      nextOpenDayEndMs(
-        { ...hours, exceptions: [{ on_date: "2026-09-18", is_open: false, start_minute: null, end_minute: null }] },
-        asEt("2026-09-17T09:00"),
-      )!,
-    ),
-    "2026-09-19T20:00:00-04:00",
-    "a closed day is skipped, not counted",
-  );
-  // An exception that MOVES the hours is honoured, so the window is the day's own
-  // close rather than the weekly one.
-  eq(
-    et(
-      nextOpenDayEndMs(
-        { ...hours, exceptions: [{ on_date: "2026-09-18", is_open: true, start_minute: 480, end_minute: 720 }] },
-        asEt("2026-09-17T09:00"),
-      )!,
-    ),
-    "2026-09-18T12:00:00-04:00",
-    "a shortened day ends when it says it does",
-  );
-  // DST: the Saturday before the US fall back reaches Sunday... which is closed,
-  // so it reaches Monday, whose close is in the NEW offset. Set as wall clock
-  // rather than by adding minutes, or the close lands an hour out.
-  eq(
-    et(nextOpenDayEndMs(hours, asEt("2026-10-31T10:00"))!),
-    "2026-11-02T20:00:00-05:00",
-    "the close is wall clock across a DST change",
-  );
-  // An org with no open day at all concludes NOTHING rather than inventing a
-  // window: a caller handed a fabricated one would judge a tier against a day
-  // nobody works (L215).
-  eq(
-    nextOpenDayEndMs({ zone, rules: [], exceptions: [] }, asEt("2026-09-17T09:00")),
-    null,
-    "a week with no open day returns null",
-  );
-  // And the control, so the null above is not simply what this always returns.
-  assert(
-    nextOpenDayEndMs(hours, asEt("2026-09-17T09:00")) !== null,
-    "a normal week does return a window",
   );
 }
 

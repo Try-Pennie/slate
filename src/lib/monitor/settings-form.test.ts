@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { ALERT_KEYS, parseMonitorSettingsForm, resolveTierRecovery, type MonitorAlertKey } from "./settings";
+import {
+  ALERT_KEYS,
+  codedPoolNearlyFullShare,
+  parseMonitorSettingsForm,
+  resolvePoolNearlyFullShare,
+  resolveTierRecovery,
+  type MonitorAlertKey,
+} from "./settings";
 
 // #571 red-team S1: a blank field must revert to fallback by storing an explicit
 // NULL, never the number 0 (a blanked floor of 0 would permanently mute the
@@ -27,6 +34,7 @@ const blank = {
   regalCallsArmed: "",
   tierRecoveryMinTimes: "",
   tierRecoveryHoldMin: "",
+  poolNearlyFullOpenPct: "",
 };
 
 describe("parseMonitorSettingsForm", () => {
@@ -50,6 +58,7 @@ describe("parseMonitorSettingsForm", () => {
       regal_calls_armed: false,
       empty_tier_recovery_min_times: null,
       empty_tier_recovery_hold_min: null,
+      pool_nearly_full_open_pct: null,
     });
   });
 
@@ -144,6 +153,28 @@ describe("parseMonitorSettingsForm", () => {
       expect(out.errors.length, `hold ${bad}`).toBeGreaterThan(0);
       expect(out.config.empty_tier_recovery_hold_min).toBeNull();
     }
+  });
+
+  // #3559: the nearly full pool line, a whole percentage. Blank is the coded 10%,
+  // and a value the notice could never or would always fire at is refused.
+  it("stores the nearly full pool line and refuses it outside its range", () => {
+    const ok = parseMonitorSettingsForm({ ...blank, poolNearlyFullOpenPct: "20" });
+    expect(ok.errors).toEqual([]);
+    expect(ok.config.pool_nearly_full_open_pct).toBe(20);
+    for (const bad of ["0", "51", "12.5", "ten"]) {
+      const out = parseMonitorSettingsForm({ ...blank, poolNearlyFullOpenPct: bad });
+      expect(out.errors.length, `line ${bad}`).toBeGreaterThan(0);
+      expect(out.config.pool_nearly_full_open_pct).toBeNull();
+    }
+  });
+
+  it("resolves the nearly full pool line as a share, falling back to 10%", () => {
+    expect(codedPoolNearlyFullShare()).toBe(0.1);
+    expect(resolvePoolNearlyFullShare(null)).toBe(0.1);
+    expect(resolvePoolNearlyFullShare({ pool_nearly_full_open_pct: null })).toBe(0.1);
+    expect(resolvePoolNearlyFullShare({ pool_nearly_full_open_pct: 25 })).toBe(0.25);
+    // A stored value outside the range the form accepts is not trusted.
+    expect(resolvePoolNearlyFullShare({ pool_nearly_full_open_pct: 90 })).toBe(0.1);
   });
 
   it("resolves the tier recovery settings, falling back to 3 times and 30 minutes", () => {

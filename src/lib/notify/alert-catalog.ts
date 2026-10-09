@@ -650,7 +650,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
     key: "empty_tier:*",
     kind: "condition",
     suffix: "bounded",
-    why: "A debt tier is offering no booking time inside the next open business day, and stays that way until somebody is staffed onto it or its agents free up; the monitor re-measures every tick.",
+    why: "A debt tier is offering no booking time on any of the days the booker shows (#3559), and stays that way until somebody is staffed onto it or its agents free up; the monitor re-measures every tick.",
   },
   {
     key: "outbox_drain_stuck",
@@ -1105,7 +1105,8 @@ export const ALERT_CATALOG: AlertEntry[] = [
     key: "pool_nearly_full",
     kind: "info",
     why:
-      "Fewer than 10% of a pool's possible starts today are still open (#1256): good news " +
+      "Fewer than the set share (10% by default) of a pool's possible starts across the days " +
+      "the booker shows are still open (#1256, #3559): good news " +
       "and a nudge to add coverage, never something broken. The moment it reaches zero is " +
       "the booked solid page's, so this has nothing of its own to end.",
   },

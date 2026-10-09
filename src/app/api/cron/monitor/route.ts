@@ -63,7 +63,6 @@ import {
   type BusyDriftResult,
   type DriftInterval,
 } from "@/lib/monitor/busy-drift-sampler";
-import { DateTime } from "luxon";
 
 /** Agents the busy drift sampler reads per tick: under freeBusy's 20 calendar cap. */
 const BUSY_DRIFT_BATCH = 18;
@@ -91,9 +90,10 @@ import {
   startTierHolds,
   tierAgentCounts,
   tierReadings,
+  tierWindows,
 } from "@/lib/monitor/tier-staffing-load";
 import { tierCauseAgents, tierNoSlotsPageText, type TierCauseInput } from "@/lib/monitor/tier-cause";
-import { closedExceptionDates, nextOpenDayEndMs } from "@/lib/booking/business-hours";
+import { closedExceptionDates } from "@/lib/booking/business-hours";
 import { loadCoverageAgents } from "@/lib/booking/business-hours-coverage-load";
 import { loadBusinessHours, loadBusinessHoursExceptions, type BusinessHours } from "@/lib/booking/business-hours-load";
 import { tierLadder } from "@/lib/routing/tiers";
@@ -301,6 +301,7 @@ import { WEBHOOK_EVENTS, deliberatelyUnsubscribedReason } from "@/lib/webhooks/e
 import {
   codedCooldownMs,
   codedTierRecovery,
+  codedPoolNearlyFullShare,
   lastKnownMonitorSettings,
   loadMonitorSettings,
   type ResolvedMonitorSettings,
@@ -1081,8 +1082,9 @@ export async function GET(req: NextRequest) {
     // because we just don't offer that time slot." If nobody works Saturday, Slate
     // offers no Saturday and the lead books Monday. Nothing is broken, so nothing
     // pages. What the alarm asks is whether the tier is offering a time inside the
-    // next OPEN business day, which is why a closed Sunday is skipped rather than
-    // paged about.
+    // days the booker SHOWS a lead (#3559): `offeredWindowFor` over the tier pool's
+    // own notice, read off its cached row, so a closed Sunday and the 6pm cutoff
+    // apply here exactly as they do on the strip.
     //
     // Asked per tier and NEVER through the ladder. After #2486 a lead whose tier is
     // dry falls to a lower one, so "can this lead book" is almost always yes, and a
@@ -1094,26 +1096,26 @@ export async function GET(req: NextRequest) {
     // verdict, and the freshness watch is what says so. ---
     const tierStaffing = await steps.run("tier_staffing", null, async () => {
       if (!gates.tierStaffing.run) return null;
-      // Non-null inside here: the gate refuses to run without the week.
-      const windowEndMs = nextOpenDayEndMs(businessHours!, now);
-      // No open day inside a fortnight is not a window to judge against, and a
-      // guessed one would hold every tier to a day nobody is working (L215).
-      if (windowEndMs === null) {
-        log.warn("monitor", { msg: "tier staffing skipped", why: "no open business day ahead" });
-        return null;
-      }
       const tierAgentIds = await loadTierAgentIds();
+      // Non-null inside here: the gate refuses to run without the week or the
+      // slot rows. A tier whose window cannot be worked out (no cached row, an
+      // unreadable notice, no open day ahead) is unmeasured on its own, rather
+      // than judged against a guessed window (L215).
+      const windows = tierWindows({ rows: slotRows!, hours: businessHours!, nowMs: now });
       const readings = tierReadings({
         agentCounts: tierAgentCounts(tierAgentIds),
         slotByCode: slotByCode!,
+        windows,
       });
-      const plan = planTierAlerts(readings, windowEndMs);
+      const plan = planTierAlerts(readings);
       log.info("monitor", {
         msg: "tier staffing",
         paged: plan.page.length,
         recovered: plan.recovered.length,
         unmeasured: plan.unmeasured.length,
-        window_end: new Date(windowEndMs).toISOString(),
+        windows: [...windows]
+          .map(([tier, w]) => `${tier}:${w.measured ? w.days.join("+") : "unmeasured"}`)
+          .join(","),
       });
       // Why a tier has no times (#3037), worked out per agent from three reads.
       // `tierNoSlotsPageText` asks the cooldown FIRST, so the reads run only on a
@@ -1121,9 +1123,10 @@ export async function GET(req: NextRequest) {
       // share), and turns any failure into the old wording plus a clause saying
       // the cause could not be read: never silence, never a guessed cause (L215,
       // L11). The failure itself is logged with its error.
-      const loadCauseInput = async (tier: string): Promise<TierCauseInput> => {
+      const loadCauseInput = async (t: { tier: string; windowEndMs: number; days: string[] }): Promise<TierCauseInput> => {
         if (workingHours === null) throw new Error("the agents' working hours could not be read");
         if (buckets === null) throw new Error("the bucket list could not be read");
+        const { tier, windowEndMs, days } = t;
         const agentIds = tierAgentIds.get(tier) ?? [];
         const reads = await loadTierCauseReads({ tier, agentIds, buckets, nowMs: now, windowEndMs });
         const hours = businessHours!;
@@ -1141,6 +1144,7 @@ export async function GET(req: NextRequest) {
           businessHours: hours,
           nowMs: now,
           windowEndMs,
+          days,
         };
       };
       for (const t of plan.page) {
@@ -1150,7 +1154,7 @@ export async function GET(req: NextRequest) {
             ? tierUnstaffedMessage(t)
             : await tierNoSlotsPageText(t, {
                 isDue: () => isAlertDue(key, cooldownMs.empty_tier, now),
-                loadCauseInput: () => loadCauseInput(t.tier),
+                loadCauseInput: () => loadCauseInput(t),
                 onCauseError: (err) => log.warn("monitor", { msg: "tier cause unreadable", tier: t.tier }, err),
               });
         // Inside its cooldown: the send would drop it, so it was never built.
@@ -1902,9 +1906,10 @@ export async function GET(req: NextRequest) {
       }),
     );
 
-    // --- A pool nearly full for the day (#1256): a quiet whisper when fewer than
-    // 10% of a pool's possible starts today are still open (Dan, 2026-10-02), well
-    // before the booked solid page (#1412) fires at zero. The measurement is the
+    // --- A pool nearly full (#1256): a quiet whisper when fewer than the set share
+    // (10% by default) of a pool's possible starts across the days the booker
+    // shows are still open (#3559), well before the booked solid page (#1412)
+    // fires at zero. The measurement is the
     // supply page's own (#1254), built from the setup reads this tick already holds
     // (the slot rows, the week, the horizon, the bucket list) plus the shared depth
     // read above, so the only new subrequests are the paginated read of today's
@@ -1944,8 +1949,10 @@ export async function GET(req: NextRequest) {
             bookedByCodeAndDate: booked,
           });
         },
-        todayIso: DateTime.fromMillis(now, { zone: hours.zone }).toISODate() ?? "",
         bookedSolidCodes: scan && !scan.truncated ? scan.cause.bookedSolid : null,
+        // The line only decides whether a quiet notice is worth sending, so with no
+        // settings reading at all the coded 10% is a safe stand in.
+        openShare: settings?.poolNearlyFullOpenShare ?? codedPoolNearlyFullShare(),
         // alert-key: pool_nearly_full
         notify: sendThrottledInfo,
         cooldownMs: cooldownMs.pool_nearly_full,

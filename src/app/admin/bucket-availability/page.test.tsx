@@ -41,6 +41,7 @@ function row(code: string, name: string): BucketSupplyRow {
     computedAtMs: NOW_MS - 30_000,
     freshness: "fresh",
     offeredLater: false,
+    offeredDays: null,
     cells: [{ kind: "counted", booked: 3, capacity: 21, share: 3 / 21 }],
   };
 }

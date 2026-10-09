@@ -6,7 +6,7 @@
 // these two pure functions rather than each holding a copy.
 //
 // Run: node --experimental-strip-types scripts/test-offered-window-shared.ts
-import { offeredWindowEndFor, servedSlotsForRung, todayCountsUntilLabel } from "../src/lib/availability/offered-window.ts";
+import { offeredWindowEndFor, offeredWindowFor, servedSlotsForRung, todayCountsUntilLabel } from "../src/lib/availability/offered-window.ts";
 import { OFFERED_OPEN_DAYS } from "../src/lib/availability/bookable-days.ts";
 import { eq, finish } from "./lib/harness.ts";
 
@@ -73,6 +73,36 @@ eq(
     Date.parse("2026-10-15T00:00:00.000Z"),
     "after 6pm on Saturday the strip starts Monday, past a shut Sunday",
   );
+}
+
+// #3559: the window with the DAYS it counted, which the monitor's tier page and
+// pool nudge judge and name. One walk produces both, so the days a page names and
+// the close the booker cuts at cannot disagree.
+{
+  const LIVE = {
+    zone: "America/New_York",
+    rules: [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_minute: 8 * 60, end_minute: 20 * 60 })),
+    exceptions: [],
+  };
+  const cases: [string, number, number][] = [
+    ["2026-08-06T15:19:00.000Z", 120, 0],
+    ["2026-08-06T19:30:00.000Z", 120, 0],
+    ["2026-10-06T21:59:00.000Z", 5, 1],
+    ["2026-10-06T22:00:00.000Z", 5, 1],
+    ["2026-10-10T22:30:00.000Z", 5, 1],
+  ];
+  for (const [iso, notice, which] of cases) {
+    const hours = which === 0 ? WEEK : LIVE;
+    const w = offeredWindowFor(hours, Date.parse(iso), notice);
+    eq(w?.endMs ?? null, offeredWindowEndFor(hours, Date.parse(iso), notice), `the window's close is the booker's own at ${iso}`);
+    eq(w?.days.length ?? null, OFFERED_OPEN_DAYS, `and it names exactly the counted days at ${iso}`);
+  }
+  // Friday 2026-10-09 at 8:11am EDT, the morning the Low page fired: Friday,
+  // Saturday and Monday, past the shut Sunday.
+  eq(offeredWindowFor(LIVE, Date.parse("2026-10-09T12:11:00.000Z"), 120)?.days, ["2026-10-09", "2026-10-10", "2026-10-12"], "a Friday morning names Friday, Saturday and Monday");
+  // After 6pm today is not one of the three, even though its leftovers are served.
+  eq(offeredWindowFor(LIVE, Date.parse("2026-10-09T22:30:00.000Z"), 120)?.days, ["2026-10-10", "2026-10-12", "2026-10-13"], "after 6pm the named days start tomorrow");
+  eq(offeredWindowFor({ zone: "America/New_York", rules: [], exceptions: [] }, Date.parse("2026-10-09T12:11:00.000Z"), 120), null, "an org never open has no window, not an empty one");
 }
 
 // The admin page states the cutoff in words built from the same constant.
