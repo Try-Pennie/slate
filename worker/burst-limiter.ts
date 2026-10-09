@@ -60,9 +60,10 @@ export class BurstLimiter {
    * the storage bill would grow with the number of addresses ever seen, which for an abuse
    * control is the number of attackers ever seen.
    *
-   * Nothing is awaited between reading the stored window and writing the next one except
-   * storage itself, so the object's input gate keeps a concurrent request from interleaving and
-   * every hit is counted exactly once, which is the property the exact ceilings rest on.
+   * The window is read from storage once per instance and then held in memory; from there to
+   * writing the next one nothing is awaited at all, so no concurrent request can interleave
+   * and every hit is counted exactly once, which is the property the exact ceilings rest on.
+   * A request arriving while that one read is in flight awaits the same read.
    */
   async fetch(request: Request): Promise<Response> {
     let body: unknown = null;
@@ -87,15 +88,23 @@ export class BurstLimiter {
     // durable (the output gate) and coalesces a burst's writes into one, so an eviction
     // resumes from the last count answered.
     if (this.window === undefined) {
-      this.loading ??= this.state.storage.get<{ windowStartMs: number; count: number }>(STORAGE_KEY).then((got) => {
-        if (this.window === undefined) this.window = got ?? null;
-      });
+      // A read that fails is forgotten, so the next request reads again rather than every
+      // later one awaiting the same rejection until the instance is evicted.
+      this.loading ??= this.state.storage.get<{ windowStartMs: number; count: number }>(STORAGE_KEY).then(
+        (got) => {
+          if (this.window === undefined) this.window = got ?? null;
+        },
+        (err: unknown) => {
+          this.loading = null;
+          throw err;
+        },
+      );
       await this.loading;
     }
     const now = Date.now();
     const step = applyCounterRequest(this.window ?? null, asked, now);
     this.window = step.next;
-    void this.state.storage.put(STORAGE_KEY, step.next);
+    this.state.storage.put(STORAGE_KEY, step.next).catch(() => this.forget());
     // The alarm deletes an idle count. It is moved only when it would fire less than one
     // and a half windows after this hit, so it always fires between one and a half and two
     // windows after the last one: never while a window is open, and set about once a window
@@ -103,7 +112,7 @@ export class BurstLimiter {
     const window = step.alarmAtMs - now;
     if (this.alarmAtMs === null || this.alarmAtMs < now + 0.75 * window) {
       this.alarmAtMs = step.alarmAtMs;
-      void this.state.storage.setAlarm(step.alarmAtMs);
+      this.state.storage.setAlarm(step.alarmAtMs).catch(() => this.forget());
     }
     // The window is reported alongside the count for the verification command (#1564), which
     // proves the counter ANSWERS by reporting twice and requiring the count to rise. Two
@@ -113,6 +122,18 @@ export class BurstLimiter {
     // rollover", which is the failure it exists to catch. The tracker on the hot path reads
     // only `count` and is unaffected.
     return Response.json(step.reply);
+  }
+
+  /**
+   * A write or an alarm that failed: forget what this instance holds, so the next request
+   * reads the stored count again and sets its alarm again rather than trusting either. The
+   * reply that counted the lost hit is withheld by the platform's output gate, so no caller
+   * was told a count that was never kept.
+   */
+  private forget(): void {
+    this.window = undefined;
+    this.loading = null;
+    this.alarmAtMs = null;
   }
 
   /** Nothing has reported for two windows, so this address is no longer hot. */

@@ -276,6 +276,78 @@ async function objectRuns() {
     await resumed.alarm();
     const fresh = await resumed.fetch(new Request("https://burst-limiter.slate/count", { method: "POST", body: JSON.stringify({ hit: { windowMs: HOUR } }) }));
     eq(((await fresh.json()) as { count: number }).count, 1, "after its alarm deletes it, the next hit counts from one");
+
+    // #3529 review: a storage call that fails must not poison the instance. A failed first read
+    // is read again by the next request rather than every later request awaiting the same
+    // rejection until eviction; a failed write or alarm is caught (never an unhandled
+    // rejection) and the instance forgets what it holds, so the next hit reads storage again
+    // and sets its alarm again rather than believing one was set.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const failing = fakeStorage();
+      const fail = { get: 1, put: 0, setAlarm: 0 };
+      const flaky = {
+        ...failing.storage,
+        get: async <T>(k: string) => {
+          if (fail.get > 0) { fail.get--; await new Promise((r) => setImmediate(r)); throw new Error("storage get failed"); }
+          return failing.storage.get<T>(k);
+        },
+        put: async <T>(k: string, v: T) => {
+          if (fail.put > 0) { fail.put--; await new Promise((r) => setImmediate(r)); throw new Error("storage put failed"); }
+          return failing.storage.put<T>(k, v);
+        },
+        setAlarm: async (t: number) => {
+          if (fail.setAlarm > 0) { fail.setAlarm--; await new Promise((r) => setImmediate(r)); throw new Error("setAlarm failed"); }
+          return failing.storage.setAlarm(t);
+        },
+      };
+      const obj = new BurstLimiter({ storage: flaky });
+      const hit = async () => {
+        try {
+          const res = await obj.fetch(new Request("https://burst-limiter.slate/count", { method: "POST", body: JSON.stringify({ hit: { windowMs: HOUR } }) }));
+          return ((await res.json()) as { count: number }).count;
+        } catch {
+          return "threw";
+        }
+      };
+      now = T0;
+      eq(await hit(), "threw", "a hit whose first storage read fails fails, and the caller fails open");
+      eq(await hit(), 1, "the next hit reads storage again rather than awaiting the same failed read");
+      fail.put = 1;
+      const getsBefore = failing.calls.get;
+      eq(await hit(), 2, "a hit whose write fails is still answered from memory; the platform withholds the reply if the write never lands");
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      eq(await hit(), 2, "after a failed write the instance reads storage again, which never held the lost hit");
+      eq(failing.calls.get, getsBefore + 1, "and it read storage once to get there");
+      // A fresh object whose first alarm fails sets it again on the next hit.
+      const alarmFake = fakeStorage();
+      let alarmFails = 1;
+      const alarmObj = new BurstLimiter({
+        storage: {
+          ...alarmFake.storage,
+          setAlarm: async (t: number) => {
+            if (alarmFails > 0) { alarmFails--; await new Promise((r) => setImmediate(r)); throw new Error("setAlarm failed"); }
+            return alarmFake.storage.setAlarm(t);
+          },
+        },
+      });
+      const alarmHit = async () => {
+        const res = await alarmObj.fetch(new Request("https://burst-limiter.slate/count", { method: "POST", body: JSON.stringify({ hit: { windowMs: HOUR } }) }));
+        return ((await res.json()) as { count: number }).count;
+      };
+      eq(await alarmHit(), 1, "a hit whose alarm fails is still counted");
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      eq(alarmFake.calls.setAlarm, 0, "(control: the first alarm did fail)");
+      eq(await alarmHit(), 2, "the next hit resumes the stored count");
+      eq(alarmFake.calls.setAlarm, 1, "and sets the alarm again rather than believing the failed one stands");
+      eq(unhandled.length, 0, "and no failed write or alarm is left as an unhandled rejection");
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   } finally {
     Date.now = realNow;
   }
