@@ -34,6 +34,7 @@ import {
   type GroupingEntry,
 } from "./pool-grouping.ts";
 import { readWithinDeadline, NoAnswerWithinError, type ScheduleTimer } from "../read-within-deadline.ts";
+import { log } from "../log.ts";
 
 /**
  * How long a grouping stands, from when its read STARTED, wherever it came from: the
@@ -238,7 +239,10 @@ export function makeGroupingReader(deps: {
           if (got.source === "installed" || got.source === "held" || !deps.readOwn) return got;
           try {
             await deps.readOwn();
-          } catch {
+          } catch (err) {
+            // The directory's answer stands, said as itself; the log is what tells a read
+            // that keeps failing from a directory that simply had nothing.
+            log.warn("pool-grouping", { msg: "own read failed; the directory's answer stands", directory: got.source }, err);
             return got;
           }
           const held = deps.store.held();

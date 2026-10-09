@@ -3169,7 +3169,7 @@ async function assignAgentWithTierFallback(
       try {
         // #3529: the rungs below, read from the same ladder read, so the line can hand the
         // whole ladder out at once rather than a rung a walker at a time.
-        const lowerRead = seat && canWalk && ladder ? await lowerRungReads(deps, ladder, ladderCodes, i, requested.bucket.code, startInstantIso, preview, allowTestBuckets, resume?.taken ?? []) : null;
+        const lowerRead = seat && canWalk && ladder ? await lowerRungReads(deps, ladder, ladderCodes, i, requested.bucket.code, startInstantIso, preview, allowTestBuckets, exclude) : null;
         const lower = lowerRead?.rungs ?? [];
         const { userId, email, candidates, read } = await assignAgent(
           deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat, undefined, exclude, {
@@ -3250,8 +3250,8 @@ async function assignAgentWithTierFallback(
  * once, top rung first (`ClaimPlace.lower`). Best effort: a read that fails sends none,
  * and the line hands out one rung at a time as before.
  */
-async function lowerRungReads(
-  deps: BookingDeps,
+export async function lowerRungReads(
+  deps: Pick<BookingDeps, "roundRobinCandidates">,
   ladder: LadderInputs,
   codes: readonly string[],
   from: number,
@@ -3259,7 +3259,10 @@ async function lowerRungReads(
   startInstantIso: string,
   preview: boolean,
   allowTestBuckets: boolean,
-  taken: readonly string[],
+  /** Everybody this confirm already knows cannot take the instant: the advisors it lost a
+   *  race to, those it asked and found unable, and an advisor it was handed and found
+   *  unable. Busy at the instant is busy on every rung, so the line is never handed them. */
+  exclude: readonly string[],
 ): Promise<{ rungs: { rung: number; read: string[] }[]; complete: boolean }> {
   const out: { rung: number; read: string[] }[] = [];
   try {
@@ -3276,7 +3279,7 @@ async function lowerRungReads(
         rungExcludesLow(requestedCode, codes[j]!),
         { inputs: ladder },
       );
-      const read = candidates.filter((id) => !taken.includes(id));
+      const read = candidates.filter((id) => !exclude.includes(id));
       if (read.length > 0) out.push({ rung: j, read });
     }
   } catch (err) {

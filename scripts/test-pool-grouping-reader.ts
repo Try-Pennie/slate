@@ -504,10 +504,21 @@ async function ownReadFallback() {
   {
     // A read that fails is the directory's own answer, never something fresh.
     const w = readerWorld({ answer: answering(null), ownRead: { ms: 50, lands: false } });
-    const reading = w.reader.ensure();
-    await w.advance(POOL_GROUPING_FETCH_MS);
-    eq((await reading).source, "absent", "own read: a failed read leaves the directory's answer as the reading");
+    const warned: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...args: unknown[]) => warned.push(String(args[0]));
+    let source: string;
+    try {
+      const reading = w.reader.ensure();
+      await w.advance(POOL_GROUPING_FETCH_MS);
+      source = (await reading).source;
+    } finally {
+      console.warn = realWarn;
+    }
+    eq(source, "absent", "own read: a failed read leaves the directory's answer as the reading");
     assert(!w.store.fresh(), "own read: and installs nothing");
+    // #3529 review: and says so, so a read that keeps failing is not just another absent.
+    assert(warned.some((l) => l.includes("tag=pool-grouping") && l.includes("own read")), `own read: a failed read is logged (got ${JSON.stringify(warned)})`);
   }
   {
     // Control: a fresh snapshot needs no read of its own.
