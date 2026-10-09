@@ -913,8 +913,11 @@ async function main() {
         );
       }
       const price = databaseCosts(profile.database, () => 0);
+      // #3495: the stack's live check reads only the calendar rows, the advisors' ids
+      // riding with their emails; the run's read the advisors by email first.
+      const liveCheck = profile === STACK_LOAD_RUN_PROFILE ? 1 : 2;
       const counted: Record<string, number> = {
-        verifyFree: 2,
+        verifyFree: liveCheck,
         invalidateSlots: 0,
         deleteGcalMirrorBlock: 0,
         resolveBucketPool: 2,
@@ -924,8 +927,8 @@ async function main() {
       for (const [name, want] of Object.entries(counted)) {
         assert(price(name, [])?.queries === want, `load model (${profile.name}): ${name} is ${want} requests on the booking API (got ${price(name, [])?.queries})`);
       }
-      // The live check's two reads are one after the other; the pool trace's two at once.
-      assert(price("verifyFree", [])?.depth === 2 && price("resolveBucketPool", [])?.depth === 1, `load model (${profile.name}): the live check reads in turn and the pool trace at once (got ${price("verifyFree", [])?.depth} and ${price("resolveBucketPool", [])?.depth})`);
+      // The live check's reads are one after the other; the pool trace's two at once.
+      assert(price("verifyFree", [])?.depth === liveCheck && price("resolveBucketPool", [])?.depth === 1, `load model (${profile.name}): the live check reads in turn and the pool trace at once (got ${price("verifyFree", [])?.depth} and ${price("resolveBucketPool", [])?.depth})`);
       // The work after a booking's answer, by request: the splice, the webhook's first
       // send (its claim and its outcome) and the stray mirror's delete.
       const d = profile.deferred;

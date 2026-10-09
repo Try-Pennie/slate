@@ -334,23 +334,34 @@ export async function calendarIdsForEmail(
  */
 export async function calendarsForEmails(
   emails: string[],
+  /**
+   * #3495: each email's advisor id, when the caller already holds them (a confirm read
+   * its advisors by id a moment ago). With every one given, the advisors are not read
+   * again by email; with any missing, they all are, so no id is guessed.
+   */
+  ids?: ReadonlyMap<string, string>,
 ): Promise<{ byEmail: Map<string, string[]>; readFailed: Set<string> }> {
   const byEmail = new Map<string, string[]>();
   const readFailed = new Set<string>();
   if (emails.length === 0) return { byEmail, readFailed };
 
   const db = supabaseAdmin();
-  const usersRes = await db
-    .from("users")
-    .select("id, email")
-    .in("email", emails);
-  throwIfDeadline(usersRes.error);
-  if (usersRes.error) {
-    // Can't map any agent to their calendars — fall back per agent for all.
-    for (const e of emails) readFailed.add(e);
-    return { byEmail, readFailed };
+  let userRows: { id: string; email: string }[];
+  if (ids && emails.every((e) => ids.has(e))) {
+    userRows = emails.map((e) => ({ id: ids.get(e)!, email: e }));
+  } else {
+    const usersRes = await db
+      .from("users")
+      .select("id, email")
+      .in("email", emails);
+    throwIfDeadline(usersRes.error);
+    if (usersRes.error) {
+      // Can't map any agent to their calendars, so fall back per agent for all.
+      for (const e of emails) readFailed.add(e);
+      return { byEmail, readFailed };
+    }
+    userRows = (usersRes.data ?? []) as { id: string; email: string }[];
   }
-  const userRows = (usersRes.data ?? []) as { id: string; email: string }[];
   const idByEmail = new Map(userRows.map((r) => [r.email, r.id]));
 
   const calsRes = await db
@@ -1081,12 +1092,12 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     // cleanly and none overlaps; any unread/errored calendar — or a wholesale
     // bulk failure — routes that agent to the accurate direct per-agent check,
     // so accuracy is never traded for speed.
-    verifyFree: async (emails, startIso, endIso) => {
+    verifyFree: async (emails, startIso, endIso, ids) => {
       const free = new Set<string>();
       const unverified = new Set<string>();
       if (emails.length === 0) return { free, unverified };
 
-      const { byEmail, readFailed } = await calendarsForEmails(emails);
+      const { byEmail, readFailed } = await calendarsForEmails(emails, ids);
       const bulkAgents = emails
         .filter((e) => !readFailed.has(e))
         .map((e) => ({ email: e, calendarIds: byEmail.get(e) ?? [e] }));

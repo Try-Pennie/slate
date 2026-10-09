@@ -437,7 +437,8 @@ export interface SelectionOutcome {
 export async function selectAgent(
   candidates: string[],
   loadEmails: (userIds: string[]) => Promise<Map<string, string>>,
-  verifyFree: (emails: string[]) => Promise<VerifyResult>,
+  /** Handed each wave's emails and, #3495, the advisor id each was read from (email to id). */
+  verifyFree: (emails: string[], ids: ReadonlyMap<string, string>) => Promise<VerifyResult>,
   batchSize: number,
 ): Promise<SelectionOutcome> {
   let anyUnverified = false;
@@ -453,7 +454,7 @@ export async function selectAgent(
     }
     if (wave.length === 0) continue;
     checked += wave.length;
-    const { free, unverified } = await verifyFree(wave.map((c) => c.email));
+    const { free, unverified } = await verifyFree(wave.map((c) => c.email), new Map(wave.map((c) => [c.email, c.userId])));
     if (unverified.size > 0) anyUnverified = true;
     for (const candidate of wave) {
       if (free.has(candidate.email)) return { assignment: candidate, anyUnverified, checked };

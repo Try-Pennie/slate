@@ -1278,6 +1278,8 @@ export interface BookingDeps {
     emails: string[],
     startIso: string,
     endIso: string,
+    /** #3495: each email's advisor id, when the caller already holds them (email to id). */
+    ids?: ReadonlyMap<string, string>,
   ): Promise<VerifyResult>;
   /**
    * Create (or 409-adopt) the event under `clientId`. Past a cancelled tombstone
@@ -2539,9 +2541,9 @@ export async function nextAdvisorAfterLostRace(
     const { assignment, anyUnverified } = await selectAgent(
       remaining,
       (userIds) => deps.loadEmails(userIds),
-      (emails) => {
+      (emails, ids) => {
         const [fromIso, toIso] = bufferedWindow(lost.eventType, lost.startIso, lost.endIso);
-        return deps.verifyFree(emails, fromIso, toIso);
+        return deps.verifyFree(emails, fromIso, toIso, ids);
       },
       VERIFY_WAVE_SIZE,
     );
@@ -2640,9 +2642,10 @@ async function assignAgent(
     candidates,
     // #3489: from the walk's ladder read when there is one: it holds every advisor's row.
     (userIds) => (line.inputs ? Promise.resolve(line.inputs.emails(userIds)) : deps.loadEmails(userIds)),
-    (emails) => {
+    // #3495: with the ids the emails were read from, so the calendars are read by id.
+    (emails, ids) => {
       const [fromIso, toIso] = bufferedWindow(eventType, startIso, endIso);
-      return deps.verifyFree(emails, fromIso, toIso);
+      return deps.verifyFree(emails, fromIso, toIso, ids);
     },
     VERIFY_WAVE_SIZE,
   );
@@ -5080,10 +5083,10 @@ async function createHeld(
   let slowestGoogleMs = 0;
   const checked: BookingDeps = {
     ...deps,
-    verifyFree: async (emails, fromIso, toIso) => {
+    verifyFree: async (emails, fromIso, toIso, ids) => {
       const from = Date.now();
       try {
-        return await deps.verifyFree(emails, fromIso, toIso);
+        return await deps.verifyFree(emails, fromIso, toIso, ids);
       } finally {
         slowestGoogleMs = Math.max(slowestGoogleMs, Date.now() - from);
       }

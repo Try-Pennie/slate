@@ -502,6 +502,12 @@ async function run() {
         JSON.stringify(calls.verifyFree[0]) === JSON.stringify(["a@x.com", "b@x.com"]),
       "create: verifies A and B together in one batched wave",
     );
+    // #3495: the wave carries the advisor ids the emails were read from, so the live check
+    // reads each calendar by id and never looks the advisors up again by email.
+    assert(
+      JSON.stringify(calls.verifyFreeIds[0]) === JSON.stringify({ "a@x.com": "a", "b@x.com": "b" }),
+      `create: the wave is handed each email's advisor id (got ${JSON.stringify(calls.verifyFreeIds[0])})`,
+    );
   }
 
   // --- createBooking: no free candidate ---
