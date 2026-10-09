@@ -70,6 +70,7 @@ import {
   BURST_LEGS,
   BURST_SEQUENCE,
   BURST_SLOT_GAP_MS,
+  DROP_SLOTS_TO_MEASURE,
   BURST_SPACING_MS,
   DROP_CAPACITY_HEADROOM,
   type BurstCapacity,
@@ -114,13 +115,6 @@ const SLATE_BASE = need("SLATE_BASE").replace(/\/$/, "");
  * kind is at most twelve, inside the ceiling; in practice the first of each answers.
  */
 const LADDERS_TO_ASK = 3;
-/**
- * How many of a drop ladder's offered times are measured for capacity, furthest first.
- * Each measurement is the booker's own candidate read on every rung of the ladder,
- * against the branch database rather than the deployment, so it spends no availability
- * read; it is bounded so a roster where nothing fits refuses in seconds.
- */
-const DROP_SLOTS_TO_MEASURE = 24;
 // env-ok: BURST_LEAD_SECONDS (optional; defaults to 300, which has to cover a
 // runner being queued, checked out and installed)
 const LEAD = Number((process.env.BURST_LEAD_SECONDS ?? "300").trim());

@@ -21,20 +21,68 @@ import { ConfirmLine } from "../worker/confirm-line.ts";
 import { POOL_GROUPING_DIRECTORY, groupingGetMessage, groupingPutMessage, groupingSnapshotOf } from "../src/lib/booking/pool-grouping.ts";
 import { memoryGroupingStorage } from "./lib/memory-grouping-storage.ts";
 import { confirmLineObjectName } from "../src/lib/booking/shared-confirm-line.ts";
+import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { walkWorkerImports } from "./lib/scan-local-import-graph.ts";
 
 interface Resolved {
-  durable_objects?: { bindings?: { name?: string; class_name?: string }[] } | null;
+  name?: string;
+  main?: string;
+  workers_dev?: boolean;
+  routes?: unknown[];
+  durable_objects?: { bindings?: { name?: string; class_name?: string; script_name?: string }[] } | null;
   migrations?: { tag?: string; new_sqlite_classes?: string[] }[] | null;
 }
 
+// #3500: the line object lives in its OWN small Worker, so waking an idle one no longer
+// loads the whole 21 MB app (load run 37829565739: a cold isolate's first line call took
+// 1.1 to 1.4s against about 0.4s warm). Slate binds it by script name, production to
+// production's and the load test to the load test's, so a load run never shares lines
+// with production and production never reaches a load test object.
+const LINE_SCRIPT = { production: "slate-confirm-line", loadtest: "slate-confirm-line-loadtest" } as const;
 for (const env of [undefined, "loadtest"] as const) {
   const label = env ?? "production";
   const cfg = unstable_readConfig({ config: "wrangler.jsonc", env }) as unknown as Resolved;
   const binding = (cfg.durable_objects?.bindings ?? []).find((b) => b.name === CONFIRM_LINE_BINDING);
   assert(binding?.class_name === CONFIRM_LINE_CLASS, `${label}: ${CONFIRM_LINE_BINDING} is bound to ${CONFIRM_LINE_CLASS} (got ${JSON.stringify(binding ?? null)})`);
+  eq(binding?.script_name, LINE_SCRIPT[label], `${label}: ${CONFIRM_LINE_BINDING} is served by the small line Worker, by script name`);
+  // The old class stays exported and declared in Slate until a later deleted_classes
+  // migration (#3500 step 3), so this deploy needs no migration of Slate's own.
   const created = (cfg.migrations ?? []).some((m) => (m.new_sqlite_classes ?? []).includes(CONFIRM_LINE_CLASS));
-  assert(created, `${label}: a migration creates ${CONFIRM_LINE_CLASS} as a SQLite class`);
+  assert(created, `${label}: Slate's migration history still declares ${CONFIRM_LINE_CLASS}, so no migration is pending`);
+
+  const line = unstable_readConfig({ config: "wrangler.confirm-line.jsonc", env }) as unknown as Resolved;
+  eq(line.name, LINE_SCRIPT[label], `${label}: the line Worker is named for its environment`);
+  eq(line.main?.replace(/^.*?(worker\/)/, "$1"), "worker/confirm-line/index.ts", `${label}: the line Worker's entry is its own small module`);
+  const own = (line.durable_objects?.bindings ?? []).find((b) => b.name === CONFIRM_LINE_BINDING);
+  assert(own?.class_name === CONFIRM_LINE_CLASS && own.script_name === undefined, `${label}: the line Worker hosts ${CONFIRM_LINE_CLASS} itself (got ${JSON.stringify(own ?? null)})`);
+  assert(
+    (line.migrations ?? []).some((m) => (m.new_sqlite_classes ?? []).includes(CONFIRM_LINE_CLASS)),
+    `${label}: the line Worker's migration creates ${CONFIRM_LINE_CLASS} as a SQLite class`,
+  );
+  assert(line.workers_dev === false && (line.routes ?? []).length === 0, `${label}: the line Worker has no address; only Slate's binding reaches it`);
+}
+
+// #3500: the whole point is that the line Worker loads almost nothing. Its entry's local
+// imports are walked to the end, and every file reached must be one of the line's own,
+// so an import that pulled the app back in (a Supabase client, Next, a notifier) fails
+// here rather than silently undoing the fix.
+{
+  const LINE_FILES = new Set([
+    "worker/confirm-line/index.ts",
+    "worker/confirm-line.ts",
+    "src/lib/booking/confirm-line-object.ts",
+    "src/lib/booking/confirm-queue.ts",
+    "src/lib/booking/pool-grouping.ts",
+    "src/lib/booking/line-key.ts",
+    "src/lib/routing/tiers.ts",
+    "src/lib/xbc.ts",
+    "src/lib/read-within-deadline.ts",
+    "src/lib/log.ts",
+  ]);
+  const { seen, foreign } = walkWorkerImports(join(import.meta.dirname, ".."), "worker/confirm-line/index.ts", LINE_FILES);
+  assert(foreign.length === 0, `the line Worker reaches only the line's own files (got ${foreign.join(", ")})`);
+  assert(seen.has("src/lib/booking/confirm-queue.ts"), "the walk did reach the line's rules (positive control: it read the imports at all)");
 }
 
 const entry = readFileSync("worker/index.ts", "utf8");

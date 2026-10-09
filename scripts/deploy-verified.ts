@@ -90,6 +90,8 @@ try {
     "scripts/stamp-build-info.ts",
     plan.commit,
   ]);
+  // #3500: Slate's CONFIRM_LINE binding names this worker, so it goes first.
+  step("deploy the confirm line worker", "pnpm", ["exec", "wrangler", "deploy", "-c", "wrangler.confirm-line.jsonc"]);
   // pnpm appends these to the script's last command, `opennextjs-cloudflare deploy`,
   // which hands unrecognised flags through to `wrangler deploy`.
   step("build and deploy", "pnpm", ["run", "cf:deploy", ...plan.deployArgs]);

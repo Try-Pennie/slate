@@ -250,10 +250,14 @@
 				"class_name": "BurstLimiter"
 			},
 			// #3325: the confirm line shared across isolates, one object per line group
-			// (src/lib/booking/confirm-line-object.ts). Memory only; nothing is stored.
+			// (src/lib/booking/confirm-line-object.ts). #3500: served by its own small
+			// Worker (wrangler.confirm-line.jsonc), deployed before this one, so waking an
+			// idle line does not load the whole app. The class is still exported and its
+			// migration kept here until a deleted_classes migration retires it.
 			{
 				"name": "CONFIRM_LINE",
-				"class_name": "ConfirmLine"
+				"class_name": "ConfirmLine",
+				"script_name": "slate-confirm-line"
 			}
 		]
 	},
@@ -408,7 +412,8 @@
 					},
 					{
 						"name": "CONFIRM_LINE",
-						"class_name": "ConfirmLine"
+						"class_name": "ConfirmLine",
+						"script_name": "slate-confirm-line-loadtest"
 					}
 				]
 			},

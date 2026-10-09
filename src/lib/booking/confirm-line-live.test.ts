@@ -254,7 +254,11 @@ describe("the line key's grouping (#3460)", () => {
     expect(facts.lineGroupSource).toBe("absent");
     await Promise.resolve();
     expect(pools.after).toContain("pool-keys-warm");
-    expect(pools.warms).toBe(1);
+    // #3529: once inside the wait, as the server's own read when the directory holds
+    // nothing fresh, and once after the response. The second costs nothing when the
+    // first landed (warmPoolKeys returns at once on a fresh grouping); this mock lands
+    // nothing, so both are counted.
+    expect(pools.warms).toBe(2);
   });
 
   // Review of #3471: the fetch starts before the ceilings answer, so a caller they refuse
