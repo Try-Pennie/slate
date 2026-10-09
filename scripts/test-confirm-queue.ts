@@ -1064,6 +1064,23 @@ async function main() {
     first.done({ full: false }, "booked");
   }
   {
+    // #3529 review: lower rungs arrive over the wire, so their order is not trusted. Out of
+    // order or repeated, they are handed top rung first, each rung once (the first listing
+    // of a repeated rung kept), and the deepest is still the deepest that brings anyone new.
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    for (let i = 0; i < 3; i++) void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 2, read: ["d"] }, { rung: 1, read: ["c"] }, { rung: 1, read: ["x"] }], lowerComplete: true });
+    await tick();
+    const marks = seen.map((t) => (t.kind === "lead" && t.start ? `${t.start.rung}:${t.start.advisor}:${t.start.deepest === true}` : t.kind));
+    eq(marks.join(","), "1:c:false,2:d:true", "wire order: lower rungs are handed top first and a repeated rung counts once");
+    for (const t of seen) if (t.kind === "lead") t.done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+  {
     // #3529: the line marks the LAST advisor it hands out (`StartFrom.last`), because a rung's
     // read ends wherever round robin put its people: load run 37871606406 read tier one with
     // an advisor of the top rung LAST, the line handed that one on the top rung, and nobody

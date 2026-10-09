@@ -782,8 +782,12 @@ export function makeConfirmQueue<T>(
               at: now(),
               below: place.below === true,
               readAt: readAt ?? line.epoch,
-              // #3529: only rungs below this one, in order, so the ladder is handed top first.
-              lower: (place.lower ?? []).filter((r) => r.rung > place.rung).map((r) => ({ rung: r.rung, read: [...r.read] })),
+              // #3529: only rungs below this one, sorted and each once (the first listing of a
+              // repeated rung kept), since they come over the wire, so the ladder is handed top first.
+              lower: (place.lower ?? [])
+                .filter((r, i, all) => r.rung > place.rung && all.findIndex((o) => o.rung === r.rung) === i)
+                .sort((x, y) => x.rung - y.rung)
+                .map((r) => ({ rung: r.rung, read: [...r.read] })),
               lowerComplete: place.lowerComplete === true,
             };
           }

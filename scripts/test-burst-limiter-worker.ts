@@ -50,7 +50,7 @@ for (const env of [undefined, "loadtest"] as const) {
 
 // Loads nothing but the counter's own rules, so a wake costs what the object needs.
 {
-  const allowed = new Set(["worker/burst-limiter/index.ts", "worker/burst-limiter.ts", "src/lib/rate-limit-burst.ts"]);
+  const allowed = new Set(["worker/burst-limiter/index.ts", "worker/burst-limiter.ts", "src/lib/rate-limit-burst.ts", "src/lib/log.ts"]);
   const { seen, foreign } = walkWorkerImports(join(import.meta.dirname, ".."), "worker/burst-limiter/index.ts", allowed);
   assert(foreign.length === 0, `the burst limiter Worker reaches only its own files (got ${foreign.join(", ")})`);
   assert(seen.has("src/lib/rate-limit-burst.ts"), "the walk did reach the counter's rules (positive control)");

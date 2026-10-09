@@ -19,6 +19,7 @@
  * per request.
  */
 import { applyCounterRequest, readCounterRequest } from "@/lib/rate-limit-burst";
+import { log } from "@/lib/log";
 
 interface DurableStorage {
   get<T>(key: string): Promise<T | undefined>;
@@ -104,7 +105,7 @@ export class BurstLimiter {
     const now = Date.now();
     const step = applyCounterRequest(this.window ?? null, asked, now);
     this.window = step.next;
-    this.state.storage.put(STORAGE_KEY, step.next).catch(() => this.forget());
+    this.state.storage.put(STORAGE_KEY, step.next).catch((err: unknown) => this.forget("put", err));
     // The alarm deletes an idle count. It is moved only when it would fire less than one
     // and a half windows after this hit, so it always fires between one and a half and two
     // windows after the last one: never while a window is open, and set about once a window
@@ -112,7 +113,7 @@ export class BurstLimiter {
     const window = step.alarmAtMs - now;
     if (this.alarmAtMs === null || this.alarmAtMs < now + 0.75 * window) {
       this.alarmAtMs = step.alarmAtMs;
-      this.state.storage.setAlarm(step.alarmAtMs).catch(() => this.forget());
+      this.state.storage.setAlarm(step.alarmAtMs).catch((err: unknown) => this.forget("setAlarm", err));
     }
     // The window is reported alongside the count for the verification command (#1564), which
     // proves the counter ANSWERS by reporting twice and requiring the count to rise. Two
@@ -130,7 +131,8 @@ export class BurstLimiter {
    * reply that counted the lost hit is withheld by the platform's output gate, so no caller
    * was told a count that was never kept.
    */
-  private forget(): void {
+  private forget(op: "put" | "setAlarm", err: unknown): void {
+    log.error("burst-limiter", { msg: "storage call failed; forgetting the held window", op }, err);
     this.window = undefined;
     this.loading = null;
     this.alarmAtMs = null;

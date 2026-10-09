@@ -317,9 +317,20 @@ async function objectRuns() {
       eq(await hit(), 1, "the next hit reads storage again rather than awaiting the same failed read");
       fail.put = 1;
       const getsBefore = failing.calls.get;
-      eq(await hit(), 2, "a hit whose write fails is still answered from memory; the platform withholds the reply if the write never lands");
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setImmediate(r));
+      const logged: string[] = [];
+      const realError = console.error;
+      console.error = (...args: unknown[]) => logged.push(String(args[0]));
+      try {
+        eq(await hit(), 2, "a hit whose write fails is still answered from memory; the platform withholds the reply if the write never lands");
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+      } finally {
+        console.error = realError;
+      }
+      assert(
+        logged.some((l) => l.includes("tag=burst-limiter") && l.includes('op="put"')),
+        `a failed write is logged under the limiter's own tag, never swallowed (got ${JSON.stringify(logged)})`,
+      );
       eq(await hit(), 2, "after a failed write the instance reads storage again, which never held the lost hit");
       eq(failing.calls.get, getsBefore + 1, "and it read storage once to get there");
       // A fresh object whose first alarm fails sets it again on the next hit.
