@@ -503,9 +503,13 @@ function assertWithinLeadCallingWindow(startIso: string, zone: string | null | u
  * pre-check and the main path cannot word or order them differently (#2310).
  */
 function assertReschedulable(ctx: BookingContext | null): asserts ctx is BookingContext {
-  if (!ctx) throw new Error("Booking not found");
+  // Typed, so the route maps these to a clean 4xx. A plain Error here is an EXPECTED
+  // refusal (a stale link on a call that already happened, an unknown token) dressed as
+  // an unexpected fault, which fell through to the generic 500 that pages the on-call
+  // (#3569, L35: classify errors once).
+  if (!ctx) throw new BookingNotFoundError();
   if (ctx.booking.status === "cancelled" || ctx.booking.status === "completed") {
-    throw new Error("This booking can no longer be changed");
+    throw new BookingNotChangeableError();
   }
 }
 

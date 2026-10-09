@@ -48,10 +48,26 @@ const service = vi.hoisted(() => {
       this.cause = cause;
     }
   }
+  // #3569: the booking is (or became) terminal, so it can no longer be moved.
+  class BookingNotChangeableError extends Error {
+    constructor() {
+      super("This booking can no longer be changed");
+      this.name = "BookingNotChangeableError";
+    }
+  }
+  // #3569: the manage token resolves to no booking.
+  class BookingNotFoundError extends Error {
+    constructor() {
+      super("Booking not found");
+      this.name = "BookingNotFoundError";
+    }
+  }
   return {
     ContactRefusedError,
     AttendeeEmailRefusedError,
     OutsideCallingWindowError,
+    BookingNotChangeableError,
+    BookingNotFoundError,
     rescheduleBooking: vi.fn(),
     pageBookingFailure: vi.fn(async (_err: unknown) => {}),
     bookingDetailExtras: vi.fn((_booking: unknown) => ({
@@ -235,6 +251,29 @@ describe("POST /bookings/[token]/reschedule", () => {
     expect((await res.json()).error).toContain("411");
   });
 
+  // #3569: a lead clicking a stale reschedule link on a call that already happened (or
+  // was cancelled) is an EXPECTED refusal, not a crash. It must be a clean 409 that
+  // never reaches the generic 500 and never pages the on-call.
+  it("maps BookingNotChangeableError to 409 with its own reason, not a generic 500 that pages (#3569)", async () => {
+    service.rescheduleBooking.mockRejectedValueOnce(new service.BookingNotChangeableError());
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe("This booking can no longer be changed");
+    // #1549: every 409 names its reason so a client never branches on the message.
+    expect(body.reason).toBe("reschedule_terminal");
+    expect(service.pageBookingFailure).not.toHaveBeenCalled();
+  });
+
+  // #3569: an unknown/garbage manage token is a 404, not a 500 that pages.
+  it("maps BookingNotFoundError to 404, not a generic 500 that pages (#3569)", async () => {
+    service.rescheduleBooking.mockRejectedValueOnce(new service.BookingNotFoundError());
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe("Booking not found");
+    expect(service.pageBookingFailure).not.toHaveBeenCalled();
+  });
+
   // #1549: two of the 409s mean "that time is not available" and one means "the
   // booking moved under you", and the lead-facing surfaces answer them in opposite
   // ways (one offers the soonest times still open, the other must not). The status
@@ -245,6 +284,9 @@ describe("POST /bookings/[token]/reschedule", () => {
       [new service.SlotUnavailableError("gone"), "reschedule_slot_taken"],
       [new service.NoEligibleAgentsError("411"), "reschedule_no_eligible_agents"],
       [new service.RescheduleConflictError(), "reschedule_conflict"],
+      // #3569: a terminal booking is a fourth 409 and names its reason too, so a
+      // client can tell "this call is over" from "the booking moved under you".
+      [new service.BookingNotChangeableError(), "reschedule_terminal"],
     ];
     for (const [err, reason] of cases) {
       service.rescheduleBooking.mockRejectedValueOnce(err);
@@ -575,6 +617,9 @@ describe("POST /api/bookings/[token]/reschedule outcome tally (#1318)", () => {
       [new service.NoEligibleAgentsError("411"), "reschedule_no_eligible_agents"],
       [new service.VerifyUnavailableError("down"), "reschedule_verify_unavailable"],
       [new service.RescheduleLockUnavailableError(), "reschedule_lock_unavailable"],
+      // #3569: a terminal booking is counted in the failure share like the others,
+      // just under its own code, so it no longer hides inside reschedule_internal.
+      [new service.BookingNotChangeableError(), "reschedule_terminal"],
       [new Error("boom"), "reschedule_internal"],
     ];
     for (const [err, code] of cases) {
@@ -583,6 +628,17 @@ describe("POST /api/bookings/[token]/reschedule outcome tally (#1318)", () => {
       await POST(req(body), params);
       expect(outcomes()).toEqual([["error", code]]);
     }
+  });
+
+  // #3569: an unknown token is bot-shaped (the token is unguessable, so a miss is a
+  // hand-made request). Counting it would put that volume in the denominator the
+  // failure SHARE is taken against, so like the 429 it is deliberately not counted.
+  it("counts nothing for an unknown manage token (#3569)", async () => {
+    recordApiOutcome.mockClear();
+    service.rescheduleBooking.mockRejectedValue(new service.BookingNotFoundError());
+    const res = await POST(req(body), params);
+    expect(res.status).toBe(404);
+    expect(outcomes()).toEqual([]);
   });
 
   it("counts nothing for a request the page could not have sent", async () => {

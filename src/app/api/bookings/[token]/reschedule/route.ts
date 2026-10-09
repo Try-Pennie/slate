@@ -15,6 +15,8 @@ import {
   ContactRefusedError,
   AttendeeEmailRefusedError,
   OutsideCallingWindowError,
+  BookingNotChangeableError,
+  BookingNotFoundError,
 } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
@@ -323,6 +325,27 @@ async function handlePost(
           { error: err.message, reason: "reschedule_no_eligible_agents" },
           { status: 409 },
         );
+      }
+      // The booking is (or became) terminal (cancelled/completed): a lead acting on a
+      // call that is over, not a crash (#3569). A real conflict like the reassign path
+      // (#717), so 409 and the same message, counted in the share but never paging.
+      // It names its reason like the other 409s (#1549), so a client tells "this call
+      // is over" from "the booking moved under you" without branching on the copy
+      // (L35). Not in RESCHEDULE_TIME_GONE_REASONS, so no alternative-times panel.
+      if (err instanceof BookingNotChangeableError) {
+        recordApiOutcome("error", "", "reschedule_terminal", { by: "manageToken", token });
+        // refusal: reschedule_terminal
+        return NextResponse.json(
+          { error: err.message, reason: "reschedule_terminal" },
+          { status: 409 },
+        );
+      }
+      // The manage token resolves to no booking (#3569): a 404, not a 500 that pages.
+      // Not counted, because the token is unguessable, so a miss is a hand-made request
+      // whose volume would only dilute the failure share (same reasoning as the 429).
+      if (err instanceof BookingNotFoundError) {
+        // refusal: reschedule_not_found
+        return NextResponse.json({ error: err.message }, { status: 404 });
       }
       recordApiOutcome("error", "", "reschedule_internal", { by: "manageToken", token });
       // refusal: reschedule_internal
