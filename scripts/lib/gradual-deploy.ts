@@ -422,6 +422,13 @@ export function maxCronWaitMs(crons: string[], budgetMs = SPLIT_BUDGET_MS, margi
 
 // --- the run itself ----------------------------------------------------------------
 
+/**
+ * #3500, #3555: the small workers that host Slate's Durable Objects, each deployed whole
+ * before Slate on every path that deploys it (this gradual deploy, the hand deploy, the
+ * load run), because Slate binds its objects to them by script name.
+ */
+export const OBJECT_WORKER_CONFIGS = ["wrangler.confirm-line.jsonc", "wrangler.burst-limiter.jsonc"] as const;
+
 /** How a run ended, as a process exit code. Each one is its own message and its own
  *  remedy, so none of them may share a number (scripts/test-gradual-deploy.ts). */
 export const EXIT = {
@@ -466,9 +473,10 @@ export const EXIT = {
    *  version (#3352). Nothing changed; it ships by hand, and until it does every later
    *  deploy ends here too. */
   classChange: 25,
-  /** #3500: the confirm line worker (slate-confirm-line) could not be deployed, so
-   *  nothing of Slate's was uploaded: Slate's binding names it. Nothing changed. */
-  lineWorkerFailed: 26,
+  /** #3500, #3555: an object worker (the confirm line's or the burst limiter's) could not
+   *  be deployed, so nothing of Slate's was uploaded: Slate's bindings name them. Nothing
+   *  changed. */
+  objectWorkerFailed: 26,
 } as const;
 
 export type EndState = "new" | "old" | "unchanged" | "unknown";
@@ -496,7 +504,7 @@ export const EXIT_END: Record<keyof typeof EXIT, EndState> = {
   tailWorkerFailed: "new",
   scriptFailed: "unknown",
   classChange: "unchanged",
-  lineWorkerFailed: "unchanged",
+  objectWorkerFailed: "unchanged",
 };
 
 export interface GradualResult {
@@ -525,11 +533,11 @@ export interface GradualOps {
    */
   tailWorker(): Promise<boolean>;
   /**
-   * #3500: deploy the confirm line worker (`wrangler deploy -c wrangler.confirm-line.jsonc`)
-   * whole, BEFORE anything of Slate's is uploaded: Slate binds CONFIRM_LINE to it by script
-   * name. True when it succeeded. Idempotent, so every run deploys it.
+   * #3500, #3555: deploy one object worker (`wrangler deploy -c <config>`) whole, BEFORE
+   * anything of Slate's is uploaded: Slate binds its objects to them by script name. True
+   * when it succeeded. Idempotent, so every run deploys each of `OBJECT_WORKER_CONFIGS`.
    */
-  lineWorker(): Promise<boolean>;
+  objectWorker(config: string): Promise<boolean>;
   /** Whether a version was uploaded in cron standby (a canary): read from its
    *  annotation. Null when it could not be read. */
   isCronStandby(versionId: string): Promise<boolean | null>;
@@ -693,13 +701,13 @@ async function runUntilSplit(ops: GradualOps): Promise<GradualResult> {
   }
   ops.log(`production is serving ${stable} at 100%`);
 
-  // #3500: the line worker Slate's binding names, before any version of Slate exists.
-  if (!(await ops.lineWorker())) {
+  // #3500, #3555: the object workers Slate's bindings name, before any version of Slate exists.
+  for (const config of OBJECT_WORKER_CONFIGS) {
+    if (await ops.objectWorker(config)) continue;
     return {
-      exit: EXIT.lineWorkerFailed,
+      exit: EXIT.objectWorkerFailed,
       end: "unchanged",
-      message:
-        "Not deployed: the confirm line worker (slate-confirm-line) could not be deployed, and Slate's CONFIRM_LINE binding names it, so nothing of Slate's was uploaded and the previous version is still serving 100%. Deploy it by hand with `npx wrangler deploy -c wrangler.confirm-line.jsonc`, then re-run the deploy.",
+      message: `Not deployed: the object worker in ${config} could not be deployed, and Slate's bindings name it, so nothing of Slate's was uploaded and the previous version is still serving 100%. Deploy it by hand with \`npx wrangler deploy -c ${config}\`, then re-run the deploy.`,
     };
   }
 

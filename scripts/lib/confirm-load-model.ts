@@ -357,6 +357,8 @@ export const LOAD_RUN_DATABASE: DatabaseModel = {
  *     priced at 200ms until a run on the stack measures the `ladder-read` stage. A
  *     rung judged from it reads nothing. The what if grid on #3489 (2026-10-08) put
  *     the bursts' verdicts within the bar from 150 to 300ms for a one request read.
+ *   - `verifyFree`: one request where it made two, the advisor read by email being gone
+ *     (#3495: `selectAgent` hands it the ids the emails were read from).
  */
 export const STACK_DATABASE: DatabaseModel = {
   ...LOAD_RUN_DATABASE,
@@ -365,9 +367,12 @@ export const STACK_DATABASE: DatabaseModel = {
     commitFreshBooking: 186,
     findActiveBookingsForPerson: 90,
     readLadderInputs: 200,
+    // #3495: the advisors' ids ride with their emails, so the live check reads only their
+    // calendar rows: one of its two statements.
+    verifyFree: 70,
   },
-  requests: { ...CODE_REQUESTS, commitFreshBooking: 1, findActiveBookingsForPerson: 1, readLadderInputs: 1 },
-  depth: CODE_DEPTH,
+  requests: { ...CODE_REQUESTS, commitFreshBooking: 1, findActiveBookingsForPerson: 1, readLadderInputs: 1, verifyFree: 1 },
+  depth: { ...CODE_DEPTH, verifyFree: 1 },
 };
 
 /** The shared line object as the run reached it. */
@@ -554,7 +559,7 @@ const S = Array.from({ length: 44 }, (_, i) => `s${i}`);
 /** Every advisor any burst names, for the harness's user fixture. */
 export const LOAD_MODEL_ADVISORS: readonly string[] = [...R, ...S];
 
-const ladder500 = (free: readonly string[]): Record<string, BurstRung> => {
+export const ladder500 = (free: readonly string[]): Record<string, BurstRung> => {
   const rung = (members: string[]): BurstRung => ({ free: members.filter((id) => free.includes(id)), busy: members.filter((id) => !free.includes(id)) });
   return {
     "500": rung(R.slice(0, 6)),

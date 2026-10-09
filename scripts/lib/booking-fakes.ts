@@ -327,6 +327,8 @@ export function makeDeps(opts: FakeOpts) {
     verifyFree: [] as string[][],
     /** #3338: the window each live check asked about, beside `verifyFree`. */
     verifyFreeWindows: [] as { fromIso: string; toIso: string }[],
+    /** #3495: the advisor ids each wave was handed beside its emails (email to id), if any. */
+    verifyFreeIds: [] as (Record<string, string> | null)[],
     /** `args` is what the invite was written WITH (#3376: its title and location). */
     createEvent: [] as { email: string; clientId?: string; args: CreateEventArgs }[],
     /**
@@ -672,9 +674,10 @@ export function makeDeps(opts: FakeOpts) {
     },
     // Batched verify-on-book: one call per round-robin wave; returns the free
     // subset plus any emails that couldn't be checked. Mirrors the real dep.
-    verifyFree: async (emails, startIso, endIso) => {
+    verifyFree: async (emails, startIso, endIso, ids) => {
       calls.verifyFree.push(emails);
       calls.verifyFreeWindows.push({ fromIso: startIso, toIso: endIso });
+      calls.verifyFreeIds.push(ids ? Object.fromEntries(ids) : null);
       const unverified = opts.unverifiedEmails ?? new Set<string>();
       const s = Date.parse(startIso);
       const e = Date.parse(endIso);

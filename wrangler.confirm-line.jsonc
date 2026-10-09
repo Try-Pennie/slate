@@ -8,7 +8,8 @@
 	//   npx wrangler deploy -c wrangler.confirm-line.jsonc                 (production)
 	//   npx wrangler deploy -c wrangler.confirm-line.jsonc --env loadtest  (load test)
 	//
-	// Production's runs from scripts/deploy-gradual.ts, the load test's from loadtest.yml.
+	// Both run from the same list as the burst limiter worker's (OBJECT_WORKER_CONFIGS in
+	// scripts/lib/gradual-deploy.ts), which scripts/deploy-gradual.ts and loadtest.yml read.
 	// scripts/test-confirm-line-binding.ts pins the names, the entry and its imports.
 	"name": "slate-confirm-line",
 	"main": "worker/confirm-line/index.ts",

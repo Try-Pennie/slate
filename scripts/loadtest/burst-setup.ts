@@ -60,7 +60,6 @@
 //   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/burst-setup.ts
 import { appendFileSync } from "node:fs";
 import {
-  chooseBurstSlots,
   burstStartAt,
   burstMoments,
   burstCrowd,
@@ -71,6 +70,7 @@ import {
   BURST_SEQUENCE,
   BURST_SLOT_GAP_MS,
   DROP_SLOTS_TO_MEASURE,
+  REFUSAL_SLOTS_TO_MEASURE,
   BURST_SPACING_MS,
   DROP_CAPACITY_HEADROOM,
   type BurstCapacity,
@@ -79,6 +79,9 @@ import {
   assembleBurstPlan,
   dropLadders,
   dropSlotFit,
+  chooseRefusalSlots,
+  measuredFree,
+  HARD_REFUSAL_MIN_FREE,
   ladderCandidates,
   ladderFreeFrom,
   refusalLadders,
@@ -302,43 +305,42 @@ if (refusalAsk.length === 0) {
   process.exit(7);
 }
 
-const refusalReads: string[] = [];
-let refusal: LadderCandidate | null = null;
-let refusalSlots: string[] | null = null;
-let refusalTiers: [string | null, string | null] = [null, null];
-for (const c of refusalAsk) {
-  const shared = await sharedOffered(c);
-  if ("why" in shared) {
-    refusalReads.push(shared.why);
-    continue;
-  }
-  const chosen = chooseBurstSlots(shared.times, REFUSAL_BURSTS, BURST_SLOT_GAP_MS);
-  if (chosen !== null) {
-    refusal = c;
-    refusalSlots = chosen;
-    refusalTiers = shared.shownTiers;
-    break;
-  }
-}
-if (refusal === null || refusalSlots === null) {
-  // TWO exit codes, because a ladder offering nothing and an availability read that
-  // failed send two different people to two different places (L11): the first is a
-  // seed or a roster problem, the second is the deployment.
+const refusalChoice = await chooseRefusalSlots(
+  refusalAsk,
+  { offered: sharedOffered, free: measuredCapacity, label: (c) => c.code },
+  { bursts: REFUSAL_BURSTS, gapMs: BURST_SLOT_GAP_MS, toMeasure: REFUSAL_SLOTS_TO_MEASURE, minFree: HARD_REFUSAL_MIN_FREE },
+);
+if (refusalChoice.kind !== "chosen") {
+  // Each outcome its own exit code, because each sends a different person to a different
+  // place (L11): a failed read is the deployment; a ladder with no time fit for the hard
+  // crowd (#3565) or no well spaced times is the seed or the roster.
   const asked = refusalAsk.map((c) => `${c.code}/${c.sibling}`).join(", ");
-  if (refusalReads.length === refusalAsk.length) {
+  const reads = refusalChoice.reads.length > 0 ? ` Reads that did not answer: ${refusalChoice.reads.join("; ")}.` : "";
+  if (refusalChoice.kind === "unanswered") {
     console.error(
       `FAILED: availability answered for none of the refusal control's ladders (${asked}), so no slot could be ` +
-        `chosen and nothing is known about any of them. Reads: ${refusalReads.join("; ")}.`,
+        `chosen and nothing is known about any of them. Reads: ${refusalChoice.reads.join("; ")}.`,
     );
     process.exit(2);
   }
+  if (refusalChoice.kind === "no-hard-slot") {
+    const m = refusalChoice.misses;
+    console.error(
+      `FAILED: no offered time on the refusal control's ladders (${asked}) has ${HARD_REFUSAL_MIN_FREE} or more ` +
+        `advisors free across the ladder with some below the requested rung, so the hard crowd (#3565) has nothing ` +
+        `to meet. Measured: ${m.slice(0, 6).join("; ")}${m.length > 6 ? `; and ${m.length - 6} more` : ""}.${reads}`,
+    );
+    process.exit(11);
+  }
   console.error(
     `FAILED: none of the refusal control's ladders (${asked}) offered ${REFUSAL_BURSTS} times at least ` +
-      `${BURST_SLOT_GAP_MS / 60_000} minutes apart that both codes offer, so there is nothing to burst at.` +
-      (refusalReads.length > 0 ? ` Reads that did not answer: ${refusalReads.join("; ")}.` : ""),
+      `${BURST_SLOT_GAP_MS / 60_000} minutes apart that both codes offer, so there is nothing to burst at.${reads}`,
   );
   process.exit(3);
 }
+const refusal = refusalChoice.ladder;
+const refusalSlots = refusalChoice.slots;
+const refusalTiers = refusalChoice.shownTiers;
 
 // --- the drop burst: a shallow top rung with room below, at a slot that fits --------
 const dropAsk = dropLadders(staffed, DROP_CROWD, DROP_CAPACITY_HEADROOM, [refusal.code]).slice(0, LADDERS_TO_ASK);
@@ -350,7 +352,7 @@ if (dropAsk.length === 0) {
   );
   process.exit(8);
 }
-const farEnough = (t: string) => refusalSlots!.every((s) => Math.abs(Date.parse(s) - Date.parse(t)) >= BURST_SLOT_GAP_MS);
+const farEnough = (t: string) => refusalSlots.every((s) => Math.abs(Date.parse(s) - Date.parse(t)) >= BURST_SLOT_GAP_MS);
 const dropReads: string[] = [];
 const dropMisses: string[] = [];
 let drop: { ladder: LadderCandidate; slot: string; capacity: BurstCapacity; shownTiers: [string | null, string | null] } | null = null;
@@ -368,7 +370,8 @@ for (const c of dropAsk) {
     .slice(0, DROP_SLOTS_TO_MEASURE);
   for (const t of times) {
     const capacity = await measuredCapacity(c, t);
-    const why = dropSlotFit({ rung0Free: capacity.rung0Free!, ladderFree: capacity.ladderFree! }, DROP_CROWD, DROP_CAPACITY_HEADROOM);
+    const free = measuredFree(capacity);
+    const why = free ? dropSlotFit(free, DROP_CROWD, DROP_CAPACITY_HEADROOM) : "who is free there was not measured";
     if (why === null) {
       drop = { ladder: c, slot: t, capacity, shownTiers: shared.shownTiers };
       break;

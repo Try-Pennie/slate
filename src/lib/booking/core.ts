@@ -418,6 +418,31 @@ export interface SelectionOutcome {
   checked?: number;
 }
 
+/** A wave's live check, as both selections make it (#3495). */
+type WaveVerify = (emails: string[], ids: ReadonlyMap<string, string>) => Promise<VerifyResult>;
+
+/**
+ * One wave of `selectAgent` and `selectReassignTarget`: its advisors' emails, in
+ * round-robin order with the emailless dropped, then one live check handed each email's
+ * advisor id (#3495), so the check reads their calendars by id. An empty wave makes no
+ * check.
+ */
+async function checkWave(
+  waveIds: string[],
+  loadEmails: (userIds: string[]) => Promise<Map<string, string>>,
+  verifyFree: WaveVerify,
+): Promise<{ wave: AssignResult[]; free: Set<string>; unverified: boolean }> {
+  const emailById = await loadEmails(waveIds);
+  const wave: AssignResult[] = [];
+  for (const userId of waveIds) {
+    const email = emailById.get(userId);
+    if (email) wave.push({ userId, email });
+  }
+  if (wave.length === 0) return { wave, free: new Set(), unverified: false };
+  const { free, unverified } = await verifyFree(wave.map((c) => c.email), new Map(wave.map((c) => [c.email, c.userId])));
+  return { wave, free, unverified: unverified.size > 0 };
+}
+
 /**
  * Verify-on-book selection: walk candidates in round-robin order, but verify a
  * WAVE of `batchSize` candidates per round-trip instead of one Google call per
@@ -437,24 +462,16 @@ export interface SelectionOutcome {
 export async function selectAgent(
   candidates: string[],
   loadEmails: (userIds: string[]) => Promise<Map<string, string>>,
-  verifyFree: (emails: string[]) => Promise<VerifyResult>,
+  /** Handed each wave's emails and, #3495, the advisor id each was read from (email to id). */
+  verifyFree: WaveVerify,
   batchSize: number,
 ): Promise<SelectionOutcome> {
   let anyUnverified = false;
   let checked = 0;
   for (let i = 0; i < candidates.length; i += batchSize) {
-    const waveIds = candidates.slice(i, i + batchSize);
-    const emailById = await loadEmails(waveIds);
-    // Preserve round-robin order; drop candidates with no resolvable email.
-    const wave: AssignResult[] = [];
-    for (const userId of waveIds) {
-      const email = emailById.get(userId);
-      if (email) wave.push({ userId, email });
-    }
-    if (wave.length === 0) continue;
+    const { wave, free, unverified } = await checkWave(candidates.slice(i, i + batchSize), loadEmails, verifyFree);
     checked += wave.length;
-    const { free, unverified } = await verifyFree(wave.map((c) => c.email));
-    if (unverified.size > 0) anyUnverified = true;
+    anyUnverified ||= unverified;
     for (const candidate of wave) {
       if (free.has(candidate.email)) return { assignment: candidate, anyUnverified, checked };
     }
@@ -488,24 +505,17 @@ export async function selectReassignTarget(
   candidates: string[],
   excludeUserId: string | null,
   loadEmails: (userIds: string[]) => Promise<Map<string, string>>,
-  verifyFree: (emails: string[]) => Promise<VerifyResult>,
+  /** As `selectAgent`'s: each wave's emails and the advisor id each was read from (#3495). */
+  verifyFree: WaveVerify,
   isUnderCap: (userId: string) => Promise<boolean>,
   batchSize: number,
 ): Promise<SelectionOutcome> {
   const eligible = candidates.filter((id) => id !== excludeUserId);
   let anyUnverified = false;
   for (let i = 0; i < eligible.length; i += batchSize) {
-    const waveIds = eligible.slice(i, i + batchSize);
-    const emailById = await loadEmails(waveIds);
-    // Preserve round-robin order; drop candidates with no resolvable email.
-    const wave: AssignResult[] = [];
-    for (const userId of waveIds) {
-      const email = emailById.get(userId);
-      if (email) wave.push({ userId, email });
-    }
-    if (wave.length === 0) continue;
-    const { free, unverified } = await verifyFree(wave.map((c) => c.email));
-    if (unverified.size > 0) anyUnverified = true;
+    const checkedWave = await checkWave(eligible.slice(i, i + batchSize), loadEmails, verifyFree);
+    anyUnverified ||= checkedWave.unverified;
+    const { wave, free } = checkedWave;
     for (const candidate of wave) {
       // Cap is checked only for a confirmed-free candidate, in order, so the
       // first free+under-cap agent wins and a busy agent costs no cap read.

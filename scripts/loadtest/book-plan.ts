@@ -209,6 +209,14 @@ export const DROP_CAPACITY_HEADROOM = 2;
 export const DROP_SLOTS_TO_MEASURE = 144;
 
 /**
+ * #3565: how many of the refusal ladder's offered times, furthest first, the setup measures
+ * looking for one with enough advisors free for the hard refusal crowd
+ * (`HARD_REFUSAL_MIN_FREE`). A day's worth of ten minute slots: far out, most of a seeded
+ * roster is free, so the first few usually fit.
+ */
+export const REFUSAL_SLOTS_TO_MEASURE = 72;
+
+/**
  * #3429: how long one probe of a burst's slot may take. Held, with the moment the
  * burst settles, inside the spacing to the next burst, so no probe overlaps a crowd.
  */

@@ -493,8 +493,12 @@ one line (the bucket rows), `7` no ladder holds fewer advisors than the refusal 
 of a hundred, `8` no ladder can host the drop burst (a sibling, somebody on the top
 rung, a rung below, twice the crowd across the ladder, and not the refusal control's
 own), `9` no offered time fits the drop burst, naming what each measured slot lacked,
-and `10` who is free at a slot could not be read. An empty burst file and a run with no
-burst leg are otherwise the same thing (L98).
+`10` who is free at a slot could not be read, and `11` no offered time on the refusal
+control's ladders has `HARD_REFUSAL_MIN_FREE` (5) advisors free across the ladder with some
+below the requested rung. The first refusal crowd takes the measured time with the MOST
+free over that floor, so every run meets the hardest crowd the seed offers (#3565); the
+seed rarely leaves ten free on the sixteen advisor ladder, so the floor is not ten. An empty burst file and a
+run with no burst leg are otherwise the same thing (L98).
 
 It also emits the DRIVER COUNT, from the app's own `DRIVERS` constant, and the BURST
 COUNT, from `BURST_LEGS`, and both the matrix and the judge's expectations read them
@@ -659,11 +663,12 @@ NEXT_PUBLIC_APP_URL=https://slate-loadtest.<subdomain>.workers.dev \
 pnpm cf:build && npx wrangler deploy --env loadtest
 ```
 
-Before the FIRST deploy of a fresh setup, deploy the confirm line worker the load test
-binds (#3500): `npx wrangler deploy -c wrangler.confirm-line.jsonc --env loadtest`. The
-load test Worker's `CONFIRM_LINE` names `slate-confirm-line-loadtest` by script, so a
-Slate deployed without it has no line object to reach. The run's arm job deploys it again
-each run; it is idempotent.
+Before the FIRST deploy of a fresh setup, deploy the object workers the load test binds
+(#3500, #3555): `npx wrangler deploy -c wrangler.confirm-line.jsonc --env loadtest` and
+`npx wrangler deploy -c wrangler.burst-limiter.jsonc --env loadtest`. The load test
+Worker's `CONFIRM_LINE` and `BURST_LIMITER` name `slate-confirm-line-loadtest` and
+`slate-burst-limiter-loadtest` by script, so a Slate deployed without them has no object
+to reach. The run's arm job deploys them again when it redeploys; it is idempotent.
 
 ### Three refusals, and no one of them answers for the others
 
