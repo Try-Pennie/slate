@@ -44,10 +44,13 @@ import {
   tierStaffingKey,
   type TierAlertState,
   type TierReading,
+  type WindowReading,
 } from "@/lib/monitor/tier-staffing";
 import { firingKey, mayWriteAlerts } from "@/lib/notify/dispatch";
 import { parseStampMs } from "@/lib/date/stamp";
 import { log } from "@/lib/log";
+import { offeredWindowFor } from "@/lib/availability/offered-window";
+import type { BusinessHoursRules } from "@/lib/availability/compute";
 
 /** Every debt tier digit, from the shared vocabulary rather than typed out, so a
  *  sixth tier is covered by construction rather than silently unwatched (L96). */
@@ -188,6 +191,9 @@ export async function loadTierCauseReads(input: {
 export function tierReadings(input: {
   agentCounts: Map<string, number> | null;
   slotByCode: Map<string, SlotHealth> | null;
+  /** Each tier's booker window, from `tierWindows`. A tier missing here is
+   *  unmeasured, never judged against a neighbour's window or a guess. */
+  windows: Map<string, WindowReading>;
 }): TierReading[] {
   return DEBT_TIERS.map((tier) => {
     const label = DEBT_TIER[tier]?.label ?? tier;
@@ -206,8 +212,37 @@ export function tierReadings(input: {
         input.slotByCode === null || health === undefined || health.slotCount === null
           ? { measured: false }
           : { measured: true, firstSlotMs: health.firstSlotMs, offeredMs: health.offeredMs ?? [] },
+      window: input.windows.get(tier) ?? { measured: false },
     };
   });
+}
+
+/**
+ * The days the booker shows a lead in each debt tier (#3559), from that tier's
+ * whole pool row in the slot cache.
+ *
+ * The booker cuts its strip with `offeredWindowFor` over the REQUESTED pool's
+ * event type notice, and the cached row carries that event type, so the window
+ * costs no read: the lane already holds the rows. A row that is missing, or whose
+ * notice is not a number, is `measured: false` rather than a window built from a
+ * guessed notice, and so is an org with no open day ahead (L215). Pure.
+ */
+export function tierWindows(input: {
+  rows: { bucket_code: string; payload: { eventType?: { min_notice_min?: unknown } | null } | null }[];
+  hours: BusinessHoursRules;
+  nowMs: number;
+}): Map<string, WindowReading> {
+  const out = new Map<string, WindowReading>();
+  for (const tier of DEBT_TIERS) {
+    const row = input.rows.find((r) => r.bucket_code === wholeTierPoolCode(tier));
+    const notice = row?.payload?.eventType?.min_notice_min;
+    const w =
+      typeof notice === "number" && Number.isFinite(notice) && notice >= 0
+        ? offeredWindowFor(input.hours, input.nowMs, notice)
+        : null;
+    out.set(tier, w === null ? { measured: false } : { measured: true, endMs: w.endMs, days: w.days });
+  }
+  return out;
 }
 
 /**

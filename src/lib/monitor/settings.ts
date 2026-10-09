@@ -167,7 +167,7 @@ export const ALERT_FIELDS: {
     key: "pool_nearly_full",
     urgency: "notice",
     label: "Nearly full pool cooldown",
-    help: "Fewer than 10% of a pool's possible starts today are still open. A full calendar is good news; this is the nudge to add coverage before leads run out of times.",
+    help: "Fewer than a set share (10% unless changed) of a pool's possible starts, across the days the booker shows, are still open. A full calendar is good news; this is the nudge to add coverage before leads run out of times.",
   },
   {
     key: "agents_without_schedule",
@@ -395,7 +395,7 @@ export const ALERT_FIELDS: {
     key: "empty_tier",
     urgency: "alert",
     label: "Debt tier offering no times",
-    help: "A whole debt tier (Low, Medium, High, Very High or Ultra High) is offering no booking time before the end of the next working day, either because nobody is assigned to it or because every agent on it is full. Leads asking for that tier are served by a lower tier meanwhile. A bucket or backend inside a tier that is still offering times is not reported. It ends only once the tier offers the minimum number of open times and has kept offering them for the hold, so one cancelled call that is booked again minutes later does not end it.",
+    help: "A whole debt tier (Low, Medium, High, Very High or Ultra High) is offering no booking time on any of the days the booker shows, either because nobody is assigned to it or because every agent on it is full. Leads asking for that tier are served by a lower tier meanwhile. A bucket or backend inside a tier that is still offering times is not reported. It ends only once the tier offers the minimum number of open times and has kept offering them for the hold, so one cancelled call that is booked again minutes later does not end it.",
   },
   {
     key: "main_not_deployed",
@@ -676,6 +676,10 @@ export const MONITOR_DEFAULTS = {
   // freed time on a full day is usually taken inside that, while a tier that has
   // genuinely recovered is still recovered half an hour on.
   tierRecovery: { minOpenTimes: 3, holdMin: 30 },
+  // #3559: the nearly full pool notice fires when FEWER than this percentage of a
+  // pool's possible starts, across the days the booker shows, are still open
+  // (Dan, 2026-10-02 for the number, 2026-10-09 for making it a setting).
+  poolNearlyFullOpenPct: 10,
   // No coded low volume floors any more (#1956). They were 5 and 20, one pair for
   // every hour of the week, and nothing had measured either: replayed over two
   // real weeks they would have paged 258 times. The floors now come from
@@ -971,6 +975,20 @@ export function resolveTierRecovery(
   };
 }
 
+/** The bounds the settings form accepts for the nearly full pool line (#3559), in
+ *  whole percent. The resolver holds a stored value to the same ones: 0 could never
+ *  fire, and past half of every start still open it would fire on a quiet day. */
+export const POOL_NEARLY_FULL_BOUNDS = { openPct: { min: 1, max: 50 } } as const;
+
+/** The nearly full pool line as a share (0.1 for 10%): store if valid, else the
+ *  coded default. */
+export function resolvePoolNearlyFullShare(
+  config: Pick<MonitorAlertConfig, "pool_nearly_full_open_pct"> | null,
+): number {
+  const pct = config?.pool_nearly_full_open_pct;
+  return (within(pct, POOL_NEARLY_FULL_BOUNDS.openPct) ? pct : MONITOR_DEFAULTS.poolNearlyFullOpenPct) / 100;
+}
+
 // Sane bounds so a fat-finger can't silently mute an alert for a week.
 const COOLDOWN_MIN_MIN = 1;
 const COOLDOWN_MIN_MAX = 7 * 24 * 60; // one week in minutes
@@ -1002,6 +1020,8 @@ export interface MonitorSettingsFormInput {
   tierRecoveryMinTimes: string;
   /** #3227: minutes it must hold that before the all clear. Blank is unset. */
   tierRecoveryHoldMin: string;
+  /** #3559: the nearly full pool line, in whole percent. Blank is the default. */
+  poolNearlyFullOpenPct: string;
 }
 
 export interface MonitorSettingsPayload {
@@ -1021,6 +1041,7 @@ export interface MonitorSettingsPayload {
     regal_calls_armed: boolean;
     empty_tier_recovery_min_times: number | null;
     empty_tier_recovery_hold_min: number | null;
+    pool_nearly_full_open_pct: number | null;
   };
   errors: string[];
 }
@@ -1093,6 +1114,12 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
         TIER_RECOVERY_BOUNDS.holdMin.min,
         TIER_RECOVERY_BOUNDS.holdMin.max,
       ),
+      pool_nearly_full_open_pct: parseBounded(
+        input.poolNearlyFullOpenPct,
+        "Percent still open",
+        POOL_NEARLY_FULL_BOUNDS.openPct.min,
+        POOL_NEARLY_FULL_BOUNDS.openPct.max,
+      ),
     },
     errors,
   };
@@ -1126,6 +1153,8 @@ export interface ResolvedMonitorSettings {
   regalCallsArmed: boolean;
   /** #3227: when a debt tier page may end (store > coded default). */
   tierRecovery: TierRecoveryPolicy;
+  /** #3559: the nearly full pool line, as a share (store > coded default). */
+  poolNearlyFullOpenShare: number;
 }
 
 type AlertConfigRow = Pick<
@@ -1143,6 +1172,7 @@ type AlertConfigRow = Pick<
   | "regal_calls_armed"
   | "empty_tier_recovery_min_times"
   | "empty_tier_recovery_hold_min"
+  | "pool_nearly_full_open_pct"
 >;
 
 /**
@@ -1184,7 +1214,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
     db
       .from("monitor_alert_config")
       .select(
-        "floor_30, floor_120, volume_ramp_end_on, volume_learning, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed, below_lead_tier_armed, regal_calls_armed, empty_tier_recovery_min_times, empty_tier_recovery_hold_min",
+        "floor_30, floor_120, volume_ramp_end_on, volume_learning, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed, below_lead_tier_armed, regal_calls_armed, empty_tier_recovery_min_times, empty_tier_recovery_hold_min, pool_nearly_full_open_pct",
       )
       .eq("id", 1)
       .maybeSingle(),
@@ -1206,6 +1236,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
     belowLeadTierArmed: resolveBelowLeadTierArmed(config),
     regalCallsArmed: resolveRegalCallsArmed(config),
     tierRecovery: resolveTierRecovery(config),
+    poolNearlyFullOpenShare: resolvePoolNearlyFullShare(config),
   };
   lastKnown = resolved;
   return resolved;
@@ -1221,6 +1252,13 @@ export function lastKnownMonitorSettings(): ResolvedMonitorSettings | null {
  *  them can disarm anything. */
 export function codedTierRecovery(): TierRecoveryPolicy {
   return resolveTierRecovery(null);
+}
+
+/** The coded nearly full pool line, for a caller with no settings reading at all.
+ *  It only decides whether a quiet notice is worth sending, so no value of it can
+ *  disarm a page. */
+export function codedPoolNearlyFullShare(): number {
+  return resolvePoolNearlyFullShare(null);
 }
 
 /** The coded cooldowns, for a caller with no settings reading at all. */

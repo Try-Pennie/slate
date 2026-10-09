@@ -126,46 +126,6 @@ export function windowOnDate(
 }
 
 /**
- * When the NEXT open business day ends, as epoch ms, or null when the org has no
- * open day inside `lookaheadDays` (#2505).
- *
- * The window the debt tier alarm judges against. Dan, 2026-09-17: "only alert if
- * there are no slots in the next 24 hours/business day (like obviously there
- * would be no slots on sunday)."
- *
- * It starts at TOMORROW rather than today, so the answer is always "the rest of
- * today, plus one whole open day". Taking the end of today would shrink to a
- * minute at 19:59 and page about a tier with nothing left in the last minute of
- * the evening, which is a healthy tier and an alarm nobody would read twice
- * (L36). A flat 24 hours would ask about Sunday on a Saturday evening and page
- * every weekend.
- *
- * Closed days are SKIPPED rather than counted, which is the same sentence: it
- * asks `windowOnDate`, the single judge of whether the org is open on a date, so
- * a holiday exception shutting Monday moves the window to Tuesday and no second
- * copy of the weekly rules is consulted (L107).
- *
- * NULL rather than a guess when no open day is found. An org shut for a fortnight
- * is a real state, and a caller that got a fabricated window would judge a tier
- * against a day nobody is working: the alarm treats null as "could not measure"
- * and concludes nothing, which is the honest answer (L215).
- */
-export function nextOpenDayEndMs(
-  hours: { zone: string; rules: BusinessWindow[]; exceptions: BusinessHoursException[] },
-  nowMs: number,
-  lookaheadDays = 14,
-): number | null {
-  const today = DateTime.fromMillis(nowMs, { zone: hours.zone }).startOf("day");
-  for (let i = 1; i <= lookaheadDays; i++) {
-    const day = today.plus({ days: i });
-    const window = windowOnDate(hours, day.toISODate() ?? "", day.weekday);
-    if (!window) continue;
-    return closeOf(day, window.end_minute);
-  }
-  return null;
-}
-
-/**
  * When a day's window closes, as epoch ms. Wall clock, never an added duration:
  * on a DST transition day adding minutes from midnight shifts the close by the
  * offset delta.
@@ -193,7 +153,7 @@ function closeOf(day: DateTime, endMinute: number): number {
  * to it. Closed days, a holiday exception included, are skipped by asking
  * `windowOnDate`, the single judge of whether the org is open on a date (L107).
  *
- * Null rather than a guess, like `nextOpenDayEndMs`: a caller handed a fabricated
+ * Null rather than a guess: a caller handed a fabricated
  * window would narrow a lead's times to a period nobody is working.
  */
 export function openDaysWindowEndMs(
@@ -202,17 +162,32 @@ export function openDaysWindowEndMs(
   days: number,
   lookaheadDays = 21,
 ): number | null {
+  return openDaysWindow(hours, earliestStartMs, days, lookaheadDays)?.endMs ?? null;
+}
+
+/**
+ * The same walk as `openDaysWindowEndMs`, returning the org local dates it
+ * counted beside the close (#3559), so a caller that names the days and a caller
+ * that cuts at the close cannot disagree about which days those are.
+ */
+export function openDaysWindow(
+  hours: { zone: string; rules: BusinessWindow[]; exceptions: BusinessHoursException[] },
+  earliestStartMs: number,
+  days: number,
+  lookaheadDays = 21,
+): { endMs: number; days: string[] } | null {
   if (!Number.isInteger(days) || days <= 0) return null;
   const today = DateTime.fromMillis(earliestStartMs, { zone: hours.zone }).startOf("day");
-  let counted = 0;
+  const counted: string[] = [];
   for (let i = 0; i <= lookaheadDays; i++) {
     const day = today.plus({ days: i });
-    const window = windowOnDate(hours, day.toISODate() ?? "", day.weekday);
+    const iso = day.toISODate() ?? "";
+    const window = windowOnDate(hours, iso, day.weekday);
     if (!window) continue;
     const close = closeOf(day, window.end_minute);
     if (close <= earliestStartMs) continue;
-    counted += 1;
-    if (counted === days) return close;
+    counted.push(iso);
+    if (counted.length === days) return { endMs: close, days: counted };
   }
   return null;
 }
@@ -229,7 +204,7 @@ export function openDaysWindowEndMs(
  * Closed days, a holiday exception included, are skipped by asking
  * `windowOnDate`, the single judge of whether the org is open on a date, so no
  * second copy of the weekly rules is consulted (L107). Wall clock arithmetic, as in
- * `nextOpenDayEndMs`, so a DST transition day keeps its real open and close.
+ * `closeOf`, so a DST transition day keeps its real open and close.
  */
 export function lastClosedBusinessDay(
   hours: { zone: string; rules: BusinessWindow[]; exceptions: BusinessHoursException[] },

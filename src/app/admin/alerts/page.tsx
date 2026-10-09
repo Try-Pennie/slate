@@ -22,6 +22,7 @@ import {
   ALERT_URGENCY_COPY,
   MONITOR_DEFAULTS,
   TIER_RECOVERY_BOUNDS,
+  POOL_NEARLY_FULL_BOUNDS,
   quietedAlarms,
   formatMinutes,
   resolveLowVolumeArmed,
@@ -34,6 +35,7 @@ import {
   envLowVolumeArmed,
   envFloors,
   resolveFloors,
+  type MonitorAlertKey,
 } from "@/lib/monitor/settings";
 import { VolumeFloors } from "@/components/admin/VolumeFloors";
 import { CalcomRetirementSwitch } from "@/components/admin/CalcomRetirementSwitch";
@@ -113,25 +115,49 @@ const LEARNING_OUTCOMES = new Set(["volume-ramp-end-set", "volume-ramp-end-clear
 const CALCOM_OUTCOMES = new Set(["calcom-retired", "calcom-live"]);
 
 
-/** #3227: the two settings that decide when a debt tier page ends, shown under its
- *  cooldown. The column names are the form field names, so the save action and
- *  this list cannot drift onto different spellings. */
-const TIER_RECOVERY_FIELDS = [
-  {
-    name: "empty_tier_recovery_min_times",
-    label: "Open times before it ends",
-    help: "How many booking times a paged debt tier must offer before the end of the next working day for its page to end. The page itself still starts only when the tier offers none.",
-    bounds: TIER_RECOVERY_BOUNDS.minOpenTimes,
-    defaultValue: MONITOR_DEFAULTS.tierRecovery.minOpenTimes,
-  },
-  {
-    name: "empty_tier_recovery_hold_min",
-    label: "Minutes held before it ends",
-    help: "How long the tier must keep offering that many times before the all clear is sent. Dropping below that number starts the wait again. Zero sends the all clear on the first check that finds enough.",
-    bounds: TIER_RECOVERY_BOUNDS.holdMin,
-    defaultValue: MONITOR_DEFAULTS.tierRecovery.holdMin,
-  },
-] as const;
+/** The settings that tune one alert beyond its cooldown, drawn directly under that
+ *  cooldown in the same row shape because they are part of the same alert: when a
+ *  debt tier page ends (#3227), and the nearly full pool line (#3559). The column
+ *  names are the form field names, so the save action and this list cannot drift
+ *  onto different spellings. */
+const ALERT_TUNING_FIELDS: Partial<
+  Record<
+    MonitorAlertKey,
+    readonly {
+      name: "empty_tier_recovery_min_times" | "empty_tier_recovery_hold_min" | "pool_nearly_full_open_pct";
+      label: string;
+      help: string;
+      bounds: { min: number; max: number };
+      defaultValue: number;
+    }[]
+  >
+> = {
+  empty_tier: [
+    {
+      name: "empty_tier_recovery_min_times",
+      label: "Open times before it ends",
+      help: "How many booking times a paged debt tier must offer across the days the booker shows for its page to end. The page itself still starts only when the tier offers none.",
+      bounds: TIER_RECOVERY_BOUNDS.minOpenTimes,
+      defaultValue: MONITOR_DEFAULTS.tierRecovery.minOpenTimes,
+    },
+    {
+      name: "empty_tier_recovery_hold_min",
+      label: "Minutes held before it ends",
+      help: "How long the tier must keep offering that many times before the all clear is sent. Dropping below that number starts the wait again. Zero sends the all clear on the first check that finds enough.",
+      bounds: TIER_RECOVERY_BOUNDS.holdMin,
+      defaultValue: MONITOR_DEFAULTS.tierRecovery.holdMin,
+    },
+  ],
+  pool_nearly_full: [
+    {
+      name: "pool_nearly_full_open_pct",
+      label: "Percent still open",
+      help: "A pool is named when fewer than this percentage of its possible starts, across the days the booker shows, are still open.",
+      bounds: POOL_NEARLY_FULL_BOUNDS.openPct,
+      defaultValue: MONITOR_DEFAULTS.poolNearlyFullOpenPct,
+    },
+  ],
+};
 
 export default async function AlertSettingsPage({
   searchParams,
@@ -511,11 +537,10 @@ export default async function AlertSettingsPage({
                             default {defMin}
                           </span>
                         </li>
-                        {/* #3227: the two settings that decide when this page
-                            ENDS sit directly under it, in the same row shape,
+                        {/* #3227, #3559: the settings that tune this alert sit
+                            directly under its cooldown, in the same row shape,
                             because they are part of the same alert. */}
-                        {f.key === "empty_tier" &&
-                          TIER_RECOVERY_FIELDS.map((r) => (
+                        {(ALERT_TUNING_FIELDS[f.key] ?? []).map((r) => (
                             <li
                               key={r.name}
                               className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border py-1.5"

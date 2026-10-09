@@ -1096,6 +1096,7 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
     rosterCoverageArmed: String(form.get("roster_coverage_armed") ?? ""),
     tierRecoveryMinTimes: String(form.get("empty_tier_recovery_min_times") ?? ""),
     tierRecoveryHoldMin: String(form.get("empty_tier_recovery_hold_min") ?? ""),
+    poolNearlyFullOpenPct: String(form.get("pool_nearly_full_open_pct") ?? ""),
   });
 
   if (parsed.errors.length) {

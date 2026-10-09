@@ -40,6 +40,7 @@ function row(over: Partial<BucketSupplyRow> = {}): BucketSupplyRow {
     computedAtMs: Date.parse("2026-08-04T15:18:30.000Z"),
     freshness: "fresh",
     offeredLater: false,
+    offeredDays: null,
     cells: [
       { kind: "counted", booked: 9, capacity: 21, share: 9 / 21 },
       { kind: "counted", booked: 21, capacity: 21, share: 1 },

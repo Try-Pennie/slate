@@ -304,8 +304,29 @@ describe("AlertSettings quieted-alarm notice (#1289)", () => {
     expect(document.getElementById(describedBy!)?.textContent).toMatch(/default 30/i);
     // And every field has one, not just the overridden one.
     const defaults = [...document.querySelectorAll('[id$="_default"]')];
-    // Plus the two that decide when a debt tier page ends (#3227).
-    expect(defaults.length).toBe(ALERT_FIELDS.length + 2);
+    // Plus the two that decide when a debt tier page ends (#3227), and the nearly
+    // full pool line (#3559).
+    expect(defaults.length).toBe(ALERT_FIELDS.length + 3);
+  });
+
+  // #3559: the nearly full pool line, set under that notice's own cooldown, with
+  // the stored value, its default and the range the save accepts.
+  it("shows the nearly full pool line under the nearly full notice", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    db.results.monitor_alert_config = {
+      data: { id: 1, pool_nearly_full_open_pct: 15 },
+      error: null,
+    };
+    render(await AlertSettingsPage(props));
+    const pct = screen.getByLabelText(/Percent still open/) as HTMLInputElement;
+    expect(pct.name).toBe("pool_nearly_full_open_pct");
+    expect(pct.value).toBe("15");
+    expect(pct.min).toBe("1");
+    expect(pct.max).toBe("50");
+    expect(document.getElementById(pct.getAttribute("aria-describedby")!)?.textContent).toMatch(/default 10$/);
+    // Directly under its own alert's cooldown, not under another alert's.
+    const row = pct.closest("li");
+    expect(row?.previousElementSibling?.querySelector('[name="cooldown_pool_nearly_full"]')).toBeTruthy();
   });
 
   // #3227: when a debt tier page ends, set under that alert's own cooldown, with

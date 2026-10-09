@@ -52,7 +52,7 @@ import {
 } from "../availability/precompute-cron.ts";
 import { groupRowsByPool, type PoolGroup } from "./pool-rows.ts";
 import { rungExcludesLow, tierLadder } from "../routing/tiers.ts";
-import { offeredWindowEndFor, servedSlotsForRung } from "../availability/offered-window.ts";
+import { offeredWindowFor, servedSlotsForRung } from "../availability/offered-window.ts";
 import { computedAtLabel } from "./bucket-supply-copy.ts";
 
 /**
@@ -209,6 +209,13 @@ export interface BucketSupplyRow {
    * days stay red, because that is the alerting case, and the row says so.
    */
   offeredLater: boolean;
+  /**
+   * The org local dates the booker shows a lead on this code (#3559), from the
+   * same `offeredWindowFor` call that bounds the cover judgement. The nearly full
+   * pool notice judges and names exactly these. Null when the row could not be
+   * read or the org has no such days, never a guessed window.
+   */
+  offeredDays: string[] | null;
   /** One cell per entry of `days`, in the same order. */
   cells: SupplyCell[];
 }
@@ -578,6 +585,7 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
 
     let cells: SupplyCell[];
     let offeredLater = false;
+    let offeredDays: string[] | null = null;
     if (cacheState !== "measured" || eventType === null || !Array.isArray(slots) || !bookingsReadable) {
       // A day the org is shut is known whatever the cache says; everything else
       // about this bucket is not.
@@ -614,7 +622,9 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
 
       // The window is the requested bucket's own, as the booker computes it from
       // the requested event type's notice.
-      const windowEndMs = offeredWindowEndFor(hours, nowMs, eventType.min_notice_min);
+      const window = offeredWindowFor(hours, nowMs, eventType.min_notice_min);
+      const windowEndMs = window?.endMs ?? null;
+      offeredDays = window?.days ?? null;
       const plan = servedBy(d.code, windowEndMs);
       offeredLater = plan.offeredLater;
       // A day is in the window when it starts before the window closes. A day
@@ -689,6 +699,7 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
       computedAtMs,
       freshness: freshnessOf(computedAtMs, nowMs),
       offeredLater,
+      offeredDays,
       cells,
     };
   });
@@ -859,6 +870,10 @@ export function sameSupplyReading(a: BucketSupplyRow, b: BucketSupplyRow, nowMs:
     a.cacheState === b.cacheState &&
     a.freshness === b.freshness &&
     a.offeredLater === b.offeredLater &&
+    // #3559: the nearly full notice judges a group by its first row's days, so
+    // codes whose booker shows different days are different readings.
+    (a.offeredDays ?? []).join() === (b.offeredDays ?? []).join() &&
+    (a.offeredDays === null) === (b.offeredDays === null) &&
     computedAtLabel(a.freshness, a.computedAtMs, nowMs).label ===
       computedAtLabel(b.freshness, b.computedAtMs, nowMs).label &&
     a.cells.length === b.cells.length &&

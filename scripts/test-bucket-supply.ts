@@ -186,6 +186,20 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   } else {
     eq(report.days.length, 6, "the columns span the whole window the cache was computed over");
     eq(report.days[0].iso, "2026-08-04", "the first column is today in the org's zone");
+    // #3559: each row records the days the booker shows, from the booker's own
+    // window over the row's notice: Tuesday 11:19 with two hours' notice is
+    // Tuesday, Wednesday and Thursday. The nearly full notice judges these.
+    eq(
+      report.rows.find((r) => r.code === "110")?.offeredDays,
+      ["2026-08-04", "2026-08-05", "2026-08-06"],
+      "a row carries the days the booker shows",
+    );
+    const unreadable = reportWith({ cacheRows: [cachedRow("110", undefined, FRESH_STAMP)] });
+    eq(
+      unreadable.measurable ? unreadable.rows.find((r) => r.code === "110")?.offeredDays : "unmeasurable",
+      null,
+      "and a row it could not read carries none, never a guessed window",
+    );
 
     const beyond = report.rows.find((r) => r.code === "120");
     const both = report.rows.find((r) => r.code === "110");
@@ -939,6 +953,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
     computedAtMs: AUG_4_1119_ET - 30_000,
     freshness: "fresh",
     offeredLater: false,
+    offeredDays: null,
     cells: [{ kind: "overflows", toPool: "Low with Achieve" }],
   };
   assert(
@@ -946,6 +961,19 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
     "overflowing to a different pool is a different reading",
   );
   assert(!sameSupplyReading(base, { ...base, code: "121", offeredLater: true }, AUG_4_1119_ET), "being offered later days is part of the reading");
+  // #3559: the nearly full notice judges a group over its first row's days.
+  assert(
+    !sameSupplyReading({ ...base, offeredDays: ["2026-08-04"] }, { ...base, code: "121", offeredDays: ["2026-08-05"] }, AUG_4_1119_ET),
+    "the days the booker shows are part of the reading",
+  );
+  assert(
+    !sameSupplyReading({ ...base, offeredDays: [] }, { ...base, code: "121", offeredDays: null }, AUG_4_1119_ET),
+    "and an unreadable window is not the same reading as an empty one",
+  );
+  assert(
+    sameSupplyReading({ ...base, offeredDays: ["2026-08-04"] }, { ...base, code: "121", offeredDays: ["2026-08-04"] }, AUG_4_1119_ET),
+    "while the same days are",
+  );
   assert(sameSupplyReading(base, { ...base, code: "121" }, AUG_4_1119_ET), "the same reading is the same");
 }
 

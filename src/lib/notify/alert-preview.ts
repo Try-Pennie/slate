@@ -590,8 +590,13 @@ const AGENT_MANY: FailingAgent[] = [
 // ever failed to parse the preview output would be visibly broken, not silently healthy.
 const NOW_MS = Date.parse("2026-07-29T12:00:00.000Z");
 
-/** #3037: the Ultra High tier's first offered time as of 2026-10-02, Monday Oct 5 at 11:30am ET. */
-const PREVIEW_TIER_FIRST_SLOT = Date.parse("2026-10-05T15:30:00.000Z"); // parse-ok: a literal
+/** #3037: the Ultra High tier's first offered time as of 2026-10-02, past the Friday,
+ *  Saturday and Monday the booker shows (#3559): Tuesday Oct 6 at 11:30am ET. */
+const PREVIEW_TIER_FIRST_SLOT = Date.parse("2026-10-06T15:30:00.000Z"); // parse-ok: a literal
+/** #3559: the days a tier page was judged over, the booker's strip on Friday 2026-10-02. */
+const PREVIEW_TIER_DAYS = ["2026-10-02", "2026-10-03", "2026-10-05"];
+/** The Very High tier page several previews share: 19 agents and no time in the window. */
+const PREVIEW_VERY_HIGH_PAGE = { tier: "4", label: "Very High", agents: 19, firstSlotMs: PREVIEW_TIER_FIRST_SLOT, days: PREVIEW_TIER_DAYS };
 
 /**
  * #1630: who the refused calendars in the previews below belong to. Two people who
@@ -631,7 +636,7 @@ function previewTierCause(
   const total = syncStopped + (days[0] ? days[0].off + days[0].slate + days[0].outside + days[0].open : 0);
   return {
     measured: true,
-    cause: { total, syncStopped, days: days.map((d, i) => ({ ...d, isoDate: `2026-10-0${i + 2}` })) },
+    cause: { total, syncStopped, days: days.map((d, i) => ({ ...d, isoDate: PREVIEW_TIER_DAYS[i] ?? "2026-10-05" })) },
   };
 }
 
@@ -1662,18 +1667,20 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "alert",
     text: tierUnstaffedMessage({ tier: "5", label: "Ultra High" }),
   },
-  // #3037: the no-slots page names the cause per open day, from a diagnosis the
-  // lane makes only on a tick about to page. One state per cause, the mixed
-  // 2026-10-02 shape, and the fallback when the diagnosis could not be read.
+  // #3037: the no-slots page names the cause, from a diagnosis the lane makes only
+  // on a tick about to page; since #3559 in one clause over the days the booker
+  // shows. One state per cause, the mixed 2026-10-02 shape, and the fallback when
+  // the diagnosis could not be read.
   {
     key: "empty_tier:*",
-    state: "booked or off today, and Saturday's one agent is full (the 2026-10-02 page)",
+    state: "booked or off over Friday, Saturday and Monday (the 2026-10-02 shape)",
     channel: "alert",
     text: tierNoSlotsMessage(
-      { tier: "5", label: "Ultra High", agents: 10, firstSlotMs: PREVIEW_TIER_FIRST_SLOT },
+      { tier: "5", label: "Ultra High", agents: 10, firstSlotMs: PREVIEW_TIER_FIRST_SLOT, days: PREVIEW_TIER_DAYS },
       previewTierCause(0, [
-        { label: "the rest of today", off: 3, slate: 6, outside: 1, open: 0 },
-        { label: "Saturday", off: 9, slate: 1, outside: 0, open: 0 },
+        { off: 3, slate: 6, outside: 1, open: 0 },
+        { off: 9, slate: 1, outside: 0, open: 0 },
+        { off: 0, slate: 9, outside: 1, open: 0 },
       ]),
     ),
   },
@@ -1682,8 +1689,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "nobody on the tier works in the window",
     channel: "alert",
     text: tierNoSlotsMessage(
-      { tier: "4", label: "Very High", agents: 19, firstSlotMs: PREVIEW_TIER_FIRST_SLOT },
-      previewTierCause(0, [{ label: "Saturday", off: 19, slate: 0, outside: 0, open: 0 }]),
+      PREVIEW_VERY_HIGH_PAGE,
+      previewTierCause(0, [{ off: 19, slate: 0, outside: 0, open: 0 }]),
     ),
   },
   {
@@ -1691,8 +1698,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "everybody works and every one is held by outside meetings or time off",
     channel: "alert",
     text: tierNoSlotsMessage(
-      { tier: "4", label: "Very High", agents: 19, firstSlotMs: PREVIEW_TIER_FIRST_SLOT },
-      previewTierCause(0, [{ label: "Tuesday", off: 0, slate: 0, outside: 19, open: 0 }]),
+      PREVIEW_VERY_HIGH_PAGE,
+      previewTierCause(0, [{ off: 0, slate: 0, outside: 19, open: 0 }]),
     ),
   },
   {
@@ -1700,8 +1707,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the tier rests on one agent and they are fully booked",
     channel: "alert",
     text: tierNoSlotsMessage(
-      { tier: "5", label: "Ultra High", agents: 1, firstSlotMs: PREVIEW_TIER_FIRST_SLOT },
-      previewTierCause(0, [{ label: "Tuesday", off: 0, slate: 1, outside: 0, open: 0 }]),
+      { tier: "5", label: "Ultra High", agents: 1, firstSlotMs: PREVIEW_TIER_FIRST_SLOT, days: PREVIEW_TIER_DAYS },
+      previewTierCause(0, [{ off: 0, slate: 1, outside: 0, open: 0 }]),
     ),
   },
   {
@@ -1709,8 +1716,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the calendar sync has stopped for some agents and the rest are booked",
     channel: "alert",
     text: tierNoSlotsMessage(
-      { tier: "3", label: "High", agents: 5, firstSlotMs: PREVIEW_TIER_FIRST_SLOT },
-      previewTierCause(2, [{ label: "Tuesday", off: 1, slate: 2, outside: 0, open: 0 }]),
+      { tier: "3", label: "High", agents: 5, firstSlotMs: PREVIEW_TIER_FIRST_SLOT, days: PREVIEW_TIER_DAYS },
+      previewTierCause(2, [{ off: 1, slate: 2, outside: 0, open: 0 }]),
     ),
   },
   {
@@ -1718,8 +1725,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the calendar sync has stopped for every agent on the tier",
     channel: "alert",
     text: tierNoSlotsMessage(
-      { tier: "5", label: "Ultra High", agents: 3, firstSlotMs: null },
-      previewTierCause(3, [{ label: "Tuesday", off: 0, slate: 0, outside: 0, open: 0 }]),
+      { tier: "5", label: "Ultra High", agents: 3, firstSlotMs: null, days: PREVIEW_TIER_DAYS },
+      previewTierCause(3, [{ off: 0, slate: 0, outside: 0, open: 0 }]),
     ),
   },
   {
@@ -1727,8 +1734,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "an agent shows an opening the cached times do not have yet",
     channel: "alert",
     text: tierNoSlotsMessage(
-      { tier: "4", label: "Very High", agents: 4, firstSlotMs: PREVIEW_TIER_FIRST_SLOT },
-      previewTierCause(0, [{ label: "Tuesday", off: 1, slate: 2, outside: 0, open: 1 }]),
+      { tier: "4", label: "Very High", agents: 4, firstSlotMs: PREVIEW_TIER_FIRST_SLOT, days: PREVIEW_TIER_DAYS },
+      previewTierCause(0, [{ off: 1, slate: 2, outside: 0, open: 1 }]),
     ),
   },
   {
@@ -1736,7 +1743,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the cause could not be read, so the three possibilities stay",
     channel: "alert",
     text: tierNoSlotsMessage(
-      { tier: "4", label: "Very High", agents: 19, firstSlotMs: PREVIEW_TIER_FIRST_SLOT },
+      PREVIEW_VERY_HIGH_PAGE,
       { measured: false },
     ),
   },
@@ -1745,7 +1752,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "one agent, the cause could not be read, and nothing is offered at all",
     channel: "alert",
     text: tierNoSlotsMessage(
-      { tier: "5", label: "Ultra High", agents: 1, firstSlotMs: null },
+      { tier: "5", label: "Ultra High", agents: 1, firstSlotMs: null, days: PREVIEW_TIER_DAYS },
       { measured: false },
     ),
   },
@@ -3416,23 +3423,27 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: formatEdgeLimiterRecovery(),
   },
-  // --- a pool nearly full for the day (#1256) -----------------------------------
+  // --- a pool nearly full over the days the booker shows (#1256, #3559) --------
   {
     key: "pool_nearly_full",
-    state: "one pool with two starts left",
+    state: "one pool with five starts left across the three days",
     channel: "info",
-    text: formatPoolNearlyFullNotice([
-      { label: "Low with Beyond", codes: ["121", "122"], open: 2, capacity: 21 },
-    ]),
+    text: formatPoolNearlyFullNotice(
+      [{ label: "Low", codes: ["111", "112"], open: 5, capacity: 148, days: PREVIEW_TIER_DAYS }],
+      0.1,
+    ),
   },
   {
     key: "pool_nearly_full",
-    state: "two pools, one full and one without a name",
+    state: "two pools, one full and one without a name, at a 20% line",
     channel: "info",
-    text: formatPoolNearlyFullNotice([
-      { label: "Very High with Beyond", codes: ["421", "422"], open: 0, capacity: 18 },
-      { label: null, codes: ["999"], open: 1, capacity: 14 },
-    ]),
+    text: formatPoolNearlyFullNotice(
+      [
+        { label: "Very High with Beyond", codes: ["421", "422"], open: 0, capacity: 18, days: PREVIEW_TIER_DAYS },
+        { label: null, codes: ["999"], open: 1, capacity: 14, days: PREVIEW_TIER_DAYS },
+      ],
+      0.2,
+    ),
   },
   {
     key: "thin_tier_staffing",

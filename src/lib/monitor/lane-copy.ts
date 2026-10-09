@@ -427,7 +427,7 @@ const VERDICT_SUBJECT: Record<DetectorVerdictLane, VerdictSubject> = {
     look: 'the Worker logs for msg="regal calls" under tag=monitor, and whether rows are arriving in regal_call_events at all',
   },
   [TIER_STAFFING_VERDICT_LANE]: {
-    what: "the check asking whether each debt tier is offering a lead any booking time before the end of the next working day",
+    what: "the check asking whether each debt tier is offering a lead any booking time on the days the booker shows",
     cost: "a whole debt tier could have nobody able to take a call and nothing would say so, while every lead asking for it was quietly served by a lower tier",
     look: 'the Worker logs for msg="tier staffing" under tag=monitor, and whether the roster and the cached slot rows can be read at all',
   },

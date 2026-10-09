@@ -124,6 +124,7 @@ function codesOf(
       computedAtMs: NOW - 30_000,
       freshness: "fresh",
       offeredLater: false,
+      offeredDays: null,
       cells: [{ kind: "counted", booked: 0, capacity: 21, share: 0 }],
       ...over,
     };
@@ -361,6 +362,7 @@ function codesOf(
       computedAtMs: NOW,
       freshness: "fresh",
       offeredLater: false,
+      offeredDays: null,
       cells: [{ kind: "closed" }],
       ...over,
     };
