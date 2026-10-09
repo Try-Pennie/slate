@@ -21,6 +21,7 @@ import { ConfirmLine } from "../worker/confirm-line.ts";
 import { POOL_GROUPING_DIRECTORY, groupingGetMessage, groupingPutMessage, groupingSnapshotOf } from "../src/lib/booking/pool-grouping.ts";
 import { memoryGroupingStorage } from "./lib/memory-grouping-storage.ts";
 import { confirmLineObjectName } from "../src/lib/booking/shared-confirm-line.ts";
+import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { walkWorkerImports } from "./lib/scan-local-import-graph.ts";
 
@@ -79,7 +80,7 @@ for (const env of [undefined, "loadtest"] as const) {
     "src/lib/read-within-deadline.ts",
     "src/lib/log.ts",
   ]);
-  const { seen, foreign } = walkWorkerImports(process.cwd(), "worker/confirm-line/index.ts", LINE_FILES);
+  const { seen, foreign } = walkWorkerImports(join(import.meta.dirname, ".."), "worker/confirm-line/index.ts", LINE_FILES);
   assert(foreign.length === 0, `the line Worker reaches only the line's own files (got ${foreign.join(", ")})`);
   assert(seen.has("src/lib/booking/confirm-queue.ts"), "the walk did reach the line's rules (positive control: it read the imports at all)");
 }

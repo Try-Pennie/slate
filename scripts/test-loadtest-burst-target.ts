@@ -248,9 +248,10 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
 // 24 furthest offered times, and launched at 4:15 PM ET those were tomorrow's late
 // afternoon and evening, with 15 or 16 advisors free against the 24 the burst needs, so
 // the run could start only at some hours of the day. The planner walks back far enough
-// to reach a working day's middle: at least two working days of 10 minute slots.
+// to reach a working day's middle: at least two working days of 10 minute slots. A working
+// day is the org's business hours, seeded 8:00 to 20:00 (migration 0098), so twelve hours.
 {
-  const TWO_WORKING_DAYS_OF_SLOTS = 2 * 8 * 6;
+  const TWO_WORKING_DAYS_OF_SLOTS = 2 * 12 * 6;
   assert(
     DROP_SLOTS_TO_MEASURE >= TWO_WORKING_DAYS_OF_SLOTS,
     `the drop burst's planner measures at least ${TWO_WORKING_DAYS_OF_SLOTS} offered times (got ${DROP_SLOTS_TO_MEASURE})`,
