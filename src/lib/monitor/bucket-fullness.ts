@@ -121,33 +121,37 @@ export function judgePoolFullness(input: {
   return { status: "measured", judged, nearlyFull };
 }
 
-function poolLine(p: NearlyFullPool): string {
-  const name = p.label ?? `bucket ${p.codes.join(", ")}`;
-  const left = p.open === 0 ? "none" : `${p.open}`;
-  return `${name}: ${left} of ${p.capacity} starts still open.`;
+/** "Fri Oct 9, Sat Oct 10, Mon Oct 12". The dates are the org's own, so they
+ *  need no zone. */
+function dayList(days: string[]): string {
+  return days.map((iso) => DateTime.fromISO(iso).toFormat("ccc LLL d")).join(", ");
 }
 
-/** "Fri Oct 9, Sat Oct 10, Mon Oct 12": every pool's days, once each, in order.
- *  The dates are the org's own, so they need no zone. */
-function dayList(pools: NearlyFullPool[]): string {
-  const isos = [...new Set(pools.flatMap((p) => p.days))].sort();
-  return isos.map((iso) => DateTime.fromISO(iso).toFormat("ccc LLL d")).join(", ");
+function poolLine(p: NearlyFullPool, ownDays: boolean): string {
+  const name = p.label ?? `bucket ${p.codes.join(", ")}`;
+  const left = p.open === 0 ? "none" : `${p.open}`;
+  const when = ownDays ? ` (${dayList(p.days)})` : "";
+  return `${name}: ${left} of ${p.capacity} starts still open${when}.`;
 }
 
 /**
  * The whisper, or "" when no pool is nearly full, so nothing is sent rather than a
  * "0 pools" post. The days are named once in the opening line and each pool gets
- * one total (Dan, 2026-10-09), so no fact is said twice.
+ * one total (Dan, 2026-10-09), so no fact is said twice. Pools whose booker shows
+ * different days (different notice) each name their own on their line instead,
+ * because a shared list would claim days a pool's total does not cover.
  */
 export function formatPoolNearlyFullNotice(pools: NearlyFullPool[], openShare: number): string {
   if (!pools.length) return "";
   const what = pools.length === 1 ? "1 pool has" : `${pools.length} pools have`;
   const whose = pools.length === 1 ? "its" : "their";
+  const shared = pools.every((p) => p.days.join() === pools[0].days.join());
+  const where = shared ? ` (${dayList(pools[0].days)})` : "";
   return (
     `${what} fewer than ${Math.round(openShare * 100)}% of ${whose} possible starts still open ` +
-    `across the days leads can book (${dayList(pools)}). Nothing is broken: the calendars ` +
+    `across the days leads can book${where}. Nothing is broken: the calendars ` +
     `are filling up, so this is a nudge to add coverage before leads run out of times.\n` +
-    pools.map(poolLine).join("\n")
+    pools.map((p) => poolLine(p, !shared)).join("\n")
   );
 }
 

@@ -288,8 +288,11 @@ const nearlyFullLow = () => report([row("111", "pool:low", "Low", [counted(48, 4
     0.2,
   );
   assert(two.startsWith("2 pools have fewer than 20% of their possible starts"), `plural agrees, at the set line: ${two}`);
-  assert(two.includes("(Fri Oct 2, Sat Oct 3, Mon Oct 5, Tue Oct 6)"), `every pool's days are named, once each, in order: ${two}`);
-  assert(two.includes("Low: none of 148 starts still open."), "a full window says none rather than 0 of");
+  // Their days differ, so each pool names its own rather than a shared list that
+  // would claim days a pool's total does not cover.
+  assert(two.includes("across the days leads can book. Nothing is broken"), `no shared list when the days differ: ${two}`);
+  assert(two.includes("Low: none of 148 starts still open (Fri Oct 2, Sat Oct 3, Mon Oct 5)."), `each pool names its own days: ${two}`);
+  assert(two.includes("1 of 20 starts still open (Sat Oct 3, Mon Oct 5, Tue Oct 6)."), `and the other its own: ${two}`);
   assert(two.includes("bucket 999"), "a pool with no name falls back to its code");
   eq(formatPoolNearlyFullNotice([], SHARE), "", "nothing to say is an empty string, so nothing is sent");
 }
