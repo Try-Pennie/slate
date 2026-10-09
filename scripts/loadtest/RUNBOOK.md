@@ -483,7 +483,7 @@ class of reason: the preflight books the first time ITS bucket offers, minutes
 earlier, and the two buckets can share an agent. It sorts before choosing, because a
 list read out of a response carries no order unless something declares one (L343).
 The drop burst's slot is at least an hour from both refusal slots, and at most
-`DROP_SLOTS_TO_MEASURE` (24) of its ladder's times are measured, furthest first.
+`DROP_SLOTS_TO_MEASURE` (144, two working days of slots, #3529) of its ladder's times are measured, furthest first.
 Each refusal is its own code: `2` availability answered for none of one kind's
 ladders (the deployment), `3` they answered and no refusal ladder offered two usable
 times both codes share (the seed), `4` the roster and its ladders could not be
@@ -658,6 +658,12 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<branch publishable key> \
 NEXT_PUBLIC_APP_URL=https://slate-loadtest.<subdomain>.workers.dev \
 pnpm cf:build && npx wrangler deploy --env loadtest
 ```
+
+Before the FIRST deploy of a fresh setup, deploy the confirm line worker the load test
+binds (#3500): `npx wrangler deploy -c wrangler.confirm-line.jsonc --env loadtest`. The
+load test Worker's `CONFIRM_LINE` names `slate-confirm-line-loadtest` by script, so a
+Slate deployed without it has no line object to reach. The run's arm job deploys it again
+each run; it is idempotent.
 
 ### Three refusals, and no one of them answers for the others
 

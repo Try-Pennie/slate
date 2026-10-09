@@ -109,6 +109,8 @@ const groupingReader = () =>
     freshMs: POOL_GROUPING_FRESH_MS,
     retryMs: POOL_GROUPING_RETRY_MS,
     onFetchStarted: (fetching) => afterResponse("pool-grouping-fetch", () => fetching),
+    // #3529: the server's own read, the moment the directory has nothing fresh.
+    readOwn: () => warmPoolKeys(),
   }));
 
 /**

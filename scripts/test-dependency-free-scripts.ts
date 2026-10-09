@@ -36,12 +36,13 @@
 // hook, in a job that installs, and this guard then never looks at it.
 //
 // Run: node --experimental-strip-types scripts/test-dependency-free-scripts.ts
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { assert, eq, finish } from "./lib/harness.ts";
 import {
   describeForeign,
+  diskIo,
   walkImportGraph,
   type ForeignEdge,
   type ImportGraphIo,
@@ -192,6 +193,59 @@ for (const f of FIXTURES) {
 }
 
 // ---------------------------------------------------------------------------
+// #3500, #3555: the small Workers' guards walk the app's own tree, so the alias is followed
+// into src/ (`aliasRoot`) and a type only import, which the bundler erases, is not walked
+// (`skipTypeOnly`). The cases are the ones a hand rolled regex got wrong: a statement with no
+// semicolon running into the import after it, read as part of a `type` statement and skipped.
+// ---------------------------------------------------------------------------
+
+const SRC_ENTRY = "/repo/worker/entry.ts";
+const walked = (files: Record<string, string>, skipTypeOnly: boolean): string[] =>
+  walkImportGraph(SRC_ENTRY, { localRoots: ["/repo"], aliasRoot: "/repo/src", skipTypeOnly, io: fakeIo(files) }).files;
+{
+  const files = {
+    [SRC_ENTRY]:
+      `import "./side.ts";\n` +
+      `import type { A } from "./types-a.ts";\n` +
+      `export type { B } from "./types-b.ts";\n` +
+      `export interface Empty {}\n` +
+      `import { v } from "./after-interface.ts";\n` +
+      `export type T = { a: 1 }\n` +
+      `import { w } from "@/lib/after-type.ts";\n` +
+      `import { type C, c } from "./mixed.ts";\n` +
+      `export { BurstLimiter } from "@/lib/limiter";\n`,
+    "/repo/worker/side.ts": ``,
+    "/repo/worker/types-a.ts": ``,
+    "/repo/worker/types-b.ts": ``,
+    "/repo/worker/after-interface.ts": ``,
+    "/repo/src/lib/after-type.ts": ``,
+    "/repo/worker/mixed.ts": ``,
+    "/repo/src/lib/limiter.ts": ``,
+  };
+  eq(
+    JSON.stringify(walked(files, true)),
+    JSON.stringify([
+      SRC_ENTRY,
+      "/repo/src/lib/after-type.ts",
+      "/repo/src/lib/limiter.ts",
+      "/repo/worker/after-interface.ts",
+      "/repo/worker/mixed.ts",
+      "/repo/worker/side.ts",
+    ].sort()),
+    "skipTypeOnly: the alias is followed into src/, a side effect and a mixed import are walked, a type only import is not, and an import after a statement with no semicolon is never swallowed into it",
+  );
+  assert(
+    walked(files, false).includes("/repo/worker/types-a.ts") && walked(files, false).includes("/repo/worker/types-b.ts"),
+    "without skipTypeOnly a type only import is walked as before, so the bare node guard's graph is unchanged",
+  );
+  const noAlias = walkImportGraph(SRC_ENTRY, { localRoots: ["/repo"], io: fakeIo(files) });
+  assert(
+    noAlias.foreign.some((e) => e.specifier === "@/lib/limiter" && e.reason === "alias"),
+    "without aliasRoot the alias is still a foreign edge, as the bare node guard needs",
+  );
+}
+
+// ---------------------------------------------------------------------------
 // The workflow side: which scripts run on bare node, and do the declarations match
 // ---------------------------------------------------------------------------
 
@@ -230,10 +284,7 @@ for (const declared of DECLARED_ALERTERS) {
 // The real graphs: every entry must be clean
 // ---------------------------------------------------------------------------
 
-const realIo: ImportGraphIo = {
-  readFile: (p) => readFileSync(p, "utf8"),
-  exists: (p) => existsSync(p) && statSync(p).isFile(),
-};
+const realIo: ImportGraphIo = diskIo;
 
 function overlayIo(overrides: Record<string, string>): ImportGraphIo {
   return {

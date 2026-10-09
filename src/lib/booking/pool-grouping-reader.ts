@@ -120,6 +120,11 @@ export type GroupingFetch =
   | "held"
   /** A fresh snapshot was fetched and installed. */
   | "installed"
+  /**
+   * #3529: the directory had nothing fresh, so this server read the grouping itself and
+   * installed it, inside the confirm's wait (`readOwn`).
+   */
+  | "read"
   | "stale"
   | "timeout"
   /** The directory answered something no snapshot can be read from: malformed, empty, partial, or an older object's refusal. */
@@ -184,6 +189,15 @@ export function makeGroupingReader(deps: {
   retryMs: number;
   /** Told of every fetch it starts, so the live wiring keeps its invocation alive until it settles. */
   onFetchStarted?: (fetching: Promise<unknown>) => void;
+  /**
+   * #3529: this server's own read of the grouping, installing it into `store`, coalesced
+   * however many ask and rejecting when it fails (`warmPoolKeys`). Run as soon as the
+   * directory answers with nothing fresh, so a confirm in the minute's gap between one
+   * snapshot expiring and the next landing keys by ladder rather than by code. It is the
+   * read a server already made after the response; started here, it is the same read,
+   * earlier, and a local read's own minute bounds it, so it extends no staleness.
+   */
+  readOwn?: () => Promise<void>;
 }): { start(): GroupingStart; wait(started: GroupingStart): Promise<GroupingReading>; ensure(): Promise<GroupingReading> } {
   let inFlight: { startedAt: number; settled: Promise<Fetched> } | null = null;
   // When the last fetch that installed nothing settled, or null after one that did.
@@ -218,12 +232,23 @@ export function makeGroupingReader(deps: {
     if (!joined || startedAt - joined.startedAt > deps.boundMs) {
       if (fruitlessAt !== null && startedAt - fruitlessAt < deps.retryMs) return { decided: { source: "backoff", waitedMs: null, ageMs: null } };
       // Never rejects: a fault in reading the answer is a failed call, said as one.
-      const settled = fetchOnce(stub).catch((): Fetched => ({ source: "unreachable", ageMs: null }));
+      const settled = fetchOnce(stub)
+        .catch((): Fetched => ({ source: "unreachable", ageMs: null }))
+        .then(async (got): Promise<Fetched> => {
+          if (got.source === "installed" || got.source === "held" || !deps.readOwn) return got;
+          try {
+            await deps.readOwn();
+          } catch {
+            return got;
+          }
+          const held = deps.store.held();
+          return deps.store.fresh() && held ? { source: "read", ageMs: deps.now() - held.readAtMs } : got;
+        });
       const mine = { startedAt, settled };
       inFlight = joined = mine;
       void settled.then((got) => {
         if (inFlight === mine) inFlight = null;
-        fruitlessAt = got.source === "installed" || got.source === "held" ? null : deps.now();
+        fruitlessAt = got.source === "installed" || got.source === "held" || got.source === "read" ? null : deps.now();
       });
       deps.onFetchStarted?.(settled);
     }
@@ -249,7 +274,7 @@ export type LineGroupSource =
   | "snapshot"
   | "own-code-missing"
   | "not-asked"
-  | Exclude<GroupingFetch, "held" | "installed">;
+  | Exclude<GroupingFetch, "held" | "installed" | "read">;
 
 /**
  * The source a confirm records, decided when its key is built. A ladder group names
@@ -265,6 +290,6 @@ export function lineGroupSourceOf(
   if (read.group !== null) return held?.origin === "snapshot" ? "snapshot" : "local";
   if (read.why === "own-code-missing") return "own-code-missing";
   if (fetched === null) return "not-asked";
-  if (fetched.source === "held" || fetched.source === "installed") return "stale";
+  if (fetched.source === "held" || fetched.source === "installed" || fetched.source === "read") return "stale";
   return fetched.source;
 }

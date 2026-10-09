@@ -1,0 +1,61 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	// The small Worker hosting the confirm line object (#3500), so waking an idle line
+	// loads the line's rules and not the whole app. Slate binds CONFIRM_LINE to it by
+	// script name (wrangler.jsonc). It must be deployed BEFORE Slate, because Slate's
+	// binding names it:
+	//
+	//   npx wrangler deploy -c wrangler.confirm-line.jsonc                 (production)
+	//   npx wrangler deploy -c wrangler.confirm-line.jsonc --env loadtest  (load test)
+	//
+	// Production's runs from scripts/deploy-gradual.ts, the load test's from loadtest.yml.
+	// scripts/test-confirm-line-binding.ts pins the names, the entry and its imports.
+	"name": "slate-confirm-line",
+	"main": "worker/confirm-line/index.ts",
+	"account_id": "3e7f907a9c19e51417873e2cce4fbc5c",
+	"compatibility_date": "2025-08-01",
+	"compatibility_flags": ["nodejs_compat"],
+	// No address at all: only Slate's binding reaches the object.
+	"workers_dev": false,
+	"preview_urls": false,
+	"observability": {
+		"enabled": true
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "CONFIRM_LINE",
+				"class_name": "ConfirmLine"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["ConfirmLine"]
+		}
+	],
+	"env": {
+		// The load test's own copy, so a load run never shares a line with production.
+		// durable_objects and migrations do not inherit, so both are repeated.
+		"loadtest": {
+			"name": "slate-confirm-line-loadtest",
+			"workers_dev": false,
+			"preview_urls": false,
+			"durable_objects": {
+				"bindings": [
+					{
+						"name": "CONFIRM_LINE",
+						"class_name": "ConfirmLine"
+					}
+				]
+			},
+			"migrations": [
+				{
+					"tag": "v1",
+					"new_sqlite_classes": ["ConfirmLine"]
+				}
+			]
+		}
+	}
+}
