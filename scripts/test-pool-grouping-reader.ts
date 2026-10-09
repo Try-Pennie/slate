@@ -555,6 +555,18 @@ async function ownReadFallback() {
     assert(warned.some((l) => l.includes("own read failed") && l.includes('directory="unanswered"')), `slow directory, failed own read: logged as failing before the directory answered (got ${JSON.stringify(warned)})`);
   }
   {
+    // An own read that hangs must not leave the fetch unsettled for ever: the server's next
+    // confirm would join a fetch that never ends. It is given up with the directory's own
+    // give up, and the directory's answer stands.
+    const w = readerWorld({ answer: answering(null), ownRead: { ms: 1_000_000, lands: true } });
+    void w.reader.ensure();
+    await w.advance(POOL_GROUPING_FETCH_GIVE_UP_MS + 10);
+    let settled: string | null = null;
+    void Promise.all(w.started).then(() => (settled = "settled"));
+    await w.advance(1);
+    eq(settled, "settled", "hung own read: the fetch settles by its give up");
+  }
+  {
     // A directory that answers fresh inside the head start costs no own read at all.
     const w = readerWorld({ answer: answering(groupingSnapshotOf(ENTRIES, T0 - 5_000)), answerAfterMs: 40, ownRead: { ms: 200, lands: true } });
     const reading = w.reader.ensure();

@@ -249,6 +249,7 @@ export function makeGroupingReader(deps: {
         if (settledOnce) return;
         settledOnce = true;
         cancelHeadStart();
+        cancelGiveUp();
         resolve(f);
       };
       const freshRead = (): Fetched | null => {
@@ -275,6 +276,9 @@ export function makeGroupingReader(deps: {
         );
       };
       const cancelHeadStart = deps.timer(deps.ownReadAfterMs ?? POOL_GROUPING_OWN_READ_AFTER_MS, startOwn);
+      // An own read that hangs is given up with the directory's own give up, so the fetch
+      // always ends and the server's next confirm never joins one that will not.
+      const cancelGiveUp = deps.timer(POOL_GROUPING_FETCH_GIVE_UP_MS, () => settle(answered ?? { source: "timeout", ageMs: null }));
       void directory.then((got) => {
         answered = got;
         if (got.source === "installed" || got.source === "held") return settle(got);
