@@ -595,6 +595,8 @@ const NOW_MS = Date.parse("2026-07-29T12:00:00.000Z");
 const PREVIEW_TIER_FIRST_SLOT = Date.parse("2026-10-06T15:30:00.000Z"); // parse-ok: a literal
 /** #3559: the days a tier page was judged over, the booker's strip on Friday 2026-10-02. */
 const PREVIEW_TIER_DAYS = ["2026-10-02", "2026-10-03", "2026-10-05"];
+/** The Very High tier page several previews share: 19 agents and no time in the window. */
+const PREVIEW_VERY_HIGH_PAGE = { tier: "4", label: "Very High", agents: 19, firstSlotMs: PREVIEW_TIER_FIRST_SLOT, days: PREVIEW_TIER_DAYS };
 
 /**
  * #1630: who the refused calendars in the previews below belong to. Two people who
@@ -1687,7 +1689,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "nobody on the tier works in the window",
     channel: "alert",
     text: tierNoSlotsMessage(
-      { tier: "4", label: "Very High", agents: 19, firstSlotMs: PREVIEW_TIER_FIRST_SLOT, days: PREVIEW_TIER_DAYS },
+      PREVIEW_VERY_HIGH_PAGE,
       previewTierCause(0, [{ off: 19, slate: 0, outside: 0, open: 0 }]),
     ),
   },
@@ -1696,7 +1698,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "everybody works and every one is held by outside meetings or time off",
     channel: "alert",
     text: tierNoSlotsMessage(
-      { tier: "4", label: "Very High", agents: 19, firstSlotMs: PREVIEW_TIER_FIRST_SLOT, days: PREVIEW_TIER_DAYS },
+      PREVIEW_VERY_HIGH_PAGE,
       previewTierCause(0, [{ off: 0, slate: 0, outside: 19, open: 0 }]),
     ),
   },
@@ -1741,7 +1743,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the cause could not be read, so the three possibilities stay",
     channel: "alert",
     text: tierNoSlotsMessage(
-      { tier: "4", label: "Very High", agents: 19, firstSlotMs: PREVIEW_TIER_FIRST_SLOT, days: PREVIEW_TIER_DAYS },
+      PREVIEW_VERY_HIGH_PAGE,
       { measured: false },
     ),
   },
