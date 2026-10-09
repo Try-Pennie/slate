@@ -11,6 +11,7 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-burst-limiter-worker.ts
 import { unstable_readConfig } from "wrangler";
 import { BURST_LIMITER_BINDING, BURST_LIMITER_CLASS } from "../src/lib/rate-limit-burst.ts";
+import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { walkWorkerImports } from "./lib/scan-local-import-graph.ts";
 
@@ -50,7 +51,7 @@ for (const env of [undefined, "loadtest"] as const) {
 // Loads nothing but the counter's own rules, so a wake costs what the object needs.
 {
   const allowed = new Set(["worker/burst-limiter/index.ts", "worker/burst-limiter.ts", "src/lib/rate-limit-burst.ts"]);
-  const { seen, foreign } = walkWorkerImports(process.cwd(), "worker/burst-limiter/index.ts", allowed);
+  const { seen, foreign } = walkWorkerImports(join(import.meta.dirname, ".."), "worker/burst-limiter/index.ts", allowed);
   assert(foreign.length === 0, `the burst limiter Worker reaches only its own files (got ${foreign.join(", ")})`);
   assert(seen.has("src/lib/rate-limit-burst.ts"), "the walk did reach the counter's rules (positive control)");
 }
