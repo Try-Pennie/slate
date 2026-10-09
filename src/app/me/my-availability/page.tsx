@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -20,6 +21,8 @@ import { agentLinkUrl } from "@/lib/agent-link/link";
 import { appUrl } from "@/lib/env";
 import { log } from "@/lib/log";
 import { hoursOriginNote } from "@/lib/admin/working-hours-copy";
+import { shouldCompareWithCalcom } from "@/lib/calcom/hours-mismatch";
+import { CalcomHoursNote } from "./CalcomHoursNote";
 import type { AvailabilitySchedule } from "@/lib/db/types";
 
 export const metadata = { title: "My availability" };
@@ -107,6 +110,12 @@ export default async function MePage({
   // agent opening self service finds hours they never set, and the one writer that
   // can be named from the record is the cal.com import.
   const originNote = rules.length > 0 ? hoursOriginNote(sched?.hours_source ?? null) : null;
+  // #3549: a week the advisor wrote is one the daily cal.com copy no longer
+  // touches, so the note compares it against cal.com. Asked here with the
+  // retirement switch still unknown (null), so the boundary below is drawn only
+  // for the advisors who could get a note; the switch is read inside it.
+  const compareWithCalcom =
+    sched != null && shouldCompareWithCalcom(sched.hours_source, rules.length, null);
 
   // #2073: the agent's own booking link, by its readable name since #3026. A failed
   // read is its own state, never "no link yet".
@@ -204,6 +213,21 @@ export default async function MePage({
             </p>
             {originNote ? (
               <p className={`mb-4 text-sm text-fg ${proseCls}`}>{originNote}</p>
+            ) : null}
+            {compareWithCalcom && sched ? (
+              <Suspense
+                fallback={
+                  <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
+                    Checking your hours against cal.com.
+                  </p>
+                }
+              >
+                <CalcomHoursNote
+                  email={me.email}
+                  hoursSource={sched.hours_source}
+                  slate={{ timezone: sched.timezone, rules }}
+                />
+              </Suspense>
             ) : null}
             {/* #1988: pressing Save wrote the week and then said
                 nothing, so it looked exactly like a click that did

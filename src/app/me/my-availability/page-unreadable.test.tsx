@@ -54,6 +54,15 @@ vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
 vi.mock("@/app/admin/actions", () => ({
   setMyWorkingHours: vi.fn(),
 }));
+// #3549: the cal.com comparison is its own async component with its own tests
+// (`CalcomHoursNote.test.tsx`). Stubbed here to a marker carrying what it was
+// handed, so these tests can assert the page WIRES it (who gets it, with which
+// week) without making a cal.com read.
+vi.mock("./CalcomHoursNote", () => ({
+  CalcomHoursNote: (p: { hoursSource: string | null; slate: { timezone: string; rules: unknown[] } }) => (
+    <p data-testid="calcom-note">{`${p.hoursSource} ${p.slate.timezone} ${p.slate.rules.length}`}</p>
+  ),
+}));
 
 import MePage from "./page";
 
@@ -267,8 +276,36 @@ describe("MePage says where a week came from when Slate recorded it (#1757)", ()
         },
       });
       const { unmount } = render(await MePage(props()));
-      expect(screen.queryByText(/cal\.com/i)).toBeNull();
+      expect(screen.queryByText(/copied from your cal\.com/i)).toBeNull();
       // The stored week still rendered, so the absence is not a blank page (L159).
+      expect((screen.getByLabelText("Tuesday") as HTMLInputElement).checked).toBe(true);
+      unmount();
+    }
+  });
+});
+
+describe("MePage compares an advisor's own week with cal.com (#3549)", () => {
+  it("hands the stored week to the comparison when the advisor wrote it", async () => {
+    mockDb({
+      availability_schedules: {
+        data: { id: "s1", timezone: "America/Chicago", hours_source: "agent" },
+        error: null,
+      },
+    });
+    render(await MePage(props()));
+    expect(screen.getByTestId("calcom-note").textContent).toBe("agent America/Chicago 1");
+  });
+
+  it("does not compare a week the daily copy keeps in step", async () => {
+    for (const hours_source of ["calcom-import", "admin", "seed", null]) {
+      mockDb({
+        availability_schedules: {
+          data: { id: "s1", timezone: "America/Chicago", hours_source },
+          error: null,
+        },
+      });
+      const { unmount } = render(await MePage(props()));
+      expect(screen.queryByTestId("calcom-note")).toBeNull();
       expect((screen.getByLabelText("Tuesday") as HTMLInputElement).checked).toBe(true);
       unmount();
     }

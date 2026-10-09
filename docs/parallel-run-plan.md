@@ -86,6 +86,9 @@ hour and is the state #1394 exists to notice.
 
 The tier alarm (#1956) and the per page alarm (#2738) share one switch, "Send a Slack
 alert when bookings drop off" under Admin, Alerts (`monitor_alert_config.low_volume_armed`).
+Armed, the per page alarm still judges the pages only while the pilot switch in
+Salesforce sends Slate every Low lead (100%, ADR 0009); during a split it stays silent,
+and only a switch it cannot read sends a message.
 Before ticking it, run `pnpm verify:parallel-run-readiness` and read its "Before arming
 the low volume alarms" heading (#2767). Two things must hold, and while the switch is
 off the command reports them there without changing its exit:

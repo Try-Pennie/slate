@@ -26,17 +26,15 @@
  * page is unmeasured on most weekday afternoons and judged in the mornings, which
  * is exactly where a replay shows its outages are and are not caught.
  *
- * AT THE SHARE SLATE CARRIES (#3193). Each page's floors are cal.com's, fitted to
- * every lead on that page, and the pilot sends Slate a share of each page's leads.
- * So the floors are thinned to the share of Low the refit measured
- * (`volume_learning.carriedShare`, #2893) by the same `thinBaseline` the tier
- * alarm's anchor goes through, before an hour is judged. Unthinned, a quiet
- * Saturday afternoon expected Income Verification to book what the whole page books,
- * and paged at 2:46pm on 2026-10-03 while the page was booking. A share that is held
- * is the share in force, as it is for the tier. A share that is unmeasured or
- * unreadable stands the step down and says which (`pageBaselinesAtShare`): never the
- * unthinned floors, which are the ones that false page, and never a share of 0,
- * whose floors cannot breach and would read as a quiet week.
+ * ONLY WHILE SLATE TAKES EVERY LOW LEAD. Each page's floors are cal.com's, fitted to
+ * every lead on that page. While the pilot splits Low between the two systems, Slate
+ * sees only part of each page, too little for a quiet two hours to mean a page broke:
+ * thinning the floors to Slate's measured share (#3193) left no hour any page could be
+ * judged in at a 44% to 49% split, and a daily message saying so. Dan, 2026-10-08: judge
+ * the pages only when the pilot sends Slate every Low lead, read straight from the
+ * Salesforce switch trypennie itself reads (`lowPilot`), and say nothing during a split.
+ * A switch that cannot be read is the one stand down that says something, once a day,
+ * with where to look. The Low tier alarm watches Low as a whole throughout.
  *
  * No `@/` imports, so node scripts can run it directly.
  */
@@ -60,7 +58,7 @@ import {
   type VolumeWindow,
 } from "./booking-volume.ts";
 import { floorsFor, judgedFloors, type VolumeBaseline } from "./volume-floors.ts";
-import { thinBaseline, type ShareInForce } from "./carried-share.ts";
+import type { PilotSettings } from "../salesforce/pilot-settings.ts";
 import type { ThrottledNotify } from "./alert-deps";
 import { logAlertSendFailure, logAllClearFailure } from "../notify/send-failure.ts";
 
@@ -169,17 +167,99 @@ export function pageVolumeAlertKey(id: LowPageId): string {
 }
 
 /**
- * The condition raised while the per page alarm cannot judge because the share of
- * Low Slate carries is not known (#3193). One key for the whole alarm, not one per
- * page: the cause is shared, so one message says it once.
+ * The condition raised while the per page alarm cannot judge because the pilot switch
+ * in Salesforce could not be read. One key for the whole alarm, not one per page: the
+ * cause is shared, so one message says it once.
+ *
+ * The key string predates the switch: it is the one #3193's share stand down used, kept
+ * so the stand down already firing when this shipped is settled by the first tick that
+ * reads the switch, rather than left open for ever under a key nothing clears.
  */
-export const PAGE_VOLUME_SHARE_UNKNOWN_KEY = "page_volume_share_unknown";
+export const PAGE_VOLUME_PILOT_UNKNOWN_KEY = "page_volume_share_unknown";
 
 /**
- * Daily. The condition changes at most once a day, when the refit runs, so repeating
- * it more often says nothing new, and the tier alarm still watches Low meanwhile.
+ * Daily. Unlike a split, an unreadable switch is somebody's to look at, so it is said
+ * again each day it lasts, and no more often.
  */
-export const PAGE_VOLUME_SHARE_UNKNOWN_COOLDOWN_MS = 24 * 60 * 60_000;
+export const PAGE_VOLUME_PILOT_UNKNOWN_COOLDOWN_MS = 24 * 60 * 60_000;
+
+/**
+ * Low's tier as the pilot names it: the first digit of a lead's XBC, which is what
+ * trypennie's `shouldUseSlate` compares against SlatePilotTiers__c.
+ */
+export const PILOT_LOW_TIER_DIGIT = "1";
+
+/** What the pilot switch means for Low leads. */
+export type LowPilot =
+  /** Every Low lead goes to Slate, so each page's floors apply as measured. */
+  | { state: "whole" }
+  /** Some Low leads go to Slate and the rest to cal.com. */
+  | { state: "split"; percent: number }
+  /** No Low lead goes to Slate. */
+  | { state: "off" }
+  /** The settings could not be read. */
+  | { state: "unreadable" };
+
+/**
+ * The switch as trypennie applies it to a Low lead (`shouldUseSlate`, src/utils/booking.ts
+ * in Halo-lab-Trypennie/trypennie), which is the code that actually decides (L620): off
+ * unless SlatePilotActive__c is true; Low's digit must be among SlatePilotTiers__c, split
+ * on semicolons or commas, where an empty field picks no tiers; an empty percentage means
+ * 100; and a lead goes to Slate when its bucket, 0 to 99, is below the percentage. Null
+ * settings are a read that failed.
+ */
+export function lowPilot(settings: PilotSettings | null): LowPilot {
+  if (settings === null) return { state: "unreadable" };
+  if (settings.active !== true) return { state: "off" };
+  const tiers = (settings.tiers ?? "").split(/[;,]/).map((t) => t.trim());
+  if (!tiers.includes(PILOT_LOW_TIER_DIGIT)) return { state: "off" };
+  const percent = settings.percent ?? 100;
+  if (percent >= 100) return { state: "whole" };
+  if (percent <= 0) return { state: "off" };
+  return { state: "split", percent };
+}
+
+const PILOT_SETTINGS_WHERE =
+  "open Website Configuration (trypennie.com) in Salesforce and look at Slate Pilot Active, Slate Pilot Percent and Slate Pilot Tiers";
+
+/**
+ * The admin page's line about the switch, beside the table of hours each page is judged
+ * in. Null when the pages are judged, since then there is nothing to explain.
+ */
+export function pilotPageLine(pilot: LowPilot): string | null {
+  switch (pilot.state) {
+    case "whole":
+      return null;
+    case "split":
+      return `Per page Low alerts are off while the pilot sends Slate ${pilot.percent}% of Low leads. They turn on at 100%.`;
+    case "off":
+      return "Per page Low alerts are off while the pilot sends Slate no Low leads.";
+    case "unreadable":
+      return `Per page Low alerts are off: the pilot settings in Salesforce could not be read. To check, ${PILOT_SETTINGS_WHERE}.`;
+  }
+}
+
+/** The condition: the switch could not be read, so no page is judged. */
+export function formatPilotUnreadableAlert(): string {
+  return (
+    "Per page Low alerts are off: Slate could not read the pilot settings in Salesforce, so it cannot tell " +
+    `whether every Low lead comes to Slate. To check, ${PILOT_SETTINGS_WHERE}. ` +
+    'The reason the read failed is in the Worker logs under tag=monitor, msg "pilot settings unreadable". ' +
+    "A full Low outage still alerts."
+  );
+}
+
+/** The all-clear, hung off a tick that read the switch, in the words of what it read. */
+export function formatPilotReadNotice(pilot: Exclude<LowPilot, { state: "unreadable" }>): string {
+  if (pilot.state === "whole") {
+    return "Per page Low alerts are on: the pilot settings in Salesforce send Slate every Low lead. Nothing to do.";
+  }
+  const why =
+    pilot.state === "split"
+      ? `they are off while the pilot sends Slate ${pilot.percent}% of Low leads, and turn on at 100%`
+      : "they are off while the pilot sends Slate no Low leads";
+  return `Per page Low alerts now follow the pilot settings in Salesforce: ${why}. Nothing to do.`;
+}
 
 /**
  * How far back a page must have recorded ANY booking before its silence is read as
@@ -449,8 +529,8 @@ export type PageVerdict =
 
 export type PageVolumeResult =
   | { status: "outside-hours" }
-  /** The share of Low Slate carries is not known (#3193), so no page's floors are. Nothing is read, paged or cleared. */
-  | { status: "share-unknown"; share: "unmeasured" | "unreadable"; text: string }
+  /** The pilot does not send Slate every Low lead, or its switch could not be read. No booking is read and no page is paged or cleared. */
+  | { status: "not-judged"; pilot: Exclude<LowPilot, { state: "whole" }> }
   /** The step itself failed; only the lane's step boundary produces this. */
   | { status: "unverified" }
   | {
@@ -462,8 +542,6 @@ export type PageVolumeResult =
    * and how many were set aside as made with no host page (#2960).
    */
       sources: { unsourced: number; total: number; hostless: number };
-      /** The share of Low the floors were thinned to (#3193), and since when it has been held, if it is. */
-      share: { share: number; heldSince: string | null };
     };
 
 /**
@@ -479,10 +557,13 @@ export type PageVolumeResult =
 export async function runPageVolumeCheck(deps: {
   nowMs: number;
   businessHours: BusinessHoursConfig;
-  /** Each page's cal.com floors for the whole page, thinned here to `share`. */
+  /** Each page's cal.com floors for the whole page, applied as measured. */
   baselines: Record<LowPageId, VolumeBaseline>;
-  /** The share of Low Slate carries (#3193), from `shareInForce`. */
-  share: ShareInForce;
+  /**
+   * The pilot settings from Salesforce. Asked once, only inside business hours. Throws
+   * when the read fails, which stands the step down as unreadable.
+   */
+  readPilot: () => Promise<PilotSettings>;
   /** The held off switch, an input so its path is tested while it is empty (#2878). */
   heldOff?: Readonly<Partial<Record<LowPageId, HeldOffSlate>>>;
   /** Customer bookings created at or after `sinceIso`. Throws when the read fails. */
@@ -505,22 +586,37 @@ export async function runPageVolumeCheck(deps: {
   log?: (fields: Record<string, unknown>) => void;
 }): Promise<PageVolumeResult> {
   if (!isBusinessHours(deps.nowMs, deps.businessHours)) return { status: "outside-hours" };
-  const atShare = pageBaselinesAtShare(deps.baselines, deps.share);
-  if (atShare.state !== "applied") {
-    deps.log?.({ share: atShare.state, why: atShare.text });
-    // Standing down is not silent: it says so on its own key, at a daily cooldown.
-    // Disarmed, the alarm pages nobody anyway, so there is nothing it has stopped doing.
+  const pilot = lowPilot(
+    await deps.readPilot().catch((err: unknown) => {
+      deps.log?.({ msg: "pilot settings unreadable", error: err instanceof Error ? err.message : String(err) });
+      return null;
+    }),
+  );
+  if (pilot.state === "unreadable") {
+    // The one stand down that speaks: somebody has to look at the switch. Disarmed, the
+    // alarm pages nobody anyway, so there is nothing it has stopped doing.
     if (deps.armed) {
       await deps
-        .notify(PAGE_VOLUME_SHARE_UNKNOWN_KEY, PAGE_VOLUME_SHARE_UNKNOWN_COOLDOWN_MS, formatPageShareUnknownAlert(atShare.text))
-        .catch(logAlertSendFailure(PAGE_VOLUME_SHARE_UNKNOWN_KEY));
+        .notify(PAGE_VOLUME_PILOT_UNKNOWN_KEY, PAGE_VOLUME_PILOT_UNKNOWN_COOLDOWN_MS, formatPilotUnreadableAlert())
+        .catch(logAlertSendFailure(PAGE_VOLUME_PILOT_UNKNOWN_KEY));
     }
-    return { status: "share-unknown", share: atShare.state, text: atShare.text };
+    return { status: "not-judged", pilot };
+  }
+  if (pilot.state !== "whole") {
+    // A split, or no Low lead on Slate: expected while the pilot runs, so nothing is said.
+    // The switch WAS read, which ends an earlier "could not read it" message.
+    deps.log?.({ pilot: pilot.state, percent: pilot.state === "split" ? pilot.percent : null });
+    // all-clear-proof: scripts/test-page-volume.ts - pins that only a tick that read the
+    // switch clears the unreadable condition, never one outside hours or one that failed.
+    await deps
+      .resolveRecovered([{ key: PAGE_VOLUME_PILOT_UNKNOWN_KEY, text: formatPilotReadNotice(pilot) }])
+      .catch(logAllClearFailure([PAGE_VOLUME_PILOT_UNKNOWN_KEY]));
+    return { status: "not-judged", pilot };
   }
 
   const judged = pagesOnSlate(deps.heldOff).map((page) => {
     const floors = judgedFloors(
-      floorsFor({ baseline: atShare.baselines[page.id], override30: null, override120: null }, deps.nowMs),
+      floorsFor({ baseline: deps.baselines[page.id], override30: null, override120: null }, deps.nowMs),
     );
     return { page, floors, measurable: floors.floor30 > 0 || floors.floor120 > 0 };
   });
@@ -613,8 +709,6 @@ export async function runPageVolumeCheck(deps: {
   deps.log?.({
     armed: deps.armed,
     tier_low: deps.tierLow,
-    share: atShare.share,
-    share_held_since: atShare.heldSince,
     unsourced: sources.unsourced,
     hostless: sources.hostless,
     read: sources.total,
@@ -628,110 +722,20 @@ export async function runPageVolumeCheck(deps: {
       )
       .join(" "),
   });
-  // A share was applied and every page reached a verdict, measured or unmeasured, so
-  // the alarm is judging again: that, and only that, ends the share condition.
-  recovered.push({ key: PAGE_VOLUME_SHARE_UNKNOWN_KEY, text: formatPageShareKnownNotice(atShare.share) });
+  // The switch was read and every page reached a verdict, measured or unmeasured, so the
+  // alarm is judging: that ends the unreadable condition.
+  recovered.push({ key: PAGE_VOLUME_PILOT_UNKNOWN_KEY, text: formatPilotReadNotice(pilot) });
   // all-clear-proof: scripts/test-page-volume.ts - pins that an unmeasured hour, a
   // low page, a tick outside business hours and a read that threw each clear
   // NOTHING about that page; only a page measured at or above its floors does. And
-  // that the share condition is cleared only by a tick that applied a share and
-  // judged, never by one that stood down, was outside hours, or threw.
+  // that the pilot condition is cleared only by a tick that read the switch, never by
+  // one that could not, was outside hours, or threw.
   if (recovered.length > 0) {
     await deps
       .resolveRecovered(recovered)
       .catch(logAllClearFailure(recovered.map((r) => r.key)));
   }
-  return { status: "checked", armed: deps.armed, pages, sources, share: { share: atShare.share, heldSince: atShare.heldSince } };
-}
-
-/**
- * Each page's floors at the share of Low Slate carries (#3193), and the sentence that
- * says so: the ONE place the alarm and the admin page's coverage table take them
- * from, so the table shows the hours the alarm can judge (L16). Thinned by
- * `thinBaseline`, the tier anchor's own thinning (#2893), so the rule is not copied
- * (L370). A page's floors cover the whole page, and Slate's half of a split is a
- * thinning of every page alike, so each is thinned by the share itself.
- *
- * An unmeasured or unreadable share yields no floors, only the words for why, and so
- * does a share too small for any floor to survive thinning.
- */
-export type PageBaselinesAtShare =
-  | { state: "applied"; baselines: Record<LowPageId, VolumeBaseline>; share: number; heldSince: string | null; text: string }
-  | { state: "unmeasured" | "unreadable"; text: string };
-
-export function pageBaselinesAtShare(
-  baselines: Record<LowPageId, VolumeBaseline>,
-  share: ShareInForce,
-): PageBaselinesAtShare {
-  const why =
-    "each page's floors count every booking on that page, Slate's and cal.com's, so judging them whole would page on a normal hour.";
-  if (share.state === "unmeasured") {
-    return {
-      state: "unmeasured",
-      text:
-        `The Low pages are not judged: the share of Low bookings Slate carries has not been measured yet, and ${why} ` +
-        `The daily refit measures it from the first day both systems take enough Low bookings.`,
-    };
-  }
-  if (share.state === "unreadable") {
-    return {
-      state: "unreadable",
-      text:
-        `The Low pages are not judged: the stored share of Low bookings Slate carries could not be read, and ${why} ` +
-        `The stored refit (monitor_alert_config.volume_learning) needs looking at.`,
-    };
-  }
-  const thinned = Object.fromEntries(
-    LOW_PAGES.map((p) => [p.id, thinBaseline(baselines[p.id], share.share)]),
-  ) as Record<LowPageId, VolumeBaseline>;
-  const pct = Math.round(share.share * 100);
-  // A share of 0, or one so small that every floor thins to 0, leaves no hour any
-  // page could breach. Applied, it would read as a judged week with nothing wrong and
-  // end the share condition, so it is treated as no share at all, in its own words.
-  // Judged against the floors as measured, so it is the SHARE that is refused, never
-  // a measurement that had no floor to begin with (that is the unmeasured hour above).
-  const anyFloor = (all: Record<LowPageId, VolumeBaseline>) =>
-    LOW_PAGES.some((p) => all[p.id].cells.some((d) => d.some((c) => c.floor30 > 0 || c.floor120 > 0)));
-  if (anyFloor(baselines) && !anyFloor(thinned)) {
-    return {
-      state: "unmeasured",
-      text:
-        `The Low pages are not judged: Slate carried ${pct}% of Low bookings in the day to ` +
-        `${share.countedTo.slice(0, 10)}, too few for any page to clear a floor of even 1 booking in two hours, ` +
-        `so no page could ever be found low.`,
-    };
-  }
-  const held = share.heldSince
-    ? ` That share has been held since ${share.heldSince.slice(0, 10)}, because Low bookings as a whole fell when it moved, which reads as lost bookings rather than a split.`
-    : "";
-  return {
-    state: "applied",
-    baselines: thinned,
-    share: share.share,
-    heldSince: share.heldSince,
-    text:
-      `Each page's floors are cal.com's for the whole page, thinned to the ${pct}% of Low bookings Slate carried ` +
-      `in the day to ${share.countedTo.slice(0, 10)}.${held}`,
-  };
-}
-
-/**
- * The condition for the per page alarm standing down (#3193): the cause in the same
- * words the step and the admin page use, then what it costs and what still watches.
- */
-export function formatPageShareUnknownAlert(cause: string): string {
-  return (
-    `${cause} Meanwhile the per page low volume alarm cannot page about any one page; ` +
-    `the Low tier alarm still watches Low bookings as a whole.`
-  );
-}
-
-/** The all-clear, hung off a tick that applied a share and judged the pages. */
-export function formatPageShareKnownNotice(share: number): string {
-  return (
-    `The per page low volume alarm is judging the Low pages again, at the ${Math.round(share * 100)}% of Low ` +
-    `bookings Slate carries. The earlier message about it is cleared. No action is needed.`
-  );
+  return { status: "checked", armed: deps.armed, pages, sources };
 }
 
 /** The untagged bookings in the long window: `recent` also in the short one, `older` not. */

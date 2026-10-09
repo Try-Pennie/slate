@@ -384,6 +384,7 @@ import { runOffsiteOriginCheck, OFFSITE_ORIGIN_LOOKBACK_MS } from "@/lib/monitor
 import { loadRecentBookingsInBuckets } from "@/lib/monitor/offsite-origin-store";
 import { readLeadScores, type LeadXbcRecord } from "@/lib/salesforce/lead-xbc";
 import { querySoqlAll, sfToken } from "@/lib/salesforce/rest";
+import { pilotSettingsCache } from "@/lib/salesforce/pilot-settings";
 import type { OrgDefaults } from "@/lib/schedule-core";
 
 export const dynamic = "force-dynamic";
@@ -1431,10 +1432,10 @@ export async function GET(req: NextRequest) {
           exceptions: businessHours!.exceptions,
         },
         baselines: MEASURED_PAGE_BASELINES,
-        // #3193: those floors are cal.com's for the whole of each page, so they are
-        // judged at the share of Low Slate carries, from the same stored refit the
-        // tier's anchor is thinned by. Unmeasured or unreadable stands the step down.
-        share: settings!.lowPageShare,
+        // Those floors are cal.com's for the whole of each page, so the pages are judged
+        // only while the pilot switch in Salesforce sends Slate every Low lead. Kept per
+        // isolate for a few minutes, so a tick costs a Salesforce read only now and then.
+        readPilot: () => pilotSettingsCache.read(now),
         // #2874: the pages' floors are Low's, so the pages count Low's bookings only.
         readSources: (sinceIso) => listCustomerBookingSourcesSince(db, sinceIso, LOW_TIER),
         pageSeenSince: (sources, sinceIso) => customerBookingFromSourcesSince(db, sources, sinceIso, LOW_TIER),
@@ -1455,8 +1456,8 @@ export async function GET(req: NextRequest) {
         log: (fields) => log.info("monitor", { msg: "page booking volume", ...fields }),
       }),
     );
-    if (pageVolume.status === "share-unknown") {
-      log.warn("monitor", { msg: "page volume not judged", share: pageVolume.share });
+    if (pageVolume.status === "not-judged" && pageVolume.pilot.state === "unreadable") {
+      log.warn("monitor", { msg: "page volume not judged", pilot: pageVolume.pilot.state });
     }
 
     // --- Relearning the low volume floors from Slate's own bookings (#2739), per

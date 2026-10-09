@@ -9,6 +9,11 @@ import userEvent from "@testing-library/user-event";
 // canEditOrgSettings is exercised; auth, redirect and the launch flag are mocked.
 const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
 const env = vi.hoisted(() => ({ consoleHiddenFor: vi.fn(() => false) }));
+const pilot = vi.hoisted(() => {
+  const every = { active: true, percent: 100, tiers: "1;2;3;4;5", lastModified: null };
+  return { every, read: vi.fn(async () => every as Record<string, unknown>) };
+});
+const EVERY_LOW_LEAD = pilot.every;
 const redirect = vi.hoisted(() =>
   vi.fn((url: string) => {
     throw new Error(`NEXT_REDIRECT:${url}`);
@@ -56,6 +61,9 @@ vi.mock("@/lib/env", async (importOriginal) => ({
 }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
+// The pilot switch in Salesforce, which decides whether the Low pages are judged. Every
+// Low lead on Slate by default, so the cases that are not about it see the table.
+vi.mock("@/lib/salesforce/pilot-settings", () => ({ pilotSettingsCache: { read: pilot.read } }));
 
 // #1748 broke the single "Booking and alert settings" hub into four routes. Each
 // block below now drives the route that owns the panel it was written about; the
@@ -482,11 +490,9 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
   const learningCard = () => document.getElementById("volume-learning")!;
   const coverageRows = () => learningCard().querySelectorAll("[data-page-coverage]");
 
-  // #3193: the pages' floors are judged at the share of Low Slate carries, so these
-  // cases store one, as the daily refit does. 75%, because at today's 44% no committed
-  // page floor survives the thinning and there would be no table to show. The day is
-  // the one just ended, read off the real clock, so no stamp here ages into another
-  // state (an overdue refit, say) as the calendar moves.
+  // A stored refit, as the daily refit writes one. The day is the one just ended, read
+  // off the real clock, so no stamp here ages into another state (an overdue refit,
+  // say) as the calendar moves.
   const shareRecord = (share: number) => {
     const to = new Date(Date.now() - 60_000).toISOString();
     const from = new Date(Date.now() - 24 * 60 * 60_000 - 60_000).toISOString();
@@ -519,19 +525,23 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
   beforeEach(() => {
     stored = shareRecord(0.75);
     db.results.monitor_alert_config = { data: stored.row, error: null };
+    pilot.read.mockReset();
+    pilot.read.mockResolvedValue(EVERY_LOW_LEAD);
   });
 
-  it("says the pages are not judged, in place of their floors, while the share Slate carries is unmeasured", async () => {
+  it("says the pages are not judged, in place of their floors, while the pilot splits Low", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    db.results.monitor_alert_config = { data: null, error: null };
+    pilot.read.mockResolvedValue({ ...EVERY_LOW_LEAD, percent: 50 });
     db.results.business_hours = { data: [], error: null };
     db.results.business_hours_exceptions = { data: [], error: null };
     render(await AlertSettingsPage(props));
-    expect(learningCard().querySelector("[data-page-share]")!.textContent).toMatch(/^The Low pages are not judged: the share of Low bookings Slate carries has not been measured yet/);
+    expect(learningCard().querySelector("[data-page-pilot]")!.textContent).toBe(
+      "Per page Low alerts are off while the pilot sends Slate 50% of Low leads. They turn on at 100%.",
+    );
     expect(coverageRows()).toHaveLength(0);
   });
 
-  it("control: with a share stored, says it beside the pages' floors", async () => {
+  it("control: with every Low lead on Slate, shows the pages' floors and no pilot line", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     const counts = [40, 0];
     db.results.bookings = {
@@ -544,19 +554,19 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
     db.results.business_hours = { data: [], error: null };
     db.results.business_hours_exceptions = { data: [], error: null };
     render(await AlertSettingsPage(props));
-    expect(learningCard().querySelector("[data-page-share]")!.textContent).toContain(
-      `thinned to the 75% of Low bookings Slate carried in the day to ${stored.to.slice(0, 10)}`,
-    );
+    expect(learningCard().querySelector("[data-page-pilot]")).toBeNull();
     expect(coverageRows().length).toBeGreaterThan(0);
   });
 
-  it("says a share too small for any page floor to survive is not one the pages are judged at", async () => {
+  it("says where to look when the pilot settings cannot be read", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    db.results.monitor_alert_config = { data: shareRecord(0.44).row, error: null };
+    pilot.read.mockRejectedValue(new Error("salesforce down"));
     db.results.business_hours = { data: [], error: null };
     db.results.business_hours_exceptions = { data: [], error: null };
     render(await AlertSettingsPage(props));
-    expect(learningCard().querySelector("[data-page-share]")!.textContent).toMatch(/^The Low pages are not judged: Slate carried 44% of Low bookings/);
+    const said = learningCard().querySelector("[data-page-pilot]")!.textContent!;
+    expect(said).toMatch(/^Per page Low alerts are off: the pilot settings in Salesforce could not be read/);
+    expect(said).toContain("Website Configuration (trypennie.com)");
     expect(coverageRows()).toHaveLength(0);
   });
 

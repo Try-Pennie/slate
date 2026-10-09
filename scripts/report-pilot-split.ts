@@ -166,7 +166,7 @@ let salesforcePercent: SalesforcePercent | undefined;
 if ((first.needsTiers || first.needsPercent) && ["SF_CLIENT_ID", "SF_CLIENT_SECRET", "SF_INSTANCE_URL"].every((n) => env[n]?.trim())) {
   const askedTiers = first.needsTiers;
   try {
-    const { readPilotSettings } = await import("./lib/pilot-settings-read.ts");
+    const { readPilotSettings } = await import("@/lib/salesforce/pilot-settings");
     const settings = await readPilotSettings();
     salesforceTiers = { ok: true, value: settings.tiers };
     salesforcePercent = { ok: true, value: settings.percent };

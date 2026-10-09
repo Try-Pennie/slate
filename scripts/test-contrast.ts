@@ -20,6 +20,7 @@ import {
   type Theme,
 } from "./lib/scan-rose-pairings.ts";
 import { sourceFiles } from "./lib/source-files.ts";
+import { WARNING_NOTICE_CLASS } from "../src/components/ui/warning-notice-paint.ts";
 
 // --- Token parsing ----------------------------------------------------------
 const TOKEN_FILE = join("src", "app", "globals.css");
@@ -142,6 +143,34 @@ for (const [theme, read] of [
     Math.max(chip, fill) + 1e-9 >= 3,
     `the test mode band is told from the card behind it (${theme}): chip ${chip.toFixed(2)}:1, fill ${fill.toFixed(2)}:1, one of them >= 3`,
   );
+}
+
+// --- #3549: the warning notice, rose outline on a rose wash ------------------
+//
+// Dan's call on 2026-10-08, from a rendered round: the sentence is ROSE on light
+// and the theme's own text on dark, inside a rose outline over a faint rose
+// wash. Rose text on a rose wash is the tight pair (the booker records 4.33:1 at
+// a 12% wash, an AA fail), so the wash is read out of the class that ships rather
+// than written here, and a heavier wash fails this rather than the sentence.
+{
+  const m = /var\(--error\)_(\d+)%/.exec(WARNING_NOTICE_CLASS);
+  assert(m !== null, "the warning notice's wash percentage is readable from its class");
+  const pct = m ? Number(m[1]) / 100 : 1;
+  const wash = (over: RGB, tint: RGB): RGB =>
+    over.map((c, i) => Math.round(tint[i] * pct + c * (1 - pct))) as RGB;
+  // The wash is mixed into the CARD colour rather than into transparent, so the
+  // notice paints its own background and measures the same on a card or on the
+  // page. Over transparent, the rose sentence on the beige page is 4.39:1.
+  assert(/var\(--error\)_\d+%,var\(--surface\)\)/.test(WARNING_NOTICE_CLASS), "the warning paints its own background, not whatever is behind it");
+  assert(/\btext-\[var\(--error\)\]/.test(WARNING_NOTICE_CLASS), "the warning sentence is rose on light");
+  assert(/\bdark:text-fg\b/.test(WARNING_NOTICE_CLASS), "the warning sentence is the theme's own text on dark");
+  const lightWash = wash(r("--surface"), r("--error"));
+  const darkWash = wash(rDark("--surface"), rDark("--error"));
+  atLeast(r("--error"), lightWash, 4.5, "warning sentence, rose on its rose wash (light)");
+  atLeast(rDark("--fg"), darkWash, 4.5, "warning sentence, fg on its rose wash (dark)");
+  atLeast(rDark("--error"), darkWash, 3, "warning icon, rose on its rose wash (dark)");
+  atLeast(r("--error"), r("--surface"), 3, "warning outline against the card (light)");
+  atLeast(rDark("--error"), rDark("--surface"), 3, "warning outline against the card (dark)");
 }
 
 // --- D17 / #1768: the focus ring, on EVERY surface it can be drawn on -------

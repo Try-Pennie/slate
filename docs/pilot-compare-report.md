@@ -154,6 +154,6 @@ read is the shared reader in `src/lib/calcom/upcoming-bookings.ts`
 and one retry, because a `past` listing's first page was measured at up to 117 s
 over a week. Salesforce lists go through `querySoqlComplete`
 (`src/lib/salesforce/rest.ts`), which refuses a read that ends short of the
-`totalSize` it promised. The settings read is `scripts/lib/pilot-settings-read.ts`,
+`totalSize` it promised. The settings read is `src/lib/salesforce/pilot-settings.ts`,
 shared with `report:pilot-split`, which now takes its tiers from it rather than a
 hard coded Low.
