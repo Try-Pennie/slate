@@ -671,6 +671,34 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "booker pages for, reached by a lead who already has an appointment.",
   },
   {
+    id: "reschedule_terminal",
+    surface: "manage page",
+    outcome: "409, told the booking can no longer be changed",
+    counting: { kind: "error", code: "reschedule_terminal" },
+    rateSignal: { kind: "covered" },
+    why:
+      "The booking is (or became) cancelled or completed, so the call it moved is over (#3569). " +
+      "Before this it threw a plain Error that fell through to the generic 500 and paged the " +
+      "on-call for a lead clicking a stale reschedule link. One is a stale link; a wave is the " +
+      "shape of a page sending old links to settled bookings, which no other check would see, so " +
+      "it is counted in the share like the other 409s rather than paging on its own.",
+  },
+  {
+    id: "reschedule_not_found",
+    surface: "manage page",
+    outcome: "404, told the booking was not found",
+    counting: { kind: "none" },
+    rateSignal: { kind: "none" },
+    why:
+      "The manage token resolves to no booking (#3569). The same reasoning as the 429 in " +
+      "`reschedule_rate_limited`: the " +
+      "token is unguessable (nanoid(24), about 143 bits), so a miss is a hand-made request rather " +
+      "than a customer being turned away, and counting it would put that volume in the denominator " +
+      "the failure share is measured against and make a real outage look proportionally smaller. " +
+      "Before this it threw a plain Error that paged the on-call. A genuinely missing booking for a " +
+      "real lead is rare and shows up as a 404 in the request log, not as a booking failure.",
+  },
+  {
     id: "reschedule_outside_calling_window",
     surface: "manage page",
     outcome: "422, told we only call between 8 AM and 8 PM their time and to pick another time",
