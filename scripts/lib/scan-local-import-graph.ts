@@ -20,7 +20,8 @@
 // The IO is injected so this is testable against fixtures and against an OVERLAY of
 // the real tree (one real file's content replaced in memory), which is how the
 // positive control reintroduces a removed import without writing to the repo.
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export interface ImportGraphIo {
   /** Read a file's source. Throws (like node:fs) when it is not there. */
@@ -28,6 +29,12 @@ export interface ImportGraphIo {
   /** Whether a path exists as a readable file. */
   exists(path: string): boolean;
 }
+
+/** The real tree on disk. */
+export const diskIo: ImportGraphIo = {
+  readFile: (p) => readFileSync(p, "utf8"),
+  exists: (p) => existsSync(p) && statSync(p).isFile(),
+};
 
 export type ForeignReason =
   /** A bare package specifier: it can only resolve out of node_modules. */
@@ -166,14 +173,21 @@ export function blankComments(src: string): string {
  * read as one statement while a string containing the word `from` cannot swallow the
  * rest of the file.
  */
-export function importSpecifiers(src: string): string[] {
+export function importSpecifiers(src: string, opts: { skipTypeOnly?: boolean } = {}): string[] {
   const code = blankComments(src);
   const found: string[] = [];
   const add = (s: string | undefined): void => {
     if (s && !found.includes(s)) found.push(s);
   };
   const patterns = [
-    /^[ \t]*(?:import|export)\b(?:(?!["'`])[\s\S])*?\bfrom\s*["']([^"']+)["']/gm,
+    // #3500: with `skipTypeOnly`, a statement opening `import type` or `export type` is not
+    // read, since the bundler erases it and it loads nothing. The skip only ever declines to
+    // START a match, so an import on a later line is still found from its own line; a
+    // statement with no semicolon can at most run on into the next import and read it as a
+    // value import, which walks more, never less.
+    opts.skipTypeOnly
+      ? /^[ \t]*(?:import|export)\b(?!\s+type\b)(?:(?!["'`])[\s\S])*?\bfrom\s*["']([^"']+)["']/gm
+      : /^[ \t]*(?:import|export)\b(?:(?!["'`])[\s\S])*?\bfrom\s*["']([^"']+)["']/gm,
     /^[ \t]*import\s+["']([^"']+)["']/gm,
     /\bimport\s*\(\s*["']([^"']+)["']/g,
     /\brequire\s*\(\s*["']([^"']+)["']/g,
@@ -217,6 +231,14 @@ export interface WalkOptions {
   /** Directories whose files count as local. Absolute paths. */
   localRoots: string[];
   io: ImportGraphIo;
+  /**
+   * #3500: where `@/` points (the app's `src/`), to walk the alias like a relative import.
+   * Absent, an `@/` import is a foreign `alias` edge, which is what a script that must run
+   * without the register-paths hook needs.
+   */
+  aliasRoot?: string;
+  /** #3500: leave out a type only import, which the bundler erases (`importSpecifiers`). */
+  skipTypeOnly?: boolean;
 }
 
 /**
@@ -249,17 +271,18 @@ export function walkImportGraph(entry: string, opts: WalkOptions): ImportGraph {
       continue;
     }
 
-    for (const spec of importSpecifiers(src)) {
+    for (const spec of importSpecifiers(src, { skipTypeOnly: opts.skipTypeOnly === true })) {
       if (spec.startsWith("node:") || NODE_BUILTINS.has(spec)) continue;
-      if (spec.startsWith("@/") || spec.startsWith("~/")) {
+      const aliased = opts.aliasRoot !== undefined && spec.startsWith("@/");
+      if (!aliased && (spec.startsWith("@/") || spec.startsWith("~/"))) {
         foreign.push({ from: file, specifier: spec, reason: "alias" });
         continue;
       }
-      if (!isRelative(spec) && !isAbsolute(spec)) {
+      if (!aliased && !isRelative(spec) && !isAbsolute(spec)) {
         foreign.push({ from: file, specifier: spec, reason: "package" });
         continue;
       }
-      const resolved = resolveLocal(file, spec, opts.io);
+      const resolved = resolveLocal(file, aliased ? join(opts.aliasRoot!, spec.slice(2)) : spec, opts.io);
       if (!resolved) {
         foreign.push({ from: file, specifier: spec, reason: "unresolved" });
         continue;
@@ -288,4 +311,21 @@ export function describeForeign(edges: ForeignEdge[], root: string): string {
       return `  ${from} imports ${e.specifier} (${e.reason})`;
     })
     .join("\n");
+}
+
+/**
+ * #3500, #3555: what a small Worker's entry loads at runtime, from the repo root `root`:
+ * the alias followed into `src/`, type only imports left out (the bundler erases them),
+ * and every file reached that is not in `allowed`, or any edge that leaves the tree (a
+ * package, or an import that resolves to nothing), reported as foreign. Paths are relative
+ * to `root`, so a Worker's test can name its own files and fail on the app creeping back in.
+ */
+export function walkWorkerImports(root: string, entry: string, allowed: ReadonlySet<string>): { seen: Set<string>; foreign: string[] } {
+  const graph = walkImportGraph(join(root, entry), { localRoots: [root], aliasRoot: join(root, "src"), skipTypeOnly: true, io: diskIo });
+  const seen = new Set(graph.files.map((f) => relative(root, f)));
+  const foreign = [
+    ...[...seen].filter((f) => !allowed.has(f)),
+    ...graph.foreign.map((e) => `${relative(root, e.from)} imports ${e.specifier} (${e.reason})`),
+  ];
+  return { seen, foreign };
 }

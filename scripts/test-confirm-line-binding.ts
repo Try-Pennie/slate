@@ -22,6 +22,7 @@ import { POOL_GROUPING_DIRECTORY, groupingGetMessage, groupingPutMessage, groupi
 import { memoryGroupingStorage } from "./lib/memory-grouping-storage.ts";
 import { confirmLineObjectName } from "../src/lib/booking/shared-confirm-line.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { walkWorkerImports } from "./lib/scan-local-import-graph.ts";
 
 interface Resolved {
   name?: string;
@@ -78,29 +79,7 @@ for (const env of [undefined, "loadtest"] as const) {
     "src/lib/read-within-deadline.ts",
     "src/lib/log.ts",
   ]);
-  const seen = new Set<string>();
-  const foreign: string[] = [];
-  const walk = (file: string) => {
-    if (seen.has(file)) return;
-    seen.add(file);
-    if (!LINE_FILES.has(file)) foreign.push(file);
-    const text = readFileSync(file, "utf8");
-    // A type only import is erased by the bundler and loads nothing, so it is not walked.
-    for (const m of text.matchAll(/^\s*(import|export)\s(type\s)?[^;]*?from\s+"([^"]+)"/gms)) {
-      if (m[2]) continue;
-      const spec = m[3]!;
-      if (/^(node:|cloudflare:)/.test(spec)) continue;
-      let target: string;
-      if (spec.startsWith("@/")) target = `src/${spec.slice(2)}`;
-      else if (spec.startsWith(".")) target = new URL(spec, `file:///${file}`).pathname.slice(1);
-      else {
-        foreign.push(`${file} imports the package ${spec}`);
-        continue;
-      }
-      walk(target.endsWith(".ts") ? target : `${target}.ts`);
-    }
-  };
-  walk("worker/confirm-line/index.ts");
+  const { seen, foreign } = walkWorkerImports(process.cwd(), "worker/confirm-line/index.ts", LINE_FILES);
   assert(foreign.length === 0, `the line Worker reaches only the line's own files (got ${foreign.join(", ")})`);
   assert(seen.has("src/lib/booking/confirm-queue.ts"), "the walk did reach the line's rules (positive control: it read the imports at all)");
 }
