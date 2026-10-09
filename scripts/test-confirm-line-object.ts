@@ -102,6 +102,13 @@ async function main() {
     assert(JSON.stringify(r1) === JSON.stringify(r2), "poll: every follower gets the same answer");
     const again = await send({ op: "done", turn: lead.turn, verdict: { full: false } });
     assert(again.ok === true, "done: a repeated report is accepted and changes nothing");
+    // #3570: a confirm arriving once the line has settled full is answered from the same
+    // verdict over the protocol it already speaks: a ticket, whose first poll is refused.
+    // An app deployed before this change reads that as it reads any wait.
+    const late = await send({ op: "enter", attempt: "D", line: "100", waitMs: 10_000 });
+    assert(late.kind === "wait" && typeof late.ticket === "string", `settled memory: a late arrival is given a ticket, not a lead (got ${JSON.stringify(late)})`);
+    const lateAnswer = await send({ op: "poll", ticket: late.ticket });
+    assert(JSON.stringify(lateAnswer) === JSON.stringify(r1), `settled memory: and its first poll is the crowd's refusal (got ${JSON.stringify(lateAnswer)})`);
   }
 
   // --- #3529: a leader's lower rungs ride on its claim, and are handed out over the wire --

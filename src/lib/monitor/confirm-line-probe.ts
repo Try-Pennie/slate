@@ -28,7 +28,11 @@
  *    after the enter is lost, as when an answer never reaches its caller), and B leads
  *    within the acknowledgement window rather than after the whole lease.
  *  - `nothingHeld`: afterwards, a newcomer on each instant the probe used leads at
- *    once, so the probe is MEASURED to have left nothing held, not assumed to.
+ *    once, so the probe is MEASURED to have left nothing held, not assumed to. On the
+ *    instant `full` settled, the line may still remember that verdict (#3570) and refuse
+ *    the newcomer with `full`'s own settlement; a line remembers only a verdict that left
+ *    no claim in flight, so that answer shows nothing held too. Refused anywhere else, or
+ *    with any other settlement, it was settled by something the probe never reported.
  *  - `directory` (#3460): the pool grouping DIRECTORY, a reserved instance of the same
  *    class, stores a put and hands it back, keeps the newest over an older put (both
  *    directions, on the probe's OWN directory), and the LIVE directory holds a grouping
@@ -222,6 +226,15 @@ export type ProbeReport = Record<ConfirmLineCheck, CheckResult>;
  * reporting it as never freed.
  */
 export const PROBE_FOLLOWER_WAIT_MS = CONFIRM_LINE_LEASE_MS + 2_000;
+
+/**
+ * How long `nothingHeld`'s newcomer waits (#3570). A line answers a remembered full
+ * verdict as a wait whose first poll is refused, and a confirm with no wait left never
+ * polls, so a newcomer that waited nothing would read a remembered line as a held one.
+ * A second is one poll's round trip with room; a line that really is held answers
+ * `unqueued` when it runs out, which costs the probe that second only when it fails.
+ */
+export const PROBE_NEWCOMER_WAIT_MS = 1_000;
 
 /**
  * The latest an abandoned lead may be freed and still count as freed by its
@@ -443,12 +456,15 @@ async function queuedBehindLeader(
   return { lead, follower, a, b };
 }
 
+/** What `full`'s leader reports as its settlement, which `nothingHeld` may meet again (#3570). */
+const fullSettlement = (run: string) => ({ probe: "confirm-line", run });
+
 async function checkFull(deps: ConfirmLineProbeDeps, key: LineKey, run: string): Promise<CheckResult> {
   const held = holdings();
   try {
     const queued = await queuedBehindLeader(deps, key, held);
     if ("outcome" in queued) return queued;
-    const settlement = { probe: "confirm-line", run };
+    const settlement = fullSettlement(run);
     await held.report(queued.lead, { full: true, refusal: "taken", settled: settlement });
     const turn = await queued.follower;
     const late = queued.b.fellBack();
@@ -538,25 +554,41 @@ async function checkAbandoned(deps: ConfirmLineProbeDeps, key: LineKey): Promise
   }
 }
 
-async function checkNothingHeld(deps: ConfirmLineProbeDeps, keys: readonly LineKey[]): Promise<CheckResult> {
+async function checkNothingHeld(
+  deps: ConfirmLineProbeDeps,
+  keys: readonly LineKey[],
+  /** The instant `full` settled and the settlement it reported, which the line may remember (#3570). */
+  settledFull: { key: LineKey; settlement: unknown },
+): Promise<CheckResult> {
   // Never a pass over nothing (L98). Each check claims its instant before it starts, so
   // this would mean the probe changed shape, which is a fault in this file.
   if (keys.length === 0) return { outcome: "errored", detail: "No instant was used, so there was nothing to find held" };
   const stillHeld: string[] = [];
+  let rememberedFull = false;
   for (const key of keys) {
     const c = participant(deps);
     const held = holdings();
     try {
-      const turn = await held.track(c.line.enter(key, 0));
+      const turn = await held.track(c.line.enter(key, PROBE_NEWCOMER_WAIT_MS));
       const fell = c.fellBack();
       if (fell) return unreachable("A newcomer after the checks", fell);
-      if (turn.kind !== "lead") stillHeld.push(key.instant.slice(key.instant.lastIndexOf(":") + 1));
+      const remembered =
+        turn.kind === "refused" &&
+        key.instant === settledFull.key.instant &&
+        JSON.stringify(turn.settled) === JSON.stringify(settledFull.settlement);
+      if (remembered) rememberedFull = true;
+      if (turn.kind !== "lead" && !remembered) stillHeld.push(key.instant.slice(key.instant.lastIndexOf(":") + 1));
     } finally {
       await held.releaseAll();
     }
   }
   if (stillHeld.length > 0) {
     return { outcome: "held", detail: `After the checks, the instant used by ${stillHeld.join(" and ")} was still held, so a newcomer there could not lead at once` };
+  }
+  if (rememberedFull) {
+    return passed(
+      `After the checks, nothing was held on any of the ${keys.length} instants they used: a newcomer led at once on each, except on full's, where the line still remembered full's verdict and refused it with full's own settlement`,
+    );
   }
   return passed(`After the checks, a newcomer led at once on each of the ${keys.length} instants they used`);
 }
@@ -803,10 +835,11 @@ export async function runConfirmLineProbe(deps: ConfirmLineProbeDeps): Promise<P
     used.push(key);
     return key;
   };
-  const full = await guarded(() => checkFull(deps, claim("full"), run));
+  const fullKey = claim("full");
+  const full = await guarded(() => checkFull(deps, fullKey, run));
   const notFull = await guarded(() => checkNotFull(deps, claim("notFull")));
   const abandoned = await guarded(() => checkAbandoned(deps, claim("abandoned")));
-  const nothingHeld = await guarded(() => checkNothingHeld(deps, used));
+  const nothingHeld = await guarded(() => checkNothingHeld(deps, used, { key: fullKey, settlement: fullSettlement(run) }));
   const directory = await guarded(() => checkDirectory(deps, run));
   // Last, because it is the one that waits: the line checks and the live read are never
   // held behind its idle spells.

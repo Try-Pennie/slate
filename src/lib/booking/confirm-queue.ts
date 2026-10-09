@@ -110,6 +110,23 @@ export const RELEASE_CAP = 24;
 export const FRONTIER_FRESH_MS = CONFIRM_QUEUE_WAIT_MS;
 
 /**
+ * How long a line remembers the full verdict that settled it (#3570), so a confirm
+ * arriving just after is answered from it as the crowd was, rather than leading a line
+ * of its own and running the whole confirm to learn the same thing. Load run
+ * 37977451270 met one on a fresh isolate: its start, a switch read giving up and a slow
+ * ceiling put it at the line about 60ms after the verdict, and it answered 5.9s after
+ * the last booking. Five seconds covers a fresh isolate's late start (1.3s to load the
+ * app, 0.5s for the switch read to give up, 1.2s of auth in that run) with room over it.
+ *
+ * What it costs: while the line remembers, no confirm opens a line for the slot, so
+ * nothing books at that instant through the line and the settlement (who sits there)
+ * stays exact for it. Only a booking at the instant CANCELLED inside the window goes
+ * unseen, and a lead arriving then is told the time is taken, as the cache-first
+ * availability already tells leads for longer than that.
+ */
+export const CONFIRM_LINE_SETTLED_MEMORY_MS = 5_000;
+
+/**
  * How a confirm's claim on an advisor ended (#3489), one value, never a boolean
  * (L163): only an advisor nobody tried is free for certain.
  *
@@ -511,6 +528,8 @@ export function makeConfirmQueue<T>(
     ackMs?: number;
     /** How long a lookahead place may stay out before it is reclaimed (#3325). */
     lookaheadLeaseMs?: number;
+    /** How long a full verdict answers confirms arriving after it settled the line (#3570). */
+    settledMemoryMs?: number;
   } = {},
 ): ConfirmQueue<T> {
   const waitMs = opts.waitMs ?? CONFIRM_QUEUE_WAIT_MS;
@@ -520,8 +539,17 @@ export function makeConfirmQueue<T>(
   const leaseMs = opts.leaseMs ?? CONFIRM_CLAIM_LEASE_MS;
   const ackMs = opts.ackMs;
   const lookaheadLeaseMs = opts.lookaheadLeaseMs ?? CONFIRM_CLAIM_LEASE_MS;
+  const settledMemoryMs = opts.settledMemoryMs ?? CONFIRM_LINE_SETTLED_MEMORY_MS;
   // A key is present while somebody leads it or waits in it.
   const lines = new Map<string, Line<T>>();
+  // #3570: the full verdict that settled a key's line, and when, so a confirm arriving
+  // just after is answered from it rather than leading a line of its own.
+  const settledLately = new Map<string, { refusal: "race" | "taken"; settled: T | null; at: number }>();
+  const rememberedFor = (key: string): { refusal: "race" | "taken"; settled: T | null } | null => {
+    const t = now();
+    for (const [k, m] of settledLately) if (t - m.at >= settledMemoryMs) settledLately.delete(k);
+    return settledLately.get(key) ?? null;
+  };
   // Removes THIS line only: a lookahead returned after its line settled must not
   // delete a newer line that has since been opened under the same key.
   const drop = (key: string, line: Line<T>) => {
@@ -618,6 +646,7 @@ export function makeConfirmQueue<T>(
   const refuseAll = (key: string, line: Line<T>, refusal: "race" | "taken", settled: T | null): void => {
     line.pending = null;
     drop(key, line);
+    settledLately.set(key, { refusal, settled, at: now() });
     for (const w of line.waiting.splice(0)) w.answer({ kind: "refused", refusal, settled });
   };
   const handedInFlight = (line: Line<T>): number => {
@@ -935,6 +964,9 @@ export function makeConfirmQueue<T>(
       existing = lines.get(key);
     }
     if (!existing) {
+      // #3570: the slot was settled full a moment ago; answered as the crowd was.
+      const remembered = rememberedFor(key);
+      if (remembered) return { kind: "wait", turn: Promise.resolve({ kind: "refused", ...remembered }), cancel() {} };
       const line: Line<T> = { waiting: [], holder: null, claims: new Map(), looking: 0, frontier: null, epoch: 0, pending: null };
       lines.set(key, line);
       return { kind: "lead", turn: leadTurn(key, line) };

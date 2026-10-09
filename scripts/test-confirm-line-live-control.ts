@@ -457,7 +457,9 @@ async function main() {
     "a not full verdict read as full",
     (w) => (m) =>
       w.handle(w.host, m.op === "done" && (m.verdict as Message | undefined)?.full === false ? { ...m, verdict: { full: true, refusal: "taken", settled: null } } : m),
-    { full: "passed", notFull: "not-handed-on", abandoned: "passed" },
+    // #3570: the line remembers that wrong full verdict, so a newcomer on notFull's instant is
+    // refused: a refusal the probe never reported, which nothingHeld must not take for its own.
+    { full: "passed", notFull: "not-handed-on", abandoned: "passed", nothingHeld: "held" },
   );
 
   // The verdict never arrives, so the follower is freed only by the leader's lease.

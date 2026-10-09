@@ -49,7 +49,7 @@ import {
   type BookingResult,
 } from "../src/lib/booking/orchestration.ts";
 import { withinBookingConfirmBudget, BOOKING_CONFIRM_BUDGET_MS } from "../src/lib/booking/confirm-budget.ts";
-import { makeConfirmQueue, isolateLine, CONFIRM_QUEUE_WAIT_MS, CONFIRM_LINE_LOOKAHEAD, type ConfirmLine, type LineTurn } from "../src/lib/booking/confirm-queue.ts";
+import { makeConfirmQueue, isolateLine, CONFIRM_QUEUE_WAIT_MS, CONFIRM_LINE_LOOKAHEAD, CONFIRM_LINE_SETTLED_MEMORY_MS, type ConfirmLine, type LineTurn } from "../src/lib/booking/confirm-queue.ts";
 import type { Booking, User } from "../src/lib/db/types.ts";
 import type { BookingContext } from "../src/lib/booking/orchestration.ts";
 import type { LadderInputs } from "../src/lib/availability/ladder-inputs.ts";
@@ -630,6 +630,10 @@ async function burst(opts: {
       let probed = false;
       const key = confirmQueueKey(opts.inputs[0].bucketCode, opts.inputs[0].startIso, undefined);
       void (async () => {
+        // #3570: a line settled full answers a confirm arriving inside its memory from
+        // that verdict, so the probe enters once the memory has lapsed: what it asks is
+        // whether anything is STILL held, which a lease (14s) outlives the memory (5s) to show.
+        await clock.sleep(CONFIRM_LINE_SETTLED_MEMORY_MS);
         for (const line of opts.isolates ? isolateLines : [queue]) {
           const turn = await line.enter(key, 0);
           if (turn.kind !== "lead") {
@@ -1008,6 +1012,25 @@ async function main() {
       const lastBooked = maxOf(got.booked.map((b) => b.atMs));
       const taken = got.others.SLOT_TAKEN;
       assert(taken === undefined || taken.maxMs - lastBooked <= BURST_LOSER_LAG_MS, `${tag}: and told within ${BURST_LOSER_LAG_MS}ms of the last booking (got ${taken ? Math.round(taken.maxMs - lastBooked) : 0}ms)`);
+    }
+    // #3570: load run 37977451270, burst 3, met three free (two on the top rung) and one
+    // confirm on a fresh isolate that reached the line about 60ms after the full verdict
+    // had answered the crowd. It led a line of its own, ran the whole confirm and was
+    // told the time was taken 5.9s after the last booking. In the model the crowd's
+    // verdict lands about 5.2s in, so a confirm arriving at 5.2s, 5.6s or 6.4s met the
+    // same: answered at about 12s. The line remembers the verdict for them now.
+    for (const lateMs of [5_200, 5_600, 6_400]) {
+      const base = RUN_37640583621[2]!;
+      const three = ["r0", "r1", "r9"];
+      const shape = { ...base, label: `refusal control, 3 free, one more arriving ${lateMs}ms in`, rungs: ladder500(three), arrivals: [...base.arrivals, [lateMs - 50, lateMs, 1] as const] };
+      const tag = `#3570 burst bar (model, stack load run), ${shape.label}`;
+      const got = await replay(shape, STACK_LOAD_RUN_PROFILE, "shared");
+      console.log(`${tag}: ${describe(got)}`);
+      assert(!got.doubleBooked && got.booked.length === 3, `${tag}: the three free advisors are booked, once each (got ${describe(got)})`);
+      const lastBooked = maxOf(got.booked.map((b) => b.atMs));
+      const taken = got.others.SLOT_TAKEN;
+      assert(taken !== undefined && taken.count === shape.arrivals.length - 3, `${tag}: everybody else is told the time is taken (got ${describe(got)})`);
+      assert(taken!.maxMs - lastBooked <= BURST_LOSER_LAG_MS, `${tag}: the late one too, within ${BURST_LOSER_LAG_MS}ms of the last booking (got ${Math.round(taken!.maxMs - lastBooked)}ms)`);
     }
     // Control (L1): the bar can fail. Priced at the run's own database cost, with none of
     // the stack's cuts (every rung read with requests of its own, the save as the seven

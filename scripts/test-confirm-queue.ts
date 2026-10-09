@@ -18,6 +18,7 @@ import {
   CONFIRM_CLAIM_LEASE_MS,
   FRONTIER_FRESH_MS,
   RELEASE_CAP,
+  CONFIRM_LINE_SETTLED_MEMORY_MS,
   type QueueTurn,
 } from "../src/lib/booking/confirm-queue.ts";
 import { BOOKING_CONFIRM_BUDGET_MS, BOOKING_CONFIRM_WORST_CASE_MS } from "../src/lib/booking/confirm-budget.ts";
@@ -102,12 +103,54 @@ async function main() {
       `full: each is refused with what took the slot (got ${JSON.stringify(followers)})`,
     );
     assert(live() === 0, `full: the followers' wait timers are cancelled once they are answered (live ${live()})`);
-    // The line is gone: the next confirm for the slot leads, and finds the slot
-    // taken through its own reads, as any later confirm does.
-    const later = await q.enter("slot");
-    assert(later.kind === "lead", "full: a confirm arriving after the verdict leads a fresh line");
-    if (later.kind === "lead") later.done({ full: false });
     if (other.kind === "lead") other.done({ full: false });
+  }
+
+  // --- #3570: a full verdict answers a confirm arriving just after it, too ----
+  //
+  // Load run 37977451270, burst 3: a confirm on a fresh isolate reached the line about
+  // 60ms after the crowd's full verdict had answered everybody waiting. The line had
+  // forgotten it, so that confirm led a line of its own and ran the whole confirm
+  // under load (a person decision, then every rung read) to be told the same thing
+  // 5.9s after the last booking. Within `CONFIRM_LINE_SETTLED_MEMORY_MS` the verdict
+  // answers it as it answered the crowd, with the same settlement.
+  {
+    const { timer } = manualTimer();
+    let now = 1_000_000;
+    const q = makeConfirmQueue<string>({ timer, now: () => now });
+    const lead = await q.enter("slot");
+    const waiting = q.enter("slot");
+    if (lead.kind === "lead") lead.done({ full: true, refusal: "race", settled: "who sits there" });
+    assert((await waiting).kind === "refused", "settled memory: the confirm waiting is refused, as before");
+    now += CONFIRM_LINE_SETTLED_MEMORY_MS - 1;
+    const late = await q.enter("slot");
+    assert(
+      late.kind === "refused" && late.refusal === "race" && late.settled === "who sits there",
+      `settled memory: a confirm arriving after the verdict, inside the window, is answered from it (got ${JSON.stringify(late)})`,
+    );
+    assert(q.lookahead("slot") === null, "settled memory: there is no busy line to look ahead of");
+    const elsewhere = await q.enter("another slot");
+    assert(elsewhere.kind === "lead", "settled memory: another slot's line is untouched by it");
+    if (elsewhere.kind === "lead") elsewhere.done({ full: false });
+    // Once the window has passed, the next confirm leads a fresh line and reads for
+    // itself, as any later confirm does.
+    now += 1;
+    const after = await q.enter("slot");
+    assert(after.kind === "lead", `settled memory: past the window, a confirm leads a fresh line (got ${after.kind})`);
+    if (after.kind === "lead") after.done({ full: false });
+  }
+
+  // --- #3570: only a FULL verdict is remembered --------------------------------
+  {
+    const { timer } = manualTimer();
+    let now = 1_000_000;
+    const q = makeConfirmQueue<string>({ timer, now: () => now });
+    const lead = await q.enter("slot");
+    if (lead.kind === "lead") lead.done({ full: false });
+    now += 1;
+    const next = await q.enter("slot");
+    assert(next.kind === "lead", `settled memory: a line that ended open is not remembered, the next confirm leads (got ${next.kind})`);
+    if (next.kind === "lead") next.done({ full: false });
   }
 
   // --- an open slot hands the lead to the next follower, one at a time --------
@@ -272,10 +315,14 @@ async function main() {
   // --- #3257: a lookahead returned after its line settled leaves a newer one ---
   {
     const { timer } = manualTimer();
-    const q = makeConfirmQueue<string>({ timer });
+    let now = 1_000_000;
+    const q = makeConfirmQueue<string>({ timer, now: () => now });
     const first = await q.enter("slot");
     const give = q.lookahead("slot");
     if (first.kind === "lead") first.done({ full: true, refusal: "race", settled: null });
+    // #3570: the full verdict answers arrivals for a while; a lookahead's lease (14s)
+    // outlives that memory (5s), so its stale give back can still meet a newer line.
+    now += CONFIRM_LINE_SETTLED_MEMORY_MS;
     const newer = await q.enter("slot");
     const follower = q.enter("slot");
     give?.();
