@@ -211,6 +211,15 @@ async function runReassignTarget() {
   let cap = capChecker();
   let r = await selectReassignTarget(["a", "b"], null, loadEmails, v.fn, cap.fn, WAVE);
   assert(r.assignment?.userId === "a", "first free + under-cap candidate wins");
+  // #3495: like `selectAgent`, the wave carries the advisor id each email was read from.
+  {
+    const seen: (Record<string, string> | null)[] = [];
+    await selectReassignTarget(["a", "b"], null, loadEmails, async (emails: string[], ids?: ReadonlyMap<string, string>) => {
+      seen.push(ids ? Object.fromEntries(ids) : null);
+      return { free: new Set(emails), unverified: new Set<string>() };
+    }, capChecker().fn, WAVE);
+    assert(JSON.stringify(seen[0]) === JSON.stringify({ "a@x": "a", "b@x": "b" }), `the reassign wave is handed each email's advisor id (got ${JSON.stringify(seen[0])})`);
+  }
   assert(cap.calls().length === 1, "cap checked only until the first free+under-cap agent is found");
 
   // The out agent is excluded even when free + under-cap (next candidate wins).

@@ -23,7 +23,7 @@ export interface CoverageTargetDeps {
   /** Batched userId -> email resolver for a verify wave (skips emailless). */
   loadEmails(userIds: string[]): Promise<Map<string, string>>;
   /** LIVE verify-on-book free check over [startIso, endIso), not the cache. */
-  verifyFree(emails: string[], startIso: string, endIso: string): Promise<VerifyResult>;
+  verifyFree(emails: string[], startIso: string, endIso: string, ids?: ReadonlyMap<string, string>): Promise<VerifyResult>;
   /** One agent's working-hours schedule (timezone + rules), for the cap's local day. */
   agentWorkingHours(userId: string): Promise<{ timezone: string; rules: WorkingRule[] }>;
   /**
@@ -118,9 +118,9 @@ export async function selectCoverageReassignTarget(
     candidates,
     booking.assigned_user_id,
     (ids) => deps.loadEmails(ids),
-    (emails) => {
+    (emails, ids) => {
       const [fromIso, toIso] = bufferedWindow(eventType, startIso, endIso);
-      return deps.verifyFree(emails, fromIso, toIso);
+      return deps.verifyFree(emails, fromIso, toIso, ids);
     },
     isUnderCap,
     COVERAGE_VERIFY_WAVE_SIZE,

@@ -356,6 +356,38 @@ async function objectRuns() {
       eq(await alarmHit(), 2, "the next hit resumes the stored count");
       eq(alarmFake.calls.setAlarm, 1, "and sets the alarm again rather than believing the failed one stands");
       eq(unhandled.length, 0, "and no failed write or alarm is left as an unhandled rejection");
+      // #3529 review: a write failing while a request waits on the storage read must not
+      // leave that request counting from nothing. Whichever moment the failure lands,
+      // between the read answering and the request resuming, the count continues from the
+      // stored one.
+      for (let lag = 0; lag < 8; lag++) {
+        const raceFake = fakeStorage();
+        raceFake.stored.set("window", { windowStartMs: now, count: 40 });
+        let raceObj!: BurstLimiter;
+        let planted = false;
+        const forgetLater = (n: number) => {
+          if (n === 0) (raceObj as unknown as { forget(op: string, err: unknown): void }).forget("put", new Error("planted"));
+          else queueMicrotask(() => forgetLater(n - 1));
+        };
+        raceObj = new BurstLimiter({
+          storage: {
+            ...raceFake.storage,
+            get: async <T>(k: string) => {
+              const v = await raceFake.storage.get<T>(k);
+              // The failure lands `lag` microtasks after the FIRST read answers, once, as one
+              // failed write does; the read it causes answers cleanly.
+              if (!planted) {
+                planted = true;
+                forgetLater(lag);
+              }
+              return v;
+            },
+          },
+        });
+        const pendingHit = raceObj.fetch(new Request("https://burst-limiter.slate/count", { method: "POST", body: JSON.stringify({ hit: { windowMs: HOUR } }) }));
+        const count = ((await (await pendingHit).json()) as { count: number }).count;
+        eq(count, 41, `a failed write landing ${lag} steps into a waiting read still counts on from the stored 40`);
+      }
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }

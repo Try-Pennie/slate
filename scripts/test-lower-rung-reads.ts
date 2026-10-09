@@ -9,7 +9,8 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-lower-rung-reads.ts
 import { lowerRungReads } from "../src/lib/booking/orchestration.ts";
 import type { LadderInputs } from "../src/lib/availability/ladder-inputs.ts";
-import { eq, finish } from "./lib/harness.ts";
+import { DeadlineExceededError } from "../src/lib/fetch-within-deadline.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 const pools: Record<string, string[]> = { "500": ["a", "b"], "400": ["b", "c", "d"], "300": ["d", "e"], "200": ["c"] };
 const ladder = {
@@ -25,5 +26,24 @@ eq(got.complete, true, "and the read still covered every rung below");
 
 const none = await lowerRungReads(deps, ladder, ["500", "400", "300", "200"], 0, "500", "2026-10-12T22:40:00.000Z", false, true, []);
 eq(JSON.stringify(none.rungs.map((r) => r.read)), JSON.stringify([["b", "c", "d"], ["d", "e"], ["c"]]), "control: with nobody excluded every rung's read is handed whole");
+
+// #3529 review: a read that fails is best effort and the line hands out one rung at a time,
+// but a confirm out of its budget is not a failed read: it ends the confirm, so it is thrown,
+// never answered as nothing below.
+const deadlineDeps = {
+  roundRobinCandidates: async () => {
+    throw new DeadlineExceededError("supabase", 0, { label: "the booking confirm", totalMs: 12_000 });
+  },
+} as unknown as Parameters<typeof lowerRungReads>[0];
+let thrown: unknown = null;
+try {
+  await lowerRungReads(deadlineDeps, ladder, ["500", "400"], 0, "500", "2026-10-12T22:40:00.000Z", false, true, []);
+} catch (err) {
+  thrown = err;
+}
+assert(thrown instanceof DeadlineExceededError, `a confirm out of its budget is thrown, not read as nothing below (got ${String(thrown)})`);
+const failing = { roundRobinCandidates: async () => { throw new Error("read failed"); } } as unknown as Parameters<typeof lowerRungReads>[0];
+const fell = await lowerRungReads(failing, ladder, ["500", "400"], 0, "500", "2026-10-12T22:40:00.000Z", false, true, []);
+eq(JSON.stringify(fell), JSON.stringify({ rungs: [], complete: false }), "control: an ordinary failed read sends nothing below and says it did not cover them");
 
 finish();

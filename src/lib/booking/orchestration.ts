@@ -3283,6 +3283,8 @@ export async function lowerRungReads(
       if (read.length > 0) out.push({ rung: j, read });
     }
   } catch (err) {
+    // A confirm out of its budget is not a failed read: it ends the confirm.
+    if (findDeadlineExceeded(err)) throw err;
     log.warn("booking", { msg: "could not read the rungs below for the line; it hands out one rung at a time", bucket_code: requestedCode }, err);
     return { rungs: [], complete: false };
   }

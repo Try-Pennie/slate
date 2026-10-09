@@ -88,7 +88,9 @@ export class BurstLimiter {
     // exactly once. The write is not awaited: the platform holds this response until it is
     // durable (the output gate) and coalesces a burst's writes into one, so an eviction
     // resumes from the last count answered.
-    if (this.window === undefined) {
+    // A loop, not a single read: a write that fails while this request waits forgets the
+    // window again (`forget`), and counting on from nothing would overwrite the stored count.
+    while (this.window === undefined) {
       // A read that fails is forgotten, so the next request reads again rather than every
       // later one awaiting the same rejection until the instance is evicted.
       this.loading ??= this.state.storage.get<{ windowStartMs: number; count: number }>(STORAGE_KEY).then(
@@ -103,7 +105,7 @@ export class BurstLimiter {
       await this.loading;
     }
     const now = Date.now();
-    const step = applyCounterRequest(this.window ?? null, asked, now);
+    const step = applyCounterRequest(this.window, asked, now);
     this.window = step.next;
     this.state.storage.put(STORAGE_KEY, step.next).catch((err: unknown) => this.forget("put", err));
     // The alarm deletes an idle count. It is moved only when it would fire less than one
