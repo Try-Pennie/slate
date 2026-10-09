@@ -104,6 +104,24 @@ async function main() {
     assert(again.ok === true, "done: a repeated report is accepted and changes nothing");
   }
 
+  // --- #3529: a leader's lower rungs ride on its claim, and are handed out over the wire --
+  {
+    const { send } = host();
+    const lead = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    await send({ op: "ack", turn: lead.turn });
+    const w = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    const polled = send({ op: "poll", ticket: w.ticket });
+    await tick();
+    const claimed = await send({ op: "claimFirst", turn: lead.turn, candidates: ["p0"], rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["p1"] }], lowerComplete: true });
+    assert(claimed.ok === true, `wire: a claim carrying lower rungs is accepted (got ${JSON.stringify(claimed)})`);
+    const r = await polled;
+    assert(r.kind === "lead" && JSON.stringify(r.start) === JSON.stringify({ rung: 1, advisor: "p1", read: ["p1"], deepest: true }), `wire: the waiter is handed the lower rung's advisor, marked deepest (got ${JSON.stringify(r)})`);
+    for (const bad of [{ rung: -1, read: ["x"] }, { rung: 1, read: "x" }, { read: ["x"] }]) {
+      const refused = await send({ op: "claimFirst", turn: lead.turn, candidates: ["p0"], rung: 0, lower: [bad] });
+      assert(refused.ok !== true, `wire: a malformed lower rung is refused (sent ${JSON.stringify(bad)}, got ${JSON.stringify(refused)})`);
+    }
+  }
+
   // --- #3529: a verdict full only `unlessFreed` keeps that condition over the wire ----
   // Dropped in transit it would read as plainly full and refuse everybody waiting. Sent
   // by a lead that never read through the line, nothing vouches for it, so the line

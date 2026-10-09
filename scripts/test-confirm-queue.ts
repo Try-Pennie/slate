@@ -22,6 +22,7 @@ import {
 } from "../src/lib/booking/confirm-queue.ts";
 import { BOOKING_CONFIRM_BUDGET_MS, BOOKING_CONFIRM_WORST_CASE_MS } from "../src/lib/booking/confirm-budget.ts";
 import { createAsserter } from "./lib/booking-fakes.ts";
+import { eq } from "./lib/harness.ts";
 
 const { assert, finish } = createAsserter();
 
@@ -981,6 +982,94 @@ async function main() {
     first.done({ full: false });
   }
 
+  // --- #3529: a leader's read of the rungs BELOW it is handed out in the same release -----
+  // Load runs 37857243671 and 37863081340: a crowd whose ladder had 13 or 14 advisors free
+  // across three rungs booked them in waves, one rung at a time, each wave waiting about
+  // two seconds for a walker to claim the rung below and become the frontier, so the last
+  // booking landed near ten seconds and the crowd behind it ran out of time. The leader's
+  // one ladder read already holds every rung, so it hands the lower rungs' reads with its
+  // claim and the line releases the whole ladder at once, rung by rung in order.
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    for (let i = 0; i < 5; i++) void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a", "b"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["b", "c", "d"] }, { rung: 2, read: ["e"] }] });
+    await tick();
+    const kinds = seen.map((t) => (t.kind === "lead" ? (t.start ? `${t.start.rung}:${t.start.advisor}` : "reader") : t.kind));
+    eq(kinds.join(","), "0:b,1:c,1:d,2:e", "lower rungs: every unclaimed advisor of the ladder is handed out at once, top rung first, each once");
+    const last = seen[3] as Extract<QueueTurn<string>, { kind: "lead" }>;
+    eq(JSON.stringify(last.start?.read), JSON.stringify(["e"]), "lower rungs: a confirm handed a lower rung is handed that rung's own read");
+    // The one handed the ladder's last advisor holds the line: nobody is left to hand.
+    const behind: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => behind.push(t));
+    await tick();
+    eq(seen.length + behind.length, 4, "lower rungs: the confirm behind the last one handed waits, with nothing left to hand it");
+    for (const t of seen) leadOf(t).done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+  {
+    // #3529: when the leader's read covered every rung below (`lowerComplete`), the advisors
+    // on the DEEPEST rung that read found anyone on are marked `deepest`: below them the read
+    // found nobody, so booking one of them can settle the crowd without a walk of the empty
+    // rungs. Without that cover, nothing is marked.
+    for (const complete of [true, false]) {
+      const { timer } = manualTimer();
+      const q = makeConfirmQueue<string>({ timer });
+      const first = leadOf(await q.enter("slot"));
+      const seen: QueueTurn<string>[] = [];
+      for (let i = 0; i < 3; i++) void q.enter("slot").then((t) => seen.push(t));
+      await tick();
+      first.seat.claimFirst(["a", "b"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["c", "d"] }], ...(complete ? { lowerComplete: true as const } : {}) });
+      await tick();
+      const marks = seen.map((t) => (t.kind === "lead" && t.start ? `${t.start.rung}:${t.start.advisor}:${t.start.deepest === true}` : t.kind));
+      eq(marks.join(","), complete ? "0:b:false,1:c:true,1:d:true" : "0:b:false,1:c:false,1:d:false", `deepest (${complete ? "read covered the ladder" : "not covered"}): only a covered read marks its deepest rung`);
+      for (const t of seen) leadOf(t).done({ full: false }, "booked");
+      first.done({ full: false }, "booked");
+    }
+  }
+  {
+    // #3529: pools overlap, so a lower rung can list only advisors already on a rung above
+    // it (load model burst 3: rungs two and three held tier one's own people). Such a rung
+    // adds nobody, so the deepest rung is the deepest that brings someone new.
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    for (let i = 0; i < 2; i++) void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["c", "d"] }, { rung: 2, read: ["d", "c"] }, { rung: 3, read: ["c"] }], lowerComplete: true });
+    await tick();
+    const marks = seen.map((t) => (t.kind === "lead" && t.start ? `${t.start.rung}:${t.start.advisor}:${t.start.deepest === true}` : t.kind));
+    eq(marks.join(","), "1:c:true,1:d:true", "deepest overlap: a rung of advisors already above adds nobody, so tier one is the deepest");
+    for (const t of seen) leadOf(t).done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+  {
+    // An advisor found busy on a lower rung is never handed again, there or above.
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["c", "d"] }] });
+    await tick();
+    const handed = leadOf(seen[0]!);
+    eq(handed.start?.advisor, "c", "lower busy: c on the rung below is handed");
+    handed.seat.trying("c");
+    const next: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => next.push(t));
+    await tick();
+    handed.done({ full: false }, "advisor-busy");
+    await tick();
+    eq(next[0]?.kind === "lead" ? next[0].start?.advisor : "none", "d", "lower busy: the next confirm is handed d, never c again");
+    leadOf(next[0]!).done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+
   // --- a walker that parks waits for the claims in flight, answered when they book -----
   {
     const { timer } = manualTimer();
@@ -1156,6 +1245,30 @@ async function main() {
     await tick();
     assert(behind.length === 1 && behind[0]!.kind === "lead", `unless freed, unread: no read to vouch with, so one confirm reads (got ${JSON.stringify(behind.map((t) => t.kind))})`);
     leadOf(behind[0]!).done({ full: false });
+  }
+
+  // #3529: a HANDED confirm's full verdict is vouched for by the read it was handed from:
+  // its rungs above were read by the leader, so when nothing was freed since that leader
+  // first read, the crowd behind it is answered at once, with no walk of the ladder again.
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const leader = leadOf(await q.enter("slot"));
+    const released: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => released.push(t));
+    await tick();
+    leader.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["c"] }] });
+    await tick();
+    const handed = leadOf(released[0]!);
+    eq(handed.start?.advisor, "c", "handed vouched: c on the rung below is handed out");
+    const behind: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => behind.push(t));
+    await tick();
+    handed.seat.trying("c");
+    leader.done({ full: false }, "booked", "s");
+    handed.done({ full: true, refusal: "race", settled: "h", unlessFreed: true }, "booked");
+    await tick();
+    assert(behind.length === 1 && behind[0]!.kind === "refused", `handed vouched: nothing freed since the leader read, so the crowd is answered at once (got ${JSON.stringify(behind.map((t) => t.kind))})`);
   }
 
   // #3529: a host drops a parked confirm whose caller stopped polling by cancelling its

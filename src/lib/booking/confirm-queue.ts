@@ -148,6 +148,20 @@ export interface ClaimPlace {
    * advisor does not hold the line either.
    */
   below?: boolean;
+  /**
+   * #3529: the reads of the ladder's rungs BELOW `rung`, from the same ladder read, in
+   * ladder order. The line hands them out in the same release as this rung, rung by rung,
+   * so a crowd whose free advisors sit on several rungs starts all of them at once rather
+   * than one rung a walker at a time. Absent from an older client, and then only `rung` is
+   * handed out, as before.
+   */
+  lower?: readonly { rung: number; read: readonly string[] }[];
+  /**
+   * #3529: `lower` covers EVERY rung below `rung` that the read found anyone on: a rung
+   * missing from it was read and found empty. The advisors on the deepest rung listed are
+   * then handed out marked `deepest` (`StartFrom.deepest`).
+   */
+  lowerComplete?: true;
 }
 
 /** What `claimFirst` answers: `spent` when a walker met a rung every candidate of which is claimed. */
@@ -168,6 +182,11 @@ export interface StartFrom {
   rung: number;
   advisor: string;
   read: readonly string[];
+  /**
+   * #3529: the read this was handed from covered the whole ladder below and found nobody
+   * free below this rung, so for this confirm the rung stands for the ladder's last.
+   */
+  deepest?: true;
 }
 
 /**
@@ -181,7 +200,8 @@ export function readStartFrom(x: unknown): StartFrom | undefined {
   if (typeof rung !== "number" || !Number.isInteger(rung) || rung < 0) return undefined;
   if (typeof advisor !== "string" || advisor.length === 0) return undefined;
   if (!Array.isArray(read) || !read.every((id) => typeof id === "string") || !read.includes(advisor)) return undefined;
-  return { rung, advisor, read: read as string[] };
+  const deepest = (x as Record<string, unknown>).deepest === true;
+  return { rung, advisor, read: read as string[], ...(deepest ? { deepest: true as const } : {}) };
 }
 
 /**
@@ -424,6 +444,10 @@ interface Line<T> {
      * so this is what vouches for them (`spentAt` of a handed turn).
      */
     readAt: number;
+    /** #3529: the rungs below, as the same read found them (`ClaimPlace.lower`). */
+    lower: { rung: number; read: string[] }[];
+    /** #3529: `lower` covers every rung below that had anyone (`ClaimPlace.lowerComplete`). */
+    lowerComplete: boolean;
   } | null;
   /** Cheap reads in flight ahead of joining this line (`lookahead`). */
   looking: number;
@@ -531,19 +555,48 @@ export function makeConfirmQueue<T>(
     // #3489 step 3: an advisor may be free again, so a pending verdict no longer holds.
     // #3529: only an ending that may have left them free (see `Line.epoch`).
     if (outcome === "untried" || outcome === "unknown") line.epoch++;
-    if (outcome === "untried") return line.frontier !== null && line.frontier.read.includes(c.userId);
-    if (line.frontier) line.frontier.read = line.frontier.read.filter((id) => id !== c.userId);
+    const uid = c.userId;
+    const f = line.frontier;
+    if (outcome === "untried") return f !== null && (f.read.includes(uid) || f.lower.some((r) => r.read.includes(uid)));
+    if (f) {
+      f.read = f.read.filter((id) => id !== uid);
+      for (const r of f.lower) r.read = r.read.filter((id) => id !== uid);
+    }
     return false;
   };
 
-  // #3489: who on the frontier nobody in flight has claimed, while it is fresh.
-  const unclaimedOnFrontier = (line: Line<T>): string[] => {
+  // #3489: who on the frontier nobody in flight has claimed, while it is fresh, as what a
+  // released confirm is handed. #3529: across the frontier's rung and every rung below it
+  // that the same read found, in ladder order, each advisor once, at the highest rung it
+  // is on, so the ladder is handed out top rung first.
+  const unclaimedOnFrontier = (line: Line<T>): StartFrom[] => {
     const f = line.frontier;
     if (!f || now() - f.at > FRONTIER_FRESH_MS) return [];
-    const claimed = new Set<string>();
-    for (const c of line.claims.values()) if (c.userId !== null) claimed.add(c.userId);
-    return f.read.filter((id) => !claimed.has(id));
+    const taken = new Set<string>();
+    for (const c of line.claims.values()) if (c.userId !== null) taken.add(c.userId);
+    const out: StartFrom[] = [];
+    const rungs = [{ rung: f.rung, read: f.read }, ...f.lower];
+    // The deepest rung that brings an advisor no rung above it already lists: pools overlap,
+    // and a rung of people already above adds nobody, booked or not.
+    let deepest: number | null = null;
+    if (f.lowerComplete) {
+      const listed = new Set<string>();
+      for (const r of rungs) {
+        if (r.read.some((id) => !listed.has(id))) deepest = r.rung;
+        for (const id of r.read) listed.add(id);
+      }
+    }
+    for (const r of rungs) {
+      for (const id of r.read) {
+        if (taken.has(id)) continue;
+        taken.add(id);
+        out.push({ rung: r.rung, advisor: id, read: [...r.read], ...(r.rung === deepest ? { deepest: true as const } : {}) });
+      }
+    }
+    return out;
   };
+  // #3529: whether the frontier's deepest rung has one below it that no read covers.
+  const frontierBelow = (f: NonNullable<Line<T>["frontier"]>): boolean => (f.lower.length > 0 ? false : f.below);
   // #3489 step 3: a pending verdict holds everybody waiting only while nothing that could
   // free an advisor has happened since and a claim is still in flight to end it.
   const pendingHolds = (line: Line<T>): boolean =>
@@ -592,12 +645,12 @@ export function makeConfirmQueue<T>(
     if (free.length > 0) {
       const room = RELEASE_CAP - handedInFlight(line);
       const k = Math.min(free.length, line.waiting.length, Math.max(0, room));
-      const { rung, read, below } = line.frontier!;
+      const below = frontierBelow(line.frontier!);
       for (let i = 0; i < k; i++) {
         const w = line.waiting.shift()!;
         // #3489 step 3: with a rung below, the one handed the rung's last advisor does
         // not hold the line either; the confirms behind it walk on past the rung.
-        w.answer(leadTurn(key, line, { rung, advisor: free[i]!, read: [...read] }, i === free.length - 1 && !below));
+        w.answer(leadTurn(key, line, free[i]!, i === free.length - 1 && !below));
       }
       if (room <= 0) return;
       // Nobody holds the line and the rung is handed out: on a ladder with a rung
@@ -620,8 +673,9 @@ export function makeConfirmQueue<T>(
     // was handed first read, since that confirm's walk is what stands for the rungs above.
     let spentAt: number | null = start ? (line.frontier?.readAt ?? null) : null;
     // #3529: the line's epoch at this confirm's first read through it, which vouches for
-    // a full verdict that holds only `unlessFreed`.
-    let readAt: number | null = null;
+    // a full verdict that holds only `unlessFreed`. A confirm handed a rung inherits the
+    // epoch of the read it was handed from, since that read is what saw the rungs above.
+    let readAt: number | null = start ? (line.frontier?.readAt ?? null) : null;
     // #3325: a host that requires acknowledgement gives a new lead only the ack
     // window; `ack` and `renew` extend it by a full lease from then.
     let until = now() + (ackMs ?? leaseMs);
@@ -709,7 +763,18 @@ export function makeConfirmQueue<T>(
           const pool = unclaimed.length > 0 ? unclaimed : [...candidates];
           // #3489: a caller that names its rung makes its read the line's frontier, so
           // handing the line on releases one waiter per advisor it left unclaimed.
-          if (place && live()) line.frontier = { rung: place.rung, read: [...candidates], at: now(), below: place.below === true, readAt: readAt ?? line.epoch };
+          if (place && live()) {
+            line.frontier = {
+              rung: place.rung,
+              read: [...candidates],
+              at: now(),
+              below: place.below === true,
+              readAt: readAt ?? line.epoch,
+              // #3529: only rungs below this one, in order, so the ladder is handed top first.
+              lower: (place.lower ?? []).filter((r) => r.rung > place.rung).map((r) => ({ rung: r.rung, read: [...r.read] })),
+              lowerComplete: place.lowerComplete === true,
+            };
+          }
           // A walker on a rung's LAST unclaimed advisor hands on too when there is a rung
           // below, so the confirms behind it walk down at once rather than wait out its
           // whole confirm (step 3).
@@ -863,8 +928,8 @@ export function makeConfirmQueue<T>(
       // #3489: an advisor the frontier still has unclaimed is handed to it too.
       const free = handedInFlight(existing) < RELEASE_CAP ? unclaimedOnFrontier(existing) : [];
       const f = existing.frontier;
-      const start = free.length > 0 && f ? { rung: f.rung, advisor: free[0]!, read: [...f.read] } : undefined;
-      return { kind: "lead", turn: leadTurn(key, existing, start, start === undefined || (free.length === 1 && !(f?.below ?? false))) };
+      const start = free.length > 0 && f ? free[0] : undefined;
+      return { kind: "lead", turn: leadTurn(key, existing, start, start === undefined || (free.length === 1 && !(f ? frontierBelow(f) : false))) };
     }
     return waitIn(key, existing, ownWaitMs);
   };

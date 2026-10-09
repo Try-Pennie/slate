@@ -120,6 +120,22 @@ const leadFields = (t: QueueTurn<unknown>) =>
   t.kind !== "lead" ? {} : { ...(t.start ? { start: t.start } : {}), ...(t.spent ? { spent: true } : {}) };
 const isStringList = (x: unknown): x is string[] => Array.isArray(x) && x.length <= 500 && x.every(isString);
 
+/**
+ * #3529: a claim's lower rungs as they arrive over the wire: absent is none, anything that
+ * is not at most twenty `{ rung, read }` pairs of a whole rung and an id list is refused.
+ */
+function readLowerRungs(x: unknown): { rung: number; read: string[] }[] | null | "bad" {
+  if (x === undefined) return null;
+  if (!Array.isArray(x) || x.length > 20) return "bad";
+  const out: { rung: number; read: string[] }[] = [];
+  for (const r of x) {
+    const { rung, read } = (r ?? {}) as { rung?: unknown; read?: unknown };
+    if (typeof rung !== "number" || !Number.isInteger(rung) || rung < 0 || !isStringList(read)) return "bad";
+    out.push({ rung, read });
+  }
+  return out;
+}
+
 /** A leader's verdict as it arrives over the wire, or null when it is not one. */
 function readVerdict(x: unknown): LeaderVerdict<unknown> | null {
   if (!x || typeof x !== "object") return null;
@@ -337,10 +353,19 @@ export function makeConfirmLineHost(deps: {
         if (!isString(m.turn) || !isStringList(m.candidates)) return bad("claimFirst needs turn and candidates");
         // #3489: an optional rung, absent from an older client.
         if (m.rung !== undefined && !(typeof m.rung === "number" && Number.isInteger(m.rung) && m.rung >= 0)) return bad("claimFirst rung must be a whole number");
+        // #3529: and optional lower rungs, each a whole rung and a list of ids, bounded.
+        const lower = readLowerRungs(m.lower);
+        if (lower === "bad") return bad("claimFirst lower must be at most 20 rungs, each a whole rung and a list of ids");
         const turn = leader(m);
         // #3489 step 3: and an optional `canWalk` and `below`, which only `true` turns on.
         const place = typeof m.rung === "number"
-          ? { rung: m.rung, ...(m.canWalk === true ? { canWalk: true } : {}), ...(m.below === true ? { below: true } : {}) }
+          ? {
+              rung: m.rung,
+              ...(m.canWalk === true ? { canWalk: true } : {}),
+              ...(m.below === true ? { below: true } : {}),
+              ...(lower ? { lower } : {}),
+              ...(lower && m.lowerComplete === true ? { lowerComplete: true as const } : {}),
+            }
           : undefined;
         return turn ? json({ ok: true, ...turn.seat.claimFirst(m.candidates, place) }) : gone();
       }

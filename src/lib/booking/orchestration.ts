@@ -2977,6 +2977,12 @@ interface TierAssignResult {
    */
   alsoAsked?: string[];
   /**
+   * #3529: the ladder read this booking decided from covered every rung below this one
+   * and found nobody free on any of them, so for its full verdict this rung stands for
+   * the ladder's last: its own walk's lower read, or the `deepest` mark it was handed.
+   */
+  deepest?: boolean;
+  /**
    * #3489: the ladder read the walk judged its rungs from, so the booking takes the
    * advisor's row and the routing trace's pool from it rather than reading them again.
    */
@@ -3127,7 +3133,19 @@ async function assignAgentWithTierFallback(
           );
           return {
             hit: true,
-            value: { bucket: resolved.bucket, eventType: resolved.eventType, startIso, endIso, userId, email, candidates, read, handed: true, rungStartedAtMs },
+            value: {
+              bucket: resolved.bucket,
+              eventType: resolved.eventType,
+              startIso,
+              endIso,
+              userId,
+              email,
+              candidates,
+              read,
+              handed: true,
+              rungStartedAtMs,
+              ...(handed.deepest ? { deepest: true } : {}),
+            },
           };
         } catch (err) {
           if (!(err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError)) {
@@ -3140,8 +3158,21 @@ async function assignAgentWithTierFallback(
         }
       }
       try {
+        // #3529: the rungs below, read from the same ladder read, so the line can hand the
+        // whole ladder out at once rather than a rung a walker at a time.
+        const lowerRead = seat && canWalk && ladder ? await lowerRungReads(deps, ladder, ladderCodes, i, requested.bucket.code, startInstantIso, preview, allowTestBuckets, resume?.taken ?? []) : null;
+        const lower = lowerRead?.rungs ?? [];
         const { userId, email, candidates, read } = await assignAgent(
-          deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat, undefined, exclude, { place: { rung: i, canWalk, below: i < ladderLength - 1 }, ...inputs },
+          deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat, undefined, exclude, {
+            place: {
+              rung: i,
+              canWalk,
+              below: i < ladderLength - 1,
+              ...(lower.length > 0 ? { lower } : {}),
+              ...(lowerRead?.complete ? { lowerComplete: true as const } : {}),
+            },
+            ...inputs,
+          },
         );
         return {
           hit: true,
@@ -3156,6 +3187,8 @@ async function assignAgentWithTierFallback(
             read,
             rungStartedAtMs,
             ...(handedRefused ? { alsoAsked: [handedRefused] } : {}),
+            // #3529: below this rung its own complete read found nobody.
+            ...(lowerRead?.complete && lower.length === 0 ? { deepest: true } : {}),
           },
         };
       } catch (err) {
@@ -3198,6 +3231,51 @@ async function assignAgentWithTierFallback(
   const refusal = traced(lastErr ?? new SlotUnavailableError(), trace(ladderStage(rungs)));
   if (spentByClaims || unreadAbove) throw new LadderSpentByClaimsError(refusal);
   throw refusal;
+}
+
+/**
+ * #3529: the candidate reads of every rung below `from`, judged by the same rules a walk
+ * judges each rung by (its bucket, the test bucket rule, the Low exclusion of a top tier
+ * lead's cascade) from the ladder read the walk already holds, so it costs no request.
+ * Handed to the line with the claim on `from`, which then releases the whole ladder at
+ * once, top rung first (`ClaimPlace.lower`). Best effort: a read that fails sends none,
+ * and the line hands out one rung at a time as before.
+ */
+async function lowerRungReads(
+  deps: BookingDeps,
+  ladder: LadderInputs,
+  codes: readonly string[],
+  from: number,
+  requestedCode: string,
+  startInstantIso: string,
+  preview: boolean,
+  allowTestBuckets: boolean,
+  taken: readonly string[],
+): Promise<{ rungs: { rung: number; read: string[] }[]; complete: boolean }> {
+  const out: { rung: number; read: string[] }[] = [];
+  try {
+    for (let j = from + 1; j < codes.length; j++) {
+      const resolved = ladder.bucket(codes[j]!);
+      if (!resolved || (resolved.bucket.is_test && !allowTestBuckets)) continue;
+      const { startIso } = bookingWindow(startInstantIso, resolved.eventType.duration_min);
+      const { candidates } = await deps.roundRobinCandidates(
+        resolved.bucket,
+        resolved.eventType,
+        Date.parse(startIso),
+        preview,
+        undefined,
+        rungExcludesLow(requestedCode, codes[j]!),
+        { inputs: ladder },
+      );
+      const read = candidates.filter((id) => !taken.includes(id));
+      if (read.length > 0) out.push({ rung: j, read });
+    }
+  } catch (err) {
+    log.warn("booking", { msg: "could not read the rungs below for the line; it hands out one rung at a time", bucket_code: requestedCode }, err);
+    return { rungs: [], complete: false };
+  }
+  // Every rung below was judged, so a rung missing from `rungs` was read and found empty.
+  return { rungs: out, complete: true };
 }
 
 /**
@@ -5595,24 +5673,23 @@ async function createHeld(
   // write through cache, so it drops that rung for the price of one candidate read.
   // A named link has no ladder: its one advisor is its last rung.
   const { candidates } = tier;
-  const lastRung = tier.rungsDropped >= ladderRungs - 1;
+  // #3529: or the deepest rung the read it decided from found anyone on.
+  const lastRung = tier.rungsDropped >= ladderRungs - 1 || tier.deepest === true;
   const at = candidates.indexOf(result.booking.assigned_user_id ?? chosen.userId);
   //
   // #3529: and never outright when an advisor it skipped for a claim may have been freed
-  // since (`claimsMayFree`). When it skipped them only through its own reads of the line
-  // (a rung passed for claims, or claimed advisors left out of the rung it booked), the
-  // line can tell, by whether any claim has ended unbooked since this confirm first read
-  // (`unlessFreed`): in a crowd that is the usual case, and everybody waiting is answered
-  // at once. A rung it never read (handed, or skipped unread) nothing can vouch for.
+  // since (`claimsMayFree`). The line can tell, by whether any claim has ended unbooked
+  // since the read this confirm decided from (`unlessFreed`): its own first read, or for a
+  // confirm handed a rung, the read it was handed from, which is what saw the rungs above.
+  // In a crowd that is the usual case, and everybody waiting is answered at once; the
+  // line voids the verdict when it has no read to vouch with.
   const lastAdvisor = lastRung && at >= 0 && at === candidates.length - 1;
   const settled = { idempotencyKey, result };
   const verdict: LeaderVerdict<ConfirmTaker> = !lastAdvisor
     ? { full: false, booked: settled }
     : !claimsMayFree(tier)
       ? { full: true, refusal: "race", settled }
-      : tier.handed !== true && tier.unreadAbove !== true
-        ? { full: true, refusal: "race", settled, unlessFreed: true }
-        : { full: false, booked: settled };
+      : { full: true, refusal: "race", settled, unlessFreed: true };
   return { result, verdict };
 }
 

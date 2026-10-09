@@ -99,6 +99,17 @@ object leaves each field out, and the line keeps its rules from before):
   met the first spent rung) leads again at once marked `spent`: its own walk proves the
   ladder spent, so it refuses with what it found rather than the next confirm walking
   the whole ladder again. A booking reads who is seated only when it saw a crowd.
+- **The whole ladder handed out at once (#3529).** A walker's claim carries the reads of
+  every rung below it from the same ladder read (`ClaimPlace.lower`, judged in memory, no
+  request), and the line releases them in the same pass as its own rung, top rung first,
+  each advisor once at the highest rung it is on. Load runs 37857243671 and 37863081340
+  booked a crowd with 13 or 14 free across three rungs in waves, a rung at a time, each
+  wave waiting about two seconds for a walker to claim the rung below; the last booking
+  landed near ten seconds and the rest timed out. When the read covered every rung below
+  (`lowerComplete`), the advisors on the deepest rung that brings somebody new are handed
+  out marked `deepest`, and that rung then stands for the ladder's last in their full
+  verdict, so the crowd is answered without a walk of the empty rungs. A handed confirm
+  inherits the epoch of the read it was handed from, which vouches for its `unlessFreed`.
 - **A full verdict that a freed claim voids (#3529).** A booking on the ladder's last
   advisor does not prove the slot full when the walk skipped an advisor only for a
   claim, since that claim may have ended without a booking and freed them. Before #3529

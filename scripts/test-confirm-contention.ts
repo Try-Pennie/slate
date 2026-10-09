@@ -205,6 +205,13 @@ async function burst(opts: {
   arriveAtMs?: number[];
   /** #3529: advisors Google reports busy at the time, though nothing in Slate holds it. */
   busyAtGoogle?: string[];
+  /**
+   * #3529: WAITING, not capacity, on a confirm's own reads before its line work (the
+   * person read, the replay and in flight lookups), as a crowd met them in the load runs
+   * (400 to 550ms a call). What a walker's way to the next rung costs, without slowing
+   * every other call on the shared capacity.
+   */
+  slowReadsMs?: number;
   /** The FIRST calendar write for this advisor's email fails at once, an outage
    *  that ends that confirm and frees the advisor it claimed. */
   failFirstEventFor?: string;
@@ -403,6 +410,7 @@ async function burst(opts: {
       // The database's own per column fetch: equality on each signal, the grading
       // left to `findPersonMatch`, exactly as the real read does.
       findActiveBookingsForPerson: async (identity) => {
+        if (opts.slowReadsMs) await clock.sleep(opts.slowReadsMs);
         personReads++;
         if (opts.failFirstPersonRead && personReads === 1) throw new Error("bookings read failed");
         return [...bySlot.values()].filter(
@@ -1610,12 +1618,14 @@ async function main() {
       `production crowd, pool of 2: two booked, the rest told SLOT_TAKEN (got ${JSON.stringify(tally)})`,
     );
     assert(bySlot.size === 2, "production crowd, pool of 2: one booking per advisor, never a double");
-    // The second booking was made from a pool thinned of the first one's claim,
-    // so it cannot call the slot full (the first might have failed). Exactly one
-    // confirm then leads and reads for itself, finds nobody left without asking
-    // Google, and its own verdict answers the other 97 without a read.
+    // The second booking was made from a pool thinned of the first one's claim. Before
+    // #3529 it could not call the slot full (the first might have failed), so one confirm
+    // led and read for itself to find nobody left. Now its verdict is full `unlessFreed`:
+    // the line knows no claim ended unbooked since the read it decided from, so the other
+    // 98 are answered from it and none reads. (When a claim does end unbooked, one confirm
+    // reads again: test-confirm-queue.ts, "unless freed control".)
     const readers = runs.filter((r) => r.outcome !== "created" && r.calls.some((c) => !LOOKAHEAD_READS.has(c.name)));
-    assert(readers.length === 1, `production crowd, pool of 2: one refused confirm leads and reads, the rest only look ahead (got ${readers.length})`);
+    assert(readers.length === 0, `production crowd, pool of 2: the refused confirms only look ahead, none reads (got ${readers.length})`);
     assert(quiet(runs.filter((r) => r.outcome !== "created" && !readers.includes(r))), "production crowd, pool of 2: the rest stay inside the lookahead bound");
     assert(
       readers.every((r) => r.calls.every((c) => c.name !== "verifyFree" && c.name !== "createEvent")),
@@ -2261,6 +2271,29 @@ async function main() {
       `past claims: confirm 2 books the freed advisor a, never told the time is taken (got ${runs[2].outcome}, ${runs[2].result?.booking.assigned_user_id}, ${JSON.stringify(tally)})`,
     );
     assert(bySlot.has(`a|${input.startIso}`) && bySlot.has(`c|${input.startIso}`), `past claims: both advisors hold the time (got ${[...bySlot.keys()].join(",")})`);
+  }
+
+  // #3529: a crowd whose free advisors sit on all three rungs is handed the WHOLE ladder
+  // at once (`ClaimPlace.lower`). Load runs 37857243671 and 37863081340 booked such a crowd
+  // in waves, a rung at a time, each wave waiting about two seconds for a walker to claim
+  // the rung below. This simulator's walkers do not pay that wait, so the timing is the
+  // load model's and the real run's to show; what this pins is that handing the lower rungs
+  // out books every free advisor on every rung, each exactly once, and refuses the rest.
+  {
+    const { runs, tally, bySlot } = await burst({
+      inputs: Array.from({ length: 8 }, (_, i) => onLadder(300 + i)),
+      pool: ["a"],
+      poolByCode: { "411": ["a"], "311": ["c", "d"], "211": ["e", "b"] },
+      queue: "real",
+      viaApi: false,
+      ladderRead: true,
+      slowReadsMs: 500,
+      slowGoogleMs: 1_000,
+      slowEventMs: 2_000,
+    });
+    const booked = runs.filter((r) => r.outcome === "created").map((r) => r.result?.booking.assigned_user_id).sort();
+    assert(JSON.stringify(booked) === JSON.stringify(["a", "b", "c", "d", "e"]) && bySlot.size === 5, `whole ladder: every free advisor on every rung is booked, each once (got ${JSON.stringify(tally)}, ${JSON.stringify(booked)})`);
+    assert(tally.SLOT_TAKEN === 3, `whole ladder: the other three are told the time is taken (got ${JSON.stringify(tally)})`);
   }
 
   // #3529 control (L159): the same crowd where every claim walked past BOOKS. Then the

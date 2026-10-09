@@ -240,7 +240,16 @@ export function makeSharedConfirmLine<T>(deps: {
           if (detached) return local;
           // #3489 step 3: `canWalk` is optional on the wire, and an older object ignores it
           // and never answers `spent`, which is the behaviour before it.
-          const where = place ? { rung: place.rung, ...(place.canWalk ? { canWalk: true } : {}), ...(place.below ? { below: true } : {}) } : {};
+          // #3529: and its lower rungs, which an older object ignores.
+          const where = place
+            ? {
+                rung: place.rung,
+                ...(place.canWalk ? { canWalk: true } : {}),
+                ...(place.below ? { below: true } : {}),
+                ...(place.lower ? { lower: place.lower.map((r) => ({ rung: r.rung, read: [...r.read] })) } : {}),
+                ...(place.lowerComplete ? { lowerComplete: true } : {}),
+              }
+            : {};
           const a = await timed({ op: "claimFirst", candidates: [...candidates], ...where });
           if (!a || !Array.isArray(a.pool) || typeof a.unclaimed !== "number") return local;
           return {
