@@ -265,7 +265,8 @@ async function drive(s: Scenario): Promise<Run> {
 {
   // The load run's arm job deploys the same list; a hand kept copy is checked against it.
   const workflow = readFileSync(join(ROOT, ".github/workflows/loadtest.yml"), "utf8");
-  const listed = workflow.match(/for config in ([^;]+); do\s+npx wrangler deploy -c "\$config" --env loadtest/)?.[1]?.trim().split(/\s+/) ?? null;
+  // #3567: through the Cloudflare API retry wrapper, which the loop's deploy now runs under.
+  const listed = workflow.match(/for config in ([^;]+); do\s+bash scripts\/loadtest\/retry-cloudflare-api\.sh npx wrangler deploy -c "\$config" --env loadtest/)?.[1]?.trim().split(/\s+/) ?? null;
   eq(JSON.stringify(listed), JSON.stringify([...OBJECT_WORKER_CONFIGS]), "the load run's arm job deploys exactly OBJECT_WORKER_CONFIGS, in order");
 }
 for (const failing of [...OBJECT_WORKER_CONFIGS, "throw"] as const) {
