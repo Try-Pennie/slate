@@ -260,8 +260,10 @@ way: load run 37841835577's tier drop burst landed in a 77 second gap, the two c
 its ladder formed two lines and raced each other, and three of twelve timed out. Now a
 server whose directory answer is not fresh reads the grouping itself at once
 (`readOwn`, the coalesced `warmPoolKeys` it already ran after the response), inside the
-confirm's own wait, said as `read` and keyed by ladder. The same reads, earlier, under a
-local read's own minute, so no staleness is extended.
+confirm's own wait, and keys by ladder; its `line_group_source` says `local`, as for any
+grouping the server read itself. The same reads, earlier, under a local read's own minute,
+so no staleness is extended. It starts only once the directory has answered, so a slow
+directory can still leave it too late (#3558).
 
 Every confirm's `confirm answered` line carries `line_group_source`, its own wait for
 the fetch (counted from its line key, so a fetch that answered during the ceilings reads
