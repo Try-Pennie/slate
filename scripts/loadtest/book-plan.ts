@@ -198,9 +198,13 @@ export const DROP_CAPACITY_HEADROOM = 2;
  * How many of a drop ladder's offered times the burst setup measures for capacity,
  * furthest first. Each measurement is the booker's own candidate read on every rung of
  * the ladder, against the branch database rather than the deployment, so it spends no
- * availability read; it is bounded so a roster where nothing fits refuses in under a
- * minute. #3529: 24 reached only tomorrow's last hours, so a run launched late in the
- * afternoon found no slot with room (run 37838336896); it reaches two working days back.
+ * availability read. Slots are measured one at a time, so when nothing fits the search
+ * costs about this many times the ladders asked times a ladder's rung reads; that worst
+ * case has not been timed (run 37871606406's whole pick, which fit early, took 12s). The
+ * setup job's ten minute limit bounds it, and a slow pick only lengthens the run, since
+ * the bursts' moments are set after it. #3529: 24 reached only tomorrow's last hours, so
+ * a run launched late in the afternoon found no slot with room (run 37838336896); it
+ * reaches two working days back.
  */
 export const DROP_SLOTS_TO_MEASURE = 144;
 
