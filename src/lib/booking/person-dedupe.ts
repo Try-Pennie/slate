@@ -37,9 +37,19 @@ export interface PersonIdentity {
  * identity alone. `bookings` has no flag of its own; the world is the bucket's
  * `is_test`, joined at the read.
  */
-export interface PersonWorld {
+/** A world named outright: the test world or the real one. */
+export interface NamedWorld {
   isTest: boolean;
 }
+
+export type PersonWorld =
+  | NamedWorld
+  /**
+   * #3489: the world of the bucket with this code, which the read finds itself, so a
+   * caller that has not read the bucket yet can send the person read beside the
+   * bucket read rather than after it. A code no bucket has is refused by the read.
+   */
+  | { bucketCode: string };
 
 export type MatchStrength = "strong" | "medium" | "weak";
 

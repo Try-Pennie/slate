@@ -104,6 +104,23 @@ async function main() {
     assert(again.ok === true, "done: a repeated report is accepted and changes nothing");
   }
 
+  // --- #3529: a verdict full only `unlessFreed` keeps that condition over the wire ----
+  // Dropped in transit it would read as plainly full and refuse everybody waiting. Sent
+  // by a lead that never read through the line, nothing vouches for it, so the line
+  // must hand the next waiter a turn to read for itself instead.
+  {
+    const { send } = host();
+    const lead = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    await send({ op: "ack", turn: lead.turn });
+    const w = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    const polled = send({ op: "poll", ticket: w.ticket });
+    await tick();
+    await send({ op: "done", turn: lead.turn, verdict: { full: true, refusal: "race", settled: null, unlessFreed: true }, outcome: "booked" });
+    const r = await polled;
+    assert(r.kind === "lead", `wire: an unless freed verdict nothing vouches for refuses nobody (got ${JSON.stringify(r)})`);
+    await send({ op: "done", turn: r.turn, verdict: { full: false } });
+  }
+
   // --- a poll with nothing to report comes back after one poll length -----------
   {
     const { send, advance } = host();
@@ -303,6 +320,160 @@ async function main() {
     calls.length = 0;
     const old = JSON.parse(await h.handle({ v: v + 1, op: "enter", attempt: "F", line: "600", waitMs: 0, trace: "t-3", stage: "wait" })) as Record<string, unknown>;
     assert(old.kind === "gone" && calls.length === 1 && calls[0]?.op === "enter", "trace: a call on another protocol version is still reported, so a load run can see it was refused");
+  }
+
+  // --- #3489: a claim that names its rung releases a waiter with what it was handed ---
+  //
+  // The object hosts the same line (`makeConfirmQueue`), so the release itself is the
+  // queue suite's to prove; this proves the wire: the rung reaches the line, the lead
+  // answer carries the start, `trying` and a claim's outcome reach the line, and an
+  // older client's messages (no rung, no outcome) keep today's line exactly (L255).
+  {
+    const { send } = host();
+    const lead = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    await send({ op: "ack", turn: lead.turn });
+    const w = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    const polled = send({ op: "poll", ticket: w.ticket });
+    await tick();
+    const claimed = await send({ op: "claimFirst", turn: lead.turn, candidates: ["p0", "p1"], rung: 2 });
+    assert(claimed.ok === true && JSON.stringify(claimed.pool) === JSON.stringify(["p0", "p1"]), `wire: a claim with a rung is answered as before (got ${JSON.stringify(claimed)})`);
+    const released = await polled;
+    assert(released.kind === "lead", `wire: the waiter is released (got ${JSON.stringify(released)})`);
+    assert(
+      JSON.stringify(released.start) === JSON.stringify({ rung: 2, advisor: "p1", read: ["p0", "p1"] }),
+      `wire: the lead answer carries what the line handed it (got ${JSON.stringify(released.start)})`,
+    );
+    await send({ op: "ack", turn: released.turn });
+    const tried = await send({ op: "trying", turn: released.turn, userId: "p1" });
+    assert(tried.ok === true, "wire: trying is accepted");
+    const next = await send({ op: "enter", attempt: "C", line: "100", waitMs: 10_000 });
+    const nextPolled = send({ op: "poll", ticket: next.ticket });
+    await tick();
+    // It tried p1 and Google found it busy: the next waiter is handed nothing.
+    await send({ op: "done", turn: released.turn, verdict: { full: false }, outcome: "advisor-busy" });
+    const n = await nextPolled;
+    assert(n.kind === "lead" && n.start === undefined, `wire: an outcome reaches the line; a busy advisor is not handed on (got ${JSON.stringify(n)})`);
+    for (const t of [lead.turn, n.turn]) await send({ op: "done", turn: t, verdict: { full: false }, outcome: "booked" });
+  }
+  {
+    const { send } = host();
+    const lead = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    await send({ op: "ack", turn: lead.turn });
+    const w = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    const polled = send({ op: "poll", ticket: w.ticket });
+    await tick();
+    await send({ op: "claimFirst", turn: lead.turn, candidates: ["p0", "p1"] });
+    const r = await polled;
+    assert(r.kind === "lead" && r.start === undefined, `wire: an older client's claim (no rung) hands the line on with nothing handed (got ${JSON.stringify(r)})`);
+    const odd = await send({ op: "done", turn: r.turn, verdict: { full: false }, outcome: "something-new" });
+    assert(odd.ok === true, "wire: an outcome this side does not know is accepted, as unknown");
+    await send({ op: "done", turn: lead.turn, verdict: { full: false } });
+    const bad = await send({ op: "claimFirst", turn: "nobody", candidates: ["p0"], rung: 1.5 });
+    assert(bad.kind === "bad", `wire: a rung that is not a whole number is refused by name (got ${JSON.stringify(bad)})`);
+  }
+
+  // --- #3489 step 3: walking past a rung others hold, parking, and the settlement ----
+  //
+  // The rules are the queue suite's; this proves the wire carries each of them: `canWalk`
+  // and `below` reach the line, its `spent` and `waiting` reach the client, a park takes
+  // ONE place however often it is retried, and the settlement a booking reads as it ends
+  // reaches every confirm the held verdict answers, the parked one included.
+  {
+    const { send } = host();
+    const a = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    await send({ op: "ack", turn: a.turn });
+    const b = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    const bTurn = send({ op: "poll", ticket: b.ticket });
+    await tick();
+    // The top rung's only advisor, with a rung below: the line hands on at once.
+    const aClaim = await send({ op: "claimFirst", turn: a.turn, candidates: ["p0"], rung: 0, canWalk: true, below: true });
+    assert(
+      aClaim.ok === true && JSON.stringify(aClaim.pool) === JSON.stringify(["p0"]) && aClaim.waiting === 1,
+      `step 3 wire: a walker's claim is answered with how many waited (got ${JSON.stringify(aClaim)})`,
+    );
+    const bLead = await bTurn;
+    assert(bLead.kind === "lead", `step 3 wire: claiming a rung's last advisor with a rung below hands the line on (got ${JSON.stringify(bLead)})`);
+    await send({ op: "ack", turn: bLead.turn });
+    const bClaim = await send({ op: "claimFirst", turn: bLead.turn, candidates: ["p0"], rung: 0, canWalk: true, below: true });
+    assert(
+      bClaim.ok === true && bClaim.spent === true && JSON.stringify(bClaim.pool) === JSON.stringify([]),
+      `step 3 wire: a rung every candidate of which is claimed is answered spent (got ${JSON.stringify(bClaim)})`,
+    );
+    const c = await send({ op: "enter", attempt: "C", line: "100", waitMs: 10_000 });
+    const cTurn = send({ op: "poll", ticket: c.ticket });
+    await tick();
+    const parked = await send({ op: "park", turn: bLead.turn, attempt: "B-park", waitMs: 10_000 });
+    assert(parked.kind === "wait" && typeof parked.ticket === "string", `step 3 wire: a park is answered with a ticket (got ${JSON.stringify(parked)})`);
+    const again = await send({ op: "park", turn: bLead.turn, attempt: "B-park", waitMs: 10_000 });
+    assert(JSON.stringify(again) === JSON.stringify(parked), `step 3 wire: a retried park gets the same ticket, never a second place (got ${JSON.stringify(again)})`);
+    const bParked = send({ op: "poll", ticket: parked.ticket });
+    await tick();
+    const settlement = { booked: { idempotencyKey: "k-a", result: { booking: { id: "b-a" } } }, seated: [{ id: "b-a", assigned_user_id: "p0" }] };
+    await send({ op: "done", turn: a.turn, verdict: { full: false }, outcome: "booked", settlement });
+    for (const [who, answer] of [["the parked confirm", await bParked], ["the confirm waiting behind it", await cTurn]] as const) {
+      assert(
+        answer.kind === "refused" && answer.refusal === "race" && JSON.stringify(answer.settled) === JSON.stringify(settlement),
+        `step 3 wire: the held verdict answers ${who} with the booking's own settlement (got ${JSON.stringify(answer)})`,
+      );
+    }
+  }
+  {
+    // A booking that ends with NO settlement (null on the wire, as a failed read sends)
+    // never answers the held verdict from nothing: one confirm is let read instead.
+    const { send } = host();
+    const a = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    await send({ op: "ack", turn: a.turn });
+    const b = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    const bTurn = send({ op: "poll", ticket: b.ticket });
+    await tick();
+    await send({ op: "claimFirst", turn: a.turn, candidates: ["p0"], rung: 0, canWalk: true, below: true });
+    const bLead = await bTurn;
+    await send({ op: "ack", turn: bLead.turn });
+    await send({ op: "claimFirst", turn: bLead.turn, candidates: ["p0"], rung: 0, canWalk: true, below: true });
+    const parked = await send({ op: "park", turn: bLead.turn, attempt: "B-park", waitMs: 10_000 });
+    const bParked = send({ op: "poll", ticket: parked.ticket });
+    await tick();
+    await send({ op: "done", turn: a.turn, verdict: { full: false }, outcome: "booked", settlement: null });
+    const answer = await bParked;
+    assert(answer.kind === "lead", `step 3 wire: with no settlement the parked confirm is let read for itself (got ${JSON.stringify(answer)})`);
+    await send({ op: "done", turn: answer.turn, verdict: { full: false } });
+    // An older client: no `canWalk`, so a rung others hold is shared as it always was,
+    // never answered spent, and no count of the waiting is sent.
+    const d = await send({ op: "enter", attempt: "D", line: "200", waitMs: 10_000 });
+    await send({ op: "ack", turn: d.turn });
+    const e = await send({ op: "enter", attempt: "E", line: "200", waitMs: 10_000 });
+    const eTurn = send({ op: "poll", ticket: e.ticket });
+    await tick();
+    await send({ op: "claimFirst", turn: d.turn, candidates: ["p0", "p1"], rung: 0 });
+    const eLead = await eTurn;
+    await send({ op: "ack", turn: eLead.turn });
+    const older = await send({ op: "claimFirst", turn: eLead.turn, candidates: ["p0"] });
+    assert(
+      older.ok === true && older.spent === undefined && older.waiting === undefined && JSON.stringify(older.pool) === JSON.stringify(["p0"]),
+      `step 3 wire: an older client's claim on a rung others hold is shared, never spent (got ${JSON.stringify(older)})`,
+    );
+    for (const t of [d.turn, eLead.turn]) await send({ op: "done", turn: t, verdict: { full: false } });
+    // A walker that parks once every claim it walked past has booked leads again at once,
+    // and the lead answer says its walk stands (`spent`), so it reports the ladder full.
+    const f = await send({ op: "enter", attempt: "F", line: "300", waitMs: 10_000 });
+    await send({ op: "ack", turn: f.turn });
+    const g = await send({ op: "enter", attempt: "G", line: "300", waitMs: 10_000 });
+    const gTurn = send({ op: "poll", ticket: g.ticket });
+    await tick();
+    await send({ op: "claimFirst", turn: f.turn, candidates: ["p0"], rung: 0, canWalk: true, below: true });
+    const gLead = await gTurn;
+    await send({ op: "ack", turn: gLead.turn });
+    await send({ op: "claimFirst", turn: gLead.turn, candidates: ["p0"], rung: 0, canWalk: true, below: true });
+    await send({ op: "done", turn: f.turn, verdict: { full: false }, outcome: "booked", settlement: { booked: null, seated: [] } });
+    const gParked = await send({ op: "park", turn: gLead.turn, attempt: "G-park", waitMs: 10_000 });
+    const gAgain = await send({ op: "poll", ticket: gParked.ticket });
+    assert(gAgain.kind === "lead" && gAgain.spent === true && typeof gAgain.turn === "string", `step 3 wire: a walker whose skipped claims all booked leads again marked spent (got ${JSON.stringify(gAgain)})`);
+    await send({ op: "done", turn: gAgain.turn, verdict: { full: true, refusal: "taken" } });
+    // A park on a turn the object does not hold is gone, and one missing its fields is bad.
+    const gone = await send({ op: "park", turn: "nobody", attempt: "Z", waitMs: 1_000 });
+    assert(gone.kind === "gone", `step 3 wire: parking a turn the object does not hold is gone (got ${JSON.stringify(gone)})`);
+    const malformed = await send({ op: "park", turn: "nobody", waitMs: 1_000 });
+    assert(malformed.kind === "bad", `step 3 wire: a park with no attempt is refused by name (got ${JSON.stringify(malformed)})`);
   }
 
   finish();

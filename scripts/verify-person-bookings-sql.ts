@@ -23,6 +23,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
+import { bookingInsertSql } from "./lib/seed-sql.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { readPersonBookings } from "../src/lib/booking/person-bookings-answer.ts";
 
@@ -56,13 +57,22 @@ function insertBooking(o: {
   const id = nextId();
   const start = new Date(Date.UTC(2031, 2, 4, 9) + minute++ * 30 * 60_000).toISOString();
   const end = new Date(Date.parse(start) + 20 * 60_000).toISOString();
-  const lit = (v: string | null | undefined) => (v == null ? "null" : `'${v.replace(/'/g, "''")}'`);
-  sql(`insert into bookings (id, org_id, bucket_id, event_type_id, assigned_user_id, agent_name, agent_email,
-      starts_at, ends_at, original_starts_at, original_ends_at, timezone, status, attendee_name, attendee_email,
-      attendee_phone, external_id, salesforce_id, gcal_event_id, manage_token, idempotency_key, kind, source)
-    values ('${id}', '${ORG}', '${o.test ? TEST : REAL}', '${ET}', '${A}', 'Agent', 'agent@example.com',
-      '${start}', '${end}', '${start}', '${end}', 'America/New_York', '${o.status ?? "confirmed"}', 'Dana Lead',
-      ${lit(o.email)}, ${lit(o.phone)}, ${lit(o.externalId)}, ${lit(o.salesforceId)}, 'gcal-${id}', 'tok-${id}', 'key-${id}', 'routed', 'booking');`);
+  sql(
+    bookingInsertSql({
+      id,
+      orgId: ORG,
+      bucketId: o.test ? TEST : REAL,
+      eventTypeId: ET,
+      assignedUserId: A,
+      startIso: start,
+      endIso: end,
+      status: o.status,
+      attendeeEmail: o.email,
+      attendeePhone: o.phone,
+      externalId: o.externalId,
+      salesforceId: o.salesforceId,
+    }),
+  );
   return id;
 }
 

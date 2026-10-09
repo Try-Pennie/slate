@@ -534,6 +534,24 @@ export interface Database {
         Returns: unknown;
       };
       /**
+       * #3489, migration 0176: everything the candidate read needs for every rung of a
+       * ladder in one request, over the caller's superset windows. Read by
+       * `ladderInputsFrom` (src/lib/availability/ladder-inputs.ts).
+       */
+      ladder_candidate_inputs: {
+        Args: {
+          p_codes: string[];
+          p_busy_from: string;
+          p_busy_to: string;
+          p_cap_from: string;
+          p_cap_to: string;
+          p_share_from: string;
+          p_share_to: string;
+          p_exceptions_from: string;
+        };
+        Returns: unknown;
+      };
+      /**
        * #3495, migration 0173: one delivery per active endpoint subscribed to the event,
        * deduped on (endpoint, event, dedupe_key), suppression decided by the caller per
        * format. Answers {subscribers, deliveries}, read by `readEnqueueAnswer`.

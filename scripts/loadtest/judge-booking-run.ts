@@ -831,6 +831,11 @@ export function steadyLineReading(attempts: readonly BookingAttempt[]): SteadyLi
 export const WAIT_SPAN_LABELS: Record<WaitSpanField, string> = {
   wait_route_ms: "route",
   wait_auth_ms: "auth",
+  // #3529: auth's steps, each named for the call it waited on.
+  wait_auth_key_edge_ms: "auth key limiter",
+  wait_auth_key_ceiling_ms: "auth key ceiling",
+  wait_auth_ip_edge_ms: "auth address limiter",
+  wait_auth_ip_ceiling_ms: "auth address ceiling",
   wait_pre_line_ms: "before the line",
   wait_line_ms: "line",
   wait_decide_ms: "person decision",

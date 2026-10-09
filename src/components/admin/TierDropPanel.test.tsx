@@ -34,6 +34,7 @@ const report = (bucketCode: string): TierDropReport => ({
       },
     ],
     unreadableStamps: 0,
+    behind: { week: { race: 0, line: 0, claimed: 0 }, month: { race: 0, line: 0, claimed: 0 } },
   },
   booked: { week: 10, month: 10 },
 });
@@ -68,5 +69,43 @@ describe("the tier drop list, by who is reading", () => {
     expect(screen.getByRole("cell", { name: "532" })).toBeTruthy();
     expect(screen.queryByRole("columnheader", { name: "Backend" })).toBeNull();
     expect(screen.queryByRole("cell", { name: "Achieve" })).toBeNull();
+  });
+});
+
+// #3338: a confirm that loses the insert race, or waits in line while the ones ahead
+// of it book, now walks on down its routing instead of being told the time is taken.
+// Both branches are counted here apart from the tier drops, and drawn even at zero,
+// so a branch that never fires is seen (L551).
+describe("drops made behind leads confirming the same time", () => {
+  const withBehind = (behind: TierDropReport["counts"]["behind"], quiet = false): TierDropReport => {
+    const r = report("532");
+    if (quiet) {
+      r.counts.week = tally(0);
+      r.counts.month = tally(0);
+      r.counts.recent = [];
+    }
+    r.counts.behind = behind;
+    return r;
+  };
+
+  it("counts each branch in both windows", () => {
+    render(<TierDropPanel report={withBehind({ week: { race: 1, line: 2, claimed: 0 }, month: { race: 3, line: 4, claimed: 0 } })} showCodes={false} />);
+    const race = screen.getByText(/Lost their advisor to a lead confirming at the same moment/).closest("tr")!;
+    expect([...race.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["1", "3"]);
+    const line = screen.getByText(/Waited behind leads confirming the same time/).closest("tr")!;
+    expect([...line.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["2", "4"]);
+  });
+
+  it("draws both branches at zero rather than leaving them out", () => {
+    render(<TierDropPanel report={withBehind({ week: { race: 0, line: 0, claimed: 0 }, month: { race: 0, line: 0, claimed: 0 } })} showCodes={false} />);
+    const race = screen.getByText(/Lost their advisor to a lead confirming at the same moment/).closest("tr")!;
+    expect([...race.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["0", "0"]);
+  });
+
+  it("is drawn in a month with no tier drop, since a sideways move is not one", () => {
+    render(<TierDropPanel report={withBehind({ week: { race: 0, line: 1, claimed: 0 }, month: { race: 0, line: 1, claimed: 0 } }, true)} showCodes={false} />);
+    expect(screen.getByText(/No lead has dropped a tier/)).toBeTruthy();
+    const line = screen.getByText(/Waited behind leads confirming the same time/).closest("tr")!;
+    expect([...line.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["1", "1"]);
   });
 });

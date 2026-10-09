@@ -295,6 +295,9 @@ const EXPECTED_PINNED = [
   // #3476: a lead's active bookings in one call; security INVOKER, pinned anyway,
   // pg_catalog built ins only, execute revoked from the web roles.
   "find_active_bookings_for_person",
+  // #3489: every rung's candidate inputs in one call; security INVOKER, pinned anyway,
+  // execute revoked from the web roles. It calls two public functions, both on the path.
+  "ladder_candidate_inputs",
   // #3248: the live reroute holds the booker skips, judged on the database clock.
   "live_reroute_holds",
   "move_busy_block",

@@ -12,6 +12,7 @@ import { placeRerouteHold, releaseRerouteHold } from "@/lib/booking/reroute-hold
 import { rerouteHoldStoreDeps } from "@/lib/booking/reroute-hold-store-live";
 import type { ClaimRerouteHoldRefusal, RerouteSwapRefusal } from "@/lib/db/reroute-hold-refusals";
 import { loadCurrentAgentPicture } from "@/lib/availability/service";
+import { ladderInputsFrom, ladderWindows } from "@/lib/availability/ladder-inputs";
 import { reportWriteFailure } from "@/lib/db/result";
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -149,7 +150,7 @@ import type {
   ReschedulePin,
   RescheduleClaim,
 } from "@/lib/booking/orchestration";
-import type { PersonIdentity, PersonWorld } from "@/lib/booking/person-dedupe";
+import type { NamedWorld, PersonIdentity, PersonWorld } from "@/lib/booking/person-dedupe";
 import { personStrongIds } from "@/lib/booking/person-dedupe";
 import { readLeadXbcLive, readSubmissionLeadIdLive } from "@/lib/salesforce/lead-xbc";
 import { timeSpentInThisRequest, type TimeSpent } from "@/lib/booking/time-spent";
@@ -638,7 +639,7 @@ export async function findActiveBookingsForPerson(
   if (ids.length === 0 && !email && !phone) return [];
   const rows = await activeBookingsBySignals(
     { ids, emailLike: email ? escapeLike(email) : null, phone },
-    world.isTest ? "test" : "real",
+    "bucketCode" in world ? { bucket: world.bucketCode } : world.isTest ? "test" : "real",
     "person booking lookup",
   );
   // The world did its work in the read; the callers grade a Booking (#2660).
@@ -651,7 +652,8 @@ export async function findActiveBookingsForPerson(
  */
 async function activeBookingsBySignals(
   signals: { ids: readonly string[]; emailLike: string | null; phone: string | null },
-  world: "real" | "test" | "both",
+  /** A named world, or the world of the bucket with this code (#3489). */
+  world: "real" | "test" | "both" | { bucket: string },
   context: string,
 ): Promise<PersonBookingRow[]> {
   const data = unwrap(
@@ -659,7 +661,7 @@ async function activeBookingsBySignals(
       p_ids: [...signals.ids],
       p_email_like: signals.emailLike,
       p_phone: signals.phone,
-      p_world: world,
+      ...(typeof world === "string" ? { p_world: world } : { p_world: "bucket" as const, p_bucket_code: world.bucket }),
     }),
     context,
   );
@@ -1038,6 +1040,25 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     // corrects their number. Throws on a refused read; the caller omits the line.
     readCallingNumber: readCallingNumberLive,
     roundRobinCandidates,
+    // #3489: the whole ladder's candidate inputs in one request (migration 0176), read
+    // strictly: a failed or unreadable answer throws, never reads as an empty ladder.
+    readLadderInputs: async (codes, startIso, eventType) => {
+      const windows = ladderWindows(startIso, eventType, Date.now());
+      const data = unwrap(
+        await supabaseAdmin().rpc("ladder_candidate_inputs", {
+          p_codes: [...codes],
+          p_busy_from: windows.busyFrom,
+          p_busy_to: windows.busyTo,
+          p_cap_from: windows.capFrom,
+          p_cap_to: windows.capTo,
+          p_share_from: windows.shareFrom,
+          p_share_to: windows.shareTo,
+          p_exceptions_from: windows.exceptionsFrom,
+        }),
+        "ladder candidate inputs",
+      );
+      return ladderInputsFrom(data, windows);
+    },
     // The org's opening hours (#1295). Throws on an unreadable week rather than
     // degrading, so a narrowing can never be silently re-opened by a failed read.
     businessHours: loadBusinessHours,
@@ -2682,7 +2703,7 @@ export async function knownContactForLanding(
   },
   /** The world of the bucket being landed on (#2660): a tester who pastes a real
    *  lead's id into a test link is never handed that lead's name and number. */
-  world: PersonWorld,
+  world: NamedWorld,
 ): Promise<KnownContact | null> {
   const salesforceId = identity.salesforceId?.trim();
   if (!salesforceId) return null;
@@ -2727,7 +2748,7 @@ export async function landingAttendee(
   identity: { salesforceId?: string | null },
   link: LinkAttendee,
   /** The world of the bucket being landed on (#2660). */
-  world: PersonWorld,
+  world: NamedWorld,
 ): Promise<LandingAttendee> {
   const complete = link.name.trim() && link.email.trim() && link.phone.trim();
   if (complete) return attendeeForLanding(link, null);

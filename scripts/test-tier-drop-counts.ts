@@ -103,6 +103,48 @@ eq(tierDropCause(null), null, "a booking with no trace is not a drop");
   eq(c.unreadableStamps, 1, "and is counted as unreadable");
 }
 
+// --- #3338: drops made BEHIND other confirms for the same time ----------------------
+//
+// A confirm that loses the insert race, or waits in its slot's line while the ones
+// ahead of it book, now walks the ladder rather than being told the time is taken.
+// Those two branches are counted apart so either one never firing is seen (L551).
+// They are counted over every RUNG drop, not only a debt tier drop: the Low pilot's
+// whole ladder sits inside one tier, so its drops are all sideways, and counting
+// only tier drops would read zero for ever there.
+{
+  const rows = [
+    row({ dropped_behind: "race" }, 0.5, "r1"),
+    row({ dropped_behind: "line" }, 2, "l1"),
+    row({ dropped_behind: "line", booked_tier: "high" }, 3, "l-sideways"), // a sideways rung drop
+    row({ dropped_behind: "race" }, 10, "r-old"), // outside 7, inside 30
+    row({}, 1, "plain"), // a drop nobody contended
+    row({ dropped_behind: "line" }, 31, "l-gone"), // outside both
+    // #3489 step 3: walked past advisors other confirms were still booking.
+    row({ dropped_behind: "claimed" }, 4, "c1"),
+  ];
+  const c = countTierDrops(rows, NOW);
+  eq(c.behind.week, { race: 1, line: 2, claimed: 1 }, "behind, last 7 days: every branch, a sideways drop included");
+  eq(c.behind.month, { race: 2, line: 2, claimed: 1 }, "behind, last 30 days");
+  eq(c.month.total, 5, "the tier drop count is unchanged by the mark: the sideways drop is still not a tier drop");
+  eq(
+    tierDropCause(row({ dropped_behind: "line" }).routing_trace),
+    "lost-at-confirm",
+    "the mark does not change a tier drop's cause, which is about what was on show",
+  );
+  const none = countTierDrops([row({}, 1, "plain")], NOW);
+  eq(none.behind, { week: { race: 0, line: 0, claimed: 0 }, month: { race: 0, line: 0, claimed: 0 } }, "nothing contended reads zero, never absent");
+
+  // An unreadable stamp is never silently left out of the contended counts either
+  // (L50): it is counted once as unreadable, whether or not the drop was also a
+  // tier drop, and placed in no window.
+  const sideways: TierDropRow = { ...row({ dropped_behind: "line", booked_tier: "high" }, 1, "bad-sideways"), created_at: "not a date" };
+  const tierDrop: TierDropRow = { ...row({ dropped_behind: "race" }, 1, "bad-tier"), created_at: "not a date" };
+  const bad = countTierDrops([sideways, tierDrop, row({ dropped_behind: "line" }, 1, "ok")], NOW);
+  eq(bad.unreadableStamps, 2, "both unreadable contended drops are counted as unreadable, each once");
+  eq(bad.behind.month, { race: 0, line: 1, claimed: 0 }, "and neither is placed in a window");
+  eq(bad.month.total, 1, "the tier drop count holds only the readable tier drop");
+}
+
 eq(tierLabel("very_high"), "Very High", "labels come from the one tier table");
 eq(tierLabel("gold"), null, "an unknown key has no label rather than a guess");
 

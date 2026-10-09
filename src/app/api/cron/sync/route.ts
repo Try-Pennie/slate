@@ -4,6 +4,7 @@ import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
 import {
   runIncrementalSync,
+  loadAgentSyncFacts,
   loadSyncAgents,
   markAgentsSynced,
   loadFailingAgents,
@@ -155,6 +156,9 @@ export async function GET(req: NextRequest) {
     // first). Real-time freshness meanwhile comes from Google push.
     // Agents are processed CONCURRENTLY up to SYNC_CONCURRENCY (#242): the old
     // sequential loop's per-agent Google I/O blew the budget before ~30 agents.
+    // #3489: every advisor's email and zone in two reads for the tick, never two each
+    // (`loadAgentSyncFacts`); null on a failed read, when each sync reads its own.
+    const facts = await loadAgentSyncFacts(agents.map((a) => a.userId));
     const deadlineMs = Date.now() + SYNC_TICK_BUDGET_MS;
     const { results, processed, truncated: budgetTruncated } =
       await mapWithConcurrency(
@@ -175,7 +179,7 @@ export async function GET(req: NextRequest) {
             return row;
           }
           try {
-            const sync = await runIncrementalSync(agent.userId, deadlineMs);
+            const sync = await runIncrementalSync(agent.userId, deadlineMs, facts?.get(agent.userId));
             row.synced = sync.events;
             if (sync.truncated) row.truncated = true;
             // Only when there IS a backed-off calendar, so the overwhelmingly

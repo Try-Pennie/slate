@@ -89,8 +89,10 @@ const tally = (lost = 0, none = 0, unrecorded = 0) => ({
   "not-recorded": unrecorded,
   total: lost + none + unrecorded,
 });
+// #3338: drops made behind leads confirming the same time, none by default.
+const behind = { week: { race: 0, line: 0 }, month: { race: 0, line: 0 } };
 const quietReport = () => ({
-  counts: { week: tally(), month: tally(), recent: [], unreadableStamps: 0 },
+  counts: { week: tally(), month: tally(), recent: [], unreadableStamps: 0, behind },
   booked: { week: 120, month: 635 },
 });
 
@@ -170,6 +172,7 @@ describe("the tier drop panel", () => {
           },
         ],
         unreadableStamps: 0,
+        behind,
       },
       booked: { week: 120, month: 635 },
     });
@@ -227,6 +230,7 @@ describe("bucket codes by who is reading", () => {
           },
         ],
         unreadableStamps: 0,
+        behind,
       },
       booked: { week: 10, month: 10 },
     });

@@ -82,6 +82,13 @@ assert(deep.key === "tier_fallback_deep:311", "deep-drop key is distinct");
 assert(deep.cooldownMs === 5 * 60 * 1000, "deep drop escalates (shorter cooldown)");
 assert(/^Routing alert:/.test(deep.text), "deep-drop text reads as an alert, not a notice");
 assert(/2 debt tiers/.test(deep.text), `the deep drop counts TIERS, not rungs (got ${deep.text})`);
+// #3338: a drop can now also be made at confirm, by a lead who lost the insert race
+// on a tier above or waited behind other leads confirming the same time, so the
+// tiers above may well have had times across the window. The page says only what
+// the walk measured, the time it was asked for, which is true either way (L11, L680).
+assert(!/across the booking window/.test(deep.text), `the deep drop does not claim the whole window was empty (got ${deep.text})`);
+assert(/could take that time when the lead confirmed/.test(deep.text), `it says no tier above could take that time at confirm (got ${deep.text})`);
+assert(/same time/.test(deep.text), `and names leads confirming the same time among the causes to check (got ${deep.text})`);
 
 // Four rungs of the new Beyond ladder is two tiers, and must read as two.
 const deepBeyond = tierFallbackAlert({ requestedCode: "322", effectiveCode: "132" })!;

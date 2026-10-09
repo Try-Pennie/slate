@@ -110,6 +110,49 @@ export async function loadAgentCalendars(userId: string): Promise<AgentCalendar[
   return (data ?? []) as AgentCalendar[];
 }
 
+/** What a cron tick knows about an advisor before it syncs them (#3489). */
+export interface AgentSyncFacts {
+  /** Null when the advisor has no email: nothing to sync, as `loadAgentEmail` answers. */
+  email: string | null;
+  /** Their working zone, `loadAgentTimezone`'s default when they have no schedule. */
+  timeZone: string;
+}
+
+/**
+ * Every advisor's email and working zone for one cron tick, in two reads (chunked by
+ * the URL budget) rather than two per advisor (#3489): 180 requests a minute for 90
+ * advisors, all in the first half of the tick that slowed bookings there (load run
+ * 37739581575). The calendar rows are NOT read here: they carry the sync token and the
+ * claims another pass holds (#2411), so each advisor's sync still reads its own, fresh.
+ *
+ * Null when either read fails: the tick then lets each advisor's sync read its own, as
+ * it always did, so a failed batch read never stops a sync.
+ */
+export async function loadAgentSyncFacts(userIds: string[]): Promise<Map<string, AgentSyncFacts> | null> {
+  const facts = new Map<string, AgentSyncFacts>();
+  if (userIds.length === 0) return facts;
+  const db = supabaseAdmin();
+  try {
+    const emails = new Map<string, string | null>();
+    const zones = new Map<string, string>();
+    for (const chunk of chunkIdsByUrlBudget(userIds)) {
+      const [users, schedules] = await Promise.all([
+        db.from("users").select("id, email").in("id", chunk),
+        db.from("availability_schedules").select("user_id, timezone").in("user_id", chunk),
+      ]);
+      for (const u of (unwrap(users, "sync facts advisors") ?? []) as { id: string; email: string | null }[]) emails.set(u.id, u.email ?? null);
+      for (const z of (unwrap(schedules, "sync facts schedules") ?? []) as { user_id: string; timezone: string | null }[]) {
+        if (z.timezone) zones.set(z.user_id, z.timezone);
+      }
+    }
+    for (const id of userIds) facts.set(id, { email: emails.get(id) ?? null, timeZone: zones.get(id) ?? "America/New_York" });
+    return facts;
+  } catch (err) {
+    log.warn("sync", { msg: "could not read the tick's advisor emails and zones; each advisor's sync reads its own" }, err);
+    return null;
+  }
+}
+
 /**
  * Every bookable, ACTIVE agent's pacing facts for one cron tick — DB only, no
  * Google calls. Deactivated (offboarded) users are filtered out (#274) so the
@@ -738,18 +781,20 @@ async function syncCalendar(
         window,
       );
 
-    // Persist the advanced sync token on its OWN write (correctness-critical:
-    // it's how the next pass resumes instead of re-bootstrapping). Kept separate
-    // from the best-effort diagnostics write so the token still saves even if
-    // the diagnostics columns aren't present yet (e.g. migration not applied).
-    if (result.nextSyncToken) {
-      // write-ok: a refused token save costs the next pass a re-bootstrap, which is expensive and correct. Losing the token can never lose events.
-      await supabaseAdmin()
-        .from("agent_calendars")
-        .update({ sync_token: result.nextSyncToken })
-        .eq("id", cal.id);
-    }
-    await recordCalHealth(cal.id, "sync", prev, { ok: true });
+    // Persist the advanced sync token (correctness-critical: it's how the next pass
+    // resumes from where this one read) in the SAME write as the health stamp, one
+    // request rather than two for every advisor every minute (#3489). It was a
+    // separate write from 2026-06-19 so the token still saved while migration 0038's
+    // health columns might not exist yet; the deploy now refuses code ahead of its
+    // schema, which retired that premise. A refused write leaves the stored token,
+    // so the next pass re-reads the same delta: never a lost event.
+    await recordCalHealth(
+      cal.id,
+      "sync",
+      prev,
+      { ok: true },
+      result.nextSyncToken ? { sync_token: result.nextSyncToken } : {},
+    );
     // A full resync may have purged vanished blocks, which `applyEvents` does not
     // count, so it is treated as a change rather than asked to prove it was not.
     return { events: result.events.length, busyChanged: busyWrites > 0 || full };
@@ -1059,15 +1104,18 @@ export async function hydrateCalendar(cal: AgentCalendar): Promise<HydrateResult
 export async function runIncrementalSync(
   userId: string,
   deadlineMs: number | null = null,
+  /** #3489: the advisor's email and zone, read once for the whole cron tick
+   *  (`loadAgentSyncFacts`); absent, they are read here, as the push path does. */
+  known?: AgentSyncFacts,
 ): Promise<{
   events: number;
   truncated: boolean;
   goneSkipped: number;
   claimSkipped: number;
 }> {
-  const email = await loadAgentEmail(userId);
+  const email = known ? known.email : await loadAgentEmail(userId);
   if (!email) return { events: 0, truncated: false, goneSkipped: 0, claimSkipped: 0 };
-  const timeZone = await loadAgentTimezone(userId);
+  const timeZone = known ? known.timeZone : await loadAgentTimezone(userId);
   // #1049: sync order, minus calendars established as gone whose turn this is
   // not. A revoked delegation cannot recover without a human, so re-attempting it
   // on all 1440 rotations a day only burns Google calls that can only fail; each

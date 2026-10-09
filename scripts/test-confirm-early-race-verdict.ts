@@ -290,9 +290,12 @@ async function main() {
     if (nextFree) {
       const res = leader && "result" in leader ? (leader.result as { booking?: { assigned_user_id?: string } }) : undefined;
       assert(res?.booking?.assigned_user_id === "b", `${label}: the leader is booked with the next advisor (got ${String(errOf(leader) ?? res?.booking?.assigned_user_id)})`);
+      // #3338: a leader settles its line only when its whole ladder is spent, and
+      // booking b leaves the rungs below with room, so the one report says nothing
+      // settles; the confirm behind runs for itself.
       assert(
-        before(log, "reserve:b", "report:full:race") && at(log, "report:full:race") >= 0,
-        `${label}: the report comes after the booking with b (log ${log.join(" ")})`,
+        before(log, "reserve:b", "report:open") && at(log, "report:open") >= 0,
+        `${label}: the report comes after the booking with b, and settles nothing while the ladder below has room (log ${log.join(" ")})`,
       );
       // The next attempt reuses the idempotency key, whose unique index would hand
       // back the lost reservation if it were still there.
@@ -389,16 +392,33 @@ async function main() {
         freeEmails: new Set(["a@x.com"]),
         insertBookingConflictFor: new Set(["a"]),
       });
+      // The rollback is held open, so "before it ends" is a measurement rather than
+      // an accident of scheduling: since #3338 the confirm walks the rungs below while
+      // its lost attempt rolls back, and reports once the walk finds nobody.
+      const cleanup = gate();
       const d: BookingDeps = {
         ...deps,
         confirmQueue: watched.line,
         deleteReservation: async (id) => {
+          log.push("cleanup:start");
+          await cleanup.promise;
           log.push("cleanup:end");
           return deps.deleteReservation(id);
         },
       };
       let res: Settled | undefined;
-      await settle(bookViaApi({ ...input, startIso, externalId: "ext-1", confirmReschedule: false }, d), (s) => (res = s));
+      const done = settle(bookViaApi({ ...input, startIso, externalId: "ext-1", confirmReschedule: false }, d), (s) => (res = s));
+      assert(await until(() => log.includes("cleanup:start")), `${label}: the lost attempt's rollback is reached`);
+      // Settle everything that can run while the rollback is held.
+      await until(() => false, 50);
+      if (!tolerated) {
+        assert(
+          watched.reports.length === 1 && watched.reports[0]?.full === true,
+          `${label}: the line hears the lost race while the rollback is still held (got ${watched.reports.map(said).join(",")})`,
+        );
+      }
+      cleanup.open();
+      await done;
       assert(watched.reports.length === 1, `${label}: the line is told exactly once (got ${watched.reports.map(said).join(",")})`);
       if (tolerated) {
         const r = res && "result" in res ? (res.result as { outcome?: string; bucketChangeDeclined?: string }) : undefined;

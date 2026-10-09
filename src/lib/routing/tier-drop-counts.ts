@@ -19,6 +19,16 @@ import type { RoutingTrace } from "../db/types.ts";
  *  - `not-recorded`: the tier on show was not saved, because the booking predates
  *    `routing_trace.displayed_tier` or the display read failed. Never guessed.
  *
+ * Beside them (#3338), the drops made BEHIND other confirms for the same time,
+ * by how: `race` when the confirm lost the insert race on a rung above and walked
+ * down, `line` when it waited in its slot's line while the ones ahead booked and
+ * then dropped (`routing_trace.dropped_behind`). Until #3338 both were told the
+ * time was taken, so these count a branch that is new, and a count of zero is how
+ * one that never fires is seen (L551). They are counted over every RUNG drop,
+ * a sideways one included, because the Low pilot's whole ladder sits inside one
+ * debt tier: counted only among tier drops they would read zero there for ever.
+ * They do not change a tier drop's cause, which is about what was on show.
+ *
  * Pure, so scripts/test-tier-drop-counts.ts drives it with an injected clock.
  */
 
@@ -29,7 +39,7 @@ export const TIER_DROP_CAUSES: TierDropCause[] = ["lost-at-confirm", "nothing-on
 
 export type TierDropTrace = Pick<
   RoutingTrace,
-  "tier_fallback" | "requested_tier" | "booked_tier" | "displayed_tier" | "bucket_code"
+  "tier_fallback" | "requested_tier" | "booked_tier" | "displayed_tier" | "bucket_code" | "dropped_behind"
 >;
 
 export interface TierDropRow {
@@ -62,6 +72,9 @@ export function tierDropCause(t: TierDropTrace | null): TierDropCause | null {
 
 export type TierDropTally = Record<TierDropCause, number> & { total: number };
 
+/** #3338: rung drops made behind other confirms for the same time, by how. */
+export type DropBehindTally = Record<NonNullable<RoutingTrace["dropped_behind"]>, number>;
+
 export interface TierDropDetail {
   id: string;
   createdAt: string;
@@ -76,8 +89,11 @@ export interface TierDropCounts {
   month: TierDropTally;
   /** Every drop inside the 30 day window, newest first. */
   recent: TierDropDetail[];
-  /** Rows whose creation stamp could not be read, so neither window holds them. */
+  /** Drops whose creation stamp could not be read, so no window holds them: a tier
+   *  drop, or since #3338 a rung drop made behind other confirms, each counted once. */
   unreadableStamps: number;
+  /** #3338: rung drops made behind other confirms for the same time, in each window. */
+  behind: { week: DropBehindTally; month: DropBehindTally };
 }
 
 function emptyTally(): TierDropTally {
@@ -93,15 +109,25 @@ export function countTierDrops(rows: TierDropRow[], nowMs: number): TierDropCoun
   const month = emptyTally();
   const recent: (TierDropDetail & { ms: number })[] = [];
   let unreadableStamps = 0;
+  const behind = { week: { race: 0, line: 0, claimed: 0 }, month: { race: 0, line: 0, claimed: 0 } };
   for (const r of rows) {
+    // #3338: any rung drop made behind other confirms, sideways included.
+    const how = r.routing_trace?.tier_fallback ? r.routing_trace.dropped_behind : undefined;
     const cause = tierDropCause(r.routing_trace);
-    if (cause === null) continue;
+    if (cause === null && !how) continue;
+    // One reading of the stamp for both counts, and one unreadable count for a row
+    // either would have held: never placed in a window, never silently left out (L50).
     const ms = parseStampMs(r.created_at);
     if (ms === null) {
       unreadableStamps++;
       continue;
     }
     const age = nowMs - ms;
+    if (how && age >= 0 && age <= TIER_DROP_WINDOW_DAYS.month * DAY_MS) {
+      behind.month[how]++;
+      if (age <= TIER_DROP_WINDOW_DAYS.week * DAY_MS) behind.week[how]++;
+    }
+    if (cause === null) continue;
     if (age < 0 || age > TIER_DROP_WINDOW_DAYS.month * DAY_MS) continue;
     month[cause]++;
     month.total++;
@@ -121,5 +147,5 @@ export function countTierDrops(rows: TierDropRow[], nowMs: number): TierDropCoun
     });
   }
   recent.sort((a, b) => b.ms - a.ms || (a.id < b.id ? -1 : 1));
-  return { week, month, recent: recent.map(({ ms: _ms, ...d }) => d), unreadableStamps };
+  return { week, month, recent: recent.map(({ ms: _ms, ...d }) => d), unreadableStamps, behind };
 }

@@ -4528,6 +4528,17 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     }),
   },
   {
+    key: "verify_on_book_outage",
+    state: "a lost race left too little time to walk down the ladder (#3338)",
+    channel: "alert",
+    text: dependencyTimeoutAlert({
+      dependency: "the tier below a lost race",
+      timeoutMs: 3_900,
+      budget: null,
+      neededMs: 8_100,
+    }),
+  },
+  {
     key: "reschedule_lock_outage",
     state: "the lock claim hit a DB error",
     channel: "alert",
@@ -4579,7 +4590,13 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_race_bound_hit",
     state: "a lead refused after every advisor handed on was taken",
     channel: "alert",
-    text: raceBoundHitPageText({ bucketCode: "311", startIso: "2026-07-28T18:00:00.000Z", lostRaces: 4 }),
+    text: raceBoundHitPageText({ requestedCode: "311", bucketCode: "311", startIso: "2026-07-28T18:00:00.000Z", lostRaces: 4 }),
+  },
+  {
+    key: "booking_race_bound_hit",
+    state: "refused on a tier below, after walking down the ladder (#3338)",
+    channel: "alert",
+    text: raceBoundHitPageText({ requestedCode: "411", bucketCode: "311", startIso: "2026-07-28T18:00:00.000Z", lostRaces: 4 }),
   },
   // A High lead and below: an Ultra High or Very High cascade is counted daily
   // above instead (#2843), and a single tier drop is counted on /admin/routing

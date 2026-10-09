@@ -98,20 +98,41 @@ const SPAN_ENDING_AT = {
   profile: "wait_to_profile_ms",
 } as const satisfies Record<Exclude<WaitPoint, "entry">, string>;
 
+/**
+ * #3529: the steps INSIDE the auth span (`authorizeBookingApi`), in the order it asks
+ * them: the per key edge limiter, the per key exact ceiling, the per address edge
+ * limiter; the per address exact ceiling then ends at `authed`. Load run 37785947346
+ * failed its startup bar on one confirm whose auth span was 2.7s, spent in waits before
+ * each rate limit object call that one span could not tell apart. Not points of the main
+ * sequence: a route without the address ceiling stamps none, and that is not missing.
+ */
+export const AUTH_STEPS = ["key_edge", "key_ceiling", "ip_edge"] as const;
+export type AuthStep = (typeof AUTH_STEPS)[number];
+
+/** The auth span's split, each step's span named for the call it waited on, in order. */
+const AUTH_SPLIT = [
+  { from: "handler", to: "key_edge", name: "wait_auth_key_edge_ms" },
+  { from: "key_edge", to: "key_ceiling", name: "wait_auth_key_ceiling_ms" },
+  { from: "key_ceiling", to: "ip_edge", name: "wait_auth_ip_edge_ms" },
+  { from: "ip_edge", to: "authed", name: "wait_auth_ip_ceiling_ms" },
+] as const satisfies readonly { from: WaitPoint | AuthStep; to: WaitPoint | AuthStep; name: string }[];
+
 /** Every span the marks write, in the order a confirm passes them, then the whole. */
-export type WaitSpanField = (typeof SPAN_ENDING_AT)[keyof typeof SPAN_ENDING_AT] | "wait_total_ms";
+export type WaitSpanField = (typeof SPAN_ENDING_AT)[keyof typeof SPAN_ENDING_AT] | (typeof AUTH_SPLIT)[number]["name"] | "wait_total_ms";
 /**
  * The span names, derived from the points so the reader and the report can never hold
- * a copy that drifts from what is written (L41).
+ * a copy that drifts from what is written (L41). Auth's steps sit right after it.
  */
 export const WAIT_SPAN_FIELDS: readonly WaitSpanField[] = [
-  ...(WAIT_POINTS.slice(1) as Exclude<WaitPoint, "entry">[]).map((p) => SPAN_ENDING_AT[p]),
+  ...(WAIT_POINTS.slice(1) as Exclude<WaitPoint, "entry">[]).flatMap((p): WaitSpanField[] =>
+    p === "authed" ? [SPAN_ENDING_AT[p], ...AUTH_SPLIT.map((s) => s.name)] : [SPAN_ENDING_AT[p]],
+  ),
   "wait_total_ms",
 ];
 
 export interface WaitMarks {
   /** Stamp a point now. The first stamp of a point wins; later ones are counted. */
-  mark(point: WaitPoint): void;
+  mark(point: WaitPoint | AuthStep): void;
   /** The spans, the whole, and what was missing, repeated or out of order. */
   fields(): Record<string, number | string>;
 }
@@ -121,8 +142,8 @@ export interface WaitMarks {
  * Worker runs before the route exists; null or undefined when it was not given.
  */
 export function makeWaitMarks(now: () => number, entryAtMs: number | null | undefined): WaitMarks {
-  const at = new Map<WaitPoint, number>();
-  const times = new Map<WaitPoint, number>();
+  const at = new Map<WaitPoint | AuthStep, number>();
+  const times = new Map<WaitPoint | AuthStep, number>();
   if (typeof entryAtMs === "number" && Number.isFinite(entryAtMs)) {
     at.set("entry", entryAtMs);
     times.set("entry", 1);
@@ -153,6 +174,12 @@ export function makeWaitMarks(now: () => number, entryAtMs: number | null | unde
         // the sequence says is wrong is wrong too.
         const prevPoint = WAIT_POINTS[i - 1]!;
         if (prev !== undefined && t >= prev && !outOfOrder.includes(point) && !outOfOrder.includes(prevPoint)) out[name] = t - prev;
+      }
+      // #3529: auth's split only whole, every end stamped and in order, so its steps
+      // always sum to the auth span and a refusal part way through invents nothing.
+      const ends = AUTH_SPLIT.map((s) => [at.get(s.from), at.get(s.to)] as const);
+      if (ends.every(([a, b]) => a !== undefined && b !== undefined && b >= a)) {
+        AUTH_SPLIT.forEach((s, i) => (out[s.name] = ends[i]![1]! - ends[i]![0]!));
       }
       const first = WAIT_POINTS.map((p) => at.get(p)).find((t) => t !== undefined);
       const end = at.get("profile");
