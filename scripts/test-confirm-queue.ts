@@ -18,10 +18,12 @@ import {
   CONFIRM_CLAIM_LEASE_MS,
   FRONTIER_FRESH_MS,
   RELEASE_CAP,
+  CONFIRM_LINE_SETTLED_MEMORY_MS,
   type QueueTurn,
 } from "../src/lib/booking/confirm-queue.ts";
 import { BOOKING_CONFIRM_BUDGET_MS, BOOKING_CONFIRM_WORST_CASE_MS } from "../src/lib/booking/confirm-budget.ts";
 import { createAsserter } from "./lib/booking-fakes.ts";
+import { eq } from "./lib/harness.ts";
 
 const { assert, finish } = createAsserter();
 
@@ -101,12 +103,54 @@ async function main() {
       `full: each is refused with what took the slot (got ${JSON.stringify(followers)})`,
     );
     assert(live() === 0, `full: the followers' wait timers are cancelled once they are answered (live ${live()})`);
-    // The line is gone: the next confirm for the slot leads, and finds the slot
-    // taken through its own reads, as any later confirm does.
-    const later = await q.enter("slot");
-    assert(later.kind === "lead", "full: a confirm arriving after the verdict leads a fresh line");
-    if (later.kind === "lead") later.done({ full: false });
     if (other.kind === "lead") other.done({ full: false });
+  }
+
+  // --- #3570: a full verdict answers a confirm arriving just after it, too ----
+  //
+  // Load run 37977451270, burst 3: a confirm on a fresh isolate reached the line about
+  // 60ms after the crowd's full verdict had answered everybody waiting. The line had
+  // forgotten it, so that confirm led a line of its own and ran the whole confirm
+  // under load (a person decision, then every rung read) to be told the same thing
+  // 5.9s after the last booking. Within `CONFIRM_LINE_SETTLED_MEMORY_MS` the verdict
+  // answers it as it answered the crowd, with the same settlement.
+  {
+    const { timer } = manualTimer();
+    let now = 1_000_000;
+    const q = makeConfirmQueue<string>({ timer, now: () => now });
+    const lead = await q.enter("slot");
+    const waiting = q.enter("slot");
+    if (lead.kind === "lead") lead.done({ full: true, refusal: "race", settled: "who sits there" });
+    assert((await waiting).kind === "refused", "settled memory: the confirm waiting is refused, as before");
+    now += CONFIRM_LINE_SETTLED_MEMORY_MS - 1;
+    const late = await q.enter("slot");
+    assert(
+      late.kind === "refused" && late.refusal === "race" && late.settled === "who sits there",
+      `settled memory: a confirm arriving after the verdict, inside the window, is answered from it (got ${JSON.stringify(late)})`,
+    );
+    assert(q.lookahead("slot") === null, "settled memory: there is no busy line to look ahead of");
+    const elsewhere = await q.enter("another slot");
+    assert(elsewhere.kind === "lead", "settled memory: another slot's line is untouched by it");
+    if (elsewhere.kind === "lead") elsewhere.done({ full: false });
+    // Once the window has passed, the next confirm leads a fresh line and reads for
+    // itself, as any later confirm does.
+    now += 1;
+    const after = await q.enter("slot");
+    assert(after.kind === "lead", `settled memory: past the window, a confirm leads a fresh line (got ${after.kind})`);
+    if (after.kind === "lead") after.done({ full: false });
+  }
+
+  // --- #3570: only a FULL verdict is remembered --------------------------------
+  {
+    const { timer } = manualTimer();
+    let now = 1_000_000;
+    const q = makeConfirmQueue<string>({ timer, now: () => now });
+    const lead = await q.enter("slot");
+    if (lead.kind === "lead") lead.done({ full: false });
+    now += 1;
+    const next = await q.enter("slot");
+    assert(next.kind === "lead", `settled memory: a line that ended open is not remembered, the next confirm leads (got ${next.kind})`);
+    if (next.kind === "lead") next.done({ full: false });
   }
 
   // --- an open slot hands the lead to the next follower, one at a time --------
@@ -271,10 +315,14 @@ async function main() {
   // --- #3257: a lookahead returned after its line settled leaves a newer one ---
   {
     const { timer } = manualTimer();
-    const q = makeConfirmQueue<string>({ timer });
+    let now = 1_000_000;
+    const q = makeConfirmQueue<string>({ timer, now: () => now });
     const first = await q.enter("slot");
     const give = q.lookahead("slot");
     if (first.kind === "lead") first.done({ full: true, refusal: "race", settled: null });
+    // #3570: the full verdict answers arrivals for a while; a lookahead's lease (14s)
+    // outlives that memory (5s), so its stale give back can still meet a newer line.
+    now += CONFIRM_LINE_SETTLED_MEMORY_MS;
     const newer = await q.enter("slot");
     const follower = q.enter("slot");
     give?.();
@@ -981,6 +1029,183 @@ async function main() {
     first.done({ full: false });
   }
 
+  // --- #3529: a leader's read of the rungs BELOW it is handed out in the same release -----
+  // Load runs 37857243671 and 37863081340: a crowd whose ladder had 13 or 14 advisors free
+  // across three rungs booked them in waves, one rung at a time, each wave waiting about
+  // two seconds for a walker to claim the rung below and become the frontier, so the last
+  // booking landed near ten seconds and the crowd behind it ran out of time. The leader's
+  // one ladder read already holds every rung, so it hands the lower rungs' reads with its
+  // claim and the line releases the whole ladder at once, rung by rung in order.
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    for (let i = 0; i < 5; i++) void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a", "b"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["b", "c", "d"] }, { rung: 2, read: ["e"] }] });
+    await tick();
+    const kinds = seen.map((t) => (t.kind === "lead" ? (t.start ? `${t.start.rung}:${t.start.advisor}` : "reader") : t.kind));
+    eq(kinds.slice(0, 4).join(","), "0:b,1:c,1:d,2:e", "lower rungs: every unclaimed advisor of the ladder is handed out at once, top rung first, each once");
+    const last = seen[3] as Extract<QueueTurn<string>, { kind: "lead" }>;
+    eq(JSON.stringify(last.start?.read), JSON.stringify(["e"]), "lower rungs: a confirm handed a lower rung is handed that rung's own read");
+    // The read did not say it covered every rung below (no `lowerComplete`), so a rung under
+    // the last one listed may be unread: one more confirm walks on rather than everybody
+    // waiting on the one handed the last listed advisor.
+    eq(seen.length, 5, "lower rungs, not covered: one more confirm is released to walk past the rungs listed");
+    const walker = seen[4]!;
+    assert(walker.kind === "lead" && !walker.start, `lower rungs, not covered: that one walks for itself, handed nothing (got ${JSON.stringify(walker)})`);
+    for (const t of seen) leadOf(t).done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+  {
+    // #3529: when the read covered every rung below, nothing below is unread, so the one
+    // handed the ladder's last advisor holds the line: nobody is left to hand.
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    for (let i = 0; i < 5; i++) void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a", "b"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["b", "c", "d"] }, { rung: 2, read: ["e"] }], lowerComplete: true });
+    await tick();
+    eq(seen.length, 4, "lower rungs, covered: the confirm behind the last one handed waits, with nothing left to hand it");
+    for (const t of seen) leadOf(t).done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+  {
+    // #3529: when the leader's read covered every rung below (`lowerComplete`), the advisors
+    // on the DEEPEST rung that read found anyone on are marked `deepest`: below them the read
+    // found nobody, so booking one of them can settle the crowd without a walk of the empty
+    // rungs. Without that cover, nothing is marked.
+    for (const complete of [true, false]) {
+      const { timer } = manualTimer();
+      const q = makeConfirmQueue<string>({ timer });
+      const first = leadOf(await q.enter("slot"));
+      const seen: QueueTurn<string>[] = [];
+      for (let i = 0; i < 3; i++) void q.enter("slot").then((t) => seen.push(t));
+      await tick();
+      first.seat.claimFirst(["a", "b"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["c", "d"] }], ...(complete ? { lowerComplete: true as const } : {}) });
+      await tick();
+      const marks = seen.map((t) => (t.kind === "lead" && t.start ? `${t.start.rung}:${t.start.advisor}:${t.start.deepest === true}` : t.kind));
+      eq(marks.join(","), complete ? "0:b:false,1:c:true,1:d:true" : "0:b:false,1:c:false,1:d:false", `deepest (${complete ? "read covered the ladder" : "not covered"}): only a covered read marks its deepest rung`);
+      for (const t of seen) leadOf(t).done({ full: false }, "booked");
+      first.done({ full: false }, "booked");
+    }
+  }
+  {
+    // #3529: pools overlap, so a lower rung can list only advisors already on a rung above
+    // it (load model burst 3: rungs two and three held tier one's own people). Such a rung
+    // adds nobody, so the deepest rung is the deepest that brings someone new.
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    for (let i = 0; i < 2; i++) void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["c", "d"] }, { rung: 2, read: ["d", "c"] }, { rung: 3, read: ["c"] }], lowerComplete: true });
+    await tick();
+    const marks = seen.map((t) => (t.kind === "lead" && t.start ? `${t.start.rung}:${t.start.advisor}:${t.start.deepest === true}` : t.kind));
+    eq(marks.join(","), "1:c:true,1:d:true", "deepest overlap: a rung of advisors already above adds nobody, so tier one is the deepest");
+    for (const t of seen) leadOf(t).done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+  {
+    // #3529 review: a read that covered every rung below and found nobody sends
+    // `lowerComplete` with no `lower`. The frontier's own rung is then the deepest: its
+    // advisors are handed marked `deepest`, and the one handed the last holds the line,
+    // rather than one more confirm walking rungs the read already found empty.
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    for (let i = 0; i < 3; i++) void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a", "b", "c"], { rung: 1, canWalk: true, below: true, lowerComplete: true });
+    await tick();
+    const marks = seen.map((t) => (t.kind === "lead" ? (t.start ? `${t.start.rung}:${t.start.advisor}:${t.start.deepest === true}` : "reader") : t.kind));
+    eq(marks.join(","), "1:b:true,1:c:true", "nobody below: the frontier's rung is the deepest, and nobody walks the empty rungs again");
+    for (const t of seen) if (t.kind === "lead") t.done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+  {
+    // #3529 review: lower rungs arrive over the wire, so their order is not trusted. Out of
+    // order or repeated, they are handed top rung first, each rung once (the first listing
+    // of a repeated rung kept), and the deepest is still the deepest that brings anyone new.
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    for (let i = 0; i < 3; i++) void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 2, read: ["d"] }, { rung: 1, read: ["c"] }, { rung: 1, read: ["x"] }], lowerComplete: true });
+    await tick();
+    const marks = seen.map((t) => (t.kind === "lead" && t.start ? `${t.start.rung}:${t.start.advisor}:${t.start.deepest === true}` : t.kind));
+    eq(marks.join(","), "1:c:false,2:d:true", "wire order: lower rungs are handed top first and a repeated rung counts once");
+    for (const t of seen) if (t.kind === "lead") t.done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+  {
+    // #3529: the line marks the LAST advisor it hands out (`StartFrom.last`), because a rung's
+    // read ends wherever round robin put its people: load run 37871606406 read tier one with
+    // an advisor of the top rung LAST, the line handed that one on the top rung, and nobody
+    // handed tier one stood at its read's end, so nobody could say the time was full and 85
+    // of 100 waited out the line. Only the final hand out carries it, wherever it sits.
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    for (let i = 0; i < 3; i++) void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a", "b"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["c", "b"] }], lowerComplete: true });
+    await tick();
+    const marks = seen.map((t) => (t.kind === "lead" && t.start ? `${t.start.rung}:${t.start.advisor}:${t.start.last === true}` : t.kind));
+    eq(marks.join(","), "0:b:false,1:c:true", "last: the final hand out is marked, though its rung's read ends with an advisor handed above");
+    for (const t of seen) if (t.kind === "lead") t.done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+  {
+    // #3529: and it goes to whoever is handed that advisor, so a release cut short by the cap
+    // or by too few waiting hands no mark until the final advisor is actually handed.
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a", "b"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["c"] }], lowerComplete: true });
+    await tick();
+    const later: QueueTurn<string>[] = [];
+    for (let i = 0; i < 2; i++) void q.enter("slot").then((t) => later.push(t));
+    await tick();
+    const marks = [...seen, ...later].map((t) => (t.kind === "lead" && t.start ? `${t.start.rung}:${t.start.advisor}:${t.start.last === true}` : t.kind));
+    eq(marks.join(","), "0:b:false,1:c:true", "last: one waiting is handed b unmarked, and c, handed later, carries the mark");
+    for (const t of [...seen, ...later]) if (t.kind === "lead") t.done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+  {
+    // An advisor found busy on a lower rung is never handed again, there or above.
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["c", "d"] }] });
+    await tick();
+    const handed = leadOf(seen[0]!);
+    eq(handed.start?.advisor, "c", "lower busy: c on the rung below is handed");
+    handed.seat.trying("c");
+    const next: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => next.push(t));
+    await tick();
+    handed.done({ full: false }, "advisor-busy");
+    await tick();
+    eq(next[0]?.kind === "lead" ? next[0].start?.advisor : "none", "d", "lower busy: the next confirm is handed d, never c again");
+    leadOf(next[0]!).done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+
   // --- a walker that parks waits for the claims in flight, answered when they book -----
   {
     const { timer } = manualTimer();
@@ -1156,6 +1381,31 @@ async function main() {
     await tick();
     assert(behind.length === 1 && behind[0]!.kind === "lead", `unless freed, unread: no read to vouch with, so one confirm reads (got ${JSON.stringify(behind.map((t) => t.kind))})`);
     leadOf(behind[0]!).done({ full: false });
+  }
+
+  // #3529: a HANDED confirm's full verdict is vouched for by the read it was handed from:
+  // its rungs above were read by the leader, so when nothing was freed since that leader
+  // first read, the crowd behind it is answered at once, with no walk of the ladder again.
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const leader = leadOf(await q.enter("slot"));
+    const released: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => released.push(t));
+    await tick();
+    // As the app sends it: its lower read covers every rung below (`lowerRungReads`).
+    leader.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["c"] }], lowerComplete: true });
+    await tick();
+    const handed = leadOf(released[0]!);
+    eq(handed.start?.advisor, "c", "handed vouched: c on the rung below is handed out");
+    const behind: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => behind.push(t));
+    await tick();
+    handed.seat.trying("c");
+    leader.done({ full: false }, "booked", "s");
+    handed.done({ full: true, refusal: "race", settled: "h", unlessFreed: true }, "booked");
+    await tick();
+    assert(behind.length === 1 && behind[0]!.kind === "refused", `handed vouched: nothing freed since the leader read, so the crowd is answered at once (got ${JSON.stringify(behind.map((t) => t.kind))})`);
   }
 
   // #3529: a host drops a parked confirm whose caller stopped polling by cancelling its

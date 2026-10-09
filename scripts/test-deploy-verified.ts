@@ -207,12 +207,13 @@ for (const [what, plan] of refusals) {
     /step\("build and deploy",\s*"pnpm",\s*\["run",\s*"cf:deploy",\s*\.\.\.plan\.deployArgs\]\)/.test(runner),
     "the deploy step hands the planned tag and message through to wrangler (#3178)",
   );
-  // #3500: Slate's CONFIRM_LINE binding names the line worker, so a hand deploy deploys
-  // it first, as the gradual deploy does (`lineWorker`).
-  const lineAt = runner.indexOf('step("deploy the confirm line worker"');
+  // #3500, #3555: Slate's bindings name the object workers, so a hand deploy deploys each
+  // of them first, from the one list the gradual deploy uses.
+  const objectsAt = runner.indexOf('step(`deploy the object worker ${config}`');
   assert(
-    lineAt !== -1 && lineAt < deployAt && /step\("deploy the confirm line worker",\s*"pnpm",\s*\["exec",\s*"wrangler",\s*"deploy",\s*"-c",\s*"wrangler\.confirm-line\.jsonc"\]\)/.test(runner),
-    "the runner deploys the confirm line worker before Slate, from its own config",
+    objectsAt !== -1 && objectsAt < deployAt && /for \(const config of OBJECT_WORKER_CONFIGS\)/.test(runner) &&
+      /step\(`deploy the object worker \$\{config\}`,\s*"pnpm",\s*\["exec",\s*"wrangler",\s*"deploy",\s*"-c",\s*config\]\)/.test(runner),
+    "the runner deploys every object worker before Slate, from the gradual deploy's list",
   );
   assert(
     stampAt < deployAt && deployAt < probeAt,

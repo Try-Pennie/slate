@@ -99,6 +99,22 @@ object leaves each field out, and the line keeps its rules from before):
   met the first spent rung) leads again at once marked `spent`: its own walk proves the
   ladder spent, so it refuses with what it found rather than the next confirm walking
   the whole ladder again. A booking reads who is seated only when it saw a crowd.
+- **The whole ladder handed out at once (#3529).** A walker's claim carries the reads of
+  every rung below it from the same ladder read (`ClaimPlace.lower`, judged in memory, no
+  request), and the line releases them in the same pass as its own rung, top rung first,
+  each advisor once at the highest rung it is on. Load runs 37857243671 and 37863081340
+  booked a crowd with 13 or 14 free across three rungs in waves, a rung at a time, each
+  wave waiting about two seconds for a walker to claim the rung below; the last booking
+  landed near ten seconds and the rest timed out. When the read covered every rung below
+  (`lowerComplete`), the advisors on the deepest rung that brings somebody new are handed
+  out marked `deepest`, and that rung then stands for the ladder's last in their full
+  verdict, so the crowd is answered without a walk of the empty rungs. A handed confirm
+  inherits the epoch of the read it was handed from, which vouches for its `unlessFreed`.
+  Which confirm took the LAST advisor is the line's to say (`StartFrom.last`), never the
+  advisor's place in the rung's read: round robin orders a read however it likes, and
+  load run 37871606406 read tier one with a top rung advisor at its end, who was handed on
+  the top rung, so no confirm on tier one stood at its read's end, nobody declared the
+  time full, and 85 of 100 waited out the line after all 14 free advisors had booked.
 - **A full verdict that a freed claim voids (#3529).** A booking on the ladder's last
   advisor does not prove the slot full when the walk skipped an advisor only for a
   claim, since that claim may have ended without a booking and freed them. Before #3529
@@ -106,9 +122,11 @@ object leaves each field out, and the line keeps its rules from before):
   was free. Now it is full only `unlessFreed`: the line applies it when no claim has
   ended unbooked since that confirm's first read through the line (its `epoch` then),
   which in a crowd is the usual case, and otherwise hands one confirm the turn to walk.
-  A confirm that skipped a rung it never read (handed a lower rung, or a walk down
-  resumed below one it passed for claims) has nothing to vouch with, so its booking is
-  never full and a walk that finds nobody parks rather than refusing. One judge,
+  A confirm that skipped a rung it never read vouches with the read that did see it: a
+  confirm handed a lower rung inherits the epoch of the read it was handed from, and a
+  walk down resumed below a rung it passed for claims keeps its own first read's, so
+  either is full `unlessFreed` like any other; the line voids the verdict when it holds no
+  read to vouch with, and then a walk that finds nobody parks rather than refusing. One judge,
   `claimsMayFree`, decides both the full verdict and whether a lost race has nowhere
   left to walk. A bucket move never walks past claims (`HeldTurn.move`), and a walk
   that stands asks whether the person already sits at the instant before refusing.
@@ -262,8 +280,12 @@ server whose directory answer is not fresh reads the grouping itself at once
 (`readOwn`, the coalesced `warmPoolKeys` it already ran after the response), inside the
 confirm's own wait, and keys by ladder; its `line_group_source` says `local`, as for any
 grouping the server read itself. The same reads, earlier, under a local read's own minute,
-so no staleness is extended. It starts only once the directory has answered, so a slow
-directory can still leave it too late (#3558).
+so no staleness is extended. It starts as soon as the directory answers with nothing
+fresh, or once the directory has not answered within its head start
+(`POOL_GROUPING_OWN_READ_AFTER_MS`, 150ms), whichever comes first, and whichever of the two
+lands a fresh grouping first answers (#3558). Load run 37952874789 is why: the directory
+held nothing fresh and answered slowly, own reads started 0.1 to 1.2s in, and 56 of a
+crowd's 100 confirms ran out of their wait and keyed by code.
 
 Every confirm's `confirm answered` line carries `line_group_source`, its own wait for
 the fetch (counted from its line key, so a fetch that answered during the ceilings reads

@@ -24,6 +24,10 @@ import {
   assembleBurstPlan,
   dropLadders,
   dropSlotFit,
+  hardRefusalFit,
+  measuredFree,
+  chooseRefusalSlots,
+  HARD_REFUSAL_MIN_FREE,
   ladderCandidates,
   ladderFreeFrom,
   ladderRosterIds,
@@ -256,6 +260,61 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
     DROP_SLOTS_TO_MEASURE >= TWO_WORKING_DAYS_OF_SLOTS,
     `the drop burst's planner measures at least ${TWO_WORKING_DAYS_OF_SLOTS} offered times (got ${DROP_SLOTS_TO_MEASURE})`,
   );
+}
+
+// #3565: one refusal crowd a run must meet many advisors free across the ladder, the case
+// the whole ladder release exists for and the one that failed with 14 free (run
+// 37871606406). A slot fits when at least HARD_REFUSAL_MIN_FREE are free across the ladder
+// and some of them only below the requested rung; a crowd of 100 is always larger.
+{
+  eq(hardRefusalFit({ rung0Free: 4, ladderFree: 14 }, HARD_REFUSAL_MIN_FREE), null, "hard refusal: 14 free with 10 below the top rung fits");
+  const few = hardRefusalFit({ rung0Free: 2, ladderFree: 3 }, HARD_REFUSAL_MIN_FREE);
+  assert(few !== null && few.includes("3 free"), `hard refusal: 3 free across the ladder does not fit, and says how many (got ${few})`);
+  const topOnly = hardRefusalFit({ rung0Free: 12, ladderFree: 12 }, HARD_REFUSAL_MIN_FREE);
+  assert(topOnly !== null && topOnly.includes("below"), `hard refusal: every free advisor on the requested rung does not fit, since nothing walks (got ${topOnly})`);
+  assert(HARD_REFUSAL_MIN_FREE >= 5, `hard refusal: the floor is at least five free (got ${HARD_REFUSAL_MIN_FREE})`);
+  // A slot whose free counts were not measured is never judged as if they were (a null read
+  // as a number compares false and passes as fitting, or as zero).
+  eq(JSON.stringify(measuredFree({ ladderRoster: 16, rung0Free: 4, ladderFree: 14 })), JSON.stringify({ rung0Free: 4, ladderFree: 14 }), "measured: both counts read pass through");
+  eq(measuredFree({ ladderRoster: 16, rung0Free: null, ladderFree: 14 }), null, "measured: a missing top rung count is not a measurement");
+  eq(measuredFree({ ladderRoster: 16, rung0Free: 4, ladderFree: null }), null, "measured: a missing ladder count is not a measurement");
+}
+
+// #3565: the refusal control's choice, every outcome driven through injected reads.
+{
+  const HOUR = 3_600_000;
+  const at = (h: number) => new Date(Date.UTC(2026, 9, 12, h)).toISOString();
+  const times = [at(14), at(15), at(16), at(17), at(18)];
+  const opts = { bursts: 2, gapMs: HOUR, toMeasure: 72, minFree: HARD_REFUSAL_MIN_FREE };
+  const io = (free: Record<string, { rung0Free: number | null; ladderFree: number | null }>, offered: Record<string, string[] | null>) => ({
+    offered: async (l: string) => (offered[l] ? { times: offered[l]!, shownTiers: ["ultra_high", "ultra_high"] as [string | null, string | null] } : { why: `${l}: availability did not answer` }),
+    free: async (_l: string, t: string) => free[t] ?? { rung0Free: 2, ladderFree: 3 },
+    label: (l: string) => l,
+  });
+  const hardAt16 = { [at(16)]: { rung0Free: 4, ladderFree: 14 } };
+  const chosen = await chooseRefusalSlots(["500"], io(hardAt16, { "500": times }), opts);
+  assert(chosen.kind === "chosen" && chosen.slots[0] === at(16), `refusal choice: the first crowd takes the time fit for the hard crowd (got ${JSON.stringify(chosen)})`);
+  // Run 37960351698's seed offered no slot with ten free on a sixteen advisor ladder, so the
+  // hard crowd takes the time with the MOST free across the ladder, over the floor, not the
+  // first over it: the hardest crowd the seed offers on every run.
+  const most = await chooseRefusalSlots(["500"], io({ [at(18)]: { rung0Free: 2, ladderFree: 6 }, [at(15)]: { rung0Free: 3, ladderFree: 9 }, [at(14)]: { rung0Free: 1, ladderFree: 7 } }, { "500": times }), opts);
+  assert(most.kind === "chosen" && most.slots[0] === at(15), `refusal choice: the time with the most free across the ladder is the hard crowd's (got ${JSON.stringify(most)})`);
+  assert(chosen.kind === "chosen" && chosen.slots[1] === at(18) && chosen.slots.length === 2, `refusal choice: the other takes the furthest time an hour from it (got ${JSON.stringify(chosen)})`);
+
+  const noHard = await chooseRefusalSlots(["500"], io({}, { "500": times }), opts);
+  assert(noHard.kind === "no-hard-slot" && noHard.misses.length === times.length, `refusal choice: no time fit for the hard crowd is its own outcome, naming every miss (got ${JSON.stringify(noHard)})`);
+
+  const unmeasured = await chooseRefusalSlots(["500"], io({ [at(18)]: { rung0Free: null, ladderFree: 14 } }, { "500": [at(18)] }), opts);
+  assert(unmeasured.kind === "no-hard-slot" && unmeasured.misses[0]!.includes("not measured"), `refusal choice: an unmeasured slot is a miss that says so, never a fit (got ${JSON.stringify(unmeasured)})`);
+
+  const unanswered = await chooseRefusalSlots(["500", "520"], io(hardAt16, {}), opts);
+  assert(unanswered.kind === "unanswered" && unanswered.reads.length === 2, `refusal choice: no ladder answering is the deployment's outcome (got ${JSON.stringify(unanswered)})`);
+
+  const crowded = await chooseRefusalSlots(["500"], io({ [at(16)]: { rung0Free: 4, ladderFree: 14 } }, { "500": [at(16), at(16) ] }), opts);
+  assert(crowded.kind === "no-spacing", `refusal choice: a hard time with nothing an hour from it is a spacing outcome, never blamed on the hard crowd (got ${JSON.stringify(crowded)})`);
+
+  const second = await chooseRefusalSlots(["500", "520"], io(hardAt16, { "500": [at(14)], "520": times }), opts);
+  assert(second.kind === "chosen" && second.ladder === "520", `refusal choice: a ladder with nothing fit gives way to the next (got ${JSON.stringify(second)})`);
 }
 
 finish();

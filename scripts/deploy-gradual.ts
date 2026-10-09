@@ -7,9 +7,9 @@
 // probes again, or restores the version that was serving. Last, once Slate is promoted
 // and healthy, it deploys the log tail worker (slate-log-tail, #3160) whole: that
 // worker binds to an entrypoint of Slate's (#3191), so it can only follow Slate, never
-// lead it. First of all, before anything of Slate's is uploaded, it deploys the confirm
-// line worker (slate-confirm-line, #3500), which Slate's CONFIRM_LINE binding names, so it
-// must lead. Every decision is in scripts/lib/gradual-deploy.ts and pinned offline by
+// lead it. First of all, before anything of Slate's is uploaded, it deploys the object
+// workers (the confirm line's, #3500, and the burst limiter's, #3555), which Slate's
+// bindings name, so they must lead. Every decision is in scripts/lib/gradual-deploy.ts and pinned offline by
 // scripts/test-gradual-deploy.ts; this file is only I/O.
 //
 //   node --experimental-strip-types scripts/deploy-gradual.ts            # deploy
@@ -199,8 +199,8 @@ const ops: GradualOps = {
     }
     return runLoud("pnpm", ["exec", "wrangler", "deploy", "-c", "wrangler.log-tail.jsonc"]);
   },
-  // #3500: the confirm line worker, in the same environment as the Slate it serves.
-  lineWorker: async () => runLoud("pnpm", ["exec", "wrangler", "deploy", "-c", "wrangler.confirm-line.jsonc", ...wranglerEnv]),
+  // #3500, #3555: an object worker, in the same environment as the Slate it serves.
+  objectWorker: async (config) => runLoud("pnpm", ["exec", "wrangler", "deploy", "-c", config, ...wranglerEnv]),
   isCronStandby: async (id) => isCronStandby(id),
   record: (event) => {
     if (stateFile) appendFileSync(stateFile, `${event}\n`, "utf8");
