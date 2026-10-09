@@ -26,6 +26,7 @@ import {
   dropSlotFit,
   hardRefusalFit,
   measuredFree,
+  chooseRefusalSlots,
   HARD_REFUSAL_MIN_FREE,
   ladderCandidates,
   ladderFreeFrom,
@@ -277,6 +278,38 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
   eq(JSON.stringify(measuredFree({ ladderRoster: 16, rung0Free: 4, ladderFree: 14 })), JSON.stringify({ rung0Free: 4, ladderFree: 14 }), "measured: both counts read pass through");
   eq(measuredFree({ ladderRoster: 16, rung0Free: null, ladderFree: 14 }), null, "measured: a missing top rung count is not a measurement");
   eq(measuredFree({ ladderRoster: 16, rung0Free: 4, ladderFree: null }), null, "measured: a missing ladder count is not a measurement");
+}
+
+// #3565: the refusal control's choice, every outcome driven through injected reads.
+{
+  const HOUR = 3_600_000;
+  const at = (h: number) => new Date(Date.UTC(2026, 9, 12, h)).toISOString();
+  const times = [at(14), at(15), at(16), at(17), at(18)];
+  const opts = { bursts: 2, gapMs: HOUR, toMeasure: 72, minFree: HARD_REFUSAL_MIN_FREE };
+  const io = (free: Record<string, { rung0Free: number | null; ladderFree: number | null }>, offered: Record<string, string[] | null>) => ({
+    offered: async (l: string) => (offered[l] ? { times: offered[l]!, shownTiers: ["ultra_high", "ultra_high"] as [string | null, string | null] } : { why: `${l}: availability did not answer` }),
+    free: async (_l: string, t: string) => free[t] ?? { rung0Free: 2, ladderFree: 3 },
+    label: (l: string) => l,
+  });
+  const hardAt16 = { [at(16)]: { rung0Free: 4, ladderFree: 14 } };
+  const chosen = await chooseRefusalSlots(["500"], io(hardAt16, { "500": times }), opts);
+  assert(chosen.kind === "chosen" && chosen.slots[0] === at(16), `refusal choice: the first crowd takes the furthest time fit for the hard crowd (got ${JSON.stringify(chosen)})`);
+  assert(chosen.kind === "chosen" && chosen.slots[1] === at(18) && chosen.slots.length === 2, `refusal choice: the other takes the furthest time an hour from it (got ${JSON.stringify(chosen)})`);
+
+  const noHard = await chooseRefusalSlots(["500"], io({}, { "500": times }), opts);
+  assert(noHard.kind === "no-hard-slot" && noHard.misses.length === times.length, `refusal choice: no time fit for the hard crowd is its own outcome, naming every miss (got ${JSON.stringify(noHard)})`);
+
+  const unmeasured = await chooseRefusalSlots(["500"], io({ [at(18)]: { rung0Free: null, ladderFree: 14 } }, { "500": [at(18)] }), opts);
+  assert(unmeasured.kind === "no-hard-slot" && unmeasured.misses[0]!.includes("not measured"), `refusal choice: an unmeasured slot is a miss that says so, never a fit (got ${JSON.stringify(unmeasured)})`);
+
+  const unanswered = await chooseRefusalSlots(["500", "520"], io(hardAt16, {}), opts);
+  assert(unanswered.kind === "unanswered" && unanswered.reads.length === 2, `refusal choice: no ladder answering is the deployment's outcome (got ${JSON.stringify(unanswered)})`);
+
+  const crowded = await chooseRefusalSlots(["500"], io({ [at(16)]: { rung0Free: 4, ladderFree: 14 } }, { "500": [at(16), at(16) ] }), opts);
+  assert(crowded.kind === "no-spacing", `refusal choice: a hard time with nothing an hour from it is a spacing outcome, never blamed on the hard crowd (got ${JSON.stringify(crowded)})`);
+
+  const second = await chooseRefusalSlots(["500", "520"], io(hardAt16, { "500": [at(14)], "520": times }), opts);
+  assert(second.kind === "chosen" && second.ladder === "520", `refusal choice: a ladder with nothing fit gives way to the next (got ${JSON.stringify(second)})`);
 }
 
 finish();

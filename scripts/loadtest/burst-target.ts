@@ -33,7 +33,7 @@ import { eligibleFromRoster } from "../../src/lib/availability/pool.ts";
 import { withoutLowCarriers } from "../../src/lib/availability/low-exclusion.ts";
 import { rungExcludesLow, tierLadder } from "../../src/lib/routing/tiers.ts";
 import type { Attributes } from "../../src/lib/db/types.ts";
-import { burstRequestsPerDriver, type BurstCapacity, type BurstKind, type BurstPlan, type PlannedBurst } from "./book-plan.ts";
+import { burstRequestsPerDriver, chooseBurstSlots, type BurstCapacity, type BurstKind, type BurstPlan, type PlannedBurst } from "./book-plan.ts";
 
 /** One bucket code and how many agents its pool resolves to. */
 export interface PoolDepth {
@@ -257,6 +257,66 @@ export function hardRefusalFit(free: { rung0Free: number; ladderFree: number }, 
   if (free.ladderFree < min) return `the ladder has ${free.ladderFree} free, under the ${min} the hard refusal crowd needs`;
   if (free.ladderFree <= free.rung0Free) return "every free advisor is on the requested rung, so nobody below it would be walked to";
   return null;
+}
+
+/** What the refusal control's choice came to (#3565), one outcome per exit the setup can give. */
+export type RefusalChoice<L> =
+  | { kind: "chosen"; ladder: L; slots: string[]; shownTiers: [string | null, string | null] }
+  /** Availability answered for none of the ladders asked (exit 2, the deployment). */
+  | { kind: "unanswered"; reads: string[] }
+  /** The ladders answered and no time fits the hard crowd (exit 11, the seed or roster). */
+  | { kind: "no-hard-slot"; misses: string[]; reads: string[] }
+  /** A hard time was found, and the other refusal crowds could not be spaced from it (exit 3). */
+  | { kind: "no-spacing"; reads: string[] };
+
+/**
+ * The refusal control's ladder and slots (#3565): the FIRST refusal crowd takes the furthest
+ * offered time fit for the hard crowd (`hardRefusalFit`), so every run meets many advisors
+ * free across the ladder; the others take the furthest times at least the gap from it and
+ * from each other. Ladders are asked in order and the first that yields a full set wins.
+ * The reads are injected, so every outcome is driven offline.
+ */
+export async function chooseRefusalSlots<L>(
+  ladders: readonly L[],
+  io: {
+    offered(ladder: L): Promise<{ times: string[]; shownTiers: [string | null, string | null] } | { why: string }>;
+    free(ladder: L, slot: string): Promise<{ rung0Free: number | null; ladderFree: number | null }>;
+    label(ladder: L): string;
+  },
+  opts: { bursts: number; gapMs: number; toMeasure: number; minFree: number },
+): Promise<RefusalChoice<L>> {
+  const reads: string[] = [];
+  const misses: string[] = [];
+  let hardFound = false;
+  for (const ladder of ladders) {
+    const shared = await io.offered(ladder);
+    if ("why" in shared) {
+      reads.push(shared.why);
+      continue;
+    }
+    const times = shared.times
+      .filter((t) => Number.isFinite(Date.parse(t)))
+      .sort((a, b) => Date.parse(b) - Date.parse(a))
+      .slice(0, opts.toMeasure);
+    let hard: string | null = null;
+    for (const t of times) {
+      const free = measuredFree(await io.free(ladder, t));
+      const why = free ? hardRefusalFit(free, opts.minFree) : "who is free there was not measured";
+      if (why === null) {
+        hard = t;
+        break;
+      }
+      misses.push(`${io.label(ladder)} at ${t}: ${why}`);
+    }
+    if (hard === null) continue;
+    hardFound = true;
+    const apart = shared.times.filter((t) => Number.isFinite(Date.parse(t)) && Math.abs(Date.parse(t) - Date.parse(hard!)) >= opts.gapMs);
+    const rest = opts.bursts > 1 ? chooseBurstSlots(apart, opts.bursts - 1, opts.gapMs) : [];
+    if (rest !== null) return { kind: "chosen", ladder, slots: [hard, ...rest], shownTiers: shared.shownTiers };
+  }
+  if (reads.length === ladders.length) return { kind: "unanswered", reads };
+  if (!hardFound) return { kind: "no-hard-slot", misses, reads };
+  return { kind: "no-spacing", reads };
 }
 
 /**

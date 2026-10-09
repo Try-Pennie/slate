@@ -537,6 +537,24 @@ async function ownReadFallback() {
     eq(w.ownReads[0], T0 + POOL_GROUPING_OWN_READ_AFTER_MS, "slow directory: started once the directory had not answered within its head start");
   }
   {
+    // An own read that fails before a slow directory answers leaves the directory's answer
+    // to stand once it arrives, said as itself, and logged; never a reading made up first.
+    const w = readerWorld({ answer: answering(null), answerAfterMs: 400, ownRead: { ms: 50, lands: false } });
+    const warned: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...args: unknown[]) => warned.push(String(args[0]));
+    let source: string;
+    try {
+      const reading = w.reader.ensure();
+      await w.advance(POOL_GROUPING_FETCH_MS);
+      source = (await reading).source;
+    } finally {
+      console.warn = realWarn;
+    }
+    eq(source, "absent", "slow directory, failed own read: the directory's answer stands once it arrives");
+    assert(warned.some((l) => l.includes("own read failed") && l.includes('directory="unanswered"')), `slow directory, failed own read: logged as failing before the directory answered (got ${JSON.stringify(warned)})`);
+  }
+  {
     // A directory that answers fresh inside the head start costs no own read at all.
     const w = readerWorld({ answer: answering(groupingSnapshotOf(ENTRIES, T0 - 5_000)), answerAfterMs: 40, ownRead: { ms: 200, lands: true } });
     const reading = w.reader.ensure();
