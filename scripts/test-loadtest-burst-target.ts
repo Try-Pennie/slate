@@ -25,6 +25,7 @@ import {
   dropLadders,
   dropSlotFit,
   hardRefusalFit,
+  measuredFree,
   HARD_REFUSAL_MIN_FREE,
   ladderCandidates,
   ladderFreeFrom,
@@ -271,6 +272,11 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
   const topOnly = hardRefusalFit({ rung0Free: 12, ladderFree: 12 }, HARD_REFUSAL_MIN_FREE);
   assert(topOnly !== null && topOnly.includes("below"), `hard refusal: every free advisor on the requested rung does not fit, since nothing walks (got ${topOnly})`);
   assert(HARD_REFUSAL_MIN_FREE >= 10, `hard refusal: the floor is at least ten free (got ${HARD_REFUSAL_MIN_FREE})`);
+  // A slot whose free counts were not measured is never judged as if they were (a null read
+  // as a number compares false and passes as fitting, or as zero).
+  eq(JSON.stringify(measuredFree({ ladderRoster: 16, rung0Free: 4, ladderFree: 14 })), JSON.stringify({ rung0Free: 4, ladderFree: 14 }), "measured: both counts read pass through");
+  eq(measuredFree({ ladderRoster: 16, rung0Free: null, ladderFree: 14 }), null, "measured: a missing top rung count is not a measurement");
+  eq(measuredFree({ ladderRoster: 16, rung0Free: 4, ladderFree: null }), null, "measured: a missing ladder count is not a measurement");
 }
 
 finish();

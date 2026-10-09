@@ -243,6 +243,11 @@ export function dropSlotFit(
  */
 export const HARD_REFUSAL_MIN_FREE = 10;
 
+/** A slot's two free counts when both were measured, or null, so neither is ever judged as a number it is not. */
+export function measuredFree(c: { rung0Free: number | null; ladderFree: number | null }): { rung0Free: number; ladderFree: number } | null {
+  return typeof c.rung0Free === "number" && typeof c.ladderFree === "number" ? { rung0Free: c.rung0Free, ladderFree: c.ladderFree } : null;
+}
+
 /**
  * Why a slot cannot host the hard refusal crowd (#3565), or null when it can: at least `min`
  * free across the ladder, and some of them free only below the requested rung, or nothing

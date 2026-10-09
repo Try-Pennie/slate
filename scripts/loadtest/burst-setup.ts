@@ -81,6 +81,7 @@ import {
   dropLadders,
   dropSlotFit,
   hardRefusalFit,
+  measuredFree,
   HARD_REFUSAL_MIN_FREE,
   ladderCandidates,
   ladderFreeFrom,
@@ -307,6 +308,9 @@ if (refusalAsk.length === 0) {
 
 const refusalReads: string[] = [];
 const hardMisses: string[] = [];
+// Whether any ladder offered a time fit for the hard crowd, so a plan that failed only on
+// spacing the other refusal crowds is never blamed on the hard crowd's free advisors.
+let hardFound = false;
 let refusal: LadderCandidate | null = null;
 let refusalSlots: string[] | null = null;
 let refusalTiers: [string | null, string | null] = [null, null];
@@ -325,8 +329,8 @@ for (const c of refusalAsk) {
     .slice(0, REFUSAL_SLOTS_TO_MEASURE);
   let hard: string | null = null;
   for (const t of times) {
-    const capacity = await measuredCapacity(c, t);
-    const why = hardRefusalFit({ rung0Free: capacity.rung0Free!, ladderFree: capacity.ladderFree! }, HARD_REFUSAL_MIN_FREE);
+    const free = measuredFree(await measuredCapacity(c, t));
+    const why = free ? hardRefusalFit(free, HARD_REFUSAL_MIN_FREE) : "who is free there was not measured";
     if (why === null) {
       hard = t;
       break;
@@ -334,6 +338,7 @@ for (const c of refusalAsk) {
     hardMisses.push(`${c.code} at ${t}: ${why}`);
   }
   if (hard === null) continue;
+  hardFound = true;
   const apart = shared.times.filter((t) => Math.abs(Date.parse(t) - Date.parse(hard!)) >= BURST_SLOT_GAP_MS);
   const rest = REFUSAL_BURSTS > 1 ? chooseBurstSlots(apart, REFUSAL_BURSTS - 1, BURST_SLOT_GAP_MS) : [];
   if (rest !== null) {
@@ -343,7 +348,7 @@ for (const c of refusalAsk) {
     break;
   }
 }
-if ((refusal === null || refusalSlots === null) && hardMisses.length > 0 && refusalReads.length < refusalAsk.length) {
+if ((refusal === null || refusalSlots === null) && !hardFound && hardMisses.length > 0 && refusalReads.length < refusalAsk.length) {
   // Its own exit code: the ladders answered, and no time offered the hard crowd's free
   // advisors, which is the seed or the roster rather than the deployment (L11).
   console.error(
@@ -401,7 +406,8 @@ for (const c of dropAsk) {
     .slice(0, DROP_SLOTS_TO_MEASURE);
   for (const t of times) {
     const capacity = await measuredCapacity(c, t);
-    const why = dropSlotFit({ rung0Free: capacity.rung0Free!, ladderFree: capacity.ladderFree! }, DROP_CROWD, DROP_CAPACITY_HEADROOM);
+    const free = measuredFree(capacity);
+    const why = free ? dropSlotFit(free, DROP_CROWD, DROP_CAPACITY_HEADROOM) : "who is free there was not measured";
     if (why === null) {
       drop = { ladder: c, slot: t, capacity, shownTiers: shared.shownTiers };
       break;
