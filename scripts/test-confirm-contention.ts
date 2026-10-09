@@ -66,6 +66,7 @@ import {
   STACK_LOAD_RUN_PROFILE,
   STACK_PRODUCTION_PROFILE,
   RUN_37640583621,
+  ladder500,
   type Arrival,
   type BurstShape,
   type LoadProfile,
@@ -977,6 +978,22 @@ async function main() {
       );
       const ran = await replay(shape, LOAD_RUN_PROFILE, "shared", { olderClient: true });
       console.log(`${tag}: ${describe(got)}. The run's own code replayed: ${describe(ran)}`);
+    }
+    // #3529: load runs 37857243671 and 37863081340 planned their refusal bursts on a ladder
+    // with four free on the top rung and seven to fourteen across it, which the 2026-10-07
+    // run never met. The same bar, on burst 3's own arrivals with seven free.
+    for (const free of [["r0", "r1", "r2", "r3", "r6", "r7", "r8"], ["r0", "r1", "r2", "r3", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "r13", "r14"]]) {
+      const shape = { ...RUN_37640583621[2]!, label: `refusal control, ${free.length} free across the ladder`, rungs: ladder500(free) };
+      const tag = `#3529 burst bar (model, stack load run), ${shape.label}`;
+      const want = Math.min(new Set(Object.values(shape.rungs).flatMap((r) => r.free)).size, shape.arrivals.length);
+      const got = await replay(shape, STACK_LOAD_RUN_PROFILE, "shared");
+      console.log(`${tag}: ${describe(got)}`);
+      assert(!got.doubleBooked, `${tag}: no advisor is booked twice`);
+      assert(got.booked.length === want, `${tag}: every free advisor the crowd can fill is booked, ${want} (got ${describe(got)})`);
+      assert(Object.keys(got.others).every((k) => k === "SLOT_TAKEN"), `${tag}: everybody else is told the time is taken, never to retry (got ${describe(got)})`);
+      const lastBooked = maxOf(got.booked.map((b) => b.atMs));
+      const taken = got.others.SLOT_TAKEN;
+      assert(taken === undefined || taken.maxMs - lastBooked <= BURST_LOSER_LAG_MS, `${tag}: and told within ${BURST_LOSER_LAG_MS}ms of the last booking (got ${taken ? Math.round(taken.maxMs - lastBooked) : 0}ms)`);
     }
     // Control (L1): the bar can fail. Priced at the run's own database cost, with none of
     // the stack's cuts (every rung read with requests of its own, the save as the seven

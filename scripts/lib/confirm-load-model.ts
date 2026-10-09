@@ -554,7 +554,7 @@ const S = Array.from({ length: 44 }, (_, i) => `s${i}`);
 /** Every advisor any burst names, for the harness's user fixture. */
 export const LOAD_MODEL_ADVISORS: readonly string[] = [...R, ...S];
 
-const ladder500 = (free: readonly string[]): Record<string, BurstRung> => {
+export const ladder500 = (free: readonly string[]): Record<string, BurstRung> => {
   const rung = (members: string[]): BurstRung => ({ free: members.filter((id) => free.includes(id)), busy: members.filter((id) => !free.includes(id)) });
   return {
     "500": rung(R.slice(0, 6)),
