@@ -494,9 +494,10 @@ of a hundred, `8` no ladder can host the drop burst (a sibling, somebody on the 
 rung, a rung below, twice the crowd across the ladder, and not the refusal control's
 own), `9` no offered time fits the drop burst, naming what each measured slot lacked,
 `10` who is free at a slot could not be read, and `11` no offered time on the refusal
-control's ladders has `HARD_REFUSAL_MIN_FREE` (10) advisors free across the ladder with
-some below the requested rung, which the first refusal crowd now needs so every run meets
-the many free case the whole ladder release exists for (#3565). An empty burst file and a
+control's ladders has `HARD_REFUSAL_MIN_FREE` (5) advisors free across the ladder with some
+below the requested rung. The first refusal crowd takes the measured time with the MOST
+free over that floor, so every run meets the hardest crowd the seed offers (#3565); the
+seed rarely leaves ten free on the sixteen advisor ladder, so the floor is not ten. An empty burst file and a
 run with no burst leg are otherwise the same thing (L98).
 
 It also emits the DRIVER COUNT, from the app's own `DRIVERS` constant, and the BURST

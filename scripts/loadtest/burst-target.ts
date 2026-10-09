@@ -234,14 +234,16 @@ export function dropSlotFit(
 }
 
 /**
- * #3565: how many advisors one refusal crowd of each run must meet free across its ladder.
+ * #3565: the fewest advisors one refusal crowd of each run may meet free across its ladder.
  * The case the whole ladder release (#3529) exists for is many free over several rungs, and
  * it is the one that failed (14 free on run 37871606406: all booked, 85 told to retry); a
- * slot with 3 free passes without reaching it, so a run that drew only easy slots could
- * pass three times while the hard case regressed. The refusal ladder holds 16, so ten is
- * reachable on a seeded roster and still several rungs' worth.
+ * slot with 3 free passes without reaching it. Ten was the first floor, and run 37960351698's
+ * seed offered no slot with ten on the sixteen advisor ladder (twelve meetings a day each,
+ * five zones), so the hard crowd takes the slot with the MOST free over this floor
+ * (`chooseRefusalSlots`): the hardest crowd the seed offers, every run. Thirteen free is held
+ * offline on every run of the suite (`scripts/test-confirm-contention.ts`).
  */
-export const HARD_REFUSAL_MIN_FREE = 10;
+export const HARD_REFUSAL_MIN_FREE = 5;
 
 /** A slot's two free counts when both were measured, or null, so neither is ever judged as a number it is not. */
 export function measuredFree(c: { rung0Free: number | null; ladderFree: number | null }): { rung0Free: number; ladderFree: number } | null {
@@ -270,10 +272,10 @@ export type RefusalChoice<L> =
   | { kind: "no-spacing"; reads: string[] };
 
 /**
- * The refusal control's ladder and slots (#3565): the FIRST refusal crowd takes the furthest
- * offered time fit for the hard crowd (`hardRefusalFit`), so every run meets many advisors
- * free across the ladder; the others take the furthest times at least the gap from it and
- * from each other. Ladders are asked in order and the first that yields a full set wins.
+ * The refusal control's ladder and slots (#3565): the FIRST refusal crowd takes the offered
+ * time with the most advisors free across the ladder among those fit for the hard crowd
+ * (`hardRefusalFit`), so every run meets the hardest crowd the seed offers; the others take
+ * the furthest times at least the gap from it and from each other. Ladders are asked in order and the first that yields a full set wins.
  * The reads are injected, so every outcome is driven offline.
  */
 export async function chooseRefusalSlots<L>(
@@ -298,15 +300,19 @@ export async function chooseRefusalSlots<L>(
       .filter((t) => Number.isFinite(Date.parse(t)))
       .sort((a, b) => Date.parse(b) - Date.parse(a))
       .slice(0, opts.toMeasure);
+    // Every time measured, and the one with the most free across the ladder kept (the
+    // furthest of equals, as the times run furthest first).
     let hard: string | null = null;
+    let most = -1;
     for (const t of times) {
       const free = measuredFree(await io.free(ladder, t));
       const why = free ? hardRefusalFit(free, opts.minFree) : "who is free there was not measured";
-      if (why === null) {
+      if (why === null && free!.ladderFree > most) {
         hard = t;
-        break;
+        most = free!.ladderFree;
+      } else if (why !== null) {
+        misses.push(`${io.label(ladder)} at ${t}: ${why}`);
       }
-      misses.push(`${io.label(ladder)} at ${t}: ${why}`);
     }
     if (hard === null) continue;
     hardFound = true;

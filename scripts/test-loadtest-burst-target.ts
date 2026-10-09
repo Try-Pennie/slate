@@ -268,11 +268,11 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
 // and some of them only below the requested rung; a crowd of 100 is always larger.
 {
   eq(hardRefusalFit({ rung0Free: 4, ladderFree: 14 }, HARD_REFUSAL_MIN_FREE), null, "hard refusal: 14 free with 10 below the top rung fits");
-  const few = hardRefusalFit({ rung0Free: 2, ladderFree: 5 }, HARD_REFUSAL_MIN_FREE);
-  assert(few !== null && few.includes("5 free"), `hard refusal: 5 free across the ladder does not fit, and says how many (got ${few})`);
+  const few = hardRefusalFit({ rung0Free: 2, ladderFree: 3 }, HARD_REFUSAL_MIN_FREE);
+  assert(few !== null && few.includes("3 free"), `hard refusal: 3 free across the ladder does not fit, and says how many (got ${few})`);
   const topOnly = hardRefusalFit({ rung0Free: 12, ladderFree: 12 }, HARD_REFUSAL_MIN_FREE);
   assert(topOnly !== null && topOnly.includes("below"), `hard refusal: every free advisor on the requested rung does not fit, since nothing walks (got ${topOnly})`);
-  assert(HARD_REFUSAL_MIN_FREE >= 10, `hard refusal: the floor is at least ten free (got ${HARD_REFUSAL_MIN_FREE})`);
+  assert(HARD_REFUSAL_MIN_FREE >= 5, `hard refusal: the floor is at least five free (got ${HARD_REFUSAL_MIN_FREE})`);
   // A slot whose free counts were not measured is never judged as if they were (a null read
   // as a number compares false and passes as fitting, or as zero).
   eq(JSON.stringify(measuredFree({ ladderRoster: 16, rung0Free: 4, ladderFree: 14 })), JSON.stringify({ rung0Free: 4, ladderFree: 14 }), "measured: both counts read pass through");
@@ -293,7 +293,12 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
   });
   const hardAt16 = { [at(16)]: { rung0Free: 4, ladderFree: 14 } };
   const chosen = await chooseRefusalSlots(["500"], io(hardAt16, { "500": times }), opts);
-  assert(chosen.kind === "chosen" && chosen.slots[0] === at(16), `refusal choice: the first crowd takes the furthest time fit for the hard crowd (got ${JSON.stringify(chosen)})`);
+  assert(chosen.kind === "chosen" && chosen.slots[0] === at(16), `refusal choice: the first crowd takes the time fit for the hard crowd (got ${JSON.stringify(chosen)})`);
+  // Run 37960351698's seed offered no slot with ten free on a sixteen advisor ladder, so the
+  // hard crowd takes the time with the MOST free across the ladder, over the floor, not the
+  // first over it: the hardest crowd the seed offers on every run.
+  const most = await chooseRefusalSlots(["500"], io({ [at(18)]: { rung0Free: 2, ladderFree: 6 }, [at(15)]: { rung0Free: 3, ladderFree: 9 }, [at(14)]: { rung0Free: 1, ladderFree: 7 } }, { "500": times }), opts);
+  assert(most.kind === "chosen" && most.slots[0] === at(15), `refusal choice: the time with the most free across the ladder is the hard crowd's (got ${JSON.stringify(most)})`);
   assert(chosen.kind === "chosen" && chosen.slots[1] === at(18) && chosen.slots.length === 2, `refusal choice: the other takes the furthest time an hour from it (got ${JSON.stringify(chosen)})`);
 
   const noHard = await chooseRefusalSlots(["500"], io({}, { "500": times }), opts);
