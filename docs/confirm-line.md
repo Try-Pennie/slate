@@ -110,6 +110,11 @@ object leaves each field out, and the line keeps its rules from before):
   out marked `deepest`, and that rung then stands for the ladder's last in their full
   verdict, so the crowd is answered without a walk of the empty rungs. A handed confirm
   inherits the epoch of the read it was handed from, which vouches for its `unlessFreed`.
+  Which confirm took the LAST advisor is the line's to say (`StartFrom.last`), never the
+  advisor's place in the rung's read: round robin orders a read however it likes, and
+  load run 37871606406 read tier one with a top rung advisor at its end, who was handed on
+  the top rung, so no confirm on tier one stood at its read's end, nobody declared the
+  time full, and 85 of 100 waited out the line after all 14 free advisors had booked.
 - **A full verdict that a freed claim voids (#3529).** A booking on the ladder's last
   advisor does not prove the slot full when the walk skipped an advisor only for a
   claim, since that claim may have ended without a booking and freed them. Before #3529

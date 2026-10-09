@@ -187,6 +187,13 @@ export interface StartFrom {
    * free below this rung, so for this confirm the rung stands for the ladder's last.
    */
   deepest?: true;
+  /**
+   * #3529: this is the last advisor the read it was handed from had unclaimed: every other
+   * one on it is claimed or was handed before it. A rung's read ends wherever round robin put
+   * its people, often with somebody a rung above holds and is handed on, so a confirm's place
+   * in its read cannot say it took the last one (load run 37871606406); this can.
+   */
+  last?: true;
 }
 
 /**
@@ -201,7 +208,8 @@ export function readStartFrom(x: unknown): StartFrom | undefined {
   if (typeof advisor !== "string" || advisor.length === 0) return undefined;
   if (!Array.isArray(read) || !read.every((id) => typeof id === "string") || !read.includes(advisor)) return undefined;
   const deepest = (x as Record<string, unknown>).deepest === true;
-  return { rung, advisor, read: read as string[], ...(deepest ? { deepest: true as const } : {}) };
+  const last = (x as Record<string, unknown>).last === true;
+  return { rung, advisor, read: read as string[], ...(deepest ? { deepest: true as const } : {}), ...(last ? { last: true as const } : {}) };
 }
 
 /**
@@ -593,6 +601,8 @@ export function makeConfirmQueue<T>(
         out.push({ rung: r.rung, advisor: id, read: [...r.read], ...(r.rung === deepest ? { deepest: true as const } : {}) });
       }
     }
+    // The final one is the last unclaimed advisor the read holds (`StartFrom.last`).
+    if (out.length > 0) out[out.length - 1] = { ...out[out.length - 1]!, last: true };
     return out;
   };
   // #3529: whether the frontier's deepest rung has one below it that no read covers.

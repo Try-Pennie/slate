@@ -1048,6 +1048,44 @@ async function main() {
     first.done({ full: false }, "booked");
   }
   {
+    // #3529: the line marks the LAST advisor it hands out (`StartFrom.last`), because a rung's
+    // read ends wherever round robin put its people: load run 37871606406 read tier one with
+    // an advisor of the top rung LAST, the line handed that one on the top rung, and nobody
+    // handed tier one stood at its read's end, so nobody could say the time was full and 85
+    // of 100 waited out the line. Only the final hand out carries it, wherever it sits.
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    for (let i = 0; i < 3; i++) void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a", "b"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["c", "b"] }], lowerComplete: true });
+    await tick();
+    const marks = seen.map((t) => (t.kind === "lead" && t.start ? `${t.start.rung}:${t.start.advisor}:${t.start.last === true}` : t.kind));
+    eq(marks.join(","), "0:b:false,1:c:true", "last: the final hand out is marked, though its rung's read ends with an advisor handed above");
+    for (const t of seen) if (t.kind === "lead") t.done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+  {
+    // #3529: and it goes to whoever is handed that advisor, so a release cut short by the cap
+    // or by too few waiting hands no mark until the final advisor is actually handed.
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a", "b"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["c"] }], lowerComplete: true });
+    await tick();
+    const later: QueueTurn<string>[] = [];
+    for (let i = 0; i < 2; i++) void q.enter("slot").then((t) => later.push(t));
+    await tick();
+    const marks = [...seen, ...later].map((t) => (t.kind === "lead" && t.start ? `${t.start.rung}:${t.start.advisor}:${t.start.last === true}` : t.kind));
+    eq(marks.join(","), "0:b:false,1:c:true", "last: one waiting is handed b unmarked, and c, handed later, carries the mark");
+    for (const t of [...seen, ...later]) if (t.kind === "lead") t.done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+  {
     // An advisor found busy on a lower rung is never handed again, there or above.
     const { timer } = manualTimer();
     const q = makeConfirmQueue<string>({ timer });

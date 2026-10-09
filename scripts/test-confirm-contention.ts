@@ -68,6 +68,7 @@ import {
   RUN_37640583621,
   ladder500,
   type Arrival,
+  type BurstRung,
   type BurstShape,
   type LoadProfile,
 } from "./lib/confirm-load-model.ts";
@@ -982,8 +983,18 @@ async function main() {
     // #3529: load runs 37857243671 and 37863081340 planned their refusal bursts on a ladder
     // with four free on the top rung and seven to fourteen across it, which the 2026-10-07
     // run never met. The same bar, on burst 3's own arrivals with seven free.
-    for (const free of [["r0", "r1", "r2", "r3", "r6", "r7", "r8"], ["r0", "r1", "r2", "r3", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "r13", "r14"]]) {
-      const shape = { ...RUN_37640583621[2]!, label: `refusal control, ${free.length} free across the ladder`, rungs: ladder500(free) };
+    // Run 37871606406 met the thirteen free case with each rung read in round robin order, so
+    // a lower rung's LAST advisor was one the rung above also holds and the line hands it
+    // there: the third case reads every rung below the top in reverse to put one there.
+    const thirteen = ["r0", "r1", "r2", "r3", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "r13", "r14"];
+    const reversedBelow = (rungs: Record<string, BurstRung>): Record<string, BurstRung> =>
+      Object.fromEntries(Object.entries(rungs).map(([code, r]) => [code, code === "500" ? r : { free: [...r.free].reverse(), busy: [...r.busy].reverse() }]));
+    for (const [free, rungs, how] of [
+      [["r0", "r1", "r2", "r3", "r6", "r7", "r8"], ladder500(["r0", "r1", "r2", "r3", "r6", "r7", "r8"]), ""],
+      [thirteen, ladder500(thirteen), ""],
+      [thirteen, reversedBelow(ladder500(thirteen)), ", a lower rung's last advisor also on the rung above"],
+    ] as const) {
+      const shape = { ...RUN_37640583621[2]!, label: `refusal control, ${free.length} free across the ladder${how}`, rungs };
       const tag = `#3529 burst bar (model, stack load run), ${shape.label}`;
       const want = Math.min(new Set(Object.values(shape.rungs).flatMap((r) => r.free)).size, shape.arrivals.length);
       const got = await replay(shape, STACK_LOAD_RUN_PROFILE, "shared");

@@ -115,7 +115,7 @@ async function main() {
     const claimed = await send({ op: "claimFirst", turn: lead.turn, candidates: ["p0"], rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["p1"] }], lowerComplete: true });
     assert(claimed.ok === true, `wire: a claim carrying lower rungs is accepted (got ${JSON.stringify(claimed)})`);
     const r = await polled;
-    assert(r.kind === "lead" && JSON.stringify(r.start) === JSON.stringify({ rung: 1, advisor: "p1", read: ["p1"], deepest: true }), `wire: the waiter is handed the lower rung's advisor, marked deepest (got ${JSON.stringify(r)})`);
+    assert(r.kind === "lead" && JSON.stringify(r.start) === JSON.stringify({ rung: 1, advisor: "p1", read: ["p1"], deepest: true, last: true }), `wire: the waiter is handed the lower rung's advisor, marked deepest and last (got ${JSON.stringify(r)})`);
     for (const bad of [{ rung: -1, read: ["x"] }, { rung: 1, read: "x" }, { read: ["x"] }]) {
       const refused = await send({ op: "claimFirst", turn: lead.turn, candidates: ["p0"], rung: 0, lower: [bad] });
       assert(refused.ok !== true, `wire: a malformed lower rung is refused (sent ${JSON.stringify(bad)}, got ${JSON.stringify(refused)})`);
@@ -358,7 +358,7 @@ async function main() {
     const released = await polled;
     assert(released.kind === "lead", `wire: the waiter is released (got ${JSON.stringify(released)})`);
     assert(
-      JSON.stringify(released.start) === JSON.stringify({ rung: 2, advisor: "p1", read: ["p0", "p1"] }),
+      JSON.stringify(released.start) === JSON.stringify({ rung: 2, advisor: "p1", read: ["p0", "p1"], last: true }),
       `wire: the lead answer carries what the line handed it (got ${JSON.stringify(released.start)})`,
     );
     await send({ op: "ack", turn: released.turn });

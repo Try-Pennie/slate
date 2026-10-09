@@ -2983,6 +2983,11 @@ interface TierAssignResult {
    */
   deepest?: boolean;
   /**
+   * #3529: the line handed this confirm the last advisor the read it was handed from had
+   * unclaimed (`StartFrom.last`), which its place in that read cannot show.
+   */
+  handedLast?: boolean;
+  /**
    * #3489: the ladder read the walk judged its rungs from, so the booking takes the
    * advisor's row and the routing trace's pool from it rather than reading them again.
    */
@@ -3145,6 +3150,7 @@ async function assignAgentWithTierFallback(
               handed: true,
               rungStartedAtMs,
               ...(handed.deepest ? { deepest: true } : {}),
+              ...(handed.last ? { handedLast: true } : {}),
             },
           };
         } catch (err) {
@@ -5683,7 +5689,9 @@ async function createHeld(
   // confirm handed a rung, the read it was handed from, which is what saw the rungs above.
   // In a crowd that is the usual case, and everybody waiting is answered at once; the
   // line voids the verdict when it has no read to vouch with.
-  const lastAdvisor = lastRung && at >= 0 && at === candidates.length - 1;
+  // A handed confirm took the last one when the line says it did (`handedLast`): its read ends
+  // wherever round robin put its people, often with somebody handed a rung above (#3529).
+  const lastAdvisor = lastRung && ((at >= 0 && at === candidates.length - 1) || (tier.handed === true && tier.handedLast === true));
   const settled = { idempotencyKey, result };
   const verdict: LeaderVerdict<ConfirmTaker> = !lastAdvisor
     ? { full: false, booked: settled }
