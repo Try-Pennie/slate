@@ -2,7 +2,8 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	// The small Worker hosting the burst limiter object (#3555), the exact rate limit
 	// ceilings and the per minute burst windows, so waking an idle counter loads only the
-	// counter's rules and a Slate deploy no longer restarts every counter. Slate binds
+	// counter's rules. (Every Slate deploy still redeploys it, which restarts the counters;
+	// #3561 is deploying it only when its code changed.) Slate binds
 	// BURST_LIMITER to it by script name (wrangler.jsonc). It must be deployed BEFORE
 	// Slate, because Slate's binding names it:
 	//
