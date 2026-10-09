@@ -364,7 +364,8 @@ export function makeConfirmLineHost(deps: {
               ...(m.canWalk === true ? { canWalk: true } : {}),
               ...(m.below === true ? { below: true } : {}),
               ...(lower ? { lower } : {}),
-              ...(lower && m.lowerComplete === true ? { lowerComplete: true as const } : {}),
+              // Sent with no lower rungs when the read covered them all and found nobody.
+              ...(m.lowerComplete === true ? { lowerComplete: true as const } : {}),
             }
           : undefined;
         return turn ? json({ ok: true, ...turn.seat.claimFirst(m.candidates, place) }) : gone();

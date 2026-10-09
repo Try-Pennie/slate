@@ -158,7 +158,8 @@ export interface ClaimPlace {
   lower?: readonly { rung: number; read: readonly string[] }[];
   /**
    * #3529: `lower` covers EVERY rung below `rung` that the read found anyone on: a rung
-   * missing from it was read and found empty. The advisors on the deepest rung listed are
+   * missing from it was read and found empty, and with no `lower` at all every rung below
+   * was. The advisors on the deepest rung listed (or on `rung` itself, with none listed) are
    * then handed out marked `deepest` (`StartFrom.deepest`).
    */
   lowerComplete?: true;
@@ -606,9 +607,9 @@ export function makeConfirmQueue<T>(
     return out;
   };
   // #3529: whether the frontier's deepest rung has one below it that no read covers. Only a
-  // read that says it covered every rung below (`lowerComplete`) rules that out; lower rungs
-  // listed without it may stop short of the ladder's end.
-  const frontierBelow = (f: NonNullable<Line<T>["frontier"]>): boolean => (f.lower.length > 0 && f.lowerComplete ? false : f.below);
+  // read that says it covered every rung below (`lowerComplete`, with or without anybody
+  // listed) rules that out; lower rungs listed without it may stop short of the ladder's end.
+  const frontierBelow = (f: NonNullable<Line<T>["frontier"]>): boolean => (f.lowerComplete ? false : f.below);
   // #3489 step 3: a pending verdict holds everybody waiting only while nothing that could
   // free an advisor has happened since and a claim is still in flight to end it.
   const pendingHolds = (line: Line<T>): boolean =>

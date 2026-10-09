@@ -1064,6 +1064,24 @@ async function main() {
     first.done({ full: false }, "booked");
   }
   {
+    // #3529 review: a read that covered every rung below and found nobody sends
+    // `lowerComplete` with no `lower`. The frontier's own rung is then the deepest: its
+    // advisors are handed marked `deepest`, and the one handed the last holds the line,
+    // rather than one more confirm walking rungs the read already found empty.
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    for (let i = 0; i < 3; i++) void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a", "b", "c"], { rung: 1, canWalk: true, below: true, lowerComplete: true });
+    await tick();
+    const marks = seen.map((t) => (t.kind === "lead" ? (t.start ? `${t.start.rung}:${t.start.advisor}:${t.start.deepest === true}` : "reader") : t.kind));
+    eq(marks.join(","), "1:b:true,1:c:true", "nobody below: the frontier's rung is the deepest, and nobody walks the empty rungs again");
+    for (const t of seen) if (t.kind === "lead") t.done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+  {
     // #3529 review: lower rungs arrive over the wire, so their order is not trusted. Out of
     // order or repeated, they are handed top rung first, each rung once (the first listing
     // of a repeated rung kept), and the deepest is still the deepest that brings anyone new.
