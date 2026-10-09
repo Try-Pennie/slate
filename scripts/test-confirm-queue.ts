@@ -999,14 +999,30 @@ async function main() {
     first.seat.claimFirst(["a", "b"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["b", "c", "d"] }, { rung: 2, read: ["e"] }] });
     await tick();
     const kinds = seen.map((t) => (t.kind === "lead" ? (t.start ? `${t.start.rung}:${t.start.advisor}` : "reader") : t.kind));
-    eq(kinds.join(","), "0:b,1:c,1:d,2:e", "lower rungs: every unclaimed advisor of the ladder is handed out at once, top rung first, each once");
+    eq(kinds.slice(0, 4).join(","), "0:b,1:c,1:d,2:e", "lower rungs: every unclaimed advisor of the ladder is handed out at once, top rung first, each once");
     const last = seen[3] as Extract<QueueTurn<string>, { kind: "lead" }>;
     eq(JSON.stringify(last.start?.read), JSON.stringify(["e"]), "lower rungs: a confirm handed a lower rung is handed that rung's own read");
-    // The one handed the ladder's last advisor holds the line: nobody is left to hand.
-    const behind: QueueTurn<string>[] = [];
-    void q.enter("slot").then((t) => behind.push(t));
+    // The read did not say it covered every rung below (no `lowerComplete`), so a rung under
+    // the last one listed may be unread: one more confirm walks on rather than everybody
+    // waiting on the one handed the last listed advisor.
+    eq(seen.length, 5, "lower rungs, not covered: one more confirm is released to walk past the rungs listed");
+    const walker = seen[4]!;
+    assert(walker.kind === "lead" && !walker.start, `lower rungs, not covered: that one walks for itself, handed nothing (got ${JSON.stringify(walker)})`);
+    for (const t of seen) leadOf(t).done({ full: false }, "booked");
+    first.done({ full: false }, "booked");
+  }
+  {
+    // #3529: when the read covered every rung below, nothing below is unread, so the one
+    // handed the ladder's last advisor holds the line: nobody is left to hand.
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    for (let i = 0; i < 5; i++) void q.enter("slot").then((t) => seen.push(t));
     await tick();
-    eq(seen.length + behind.length, 4, "lower rungs: the confirm behind the last one handed waits, with nothing left to hand it");
+    first.seat.claimFirst(["a", "b"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["b", "c", "d"] }, { rung: 2, read: ["e"] }], lowerComplete: true });
+    await tick();
+    eq(seen.length, 4, "lower rungs, covered: the confirm behind the last one handed waits, with nothing left to hand it");
     for (const t of seen) leadOf(t).done({ full: false }, "booked");
     first.done({ full: false }, "booked");
   }
@@ -1295,7 +1311,8 @@ async function main() {
     const released: QueueTurn<string>[] = [];
     void q.enter("slot").then((t) => released.push(t));
     await tick();
-    leader.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["c"] }] });
+    // As the app sends it: its lower read covers every rung below (`lowerRungReads`).
+    leader.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true, lower: [{ rung: 1, read: ["c"] }], lowerComplete: true });
     await tick();
     const handed = leadOf(released[0]!);
     eq(handed.start?.advisor, "c", "handed vouched: c on the rung below is handed out");

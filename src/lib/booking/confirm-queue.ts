@@ -605,8 +605,10 @@ export function makeConfirmQueue<T>(
     if (out.length > 0) out[out.length - 1] = { ...out[out.length - 1]!, last: true };
     return out;
   };
-  // #3529: whether the frontier's deepest rung has one below it that no read covers.
-  const frontierBelow = (f: NonNullable<Line<T>["frontier"]>): boolean => (f.lower.length > 0 ? false : f.below);
+  // #3529: whether the frontier's deepest rung has one below it that no read covers. Only a
+  // read that says it covered every rung below (`lowerComplete`) rules that out; lower rungs
+  // listed without it may stop short of the ladder's end.
+  const frontierBelow = (f: NonNullable<Line<T>["frontier"]>): boolean => (f.lower.length > 0 && f.lowerComplete ? false : f.below);
   // #3489 step 3: a pending verdict holds everybody waiting only while nothing that could
   // free an advisor has happened since and a claim is still in flight to end it.
   const pendingHolds = (line: Line<T>): boolean =>
