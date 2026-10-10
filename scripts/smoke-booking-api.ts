@@ -74,7 +74,7 @@
 // works without exporting them by hand (and without `source`, which dies on an
 // unmatched quote anywhere in the file).
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
-import { evaluateSlotAvailability, slots } from "./smoke-lib.ts";
+import { evaluateSlotAvailability, slots, withRetry } from "./smoke-lib.ts";
 import { sweepQuietly } from "./lib/smoke-event-cleanup.ts";
 import {
   judgePublicTestBucketGate,
@@ -83,6 +83,7 @@ import {
 } from "./lib/public-test-bucket-check.ts";
 import { PUBLIC_TEST_BUCKET_CODES } from "../src/lib/embed/public-test-bucket.ts";
 import { bookFirstFreeSlot } from "./lib/smoke-book-retry.ts";
+import { smokeAttendee } from "./lib/smoke-identity.ts";
 import { chooseCrossBucketSlot } from "./lib/smoke-cross-bucket-slot.ts";
 import {
   MIN_SLOTS_FOR_RUN,
@@ -202,10 +203,10 @@ type ReassignBody = {
 };
 
 async function req(method: string, path: string): Promise<{ status: number; body: DirectBody }> {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: { authorization: `Bearer ${KEY}` },
-  });
+  const doFetch = () => fetch(`${BASE}${path}`, { method, headers: { authorization: `Bearer ${KEY}` } });
+  // #3583: retry an idempotent GET on a thrown network error so a transient blip does
+  // not fail the run; never retry a mutating method (a DELETE re-send is not safe).
+  const res = method === "GET" ? await withRetry(doFetch) : await doFetch();
   return { status: res.status, body: (await res.json().catch(() => ({}))) as DirectBody };
 }
 
@@ -300,13 +301,11 @@ async function cleanup() {
   }
 }
 
-function uniq(tag: string) {
-  const n = Date.now();
-  // Attendee address is a plus-alias of the real smoketest@trypennie.com mailbox
-  // (the test agent itself), so Google's invite/cancel emails DELIVER into that
-  // inbox instead of bouncing an "undeliverable" notice onto the organizer (#396).
-  return { externalId: `smoke-${tag}-${n}`, email: `smoketest+${tag}-${n}@trypennie.com` };
-}
+// #3581: the per-run identity helper lives in one place now
+// (scripts/lib/smoke-identity.ts), so a new scenario cannot quietly reintroduce a
+// FIXED identity and re-accumulate cancelled-tombstone chains (#3576). The scan in
+// scripts/test-smoke-identity-nonce.ts fails on a hand-rolled fixed plus-alias.
+const uniq = smokeAttendee;
 
 // A reschedule target a safe margin LATER than `from` (default 60 min). Slots are
 // published at a FINER granularity than the event is long (e.g. 10-min slots for
@@ -442,15 +441,16 @@ function recordBooked(plan: SlotPlan, body: { booking?: { startsAt?: string } } 
 // with nothing at all, exactly as a stray caller would.
 async function checkPublicTestBucket() {
   for (const code of PUBLIC_TEST_BUCKET_CODES) {
-    const served = await fetch(publicTestBucketUrl(BASE, code), {
-      headers: { authorization: `Bearer ${KEY}` },
-    });
+    // #3583: idempotent GET reads, retried on a thrown network blip during setup.
+    const served = await withRetry(() =>
+      fetch(publicTestBucketUrl(BASE, code), { headers: { authorization: `Bearer ${KEY}` } }),
+    );
     const servedBody: unknown = await served.json().catch(() => null);
     const verdict = judgePublicTestBucketRead({ status: served.status, body: servedBody }, code);
     check(verdict.outcome === "served", `public test bucket ${code} is served: ${verdict.reason}`);
 
     // Deliberately NO authorization header and NO pass.
-    const bare = await fetch(publicTestBucketUrl(BASE, code));
+    const bare = await withRetry(() => fetch(publicTestBucketUrl(BASE, code)));
     const bareBody: unknown = await bare.json().catch(() => null);
     const gate = judgePublicTestBucketGate({ status: bare.status, body: bareBody }, code);
     check(gate.outcome === "gated", `public test bucket ${code} is gated: ${gate.reason}`);
@@ -493,7 +493,13 @@ async function scenarioMain(slotsA: string[], plan: SlotPlan) {
   check(created.status === 200 && created.body.outcome === "created", `book -> created (got ${created.status}/${created.body.outcome})`);
 
   const dup = await book({ bucket: BUCKET_A, start: slotA, ...id, phone });
-  check(dup.body.outcome === "deduped" && dup.body.booking?.id === created.body.booking?.id, "same slot -> deduped (same booking id)");
+  // #3584: carry the actual outcome and ids, so a failure is diagnosable from the
+  // log alone (a second booking created, which is serious, vs a different id on a
+  // race) rather than needing a database query to tell the two apart.
+  check(
+    dup.body.outcome === "deduped" && dup.body.booking?.id === created.body.booking?.id,
+    `same slot -> deduped (same booking id) (got outcome=${dup.body.outcome}, id=${dup.body.booking?.id ?? "none"}, created id=${created.body.booking?.id ?? "none"})`,
+  );
 
   const moved = await book({ bucket: BUCKET_A, start: slotB, ...id, phone });
   trackForCleanup(moved.body);

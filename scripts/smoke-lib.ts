@@ -41,7 +41,76 @@ export function tokenFrom(manageUrl: unknown): string {
   return String(manageUrl ?? "").split("/").pop() ?? "";
 }
 
-/** POST JSON to `path`, optionally bearer-authed. Never throws on a non-JSON body. */
+/**
+ * The socket/DNS error codes that count as a TRANSIENT network failure worth retrying.
+ * An explicit ALLOWLIST, not a denylist (L35): undici throws `TypeError: fetch failed`
+ * with one of these on its `cause` for a real network blip, while deterministic bugs
+ * carry other codes (`ERR_INVALID_URL`, the 2026-08-14 outage #1495; `UND_ERR_*` bad
+ * arguments) or no code at all, and retrying those just wastes the backoff and hides
+ * the cause. An unknown code is treated as NOT transient, the safe direction.
+ */
+const TRANSIENT_NETWORK_CODES = new Set([
+  "ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EPIPE",
+  "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_SOCKET",
+]);
+
+/** Whether a thrown fetch failure is a transient network error worth retrying (L35). */
+export function isTransientNetworkError(err: unknown): boolean {
+  if (!(err instanceof TypeError)) return false;
+  const code = (err as { cause?: { code?: unknown } }).cause?.code;
+  return typeof code === "string" && TRANSIENT_NETWORK_CODES.has(code);
+}
+
+/**
+ * A bounded retry for the canary's transient-prone network READS (#3583).
+ *
+ * The full pass runs every ~6 hours, so one transient blip (an `ECONNRESET`, a
+ * dropped connection) on a setup read failed the whole run and burned the interval,
+ * paging on a fault that was gone by the next request (run 38067762798, 2026-10-10,
+ * which died "before the checks began"). This retries a thrown attempt a bounded
+ * number of times; a completed response of any status is a real answer, returned
+ * as-is. By default only a transient network error is retried (see
+ * isTransientNetworkError), never a deterministic one. Finite, because a read that
+ * retries forever hangs the run (L110).
+ *
+ * ONLY for IDEMPOTENT reads (e.g. `slots`). A mutating POST must NOT be retried on a
+ * thrown error: a booking the server already committed, whose response was then lost
+ * to an `ECONNRESET`, would be re-sent and come back `deduped`/`rescheduled` instead
+ * of `created`, which fails the canary on a success (L33). So `jpost` does not use it.
+ *
+ * Pure: the attempt, the sleep and the retryable predicate are injected, so it is
+ * node-testable with no real network and no real clock (scripts/test-smoke-retry.ts).
+ */
+export async function withRetry<T>(
+  attempt: () => Promise<T>,
+  opts: {
+    attempts?: number;
+    retryable?: (err: unknown) => boolean;
+    sleep?: (ms: number) => Promise<void>;
+    backoffMs?: number;
+  } = {},
+): Promise<T> {
+  const attempts = opts.attempts ?? 3;
+  const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const backoffMs = opts.backoffMs ?? 500;
+  const retryable = opts.retryable ?? isTransientNetworkError;
+  let lastErr: unknown;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return await attempt();
+    } catch (err) {
+      lastErr = err;
+      if (i === attempts || !retryable(err)) throw err;
+      await sleep(backoffMs * i);
+    }
+  }
+  throw lastErr;
+}
+
+/** POST JSON to `path`, optionally bearer-authed. Never throws on a non-JSON body.
+ *  Deliberately NOT retried: a POST is not idempotent for the canary's purpose (see
+ *  withRetry). */
 export async function jpost(
   path: string,
   body: Json,
@@ -57,11 +126,15 @@ export async function jpost(
   return { status: res.status, body: (await res.json().catch(() => ({}))) as Json };
 }
 
-/** Open availability slots for a bucket. Returns [] on any non-200 or missing field. */
+/** Open availability slots for a bucket. Returns [] on any non-200 or missing field.
+ *  #3583: this idempotent read is retried on a thrown network error so a transient
+ *  blip during setup does not fail the whole run. */
 export async function slots(bucket: string): Promise<string[]> {
-  const res = await fetch(`${smokeBase()}/api/availability?bucket=${encodeURIComponent(bucket)}`, {
-    headers: { authorization: `Bearer ${smokeKey()}` },
-  });
+  const res = await withRetry(() =>
+    fetch(`${smokeBase()}/api/availability?bucket=${encodeURIComponent(bucket)}`, {
+      headers: { authorization: `Bearer ${smokeKey()}` },
+    }),
+  );
   const body = (await res.json().catch(() => ({}))) as { slots?: string[] };
   return res.status === 200 ? body.slots ?? [] : [];
 }
