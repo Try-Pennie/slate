@@ -14,6 +14,7 @@
 
 import { envOr } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
+import { rescheduleSmokeIdentity } from "./lib/smoke-reschedule-identity.ts";
 
 // envOr, not `??`: the canary wires SLATE_BASE_URL from a repo Actions variable and
 // `${{ vars.X }}` for an unset variable arrives as "" rather than undefined (#1494).
@@ -41,8 +42,12 @@ async function main(): Promise<void> {
   if (open.length < 19) process.exit(1);
   const s0 = open[0], s1 = open[6], s2 = open[12], s3 = open[18];
 
-  const externalId = `smoke-resched-${open[0]}`;
-  const email = `smoketest+resched@trypennie.com`;
+  // #3576: a per-run nonce so each run's idempotency key (and therefore its
+  // deterministic Google event id) is unique. A fixed identity on the day-stable
+  // earliest slot made every run of the day reuse one id, piling cancelled
+  // tombstones onto its chain until a run exhausted it (#3217) and paged a false
+  // 500. Stable WITHIN the run (one nonce), so create/reschedule/cancel agree.
+  const { externalId, email } = rescheduleSmokeIdentity(open[0], Date.now());
   let token = "";
 
   try {
