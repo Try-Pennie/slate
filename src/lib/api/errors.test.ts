@@ -214,6 +214,39 @@ describe("internalErrorResponse alerting (#802)", () => {
   });
 });
 
+// #3575: the smoke canary's own booking 500s page the production internal-error
+// channel dressed as a real incident. The caller that knows the attempt is test
+// traffic (buckets.is_test) can ask for the fault to be LOGGED without PAGING. The
+// log is the forensic record and stays complete; only the Slack page is withheld,
+// and only for test traffic. A real (is_test=false) fault still pages, because a
+// suppressed real 500 is a dropped customer nobody hears about.
+describe("reportInternalError can log without paging for test traffic (#3575)", () => {
+  it("does NOT send a Slack alert when page is false", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await reportInternalError(new Error("canary book blew up"), "bookings-api/book", { page: false });
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("still LOGS the full error when page is false, so forensics are kept", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const err = new Error("canary book blew up with jane.doe@example.com in the row");
+    await reportInternalError(err, "bookings-api/book", { page: false });
+    // #808: the Error is passed THROUGH as the argument so Cloudflare serializes it.
+    const args = spy.mock.calls.flat();
+    expect(args.some((a) => a === err)).toBe(true);
+    expect(spy.mock.calls.some((c) => String(c[0]).includes("tag=api"))).toBe(true);
+  });
+
+  it("pages when page is true, and the default is still to page", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await reportInternalError(new Error("real book blew up"), "bookings-api/book", { page: true });
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+    dispatch.sendThrottledAlert.mockClear();
+    await reportInternalError(new Error("real book blew up again"), "bookings-api/book");
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+  });
+});
+
 // #2788: the browser error beacon raises its alerts through this same chokepoint,
 // keyed `client_error:<surface>`, and nothing returned a 500 there: the beacon
 // answers 204 and the page was whatever the browser showed. A sentence claiming a

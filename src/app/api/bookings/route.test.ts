@@ -89,6 +89,21 @@ vi.mock("@/lib/booking/refusal-stored-offer-live", () => storedOffer);
 const prelude = vi.hoisted(() => ({ startConfirmPrelude: vi.fn() }));
 vi.mock("@/lib/booking/confirm-line-live", () => prelude);
 
+// #3575: observe whether a book 500 pages, and control whether the attempt reads as
+// test traffic. Partial mocks so every OTHER export of these modules stays real: the
+// route imports only resolveTestTraffic from test-traffic, and only sendThrottledAlert
+// is on the paging path through reportInternalError.
+const dispatch = vi.hoisted(() => ({ sendThrottledAlert: vi.fn(async () => {}) }));
+vi.mock("@/lib/notify/dispatch", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/notify/dispatch")>()),
+  sendThrottledAlert: dispatch.sendThrottledAlert,
+}));
+const testTraffic = vi.hoisted(() => ({ resolveTestTraffic: vi.fn(async () => false) }));
+vi.mock("@/lib/monitor/test-traffic", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/monitor/test-traffic")>()),
+  resolveTestTraffic: testTraffic.resolveTestTraffic,
+}));
+
 import { POST, GET } from "./route";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { deadlineWithinBudget } from "@/lib/call-budget";
@@ -157,6 +172,11 @@ describe("POST /api/bookings (auth skeleton)", () => {
     rateLimit.bookingApiIpWithinLimit.mockClear();
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
     monitor.recordApiOutcome.mockClear();
+    // #3575: default to real traffic (pages), the safe direction; a test overrides it.
+    dispatch.sendThrottledAlert.mockClear();
+    dispatch.sendThrottledAlert.mockResolvedValue(undefined);
+    testTraffic.resolveTestTraffic.mockReset();
+    testTraffic.resolveTestTraffic.mockResolvedValue(false);
     service.bookViaApi.mockReset();
     service.bookViaApi.mockResolvedValue(result("created"));
     service.previewBooking.mockReset();
@@ -541,6 +561,68 @@ describe("POST /api/bookings (auth skeleton)", () => {
     const body = await res.json();
     expect(body.code).toBe("INTERNAL");
     expect(body.error).not.toMatch(/bookings|does not exist/);
+  });
+
+  // #3575: the smoke canary's own book 500s paged the production incident channel.
+  // A book INTERNAL on an is_test bucket is still logged and still answers 500, but
+  // does not page; a real one still pages; an expected refusal never resolves test
+  // traffic at all (it does not page either way, so the read would be wasted).
+  it("does NOT page when a book INTERNAL fault is test traffic (#3575)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    regalKey.primary.mockReturnValue("real-secret");
+    testTraffic.resolveTestTraffic.mockResolvedValue(true);
+    service.bookViaApi.mockRejectedValueOnce(new Error("canary book blew up"));
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBe("INTERNAL");
+    expect(testTraffic.resolveTestTraffic).toHaveBeenCalledWith({ by: "bucket", code: VALID_BODY.bucketCode });
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("DOES page when a book INTERNAL fault is real traffic (#3575)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    regalKey.primary.mockReturnValue("real-secret");
+    testTraffic.resolveTestTraffic.mockResolvedValue(false);
+    service.bookViaApi.mockRejectedValueOnce(new Error("real book blew up"));
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(500);
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not resolve test traffic for an expected (non-INTERNAL) refusal (#3575)", async () => {
+    regalKey.primary.mockReturnValue("real-secret");
+    service.bookViaApi.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(409);
+    expect(testTraffic.resolveTestTraffic).not.toHaveBeenCalled();
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  // #3575: the test-traffic lookup is on the failure path, where the same outage
+  // that caused the INTERNAL fault could break it too. It must not turn the 500 into
+  // an unhandled rejection: a throw fails safe to real, so the caller still gets its
+  // 500 AND the fault still pages (the safe direction).
+  it("still answers 500 and pages when the test-traffic lookup itself throws (#3575)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    regalKey.primary.mockReturnValue("real-secret");
+    testTraffic.resolveTestTraffic.mockRejectedValue(new Error("bucket lookup is down too"));
+    service.bookViaApi.mockRejectedValueOnce(new Error("book blew up"));
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBe("INTERNAL");
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT page when a dry run INTERNAL fault is test traffic (#3575)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    regalKey.primary.mockReturnValue("real-secret");
+    testTraffic.resolveTestTraffic.mockResolvedValue(true);
+    service.previewBooking.mockReset();
+    service.previewBooking.mockRejectedValueOnce(new Error("canary dry run blew up"));
+    const res = await post("Bearer real-secret", { ...VALID_BODY, dryRun: true });
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBe("INTERNAL");
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
   });
 
   it("keeps the intended message on a typed error (SLOT_TAKEN) (#707)", async () => {
