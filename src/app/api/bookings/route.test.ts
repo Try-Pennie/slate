@@ -56,6 +56,9 @@ const service = vi.hoisted(() => {
       this.cause = cause;
     }
   }
+  // #3580: mapLookupError (on the lookup catch path) classifies a not-found with
+  // `instanceof BookingNotFoundError`, so the mock must carry the class.
+  class BookingNotFoundError extends Error {}
   return {
     OutsideCallingWindowError,
     AttendeeEmailRefusedError,
@@ -71,6 +74,7 @@ const service = vi.hoisted(() => {
     VerifyUnavailableError,
     NoEligibleAgentsError,
     UnknownBucketError,
+    BookingNotFoundError,
   };
 });
 
@@ -90,18 +94,25 @@ const prelude = vi.hoisted(() => ({ startConfirmPrelude: vi.fn() }));
 vi.mock("@/lib/booking/confirm-line-live", () => prelude);
 
 // #3575: observe whether a book 500 pages, and control whether the attempt reads as
-// test traffic. Partial mocks so every OTHER export of these modules stays real: the
-// route imports only resolveTestTraffic from test-traffic, and only sendThrottledAlert
-// is on the paging path through reportInternalError.
+// test traffic. Partial mocks so every OTHER export of these modules stays real, and
+// only sendThrottledAlert is on the paging path through reportInternalError.
 const dispatch = vi.hoisted(() => ({ sendThrottledAlert: vi.fn(async () => {}) }));
 vi.mock("@/lib/notify/dispatch", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/notify/dispatch")>()),
   sendThrottledAlert: dispatch.sendThrottledAlert,
 }));
-const testTraffic = vi.hoisted(() => ({ resolveTestTraffic: vi.fn(async () => false) }));
+// #3575/#3580: the paging resolvers the route actually calls. The book and preview
+// paths resolve by bucket code (isTestBucketForPaging, #3580 moved the wrapper into
+// test-traffic.ts), and the lookup path by booking id or the person's external id.
+// Their never-throws guarantee is proven in test-traffic.test.ts; here they are seams.
+const testTraffic = vi.hoisted(() => ({
+  isTestBucketForPaging: vi.fn(async () => false),
+  isTestOwnedBookingForPaging: vi.fn(async () => false),
+}));
 vi.mock("@/lib/monitor/test-traffic", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/monitor/test-traffic")>()),
-  resolveTestTraffic: testTraffic.resolveTestTraffic,
+  isTestBucketForPaging: testTraffic.isTestBucketForPaging,
+  isTestOwnedBookingForPaging: testTraffic.isTestOwnedBookingForPaging,
 }));
 
 import { POST, GET } from "./route";
@@ -175,8 +186,10 @@ describe("POST /api/bookings (auth skeleton)", () => {
     // #3575: default to real traffic (pages), the safe direction; a test overrides it.
     dispatch.sendThrottledAlert.mockClear();
     dispatch.sendThrottledAlert.mockResolvedValue(undefined);
-    testTraffic.resolveTestTraffic.mockReset();
-    testTraffic.resolveTestTraffic.mockResolvedValue(false);
+    testTraffic.isTestBucketForPaging.mockReset();
+    testTraffic.isTestBucketForPaging.mockResolvedValue(false);
+    testTraffic.isTestOwnedBookingForPaging.mockReset();
+    testTraffic.isTestOwnedBookingForPaging.mockResolvedValue(false);
     service.bookViaApi.mockReset();
     service.bookViaApi.mockResolvedValue(result("created"));
     service.previewBooking.mockReset();
@@ -570,19 +583,19 @@ describe("POST /api/bookings (auth skeleton)", () => {
   it("does NOT page when a book INTERNAL fault is test traffic (#3575)", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     regalKey.primary.mockReturnValue("real-secret");
-    testTraffic.resolveTestTraffic.mockResolvedValue(true);
+    testTraffic.isTestBucketForPaging.mockResolvedValue(true);
     service.bookViaApi.mockRejectedValueOnce(new Error("canary book blew up"));
     const res = await post("Bearer real-secret", VALID_BODY);
     expect(res.status).toBe(500);
     expect((await res.json()).code).toBe("INTERNAL");
-    expect(testTraffic.resolveTestTraffic).toHaveBeenCalledWith({ by: "bucket", code: VALID_BODY.bucketCode });
+    expect(testTraffic.isTestBucketForPaging).toHaveBeenCalledWith(VALID_BODY.bucketCode);
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
   });
 
   it("DOES page when a book INTERNAL fault is real traffic (#3575)", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     regalKey.primary.mockReturnValue("real-secret");
-    testTraffic.resolveTestTraffic.mockResolvedValue(false);
+    testTraffic.isTestBucketForPaging.mockResolvedValue(false);
     service.bookViaApi.mockRejectedValueOnce(new Error("real book blew up"));
     const res = await post("Bearer real-secret", VALID_BODY);
     expect(res.status).toBe(500);
@@ -594,18 +607,19 @@ describe("POST /api/bookings (auth skeleton)", () => {
     service.bookViaApi.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
     const res = await post("Bearer real-secret", VALID_BODY);
     expect(res.status).toBe(409);
-    expect(testTraffic.resolveTestTraffic).not.toHaveBeenCalled();
+    expect(testTraffic.isTestBucketForPaging).not.toHaveBeenCalled();
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
   });
 
-  // #3575: the test-traffic lookup is on the failure path, where the same outage
-  // that caused the INTERNAL fault could break it too. It must not turn the 500 into
-  // an unhandled rejection: a throw fails safe to real, so the caller still gets its
-  // 500 AND the fault still pages (the safe direction).
-  it("still answers 500 and pages when the test-traffic lookup itself throws (#3575)", async () => {
+  // #3575/#3580: the test-traffic lookup is on the failure path, where the same outage
+  // that caused the INTERNAL fault could break it too. It must not turn the 500 into an
+  // unhandled rejection. The never-throws guarantee now lives in the shared wrapper
+  // (isTestBucketForPaging, proven in test-traffic.test.ts): the resolver answers false
+  // on any failure, so the caller still gets its 500 AND the fault still pages.
+  it("still answers 500 and pages when the resolver reports real (its fail-safe) (#3575)", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     regalKey.primary.mockReturnValue("real-secret");
-    testTraffic.resolveTestTraffic.mockRejectedValue(new Error("bucket lookup is down too"));
+    testTraffic.isTestBucketForPaging.mockResolvedValue(false);
     service.bookViaApi.mockRejectedValueOnce(new Error("book blew up"));
     const res = await post("Bearer real-secret", VALID_BODY);
     expect(res.status).toBe(500);
@@ -616,7 +630,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   it("does NOT page when a dry run INTERNAL fault is test traffic (#3575)", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     regalKey.primary.mockReturnValue("real-secret");
-    testTraffic.resolveTestTraffic.mockResolvedValue(true);
+    testTraffic.isTestBucketForPaging.mockResolvedValue(true);
     service.previewBooking.mockReset();
     service.previewBooking.mockRejectedValueOnce(new Error("canary dry run blew up"));
     const res = await post("Bearer real-secret", { ...VALID_BODY, dryRun: true });
@@ -1285,5 +1299,61 @@ describe("POST /api/bookings: who may book a test bucket (#2669)", () => {
     const res = await post("Bearer trypennie-secret", VALID_BODY);
     expect(res.status).toBe(200);
     expect(service.bookViaApi).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: false }), expect.anything());
+  });
+});
+
+// #3580: the smoke canary reads its own test bookings on the key-authed lookup path,
+// so an INTERNAL fault there paged production. Test-ness is resolved from the booking
+// (by id when the caller named one, else from the person's own bookings) and the page
+// is withheld only for positively-test traffic; a real one still pages.
+describe("#3580 lookup page suppression", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    regalKey.primary.mockReturnValue("real-secret");
+    regalKey.secondary.mockReturnValue("");
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
+    dispatch.sendThrottledAlert.mockResolvedValue(undefined);
+    // Default to real traffic (pages); a test overrides the resolver.
+    testTraffic.isTestOwnedBookingForPaging.mockResolvedValue(false);
+    service.getPersonBookingById.mockReset();
+    service.lookupPersonBookings.mockReset();
+  });
+
+  function lookup(query: string) {
+    return GET(new Request(`http://localhost/api/bookings?${query}`, { headers: { authorization: "Bearer real-secret" } }) as never);
+  }
+
+  // Test-ness is resolved from the (bookingId, externalId) PAIR naming one owned
+  // booking, so only a by-id lookup can suppress; a person-only lookup always pages.
+  it("does NOT page a by-id lookup INTERNAL fault that is test traffic", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.getPersonBookingById.mockRejectedValueOnce(new Error("boom"));
+    testTraffic.isTestOwnedBookingForPaging.mockResolvedValue(true);
+    const res = await lookup("externalId=smoke-1&bookingId=bk-1");
+    expect(res.status).toBe(500);
+    expect(testTraffic.isTestOwnedBookingForPaging).toHaveBeenCalledWith("bk-1", "smoke-1");
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("DOES page a by-id lookup INTERNAL fault that is real traffic", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.getPersonBookingById.mockRejectedValueOnce(new Error("boom"));
+    testTraffic.isTestOwnedBookingForPaging.mockResolvedValue(false);
+    const res = await lookup("externalId=00Q1&bookingId=bk-1");
+    expect(res.status).toBe(500);
+    expect(testTraffic.isTestOwnedBookingForPaging).toHaveBeenCalledWith("bk-1", "00Q1");
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it("ALWAYS pages a person-only lookup INTERNAL fault (no id to anchor to), without resolving", async () => {
+    // No booking id, so there is no unforgeable pair to confirm; the externalId alone
+    // is caller-settable, so this deliberately pages and never consults the resolver.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.lookupPersonBookings.mockRejectedValueOnce(new Error("boom"));
+    const res = await lookup("externalId=smoke-1");
+    expect(res.status).toBe(500);
+    expect(testTraffic.isTestOwnedBookingForPaging).not.toHaveBeenCalled();
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
   });
 });

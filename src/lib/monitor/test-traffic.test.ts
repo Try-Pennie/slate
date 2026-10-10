@@ -13,12 +13,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const bucketMaybeSingle = vi.hoisted(() => vi.fn());
 const bookingMaybeSingle = vi.hoisted(() => vi.fn());
+// #3580: the owned-booking paging resolver chains two `.eq()` (id AND external_id)
+// before `.maybeSingle()`, so `.eq()` returns a terminal that itself carries `.eq()`.
 const from = vi.hoisted(() =>
-  vi.fn((table: string) => ({
-    select: () => ({
-      eq: () => ({ maybeSingle: table === "buckets" ? bucketMaybeSingle : bookingMaybeSingle }),
-    }),
-  })),
+  vi.fn((table: string) => {
+    const term: { maybeSingle: () => unknown; eq: () => typeof term } = {
+      maybeSingle: table === "buckets" ? bucketMaybeSingle : bookingMaybeSingle,
+      eq: () => term,
+    };
+    return { select: () => ({ eq: () => term }) };
+  }),
 );
 const admin = vi.hoisted(() => ({ supabaseAdmin: vi.fn(() => ({ from })) }));
 const logged = vi.hoisted(() => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() }));
@@ -26,7 +30,7 @@ const logged = vi.hoisted(() => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() 
 vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/lib/log", () => ({ log: logged }));
 
-import { resolveTestTraffic, resolveTrafficMarkers, resetBucketTestCacheForTests, bucketTestCacheSizeForTests, BUCKET_TEST_CACHE_MS, BUCKET_TEST_CACHE_MAX } from "./test-traffic";
+import { resolveTestTraffic, resolveTrafficMarkers, resetBucketTestCacheForTests, bucketTestCacheSizeForTests, BUCKET_TEST_CACHE_MS, BUCKET_TEST_CACHE_MAX, isTestBucketForPaging, isTestManageTokenForPaging, isTestOwnedBookingForPaging } from "./test-traffic";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -229,3 +233,90 @@ describe("resolveTestTraffic, by bucket, read once per server per minute (#3461)
     expect(bucketMaybeSingle).toHaveBeenCalledTimes(2);
   });
 });
+
+// #3580: the cancel, lookup and reschedule API paths page on an INTERNAL fault via
+// reportInternalError, so the smoke canary's own 500s on those paths paged the
+// production incident channel (the book path alone was fixed by #3575). These three
+// helpers resolve the same server-only `buckets.is_test` from whichever identifier the
+// path carries (a manage token, a booking id, or a person's external id), so the
+// failure path can pass `page: !isTest`. Every one FAILS toward paging (returns false),
+// the safe direction: a suppressed real 500 is a dropped customer nobody hears, where an
+// over-eager page is only noise (mirrors #3575's book-path rule, L337).
+describe("isTestManageTokenForPaging (the cancel and reschedule token paths)", () => {
+  it("suppresses the page when the booking sits in a test bucket", async () => {
+    bookingMaybeSingle.mockResolvedValue({ data: { buckets: { is_test: true } }, error: null });
+    expect(await isTestManageTokenForPaging("tok-smoke")).toBe(true);
+    expect(from).toHaveBeenCalledWith("bookings");
+  });
+
+  it("pages (not test) for a real lead's booking", async () => {
+    bookingMaybeSingle.mockResolvedValue({ data: { buckets: { is_test: false } }, error: null });
+    expect(await isTestManageTokenForPaging("tok-real")).toBe(false);
+  });
+
+  it("pages when the lookup read fails, rather than hiding a real 500", async () => {
+    bookingMaybeSingle.mockResolvedValue({ data: null, error: { message: "timeout" } });
+    expect(await isTestManageTokenForPaging("tok")).toBe(false);
+    expect(logged.warn).toHaveBeenCalled();
+  });
+
+  it("pages when the lookup throws", async () => {
+    bookingMaybeSingle.mockRejectedValue(new Error("socket hang up"));
+    expect(await isTestManageTokenForPaging("tok")).toBe(false);
+    expect(logged.warn).toHaveBeenCalled();
+  });
+});
+
+describe("isTestOwnedBookingForPaging (the lookup-by-id and direct cancel paths)", () => {
+  it("suppresses the page when the (id, externalId) pair names a test-bucket booking", async () => {
+    bookingMaybeSingle.mockResolvedValue({ data: { buckets: { is_test: true } }, error: null });
+    expect(await isTestOwnedBookingForPaging("bk-smoke", "smoke-main-1")).toBe(true);
+    expect(from).toHaveBeenCalledWith("bookings");
+  });
+
+  it("pages (not test) when the pair names a real-bucket booking", async () => {
+    bookingMaybeSingle.mockResolvedValue({ data: { buckets: { is_test: false } }, error: null });
+    expect(await isTestOwnedBookingForPaging("bk-real", "lead-123")).toBe(false);
+  });
+
+  it("pages when the id and externalId name NO booking together (an unowned/forged pair)", async () => {
+    // maybeSingle returns null when the AND of id and external_id matches nothing: a
+    // caller pairing a test booking's id with an identity that does not own it gets
+    // no row, so it cannot borrow that booking's test flag.
+    bookingMaybeSingle.mockResolvedValue({ data: null, error: null });
+    expect(await isTestOwnedBookingForPaging("bk-smoke", "not-the-owner")).toBe(false);
+  });
+
+  it("pages when the read fails, rather than hiding a real 500", async () => {
+    bookingMaybeSingle.mockResolvedValue({ data: null, error: { message: "timeout" } });
+    expect(await isTestOwnedBookingForPaging("bk", "ext")).toBe(false);
+    expect(logged.warn).toHaveBeenCalled();
+  });
+
+  it("pages when the read throws", async () => {
+    bookingMaybeSingle.mockRejectedValue(new Error("down"));
+    expect(await isTestOwnedBookingForPaging("bk", "ext")).toBe(false);
+    expect(logged.warn).toHaveBeenCalled();
+  });
+});
+
+describe("isTestBucketForPaging (the book and preview paths, #3580 consolidation)", () => {
+  // The book path's own try/catch wrapper used to live in bookings/route.ts; the paging
+  // resolvers now all live here, each over resolveTestTraffic, so they cannot drift (L370).
+  it("suppresses the page for a SMOKE bucket", async () => {
+    bucketMaybeSingle.mockResolvedValue({ data: { is_test: true }, error: null });
+    expect(await isTestBucketForPaging("SMOKE")).toBe(true);
+    expect(from).toHaveBeenCalledWith("buckets");
+  });
+
+  it("pages (not test) for a real bucket", async () => {
+    expect(await isTestBucketForPaging("411")).toBe(false);
+  });
+
+  it("pages when the bucket read fails, rather than hiding a real 500", async () => {
+    bucketMaybeSingle.mockResolvedValue({ data: null, error: { message: "relation missing" } });
+    expect(await isTestBucketForPaging("411")).toBe(false);
+    expect(logged.warn).toHaveBeenCalled();
+  });
+});
+

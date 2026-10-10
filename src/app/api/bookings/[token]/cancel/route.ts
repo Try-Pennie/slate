@@ -6,6 +6,7 @@ import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { isBookingWriteFailure } from "@/lib/booking/gated-write";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { internalErrorResponse, reportInternalError } from "@/lib/api/errors";
+import { isTestManageTokenForPaging } from "@/lib/monitor/test-traffic";
 import { noStore } from "@/lib/api/no-store";
 import { manageWithinLimit } from "@/lib/rate-limit";
 // From the pure core rather than the re-export, so a test can stub the limiter without
@@ -110,14 +111,19 @@ async function handlePost(
     // the advisor's slot all stood. It is reported through the same chokepoint an
     // unexpected fault goes through, so somebody is paged, and answered 503 rather
     // than 500 because a retry really can succeed.
+    // #3580: the smoke canary cancels its own test bookings on this path, so an
+    // INTERNAL fault here paged the production incident channel. Resolve test-ness
+    // from the booking's bucket (server-side, via the manage token) and withhold the
+    // page for test traffic; a real one still pages (an unreadable marker pages).
+    const page = !(await isTestManageTokenForPaging(token));
     if (isBookingWriteFailure(err)) {
       recordApiOutcome("error", "", "cancel_write_failed", { by: "manageToken", token });
-      await reportInternalError(err, "bookings/[token]/cancel");
+      await reportInternalError(err, "bookings/[token]/cancel", { page });
       // refusal: cancel_write_failed
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
     recordApiOutcome("error", "", "cancel_internal", { by: "manageToken", token });
     // refusal: cancel_internal
-    return internalErrorResponse(err, "bookings/[token]/cancel");
+    return internalErrorResponse(err, "bookings/[token]/cancel", { page });
   }
 }

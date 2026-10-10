@@ -51,6 +51,9 @@ const errors = vi.hoisted(() => ({
   reportInternalError: vi.fn(async () => {}),
 }));
 const monitor = vi.hoisted(() => ({ recordApiOutcome: vi.fn() }));
+// #3580: the direct cancel resolves test-ness from the (bookingId, externalId) pair,
+// so the page is withheld for the smoke canary's own cancels; controlled here.
+const testTraffic = vi.hoisted(() => ({ isTestOwnedBookingForPaging: vi.fn(async () => false) }));
 
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/rate-limit", () => rateLimit);
@@ -58,6 +61,7 @@ vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/booking/reason-options", () => reasons);
 vi.mock("@/lib/api/errors", () => errors);
 vi.mock("@/lib/monitor/record-api-outcome", () => monitor);
+vi.mock("@/lib/monitor/test-traffic", () => testTraffic);
 
 import { POST } from "./route";
 import { DELETE, POST as BOOK, GET as LOOKUP } from "../route";
@@ -103,6 +107,8 @@ beforeEach(() => {
   reasons.loadReasonOptions.mockReset();
   reasons.loadReasonOptions.mockResolvedValue({ cancel: { all: CANCEL_REASONS } });
   errors.reportInternalError.mockClear();
+  testTraffic.isTestOwnedBookingForPaging.mockReset();
+  testTraffic.isTestOwnedBookingForPaging.mockResolvedValue(false);
 });
 
 describe.each([
@@ -373,5 +379,41 @@ describe("POST /api/bookings/cancel on Marcia's own key (#2940)", () => {
     expect(res.status).toBe(401);
     expect(service.lookupPersonBookings).not.toHaveBeenCalled();
     expect(service.listBookings).not.toHaveBeenCalled();
+  });
+});
+
+// #3580: the smoke canary cancels its own test bookings through BOTH verbs, so an
+// INTERNAL fault paged production. The page is withheld only when the booking is
+// POSITIVELY test traffic (resolved server-side from its id); a real one still pages.
+// Run for both verbs so neither drifts.
+describe.each([
+  ["POST /api/bookings/cancel", viaPost],
+  ["DELETE /api/bookings", viaDelete],
+] as const)("%s: #3580 test-traffic page suppression", (_name, send) => {
+  // The canary cancels its own booking under its smoke externalId; test-ness is read
+  // from the (bookingId, externalId) pair, which only its owner can present.
+  it("does NOT page an INTERNAL cancel fault that is test traffic", async () => {
+    testTraffic.isTestOwnedBookingForPaging.mockResolvedValue(true);
+    service.cancelDirectBooking.mockRejectedValueOnce(new Error("boom"));
+    const res = await send({ bookingId: "bk-7", externalId: "smoke-1" });
+    expect(res.status).toBe(500);
+    expect(testTraffic.isTestOwnedBookingForPaging).toHaveBeenCalledWith("bk-7", "smoke-1");
+    expect(errors.reportInternalError).toHaveBeenCalledWith(expect.anything(), "bookings-api/cancel", { page: false });
+  });
+
+  it("DOES page an INTERNAL cancel fault that is real traffic", async () => {
+    testTraffic.isTestOwnedBookingForPaging.mockResolvedValue(false);
+    service.cancelDirectBooking.mockRejectedValueOnce(new Error("boom"));
+    const res = await send({ bookingId: "bk-7", externalId: "00Q1" });
+    expect(res.status).toBe(500);
+    expect(errors.reportInternalError).toHaveBeenCalledWith(expect.anything(), "bookings-api/cancel", { page: true });
+  });
+
+  it("pages a salesforceId-only cancel (cannot be the canary) without resolving test-ness", async () => {
+    service.cancelDirectBooking.mockRejectedValueOnce(new Error("boom"));
+    const res = await send({ bookingId: "bk-7", salesforceId: "00Q5x000001abcEAA" });
+    expect(res.status).toBe(500);
+    expect(testTraffic.isTestOwnedBookingForPaging).not.toHaveBeenCalled();
+    expect(errors.reportInternalError).toHaveBeenCalledWith(expect.anything(), "bookings-api/cancel", { page: true });
   });
 });

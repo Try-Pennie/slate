@@ -11,6 +11,7 @@ import type { ReasonOption } from "@/lib/booking/core";
 import { cancelDirectBooking, BookingNotFoundError } from "@/lib/booking/service";
 import { isBookingWriteFailure } from "@/lib/booking/gated-write";
 import { GENERIC_ERROR_MESSAGE, reportInternalError } from "@/lib/api/errors";
+import { isTestOwnedBookingForPaging } from "@/lib/monitor/test-traffic";
 
 /**
  * The key authed cancel, once (#386, #2591). `DELETE /api/bookings` carries its fields
@@ -58,7 +59,16 @@ export async function respondToDirectCancel(
     return NextResponse.json({ outcome: "cancelled", booking });
   } catch (err) {
     const { httpStatus, code } = mapLookupError(err);
-    return NextResponse.json(await apiErrorBody(err, code, "cancel", "Cancel failed"), {
+    // #3580: the smoke canary cancels its own test bookings through this (bot) path,
+    // so an INTERNAL fault here paged production. Resolve test-ness only from the
+    // (bookingId, externalId) PAIR naming one owned booking, so neither half is
+    // caller-settable. A caller naming only a salesforceId (no externalId) cannot be
+    // the canary (which uses externalId), so it pages. Only on INTERNAL.
+    const isTest =
+      code === "INTERNAL" && bookingId && externalId
+        ? await isTestOwnedBookingForPaging(bookingId, externalId)
+        : false;
+    return NextResponse.json(await apiErrorBody(err, code, "cancel", "Cancel failed", { isTest }), {
       status: httpStatus,
     });
   }
