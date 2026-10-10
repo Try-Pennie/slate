@@ -47,13 +47,19 @@ assert(
 );
 
 // Synthetic attendees use the deliverable smoketest mailbox so invites/cancels
-// land in a real inbox instead of bouncing onto the assigned agent.
+// land in a real inbox instead of bouncing onto the assigned agent. The address is
+// built in the shared identity helper now (#3581), which smoke-booking-api uses.
+const identity = readFileSync(join(import.meta.dirname, "lib", "smoke-identity.ts"), "utf8");
 assert(
-  /smoketest\+\$\{tag\}/.test(src),
-  "synthetic attendee address uses the deliverable smoketest+ mailbox",
+  /smoketest\+\$\{tag\}/.test(identity),
+  "the smokeAttendee helper builds the deliverable smoketest+ mailbox address",
 );
 assert(
-  !/email:\s*`smoke\+\$\{tag\}/.test(src),
+  /from "\.\/lib\/smoke-identity\.ts"/.test(src),
+  "smoke-booking-api uses the shared smokeAttendee helper",
+);
+assert(
+  !/email:\s*`smoke\+\$\{tag\}/.test(src) && !/email:\s*`smoke\+\$\{tag\}/.test(identity),
   "the old non-deliverable smoke+ attendee address is gone",
 );
 
