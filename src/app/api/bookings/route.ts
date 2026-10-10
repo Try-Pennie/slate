@@ -37,6 +37,7 @@ import { FULL_API_CALLERS } from "@/lib/booking/api-auth";
 import { startConfirmPrelude } from "@/lib/booking/confirm-line-live";
 import { log } from "@/lib/log";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
+import { resolveTestTraffic } from "@/lib/monitor/test-traffic";
 import type { BookingOriginFacts } from "@/lib/monitor/offsite-origin";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 import { mayBookTestBuckets } from "@/lib/booking/api-auth";
@@ -129,6 +130,37 @@ function waitFactsFor(req: NextRequest): ConfirmLineFacts {
   };
 }
 
+/**
+ * Is this booking attempt test traffic, for the PAGING decision only (#3575)?
+ *
+ * Shared by the book and dry run failure paths so the rule lives once (L613). Two
+ * things keep it safe on a failure path, where a thrown lookup would lose the 500
+ * the caller is owed:
+ *
+ *  - It resolves the bucket flag ONLY for an INTERNAL fault, the one code that
+ *    pages, so an expected refusal (slot taken, outside the window) never pays the
+ *    read.
+ *  - It NEVER throws. `resolveTestTraffic` already answers false on an unreadable
+ *    flag, but the same outage that caused the INTERNAL fault could in principle
+ *    break the lookup itself, and a book failure handler must not turn a clean 500
+ *    into an unhandled rejection (L337). An unreadable answer is `false`, which
+ *    PAGES, the safe direction: a suppressed real 500 is a dropped customer nobody
+ *    hears, where an over eager page is only noise.
+ */
+async function isTestTrafficForPaging(code: string, bucketCode: string): Promise<boolean> {
+  if (code !== "INTERNAL") return false;
+  try {
+    return await resolveTestTraffic({ by: "bucket", code: bucketCode });
+  } catch (err) {
+    log.warn("booking-api", {
+      msg: "test-traffic lookup failed on the failure path; paging as real",
+      code,
+      err: String(err),
+    });
+    return false;
+  }
+}
+
 async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
   facts.marks?.mark("handler");
   // #3300: the key, the ceilings and reading the body, as one stage, ended where the
@@ -214,7 +246,9 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
         // would, answered as one by POST rather than as INTERNAL.
         if (isDeadlineExceeded(err)) throw err;
         const { status, code } = mapBookingError(err);
-        return NextResponse.json(await apiErrorBody(err, code, "preview", "Preview failed"), { status });
+        // #3575: a test-bucket dry run that faults internally is logged, not paged.
+        const isTest = await isTestTrafficForPaging(code, v.bucketCode);
+        return NextResponse.json(await apiErrorBody(err, code, "preview", "Preview failed", { isTest }), { status });
       });
     }
   }
@@ -355,9 +389,11 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
           host: apiHost,
         });
       }
+      // #3575: only an INTERNAL fault pages, and only a real one should.
+      const isTest = await isTestTrafficForPaging(code, v.bucketCode);
       return NextResponse.json(
         {
-          ...(await apiErrorBody(err, code, "book", "Booking failed")),
+          ...(await apiErrorBody(err, code, "book", "Booking failed", { isTest })),
           // #3359: the field to change, in the shape a VALIDATION refusal carries it.
           ...(err instanceof AttendeeEmailRefusedError ? { fieldErrors: { [err.field]: err.message } } : {}),
         },

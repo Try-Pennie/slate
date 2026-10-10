@@ -81,9 +81,15 @@ export async function apiErrorBody(
   code: string,
   context: string,
   fallback: string,
+  // #3575: when the attempt is test traffic (the smoke canary on an `is_test`
+  // bucket) the INTERNAL fault is still logged in full but does not PAGE the
+  // production incident channel. Omitted or false means a real fault, which pages
+  // exactly as before; the caller resolves test-ness from the bucket (server-only,
+  // via resolveTestTraffic) so a client can never set it.
+  opts: { isTest?: boolean } = {},
 ): Promise<{ error: string; code: string }> {
   if (code === "INTERNAL") {
-    await reportInternalError(err, `bookings-api/${context}`);
+    await reportInternalError(err, `bookings-api/${context}`, { page: !opts.isTest });
     return { error: GENERIC_ERROR_MESSAGE, code };
   }
   return { error: err instanceof Error ? err.message : fallback, code };
