@@ -35,9 +35,25 @@ export const INTERNAL_ERROR_COOLDOWN_MS = 15 * 60 * 1000;
  * The alert can never escape: it writes to `alert_state`, so whatever broke the
  * route can break the alert too, and a monitoring failure must not become a
  * booking failure. Its own failure is logged, never swallowed into silence.
+ *
+ * `page` (#3575) decides whether the Slack page fires. It is true by default, so
+ * every existing caller is unchanged. A caller that KNOWS the fault is test
+ * traffic (the smoke canary on an `is_test` bucket) passes `page: false`: the
+ * fault is still logged in full here, so forensics are complete, but it does not
+ * page the production incident channel where a real customer 500 would land. The
+ * default is to page, so an unreadable or un-passed test marker pages, which is
+ * the safe direction (a suppressed real 500 is a dropped customer nobody hears).
  */
-export async function reportInternalError(err: unknown, context: string): Promise<void> {
+export async function reportInternalError(
+  err: unknown,
+  context: string,
+  opts: { page?: boolean } = {},
+): Promise<void> {
   log.error("api", { msg: "unexpected error", context }, err);
+
+  // #3575: a test-traffic fault is logged above but not paged. The log, not the
+  // page, is the forensic record, so nothing is lost by withholding the alert.
+  if (opts.page === false) return;
 
   // #1135: one readable sentence, never a raw body. This is the chokepoint for
   // every unexpected fault, so whatever a library throws (a multi-line SQL
