@@ -109,6 +109,7 @@ const give = (bookingId: string, settled: string, sweep: Sweep): StrandedItemRea
   settledAt: at(settled),
   sweep,
   assignedUserId: sweep.outUserId,
+  assignedAgentInPool: false,
 });
 
 /**
@@ -147,8 +148,8 @@ afterEach(() => {
 describe("the coverage give up page on 2026-10-05 (#3303)", () => {
   // The two sweeps over the active agent's whole day, both giving up on the same
   // two calls, finished at the times measured in production.
-  const J1: Sweep = { outUserId: "agent-active", status: "done", updatedAt: at("14:47:24") };
-  const J2: Sweep = { outUserId: "agent-active", status: "done", updatedAt: at("14:47:25") };
+  const J1: Sweep = { outUserId: "agent-active", status: "done", updatedAt: at("14:47:24"), fromRedistribute: true };
+  const J2: Sweep = { outUserId: "agent-active", status: "done", updatedAt: at("14:47:25"), fromRedistribute: true };
   const coverage = [
     give("noon", "14:45:29", J1),
     give("340pm", "14:46:05", J1),
@@ -160,7 +161,7 @@ describe("the coverage give up page on 2026-10-05 (#3303)", () => {
   it("re-pages with 4 when the third sweep finishes after the first page, then stays quiet", async () => {
     // The offboarding sweep is still running at the first tick and finishes before
     // the second, so the first page carries the two coverage sweeps' 2 calls.
-    const running: Sweep = { outUserId: "agent-departed", status: "active", updatedAt: at("14:43:28") };
+    const running: Sweep = { outUserId: "agent-departed", status: "active", updatedAt: at("14:43:28"), fromRedistribute: false };
     const finished: Sweep = { ...running, status: "done", updatedAt: at("14:52:40") };
 
     const first = await tick("14:50:54", [...coverage, ...offboarding(running)]);
@@ -182,7 +183,7 @@ describe("the coverage give up page on 2026-10-05 (#3303)", () => {
   });
 
   it("on the real timeline, says nothing at 14:45:54 and pages the whole 4 at 14:50:54", async () => {
-    const J3: Sweep = { outUserId: "agent-departed", status: "done", updatedAt: at("14:47:25") };
+    const J3: Sweep = { outUserId: "agent-departed", status: "done", updatedAt: at("14:47:25"), fromRedistribute: false };
     const runningJ1: Sweep = { ...J1, status: "active", updatedAt: at("14:41:50") };
 
     // At 14:45:54 only the first item had settled and every sweep was running: the

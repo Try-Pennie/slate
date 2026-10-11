@@ -50,6 +50,7 @@ const holder = (over: Partial<StrandedHolder> = {}): StrandedHolder => ({
   email: "dana@example.com",
   unplaceable: 2,
   failed: 0,
+  bookingIds: [],
   ...over,
 });
 
@@ -336,8 +337,9 @@ describe("countStranded (#3303)", () => {
       status: "unplaceable",
       settledAt: at("14:45:29"),
       assignedUserId: "agent-a",
+      assignedAgentInPool: false,
       ...rest,
-      sweep: { outUserId: "agent-a", status: "done", updatedAt: at("14:47:24"), ...sweep },
+      sweep: { outUserId: "agent-a", status: "done", updatedAt: at("14:47:24"), fromRedistribute: true, ...sweep },
     };
   };
 
@@ -468,9 +470,9 @@ describe("countStranded (#3303)", () => {
   // up on the same two calls; J3 was the departed agent's offboarding.
   describe("2026-10-05", () => {
     type Sweep = StrandedItemRead["sweep"];
-    const J1: Sweep = { outUserId: "agent-active", status: "done", updatedAt: at("14:47:24") };
-    const J2: Sweep = { outUserId: "agent-active", status: "done", updatedAt: at("14:47:25") };
-    const J3: Sweep = { outUserId: "agent-departed", status: "done", updatedAt: at("14:47:25") };
+    const J1: Sweep = { outUserId: "agent-active", status: "done", updatedAt: at("14:47:24"), fromRedistribute: true };
+    const J2: Sweep = { outUserId: "agent-active", status: "done", updatedAt: at("14:47:25"), fromRedistribute: true };
+    const J3: Sweep = { outUserId: "agent-departed", status: "done", updatedAt: at("14:47:25"), fromRedistribute: false };
     const todays = (finished: boolean): StrandedItemRead[] => {
       const s = (j: Sweep): Sweep => (finished ? j : { ...j, status: "active" });
       return [
@@ -502,5 +504,71 @@ describe("countStranded (#3303)", () => {
       ]);
       expect(res.newestCountableMs).toBe(ms("14:47:25"));
     });
+  });
+});
+
+// #3597: a coverage sweep fires on a Redistribute tag, but the tag can clear minutes
+// later; the agent is then bookable and will take the call, so it is no longer stranded.
+// The unplaceable/failed item is a frozen record, so without this the monitor pages for
+// ever about a call that is already covered (2026-10-10: James was tagged at 10:00 and
+// untagged at 11:00, yet the stranded page fired at 8:40 PM).
+describe("countStranded excludes an agent who is bookable again (#3597)", () => {
+  const at = (hms: string) => `2026-10-05T${hms}Z`;
+  const ms = (hms: string) => Date.parse(at(hms));
+  const give = (inPool: boolean, fromRedistribute = true): StrandedItemRead => ({
+    bookingId: "b1",
+    status: "unplaceable",
+    settledAt: at("14:45:29"),
+    assignedUserId: "agent-a",
+    assignedAgentInPool: inPool,
+    sweep: { outUserId: "agent-a", status: "done", updatedAt: at("14:47:24"), fromRedistribute },
+  });
+
+  it("does not count a Redistribute give up whose agent is back in the pool, and does not hold it either", () => {
+    const res = countStranded([give(true)], ms("14:50:54"));
+    expect(res.appointments).toEqual([]);
+    expect(res.waiting).toBe(0);
+    expect(res.newestCountableMs).toBeNull();
+  });
+
+  it("still counts a Redistribute give up while the agent is not in the pool (departed or still tagged)", () => {
+    const res = countStranded([give(false)], ms("14:50:54"));
+    expect(res.appointments).toHaveLength(1);
+  });
+
+  it("STILL counts an approved-time-off give up even when the agent is in the pool (they are away in the window)", () => {
+    // The in-pool exclusion is Redistribute-only: an OOO agent stays in the pool but is
+    // genuinely away during the window, so their stranded call must keep paging.
+    const res = countStranded([give(true, false)], ms("14:50:54"));
+    expect(res.appointments).toHaveLength(1);
+  });
+});
+
+// #3594: the alert names WHICH bookings are stranded, so nobody has to query the database
+// to find the call about to meet nobody (it took several queries on 2026-10-10).
+describe("the coverage alert names the stranded bookings (#3594)", () => {
+  const agents: CoverageOutAgent[] = [{ id: "u1", name: "Dana Ruiz", email: "dana@example.com" }];
+
+  it("carries the booking ids per holder, in the order seen", () => {
+    const holders = strandedHoldersFromItems(
+      [item({ bookingId: "b1", outUserId: "u1" }), item({ bookingId: "b2", outUserId: "u1" })],
+      agents,
+    );
+    expect(holders[0].bookingIds).toEqual(["b1", "b2"]);
+  });
+
+  it("names the booking id in the page so it is actionable without a database query", () => {
+    const bk = "1ec69300-f649-4eda-b08a-ca0aee01f5dc";
+    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 1, bookingIds: [bk] })]);
+    expect(text).toContain(bk);
+  });
+
+  it("caps the named ids and summarises the rest, so a broad gap stays readable on a phone", () => {
+    const ids = Array.from({ length: 8 }, (_, i) => `bk-${i}`);
+    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 8, bookingIds: ids })]);
+    expect(text).toContain("bk-0");
+    expect(text).toContain("bk-4");
+    expect(text).not.toContain("bk-5"); // past the cap
+    expect(text).toContain("and 3 more");
   });
 });

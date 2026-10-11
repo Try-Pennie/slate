@@ -2012,7 +2012,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "one appointment nobody was free for",
     channel: "alert",
     text: formatCoverageNeedsHumanAlert([
-      { userId: "u1", name: "Dana Ruiz", email: "dana.ruiz@example.com", unplaceable: 1, failed: 0 },
+      { userId: "u1", name: "Dana Ruiz", email: "dana.ruiz@example.com", unplaceable: 1, failed: 0, bookingIds: ["1ec69300-f649-4eda-b08a-ca0aee01f5dc"] },
     ]),
   },
   {
@@ -2020,9 +2020,9 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "both outcomes, several agents",
     channel: "alert",
     text: formatCoverageNeedsHumanAlert([
-      { userId: "u1", name: "Dana Ruiz", email: "dana.ruiz@example.com", unplaceable: 4, failed: 2 },
-      { userId: "u2", name: "Sam Okafor", email: "sam.okafor@example.com", unplaceable: 0, failed: 1 },
-      { userId: "u3", name: null, email: "kim.ito@example.com", unplaceable: 1, failed: 0 },
+      { userId: "u1", name: "Dana Ruiz", email: "dana.ruiz@example.com", unplaceable: 4, failed: 2, bookingIds: Array.from({ length: 6 }, (_, i) => `bk-ruiz-${i}`) },
+      { userId: "u2", name: "Sam Okafor", email: "sam.okafor@example.com", unplaceable: 0, failed: 1, bookingIds: ["bk-okafor-1"] },
+      { userId: "u3", name: null, email: "kim.ito@example.com", unplaceable: 1, failed: 0, bookingIds: ["bk-ito-1"] },
     ]),
   },
   {
@@ -2030,13 +2030,18 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "more agents than the list cap",
     channel: "alert",
     text: formatCoverageNeedsHumanAlert(
-      Array.from({ length: 11 }, (_, i) => ({
-        userId: `u${i}`,
-        name: `Agent ${i}`,
-        email: `agent${i}@example.com`,
-        unplaceable: 11 - i,
-        failed: i % 3 === 0 ? 1 : 0,
-      })),
+      Array.from({ length: 11 }, (_, i) => {
+        const unplaceable = 11 - i;
+        const failed = i % 3 === 0 ? 1 : 0;
+        return {
+          userId: `u${i}`,
+          name: `Agent ${i}`,
+          email: `agent${i}@example.com`,
+          unplaceable,
+          failed,
+          bookingIds: Array.from({ length: unplaceable + failed }, (_, j) => `bk-${i}-${j}`),
+        };
+      }),
     ),
   },
   {
