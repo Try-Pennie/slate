@@ -2046,22 +2046,63 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatCalcomRetiredSweepEnding(),
   },
   {
+    // #3485: why the agent will not be there (approved time off, with its window), and
+    // the booking and agent as links. The common real case, David Shearer's on 2026-10-11.
     key: "coverage_needs_human",
-    state: "one appointment nobody was free for",
+    state: "one appointment nobody was free for (time off, linked)",
     channel: "alert",
-    text: formatCoverageNeedsHumanAlert([
-      { userId: "u1", name: "Dana Ruiz", email: "dana.ruiz@example.com", unplaceable: 1, failed: 0, bookingIds: ["1ec69300-f649-4eda-b08a-ca0aee01f5dc"] },
-    ]),
+    text: formatCoverageNeedsHumanAlert(
+      [
+        {
+          userId: "u1",
+          name: "Dana Ruiz",
+          email: "dana.ruiz@example.com",
+          unplaceable: 1,
+          failed: 0,
+          bookingIds: ["1ec69300-f649-4eda-b08a-ca0aee01f5dc"],
+          cause: {
+            kind: "time-off",
+            timeOff: {
+              startsAt: "2026-10-13T14:30:00Z",
+              endsAt: "2026-10-13T20:00:00Z",
+              tzId: "America/Chicago",
+              tzLabel: "CT",
+            },
+          },
+        },
+      ],
+      "https://slate.example.com",
+    ),
   },
   {
+    // #3485: two different causes across agents, and the links, at production shape.
     key: "coverage_needs_human",
-    state: "both outcomes, several agents",
+    state: "both outcomes, several agents, mixed causes",
     channel: "alert",
-    text: formatCoverageNeedsHumanAlert([
-      { userId: "u1", name: "Dana Ruiz", email: "dana.ruiz@example.com", unplaceable: 4, failed: 2, bookingIds: Array.from({ length: 6 }, (_, i) => `bk-ruiz-${i}`) },
-      { userId: "u2", name: "Sam Okafor", email: "sam.okafor@example.com", unplaceable: 0, failed: 1, bookingIds: ["bk-okafor-1"] },
-      { userId: "u3", name: null, email: "kim.ito@example.com", unplaceable: 1, failed: 0, bookingIds: ["bk-ito-1"] },
-    ]),
+    text: formatCoverageNeedsHumanAlert(
+      [
+        {
+          userId: "u1",
+          name: "Dana Ruiz",
+          email: "dana.ruiz@example.com",
+          unplaceable: 4,
+          failed: 2,
+          bookingIds: Array.from({ length: 6 }, (_, i) => `bk-ruiz-${i}`),
+          cause: {
+            kind: "time-off",
+            timeOff: {
+              startsAt: "2026-10-13T14:30:00Z",
+              endsAt: "2026-10-13T20:00:00Z",
+              tzId: "America/Chicago",
+              tzLabel: "CT",
+            },
+          },
+        },
+        { userId: "u2", name: "Sam Okafor", email: "sam.okafor@example.com", unplaceable: 0, failed: 1, bookingIds: ["bk-okafor-1"], cause: { kind: "offboarded" } },
+        { userId: "u3", name: null, email: "kim.ito@example.com", unplaceable: 1, failed: 0, bookingIds: ["bk-ito-1"] },
+      ],
+      "https://slate.example.com",
+    ),
   },
   {
     key: "coverage_needs_human",

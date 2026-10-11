@@ -1,15 +1,115 @@
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failure";
 import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
+import { formatWhenLine } from "@/lib/ooo/core";
 import { parseStampMs } from "@/lib/date/stamp";
 import type { BulkReassignJobStatus } from "@/lib/db/types";
 import { log } from "@/lib/log";
 
 /**
+ * Why the agent will not be there (#3485). The sweep that stranded a call records
+ * its origin on the job in mutually exclusive columns (the time-off request,
+ * offboarding, a Twilio pool exit or tier demotion, or an admin), and this is that
+ * origin decoded, so the alert can say the reason rather than only "an agent who
+ * will not be there". For approved time off the window travels too, in the request's
+ * OWN display zone, so the page names it WITHOUT the agent's free-text reason, which
+ * is often personal and does not belong in a shared channel (Dan, 2026-10-11).
+ */
+export type SweepCause =
+  | {
+      kind: "time-off";
+      timeOff: { startsAt: string; endsAt: string; tzId: string | null; tzLabel: string | null };
+    }
+  | { kind: "offboarded" }
+  | { kind: "redistribute" }
+  | { kind: "demotion" }
+  | { kind: "admin" }
+  | { kind: "unknown" };
+
+/** The window of an approved time off, in its own display zone, for a `time-off` cause. */
+export interface TimeOffWindow {
+  startsAt: string;
+  endsAt: string;
+  tzId: string | null;
+  tzLabel: string | null;
+}
+
+/**
+ * Best-effort time-off windows for the stranded page's reason clause (#3485). This read
+ * ONLY enriches the page with "on approved time off, <when>", so a failure must degrade
+ * to no window and NEVER propagate: were it to throw out of the loader, the whole
+ * stranded check would report `unreadable` and a real page would be suppressed for the
+ * sake of a cosmetic clause (review finding, 2026-10-11). On failure it reports through
+ * `onError` and returns an empty map, and the ooo causes then render without their
+ * window. No ids means no fetch.
+ */
+export async function loadTimeOffWindows(
+  oooIds: string[],
+  fetchWindows: (ids: string[]) => Promise<Array<{ id: string } & TimeOffWindow>>,
+  onError?: (err: unknown) => void,
+): Promise<Map<string, TimeOffWindow>> {
+  if (oooIds.length === 0) return new Map();
+  try {
+    const rows = await fetchWindows(oooIds);
+    return new Map(
+      rows.map((r) => [r.id, { startsAt: r.startsAt, endsAt: r.endsAt, tzId: r.tzId, tzLabel: r.tzLabel }]),
+    );
+  } catch (err) {
+    onError?.(err);
+    return new Map();
+  }
+}
+
+/**
+ * Decode why a sweep's out agent will not be there (#3485) from the job's mutually
+ * exclusive origin columns. An approved-time-off sweep carries `created_by` (the
+ * approver) AND `ooo_request_id`, so the request is checked FIRST: the reader needs
+ * the absence, not who signed it off. A time-off sweep whose window could not be read
+ * is `unknown`, never a half-stated "on time off" with no when (L11): a reason the
+ * reader cannot act on is worse than none. The order matches `coverageSweepActor`'s
+ * accountability decode, which is the same columns asked a different question.
+ */
+export function decodeSweepCause(
+  job: {
+    ooo_request_id?: string | null;
+    offboarding_deactivated_at?: string | null;
+    redistribute_marked_at?: string | null;
+    demotion_marked_at?: string | null;
+    created_by?: string | null;
+  },
+  timeOff?: TimeOffWindow | null,
+): SweepCause {
+  if (job.ooo_request_id) return timeOff ? { kind: "time-off", timeOff } : { kind: "unknown" };
+  if (job.offboarding_deactivated_at) return { kind: "offboarded" };
+  if (job.redistribute_marked_at) return { kind: "redistribute" };
+  if (job.demotion_marked_at) return { kind: "demotion" };
+  if (job.created_by) return { kind: "admin" };
+  return { kind: "unknown" };
+}
+
+/**
+ * Whether two causes are the same reason (#3485). Same kind, and for time off the same
+ * window: two approved time offs of different windows are NOT the same reason, so a
+ * holder stranded by both must not be told one of the two windows for all its calls.
+ */
+function sameCause(a: SweepCause, b: SweepCause): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "time-off" && b.kind === "time-off") {
+    return (
+      a.timeOff.startsAt === b.timeOff.startsAt &&
+      a.timeOff.endsAt === b.timeOff.endsAt &&
+      a.timeOff.tzId === b.timeOff.tzId &&
+      a.timeOff.tzLabel === b.timeOff.tzLabel
+    );
+  }
+  return true;
+}
+
+/**
  * Appointments a coverage sweep gave up on (#1242).
  *
  * When the bulk sweep cannot place one, it settles the item as `unplaceable`
- * (nobody was free and under their daily cap at that time) or, after exhausting
+ * (no other advisor was available at that time) or, after exhausting
  * its retries, `failed`. Both are terminal, and both mean the appointment is still
  * assigned to an agent who is not going to be there, with only a person able to
  * resolve it. Until this check existed the outcome reached exactly two places: the
@@ -49,6 +149,8 @@ export interface StrandedAppointment {
   /** The agent it is still assigned to: the sweep's out agent. */
   outUserId: string;
   status: StrandedStatus;
+  /** Why the out agent will not be there (#3485), from the sweep that stranded it. */
+  cause?: SweepCause;
 }
 
 /**
@@ -75,6 +177,8 @@ export interface StrandedItemRead {
      * the window, so an in-pool holder there is still stranded and must keep paging.
      */
     fromRedistribute: boolean;
+    /** Why this sweep's out agent will not be there (#3485), decoded from the job. */
+    cause?: SweepCause;
   };
   /** Who holds the booking now, or null when it is no longer active and upcoming. */
   assignedUserId: string | null;
@@ -185,7 +289,15 @@ export function countStranded(items: StrandedItemRead[], asOfMs: number): Counte
       continue;
     }
     const settledMs = parseStampMs(it.settledAt) ?? Number.NEGATIVE_INFINITY;
-    const appt: StrandedAppointment = { bookingId: it.bookingId, outUserId: it.sweep.outUserId, status: it.status };
+    const appt: StrandedAppointment = {
+      bookingId: it.bookingId,
+      outUserId: it.sweep.outUserId,
+      status: it.status,
+      // #3485: the cause travels with the appointment so the holder, and then the
+      // alert, can say why. The dedupe below keeps the latest attempt's appt, so the
+      // cause follows the most recent sweep that gave up on this call.
+      cause: it.sweep.cause,
+    };
     const prior = counted.get(it.bookingId);
     if (!prior) {
       counted.set(it.bookingId, { appt, atMs: at, settledMs });
@@ -221,7 +333,7 @@ export interface StrandedHolder {
   userId: string;
   name: string | null;
   email: string | null;
-  /** Nobody was free and under cap at the original time. */
+  /** No other advisor was available at the original time. */
   unplaceable: number;
   /** The move itself kept erroring until it ran out of attempts. */
   failed: number;
@@ -231,6 +343,14 @@ export interface StrandedHolder {
    * booking otherwise took several database queries. Capped when rendered, not here.
    */
   bookingIds: string[];
+  /**
+   * Why this agent will not be there (#3485), so the alert says the reason rather than
+   * only "an agent who will not be there". Undefined when the loader did not resolve it;
+   * `unknown` when a holder's stranded calls came from sweeps that disagree on why, so
+   * no one reason is true of them all. Rendered as a clause, never the agent's own
+   * free-text reason.
+   */
+  cause?: SweepCause;
 }
 
 /**
@@ -265,6 +385,12 @@ export function strandedHoldersFromItems(
   for (const it of items) {
     if (seen.has(it.bookingId)) continue;
     seen.add(it.bookingId);
+    // A holder's cause is the ONE reason true of ALL its stranded calls, else unknown
+    // (#3485). A call with no resolved cause is itself a disagreement: a later call's
+    // reason must not be claimed for it, so an unresolved cause is normalised to unknown
+    // and compared like any other (review finding, 2026-10-11). "Disagree" also covers
+    // two approved time offs with DIFFERENT windows, same kind but not the same when.
+    const cause: SweepCause = it.cause ?? { kind: "unknown" };
     let h = holders.get(it.outUserId);
     if (!h) {
       const agent = byId.get(it.outUserId);
@@ -275,8 +401,11 @@ export function strandedHoldersFromItems(
         unplaceable: 0,
         failed: 0,
         bookingIds: [],
+        cause,
       };
       holders.set(it.outUserId, h);
+    } else if (!sameCause(h.cause ?? { kind: "unknown" }, cause)) {
+      h.cause = { kind: "unknown" };
     }
     h.bookingIds.push(it.bookingId);
     if (it.status === "failed") h.failed++;
@@ -300,6 +429,48 @@ const whoIs = (h: StrandedHolder): string => {
   return h.email && h.email !== who ? `${who} (${h.email})` : who;
 };
 
+/**
+ * Escape a Slack link LABEL (#3485). An agent name is DB text, so a stray `<`, `>`,
+ * `&` or `|` would break the `<url|label>` link or the message around it: `>` ends the
+ * link, `|` is the url/label separator. Slack escapes the first three as entities; `|`
+ * has no entity, so it becomes a slash. The booking ids are uuids and need none of this.
+ */
+const slackLabel = (s: string): string =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\|/g, "/");
+
+/**
+ * The holder, linked to their page in Admin when a base url is known (#3485), which
+ * is where the Move-bookings panel that fixes this lives, so the reader acts in one
+ * tap. A bare holder (no base url) renders as before.
+ */
+const whoLink = (h: StrandedHolder, appBaseUrl?: string): string =>
+  appBaseUrl ? `<${appBaseUrl}/admin/agents/${h.userId}|${slackLabel(whoIs(h))}>` : whoIs(h);
+
+/**
+ * Why the agent will not be there, as a clause for the holder line (#3485), or null
+ * when there is nothing specific to say. Never the agent's own free-text reason: the
+ * kind, and for time off the window in the request's display zone (Dan, 2026-10-11).
+ */
+function causePhrase(cause: SweepCause | undefined): string | null {
+  if (!cause) return null;
+  switch (cause.kind) {
+    case "time-off": {
+      const { startsAt, endsAt, tzId, tzLabel } = cause.timeOff;
+      return `is on approved time off, ${formatWhenLine(startsAt, endsAt, tzId ?? "Etc/UTC", tzLabel ?? undefined)}`;
+    }
+    case "offboarded":
+      return "has left the pool";
+    case "redistribute":
+      return "was taken out of the routing pool";
+    case "demotion":
+      return "changed routing tier, so this call is no longer theirs to take";
+    case "admin":
+      return "was taken out of this pool by an admin";
+    case "unknown":
+      return null;
+  }
+}
+
 /** How many stranded booking ids to name per holder before the rest are summarised: a
  *  handful is enough to act on without turning a phone alert into a wall of uuids. */
 const BOOKING_ID_CAP = 5;
@@ -307,7 +478,7 @@ const BOOKING_ID_CAP = 5;
 /** Human line for one holder: who, how many, which outcome (since the remediation differs
  *  per outcome), and WHICH bookings (#3594), so nobody has to query the database to find
  *  the stranded call. */
-function holderLine(h: StrandedHolder): string {
+function holderLine(h: StrandedHolder, appBaseUrl?: string): string {
   const parts: string[] = [];
   if (h.unplaceable > 0) {
     parts.push(`${plural(h.unplaceable, "appointment", "appointments")} nobody was free for`);
@@ -315,28 +486,37 @@ function holderLine(h: StrandedHolder): string {
   if (h.failed > 0) {
     parts.push(`${plural(h.failed, "appointment", "appointments")} where the move kept failing`);
   }
-  const shown = h.bookingIds.slice(0, BOOKING_ID_CAP).join(", ");
+  // #3485: each booking id is a link to its page in Admin when a base url is known, so
+  // the stranded call is one tap away; a bare id otherwise.
+  const linkId = (id: string): string => (appBaseUrl ? `<${appBaseUrl}/admin/bookings/${id}|${id}>` : id);
+  const shown = h.bookingIds.slice(0, BOOKING_ID_CAP).map(linkId).join(", ");
   const extra = h.bookingIds.length > BOOKING_ID_CAP ? ` and ${h.bookingIds.length - BOOKING_ID_CAP} more` : "";
   const ids = h.bookingIds.length > 0 ? ` (booking ${shown}${extra})` : "";
-  return `${whoIs(h)}, ${parts.join(", ")}${ids}`;
+  const who = whoLink(h, appBaseUrl);
+  const phrase = causePhrase(h.cause);
+  // With a reason the line reads "<who> is on approved time off, <when>. N appointment..."
+  // Without one the existing "<who>, N appointment..." shape is kept (#3485).
+  return phrase ? `${who} ${phrase}. ${parts.join(", ")}${ids}` : `${who}, ${parts.join(", ")}${ids}`;
 }
 
 /**
  * The page. States the customer-facing consequence first, because that is what
  * decides whether someone acts at 7am, then names the agents, which outcome they hit,
  * and WHICH bookings (#3594: the id is named so nobody has to query the database to find
- * the stranded call, which took several queries on 2026-10-10), then points at the ONE
- * place that fixes it. Times are still left out: the coverage panel has them and a page
- * is read on a phone.
+ * the stranded call, which took several queries on 2026-10-10), and WHY the agent will not
+ * be there (#3485: the sweep's cause, and for time off the absence window, so the reader
+ * knows what they are fixing), then points at the ONE place that fixes it. With a base url
+ * the booking and the agent are links. The bookings' OWN times are still left out: the
+ * coverage panel has them and a page is read on a phone.
  *
  * Verbs agree with the subject in both directions. Counting the nouns is not
  * enough, which is only visible rendered (`pnpm preview:alerts`).
  */
-export function formatCoverageNeedsHumanAlert(holders: StrandedHolder[]): string {
+export function formatCoverageNeedsHumanAlert(holders: StrandedHolder[], appBaseUrl?: string): string {
   const total = holders.reduce((n, h) => n + h.unplaceable + h.failed, 0);
   const one = total === 1;
   const oneAgent = holders.length === 1;
-  const lines = holders.slice(0, NAME_CAP).map(holderLine);
+  const lines = holders.slice(0, NAME_CAP).map((h) => holderLine(h, appBaseUrl));
   const more = holders.length > NAME_CAP ? `\n(and ${holders.length - NAME_CAP} more)` : "";
   return (
     `${plural(total, "appointment", "appointments")} could not be moved to another advisor and ` +
@@ -376,6 +556,11 @@ export interface StrandedRead {
   newestCountableMs: number | null;
   /** Taken before the reads began, so anything landing during them reads as news next tick. */
   asOfMs: number;
+  /**
+   * The deployment's base url (#3485), so the page can link the booking and the agent.
+   * Optional: omitted, the page renders bare ids and names, as it did before.
+   */
+  appBaseUrl?: string;
 }
 
 /**
@@ -459,7 +644,7 @@ export async function runCoverageNeedsHumanCheck(deps: {
   await sendThrottledAlert(
     COVERAGE_NEEDS_HUMAN_KEY,
     deps.cooldownMs,
-    formatCoverageNeedsHumanAlert(holders),
+    formatCoverageNeedsHumanAlert(holders, read.appBaseUrl),
     undefined,
     { newestMs: read.newestCountableMs, asOfMs: read.asOfMs },
   ).catch(logAlertSendFailure(COVERAGE_NEEDS_HUMAN_KEY));
