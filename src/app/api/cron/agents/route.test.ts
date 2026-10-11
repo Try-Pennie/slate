@@ -447,6 +447,17 @@ describe("GET /api/cron/agents", () => {
       expect(String(call?.[2])).toContain("/admin/agents/u1");
     });
 
+    // Its own boundary: the Twilio half READ fine, so a failure while reporting the reroute must
+    // not be recorded as Twilio being unreadable, which pages about the wrong system.
+    it("keeps a failure while reporting the reroute out of the Twilio read's account", async () => {
+      twilio.syncTwilioRedistribute.mockResolvedValueOnce({ ...(await twilioResult()), demotionEvalFailures: 1 });
+      streak.recordConsecutiveStreak.mockRejectedValueOnce(new Error("alert_state unreachable"));
+      const res = await GET(req());
+      expect(await res.json()).toMatchObject({ twilio: { ok: true } });
+      expect(streak.recordConsecutiveStreak).not.toHaveBeenCalledWith("twilio_sync_failures", expect.any(Number), 2);
+      expect(verdict.recordDetectorVerdict).toHaveBeenCalledWith("verdict:twilio-roster", true);
+    });
+
     it("says nothing about moves on a run that queued none", async () => {
       await GET(req());
       expect(dispatch.sendThrottledInfo.mock.calls.map((c: unknown[]) => c[0])).not.toContain("demotion_reroute_moved");

@@ -13,6 +13,7 @@ import {
   DEMOTION_MARK_KEY,
   DEMOTION_SWEEP_REASON,
   demotionChangeOf,
+  readDemotionChange,
   storedDemotionFrom,
   type DemotionTiers,
   DEMOTION_SWEEP_DEBOUNCE_MS,
@@ -295,6 +296,15 @@ const FROM: DemotionTiers = { debtTeam: ["ultra_high", "high"], backendService: 
   eq(JSON.stringify(change?.from), JSON.stringify(FROM), "the change's from is the saved tiers");
   eq(JSON.stringify(change?.to), JSON.stringify({ debtTeam: ["high"], backendService: ["achieve"] }), "the change's to is the current tiers");
   eq(demotionChangeOf({ debt_team: ["high"], [DEMOTION_MARK_KEY]: T0 }), null, "no saved tiers means no change can be stated");
+}
+
+// --- reading a stored change back (#3615) -------------------------------------
+{
+  const good = { from: { debtTeam: ["high"], backendService: [] }, to: { debtTeam: [], backendService: [] } };
+  eq(JSON.stringify(readDemotionChange(good)), JSON.stringify(good), "a well formed change reads back as itself");
+  for (const bad of [null, undefined, "x", 3, {}, { from: good.from }, { from: { debtTeam: "high", backendService: [] }, to: good.to }, { from: good.from, to: { debtTeam: [1], backendService: [] } }]) {
+    eq(readDemotionChange(bad), null, `a malformed change (${JSON.stringify(bad)}) reads as unrecorded`);
+  }
 }
 
 // --- the lead hears about a demotion move the way they hear about any coverage move (#3615) ---

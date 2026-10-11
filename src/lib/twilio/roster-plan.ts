@@ -302,6 +302,12 @@ export function twilioUndoesBookable(attributes: Attributes | null | undefined):
  */
 export const TWILIO_WORKER_MISSING_KEY = "twilio_worker_missing_since";
 
+/** The moment Slate marked an agent for Redistribute, and the moment their coverage sweep ran
+ *  (#3599). One spelling each, so the bucket picker's bookkeeping exclusion (#3615) reads these
+ *  rather than a copy of the strings. */
+export const REDISTRIBUTE_AT_KEY = "redistribute_at";
+export const REDISTRIBUTE_SWEPT_KEY = "redistribute_swept_at";
+
 /**
  * True when the last roster sync found no Twilio worker for this person, so the
  * Twilio facts stored for them (the `Redistribute` tag among them) are what Twilio
@@ -330,13 +336,13 @@ export function twilioWorkerMissingSinceMs(attributes: Attributes | null | undef
  * is what puts a marked person in the pool the hour the tag comes off.
  */
 export function withMark(attributes: Attributes | null, markedAtIso: string): Attributes {
-  const next: Attributes = { ...(attributes ?? {}), redistribute: REDISTRIBUTE_MARK, redistribute_at: markedAtIso };
+  const next: Attributes = { ...(attributes ?? {}), redistribute: REDISTRIBUTE_MARK, [REDISTRIBUTE_AT_KEY]: markedAtIso };
   // A mark means a turn-off is happening NOW. Any swept marker belongs to a PREVIOUS
   // redistribute cycle (the agent was turned back on, by hand or by the tag lifting, and
   // is being withheld again), so it must not carry over: left behind, the new cycle's
   // sweep-overdue reads as already done and the calls booked in between never move
   // (#3599).
-  delete next.redistribute_swept_at;
+  delete next[REDISTRIBUTE_SWEPT_KEY];
   return next;
 }
 
@@ -346,10 +352,10 @@ function withoutMark(attributes: Attributes | null): Attributes {
   // The stamp goes WITH the mark. Left behind, a later pool exit would key its
   // coverage sweep onto the stamp of the previous one, and the unique index would
   // refuse the new sweep while the old job explained nothing about it.
-  delete next.redistribute_at;
+  delete next[REDISTRIBUTE_AT_KEY];
   // The sweep marker goes with the mark too (#3599): a future redistribute must
   // start its own debounce and its own sweep, not read as already done.
-  delete next.redistribute_swept_at;
+  delete next[REDISTRIBUTE_SWEPT_KEY];
   return next;
 }
 
@@ -359,12 +365,12 @@ function withoutMark(attributes: Attributes | null): Attributes {
  * withheld on a later sync, whose calls were already moved, is planned nothing.
  */
 function withSwept(attributes: Attributes | null, sweptAtIso: string): Attributes {
-  return { ...(attributes ?? {}), redistribute_swept_at: sweptAtIso };
+  return { ...(attributes ?? {}), [REDISTRIBUTE_SWEPT_KEY]: sweptAtIso };
 }
 
 /** Whether the coverage sweep has already run for the mark this row carries (#3599). */
 function isSwept(attributes: Attributes | null | undefined): boolean {
-  const raw = attributes?.redistribute_swept_at;
+  const raw = attributes?.[REDISTRIBUTE_SWEPT_KEY];
   return typeof raw === "string" && raw.trim() !== "";
 }
 
@@ -422,7 +428,7 @@ export function redistributeSweepPending(
  * `Number.isFinite` rather than letting the unreadable value through (L50).
  */
 function storedMarkStamp(attributes: Attributes | null | undefined): string | null {
-  const raw = attributes?.redistribute_at;
+  const raw = attributes?.[REDISTRIBUTE_AT_KEY];
   if (typeof raw !== "string" || raw.trim() === "") return null;
   return Number.isFinite(Date.parse(raw)) ? raw : null;
 }

@@ -471,6 +471,17 @@ async function run() {
   }
 
   {
+    // The move is the item's outcome, not the trail row: a trail write that throws (the real one
+    // never does, but the seam does not promise it) must not report a completed move as failed.
+    const { deps: d } = auditFakes();
+    d.recordAudit = async () => {
+      throw new Error("audit_log unreachable");
+    };
+    const out = await processBulkReassignItem(item(), demotionJob, d);
+    assert(out.status === "moved" && out.targetUserId === "cov", "a failing audit write still reports the completed move");
+  }
+
+  {
     // A demotion stamped before the earlier tiers were saved still audits the move, with the
     // change recorded as unknown rather than invented.
     const { deps: d, audits } = auditFakes();

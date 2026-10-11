@@ -14,7 +14,7 @@
  */
 
 import { describeDemotionChange } from "@/lib/booking/demotion-copy";
-import type { DemotionChange } from "@/lib/booking/demotion-plan";
+import { readDemotionChange } from "@/lib/booking/demotion-plan";
 
 export interface AuditDisplayRow {
   action: string;
@@ -117,7 +117,7 @@ export function auditDetailText(row: AuditDisplayRow, nameOf?: (id: string | nul
     // Who took the call, and what changed in Twilio, in the sentence the Slack line and the undo
     // panel use too. The demoted advisor is already the row's target.
     const to = typeof row.details?.to_user_id === "string" ? row.details.to_user_id : null;
-    const change = describeDemotionChange((row.details?.change ?? null) as DemotionChange | null);
+    const change = describeDemotionChange(readDemotionChange(row.details?.change));
     parts.push(`Moved to ${nameOf ? nameOf(to) : (to ?? "another advisor")}.`);
     parts.push(change ?? "What changed in Twilio was not recorded.");
     return parts.join(" ");

@@ -318,7 +318,12 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       const cleared = await resolveAlert("twilio_sync_failures", twilioSyncRecovery()).catch(logResolveFailure("twilio_sync_failures"));
       if (cleared) log.info("agents", { msg: "twilio sync failure alert cleared" });
       await reportTwilioWriteOutcome(result);
-      await reportDemotionOutcome(result);
+      // #3615: its own boundary. The Twilio half READ fine by this point, so a failure while
+      // reporting the reroute (its streak, its page, its info line) must not land in the catch
+      // below and be recorded as Twilio being unreadable, which pages about the wrong system.
+      await reportDemotionOutcome(result).catch((err: unknown) =>
+        log.error("agents", { msg: "could not report the demotion reroute's outcome, carrying on" }, err),
+      );
     } catch (err) {
       const reason = errorText(err);
       twilio = { ok: false, reason };

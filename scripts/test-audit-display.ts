@@ -176,6 +176,21 @@ const nameOf = (id: string | null) => (id ? `Name(${id})` : "unassigned");
     `an unrecorded change says so rather than inventing one (${unrecorded})`,
   );
   assert(!/[\u2014\u2013]/.test(detail), "the detail has no dash punctuation");
+
+  // The change comes back from jsonb. A malformed one must read as unrecorded, never throw while
+  // the page renders and take the whole audit log down with it (L50).
+  for (const bad of [{ from: "x" }, { from: { debtTeam: "high" }, to: {} }, "garbage", 7, { from: null, to: null }]) {
+    let text = "";
+    try {
+      text = auditDetailText(row(bad), nameOf);
+    } catch (err) {
+      text = `THREW ${String(err)}`;
+    }
+    assert(
+      text === "Moved to Name(cov). What changed in Twilio was not recorded.",
+      `a malformed stored change (${JSON.stringify(bad)}) reads as unrecorded (got: ${text})`,
+    );
+  }
 }
 
 finish();

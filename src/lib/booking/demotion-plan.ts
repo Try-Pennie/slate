@@ -74,6 +74,32 @@ export const DEMOTION_SWEEP_DEBOUNCE_MS = 30 * 60_000;
  */
 export const DEMOTION_SWEEP_PENDING_GRACE_MS = 4 * 60 * 60_000;
 
+function isStringList(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
+function readTiers(v: unknown): DemotionTiers | null {
+  if (typeof v !== "object" || v === null) return null;
+  const t = v as Record<string, unknown>;
+  return isStringList(t.debtTeam) && isStringList(t.backendService)
+    ? { debtTeam: t.debtTeam, backendService: t.backendService }
+    : null;
+}
+
+/**
+ * A stored change read back from jsonb (`bulk_reassign_jobs.demotion_change`, an audit row's
+ * details) as a `DemotionChange`, or null when it is absent or not that shape (#3615). Every
+ * reader goes through this rather than a cast, so one malformed row reads as "not recorded"
+ * instead of throwing while a page renders (L50).
+ */
+export function readDemotionChange(value: unknown): DemotionChange | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  const from = readTiers(v.from);
+  const to = readTiers(v.to);
+  return from && to ? { from, to } : null;
+}
+
 /** The debt tiers and backend an attribute set carries, as lists. */
 export function demotionTiersOf(attributes: Attributes | null | undefined): DemotionTiers {
   return { debtTeam: asList(attributes?.debt_team), backendService: asList(attributes?.backend_service) };
