@@ -10,7 +10,7 @@ import {
   moveBackOverCapText,
   latestDemotionMove,
   moveBackDemotionReroute,
-  pinnedBookingIds,
+  pinnedByAgent,
   type MoveBackDeps,
   planDemotionRevert,
   revertRefusalText,
@@ -146,11 +146,21 @@ for (const status of ["cancelled", "completed"]) {
 // --- pinning: what later sweeps and the backstop leave alone --------------------------------
 
 {
-  const reverted = move({ bookingId: "kept", revertedAt: "2026-10-12T14:00:00.000Z", revertedBy: "admin1" });
-  const live = move({ bookingId: "moved" });
-  const otherAgent = move({ bookingId: "elsewhere", outUserId: "pat", revertedAt: "2026-10-12T14:00:00.000Z" });
-  const pinned = pinnedBookingIds([reverted, live, otherAgent], "jordan");
-  eq([...pinned].sort(), ["kept"], "only this advisor's moved-back calls are pinned to them");
+  // The one rule the sweep, the decision and the backstop all read, through the store's query.
+  const row = (booking_id: string, out: string | null, reverted_at: string | null) => ({
+    booking_id,
+    reverted_at,
+    bulk_reassign_jobs: out === null ? null : { out_user_id: out },
+  });
+  const pinned = pinnedByAgent([
+    row("kept", "jordan", "2026-10-12T14:00:00.000Z"),
+    row("moved", "jordan", null),
+    row("elsewhere", "pat", "2026-10-12T14:00:00.000Z"),
+    row("orphan", null, "2026-10-12T14:00:00.000Z"),
+  ]);
+  eq([...(pinned.get("jordan") ?? [])], ["kept"], "only a moved back call is pinned, and to the advisor it went back to");
+  eq([...(pinned.get("pat") ?? [])], ["elsewhere"], "another advisor's pin is theirs alone");
+  eq(pinned.size, 2, "a row with no sweep pins nothing");
 }
 
 // --- the move back, end to end over fakes ---------------------------------------------------

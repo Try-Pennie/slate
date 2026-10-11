@@ -346,6 +346,17 @@ describe("BulkReassignCoverage: what the move says it did (#2122)", () => {
     expect(screen.getAllByRole("link", { name: /place by hand/i })).toHaveLength(1);
   });
 
+  it("says a call was already moved back, and offers no second move back", async () => {
+    await openOnJob({
+      ...mixedFixture,
+      moved: [
+        { bookingId: "bk-back", status: "moved", detail: null, startsAt: "2026-07-27T15:00:00.000Z", attendeeName: "Robin", revertedAt: "2026-07-20T15:00:00.000Z" },
+      ],
+    });
+    expect(screen.getByText("Moved back to the original advisor")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /move back/i })).toBeNull();
+  });
+
   it("shows no moved list when the reply carries none, as an older server's does", async () => {
     await openOnJob(mixedFixture);
     expect(screen.queryByText(/^Moved \(/)).toBeNull();

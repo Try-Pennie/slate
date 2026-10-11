@@ -416,6 +416,15 @@ async function run() {
   const { moved: _drop, ...older } = progDemotion;
   assert(isBulkReassignProgress(older), "a reply from a server older than the moved list still reads (L598)");
   assert(!isBulkReassignProgress({ ...progDemotion, moved: "x" }), "a moved list of the wrong shape is refused");
+  // A call an admin already moved back says so on its row, so the list never offers it again.
+  const progBack = buildBulkReassignProgress(
+    demotion,
+    [itemRow({ id: "m1", booking_id: "bkA", status: "moved", reverted_at: "2026-10-12T14:00:00.000Z" })],
+    ctxMoved,
+  );
+  assert(progBack.moved?.[0].revertedAt === "2026-10-12T14:00:00.000Z", "a moved back call carries when it went back");
+  assert(isBulkReassignProgress(progBack), "and the reply carrying it is valid");
+  assert(!isBulkReassignProgress({ ...progBack, moved: [{ ...progBack.moved![0], revertedAt: 7 }] }), "a reverted stamp of the wrong type is refused");
 
   // --- #3615: an audit row for every call a DEMOTION sweep moves ---
   //

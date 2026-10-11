@@ -352,6 +352,9 @@ export interface BulkReassignActionableItem {
   detail: string | null;
   startsAt: string | null;
   attendeeName: string | null;
+  /** When an admin moved this call back after a demotion move (#3615); absent or null otherwise,
+   *  including from a server older than the field. */
+  revertedAt?: string | null;
 }
 
 export interface BulkReassignProgress {
@@ -405,6 +408,8 @@ export function buildBulkReassignProgress(
         detail: it.detail,
         startsAt: bookingCtx.get(it.booking_id)?.startsAt ?? null,
         attendeeName: bookingCtx.get(it.booking_id)?.attendeeName ?? null,
+        // Only on a call that was moved back, so the other lists' rows are unchanged.
+        ...(it.reverted_at ? { revertedAt: it.reverted_at } : {}),
       }));
   // One shape for both lists, from one function, so the panel can draw them with
   // one row component and the two cannot drift into different fields.
@@ -474,7 +479,8 @@ function isProgressRowList(value: unknown): boolean {
     return (
       (r.detail === null || typeof r.detail === "string") &&
       (r.startsAt === null || typeof r.startsAt === "string") &&
-      (r.attendeeName === null || typeof r.attendeeName === "string")
+      (r.attendeeName === null || typeof r.attendeeName === "string") &&
+      (r.revertedAt === undefined || r.revertedAt === null || typeof r.revertedAt === "string")
     );
   });
 }

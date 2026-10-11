@@ -18,6 +18,7 @@ import {
 } from "@/lib/booking/demotion-snapshot";
 import type { RerouteCandidate } from "@/lib/booking/reroute-eligibility";
 import type { DemotionChange } from "@/lib/booking/demotion-plan";
+import { pinnedByAgent } from "@/lib/booking/demotion-revert";
 import type {
   Attributes,
   BookingStatus,
@@ -201,9 +202,12 @@ function demotionSnapshotReaders(
  * a failed read can never drop a pin and move a call an admin deliberately kept (L184).
  */
 export async function pinnedDemotionBookingIds(outUserIds: string[]): Promise<Map<string, Set<string>>> {
-  const byAgent = new Map<string, Set<string>>();
-  if (outUserIds.length === 0) return byAgent;
-  const rows = await selectAllPages<{ booking_id: string; bulk_reassign_jobs: { out_user_id: string } | null }>(
+  if (outUserIds.length === 0) return new Map();
+  const rows = await selectAllPages<{
+    booking_id: string;
+    reverted_at: string | null;
+    bulk_reassign_jobs: { out_user_id: string } | null;
+  }>(
     "demotion-pinned-bookings",
     "id",
     () =>
@@ -212,19 +216,12 @@ export async function pinnedDemotionBookingIds(outUserIds: string[]): Promise<Ma
       // of the bookable roster (design ceiling 200, the in() URL id limit).
       supabaseAdmin()
         .from("bulk_reassign_items")
-        .select("id, booking_id, bulk_reassign_jobs!inner(out_user_id, demotion_marked_at)")
+        .select("id, booking_id, reverted_at, bulk_reassign_jobs!inner(out_user_id, demotion_marked_at)")
         .not("reverted_at", "is", null)
         .not("bulk_reassign_jobs.demotion_marked_at", "is", null)
         .in("bulk_reassign_jobs.out_user_id", outUserIds),
   );
-  for (const r of rows) {
-    const agent = r.bulk_reassign_jobs?.out_user_id;
-    if (!agent) continue;
-    const set = byAgent.get(agent) ?? new Set<string>();
-    set.add(r.booking_id);
-    byAgent.set(agent, set);
-  }
-  return byAgent;
+  return pinnedByAgent(rows);
 }
 
 /**

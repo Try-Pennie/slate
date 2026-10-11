@@ -156,12 +156,24 @@ export function latestDemotionMove(moves: DemotionMoveRecord[]): DemotionMoveRec
 }
 
 /**
- * The calls an admin moved back to `outUserId` (#3615): pinned to them, so later demotion sweeps,
- * the demotion decision and the demoted-agent backstop leave them alone. Only this advisor's own
- * moved-back calls; another advisor's undo says nothing about this one.
+ * The calls an admin moved back, by the advisor they went back to (#3615): pinned to them, so
+ * later demotion sweeps, the demotion decision and the demoted-agent backstop leave them alone.
+ * The ONE rule all three read, applied to the store's query rows (`pinnedDemotionBookingIds`), so
+ * the rule tested here is the rule shipped (L370). A row with no sweep, or not moved back, pins
+ * nothing.
  */
-export function pinnedBookingIds(moves: DemotionMoveRecord[], outUserId: string): Set<string> {
-  return new Set(moves.filter((m) => m.outUserId === outUserId && m.revertedAt).map((m) => m.bookingId));
+export function pinnedByAgent(
+  rows: { booking_id: string; reverted_at: string | null; bulk_reassign_jobs: { out_user_id: string } | null }[],
+): Map<string, Set<string>> {
+  const byAgent = new Map<string, Set<string>>();
+  for (const r of rows) {
+    const agent = r.bulk_reassign_jobs?.out_user_id;
+    if (!agent || !r.reverted_at) continue;
+    const set = byAgent.get(agent) ?? new Set<string>();
+    set.add(r.booking_id);
+    byAgent.set(agent, set);
+  }
+  return byAgent;
 }
 
 /** The detail the move back's reassign carries beside the shared `coverage` reason, so the

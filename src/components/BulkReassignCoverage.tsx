@@ -668,6 +668,9 @@ function MoveOutcomeRow({ item }: { item: BulkReassignActionableItem }) {
   // #3615: a call the sweep MOVED is not placed by hand; its control is the move back, which
   // lives on the booking. Asked of the engine's own list, like the skip above.
   const wasMoved = MOVED_ITEM_STATUSES.includes(item.status);
+  // A moved call an admin already moved back says so, and offers nothing: a second move back
+  // would only be refused on the booking page.
+  const movedBack = wasMoved && Boolean(item.revertedAt);
   return (
     <li className="flex items-center justify-between gap-3 py-2 text-sm">
       <span className="min-w-0">
@@ -675,9 +678,13 @@ function MoveOutcomeRow({ item }: { item: BulkReassignActionableItem }) {
           {item.attendeeName ?? "Booking"}
           {item.startsAt ? ` · ${formatSlotTime(item.startsAt)}` : ""}
         </span>
-        {item.detail && <span className="block truncate text-xs text-fg-muted">{item.detail}</span>}
+        {movedBack ? (
+          <span className="block truncate text-xs text-fg-muted">Moved back to the original advisor</span>
+        ) : (
+          item.detail && <span className="block truncate text-xs text-fg-muted">{item.detail}</span>
+        )}
       </span>
-      {canPlace && (
+      {canPlace && !movedBack && (
         <a
           href={`/admin/bookings/${item.bookingId}`}
           className="shrink-0 text-pennie-blue underline dark:text-pennie-sky"

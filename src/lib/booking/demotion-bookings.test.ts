@@ -74,7 +74,7 @@ describe("demotionBookings", () => {
 
 describe("a call an admin moved back (#3615)", () => {
   it("is read from the sweep items and left out of both the snapshot and the decision", async () => {
-    tables.data.bulk_reassign_items = [{ id: "i1", booking_id: "uh1", bulk_reassign_jobs: { out_user_id: "u1" } }];
+    tables.data.bulk_reassign_items = [{ id: "i1", booking_id: "uh1", reverted_at: "2026-10-12T14:00:00.000Z", bulk_reassign_jobs: { out_user_id: "u1" } }];
     expect(await demotionBookings("u1", START, null, { debt_team: ["high"] })).toEqual([]);
     expect((await rerouteCandidatesForAgent("u1", START, null)).map((c) => c.bookingId)).toEqual(["hi1"]);
     expect(tables.from).toContain("bulk_reassign_items");
