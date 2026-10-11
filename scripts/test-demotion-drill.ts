@@ -134,6 +134,7 @@ for (const [sabotage, reason] of failures) {
   const r = await runDemotionDrill(w.deps);
   eq(r.reason, "cleanup-failed", "a cancel that fails is reported, not a pass");
   assert(r.detail.includes("google refused the cancel"), "naming what failed");
+  eq(r.endedAs, "passed", "and saying what the drill itself had measured before the cleanup");
   const w2 = world({ restoreThrows: true });
   eq((await runDemotionDrill(w2.deps)).reason, "cleanup-failed", "so is a restore that fails");
 }
@@ -178,6 +179,14 @@ for (const [sabotage, reason] of failures) {
   const w = world();
   w.deps.book = async () => ({ bookingId: "bk1", manageToken: "tok1", assignedUserId: "stranger" });
   eq((await runDemotionDrill(w.deps)).reason, "booked-outside-drill", "a call on somebody outside the drill is never demoted");
+}
+
+{
+  // A broken pipeline AND a failed cleanup: both are said, and the measured one is kept.
+  const w = world({ noMove: true, cancelThrows: true });
+  const r = await runDemotionDrill(w.deps);
+  eq(r.reason, "cleanup-failed", "the cleanup failure is said");
+  eq(r.endedAs, "did-not-move", "and the pipeline's own failure is carried, not lost");
 }
 
 eq(new Set(DRILL_REASONS).size, DRILL_REASONS.length, "every reason is listed once");

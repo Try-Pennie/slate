@@ -466,8 +466,9 @@ exits on its own code, listed in `scripts/lib/reroute-drill-run-outcome.ts`:
 | 9 | no free time on the DRILL bucket |
 | 10, 11 | the booking path refused the test call, or it landed outside the drill (nobody demoted) |
 | 12 to 20 | **the pipeline answered wrongly**: no stamp, no sweep, no change recorded, nothing queued, no move, no audit, the move back refused or did not land, or not pinned |
-| 21 | the drill could not cancel its call or restore its advisor |
+| 21 | the drill could not cancel its call or restore its advisor, before it judged anything |
 | 22 | a step threw |
+| 23 | the drill judged the pipeline and THEN could not clean up; what it judged is in the message |
 
 Its decision logic is pinned offline by `scripts/test-demotion-drill.ts`, which runs the drill over
 a fake world built from the real decision functions and shows every failure reason can occur.
@@ -481,7 +482,7 @@ drill is never cut off mid cleanup.
 
 **It stamps `verdict:reroute-drill`**, at the burst counter's 52 hours for the same derived
 reasons (`scripts/test-reroute-drill-schedule.ts` re-derives it from the workflow file). **Only a
-run that exercised the pipeline may stamp it**: exits 0 and 12 to 20 conclude, and every bad one of
+run that exercised the pipeline may stamp it**: exits 0, 12 to 20 and 23 conclude, and every bad one of
 those is posted to Slack. A drill that could not start, or could not clean up, does not stamp; its
 message still says so daily, and the lapsing stamp pages as a blind detector.
 

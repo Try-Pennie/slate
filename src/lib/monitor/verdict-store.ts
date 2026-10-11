@@ -65,7 +65,7 @@ import {
  * two of calendar writes. All four run as GitHub workflows (the last two as steps of the burst
  * counter's) and stamp through the key authed heartbeat endpoint instead.
  *
- * A fourth, `verdict:availability-latency` (#1700), is excluded for its own reason,
+ * A fifth, `verdict:availability-latency` (#1700), is excluded for its own reason,
  * given beside it below: the smoke canary measures it on a GitHub runner.
  *
  * Excluding them in the TYPE rather than by leaving them out of the table below is

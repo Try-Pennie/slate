@@ -66,6 +66,8 @@ export const REROUTE_DRILL_EXIT = {
   cleanupFailed: 21,
   /** A step threw. */
   errored: 22,
+  /** The drill measured the pipeline (a pass or a definite failure) and THEN could not clean up. */
+  cleanupFailedAfterVerdict: 23,
 } as const;
 
 export type RerouteDrillExit = (typeof REROUTE_DRILL_EXIT)[keyof typeof REROUTE_DRILL_EXIT];
@@ -106,7 +108,14 @@ export function readDrillReply(status: number, body: string): { exit: RerouteDri
   const r = parsed as { reason?: unknown; detail?: unknown } | null;
   // An OWN property only: a reason named like an inherited one ("toString") must read as
   // unknown, never borrow whatever the prototype holds.
-  const exit = typeof r?.reason === "string" && Object.hasOwn(REASON_EXIT, r.reason) ? REASON_EXIT[r.reason] : undefined;
+  let exit = typeof r?.reason === "string" && Object.hasOwn(REASON_EXIT, r.reason) ? REASON_EXIT[r.reason] : undefined;
+  // A cleanup that failed AFTER the drill measured the pipeline keeps that measurement, or a real
+  // broken pipeline would later page as a drill that never concluded.
+  if (exit === REROUTE_DRILL_EXIT.cleanupFailed) {
+    const ended = (parsed as { endedAs?: unknown } | null)?.endedAs;
+    const endedExit = typeof ended === "string" && Object.hasOwn(REASON_EXIT, ended) ? REASON_EXIT[ended] : undefined;
+    if (endedExit !== undefined && RUN_JUDGEMENT[endedExit].concluded) exit = REROUTE_DRILL_EXIT.cleanupFailedAfterVerdict;
+  }
   if (exit === undefined) {
     return { exit: REROUTE_DRILL_EXIT.unreadableReply, detail: `The endpoint answered a reason nothing here knows (${String(r?.reason)}).` };
   }
@@ -162,6 +171,11 @@ export const RUN_JUDGEMENT: Record<RerouteDrillExit, RunJudgement> = {
       "The reroute drill could not clean up after itself, so a test call may still be booked or a test advisor may still be missing the drill tier. Tomorrow's drill will refuse until it is put right.",
   },
   [REROUTE_DRILL_EXIT.errored]: { concluded: false, headline: `The reroute drill failed in a step before it could judge it, ${BLIND}` },
+  [REROUTE_DRILL_EXIT.cleanupFailedAfterVerdict]: {
+    concluded: true,
+    headline:
+      "The reroute drill judged the pipeline and then could not clean up after itself, so a test call may still be booked or a test advisor may still be missing the drill tier. What it judged is below.",
+  },
 };
 
 const SILENCE = "This repeats once a day until a run passes, and a run that passes says nothing.";

@@ -31,6 +31,24 @@ eq(readDrillReply(404, "").exit, REROUTE_DRILL_EXIT.endpointMissing, "a deployme
 eq(readDrillReply(200, "<html>").exit, REROUTE_DRILL_EXIT.unreadableReply, "a body that is not the endpoint's");
 eq(readDrillReply(200, JSON.stringify({ reason: "something-new", detail: "x" })).exit, REROUTE_DRILL_EXIT.unreadableReply, "a reason nothing here knows is never read as a pass");
 eq(readDrillReply(500, "boom").exit, REROUTE_DRILL_EXIT.unreadableReply, "any other status is unreadable, not a verdict");
+// A cleanup that failed AFTER the drill measured the pipeline keeps that measurement as a verdict,
+// or a real broken pipeline would later page as a drill that never concluded.
+eq(
+  readDrillReply(200, JSON.stringify({ reason: "cleanup-failed", endedAs: "did-not-move", detail: "x" })).exit,
+  REROUTE_DRILL_EXIT.cleanupFailedAfterVerdict,
+  "cleanup failed after a measured failure",
+);
+eq(
+  readDrillReply(200, JSON.stringify({ reason: "cleanup-failed", endedAs: "passed", detail: "x" })).exit,
+  REROUTE_DRILL_EXIT.cleanupFailedAfterVerdict,
+  "cleanup failed after a pass",
+);
+eq(
+  readDrillReply(200, JSON.stringify({ reason: "cleanup-failed", endedAs: "errored", detail: "x" })).exit,
+  REROUTE_DRILL_EXIT.cleanupFailed,
+  "cleanup failed after a drill that never reached the pipeline",
+);
+assert(concludesEarly(REROUTE_DRILL_EXIT.cleanupFailedAfterVerdict), "after a measured verdict, a failed cleanup still stamps");
 for (const inherited of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
   eq(
     readDrillReply(200, JSON.stringify({ reason: inherited, detail: "x" })).exit,
@@ -41,6 +59,9 @@ for (const inherited of ["constructor", "toString", "__proto__", "hasOwnProperty
 
 // Which endings stamp.
 const concludes = (exit: number) => decideRerouteDrillReport({ exit, detail: "d" }, "https://run").concluded;
+function concludesEarly(exit: number): boolean {
+  return decideRerouteDrillReport({ exit, detail: "d" }, "https://run").concluded;
+}
 assert(concludes(REROUTE_DRILL_EXIT.passed), "a pass is a measured verdict");
 for (const exit of [
   REROUTE_DRILL_EXIT.didNotStamp,

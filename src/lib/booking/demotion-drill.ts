@@ -65,6 +65,9 @@ export interface DrillResult {
   reason: DrillReason;
   /** One plain sentence about what happened, with what failed when something did. */
   detail: string;
+  /** On `cleanup-failed` only: what the drill had measured before its cleanup failed, so a broken
+   *  pipeline measured on the same run is reported as measured rather than lost. */
+  endedAs?: DrillReason;
 }
 
 export interface DrillAgent {
@@ -241,7 +244,8 @@ export async function runDemotionDrill(deps: DemotionDrillDeps): Promise<DrillRe
   if (cleanupErrors.length > 0) {
     return {
       reason: "cleanup-failed",
-      detail: `The drill could not clean up after itself (${cleanupErrors.join("; ")}). It had ended: ${result.reason}.`,
+      detail: `The drill could not clean up after itself (${cleanupErrors.join("; ")}). Before that it had found: ${result.detail}`,
+      endedAs: result.reason,
     };
   }
   return result;
