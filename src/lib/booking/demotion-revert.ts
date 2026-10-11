@@ -11,9 +11,10 @@
  * different, and one answering for another is how somebody hunts for a fault that is not there.
  */
 import type { BulkReassignItemStatus } from "@/lib/db/types";
-import type { DemotionChange } from "@/lib/booking/demotion-plan";
+import { readDemotionChange, type DemotionChange } from "@/lib/booking/demotion-plan";
 import { bookingIsActionable } from "@/lib/booking/detail";
 import { parseStampMs } from "@/lib/date/stamp";
+import type { AuditEntry } from "@/lib/audit";
 
 /** One call a demotion sweep handled, joined with its sweep: what the undo is about. */
 export interface DemotionMoveRecord {
@@ -32,6 +33,45 @@ export interface DemotionMoveRecord {
   change: DemotionChange | null;
   revertedAt: string | null;
   revertedBy: string | null;
+}
+
+/** A `bulk_reassign_items` row joined with its sweep, as `demotion-revert-store.ts` reads it. */
+export interface DemotionMoveRow {
+  id: string;
+  booking_id: string;
+  status: string;
+  target_user_id: string | null;
+  updated_at: string;
+  reverted_at: string | null;
+  reverted_by: string | null;
+  bulk_reassign_jobs: {
+    id: string;
+    org_id: string;
+    out_user_id: string;
+    demotion_marked_at: string | null;
+    demotion_change: unknown;
+  } | null;
+}
+
+/** The move a row records, or null when the row is not a demotion move at all. The change comes
+ *  back from jsonb and goes through the shape check, so a malformed one reads as unrecorded. */
+export function demotionMoveFromRow(row: DemotionMoveRow): DemotionMoveRecord | null {
+  const job = row.bulk_reassign_jobs;
+  if (!job || !job.demotion_marked_at) return null;
+  return {
+    itemId: row.id,
+    bookingId: row.booking_id,
+    jobId: job.id,
+    orgId: job.org_id,
+    outUserId: job.out_user_id,
+    toUserId: row.target_user_id,
+    status: row.status as BulkReassignItemStatus,
+    movedAt: row.updated_at,
+    demotionMarkedAt: job.demotion_marked_at,
+    change: readDemotionChange(job.demotion_change),
+    revertedAt: row.reverted_at,
+    revertedBy: row.reverted_by,
+  };
 }
 
 /** Every reason a move back is refused, as a runtime list so the copy is checked against it. */
@@ -117,4 +157,79 @@ export function latestDemotionMove(moves: DemotionMoveRecord[]): DemotionMoveRec
  */
 export function pinnedBookingIds(moves: DemotionMoveRecord[], outUserId: string): Set<string> {
   return new Set(moves.filter((m) => m.outUserId === outUserId && m.revertedAt).map((m) => m.bookingId));
+}
+
+/** The detail the move back's reassign carries beside the shared `coverage` reason, so the
+ *  booking's history says what this reassign was. */
+export const MOVE_BACK_REASON_DETAIL = "Moved back after an automatic reroute";
+
+/** Everything a move back reads and writes, injected so the order is tested without a database. */
+export interface MoveBackDeps {
+  /** The demotion moves of this booking, scoped to the org (a booking elsewhere has none). */
+  loadMoves(bookingId: string, orgId: string): Promise<DemotionMoveRecord[]>;
+  /** The booking as it stands now, scoped to the org; null when it is not there. */
+  loadBooking(bookingId: string, orgId: string): Promise<{ status: string; assigned_user_id: string | null; starts_at: string } | null>;
+  loadUser(userId: string): Promise<{ email: string | null; deactivated_at: string | null } | null>;
+  /** The standard admin reassign, so the lead's invite, the calendars and Regal hear about it
+   *  the way they hear about every reassign. Throws its own typed refusals (a daily cap, a
+   *  calendar clash), which the route already knows how to say. */
+  reassign(bookingId: string, toEmail: string, overrideCap: boolean): Promise<void>;
+  /** Record the undo, as a compare-and-swap on it not being recorded yet: true only for the call
+   *  that recorded it. */
+  markReverted(itemId: string, byUserId: string): Promise<boolean>;
+  recordAudit(entry: AuditEntry): Promise<void>;
+}
+
+export type MoveBackOutcome =
+  | { kind: "moved-back"; toUserId: string }
+  /** Another press recorded the same undo first; the call is back either way. */
+  | { kind: "already-recorded" }
+  | { kind: "refused"; reason: RevertRefusal }
+  | { kind: "not-found" };
+
+/**
+ * Move a rerouted call back to its original advisor (#3615).
+ *
+ * Safe to run twice at once: the reassign to one advisor is idempotent (#449), and the record is
+ * a compare-and-swap, so of two presses exactly one records the undo and writes the audit row.
+ * The move goes FIRST and the record after, so a run that dies between them leaves the call back
+ * with the advisor and an unrecorded undo, which the planner answers with `record-only` on the
+ * next press rather than refusing it. A reassign that refuses records nothing.
+ */
+export async function moveBackDemotionReroute(
+  deps: MoveBackDeps,
+  input: {
+    bookingId: string;
+    orgId: string;
+    actor: { userId: string; actingAsUserId?: string | null };
+    overrideCap: boolean;
+    nowMs: number;
+  },
+): Promise<MoveBackOutcome> {
+  const booking = await deps.loadBooking(input.bookingId, input.orgId);
+  if (!booking) return { kind: "not-found" };
+  const move = latestDemotionMove(await deps.loadMoves(input.bookingId, input.orgId));
+  const original = move ? await deps.loadUser(move.outUserId) : null;
+  const plan = planDemotionRevert({ move, booking, original, nowMs: input.nowMs });
+  if (plan.kind === "refused") return plan;
+  // Narrowed by the planner: a plan that is not refused always has a completed move.
+  const m = move as DemotionMoveRecord;
+  if (plan.kind === "move-back") await deps.reassign(input.bookingId, plan.toEmail, input.overrideCap);
+  if (!(await deps.markReverted(m.itemId, input.actor.userId))) return { kind: "already-recorded" };
+  await deps.recordAudit({
+    orgId: m.orgId,
+    actorId: input.actor.userId,
+    action: "booking.demotion_reroute_reverted",
+    targetUserId: m.outUserId,
+    details: {
+      booking_id: input.bookingId,
+      job_id: m.jobId,
+      item_id: m.itemId,
+      from_user_id: m.toUserId,
+      to_user_id: m.outUserId,
+      ...(input.actor.actingAsUserId ? { acting_as_user_id: input.actor.actingAsUserId } : {}),
+      ...(plan.kind === "record-only" ? { recorded_after_the_move: true } : {}),
+    },
+  });
+  return { kind: "moved-back", toUserId: m.outUserId };
 }

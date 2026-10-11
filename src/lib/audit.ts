@@ -100,6 +100,9 @@ export const AUDIT_ACTIONS = [
   // demoted off the pool it needs. No human actor; the details carry the booking, both advisors,
   // the sweep, and what changed in Twilio, so "why is my call with somebody else" is answerable.
   "booking.demotion_reroute",
+  // #3615: an admin moved that call BACK to the advisor it left. The details name the booking,
+  // both advisors and the sweep item; the call then stays with that advisor.
+  "booking.demotion_reroute_reverted",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

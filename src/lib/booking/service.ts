@@ -107,8 +107,10 @@ import {
 import { selectCoverageReassignTarget, type CoverageTargetDeps } from "@/lib/booking/coverage-target";
 import { coverageSweepActor } from "@/lib/booking/coverage-sweep-actor";
 import type { CoverageSweepCancelReport } from "@/lib/booking/coverage-sweep-cancel";
-import type { DemotionChange } from "@/lib/booking/demotion-plan";
 import { recordAudit } from "@/lib/audit";
+import { DEMOTION_SWEEP_REASON, type DemotionChange } from "@/lib/booking/demotion-plan";
+import { MOVE_BACK_REASON_DETAIL, moveBackDemotionReroute, type MoveBackOutcome } from "@/lib/booking/demotion-revert";
+import { loadDemotionMoves, markDemotionMoveReverted } from "@/lib/booking/demotion-revert-store";
 import {
   cancelCoverageSweepForRequest,
   claimBulkReassignItem,
@@ -3456,6 +3458,52 @@ function realBulkReassignDeps(): BulkReassignDeps {
     commitItemOutcome: commitBulkReassignItemOutcome,
     markJobDoneIfDrained: markBulkReassignJobDoneIfDrained,
   };
+}
+
+/**
+ * Move a rerouted call back to the advisor a demotion sweep moved it off (#3615). The decisions
+ * and their order live in `demotion-revert.ts`; this wires the reads, the standard admin reassign
+ * (so the lead's invite, both calendars and Regal hear about it as about any reassign, with the
+ * same `coverage` reason the move carried, Dan 2026-10-11) and the recorded undo.
+ */
+export function adminMoveBackDemotionReroute(
+  bookingId: string,
+  orgId: string,
+  actor: BookingActor,
+  overrideCap: boolean,
+): Promise<MoveBackOutcome> {
+  return moveBackDemotionReroute(
+    {
+      loadMoves: loadDemotionMoves,
+      loadBooking: async (id, org) =>
+        unwrap(
+          await supabaseAdmin()
+            .from("bookings")
+            .select("status, assigned_user_id, starts_at")
+            .eq("id", id)
+            .eq("org_id", org)
+            .maybeSingle(),
+          "move back: booking",
+        ) as { status: string; assigned_user_id: string | null; starts_at: string } | null,
+      loadUser: async (id) =>
+        unwrap(
+          await supabaseAdmin().from("users").select("email, deactivated_at").eq("id", id).maybeSingle(),
+          "move back: original advisor",
+        ) as { email: string | null; deactivated_at: string | null } | null,
+      reassign: async (id, toEmail, override) => {
+        await adminReassignBooking(
+          id,
+          toEmail,
+          { code: DEMOTION_SWEEP_REASON.code, detail: MOVE_BACK_REASON_DETAIL },
+          actor,
+          override,
+        );
+      },
+      markReverted: markDemotionMoveReverted,
+      recordAudit,
+    },
+    { bookingId, orgId, actor, overrideCap, nowMs: Date.now() },
+  );
 }
 
 /** Drain one bounded tick of the bulk-reassign engine (the cron lane). */

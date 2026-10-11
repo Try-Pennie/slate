@@ -67,6 +67,7 @@ const ACTION_LABEL: Record<string, string> = {
   "regal.ignore_added": "stopped reporting a person's Regal calls",
   "regal.ignore_removed": "started reporting a person's Regal calls again",
   "booking.demotion_reroute": "moved a booked call after a Twilio demotion",
+  "booking.demotion_reroute_reverted": "moved an automatically moved call back",
 };
 
 /**
@@ -113,6 +114,12 @@ export function auditActorText(
  *  was reconstructed after the fact. */
 export function auditDetailText(row: AuditDisplayRow, nameOf?: (id: string | null) => string): string {
   const parts: string[] = [];
+  if (row.action === "booking.demotion_reroute_reverted") {
+    // #3615: who got the call back, and from whom.
+    const idOf = (v: unknown) => (typeof v === "string" ? v : null);
+    const name = (id: string | null, fallback: string) => (id === null ? fallback : nameOf ? nameOf(id) : id);
+    return `Moved back to ${name(idOf(row.details?.to_user_id), "the original advisor")} from ${name(idOf(row.details?.from_user_id), "another advisor")}.`;
+  }
   if (row.action === "booking.demotion_reroute") {
     // Who took the call, and what changed in Twilio, in the sentence the Slack line and the undo
     // panel use too. The demoted advisor is already the row's target.
