@@ -4,7 +4,11 @@
 // CONFIRMED narrowing (served before, not after), never on an unknown read, and never an
 // agent_link booking. The agreement test against agentIdsFromPool is what keeps the new
 // predicate from drifting from the booker's own eligibility definition (L263).
-import { agentStillServes, bookingsToReroute } from "../src/lib/booking/reroute-eligibility.ts";
+import {
+  agentStillServes,
+  bookingsToReroute,
+  unservedBookingIds,
+} from "../src/lib/booking/reroute-eligibility.ts";
 import { agentIdsFromPool } from "../src/lib/availability/pool.ts";
 import type { Attributes, Criteria } from "../src/lib/db/types.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -119,6 +123,67 @@ const afterDemoted: Attributes = { debt_team: ["high"] };
     { bookingId: "m1", kind: "round_robin", criteria: { debt_team: "ultra_high" }, isManualMember: true },
   ]);
   eq(out.length, 0, "a manual member's booking is never rerouted on a demotion");
+}
+
+// --- unservedBookingIds (Phase 4: the filtered demotion snapshot) ---------
+//
+// At SWEEP time the demotion has already been confirmed and stamped; the set to move is
+// exactly the agent's upcoming bookings they no longer serve under their CURRENT attributes
+// (re-read at sweep time so a booking that landed during the debounce is judged too). It
+// reuses agentStillServes, so it can never judge eligibility differently from the booker or
+// from bookingsToReroute (L263, L342). Unlike coverageBookings (every upcoming booking, for
+// a FULL pool exit) it keeps only the bookings in the pools the agent LOST.
+
+{
+  // The agent kept `high` but lost `ultra_high`: only the ultra-high booking moves, the
+  // still-served high one stays. This is the partial case coverageBookings cannot express.
+  const out = unservedBookingIds(afterDemoted, [
+    { bookingId: "uh1", kind: "round_robin", ...UH },
+    { bookingId: "hi1", kind: "round_robin", ...HI },
+  ]);
+  eq(out.join(","), "uh1", "a demotion snapshot keeps only the bookings the agent no longer serves");
+}
+
+{
+  // An agent who still serves everything they hold has an EMPTY snapshot: the enqueue then
+  // creates a born-`done` job and moves nobody, which is a legitimate quiet outcome.
+  const out = unservedBookingIds({ debt_team: ["ultra_high", "high"] }, [
+    { bookingId: "uh1", kind: "round_robin", ...UH },
+    { bookingId: "hi1", kind: "round_robin", ...HI },
+  ]);
+  eq(out.length, 0, "an agent still serving every held booking yields an empty snapshot");
+}
+
+{
+  // agent_link is excluded here too (the lead chose the advisor), matching bookingsToReroute
+  // and the manual reroute refusal, so a snapshot can never hand off a by-name booking.
+  const out = unservedBookingIds(afterDemoted, [{ bookingId: "al1", kind: "agent_link", ...UH }]);
+  eq(out.length, 0, "an agent_link booking is never in a demotion snapshot");
+}
+
+{
+  // A manual member serves every booking in the bucket regardless of attributes, so none of
+  // their bookings is ever in the snapshot even when their tier narrowed.
+  const out = unservedBookingIds(afterDemoted, [
+    { bookingId: "m1", kind: "round_robin", criteria: { debt_team: "ultra_high" }, isManualMember: true },
+  ]);
+  eq(out.length, 0, "a manual member's booking is never in a demotion snapshot");
+}
+
+{
+  // THE FAIL-SAFE: a null/unknown current attribute set (a failed read) moves NOBODY, the
+  // same way bookingsToReroute refuses an unknown side, so a bad read cannot mass-reroute a
+  // whole roster (L214, L50). A null must never be fed to matchesCriteria and scored absent.
+  eq(
+    unservedBookingIds(null, [{ bookingId: "uh1", kind: "round_robin", ...UH }]).length,
+    0,
+    "a null (unknown) current attribute set moves nobody",
+  );
+  eq(
+    unservedBookingIds(undefined, [{ bookingId: "uh1", kind: "round_robin", ...UH }]).length,
+    0,
+    "an undefined current attribute set moves nobody",
+  );
 }
 
 finish();

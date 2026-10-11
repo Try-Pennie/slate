@@ -68,3 +68,31 @@ export function bookingsToReroute(
     )
     .map((b) => b.bookingId);
 }
+
+/**
+ * The FILTERED demotion snapshot (#3582, Phase 4): of an agent's upcoming bookings, the ones
+ * they no longer serve under their CURRENT attributes, which is exactly the set a confirmed
+ * demotion must move. Re-read at sweep time (the caller re-snapshots) so a booking that
+ * landed during the debounce is judged by the same rule.
+ *
+ * Unlike `coverageBookings` (every upcoming booking, correct only for a FULL pool exit) this
+ * keeps only the bookings in the pools the agent LOST, so a partial demotion leaves the
+ * still-served bookings alone. It shares `agentStillServes` with `bookingsToReroute` and the
+ * booker's own pool resolver, so a snapshot can never move a booking the booker would still
+ * have offered the agent (L263, L342).
+ *
+ * The same two fail-safes as `bookingsToReroute`: a null/undefined (unknown) attribute set
+ * moves NOBODY, so a failed roster read can never mass-reroute (L214, L50); an `agent_link`
+ * booking is never moved, because the lead chose that advisor by name. A manual member serves
+ * every booking in their bucket, so none of theirs is ever in the snapshot.
+ */
+export function unservedBookingIds(
+  attributes: Attributes | null | undefined,
+  bookings: RerouteCandidate[],
+): string[] {
+  if (attributes == null) return [];
+  return bookings
+    .filter((b) => b.kind !== "agent_link")
+    .filter((b) => !agentStillServes(attributes, b.criteria, b.isManualMember))
+    .map((b) => b.bookingId);
+}
