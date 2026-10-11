@@ -1,7 +1,7 @@
 import { unwrap, unwrapCount } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { selectAllPages } from "@/lib/supabase/paginate";
+import { selectAllPages, type PageableQuery } from "@/lib/supabase/paginate";
 import type { ActionableBookingContext, BookingSnapshot, ItemOutcome } from "@/lib/booking/bulk-reassign";
 import { enqueueCoverageSweep } from "@/lib/booking/coverage-sweep-enqueue";
 import {
@@ -9,12 +9,19 @@ import {
   type CoverageSweepCancelReport,
 } from "@/lib/booking/coverage-sweep-cancel";
 import { coverageSelectionBounds } from "@/lib/booking/coverage-selection";
+import {
+  assembleDemotionSnapshot,
+  criteriaMapOrThrow,
+  type DemotionCandidateRow,
+} from "@/lib/booking/demotion-snapshot";
 import type {
+  Attributes,
   BookingStatus,
   BulkReassignItem,
   BulkReassignItemStatus,
   BulkReassignJob,
   BulkReassignJobStatus,
+  Criteria,
 } from "@/lib/db/types";
 
 /**
@@ -64,6 +71,38 @@ export interface CoverageBookingRow {
   attendee_name: string | null;
 }
 
+/** A bookings select builder, as its own concrete type. Taking the builder's own type (rather
+ *  than a hand-written structural interface, which trips TS2589 on the deep PostgREST generics)
+ *  keeps `applyUpcomingWindow` an identity pass-through for the type. */
+type BookingsSelectBuilder = ReturnType<
+  ReturnType<ReturnType<typeof supabaseAdmin>["from"]>["select"]
+>;
+
+/**
+ * Apply the "upcoming active bookings assigned to this agent" window to a `.from("bookings")`
+ * select, whatever columns it selected. The rule lives HERE once so `coverageBookings` and the
+ * demotion snapshot can never drift on what "upcoming" means (L16, L342): same statuses, same
+ * `coverageSelectionBounds` (strictly after now so one under way is never moved; still running
+ * when the absence begins, #1237), same order. The `.from`/`.select`/tag/key stay at each call
+ * site because the paged-read-key guard reads those literally.
+ */
+function applyUpcomingWindow(
+  base: BookingsSelectBuilder,
+  outUserId: string,
+  bounds: ReturnType<typeof coverageSelectionBounds>,
+): PageableQuery {
+  let q = base
+    .eq("assigned_user_id", outUserId)
+    .in("status", ACTIVE_BOOKING_STATUSES)
+    // Strictly after now: one already under way is never moved out from under the customer.
+    .gt("starts_at", bounds.startsAfterIso)
+    // Still running when the absence begins. The bound that was missing (#1237).
+    .gt("ends_at", bounds.endsAfterIso)
+    .order("starts_at", { ascending: true });
+  if (bounds.startsBeforeIso) q = q.lt("starts_at", bounds.startsBeforeIso);
+  return q;
+}
+
 /**
  * The bookings a coverage sweep over this window would move, with enough of each row
  * to describe it. `coverageBookingIds` is this, narrowed to ids: ONE query, so the
@@ -79,21 +118,84 @@ export async function coverageBookings(
     { startIso: rangeStartIso, endIso: rangeEndIso },
     new Date().toISOString(),
   );
-  return selectAllPages<CoverageBookingRow>("bulk-reassign-coverage-bookings", "id", () => {
-    let q = supabaseAdmin()
-      // cap-safe: read every page via selectAllPages, which orders and pages it, so an out
-      // agent with more than one page of upcoming bookings is fully snapshotted.
-      .from("bookings")
-      .select("id, starts_at, ends_at, attendee_name")
-      .eq("assigned_user_id", outUserId)
-      .in("status", ACTIVE_BOOKING_STATUSES)
-      // Strictly after now: one already under way is never moved out from under the customer.
-      .gt("starts_at", bounds.startsAfterIso)
-      // Still running when the absence begins. The bound that was missing.
-      .gt("ends_at", bounds.endsAfterIso)
-      .order("starts_at", { ascending: true });
-    if (bounds.startsBeforeIso) q = q.lt("starts_at", bounds.startsBeforeIso);
-    return q;
+  return selectAllPages<CoverageBookingRow>("bulk-reassign-coverage-bookings", "id", () =>
+    // cap-safe: read every page via selectAllPages, which orders and pages it, so an out
+    // agent with more than one page of upcoming bookings is fully snapshotted.
+    applyUpcomingWindow(
+      supabaseAdmin().from("bookings").select("id, starts_at, ends_at, attendee_name"),
+      outUserId,
+      bounds,
+    ),
+  );
+}
+
+/**
+ * The FILTERED snapshot for a Twilio tier/pool DEMOTION (#3582): of the agent's upcoming
+ * bookings, only the ones they no longer serve under their CURRENT attributes, as
+ * `CoverageBookingRow`s. Unlike `coverageBookings` (every upcoming booking, for a FULL pool
+ * exit) it keeps only the bookings in the pools the agent LOST, so a partial demotion leaves
+ * the still-served bookings alone.
+ *
+ * The join and the fail-safes live in `demotion-snapshot.ts` (`assembleDemotionSnapshot` +
+ * `selectDemotionBookings`), node-tested there. This is only the IO, and every read goes
+ * through `unwrap`, so a failed query THROWS rather than reading as "nothing to move" (L184).
+ * A genuinely absent user row reads as null attributes, which moves nobody (the fail-safe).
+ */
+export async function demotionBookings(
+  outUserId: string,
+  rangeStartIso: string,
+  rangeEndIso: string | null,
+): Promise<CoverageBookingRow[]> {
+  const bounds = coverageSelectionBounds(
+    { startIso: rangeStartIso, endIso: rangeEndIso },
+    new Date().toISOString(),
+  );
+  return assembleDemotionSnapshot({
+    candidates: () =>
+      // The SAME window as coverageBookings (via the shared applyUpcomingWindow), plus the
+      // bucket_id and kind the eligibility join needs. Its own inline paged read so the
+      // paged-read-key guard can read the table, tag and key literally here.
+      selectAllPages<DemotionCandidateRow>("bulk-reassign-demotion-candidates", "id", () =>
+        // cap-safe: read every page via selectAllPages, which orders and pages it.
+        applyUpcomingWindow(
+          supabaseAdmin()
+            .from("bookings")
+            .select("id, starts_at, ends_at, attendee_name, bucket_id, kind"),
+          outUserId,
+          bounds,
+        ),
+      ),
+    agentAttributes: async () => {
+      const row = unwrap(
+        await supabaseAdmin().from("users").select("attributes").eq("id", outUserId).maybeSingle(),
+        "demotion-agent-attributes",
+      ) as { attributes: Attributes | null } | null;
+      return row?.attributes ?? null;
+    },
+    bucketCriteria: async (bucketIds) => {
+      if (bucketIds.length === 0) return new Map<string, Criteria | null>();
+      const rows = unwrap(
+        // cap-safe: buckets is roster-bounded (~60) and this is a primary-key `in` over the
+        // distinct buckets of one agent's upcoming bookings, so it never fills a page.
+        await supabaseAdmin().from("buckets").select("id, criteria").in("id", bucketIds),
+        "demotion-bucket-criteria",
+      ) as { id: string; criteria: Criteria | null }[];
+      // Fails loud when a requested bucket is missing (a short or failed read), so a demotion
+      // never mass-moves off an incomplete read (L214, L184). See criteriaMapOrThrow.
+      return criteriaMapOrThrow(bucketIds, rows);
+    },
+    manualMemberBucketIds: async () => {
+      const rows = unwrap(
+        // cap-safe: bucket_members for one user is bounded by the roster's ~60 buckets.
+        await supabaseAdmin()
+          .from("bucket_members")
+          .select("bucket_id")
+          .eq("user_id", outUserId)
+          .eq("active", true),
+        "demotion-manual-members",
+      ) as { bucket_id: string }[];
+      return new Set(rows.map((r) => r.bucket_id));
+    },
   });
 }
 
@@ -124,6 +226,20 @@ export interface CreateBulkReassignJobInput {
    *  died mid flip reads the same stamp back and converges on one sweep. Absent for
    *  every other sweep. */
   redistributeMarkedAtIso?: string | null;
+  /** The Twilio tier/pool DEMOTION this sweep covers (#3582), when the hourly roster sync
+   *  triggered it. The moment Slate stamped the demotion, stored on the agent's own
+   *  `attributes.demotion_marked_at` in the same write as the narrowed tiers, which is both
+   *  the window start and, paired with the agent, the idempotency key: a sync that died mid
+   *  flip reads the same stamp back and converges on one sweep. Absent for every other sweep.
+   *  Unlike the three keys above, a demotion is PARTIAL (the agent still serves the pools they
+   *  kept), so it is paired with `snapshotBookings` below rather than the full coverage read. */
+  demotionMarkedAtIso?: string | null;
+  /** The bookings this sweep should move, when the caller already knows them (the demotion
+   *  case passes the FILTERED set, only the bookings the agent no longer serves, via
+   *  `demotionBookings`). Absent means the full coverage read, which is correct for a pool
+   *  exit but would move the still-served bookings of a partial demotion. The conflict path
+   *  re-snapshots through this too, so a crashed first attempt still converges on its work. */
+  snapshotBookings?: () => Promise<CoverageBookingRow[]>;
 }
 
 /** Postgres unique-violation. The ONLY error class that means "a sweep already
@@ -151,6 +267,7 @@ export async function createBulkReassignJob(
   const oooRequestId = input.oooRequestId ?? null;
   const offboardingDeactivatedAt = input.offboardingDeactivatedAtIso ?? null;
   const redistributeMarkedAt = input.redistributeMarkedAtIso ?? null;
+  const demotionMarkedAt = input.demotionMarkedAtIso ?? null;
   // The rows this run snapshotted, kept so the caller can describe the work to a
   // person (#1239) without asking the database the same question a second time and
   // getting a different answer. The enqueue layer itself only ever needs the ids.
@@ -162,7 +279,13 @@ export async function createBulkReassignJob(
   let snapshot: CoverageBookingRow[] = [];
   const result = await enqueueCoverageSweep({
     snapshotBookingIds: async () => {
-      snapshot = await coverageBookings(input.outUserId, input.rangeStartIso, input.rangeEndIso);
+      // A demotion passes the FILTERED set (only the bookings the agent no longer serves);
+      // every other sweep reads the full coverage window. Both resolve into `snapshot`, so the
+      // conflict path re-snapshots through the same source and the caller's notice describes
+      // exactly what this run moved.
+      snapshot = input.snapshotBookings
+        ? await input.snapshotBookings()
+        : await coverageBookings(input.outUserId, input.rangeStartIso, input.rangeEndIso);
       return snapshot.map((r) => r.id);
     },
 
@@ -182,6 +305,7 @@ export async function createBulkReassignJob(
           ooo_request_id: oooRequestId,
           offboarding_deactivated_at: offboardingDeactivatedAt,
           redistribute_marked_at: redistributeMarkedAt,
+          demotion_marked_at: demotionMarkedAt,
         })
         .select("id")
         .single();
@@ -224,6 +348,22 @@ export async function createBulkReassignJob(
             .eq("redistribute_marked_at", redistributeMarkedAt)
             .maybeSingle(),
           "find-existing-redistribute-sweep",
+        ) as { id: string } | null;
+        return row ?? null;
+      }
+      // #3582: a demotion sweep is keyed on (agent, demotion mark), a fourth unique index.
+      // Same convergent conflict path, so the lookup asks the question THAT index answers.
+      if (demotionMarkedAt) {
+        const row = unwrap(
+          await supabaseAdmin()
+            .from("bulk_reassign_jobs")
+            // cap-safe: the unique index on (out_user_id, demotion_marked_at) means this
+            // matches at most one row.
+            .select("id")
+            .eq("out_user_id", input.outUserId)
+            .eq("demotion_marked_at", demotionMarkedAt)
+            .maybeSingle(),
+          "find-existing-demotion-sweep",
         ) as { id: string } | null;
         return row ?? null;
       }

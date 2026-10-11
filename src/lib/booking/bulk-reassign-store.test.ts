@@ -182,6 +182,89 @@ describe("a redistribute coverage sweep is keyed on the mark (#2115)", () => {
   });
 });
 
+// #3582: the fourth cause column. The hourly Twilio flip NARROWS an agent's eligibility (a
+// tier or backend_service change) with nobody to ask. Unlike the three above it is PARTIAL, so
+// the sweep carries an injected FILTERED snapshot (only the bookings the agent no longer
+// serves) rather than the full coverage read. The same converge-on-retry shape, a fourth
+// unique index, so a sync that dies mid flip re-plans next hour and must converge, not
+// double-move a customer.
+describe("a demotion coverage sweep is keyed on the mark and uses the filtered snapshot (#3582)", () => {
+  const DEMOTION_AT = "2026-10-01T09:00:00.000Z";
+  // What the FULL coverage read (coverageBookings) would return, so a test can tell the
+  // filtered source apart from the full one.
+  const FULL = [
+    { id: "full1", starts_at: "2026-10-05T14:00:00Z", ends_at: "2026-10-05T14:30:00Z", attendee_name: "Al" },
+    { id: "full2", starts_at: "2026-10-05T16:00:00Z", ends_at: "2026-10-05T16:30:00Z", attendee_name: "Bo" },
+  ];
+  // The FILTERED set the demotion caller passes: only the booking in the lost pool.
+  const FILTERED = [
+    { id: "lost1", starts_at: "2026-10-05T15:00:00Z", ends_at: "2026-10-05T15:30:00Z", attendee_name: "Cy" },
+  ];
+  const demotionInput = {
+    ...offboardingInput,
+    rangeStartIso: DEMOTION_AT,
+    offboardingDeactivatedAtIso: null,
+    demotionMarkedAtIso: DEMOTION_AT,
+    snapshotBookings: async () => FILTERED,
+  };
+
+  beforeEach(() => {
+    // The chain's snapshot read (what coverageBookings sees) is the FULL set, so if the code
+    // ever ignored the injected filtered source the test would move the wrong bookings.
+    snapshotRows = [...FULL];
+  });
+
+  it("stamps the mark and moves the FILTERED set, not the full coverage read", async () => {
+    const res = await createBulkReassignJob(demotionInput);
+
+    expect(res.jobId).toBe("job-new");
+    expect(calls.inserted[0]).toMatchObject({
+      out_user_id: "u9",
+      demotion_marked_at: DEMOTION_AT,
+      // A system-initiated partial demotion: no human actor and none of the other causes.
+      created_by: null,
+      ooo_request_id: null,
+      offboarding_deactivated_at: null,
+      redistribute_marked_at: null,
+    });
+    // The filtered source won: the item is the lost-pool booking, not the full coverage set.
+    expect(calls.itemsUpserted[0].map((r) => r.booking_id)).toEqual(["lost1"]);
+    expect(res.snapshot).toEqual(FILTERED);
+    expect(res.itemCount).toBe(1);
+  });
+
+  it("converges onto the existing sweep when the same mark is enqueued twice", async () => {
+    insertConflicts = true;
+    existingJob = { id: "job-existing" };
+
+    const res = await createBulkReassignJob(demotionInput);
+
+    expect(res.jobId).toBe("job-existing");
+    // Looked up by the pair THIS index is on, not by any of the other three keys.
+    expect(calls.jobLookupFilters).toContainEqual(["out_user_id", "u9"]);
+    expect(calls.jobLookupFilters).toContainEqual(["demotion_marked_at", DEMOTION_AT]);
+    expect(calls.jobLookupFilters.some(([col]) => col === "redistribute_marked_at")).toBe(false);
+    expect(calls.jobLookupFilters.some(([col]) => col === "offboarding_deactivated_at")).toBe(false);
+    expect(calls.jobLookupFilters.some(([col]) => col === "ooo_request_id")).toBe(false);
+    // Re-snapshotted through the filtered source, so a half-written first attempt still ends
+    // up with its (filtered) work rather than the full set.
+    expect(calls.itemsUpserted[0].map((r) => r.booking_id)).toEqual(["lost1"]);
+    expect(res.snapshot).toEqual(FILTERED);
+  });
+
+  it("throws rather than reporting success when the conflicting sweep cannot be found", async () => {
+    insertConflicts = true;
+    existingJob = null;
+
+    await expect(createBulkReassignJob(demotionInput)).rejects.toThrow(/conflicted/);
+  });
+
+  it("leaves the demotion column null for every other sweep", async () => {
+    await createBulkReassignJob({ ...offboardingInput });
+    expect(calls.inserted[0]).toMatchObject({ demotion_marked_at: null });
+  });
+});
+
 describe("an offboarding coverage sweep is keyed on the deactivation (#1241)", () => {
   it("stamps the deactivation on the job row, so the unique index has something to bite on", async () => {
     const res = await createBulkReassignJob(offboardingInput);
