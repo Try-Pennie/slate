@@ -1,5 +1,5 @@
 // Sanity test for the routing-attribute catalog derivation.
-// Run: node --experimental-strip-types scripts/test-catalog.ts
+// Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-catalog.ts
 import { deriveAttributeCatalog } from "../src/lib/availability/catalog.ts";
 import type { Attributes } from "../src/lib/db/types.ts";
 import { withDemotionMark, withDemotionSwept } from "../src/lib/booking/demotion-plan.ts";

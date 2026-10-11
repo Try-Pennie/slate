@@ -515,6 +515,19 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
  * (#1134, #1152). Best effort, like its siblings: a Slack problem never fails the run.
  */
 async function reportDemotionOutcome(result: TwilioSyncResult): Promise<void> {
+  // Two boundaries, so the moved-calls line is said even when the failure bookkeeping beside it
+  // (a streak write, a page, an all-clear) throws: they are two facts, and one failing to report
+  // must not silence the other.
+  await reportDemotionFailures(result).catch((err: unknown) =>
+    log.error("agents", { msg: "could not report the demotion reroute's failures, carrying on" }, err),
+  );
+  await reportDemotionMoves(result).catch((err: unknown) =>
+    log.error("agents", { msg: "could not report the demotion reroute's moves, carrying on" }, err),
+  );
+}
+
+/** The failure half of `reportDemotionOutcome`: page on the second run in a row, else clear. */
+async function reportDemotionFailures(result: TwilioSyncResult): Promise<void> {
   const failures = {
     switchUnreadable: result.demotionSwitchUnreadable,
     evals: result.demotionEvalFailures,
@@ -545,7 +558,10 @@ async function reportDemotionOutcome(result: TwilioSyncResult): Promise<void> {
     ).catch(logResolveFailure("demotion_trigger_failures"));
     if (cleared) log.info("agents", { msg: "demotion trigger failure alert cleared" });
   }
+}
 
+/** The moves half of `reportDemotionOutcome`: the quiet line when demotion sweeps queued calls. */
+async function reportDemotionMoves(result: TwilioSyncResult): Promise<void> {
   if (result.demotionSweeps.length > 0) {
     // Zero cooldown: every run that moves calls is its own event and must be said. A run that
     // moves none says nothing, so this can never repeat itself.

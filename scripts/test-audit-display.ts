@@ -6,7 +6,7 @@
 // an audit row that silently claims to have been written at the time is worse
 // than a visible gap. The table also fell back to printing raw action strings
 // ("ooo.approve") for every action nobody had added a label for.
-// Run: node --experimental-strip-types scripts/test-audit-display.ts
+// Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-audit-display.ts
 import {
   auditActionLabel,
   auditActorText,

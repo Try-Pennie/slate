@@ -458,6 +458,17 @@ describe("GET /api/cron/agents", () => {
       expect(verdict.recordDetectorVerdict).toHaveBeenCalledWith("verdict:twilio-roster", true);
     });
 
+    it("still whispers the moves when the failure bookkeeping beside it throws", async () => {
+      twilio.syncTwilioRedistribute.mockResolvedValueOnce({
+        ...(await twilioResult()),
+        demotionEvalFailures: 1,
+        demotionSweeps: [{ email: "jlee@trypennie.com", userId: "u1", bookings: 2, change: null }],
+      });
+      streak.recordConsecutiveStreak.mockRejectedValueOnce(new Error("alert_state unreachable"));
+      await GET(req());
+      expect(dispatch.sendThrottledInfo.mock.calls.map((c: unknown[]) => c[0])).toContain("demotion_reroute_moved");
+    });
+
     it("says nothing about moves on a run that queued none", async () => {
       await GET(req());
       expect(dispatch.sendThrottledInfo.mock.calls.map((c: unknown[]) => c[0])).not.toContain("demotion_reroute_moved");
