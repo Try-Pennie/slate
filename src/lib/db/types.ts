@@ -1328,6 +1328,13 @@ export interface BulkReassignJob {
    *  Unique per (agent, mark), so a sync that crashed mid flip converges on one
    *  sweep. Also the record of WHY such a job has no `created_by`. */
   redistribute_marked_at: string | null;
+  /** The Twilio tier/pool demotion that triggered this sweep (#3582): the moment the
+   *  hourly roster sync recorded the agent lost eligibility a held booking needs,
+   *  stored on their own `attributes.demotion_marked_at` in the same write as the
+   *  narrowed tiers. NULL for every other sweep. Unique per (agent, demotion), so a
+   *  retried or crashed sync converges on one sweep, and the record of WHY such a job
+   *  has no `created_by`. */
+  demotion_marked_at: string | null;
   created_at: string;
   updated_at: string;
 }
