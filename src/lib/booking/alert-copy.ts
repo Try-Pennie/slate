@@ -324,13 +324,19 @@ export function reconcileFreedAlert(counts: {
   freedCancelled: number;
   freedOrphans: number;
   agentCount: number;
+  /** #3585: the booking ids whose block was freed, so a reader can tell a genuine
+   *  missed write from the cancel/reconcile race rather than inferring from a snapshot.
+   *  Already bounded by the caller; `bookingIdsTruncated` says more exist. */
+  bookingIds?: string[];
+  bookingIdsTruncated?: boolean;
 }): string {
-  const { freedCancelled, freedOrphans, agentCount } = counts;
+  const { freedCancelled, freedOrphans, agentCount, bookingIds = [], bookingIdsTruncated = false } = counts;
   const parts: string[] = [];
   if (freedCancelled > 0) {
+    const ids = bookingIds.length > 0 ? ` Booking ids: ${bookingIds.join(", ")}${bookingIdsTruncated ? " ..." : ""}.` : "";
     parts.push(
       `${freedCancelled} stuck busy_block(s) whose booking was cancelled or missing. ` +
-        `A write-through delete was missed, so check cancel-path health.`,
+        `A write-through delete was missed, so check cancel-path health.${ids}`,
     );
   }
   if (freedOrphans > 0) {
