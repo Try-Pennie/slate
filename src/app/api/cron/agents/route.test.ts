@@ -445,6 +445,9 @@ describe("GET /api/cron/agents", () => {
       expect(call).toBeTruthy();
       expect(String(call?.[2])).toContain("jlee@trypennie.com");
       expect(String(call?.[2])).toContain("/admin/agents/u1");
+      // The real notifier REFUSES a cooldown that is not a positive number, before it posts,
+      // so a zero here is a line that is never sent while this mock happily records it.
+      expect(Number(call?.[1])).toBeGreaterThan(0);
     });
 
     // Its own boundary: the Twilio half READ fine, so a failure while reporting the reroute must

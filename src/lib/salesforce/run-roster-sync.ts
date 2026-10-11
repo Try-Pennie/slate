@@ -77,6 +77,8 @@ const TWILIO_WRITE_STREAK_WINDOW_S = 3 * 60 * 60;
 const TWILIO_WRITE_STREAK_ALERT_AT = 2;
 /** #3615: the reroute for demoted advisors, on the same two-runs-in-a-row footing as the writes. */
 const DEMOTION_TRIGGER_STREAK_KEY = "demotion_trigger_failures";
+/** #3615: the "calls moved" line. Positive because the notifier refuses anything else. */
+const DEMOTION_MOVED_INFO_COOLDOWN_MS = 60_000;
 
 /**
  * The Twilio READ failures streak (#2774).
@@ -563,12 +565,13 @@ async function reportDemotionFailures(result: TwilioSyncResult): Promise<void> {
 /** The moves half of `reportDemotionOutcome`: the quiet line when demotion sweeps queued calls. */
 async function reportDemotionMoves(result: TwilioSyncResult): Promise<void> {
   if (result.demotionSweeps.length > 0) {
-    // Zero cooldown: every run that moves calls is its own event and must be said. A run that
-    // moves none says nothing, so this can never repeat itself.
+    // A one minute cooldown, the shortest the notifier accepts (it refuses zero before posting):
+    // every run that moves calls is its own event and must be said, runs are an hour apart, and
+    // a run that moves none says nothing, so this cannot repeat itself.
     // alert-key: demotion_reroute_moved
     await sendThrottledInfo(
       "demotion_reroute_moved",
-      0,
+      DEMOTION_MOVED_INFO_COOLDOWN_MS,
       demotionRerouteMovedInfo(
         result.demotionSweeps.map((s) => ({
           email: s.email,
