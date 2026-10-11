@@ -38,8 +38,9 @@ export const dynamic = "force-dynamic";
  *    `blocked-uri`, and on the manage page the URL is the booking's credential.
  *    #2564 took that token out of the warehouse; an endpoint the whole internet
  *    can post to must not walk it into the logs instead.
- *  - It does not page a report only report or a browser extension's own refusal,
- *    neither of which is Slate's page failing somebody. Both are still logged.
+ *  - It does not page a report only report, a browser extension's own refusal, or a
+ *    passive third-party font refusal (#3417, `injected-passive`), none of which is
+ *    Slate's page failing somebody. All are still logged.
  */
 export async function POST(req: NextRequest): Promise<NextResponse> {
   // 204 on every path: refusal and success are indistinguishable from outside.
@@ -61,7 +62,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (violation.directive === "(unreadable)") return done();
 
   const decision = cspViolationPage(violation);
-  log.warn("csp-report", {
+  const logBase = {
     msg: "policy violation",
     directive: violation.directive,
     blocked: violation.blocked,
@@ -69,11 +70,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     referrer: violation.referrer,
     source: violation.source,
     disposition: violation.disposition,
-    paged: decision.page,
-    ...(decision.page ? {} : { not_paged: decision.why }),
-  });
-  if (!decision.page) return done();
+  };
 
+  // Three refusals are logged and dropped (#3417 added the third): a report-only report
+  // blocked nothing, an extension's own resource is the person's browser, and a passive
+  // third-party resource no Slate page requests ("injected-passive") is almost always an
+  // extension and blocked nothing a lead needed, so one person's extension no longer
+  // pages production.
+  if (decision.page === false) {
+    log.warn("csp-report", { ...logBase, paged: false, not_paged: decision.why });
+    return done();
+  }
+
+  log.warn("csp-report", { ...logBase, paged: true });
   try {
     const cooldowns = await loadMonitorCooldowns("csp-report");
     // alert-key: csp_violation:*
