@@ -29,14 +29,22 @@
 //    expected case: the activation gate turns down anybody with no reachable Google
 //    calendar.
 //
-// TAKING SOMEBODY OUT OF THE POOL STRANDS WHAT THEY HAVE BOOKED, so the flip queues
-// the same coverage sweep the offboarding automation does (#2115, Dan 2026-09-09).
-// The admin toggle asks a person to confirm first; this has nobody to ask, so it
-// takes the sweep rather than the question. Measured 2026-09-09, right after the
-// first live run turned twelve agents not bookable, zero of them held an upcoming
-// booking, because cal.com is still taking every lead. After cutover Slate holds
-// the real book and this is what stops a lead's call sitting with an agent who can
-// no longer be routed to.
+// TAKING SOMEBODY OUT OF THE POOL STRANDS WHAT THEY HAVE BOOKED, so the same coverage
+// sweep the offboarding automation does moves it (#2115, Dan 2026-09-09). The admin
+// toggle asks a person to confirm first; this has nobody to ask, so it takes the sweep
+// rather than the question. After cutover Slate holds the real book and this is what
+// stops a lead's call sitting with an agent who can no longer be routed to.
+//
+// The sweep is DEBOUNCED (#3599): it does NOT fire on the turn-off. Moving a customer's
+// booked call is disruptive and not cheap to undo, so the first sight only takes the
+// agent out of the pool (reversible, moves no call) and the sweep waits for the
+// `sweep-overdue` flip on a LATER sync, once the stored mark has aged past the debounce
+// window. A tag that flaps off within the hour is undone by `turn-back-on` before a
+// single call moved. The `sweep-overdue` runs the sweep BEFORE recording it done, the
+// same assume-it-runs-twice ordering as the mark: a crash in between re-plans and
+// converges on the one job by its unique key. Between the turn-off and the sweep the
+// agent is out of the pool but still holds their calls by design, which
+// `inactive_agent_bookings` is told to tolerate via `redistributeSweepPending`.
 //
 // COST, derived rather than assumed: one Twilio call for the whole roster (142
 // workers against a page size of 200), one roster read, and per flip about 6
@@ -77,11 +85,13 @@ export interface TwilioSyncDeps {
   /** Injected, so the stamp a flip is keyed on is one value a test can assert on. */
   nowIso: () => string;
   /**
-   * Queue the coverage sweep that moves what the agent already has booked (#2115).
+   * Queue the coverage sweep that moves what the agent already has booked (#2115),
+   * on the debounced `sweep-overdue` flip rather than the turn-off (#3599).
    *
-   * Idempotent on `markedAtIso` by a database unique index, so a run that dies
-   * between the mark and the flip converges on ONE sweep rather than moving
-   * customers' bookings twice.
+   * Idempotent on `markedAtIso` by a database unique index, so a run that dies between
+   * the sweep and the marker that records it done re-plans and converges on ONE sweep
+   * rather than moving customers' bookings twice. `markedAtIso` is the stamp the
+   * turn-off stored, so the overdue sweep keys onto the same job the turn-off would have.
    */
   startCoverageSweep: (input: {
     outUserId: string;
@@ -175,12 +185,13 @@ export interface TwilioSyncResult {
    */
   coverageSweeps: { email: string; bookings: number }[];
   /**
-   * Coverage sweeps that threw, so the flip went ahead anyway.
+   * Overdue coverage sweeps that threw (#3599). The sweep runs on its own later sync,
+   * after the agent is already out of the pool, so there is no flip to hold back here.
    *
-   * The flip is NOT held back on this. An agent Twilio withholds who is still
-   * bookable misroutes a lead today, which is the sharper harm, and the calls left
-   * behind are caught by `inactive_agent_bookings`, which watches for exactly a not
-   * bookable agent still holding appointments.
+   * A throw leaves the swept marker UNWRITTEN, so the next sync re-plans the
+   * sweep-overdue and tries again; the calls held meanwhile are caught by
+   * `inactive_agent_bookings`, which watches for exactly a not bookable agent still
+   * holding appointments once the pending-sweep grace lapses.
    */
   coverageSweepFailures: number;
   /**
@@ -432,36 +443,15 @@ async function runFlip(
   const countLanded_ = () => countLanded(flip.email, flip.changes, out.landed);
 
   if (flip.action === "turn-off") {
-    // Mark first. See the header for why this order and not the other. The legal
-    // value rides in the SAME payload rather than a second write over the same
-    // column, which would build from a base this one has already changed (L443).
+    // Mark first, then the flip. The legal value rides in the SAME payload rather than
+    // a second write over the same column, which would build from a base this one has
+    // already changed (L443). The coverage sweep is NOT here: moving a customer's call
+    // is disruptive and not cheap to undo, so it waits for the `sweep-overdue` path
+    // below, on a later sync once the mark has aged past the debounce window (#3599).
+    // The first sight only takes them out of the pool, which is reversible, so a tag
+    // that flaps off within the hour is undone by `turn-back-on` with no call moved.
     await deps.writeAttributes({ userId: flip.userId, attributes: flip.attributes });
     countLanded_();
-    // Then the coverage sweep, BEFORE the flip (#2115). The order is the crash
-    // safety: a run that dies here leaves a marked and still bookable agent, whom
-    // the next hour plans again, reads the same stamp from, and converges onto the
-    // same sweep by its unique key. Queued after the flip instead, that agent is no
-    // longer bookable, nothing re-plans them, and the sweep is lost in silence.
-    //
-    // Its own boundary, and the flip is NOT held back on it: an agent Twilio
-    // withholds who is still bookable misroutes a lead today, which is the sharper
-    // harm, and calls left behind are caught by `inactive_agent_bookings`.
-    if (flip.markedAtIso) {
-      try {
-        const { itemCount } = await deps.startCoverageSweep({
-          outUserId: flip.userId,
-          markedAtIso: flip.markedAtIso,
-        });
-        if (itemCount > 0) out.coverageSweeps.push({ email: flip.email, bookings: itemCount });
-      } catch (err) {
-        out.counters.coverageSweepFailures++;
-        log.error(
-          "twilio-sync",
-          { msg: "coverage sweep could not be queued, taking them out of the pool anyway", user_id: flip.userId },
-          err,
-        );
-      }
-    }
     const result = await deps.applyBookable(flip.userId, false);
     if (result.status === "applied") {
       out.turnedOff.push(flip.email);
@@ -478,6 +468,39 @@ async function runFlip(
       // will look at.
       log.warn("twilio-sync", { msg: "flip out of the pool did not apply", user_id: flip.userId, status: result.status });
     }
+    return;
+  }
+
+  if (flip.action === "sweep-overdue") {
+    // The debounce has elapsed (#3599): the agent is already out of the pool from a
+    // prior turn-off, still tagged, and the mark it stored has aged past the window, so
+    // the booked calls move now. The sweep goes BEFORE the marker that records it done.
+    // That order is the crash safety: a run that dies between them leaves the agent
+    // tagged and NOT yet marked swept, whom the next sync re-plans, reads the SAME
+    // stamp from, and converges onto the same job by its unique key. Recording it done
+    // first, a crash in between would log a sweep that never ran and the next sync would
+    // skip it. The flip itself already happened, so there is nothing to apply or audit.
+    if (!flip.markedAtIso) return;
+    try {
+      const { itemCount } = await deps.startCoverageSweep({
+        outUserId: flip.userId,
+        markedAtIso: flip.markedAtIso,
+      });
+      if (itemCount > 0) out.coverageSweeps.push({ email: flip.email, bookings: itemCount });
+    } catch (err) {
+      out.counters.coverageSweepFailures++;
+      log.error(
+        "twilio-sync",
+        { msg: "overdue coverage sweep could not be queued, next sync will retry", user_id: flip.userId },
+        err,
+      );
+      // Marker withheld, so the next sync re-plans and retries. Calls left behind
+      // meanwhile are caught by `inactive_agent_bookings`.
+      return;
+    }
+    // Record the sweep as done only now it has landed, so it fires once.
+    await deps.writeAttributes({ userId: flip.userId, attributes: flip.attributes });
+    countLanded_();
     return;
   }
 

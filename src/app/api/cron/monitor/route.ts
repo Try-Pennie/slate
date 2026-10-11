@@ -344,6 +344,7 @@ import {
   runInactiveAgentBookingsCheck,
   type OutOfPoolAgent,
 } from "@/lib/monitor/inactive-agent-bookings";
+import { redistributeSweepPending } from "@/lib/twilio/roster-plan";
 import {
   countStranded,
   runCoverageNeedsHumanCheck,
@@ -2695,17 +2696,27 @@ export async function GET(req: NextRequest) {
       const agents = (unwrap(
         await db
           .from("users")
-          .select("id, name, email, deactivated_at")
+          .select("id, name, email, deactivated_at, attributes")
           .or("bookable.eq.false,deactivated_at.not.is.null")
           .eq("is_test", false),
         "monitor inactive-agent roster",
-      ) ?? []) as { id: string; name: string | null; email: string | null; deactivated_at: string | null }[];
+      ) ?? []) as {
+        id: string;
+        name: string | null;
+        email: string | null;
+        deactivated_at: string | null;
+        attributes: Attributes | null;
+      }[];
       if (agents.length === 0) return [];
+      const nowIso = new Date(now).toISOString();
       const outOfPool: OutOfPoolAgent[] = agents.map((a) => ({
         id: a.id,
         name: a.name,
         email: a.email,
         deactivated: a.deactivated_at !== null,
+        // #3599: an agent mid debounced-redistribute-sweep holds their calls by design
+        // for one sync; the automatic sweep is what moves them, so do not page on it.
+        coveredByPendingSweep: redistributeSweepPending(a.attributes, nowIso),
       }));
       // Every page: an offboarding backlog can hold more than 1,000 upcoming
       // bookings between them, and a truncated page would under-report the gap.

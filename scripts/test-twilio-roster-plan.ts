@@ -27,6 +27,7 @@ import {
   carriesRedistributeTag,
   twilioWorkerMissing,
   twilioUndoesBookable,
+  redistributeSweepPending,
   TWILIO_WORKER_MISSING_KEY,
   type TwilioRosterRow,
 } from "@/lib/twilio/roster-plan";
@@ -257,6 +258,131 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
   eq(plan.attributeWrites.length, 1, "the attribute write is planned");
   const attrs = plan.attributeWrites[0]?.attributes as Record<string, unknown>;
   assert(!("redistribute_at" in attrs), "and no stamp is invented for somebody who is not leaving the pool");
+}
+
+// --- the coverage sweep is debounced across a sync (#3599) ---------------------
+// Moving a customer's booked call to another agent is disruptive and not cheap to
+// undo, so it waits until the tag has survived from one sync to the next. The first
+// sight of the tag takes the agent out of the pool (a new lead must never be routed
+// to somebody Twilio withholds), but leaves their booked calls where they are. A tag
+// that flaps off within the hour is cleared by the turn-back-on above before any call
+// was moved. Only a tag still present on a LATER sync, the mark it left aged past the
+// debounce window, moves the calls, and it does so once.
+
+{
+  // First sight. A bookable tagged agent is turned OFF, but the planned action is
+  // the reversible flip, never the sweep: the first sight never moves a call.
+  const plan = planTwilioRoster([row({ bookable: true })], twilio(side(["Redistribute"])), NOW);
+  eq(plan.flips.length, 1, "the agent is flipped");
+  eq(plan.flips[0]?.action, "turn-off", "out of the pool, and NOT a sweep-overdue: the first sight never moves a call");
+}
+
+{
+  // A later sync: still tagged, still out of the pool, the mark aged past the
+  // window. Now the calls move.
+  const AGED = "2026-09-09T11:00:00.000Z"; // 60 min before NOW, past the 30 min window
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute: MARK, redistribute_at: AGED } })],
+    twilio(side(["Redistribute"])),
+    NOW,
+  );
+  eq(plan.flips.length, 1, "the overdue sweep is planned");
+  eq(plan.flips[0]?.action, "sweep-overdue", "and it is the sweep, not another pool flip");
+  eq(plan.flips[0]?.markedAtIso, AGED, "keyed on the stored mark, so it converges with the turn-off's key under the unique index");
+  assert(
+    (plan.flips[0]?.attributes as Record<string, unknown>).redistribute_swept_at !== undefined,
+    "and the payload records that the sweep was done, so a later sync fires it once",
+  );
+}
+
+{
+  // The mark is too fresh: the tag has not yet survived to a later sync (a manual
+  // re-run minutes after the turn-off), so nothing moves.
+  const FRESH = "2026-09-09T11:45:00.000Z"; // 15 min before NOW, inside the 30 min window
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute: MARK, redistribute_at: FRESH } })],
+    twilio(side(["Redistribute"])),
+    NOW,
+  );
+  eq(plan.flips.length, 0, "a mark inside the debounce window moves nothing: a within-hour flap has not been ruled out yet");
+}
+
+{
+  // Already swept. The calls were moved on the previous overdue sync, so a later
+  // one must not move them again.
+  const AGED = "2026-09-09T11:00:00.000Z";
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute: MARK, redistribute_at: AGED, redistribute_swept_at: AGED } })],
+    twilio(side(["Redistribute"])),
+    NOW,
+  );
+  eq(plan.flips.length, 0, "an agent whose calls were already moved is planned nothing: the sweep fires once");
+}
+
+{
+  // An agent turned back on BY HAND while still tagged and already swept (a completed
+  // prior cycle) is turned off again as a FRESH cycle: a new stamp so the overdue sweep
+  // keys a new job rather than the one the unique index already holds, and the stale
+  // swept marker dropped so the new cycle actually sweeps the calls booked in between.
+  const OLD = "2026-09-09T08:00:00.000Z";
+  const plan = planTwilioRoster(
+    [row({ bookable: true, attributes: { redistribute: MARK, redistribute_at: OLD, redistribute_swept_at: OLD } })],
+    twilio(side(["Redistribute"])),
+    NOW,
+  );
+  eq(plan.flips[0]?.action, "turn-off", "they are turned off again");
+  eq(plan.flips[0]?.markedAtIso, NOW, "with a FRESH stamp, so the new cycle's sweep is a new job, not the completed one");
+  const attrs = plan.flips[0]?.attributes as Record<string, unknown>;
+  assert(!("redistribute_swept_at" in attrs), "and the stale swept marker is dropped, so the new cycle actually sweeps");
+}
+
+{
+  // The tag comes off after a sweep. Turn-back-on clears the sweep marker along with
+  // the mark, so a future redistribute starts its own debounce and its own sweep
+  // rather than reading as already done.
+  const AGED = "2026-09-09T11:00:00.000Z";
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute: MARK, redistribute_at: AGED, redistribute_swept_at: AGED, debt_team: ["low"] } })],
+    twilio(side(["Low Debt: 20k - 30k"])),
+    NOW,
+  );
+  eq(plan.flips[0]?.action, "turn-back-on", "the agent is put back in the pool");
+  const attrs = plan.flips[0]?.attributes as Record<string, unknown>;
+  assert(!("redistribute_swept_at" in attrs), "and the sweep marker is cleared with the mark, so a later exit sweeps afresh");
+}
+
+// --- the inactive-agent backstop leaves a mid-sweep agent alone (#3599) ---------
+// Between the turn-off and the debounced sweep an agent is out of the pool but still
+// holds their calls, by design. `inactive_agent_bookings` would otherwise page on that
+// window, so it asks this predicate and skips an agent whose sweep is still pending.
+
+{
+  const WITHIN = "2026-09-09T11:00:00.000Z"; // 1h before NOW, inside the 4h grace
+  assert(
+    redistributeSweepPending({ redistribute: MARK, redistribute_at: WITHIN }, NOW),
+    "a marked, unswept agent whose mark is fresh is mid-sweep, so the backstop leaves them to it",
+  );
+}
+
+{
+  const PAST = "2026-09-09T07:00:00.000Z"; // 5h before NOW, past the 4h grace
+  assert(
+    !redistributeSweepPending({ redistribute: MARK, redistribute_at: PAST }, NOW),
+    "a mark older than the grace is a stuck sweep, so the backstop pages as before",
+  );
+}
+
+{
+  const WITHIN = "2026-09-09T11:00:00.000Z";
+  assert(
+    !redistributeSweepPending({ redistribute: MARK, redistribute_at: WITHIN, redistribute_swept_at: WITHIN }, NOW),
+    "an agent whose sweep has already run is not mid-sweep: any calls it could not place are an ordinary gap",
+  );
+  assert(!redistributeSweepPending({ debt_team: ["low"] }, NOW), "an unmarked agent is never mid-sweep");
+  assert(
+    !redistributeSweepPending({ redistribute: MARK }, NOW),
+    "a mark with no stamp cannot be timed, so it is not treated as a pending sweep",
+  );
 }
 
 // --- the routing attributes themselves (#2152) ---------------------------------

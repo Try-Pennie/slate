@@ -99,11 +99,11 @@ function deps(
     d.calls,
     [
       `attrs:u1:{"redistribute_tagged":"Y","redistribute":"Y","redistribute_at":"${NOW}"}`,
-      `sweep:u1:${NOW}`,
       "flip:u1:false",
     ],
-    "the mark is written, then the coverage sweep is enqueued, then the flip: a crash anywhere in that order converges next hour",
+    "the first sight writes the mark and takes them out of the pool, and moves NO call: the sweep waits for a later sync (#3599)",
   );
+  assert(!d.calls.some((c) => c.startsWith("sweep:")), "no coverage sweep is queued on first sight, so a within-hour flap moves nothing");
   eq(r.turnedBackOn.length, 0, "and nobody is turned back on");
   eq(d.audits.length, 1, "the flip is audited");
   eq((d.audits[0] as { action: string }).action, "agent.bookable", "as a bookable change, the same action the admin toggle records");
@@ -277,66 +277,76 @@ const backOn = {
   eq(r.markedWithNoWorker, ["c@trypennie.com"], "and a marked agent Twilio holds no worker for is named, since doing nothing is otherwise invisible");
 }
 
-// --- what the agent already has booked (#2115) ---------------------------------
+// --- what the agent already has booked (#2115, debounced by #3599) --------------
 // Taking somebody out of the pool strands whatever they have booked, and the admin
-// toggle asks a person before doing it. This flip has nobody to ask, so it queues
-// the same coverage sweep, on Dan's call (2026-09-09).
+// toggle asks a person before doing it. This flip has nobody to ask, so it queues the
+// same coverage sweep, on Dan's call (2026-09-09). But moving a customer's call is
+// disruptive and not cheap to undo, so the sweep waits until the tag has survived to a
+// LATER sync and the mark it left has aged past the debounce window (#3599). That is
+// the `sweep-overdue` path below: the agent is already out of the pool from a prior
+// turn-off, still tagged, and the mark is old enough.
+
+// The mark a prior turn-off stored, aged past the 30 minute window.
+const AGED = "2026-09-09T11:00:00.000Z";
+const overdue = {
+  fetchWorkers: async () => [worker("a@trypennie.com", ["Redistribute"])],
+  loadRoster: async () => [row({ bookable: false, attributes: { redistribute: "Y", redistribute_at: AGED } })],
+};
 
 {
-  const d = deps({}, undefined, () => ({ itemCount: 3 }));
+  const d = deps(overdue, undefined, () => ({ itemCount: 3 }));
   const r = await syncTwilioRedistribute(d.deps);
-  eq(r.coverageSweeps, [{ email: "a@trypennie.com", bookings: 3 }], "the sweep says how many calls it took, per agent");
+  eq(r.coverageSweeps, [{ email: "a@trypennie.com", bookings: 3 }], "the overdue sweep says how many calls it took, per agent");
   eq(r.coverageSweepFailures, 0, "and nothing failed");
+  eq(r.turnedOff.length, 0, "the agent is already out of the pool, so no flip is reported");
+  eq(d.audits.length, 0, "and nothing is audited, because the bookable state did not change");
 }
 
 {
   // A sweep that found nothing is not reported as work done, and is still
   // distinguishable from one that could not run, because the failures are counted
   // apart (L98, L11).
-  const d = deps();
+  const d = deps(overdue);
   const r = await syncTwilioRedistribute(d.deps);
   eq(r.coverageSweeps.length, 0, "an agent holding nothing produces no line");
   eq(r.coverageSweepFailures, 0, "and no failure either, so the two are told apart");
-  eq(r.turnedOff, ["a@trypennie.com"], "and the flip still happened");
 }
 
 {
-  // THE ORDER THAT MAKES A CRASH SAFE. Enqueued BEFORE the flip, so a run that dies
-  // in between leaves a marked and still bookable agent whom the next hour plans
-  // again, reads the same stamp from, and converges onto the SAME sweep by the
-  // unique key. Enqueued after the flip, that agent is no longer bookable, nothing
-  // re-plans them, and the sweep is lost with nothing saying so.
-  const d = deps();
+  // THE ORDER THAT MAKES A CRASH SAFE. The sweep is enqueued BEFORE the marker that
+  // records it as done, so a run that dies between them leaves an agent still tagged
+  // and NOT yet marked swept, whom the next sync re-plans, reads the same stamp from,
+  // and converges onto the SAME sweep by the unique key. Marked swept first, a crash
+  // in between would record a sweep that never ran and the next sync would skip it.
+  const d = deps(overdue, undefined, () => ({ itemCount: 1 }));
   await syncTwilioRedistribute(d.deps);
   const sweep = d.calls.findIndex((c) => c.startsWith("sweep:"));
-  const flip = d.calls.findIndex((c) => c.startsWith("flip:"));
-  const attrs = d.calls.findIndex((c) => c.startsWith("attrs:"));
-  assert(attrs < sweep && sweep < flip, `the order is mark, sweep, flip (got ${d.calls.join(" ")})`);
+  const attrs = d.calls.findIndex((c) => c.includes("redistribute_swept_at"));
+  assert(sweep !== -1 && attrs !== -1 && sweep < attrs, `the order is sweep, then record it done (got ${d.calls.join(" ")})`);
 }
 
 {
-  // A sweep that could not be enqueued must NOT stop the flip. An agent Twilio
-  // withholds who is still bookable misroutes a lead today, which is the sharper
-  // harm; the bookings left behind are caught by `inactive_agent_bookings`, which
-  // watches for exactly a not bookable agent still holding calls.
-  const d = deps({}, undefined, () => {
+  // A sweep that could not be enqueued must NOT record itself as done: the marker is
+  // withheld so the next sync tries again. The bookings left behind meanwhile are
+  // caught by `inactive_agent_bookings`, which watches for exactly a not bookable
+  // agent still holding calls.
+  const d = deps(overdue, undefined, () => {
     throw new Error("database went away");
   });
   const r = await syncTwilioRedistribute(d.deps);
   eq(r.coverageSweepFailures, 1, "the failure is counted rather than swallowed");
-  eq(r.turnedOff, ["a@trypennie.com"], "and the agent is still taken out of the pool");
   eq(r.coverageSweeps.length, 0, "with nothing claimed about calls that were never queued");
+  assert(!d.calls.some((c) => c.includes("redistribute_swept_at")), "and the sweep marker is NOT written, so the next sync retries");
 }
 
 {
-  // The stamp the sweep is keyed on is the one in the attributes payload, not a
-  // second reading of the clock. Two different values here would mean the retry
-  // could never find the job it created.
-  const d = deps({}, undefined, () => ({ itemCount: 1 }));
+  // The stamp the sweep is keyed on is the one the mark already stored, not a second
+  // reading of the clock, so the overdue sweep converges with the job the turn-off
+  // would have keyed had it swept.
+  const d = deps(overdue, undefined, () => ({ itemCount: 1 }));
   await syncTwilioRedistribute(d.deps);
-  const written = d.calls.find((c) => c.startsWith("attrs:"))!;
   const swept = d.calls.find((c) => c.startsWith("sweep:"))!;
-  assert(written.includes(NOW) && swept.endsWith(NOW), "the stamp written and the stamp swept on are the same value");
+  assert(swept.endsWith(AGED), `the sweep is keyed on the stored mark, not the clock (got ${swept})`);
 }
 
 {

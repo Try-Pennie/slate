@@ -66,6 +66,16 @@ export interface OutOfPoolAgent {
   email: string | null;
   /** True when `deactivated_at` is set; false when they are merely not bookable. */
   deactivated: boolean;
+  /**
+   * True when their booked calls are being handled by a debounced redistribute sweep
+   * that has not run yet (#3599): the Twilio turn-off takes them out of the pool a sync
+   * before the sweep moves their calls, so for that window they hold calls by design,
+   * not through neglect. The raw mark state only; the check still pages a DEACTIVATED
+   * holder regardless, because no sweep ever runs for one. Required so `tsc` names every
+   * construction site (the one query that feeds this), and the safe value is `false`: a
+   * missed case pages rather than going quiet.
+   */
+  coveredByPendingSweep: boolean;
 }
 
 /** One out-of-pool agent who still holds future appointments. */
@@ -102,6 +112,12 @@ export function inactiveHoldersFromBookings(
   }
   return agents
     .flatMap((a) => {
+      // A redistribute sweep that has not run yet is deliberately holding these calls
+      // for one sync (#3599), so leave them to it rather than page mid-pipeline. But only
+      // for a NOT-bookable agent: the planner skips deactivated rows, so no sweep ever
+      // runs for a deactivated agent and the exemption would silence the backstop on
+      // exactly the #1215 case it exists for. A deactivated holder always pages.
+      if (a.coveredByPendingSweep && !a.deactivated) return [];
       const bookingCount = byAgent.get(a.id) ?? 0;
       if (bookingCount === 0) return [];
       return [
