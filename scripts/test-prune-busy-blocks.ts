@@ -1,26 +1,31 @@
-// The past-row prune for `busy_blocks` (#1252): cutoff maths, the per-run bound,
+// The busy_blocks prune (#1252 past, #1265 future): cutoff maths, the per-run bound,
 // and the failure paths.
 //
-// WHY A PAST-ONLY PRUNE. `busy_blocks` is the cached index availability reads, and
-// it only ever grows: the Google sync stores every event the delta stream reports,
-// including recurring instances expanded years ahead, so 403k rows were cached on
-// 2026-08-04 while only 3,646 sat inside the 4-day window anything can read.
+// WHY THE PRUNE EXISTS. `busy_blocks` is the cached index availability reads, and it
+// only ever grew: the Google sync stores every event the delta stream reports, including
+// recurring instances expanded years ahead, so 403k rows were cached on 2026-08-04 while
+// only 3,646 sat inside the 4-day window anything can read.
 //
-// Only the PAST is safe to delete. Every reader requires `ends_at > now`
-// (availability service.ts, booking service.ts, staffing depth), so a finished
-// block is unreadable, and time only moves one way: it can never re-enter a window.
-// A FUTURE row is a different story and deliberately out of scope here, because
-// incremental sync reports only CHANGES: delete a far-future block and nothing
-// re-adds it when the horizon reaches it, so the agent would look free during a
-// real meeting. That needs a rolling re-bootstrap, tracked separately.
+// TWO ends are safe to delete, each for its own reason. The PAST: every reader requires
+// `ends_at > now`, so a finished block is unreadable and time only moves one way. The
+// FUTURE out-of-window tail (#1265): once #1264's write filter stops ADDING blocks past
+// the cache window, the delta can no longer re-add what is removed, so the backlog is
+// safe to clear. The cutoff/gate below pin the inequality that keeps it provably clear of
+// anything readable (`starts_at < now + horizon`). Before #1264 the future was NOT safe:
+// a far-future block deleted while the delta still re-added it would churn.
 import {
   BUSY_PRUNE_BATCH_ROWS,
   BUSY_PRUNE_KEEP_PAST_HOURS,
   BUSY_PRUNE_MAX_ROWS_PER_RUN,
+  BUSY_FUTURE_PRUNE_GATE_GRACE_MS,
   busyPruneCutoffIso,
+  busyFuturePruneCutoffIso,
+  busyFuturePruneGateIso,
   pruneInBatches,
 } from "../src/lib/busy/prune-core.ts";
-import { BOOTSTRAP_LOOKBACK_MS } from "../src/lib/google/sync-coalesce.ts";
+import { BOOTSTRAP_LOOKBACK_MS, BUSY_WINDOW_AHEAD_DAYS } from "../src/lib/google/sync-coalesce.ts";
+import { WRITE_WINDOW_MARGIN_MS } from "../src/lib/google/sync-core.ts";
+import { HORIZON_MAX } from "../src/lib/booking/settings.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- cutoff ---------------------------------------------------------------
@@ -39,6 +44,35 @@ assert(
   BUSY_PRUNE_KEEP_PAST_HOURS * 60 * 60_000 > BOOTSTRAP_LOOKBACK_MS,
   "keep-past window exceeds the bootstrap lookback, so a pruned row is never re-added",
 );
+
+// --- the future cutoff + hydration gate (#1265) ---------------------------
+const DAY = 24 * 60 * 60_000;
+const nowIso = "2026-10-11T12:00:00.000Z";
+const nowMs = Date.parse(nowIso);
+const futureCutoffMs = Date.parse(busyFuturePruneCutoffIso(nowIso, BUSY_WINDOW_AHEAD_DAYS, WRITE_WINDOW_MARGIN_MS));
+const gateMs = Date.parse(busyFuturePruneGateIso(nowIso, HORIZON_MAX));
+
+// The future cutoff equals the write filter's keepTo (now + ahead + margin) EXACTLY, so
+// #1264 (stops adding past it) and #1265 (removes the backlog past it) never churn.
+eq(
+  futureCutoffMs,
+  nowMs + BUSY_WINDOW_AHEAD_DAYS * DAY + WRITE_WINDOW_MARGIN_MS,
+  "the future cutoff is the write filter's keep boundary, so the two never fight",
+);
+
+// THE LOAD-BEARING INEQUALITY. Readable requires starts_at < now + horizon, at most
+// now + HORIZON_MAX. The cutoff must sit strictly beyond that, so no readable block is
+// ever prunable however large the horizon is set.
+assert(
+  futureCutoffMs > nowMs + HORIZON_MAX * DAY,
+  "the future cutoff is strictly beyond the largest readable instant, so nothing readable is pruned",
+);
+
+// The hydration gate sits past the max horizon by the grace, so a calendar is eligible
+// only once its window reaches beyond every slot a lead could book, never while it is
+// merely level with the horizon.
+eq(gateMs, nowMs + HORIZON_MAX * DAY + BUSY_FUTURE_PRUNE_GATE_GRACE_MS, "the gate is now + HORIZON_MAX + grace");
+assert(gateMs > nowMs + HORIZON_MAX * DAY, "the gate is strictly past the largest readable instant");
 
 // --- the per-run bound ----------------------------------------------------
 

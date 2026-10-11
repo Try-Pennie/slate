@@ -1,8 +1,9 @@
 import { DateTime } from "luxon";
 
 /**
- * Pure core of the `busy_blocks` past-row prune (#1252). Kept dependency-free so
- * the node runner drives it directly, with the store injected.
+ * Pure core of the `busy_blocks` prune (#1252 past rows, #1265 future out-of-window
+ * rows). Kept dependency-free so the node runner drives it directly, with the store
+ * injected; the route supplies the selects and deletes for each clause.
  *
  * `busy_blocks` is the cached availability index and it only ever grew: the Google
  * sync stores every event its delta stream reports, and a bootstrap with
@@ -11,14 +12,21 @@ import { DateTime } from "luxon";
  * 4-day window any reader can see, and `purgeVanished` pages EVERY cached block for
  * a calendar on each full resync, so the size is paid for in subrequests too.
  *
- * This prune deliberately covers the PAST ONLY. Every reader requires
- * `ends_at > now` (`availability/service.ts`, `booking/service.ts`, staffing
- * depth), so a finished block is already unreadable, and time moves one way: it can
- * never come back into a window. Future rows are NOT safe to delete here, because
- * incremental sync reports only CHANGES: a far-future block that is deleted is
- * never re-added when the horizon reaches it, and the agent would then look free
- * during a real meeting. Shrinking the future side needs a rolling re-bootstrap so
- * the stored window can advance, which is tracked separately.
+ * There are two prunable ends, and each is safe for a different reason:
+ *
+ *  - the PAST (#1252): every reader requires `ends_at > now`, so a finished block is
+ *    already unreadable and time only moves one way, it can never come back into a
+ *    window. `busyPruneCutoffIso` keeps a window wider than the bootstrap lookback so
+ *    the prune and the sync cannot churn.
+ *  - the FUTURE out-of-window tail (#1265): once #1264's write filter stops ADDING
+ *    blocks past the cache window, the delta can no longer re-add what is removed, so
+ *    the existing backlog is safe to delete. `busyFuturePruneCutoffIso` /
+ *    `busyFuturePruneGateIso` below are the bound and the per-calendar hydration gate
+ *    that make it provable no readable block (which needs `starts_at < now + horizon`)
+ *    is ever in scope. Before #1264 shipped this was NOT safe: a far-future block
+ *    deleted while the delta still re-added it would churn, and one deleted before
+ *    hydration covered its window would leave the agent looking free during a real
+ *    meeting.
  */
 
 /**
@@ -63,6 +71,12 @@ export const BUSY_PRUNE_BATCH_ROWS = 200;
  * nightly runs, after which the daily volume is a few hundred rows. Lowered from
  * 30,000 when the round size dropped to a URL-safe 200 (#1259): keeping the row cap
  * while tripling the round count would have tripled the subrequest cost instead.
+ *
+ * #1265: the future out-of-window prune shares this ONE cap with the past prune rather
+ * than carrying its own, so the two together still delete at most 20,000 rows (about 200
+ * delete subrequests) per invocation. The future phase adds one candidate read per
+ * eligible calendar (roster-bounded, ~150), which is the only extra subrequest cost on
+ * top of the shared delete budget.
  */
 export const BUSY_PRUNE_MAX_ROWS_PER_RUN = 20_000;
 
@@ -73,6 +87,48 @@ export function busyPruneCutoffIso(
 ): string {
   return DateTime.fromISO(nowIso, { zone: "utc" })
     .minus({ hours: keepPastHours })
+    .toUTC()
+    .toISO({ suppressMilliseconds: false })!;
+}
+
+/**
+ * How far past the horizon a calendar's hydrated window must reach before its future
+ * tail may be pruned (#1265). The grace sits above the max bookable horizon, never near
+ * it, so a calendar that has only just caught up to the horizon is still held back.
+ */
+export const BUSY_FUTURE_PRUNE_GATE_GRACE_MS = 24 * 60 * 60_000;
+
+/**
+ * The FUTURE cutoff (#1265): a gcal block starting at or after this is beyond what any
+ * reader can see and beyond the write filter's keep boundary, so it is safe to prune.
+ *
+ * `aheadDays` and `marginMs` are passed in (BUSY_WINDOW_AHEAD_DAYS, WRITE_WINDOW_MARGIN_MS
+ * at the call site) rather than imported, so this pure module takes on no dependency on
+ * the sync layer that imports it. Kept EQUAL to the write filter's keepTo so the two
+ * never churn: #1264 stops ADDING past this line, this REMOVES the backlog past it.
+ */
+export function busyFuturePruneCutoffIso(nowIso: string, aheadDays: number, marginMs: number): string {
+  return DateTime.fromISO(nowIso, { zone: "utc" })
+    .plus({ days: aheadDays, milliseconds: marginMs })
+    .toUTC()
+    .toISO({ suppressMilliseconds: false })!;
+}
+
+/**
+ * The hydration gate (#1265): a calendar may have its future tail pruned only when its
+ * `sync_window_to` is STRICTLY AFTER this instant, so it is provable that nothing
+ * readable is ever deleted. Readable requires `starts_at < now + horizon <= now +
+ * horizonMaxDays`, and this gate is `now + horizonMaxDays + grace`, so an eligible
+ * calendar's window reaches past every slot a lead could book, and the future cutoff
+ * above is further out still.
+ */
+export function busyFuturePruneGateIso(
+  nowIso: string,
+  horizonMaxDays: number,
+  graceMs: number = BUSY_FUTURE_PRUNE_GATE_GRACE_MS,
+): string {
+  return DateTime.fromISO(nowIso, { zone: "utc" })
+    .plus({ days: horizonMaxDays, milliseconds: graceMs })
     .toUTC()
     .toISO({ suppressMilliseconds: false })!;
 }
