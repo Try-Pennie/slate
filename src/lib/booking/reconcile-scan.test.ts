@@ -141,7 +141,7 @@ vi.mock("@/lib/availability/slot-cache", async (importOriginal) => ({
 
 import { loadActiveUpcomingBookings, reconcileMissingBusyBlocks } from "./service";
 import { RECONCILE_MISSING_GRACE_MS } from "./orchestration";
-import { reconcileRecreatedAlert } from "./alert-copy";
+import { reconcileRecreatedAlert, reconcileFreedAlert } from "./alert-copy";
 
 const NOW = new Date("2026-07-13T15:00:00.000Z");
 const DEPARTED_AT = "2026-07-13T14:43:27.000Z";
@@ -282,5 +282,37 @@ describe("reconcileMissingBusyBlocks", () => {
     expect(state.upserted).toEqual([]);
     expect(pools.refreshPoolsForAgents).not.toHaveBeenCalled();
     expect(notify.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+});
+
+describe("reconcileFreedAlert names the freed bookings (#3585)", () => {
+  it("names which bookings were freed, not only how many agents", () => {
+    const text = reconcileFreedAlert({
+      freedCancelled: 2,
+      freedOrphans: 0,
+      agentCount: 1,
+      bookingIds: ["bk1", "bk2"],
+    });
+    expect(text).toContain("Booking ids: bk1, bk2.");
+    expect(text).toContain("cancel-path health");
+  });
+
+  it("marks the list as truncated when more were freed than shown", () => {
+    const text = reconcileFreedAlert({
+      freedCancelled: 20,
+      freedOrphans: 0,
+      agentCount: 3,
+      bookingIds: ["bk1", "bk2"],
+      bookingIdsTruncated: true,
+    });
+    expect(text).toContain("Booking ids: bk1, bk2 ...");
+  });
+
+  it("names no booking ids for a pure orphan free (nothing owned the slot)", () => {
+    // An orphan has no booking_id, so there is nothing to name and the cancel path is
+    // not implicated: the ids clause must not appear.
+    const text = reconcileFreedAlert({ freedCancelled: 0, freedOrphans: 1, agentCount: 1, bookingIds: [] });
+    expect(text).not.toContain("Booking ids:");
+    expect(text).toContain("no booking and no approved time off owned");
   });
 });

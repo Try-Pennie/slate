@@ -23,14 +23,22 @@ function booking(id: string, user_id: string): ActiveUpcomingBooking {
   };
 }
 
-function makeDeps(opts: { active: ActiveUpcomingBooking[]; haveBlock: string[] }) {
+function makeDeps(opts: {
+  active: ActiveUpcomingBooking[];
+  haveBlock: string[];
+  /** #3585: ids that were cancelled between the booking read and the re-verify, so the
+   *  re-verify no longer sees them as active. Defaults to none (every candidate active). */
+  cancelledBeforeReverify?: string[];
+}) {
   const inserted: BusyBlockInsert[] = [];
   const calls = {
     loadActiveUpcomingBookings: 0,
     loadBusyBlockBookingIds: [] as string[][],
+    loadStillActiveBookingIds: [] as string[][],
     // #762: how many WRITES the sweep issued, as opposed to how many rows it wrote.
     insertBatches: 0,
   };
+  const cancelled = new Set(opts.cancelledBeforeReverify ?? []);
   const deps = {
     loadActiveUpcomingBookings: async (limit: number) => {
       calls.loadActiveUpcomingBookings = limit;
@@ -39,6 +47,11 @@ function makeDeps(opts: { active: ActiveUpcomingBooking[]; haveBlock: string[] }
     loadBusyBlockBookingIds: async (ids: string[]) => {
       calls.loadBusyBlockBookingIds.push(ids);
       return new Set(opts.haveBlock.filter((id) => ids.includes(id)));
+    },
+    loadStillActiveBookingIds: async (ids: string[]) => {
+      calls.loadStillActiveBookingIds.push(ids);
+      // #3585: every candidate is still active unless a cancel landed in the window.
+      return new Set(ids.filter((id) => !cancelled.has(id)));
     },
     insertBusyBlocks: async (blocks: BusyBlockInsert[]) => {
       calls.insertBatches++;
@@ -165,6 +178,37 @@ function makeDeps(opts: { active: ActiveUpcomingBooking[]; haveBlock: string[] }
   const { deps, calls } = makeDeps({ active: [booking("C1", "u1")], haveBlock: [] });
   await reconcileMissingBusyBlocks(deps, 50);
   assert(calls.loadActiveUpcomingBookings === 50, "passes the scan limit through to the loader");
+}
+
+// --- #3585: a cancel landing between the two reads is not re-created ------------
+{
+  // D1 looked active, its block is gone (the cancel deleted it), and by the re-verify
+  // it is no longer active. Nothing is re-created, so no false "missed write" page and
+  // no block for the next tick to free and page about again. D2 beside it is a genuine
+  // missed write for a still-active booking and IS re-created.
+  const { deps, inserted, calls } = makeDeps({
+    active: [booking("D1", "u1"), booking("D2", "u2")],
+    haveBlock: [],
+    cancelledBeforeReverify: ["D1"],
+  });
+  const res = await reconcileMissingBusyBlocks(deps, 100);
+  assert(res.recreated === 1, "only the still-active missing block is re-created");
+  assert(res.bookingIds.length === 1 && res.bookingIds[0] === "D2", "and it is D2, not the cancelled D1");
+  assert(!inserted.some((b) => b.booking_id === "D1"), "no block is re-created for the booking being cancelled");
+  // The re-verify reads only the MISSING set (D1, D2), never the whole scan.
+  assert(
+    calls.loadStillActiveBookingIds.length === 1 &&
+      calls.loadStillActiveBookingIds[0]!.slice().sort().join(",") === "D1,D2",
+    "the re-verify reads only the missing candidates",
+  );
+}
+
+// --- #3585: no re-verify read when nothing is missing --------------------------
+{
+  const { deps, calls } = makeDeps({ active: [booking("E1", "u1")], haveBlock: ["E1"] });
+  const res = await reconcileMissingBusyBlocks(deps, 100);
+  assert(res.recreated === 0, "nothing missing, nothing re-created");
+  assert(calls.loadStillActiveBookingIds.length === 0, "and no re-verify read is paid when nothing is missing");
 }
 
 finish();
