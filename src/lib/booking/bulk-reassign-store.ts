@@ -1,7 +1,10 @@
 import { unwrap, unwrapCount } from "@/lib/db/result";
+import { inIdChunks } from "@/lib/db/id-batch";
+import { hasLeftPool, POOL_STATE_COLUMNS, type PoolStateRow } from "@/lib/bookable/left-pool";
 import { log } from "@/lib/log";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages, type PageableQuery } from "@/lib/supabase/paginate";
+import { selectRetryableUnplaceable, type RetryableUnplaceable } from "@/lib/booking/coverage-retry";
 import type { ActionableBookingContext, BookingSnapshot, ItemOutcome } from "@/lib/booking/bulk-reassign";
 import { enqueueCoverageSweep } from "@/lib/booking/coverage-sweep-enqueue";
 import {
@@ -503,12 +506,14 @@ export async function createBulkReassignJob(
 }
 
 /**
- * The oldest pending items, bounded per tick, each paired with its job. A job is
- * flipped to 'done' only once it has zero pending items, so every pending item
- * necessarily belongs to an ACTIVE job: no job-status join is needed. The jobs
- * are loaded in a second primary-key query (at most one per distinct job). Fails
- * loud on a read error (the lane catches, logs, and retries) rather than draining
- * nothing silently, which would look like "no work left".
+ * The oldest pending items, bounded per tick, each paired with its job. Keyed on the
+ * ITEM's status, never the job's: the drain picks up a pending item whatever its sweep's
+ * status. That is usually an active sweep (a sweep is flipped 'done' only once it has zero
+ * pending items), but the #3485 hourly retry re-arms a stranded item under a sweep it
+ * leaves 'done', and the drain must still process it, which is why the job is loaded by id
+ * rather than filtered on. The jobs are loaded in a second primary-key query (at most one
+ * per distinct job). Fails loud on a read error (the lane catches, logs, and retries)
+ * rather than draining nothing silently, which would look like "no work left".
  */
 export async function loadPendingBulkReassignItems(
   limit: number,
@@ -555,6 +560,119 @@ export async function countPendingBulkReassignItems(jobId: string): Promise<numb
       .eq("status", "pending"),
     "count-pending-bulk-reassign-items",
   );
+}
+
+/**
+ * Unplaceable coverage items that are still stranded (#3485 part C), each paired with its
+ * sweep's status, for the hourly retry. "Still stranded" is the same predicate the monitor
+ * uses (L342): the booking is active and UPCOMING (a passed call is never re-attempted), it
+ * is STILL on the sweep's out agent (one already moved off is not, and would just re-settle
+ * `moved`), and it is NOT a Redistribute sweep whose agent is back in the pool (#3597: that
+ * call is covered, and re-arming it would move it off the now-available agent). The sweep
+ * status lets the retry skip a cancelled sweep. Only `unplaceable` is retried, not `failed`:
+ * "nobody was free" self-heals as calendars open, whereas a move that kept erroring is a
+ * systemic fault for a person. Fails loud on a read error (the lane catches and retries).
+ */
+export async function loadRetryableUnplaceable(nowIso: string): Promise<RetryableUnplaceable[]> {
+  const items = await selectAllPages<{ id: string; job_id: string; booking_id: string }>(
+    "load-retryable-unplaceable-items",
+    "id",
+    () =>
+      supabaseAdmin()
+        .from("bulk_reassign_items")
+        .select("id, job_id, booking_id")
+        .eq("status", "unplaceable"),
+  );
+  if (items.length === 0) return [];
+  // Who holds each item's booking now, for the active+upcoming ones only, and whether that
+  // holder is back IN THE POOL (#3597). A missing entry means the booking is gone, inactive
+  // or in the past, so the item is not retryable.
+  const holderByBooking = new Map<string, { assignedUserId: string | null; inPool: boolean }>();
+  await inIdChunks(
+    "load-retryable-unplaceable bookings",
+    [...new Set(items.map((i) => i.booking_id))],
+    async (batch) => {
+      const rows = (unwrap(
+        await supabaseAdmin()
+          .from("bookings")
+          // cap-safe: primary-key lookup, already split to the URL budget.
+          .select(`id, assigned_user_id, users!bookings_assigned_user_id_fkey(${POOL_STATE_COLUMNS})`)
+          .in("id", batch)
+          .in("status", ACTIVE_BOOKING_STATUSES)
+          .gte("starts_at", nowIso),
+        "load-retryable-unplaceable bookings",
+      ) ?? []) as { id: string; assigned_user_id: string | null; users: PoolStateRow | null }[];
+      for (const r of rows) {
+        holderByBooking.set(r.id, {
+          assignedUserId: r.assigned_user_id,
+          inPool: r.users != null && !hasLeftPool(r.users),
+        });
+      }
+      return rows.length;
+    },
+  );
+  const live = items.filter((i) => holderByBooking.has(i.booking_id));
+  if (live.length === 0) return [];
+  // Attach each item's sweep status, out agent, AND whether it was a Redistribute sweep, so
+  // the retry can skip a cancelled sweep, confirm the call is STILL on the out agent, and
+  // apply the #3597 rule below.
+  const jobById = new Map<
+    string,
+    { status: BulkReassignJobStatus; outUserId: string; fromRedistribute: boolean }
+  >();
+  await inIdChunks(
+    "load-retryable-unplaceable jobs",
+    [...new Set(live.map((i) => i.job_id))],
+    async (batch) => {
+      const rows = (unwrap(
+        await supabaseAdmin()
+          .from("bulk_reassign_jobs")
+          // cap-safe: primary-key lookup, already split to the URL budget.
+          .select("id, status, out_user_id, redistribute_marked_at")
+          .in("id", batch),
+        "load-retryable-unplaceable jobs",
+      ) ?? []) as {
+        id: string;
+        status: BulkReassignJobStatus;
+        out_user_id: string;
+        redistribute_marked_at: string | null;
+      }[];
+      for (const r of rows) {
+        jobById.set(r.id, {
+          status: r.status,
+          outUserId: r.out_user_id,
+          fromRedistribute: r.redistribute_marked_at != null,
+        });
+      }
+      return rows.length;
+    },
+  );
+  // The "still stranded" predicate is pure and tested in coverage-retry.ts (L342).
+  return selectRetryableUnplaceable({ items: live, holderByBooking, jobById });
+}
+
+/**
+ * Flip the given coverage items `unplaceable` -> `pending` (#3485 part C), chunked for the
+ * URL budget. Conditional on the row still being `unplaceable`: a raced `moved` or
+ * `cancelled` item must NEVER be re-armed, or a customer could be handed to a second
+ * advisor, or a cancelled time off's move undone. The sweep is deliberately left `done`
+ * (the drain picks up a pending item whatever its sweep's status); the prior `detail` is
+ * left in place, so the "why it was unplaceable" diagnosis survives the retry and the drain
+ * rewrites it on the next settle. Returns how many rows were actually flipped.
+ */
+export async function reArmUnplaceableItems(itemIds: string[]): Promise<number> {
+  let reArmed = 0;
+  for (let i = 0; i < itemIds.length; i += RE_ARM_CHUNK) {
+    reArmed += unwrapCount(
+      await supabaseAdmin()
+        .from("bulk_reassign_items")
+        .update({ status: "pending", updated_at: new Date().toISOString() }, { count: "exact" })
+        .in("id", itemIds.slice(i, i + RE_ARM_CHUNK))
+        .eq("status", "unplaceable"),
+      "re-arm-unplaceable-coverage-items",
+    );
+  }
+  return reArmed;
 }
 
 /** One booking's current status + assignment, or null if it no longer exists. */

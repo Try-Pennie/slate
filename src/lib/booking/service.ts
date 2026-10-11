@@ -108,6 +108,7 @@ import {
   type BulkReassignProgress,
 } from "@/lib/booking/bulk-reassign";
 import { selectCoverageReassignTarget, type CoverageTargetDeps } from "@/lib/booking/coverage-target";
+import { retryUnplaceableCoverage, type CoverageRetrySummary } from "@/lib/booking/coverage-retry";
 import { coverageSweepActor } from "@/lib/booking/coverage-sweep-actor";
 import type { CoverageSweepCancelReport } from "@/lib/booking/coverage-sweep-cancel";
 import { recordAudit } from "@/lib/audit";
@@ -128,8 +129,10 @@ import {
   loadBulkReassignJob,
   loadPendingBulkReassignItems,
   countPendingBulkReassignItems,
+  loadRetryableUnplaceable,
   loadUserOrgId,
   markBulkReassignJobDoneIfDrained,
+  reArmUnplaceableItems,
   type CoverageBookingRow,
 } from "@/lib/booking/bulk-reassign-store";
 import { userIdsOnApprovedTimeOff } from "@/lib/ooo/approved-overlap";
@@ -3550,6 +3553,17 @@ export function drainBulkReassignJobs(
   stillHeld?: () => Promise<boolean>,
 ): Promise<BulkReassignDrainSummary> {
   return drainBulkReassign(realBulkReassignDeps(), undefined, stillHeld);
+}
+
+/**
+ * Re-arm stranded (unplaceable) coverage calls so the drain re-attempts them (#3485 part
+ * C, the hourly retry lane). Wires the real store reads and writes into the pure retry.
+ */
+export function retryUnplaceableCoverageJobs(): Promise<CoverageRetrySummary> {
+  return retryUnplaceableCoverage({
+    loadRetryable: () => loadRetryableUnplaceable(new Date().toISOString()),
+    reArm: (ids) => reArmUnplaceableItems(ids),
+  });
 }
 
 /** How many of the out agent's active upcoming bookings a coverage sweep over

@@ -1002,6 +1002,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `POST /api/cron/lane-failure` | Not a lane and never scheduled: the Worker's dispatcher reports a lane that threw or answered non-ok here, in process and with the cron bearer, and it pages `cron_lane_failed:<lane>` at most hourly per lane (#3133). The tick's id arrives in `x-slate-tick-id` (#3139). A lane's 500 that carries `x-slate-lane-alerted` (written by `laneFailure`, from the alerts the lane's own code raised) is not reported, so a failure is one message, never two. |
 | `GET /api/cron/hydrate-calendars` | Fills in calendar metadata for agents whose calendars have not been read yet. |
 | `GET /api/cron/bulk-reassign` | Drains queued bulk coverage reassign jobs (#973, #562). |
+| `GET /api/cron/bulk-reassign-retry` | Hourly: re-arms still-stranded unplaceable coverage calls so the drain re-attempts them (#3485). |
 | `GET /api/cron/booking-reminders` | Emails each lead a reminder 24 hours before their call, from their advisor's own mailbox (#2359). |
 | `GET /api/cron/ooo-approvals` | Moves approved and declined time-off requests through their side effects. |
 | `GET /api/cron/ooo-digest` | The daily 7am ET time-off digest, and the record of whether it landed. |
