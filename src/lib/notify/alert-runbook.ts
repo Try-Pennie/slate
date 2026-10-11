@@ -31,6 +31,7 @@ export const ALERT_FAMILIES = [
   "the-booking-api-is-refusing-its-caller",
   "an-unexpected-fault-was-reported",
   "a-merge-has-not-shipped-or-ci-cannot-run",
+  "the-database-is-running-low-on-memory",
   "something-was-measured-and-is-only-worth-knowing",
 ] as const;
 
@@ -331,6 +332,14 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #3325: the shared confirm line fails open to each server's own line, like a limiter.
   confirm_line_unreachable: "a-limit-or-a-guard-is-not-working",
   rate_limit_blocked: "something-was-measured-and-is-only-worth-knowing",
+
+  // The database instance itself is out of memory, not a query or a lane (#3588). Its own
+  // family because the remedy is different from everything above: nothing in Slate is
+  // misconfigured, the fix is to scale the Supabase instance or shed load, and the first
+  // check is the metrics figures in the page rather than any Slate log. The warn whisper
+  // shares it: same subject, same diagnosis, one step earlier.
+  db_saturation: "the-database-is-running-low-on-memory",
+  db_saturation_warn: "the-database-is-running-low-on-memory",
 
   // A fault nothing predicted.
   internal_error: "an-unexpected-fault-was-reported",

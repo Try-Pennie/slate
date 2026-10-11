@@ -57,6 +57,8 @@ export const ALERT_KEYS = [
   "audit_log_chain_broken",
   "hydration_all_failing",
   "calendar_window_uncovered",
+  "db_saturation",
+  "db_saturation_warn",
   "busy_cache_drift",
   "schedule_parity_drift",
   "agents_on_unset_hours",
@@ -216,6 +218,18 @@ export const ALERT_FIELDS: {
     urgency: "page",
     label: "Calendar refresh not covering the booking window",
     help: "A bookable agent's calendar has not been refreshed far enough ahead to cover the days the booker offers, so a lead could book an hour that calendar already has taken.",
+  },
+  {
+    key: "db_saturation",
+    urgency: "page",
+    label: "Database low on memory",
+    help: "The booking database's committed memory is critically high (over 90% of its ceiling), which slows every availability and booking request while Postgres query execution still looks idle. Scaling the instance or shedding load clears it.",
+  },
+  {
+    key: "db_saturation_warn",
+    urgency: "whisper",
+    label: "Database memory getting tight",
+    help: "The booking database's committed memory is elevated (over 80%) or it is swapping, an early warning before it reaches the critical mark. Below the level that pages, but worth scaling the instance proactively.",
   },
   {
     key: "busy_cache_drift",
@@ -497,6 +511,11 @@ export const MONITOR_DEFAULTS = {
     // (#1262): stays wrong until the rotation reaches it or someone fixes the
     // account, so it repeats hourly like the coverage pages it sits beside.
     calendar_window_uncovered: 60 * 60_000,
+    // Database memory pressure (#3588): the page stays true until someone scales the
+    // instance or load eases, so it repeats hourly, and the warn whisper matches so a
+    // slow climb is not re-whispered every 5 minutes.
+    db_saturation: 60 * 60_000,
+    db_saturation_warn: 60 * 60_000,
     // Busy time missing from the cache (#1591): it stays wrong until the sync
     // reaches the calendar or someone fixes the account, so hourly, like the
     // calendar window page it sits beside.
