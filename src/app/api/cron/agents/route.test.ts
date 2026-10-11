@@ -81,7 +81,7 @@ const twilio = vi.hoisted(() => ({
     unmappedTags: [] as string[],
     flipFailures: 0,
     // #3615: the reroute for demoted advisors, healthy by default.
-    demotionSweeps: [] as { email: string; userId: string; bookings: number; change: unknown }[],
+    demotionSweeps: [] as { email: string; userId: string; jobId: string; bookings: number; change: unknown }[],
     demotionSweepFailures: 0,
     demotionWriteFailures: 0,
     demotionEvalFailures: 0,
@@ -435,6 +435,7 @@ describe("GET /api/cron/agents", () => {
           {
             email: "jlee@trypennie.com",
             userId: "u1",
+            jobId: "job9",
             bookings: 2,
             change: { from: { debtTeam: ["ultra_high", "high"], backendService: [] }, to: { debtTeam: ["high"], backendService: [] } },
           },
@@ -444,7 +445,8 @@ describe("GET /api/cron/agents", () => {
       const call = dispatch.sendThrottledInfo.mock.calls.find((c: unknown[]) => c[0] === "demotion_reroute_moved");
       expect(call).toBeTruthy();
       expect(String(call?.[2])).toContain("jlee@trypennie.com");
-      expect(String(call?.[2])).toContain("/admin/agents/u1");
+      // Opened ON the sweep, where its moved calls are listed with their move back.
+      expect(String(call?.[2])).toContain("/admin/agents/u1?job=job9");
       // The real notifier REFUSES a cooldown that is not a positive number, before it posts,
       // so a zero here is a line that is never sent while this mock happily records it.
       expect(Number(call?.[1])).toBeGreaterThan(0);
@@ -465,7 +467,7 @@ describe("GET /api/cron/agents", () => {
       twilio.syncTwilioRedistribute.mockResolvedValueOnce({
         ...(await twilioResult()),
         demotionEvalFailures: 1,
-        demotionSweeps: [{ email: "jlee@trypennie.com", userId: "u1", bookings: 2, change: null }],
+        demotionSweeps: [{ email: "jlee@trypennie.com", userId: "u1", jobId: "job9", bookings: 2, change: null }],
       });
       streak.recordConsecutiveStreak.mockRejectedValueOnce(new Error("alert_state unreachable"));
       await GET(req());

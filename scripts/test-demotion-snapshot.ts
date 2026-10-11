@@ -113,6 +113,7 @@ function readers(over: Partial<DemotionSnapshotReaders>): DemotionSnapshotReader
     agentAttributes: async () => ({ debt_team: ["high"] }),
     bucketCriteria: async () => criteriaByBucket,
     manualMemberBucketIds: async () => new Set<string>(),
+    pinnedBookingIds: async () => new Set<string>(),
     ...over,
   };
 }
@@ -239,6 +240,7 @@ function readers(over: Partial<DemotionSnapshotReaders>): DemotionSnapshotReader
       return criteriaByBucket;
     },
     manualMemberBucketIds: async () => new Set<string>(),
+    pinnedBookingIds: async () => new Set<string>(),
   });
   eq(out.map((c) => c.bookingId).join(","), "a,b", "returns every held booking as a candidate");
   assert(attrsAsked, "it reads bucket criteria for the referenced buckets");
@@ -254,9 +256,49 @@ function readers(over: Partial<DemotionSnapshotReaders>): DemotionSnapshotReader
       return new Map();
     },
     manualMemberBucketIds: async () => new Set(),
+    pinnedBookingIds: async () => {
+      criteriaRead = true;
+      return new Set();
+    },
   });
   eq(out.length, 0, "no bookings yields no candidates");
   assert(!criteriaRead, "and reads nothing further");
+}
+
+// --- #3615: a call an admin moved BACK stays with that advisor ---------------------------
+//
+// Dan, 2026-10-11: the admin's choice stands. Left in, the next demotion sweep would move it
+// again and the backstop would page about it every day. Dropped from the SHARED candidate read,
+// so the sweep's snapshot and the decision cannot disagree about it (L342).
+
+{
+  const out = await assembleDemotionSnapshot(readers({ pinnedBookingIds: async () => new Set(["uh1"]) }));
+  eq(out.length, 0, "a moved back call is never snapshotted to move again");
+}
+
+{
+  const out = await assembleRerouteCandidates({
+    candidates: async () => [row("a", "b-uh"), row("b", "b-uh")],
+    bucketCriteria: async () => criteriaByBucket,
+    manualMemberBucketIds: async () => new Set<string>(),
+    pinnedBookingIds: async () => new Set(["a"]),
+  });
+  eq(out.map((c) => c.bookingId).join(","), "b", "nor is it a candidate the decision weighs");
+}
+
+{
+  // The pinned read is asked only when the agent holds something, like the other reads.
+  let asked = false;
+  await assembleDemotionSnapshot(
+    readers({
+      candidates: async () => [],
+      pinnedBookingIds: async () => {
+        asked = true;
+        return new Set();
+      },
+    }),
+  );
+  assert(!asked, "an agent holding nothing costs no pinned read");
 }
 
 finish();

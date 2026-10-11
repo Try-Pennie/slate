@@ -18,6 +18,7 @@ import {
 } from "@/lib/booking/demotion-snapshot";
 import type { RerouteCandidate } from "@/lib/booking/reroute-eligibility";
 import type { DemotionChange } from "@/lib/booking/demotion-plan";
+import { pinnedByAgent } from "@/lib/booking/demotion-revert";
 import type {
   Attributes,
   BookingStatus,
@@ -189,7 +190,38 @@ function demotionSnapshotReaders(
       ) as { bucket_id: string }[];
       return new Set(rows.map((r) => r.bucket_id));
     },
+    pinnedBookingIds: async () => (await pinnedDemotionBookingIds([outUserId])).get(outUserId) ?? new Set<string>(),
   };
+}
+
+/**
+ * The calls an admin moved BACK to each of these agents after a demotion move (#3615), by agent.
+ * Pinned to them: the demotion sweep, the demotion decision and the demoted-agent backstop all
+ * leave these alone (Dan, 2026-10-11). One read over every agent asked about, so the backstop
+ * spends it once rather than per agent. Fails loud on a read error (`selectAllPages` throws), so
+ * a failed read can never drop a pin and move a call an admin deliberately kept (L184).
+ */
+export async function pinnedDemotionBookingIds(outUserIds: string[]): Promise<Map<string, Set<string>>> {
+  if (outUserIds.length === 0) return new Map();
+  const rows = await selectAllPages<{
+    booking_id: string;
+    reverted_at: string | null;
+    bulk_reassign_jobs: { out_user_id: string } | null;
+  }>(
+    "demotion-pinned-bookings",
+    "id",
+    () =>
+      // cap-safe: read every page via selectAllPages, which orders and pages it.
+      // in-chunk-ok: outUserIds is one agent, or the backstop's currently marked agents, a subset
+      // of the bookable roster (design ceiling 200, the in() URL id limit).
+      supabaseAdmin()
+        .from("bulk_reassign_items")
+        .select("id, booking_id, reverted_at, bulk_reassign_jobs!inner(out_user_id, demotion_marked_at)")
+        .not("reverted_at", "is", null)
+        .not("bulk_reassign_jobs.demotion_marked_at", "is", null)
+        .in("bulk_reassign_jobs.out_user_id", outUserIds),
+  );
+  return pinnedByAgent(rows);
 }
 
 /**
@@ -703,11 +735,16 @@ export async function loadActionableBookingContext(
     await supabaseAdmin()
       .from("bookings")
       // cap-safe: primary-key lookup of the actionable items' bookings.
-      .select("id, starts_at, attendee_name")
+      .select("id, starts_at, attendee_name, status, assigned_user_id")
       .in("id", bookingIds),
     "load-actionable-booking-context",
-  ) as { id: string; starts_at: string; attendee_name: string | null }[] | null;
-  return new Map((rows ?? []).map((r) => [r.id, { startsAt: r.starts_at, attendeeName: r.attendee_name }]));
+  ) as { id: string; starts_at: string; attendee_name: string | null; status: string; assigned_user_id: string | null }[] | null;
+  return new Map(
+    (rows ?? []).map((r) => [
+      r.id,
+      { startsAt: r.starts_at, attendeeName: r.attendee_name, status: r.status, assignedUserId: r.assigned_user_id },
+    ]),
+  );
 }
 
 /** Flip the job to 'done' once it has no pending items left. Best-effort: a

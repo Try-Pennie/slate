@@ -1372,6 +1372,11 @@ export interface BulkReassignItem {
   target_user_id: string | null;
   detail: string | null;
   attempts: number;
+  /** When an admin moved this call back to the sweep's original advisor (#3615, migration
+   *  0181); null until then. Optional on the type because rows read before 0181 lack it. */
+  reverted_at?: string | null;
+  /** The admin who moved it back (#3615); null until then. */
+  reverted_by?: string | null;
   created_at: string;
   updated_at: string;
 }

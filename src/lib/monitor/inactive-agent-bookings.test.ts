@@ -26,6 +26,7 @@ import {
   runInactiveAgentBookingsCheck,
   inactiveHoldersFromBookings,
   demotedHolders,
+  demotedAgentsFrom,
   formatInactiveAgentBookingsAlert,
   formatDemotedAgentBookingsAlert,
   formatDemotedAgentBookingsRecovery,
@@ -340,6 +341,44 @@ describe("the demotion backstop (#3582)", () => {
     const [key, text] = resolveAlert.mock.calls[0];
     expect(key).toBe(DEMOTED_AGENT_BOOKINGS_KEY);
     expect(text).toContain("No agent moved off a pool is holding");
+  });
+
+  // The counts the backstop pages on, built from its reads. A call an admin moved BACK to the
+  // demoted advisor (#3615) is theirs by decision: counting it would page about it every day.
+  describe("demotedAgentsFrom", () => {
+    const stamped = [{ id: "d1", name: "Del Vane", email: "del@example.com", attributes: { debt_team: ["high"] } }];
+    const row = (id: string) => ({
+      id,
+      starts_at: "2026-10-20T15:00:00Z",
+      ends_at: "2026-10-20T15:30:00Z",
+      attendee_name: null,
+      bucket_id: "b-uh",
+      kind: "round_robin",
+      assigned_user_id: "d1",
+    });
+    const base = {
+      stamped,
+      rows: [row("bk1"), row("bk2")],
+      criteriaByBucket: new Map([["b-uh", { debt_team: "ultra_high" }]]),
+      membersByUser: new Map<string, Set<string>>(),
+    };
+
+    it("counts every call the demoted advisor can no longer take", () => {
+      const out = demotedAgentsFrom({ ...base, pinnedByUser: new Map() });
+      expect(out).toEqual([
+        { id: "d1", name: "Del Vane", email: "del@example.com", coveredByPendingSweep: false, unservedCount: 2 },
+      ]);
+    });
+
+    it("leaves out a call an admin moved back to them", () => {
+      const out = demotedAgentsFrom({ ...base, pinnedByUser: new Map([["d1", new Set(["bk1"])]]) });
+      expect(out[0].unservedCount).toBe(1);
+    });
+
+    it("does not let one advisor's moved back call hide another's", () => {
+      const out = demotedAgentsFrom({ ...base, pinnedByUser: new Map([["someone-else", new Set(["bk1"])]]) });
+      expect(out[0].unservedCount).toBe(2);
+    });
   });
 
   it("neither pages nor clears when the demotion read fails, so it cannot false-all-clear", async () => {

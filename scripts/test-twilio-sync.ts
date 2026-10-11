@@ -52,7 +52,7 @@ function deps(
   over: Partial<TwilioSyncDeps> = {},
   answer?: (userId: string, bookable: boolean) => BookableResult,
   sweepAnswer?: (userId: string) => { itemCount: number },
-  demotionSweepAnswer?: (userId: string) => { itemCount: number },
+  demotionSweepAnswer?: (userId: string) => { itemCount: number; jobId?: string },
 ) {
   const calls: string[] = [];
   const audits: Record<string, unknown>[] = [];
@@ -81,7 +81,8 @@ function deps(
     startDemotionSweep: async ({ outUserId, markedAtIso, change }) => {
       calls.push(`demotion-sweep:${outUserId}:${markedAtIso}`);
       sweepChanges.push(change);
-      return demotionSweepAnswer ? demotionSweepAnswer(outUserId) : { itemCount: 0 };
+      const a = demotionSweepAnswer ? demotionSweepAnswer(outUserId) : { itemCount: 0 };
+      return { itemCount: a.itemCount, jobId: a.jobId ?? "job-fake" };
     },
     fetchWorkers: async () => [worker("a@trypennie.com", ["Redistribute"])],
     loadRoster: async () => [row()],
@@ -739,15 +740,15 @@ const STAMP_AGED = "2026-09-09T11:00:00.000Z"; // 1h before NOW, past the 30-min
     },
     undefined,
     undefined,
-    () => ({ itemCount: 1 }),
+    () => ({ itemCount: 1, jobId: "job1" }),
   );
   const r = await syncTwilioRedistribute(d.deps);
   const change = { from: { debtTeam: ["ultra_high", "high"], backendService: [] }, to: { debtTeam: ["high"], backendService: [] } };
   eq(r.demotionSwept, ["a@trypennie.com"], "an aged, still-unserved demotion sweeps");
   eq(
     r.demotionSweeps,
-    [{ email: "a@trypennie.com", userId: "u1", bookings: 1, change }],
-    "and reports what it moved, and what changed, for the Slack line (#3615)",
+    [{ email: "a@trypennie.com", userId: "u1", jobId: "job1", bookings: 1, change }],
+    "and reports what it moved, what changed, and the sweep, for the Slack line to open (#3615)",
   );
   eq(d.sweepChanges, [change], "the sweep is told what changed, to record on its job (#3615)");
   eq(

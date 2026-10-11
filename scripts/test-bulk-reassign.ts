@@ -9,6 +9,7 @@ import {
   BULK_REASSIGN_ITEMS_PER_TICK,
   MAX_ITEM_ATTEMPTS,
   buildBulkReassignProgress,
+  isBulkReassignProgress,
   drainBulkReassign,
   parseBulkReassignRange,
   processBulkReassignItem,
@@ -401,6 +402,50 @@ async function run() {
   // not have to guard, and an absent field would read as "could not tell".
   const progNone = buildBulkReassignProgress(job, [itemRow({ id: "x", booking_id: "bkZ", status: "moved" })], new Map());
   assert(Array.isArray(progNone.skipped) && progNone.skipped.length === 0, "no skips is an empty list");
+
+  // #3615: a DEMOTION sweep also lists the calls it moved, each a link to the booking where the
+  // move back lives. Nothing else told a person which calls an automatic reroute moved. Any other
+  // sweep lists none: its moves were asked for by the person watching.
+  const demotion = { ...job, created_by: null, demotion_marked_at: "2026-10-11T18:00:00.000Z", demotion_change: null };
+  const ctxMoved = new Map([["bkA", { startsAt: "2026-10-14T15:00:00.000Z", attendeeName: "Ann" }]]);
+  const progDemotion = buildBulkReassignProgress(demotion, [itemRow({ id: "m1", booking_id: "bkA", status: "moved" }), itemRow({ id: "m2", booking_id: "bkB", status: "unplaceable" })], ctxMoved);
+  assert(progDemotion.moved.length === 1 && progDemotion.moved[0].bookingId === "bkA", "a demotion sweep lists the call it moved");
+  assert(progDemotion.moved[0].attendeeName === "Ann", "with the lead's name to recognise it by");
+  assert(progNone.moved.length === 0, "any other sweep lists no moved calls");
+  assert(isBulkReassignProgress(progDemotion), "the payload with moved calls is a valid progress reply");
+  const { moved: _drop, ...older } = progDemotion;
+  assert(isBulkReassignProgress(older), "a reply from a server older than the moved list still reads (L598)");
+  assert(!isBulkReassignProgress({ ...progDemotion, moved: "x" }), "a moved list of the wrong shape is refused");
+  // A call an admin already moved back says so on its row, so the list never offers it again.
+  const progBack = buildBulkReassignProgress(
+    demotion,
+    [itemRow({ id: "m1", booking_id: "bkA", status: "moved", reverted_at: "2026-10-12T14:00:00.000Z" })],
+    ctxMoved,
+  );
+  assert(progBack.moved?.[0].revertedAt === "2026-10-12T14:00:00.000Z", "a moved back call carries when it went back");
+  assert(isBulkReassignProgress(progBack), "and the reply carrying it is valid");
+  assert(!isBulkReassignProgress({ ...progBack, moved: [{ ...progBack.moved![0], revertedAt: 7 }] }), "a reverted stamp of the wrong type is refused");
+
+  // Whether each moved call can STILL go back, judged by the same planner the booking page uses
+  // (L1007: the row may only offer what the rules permit now).
+  {
+    const NOWMS = Date.parse("2026-10-12T15:00:00.000Z");
+    const ctxFor = (status: string, assignedUserId: string | null, startsAt = "2026-10-14T15:00:00.000Z") =>
+      new Map([["bkA", { startsAt, attendeeName: "Ann", status, assignedUserId }]]);
+    const movedItem = [itemRow({ id: "m1", booking_id: "bkA", status: "moved", target_user_id: "cov" })];
+    const original = { email: "out@x.com", deactivated_at: null };
+    const can = (ctx: ReturnType<typeof ctxFor>, orig: typeof original | null = original) =>
+      buildBulkReassignProgress(demotion, movedItem, ctx, { original: orig, nowMs: NOWMS }).moved?.[0].canMoveBack;
+    assert(can(ctxFor("confirmed", "cov")) === true, "a call still with the advisor it moved to can go back");
+    assert(can(ctxFor("cancelled", "cov")) === false, "a cancelled one cannot");
+    assert(can(ctxFor("confirmed", "someone-else")) === false, "nor one moved again since");
+    assert(can(ctxFor("confirmed", "cov", "2026-10-12T14:00:00.000Z")) === false, "nor one whose time has come");
+    assert(can(ctxFor("confirmed", "cov"), { email: "out@x.com", deactivated_at: "2026-10-12T09:00:00.000Z" }) === false, "nor one whose original advisor left");
+    assert(can(new Map()) === false, "nor one whose booking could not be found");
+    const plain = buildBulkReassignProgress(demotion, movedItem, ctxFor("confirmed", "cov"));
+    assert(plain.moved?.[0].canMoveBack === undefined, "without the planner's inputs, nothing is claimed either way");
+    assert(!isBulkReassignProgress({ ...plain, moved: [{ ...plain.moved![0], canMoveBack: "yes" }] }), "a canMoveBack of the wrong type is refused");
+  }
 
   // --- #3615: an audit row for every call a DEMOTION sweep moves ---
   //

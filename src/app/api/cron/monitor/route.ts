@@ -347,6 +347,7 @@ import {
 import {
   DEMOTED_AGENT_BOOKINGS_KEY,
   demotedHolders,
+  demotedAgentsFrom,
   formatDemotedAgentBookingsAlert,
   formatDemotedAgentBookingsRecovery,
   inactiveHoldersFromBookings,
@@ -356,11 +357,7 @@ import {
 } from "@/lib/monitor/inactive-agent-bookings";
 import { redistributeSweepPending } from "@/lib/twilio/roster-plan";
 import { demotionSweepPending, storedDemotionStamp } from "@/lib/booking/demotion-plan";
-import {
-  criteriaMapOrThrow,
-  selectDemotionBookings,
-  type DemotionCandidateRow,
-} from "@/lib/booking/demotion-snapshot";
+import { criteriaMapOrThrow, type DemotionCandidateRow } from "@/lib/booking/demotion-snapshot";
 import {
   countStranded,
   runCoverageNeedsHumanCheck,
@@ -382,7 +379,7 @@ import { ACTIONABLE_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
 import { unwrap } from "@/lib/db/result";
 import { parseStampMs } from "@/lib/date/stamp";
 import { countHumanOutcomesSince, type OutcomeCountDb } from "@/lib/monitor/regal-call-outcomes-store";
-import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
+import { ACTIVE_BOOKING_STATUSES, pinnedDemotionBookingIds } from "@/lib/booking/bulk-reassign-store";
 import { loadOooCoverageBookings, loadSnapshottedBookingIds } from "@/lib/monitor/ooo-coverage-bookings";
 import { inIdChunks } from "@/lib/db/id-batch";
 import { selectAllPages } from "@/lib/supabase/paginate";
@@ -2820,33 +2817,10 @@ export async function GET(req: NextRequest) {
         set.add(m.bucket_id);
         membersByUser.set(m.user_id, set);
       }
-      const rowsByUser = new Map<string, DemotionCandidateRow[]>();
-      for (const r of rows) {
-        if (!r.assigned_user_id) continue;
-        const list = rowsByUser.get(r.assigned_user_id) ?? [];
-        list.push({
-          id: r.id,
-          starts_at: r.starts_at,
-          ends_at: r.ends_at,
-          attendee_name: r.attendee_name,
-          bucket_id: r.bucket_id,
-          kind: r.kind,
-        });
-        rowsByUser.set(r.assigned_user_id, list);
-      }
-      return stamped.map((a) => ({
-        id: a.id,
-        name: a.name,
-        email: a.email,
-        // Already past the debounce window (filtered above), so never covered by a pending sweep.
-        coveredByPendingSweep: false,
-        unservedCount: selectDemotionBookings(
-          a.attributes,
-          rowsByUser.get(a.id) ?? [],
-          criteriaByBucket,
-          membersByUser.get(a.id) ?? new Set<string>(),
-        ).length,
-      }));
+      // #3615: the calls an admin moved back to these agents are theirs by decision, so the
+      // backstop does not count them. One read over every marked agent.
+      const pinnedByUser = await pinnedDemotionBookingIds(stampedIds);
+      return demotedAgentsFrom({ stamped, rows, criteriaByBucket, membersByUser, pinnedByUser });
     };
     const inactiveBookings = await steps.run("inactive_bookings", null, () =>
       runInactiveAgentBookingsCheck({

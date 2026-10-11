@@ -14,7 +14,7 @@ import {
   isReconstructed,
 } from "../src/lib/audit-display.ts";
 import { AUDIT_ACTIONS } from "../src/lib/audit.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 const nameOf = (id: string | null) => (id ? `Name(${id})` : "unassigned");
 
@@ -195,6 +195,17 @@ const nameOf = (id: string | null) => (id ? `Name(${id})` : "unassigned");
       `a malformed stored change (${JSON.stringify(bad)}) reads as unrecorded (got: ${text})`,
     );
   }
+}
+
+// --- #3615: an admin moved an automatically moved call back ---
+{
+  const row = {
+    action: "booking.demotion_reroute_reverted",
+    actor_id: "admin1",
+    details: { booking_id: "bk1", from_user_id: "cov", to_user_id: "out" },
+  };
+  eq(auditActorText(row, nameOf), "Name(admin1)", "attributed to the admin who pressed it");
+  eq(auditDetailText(row, nameOf), "Moved back to Name(out) from Name(cov).", "naming both advisors");
 }
 
 finish();

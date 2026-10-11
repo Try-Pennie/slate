@@ -19,6 +19,9 @@ import { rescheduleTimesFrom } from "@/lib/booking/reschedule-times-url";
 import type { BookingEventView, HistoryRosterUser } from "@/lib/booking/event-display";
 import { listBookingHistory } from "@/lib/booking/history";
 import { log } from "@/lib/log";
+import DemotionMoveBack from "@/components/DemotionMoveBack";
+import type { DemotionMoveView } from "@/lib/booking/demotion-revert";
+import { loadDemotionMoveView } from "@/lib/booking/demotion-revert-store";
 
 /**
  * How many considered agents to name before summarising the rest (#1943).
@@ -117,6 +120,17 @@ export default async function BookingDetailPage({
     history = null;
   }
 
+  // #3615: whether an automatic demotion reroute moved this call, and whether it can go back.
+  // `undefined` is "no automatic move", `null` is "could not be read", which says so rather
+  // than hiding the undo (L10).
+  let demotionMove: DemotionMoveView | null | undefined;
+  try {
+    demotionMove = (await loadDemotionMoveView(booking, me.org_id)) ?? undefined;
+  } catch (err) {
+    log.error("booking-detail", { msg: "demotion move unreadable", booking_id: booking.id }, err);
+    demotionMove = null;
+  }
+
   const opts = await loadReasonOptions();
   const actionReasons = {
     reschedule: opts.reschedule.active,
@@ -164,6 +178,21 @@ export default async function BookingDetailPage({
             <Fact label="Source" value={view.source} />
           </dl>
         </section>
+
+        {/* #3615: an automatic demotion reroute, said where the call's advisor is, with its undo.
+            No card when no sweep moved this call. */}
+        {demotionMove !== undefined && (
+          <section className={cardCls}>
+            <h2 className="mb-3 text-sm font-semibold">Moved automatically</h2>
+            {demotionMove === null ? (
+              <p className="text-sm text-fg-muted">
+                Slate could not check whether this call was moved automatically. Reload the page to try again.
+              </p>
+            ) : (
+              <DemotionMoveBack bookingId={booking.id} view={demotionMove} />
+            )}
+          </section>
+        )}
 
         {/* #1943: no card at all when nothing is actionable. Dan: "what does
             actions canceled mean? I can see it was canceled from the history."
