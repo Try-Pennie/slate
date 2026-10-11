@@ -3,6 +3,7 @@ import type { Booking, BulkReassignItem, BulkReassignItemStatus, BulkReassignJob
 import { AttendeeEmailRefusedError, ATTENDEE_EMAIL_REFUSED_STAFF } from "@/lib/booking/attendee-email-refused";
 import type { AuditEntry } from "@/lib/audit";
 import { log } from "@/lib/log";
+import { planDemotionRevert } from "@/lib/booking/demotion-revert";
 
 /** The item statuses that stay on the out agent and need a manual force-override
  *  (#974): no covering agent could be placed, or the move exhausted its retries. */
@@ -343,6 +344,10 @@ export function summarizeBulkReassignItems(
 export interface ActionableBookingContext {
   startsAt: string;
   attendeeName: string | null;
+  /** The booking's status and current advisor (#3615), which decide whether a moved call can
+   *  still go back. Optional so a caller with only display context passes none. */
+  status?: string;
+  assignedUserId?: string | null;
 }
 
 /** One actionable ("couldn't place") item for the progress view (#974). */
@@ -355,6 +360,9 @@ export interface BulkReassignActionableItem {
   /** When an admin moved this call back after a demotion move (#3615); absent or null otherwise,
    *  including from a server older than the field. */
   revertedAt?: string | null;
+  /** Whether a demotion move can STILL go back (#3615), judged by the booking page's own planner,
+   *  so the row offers only what the rules permit now (L1007). Absent when it was not judged. */
+  canMoveBack?: boolean;
 }
 
 export interface BulkReassignProgress {
@@ -397,7 +405,36 @@ export function buildBulkReassignProgress(
   job: BulkReassignJob,
   items: BulkReassignItem[],
   bookingCtx: Map<string, ActionableBookingContext>,
+  /** The planner's other inputs, for a demotion sweep's moved calls (#3615): the advisor the
+   *  calls left, and now. Absent means the rows say nothing about whether they can go back. */
+  moveBack?: { original: { email: string | null; deactivated_at: string | null } | null; nowMs: number },
 ): BulkReassignProgress {
+  // #3615: whether a moved call can still go back, by the SAME planner the booking page runs
+  // (L263, L342). A booking that could not be read cannot be moved back from here.
+  const canMoveBackOf = (it: BulkReassignItem): boolean => {
+    const ctx = bookingCtx.get(it.booking_id);
+    if (!moveBack || !ctx || ctx.status === undefined || !job.demotion_marked_at) return false;
+    const plan = planDemotionRevert({
+      move: {
+        itemId: it.id,
+        bookingId: it.booking_id,
+        jobId: job.id,
+        orgId: job.org_id,
+        outUserId: job.out_user_id,
+        toUserId: it.target_user_id,
+        status: it.status,
+        movedAt: it.updated_at,
+        demotionMarkedAt: job.demotion_marked_at,
+        change: null,
+        revertedAt: it.reverted_at ?? null,
+        revertedBy: it.reverted_by ?? null,
+      },
+      booking: { status: ctx.status, assigned_user_id: ctx.assignedUserId ?? null, starts_at: ctx.startsAt },
+      original: moveBack.original,
+      nowMs: moveBack.nowMs,
+    });
+    return plan.kind !== "refused";
+  };
   const summary = summarizeBulkReassignItems(items);
   const rowsOf = (statuses: readonly BulkReassignItemStatus[]) =>
     items
@@ -410,6 +447,7 @@ export function buildBulkReassignProgress(
         attendeeName: bookingCtx.get(it.booking_id)?.attendeeName ?? null,
         // Only on a call that was moved back, so the other lists' rows are unchanged.
         ...(it.reverted_at ? { revertedAt: it.reverted_at } : {}),
+        ...(moveBack && it.status === "moved" ? { canMoveBack: canMoveBackOf(it) } : {}),
       }));
   // One shape for both lists, from one function, so the panel can draw them with
   // one row component and the two cannot drift into different fields.
@@ -480,7 +518,8 @@ function isProgressRowList(value: unknown): boolean {
       (r.detail === null || typeof r.detail === "string") &&
       (r.startsAt === null || typeof r.startsAt === "string") &&
       (r.attendeeName === null || typeof r.attendeeName === "string") &&
-      (r.revertedAt === undefined || r.revertedAt === null || typeof r.revertedAt === "string")
+      (r.revertedAt === undefined || r.revertedAt === null || typeof r.revertedAt === "string") &&
+      (r.canMoveBack === undefined || typeof r.canMoveBack === "boolean")
     );
   });
 }

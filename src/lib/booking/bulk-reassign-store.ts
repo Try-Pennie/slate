@@ -735,11 +735,16 @@ export async function loadActionableBookingContext(
     await supabaseAdmin()
       .from("bookings")
       // cap-safe: primary-key lookup of the actionable items' bookings.
-      .select("id, starts_at, attendee_name")
+      .select("id, starts_at, attendee_name, status, assigned_user_id")
       .in("id", bookingIds),
     "load-actionable-booking-context",
-  ) as { id: string; starts_at: string; attendee_name: string | null }[] | null;
-  return new Map((rows ?? []).map((r) => [r.id, { startsAt: r.starts_at, attendeeName: r.attendee_name }]));
+  ) as { id: string; starts_at: string; attendee_name: string | null; status: string; assigned_user_id: string | null }[] | null;
+  return new Map(
+    (rows ?? []).map((r) => [
+      r.id,
+      { startsAt: r.starts_at, attendeeName: r.attendee_name, status: r.status, assignedUserId: r.assigned_user_id },
+    ]),
+  );
 }
 
 /** Flip the job to 'done' once it has no pending items left. Best-effort: a

@@ -357,6 +357,18 @@ describe("BulkReassignCoverage: what the move says it did (#2122)", () => {
     expect(screen.queryByRole("link", { name: /move back/i })).toBeNull();
   });
 
+  it("offers no move back on a call that can no longer go back, and opens the booking instead", async () => {
+    await openOnJob({
+      ...mixedFixture,
+      moved: [
+        { bookingId: "bk-gone-back", status: "moved", detail: null, startsAt: "2026-07-27T15:00:00.000Z", attendeeName: "Robin", canMoveBack: false },
+      ],
+    });
+    expect(screen.queryByRole("link", { name: /move back/i })).toBeNull();
+    expect(screen.getByText("Can no longer be moved back")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open booking" }).getAttribute("href")).toBe("/admin/bookings/bk-gone-back");
+  });
+
   it("shows no moved list when the reply carries none, as an older server's does", async () => {
     await openOnJob(mixedFixture);
     expect(screen.queryByText(/^Moved \(/)).toBeNull();

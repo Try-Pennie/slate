@@ -3635,7 +3635,18 @@ export async function getBulkReassignProgress(jobId: string): Promise<BulkReassi
   ];
   const shownIds = items.filter((it) => shown.includes(it.status)).map((it) => it.booking_id);
   const ctx = await loadActionableBookingContext(shownIds);
-  return buildBulkReassignProgress(job, items, ctx);
+  // #3615: for a demotion sweep, the advisor its calls left, so each moved row can say whether it
+  // can still go back, by the booking page's own planner.
+  const moveBack = job.demotion_marked_at
+    ? {
+        original: unwrap(
+          await supabaseAdmin().from("users").select("email, deactivated_at").eq("id", job.out_user_id).maybeSingle(),
+          "bulk reassign progress: original advisor",
+        ) as { email: string | null; deactivated_at: string | null } | null,
+        nowMs: Date.now(),
+      }
+    : undefined;
+  return buildBulkReassignProgress(job, items, ctx, moveBack);
 }
 
 export function completePastBookings(): Promise<{

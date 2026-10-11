@@ -671,6 +671,9 @@ function MoveOutcomeRow({ item }: { item: BulkReassignActionableItem }) {
   // A moved call an admin already moved back says so, and offers nothing: a second move back
   // would only be refused on the booking page.
   const movedBack = wasMoved && Boolean(item.revertedAt);
+  // #3615: a moved call that can no longer go back (cancelled, started, moved again, its advisor
+  // left) offers the booking rather than an action the rules no longer permit (L1007).
+  const cannotGoBack = wasMoved && !movedBack && item.canMoveBack === false;
   return (
     <li className="flex items-center justify-between gap-3 py-2 text-sm">
       <span className="min-w-0">
@@ -680,6 +683,8 @@ function MoveOutcomeRow({ item }: { item: BulkReassignActionableItem }) {
         </span>
         {movedBack ? (
           <span className="block truncate text-xs text-fg-muted">Moved back to the original advisor</span>
+        ) : cannotGoBack ? (
+          <span className="block truncate text-xs text-fg-muted">Can no longer be moved back</span>
         ) : (
           item.detail && <span className="block truncate text-xs text-fg-muted">{item.detail}</span>
         )}
@@ -689,7 +694,7 @@ function MoveOutcomeRow({ item }: { item: BulkReassignActionableItem }) {
           href={`/admin/bookings/${item.bookingId}`}
           className="shrink-0 text-pennie-blue underline dark:text-pennie-sky"
         >
-          {wasMoved ? "Move back" : "Place by hand"}
+          {cannotGoBack ? "Open booking" : wasMoved ? "Move back" : "Place by hand"}
         </a>
       )}
     </li>

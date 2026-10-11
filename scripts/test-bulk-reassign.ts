@@ -426,6 +426,27 @@ async function run() {
   assert(isBulkReassignProgress(progBack), "and the reply carrying it is valid");
   assert(!isBulkReassignProgress({ ...progBack, moved: [{ ...progBack.moved![0], revertedAt: 7 }] }), "a reverted stamp of the wrong type is refused");
 
+  // Whether each moved call can STILL go back, judged by the same planner the booking page uses
+  // (L1007: the row may only offer what the rules permit now).
+  {
+    const NOWMS = Date.parse("2026-10-12T15:00:00.000Z");
+    const ctxFor = (status: string, assignedUserId: string | null, startsAt = "2026-10-14T15:00:00.000Z") =>
+      new Map([["bkA", { startsAt, attendeeName: "Ann", status, assignedUserId }]]);
+    const movedItem = [itemRow({ id: "m1", booking_id: "bkA", status: "moved", target_user_id: "cov" })];
+    const original = { email: "out@x.com", deactivated_at: null };
+    const can = (ctx: ReturnType<typeof ctxFor>, orig: typeof original | null = original) =>
+      buildBulkReassignProgress(demotion, movedItem, ctx, { original: orig, nowMs: NOWMS }).moved?.[0].canMoveBack;
+    assert(can(ctxFor("confirmed", "cov")) === true, "a call still with the advisor it moved to can go back");
+    assert(can(ctxFor("cancelled", "cov")) === false, "a cancelled one cannot");
+    assert(can(ctxFor("confirmed", "someone-else")) === false, "nor one moved again since");
+    assert(can(ctxFor("confirmed", "cov", "2026-10-12T14:00:00.000Z")) === false, "nor one whose time has come");
+    assert(can(ctxFor("confirmed", "cov"), { email: "out@x.com", deactivated_at: "2026-10-12T09:00:00.000Z" }) === false, "nor one whose original advisor left");
+    assert(can(new Map()) === false, "nor one whose booking could not be found");
+    const plain = buildBulkReassignProgress(demotion, movedItem, ctxFor("confirmed", "cov"));
+    assert(plain.moved?.[0].canMoveBack === undefined, "without the planner's inputs, nothing is claimed either way");
+    assert(!isBulkReassignProgress({ ...plain, moved: [{ ...plain.moved![0], canMoveBack: "yes" }] }), "a canMoveBack of the wrong type is refused");
+  }
+
   // --- #3615: an audit row for every call a DEMOTION sweep moves ---
   //
   // The move itself is already in the booking's history; what the audit adds is WHY: the Twilio
