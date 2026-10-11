@@ -199,3 +199,76 @@ export async function measureLatency(deps: LatencyRunDeps): Promise<LatencyRun> 
     recheck,
   };
 }
+
+/** The verdict for one canary pass that probed a real bucket AND the SMOKE bucket. */
+export interface DualLatencyDecision {
+  /** True when this pass must page (a confirmed REAL-bucket regression). */
+  page: boolean;
+  /** True when the REAL bucket read a median, pass or fail: the #1700 verdict stamp. */
+  measured: boolean;
+  /** One sentence for the log, and for the failure log when `page` is true. */
+  message: string | null;
+}
+
+/**
+ * Combine a full REAL-bucket run with a one-batch SMOKE reading into the pass's
+ * verdict (#3586).
+ *
+ * The SMOKE bucket is the one the canary books and cancels on every pass, so its slot
+ * cache is churned and a cold SMOKE read can be slow while a real lead is unaffected
+ * (2026-10-10: a ~3 minute SMOKE blip paged as a production slowdown). So paging and the
+ * verdict stamp follow the REAL bucket, whose cache the canary never touches and which
+ * is what a lead actually reads; the SMOKE reading is kept only as a comparison in the
+ * log, so a churned-test-cache blip is visible but never pages.
+ *
+ * The REAL bucket drives `measured` too: if it read no median (a renamed bucket code, or
+ * the endpoint not answering), this pass stamps nothing, so the `verdict:availability-latency`
+ * heartbeat goes stale and pages through the #1700 net rather than a dead real probe
+ * reading as a healthy morning (L557). The SMOKE reading never rescues that: it is not
+ * the signal being protected.
+ */
+export function decideDualLatency(
+  real: LatencyRun,
+  smoke: LatencyVerdict,
+  realBucket: string,
+): DualLatencyDecision {
+  const smokeNote =
+    smoke.medianMs === null
+      ? "SMOKE bucket not measured"
+      : `SMOKE bucket median ${Math.round(smoke.medianMs)}ms`;
+  // Every message names the REAL bucket it is about: it is the subject of the page now,
+  // so "availability read median Nms" without a bucket, next to only a SMOKE note, would
+  // read as if SMOKE were what regressed.
+  const realNote = `real bucket ${realBucket}`;
+  if (real.page) {
+    return {
+      page: true,
+      measured: real.measured,
+      message: real.message ? `${real.message} (${realNote}; ${smokeNote})` : `${realNote}; ${smokeNote}`,
+    };
+  }
+  if (!real.measured) {
+    // The production signal measured nothing; no page this pass, and no stamp, so a
+    // persistently broken real probe is caught by the stale heartbeat, not swallowed.
+    return {
+      page: false,
+      measured: false,
+      message: real.message ? `${real.message} (${realNote}; ${smokeNote})` : `${realNote}; ${smokeNote}`,
+    };
+  }
+  if (smoke.regressed) {
+    // The real bucket's HEALTHY median is the recheck's when the first batch was a
+    // passing blip (first over budget, recheck inside it); only on a clean `healthy`
+    // run is `first` the in-budget reading. Reporting `first` here would print the
+    // slow number beside the words "inside the budget".
+    const realHealthyMs = real.recheck?.medianMs ?? real.first.medianMs;
+    return {
+      page: false,
+      measured: true,
+      message:
+        `${realNote} median ${ms(realHealthyMs)} is inside the budget; ${smokeNote} was over it, so a ` +
+        `churned test-cache blip and not a production slowdown. Nobody is paged.`,
+    };
+  }
+  return { page: false, measured: true, message: real.message };
+}

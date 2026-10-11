@@ -14,6 +14,7 @@ import {
   judgeLatency,
   median,
   measureLatency,
+  decideDualLatency,
   LATENCY_SAMPLES,
   LATENCY_RECHECK_DELAY_MS,
   AVAILABILITY_P50_BUDGET_MS,
@@ -210,6 +211,77 @@ const SUSTAINED = [700, 800, 900, 850, 820];
   // inside its 15 minute timeout.
   assert(LATENCY_RECHECK_DELAY_MS >= 60_000, "the recheck waits at least a minute");
   assert(LATENCY_RECHECK_DELAY_MS <= 5 * 60_000, "and no more than five, inside the job timeout");
+}
+
+// --- #3586: the dual-bucket decision ------------------------------------------
+//
+// The SMOKE bucket's cache is churned by the canary's own book and cancel on every
+// pass, so a cold SMOKE read paged as a production slowdown on 2026-10-10 while a real
+// lead on bucket 112 was unaffected. The decision now pages on the REAL bucket (the
+// production signal, whose cache the canary never touches) and keeps SMOKE as a
+// comparison only, so a churned-test-cache blip is logged but never pages.
+{
+  const HEALTHY = [166, 120, 51, 41, 45]; // median 48ms
+  const SLOW = [700, 800, 900, 850, 820]; // median 835ms
+  const realHealthy = await measureLatency(fakeRun([HEALTHY]).deps);
+  const realConfirmed = await measureLatency(fakeRun([SLOW, SLOW]).deps); // page: true
+  const realNotMeasured = await measureLatency(fakeRun([[42]]).deps); // one usable sample, no median
+  const smokeHealthy = judgeLatency(HEALTHY);
+  const smokeSlow = judgeLatency(SLOW);
+
+  {
+    // A real regression pages, whatever SMOKE says, and the page NAMES the real bucket
+    // it is about so the reader does not mistake the SMOKE note for the subject.
+    const d = decideDualLatency(realConfirmed, smokeSlow, "100");
+    eq(d.page, true, "a confirmed REAL regression pages");
+    eq(d.measured, true, "and counts as a measured verdict");
+    assert(d.message !== null && /\d+ms/.test(d.message), `the page names the median (${d.message})`);
+    assert(d.message !== null && /real bucket 100/.test(d.message), `and names the real bucket (${d.message})`);
+  }
+  {
+    // The #3586 fix: a SMOKE-only blip over a healthy real bucket does NOT page.
+    const d = decideDualLatency(realHealthy, smokeSlow, "100");
+    eq(d.page, false, "a SMOKE blip over a healthy real bucket does not page");
+    eq(d.measured, true, "the real bucket still measured, so the verdict stamps");
+    assert(
+      d.message !== null && /smoke/i.test(d.message) && /(blip|test[- ]cache|not a production)/i.test(d.message),
+      `and the log says the SMOKE blip was seen and dismissed (${d.message})`,
+    );
+  }
+  {
+    // Both healthy: no page, and nothing to say beyond the measured reading.
+    const d = decideDualLatency(realHealthy, smokeHealthy, "100");
+    eq(d.page, false, "both healthy pages nobody");
+    eq(d.measured, true, "and is a measured reading");
+  }
+  {
+    // A real passing-blip (first batch slow, recheck healthy) with SMOKE also slow:
+    // the message must report the RECHECK median (the in-budget one), never the slow
+    // first batch beside the words "inside the budget".
+    const realBlip = await measureLatency(fakeRun([SLOW, HEALTHY]).deps);
+    eq(realBlip.kind, "passing-blip", "the real run recovered on recheck");
+    const d = decideDualLatency(realBlip, smokeSlow, "100");
+    eq(d.page, false, "a recovered real bucket with a SMOKE blip does not page");
+    // The real part reports the RECHECK median (48ms), not the slow first batch (835ms).
+    assert(
+      d.message !== null && /real bucket 100 median 48ms is inside the budget/.test(d.message),
+      `names the healthy recheck median as the in-budget one (${d.message})`,
+    );
+    assert(
+      d.message !== null && !/median 835ms is inside the budget/.test(d.message),
+      "never the slow first batch claimed as 'inside the budget'",
+    );
+  }
+  {
+    // The real bucket measured nothing (a bad/renamed bucket code, or the endpoint
+    // did not answer): not a page here, and NOT a measured verdict, so the heartbeat
+    // goes stale and pages through the #1700 net rather than reading as healthy. The
+    // log still names the real bucket, so a reader knows which probe went quiet.
+    const d = decideDualLatency(realNotMeasured, smokeHealthy, "100");
+    eq(d.page, false, "a real bucket that measured nothing does not page on this pass");
+    eq(d.measured, false, "and does not stamp, so a stuck real probe goes stale (#1700, L557)");
+    assert(d.message !== null && /real bucket 100/.test(d.message), `and names the real bucket (${d.message})`);
+  }
 }
 
 finish();
