@@ -61,9 +61,9 @@ beforeEach(() => vi.clearAllMocks());
 // something the query is supposed to have excluded.
 describe("inactiveHoldersFromBookings (#1215)", () => {
   const agents: OutOfPoolAgent[] = [
-    { id: "u1", name: "Dana Ruiz", email: "dana@example.com", deactivated: true },
-    { id: "u2", name: null, email: "sam@example.com", deactivated: false },
-    { id: "u3", name: "Kim Ito", email: "kim@example.com", deactivated: true },
+    { id: "u1", name: "Dana Ruiz", email: "dana@example.com", deactivated: true, coveredByPendingSweep: false },
+    { id: "u2", name: null, email: "sam@example.com", deactivated: false, coveredByPendingSweep: false },
+    { id: "u3", name: "Kim Ito", email: "kim@example.com", deactivated: true, coveredByPendingSweep: false },
   ];
 
   it("counts each out-of-pool agent's bookings and drops the ones holding none", () => {
@@ -103,6 +103,36 @@ describe("inactiveHoldersFromBookings (#1215)", () => {
       { assigned_user_id: "u3" },
     ]);
     expect(holders.map((h) => h.userId)).toEqual(["u3", "u1"]);
+  });
+
+  // #3599: the redistribute turn-off now takes an agent out of the pool a sync before
+  // the debounced sweep moves their calls, so for that window they hold calls by design.
+  // An agent the roster marked as mid-sweep must not page: the automatic sweep has them.
+  it("leaves an agent mid debounced-redistribute-sweep to the sweep, not a page", () => {
+    const mid: OutOfPoolAgent[] = [
+      { id: "u2", name: null, email: "sam@example.com", deactivated: false, coveredByPendingSweep: true },
+    ];
+    const holders = inactiveHoldersFromBookings(mid, [{ assigned_user_id: "u2" }, { assigned_user_id: "u2" }]);
+    expect(holders).toEqual([]);
+  });
+
+  it("still pages a DEACTIVATED agent even when marked mid-sweep, since no sweep runs for them", () => {
+    // The planner skips deactivated rows, so the sweep never fires for a departed agent.
+    // Exempting them would silence the backstop on exactly the #1215 case it exists for.
+    const dead: OutOfPoolAgent[] = [
+      { id: "u1", name: "Dana", email: "dana@example.com", deactivated: true, coveredByPendingSweep: true },
+    ];
+    const holders = inactiveHoldersFromBookings(dead, [{ assigned_user_id: "u1" }]);
+    expect(holders.map((h) => h.userId)).toEqual(["u1"]);
+  });
+
+  it("still pages a departed agent holding calls even while a different agent is mid-sweep", () => {
+    const mixed: OutOfPoolAgent[] = [
+      { id: "u1", name: "Dana Ruiz", email: "dana@example.com", deactivated: true, coveredByPendingSweep: false },
+      { id: "u2", name: null, email: "sam@example.com", deactivated: false, coveredByPendingSweep: true },
+    ];
+    const holders = inactiveHoldersFromBookings(mixed, [{ assigned_user_id: "u1" }, { assigned_user_id: "u2" }]);
+    expect(holders.map((h) => h.userId)).toEqual(["u1"]);
   });
 });
 

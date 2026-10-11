@@ -147,7 +147,27 @@ export function changesAnything(c: TwilioChanges): boolean {
   );
 }
 
-export type RedistributeAction = "turn-off" | "turn-back-on";
+export type RedistributeAction = "turn-off" | "turn-back-on" | "sweep-overdue";
+
+/**
+ * How long the Redistribute mark must have been stored before the coverage sweep
+ * moves the agent's booked calls (#3599).
+ *
+ * Moving a customer's call to another agent is disruptive and not cheap to undo, so
+ * it waits until the tag has survived from one sync to the next rather than firing on
+ * first sight. The first sight takes the agent out of the pool (a reversible flip, so
+ * no new lead reaches somebody Twilio withholds) but leaves their booked calls where
+ * they are; a tag that flaps off within the hour is cleared by `turn-back-on` before
+ * any call moved.
+ *
+ * The structural guarantee already does most of this: a `sweep-overdue` can only be
+ * planned for an agent who is ALREADY out of the pool, which only a PRIOR sync's
+ * `turn-off` can have done, so the tag has by construction been seen in two syncs.
+ * This window is the second guard, against a manual re-run minutes after the
+ * turn-off: it is comfortably under the hourly cadence (so the next scheduled sync
+ * still confirms) and comfortably over a rapid re-run (so one does not).
+ */
+export const REDISTRIBUTE_SWEEP_DEBOUNCE_MS = 30 * 60_000;
 
 export interface PlannedRedistribute {
   userId: string;
@@ -175,14 +195,14 @@ export interface PlannedRedistribute {
   /** What Twilio says about them, and which of it moved. */
   changes: TwilioChanges;
   /**
-   * The moment Slate marked them, for a `turn-off` only, and null on the way back
-   * in (#2115).
+   * The moment Slate marked them, for a `turn-off` or a `sweep-overdue`, and null on
+   * the way back in (#2115).
    *
-   * It is the coverage sweep's idempotency key AND the sweep's window start, and it
-   * is READ BACK from the row whenever one is already stored: a run that died
-   * between the mark and the flip leaves a marked and still bookable agent, and
-   * minting a fresh stamp next hour would be a fresh key, so the unique index would
-   * never fire and the sweep would run twice.
+   * It is the coverage sweep's idempotency key AND the sweep's window start. It is
+   * minted on the first `turn-off` and READ BACK from the row everywhere after: the
+   * `sweep-overdue` that actually moves the calls on a later sync reads the same stamp
+   * the `turn-off` stored, so the two converge on one job under the unique index.
+   * Minting a fresh stamp would be a fresh key, and the sweep would run twice (#3599).
    */
   markedAtIso: string | null;
 }
@@ -310,7 +330,14 @@ export function twilioWorkerMissingSinceMs(attributes: Attributes | null | undef
  * is what puts a marked person in the pool the hour the tag comes off.
  */
 export function withMark(attributes: Attributes | null, markedAtIso: string): Attributes {
-  return { ...(attributes ?? {}), redistribute: REDISTRIBUTE_MARK, redistribute_at: markedAtIso };
+  const next: Attributes = { ...(attributes ?? {}), redistribute: REDISTRIBUTE_MARK, redistribute_at: markedAtIso };
+  // A mark means a turn-off is happening NOW. Any swept marker belongs to a PREVIOUS
+  // redistribute cycle (the agent was turned back on, by hand or by the tag lifting, and
+  // is being withheld again), so it must not carry over: left behind, the new cycle's
+  // sweep-overdue reads as already done and the calls booked in between never move
+  // (#3599).
+  delete next.redistribute_swept_at;
+  return next;
 }
 
 function withoutMark(attributes: Attributes | null): Attributes {
@@ -320,7 +347,70 @@ function withoutMark(attributes: Attributes | null): Attributes {
   // coverage sweep onto the stamp of the previous one, and the unique index would
   // refuse the new sweep while the old job explained nothing about it.
   delete next.redistribute_at;
+  // The sweep marker goes with the mark too (#3599): a future redistribute must
+  // start its own debounce and its own sweep, not read as already done.
+  delete next.redistribute_swept_at;
   return next;
+}
+
+/**
+ * The attributes with the coverage sweep recorded as done, stamped `sweptAtIso`
+ * (#3599). Its presence is what makes `sweep-overdue` fire ONCE: an agent still
+ * withheld on a later sync, whose calls were already moved, is planned nothing.
+ */
+function withSwept(attributes: Attributes | null, sweptAtIso: string): Attributes {
+  return { ...(attributes ?? {}), redistribute_swept_at: sweptAtIso };
+}
+
+/** Whether the coverage sweep has already run for the mark this row carries (#3599). */
+function isSwept(attributes: Attributes | null | undefined): boolean {
+  const raw = attributes?.redistribute_swept_at;
+  return typeof raw === "string" && raw.trim() !== "";
+}
+
+/**
+ * Whether the mark has been stored long enough for the coverage sweep to move the
+ * agent's calls (#3599). `Date.parse` answers NaN for an unreadable instant and every
+ * comparison with NaN is false, so an unreadable stamp reads as NOT aged and the sweep
+ * holds off rather than moving a customer's call on a corrupt key (L50).
+ */
+function markAgedPastDebounce(markedAtIso: string, nowIso: string): boolean {
+  return Date.parse(nowIso) - Date.parse(markedAtIso) >= REDISTRIBUTE_SWEEP_DEBOUNCE_MS;
+}
+
+/**
+ * How long after the mark a redistribute agent may legitimately still be holding their
+ * booked calls before the `inactive_agent_bookings` backstop should treat them as
+ * abandoned rather than mid-pipeline (#3599).
+ *
+ * The debounce holds the sweep until a later sync (REDISTRIBUTE_SWEEP_DEBOUNCE_MS plus
+ * up to a sync interval), and GitHub drops scheduled runs under load, so a couple more
+ * intervals must not read as a stuck sweep. Past this, an unswept mark means the sweep
+ * genuinely is not running, and the inactive-agent backstop pages as it did before.
+ */
+export const REDISTRIBUTE_SWEEP_PENDING_GRACE_MS = 4 * 60 * 60_000;
+
+/**
+ * Whether this agent's booked calls are being handled by a debounced redistribute
+ * sweep that has not yet run (#3599): Slate has marked them, the sweep has not yet
+ * recorded itself done, and the mark is young enough that the sweep is still
+ * legitimately pending. Such an agent is deliberately holding their calls for the
+ * automatic sweep, not abandoned, so `inactive_agent_bookings` leaves them to it rather
+ * than paging during the debounce window the redistribute flip now opens.
+ *
+ * Only the UNSWEPT window is exempt. Once the sweep has run (`redistribute_swept_at`
+ * set) any calls it could not place are an ordinary stranded gap again, and once the
+ * mark ages past the grace a sweep that never ran is a real stuck pipeline the backstop
+ * must still catch.
+ */
+export function redistributeSweepPending(
+  attributes: Attributes | null | undefined,
+  nowIso: string,
+): boolean {
+  if (!isMarkedRedistribute(attributes) || isSwept(attributes)) return false;
+  const markedAtIso = storedMarkStamp(attributes);
+  if (markedAtIso === null) return false;
+  return Date.parse(nowIso) - Date.parse(markedAtIso) < REDISTRIBUTE_SWEEP_PENDING_GRACE_MS;
 }
 
 /**
@@ -493,10 +583,15 @@ export function planTwilioRoster(
     const base = changesAnything(changes) ? withTwilioFacts(row.attributes, changes) : (row.attributes ?? {});
 
     if (worker?.redistribute) {
-      // Twilio withholds them. Only a flip is planned, and only from inside the
-      // pool: an agent already out of it is left exactly as they are.
+      // Twilio withholds them. The first sight takes a bookable agent out of the
+      // pool, a reversible flip that moves no call, and stores the mark.
       if (row.bookable) {
-        const markedAtIso = storedMarkStamp(row.attributes) ?? nowIso;
+        // A completed prior cycle (already swept) starts afresh with a NEW stamp, so the
+        // sweep-overdue keys a new job rather than the one the unique index already holds
+        // for the old stamp, and withMark drops the stale swept marker. An in-flight
+        // cycle (marked but never swept, e.g. a crash between the mark and the flip)
+        // reuses the stored stamp so both runs converge on the one job.
+        const markedAtIso = isSwept(row.attributes) ? nowIso : (storedMarkStamp(row.attributes) ?? nowIso);
         flips.push({
           userId: row.id,
           email,
@@ -507,6 +602,27 @@ export function planTwilioRoster(
           markedAtIso,
         });
         continue;
+      }
+      // Already out of the pool. If SLATE marked them, the tag has survived to this
+      // LATER sync (only a prior sync's turn-off leaves a marked, not bookable agent),
+      // and once the mark has aged past the debounce window the booked calls move
+      // (#3599). The sweep marker makes it fire ONCE: a later sync finds them swept and
+      // plans nothing. An agent an admin turned off carries no mark and is never swept
+      // here, exactly as before.
+      if (marked && !isSwept(row.attributes)) {
+        const markedAtIso = storedMarkStamp(row.attributes);
+        if (markedAtIso !== null && markAgedPastDebounce(markedAtIso, nowIso)) {
+          flips.push({
+            userId: row.id,
+            email,
+            action: "sweep-overdue",
+            attributes: withSwept(base, nowIso),
+            heldAttributes: null,
+            changes,
+            markedAtIso,
+          });
+          continue;
+        }
       }
     } else if (marked) {
       if (!worker) {
