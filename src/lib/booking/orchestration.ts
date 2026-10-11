@@ -1619,6 +1619,15 @@ export interface BookingDeps {
    * sweep re-creates a block only for the ids NOT in this set.
    */
   loadBusyBlockBookingIds(bookingIds: string[]): Promise<Set<string>>;
+  /**
+   * Of `bookingIds`, which are STILL active (confirmed/rescheduled, upcoming, in
+   * pool), re-read immediately before re-creating their blocks (#3585). A
+   * cancellation landing between the booking read and the block read makes an active
+   * booking look like a missed write-through; this closes that window. Same active
+   * predicate as `loadActiveUpcomingBookings`, minus the create grace (which cannot
+   * change in the interval).
+   */
+  loadStillActiveBookingIds(bookingIds: string[]): Promise<Set<string>>;
   // --- Outbox (#429 P2): durable intent + idempotent drain ---
   /** Write a durable mutation-intent row; returns its id. */
   enqueueOutbox(row: BookingOutboxInsert): Promise<string>;
@@ -2298,6 +2307,13 @@ export async function reconcileCancelledBusyBlocks(
   /** Of `freed`, the ones nothing owned at all (no booking, no time off). */
   freedOrphans: number;
   userIds: string[];
+  /**
+   * The booking ids whose block this freed (#3585): so the alert names WHICH booking,
+   * not only "across N agents", and a genuine missed write is distinguishable in the
+   * log from the cancel/reconcile race rather than inferred from a point-in-time
+   * snapshot. The orphans (no booking_id) are not here; they are counted separately.
+   */
+  freedBookingIds: string[];
   scanned: number;
 }> {
   const rows = await deps.loadReconcilableBusyBlocks(limit, offset);
@@ -2345,7 +2361,7 @@ export async function reconcileCancelledBusyBlocks(
   });
 
   if (stuck.length === 0) {
-    return { freed: 0, freedCancelled: 0, freedOrphans: 0, userIds: [], scanned: rows.length };
+    return { freed: 0, freedCancelled: 0, freedOrphans: 0, userIds: [], freedBookingIds: [], scanned: rows.length };
   }
   await deps.deleteBusyBlocksByIds(stuck.map((r) => r.id));
   const freedCancelled = stuck.filter((r) => r.booking_id !== null).length;
@@ -2354,6 +2370,7 @@ export async function reconcileCancelledBusyBlocks(
     freedCancelled,
     freedOrphans: stuck.length - freedCancelled,
     userIds: [...new Set(stuck.map((r) => r.user_id))],
+    freedBookingIds: [...new Set(stuck.filter((r) => r.booking_id !== null).map((r) => r.booking_id as string))],
     scanned: rows.length,
   };
 }
@@ -2423,13 +2440,37 @@ export async function reconcileMissingBusyBlocks(
   const missing = bookings.filter((b) => !haveBlock.has(b.id));
   if (missing.length === 0) return empty;
 
+  // #3585: re-verify the NARROW candidate set is still active immediately before
+  // re-creating. The booking read and the block read above are two separate reads; a
+  // cancellation landing between them deletes the block and makes an active booking
+  // look like a missed write-through INSERT, so the sweep re-created a block for a
+  // booking being cancelled and paged a false "missed write" (and the next tick freed
+  // it and paged a false "stuck block"). Re-reading just the `missing` ids collapses
+  // that window from the full two-scan gap (tens of ms to seconds under load, which an
+  // ordinary cancel hit) to a single read-then-insert, which an ordinary cancel does
+  // not. The insert-only safety bias is unchanged: a genuinely-missing block for a
+  // still-active booking is still re-created.
+  //
+  // A RESIDUAL window remains, between this re-verify and the insert below: a cancel
+  // landing there still re-creates one block and the next tick frees and pages about
+  // it. Closing it fully needs a DB-side conditional insert (INSERT ... SELECT WHERE
+  // the booking is still active), an RPC and a migration, tracked in #3592. It is left
+  // there because this residual is in the SAFE direction (the stray block keeps the
+  // slot busy, never a double-book) and is now MEASURABLE rather than inferred: both the
+  // re-create and the free side name the booking ids, so if it ever fires the two pages
+  // carry the same id a cancel is logged against, instead of a point-in-time snapshot
+  // having to rule it out by hand.
+  const stillActive = await deps.loadStillActiveBookingIds(missing.map((b) => b.id));
+  const toRecreate = missing.filter((b) => stillActive.has(b.id));
+  if (toRecreate.length === 0) return empty;
+
   await deps.insertBusyBlocks(
-    missing.map((b) => busyBlockFor(b.user_id, b.starts_at, b.ends_at, b.id)),
+    toRecreate.map((b) => busyBlockFor(b.user_id, b.starts_at, b.ends_at, b.id)),
   );
   return {
-    recreated: missing.length,
-    bookingIds: missing.map((b) => b.id),
-    userIds: [...new Set(missing.map((b) => b.user_id))],
+    recreated: toRecreate.length,
+    bookingIds: toRecreate.map((b) => b.id),
+    userIds: [...new Set(toRecreate.map((b) => b.user_id))],
     scanned: bookings.length,
   };
 }

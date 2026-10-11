@@ -182,6 +182,7 @@ function makeDeps(): BookingDeps & CommitFreshParts {
     deleteBusyBlocksByIds: noop,
     loadActiveUpcomingBookings: async () => [],
     loadBusyBlockBookingIds: async () => new Set<string>(),
+    loadStillActiveBookingIds: async (ids: string[]) => new Set<string>(ids),
     enqueueOutbox: async () => "ob-1",
     loadDrainableOutbox: async () => [] as BookingOutbox[],
     // #1048: the lease is a TOKEN now, and every write on the row is gated on it.

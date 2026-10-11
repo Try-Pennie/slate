@@ -90,6 +90,9 @@ describe("reconcileCancelledBusyBlocks in-flight guard (#784)", () => {
     const res = await reconcileCancelledBusyBlocks(200);
 
     expect(res.freed).toBe(1);
+    // #3585: the freed booking is named, so a genuine missed delete is distinguishable
+    // in the log from the cancel/reconcile race rather than inferred from a snapshot.
+    expect(res.freedBookingIds).toEqual(["bk1"]);
     expect(deleteBusyBlocksByIds).toHaveBeenCalledWith(["blk1"]);
     // #2357: one bounded, pooled refresh for the freed agents, never a per code loop.
     expect(slotCache.refreshPoolsForAgents).toHaveBeenCalledTimes(1);

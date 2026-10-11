@@ -1807,6 +1807,32 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       );
     },
 
+    loadStillActiveBookingIds: async (bookingIds) => {
+      if (bookingIds.length === 0) return new Set<string>();
+      // #3585: re-verify the candidate set is still active, immediately before the
+      // reconcile-missing sweep re-creates their blocks. Same active predicate as
+      // loadActiveUpcomingBookings (status, upcoming, assigned, in pool) minus the
+      // create grace, which cannot change in the interval. Fail loud like the loader
+      // above: an empty result born of a read error would let the very race this
+      // guards re-create every candidate, so `unwrap` throws and the tick retries
+      // rather than re-inserting blindly (the next tick re-reads from scratch).
+      const data = unwrap(
+        await whereStillInPool(
+          supabaseAdmin()
+            .from("bookings")
+            // cap-safe: bounded by the sweep's page of candidate ids (.in over the missing set).
+            .select("id, users!bookings_assigned_user_id_fkey!inner(id)")
+            .in("id", bookingIds)
+            .in("status", ["confirmed", "rescheduled"])
+            .gte("ends_at", new Date().toISOString())
+            .not("assigned_user_id", "is", null),
+          "users",
+        ),
+        "loadStillActiveBookingIds",
+      );
+      return new Set(((data ?? []) as { id: string }[]).map((r) => r.id));
+    },
+
     // --- Outbox (#429 P2) ---
     enqueueOutbox: async (row) => {
       // #2373: `unwrap` so a REFUSED insert throws with the database's own reason
@@ -3758,6 +3784,10 @@ export async function reconcileCancelledBusyBlocks(limit: number, offset = 0) {
     freedCancelled: res.freedCancelled,
     freedOrphans: res.freedOrphans,
     agentCount: res.userIds.length,
+    // #3585: name which bookings were freed (first 10), so a genuine missed write is
+    // distinguishable from the cancel/reconcile race in the log.
+    bookingIds: res.freedBookingIds.slice(0, 10).map(String),
+    bookingIdsTruncated: res.freedBookingIds.length > 10,
   });
   await sendThrottledAlert(
     RECONCILE_ALERT_KEY,
