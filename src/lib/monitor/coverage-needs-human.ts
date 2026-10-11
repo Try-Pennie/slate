@@ -68,9 +68,27 @@ export interface StrandedItemRead {
     status: BulkReassignJobStatus;
     /** The sweep's `updated_at`, which for a finished sweep is when it finished. */
     updatedAt: string;
+    /**
+     * Whether this sweep was triggered by a Redistribute tag (#3597). Only then does the
+     * agent being back in the pool mean the call is covered. A sweep from APPROVED TIME
+     * OFF moves calls out of an agent who stays in the pool but is genuinely away during
+     * the window, so an in-pool holder there is still stranded and must keep paging.
+     */
+    fromRedistribute: boolean;
   };
   /** Who holds the booking now, or null when it is no longer active and upcoming. */
   assignedUserId: string | null;
+  /**
+   * Whether the agent holding it is back IN THE POOL (#3597): judged by `hasLeftPool`,
+   * so it is true only when the agent is genuinely available again (bookable, not
+   * deactivated, not awaiting activation), not merely carrying a stale `bookable` flag.
+   * A coverage sweep fires on a Redistribute tag, but the tag can clear minutes later (a
+   * transient flap), and the agent is then back and will take the call: it is no longer
+   * stranded. The `unplaceable`/`failed` item is a frozen record of a past moment, so
+   * without this the monitor pages for ever about a call that is already covered. A
+   * DEPARTED agent (deactivated) is NOT in the pool, so their stranded calls still page.
+   */
+  assignedAgentInPool: boolean;
 }
 
 /**
@@ -154,6 +172,13 @@ export function countStranded(items: StrandedItemRead[], asOfMs: number): Counte
   const held = new Set<string>();
   for (const it of items) {
     if (it.assignedUserId === null || it.assignedUserId !== it.sweep.outUserId) continue;
+    // #3597: a Redistribute flap cleared, so the agent is back in the pool and will take
+    // the call: it is covered and no longer stranded. Not `held`, because there is nothing
+    // to wait for: it is resolved, and a later tick must not resurrect it. Scoped to
+    // Redistribute sweeps ONLY: an approved-time-off sweep moves calls out of an agent who
+    // STAYS in the pool but is away during the window, so an in-pool holder there is still
+    // stranded. A departed agent is not in the pool, so their stranded calls still count.
+    if (it.assignedAgentInPool && it.sweep.fromRedistribute) continue;
     const at = countableAt(it, asOfMs);
     if (at === false) {
       held.add(it.bookingId);
@@ -200,6 +225,12 @@ export interface StrandedHolder {
   unplaceable: number;
   /** The move itself kept erroring until it ran out of attempts. */
   failed: number;
+  /**
+   * The booking ids this agent is stranded with (#3594), in the order seen, so the alert
+   * can name WHICH call needs a hand rather than only how many. Finding the stranded
+   * booking otherwise took several database queries. Capped when rendered, not here.
+   */
+  bookingIds: string[];
 }
 
 /**
@@ -243,9 +274,11 @@ export function strandedHoldersFromItems(
         email: agent?.email ?? null,
         unplaceable: 0,
         failed: 0,
+        bookingIds: [],
       };
       holders.set(it.outUserId, h);
     }
+    h.bookingIds.push(it.bookingId);
     if (it.status === "failed") h.failed++;
     else h.unplaceable++;
   }
@@ -267,8 +300,13 @@ const whoIs = (h: StrandedHolder): string => {
   return h.email && h.email !== who ? `${who} (${h.email})` : who;
 };
 
-/** Human line for one holder: who, how many, and which outcome, since the
- *  remediation differs per outcome. */
+/** How many stranded booking ids to name per holder before the rest are summarised: a
+ *  handful is enough to act on without turning a phone alert into a wall of uuids. */
+const BOOKING_ID_CAP = 5;
+
+/** Human line for one holder: who, how many, which outcome (since the remediation differs
+ *  per outcome), and WHICH bookings (#3594), so nobody has to query the database to find
+ *  the stranded call. */
 function holderLine(h: StrandedHolder): string {
   const parts: string[] = [];
   if (h.unplaceable > 0) {
@@ -277,15 +315,19 @@ function holderLine(h: StrandedHolder): string {
   if (h.failed > 0) {
     parts.push(`${plural(h.failed, "appointment", "appointments")} where the move kept failing`);
   }
-  return `${whoIs(h)}, ${parts.join(", ")}`;
+  const shown = h.bookingIds.slice(0, BOOKING_ID_CAP).join(", ");
+  const extra = h.bookingIds.length > BOOKING_ID_CAP ? ` and ${h.bookingIds.length - BOOKING_ID_CAP} more` : "";
+  const ids = h.bookingIds.length > 0 ? ` (booking ${shown}${extra})` : "";
+  return `${whoIs(h)}, ${parts.join(", ")}${ids}`;
 }
 
 /**
  * The page. States the customer-facing consequence first, because that is what
- * decides whether someone acts at 7am, then names the agents and which outcome
- * they hit, then points at the ONE place that fixes it. Deliberately carries no
- * booking ids or times: the coverage panel lists them and a page is read on a
- * phone.
+ * decides whether someone acts at 7am, then names the agents, which outcome they hit,
+ * and WHICH bookings (#3594: the id is named so nobody has to query the database to find
+ * the stranded call, which took several queries on 2026-10-10), then points at the ONE
+ * place that fixes it. Times are still left out: the coverage panel has them and a page
+ * is read on a phone.
  *
  * Verbs agree with the subject in both directions. Counting the nouns is not
  * enough, which is only visible rendered (`pnpm preview:alerts`).

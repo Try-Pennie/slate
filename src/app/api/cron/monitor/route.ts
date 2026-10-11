@@ -353,6 +353,7 @@ import {
   type StrandedRead,
   type StrandedStatus,
 } from "@/lib/monitor/coverage-needs-human";
+import { hasLeftPool, POOL_STATE_COLUMNS, type PoolStateRow } from "@/lib/bookable/left-pool";
 import { runOooProtectionCheck } from "@/lib/monitor/ooo-protection";
 import { runOooEventMismatchCheck } from "@/lib/monitor/ooo-event-mismatch";
 import {
@@ -2779,16 +2780,31 @@ export async function GET(req: NextRequest) {
               // a person, whatever kind of booking it is (#2073).
               .from("bookings")
               // cap-safe: primary-key lookup, already split to the URL budget.
-              .select("id, assigned_user_id")
+              // #3597: also read the holder's pool state, so a call whose agent is back in
+              // the pool (a cleared Redistribute flap) is no longer counted stranded,
+              // judged by the same hasLeftPool rule the sweep uses so a departed agent is
+              // not mistaken for a covered one.
+              .select(`id, assigned_user_id, users!bookings_assigned_user_id_fkey(${POOL_STATE_COLUMNS})`)
               .in("id", batch)
               .in("status", ACTIVE_BOOKING_STATUSES)
               .gte("starts_at", new Date(now).toISOString()),
             "monitor stranded coverage bookings",
-          ) ?? []) as { id: string; assigned_user_id: string | null }[],
+          ) ?? []) as {
+            id: string;
+            assigned_user_id: string | null;
+            users: PoolStateRow | null;
+          }[],
       );
       // Who holds each active, upcoming booking NOW (#3303): `countStranded` keeps
-      // a give up only while that is still the sweep's out agent.
-      const holderByBooking = new Map(bookingPages.flat().map((b) => [b.id, b.assigned_user_id]));
+      // a give up only while that is still the sweep's out agent. Also whether that
+      // holder is back in the pool (#3597): a missing user row reads as NOT in the pool,
+      // the safe direction (the call stays stranded and reported).
+      const holderByBooking = new Map(
+        bookingPages.flat().map((b) => [
+          b.id,
+          { userId: b.assigned_user_id, inPool: b.users != null && !hasLeftPool(b.users) },
+        ]),
+      );
       const live = items.filter((it) => holderByBooking.has(it.booking_id));
       if (live.length === 0) return nothing;
       // The out agent lives on the job, so resolve the jobs these belong to. Split
@@ -2803,10 +2819,15 @@ export async function GET(req: NextRequest) {
             await db
               .from("bulk_reassign_jobs")
               // cap-safe: primary-key lookup, already split to the URL budget.
-              .select("id, out_user_id, status, updated_at")
+              // #3597: redistribute_marked_at tells a Redistribute sweep from an OOO one,
+              // so the in-pool exclusion applies only to the former.
+              .select("id, out_user_id, status, updated_at, redistribute_marked_at")
               .in("id", batch),
             "monitor stranded coverage jobs",
-          ) ?? []) as Pick<BulkReassignJob, "id" | "out_user_id" | "status" | "updated_at">[],
+          ) ?? []) as Pick<
+            BulkReassignJob,
+            "id" | "out_user_id" | "status" | "updated_at" | "redistribute_marked_at"
+          >[],
       );
       const jobById = new Map(jobPages.flat().map((j) => [j.id, j]));
       const reads: StrandedItemRead[] = live.flatMap((it) => {
@@ -2817,8 +2838,14 @@ export async function GET(req: NextRequest) {
                 bookingId: it.booking_id,
                 status: it.status as StrandedStatus,
                 settledAt: it.updated_at,
-                sweep: { outUserId: job.out_user_id, status: job.status, updatedAt: job.updated_at },
-                assignedUserId: holderByBooking.get(it.booking_id) ?? null,
+                sweep: {
+                  outUserId: job.out_user_id,
+                  status: job.status,
+                  updatedAt: job.updated_at,
+                  fromRedistribute: job.redistribute_marked_at != null,
+                },
+                assignedUserId: holderByBooking.get(it.booking_id)?.userId ?? null,
+                assignedAgentInPool: holderByBooking.get(it.booking_id)?.inPool ?? false,
               },
             ]
           : [];
