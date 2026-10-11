@@ -189,7 +189,42 @@ function demotionSnapshotReaders(
       ) as { bucket_id: string }[];
       return new Set(rows.map((r) => r.bucket_id));
     },
+    pinnedBookingIds: async () => (await pinnedDemotionBookingIds([outUserId])).get(outUserId) ?? new Set<string>(),
   };
+}
+
+/**
+ * The calls an admin moved BACK to each of these agents after a demotion move (#3615), by agent.
+ * Pinned to them: the demotion sweep, the demotion decision and the demoted-agent backstop all
+ * leave these alone (Dan, 2026-10-11). One read over every agent asked about, so the backstop
+ * spends it once rather than per agent. Fails loud on a read error (`selectAllPages` throws), so
+ * a failed read can never drop a pin and move a call an admin deliberately kept (L184).
+ */
+export async function pinnedDemotionBookingIds(outUserIds: string[]): Promise<Map<string, Set<string>>> {
+  const byAgent = new Map<string, Set<string>>();
+  if (outUserIds.length === 0) return byAgent;
+  const rows = await selectAllPages<{ booking_id: string; bulk_reassign_jobs: { out_user_id: string } | null }>(
+    "demotion-pinned-bookings",
+    "id",
+    () =>
+      // cap-safe: read every page via selectAllPages, which orders and pages it.
+      // in-chunk-ok: outUserIds is one agent, or the backstop's currently marked agents, a subset
+      // of the bookable roster (design ceiling 200, the in() URL id limit).
+      supabaseAdmin()
+        .from("bulk_reassign_items")
+        .select("id, booking_id, bulk_reassign_jobs!inner(out_user_id, demotion_marked_at)")
+        .not("reverted_at", "is", null)
+        .not("bulk_reassign_jobs.demotion_marked_at", "is", null)
+        .in("bulk_reassign_jobs.out_user_id", outUserIds),
+  );
+  for (const r of rows) {
+    const agent = r.bulk_reassign_jobs?.out_user_id;
+    if (!agent) continue;
+    const set = byAgent.get(agent) ?? new Set<string>();
+    set.add(r.booking_id);
+    byAgent.set(agent, set);
+  }
+  return byAgent;
 }
 
 /**

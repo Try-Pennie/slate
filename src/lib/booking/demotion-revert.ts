@@ -1,0 +1,120 @@
+/**
+ * Moving a rerouted call BACK to its original advisor (#3615). Pure; the IO lives in
+ * `demotion-revert-store.ts` and the service wires the reassign.
+ *
+ * Settled with Dan 2026-10-11: a demotion move is automatic but undoable from the booking's
+ * page, and an undone call STAYS with the original advisor. Later demotion sweeps, the demotion
+ * decision and the demoted-agent backstop all leave it alone (`pinnedBookingIds`), rather than
+ * the next sync moving it again and the backstop paging about it every day.
+ *
+ * Every refusal is its own reason with its own sentence (L11): each sends the reader somewhere
+ * different, and one answering for another is how somebody hunts for a fault that is not there.
+ */
+import type { BulkReassignItemStatus } from "@/lib/db/types";
+import type { DemotionChange } from "@/lib/booking/demotion-plan";
+import { bookingIsActionable } from "@/lib/booking/detail";
+import { parseStampMs } from "@/lib/date/stamp";
+
+/** One call a demotion sweep handled, joined with its sweep: what the undo is about. */
+export interface DemotionMoveRecord {
+  itemId: string;
+  bookingId: string;
+  jobId: string;
+  orgId: string;
+  /** The advisor the sweep moved the call OFF: who it goes back to. */
+  outUserId: string;
+  /** The advisor the sweep moved it TO; null for an item it could not place. */
+  toUserId: string | null;
+  status: BulkReassignItemStatus;
+  /** When the sweep recorded the move (the item's last write). */
+  movedAt: string;
+  demotionMarkedAt: string;
+  change: DemotionChange | null;
+  revertedAt: string | null;
+  revertedBy: string | null;
+}
+
+/** Every reason a move back is refused, as a runtime list so the copy is checked against it. */
+export const REVERT_REFUSALS = [
+  "no-automatic-move",
+  "already-moved-back",
+  "moved-since",
+  "not-active",
+  "already-started",
+  "original-left",
+] as const;
+export type RevertRefusal = (typeof REVERT_REFUSALS)[number];
+
+export type RevertPlan =
+  | { kind: "move-back"; toUserId: string; toEmail: string }
+  /** The call is already back with the original advisor and only the record is missing (a run
+   *  that died between the move and the record). Recording it is the whole remaining work, so the
+   *  undo converges instead of refusing. */
+  | { kind: "record-only" }
+  | { kind: "refused"; reason: RevertRefusal };
+
+/**
+ * Decide whether this booking's automatic move can be undone now.
+ *
+ * The order is the order of what a reader would ask: is there a move to undo, has it already been
+ * undone, is the call still the one that moved (still with that advisor, active, upcoming), and
+ * can the original advisor take it. A start time that cannot be read is refused as already
+ * started, never read as upcoming (L50).
+ */
+export function planDemotionRevert(input: {
+  move: DemotionMoveRecord | null;
+  booking: { status: string; assigned_user_id: string | null; starts_at: string };
+  original: { email: string | null; deactivated_at: string | null } | null;
+  nowMs: number;
+}): RevertPlan {
+  const { move, booking, original, nowMs } = input;
+  if (!move || move.status !== "moved" || !move.toUserId) return { kind: "refused", reason: "no-automatic-move" };
+  if (move.revertedAt) return { kind: "refused", reason: "already-moved-back" };
+  if (!bookingIsActionable(booking.status)) return { kind: "refused", reason: "not-active" };
+  const startsMs = parseStampMs(booking.starts_at);
+  if (startsMs === null || startsMs <= nowMs) return { kind: "refused", reason: "already-started" };
+  if (booking.assigned_user_id === move.outUserId) return { kind: "record-only" };
+  if (booking.assigned_user_id !== move.toUserId) return { kind: "refused", reason: "moved-since" };
+  if (!original || original.deactivated_at || !original.email) return { kind: "refused", reason: "original-left" };
+  return { kind: "move-back", toUserId: move.outUserId, toEmail: original.email };
+}
+
+/** What a refusal says, naming the people it is about. */
+export function revertRefusalText(reason: RevertRefusal, names: { original: string; current: string }): string {
+  switch (reason) {
+    case "no-automatic-move":
+      return "Slate did not move this call automatically, so there is no automatic move to undo.";
+    case "already-moved-back":
+      return `This call has already been moved back to ${names.original}.`;
+    case "moved-since":
+      return `This call has been moved again since, and is now with ${names.current}. Use Reassign if it should go to ${names.original}.`;
+    case "not-active":
+      return "This call was cancelled or has finished, so there is nothing to move back.";
+    case "already-started":
+      return "This call's time has already come, so it can no longer be moved.";
+    case "original-left":
+      return `${names.original} has left Slate, so the call cannot go back to them.`;
+  }
+}
+
+/**
+ * The move a booking's undo is about: the most recent COMPLETED demotion move. A failed or
+ * unplaced attempt moved nothing, so it is never the thing to undo.
+ */
+export function latestDemotionMove(moves: DemotionMoveRecord[]): DemotionMoveRecord | null {
+  let best: DemotionMoveRecord | null = null;
+  for (const m of moves) {
+    if (m.status !== "moved" || !m.toUserId) continue;
+    if (!best || Date.parse(m.movedAt) > Date.parse(best.movedAt)) best = m;
+  }
+  return best;
+}
+
+/**
+ * The calls an admin moved back to `outUserId` (#3615): pinned to them, so later demotion sweeps,
+ * the demotion decision and the demoted-agent backstop leave them alone. Only this advisor's own
+ * moved-back calls; another advisor's undo says nothing about this one.
+ */
+export function pinnedBookingIds(moves: DemotionMoveRecord[], outUserId: string): Set<string> {
+  return new Set(moves.filter((m) => m.outUserId === outUserId && m.revertedAt).map((m) => m.bookingId));
+}

@@ -3,6 +3,8 @@ import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure, logAllClearFailure } from "@/lib/notify/send-failure";
 import { log } from "@/lib/log";
+import type { Attributes, Criteria } from "@/lib/db/types";
+import { selectDemotionBookings, type DemotionCandidateRow } from "@/lib/booking/demotion-snapshot";
 
 /**
  * Appointments still held by an agent who has left the bookable pool (#1215).
@@ -177,6 +179,50 @@ export function demotedHolders(agents: DemotedAgent[]): InactiveHolder[] {
       bookingCount: a.unservedCount,
     }))
     .sort((x, y) => y.bookingCount - x.bookingCount || x.userId.localeCompare(y.userId));
+}
+
+/**
+ * The demoted agents the backstop judges, built from its reads (#3582): each marked agent past the
+ * debounce, with how many of their upcoming calls they can no longer serve, judged by the SAME
+ * filtered snapshot the reroute moves with (`selectDemotionBookings`, L342). A call an admin moved
+ * BACK to them (#3615) is theirs by decision and is not counted, or the backstop would page about
+ * it every day. Pure, so the counting is tested where the route's reads are not.
+ */
+export function demotedAgentsFrom(input: {
+  stamped: { id: string; name: string | null; email: string | null; attributes: Attributes | null }[];
+  rows: (DemotionCandidateRow & { assigned_user_id: string | null })[];
+  criteriaByBucket: Map<string, Criteria | null>;
+  membersByUser: Map<string, Set<string>>;
+  pinnedByUser: Map<string, Set<string>>;
+}): DemotedAgent[] {
+  const rowsByUser = new Map<string, DemotionCandidateRow[]>();
+  for (const r of input.rows) {
+    if (!r.assigned_user_id) continue;
+    if (input.pinnedByUser.get(r.assigned_user_id)?.has(r.id)) continue;
+    const list = rowsByUser.get(r.assigned_user_id) ?? [];
+    list.push({
+      id: r.id,
+      starts_at: r.starts_at,
+      ends_at: r.ends_at,
+      attendee_name: r.attendee_name,
+      bucket_id: r.bucket_id,
+      kind: r.kind,
+    });
+    rowsByUser.set(r.assigned_user_id, list);
+  }
+  return input.stamped.map((a) => ({
+    id: a.id,
+    name: a.name,
+    email: a.email,
+    // Only agents past the debounce reach here (the caller filters), so never mid-sweep.
+    coveredByPendingSweep: false,
+    unservedCount: selectDemotionBookings(
+      a.attributes,
+      rowsByUser.get(a.id) ?? [],
+      input.criteriaByBucket,
+      input.membersByUser.get(a.id) ?? new Set<string>(),
+    ).length,
+  }));
 }
 
 // Match the other monitor notices' list cap so a broad gap stays one readable

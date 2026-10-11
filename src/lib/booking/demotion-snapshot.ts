@@ -111,6 +111,20 @@ export interface DemotionSnapshotReaders {
   bucketCriteria(bucketIds: string[]): Promise<Map<string, Criteria | null>>;
   /** The buckets the agent is an ACTIVE manual member of. */
   manualMemberBucketIds(): Promise<Set<string>>;
+  /** The calls an admin moved BACK to this agent after a demotion move (#3615): pinned to them,
+   *  so neither the sweep nor the decision weighs them again. A read error must throw. */
+  pinnedBookingIds(): Promise<Set<string>>;
+}
+
+/** The agent's upcoming bookings without the ones an admin moved back to them (#3615). Read only
+ *  when the agent holds something, like the other reads. */
+async function unpinnedCandidates(
+  readers: Pick<DemotionSnapshotReaders, "candidates" | "pinnedBookingIds">,
+): Promise<DemotionCandidateRow[]> {
+  const candidates = await readers.candidates();
+  if (candidates.length === 0) return [];
+  const pinned = await readers.pinnedBookingIds();
+  return pinned.size === 0 ? candidates : candidates.filter((c) => !pinned.has(c.id));
 }
 
 /**
@@ -123,7 +137,7 @@ export interface DemotionSnapshotReaders {
 export async function assembleDemotionSnapshot(
   readers: DemotionSnapshotReaders,
 ): Promise<CoverageBookingRow[]> {
-  const candidates = await readers.candidates();
+  const candidates = await unpinnedCandidates(readers);
   if (candidates.length === 0) return [];
   const bucketIds = [...new Set(candidates.map((c) => c.bucket_id))];
   const [attributes, criteriaByBucket, manualMemberBucketIds] = await Promise.all([
@@ -144,7 +158,7 @@ export async function assembleDemotionSnapshot(
 export async function assembleRerouteCandidates(
   readers: Omit<DemotionSnapshotReaders, "agentAttributes">,
 ): Promise<RerouteCandidate[]> {
-  const candidates = await readers.candidates();
+  const candidates = await unpinnedCandidates(readers);
   if (candidates.length === 0) return [];
   const bucketIds = [...new Set(candidates.map((c) => c.bucket_id))];
   const [criteriaByBucket, manualMemberBucketIds] = await Promise.all([
