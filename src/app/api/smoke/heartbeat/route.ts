@@ -57,6 +57,10 @@ const CANARY_HEARTBEAT_LANES = new Set([
   // rule: it records that the probe CONCLUDED, never that the step ran, so a run the
   // deployment never answered, or one it could not fully read, leaves it unstamped.
   "verdict:confirm-line",
+  // The daily reroute drill (#3615). Same family and same rule: it records that the drill
+  // exercised the reroute pipeline, never that the step ran, so a drill that could not start
+  // (not seeded, no free time, a refused key) leaves it unstamped.
+  "verdict:reroute-drill",
   // The availability latency reading the smoke canary takes (#1700). Same family
   // and same rule: it records that the check read a real median, never that the
   // step ran, so a run whose every request was refused leaves it unstamped.

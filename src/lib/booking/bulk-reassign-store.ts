@@ -512,15 +512,17 @@ export async function createBulkReassignJob(
  */
 export async function loadPendingBulkReassignItems(
   limit: number,
+  /** #3615: one sweep's items only, for the reroute drill. Absent means every sweep's. */
+  jobId?: string,
 ): Promise<{ item: BulkReassignItem; job: BulkReassignJob }[]> {
+  let q = supabaseAdmin()
+    .from("bulk_reassign_items")
+    // cap-safe: bounded by the explicit .limit(limit) below.
+    .select("*")
+    .eq("status", "pending");
+  if (jobId) q = q.eq("job_id", jobId);
   const items = (unwrap(
-    await supabaseAdmin()
-      .from("bulk_reassign_items")
-      // cap-safe: bounded by the explicit .limit(limit) below.
-      .select("*")
-      .eq("status", "pending")
-      .order("created_at", { ascending: true })
-      .limit(limit),
+    await q.order("created_at", { ascending: true }).limit(limit),
     "load-pending-bulk-reassign-items",
   ) as BulkReassignItem[] | null) ?? [];
   if (items.length === 0) return [];
@@ -540,6 +542,19 @@ export async function loadPendingBulkReassignItems(
     const job = jobById.get(item.job_id);
     return job ? [{ item, job }] : [];
   });
+}
+
+/** How many of one sweep's items are still pending (#3615), as a server side count. */
+export async function countPendingBulkReassignItems(jobId: string): Promise<number> {
+  return unwrapCount(
+    await supabaseAdmin()
+      .from("bulk_reassign_items")
+      // cap-safe: server-side count (head:true), no rows returned.
+      .select("id", { count: "exact", head: true })
+      .eq("job_id", jobId)
+      .eq("status", "pending"),
+    "count-pending-bulk-reassign-items",
+  );
 }
 
 /** One booking's current status + assignment, or null if it no longer exists. */

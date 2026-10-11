@@ -637,6 +637,12 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // clears it by under an hour. `scripts/test-confirm-line-schedule.ts` re-derives it FROM
   // the workflow file.
   "verdict:confirm-line": 52 * 60 * MIN,
+  // The daily reroute drill (#3615), its own steps of the same workflow, so the same arithmetic:
+  // 24h of cadence, doubled so one dropped run does not page, plus the 3h worst lateness measured
+  // here, plus the job's 20 minute timeout (raised from 10 to leave the drill room). That is
+  // 51h20m, and 52 clears it. `scripts/test-reroute-drill-schedule.ts` re-derives it FROM the
+  // workflow file.
+  "verdict:reroute-drill": 52 * 60 * MIN,
   // The smoke canary's latency reading (#1700), stamped by the 30 minute canary
   // workflow whenever the check read a real median.
   //

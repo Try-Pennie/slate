@@ -28,6 +28,7 @@ import {
   BURST_COUNTER_VERDICT_LANE,
   KILL_SWITCH_VERDICT_LANE,
   CONFIRM_LINE_VERDICT_LANE,
+  REROUTE_DRILL_VERDICT_LANE,
   AVAILABILITY_LATENCY_VERDICT_LANE,
   REGAL_CALLS_VERDICT_LANE,
   ROSTER_COVERAGE_VERDICT_LANE,
@@ -76,6 +77,8 @@ export type WorkerStampedVerdictLane = Exclude<
   | typeof BURST_COUNTER_VERDICT_LANE
   | typeof KILL_SWITCH_VERDICT_LANE
   | typeof CONFIRM_LINE_VERDICT_LANE
+  // #3615: the daily reroute drill, stamped by its own steps of the burst counter's workflow.
+  | typeof REROUTE_DRILL_VERDICT_LANE
   // #1700: measured by the smoke canary on a GitHub runner, where the reads it times
   // happen, so there is nothing for the Worker to stamp.
   | typeof AVAILABILITY_LATENCY_VERDICT_LANE

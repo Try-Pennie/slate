@@ -9,6 +9,7 @@ import {
   BULK_REASSIGN_ITEMS_PER_TICK,
   MAX_ITEM_ATTEMPTS,
   buildBulkReassignProgress,
+  drainOneJob,
   isBulkReassignProgress,
   drainBulkReassign,
   parseBulkReassignRange,
@@ -536,4 +537,95 @@ async function run() {
 }
 
 await run();
+
+// --- #3615: draining ONE sweep, for the reroute drill -----------------------------------------
+//
+// The drill must not move its call alongside the every minute lane, which holds the lane lease
+// while it works (two ticks against one daily cap count is what the lease exists to stop). So it
+// takes the same lease; while the lane holds it, it waits, and the lane may simply move the call
+// itself, which is just as good. The sleep is injected, so nothing here waits for real (L524).
+{
+  const slept: number[] = [];
+  let pending = 1;
+  const drained: string[] = [];
+  const out = await drainOneJob(
+    {
+      acquire: async () => ({ release: async () => {}, stillHeld: async () => true }),
+      drain: async () => {
+        drained.push("job1");
+        pending = 0;
+      },
+      pendingCount: async () => pending,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    },
+    { attempts: 3, waitMs: 5000 },
+  );
+  assert(out === "drained" && drained.length === 1 && slept.length === 0, "with the lease free, it drains the sweep at once");
+}
+{
+  // The lane holds the lease and moves the call itself on its next tick.
+  const slept: number[] = [];
+  let polls = 0;
+  const out = await drainOneJob(
+    {
+      acquire: async () => null,
+      drain: async () => {
+        throw new Error("must not drain without the lease");
+      },
+      pendingCount: async () => (++polls >= 2 ? 0 : 1),
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    },
+    { attempts: 3, waitMs: 5000 },
+  );
+  assert(out === "drained", "a sweep the lane drained counts, without this drain touching it");
+  assert(JSON.stringify(slept) === JSON.stringify([5000]), "waiting the injected interval between looks");
+}
+{
+  let threw = "";
+  try {
+    await drainOneJob(
+      {
+        acquire: async () => null,
+        drain: async () => {},
+        pendingCount: async () => 1,
+        sleep: async () => {},
+      },
+      { attempts: 3, waitMs: 5000 },
+    );
+  } catch (err) {
+    threw = String(err);
+  }
+  assert(threw.includes("still pending"), "a sweep nobody drained is a failure that says so, never a pass");
+}
+{
+  // The lease is released even when the drain throws.
+  let released = false;
+  let threw = false;
+  try {
+    await drainOneJob(
+      {
+        acquire: async () => ({
+          release: async () => {
+            released = true;
+          },
+          stillHeld: async () => true,
+        }),
+        drain: async () => {
+          throw new Error("google went away");
+        },
+        pendingCount: async () => 1,
+        sleep: async () => {},
+      },
+      { attempts: 2, waitMs: 1 },
+    );
+  } catch {
+    threw = true;
+  }
+  assert(threw && released, "a drain that throws releases the lease and surfaces the error");
+}
+
 finish();

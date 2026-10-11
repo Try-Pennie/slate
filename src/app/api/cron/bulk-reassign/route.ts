@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { drainBulkReassignJobs } from "@/lib/booking/service";
+import { BULK_REASSIGN_LANE_LOCK } from "@/lib/booking/bulk-reassign";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
@@ -27,7 +28,7 @@ export async function GET(req: NextRequest) {
   // this lock, so two ticks could move bookings against the same daily cap count.
   // The lease renews before each item and the drain stops once another tick holds
   // the key (#3120).
-  const lease = await acquireLease("cron_bulk_reassign", CRON_LOCK_TTL_MS);
+  const lease = await acquireLease(BULK_REASSIGN_LANE_LOCK, CRON_LOCK_TTL_MS);
   if (!lease) {
     return NextResponse.json({ skipped: "overlapping-run" });
   }
@@ -56,6 +57,6 @@ export async function GET(req: NextRequest) {
     }
     return NextResponse.json(summary ?? { error: "drain-failed" });
   } finally {
-    await releaseLock("cron_bulk_reassign", lease.token());
+    await releaseLock(BULK_REASSIGN_LANE_LOCK, lease.token());
   }
 }

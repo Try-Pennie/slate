@@ -99,8 +99,10 @@ import {
   ACTIONABLE_ITEM_STATUSES,
   SKIPPED_ITEM_STATUSES,
   MOVED_ITEM_STATUSES,
+  BULK_REASSIGN_LANE_LOCK,
   buildBulkReassignProgress,
   drainBulkReassign,
+  drainOneJob,
   type BulkReassignDeps,
   type BulkReassignDrainSummary,
   type BulkReassignProgress,
@@ -109,6 +111,8 @@ import { selectCoverageReassignTarget, type CoverageTargetDeps } from "@/lib/boo
 import { coverageSweepActor } from "@/lib/booking/coverage-sweep-actor";
 import type { CoverageSweepCancelReport } from "@/lib/booking/coverage-sweep-cancel";
 import { recordAudit } from "@/lib/audit";
+import { acquireLease, releaseLock } from "@/lib/locks";
+import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { DEMOTION_SWEEP_REASON, type DemotionChange } from "@/lib/booking/demotion-plan";
 import { MOVE_BACK_REASON_DETAIL, moveBackDemotionReroute, type MoveBackOutcome } from "@/lib/booking/demotion-revert";
 import { loadDemotionMoves, markDemotionMoveReverted } from "@/lib/booking/demotion-revert-store";
@@ -123,6 +127,7 @@ import {
   loadBulkReassignItems,
   loadBulkReassignJob,
   loadPendingBulkReassignItems,
+  countPendingBulkReassignItems,
   loadUserOrgId,
   markBulkReassignJobDoneIfDrained,
   type CoverageBookingRow,
@@ -3504,6 +3509,39 @@ export function adminMoveBackDemotionReroute(
       recordAudit,
     },
     { bookingId, orgId, actor, overrideCap, nowMs: Date.now() },
+  );
+}
+
+/**
+ * Drain ONE sweep's pending items under the lane's own lease (#3615), for the reroute drill. The
+ * decisions (wait while the lane holds the lease, accept the lane draining it, throw if nobody
+ * did) live in `drainOneJob`. The sleep is injectable; the drill's endpoint uses the real one.
+ */
+export function drainBulkReassignJob(
+  jobId: string,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<"drained"> {
+  return drainOneJob(
+    {
+      acquire: async () => {
+        // lock-overlap: fenced, the lane's own lease. While the lane holds it this waits rather
+        // than moving calls beside it, and the drain renews and stops on `stillHeld` (#3120).
+        const lease = await acquireLease(BULK_REASSIGN_LANE_LOCK, CRON_LOCK_TTL_MS);
+        return lease
+          ? { release: () => releaseLock(BULK_REASSIGN_LANE_LOCK, lease.token()), stillHeld: () => lease.stillHeld() }
+          : null;
+      },
+      drain: async (stillHeld) => {
+        await drainBulkReassign(
+          { ...realBulkReassignDeps(), loadPendingItems: (limit) => loadPendingBulkReassignItems(limit, jobId) },
+          undefined,
+          stillHeld,
+        );
+      },
+      pendingCount: () => countPendingBulkReassignItems(jobId),
+      sleep,
+    },
+    { attempts: 12, waitMs: 10_000 },
   );
 }
 

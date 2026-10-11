@@ -33,6 +33,16 @@
 export const HIDDEN_TEST_BUCKET_CODES = ["SMOKE", "SMOKE2"] as const;
 
 /**
+ * The reroute drill's bucket (#3615). A test bucket like the canary's, so no real lead, webhook or
+ * monitor ever sees it, and never public. Unlike them it has NO manual members and is keyed on the
+ * made up `DRILL_TIER` both test advisors carry, because the daily drill proves a demotion moves a
+ * call, and a demotion can only move a call held through criteria (a manual member serves
+ * everything). No real bucket keys on the tier, so carrying it widens no real pool.
+ */
+export const DRILL_TEST_BUCKET_CODE = "DRILL";
+export const DRILL_TIER = "drill";
+
+/**
  * The test buckets the public paths serve, the partner one FIRST (the canary and
  * the reroute check lead with it).
  *

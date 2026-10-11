@@ -15,6 +15,8 @@ import { assert, eq, finish } from "./lib/harness.ts";
 import { SEED_START_MINUTE, SEED_END_MINUTE } from "../src/lib/schedule-core.ts";
 import {
   DEMO_BUCKET_CODE,
+  DRILL_TEST_BUCKET_CODE,
+  DRILL_TIER,
   HIDDEN_TEST_BUCKET_CODES,
   PUBLIC_TEST_BUCKET_CODES,
 } from "../src/lib/embed/public-test-bucket.ts";
@@ -54,10 +56,10 @@ assert(seed.user.role === "agent", "agent row has role 'agent'");
 assert(seed.user.org_id === "org-smoke", "agent is in the target org");
 assert(seed.user.bookable === true, "agent is bookable (in the round-robin pool)");
 assert(seed.user.deactivated_at === null, "agent is active (not deactivated)");
-assert(
-  Object.keys(seed.user.attributes).length === 0,
-  "agent has no routing attributes (matches empty-criteria buckets)",
-);
+// #3615: the one routing attribute is the made up drill tier, which only the DRILL bucket keys on,
+// so the empty criteria buckets still reach the agent through membership alone and no real
+// bucket's pool can ever widen to it.
+eq(JSON.stringify(seed.user.attributes), JSON.stringify({ debt_team: [DRILL_TIER] }), "the agent carries the drill tier and nothing else");
 assert(seed.user.is_test === true, "agent is flagged is_test (hidden from UI, real leads can't book)");
 
 // --- Schedules + rules (so each agent actually has open slots) ---
@@ -86,20 +88,34 @@ assert(
 );
 
 // --- Buckets (isolated, empty-criteria, round-robin) ---
-eq(seed.buckets.length, HIDDEN.length + ALL_PUBLIC.length, "one bucket per requested code, hidden and public alike");
+eq(seed.buckets.length, HIDDEN.length + ALL_PUBLIC.length + 1, "one bucket per requested code, hidden and public alike, plus the drill");
 eq(
   seed.buckets.map((b) => b.code).join(","),
-  [...HIDDEN, ...ALL_PUBLIC].join(","),
-  "buckets carry the hidden codes and then the public ones, each read from the shared constant",
+  [...HIDDEN, ...ALL_PUBLIC, DRILL_TEST_BUCKET_CODE].join(","),
+  "buckets carry the hidden codes, then the public ones, then the drill's, each read from the shared constant",
 );
+
+// #3615: the reroute drill's bucket. Keyed on the drill tier with NO manual members, because a
+// demotion can only move a call held through criteria: a manual member serves everything.
+{
+  const drill = seed.buckets.find((b) => b.code === DRILL_TEST_BUCKET_CODE);
+  eq(JSON.stringify(drill?.criteria), JSON.stringify({ debt_team: DRILL_TIER }), "the drill bucket is keyed on the drill tier");
+  eq(drill?.is_test, true, "and is a test bucket, so no real lead or monitor ever sees it");
+  eq(drill?.event_type_id, "evt-smoke", "on the org's own event type, like the canary's buckets");
+  eq(seed.members.filter((m) => m.bucketCode === DRILL_TEST_BUCKET_CODE).length, 0, "with no manual members at all");
+}
 // #3424: the demo bucket is named as one in the admin, so nobody reads a demo
 // booking as a partner's test; the partner bucket keeps its name.
 eq(seed.buckets.find((b) => b.code === DEMO_BUCKET_CODE)?.name, `Demo (${DEMO_BUCKET_CODE})`, "the demo bucket is named as the demo");
 eq(seed.buckets.find((b) => b.code === PUBLIC)?.name, `Partner Test (${PUBLIC})`, "the partner bucket keeps its name");
-assert(
-  seed.buckets.every((b) => Object.keys(b.criteria).length === 0),
-  "buckets have EMPTY criteria so the lone member always matches",
-);
+{
+  const membershipBuckets = seed.buckets.filter((b) => b.code !== DRILL_TEST_BUCKET_CODE);
+  eq(membershipBuckets.length, HIDDEN.length + ALL_PUBLIC.length, "the filter below sees every bucket but the drill's");
+  assert(
+    membershipBuckets.every((b) => Object.keys(b.criteria).length === 0),
+    "every bucket but the drill's has EMPTY criteria, so membership alone decides who serves it",
+  );
+}
 assert(
   seed.buckets.every((b) => b.assignment === "round_robin"),
   "buckets are round-robin",
@@ -177,7 +193,7 @@ assert(
 eq(
   seed.members.filter((m) => m.user_id === seed.user.id).length,
   HIDDEN.length + ALL_PUBLIC.length,
-  "primary agent is a member of every bucket",
+  "primary agent is a member of every bucket but the drill's",
 );
 assert(
   [...HIDDEN, ...ALL_PUBLIC].every((code) =>
@@ -208,6 +224,7 @@ if (target) {
   assert(target.deactivated_at === null, "reassign target is active");
   assert(target.is_test === true, "reassign target is flagged is_test (hidden from UI, real leads can't book)");
   assert(target.id !== seed.user.id, "reassign target is a DISTINCT agent (reassign no-ops onto the same agent)");
+  eq(JSON.stringify(target.attributes), JSON.stringify({ debt_team: [DRILL_TIER] }), "and carries the drill tier, so the drill has a second advisor to move a call to");
 
   // It now has its OWN schedule + working hours so round-robin can pick it.
   const targetSchedule = seed.schedules.find((s) => s.user_id === target.id);
@@ -231,6 +248,7 @@ if (target) {
 const noTarget = buildSmokeSeed({ ...params, reassignTargetEmail: undefined });
 assert(noTarget.reassignTarget === null, "no reassign target when reassignTargetEmail is omitted");
 assert(noTarget.schedules.length === 1, "omitting the target seeds a single schedule");
+assert(!noTarget.buckets.some((b) => b.code === DRILL_TEST_BUCKET_CODE), "and no drill bucket, which needs two advisors");
 assert(
   noTarget.members.every((m) => m.user_id === noTarget.user.id),
   "omitting the target leaves only the primary agent's memberships",
