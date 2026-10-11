@@ -9,8 +9,10 @@
 // criteria looked up by bucket_id, manual membership by set, and the null-attributes fail-safe.
 import {
   assembleDemotionSnapshot,
+  assembleRerouteCandidates,
   criteriaMapOrThrow,
   selectDemotionBookings,
+  toRerouteCandidates,
 } from "../src/lib/booking/demotion-snapshot.ts";
 import type { DemotionCandidateRow, DemotionSnapshotReaders } from "../src/lib/booking/demotion-snapshot.ts";
 import type { Attributes, Criteria } from "../src/lib/db/types.ts";
@@ -209,6 +211,52 @@ function readers(over: Partial<DemotionSnapshotReaders>): DemotionSnapshotReader
     threw = true;
   }
   assert(threw, "a buckets read missing a requested bucket throws rather than returning a partial map");
+}
+
+// --- toRerouteCandidates / assembleRerouteCandidates (the decision's candidates) ---
+
+{
+  // The join: criteria looked up by bucket_id, manual membership by set, kind carried through.
+  const out = toRerouteCandidates(
+    [row("a", "b-uh"), row("m", "b-hi"), row("al", "b-uh", "agent_link")],
+    criteriaByBucket,
+    new Set<string>(["b-hi"]),
+  );
+  eq(out.length, 3, "one candidate per booking (no filtering, unlike the snapshot)");
+  eq(JSON.stringify(out[0].criteria), JSON.stringify({ debt_team: "ultra_high" }), "criteria looked up by bucket_id");
+  assert(out[1].isManualMember, "manual membership resolved by set");
+  assert(!out[0].isManualMember, "a non-member reads as not a manual member");
+  eq(out[2].kind, "agent_link", "the kind is carried through for the decision to exclude");
+}
+
+{
+  // assembleRerouteCandidates reads candidates + criteria + members (NOT attributes) and joins.
+  let attrsAsked = false;
+  const out = await assembleRerouteCandidates({
+    candidates: async () => [row("a", "b-uh"), row("b", "b-uh")],
+    bucketCriteria: async (ids) => {
+      attrsAsked = ids.length > 0; // just to use ids
+      return criteriaByBucket;
+    },
+    manualMemberBucketIds: async () => new Set<string>(),
+  });
+  eq(out.map((c) => c.bookingId).join(","), "a,b", "returns every held booking as a candidate");
+  assert(attrsAsked, "it reads bucket criteria for the referenced buckets");
+}
+
+{
+  // No bookings short-circuits with no further reads.
+  let criteriaRead = false;
+  const out = await assembleRerouteCandidates({
+    candidates: async () => [],
+    bucketCriteria: async () => {
+      criteriaRead = true;
+      return new Map();
+    },
+    manualMemberBucketIds: async () => new Set(),
+  });
+  eq(out.length, 0, "no bookings yields no candidates");
+  assert(!criteriaRead, "and reads nothing further");
 }
 
 finish();

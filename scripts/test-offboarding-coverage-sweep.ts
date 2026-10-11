@@ -163,6 +163,18 @@ const STAMP = "2026-08-31T14:00:00.000Z";
 }
 
 {
+  // #3582: the Twilio tier/backend demotion is the FOURTH sweep with no human in it. Same
+  // system initiator, its own cause column, so the drain does not refuse it.
+  const actor = coverageSweepActor({
+    created_by: null,
+    acting_as_user_id: null,
+    offboarding_deactivated_at: null,
+    demotion_marked_at: STAMP,
+  });
+  eq(actor.kind, "system", "a sweep the Twilio demotion triggered has no human actor and says so");
+}
+
+{
   // A staff actor wins even on an offboarding job: if somebody is recorded, the
   // move is theirs.
   const actor = coverageSweepActor({

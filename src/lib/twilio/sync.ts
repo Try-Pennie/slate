@@ -67,6 +67,10 @@ import {
   type ActivationAllowance,
 } from "@/lib/bookable/activation-allowance";
 import { startBulkReassign } from "@/lib/booking/service";
+import { demotionBookings, rerouteCandidatesForAgent } from "@/lib/booking/bulk-reassign-store";
+import { readDemotionRerouteEnabled } from "@/lib/booking/settings";
+import { resolveDemotionWrites } from "@/lib/twilio/demotion-trigger";
+import type { RerouteCandidate } from "@/lib/booking/reroute-eligibility";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { ensureDefaultOrg } from "@/lib/provision";
@@ -96,6 +100,33 @@ export interface TwilioSyncDeps {
   startCoverageSweep: (input: {
     outUserId: string;
     markedAtIso: string;
+  }) => Promise<{ itemCount: number }>;
+  /**
+   * Whether the reroute-on-ineligibility trigger is armed (#3582), read once per run from
+   * `booking_settings.demotion_reroute_enabled`. When false the whole demotion lifecycle is
+   * skipped: no candidates are read, nothing is stamped, swept or cleared, and the run behaves
+   * exactly as it did before the feature. Fails to false, so an unreadable switch never moves a
+   * customer's booking.
+   */
+  demotionEnabled: boolean;
+  /**
+   * An agent's upcoming bookings as reroute candidates, for the demotion DECISION (#3582): the
+   * trigger runs `bookingsToReroute` over every held booking. Only called for an evaluated agent
+   * while `demotionEnabled` is true.
+   */
+  loadRerouteCandidates: (userId: string) => Promise<RerouteCandidate[]>;
+  /**
+   * Queue the PARTIAL coverage sweep for a tier/backend demotion (#3582): moves only the
+   * bookings the agent no longer serves, keyed idempotently on `markedAtIso` so a crashed or
+   * re-run sync converges on ONE job. The sibling of `startCoverageSweep` (the full pool exit).
+   */
+  startDemotionSweep: (input: {
+    outUserId: string;
+    markedAtIso: string;
+    /** The agent's eligibility as the decision saw it (the narrowed `after`), used to FILTER the
+     *  snapshot. Passed rather than re-read, because the narrowed attributes may not be written
+     *  yet when the enqueue runs (the swept-marker write comes after it). */
+    attributes: Attributes | null;
   }) => Promise<{ itemCount: number }>;
   fetchWorkers: () => Promise<TwilioWorker[]>;
   loadRoster: () => Promise<TwilioRosterRow[]>;
@@ -219,6 +250,27 @@ export interface TwilioSyncResult {
    * next hour retries, since the plan is a pure function of the current state.
    */
   flipFailures: number;
+  /** Emails the demotion trigger stamped this run (a confirmed tier/backend narrowing), counted
+   *  once the stamping write landed (#3582). Empty when the trigger is off. */
+  demotionStamped: string[];
+  /** Emails whose demotion sweep was queued this run, once the stamp aged past the debounce and
+   *  the agent still could not serve a held booking (#3582). */
+  demotionSwept: string[];
+  /** Emails whose demotion mark was cleared this run (re-widened or the booking already moved),
+   *  so a flapped narrowing moves nobody (#3582). */
+  demotionCleared: string[];
+  /** The demotion sweeps queued this run and how many bookings each moved, the partial sibling
+   *  of `coverageSweeps` (#3582). An agent with nothing to move produces no entry. */
+  demotionSweeps: { email: string; bookings: number }[];
+  /** Demotion sweeps that threw while queueing, so the swept marker was withheld and the next
+   *  sync retries; calls held meanwhile are caught by `inactive_agent_bookings` (#3582). */
+  demotionSweepFailures: number;
+  /** Demotion attribute writes (stamp / swept marker / clear) that threw, so the run carried on
+   *  with the rest and the next sync re-plans (#3582, L73). */
+  demotionWriteFailures: number;
+  /** Agents whose demotion DECISION threw (a failed candidate/criteria read), skipped so the
+   *  auxiliary demotion pass could never abort the core roster sync (#3582, L73). */
+  demotionEvalFailures: number;
 }
 
 /**
@@ -273,6 +325,22 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
   const landed: Landed = { tiersChanged, backendChanged, redistributeTagLanded, redistributeTagCleared };
   const coverageSweeps: { email: string; bookings: number }[] = [];
   const counters = { coverageSweepFailures: 0, heldWriteFailures: 0 };
+  const demotionStamped: string[] = [];
+  const demotionSwept: string[] = [];
+  const demotionCleared: string[] = [];
+  const demotionSweeps: { email: string; bookings: number }[] = [];
+  let demotionSweepFailures = 0;
+  let demotionWriteFailures = 0;
+
+  // The demotion lifecycle (#3582), gated OFF by default. When off, nothing here runs: no
+  // candidates are read and the run behaves exactly as before. When on, a NEW stamp is folded
+  // into the core tier write (so it lands in the same write as the tiers), while a sweep or clear
+  // is a SEPARATE write applied after the core loop, so a demotion failure can never lose the core
+  // tier change.
+  const demotion = deps.demotionEnabled
+    ? await resolveDemotionWrites(roster, plan, deps.loadRerouteCandidates, deps.nowIso())
+    : { stampOverlays: new Map<string, Attributes>(), sweepClearWrites: [], evalFailures: 0 };
+  const demotionEvalFailures = demotion.evalFailures;
 
   let flipFailures = 0;
   for (const flip of plan.flips) {
@@ -301,12 +369,54 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
   // touches the WHOLE roster, so one bad row must not take the rest with it.
   let attributeWriteFailures = 0;
   for (const write of plan.attributeWrites) {
+    // A demotion stamp (confirmed, or defensive when the decision's read failed) rides in THIS
+    // write, so it lands in the same write as the tiers that caused it (crash-safe). The core tier
+    // write is never withheld: a demotion-read failure must not block an agent's routing facts. An
+    // existing stamp is already carried in write.attributes.
+    const overlay = demotion.stampOverlays.get(write.userId);
     try {
-      await deps.writeAttributes({ userId: write.userId, attributes: write.attributes });
+      await deps.writeAttributes({ userId: write.userId, attributes: overlay ?? write.attributes });
       countLanded(write.email, write.changes, landed);
+      if (overlay) demotionStamped.push(write.email);
     } catch (err) {
       attributeWriteFailures++;
       log.error("twilio-sync", { msg: "attribute write failed, carrying on", user_id: write.userId }, err);
+    }
+  }
+
+  // The demotion sweep/clear writes (#3582), SEPARATE from the core tier write above so a failure
+  // here can never lose a tier change. Each is its own boundary. A sweep ENQUEUES BEFORE writing
+  // its swept marker, the crash-safe order the redistribute sweep uses: a run that dies in between
+  // re-plans next sync and converges on the one job by its unique key, where recording it done
+  // first would log a sweep that never ran.
+  for (const dw of demotion.sweepClearWrites) {
+    try {
+      if (dw.sweepMarkedAtIso) {
+        try {
+          const { itemCount } = await deps.startDemotionSweep({
+            outUserId: dw.userId,
+            markedAtIso: dw.sweepMarkedAtIso,
+            attributes: dw.attributes,
+          });
+          if (itemCount > 0) demotionSweeps.push({ email: dw.email, bookings: itemCount });
+        } catch (err) {
+          demotionSweepFailures++;
+          log.error(
+            "twilio-sync",
+            { msg: "demotion sweep could not be queued, next sync will retry", user_id: dw.userId },
+            err,
+          );
+          // Swept marker withheld, so the next sync re-plans and retries. Calls held meanwhile
+          // are caught by `inactive_agent_bookings` via the demotion-pending grace.
+          continue;
+        }
+      }
+      await deps.writeAttributes({ userId: dw.userId, attributes: dw.attributes });
+      if (dw.kind === "sweep-overdue") demotionSwept.push(dw.email);
+      else demotionCleared.push(dw.email);
+    } catch (err) {
+      demotionWriteFailures++;
+      log.error("twilio-sync", { msg: "demotion write failed, carrying on", user_id: dw.userId }, err);
     }
   }
 
@@ -363,6 +473,13 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     noEmail,
     unmappedTags,
     flipFailures,
+    demotionStamped,
+    demotionSwept,
+    demotionCleared,
+    demotionSweeps,
+    demotionSweepFailures,
+    demotionWriteFailures,
+    demotionEvalFailures,
   };
 }
 
@@ -583,6 +700,29 @@ export async function defaultTwilioSyncDeps(orgId?: string): Promise<TwilioSyncD
         reason: { code: "coverage", detail: null },
         actor: null,
         redistributeMarkedAtIso: markedAtIso,
+      });
+      return { itemCount };
+    },
+    // Read once per run. Off by default, so the whole demotion lifecycle below stays inert until
+    // an admin arms it (#3582); fails to false, so an unreadable switch never moves a booking.
+    demotionEnabled: await readDemotionRerouteEnabled(),
+    loadRerouteCandidates: (userId) =>
+      // Open ended from now: everything still ahead of the agent. The window rule is shared with
+      // the snapshot, so the decision and the move judge the same bookings (L342).
+      rerouteCandidatesForAgent(userId, new Date().toISOString(), null),
+    // The PARTIAL sibling of startCoverageSweep (#3582): a system-initiated sweep keyed on the
+    // demotion mark, moving only the FILTERED set the agent no longer serves (demotionBookings),
+    // never the full coverage read.
+    startDemotionSweep: async ({ outUserId, markedAtIso, attributes }) => {
+      const { itemCount } = await startBulkReassign({
+        outUserId,
+        rangeStartIso: markedAtIso,
+        rangeEndIso: null,
+        reason: { code: "coverage", detail: null },
+        actor: null,
+        demotionMarkedAtIso: markedAtIso,
+        // Filter by the decision's attributes, not a fresh DB read (see demotionBookings).
+        snapshotBookings: () => demotionBookings(outUserId, markedAtIso, null, attributes),
       });
       return { itemCount };
     },

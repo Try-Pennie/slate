@@ -52,6 +52,7 @@ function deps(
   over: Partial<TwilioSyncDeps> = {},
   answer?: (userId: string, bookable: boolean) => BookableResult,
   sweepAnswer?: (userId: string) => { itemCount: number },
+  demotionSweepAnswer?: (userId: string) => { itemCount: number },
 ) {
   const calls: string[] = [];
   const audits: Record<string, unknown>[] = [];
@@ -68,6 +69,15 @@ function deps(
     startCoverageSweep: async ({ outUserId, markedAtIso }) => {
       calls.push(`sweep:${outUserId}:${markedAtIso}`);
       return sweepAnswer ? sweepAnswer(outUserId) : { itemCount: 0 };
+    },
+    // Off by default, so every case written before the demotion trigger keeps its meaning: the
+    // whole lifecycle is skipped and these three are never reached. The demotion cases below
+    // pass their own.
+    demotionEnabled: false,
+    loadRerouteCandidates: async () => [],
+    startDemotionSweep: async ({ outUserId, markedAtIso }) => {
+      calls.push(`demotion-sweep:${outUserId}:${markedAtIso}`);
+      return demotionSweepAnswer ? demotionSweepAnswer(outUserId) : { itemCount: 0 };
     },
     fetchWorkers: async () => [worker("a@trypennie.com", ["Redistribute"])],
     loadRoster: async () => [row()],
@@ -626,6 +636,130 @@ const overdue = {
   eq(d.calls, [], "an uninformative read writes nothing: no stamp cleared and none added");
   eq(r.corruptAttributes, 2, "and the unreadable workers are still counted");
   eq(r.redistributeTagCleared, [], "and no tag is reported as cleared");
+}
+
+// --- the demotion trigger (#3582), gated by demotionEnabled --------------------
+
+// A worker on High only (stored was ultra_high + high) is a tier NARROWING.
+const narrowingWorker = () => [worker("a@trypennie.com", ["High Debt: 50k+"])];
+const UH_CANDIDATE = [
+  { bookingId: "uh1", kind: "round_robin", criteria: { debt_team: "ultra_high" }, isManualMember: false },
+];
+const STAMP_AGED = "2026-09-09T11:00:00.000Z"; // 1h before NOW, past the 30-min debounce
+
+{
+  // OFF: a confirmed narrowing stamps NOTHING, moves NOBODY, and the write is the plain tier
+  // write with no demotion mark. The run is exactly what it was before the feature.
+  const d = deps({
+    demotionEnabled: false,
+    fetchWorkers: async () => narrowingWorker(),
+    loadRoster: async () => [row({ attributes: { debt_team: ["ultra_high", "high"] } })],
+    loadRerouteCandidates: async () => UH_CANDIDATE,
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.demotionStamped.length, 0, "flag off: nothing is stamped");
+  assert(!d.calls.some((c) => c.includes("demotion_marked_at")), "flag off: no demotion mark is written");
+  assert(!d.calls.some((c) => c.startsWith("demotion-sweep:")), "flag off: no demotion sweep is queued");
+  eq(d.calls, ['attrs:u1:{"debt_team":["high"]}'], "flag off: just the plain tier write");
+}
+
+{
+  // ON: a confirmed narrowing STAMPS, folded into the SAME tier write, and moves nobody yet.
+  const d = deps({
+    demotionEnabled: true,
+    fetchWorkers: async () => narrowingWorker(),
+    loadRoster: async () => [row({ attributes: { debt_team: ["ultra_high", "high"] } })],
+    loadRerouteCandidates: async () => UH_CANDIDATE,
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.demotionStamped, ["a@trypennie.com"], "flag on: the narrowing is stamped");
+  eq(r.tiersChanged, ["a@trypennie.com"], "and the tier change is still counted");
+  eq(
+    d.calls,
+    [`attrs:u1:{"debt_team":["high"],"demotion_marked_at":"${NOW}"}`],
+    "the stamp rides in the SAME write as the narrowed tiers, and the base loop does not write it twice",
+  );
+  assert(!d.calls.some((c) => c.startsWith("demotion-sweep:")), "no sweep on first sight: it waits for the debounce");
+}
+
+{
+  // ON: an UPGRADE (widening) stamps nothing even with the flag on.
+  const d = deps({
+    demotionEnabled: true,
+    fetchWorkers: async () => [worker("a@trypennie.com", ["Ultra High Debt: 100k+", "High Debt: 50k+"])],
+    loadRoster: async () => [row({ attributes: { debt_team: ["high"] } })],
+    loadRerouteCandidates: async () => UH_CANDIDATE,
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.demotionStamped.length, 0, "flag on: a widening stamps nothing");
+}
+
+{
+  // ON: a stamped row, aged past the debounce, still unable to serve a held booking: SWEEP,
+  // enqueue BEFORE the swept marker write, keyed on the STORED stamp.
+  const d = deps(
+    {
+      demotionEnabled: true,
+      // Worker still on High only: no tier change this sync, so this is a stamped-row sweep.
+      fetchWorkers: async () => narrowingWorker(),
+      loadRoster: async () => [
+        row({ attributes: { debt_team: ["high"], demotion_marked_at: STAMP_AGED } }),
+      ],
+      loadRerouteCandidates: async () => UH_CANDIDATE,
+    },
+    undefined,
+    undefined,
+    () => ({ itemCount: 1 }),
+  );
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.demotionSwept, ["a@trypennie.com"], "an aged, still-unserved demotion sweeps");
+  eq(r.demotionSweeps, [{ email: "a@trypennie.com", bookings: 1 }], "and reports what it moved");
+  eq(
+    d.calls,
+    [
+      `demotion-sweep:u1:${STAMP_AGED}`,
+      `attrs:u1:{"debt_team":["high"],"demotion_marked_at":"${STAMP_AGED}","demotion_swept_at":"${NOW}"}`,
+    ],
+    "the enqueue goes BEFORE the swept marker, so a crash between them re-sweeps and converges",
+  );
+}
+
+{
+  // ON: a stamped row whose sweep enqueue THROWS: the swept marker is withheld (no attrs write)
+  // so the next sync retries, and it is counted as a failure rather than reported as done.
+  const d = deps(
+    {
+      demotionEnabled: true,
+      fetchWorkers: async () => narrowingWorker(),
+      loadRoster: async () => [
+        row({ attributes: { debt_team: ["high"], demotion_marked_at: STAMP_AGED } }),
+      ],
+      loadRerouteCandidates: async () => UH_CANDIDATE,
+      startDemotionSweep: async () => {
+        throw new Error("enqueue blew up");
+      },
+    },
+  );
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.demotionSweepFailures, 1, "a failed enqueue is counted");
+  eq(r.demotionSwept.length, 0, "and not reported as swept");
+  assert(!d.calls.some((c) => c.includes("demotion_swept_at")), "the swept marker is withheld, so the next sync retries");
+}
+
+{
+  // ON: a stamped row the agent can serve again (re-widened): CLEAR the mark, move nobody.
+  const d = deps({
+    demotionEnabled: true,
+    fetchWorkers: async () => [worker("a@trypennie.com", ["Ultra High Debt: 100k+", "High Debt: 50k+"])],
+    loadRoster: async () => [
+      row({ attributes: { debt_team: ["ultra_high", "high"], demotion_marked_at: STAMP_AGED } }),
+    ],
+    loadRerouteCandidates: async () => UH_CANDIDATE,
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.demotionCleared, ["a@trypennie.com"], "a re-widened agent clears the stamp");
+  assert(!d.calls.some((c) => c.startsWith("demotion-sweep:")), "and no sweep is queued");
+  assert(!d.calls.some((c) => c.includes("demotion_marked_at")), "the cleared write carries no mark");
 }
 
 finish();
