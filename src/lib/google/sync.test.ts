@@ -86,6 +86,7 @@ import { WATCH_PAGING } from "@/lib/notify/alerts";
 import { GoogleHttpError } from "@/lib/google/http-error";
 import { idFilterBytes, MAX_IN_FILTER_BYTES } from "@/lib/db/id-batch";
 import { movedBusyRows } from "./sync-core";
+import { BUSY_WINDOW_AHEAD_DAYS } from "./sync-coalesce";
 
 /**
  * Chainable stand-in for the supabase client that emulates PostgREST paging:
@@ -305,12 +306,16 @@ describe("applyEvents keys + deletes per calendar (#619)", () => {
   it("upserts with the 3-part conflict key and scopes the delete to the calendar", async () => {
     const { db, upserts, deletes } = busyWriteDb();
     admin.current = db;
+    // Dated near now so applyEvents' write window filter (#1264, which reads Date.now())
+    // keeps the busy event; this test is about the conflict key and delete scoping.
+    const soon = new Date(Date.now() + 2 * 24 * 60 * 60_000).toISOString();
+    const soonEnd = new Date(Date.now() + 2 * 24 * 60 * 60_000 + 60 * 60_000).toISOString();
     const events = [
       {
         id: "shared-evt",
         status: "confirmed",
-        start: { dateTime: "2026-01-01T10:00:00Z" },
-        end: { dateTime: "2026-01-01T11:00:00Z" },
+        start: { dateTime: soon },
+        end: { dateTime: soonEnd },
       },
       { id: "gone-evt", status: "cancelled" },
     ];
@@ -332,6 +337,34 @@ describe("applyEvents keys + deletes per calendar (#619)", () => {
       calendar_id: "cal-A",
       gcal_event_id: ["gone-evt"],
     });
+  });
+
+  it("drops an out-of-window event through applyEvents, proving the write filter is wired (#1264)", async () => {
+    // applyEvents must pass a real clock to partitionBusyWrites; if that argument were
+    // dropped the filter would silently go off. An in-window event upserts and a far
+    // future one (well past the 21 day window) is routed to deletes instead, which only
+    // happens if applyEvents actually threaded the clock.
+    const { db, upserts, deletes } = busyWriteDb();
+    admin.current = db;
+    const soon = new Date(Date.now() + 2 * 24 * 60 * 60_000).toISOString();
+    const soonEnd = new Date(Date.now() + 2 * 24 * 60 * 60_000 + 60 * 60_000).toISOString();
+    // Derived from the window constant (plus 30 days of slack), so it stays well past the
+    // far edge if BUSY_WINDOW_AHEAD_DAYS changes rather than silently landing inside it.
+    const farMs = Date.now() + (BUSY_WINDOW_AHEAD_DAYS + 30) * 24 * 60 * 60_000;
+    const far = new Date(farMs).toISOString();
+    const farEnd = new Date(farMs + 60 * 60_000).toISOString();
+    const events = [
+      { id: "soon-evt", status: "confirmed", start: { dateTime: soon }, end: { dateTime: soonEnd } },
+      { id: "far-evt", status: "confirmed", start: { dateTime: far }, end: { dateTime: farEnd } },
+    ];
+
+    await applyEvents("u1", "cal-A", events, new Set(), "UTC");
+
+    const upsertedIds = upserts.flatMap((u) => (u.rows as { gcal_event_id: string }[]).map((r) => r.gcal_event_id));
+    expect(upsertedIds).toEqual(["soon-evt"]);
+    const deletedIds = deletes.flatMap((d) => d.filters.gcal_event_id as string[]);
+    expect(deletedIds).toContain("far-evt");
+    expect(upsertedIds).not.toContain("far-evt");
   });
 
   // #1268: the delete ids ride in the QUERY STRING, where an oversized batch is

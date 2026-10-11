@@ -6,7 +6,10 @@ import {
   isBusyEvent,
   partitionBusyWrites,
   staleBlockIds,
+  WRITE_WINDOW_MARGIN_MS,
 } from "../src/lib/google/sync-core.ts";
+import { BUSY_WINDOW_AHEAD_DAYS } from "../src/lib/google/sync-coalesce.ts";
+import { BUSY_PRUNE_KEEP_PAST_HOURS } from "../src/lib/busy/prune-core.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { GoogleEvent } from "../src/lib/google/calendar.ts";
@@ -173,7 +176,7 @@ assert(
     { id: "e3", transparency: "transparent", start: { dateTime: "2026-06-08T15:00:00Z" }, end: { dateTime: "2026-06-08T16:00:00Z" } },
     { start: { dateTime: "2026-06-08T17:00:00Z" }, end: { dateTime: "2026-06-08T18:00:00Z" } }, // no id -> skipped
   ];
-  const { upserts, deletes } = partitionBusyWrites("u1", "cal-1", events);
+  const { upserts, deletes } = partitionBusyWrites("u1", "cal-1", events, new Set(), "UTC", null);
   assert(upserts.length === 1 && upserts[0].gcal_event_id === "e1", "only the busy event becomes an upsert row");
   assert(
     upserts[0].user_id === "u1" &&
@@ -202,7 +205,7 @@ assert(
     { id: "slateBBB", status: "cancelled", start: { dateTime: "x" }, end: { dateTime: "y" } }, // a cancelled Slate event
   ];
   const slateOwned = new Set(["slateAAA", "slateBBB"]);
-  const { upserts, deletes } = partitionBusyWrites("u1", "cal-1", events, slateOwned);
+  const { upserts, deletes } = partitionBusyWrites("u1", "cal-1", events, slateOwned, "UTC", null);
   assert(
     upserts.length === 1 && upserts[0].gcal_event_id === "ext1",
     "a Slate-owned event is NOT mirrored as a gcal block (only the external event upserts)",
@@ -229,7 +232,7 @@ assert(
     { id: "dailyHold_20260608T193000Z", ...win },
     { id: "weeklyHold_20260608T193000Z", ...win },
   ];
-  const { upserts, deletes } = partitionBusyWrites("u1", "cal-1", events);
+  const { upserts, deletes } = partitionBusyWrites("u1", "cal-1", events, new Set(), "UTC", null);
   assert(
     upserts.length === 2 &&
       upserts.every((u) => u.starts_at === "2026-06-08T19:30:00Z" && u.ends_at === "2026-06-08T20:00:00Z"),
@@ -243,7 +246,7 @@ assert(
   const events = [
     { id: "ooo", start: { date: "2026-07-04" }, end: { date: "2026-07-05" } },
   ];
-  const { upserts } = partitionBusyWrites("u1", "cal-1", events, new Set(), "America/New_York");
+  const { upserts } = partitionBusyWrites("u1", "cal-1", events, new Set(), "America/New_York", null);
   assert(
     upserts.length === 1 &&
       upserts[0].starts_at === "2026-07-04T04:00:00.000Z" &&
@@ -257,8 +260,66 @@ assert(
     { id: "e1", start: { dateTime: "2026-06-08T13:00:00Z" }, end: { dateTime: "2026-06-08T13:30:00Z" } },
   ];
   assert(
-    partitionBusyWrites("u1", "cal-1", events).upserts.length === 1,
+    partitionBusyWrites("u1", "cal-1", events, new Set(), "UTC", null).upserts.length === 1,
     "no skip set -> behaves exactly as before (backward compatible)",
+  );
+}
+
+// partitionBusyWrites: the WRITE WINDOW FILTER (#1264). With a clock, an event whose
+// window is outside [now - BUSY_PRUNE_KEEP_PAST_HOURS, now + BUSY_WINDOW_AHEAD_DAYS]
+// (plus a one day margin erring toward keeping) is NOT upserted and is queued for
+// DELETE, so an event moved from inside the window to far outside clears its stale
+// near-term row instead of leaving the agent falsely busy there forever. The delta is
+// not scoped to the fetch's timeMax, so without this the cache can never bound itself.
+// All the dates below are DERIVED from the real window constants, not hard-coded, so if
+// BUSY_WINDOW_AHEAD_DAYS, BUSY_PRUNE_KEEP_PAST_HOURS or WRITE_WINDOW_MARGIN_MS change the
+// fixtures move with them and keep testing the actual edge rather than silently passing
+// from the far side of a wider window (L354).
+const WIN_DAY = 24 * 60 * 60_000;
+const winNow = Date.parse("2026-10-11T12:00:00Z");
+const aheadEdge = winNow + BUSY_WINDOW_AHEAD_DAYS * WIN_DAY; // far edge, before the margin
+const pastEdge = winNow - BUSY_PRUNE_KEEP_PAST_HOURS * 60 * 60_000; // near past edge
+const winIso = (ms: number) => new Date(ms).toISOString();
+const evAt = (id: string, startMs: number) => ({
+  id,
+  start: { dateTime: winIso(startMs) },
+  end: { dateTime: winIso(startMs + 30 * 60_000) },
+});
+{
+  const near = evAt("near", (winNow + aheadEdge) / 2); // midway through the ahead window: always in
+  const farFuture = evAt("far", aheadEdge + WRITE_WINDOW_MARGIN_MS + WIN_DAY); // clear of the margin: out
+  const farPast = evAt("old", pastEdge - WRITE_WINDOW_MARGIN_MS - WIN_DAY); // clear of the past margin: out
+  const { upserts, deletes } = partitionBusyWrites("u1", "cal-1", [near, farFuture, farPast], new Set(), "UTC", winNow);
+  assert(upserts.length === 1 && upserts[0].gcal_event_id === "near", "#1264: only the in-window event upserts");
+  assert(
+    deletes.includes("far") && deletes.includes("old"),
+    "#1264: an out-of-window event is queued for delete, so a move out of the window clears the stale row",
+  );
+}
+{
+  // The margin errs toward KEEPING: an event HALF a margin past the far edge is still
+  // kept, so the ~5h all-day/timezone skew cannot churn it between the filter and the
+  // next bootstrap. Derived from the margin, so it tracks a change to it.
+  const edge = evAt("edge", aheadEdge + WRITE_WINDOW_MARGIN_MS / 2);
+  const { upserts, deletes } = partitionBusyWrites("u1", "cal-1", [edge], new Set(), "UTC", winNow);
+  assert(upserts.length === 1 && deletes.length === 0, "#1264: an event within the margin past the far edge is kept, not churned");
+}
+{
+  // An unreadable window is KEPT (upserted), never dropped on a NaN: the same
+  // fail-toward-keeping direction as the margin, so a corrupt stamp cannot delete a
+  // row we cannot place (L50).
+  const bad = { id: "bad", start: { dateTime: "not-a-date" }, end: { dateTime: "also-bad" } };
+  const { upserts, deletes } = partitionBusyWrites("u1", "cal-1", [bad], new Set(), "UTC", winNow);
+  assert(upserts.length === 1 && deletes.length === 0, "#1264: an unreadable window is kept, not dropped on a NaN");
+}
+{
+  // An explicit null clock opts OUT of the filter (the only way to, now that the clock
+  // is required): an event well past the window still upserts. The pure-rule tests above
+  // use this so the filter is never silently off, only deliberately so.
+  const far = evAt("far", aheadEdge + WRITE_WINDOW_MARGIN_MS + WIN_DAY);
+  assert(
+    partitionBusyWrites("u1", "cal-1", [far], new Set(), "UTC", null).upserts.length === 1,
+    "#1264: an explicit null clock opts out of the window filter",
   );
 }
 
@@ -447,7 +508,7 @@ assert(
 
   // And it reaches the live path: a declined event is QUEUED FOR DELETE, so a
   // block cached before the decline is cleared rather than left over blocking.
-  const { upserts, deletes } = partitionBusyWrites("u1", "primary", payload.items);
+  const { upserts, deletes } = partitionBusyWrites("u1", "primary", payload.items, new Set(), "UTC", null);
   assert(
     deletes.length === 1 && deletes[0] === "declined-all-hands",
     "partitionBusyWrites deletes the declined event's cached block",
