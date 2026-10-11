@@ -104,7 +104,9 @@ export function readDrillReply(status: number, body: string): { exit: RerouteDri
     return { exit: REROUTE_DRILL_EXIT.unreadableReply, detail: "The reply was not the endpoint's JSON." };
   }
   const r = parsed as { reason?: unknown; detail?: unknown } | null;
-  const exit = typeof r?.reason === "string" ? REASON_EXIT[r.reason] : undefined;
+  // An OWN property only: a reason named like an inherited one ("toString") must read as
+  // unknown, never borrow whatever the prototype holds.
+  const exit = typeof r?.reason === "string" && Object.hasOwn(REASON_EXIT, r.reason) ? REASON_EXIT[r.reason] : undefined;
   if (exit === undefined) {
     return { exit: REROUTE_DRILL_EXIT.unreadableReply, detail: `The endpoint answered a reason nothing here knows (${String(r?.reason)}).` };
   }

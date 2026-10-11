@@ -31,6 +31,13 @@ eq(readDrillReply(404, "").exit, REROUTE_DRILL_EXIT.endpointMissing, "a deployme
 eq(readDrillReply(200, "<html>").exit, REROUTE_DRILL_EXIT.unreadableReply, "a body that is not the endpoint's");
 eq(readDrillReply(200, JSON.stringify({ reason: "something-new", detail: "x" })).exit, REROUTE_DRILL_EXIT.unreadableReply, "a reason nothing here knows is never read as a pass");
 eq(readDrillReply(500, "boom").exit, REROUTE_DRILL_EXIT.unreadableReply, "any other status is unreadable, not a verdict");
+for (const inherited of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+  eq(
+    readDrillReply(200, JSON.stringify({ reason: inherited, detail: "x" })).exit,
+    REROUTE_DRILL_EXIT.unreadableReply,
+    `a reason named like an inherited property (${inherited}) is unreadable, never an exit it borrowed`,
+  );
+}
 
 // Which endings stamp.
 const concludes = (exit: number) => decideRerouteDrillReport({ exit, detail: "d" }, "https://run").concluded;
