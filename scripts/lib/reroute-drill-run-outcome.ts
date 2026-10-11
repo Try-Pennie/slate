@@ -14,10 +14,12 @@
  * - **What to SAY.** A pass says nothing (L36). Everything else is reported with the drill's own
  *   sentence rather than a second copy of its wording here (L41).
  *
- * Bare node safe: imports nothing, because the reporter that uses it runs with no dependency
- * install (#1598). The drill's own reason list lives in `src/lib/booking/demotion-drill.ts`, and
+ * Bare node safe: imports only from scripts/, because the reporter that uses it runs with no
+ * dependency install (#1598). The drill's own reason list lives in `src/lib/booking/demotion-drill.ts`, and
  * `scripts/test-reroute-drill-run-outcome.ts` requires every one of them to have an exit here.
  */
+
+import { proofAlertText } from "./run-summary-file.ts";
 
 /** Every way the command can end, on its own code (L11). */
 export const REROUTE_DRILL_EXIT = {
@@ -207,6 +209,6 @@ export function decideRerouteDrillReport(
   if (judgement.headline === null) return { concluded: judgement.concluded, alert: null };
   return {
     concluded: judgement.concluded,
-    alert: [judgement.headline, summary.detail.trim() || `The run recorded no detail (exit ${summary.exit}).`, SILENCE, look].join("\n"),
+    alert: proofAlertText(judgement.headline, summary, SILENCE, look),
   };
 }

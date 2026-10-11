@@ -47,6 +47,18 @@ export function envOr(value: string | undefined, fallback: string): string {
   return trimmed ? trimmed : fallback;
 }
 
+/**
+ * The canary key and the deployment a scheduled proof asks (#3340, #3615), in one place so the
+ * proofs cannot drift on the default or the trailing slash. Takes the VALUES, so each
+ * `process.env.*` read stays visible to scripts/test-workflow-env-coverage.ts.
+ */
+export function canaryProofTarget(
+  key: string | undefined,
+  baseUrl: string | undefined,
+): { canaryKey: string; deployment: string } {
+  return { canaryKey: key ?? "", deployment: envOr(baseUrl, "https://slate.trypennie.app").replace(/\/$/, "") };
+}
+
 /** Load each file into process.env WITHOUT overriding vars already set (so an
  *  explicit `FOO=bar node …` still wins). Missing files are skipped. */
 export function loadEnvFiles(files: string[]): void {

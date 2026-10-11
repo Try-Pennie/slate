@@ -26,8 +26,8 @@
 //   BOOKING_API_KEY_CANARY       the canary's Bearer key (from .env.local / .dev.vars, or the environment)
 //   SLATE_BASE_URL               the deployment to ask (default https://slate.trypennie.app)
 //   REROUTE_DRILL_SUMMARY_FILE   where the scheduled lane reads the verdict (unset: nowhere)
-import { loadEnvFiles, envOr } from "./smoke-env.ts";
-import { writeRunSummary } from "./lib/run-summary-file.ts";
+import { loadEnvFiles, canaryProofTarget } from "./smoke-env.ts";
+import { recordRunSummary } from "./lib/run-summary-file.ts";
 import { REROUTE_DRILL_EXIT, readDrillReply } from "./lib/reroute-drill-run-outcome.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
@@ -35,14 +35,13 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 /** Longer than the drill can take, its wait on the drain lane included. */
 const REPLY_DEADLINE_MS = 5 * 60_000;
 
-const canaryKey = process.env.BOOKING_API_KEY_CANARY ?? "";
-// envOr rather than `??`: an unset repo variable reaches the step as an empty string (#1494).
-const deployment = envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app").replace(/\/$/, "");
+// An unset repo variable reaches the step as an empty string (#1494), which canaryProofTarget
+// treats as unset.
+const { canaryKey, deployment } = canaryProofTarget(process.env.BOOKING_API_KEY_CANARY, process.env.SLATE_BASE_URL);
 const summaryPath = process.env.REROUTE_DRILL_SUMMARY_FILE ?? "";
 
 function end(exit: number, message: string): never {
-  const res = writeRunSummary(summaryPath, { exit, detail: message });
-  if (summaryPath && !res.written) console.error(`  (the verdict could not be recorded: ${res.why})`);
+  recordRunSummary(summaryPath, { exit, detail: message });
   if (exit === REROUTE_DRILL_EXIT.passed) console.log(`\nPASSED: ${message}`);
   else console.error(`\nFAILED (exit ${exit}): ${message}`);
   process.exit(exit);

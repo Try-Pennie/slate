@@ -11,10 +11,9 @@
 //
 // Fails loud: a Slack post that errors, or Slack unconfigured while there is something to
 // say, exits non-zero so the job goes red rather than pretending it warned anyone.
-import { appendFileSync } from "node:fs";
 import { runAlerter } from "./lib/run-alerter.ts";
 import { postConcludedDecision, type PostFn } from "./lib/post-decision.ts";
-import { readRunSummary } from "./lib/run-summary-file.ts";
+import { readRunSummary, writeConcludedOutput } from "./lib/run-summary-file.ts";
 import { decideConfirmLineReport } from "./lib/confirm-line-run-outcome.ts";
 
 export async function run(post: PostFn, env: Record<string, string | undefined>) {
@@ -26,7 +25,7 @@ runAlerter(import.meta.url, async (post, env) => {
   const result = await run(post, env);
   // Whether the proof CONCLUDED is a fact about the line, so it is written whatever became
   // of the post: a Slack fault must not leave the verdict unstamped (L53).
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `concluded=${result.concluded ? 1 : 0}\n`, "utf8");
+  writeConcludedOutput(result.concluded);
   if (!result.ok) {
     console.error(
       `::error title=Confirm line alert not sent::The shared confirm line proof's Slack post failed (${result.reason}). ` +

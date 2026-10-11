@@ -13,7 +13,7 @@
  *
  * Bare node safe: node builtins only, because the reporters run with no install (#1598).
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
 export interface RunSummary {
   /** The command's exit code: the whole judgement. */
@@ -38,6 +38,29 @@ export function writeRunSummary(path: string, summary: RunSummary): { written: b
   } catch (err) {
     return { written: false, why: String(err) };
   }
+}
+
+/** Write the verdict as a command ends, and say on stderr when it could not land. */
+export function recordRunSummary(path: string, summary: RunSummary): void {
+  const res = writeRunSummary(path, summary);
+  if (path && !res.written) console.error(`  (the verdict could not be recorded: ${res.why})`);
+}
+
+/**
+ * Hand a reporter's CONCLUDED to the workflow, whose stamp step reads it. Written whatever became
+ * of the Slack post: whether a check concluded is a fact about the run, and losing it to a Slack
+ * fault would leave the heartbeat unstamped for a reason unrelated to the check (L53). Does
+ * nothing outside a workflow.
+ */
+export function writeConcludedOutput(concluded: boolean): void {
+  const out = process.env.GITHUB_OUTPUT;
+  if (out) appendFileSync(out, `concluded=${concluded ? "1" : "0"}\n`, "utf8");
+}
+
+/** The alert a scheduled proof posts: its headline, the command's own sentence, how often it
+ *  repeats, and where to look (L41: the wording of each part lives with its proof). */
+export function proofAlertText(headline: string, summary: RunSummary, silence: string, look: string): string {
+  return [headline, summary.detail.trim() || `The run recorded no detail (exit ${summary.exit}).`, silence, look].join("\n");
 }
 
 /**
