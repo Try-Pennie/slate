@@ -37,7 +37,7 @@ import { FULL_API_CALLERS } from "@/lib/booking/api-auth";
 import { startConfirmPrelude } from "@/lib/booking/confirm-line-live";
 import { log } from "@/lib/log";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
-import { resolveTestTraffic } from "@/lib/monitor/test-traffic";
+import { isTestBucketForPaging, isTestOwnedBookingForPaging } from "@/lib/monitor/test-traffic";
 import type { BookingOriginFacts } from "@/lib/monitor/offsite-origin";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 import { mayBookTestBuckets } from "@/lib/booking/api-auth";
@@ -133,32 +133,17 @@ function waitFactsFor(req: NextRequest): ConfirmLineFacts {
 /**
  * Is this booking attempt test traffic, for the PAGING decision only (#3575)?
  *
- * Shared by the book and dry run failure paths so the rule lives once (L613). Two
- * things keep it safe on a failure path, where a thrown lookup would lose the 500
- * the caller is owed:
- *
- *  - It resolves the bucket flag ONLY for an INTERNAL fault, the one code that
- *    pages, so an expected refusal (slot taken, outside the window) never pays the
- *    read.
- *  - It NEVER throws. `resolveTestTraffic` already answers false on an unreadable
- *    flag, but the same outage that caused the INTERNAL fault could in principle
- *    break the lookup itself, and a book failure handler must not turn a clean 500
- *    into an unhandled rejection (L337). An unreadable answer is `false`, which
- *    PAGES, the safe direction: a suppressed real 500 is a dropped customer nobody
- *    hears, where an over eager page is only noise.
+ * Resolves the bucket flag ONLY for an INTERNAL fault, the one code that pages, so an
+ * expected refusal (slot taken, outside the window) never pays the read. The
+ * never-throws, page-as-real wrapper lives in `isTestBucketForPaging`
+ * (`test-traffic.ts`), the SAME wrapper the cancel, lookup and reschedule paging
+ * resolvers use (#3580), so the four cannot drift (L370): an unreadable flag answers
+ * `false`, which PAGES, the safe direction, since a suppressed real 500 is a dropped
+ * customer nobody hears while an over eager page is only noise.
  */
 async function isTestTrafficForPaging(code: string, bucketCode: string): Promise<boolean> {
   if (code !== "INTERNAL") return false;
-  try {
-    return await resolveTestTraffic({ by: "bucket", code: bucketCode });
-  } catch (err) {
-    log.warn("booking-api", {
-      msg: "test-traffic lookup failed on the failure path; paging as real",
-      code,
-      err: String(err),
-    });
-    return false;
-  }
+  return isTestBucketForPaging(bucketCode);
 }
 
 async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
@@ -498,7 +483,15 @@ async function handleGet(req: NextRequest) {
     return NextResponse.json({ bookings: list });
   } catch (err) {
     const { httpStatus, code } = mapLookupError(err);
-    return NextResponse.json(await apiErrorBody(err, code, "lookup", "Lookup failed"), {
+    // #3580: the smoke canary reads its own test bookings on this path, so an
+    // INTERNAL fault here paged production. Resolve test-ness only from the
+    // (bookingId, externalId) PAIR naming one owned booking, never from either alone,
+    // so neither half is caller-settable. A person-only lookup (no bookingId) has
+    // nothing unforgeable to anchor to, so it pages. Only on INTERNAL, so a 404/400
+    // spends no read; an unreadable or unconfirmed marker pages (the safe direction).
+    const isTest =
+      code === "INTERNAL" && bookingId ? await isTestOwnedBookingForPaging(bookingId, externalId) : false;
+    return NextResponse.json(await apiErrorBody(err, code, "lookup", "Lookup failed", { isTest }), {
       status: httpStatus,
     });
   }

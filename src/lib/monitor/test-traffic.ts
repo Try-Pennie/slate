@@ -209,3 +209,71 @@ export async function resolveTestTraffic(source: TestTraffic): Promise<boolean> 
   const row = await readManagedBooking(source.token);
   return row?.buckets?.is_test === true;
 }
+
+/**
+ * Whether an INTERNAL fault on a booking-API path is the smoke canary's, so the
+ * failure path can pass `page: !isTest` and the production incident channel is not
+ * paged by the test harness (#3580). The book path was fixed by #3575.
+ *
+ * Test-ness is read SERVER SIDE from `buckets.is_test` and resolved only from an
+ * identifier the caller cannot FORGE to point at test data they do not own, because
+ * the module's rule is that test-ness is never caller-settable:
+ *
+ *  - the bucket code (book/preview, #3575): the server owns `is_test`;
+ *  - the manage token (cancel/reschedule): unguessable and self-authenticating, so a
+ *    caller can only name a booking they already hold;
+ *  - a (bookingId, externalId) PAIR (lookup-by-id, direct cancel): both must match one
+ *    real row, and a booking id is a uuid, so the pair cannot be guessed. Resolving by
+ *    the externalId ALONE was rejected (a keyed caller could claim the smoke identity),
+ *    as was the booking id alone (it ignores whose booking it is).
+ *
+ * There is deliberately NO resolver for a person-only lookup (an externalId with no
+ * booking id): nothing anchors it to a row the caller owns, so it always pages.
+ *
+ * Each resolver's reader catches its own errors and answers false, so every doubt
+ * (an unreadable marker, a missing/unowned booking) PAGES, the safe direction: a
+ * suppressed real 500 is a dropped customer nobody hears, where an over-eager page is
+ * only noise (L337). A page is withheld only when the booking is POSITIVELY test.
+ */
+
+/** The book and preview paths, which name the attempt by its bucket code (#3575). */
+export function isTestBucketForPaging(bucketCode: string): Promise<boolean> {
+  return resolveTestTraffic({ by: "bucket", code: bucketCode });
+}
+
+/** The cancel and reschedule manage-token paths ([token]/cancel, [token]/reschedule). */
+export function isTestManageTokenForPaging(token: string): Promise<boolean> {
+  return resolveTestTraffic({ by: "manageToken", token });
+}
+
+/**
+ * The lookup-by-id and direct cancel paths. Confirms the booking id and the caller's
+ * external id name ONE real row together, then takes that row's bucket flag. A caller
+ * cannot forge the pair (the id is a uuid) and cannot borrow a test identity (the id
+ * must be that identity's own booking), so neither half is caller-settable.
+ */
+export async function isTestOwnedBookingForPaging(
+  bookingId: string,
+  externalId: string,
+): Promise<boolean> {
+  try {
+    // cap-safe: id is the primary key, so maybeSingle returns at most one row; the
+    // external_id match is an additional AND, not a widening.
+    const { data, error } = await supabaseAdmin()
+      // agent-link-ok: one booking looked up by its own id to read its test marker,
+      // which describes that booking whatever kind it is (#2073).
+      .from("bookings")
+      .select("buckets!inner(is_test)")
+      .eq("id", bookingId)
+      .eq("external_id", externalId)
+      .maybeSingle();
+    if (error) {
+      unreadable("owned-booking", error.message);
+      return false;
+    }
+    return (data as { buckets?: { is_test: boolean } } | null)?.buckets?.is_test === true;
+  } catch (err) {
+    unreadable("owned-booking", String(err));
+    return false;
+  }
+}

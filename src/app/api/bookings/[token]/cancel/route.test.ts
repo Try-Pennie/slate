@@ -24,6 +24,14 @@ vi.mock("@/lib/monitor/record-api-outcome", () => ({ recordApiOutcome }));
 
 vi.mock("@/lib/booking/service", () => service);
 
+// #3580: observe whether a cancel 500 pages, and control whether the attempt reads as
+// test traffic. The REAL reportInternalError runs (so the route's page flag really
+// reaches it); only the Slack dispatch it ends in and the DB-backed resolver are mocked.
+const dispatch = vi.hoisted(() => ({ sendThrottledAlert: vi.fn(async () => {}) }));
+vi.mock("@/lib/notify/dispatch", () => dispatch);
+const testTraffic = vi.hoisted(() => ({ isTestManageTokenForPaging: vi.fn(async () => false) }));
+vi.mock("@/lib/monitor/test-traffic", () => testTraffic);
+
 import { POST } from "./route";
 // Deliberately NOT mocked: the point of #2373 is that the route branches on the real
 // classification rather than on how an error happens to be worded.
@@ -48,7 +56,12 @@ const outcome = (claimed: boolean) => ({
   booking: { id: "bk1", startsAt: "2026-07-01T15:00:00.000Z", endsAt: "2026-07-01T15:30:00.000Z" },
 });
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // #3580: default to real traffic (pages), the safe direction; a test overrides it.
+  testTraffic.isTestManageTokenForPaging.mockReset();
+  testTraffic.isTestManageTokenForPaging.mockResolvedValue(false);
+});
 
 describe("POST /bookings/[token]/cancel", () => {
   it("#3135 refuses a body past the cap with 413 and cancels nothing", async () => {
@@ -236,5 +249,48 @@ describe("cancel answers are never stored (#2561)", () => {
     const res = await POST(req({ reason: "schedule_conflict" }), params);
     expect(res.status).toBe(500);
     expect(noStore(res)).toBe("no-store");
+  });
+});
+
+// #3580: the smoke canary cancels its own test bookings on this path, so an INTERNAL
+// fault paged the production incident channel. The page is withheld only when the
+// booking is POSITIVELY test traffic (resolved server-side from its bucket); a real
+// one still pages, and an unreadable marker pages (tested in test-traffic.test.ts).
+describe("#3580 test-traffic page suppression", () => {
+  it("does NOT page a cancel INTERNAL fault that is test traffic", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    testTraffic.isTestManageTokenForPaging.mockResolvedValue(true);
+    service.cancelBooking.mockRejectedValueOnce(new Error("boom"));
+    const res = await POST(req({ reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(500);
+    expect(testTraffic.isTestManageTokenForPaging).toHaveBeenCalledWith("tok1");
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("DOES page a cancel INTERNAL fault that is real traffic", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    testTraffic.isTestManageTokenForPaging.mockResolvedValue(false);
+    service.cancelBooking.mockRejectedValueOnce(new Error("boom"));
+    const res = await POST(req({ reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(500);
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT page a cancel WRITE failure that is test traffic", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    testTraffic.isTestManageTokenForPaging.mockResolvedValue(true);
+    service.cancelBooking.mockRejectedValueOnce(new BookingWriteFailedError("cancel_claim", "db down"));
+    const res = await POST(req({ reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(503);
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("DOES page a cancel WRITE failure that is real traffic", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    testTraffic.isTestManageTokenForPaging.mockResolvedValue(false);
+    service.cancelBooking.mockRejectedValueOnce(new BookingWriteFailedError("cancel_claim", "db down"));
+    const res = await POST(req({ reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(503);
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
   });
 });

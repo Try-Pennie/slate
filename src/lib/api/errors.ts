@@ -102,7 +102,12 @@ export async function reportInternalError(
 export async function internalErrorResponse(
   err: unknown,
   context: string,
+  // #3580: forwarded to reportInternalError. The cancel and reschedule manage-token
+  // paths pass `page: false` when the fault is the smoke canary's (resolved
+  // server-side from the booking's bucket), so the test harness does not page the
+  // production incident channel. Omitted means page, which is the safe default.
+  opts: { page?: boolean } = {},
 ): Promise<NextResponse> {
-  await reportInternalError(err, context);
+  await reportInternalError(err, context, opts);
   return NextResponse.json({ error: GENERIC_ERROR_MESSAGE }, { status: 500 });
 }
