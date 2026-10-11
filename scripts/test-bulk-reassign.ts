@@ -115,6 +115,15 @@ async function run() {
   o = await processBulkReassignItem(item(), job, deps);
   assert(o.status === "unplaceable", "a genuinely-full slot yields unplaceable");
   assert(!log.some((l) => l.startsWith("reassign")), "an unplaceable booking is not moved");
+  // #3485: the detail must not blame the daily cap. Most event types carry no cap
+  // (it is null), so "nobody was free and under their daily cap" names a gate that
+  // never applied and sent a reader down the wrong path. It says availability, the
+  // one thing always true when a slot is genuinely full.
+  assert(!/daily cap/i.test(o.detail ?? ""), "the unplaceable detail does not blame the daily cap");
+  assert(
+    /no other advisor was available/i.test(o.detail ?? ""),
+    "the unplaceable detail says no other advisor was available",
+  );
 
   // Verify outage (nobody placeable, but a candidate couldn't be checked) → stays
   // pending for retry while attempts remain, then fails once retries are exhausted.

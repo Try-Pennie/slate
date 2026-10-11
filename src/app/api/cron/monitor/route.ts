@@ -360,6 +360,8 @@ import { demotionSweepPending, storedDemotionStamp } from "@/lib/booking/demotio
 import { criteriaMapOrThrow, type DemotionCandidateRow } from "@/lib/booking/demotion-snapshot";
 import {
   countStranded,
+  decodeSweepCause,
+  loadTimeOffWindows,
   runCoverageNeedsHumanCheck,
   strandedHoldersFromItems,
   type CoverageOutAgent,
@@ -2860,7 +2862,9 @@ export async function GET(req: NextRequest) {
       // reads run is left for the next tick, where it reads as news and re-pages,
       // rather than landing on this page with a stamp after its measurement time.
       const asOfMs = Date.now();
-      const nothing: StrandedRead = { holders: [], waiting: 0, newestCountableMs: null, asOfMs };
+      // #3485: the deployment base url, so the page can link the booking and the agent.
+      const appBaseUrl = appUrl();
+      const nothing: StrandedRead = { holders: [], waiting: 0, newestCountableMs: null, asOfMs, appBaseUrl };
       const items = await selectAllPages<{
         booking_id: string;
         status: string;
@@ -2933,15 +2937,80 @@ export async function GET(req: NextRequest) {
               // cap-safe: primary-key lookup, already split to the URL budget.
               // #3597: redistribute_marked_at tells a Redistribute sweep from an OOO one,
               // so the in-pool exclusion applies only to the former.
-              .select("id, out_user_id, status, updated_at, redistribute_marked_at")
+              // #3485: the cause columns say WHY the out agent will not be there, so the
+              // page can state the reason rather than only naming the agent.
+              .select(
+                "id, out_user_id, status, updated_at, redistribute_marked_at, ooo_request_id, offboarding_deactivated_at, demotion_marked_at, created_by",
+              )
               .in("id", batch),
             "monitor stranded coverage jobs",
           ) ?? []) as Pick<
             BulkReassignJob,
-            "id" | "out_user_id" | "status" | "updated_at" | "redistribute_marked_at"
+            | "id"
+            | "out_user_id"
+            | "status"
+            | "updated_at"
+            | "redistribute_marked_at"
+            | "ooo_request_id"
+            | "offboarding_deactivated_at"
+            | "demotion_marked_at"
+            | "created_by"
           >[],
       );
       const jobById = new Map(jobPages.flat().map((j) => [j.id, j]));
+      // #3485: for every sweep triggered by approved time off, read that request's
+      // absence window in its OWN display zone, so the page can say "on approved time
+      // off, Mon Oct 13 ..." without touching the agent's free-text reason. Bounded by
+      // the distinct ooo-triggered jobs behind the stranded items, so split like the rest.
+      const oooIds = [
+        ...new Set(
+          jobPages.flat().flatMap((j) => (j.ooo_request_id ? [j.ooo_request_id] : [])),
+        ),
+      ];
+      // BEST-EFFORT, and the degrade is enforced in `loadTimeOffWindows`: this read only
+      // ENRICHES the page with the absence window, so a failure returns an empty map
+      // rather than throwing out of the loader and taking the whole check to `unreadable`
+      // (review finding, 2026-10-11). The load-bearing reads above (items, bookings,
+      // jobs, agents) still throw, as they must.
+      const oooById = await loadTimeOffWindows(
+        oooIds,
+        async (ids) =>
+          (
+            await inIdChunks(
+              "monitor stranded coverage time off",
+              ids,
+              async (batch) =>
+                (unwrap(
+                  await db
+                    .from("ooo_requests")
+                    // cap-safe: primary-key lookup, already split to the URL budget.
+                    .select("id, starts_at, ends_at, display_tz_id, display_tz_label")
+                    .in("id", batch),
+                  "monitor stranded coverage time off",
+                ) ?? []) as {
+                  id: string;
+                  starts_at: string;
+                  ends_at: string;
+                  display_tz_id: string | null;
+                  display_tz_label: string | null;
+                }[],
+            )
+          )
+            .flat()
+            .map((o) => ({
+              id: o.id,
+              startsAt: o.starts_at,
+              endsAt: o.ends_at,
+              tzId: o.display_tz_id,
+              tzLabel: o.display_tz_label,
+            })),
+        (err) =>
+          log.warn(
+            "coverage-needs-human",
+            { msg: "time off window read failed; page will omit the window" },
+            err instanceof Error ? err : undefined,
+          ),
+      );
       const reads: StrandedItemRead[] = live.flatMap((it) => {
         const job = jobById.get(it.job_id);
         return job
@@ -2955,6 +3024,11 @@ export async function GET(req: NextRequest) {
                   status: job.status,
                   updatedAt: job.updated_at,
                   fromRedistribute: job.redistribute_marked_at != null,
+                  // #3485: why this agent will not be there, from the job's own columns.
+                  cause: decodeSweepCause(
+                    job,
+                    job.ooo_request_id ? oooById.get(job.ooo_request_id) ?? null : null,
+                  ),
                 },
                 assignedUserId: holderByBooking.get(it.booking_id)?.userId ?? null,
                 assignedAgentInPool: holderByBooking.get(it.booking_id)?.inPool ?? false,
@@ -2963,7 +3037,7 @@ export async function GET(req: NextRequest) {
           : [];
       });
       const counted = countStranded(reads, asOfMs);
-      const found = { waiting: counted.waiting, newestCountableMs: counted.newestCountableMs, asOfMs };
+      const found = { waiting: counted.waiting, newestCountableMs: counted.newestCountableMs, asOfMs, appBaseUrl };
       const stranded = counted.appointments;
       if (stranded.length === 0) return { ...found, holders: [] };
       const agents = (unwrap(
