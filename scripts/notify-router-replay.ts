@@ -19,7 +19,8 @@
 // Fails loud: a Slack post that errors, or Slack being unconfigured while there is
 // something to say, exits non-zero so the job goes visibly red rather than
 // pretending it warned anyone.
-import { readFileSync, appendFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { writeConcludedOutput } from "./lib/run-summary-file.ts";
 import { runAlerter } from "./lib/run-alerter.ts";
 import { postConcludedDecision } from "./lib/post-decision.ts";
 import { decideReplayReport, type ReplaySummaryFile } from "./lib/router-replay-report.ts";
@@ -70,8 +71,7 @@ runAlerter(import.meta.url, async (post, env) => {
   // is a fact about the replay, and losing it because Slack was misconfigured
   // would leave the heartbeat unstamped for a reason that has nothing to do with
   // the replay (L53, two checks must never share one status).
-  const out = process.env.GITHUB_OUTPUT;
-  if (out) appendFileSync(out, `concluded=${res.concluded ? "1" : "0"}\n`, "utf8");
+  writeConcludedOutput(res.concluded);
   if (!res.ok) {
     console.error(
       `::error title=Replay alert not sent::Could not post the Slack router-replay alert ` +

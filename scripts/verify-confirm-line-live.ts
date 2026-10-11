@@ -34,8 +34,8 @@
 //   BOOKING_API_KEY_CANARY     the canary's Bearer key (from .env.local / .dev.vars, or the environment)
 //   SLATE_BASE_URL             the deployment to ask (default https://slate.trypennie.app)
 //   CONFIRM_LINE_SUMMARY_FILE  where the scheduled lane reads the verdict (unset: nowhere)
-import { loadEnvFiles, envOr } from "./smoke-env.ts";
-import { writeRunSummary } from "./lib/run-summary-file.ts";
+import { loadEnvFiles, canaryProofTarget } from "./smoke-env.ts";
+import { recordRunSummary } from "./lib/run-summary-file.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
 
@@ -46,15 +46,14 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 const { CONFIRM_LINE_EXIT, REPLY_DEADLINE_MS, readConfirmLineOutcome, judgeConfirmLineProbe } = await import("./lib/confirm-line-live-control.ts");
 type Outcome = ReturnType<typeof readConfirmLineOutcome>;
 
-const canaryKey = process.env.BOOKING_API_KEY_CANARY ?? "";
-// envOr rather than `??`: an unset repo variable reaches the step as an empty string (#1494).
-const deployment = envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app").replace(/\/$/, "");
+// An unset repo variable reaches the step as an empty string (#1494), which canaryProofTarget
+// treats as unset.
+const { canaryKey, deployment } = canaryProofTarget(process.env.BOOKING_API_KEY_CANARY, process.env.SLATE_BASE_URL);
 const summaryPath = process.env.CONFIRM_LINE_SUMMARY_FILE ?? "";
 
 /** Record the verdict for the lane, print it, and exit on its code. */
 function end(exit: number, message: string): never {
-  const res = writeRunSummary(summaryPath, { exit, detail: message });
-  if (summaryPath && !res.written) console.error(`  (the verdict could not be recorded: ${res.why})`);
+  recordRunSummary(summaryPath, { exit, detail: message });
   if (exit === CONFIRM_LINE_EXIT.passed) console.log(`\nPASSED: ${message}`);
   else console.error(`\nFAILED: ${message}`);
   process.exit(exit);

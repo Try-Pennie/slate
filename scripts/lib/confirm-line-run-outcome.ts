@@ -13,11 +13,13 @@
  * - **What to SAY.** The good day says nothing (L36). Everything else is reported with
  *   the command's own sentence rather than a second copy of its wording here (L41).
  *
- * Bare node safe: imports nothing, because the reporter that uses it runs with no
+ * Bare node safe: imports only from scripts/, because the reporter that uses it runs with no
  * dependency install (#1598). That is why the exit table LIVES here rather than in
  * `confirm-line-live-control.ts`, which reaches into `src/` for the probe vocabulary and
  * re-exports this table, so there is still one of it.
  */
+
+import { proofAlertText } from "./run-summary-file.ts";
 
 /**
  * Every way the command can end, on its own code (L11). A shell caller branches on these,
@@ -281,6 +283,6 @@ export function decideConfirmLineReport(
   if (judgement.headline === null) return { concluded: judgement.concluded, alert: null };
   return {
     concluded: judgement.concluded,
-    alert: [judgement.headline, summary.detail.trim() || `The run recorded no detail (exit ${summary.exit}).`, SILENCE, look].join("\n"),
+    alert: proofAlertText(judgement.headline, summary, SILENCE, look),
   };
 }

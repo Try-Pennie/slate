@@ -777,8 +777,7 @@ session:
   `scripts/test-*.ts` sibling, so the rules are tested where no network exists
   and a live run is spent only on the thing a fixture cannot answer.
 
-The blindness is not confined to these commands, and the general remedy is worth
-knowing wherever you write a detector. Any fail safe check can sit permanently
+The blindness is not confined to these commands. Any fail safe check can sit permanently
 blind while looking healthy, so several carry a SECOND heartbeat stamp on top of
 the lane's, written only when they reach a MEASURED verdict
 (`src/lib/monitor/verdict-freshness.ts`), judged with `neverIsStale` ON because
@@ -795,10 +794,11 @@ one's bound, are in `docs/verify-commands.md`.
 | `verify:burst-counter` | the `BURST_LIMITER` object is not merely bound but answers AND counts, which the monitor lane deliberately cannot ask |
 | `verify:confirm-line` | the `CONFIRM_LINE` object answers the confirm path's client by its rules; it cannot prove isolates share it, only the load run can |
 | `verify:kill-switch` | the booking kill switch really refuses on the deployed Worker, the one gate here that fails CLOSED |
+| `verify:reroute-on-ineligibility` | a Twilio demotion really moves and audits a held call, and the move back holds (a daily drill on test advisors) |
 | `verify:calcom-parity` | Slate and cal.com hold the same roster and the same week per agent, which is invisible from inside Slate alone |
 | `verify:twilio-parity` | Slate holds the routing facts Twilio is the source of truth for, and notices a `Redistribute` agent still bookable |
 | `verify:router-replay` | Slate's ladder agrees with cal.com's choices on real leads, the only measurement of routing that exists before cutover |
-| `verify:parallel-run-readiness` | the preconditions of a trustworthy shadow run, each judged by the code that already owns it, including trypennie's key seen from production (exit 13, #2717) (every caller holds its own key since #2865, so exits 17 and 18 are retired), plus the low volume alarms' arming preconditions, reported without gating while they are disarmed (exits 14 to 16, #2767) |
+| `verify:parallel-run-readiness` | the preconditions of a trustworthy shadow run, each judged by the code that already owns it, including trypennie's key seen from production (exit 13, #2717), plus the low volume alarms' arming preconditions, reported without gating while they are disarmed (exits 14 to 16, #2767) |
 | `verify:pool-slot-parity` | the bucket codes sharing one availability pool really offer the same times |
 | `verify:table-drift` | production holds no table that no migration created |
 | `verify:reroute-live` | every reroute outcome end to end on production's test advisors, leaving nothing behind (#3251) |

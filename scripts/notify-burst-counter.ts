@@ -17,8 +17,7 @@
 // Fails loud: a Slack post that errors, or Slack being unconfigured while there is
 // something to say, exits non-zero so the job goes visibly red rather than pretending it
 // warned anyone.
-import { appendFileSync } from "node:fs";
-import { readRunSummary } from "./lib/run-summary-file.ts";
+import { readRunSummary, writeConcludedOutput } from "./lib/run-summary-file.ts";
 import { runAlerter } from "./lib/run-alerter.ts";
 import { postConcludedDecision } from "./lib/post-decision.ts";
 import {
@@ -59,8 +58,7 @@ runAlerter(import.meta.url, async (post, env) => {
   // Written whatever happened to the Slack post: whether the check CONCLUDED is a fact
   // about the run, and losing it because Slack was misconfigured would leave the
   // heartbeat unstamped for a reason that has nothing to do with the counter (L53).
-  const out = process.env.GITHUB_OUTPUT;
-  if (out) appendFileSync(out, `concluded=${res.concluded ? "1" : "0"}\n`, "utf8");
+  writeConcludedOutput(res.concluded);
   if (!res.ok) {
     console.error(
       `::error title=Burst counter alert not sent::Could not post the Slack burst-counter ` +

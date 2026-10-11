@@ -8,7 +8,7 @@
 // Salesforce). The buckets carry EMPTY criteria so the lone member always
 // matches, keeping the smoke test off the production round-robin and its
 // fairness data. Ids are deterministic so re-seeding upserts in place.
-import { isDemoBucket } from "../src/lib/embed/public-test-bucket.ts";
+import { DRILL_TEST_BUCKET_CODE, DRILL_TIER, isDemoBucket } from "../src/lib/embed/public-test-bucket.ts";
 import { SEED_START_MINUTE, SEED_END_MINUTE } from "../src/lib/schedule-core.ts";
 
 /**
@@ -85,7 +85,8 @@ export interface SmokeSeedUser {
   email: string;
   name: string;
   role: "agent";
-  attributes: Record<string, never>;
+  /** #3615: the made up drill tier only, which only the DRILL bucket keys on. */
+  attributes: { debt_team: string[] };
   bookable: boolean;
   deactivated_at: null;
   /** Hides it from internal UI and blocks real-lead bookings of its buckets (#396). */
@@ -108,7 +109,8 @@ export interface SmokeSeedBucket {
   name: string;
   event_type_id: string;
   assignment: "round_robin";
-  criteria: Record<string, never>;
+  /** Empty for every bucket but the drill's (#3615), which is keyed on the drill tier. */
+  criteria: Record<string, string>;
   /** Hidden from public availability/book; only the key-authed smoke test books it (#396). */
   is_test: true;
 }
@@ -185,7 +187,7 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
     // somebody by this name, so a visitor never takes the demo for them.
     name: "Sarah Mitchell",
     role: "agent",
-    attributes: {},
+    attributes: { debt_team: [DRILL_TIER] },
     bookable: true,
     deactivated_at: null,
     is_test: true,
@@ -256,7 +258,7 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
         email: p.reassignTargetEmail,
         name: "Smoke Reassign Target",
         role: "agent",
-        attributes: {},
+        attributes: { debt_team: [DRILL_TIER] },
         bookable: true,
         deactivated_at: null,
         is_test: true,
@@ -276,6 +278,18 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
     // A bookable fallback in the first HIDDEN bucket (SMOKE) only. Never the
     // public one: a partner's test call must land on the one agent the docs name.
     members.push({ bucketCode: p.bucketCodes[0], user_id: reassignTarget.id });
+    // #3615: the reroute drill's bucket, which needs two advisors. Keyed on the drill tier and
+    // given NO members, because a demotion only moves a call held through criteria. Added after
+    // the membership list is built, so it can never gain a member by accident.
+    buckets.push({
+      org_id: p.orgId,
+      code: DRILL_TEST_BUCKET_CODE,
+      name: `Reroute Drill (${DRILL_TEST_BUCKET_CODE})`,
+      event_type_id: p.eventTypeId,
+      assignment: "round_robin",
+      criteria: { debt_team: DRILL_TIER },
+      is_test: true,
+    });
   }
 
   return {

@@ -126,6 +126,17 @@ export const KILL_SWITCH_VERDICT_LANE = "verdict:kill-switch";
  */
 export const CONFIRM_LINE_VERDICT_LANE = "verdict:confirm-line";
 /**
+ * The daily reroute drill (#3615), the fourth member of this family stamped from OUTSIDE the
+ * Worker, by its own steps of the burst counter's workflow.
+ *
+ * The automatic reroute on ineligibility acts only when Twilio narrows somebody, so a pipeline
+ * that had stopped would look exactly like a quiet month (L557). `pnpm verify:reroute-on-ineligibility`
+ * books a test call on the DRILL bucket, demotes its test advisor and requires the real decision,
+ * sweep, drain and move back to do their work; this lane is stamped only on a run where that
+ * pipeline was exercised. Which endings those are is decided in `scripts/lib/reroute-drill-run-outcome.ts`.
+ */
+export const REROUTE_DRILL_VERDICT_LANE = "verdict:reroute-drill";
+/**
  * The booking below the lead's Salesforce tier check (#2593).
  *
  * Silent on a healthy day AND on a broken one, like the tier staffing alarm: two
@@ -292,6 +303,7 @@ export type DetectorVerdictLane =
   | typeof BURST_COUNTER_VERDICT_LANE
   | typeof KILL_SWITCH_VERDICT_LANE
   | typeof CONFIRM_LINE_VERDICT_LANE
+  | typeof REROUTE_DRILL_VERDICT_LANE
   | typeof BELOW_LEAD_TIER_VERDICT_LANE
   | typeof CROSS_SYSTEM_BOOKINGS_VERDICT_LANE
   | typeof REGAL_CALLS_VERDICT_LANE

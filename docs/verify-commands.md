@@ -423,6 +423,69 @@ the directory awake, which is a detector that has stopped concluding. It ranks b
 every real finding, so a run with one is named by that finding and still stamps. The
 mapping is `scripts/lib/confirm-line-run-outcome.ts`.
 
+# Proving the reroute on ineligibility (`pnpm verify:reroute-on-ineligibility`)
+
+The automatic reroute (#3582, #3615) moves a booked call off an advisor Twilio demotes off a
+pool the call needs. It acts only when Twilio narrows somebody, so a pipeline that had stopped
+working would look exactly like a quiet month (L557, #1394), and fakes agree with our assumptions
+about the database, the reassign and the calendars by construction (L52).
+
+**`pnpm verify:reroute-on-ineligibility` is the proof, as a drill.** It calls
+`POST /api/smoke/demotion-drill`, which runs `src/lib/booking/demotion-drill.ts` inside the
+deployment, where Slate's own calendar credentials live, on the DRILL test bucket and the two smoke
+test advisors only:
+
+1. book a test call on the DRILL bucket, keyed on the made up `drill` tier both advisors carry;
+2. take that tier off whoever got the call, exactly as a Twilio narrowing would;
+3. run the real demotion decision (stamp, then sweep past the debounce, on an injected clock, so
+   nothing waits), queue the real filtered sweep with what changed, and drain it under the lane's
+   own lease;
+4. require the call with the other advisor, the change recorded on the sweep, and an audit row;
+5. move it back through the real move back, and require it back, audited, and pinned;
+6. ALWAYS cancel the call and restore the advisor, and report a cleanup that failed OVER a pass.
+
+The hourly Twilio sync never evaluates a test advisor, so the drill drives the same decision
+functions the sync runs rather than the sync itself. The DRILL bucket and the drill tier come from
+the smoke seed (`scripts/seed-smoke-test.ts`); a drill on a deployment that was never seeded exits
+8 and says to run it. The drill's two audit rows a day are about test advisors, which the audit log
+hides unless "Include test advisors" is ticked.
+
+```
+BOOKING_API_KEY_CANARY=<the canary key the deployment holds> pnpm verify:reroute-on-ineligibility
+```
+
+`SLATE_BASE_URL` picks the deployment (default prod). Only a pass exits 0, and every other ending
+exits on its own code, listed in `scripts/lib/reroute-drill-run-outcome.ts`:
+
+| exit | what it met |
+|---|---|
+| 0 | the call moved, was recorded and audited, and the move back held |
+| 1 to 6 | the command could not ask (no key or URL, no reply, an unreadable reply, a refused key, no key on the deployment, no endpoint yet) |
+| 7 | another drill was running |
+| 8 | the DRILL bucket or its two advisors are not seeded |
+| 9 | no free time on the DRILL bucket |
+| 10, 11 | the booking path refused the test call, or it landed outside the drill (nobody demoted) |
+| 12 to 20 | **the pipeline answered wrongly**: no stamp, no sweep, no change recorded, nothing queued, no move, no audit, the move back refused or did not land, or not pinned |
+| 21 | the drill could not cancel its call or restore its advisor, before it judged anything |
+| 22 | a step threw |
+| 23 | the drill judged the pipeline and THEN could not clean up; what it judged is in the message |
+
+Its decision logic is pinned offline by `scripts/test-demotion-drill.ts`, which runs the drill over
+a fake world built from the real decision functions and shows every failure reason can occur.
+
+## It runs DAILY, beside the burst counter's proof
+
+`.github/workflows/burst-counter.yml` runs it every day after the confirm line proof, with its own
+summary file (`reroute-drill-summary.json`), its own bare node reporter
+(`scripts/notify-reroute-drill.ts`) and its own stamp. The job's timeout is 20 minutes so a slow
+drill is never cut off mid cleanup.
+
+**It stamps `verdict:reroute-drill`**, at the burst counter's 52 hours for the same derived
+reasons (`scripts/test-reroute-drill-schedule.ts` re-derives it from the workflow file). **Only a
+run that exercised the pipeline may stamp it**: exits 0, 12 to 20 and 23 conclude, and every bad one of
+those is posted to Slack. A drill that could not start, or could not clean up, does not stamp; its
+message still says so daily, and the lapsing stamp pages as a blind detector.
+
 # Proving an approved time off blocks (`pnpm verify:ooo-protection`)
 
 The third command in this family, and the closest mirror of the truth probe two

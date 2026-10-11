@@ -28,6 +28,11 @@ export const MOVED_ITEM_STATUSES: BulkReassignItemStatus[] = ["moved"];
  */
 export const BULK_REASSIGN_ITEMS_PER_TICK = 20;
 
+/** The lease the every minute drain lane holds while it moves calls (#3120), and that the reroute
+ *  drill takes before draining its own sweep (#3615). One spelling, so the two cannot drift apart
+ *  and run side by side. */
+export const BULK_REASSIGN_LANE_LOCK = "cron_bulk_reassign";
+
 /**
  * How many times a single item may be processed before a transient failure
  * (a reassign error, or a verify outage that never clears) becomes a terminal
@@ -304,6 +309,41 @@ export async function drainBulkReassign(
     await deps.markJobDoneIfDrained(jobId);
   }
   return summary;
+}
+
+/**
+ * Drain ONE sweep's pending items, for the reroute drill (#3615).
+ *
+ * The every minute lane holds a lease while it works, because two ticks moving calls against one
+ * daily cap count is what the lease exists to stop (#3120). So this takes the SAME lease. While the
+ * lane holds it, this waits, and the lane may simply move the sweep's call itself on its next
+ * tick, which is just as good: what is asked is that nothing is left pending, not who drained it.
+ * A sweep still pending after every attempt THROWS, so it can never read as drained. The lease is
+ * released whatever the drain does. The sleep is injected (L524).
+ */
+export async function drainOneJob(
+  deps: {
+    acquire(): Promise<{ release(): Promise<void>; stillHeld(): Promise<boolean> } | null>;
+    drain(stillHeld: () => Promise<boolean>): Promise<void>;
+    pendingCount(): Promise<number>;
+    sleep(ms: number): Promise<void>;
+  },
+  opts: { attempts: number; waitMs: number },
+): Promise<"drained"> {
+  for (let attempt = 1; attempt <= opts.attempts; attempt++) {
+    if ((await deps.pendingCount()) === 0) return "drained";
+    const lease = await deps.acquire();
+    if (lease) {
+      try {
+        await deps.drain(() => lease.stillHeld());
+      } finally {
+        await lease.release();
+      }
+      if ((await deps.pendingCount()) === 0) return "drained";
+    }
+    if (attempt < opts.attempts) await deps.sleep(opts.waitMs);
+  }
+  throw new Error(`the sweep's call was still pending after ${opts.attempts} attempts to drain it`);
 }
 
 /** A job's per-status item counts for the progress read (#974). */

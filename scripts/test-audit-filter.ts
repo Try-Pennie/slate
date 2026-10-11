@@ -19,6 +19,7 @@ import {
   auditActionChoices,
   DB_WRITTEN_AUDIT_ACTIONS,
   parseAuditFilters,
+  testAdvisorRowsFilter,
   auditFilterHref,
   describeAuditFilters,
   AUDIT_PAGE_SIZE,
@@ -180,6 +181,29 @@ import { assert, eq, finish } from "./lib/harness.ts";
   eq(new Set(choices).size, choices.length, "nothing is offered twice");
   eq([...choices].sort().join(","), choices.join(","), "the order is stable, not edit-history order");
   assert(choices.some((a) => !isRoutineAudit(a)), "and privileged actions are among them");
+}
+
+// ------------------------------------------------- test advisors (#3615)
+//
+// The daily reroute drill writes two audit rows a day about the smoke test advisors. They are not
+// privileged actions anybody needs to read, so they are hidden by default, like time off, and a
+// box brings them back.
+{
+  eq(parseAuditFilters({}).includeTest, false, "rows about test advisors are hidden by default");
+  eq(parseAuditFilters({ test: "1" }).includeTest, true, "test=1 brings them back");
+  const f = parseAuditFilters({ test: "1", actor: "u-1" });
+  assert(auditFilterHref(f, { page: 2 }).includes("test=1"), "and a link that changes the page keeps them shown");
+  assert(!auditFilterHref(parseAuditFilters({}), {}).includes("test="), "a default link carries no test parameter");
+
+  // The filter that hides them must keep every row with NO target: SQL's NOT IN answers unknown
+  // for a missing value, so a bare "target not in test advisors" would also hide every action
+  // that is about nobody.
+  eq(
+    testAdvisorRowsFilter(["t1", "t2"]),
+    "target_id.is.null,target_id.not.in.(t1,t2)",
+    "rows about nobody stay, rows about a test advisor go",
+  );
+  eq(testAdvisorRowsFilter([]), null, "with no test advisors there is nothing to hide, and no filter at all");
 }
 
 finish();

@@ -65,9 +65,13 @@ jobs:
     # the end of the current one minute window so both reports land inside one, which is at
     # most a minute. The confirm line proof below is one request the command cuts off at
     # two and a half minutes, and about 25 seconds when healthy, most of it the directory
-    # left idle until the platform puts it to sleep (#3481). Ten covers the install and both
-    # with room, and an explicit timeout is required of every job here (L313).
-    timeout-minutes: 10
+    # left idle until the platform puts it to sleep (#3481). The reroute drill (#3615) is one
+    # request its command cuts off at five minutes, a minute or two when healthy. Twenty covers
+    # the install and all three with room, so a job is never cut off mid drill with its test call
+    # still booked, and an explicit timeout is required of every job here (L313). The verdict
+    # bounds in src/lib/monitor/health.ts include this timeout, and their schedule tests re-derive
+    # them from this file.
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -200,4 +204,36 @@ jobs:
         run: |
           base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
           curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=verdict:confirm-line" \
+            -H "authorization: Bearer $BOOKING_API_KEY_CANARY"
+      # #3615: the daily reroute drill. A test call is booked on the DRILL bucket, its test advisor
+      # loses the drill tier, and the real demotion decision, sweep, drain and move back must do
+      # their work. Inside the deployment, through the canary's key, so no Google credentials live
+      # here. Same shape as the confirm line proof above: its own summary file, its own reporter,
+      # and a stamp only on a run that exercised the pipeline.
+      - name: Run the reroute drill
+        id: reroute_drill
+        continue-on-error: true
+        if: ${{ !cancelled() && steps.pre.outputs.configured == '1' }}
+        env:
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+          REROUTE_DRILL_SUMMARY_FILE: reroute-drill-summary.json
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-reroute-on-ineligibility-live.ts
+      - name: Say what the reroute drill found
+        id: reroute_drill_report
+        if: always() && steps.pre.outputs.configured == '1'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+          REROUTE_DRILL_SUMMARY_FILE: reroute-drill-summary.json
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node --experimental-strip-types scripts/notify-reroute-drill.ts
+      - name: Stamp the reroute drill verdict (a measured verdict only)
+        if: always() && steps.pre.outputs.configured == '1' && steps.reroute_drill_report.outputs.concluded == '1'
+        env:
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+        run: |
+          base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
+          curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=verdict:reroute-drill" \
             -H "authorization: Bearer $BOOKING_API_KEY_CANARY"

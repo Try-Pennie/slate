@@ -44,6 +44,8 @@ export interface AuditFilters {
   fromIso: string | null;
   toIso: string | null;
   includeRoutine: boolean;
+  /** #3615: rows about the smoke test advisors (the daily reroute drill's), hidden unless asked for. */
+  includeTest: boolean;
   page: number;
 }
 
@@ -93,6 +95,7 @@ export function parseAuditFilters(sp: Params): AuditFilters {
     fromIso: readDate(sp.from),
     toIso: readDate(sp.to),
     includeRoutine,
+    includeTest: sp.test === "1",
     page: readPage(sp.page),
   };
 }
@@ -120,10 +123,22 @@ export function auditFilterHref(
   // Only when it is not implied by the action already named, so the URL does not
   // carry a parameter that changes nothing.
   if (routine && !(action !== null && isRoutineAudit(action))) params.set("routine", "1");
+  if (filters.includeTest) params.set("test", "1");
   if (page > 1) params.set("page", String(page));
 
   const q = params.toString();
   return `/admin${q ? `?${q}` : ""}#audit`;
+}
+
+/**
+ * The filter that hides rows about the test advisors (#3615), as a PostgREST `or`, or null when
+ * there are none to hide. It KEEPS rows with no target: SQL's NOT IN answers unknown for a missing
+ * value, so a bare "target not in the test advisors" would also hide every action about nobody,
+ * which reads as a quieter trail rather than as a filter.
+ */
+export function testAdvisorRowsFilter(testUserIds: string[]): string | null {
+  if (testUserIds.length === 0) return null;
+  return `target_id.is.null,target_id.not.in.(${testUserIds.join(",")})`;
 }
 
 /**

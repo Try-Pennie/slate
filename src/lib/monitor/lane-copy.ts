@@ -23,6 +23,7 @@ import {
   BURST_COUNTER_VERDICT_LANE,
   KILL_SWITCH_VERDICT_LANE,
   CONFIRM_LINE_VERDICT_LANE,
+  REROUTE_DRILL_VERDICT_LANE,
   AVAILABILITY_LATENCY_VERDICT_LANE,
   BELOW_LEAD_TIER_VERDICT_LANE,
   CROSS_SYSTEM_BOOKINGS_VERDICT_LANE,
@@ -576,6 +577,17 @@ const VERDICT_SUBJECT: Record<DetectorVerdictLane, VerdictSubject> = {
     look:
       "whether the daily burst-counter workflow ran its confirm line step at all in the Actions tab, " +
       "then what that step said, since it ends on a different exit code for each way the check can fail",
+  },
+  [REROUTE_DRILL_VERDICT_LANE]: {
+    what: "the daily reroute drill that proves a Twilio demotion really moves a call, records it, and can be undone",
+    cost:
+      "nothing is confirming that the automatic reroute still moves a demoted advisor's calls, and because it acts " +
+      "only when Twilio narrows somebody, a pipeline that had stopped would look exactly like a quiet month",
+    // WHETHER IT RAN comes first, for the burst counter's reason: every bad reading of the pipeline
+    // stamps, so this page means a drill that could not start or a run that never happened.
+    look:
+      "whether the daily burst-counter workflow ran its reroute drill step at all in the Actions tab, then " +
+      "what that step said, since it ends on a different exit code for each way the drill can fail",
   },
   [AVAILABILITY_LATENCY_VERDICT_LANE]: {
     what: "the smoke canary's check on how fast the booker's availability read answers",

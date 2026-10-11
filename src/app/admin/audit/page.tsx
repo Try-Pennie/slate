@@ -12,6 +12,7 @@ import {
   describeAuditFilters,
   auditActionChoices,
   AUDIT_PAGE_SIZE,
+  testAdvisorRowsFilter,
 } from "@/lib/audit-filter";
 import { auditActionLabel, auditActorText, auditDetailText } from "@/lib/audit-display";
 import { InPlaceLink } from "@/components/ui/InPlaceLink";
@@ -33,6 +34,7 @@ export default async function AuditLogPage({
     from?: string;
     to?: string;
     routine?: string;
+    test?: string;
     auditPage?: string;
   }>;
 }) {
@@ -75,6 +77,7 @@ export default async function AuditLogPage({
     from: sp.from,
     to: sp.to,
     routine: sp.routine,
+    test: sp.test,
     page: sp.auditPage,
   });
   let auditEntries: AuditEntry[] = [];
@@ -83,7 +86,19 @@ export default async function AuditLogPage({
   if (isAdmin) {
     // The same predicate for the COUNT and for the ROWS, so the number above the
     // table and the rows in it can never describe different sets (L16).
+    // #3615: the test advisors, whose rows (the daily reroute drill's) are hidden unless asked
+    // for. Read through unwrap: an unreadable list would quietly show the drill's rows again.
+    const testIds = auditFilters.includeTest
+      ? []
+      : (
+          unwrap(
+            await db.from("users").select("id").eq("org_id", me.org_id).eq("is_test", true),
+            "audit log test advisors",
+          ) as { id: string }[]
+        ).map((u) => u.id);
+    const hideTest = testAdvisorRowsFilter(testIds);
     type Filterable = {
+      or: (f: string) => Filterable;
       eq: (c: string, v: string) => Filterable;
       in: (c: string, v: string[]) => Filterable;
       not: (c: string, op: string, v: string) => Filterable;
@@ -96,6 +111,7 @@ export default async function AuditLogPage({
       if (auditFilters.actions?.length) b = b.in("action", auditFilters.actions);
       else if (!auditFilters.includeRoutine) b = b.not("action", "like", "ooo.%");
       if (auditFilters.actorId) b = b.eq("actor_id", auditFilters.actorId);
+      if (hideTest) b = b.or(hideTest);
       if (auditFilters.fromIso) b = b.gte("created_at", `${auditFilters.fromIso}T00:00:00Z`);
       // Inclusive of the whole end day, which is what a person picking a date means.
       if (auditFilters.toIso) b = b.lte("created_at", `${auditFilters.toIso}T23:59:59.999Z`);
@@ -216,10 +232,25 @@ export default async function AuditLogPage({
             />
             Include time off decisions
           </label>
+          <label className="flex items-center gap-2 text-xs text-fg-muted">
+            <input
+              type="checkbox"
+              name="test"
+              value="1"
+              defaultChecked={auditFilters.includeTest}
+              className="h-4 w-4"
+            />
+            Include test advisors
+          </label>
           <button type="submit" className={btnSecondaryCls}>
             Apply
           </button>
-          {(auditFilters.actions || auditFilters.actorId || auditFilters.fromIso || auditFilters.toIso) && (
+          {(auditFilters.actions ||
+            auditFilters.actorId ||
+            auditFilters.fromIso ||
+            auditFilters.toIso ||
+            auditFilters.includeRoutine ||
+            auditFilters.includeTest) && (
             <InPlaceLink href="/admin/audit" className={btnSecondaryCls}>
               Clear
             </InPlaceLink>

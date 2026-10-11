@@ -134,6 +134,8 @@ const healthy = () => ({
   // #3340: the daily proof that the shared confirm line answers, stamped by the same
   // workflow as the burst counter's and carrying the same 52h bound.
   "verdict:confirm-line": ago(24 * 60 * MIN),
+  // #3615: the daily reroute drill, stamped by the same workflow.
+  "verdict:reroute-drill": ago(24 * 60 * MIN),
   // #1700: the canary's latency reading, stamped from the 30 minute canary workflow
   // whenever it read a real median, so a healthy fleet has one well inside the hour.
   "verdict:availability-latency": ago(40 * MIN),

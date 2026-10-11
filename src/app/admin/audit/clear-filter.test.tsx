@@ -92,4 +92,10 @@ describe("the audit log's Clear control", () => {
 
     expect(screen.queryByRole("link", { name: /^Clear$/i })).toBeNull();
   });
+
+  // #3615: a ticked box is a filter too, so Clear is offered when one is the only thing set.
+  it.each([["test"], ["routine"]])("is offered when only the %s box is ticked", async (box) => {
+    render(await AuditLogPage({ searchParams: Promise.resolve({ [box]: "1" }) }));
+    expect(screen.getByRole("link", { name: /^Clear$/i }).getAttribute("href")).toBe("/admin/audit");
+  });
 });
