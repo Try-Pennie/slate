@@ -90,12 +90,14 @@ describe("DemotionMoveBack (#3615)", () => {
     expect(refresh).toHaveBeenCalled();
   });
 
-  it("says a refusal in its own words, naming who it is about", async () => {
+  it("says a refusal in its own words, and redraws the page, which knows who has the call now", async () => {
     mockFetch({ status: 409, body: { reason: "moved-since", error: "x" } });
     render(<DemotionMoveBack bookingId="bk1" view={viewFor(move())} />);
     await userEvent.click(screen.getByRole("button", { name: "Move back to Jordan Lee" }));
     await userEvent.click(screen.getByRole("button", { name: "Move back" }));
-    expect(screen.getByRole("alert").textContent).toContain("has been moved again since");
+    expect(screen.getByRole("alert").textContent).toContain("moved again after this page loaded");
+    expect(screen.getByRole("alert").textContent).not.toContain("Sam Park");
+    expect(refresh).toHaveBeenCalled();
   });
 
   it("says a failure it could not classify as a failure, never as done", async () => {

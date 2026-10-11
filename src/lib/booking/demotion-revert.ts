@@ -121,14 +121,18 @@ export function planDemotionRevert(input: {
 }
 
 /** What a refusal says, naming the people it is about. */
-export function revertRefusalText(reason: RevertRefusal, names: { original: string; current: string }): string {
+export function revertRefusalText(reason: RevertRefusal, names: { original: string; current: string | null }): string {
   switch (reason) {
     case "no-automatic-move":
       return "Slate did not move this call automatically, so there is no automatic move to undo.";
     case "already-moved-back":
       return `This call has already been moved back to ${names.original}.`;
     case "moved-since":
-      return `This call has been moved again since, and is now with ${names.current}. Use Reassign if it should go to ${names.original}.`;
+      // `current` is null for a refusal arriving after the page was drawn: who holds the call now
+      // is not known there, and the page is redrawn to say it.
+      return names.current === null
+        ? "This call was moved again after this page loaded, so it was left where it is. The page is being redrawn to show who has it now."
+        : `This call has been moved again since, and is now with ${names.current}. Use Reassign if it should go to ${names.original}.`;
     case "not-active":
       return "This call was cancelled or has finished, so there is nothing to move back.";
     case "already-started":
@@ -284,7 +288,7 @@ export function demotionMoveView(input: {
     };
   }
   const refusals = Object.fromEntries(
-    REVERT_REFUSALS.map((r) => [r, revertRefusalText(r, { original, current: movedTo })]),
+    REVERT_REFUSALS.map((r) => [r, revertRefusalText(r, { original, current: null })]),
   ) as Record<RevertRefusal, string>;
   if (plan.kind === "record-only") {
     return {
@@ -304,7 +308,7 @@ export function demotionMoveView(input: {
     buttonLabel: `Move back to ${original}`,
     confirmMessage:
       `${original} takes this call again and the lead gets an updated invite; ${movedTo}'s calendar loses it. ` +
-      `${original} still lacks the tier this call's pool needs, so Slate will leave the call with ${original} and stop flagging it.`,
+      `Slate will then leave the call with ${original}, and will not move it or flag it again.`,
     confirmLabel: "Move back",
     keepLabel: `Keep with ${movedTo}`,
     overCapText: moveBackOverCapText(original),

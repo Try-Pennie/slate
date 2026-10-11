@@ -308,8 +308,14 @@ const actor = { userId: "admin1", actingAsUserId: null };
     assert(can.confirmMessage.includes("Jordan Lee takes this call again"), "the confirm says the consequence for the advisor");
     assert(can.confirmMessage.includes("updated invite"), "and for the lead");
     assert(can.confirmMessage.includes("leave the call with Jordan Lee"), "and that Slate will not move it again");
+    // Only what the pin guarantees: nothing re-measured whether the advisor regained the tier.
+    assert(!/lacks|tier/.test(can.confirmMessage), "and claims nothing about the advisor's tiers it did not measure (L11)");
     eq(can.keepLabel, "Keep with Sam Park", "the way out names who keeps it");
-    eq(can.refusals["moved-since"], revertRefusalText("moved-since", { original: "Jordan Lee", current: "Sam Park" }), "a refusal arriving later reads in the shared words");
+    eq(can.refusals["original-left"], revertRefusalText("original-left", { original: "Jordan Lee", current: null }), "a refusal arriving later reads in the shared words");
+    // A late "moved since" cannot know who holds the call now: the page was drawn before that
+    // move. Naming the advisor Slate moved it TO would name exactly who no longer has it.
+    assert(!can.refusals["moved-since"].includes("Sam Park"), "a late moved since never names the advisor who no longer has it");
+    assert(can.refusals["moved-since"].includes("redrawn"), "it says the page is being redrawn to show who does");
   }
 
   const back = view({ move: move({ change, revertedAt: "2026-10-12T14:00:00.000Z", revertedBy: "admin1" }), booking: booking({ assigned_user_id: "jordan" }) });
