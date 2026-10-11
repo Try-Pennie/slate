@@ -177,6 +177,10 @@ const nameOf = (id: string | null) => (id ? `Name(${id})` : "unassigned");
   );
   assert(!/[\u2014\u2013]/.test(detail), "the detail has no dash punctuation");
 
+  // A row with no destination recorded must not read "Moved to unassigned".
+  const noTo = auditDetailText({ ...row(change), details: { booking_id: "bk1", change } }, nameOf);
+  assert(noTo.startsWith("Moved to another advisor."), `a missing destination reads as another advisor (got: ${noTo})`);
+
   // The change comes back from jsonb. A malformed one must read as unrecorded, never throw while
   // the page renders and take the whole audit log down with it (L50).
   for (const bad of [{ from: "x" }, { from: { debtTeam: "high" }, to: {} }, "garbage", 7, { from: null, to: null }]) {

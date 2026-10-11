@@ -118,7 +118,7 @@ export function auditDetailText(row: AuditDisplayRow, nameOf?: (id: string | nul
     // panel use too. The demoted advisor is already the row's target.
     const to = typeof row.details?.to_user_id === "string" ? row.details.to_user_id : null;
     const change = describeDemotionChange(readDemotionChange(row.details?.change));
-    parts.push(`Moved to ${nameOf ? nameOf(to) : (to ?? "another advisor")}.`);
+    parts.push(`Moved to ${to === null ? "another advisor" : nameOf ? nameOf(to) : to}.`);
     parts.push(change ?? "What changed in Twilio was not recorded.");
     return parts.join(" ");
   }

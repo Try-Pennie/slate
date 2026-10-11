@@ -726,7 +726,8 @@ export async function defaultTwilioSyncDeps(orgId?: string): Promise<TwilioSyncD
       return { itemCount };
     },
     // Read once per run. Off by default, so the whole demotion lifecycle below stays inert until
-    // an admin arms it (#3582); fails to false, so an unreadable switch never moves a booking.
+    // an admin arms it (#3582). An unreadable switch answers null (#3615): treated as off, so it
+    // never moves a booking, and reported, so it is never a silent hour.
     demotionEnabled: await readDemotionRerouteEnabled(),
     loadRerouteCandidates: (userId) =>
       // Open ended from now: everything still ahead of the agent. The window rule is shared with
