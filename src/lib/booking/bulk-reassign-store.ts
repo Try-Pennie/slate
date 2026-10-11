@@ -11,9 +11,12 @@ import {
 import { coverageSelectionBounds } from "@/lib/booking/coverage-selection";
 import {
   assembleDemotionSnapshot,
+  assembleRerouteCandidates,
   criteriaMapOrThrow,
   type DemotionCandidateRow,
+  type DemotionSnapshotReaders,
 } from "@/lib/booking/demotion-snapshot";
+import type { RerouteCandidate } from "@/lib/booking/reroute-eligibility";
 import type {
   Attributes,
   BookingStatus,
@@ -130,27 +133,23 @@ export async function coverageBookings(
 }
 
 /**
- * The FILTERED snapshot for a Twilio tier/pool DEMOTION (#3582): of the agent's upcoming
- * bookings, only the ones they no longer serve under their CURRENT attributes, as
- * `CoverageBookingRow`s. Unlike `coverageBookings` (every upcoming booking, for a FULL pool
- * exit) it keeps only the bookings in the pools the agent LOST, so a partial demotion leaves
- * the still-served bookings alone.
- *
- * The join and the fail-safes live in `demotion-snapshot.ts` (`assembleDemotionSnapshot` +
- * `selectDemotionBookings`), node-tested there. This is only the IO, and every read goes
- * through `unwrap`, so a failed query THROWS rather than reading as "nothing to move" (L184).
- * A genuinely absent user row reads as null attributes, which moves nobody (the fail-safe).
+ * The shared reads behind the demotion snapshot and the demotion decision: the agent's upcoming
+ * bookings (the same window as `coverageBookings`, plus bucket_id and kind), the criteria of the
+ * buckets they reference, and the buckets they are a manual member of. The agent's ATTRIBUTES are
+ * NOT here: `demotionBookings` supplies them (the decision-time value), and `rerouteCandidatesForAgent`
+ * does not need them. Each read goes through `unwrap` / `criteriaMapOrThrow`, so a failed or short
+ * read THROWS rather than reading as "nothing to move" (L184).
  */
-export async function demotionBookings(
+function demotionSnapshotReaders(
   outUserId: string,
   rangeStartIso: string,
   rangeEndIso: string | null,
-): Promise<CoverageBookingRow[]> {
+): Omit<DemotionSnapshotReaders, "agentAttributes"> {
   const bounds = coverageSelectionBounds(
     { startIso: rangeStartIso, endIso: rangeEndIso },
     new Date().toISOString(),
   );
-  return assembleDemotionSnapshot({
+  return {
     candidates: () =>
       // The SAME window as coverageBookings (via the shared applyUpcomingWindow), plus the
       // bucket_id and kind the eligibility join needs. Its own inline paged read so the
@@ -165,13 +164,6 @@ export async function demotionBookings(
           bounds,
         ),
       ),
-    agentAttributes: async () => {
-      const row = unwrap(
-        await supabaseAdmin().from("users").select("attributes").eq("id", outUserId).maybeSingle(),
-        "demotion-agent-attributes",
-      ) as { attributes: Attributes | null } | null;
-      return row?.attributes ?? null;
-    },
     bucketCriteria: async (bucketIds) => {
       if (bucketIds.length === 0) return new Map<string, Criteria | null>();
       const rows = unwrap(
@@ -196,7 +188,49 @@ export async function demotionBookings(
       ) as { bucket_id: string }[];
       return new Set(rows.map((r) => r.bucket_id));
     },
+  };
+}
+
+/**
+ * The FILTERED snapshot for a Twilio tier/pool DEMOTION (#3582): of the agent's upcoming
+ * bookings, only the ones they no longer serve under `attributes`, as `CoverageBookingRow`s.
+ * Unlike `coverageBookings` (every upcoming booking, for a FULL pool exit) it keeps only the
+ * bookings in the pools the agent LOST.
+ *
+ * `attributes` are PASSED IN, the agent's eligibility as the decision saw it, rather than
+ * re-read here: when a sweep coincides with a tier change this sync, the narrowed attributes
+ * have not been written to the database yet (the swept-marker write comes after the enqueue), so
+ * re-reading would filter against the agent's OLD eligibility and move the wrong set. The
+ * bookings themselves ARE re-read on every call (including the conflict re-snapshot), so a
+ * booking that landed between the decision and the enqueue is still caught. The bucket criteria
+ * and manual membership reads fail loud (`unwrap`, `criteriaMapOrThrow`), so a partial read
+ * throws rather than moving everything (L184).
+ */
+export async function demotionBookings(
+  outUserId: string,
+  rangeStartIso: string,
+  rangeEndIso: string | null,
+  attributes: Attributes | null | undefined,
+): Promise<CoverageBookingRow[]> {
+  return assembleDemotionSnapshot({
+    ...demotionSnapshotReaders(outUserId, rangeStartIso, rangeEndIso),
+    agentAttributes: async () => attributes ?? null,
   });
+}
+
+/**
+ * The agent's upcoming bookings as `RerouteCandidate`s, for the demotion DECISION (#3582): the
+ * demotion trigger runs `planDemotionAction` (which runs `bookingsToReroute` over EVERY held
+ * booking), so this returns them all, unlike `demotionBookings` which filters to the lost-pool
+ * set for the enqueue. Shares the same reads, so the decision and the snapshot never build a
+ * different candidate set (L342).
+ */
+export async function rerouteCandidatesForAgent(
+  outUserId: string,
+  rangeStartIso: string,
+  rangeEndIso: string | null,
+): Promise<RerouteCandidate[]> {
+  return assembleRerouteCandidates(demotionSnapshotReaders(outUserId, rangeStartIso, rangeEndIso));
 }
 
 export interface CreateBulkReassignJobInput {

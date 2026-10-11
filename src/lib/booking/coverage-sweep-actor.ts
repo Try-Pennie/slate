@@ -29,6 +29,7 @@ export function coverageSweepActor(job: {
   acting_as_user_id: string | null;
   offboarding_deactivated_at: string | null;
   redistribute_marked_at?: string | null;
+  demotion_marked_at?: string | null;
 }): CoverageSweepActor {
   if (job.created_by) {
     return { kind: "staff", userId: job.created_by, actingAsUserId: job.acting_as_user_id };
@@ -38,5 +39,8 @@ export function coverageSweepActor(job: {
   // request. It records WHY it has no actor the same way, through its own cause
   // column, so the refusal below still stands for a job that cannot say.
   if (job.redistribute_marked_at) return { kind: "system" };
+  // #3582: the Twilio tier/backend demotion is the third. Same system initiator, its own cause
+  // column, so the refusal still stands for a job that records no reason for its missing actor.
+  if (job.demotion_marked_at) return { kind: "system" };
   throw new Error("bulk-reassign job has no accountable actor (created_by)");
 }

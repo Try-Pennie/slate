@@ -3498,6 +3498,16 @@ export interface StartBulkReassignInput {
    *  (agent, mark), so a sync that crashed between the mark and the flip converges
    *  on ONE sweep rather than moving customers' bookings twice. */
   redistributeMarkedAtIso?: string | null;
+  /** The Twilio tier/pool DEMOTION this sweep covers (#3582), when the hourly roster
+   *  sync triggered it. Makes the enqueue idempotent by database key on (agent,
+   *  demotion mark), so a crashed or re-run sync converges on ONE sweep. Unlike the
+   *  keys above a demotion is PARTIAL, so it is paired with `snapshotBookings` (the
+   *  filtered set) rather than the full coverage read. */
+  demotionMarkedAtIso?: string | null;
+  /** The bookings this sweep should move, when the caller already knows them: the
+   *  demotion case passes the FILTERED set (only the bookings the agent no longer
+   *  serves). Absent means the full coverage read. */
+  snapshotBookings?: () => Promise<CoverageBookingRow[]>;
 }
 
 /**
@@ -3512,7 +3522,12 @@ export async function startBulkReassign(
   // can say why. Refused here, at the one place every sweep is created, rather
   // than at the drain, where the job row already exists and the bookings are
   // already snapshotted.
-  if (!input.actor && !input.offboardingDeactivatedAtIso && !input.redistributeMarkedAtIso) {
+  if (
+    !input.actor &&
+    !input.offboardingDeactivatedAtIso &&
+    !input.redistributeMarkedAtIso &&
+    !input.demotionMarkedAtIso
+  ) {
     throw new Error("a coverage sweep with no accountable actor must record why it has none");
   }
   const orgId = await loadUserOrgId(input.outUserId);
@@ -3529,6 +3544,8 @@ export async function startBulkReassign(
     oooRequestId: input.oooRequestId ?? null,
     offboardingDeactivatedAtIso: input.offboardingDeactivatedAtIso ?? null,
     redistributeMarkedAtIso: input.redistributeMarkedAtIso ?? null,
+    demotionMarkedAtIso: input.demotionMarkedAtIso ?? null,
+    snapshotBookings: input.snapshotBookings,
   });
 }
 

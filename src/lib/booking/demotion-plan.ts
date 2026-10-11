@@ -109,6 +109,36 @@ export function demotionSweepPending(attributes: Attributes | null | undefined, 
   return Date.parse(nowIso) - Date.parse(markedAtIso) < DEMOTION_SWEEP_PENDING_GRACE_MS;
 }
 
+function asList(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map(String);
+  if (v === undefined || v === null) return [];
+  return [String(v)];
+}
+
+/**
+ * A CHEAP, attribute-only check for whether a change COULD narrow eligibility: a debt_team value
+ * was lost, or the backend_service set changed at all (a positive bucket loses it, a negated bucket
+ * gains an exclusion). A pure widening (only tiers gained, backend unchanged) returns false.
+ *
+ * This is deliberately an over-approximation of `bookingsToReroute`, used ONLY when the precise
+ * candidate read failed, to decide whether to stamp DEFENSIVELY so a real narrowing is not written
+ * away unexamined. A false positive costs a stamp the next sync's sweep pass clears; a false
+ * negative would strand a customer, so it errs toward stamping (L648). Unknown (null) either side
+ * returns false, since nothing can be said.
+ */
+export function mayNarrowEligibility(
+  before: Attributes | null | undefined,
+  after: Attributes | null | undefined,
+): boolean {
+  if (before == null || after == null) return false;
+  const afterDebt = new Set(asList(after.debt_team));
+  const lostTier = asList(before.debt_team).some((v) => !afterDebt.has(v));
+  const backendChanged =
+    asList(before.backend_service).sort().join("\u0000") !==
+    asList(after.backend_service).sort().join("\u0000");
+  return lostTier || backendChanged;
+}
+
 /**
  * What the demotion lifecycle does for one agent this sync:
  *  - `stamp`: a confirmed narrowing with no mark yet; stamp `demotion_marked_at` with the write.
@@ -145,18 +175,58 @@ export function planDemotionAction(
   // An unknown current read: judge nothing, and above all never clear a pending mark.
   if (after == null) return { kind: "none" };
 
+  // A CONFIRMED narrowing THIS sync (served before, not after). A fresh narrowing starts a new
+  // cycle even over an already-swept mark, so a second demotion of the same agent is not swallowed.
+  const narrowedThisSync = bookingsToReroute(before, after, candidates).length > 0;
+
   const stamp = storedDemotionStamp(before);
   if (stamp !== null) {
-    // Does the agent still fail to serve a booking they hold? (one-sided, current attributes)
-    const stillUnserved = unservedBookingIds(after, candidates).length > 0;
-    if (!stillUnserved) return { kind: "clear" };
-    if (isDemotionSwept(before)) return { kind: "none" };
+    if (isDemotionSwept(before)) {
+      // The previous cycle's calls were already moved. A fresh narrowing this sync is a NEW
+      // demotion: re-stamp (dated now), which drops the stale swept marker and starts its own
+      // debounce and sweep, so the newly-lost bookings are not left behind (#3599, the redistribute
+      // "new cycle after a completed one" rule).
+      if (narrowedThisSync) return { kind: "stamp", markedAtIso: nowIso };
+      // No new narrowing: once the agent serves everything they hold again (the swept calls moved,
+      // or they re-widened), clear the spent mark; otherwise leave it (do not re-sweep).
+      if (unservedBookingIds(after, candidates).length === 0) return { kind: "clear" };
+      return { kind: "none" };
+    }
+    // A pending (unswept) cycle. Clear if the agent serves everything again; sweep once aged;
+    // otherwise hold through the debounce.
+    if (unservedBookingIds(after, candidates).length === 0) return { kind: "clear" };
     if (demotionMarkAgedPastDebounce(stamp, nowIso)) return { kind: "sweep-overdue", markedAtIso: stamp };
     return { kind: "none" };
   }
 
-  // No mark yet: stamp only on a CONFIRMED narrowing (served before, not after), never on a
-  // pre-existing mis-assignment nothing changed.
-  const narrowed = bookingsToReroute(before, after, candidates).length > 0;
-  return narrowed ? { kind: "stamp", markedAtIso: nowIso } : { kind: "none" };
+  // No mark yet: stamp only on a CONFIRMED narrowing, never on a pre-existing mis-assignment
+  // nothing changed.
+  return narrowedThisSync ? { kind: "stamp", markedAtIso: nowIso } : { kind: "none" };
+}
+
+/**
+ * Turn a `DemotionAction` into the write it needs: the attributes to store this sync (the
+ * narrowed-tier attributes `after` with the mark folded in, swept, or cleared) and, for a
+ * sweep, the stamp to key the enqueue on. Returns null for `none`, so the caller writes
+ * nothing for a row the lifecycle leaves alone.
+ *
+ * Pure, and the stamp travels WITH the tier attributes in one write (the migration's rule),
+ * so a run that dies between the two leaves one consistent row rather than a stamp without its
+ * tiers or the reverse.
+ */
+export function applyDemotionAction(
+  after: Attributes,
+  action: DemotionAction,
+  nowIso: string,
+): { attributes: Attributes; sweepMarkedAtIso: string | null } | null {
+  switch (action.kind) {
+    case "none":
+      return null;
+    case "stamp":
+      return { attributes: withDemotionMark(after, action.markedAtIso), sweepMarkedAtIso: null };
+    case "sweep-overdue":
+      return { attributes: withDemotionSwept(after, nowIso), sweepMarkedAtIso: action.markedAtIso };
+    case "clear":
+      return { attributes: withoutDemotionMark(after), sweepMarkedAtIso: null };
+  }
 }

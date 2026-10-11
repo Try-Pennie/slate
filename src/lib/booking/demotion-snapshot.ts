@@ -14,20 +14,40 @@ export interface DemotionCandidateRow extends CoverageBookingRow {
 }
 
 /**
+ * The agent's upcoming bookings as `RerouteCandidate`s: the join (criteria looked up by
+ * `bucket_id`, manual membership by set) that both the filtered snapshot and the demotion
+ * DECISION (`planDemotionAction`, which needs every booking to run `bookingsToReroute`) read
+ * from. Shared so the snapshot and the decision can never build a different candidate set
+ * (L342).
+ */
+export function toRerouteCandidates(
+  rows: DemotionCandidateRow[],
+  criteriaByBucket: Map<string, Criteria | null>,
+  manualMemberBucketIds: Set<string>,
+): RerouteCandidate[] {
+  return rows.map((r) => ({
+    bookingId: r.id,
+    kind: r.kind,
+    criteria: criteriaByBucket.get(r.bucket_id) ?? null,
+    isManualMember: manualMemberBucketIds.has(r.bucket_id),
+  }));
+}
+
+/**
  * The FILTERED snapshot of a demotion sweep (#3582, Phase 4): of the agent's upcoming
- * bookings, the ones they no longer serve under their CURRENT attributes, as
- * `CoverageBookingRow`s (so the count, the work the sweep snapshots and any notice can never
- * disagree, L16). Unlike `coverageBookings` (every upcoming booking, correct only for a FULL
- * pool exit) it keeps only the bookings in the pools the agent LOST.
+ * bookings, the ones they no longer serve under the given `attributes`, as `CoverageBookingRow`s
+ * (so the count, the work the sweep snapshots and any notice can never disagree, L16). Unlike
+ * `coverageBookings` (every upcoming booking, correct only for a FULL pool exit) it keeps only
+ * the bookings in the pools the agent LOST.
  *
- * Pure: it does the join (criteria looked up by `bucket_id`, manual membership by set) and
- * then delegates the eligibility verdict to `unservedBookingIds`, which shares
- * `agentStillServes` with the booker's own pool resolver, so a snapshot can never move a
- * booking the booker would still have offered this agent (L263, L342).
+ * Pure: it does the join (via `toRerouteCandidates`) and then delegates the eligibility verdict
+ * to `unservedBookingIds`, which shares `agentStillServes` with the booker's own pool resolver,
+ * so a snapshot can never move a booking the booker would still have offered this agent (L263,
+ * L342).
  *
- * The fail-safes ride on `unservedBookingIds`: null/undefined `attributes` (a failed users
- * read) moves NOBODY (L214, L50), and an `agent_link` booking is never moved. A manual member
- * serves every booking in their bucket, so none of theirs is kept.
+ * The fail-safes ride on `unservedBookingIds`: null/undefined `attributes` (a failed read) moves
+ * NOBODY (L214, L50), and an `agent_link` booking is never moved. A manual member serves every
+ * booking in their bucket, so none of theirs is kept.
  *
  * `criteriaByBucket` is complete for every `bucket_id` present in production: the IO wrapper
  * (`demotionBookings`) reads all referenced buckets and THROWS on a read error OR a missing
@@ -45,12 +65,7 @@ export function selectDemotionBookings(
   criteriaByBucket: Map<string, Criteria | null>,
   manualMemberBucketIds: Set<string>,
 ): CoverageBookingRow[] {
-  const candidates: RerouteCandidate[] = rows.map((r) => ({
-    bookingId: r.id,
-    kind: r.kind,
-    criteria: criteriaByBucket.get(r.bucket_id) ?? null,
-    isManualMember: manualMemberBucketIds.has(r.bucket_id),
-  }));
+  const candidates = toRerouteCandidates(rows, criteriaByBucket, manualMemberBucketIds);
   const moveIds = new Set(unservedBookingIds(attributes, candidates));
   return rows
     .filter((r) => moveIds.has(r.id))
@@ -117,4 +132,24 @@ export async function assembleDemotionSnapshot(
     readers.manualMemberBucketIds(),
   ]);
   return selectDemotionBookings(attributes, candidates, criteriaByBucket, manualMemberBucketIds);
+}
+
+/**
+ * The agent's upcoming bookings as `RerouteCandidate`s (#3582, Phase 3), which the demotion
+ * DECISION needs: `planDemotionAction` runs `bookingsToReroute` over EVERY held booking, so
+ * unlike the filtered snapshot this returns them all. Does not read the agent's attributes
+ * (the decision supplies before/after itself). Short-circuits when the agent holds nothing, and
+ * any read that throws propagates so a partial read never becomes a decision (L184).
+ */
+export async function assembleRerouteCandidates(
+  readers: Omit<DemotionSnapshotReaders, "agentAttributes">,
+): Promise<RerouteCandidate[]> {
+  const candidates = await readers.candidates();
+  if (candidates.length === 0) return [];
+  const bucketIds = [...new Set(candidates.map((c) => c.bucket_id))];
+  const [criteriaByBucket, manualMemberBucketIds] = await Promise.all([
+    readers.bucketCriteria(bucketIds),
+    readers.manualMemberBucketIds(),
+  ]);
+  return toRerouteCandidates(candidates, criteriaByBucket, manualMemberBucketIds);
 }

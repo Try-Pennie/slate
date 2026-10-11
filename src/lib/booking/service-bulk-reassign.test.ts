@@ -60,6 +60,9 @@ describe("startBulkReassign", () => {
       offboardingDeactivatedAtIso: null,
       // #2115: and not a Twilio redistribute pool exit either.
       redistributeMarkedAtIso: null,
+      // #3582: and not a Twilio demotion; a person-started sweep passes no filtered snapshot.
+      demotionMarkedAtIso: null,
+      snapshotBookings: undefined,
     });
   });
 
@@ -86,7 +89,34 @@ describe("startBulkReassign", () => {
     );
   });
 
-  // The guard that keeps the two lines above from weakening it: a sweep with no
+  // #3582: a tier/backend DEMOTION sweep also carries no actor and is keyed on the demotion mark,
+  // and it passes a FILTERED snapshot (only the bookings the agent lost) through to the store
+  // rather than the full coverage read. The mark satisfies the no-actor refusal.
+  it("passes the mark and the filtered snapshot through for a demotion sweep (#3582)", async () => {
+    store.loadUserOrgId.mockResolvedValueOnce("org9");
+    store.createBulkReassignJob.mockResolvedValueOnce({ jobId: "job5", itemCount: 1 });
+    const snapshotBookings = vi.fn(async () => []);
+    await startBulkReassign({
+      outUserId: "out1",
+      rangeStartIso: "2026-10-01T09:00:00.000Z",
+      rangeEndIso: null,
+      reason,
+      actor: null,
+      demotionMarkedAtIso: "2026-10-01T09:00:00.000Z",
+      snapshotBookings,
+    });
+    expect(store.createBulkReassignJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        createdBy: null,
+        demotionMarkedAtIso: "2026-10-01T09:00:00.000Z",
+        redistributeMarkedAtIso: null,
+        offboardingDeactivatedAtIso: null,
+        snapshotBookings,
+      }),
+    );
+  });
+
+  // The guard that keeps the lines above from weakening it: a sweep with no
   // actor and no recorded reason for having none is still refused, because moving a
   // customer's appointment on it could never be explained afterwards (L93).
   it("still refuses a sweep with no actor and no reason for having none", async () => {

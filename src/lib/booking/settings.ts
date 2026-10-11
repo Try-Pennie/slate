@@ -286,6 +286,31 @@ export async function readPublicBookingPaused(): Promise<boolean | null> {
 }
 
 /**
+ * Is the reroute-on-ineligibility trigger armed? (#3582, migration 0179.)
+ *
+ * The go-live switch for the automatic demotion reroute. Read once per hourly roster run.
+ *
+ * **Fails to OFF**, unlike the booking reads above which answer null and let a judge decide:
+ * this gates a customer-MOVING action, so an unreadable switch must never be read as "on". An
+ * absent settings row is a real answer (nobody has armed it) and is also off. On a read error
+ * the hourly sync simply behaves as it does today and retries next hour, which is the safe
+ * degradation for a feature whose whole point is that it stays off until deliberately enabled.
+ */
+export async function readDemotionRerouteEnabled(): Promise<boolean> {
+  try {
+    const db = supabaseAdmin();
+    const row = unwrap(
+      await db.from("booking_settings").select("demotion_reroute_enabled").eq("id", 1).maybeSingle(),
+      "booking_settings.demotion_reroute_enabled",
+    ) as Pick<BookingSettings, "demotion_reroute_enabled"> | null;
+    return row?.demotion_reroute_enabled === true;
+  } catch (err) {
+    log.error("booking-settings", { msg: "demotion reroute flag read failed, treating as off" }, err);
+    return false;
+  }
+}
+
+/**
  * The kill switch AND when it was last thrown, for the monitor lane (#2366).
  *
  * A deliberate second read rather than a widening of `readPublicBookingPaused`

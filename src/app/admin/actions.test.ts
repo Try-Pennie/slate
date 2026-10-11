@@ -92,6 +92,13 @@ const twilioOk = (over: Partial<TwilioSyncResult> = {}) => ({
     noEmail: 0,
     unmappedTags: [],
     flipFailures: 0,
+    demotionStamped: [],
+    demotionSwept: [],
+    demotionCleared: [],
+    demotionSweeps: [],
+    demotionSweepFailures: 0,
+    demotionWriteFailures: 0,
+    demotionEvalFailures: 0,
     ...over,
   } satisfies TwilioSyncResult,
 });

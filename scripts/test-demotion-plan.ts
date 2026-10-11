@@ -7,6 +7,7 @@
 // that flaps back before the sweep CLEARS the stamp and moves nobody. The stamp is stable and
 // read back, never minted per run, so a retried sync converges on one sweep (#3614).
 import {
+  applyDemotionAction,
   DEMOTION_MARK_KEY,
   DEMOTION_SWEEP_DEBOUNCE_MS,
   DEMOTION_SWEEP_PENDING_GRACE_MS,
@@ -14,6 +15,7 @@ import {
   demotionMarkAgedPastDebounce,
   demotionSweepPending,
   isDemotionSwept,
+  mayNarrowEligibility,
   planDemotionAction,
   storedDemotionStamp,
   withDemotionMark,
@@ -142,12 +144,85 @@ const HI: RerouteCandidate = {
 }
 
 {
+  // A SECOND, distinct narrowing of an already-swept agent starts a NEW cycle (re-stamp dated now),
+  // so the newly-lost bookings are not swallowed by the old swept marker. Here the agent, already
+  // demoted to high and swept, now loses high too; the high booking is a fresh narrowing.
+  const sweptThenNarrowed: Attributes = { debt_team: ["high"], [DEMOTION_MARK_KEY]: T0, [DEMOTION_SWEPT_KEY]: AGED };
+  const a = planDemotionAction(sweptThenNarrowed, { debt_team: ["low"] }, [HI], AGED);
+  eq(a.kind, "stamp", "a fresh narrowing over a swept mark re-stamps a new cycle");
+  if (a.kind === "stamp") eq(a.markedAtIso, AGED, "dated now, so withDemotionMark drops the stale swept marker");
+}
+
+{
+  // A swept agent who now serves everything they hold again (calls moved, or re-widened) clears the
+  // spent mark.
+  const sweptBefore: Attributes = { debt_team: ["ultra_high", "high"], [DEMOTION_MARK_KEY]: T0, [DEMOTION_SWEPT_KEY]: AGED };
+  eq(planDemotionAction(sweptBefore, before, [UH], AGED).kind, "clear", "a swept agent serving everything clears the spent mark");
+}
+
+{
   // Stamp exists but the agent now serves everything they hold (re-widened, or the booking was
   // moved/rescheduled): CLEAR the stamp, move nobody.
   const markedBefore: Attributes = { debt_team: ["ultra_high", "high"], [DEMOTION_MARK_KEY]: T0 };
   eq(planDemotionAction(markedBefore, before, [UH], AGED).kind, "clear", "a re-widened agent clears the stamp");
   // And once the held bookings are gone (moved by the sweep), there is nothing unserved either.
   eq(planDemotionAction(markedBefore, afterDemoted, [], AGED).kind, "clear", "no held bookings left clears the stamp");
+}
+
+// --- mayNarrowEligibility (cheap attribute check for the defensive stamp) --
+
+{
+  assert(mayNarrowEligibility(before, afterDemoted), "losing a debt tier may narrow");
+  assert(!mayNarrowEligibility(afterDemoted, before), "gaining a debt tier (a widening) does not");
+  assert(!mayNarrowEligibility(before, before), "no change does not narrow");
+  assert(
+    mayNarrowEligibility({ backend_service: ["achieve"] }, { backend_service: ["beyond"] }),
+    "any backend_service change may narrow (a positive bucket loses it, a negated one gains an exclusion)",
+  );
+  assert(
+    mayNarrowEligibility({}, { backend_service: ["achieve"] }),
+    "gaining a backend value may narrow a negated bucket",
+  );
+  assert(!mayNarrowEligibility(null, afterDemoted), "an unknown before cannot be judged to narrow");
+  assert(!mayNarrowEligibility(before, null), "an unknown after cannot be judged to narrow");
+}
+
+// --- applyDemotionAction (action -> the attribute overlay + sweep) ---------
+
+const afterAttrs: Attributes = { debt_team: ["high"] };
+
+{
+  // none produces no write at all.
+  eq(applyDemotionAction(afterAttrs, { kind: "none" }, AGED), null, "a none action produces no write");
+}
+
+{
+  // stamp folds demotion_marked_at into the write; no sweep.
+  const o = applyDemotionAction(afterAttrs, { kind: "stamp", markedAtIso: T0 }, AGED);
+  assert(o !== null, "a stamp action produces a write");
+  eq(o!.attributes[DEMOTION_MARK_KEY], T0, "the stamp is folded into the write attributes");
+  eq((o!.attributes.debt_team as string[]).join(","), "high", "the write keeps the narrowed tiers");
+  eq(o!.sweepMarkedAtIso, null, "a stamp enqueues no sweep");
+}
+
+{
+  // sweep-overdue records swept=now AND asks for the enqueue keyed on the STORED stamp.
+  const base: Attributes = { debt_team: ["high"], [DEMOTION_MARK_KEY]: T0 };
+  const o = applyDemotionAction(base, { kind: "sweep-overdue", markedAtIso: T0 }, AGED);
+  assert(o !== null, "a sweep-overdue action produces a write");
+  eq(o!.attributes[DEMOTION_SWEPT_KEY], AGED, "the sweep records swept=now");
+  eq(o!.attributes[DEMOTION_MARK_KEY], T0, "the sweep keeps the mark for convergence");
+  eq(o!.sweepMarkedAtIso, T0, "the sweep enqueues keyed on the stored stamp");
+}
+
+{
+  // clear drops the mark, no sweep.
+  const base: Attributes = { debt_team: ["ultra_high", "high"], [DEMOTION_MARK_KEY]: T0, [DEMOTION_SWEPT_KEY]: AGED };
+  const o = applyDemotionAction(base, { kind: "clear" }, AGED);
+  assert(o !== null, "a clear action produces a write");
+  eq(o!.attributes[DEMOTION_MARK_KEY], undefined, "clear drops the mark from the write");
+  eq(o!.attributes[DEMOTION_SWEPT_KEY], undefined, "clear drops the swept marker too");
+  eq(o!.sweepMarkedAtIso, null, "clear enqueues no sweep");
 }
 
 finish();

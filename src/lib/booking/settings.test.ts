@@ -26,6 +26,7 @@ import {
   loadBookingHorizonDays,
   readBookingHorizonDays,
   readPublicBookingPaused,
+  readDemotionRerouteEnabled,
   readPublicBookingPauseState,
   parseHorizonForm,
   HORIZON_DEFAULT,
@@ -268,6 +269,45 @@ describe("readPublicBookingPaused", () => {
     expect(await readPublicBookingPaused()).toBe(false);
     maybeSingle.mockResolvedValue({ data: null, error: { message: "read failed" } });
     expect(await readPublicBookingPaused()).toBeNull();
+  });
+});
+
+// #3582: the go-live switch for the reroute trigger. Unlike the booking reads above (which answer
+// null and let a judge decide), this gates a customer-MOVING action, so it FAILS TO OFF: an
+// unreadable switch, and an absent settings row, both read as off.
+describe("readDemotionRerouteEnabled", () => {
+  beforeEach(() => {
+    maybeSingle.mockReset();
+  });
+
+  it("reads a stored true as armed", async () => {
+    maybeSingle.mockResolvedValue({ data: { demotion_reroute_enabled: true }, error: null });
+    await expect(readDemotionRerouteEnabled()).resolves.toBe(true);
+  });
+
+  it("reads a stored false as off", async () => {
+    maybeSingle.mockResolvedValue({ data: { demotion_reroute_enabled: false }, error: null });
+    await expect(readDemotionRerouteEnabled()).resolves.toBe(false);
+  });
+
+  it("reads a missing settings row as off (nobody has armed it)", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: null });
+    await expect(readDemotionRerouteEnabled()).resolves.toBe(false);
+  });
+
+  // The one that matters: a read error must fail to OFF, never leave the trigger armed on a fault.
+  it("fails to OFF, never throws, when the read ERRORS", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: { message: "column does not exist" } });
+    await expect(readDemotionRerouteEnabled()).resolves.toBe(false);
+  });
+
+  // The pair read together, so neither assertion can be satisfied by a reader hard wired to one
+  // answer (L1): a stored true really reads true, and only a true arms it.
+  it("arms only on a stored true, off on everything else", async () => {
+    maybeSingle.mockResolvedValue({ data: { demotion_reroute_enabled: true }, error: null });
+    expect(await readDemotionRerouteEnabled()).toBe(true);
+    maybeSingle.mockResolvedValue({ data: null, error: { message: "read failed" } });
+    expect(await readDemotionRerouteEnabled()).toBe(false);
   });
 });
 
