@@ -68,6 +68,9 @@ export async function runDemotionDrillLive(): Promise<DrillResult> {
         prefill: {},
         externalId: attendee.externalId,
         confirmReschedule: false,
+        // DRILL is a test bucket, which the booking path refuses as unknown unless the caller says
+        // it may book one; the canary route says so once its key is checked, and so does this.
+        allowTestBuckets: true,
       });
       if (res.outcome !== "created") return null;
       return { bookingId: res.booking.id, manageToken: res.booking.manage_token, assignedUserId: res.booking.assigned_user_id };
