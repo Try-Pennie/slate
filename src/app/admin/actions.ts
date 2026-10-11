@@ -643,6 +643,18 @@ function twilioParts(
     r.coverageSweepFailures
       ? `${plural(r.coverageSweepFailures, "agent")} left the pool and their upcoming calls could not be queued for a move, so use the coverage panel on their profile`
       : null,
+    // #3615: the PARTIAL sibling of the line above, a demotion sweep moving only the calls in
+    // the pool an agent lost, then the reroute's own faults. An unreadable switch is said on its
+    // own, because it means nobody was checked at all.
+    r.demotionSweeps.length
+      ? `${plural(r.demotionSweeps.reduce((n, c) => n + c.bookings, 0), "upcoming call")} being moved off ${plural(r.demotionSweeps.length, "agent")} Twilio demoted off a pool those calls need`
+      : null,
+    r.demotionSwitchUnreadable
+      ? "Slate could not read whether the automatic reroute is switched on and checked nobody, so press this again in a minute"
+      : null,
+    r.demotionEvalFailures + r.demotionSweepFailures + r.demotionWriteFailures
+      ? `${plural(r.demotionEvalFailures + r.demotionSweepFailures + r.demotionWriteFailures, "agent")} the automatic reroute could not finish for, so press this again in a minute`
+      : null,
     // The routing attributes (#2152), before the failures, because a
     // changed tier moves somebody between buckets and is the one a reader will go
     // and check.

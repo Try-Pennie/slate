@@ -16,10 +16,11 @@ import { activationAllowance, ROSTER_RUN_LOCK_TTL_MS } from "@/lib/bookable/acti
 import { ensureDefaultOrg } from "@/lib/provision";
 import { ensureDefaultSchedules } from "@/lib/schedule";
 import { acquireLease, releaseLock, type LeaseStopReason, type LockLease } from "@/lib/locks";
-import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, sendThrottledInfo, resolveAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failure";
 import { clearFailureStreak, recordConsecutiveStreak } from "@/lib/notify/streak";
 import { log } from "@/lib/log";
+import { appUrl } from "@/lib/env";
 import {
   agentSyncRecovery,
   salesforceManagerAmbiguousAlert,
@@ -33,6 +34,9 @@ import {
   twilioWriteFailureAlert,
   twilioWriteFailureRecovery,
   twilioOrphanedMarkAlert,
+  demotionTriggerFailureAlert,
+  demotionTriggerFailureRecovery,
+  demotionRerouteMovedInfo,
   twilioOrphanedMarkRecovery,
 } from "@/lib/monitor/cron-alert-copy";
 import { hasUserIdConflicts } from "@/lib/salesforce/user-id-link";
@@ -71,6 +75,10 @@ const AGENTS_LOCK_TTL_MS = ROSTER_RUN_LOCK_TTL_MS;
 const TWILIO_WRITE_STREAK_KEY = "twilio_write_failures";
 const TWILIO_WRITE_STREAK_WINDOW_S = 3 * 60 * 60;
 const TWILIO_WRITE_STREAK_ALERT_AT = 2;
+/** #3615: the reroute for demoted advisors, on the same two-runs-in-a-row footing as the writes. */
+const DEMOTION_TRIGGER_STREAK_KEY = "demotion_trigger_failures";
+/** #3615: the "calls moved" line. Positive because the notifier refuses anything else. */
+const DEMOTION_MOVED_INFO_COOLDOWN_MS = 60_000;
 
 /**
  * The Twilio READ failures streak (#2774).
@@ -312,6 +320,12 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       const cleared = await resolveAlert("twilio_sync_failures", twilioSyncRecovery()).catch(logResolveFailure("twilio_sync_failures"));
       if (cleared) log.info("agents", { msg: "twilio sync failure alert cleared" });
       await reportTwilioWriteOutcome(result);
+      // #3615: its own boundary. The Twilio half READ fine by this point, so a failure while
+      // reporting the reroute (its streak, its page, its info line) must not land in the catch
+      // below and be recorded as Twilio being unreadable, which pages about the wrong system.
+      await reportDemotionOutcome(result).catch((err: unknown) =>
+        log.error("agents", { msg: "could not report the demotion reroute's outcome, carrying on" }, err),
+      );
     } catch (err) {
       const reason = errorText(err);
       twilio = { ok: false, reason };
@@ -488,6 +502,85 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
     };
   } finally {
     await releaseLock(AGENTS_LOCK_KEY, lease.token());
+  }
+}
+
+/**
+ * The reroute for advisors Twilio demoted (#3615): page when it could not finish on two runs in a
+ * row, and whisper the moves when a demotion sweep queued calls.
+ *
+ * Its own key rather than more parts on `twilio_write_failures`, because it is its own feature
+ * behind its own switch with its own repair. An UNREADABLE switch counts as a failure: the sync
+ * treats it as off and checks nobody, which once armed is every demotion silently missed.
+ *
+ * Only reached from a run that READ Twilio, so a run that measured nothing clears nothing
+ * (#1134, #1152). Best effort, like its siblings: a Slack problem never fails the run.
+ */
+async function reportDemotionOutcome(result: TwilioSyncResult): Promise<void> {
+  // Two boundaries, so the moved-calls line is said even when the failure bookkeeping beside it
+  // (a streak write, a page, an all-clear) throws: they are two facts, and one failing to report
+  // must not silence the other.
+  await reportDemotionFailures(result).catch((err: unknown) =>
+    log.error("agents", { msg: "could not report the demotion reroute's failures, carrying on" }, err),
+  );
+  await reportDemotionMoves(result).catch((err: unknown) =>
+    log.error("agents", { msg: "could not report the demotion reroute's moves, carrying on" }, err),
+  );
+}
+
+/** The failure half of `reportDemotionOutcome`: page on the second run in a row, else clear. */
+async function reportDemotionFailures(result: TwilioSyncResult): Promise<void> {
+  const failures = {
+    switchUnreadable: result.demotionSwitchUnreadable,
+    evals: result.demotionEvalFailures,
+    sweeps: result.demotionSweepFailures,
+    writes: result.demotionWriteFailures,
+  };
+  const anyFailed = failures.switchUnreadable || failures.evals + failures.sweeps + failures.writes > 0;
+  if (anyFailed) {
+    const streak = await recordConsecutiveStreak(
+      DEMOTION_TRIGGER_STREAK_KEY,
+      TWILIO_WRITE_STREAK_WINDOW_S,
+      TWILIO_WRITE_STREAK_ALERT_AT,
+    );
+    // alert-key: demotion_trigger_failures
+    if (streak) {
+      await sendThrottledAlert(
+        "demotion_trigger_failures",
+        SYNC_ALERT_COOLDOWN_MS,
+        demotionTriggerFailureAlert(failures),
+      ).catch(logAlertSendFailure("demotion_trigger_failures"));
+    }
+  } else {
+    await clearFailureStreak(DEMOTION_TRIGGER_STREAK_KEY);
+    // alert-key: demotion_trigger_failures
+    const cleared = await resolveAlert(
+      "demotion_trigger_failures",
+      demotionTriggerFailureRecovery(),
+    ).catch(logResolveFailure("demotion_trigger_failures"));
+    if (cleared) log.info("agents", { msg: "demotion trigger failure alert cleared" });
+  }
+}
+
+/** The moves half of `reportDemotionOutcome`: the quiet line when demotion sweeps queued calls. */
+async function reportDemotionMoves(result: TwilioSyncResult): Promise<void> {
+  if (result.demotionSweeps.length > 0) {
+    // A one minute cooldown, the shortest the notifier accepts (it refuses zero before posting):
+    // every run that moves calls is its own event and must be said, runs are an hour apart, and
+    // a run that moves none says nothing, so this cannot repeat itself.
+    // alert-key: demotion_reroute_moved
+    await sendThrottledInfo(
+      "demotion_reroute_moved",
+      DEMOTION_MOVED_INFO_COOLDOWN_MS,
+      demotionRerouteMovedInfo(
+        result.demotionSweeps.map((s) => ({
+          email: s.email,
+          bookings: s.bookings,
+          change: s.change,
+          url: `${appUrl()}/admin/agents/${encodeURIComponent(s.userId)}`,
+        })),
+      ),
+    ).catch(logAlertSendFailure("demotion_reroute_moved"));
   }
 }
 

@@ -1,4 +1,30 @@
 import type { Attributes } from "@/lib/db/types";
+import { REDISTRIBUTE_AT_KEY, REDISTRIBUTE_SWEPT_KEY, TWILIO_WORKER_MISSING_KEY } from "@/lib/twilio/roster-plan";
+import {
+  DEMOTION_FROM_BACKEND_KEY,
+  DEMOTION_FROM_DEBT_KEY,
+  DEMOTION_MARK_KEY,
+  DEMOTION_SWEPT_KEY,
+} from "@/lib/booking/demotion-plan";
+
+/**
+ * Keys the roster sync writes onto `attributes` as its own lifecycle bookkeeping, which are not
+ * routing facts and so are never offered as bucket criteria (#3615): the Redistribute and
+ * demotion marks' timestamps, their swept markers, the missing worker stamp, and the tiers held
+ * before a demotion (which read exactly like real tiers). Built from the writers' own key
+ * constants, so a renamed key follows, and `scripts/test-catalog.ts` checks it against what the
+ * real mark helpers write. What it cannot see is a bookkeeping key added by some OTHER writer
+ * with no constant here; such a key would show up in the picker until it is added.
+ */
+const SYNC_BOOKKEEPING_KEYS = new Set<string>([
+  REDISTRIBUTE_AT_KEY,
+  REDISTRIBUTE_SWEPT_KEY,
+  TWILIO_WORKER_MISSING_KEY,
+  DEMOTION_MARK_KEY,
+  DEMOTION_SWEPT_KEY,
+  DEMOTION_FROM_DEBT_KEY,
+  DEMOTION_FROM_BACKEND_KEY,
+]);
 
 /**
  * Pure: build the routing-attribute catalog from the agents themselves — the
@@ -16,6 +42,7 @@ export function deriveAttributeCatalog(
   for (const attrs of attributesList) {
     if (!attrs) continue;
     for (const [key, val] of Object.entries(attrs)) {
+      if (SYNC_BOOKKEEPING_KEYS.has(key)) continue;
       const values = Array.isArray(val) ? val : [val];
       for (const v of values) {
         if (v === undefined || v === null || v === "") continue;

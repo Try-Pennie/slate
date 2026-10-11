@@ -18,6 +18,7 @@ import {
   type ItemOutcome,
 } from "../src/lib/booking/bulk-reassign.ts";
 import type { BulkReassignItem, BulkReassignItemStatus, BulkReassignJob } from "../src/lib/db/types.ts";
+import type { AuditEntry } from "../src/lib/audit.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const job: BulkReassignJob = {
@@ -61,6 +62,7 @@ function fakeDeps(over: Partial<BulkReassignDeps> = {}) {
       log.push(`reassign:${bookingId}`);
     },
     claimItem: async () => true,
+    recordAudit: async () => {},
     commitItemOutcome: async (itemId, outcome, attempts) => {
       log.push(`commit:${itemId}:${outcome.status}:${attempts}`);
     },
@@ -399,6 +401,93 @@ async function run() {
   // not have to guard, and an absent field would read as "could not tell".
   const progNone = buildBulkReassignProgress(job, [itemRow({ id: "x", booking_id: "bkZ", status: "moved" })], new Map());
   assert(Array.isArray(progNone.skipped) && progNone.skipped.length === 0, "no skips is an empty list");
+
+  // --- #3615: an audit row for every call a DEMOTION sweep moves ---
+  //
+  // The move itself is already in the booking's history; what the audit adds is WHY: the Twilio
+  // change recorded on the job, from and to which advisor, and that the automation did it.
+  const change = {
+    from: { debtTeam: ["ultra_high", "high"], backendService: [] },
+    to: { debtTeam: ["high"], backendService: [] },
+  };
+  const demotionJob: BulkReassignJob = {
+    ...job,
+    created_by: null,
+    demotion_marked_at: "2026-10-01T12:00:00.000Z",
+    demotion_change: change,
+  };
+  const auditFakes = () => {
+    const audits: AuditEntry[] = [];
+    const f = fakeDeps({
+      recordAudit: async (entry) => {
+        audits.push(entry);
+      },
+    });
+    return { ...f, audits };
+  };
+
+  {
+    const { deps: d, audits } = auditFakes();
+    const out = await processBulkReassignItem(item(), demotionJob, d);
+    assert(out.status === "moved", "the demotion move happens");
+    assert(audits.length === 1, "one audit row for the one move");
+    const a = audits[0];
+    assert(a.action === "booking.demotion_reroute", "recorded as a demotion reroute");
+    assert(a.actorId === null, "with no human actor: the automation moved it");
+    assert(a.targetUserId === "out", "about the demoted advisor, the one who lost the call");
+    assert(a.orgId === "org1", "in the job's org");
+    const det = a.details as Record<string, unknown>;
+    assert(det.booking_id === "bk1" && det.job_id === "job1", "naming the booking and the sweep");
+    assert(det.from_user_id === "out" && det.to_user_id === "cov", "from the demoted advisor to the one who took it");
+    assert(det.demotion_marked_at === "2026-10-01T12:00:00.000Z", "and when the demotion was recorded");
+    assert(JSON.stringify(det.change) === JSON.stringify(change), "and what changed in Twilio");
+  }
+
+  {
+    // A sweep that is NOT a demotion writes no demotion audit: an admin's or an offboarding's
+    // coverage move is not this event.
+    const { deps: d, audits } = auditFakes();
+    await processBulkReassignItem(item(), job, d);
+    assert(audits.length === 0, "a non-demotion sweep writes no demotion audit row");
+  }
+
+  {
+    // A move that FAILED writes nothing: the trail records what happened, not what was tried.
+    const { deps: d, audits } = auditFakes();
+    d.reassign = async () => {
+      throw new Error("google refused");
+    };
+    await processBulkReassignItem(item(), demotionJob, d);
+    assert(audits.length === 0, "a failed move writes no audit row");
+  }
+
+  {
+    // A booking already off the advisor was not moved by THIS tick (somebody else moved it, or a
+    // tick that crashed before committing already wrote its row), so nothing is claimed here.
+    const { deps: d, audits } = auditFakes();
+    d.loadBooking = async (id) => ({ id, status: "confirmed", assigned_user_id: "someone_else" });
+    await processBulkReassignItem(item(), demotionJob, d);
+    assert(audits.length === 0, "a booking found already moved is not claimed as this sweep's move");
+  }
+
+  {
+    // The move is the item's outcome, not the trail row: a trail write that throws (the real one
+    // never does, but the seam does not promise it) must not report a completed move as failed.
+    const { deps: d } = auditFakes();
+    d.recordAudit = async () => {
+      throw new Error("audit_log unreachable");
+    };
+    const out = await processBulkReassignItem(item(), demotionJob, d);
+    assert(out.status === "moved" && out.targetUserId === "cov", "a failing audit write still reports the completed move");
+  }
+
+  {
+    // A demotion stamped before the earlier tiers were saved still audits the move, with the
+    // change recorded as unknown rather than invented.
+    const { deps: d, audits } = auditFakes();
+    await processBulkReassignItem(item(), { ...demotionJob, demotion_change: null }, d);
+    assert(audits.length === 1 && (audits[0].details as Record<string, unknown>).change === null, "an unrecorded change is null");
+  }
 }
 
 await run();

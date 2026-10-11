@@ -360,6 +360,9 @@ import {
   twilioWriteFailureRecovery,
   twilioOrphanedMarkAlert,
   twilioOrphanedMarkRecovery,
+  demotionTriggerFailureAlert,
+  demotionTriggerFailureRecovery,
+  demotionRerouteMovedInfo,
   agentSyncRecovery,
   salesforceManagerAmbiguousAlert,
   salesforceManagerAmbiguousRecovery,
@@ -4878,6 +4881,43 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: twilioOrphanedMarkAlert(3) },
   { key: "twilio_marked_no_worker", state: "every mark has a worker again", channel: "recovery",
     text: twilioOrphanedMarkRecovery() },
+  // #3615. Each part alone, then all four, because the sentence is assembled from parts.
+  { key: "demotion_trigger_failures", state: "the switch could not be read", channel: "alert",
+    text: demotionTriggerFailureAlert({ switchUnreadable: true, evals: 0, sweeps: 0, writes: 0 }) },
+  { key: "demotion_trigger_failures", state: "a changed agent could not be checked", channel: "alert",
+    text: demotionTriggerFailureAlert({ switchUnreadable: false, evals: 1, sweeps: 0, writes: 0 }) },
+  { key: "demotion_trigger_failures", state: "a move could not be queued", channel: "alert",
+    text: demotionTriggerFailureAlert({ switchUnreadable: false, evals: 0, sweeps: 2, writes: 0 }) },
+  { key: "demotion_trigger_failures", state: "a demotion record would not save", channel: "alert",
+    text: demotionTriggerFailureAlert({ switchUnreadable: false, evals: 0, sweeps: 0, writes: 3 }) },
+  { key: "demotion_trigger_failures", state: "all four at once", channel: "alert",
+    text: demotionTriggerFailureAlert({ switchUnreadable: true, evals: 1, sweeps: 2, writes: 3 }) },
+  { key: "demotion_trigger_failures", state: "the reroute is running cleanly again", channel: "recovery",
+    text: demotionTriggerFailureRecovery() },
+  { key: "demotion_reroute_moved", state: "one agent, one call", channel: "info",
+    text: demotionRerouteMovedInfo([
+      {
+        email: "advisor@trypennie.com",
+        bookings: 1,
+        change: { from: { debtTeam: ["ultra_high", "high"], backendService: [] }, to: { debtTeam: ["high"], backendService: [] } },
+        url: "https://slate.trypennie.app/admin/agents/3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+      },
+    ]) },
+  { key: "demotion_reroute_moved", state: "two agents, one change not recorded", channel: "info",
+    text: demotionRerouteMovedInfo([
+      {
+        email: "first@trypennie.com",
+        bookings: 3,
+        change: { from: { debtTeam: ["high"], backendService: ["achieve"] }, to: { debtTeam: ["high"], backendService: ["beyond"] } },
+        url: "https://slate.trypennie.app/admin/agents/3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+      },
+      {
+        email: "second@trypennie.com",
+        bookings: 2,
+        change: null,
+        url: "https://slate.trypennie.app/admin/agents/9e8d7c6b-5a49-4382-b1a0-f9e8d7c6b5a4",
+      },
+    ]) },
   // Each shape alone, then all three together, because the sentence is assembled
   // from parts and a reader has to be able to see each one read on its own.
   { key: "salesforce_user_id_conflicts", state: "one stored id disagrees", channel: "alert",

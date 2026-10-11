@@ -290,13 +290,13 @@ export async function readPublicBookingPaused(): Promise<boolean | null> {
  *
  * The go-live switch for the automatic demotion reroute. Read once per hourly roster run.
  *
- * **Fails to OFF**, unlike the booking reads above which answer null and let a judge decide:
- * this gates a customer-MOVING action, so an unreadable switch must never be read as "on". An
- * absent settings row is a real answer (nobody has armed it) and is also off. On a read error
- * the hourly sync simply behaves as it does today and retries next hour, which is the safe
- * degradation for a feature whose whole point is that it stays off until deliberately enabled.
+ * It gates a customer-MOVING action, so an unreadable switch is never read as "on". An absent
+ * settings row is a real answer (nobody has armed it) and is off. A read ERROR answers **null**,
+ * never throwing: the sync treats it as off and moves nobody, AND reports it (#3615). It used to
+ * answer false, which is also what a deliberately OFF switch answers, so a switch that could not
+ * be read once armed would have checked nobody every hour while looking exactly like a quiet one.
  */
-export async function readDemotionRerouteEnabled(): Promise<boolean> {
+export async function readDemotionRerouteEnabled(): Promise<boolean | null> {
   try {
     const db = supabaseAdmin();
     const row = unwrap(
@@ -306,7 +306,7 @@ export async function readDemotionRerouteEnabled(): Promise<boolean> {
     return row?.demotion_reroute_enabled === true;
   } catch (err) {
     log.error("booking-settings", { msg: "demotion reroute flag read failed, treating as off" }, err);
-    return false;
+    return null;
   }
 }
 

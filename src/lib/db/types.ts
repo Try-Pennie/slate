@@ -6,6 +6,7 @@
 import type { BookingSource } from "../booking/booking-source.ts";
 import type { RoutingCodeRecord } from "../routing/lead-code.ts";
 import type { RecordedRefusalStage } from "../booking/refusal-trace.ts";
+import type { DemotionChange } from "../booking/demotion-plan.ts";
 
 export type Role = "super_admin" | "admin" | "team_lead" | "manager" | "agent";
 /** `hold` (#3248, migration 0167): written by a reroute hold's trigger, carrying
@@ -1340,6 +1341,10 @@ export interface BulkReassignJob {
    *  retried or crashed sync converges on one sweep, and the record of WHY such a job
    *  has no `created_by`. */
   demotion_marked_at: string | null;
+  /** What that demotion changed (#3615, migration 0180): the debt tiers and backend held
+   *  before (saved with the mark) and the ones the sweep acted on. NULL for any other sweep, or
+   *  for a demotion whose earlier tiers were never saved. */
+  demotion_change: DemotionChange | null;
   created_at: string;
   updated_at: string;
 }

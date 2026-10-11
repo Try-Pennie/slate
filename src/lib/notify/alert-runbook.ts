@@ -269,6 +269,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // worker for them, so nothing can say whether the tag went or the worker did.
   // The repair is in Twilio or on the agent's profile, both upstream of any run.
   twilio_marked_no_worker: "the-roster-or-routing-data-is-wrong",
+  // #3615. The reroute for demoted advisors could not finish acting on a roster change, like the
+  // Twilio writes above: the first question is which agent and which error.
+  demotion_trigger_failures: "the-roster-or-routing-data-is-wrong",
+  demotion_reroute_moved: "the-roster-or-routing-data-is-wrong",
   // #1908. The lead's own routing input is missing, so they are routed to the Low
   // pool rather than their real tier. Same family as the rest: the routing data is
   // wrong, and the fix is upstream of Slate rather than inside it.

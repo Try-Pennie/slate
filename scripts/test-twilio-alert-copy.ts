@@ -15,6 +15,9 @@ import {
   twilioWriteFailureRecovery,
   twilioOrphanedMarkAlert,
   twilioOrphanedMarkRecovery,
+  demotionTriggerFailureAlert,
+  demotionTriggerFailureRecovery,
+  demotionRerouteMovedInfo,
 } from "@/lib/monitor/cron-alert-copy";
 import { alertEntry } from "@/lib/notify/alert-catalog";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -154,6 +157,61 @@ const REFUSED = "Twilio refused the credentials (401). The API key has to be Tas
     eq(entry?.kind, "condition", `${key} is a condition: it is an ongoing state a later run ends`);
     assert((entry?.why ?? "").length > 20, `${key} says why it is classified that way`);
   }
+}
+
+// --- #3615: the reroute for demoted advisors could not finish ---------------------
+{
+  const none = { switchUnreadable: false, evals: 0, sweeps: 0, writes: 0 };
+  const sw = demotionTriggerFailureAlert({ ...none, switchUnreadable: true });
+  assert(/switched on|switch/i.test(sw), `an unreadable switch is named as the switch (got: ${sw})`);
+  assert(/nobody|no one|no agent/i.test(sw), "and says the consequence: nobody was checked");
+
+  const ev = demotionTriggerFailureAlert({ ...none, evals: 2 });
+  assert(/\b2 agents\b/.test(ev), `the count of agents not checked is named (got: ${ev})`);
+  assert(/still with them|may still/i.test(ev), "and the consequence: a call they can no longer take may still be theirs");
+
+  const sweep = demotionTriggerFailureAlert({ ...none, sweeps: 1 });
+  assert(/\b1 agent\b/.test(sweep), `one agent reads as singular (got: ${sweep})`);
+  assert(/coverage panel/i.test(sweep), "a move that could not be queued names where to move the calls by hand");
+
+  const wr = demotionTriggerFailureAlert({ ...none, writes: 3 });
+  assert(wr.includes("3"), "a record that could not be saved is counted");
+
+  const all = demotionTriggerFailureAlert({ switchUnreadable: true, evals: 1, sweeps: 2, writes: 3 });
+  for (const n of ["1", "2", "3"]) assert(all.includes(n), `the count ${n} survives into the combined message`);
+  assert(/tag=twilio-sync/.test(all), "and it points at the logs where each failure is written");
+  assert(!/^Slate/.test(all), "and does not open with Slate, which the Slack header already says");
+
+  const rec = demotionTriggerFailureRecovery();
+  assert(/no action/i.test(rec), "the all clear says nothing is owed");
+  assert(!/[0-9]/.test(rec), "and quotes no count");
+
+  for (const key of ["demotion_trigger_failures", "demotion_reroute_moved"]) {
+    const entry = alertEntry(key);
+    assert(entry !== undefined, `${key} is classified in the alert catalog`);
+  }
+  eq(alertEntry("demotion_trigger_failures")?.kind, "condition", "the failure is a condition that ends");
+  eq(alertEntry("demotion_reroute_moved")?.kind, "info", "the moved line is a whisper, never a page");
+}
+
+// --- #3615: the Slack line when a demotion sweep moves calls ------------------------
+{
+  const change = { from: { debtTeam: ["ultra_high", "high"], backendService: [] }, to: { debtTeam: ["high"], backendService: [] } };
+  const one = demotionRerouteMovedInfo([
+    { email: "jlee@trypennie.com", bookings: 1, change, url: "https://slate.trypennie.app/admin/agents/u1" },
+  ]);
+  assert(/\b1 call\b/.test(one), `one call reads as singular (got: ${one})`);
+  assert(one.includes("jlee@trypennie.com"), "it names whose calls moved");
+  assert(one.includes("Debt tiers went from Ultra High and High to High."), "it says what changed, in the shared sentence");
+  assert(one.includes("https://slate.trypennie.app/admin/agents/u1"), "and links the agent's page, where the moves are");
+
+  const two = demotionRerouteMovedInfo([
+    { email: "a@trypennie.com", bookings: 3, change, url: "https://x/a" },
+    { email: "b@trypennie.com", bookings: 2, change: null, url: "https://x/b" },
+  ]);
+  assert(/\b5 calls\b/.test(two) && /\b2 agents\b/.test(two), `the totals are summed (got: ${two})`);
+  assert(/not recorded/i.test(two), "an unrecorded change says so rather than inventing one");
+  assert(!/[\u2014\u2013]/.test(two), "no dash punctuation");
 }
 
 finish();

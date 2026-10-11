@@ -1,6 +1,8 @@
 import type { SelectionOutcome } from "@/lib/booking/core";
 import type { Booking, BulkReassignItem, BulkReassignItemStatus, BulkReassignJob } from "@/lib/db/types";
 import { AttendeeEmailRefusedError, ATTENDEE_EMAIL_REFUSED_STAFF } from "@/lib/booking/attendee-email-refused";
+import type { AuditEntry } from "@/lib/audit";
+import { log } from "@/lib/log";
 
 /** The item statuses that stay on the out agent and need a manual force-override
  *  (#974): no covering agent could be placed, or the move exhausted its retries. */
@@ -94,6 +96,9 @@ export interface BulkReassignDeps {
    * atomically, at the moment of asking.
    */
   claimItem(itemId: string): Promise<boolean>;
+  /** Append a row to the audit trail (`recordAudit`, which never throws). Used for the moves a
+   *  demotion sweep makes (#3615); see `demotionRerouteAudit`. */
+  recordAudit(entry: AuditEntry): Promise<void>;
   /**
    * Persist an item's outcome and its new attempt count in one write.
    *
@@ -117,6 +122,30 @@ function retryOrFail(priorAttempts: number, detail: string): ItemOutcome {
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * The audit row for one call a DEMOTION sweep moved (#3615), or null for any other sweep, whose
+ * moves are not this event. Who lost the call is the row's target; the details carry the
+ * booking, both advisors, the sweep and what changed in Twilio (null when the earlier tiers were
+ * never saved, which the reader sees as "not recorded" rather than an invented change). Pure.
+ */
+export function demotionRerouteAudit(job: BulkReassignJob, bookingId: string, toUserId: string): AuditEntry | null {
+  if (!job.demotion_marked_at) return null;
+  return {
+    orgId: job.org_id,
+    actorId: null,
+    action: "booking.demotion_reroute",
+    targetUserId: job.out_user_id,
+    details: {
+      booking_id: bookingId,
+      job_id: job.id,
+      from_user_id: job.out_user_id,
+      to_user_id: toUserId,
+      demotion_marked_at: job.demotion_marked_at,
+      change: job.demotion_change ?? null,
+    },
+  };
 }
 
 /**
@@ -181,7 +210,6 @@ export async function processBulkReassignItem(
   if (selection.assignment) {
     try {
       await deps.reassign(item.booking_id, selection.assignment.email, job);
-      return { status: "moved", targetUserId: selection.assignment.userId, detail: null };
     } catch (err) {
       // #3373: Google will never invite this lead's address, so no retry can move
       // the booking: failed at once, saying why, rather than retried to the cap and
@@ -192,6 +220,19 @@ export async function processBulkReassignItem(
       }
       return retryOrFail(item.attempts, `Reassign failed: ${errMessage(err)}`);
     }
+    // #3615: written AFTER the move succeeded, and OUTSIDE the move's try, so the trail records
+    // what happened and a trail write that ever threw could not report a completed move as a
+    // failed one. Caught here too, because the item's outcome is the move, not the row. A tick
+    // that dies between the two leaves the move in the booking's history without this row; the
+    // crash-resume branch above cannot tell that case from somebody else moving the booking, so
+    // it claims nothing rather than a move it may not have made.
+    const audit = demotionRerouteAudit(job, item.booking_id, selection.assignment.userId);
+    if (audit) {
+      await deps.recordAudit(audit).catch((err: unknown) =>
+        log.error("bulk-reassign", { msg: "demotion reroute audit row not written", booking_id: item.booking_id }, err),
+      );
+    }
+    return { status: "moved", targetUserId: selection.assignment.userId, detail: null };
   }
   if (selection.anyUnverified) {
     return retryOrFail(item.attempts, "Calendar verify was unavailable; will retry.");

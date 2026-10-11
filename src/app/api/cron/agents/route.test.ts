@@ -41,6 +41,8 @@ const dispatch = vi.hoisted(() => ({
     async (_key: string, _cooldownMs: number, _text: string) => {},
   ),
   resolveAlert: vi.fn(async (_key: string, _text: string) => true),
+  // #3615: the quiet line when a demotion sweep moves calls.
+  sendThrottledInfo: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
 }));
 const streak = vi.hoisted(() => ({
   recordFailureStreak: vi.fn(),
@@ -78,6 +80,12 @@ const twilio = vi.hoisted(() => ({
     noEmail: 0,
     unmappedTags: [] as string[],
     flipFailures: 0,
+    // #3615: the reroute for demoted advisors, healthy by default.
+    demotionSweeps: [] as { email: string; userId: string; bookings: number; change: unknown }[],
+    demotionSweepFailures: 0,
+    demotionWriteFailures: 0,
+    demotionEvalFailures: 0,
+    demotionSwitchUnreadable: false,
   })),
   defaultTwilioSyncDeps: vi.fn(async () => ({}) as never),
 }));
@@ -170,6 +178,7 @@ describe("GET /api/cron/agents", () => {
     // the Salesforce sync's, the Twilio read's (#2774), and the Twilio writes' (#2114).
     expect(streak.clearFailureStreak.mock.calls.map((c: unknown[]) => c[0]).sort()).toEqual([
       "cron_agents_failures",
+      "demotion_trigger_failures",
       "twilio_sync_failures",
       "twilio_write_failures",
     ]);
@@ -227,6 +236,7 @@ describe("GET /api/cron/agents", () => {
       "twilio_sync_failures",
       "twilio_write_failures",
       "twilio_marked_no_worker",
+      "demotion_trigger_failures",
       "agent_sync_failures",
       "salesforce_user_id_conflicts",
       "salesforce_manager_ambiguous",
@@ -385,6 +395,87 @@ describe("GET /api/cron/agents", () => {
     const cleared = dispatch.resolveAlert.mock.calls.map((c: unknown[]) => c[0]);
     expect(cleared).not.toContain("twilio_write_failures");
     expect(cleared).not.toContain("twilio_marked_no_worker");
+    // #3615: nor the reroute's, which never ran on a run that could not read Twilio.
+    expect(cleared).not.toContain("demotion_trigger_failures");
+  });
+
+  // #3615: the reroute for demoted advisors. Its failures were counted and logged and reported by
+  // nothing, and an unreadable switch looked exactly like a switch left off.
+  describe("the reroute for demoted advisors (#3615)", () => {
+    it("stays quiet on the first failing run and does not clear either", async () => {
+      twilio.syncTwilioRedistribute.mockResolvedValueOnce({ ...(await twilioResult()), demotionEvalFailures: 1 });
+      streak.recordConsecutiveStreak.mockResolvedValueOnce(false);
+      await GET(req());
+      expect(streak.recordConsecutiveStreak).toHaveBeenCalledWith("demotion_trigger_failures", expect.any(Number), 2);
+      expect(dispatch.sendThrottledAlert.mock.calls.map((c: unknown[]) => c[0])).not.toContain("demotion_trigger_failures");
+      expect(dispatch.resolveAlert.mock.calls.map((c: unknown[]) => c[0])).not.toContain("demotion_trigger_failures");
+    });
+
+    it("pages on the second, naming each fault, and an unreadable switch counts", async () => {
+      twilio.syncTwilioRedistribute.mockResolvedValueOnce({
+        ...(await twilioResult()),
+        demotionSwitchUnreadable: true,
+        demotionSweepFailures: 2,
+      });
+      // The only streak this run records: no Twilio write failed.
+      streak.recordConsecutiveStreak.mockResolvedValueOnce(true);
+      await GET(req());
+      const call = dispatch.sendThrottledAlert.mock.calls.find((c: unknown[]) => c[0] === "demotion_trigger_failures");
+      expect(call).toBeTruthy();
+      expect(String(call?.[2])).toMatch(/switched on/);
+      expect(String(call?.[2])).toContain("2 agents");
+      // It is its own fault, so the Twilio write alert is not dragged in with it.
+      expect(dispatch.sendThrottledAlert.mock.calls.map((c: unknown[]) => c[0])).not.toContain("twilio_write_failures");
+    });
+
+    it("whispers the moves when a demotion sweep queued calls, linking each agent's page", async () => {
+      twilio.syncTwilioRedistribute.mockResolvedValueOnce({
+        ...(await twilioResult()),
+        demotionSweeps: [
+          {
+            email: "jlee@trypennie.com",
+            userId: "u1",
+            bookings: 2,
+            change: { from: { debtTeam: ["ultra_high", "high"], backendService: [] }, to: { debtTeam: ["high"], backendService: [] } },
+          },
+        ],
+      });
+      await GET(req());
+      const call = dispatch.sendThrottledInfo.mock.calls.find((c: unknown[]) => c[0] === "demotion_reroute_moved");
+      expect(call).toBeTruthy();
+      expect(String(call?.[2])).toContain("jlee@trypennie.com");
+      expect(String(call?.[2])).toContain("/admin/agents/u1");
+      // The real notifier REFUSES a cooldown that is not a positive number, before it posts,
+      // so a zero here is a line that is never sent while this mock happily records it.
+      expect(Number(call?.[1])).toBeGreaterThan(0);
+    });
+
+    // Its own boundary: the Twilio half READ fine, so a failure while reporting the reroute must
+    // not be recorded as Twilio being unreadable, which pages about the wrong system.
+    it("keeps a failure while reporting the reroute out of the Twilio read's account", async () => {
+      twilio.syncTwilioRedistribute.mockResolvedValueOnce({ ...(await twilioResult()), demotionEvalFailures: 1 });
+      streak.recordConsecutiveStreak.mockRejectedValueOnce(new Error("alert_state unreachable"));
+      const res = await GET(req());
+      expect(await res.json()).toMatchObject({ twilio: { ok: true } });
+      expect(streak.recordConsecutiveStreak).not.toHaveBeenCalledWith("twilio_sync_failures", expect.any(Number), 2);
+      expect(verdict.recordDetectorVerdict).toHaveBeenCalledWith("verdict:twilio-roster", true);
+    });
+
+    it("still whispers the moves when the failure bookkeeping beside it throws", async () => {
+      twilio.syncTwilioRedistribute.mockResolvedValueOnce({
+        ...(await twilioResult()),
+        demotionEvalFailures: 1,
+        demotionSweeps: [{ email: "jlee@trypennie.com", userId: "u1", bookings: 2, change: null }],
+      });
+      streak.recordConsecutiveStreak.mockRejectedValueOnce(new Error("alert_state unreachable"));
+      await GET(req());
+      expect(dispatch.sendThrottledInfo.mock.calls.map((c: unknown[]) => c[0])).toContain("demotion_reroute_moved");
+    });
+
+    it("says nothing about moves on a run that queued none", async () => {
+      await GET(req());
+      expect(dispatch.sendThrottledInfo.mock.calls.map((c: unknown[]) => c[0])).not.toContain("demotion_reroute_moved");
+    });
   });
 
   it("stays quiet on a single (self-healing) failure", async () => {

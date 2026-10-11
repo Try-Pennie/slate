@@ -3,7 +3,7 @@
 // reader, so the branches the sync integration test does not reach (a flipped row excluded, a
 // deactivated row skipped, a stamped-but-unchanged row swept) are driven here.
 import { demotionEvalList, resolveDemotionWrites } from "../src/lib/twilio/demotion-trigger.ts";
-import { DEMOTION_MARK_KEY } from "../src/lib/booking/demotion-plan.ts";
+import { DEMOTION_MARK_KEY, storedDemotionFrom } from "../src/lib/booking/demotion-plan.ts";
 import type { RerouteCandidate } from "../src/lib/booking/reroute-eligibility.ts";
 import type {
   AttributeWrite,
@@ -157,6 +157,8 @@ const uh: RerouteCandidate = {
   eq(res.stampOverlays.size, 1, "a narrowing produces a stamp overlay");
   eq((res.stampOverlays.get("u1") as Attributes)[DEMOTION_MARK_KEY], NOW, "the overlay carries the mark dated now");
   eq((res.stampOverlays.get("u1") as Attributes).debt_team?.toString(), "high", "and the narrowed tiers");
+  // #3615: the tiers held BEFORE ride in the same write, so the audit can name the change.
+  eq(storedDemotionFrom(res.stampOverlays.get("u1"))?.debtTeam.join(","), "ultra_high,high", "and the tiers held before");
   eq(res.sweepClearWrites.length, 0, "a fresh stamp is not a sweep");
 }
 
@@ -224,6 +226,7 @@ const uh: RerouteCandidate = {
   eq(res.stampOverlays.size, 1, "a possible narrowing is stamped defensively");
   eq((res.stampOverlays.get("u1") as Attributes)[DEMOTION_MARK_KEY], NOW, "the defensive stamp carries the mark");
   eq((res.stampOverlays.get("u1") as Attributes).debt_team?.toString(), "high", "folded into the narrowed tier write");
+  eq(storedDemotionFrom(res.stampOverlays.get("u1"))?.debtTeam.join(","), "ultra_high,high", "the defensive stamp saves the tiers held before too");
 }
 
 {

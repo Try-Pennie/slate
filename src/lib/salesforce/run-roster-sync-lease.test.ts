@@ -139,6 +139,12 @@ const cleanTwilio = () => ({
   coverageSweepFailures: 0,
   attributeWriteFailures: 0,
   markedWithNoWorker: [],
+  // #3615: the reroute for demoted advisors, healthy.
+  demotionSweeps: [],
+  demotionSweepFailures: 0,
+  demotionWriteFailures: 0,
+  demotionEvalFailures: 0,
+  demotionSwitchUnreadable: false,
 });
 
 /** A promise and the function that settles it, so a test decides when a phase ends. */

@@ -107,6 +107,8 @@ import {
 import { selectCoverageReassignTarget, type CoverageTargetDeps } from "@/lib/booking/coverage-target";
 import { coverageSweepActor } from "@/lib/booking/coverage-sweep-actor";
 import type { CoverageSweepCancelReport } from "@/lib/booking/coverage-sweep-cancel";
+import type { DemotionChange } from "@/lib/booking/demotion-plan";
+import { recordAudit } from "@/lib/audit";
 import {
   cancelCoverageSweepForRequest,
   claimBulkReassignItem,
@@ -3450,6 +3452,7 @@ function realBulkReassignDeps(): BulkReassignDeps {
       await adminReassignBooking(bookingId, targetEmail, reason, actor, false);
     },
     claimItem: claimBulkReassignItem,
+    recordAudit,
     commitItemOutcome: commitBulkReassignItemOutcome,
     markJobDoneIfDrained: markBulkReassignJobDoneIfDrained,
   };
@@ -3504,6 +3507,8 @@ export interface StartBulkReassignInput {
    *  keys above a demotion is PARTIAL, so it is paired with `snapshotBookings` (the
    *  filtered set) rather than the full coverage read. */
   demotionMarkedAtIso?: string | null;
+  /** What the demotion changed (#3615), recorded on the job. See `CreateBulkReassignJobInput`. */
+  demotionChange?: DemotionChange | null;
   /** The bookings this sweep should move, when the caller already knows them: the
    *  demotion case passes the FILTERED set (only the bookings the agent no longer
    *  serves). Absent means the full coverage read. */
@@ -3545,6 +3550,7 @@ export async function startBulkReassign(
     offboardingDeactivatedAtIso: input.offboardingDeactivatedAtIso ?? null,
     redistributeMarkedAtIso: input.redistributeMarkedAtIso ?? null,
     demotionMarkedAtIso: input.demotionMarkedAtIso ?? null,
+    demotionChange: input.demotionChange ?? null,
     snapshotBookings: input.snapshotBookings,
   });
 }

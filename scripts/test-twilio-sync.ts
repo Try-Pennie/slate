@@ -56,6 +56,9 @@ function deps(
 ) {
   const calls: string[] = [];
   const audits: Record<string, unknown>[] = [];
+  // #3615: what each demotion sweep was told changed, kept apart from `calls` so the cases that
+  // assert the exact call ORDER keep their meaning.
+  const sweepChanges: unknown[] = [];
   const base: TwilioSyncDeps = {
     orgId: "org1",
     // #2302: a generous default, so every case written before the allowance existed
@@ -75,8 +78,9 @@ function deps(
     // pass their own.
     demotionEnabled: false,
     loadRerouteCandidates: async () => [],
-    startDemotionSweep: async ({ outUserId, markedAtIso }) => {
+    startDemotionSweep: async ({ outUserId, markedAtIso, change }) => {
       calls.push(`demotion-sweep:${outUserId}:${markedAtIso}`);
+      sweepChanges.push(change);
       return demotionSweepAnswer ? demotionSweepAnswer(outUserId) : { itemCount: 0 };
     },
     fetchWorkers: async () => [worker("a@trypennie.com", ["Redistribute"])],
@@ -96,7 +100,7 @@ function deps(
     }) as TwilioSyncDeps["recordAudit"],
     ...over,
   };
-  return { deps: base, calls, audits };
+  return { deps: base, calls, audits, sweepChanges };
 }
 
 // --- turning somebody off -----------------------------------------------------
@@ -661,6 +665,23 @@ const STAMP_AGED = "2026-09-09T11:00:00.000Z"; // 1h before NOW, past the 30-min
   assert(!d.calls.some((c) => c.includes("demotion_marked_at")), "flag off: no demotion mark is written");
   assert(!d.calls.some((c) => c.startsWith("demotion-sweep:")), "flag off: no demotion sweep is queued");
   eq(d.calls, ['attrs:u1:{"debt_team":["high"]}'], "flag off: just the plain tier write");
+  eq(r.demotionSwitchUnreadable, false, "a switch read as off is not reported as unreadable");
+}
+
+{
+  // #3615: an UNREADABLE switch (null) behaves exactly like off, moving nobody, but the run SAYS
+  // so: checking nobody because the switch could not be read is not the same hour as checking
+  // nobody because it is off, and only the first is a fault somebody has to fix.
+  const d = deps({
+    demotionEnabled: null,
+    fetchWorkers: async () => narrowingWorker(),
+    loadRoster: async () => [row({ attributes: { debt_team: ["ultra_high", "high"] } })],
+    loadRerouteCandidates: async () => UH_CANDIDATE,
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.demotionStamped.length, 0, "an unreadable switch stamps nothing");
+  eq(d.calls, ['attrs:u1:{"debt_team":["high"]}'], "an unreadable switch writes only the plain tier write");
+  eq(r.demotionSwitchUnreadable, true, "and the run reports the switch as unreadable");
 }
 
 {
@@ -676,8 +697,10 @@ const STAMP_AGED = "2026-09-09T11:00:00.000Z"; // 1h before NOW, past the 30-min
   eq(r.tiersChanged, ["a@trypennie.com"], "and the tier change is still counted");
   eq(
     d.calls,
-    [`attrs:u1:{"debt_team":["high"],"demotion_marked_at":"${NOW}"}`],
-    "the stamp rides in the SAME write as the narrowed tiers, and the base loop does not write it twice",
+    [
+      `attrs:u1:{"debt_team":["high"],"demotion_marked_at":"${NOW}","demotion_from_debt_team":["ultra_high","high"],"demotion_from_backend_service":[]}`,
+    ],
+    "the stamp, and the tiers held before it (#3615), ride in the SAME write as the narrowed tiers",
   );
   assert(!d.calls.some((c) => c.startsWith("demotion-sweep:")), "no sweep on first sight: it waits for the debounce");
 }
@@ -703,7 +726,14 @@ const STAMP_AGED = "2026-09-09T11:00:00.000Z"; // 1h before NOW, past the 30-min
       // Worker still on High only: no tier change this sync, so this is a stamped-row sweep.
       fetchWorkers: async () => narrowingWorker(),
       loadRoster: async () => [
-        row({ attributes: { debt_team: ["high"], demotion_marked_at: STAMP_AGED } }),
+        row({
+          attributes: {
+            debt_team: ["high"],
+            demotion_marked_at: STAMP_AGED,
+            demotion_from_debt_team: ["ultra_high", "high"],
+            demotion_from_backend_service: [],
+          },
+        }),
       ],
       loadRerouteCandidates: async () => UH_CANDIDATE,
     },
@@ -712,13 +742,19 @@ const STAMP_AGED = "2026-09-09T11:00:00.000Z"; // 1h before NOW, past the 30-min
     () => ({ itemCount: 1 }),
   );
   const r = await syncTwilioRedistribute(d.deps);
+  const change = { from: { debtTeam: ["ultra_high", "high"], backendService: [] }, to: { debtTeam: ["high"], backendService: [] } };
   eq(r.demotionSwept, ["a@trypennie.com"], "an aged, still-unserved demotion sweeps");
-  eq(r.demotionSweeps, [{ email: "a@trypennie.com", bookings: 1 }], "and reports what it moved");
+  eq(
+    r.demotionSweeps,
+    [{ email: "a@trypennie.com", userId: "u1", bookings: 1, change }],
+    "and reports what it moved, and what changed, for the Slack line (#3615)",
+  );
+  eq(d.sweepChanges, [change], "the sweep is told what changed, to record on its job (#3615)");
   eq(
     d.calls,
     [
       `demotion-sweep:u1:${STAMP_AGED}`,
-      `attrs:u1:{"debt_team":["high"],"demotion_marked_at":"${STAMP_AGED}","demotion_swept_at":"${NOW}"}`,
+      `attrs:u1:{"debt_team":["high"],"demotion_marked_at":"${STAMP_AGED}","demotion_from_debt_team":["ultra_high","high"],"demotion_from_backend_service":[],"demotion_swept_at":"${NOW}"}`,
     ],
     "the enqueue goes BEFORE the swept marker, so a crash between them re-sweeps and converges",
   );

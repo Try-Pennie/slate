@@ -70,6 +70,8 @@ import { startBulkReassign } from "@/lib/booking/service";
 import { demotionBookings, rerouteCandidatesForAgent } from "@/lib/booking/bulk-reassign-store";
 import { readDemotionRerouteEnabled } from "@/lib/booking/settings";
 import { resolveDemotionWrites } from "@/lib/twilio/demotion-trigger";
+import { DEMOTION_SWEEP_REASON, demotionChangeOf, type DemotionChange } from "@/lib/booking/demotion-plan";
+
 import type { RerouteCandidate } from "@/lib/booking/reroute-eligibility";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
@@ -78,6 +80,15 @@ import { recordAudit } from "@/lib/audit";
 import { log } from "@/lib/log";
 import type { Attributes } from "@/lib/db/types";
 import type { TwilioWorker } from "@/lib/twilio/client";
+
+/** One demotion sweep queued this run (#3582), with what changed (#3615) so the run's report can
+ *  say who lost what and point at the undo. */
+export interface DemotionSweepReport {
+  email: string;
+  userId: string;
+  bookings: number;
+  change: DemotionChange | null;
+}
 
 export interface TwilioSyncDeps {
   orgId: string;
@@ -105,10 +116,11 @@ export interface TwilioSyncDeps {
    * Whether the reroute-on-ineligibility trigger is armed (#3582), read once per run from
    * `booking_settings.demotion_reroute_enabled`. When false the whole demotion lifecycle is
    * skipped: no candidates are read, nothing is stamped, swept or cleared, and the run behaves
-   * exactly as it did before the feature. Fails to false, so an unreadable switch never moves a
-   * customer's booking.
+   * exactly as it did before the feature. Null means the switch could not be READ (#3615): the
+   * run treats it as off, so an unreadable switch never moves a customer's booking, and reports
+   * it as `demotionSwitchUnreadable` so a switch that cannot be read is not a silent hour.
    */
-  demotionEnabled: boolean;
+  demotionEnabled: boolean | null;
   /**
    * An agent's upcoming bookings as reroute candidates, for the demotion DECISION (#3582): the
    * trigger runs `bookingsToReroute` over every held booking. Only called for an evaluated agent
@@ -127,6 +139,10 @@ export interface TwilioSyncDeps {
      *  snapshot. Passed rather than re-read, because the narrowed attributes may not be written
      *  yet when the enqueue runs (the swept-marker write comes after it). */
     attributes: Attributes | null;
+    /** What the demotion changed (#3615): the tiers saved at the stamp and the ones the sweep acts
+     *  on, recorded on the job at the moment it decides to move anybody. Null for a mark stamped
+     *  before the earlier tiers were saved. */
+    change: DemotionChange | null;
   }) => Promise<{ itemCount: number }>;
   fetchWorkers: () => Promise<TwilioWorker[]>;
   loadRoster: () => Promise<TwilioRosterRow[]>;
@@ -261,7 +277,7 @@ export interface TwilioSyncResult {
   demotionCleared: string[];
   /** The demotion sweeps queued this run and how many bookings each moved, the partial sibling
    *  of `coverageSweeps` (#3582). An agent with nothing to move produces no entry. */
-  demotionSweeps: { email: string; bookings: number }[];
+  demotionSweeps: DemotionSweepReport[];
   /** Demotion sweeps that threw while queueing, so the swept marker was withheld and the next
    *  sync retries; calls held meanwhile are caught by `inactive_agent_bookings` (#3582). */
   demotionSweepFailures: number;
@@ -271,6 +287,9 @@ export interface TwilioSyncResult {
   /** Agents whose demotion DECISION threw (a failed candidate/criteria read), skipped so the
    *  auxiliary demotion pass could never abort the core roster sync (#3582, L73). */
   demotionEvalFailures: number;
+  /** The reroute switch could not be read this run (#3615), so the demotion trigger checked
+   *  nobody. Kept apart from a switch read as off, which is a healthy hour. */
+  demotionSwitchUnreadable: boolean;
 }
 
 /**
@@ -328,7 +347,7 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
   const demotionStamped: string[] = [];
   const demotionSwept: string[] = [];
   const demotionCleared: string[] = [];
-  const demotionSweeps: { email: string; bookings: number }[] = [];
+  const demotionSweeps: DemotionSweepReport[] = [];
   let demotionSweepFailures = 0;
   let demotionWriteFailures = 0;
 
@@ -337,7 +356,7 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
   // into the core tier write (so it lands in the same write as the tiers), while a sweep or clear
   // is a SEPARATE write applied after the core loop, so a demotion failure can never lose the core
   // tier change.
-  const demotion = deps.demotionEnabled
+  const demotion = deps.demotionEnabled === true
     ? await resolveDemotionWrites(roster, plan, deps.loadRerouteCandidates, deps.nowIso())
     : { stampOverlays: new Map<string, Attributes>(), sweepClearWrites: [], evalFailures: 0 };
   const demotionEvalFailures = demotion.evalFailures;
@@ -393,12 +412,14 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     try {
       if (dw.sweepMarkedAtIso) {
         try {
+          const change = demotionChangeOf(dw.attributes);
           const { itemCount } = await deps.startDemotionSweep({
             outUserId: dw.userId,
             markedAtIso: dw.sweepMarkedAtIso,
             attributes: dw.attributes,
+            change,
           });
-          if (itemCount > 0) demotionSweeps.push({ email: dw.email, bookings: itemCount });
+          if (itemCount > 0) demotionSweeps.push({ email: dw.email, userId: dw.userId, bookings: itemCount, change });
         } catch (err) {
           demotionSweepFailures++;
           log.error(
@@ -480,6 +501,7 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     demotionSweepFailures,
     demotionWriteFailures,
     demotionEvalFailures,
+    demotionSwitchUnreadable: deps.demotionEnabled === null,
   };
 }
 
@@ -704,7 +726,8 @@ export async function defaultTwilioSyncDeps(orgId?: string): Promise<TwilioSyncD
       return { itemCount };
     },
     // Read once per run. Off by default, so the whole demotion lifecycle below stays inert until
-    // an admin arms it (#3582); fails to false, so an unreadable switch never moves a booking.
+    // an admin arms it (#3582). An unreadable switch answers null (#3615): treated as off, so it
+    // never moves a booking, and reported, so it is never a silent hour.
     demotionEnabled: await readDemotionRerouteEnabled(),
     loadRerouteCandidates: (userId) =>
       // Open ended from now: everything still ahead of the agent. The window rule is shared with
@@ -713,14 +736,15 @@ export async function defaultTwilioSyncDeps(orgId?: string): Promise<TwilioSyncD
     // The PARTIAL sibling of startCoverageSweep (#3582): a system-initiated sweep keyed on the
     // demotion mark, moving only the FILTERED set the agent no longer serves (demotionBookings),
     // never the full coverage read.
-    startDemotionSweep: async ({ outUserId, markedAtIso, attributes }) => {
+    startDemotionSweep: async ({ outUserId, markedAtIso, attributes, change }) => {
       const { itemCount } = await startBulkReassign({
         outUserId,
         rangeStartIso: markedAtIso,
         rangeEndIso: null,
-        reason: { code: "coverage", detail: null },
+        reason: DEMOTION_SWEEP_REASON,
         actor: null,
         demotionMarkedAtIso: markedAtIso,
+        demotionChange: change,
         // Filter by the decision's attributes, not a fresh DB read (see demotionBookings).
         snapshotBookings: () => demotionBookings(outUserId, markedAtIso, null, attributes),
       });

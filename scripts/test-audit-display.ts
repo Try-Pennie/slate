@@ -6,7 +6,7 @@
 // an audit row that silently claims to have been written at the time is worse
 // than a visible gap. The table also fell back to printing raw action strings
 // ("ooo.approve") for every action nobody had added a label for.
-// Run: node --experimental-strip-types scripts/test-audit-display.ts
+// Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-audit-display.ts
 import {
   auditActionLabel,
   auditActorText,
@@ -144,6 +144,57 @@ const nameOf = (id: string | null) => (id ? `Name(${id})` : "unassigned");
     !dash.test(auditDetailText({ action: "ooo.approve", actor_id: "u", details: { reconstructed: true } })),
     "rebuilt note has no dash punctuation",
   );
+}
+
+// --- #3615: a call the demotion automation moved ---
+{
+  const row = (change: unknown) => ({
+    action: "booking.demotion_reroute",
+    actor_id: null,
+    details: { booking_id: "bk1", from_user_id: "out", to_user_id: "cov", change },
+  });
+  const change = {
+    from: { debtTeam: ["ultra_high", "high"], backendService: ["achieve"] },
+    to: { debtTeam: ["high"], backendService: ["achieve"] },
+  };
+  // No person pressed anything, and "unassigned" would read as nobody being responsible.
+  assert(auditActorText(row(change), nameOf) === "Slate", "the automation's move is attributed to Slate, not 'unassigned'");
+  assert(auditActionLabel("booking.demotion_reroute") === "moved a booked call after a Twilio demotion", "labelled as what happened");
+  const detail = auditDetailText(row(change), nameOf);
+  assert(
+    detail === "Moved to Name(cov). Debt tiers went from Ultra High and High to High.",
+    `the detail names who took the call and what changed (${detail})`,
+  );
+  const both = auditDetailText(
+    row({ from: { debtTeam: ["high"], backendService: ["achieve"] }, to: { debtTeam: ["high"], backendService: [] } }),
+    nameOf,
+  );
+  assert(both === "Moved to Name(cov). Backend went from Achieve to none.", `a backend change is named on its own (${both})`);
+  const unrecorded = auditDetailText(row(null), nameOf);
+  assert(
+    unrecorded === "Moved to Name(cov). What changed in Twilio was not recorded.",
+    `an unrecorded change says so rather than inventing one (${unrecorded})`,
+  );
+  assert(!/[\u2014\u2013]/.test(detail), "the detail has no dash punctuation");
+
+  // A row with no destination recorded must not read "Moved to unassigned".
+  const noTo = auditDetailText({ ...row(change), details: { booking_id: "bk1", change } }, nameOf);
+  assert(noTo.startsWith("Moved to another advisor."), `a missing destination reads as another advisor (got: ${noTo})`);
+
+  // The change comes back from jsonb. A malformed one must read as unrecorded, never throw while
+  // the page renders and take the whole audit log down with it (L50).
+  for (const bad of [{ from: "x" }, { from: { debtTeam: "high" }, to: {} }, "garbage", 7, { from: null, to: null }]) {
+    let text = "";
+    try {
+      text = auditDetailText(row(bad), nameOf);
+    } catch (err) {
+      text = `THREW ${String(err)}`;
+    }
+    assert(
+      text === "Moved to Name(cov). What changed in Twilio was not recorded.",
+      `a malformed stored change (${JSON.stringify(bad)}) reads as unrecorded (got: ${text})`,
+    );
+  }
 }
 
 finish();
