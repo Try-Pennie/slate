@@ -7,6 +7,7 @@
 import {
   demotionMoveFromRow,
   demotionMoveView,
+  demotionMovePeople,
   moveBackOverCapText,
   latestDemotionMove,
   moveBackDemotionReroute,
@@ -346,6 +347,19 @@ const actor = { userId: "admin1", actingAsUserId: null };
 
   eq(moveBackOverCapText("Jordan Lee"), "Jordan Lee is already at their daily limit of calls on that day. Move the call back anyway?", "the over cap second ask");
   for (const t of [can, back, since].map((v) => JSON.stringify(v))) assert(!DASH.test(t), "no dash punctuation in anything the page shows");
+}
+
+// --- who the booking page has to name ----------------------------------------------------
+{
+  // Every person a sentence on the panel can name, the CURRENT holder included: a "moved since"
+  // refusal names them, and leaving them out reads as "now with another advisor".
+  eq(
+    demotionMovePeople(move({ revertedBy: "admin1" }), { assigned_user_id: "alex" }).sort(),
+    ["admin1", "alex", "jordan", "sam"],
+    "the advisor it left, the one it went to, whoever undid it, and whoever holds it now",
+  );
+  eq(demotionMovePeople(move(), { assigned_user_id: "sam" }).sort(), ["jordan", "sam"], "each named once");
+  eq(demotionMovePeople(move(), { assigned_user_id: null }).sort(), ["jordan", "sam"], "and nobody for an unassigned call");
 }
 
 finish();

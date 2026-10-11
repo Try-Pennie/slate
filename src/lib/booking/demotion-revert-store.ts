@@ -7,6 +7,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import {
   demotionMoveFromRow,
+  demotionMovePeople,
   demotionMoveView,
   latestDemotionMove,
   type DemotionMoveRecord,
@@ -59,9 +60,9 @@ export async function loadDemotionMoveView(
 ): Promise<DemotionMoveView | null> {
   const move = latestDemotionMove(await loadDemotionMoves(booking.id, orgId));
   if (!move) return null;
-  const ids = [move.outUserId, move.toUserId, move.revertedBy].filter((x): x is string => typeof x === "string");
+  const ids = demotionMovePeople(move, booking);
   const people = unwrap(
-    // cap-safe: at most three users, by primary key.
+    // cap-safe: at most four users, by primary key.
     await supabaseAdmin().from("users").select("id, name, email, deactivated_at").in("id", ids),
     "demotion move people",
   ) as { id: string; name: string | null; email: string | null; deactivated_at: string | null }[] | null;

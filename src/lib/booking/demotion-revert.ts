@@ -332,3 +332,14 @@ export function demotionMoveView(input: {
 export function moveBackOverCapText(original: string): string {
   return `${original} is already at their daily limit of calls on that day. Move the call back anyway?`;
 }
+
+/**
+ * Every person a sentence on the booking page's panel can name, so the page reads them all in one
+ * query: the advisor the call left, the one it went to, whoever moved it back, and whoever holds
+ * it NOW, whom a "moved since" refusal names. Each once.
+ */
+export function demotionMovePeople(move: DemotionMoveRecord, booking: { assigned_user_id: string | null }): string[] {
+  return [...new Set([move.outUserId, move.toUserId, move.revertedBy, booking.assigned_user_id])].filter(
+    (x): x is string => typeof x === "string",
+  );
+}
