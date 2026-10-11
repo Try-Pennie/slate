@@ -20,6 +20,7 @@ const MOVE = {
   advisor: advisor("Morgan Reyes"), bucket: bucket("412"), requested: bucket("512"), rungsDropped: 1,
 };
 const KEEP = { kind: "keep", lastResort: true, advisor: advisor("Taylor Brooks"), bucket: bucket("512"), requested: bucket("512"), rungsDropped: 0 };
+const NONE = { kind: "none", requested: bucket("512") };
 
 type Responder = (body: Record<string, unknown> | null) => { status?: number; body: unknown };
 function mockFetch(routes: { current?: unknown; find?: Responder; confirm?: Responder; release?: Responder }) {
@@ -118,6 +119,41 @@ describe("ReroutePanel, as an admin (codes)", () => {
     expect(sent(fn, "/reroute/confirm")).toEqual([
       { holdId: null, bucketCode: "512", requestedBucketCode: "512", note: null },
     ]);
+  });
+
+  it("looks for a different advisor from a keep, excluding the current one (#3596)", async () => {
+    const user = userEvent.setup();
+    const fn = mockFetch({ find: (body) => ({ body: body?.excludeCurrent ? MOVE : KEEP }) });
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("combobox", { name: "Correct bucket" }));
+    await user.click(screen.getByRole("option", { name: "512" }));
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("Taylor Brooks stays");
+    await user.click(screen.getByRole("button", { name: "Look for a different advisor" }));
+    await screen.findByText("One tier down, in 412");
+    expect(sent(fn, "/reroute")).toEqual([
+      { bucketCode: "512" },
+      { bucketCode: "512", excludeCurrent: true },
+    ]);
+  });
+
+  it("says nobody else is free when the kept advisor was the only one (#3596)", async () => {
+    const user = userEvent.setup();
+    mockFetch({ find: (body) => ({ body: body?.excludeCurrent ? NONE : KEEP }) });
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("Taylor Brooks stays");
+    await user.click(screen.getByRole("button", { name: "Look for a different advisor" }));
+    await screen.findByText("Nobody is free");
+  });
+
+  it("offers no different-advisor button on a move result (#3596)", async () => {
+    const user = userEvent.setup();
+    mockFetch({});
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("One tier down, in 412");
+    expect(screen.queryByRole("button", { name: "Look for a different advisor" })).toBeNull();
   });
 
   it("cancelling a move releases the hold", async () => {

@@ -216,6 +216,31 @@ async function main() {
     eq(p.kind, "none", "nobody to keep and nobody free reads as none, never a keep of nobody");
   }
 
+  // --- start with the current advisor excluded: look for someone else (#3596) ---
+  {
+    // "Look for a different advisor" from a keep: re-run excluding the current advisor
+    // and move the call to the next eligible one.
+    const { deps, calls } = fake({ targets: [moveTarget("NEXT", "512", 0)] });
+    const p = await startReroute(deps, { bookingId: "K1", bucketCode: "512", actor, excludeCurrent: true });
+    eq(calls.findExcludes[0], ["CUR"], "the search excludes the current advisor, resolved from the booking and not the caller");
+    eq(p.kind, "move", "a different eligible advisor is a move");
+    if (p.kind === "move") eq(p.advisor.name, "Casey Lin", "naming the next advisor, not the one excluded");
+  }
+  {
+    // The current advisor was the only eligible person: excluding them is an honest
+    // "none", distinct from the keep, never a keep of the advisor we just excluded.
+    const { deps, calls } = fake({ targets: [{ outcome: "keep-last-resort", bucket: bucketFor("512"), eventType, rungsDropped: 0 }] });
+    const p = await startReroute(deps, { bookingId: "K1", bucketCode: "512", actor, excludeCurrent: true });
+    eq(calls.findExcludes[0], ["CUR"], "the current advisor is still excluded");
+    eq(p.kind, "none", "and with nobody else free the result is none, not a keep of the excluded advisor");
+  }
+  {
+    // Without the flag nothing is excluded, exactly as before.
+    const { deps, calls } = fake({ targets: [moveTarget("NEW", "512", 0)] });
+    await startReroute(deps, { bookingId: "K1", bucketCode: "512", actor });
+    eq(calls.findExcludes[0], [], "the ordinary start excludes nobody");
+  }
+
   // --- start: refusals each carry their own code ---
   const refusedCode = async (o: Opts, input = { bookingId: "K1", bucketCode: "512", actor }) => {
     const { deps } = fake(o);
