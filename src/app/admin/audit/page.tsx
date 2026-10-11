@@ -245,7 +245,12 @@ export default async function AuditLogPage({
           <button type="submit" className={btnSecondaryCls}>
             Apply
           </button>
-          {(auditFilters.actions || auditFilters.actorId || auditFilters.fromIso || auditFilters.toIso) && (
+          {(auditFilters.actions ||
+            auditFilters.actorId ||
+            auditFilters.fromIso ||
+            auditFilters.toIso ||
+            auditFilters.includeRoutine ||
+            auditFilters.includeTest) && (
             <InPlaceLink href="/admin/audit" className={btnSecondaryCls}>
               Clear
             </InPlaceLink>
