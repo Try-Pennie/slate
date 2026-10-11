@@ -1,6 +1,20 @@
 import { DateTime } from "luxon";
 import type { GoogleEvent } from "./calendar.ts";
 import { parseStampMs } from "@/lib/date/stamp";
+import { BUSY_WINDOW_AHEAD_DAYS } from "@/lib/google/sync-coalesce";
+import { BUSY_PRUNE_KEEP_PAST_HOURS } from "@/lib/busy/prune-core";
+
+/**
+ * How far past the write window's edge an event may still sit and be kept (#1264).
+ *
+ * The boundary errs toward KEEPING: `allDayToUtc` anchors an all-day event to midnight
+ * in the AGENT's zone while Google evaluates its own fetch bound against the event's
+ * calendar zone, roughly a five hour skew, so an event can land just outside the window
+ * and churn between this filter and the next bootstrap. One day of margin on each edge
+ * absorbs that skew, at the cost of caching a day more than the horizon strictly needs,
+ * which is the harmless direction (a slightly larger cache, never a dropped near event).
+ */
+export const WRITE_WINDOW_MARGIN_MS = 24 * 60 * 60_000;
 
 /**
  * Pure helpers for calendar sync (no IO), so the busy/stale logic is testable.
@@ -182,9 +196,24 @@ export function partitionBusyWrites(
   events: GoogleEvent[],
   slateEventIds: Set<string> = new Set(),
   timeZone = "UTC",
+  /**
+   * The clock for the write window filter (#1264), REQUIRED so no caller can turn the
+   * filter off by forgetting it (L168): pass `Date.now()` to filter, or an explicit
+   * `null` to opt out and say so. With a clock, an event whose window falls outside
+   * [now - BUSY_PRUNE_KEEP_PAST_HOURS, now + BUSY_WINDOW_AHEAD_DAYS] (plus
+   * WRITE_WINDOW_MARGIN_MS each side) is NOT upserted and is queued for DELETE, so the
+   * cache bounds itself even though Google's delta is not scoped to the fetch's timeMax,
+   * and a move from inside the window to far outside clears its stale near-term row. The
+   * sole production caller (`applyEvents`) passes `Date.now()`; only pure-rule tests pass
+   * `null`.
+   */
+  nowMs: number | null,
 ): { upserts: BusyBlockRow[]; deletes: string[] } {
   const upserts: BusyBlockRow[] = [];
   const deletes: string[] = [];
+  const keepFromMs =
+    nowMs === null ? null : nowMs - BUSY_PRUNE_KEEP_PAST_HOURS * 60 * 60_000 - WRITE_WINDOW_MARGIN_MS;
+  const keepToMs = nowMs === null ? null : nowMs + BUSY_WINDOW_AHEAD_DAYS * 24 * 60 * 60_000 + WRITE_WINDOW_MARGIN_MS;
   for (const ev of events) {
     if (!ev.id) continue;
     // #166/#586: an event Slate itself created for a booking is already represented
@@ -203,6 +232,20 @@ export function partitionBusyWrites(
       continue;
     }
     const win = eventWindow(ev, timeZone)!;
+    // #1264: outside the write window -> delete rather than upsert, so the delta cannot
+    // keep an out-of-window row alive and a move out of the window clears the old one. An
+    // unreadable bound is KEPT (parseStampMs returns null -> not judged out), the same
+    // fail-toward-keeping direction as the margin: a NaN never deletes a row (L50).
+    if (keepFromMs !== null && keepToMs !== null) {
+      const startMs = parseStampMs(win.start);
+      const endMs = parseStampMs(win.end);
+      const outOfWindow =
+        startMs !== null && endMs !== null && (endMs <= keepFromMs || startMs >= keepToMs);
+      if (outOfWindow) {
+        deletes.push(ev.id);
+        continue;
+      }
+    }
     upserts.push({
       user_id: userId,
       gcal_event_id: ev.id,

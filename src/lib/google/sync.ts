@@ -373,6 +373,10 @@ export async function applyEvents(
     events,
     slateEventIds,
     timeZone,
+    // #1264: the write window filter, now that hydration covers the full window for every
+    // bookable calendar. An out-of-window event is deleted rather than cached, so the
+    // unbounded delta cannot keep far-future rows alive (and #1265 can prune the backlog).
+    Date.now(),
   );
   // Throw on any failure so syncCalendar never advances the sync token past an
   // event it failed to record - a swallowed error loses the event for good (the

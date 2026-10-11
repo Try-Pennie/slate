@@ -3173,7 +3173,15 @@ describe("a committed time is spelled the same way wherever it is read back (#22
   });
 
   it("names the full date, with the year, on the call a recognised lead already has", async () => {
-    const existing = new Date(Date.now() + 9 * 24 * 60 * 60 * 1000).toISOString();
+    // Nine days out so it is always a FUTURE call, but with the time-of-day pinned to
+    // 17:00Z (noon EST / 1pm EDT). Taken straight from Date.now() the instant straddled
+    // the ET/UTC midnight boundary whenever the wall-clock time-of-day put it near
+    // midnight, and the screen and longDayLabel then named different days; mid-day ET is
+    // far from both midnights, so the day is deterministic without a fixed date that would
+    // later fall into the past (L524).
+    const d = new Date(Date.now() + 9 * 24 * 60 * 60 * 1000);
+    d.setUTCHours(17, 0, 0, 0);
+    const existing = d.toISOString();
     global.fetch = plainFetch();
     render(
       <Booker
