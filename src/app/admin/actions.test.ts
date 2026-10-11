@@ -99,6 +99,7 @@ const twilioOk = (over: Partial<TwilioSyncResult> = {}) => ({
     demotionSweepFailures: 0,
     demotionWriteFailures: 0,
     demotionEvalFailures: 0,
+    demotionSwitchUnreadable: false,
     ...over,
   } satisfies TwilioSyncResult,
 });
@@ -1773,6 +1774,43 @@ describe("syncSalesforceNow (#491, #2071)", () => {
     }
     expect(redirected).toContain("could not be queued for a move");
     expect(redirected).toContain("coverage panel");
+  });
+
+  // #3615: a demotion sweep moves only the calls in the pool somebody lost, and the reroute's own
+  // faults (including a switch that could not be read) are said on the page, not only in Slack.
+  it("says how many calls are moving off agents Twilio demoted", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome(
+        { updated: 0 },
+        twilioOk({
+          demotionSweeps: [
+            { email: "a@x", userId: "u1", bookings: 2, change: null },
+            { email: "b@x", userId: "u2", bookings: 1, change: null },
+          ],
+        }),
+      ),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("3 upcoming calls being moved off 2 agents Twilio demoted off a pool those calls need");
+  });
+
+  it("names a reroute that could not finish, and a switch that could not be read", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome({ updated: 0 }, twilioOk({ demotionEvalFailures: 1, demotionSweepFailures: 1, demotionSwitchUnreadable: true })),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("could not read whether the automatic reroute is switched on");
+    expect(redirected).toContain("2 agents the automatic reroute could not finish for");
   });
 
   // #2735: the tag is what silences the Regal call page, so a run that moved it for

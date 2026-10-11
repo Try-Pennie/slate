@@ -272,9 +272,10 @@ describe("readPublicBookingPaused", () => {
   });
 });
 
-// #3582: the go-live switch for the reroute trigger. Unlike the booking reads above (which answer
-// null and let a judge decide), this gates a customer-MOVING action, so it FAILS TO OFF: an
-// unreadable switch, and an absent settings row, both read as off.
+// #3582: the go-live switch for the reroute trigger. It gates a customer-MOVING action, so an
+// unreadable switch must never arm it. #3615: it now answers null for an unreadable switch rather
+// than a plain false, because a false is also what a deliberately OFF switch answers, and the sync
+// has to be able to say "could not read it, so checked nobody" instead of looking like a quiet hour.
 describe("readDemotionRerouteEnabled", () => {
   beforeEach(() => {
     maybeSingle.mockReset();
@@ -295,10 +296,11 @@ describe("readDemotionRerouteEnabled", () => {
     await expect(readDemotionRerouteEnabled()).resolves.toBe(false);
   });
 
-  // The one that matters: a read error must fail to OFF, never leave the trigger armed on a fault.
-  it("fails to OFF, never throws, when the read ERRORS", async () => {
+  // The one that matters: a read error never arms the trigger, never throws, and is told apart
+  // from a switch somebody left off.
+  it("answers null (unreadable), never true and never a throw, when the read ERRORS", async () => {
     maybeSingle.mockResolvedValue({ data: null, error: { message: "column does not exist" } });
-    await expect(readDemotionRerouteEnabled()).resolves.toBe(false);
+    await expect(readDemotionRerouteEnabled()).resolves.toBeNull();
   });
 
   // The pair read together, so neither assertion can be satisfied by a reader hard wired to one
@@ -307,7 +309,7 @@ describe("readDemotionRerouteEnabled", () => {
     maybeSingle.mockResolvedValue({ data: { demotion_reroute_enabled: true }, error: null });
     expect(await readDemotionRerouteEnabled()).toBe(true);
     maybeSingle.mockResolvedValue({ data: null, error: { message: "read failed" } });
-    expect(await readDemotionRerouteEnabled()).toBe(false);
+    expect(await readDemotionRerouteEnabled()).toBeNull();
   });
 });
 

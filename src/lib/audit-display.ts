@@ -13,6 +13,9 @@
  *    claims to have been written at the time is worse than an admitted gap.
  */
 
+import { describeDemotionChange } from "@/lib/booking/demotion-copy";
+import type { DemotionChange } from "@/lib/booking/demotion-plan";
+
 export interface AuditDisplayRow {
   action: string;
   actor_id: string | null;
@@ -63,7 +66,15 @@ const ACTION_LABEL: Record<string, string> = {
   "pii.warehouse_purge": "purged contact data from the warehouse",
   "regal.ignore_added": "stopped reporting a person's Regal calls",
   "regal.ignore_removed": "started reporting a person's Regal calls again",
+  "booking.demotion_reroute": "moved a booked call after a Twilio demotion",
 };
+
+/**
+ * Actions Slate takes ON ITS OWN, with no person in the request (#3615). Their null actor is the
+ * automation, so it reads as "Slate" rather than "unassigned", which would say nobody was
+ * responsible.
+ */
+const AUTOMATED_ACTIONS = new Set(["booking.demotion_reroute"]);
 
 /** The action as a readable phrase, falling back to the raw key so an
  *  unlabelled action still renders as something rather than blank. */
@@ -94,13 +105,23 @@ export function auditActorText(
   if (row.actor_id === null && (unrecorded === true || unrecorded === "true")) {
     return "not recorded";
   }
+  if (row.actor_id === null && AUTOMATED_ACTIONS.has(row.action)) return "Slate";
   return nameOf(row.actor_id);
 }
 
 /** The one line detail column: what changed, plus a rebuilt note when the row
  *  was reconstructed after the fact. */
-export function auditDetailText(row: AuditDisplayRow): string {
+export function auditDetailText(row: AuditDisplayRow, nameOf?: (id: string | null) => string): string {
   const parts: string[] = [];
+  if (row.action === "booking.demotion_reroute") {
+    // Who took the call, and what changed in Twilio, in the sentence the Slack line and the undo
+    // panel use too. The demoted advisor is already the row's target.
+    const to = typeof row.details?.to_user_id === "string" ? row.details.to_user_id : null;
+    const change = describeDemotionChange((row.details?.change ?? null) as DemotionChange | null);
+    parts.push(`Moved to ${nameOf ? nameOf(to) : (to ?? "another advisor")}.`);
+    parts.push(change ?? "What changed in Twilio was not recorded.");
+    return parts.join(" ");
+  }
   if (row.action === "role.set" && row.details?.from && row.details?.to) {
     parts.push(`${String(row.details.from)} to ${String(row.details.to)}`);
   }

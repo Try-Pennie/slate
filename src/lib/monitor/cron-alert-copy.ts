@@ -3,8 +3,12 @@
  *
  * Lifted out of the route handlers so the alert preview renders the REAL copy by
  * calling these (L41: one place per sentence). All of these are CONDITIONS, so
- * each has a matching all-clear that a person reads in the same channel.
+ * each has a matching all-clear that a person reads in the same channel, except
+ * `demotionRerouteMovedInfo`, an info line that never needed action (#3615).
  */
+
+import { describeDemotionChange } from "@/lib/booking/demotion-copy";
+import type { DemotionChange } from "@/lib/booking/demotion-plan";
 
 /** The hourly Salesforce roster sync is failing on consecutive runs. */
 export function agentSyncFailureAlert(message: string): string {
@@ -121,6 +125,76 @@ export function twilioOrphanedMarkRecovery(): string {
     "Every agent Slate is holding out of the pool for redistribute has a Twilio worker again, " +
     "so the tag can be read for all of them. No action is needed."
   );
+}
+
+/**
+ * The reroute for demoted advisors could not finish, on two roster runs in a row (#3615). Each
+ * part is its own fault with its own consequence (L11), and the switch comes first because it
+ * means NOBODY was checked, which hides every other count.
+ */
+export function demotionTriggerFailureAlert(counts: {
+  switchUnreadable: boolean;
+  evals: number;
+  sweeps: number;
+  writes: number;
+}): string {
+  const parts: string[] = [];
+  if (counts.switchUnreadable) {
+    parts.push(
+      "Slate could not read whether the automatic reroute is switched on, so it treated it as off and checked nobody",
+    );
+  }
+  if (counts.evals > 0) {
+    parts.push(
+      `${agents(counts.evals)} whose Twilio tiers changed could not be checked against the calls they hold, so a call they can no longer take may still be with them`,
+    );
+  }
+  if (counts.sweeps > 0) {
+    parts.push(
+      `${agents(counts.sweeps)} lost a pool their calls need and the move of those calls could not be queued, so the calls are still with them: move them from the coverage panel on their profile`,
+    );
+  }
+  if (counts.writes > 0) {
+    parts.push(
+      `${agents(counts.writes)} could not have their demotion recorded, so the next run will try again`,
+    );
+  }
+  return (
+    "The automatic reroute for advisors Twilio demoted could not finish, on two roster runs in a row. " +
+    `${parts.join(". ")}. Check the Worker logs for tag=twilio-sync.`
+  );
+}
+
+/** The reroute for demoted advisors ran cleanly again. */
+export function demotionTriggerFailureRecovery(): string {
+  return (
+    "The automatic reroute for advisors Twilio demoted is running cleanly again: on the latest run " +
+    "every changed agent was checked and every move was queued. No action is needed."
+  );
+}
+
+/**
+ * The quiet line when demotion sweeps start moving calls (#3615). Nothing else tells a person a
+ * reroute happened, so this is how somebody finds the moves to check them: whose calls, how many,
+ * what changed in Twilio (the one shared sentence), and the agent's page.
+ */
+export function demotionRerouteMovedInfo(
+  sweeps: { email: string; bookings: number; change: DemotionChange | null; url: string }[],
+): string {
+  const total = sweeps.reduce((n, s) => n + s.bookings, 0);
+  const lines = sweeps.map(
+    (s) =>
+      `${s.email}, ${calls(s.bookings)}. ${describeDemotionChange(s.change) ?? "What changed in Twilio was not recorded."} ${s.url}`,
+  );
+  return (
+    `Twilio demoted ${agents(sweeps.length)} off a pool their booked calls need, so Slate is moving ` +
+    `${calls(total)} to other advisors.\n${lines.join("\n")}`
+  );
+}
+
+/** "1 call" / "4 calls". */
+function calls(n: number): string {
+  return `${n} call${n === 1 ? "" : "s"}`;
 }
 
 /** "1 agent" / "4 agents", so a count of one never renders as a plural. */

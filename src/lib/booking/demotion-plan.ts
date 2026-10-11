@@ -27,6 +27,37 @@ export const DEMOTION_MARK_KEY = "demotion_marked_at";
 export const DEMOTION_SWEPT_KEY = "demotion_swept_at";
 
 /**
+ * The agent attributes holding the debt tiers and backend the agent carried BEFORE the demotion
+ * (#3615). By the time the sweep moves a call (a sync at least the debounce after the stamp) the
+ * stored attributes already hold the NARROWED values, so the change that moved the call is
+ * recorded nowhere unless the stamp saves it. They are written in the SAME write as the mark and
+ * dropped with it. Two flat keys rather than one object, because an attribute value is a scalar
+ * or a list of strings.
+ */
+export const DEMOTION_FROM_DEBT_KEY = "demotion_from_debt_team";
+export const DEMOTION_FROM_BACKEND_KEY = "demotion_from_backend_service";
+
+/**
+ * The reason a demotion sweep's moves carry (#3615). The move runs the standard reassign, which
+ * sends `booking.reassigned` to Regal with this as `reassignReason`, so it is the code every
+ * coverage sweep already sends: settled with Dan, a demotion move is no new lead message, and a
+ * new code would reach a Regal journey branch nobody built.
+ */
+export const DEMOTION_SWEEP_REASON = { code: "coverage", detail: null } as const;
+
+/** The two routing facts a demotion can narrow (legal eligibility is retired as a trigger). */
+export interface DemotionTiers {
+  debtTeam: string[];
+  backendService: string[];
+}
+
+/** What a demotion changed: the tiers saved at the stamp, and the tiers the sweep acted on. */
+export interface DemotionChange {
+  from: DemotionTiers;
+  to: DemotionTiers;
+}
+
+/**
  * How long the demotion mark must have been stored before the sweep moves the agent's lost-pool
  * calls (#3599's reasoning, for the partial case). Moving a customer's call is disruptive and
  * not cheap to undo, so it waits a sync: a tag that flaps back within the window is cleared by
@@ -43,24 +74,61 @@ export const DEMOTION_SWEEP_DEBOUNCE_MS = 30 * 60_000;
  */
 export const DEMOTION_SWEEP_PENDING_GRACE_MS = 4 * 60 * 60_000;
 
+/** The debt tiers and backend an attribute set carries, as lists. */
+export function demotionTiersOf(attributes: Attributes | null | undefined): DemotionTiers {
+  return { debtTeam: asList(attributes?.debt_team), backendService: asList(attributes?.backend_service) };
+}
+
 /**
- * The attributes with the demotion mark on, stamped `markedAtIso`. A stale swept marker from a
- * PREVIOUS demotion is dropped, so a new cycle starts its own debounce and sweep rather than
- * reading as already done (#3599).
+ * The attributes with the demotion mark on, stamped `markedAtIso`, carrying `from`, the tiers the
+ * agent held before this narrowing (#3615). A stale swept marker from a PREVIOUS demotion is
+ * dropped, so a new cycle starts its own debounce and sweep rather than reading as already done
+ * (#3599), and `from` replaces any earlier cycle's, so the audit names THIS cycle's change.
  */
-export function withDemotionMark(attributes: Attributes | null, markedAtIso: string): Attributes {
-  const next: Attributes = { ...(attributes ?? {}), [DEMOTION_MARK_KEY]: markedAtIso };
+export function withDemotionMark(attributes: Attributes | null, markedAtIso: string, from: DemotionTiers): Attributes {
+  const next: Attributes = {
+    ...(attributes ?? {}),
+    [DEMOTION_MARK_KEY]: markedAtIso,
+    [DEMOTION_FROM_DEBT_KEY]: [...from.debtTeam],
+    [DEMOTION_FROM_BACKEND_KEY]: [...from.backendService],
+  };
   delete next[DEMOTION_SWEPT_KEY];
   return next;
 }
 
-/** The attributes with the demotion mark and its swept marker removed, so a flapped or resolved
- *  demotion leaves no trace and a later one starts clean. */
+/** The attributes with the demotion mark, its swept marker and its saved tiers removed, so a
+ *  flapped or resolved demotion leaves no trace and a later one starts clean. */
 export function withoutDemotionMark(attributes: Attributes | null): Attributes {
   const next: Attributes = { ...(attributes ?? {}) };
   delete next[DEMOTION_MARK_KEY];
   delete next[DEMOTION_SWEPT_KEY];
+  delete next[DEMOTION_FROM_DEBT_KEY];
+  delete next[DEMOTION_FROM_BACKEND_KEY];
   return next;
+}
+
+/**
+ * The tiers saved at the stamp, or null when this row carries none. A mark stamped before #3615
+ * saved nothing, and that must read as UNKNOWN rather than as "held no tiers", which would state
+ * a change that never happened. Both keys are required: an empty list is a real answer, an
+ * absent key is not.
+ */
+export function storedDemotionFrom(attributes: Attributes | null | undefined): DemotionTiers | null {
+  const debt = attributes?.[DEMOTION_FROM_DEBT_KEY];
+  const backend = attributes?.[DEMOTION_FROM_BACKEND_KEY];
+  if (debt === undefined || backend === undefined) return null;
+  return { debtTeam: asList(debt), backendService: asList(backend) };
+}
+
+/**
+ * The change a demotion sweep acts on, for its job record (#3615): the tiers saved at the stamp
+ * and the tiers on the attributes the sweep is moving calls under. Null when nothing was saved,
+ * so the record says "not recorded" instead of inventing a before.
+ */
+export function demotionChangeOf(attributes: Attributes | null | undefined): DemotionChange | null {
+  const from = storedDemotionFrom(attributes);
+  if (from === null) return null;
+  return { from, to: demotionTiersOf(attributes) };
 }
 
 /** The attributes with the sweep recorded as done, stamped `sweptAtIso`. KEEPS the mark, so the
@@ -150,7 +218,7 @@ export function mayNarrowEligibility(
  */
 export type DemotionAction =
   | { kind: "none" }
-  | { kind: "stamp"; markedAtIso: string }
+  | { kind: "stamp"; markedAtIso: string; from: DemotionTiers }
   | { kind: "sweep-overdue"; markedAtIso: string }
   | { kind: "clear" };
 
@@ -186,7 +254,7 @@ export function planDemotionAction(
       // demotion: re-stamp (dated now), which drops the stale swept marker and starts its own
       // debounce and sweep, so the newly-lost bookings are not left behind (#3599, the redistribute
       // "new cycle after a completed one" rule).
-      if (narrowedThisSync) return { kind: "stamp", markedAtIso: nowIso };
+      if (narrowedThisSync) return { kind: "stamp", markedAtIso: nowIso, from: demotionTiersOf(before) };
       // No new narrowing: once the agent serves everything they hold again (the swept calls moved,
       // or they re-widened), clear the spent mark; otherwise leave it (do not re-sweep).
       if (unservedBookingIds(after, candidates).length === 0) return { kind: "clear" };
@@ -201,7 +269,7 @@ export function planDemotionAction(
 
   // No mark yet: stamp only on a CONFIRMED narrowing, never on a pre-existing mis-assignment
   // nothing changed.
-  return narrowedThisSync ? { kind: "stamp", markedAtIso: nowIso } : { kind: "none" };
+  return narrowedThisSync ? { kind: "stamp", markedAtIso: nowIso, from: demotionTiersOf(before) } : { kind: "none" };
 }
 
 /**
@@ -223,7 +291,7 @@ export function applyDemotionAction(
     case "none":
       return null;
     case "stamp":
-      return { attributes: withDemotionMark(after, action.markedAtIso), sweepMarkedAtIso: null };
+      return { attributes: withDemotionMark(after, action.markedAtIso, action.from), sweepMarkedAtIso: null };
     case "sweep-overdue":
       return { attributes: withDemotionSwept(after, nowIso), sweepMarkedAtIso: action.markedAtIso };
     case "clear":

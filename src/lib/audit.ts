@@ -96,6 +96,10 @@ export const AUDIT_ACTIONS = [
   // "who decided this person's calls are not reported, and why" is answered.
   "regal.ignore_added",
   "regal.ignore_removed",
+  // #3615: the reroute-on-ineligibility automation moved a booked call off an advisor Twilio
+  // demoted off the pool it needs. No human actor; the details carry the booking, both advisors,
+  // the sweep, and what changed in Twilio, so "why is my call with somebody else" is answerable.
+  "booking.demotion_reroute",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
@@ -107,6 +111,25 @@ export const AUDIT_WRITE_FAILED_KEY = "audit_write_failed";
 /** Long enough that a persistently broken audit_log pages once rather than once
  *  per admin click; short enough that still-broken an hour later is news again. */
 export const AUDIT_WRITE_FAILED_COOLDOWN_MS = 15 * 60 * 1000;
+
+/** One row for the audit trail, as `recordAudit` writes it. */
+export interface AuditEntry {
+  orgId: string;
+  /** Null for an action taken by an operator process rather than a signed-in user
+   *  (the column is nullable, and erase_booking_pii already writes null). */
+  actorId: string | null;
+  action: AuditAction;
+  /**
+   * The USER this action was about, or null when it was about no one.
+   *
+   * `audit_log.target_id` has a foreign key to `users(id)`, and the admin trail
+   * renders it as a person's name, so nothing else may go here. Passing another
+   * entity's id (an ooo_requests row, #1220) is rejected by the database and the
+   * action goes unrecorded. Put that id in `details` instead.
+   */
+  targetUserId?: string | null;
+  details?: Record<string, unknown>;
+}
 
 /**
  * Appends a privileged action to the audit trail. Never throws, so a logging
@@ -126,23 +149,7 @@ export const AUDIT_WRITE_FAILED_COOLDOWN_MS = 15 * 60 * 1000;
  * it, so there is no healthy state to observe and an all-clear would be noise.
  * Same reasoning as a failed booking_events insert.
  */
-export async function recordAudit(entry: {
-  orgId: string;
-  /** Null for an action taken by an operator process rather than a signed-in user
-   *  (the column is nullable, and erase_booking_pii already writes null). */
-  actorId: string | null;
-  action: AuditAction;
-  /**
-   * The USER this action was about, or null when it was about no one.
-   *
-   * `audit_log.target_id` has a foreign key to `users(id)`, and the admin trail
-   * renders it as a person's name, so nothing else may go here. Passing another
-   * entity's id (an ooo_requests row, #1220) is rejected by the database and the
-   * action goes unrecorded. Put that id in `details` instead.
-   */
-  targetUserId?: string | null;
-  details?: Record<string, unknown>;
-}): Promise<void> {
+export async function recordAudit(entry: AuditEntry): Promise<void> {
   try {
     const { error } = await supabaseAdmin().from("audit_log").insert({
       org_id: entry.orgId,

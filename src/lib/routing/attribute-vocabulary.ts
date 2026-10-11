@@ -37,3 +37,17 @@ export const BACKEND_VALUES = ["beyond", "achieve"] as const;
 
 export type DebtTierValue = (typeof DEBT_TIER_VALUES)[number];
 export type BackendValue = (typeof BACKEND_VALUES)[number];
+
+/** How each debt tier and backend reads to a person (#3615). A `Record` over the vocabulary, so
+ *  `tsc` names a value somebody adds above and forgets here. */
+export const DEBT_TIER_LABELS: Record<DebtTierValue, string> = {
+  ultra_high: "Ultra High",
+  very_high: "Very High",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+};
+export const BACKEND_LABELS: Record<BackendValue, string> = {
+  beyond: "Beyond",
+  achieve: "Achieve",
+};

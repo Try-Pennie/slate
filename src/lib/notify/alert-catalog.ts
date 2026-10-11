@@ -259,6 +259,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The roster sync can read Twilio and cannot finish acting on it: a flip, a coverage move or a routing attribute write keeps throwing. It stays true until a run lands them all, which is the recovery.",
   },
   {
+    key: "demotion_trigger_failures",
+    kind: "condition",
+    why:
+      "The automatic reroute for advisors Twilio demoted could not finish on two roster runs in a " +
+      "row: its on/off switch could not be read, a changed agent could not be checked, a move could " +
+      "not be queued, or a demotion record would not save (#3615). It stays true until a run " +
+      "completes all of them, which is the recovery.",
+  },
+  {
     key: "twilio_marked_no_worker",
     kind: "condition",
     why: "Slate is holding somebody out of the pool for redistribute and Twilio holds no worker for their address, so nothing can say whether the tag went or the worker did. It stays true until the worker is restored or somebody turns them back on.",
@@ -1025,6 +1034,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
   },
 
   // --- Info: never needed action, so never announces recovery ---------------
+  {
+    key: "demotion_reroute_moved",
+    kind: "info",
+    why:
+      "A demotion sweep started moving an advisor's booked calls to other advisors (#3615). " +
+      "Nothing is broken, so nobody is woken; it is said at all because nothing else tells a " +
+      "person a reroute happened, and the moves can only be checked by somebody who knows. " +
+      "There is no all-clear: the move is an event, not a state that ends.",
+  },
   {
     key: "client_error_test_bucket",
     kind: "info",

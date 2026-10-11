@@ -261,7 +261,24 @@ describe("a demotion coverage sweep is keyed on the mark and uses the filtered s
 
   it("leaves the demotion column null for every other sweep", async () => {
     await createBulkReassignJob({ ...offboardingInput });
-    expect(calls.inserted[0]).toMatchObject({ demotion_marked_at: null });
+    expect(calls.inserted[0]).toMatchObject({ demotion_marked_at: null, demotion_change: null });
+  });
+
+  // #3615: the audit of each move, and the undo screen, say what changed in Twilio. The agent's
+  // row already holds the narrowed tiers by the time the sweep runs, so the change is recorded
+  // on the job at the moment it decides to move anybody.
+  it("records what the demotion changed on the job", async () => {
+    const change = {
+      from: { debtTeam: ["ultra_high", "high"], backendService: ["achieve"] },
+      to: { debtTeam: ["high"], backendService: ["achieve"] },
+    };
+    await createBulkReassignJob({ ...demotionInput, demotionChange: change });
+    expect(calls.inserted[0]).toMatchObject({ demotion_marked_at: DEMOTION_AT, demotion_change: change });
+  });
+
+  it("records no change when none was saved, rather than inventing one", async () => {
+    await createBulkReassignJob({ ...demotionInput, demotionChange: null });
+    expect(calls.inserted[0]).toMatchObject({ demotion_change: null });
   });
 });
 

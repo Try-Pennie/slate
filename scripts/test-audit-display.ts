@@ -146,4 +146,36 @@ const nameOf = (id: string | null) => (id ? `Name(${id})` : "unassigned");
   );
 }
 
+// --- #3615: a call the demotion automation moved ---
+{
+  const row = (change: unknown) => ({
+    action: "booking.demotion_reroute",
+    actor_id: null,
+    details: { booking_id: "bk1", from_user_id: "out", to_user_id: "cov", change },
+  });
+  const change = {
+    from: { debtTeam: ["ultra_high", "high"], backendService: ["achieve"] },
+    to: { debtTeam: ["high"], backendService: ["achieve"] },
+  };
+  // No person pressed anything, and "unassigned" would read as nobody being responsible.
+  assert(auditActorText(row(change), nameOf) === "Slate", "the automation's move is attributed to Slate, not 'unassigned'");
+  assert(auditActionLabel("booking.demotion_reroute") === "moved a booked call after a Twilio demotion", "labelled as what happened");
+  const detail = auditDetailText(row(change), nameOf);
+  assert(
+    detail === "Moved to Name(cov). Debt tiers went from Ultra High and High to High.",
+    `the detail names who took the call and what changed (${detail})`,
+  );
+  const both = auditDetailText(
+    row({ from: { debtTeam: ["high"], backendService: ["achieve"] }, to: { debtTeam: ["high"], backendService: [] } }),
+    nameOf,
+  );
+  assert(both === "Moved to Name(cov). Backend went from Achieve to none.", `a backend change is named on its own (${both})`);
+  const unrecorded = auditDetailText(row(null), nameOf);
+  assert(
+    unrecorded === "Moved to Name(cov). What changed in Twilio was not recorded.",
+    `an unrecorded change says so rather than inventing one (${unrecorded})`,
+  );
+  assert(!/[\u2014\u2013]/.test(detail), "the detail has no dash punctuation");
+}
+
 finish();

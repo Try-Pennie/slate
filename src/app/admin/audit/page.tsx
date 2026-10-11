@@ -252,7 +252,7 @@ export default async function AuditLogPage({
                     <td className="py-1.5 pr-3">{auditActorText(a, nameOf)}</td>
                     <td className="py-1.5 pr-3">{auditActionLabel(a.action)}</td>
                     <td className="py-1.5 pr-3">{nameOf(a.target_id)}</td>
-                    <td className="py-1.5 text-fg-muted">{auditDetailText(a)}</td>
+                    <td className="py-1.5 text-fg-muted">{auditDetailText(a, nameOf)}</td>
                   </tr>
                 ))}
               </tbody>

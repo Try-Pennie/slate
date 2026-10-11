@@ -62,6 +62,7 @@ describe("startBulkReassign", () => {
       redistributeMarkedAtIso: null,
       // #3582: and not a Twilio demotion; a person-started sweep passes no filtered snapshot.
       demotionMarkedAtIso: null,
+      demotionChange: null,
       snapshotBookings: undefined,
     });
   });
@@ -103,12 +104,15 @@ describe("startBulkReassign", () => {
       reason,
       actor: null,
       demotionMarkedAtIso: "2026-10-01T09:00:00.000Z",
+      demotionChange: { from: { debtTeam: ["ultra_high"], backendService: [] }, to: { debtTeam: [], backendService: [] } },
       snapshotBookings,
     });
     expect(store.createBulkReassignJob).toHaveBeenCalledWith(
       expect.objectContaining({
         createdBy: null,
         demotionMarkedAtIso: "2026-10-01T09:00:00.000Z",
+        // #3615: what the demotion changed reaches the job record.
+        demotionChange: { from: { debtTeam: ["ultra_high"], backendService: [] }, to: { debtTeam: [], backendService: [] } },
         redistributeMarkedAtIso: null,
         offboardingDeactivatedAtIso: null,
         snapshotBookings,

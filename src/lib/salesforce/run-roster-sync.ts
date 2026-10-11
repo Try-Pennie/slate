@@ -16,10 +16,11 @@ import { activationAllowance, ROSTER_RUN_LOCK_TTL_MS } from "@/lib/bookable/acti
 import { ensureDefaultOrg } from "@/lib/provision";
 import { ensureDefaultSchedules } from "@/lib/schedule";
 import { acquireLease, releaseLock, type LeaseStopReason, type LockLease } from "@/lib/locks";
-import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, sendThrottledInfo, resolveAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failure";
 import { clearFailureStreak, recordConsecutiveStreak } from "@/lib/notify/streak";
 import { log } from "@/lib/log";
+import { appUrl } from "@/lib/env";
 import {
   agentSyncRecovery,
   salesforceManagerAmbiguousAlert,
@@ -33,6 +34,9 @@ import {
   twilioWriteFailureAlert,
   twilioWriteFailureRecovery,
   twilioOrphanedMarkAlert,
+  demotionTriggerFailureAlert,
+  demotionTriggerFailureRecovery,
+  demotionRerouteMovedInfo,
   twilioOrphanedMarkRecovery,
 } from "@/lib/monitor/cron-alert-copy";
 import { hasUserIdConflicts } from "@/lib/salesforce/user-id-link";
@@ -71,6 +75,8 @@ const AGENTS_LOCK_TTL_MS = ROSTER_RUN_LOCK_TTL_MS;
 const TWILIO_WRITE_STREAK_KEY = "twilio_write_failures";
 const TWILIO_WRITE_STREAK_WINDOW_S = 3 * 60 * 60;
 const TWILIO_WRITE_STREAK_ALERT_AT = 2;
+/** #3615: the reroute for demoted advisors, on the same two-runs-in-a-row footing as the writes. */
+const DEMOTION_TRIGGER_STREAK_KEY = "demotion_trigger_failures";
 
 /**
  * The Twilio READ failures streak (#2774).
@@ -312,6 +318,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       const cleared = await resolveAlert("twilio_sync_failures", twilioSyncRecovery()).catch(logResolveFailure("twilio_sync_failures"));
       if (cleared) log.info("agents", { msg: "twilio sync failure alert cleared" });
       await reportTwilioWriteOutcome(result);
+      await reportDemotionOutcome(result);
     } catch (err) {
       const reason = errorText(err);
       twilio = { ok: false, reason };
@@ -488,6 +495,68 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
     };
   } finally {
     await releaseLock(AGENTS_LOCK_KEY, lease.token());
+  }
+}
+
+/**
+ * The reroute for advisors Twilio demoted (#3615): page when it could not finish on two runs in a
+ * row, and whisper the moves when a demotion sweep queued calls.
+ *
+ * Its own key rather than more parts on `twilio_write_failures`, because it is its own feature
+ * behind its own switch with its own repair. An UNREADABLE switch counts as a failure: the sync
+ * treats it as off and checks nobody, which once armed is every demotion silently missed.
+ *
+ * Only reached from a run that READ Twilio, so a run that measured nothing clears nothing
+ * (#1134, #1152). Best effort, like its siblings: a Slack problem never fails the run.
+ */
+async function reportDemotionOutcome(result: TwilioSyncResult): Promise<void> {
+  const failures = {
+    switchUnreadable: result.demotionSwitchUnreadable,
+    evals: result.demotionEvalFailures,
+    sweeps: result.demotionSweepFailures,
+    writes: result.demotionWriteFailures,
+  };
+  const anyFailed = failures.switchUnreadable || failures.evals + failures.sweeps + failures.writes > 0;
+  if (anyFailed) {
+    const streak = await recordConsecutiveStreak(
+      DEMOTION_TRIGGER_STREAK_KEY,
+      TWILIO_WRITE_STREAK_WINDOW_S,
+      TWILIO_WRITE_STREAK_ALERT_AT,
+    );
+    // alert-key: demotion_trigger_failures
+    if (streak) {
+      await sendThrottledAlert(
+        "demotion_trigger_failures",
+        SYNC_ALERT_COOLDOWN_MS,
+        demotionTriggerFailureAlert(failures),
+      ).catch(logAlertSendFailure("demotion_trigger_failures"));
+    }
+  } else {
+    await clearFailureStreak(DEMOTION_TRIGGER_STREAK_KEY);
+    // alert-key: demotion_trigger_failures
+    const cleared = await resolveAlert(
+      "demotion_trigger_failures",
+      demotionTriggerFailureRecovery(),
+    ).catch(logResolveFailure("demotion_trigger_failures"));
+    if (cleared) log.info("agents", { msg: "demotion trigger failure alert cleared" });
+  }
+
+  if (result.demotionSweeps.length > 0) {
+    // Zero cooldown: every run that moves calls is its own event and must be said. A run that
+    // moves none says nothing, so this can never repeat itself.
+    // alert-key: demotion_reroute_moved
+    await sendThrottledInfo(
+      "demotion_reroute_moved",
+      0,
+      demotionRerouteMovedInfo(
+        result.demotionSweeps.map((s) => ({
+          email: s.email,
+          bookings: s.bookings,
+          change: s.change,
+          url: `${appUrl()}/admin/agents/${encodeURIComponent(s.userId)}`,
+        })),
+      ),
+    ).catch(logAlertSendFailure("demotion_reroute_moved"));
   }
 }
 

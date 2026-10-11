@@ -8,7 +8,13 @@
 // read back, never minted per run, so a retried sync converges on one sweep (#3614).
 import {
   applyDemotionAction,
+  DEMOTION_FROM_BACKEND_KEY,
+  DEMOTION_FROM_DEBT_KEY,
   DEMOTION_MARK_KEY,
+  DEMOTION_SWEEP_REASON,
+  demotionChangeOf,
+  storedDemotionFrom,
+  type DemotionTiers,
   DEMOTION_SWEEP_DEBOUNCE_MS,
   DEMOTION_SWEEP_PENDING_GRACE_MS,
   DEMOTION_SWEPT_KEY,
@@ -23,6 +29,7 @@ import {
   withoutDemotionMark,
 } from "../src/lib/booking/demotion-plan.ts";
 import type { RerouteCandidate } from "../src/lib/booking/reroute-eligibility.ts";
+import { REASSIGN_REASONS } from "../src/lib/booking/core.ts";
 import type { Attributes } from "../src/lib/db/types.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -49,7 +56,7 @@ const HI: RerouteCandidate = {
 // --- attribute mark helpers (mirror of withMark/withoutMark/withSwept) ------
 
 {
-  const marked = withDemotionMark({ debt_team: ["high"], [DEMOTION_SWEPT_KEY]: "stale" }, T0);
+  const marked = withDemotionMark({ debt_team: ["high"], [DEMOTION_SWEPT_KEY]: "stale" }, T0, { debtTeam: ["high"], backendService: [] });
   eq(marked[DEMOTION_MARK_KEY], T0, "withDemotionMark stamps the mark");
   eq(marked[DEMOTION_SWEPT_KEY], undefined, "withDemotionMark drops a stale swept marker so a new cycle sweeps afresh");
   eq((marked.debt_team as string[]).join(","), "high", "withDemotionMark preserves the other attributes");
@@ -198,7 +205,7 @@ const afterAttrs: Attributes = { debt_team: ["high"] };
 
 {
   // stamp folds demotion_marked_at into the write; no sweep.
-  const o = applyDemotionAction(afterAttrs, { kind: "stamp", markedAtIso: T0 }, AGED);
+  const o = applyDemotionAction(afterAttrs, { kind: "stamp", markedAtIso: T0, from: { debtTeam: ["ultra_high", "high"], backendService: [] } }, AGED);
   assert(o !== null, "a stamp action produces a write");
   eq(o!.attributes[DEMOTION_MARK_KEY], T0, "the stamp is folded into the write attributes");
   eq((o!.attributes.debt_team as string[]).join(","), "high", "the write keeps the narrowed tiers");
@@ -223,6 +230,86 @@ const afterAttrs: Attributes = { debt_team: ["high"] };
   eq(o!.attributes[DEMOTION_MARK_KEY], undefined, "clear drops the mark from the write");
   eq(o!.attributes[DEMOTION_SWEPT_KEY], undefined, "clear drops the swept marker too");
   eq(o!.sweepMarkedAtIso, null, "clear enqueues no sweep");
+}
+
+// --- the tiers held BEFORE the demotion (#3615) ------------------------------
+//
+// The audit row for a reroute names what changed in Twilio. By the time the sweep moves a call
+// (a sync at least 30 minutes after the stamp) the stored attributes already hold the NARROWED
+// tiers, so the pre-demotion ones exist nowhere unless the stamp saves them. They ride in the
+// SAME write as the mark, so a stamp can never land without them.
+
+const FROM: DemotionTiers = { debtTeam: ["ultra_high", "high"], backendService: ["achieve"] };
+
+{
+  const marked = withDemotionMark({ debt_team: ["high"] }, T0, FROM);
+  eq(
+    JSON.stringify(storedDemotionFrom(marked)),
+    JSON.stringify(FROM),
+    "withDemotionMark saves the pre-demotion tiers, and storedDemotionFrom reads them back",
+  );
+  const swept = withDemotionSwept(marked, AGED);
+  eq(JSON.stringify(storedDemotionFrom(swept)), JSON.stringify(FROM), "the sweep keeps the pre-demotion tiers");
+  const cleared = withoutDemotionMark(marked);
+  eq(storedDemotionFrom(cleared), null, "a clear drops the pre-demotion tiers with the mark");
+  eq(cleared[DEMOTION_FROM_DEBT_KEY], undefined, "no debt tier key is left behind by a clear");
+  eq(cleared[DEMOTION_FROM_BACKEND_KEY], undefined, "no backend key is left behind by a clear");
+}
+
+{
+  // An agent who held NO backend before is a real answer (an empty list), distinct from a mark
+  // stamped before this change, which recorded nothing and must read as unknown, never as empty.
+  const none = withDemotionMark({}, T0, { debtTeam: ["high"], backendService: [] });
+  eq(JSON.stringify(storedDemotionFrom(none)?.backendService), "[]", "an empty backend list is kept as empty");
+  eq(storedDemotionFrom({ [DEMOTION_MARK_KEY]: T0 }), null, "a mark with no saved tiers reads as unknown");
+}
+
+{
+  // The decision carries the tiers of BEFORE on a stamp, so the write can save them.
+  const beforeWithBackend: Attributes = { debt_team: ["ultra_high", "high"], backend_service: ["achieve"] };
+  const a = planDemotionAction(beforeWithBackend, { debt_team: ["high"], backend_service: ["achieve"] }, [UH, HI], T0);
+  eq(a.kind, "stamp", "the narrowing stamps");
+  if (a.kind === "stamp") eq(JSON.stringify(a.from), JSON.stringify(FROM), "the stamp carries the tiers held before");
+  const o = applyDemotionAction({ debt_team: ["high"] }, a, T0);
+  eq(JSON.stringify(storedDemotionFrom(o!.attributes)), JSON.stringify(FROM), "the stamp write saves them");
+}
+
+{
+  // A second narrowing over a swept mark records the tiers held before THAT narrowing, not the
+  // first cycle's: the audit names the change that moved this cycle's calls.
+  const sweptThenNarrowed: Attributes = {
+    debt_team: ["high"],
+    [DEMOTION_MARK_KEY]: T0,
+    [DEMOTION_SWEPT_KEY]: AGED,
+    ...withDemotionMark({}, T0, FROM),
+  };
+  const a = planDemotionAction(sweptThenNarrowed, { debt_team: ["low"] }, [HI], AGED);
+  eq(a.kind, "stamp", "the second narrowing re-stamps");
+  if (a.kind === "stamp") eq(JSON.stringify(a.from.debtTeam), JSON.stringify(["high"]), "it saves the tiers before THIS narrowing");
+}
+
+{
+  // What the sweep copies onto its job: the saved tiers before, and the tiers it is acting on.
+  const atSweep = withDemotionSwept(withDemotionMark({ debt_team: ["high"], backend_service: ["achieve"] }, T0, FROM), AGED);
+  const change = demotionChangeOf(atSweep);
+  eq(JSON.stringify(change?.from), JSON.stringify(FROM), "the change's from is the saved tiers");
+  eq(JSON.stringify(change?.to), JSON.stringify({ debtTeam: ["high"], backendService: ["achieve"] }), "the change's to is the current tiers");
+  eq(demotionChangeOf({ debt_team: ["high"], [DEMOTION_MARK_KEY]: T0 }), null, "no saved tiers means no change can be stated");
+}
+
+// --- the lead hears about a demotion move the way they hear about any coverage move (#3615) ---
+//
+// Settled with Dan 2026-10-11: no new lead message. The move runs the standard reassign, which
+// sends booking.reassigned to Regal with the job's reason as reassignReason, so the reason must be
+// the one every coverage sweep already sends: a new code would land in a Regal journey branch
+// nobody built.
+{
+  eq(DEMOTION_SWEEP_REASON.code, "coverage", "a demotion move is reported to Regal as the coverage move it is");
+  eq(DEMOTION_SWEEP_REASON.detail, null, "with no detail, like the redistribute sweep");
+  assert(
+    REASSIGN_REASONS.some((r) => r.code === DEMOTION_SWEEP_REASON.code && !r.systemOnly),
+    "a reason Regal already receives from every other coverage move",
+  );
 }
 
 finish();

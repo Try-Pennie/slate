@@ -17,6 +17,7 @@ import {
   type DemotionSnapshotReaders,
 } from "@/lib/booking/demotion-snapshot";
 import type { RerouteCandidate } from "@/lib/booking/reroute-eligibility";
+import type { DemotionChange } from "@/lib/booking/demotion-plan";
 import type {
   Attributes,
   BookingStatus,
@@ -268,6 +269,10 @@ export interface CreateBulkReassignJobInput {
    *  Unlike the three keys above, a demotion is PARTIAL (the agent still serves the pools they
    *  kept), so it is paired with `snapshotBookings` below rather than the full coverage read. */
   demotionMarkedAtIso?: string | null;
+  /** What the demotion behind this sweep changed (#3615), recorded on the job so each move's
+   *  audit row and the undo screen can say it. Null or absent for every other sweep, and for a
+   *  demotion whose earlier tiers were never saved. */
+  demotionChange?: DemotionChange | null;
   /** The bookings this sweep should move, when the caller already knows them (the demotion
    *  case passes the FILTERED set, only the bookings the agent no longer serves, via
    *  `demotionBookings`). Absent means the full coverage read, which is correct for a pool
@@ -340,6 +345,7 @@ export async function createBulkReassignJob(
           offboarding_deactivated_at: offboardingDeactivatedAt,
           redistribute_marked_at: redistributeMarkedAt,
           demotion_marked_at: demotionMarkedAt,
+          demotion_change: input.demotionChange ?? null,
         })
         .select("id")
         .single();

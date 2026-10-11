@@ -24,6 +24,7 @@ import type { Attributes } from "@/lib/db/types";
 import type { RerouteCandidate } from "@/lib/booking/reroute-eligibility";
 import {
   applyDemotionAction,
+  demotionTiersOf,
   mayNarrowEligibility,
   planDemotionAction,
   storedDemotionStamp,
@@ -173,7 +174,7 @@ export async function resolveDemotionWrites(
       // the narrowing is not written away. The next sync's sweep pass reads the bookings and either
       // sweeps the lost set or clears the stamp if the agent in fact still serves them (L648).
       if (e.changes !== null && storedDemotionStamp(e.before) === null && mayNarrowEligibility(e.before, e.after)) {
-        stampOverlays.set(e.userId, withDemotionMark(e.after, nowIso));
+        stampOverlays.set(e.userId, withDemotionMark(e.after, nowIso, demotionTiersOf(e.before)));
       }
       log.error(
         "twilio-sync",
