@@ -386,6 +386,11 @@ export interface BookingSettings {
    *  predates it confirms exactly as before. Read through the cached switch in
    *  `src/lib/booking/shared-line-switch-core.ts`. */
   shared_confirm_line: boolean;
+  /** #3582, migration 0179: the go-live switch for the reroute-on-ineligibility trigger.
+   *  True lets the hourly Twilio sync stamp a tier/backend demotion and, after the
+   *  debounce, move the agent's lost-pool bookings. NOT NULL DEFAULT false: off until an
+   *  admin turns it on, and the whole demotion lifecycle is inert while off. */
+  demotion_reroute_enabled: boolean;
   updated_at: string;
   updated_by: string | null;
 }
