@@ -408,6 +408,8 @@ import {
 import {
   formatInactiveAgentBookingsAlert,
   formatInactiveAgentBookingsRecovery,
+  formatDemotedAgentBookingsAlert,
+  formatDemotedAgentBookingsRecovery,
 } from "@/lib/monitor/inactive-agent-bookings";
 import {
   formatFallbackClearedRecovery,
@@ -1894,6 +1896,33 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "every appointment reassigned",
     channel: "recovery",
     text: formatInactiveAgentBookingsRecovery(),
+  },
+
+  // --- appointments a demotion took off the pool, un-rerouted (#3582) --------
+  // The sibling of the pool-exit page above, a separate alert: a still-bookable agent moved off
+  // a pool a booking they hold needs, whose automatic reroute did not move it.
+  {
+    key: "demoted_agent_bookings",
+    state: "one demoted agent holding one appointment",
+    channel: "alert",
+    text: formatDemotedAgentBookingsAlert([
+      { userId: "u1", name: "Dana Ruiz", email: "dana.ruiz@example.com", reason: "demoted", bookingCount: 1 },
+    ]),
+  },
+  {
+    key: "demoted_agent_bookings",
+    state: "several demoted agents",
+    channel: "alert",
+    text: formatDemotedAgentBookingsAlert([
+      { userId: "u1", name: "Dana Ruiz", email: "dana.ruiz@example.com", reason: "demoted", bookingCount: 4 },
+      { userId: "u2", name: null, email: "sam.okafor@example.com", reason: "demoted", bookingCount: 2 },
+    ]),
+  },
+  {
+    key: "demoted_agent_bookings",
+    state: "every appointment rerouted or reassigned",
+    channel: "recovery",
+    text: formatDemotedAgentBookingsRecovery(),
   },
 
   // --- approved time off that has stopped blocking anything (#1467) ----------

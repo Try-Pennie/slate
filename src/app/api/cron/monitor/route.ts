@@ -345,11 +345,22 @@ import {
   type SyncAgentStaleness,
 } from "@/lib/monitor/sync-staleness";
 import {
+  DEMOTED_AGENT_BOOKINGS_KEY,
+  demotedHolders,
+  formatDemotedAgentBookingsAlert,
+  formatDemotedAgentBookingsRecovery,
   inactiveHoldersFromBookings,
   runInactiveAgentBookingsCheck,
+  type DemotedAgent,
   type OutOfPoolAgent,
 } from "@/lib/monitor/inactive-agent-bookings";
 import { redistributeSweepPending } from "@/lib/twilio/roster-plan";
+import { demotionSweepPending, storedDemotionStamp } from "@/lib/booking/demotion-plan";
+import {
+  criteriaMapOrThrow,
+  selectDemotionBookings,
+  type DemotionCandidateRow,
+} from "@/lib/booking/demotion-snapshot";
 import {
   countStranded,
   runCoverageNeedsHumanCheck,
@@ -375,7 +386,7 @@ import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
 import { loadOooCoverageBookings, loadSnapshottedBookingIds } from "@/lib/monitor/ooo-coverage-bookings";
 import { inIdChunks } from "@/lib/db/id-batch";
 import { selectAllPages } from "@/lib/supabase/paginate";
-import type { Attributes, Bucket, BulkReassignJob } from "@/lib/db/types";
+import type { Attributes, Bucket, BulkReassignJob, Criteria } from "@/lib/db/types";
 import { log } from "@/lib/log";
 import { groupRulesBySchedule, runUnsetHoursCheck, type UnsetHoursAgent, type HoursSource } from "@/lib/monitor/unset-hours";
 import {
@@ -2740,11 +2751,122 @@ export async function GET(req: NextRequest) {
       );
       return inactiveHoldersFromBookings(outOfPool, bookings);
     };
+    // #3582: the demotion backstop. A BOOKABLE agent a Twilio tier/backend change took off a pool
+    // the bookings they hold need is invisible to the pool-exit read above (they are still in the
+    // pool), so an un-rerouted held booking (the sweep failed, or found no eligible advisor) would
+    // go uncaught. Only agents carrying a demotion mark are read (so this is inert until the
+    // reroute feature is armed and stamps appear), and only those past the sweep's debounce window.
+    const loadDemotedHolders = async (): Promise<DemotedAgent[]> => {
+      const nowIso = new Date(now).toISOString();
+      // cap-safe: users is roster-bounded (100-200 agent target), so the bookable subset fits a page.
+      const bookable = (unwrap(
+        await db
+          .from("users")
+          .select("id, name, email, attributes")
+          .eq("bookable", true)
+          .is("deactivated_at", null)
+          .eq("is_test", false),
+        "monitor demoted-agent roster",
+      ) ?? []) as { id: string; name: string | null; email: string | null; attributes: Attributes | null }[];
+      // Only marked agents past the debounce window; a pending sweep holds its calls by design.
+      const stamped = bookable.filter(
+        (a) => storedDemotionStamp(a.attributes) !== null && !demotionSweepPending(a.attributes, nowIso),
+      );
+      if (stamped.length === 0) return [];
+      const stampedIds = stamped.map((a) => a.id);
+      // One bulk bookings read over the marked agents, not one per agent, so the shared monitor
+      // budget is spent once (the sync lane this backstop watches is the budget-tight one).
+      const rows = await selectAllPages<DemotionCandidateRow & { assigned_user_id: string | null }>(
+        "monitor demoted-agent bookings",
+        "id",
+        () =>
+          db
+            // agent-link-ok: all kinds are read; the demotion snapshot (unservedBookingIds) drops
+            // agent_link bookings itself, exactly as the reroute does, so the query need not.
+            // test-data-ok: scoped to stampedIds, which are is_test=false agents (filtered on the
+            // users read above), so no test fixtures can be counted.
+            // in-chunk-ok: stampedIds is a SUBSET of the bookable roster (design ceiling 200, the
+            // in() URL id limit), and in practice a small transient set of currently-marked agents.
+            .from("bookings")
+            .select("id, starts_at, ends_at, attendee_name, bucket_id, kind, assigned_user_id")
+            .in("assigned_user_id", stampedIds)
+            .in("status", ACTIVE_BOOKING_STATUSES)
+            .gte("starts_at", nowIso),
+      );
+      const bucketIds = [...new Set(rows.map((r) => r.bucket_id))];
+      const criteriaByBucket =
+        bucketIds.length === 0
+          ? new Map<string, Criteria | null>()
+          : criteriaMapOrThrow(
+              bucketIds,
+              unwrap(
+                // cap-safe: a primary-key `in` over the distinct buckets of the marked agents' bookings.
+                // in-chunk-ok: bucketIds is the DISTINCT buckets of those bookings, bounded by the
+                // roster's ~60 buckets, so the filter can never exceed the URL id ceiling.
+                await db.from("buckets").select("id, criteria").in("id", bucketIds),
+                "monitor demoted-agent bucket criteria",
+              ) as { id: string; criteria: Criteria | null }[],
+            );
+      const memberRows = (unwrap(
+        // cap-safe: bucket_members for a bounded set of marked agents.
+        // in-chunk-ok: stampedIds is a subset of the bookable roster (design ceiling 200, the in()
+        // URL id limit), so the filter cannot exceed it.
+        await db.from("bucket_members").select("bucket_id, user_id").in("user_id", stampedIds).eq("active", true),
+        "monitor demoted-agent memberships",
+      ) ?? []) as { bucket_id: string; user_id: string }[];
+      const membersByUser = new Map<string, Set<string>>();
+      for (const m of memberRows) {
+        const set = membersByUser.get(m.user_id) ?? new Set<string>();
+        set.add(m.bucket_id);
+        membersByUser.set(m.user_id, set);
+      }
+      const rowsByUser = new Map<string, DemotionCandidateRow[]>();
+      for (const r of rows) {
+        if (!r.assigned_user_id) continue;
+        const list = rowsByUser.get(r.assigned_user_id) ?? [];
+        list.push({
+          id: r.id,
+          starts_at: r.starts_at,
+          ends_at: r.ends_at,
+          attendee_name: r.attendee_name,
+          bucket_id: r.bucket_id,
+          kind: r.kind,
+        });
+        rowsByUser.set(r.assigned_user_id, list);
+      }
+      return stamped.map((a) => ({
+        id: a.id,
+        name: a.name,
+        email: a.email,
+        // Already past the debounce window (filtered above), so never covered by a pending sweep.
+        coveredByPendingSweep: false,
+        unservedCount: selectDemotionBookings(
+          a.attributes,
+          rowsByUser.get(a.id) ?? [],
+          criteriaByBucket,
+          membersByUser.get(a.id) ?? new Set<string>(),
+        ).length,
+      }));
+    };
     const inactiveBookings = await steps.run("inactive_bookings", null, () =>
       runInactiveAgentBookingsCheck({
         loadHolders: loadInactiveHolders,
         cooldownMs: cooldownMs.inactive_agent_bookings,
         log: (fields) => log.info("inactive-agent-bookings", { msg: "tick", ...fields }),
+      }),
+    );
+    // #3582: the demotion backstop, in its OWN step so a failed demotion read makes only this
+    // check unreadable and never blinds the #1215 departed-agent check above (L71). Its own alert
+    // key, streak and copy, because the cause and remediation differ (a demoted agent is still
+    // bookable; their held booking needs rerouting, which the automatic reroute should have done).
+    const demotedBookings = await steps.run("demoted_bookings", null, () =>
+      runInactiveAgentBookingsCheck({
+        loadHolders: async () => demotedHolders(await loadDemotedHolders()),
+        cooldownMs: cooldownMs.demoted_agent_bookings,
+        key: DEMOTED_AGENT_BOOKINGS_KEY,
+        formatAlert: formatDemotedAgentBookingsAlert,
+        formatRecovery: formatDemotedAgentBookingsRecovery,
+        log: (fields) => log.info("demoted-agent-bookings", { msg: "tick", ...fields }),
       }),
     );
 
@@ -4064,6 +4186,7 @@ export async function GET(req: NextRequest) {
       // same (#2476, #2229).
       ciHealth,
       inactiveBookings,
+      demotedBookings,
       strandedCoverage,
       // null when the step failed, never a clear-looking zero: this check's whole
       // subject is a gap nothing else records, so "could not look" must not read as
