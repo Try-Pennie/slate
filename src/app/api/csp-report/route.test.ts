@@ -12,7 +12,6 @@ const dispatch = vi.hoisted(() => ({
 const settings = vi.hoisted(() => ({
   loadMonitorCooldowns: vi.fn(async (_tag: string) => ({ csp_violation: 60 * 60_000 }) as Record<string, number>),
 }));
-
 vi.mock("@/lib/rate-limit", () => limiter);
 vi.mock("@/lib/log", () => ({ log: logged }));
 vi.mock("@/lib/notify/dispatch", () => dispatch);
@@ -216,7 +215,11 @@ describe("the page an enforced violation sends (#2575)", () => {
   });
 
   it("gives a different directive its own key, so an image refusal never silences a script one", async () => {
-    await POST(req({ "csp-report": { ...ENFORCED["csp-report"], "violated-directive": "img-src" } }));
+    // A SLATE-OWN-ORIGIN image refusal (a real gap in our own loading) pages under the
+    // img-src key; the script refusal pages under the script-src key. Different keys, so
+    // neither silences the other for the cooldown. (A THIRD-PARTY image refusal is the
+    // injected-passive class and is logged, not paged, covered below.)
+    await POST(req({ "csp-report": { ...ENFORCED["csp-report"], "violated-directive": "img-src", "blocked-uri": "https://slate.trypennie.app/logo.png" } }));
     await POST(req(ENFORCED));
 
     expect(dispatch.sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual([
@@ -348,5 +351,36 @@ describe("the page an enforced violation sends (#2575)", () => {
 
     expect(res.status).toBe(204);
     expect(logged.error).toHaveBeenCalledWith("csp-report", expect.objectContaining({ msg: expect.stringContaining("page") }), expect.any(Error));
+  });
+});
+
+// #3417: a passive FONT refusal from a third-party host no Slate page requests, with no
+// source, is almost always an extension and blocked nothing a lead needed, so it is
+// LOGGED and never pages. One person's extension no longer pages production, and a
+// widespread real gap still shows in the logs by host. (img/style/media keep paging as
+// exfil channels; covered in csp.test.ts.)
+describe("#3417 injected passive third-party refusal", () => {
+  const INJECTED = {
+    "csp-report": {
+      "document-uri": "https://slate.trypennie.app/book?xbc=411",
+      "violated-directive": "font-src",
+      "blocked-uri": "https://fonts.gstatic.com/s/mulish/x.woff2",
+      disposition: "enforce",
+    },
+  };
+
+  it("logs the violation but does NOT page", async () => {
+    const res = await POST(req(INJECTED));
+    expect(res.status).toBe(204);
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    expect(logged.warn).toHaveBeenCalledWith(
+      "csp-report",
+      expect.objectContaining({ paged: false, not_paged: "injected-passive" }),
+    );
+  });
+
+  it("still pages a passive refusal of Slate's OWN origin (a real gap in our loading)", async () => {
+    await POST(req({ "csp-report": { ...INJECTED["csp-report"], "blocked-uri": "https://slate.trypennie.app/fonts/own.woff2" } }));
+    expect(dispatch.sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual(["csp_violation:font-src"]);
   });
 });
