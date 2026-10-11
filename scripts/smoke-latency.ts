@@ -6,8 +6,12 @@
 // regression has relied on somebody noticing a page feels slow, which for a lead who
 // abandons is nobody.
 //
-// It measures the read path only: an unauthenticated GET against the isolated SMOKE
-// bucket, which writes nothing and costs a cached read. The booking confirm is
+// It measures the read path only, a GET that writes nothing, against TWO buckets
+// (#3586): a REAL bucket (public, read with no key, as a lead does) and the isolated
+// SMOKE bucket (hidden, read with the canary key). The SMOKE bucket is the one the
+// canary books and cancels on every pass, so its slot cache is churned and a cold SMOKE
+// read can be slow while a real lead is fine. So PAGING follows the real bucket, and the
+// SMOKE reading is kept only as a comparison in the log. The booking confirm is
 // deliberately NOT timed here, because timing it means making one, and the canary
 // already does that on its own schedule with its own teardown.
 //
@@ -25,13 +29,16 @@
 //
 // Run: SLATE_BASE_URL=... node --experimental-strip-types scripts/smoke-latency.ts
 import { appendFileSync } from "node:fs";
-import { measureLatency, LATENCY_SAMPLES, AVAILABILITY_P50_BUDGET_MS } from "./lib/latency-slo.ts";
+import { measureLatency, judgeLatency, decideDualLatency, LATENCY_SAMPLES, AVAILABILITY_P50_BUDGET_MS } from "./lib/latency-slo.ts";
 import { failureLogPath, recordFailure } from "./lib/smoke-failure-log.ts";
 
 const base = (process.env.SLATE_BASE_URL || "https://slate.trypennie.app").replace(/\/$/, "");
 // env-ok: SMOKE_BUCKET (a local override; CI wants the seeded SMOKE bucket)
-const bucket = process.env.SMOKE_BUCKET ?? "SMOKE";
-const url = `${base}/api/availability?bucket=${encodeURIComponent(bucket)}`;
+const smokeBucket = process.env.SMOKE_BUCKET ?? "SMOKE";
+// The REAL bucket probed alongside SMOKE (#3586): the production signal, whose slot
+// cache the canary never churns. Defaults to the catch-all "100", which always exists;
+// env-ok: LATENCY_REAL_BUCKET lets a different deployment name its own real bucket.
+const realBucket = process.env.LATENCY_REAL_BUCKET ?? "100";
 const key = process.env.BOOKING_API_KEY_CANARY ?? "";
 
 const io = {
@@ -40,16 +47,16 @@ const io = {
 };
 const failureLog = failureLogPath(process.env);
 
-/** One timed read. Returns the elapsed ms, or null when the request did not complete
- *  or did not answer 200: an error is not a latency measurement, and averaging one in
- *  would report a broken endpoint as a fast one. */
-async function sample(): Promise<number | null> {
+/** One timed read of a bucket. Returns the elapsed ms, or null when the request did not
+ *  complete or did not answer 200: an error is not a latency measurement, and averaging
+ *  one in would report a broken endpoint as a fast one. */
+async function sample(bucket: string, authed: boolean): Promise<number | null> {
+  const url = `${base}/api/availability?bucket=${encodeURIComponent(bucket)}`;
   const started = Date.now();
   try {
-    const res = await fetch(url, {
-      // The SMOKE bucket is hidden (#396), so the read needs the key to see it at all.
-      headers: key ? { authorization: `Bearer ${key}` } : {},
-    });
+    // The SMOKE bucket is hidden (#396) and needs the key to be seen at all; the REAL
+    // bucket is public, and is read WITHOUT the key, exactly as a lead's browser does.
+    const res = await fetch(url, { headers: authed && key ? { authorization: `Bearer ${key}` } : {} });
     const elapsed = Date.now() - started;
     if (!res.ok) {
       console.error(`latency: ${url} answered ${res.status}, not counted as a sample`);
@@ -65,44 +72,62 @@ async function sample(): Promise<number | null> {
   }
 }
 
-// Every batch taken, so the log line keeps its original `latency: samples=[...]` shape.
-// That shape is what the history behind #2811 was measured from, 590 runs of it, and
-// the next measurement will want the same.
-const batches: number[][] = [];
-
-async function takeBatch(): Promise<number[]> {
+/** Take one batch of `LATENCY_SAMPLES` timed reads of `bucket`, errors left out, and
+ *  record it in `into` for the log line's `samples=[...]ms` detail. */
+async function takeBatch(bucket: string, authed: boolean, into: number[][]): Promise<number[]> {
   const samples: number[] = [];
-  batches.push(samples);
+  into.push(samples);
   for (let i = 0; i < LATENCY_SAMPLES; i++) {
-    const ms = await sample();
+    const ms = await sample(bucket, authed);
     if (ms !== null) samples.push(ms);
   }
   return samples;
 }
 
-const run = await measureLatency({
-  takeBatch,
-  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// The REAL bucket is the paging signal: full measurement with the #2811 recheck.
+const realBatches: number[][] = [];
+const realRun = await measureLatency({
+  takeBatch: () => takeBatch(realBucket, false, realBatches),
+  sleep,
 });
-for (const [i, v] of [run.first, run.recheck].entries()) {
+
+// The SMOKE bucket is a comparison only: one batch, no recheck, never pages.
+const smokeBatches: number[][] = [];
+const smokeVerdict = judgeLatency(await takeBatch(smokeBucket, true, smokeBatches));
+
+const decision = decideDualLatency(realRun, smokeVerdict, realBucket);
+
+// The REAL bucket keeps the canonical `latency: samples=[...]` / `latency recheck:`
+// line, unchanged from before #3586, so the history #2811 was measured from reads on
+// (it is now the paging signal, which is the right thing for that line to carry). The
+// bucket it was read against is appended, so a reader still knows which one.
+for (const [i, v] of [realRun.first, realRun.recheck].entries()) {
   if (!v) continue;
   console.log(
-    `latency${i === 0 ? "" : " recheck"}: samples=[${(batches[i] ?? []).join(", ")}]ms (first dropped as cold) median=${
+    `latency${i === 0 ? "" : " recheck"}: samples=[${(realBatches[i] ?? []).join(", ")}]ms (first dropped as cold) median=${
       v.medianMs === null ? "none" : `${Math.round(v.medianMs)}ms`
-    } budget=${AVAILABILITY_P50_BUDGET_MS}ms`,
+    } budget=${AVAILABILITY_P50_BUDGET_MS}ms bucket=${realBucket}`,
   );
 }
-if (run.message) console.log(`latency: ${run.message}`);
+// The SMOKE bucket is its own, differently-prefixed line, so it is never read as the
+// primary `latency:` sample: it is a comparison only and never pages (#3586).
+console.log(
+  `latency smoke(${smokeBucket}): samples=[${(smokeBatches[0] ?? []).join(", ")}]ms (first dropped as cold, comparison only) ` +
+    `median=${smokeVerdict.medianMs === null ? "none" : `${Math.round(smokeVerdict.medianMs)}ms`} budget=${AVAILABILITY_P50_BUDGET_MS}ms`,
+);
+if (decision.message) console.log(`latency: ${decision.message}`);
 
 // Written BEFORE any exit, because the stamp step reads it on a paging run too: a
 // confirmed regression is a measured verdict, and whether the check concluded is a
-// different fact from whether the read was fast (L53).
-if (run.measured && process.env.GITHUB_OUTPUT) {
+// different fact from whether the read was fast (L53). Follows the REAL bucket.
+if (decision.measured && process.env.GITHUB_OUTPUT) {
   appendFileSync(process.env.GITHUB_OUTPUT, "measured=1\n");
 }
 
-if (run.page && run.message) {
-  const wrote = recordFailure(io, failureLog, `Availability latency: ${run.message}`);
+if (decision.page && decision.message) {
+  const wrote = recordFailure(io, failureLog, `Availability latency: ${decision.message}`);
   if (!wrote) {
     console.error(
       "latency: the regression could not be recorded for the alerter (no SMOKE_FAILURE_FILE), so it is printed here only",
