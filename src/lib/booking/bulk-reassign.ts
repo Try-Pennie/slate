@@ -250,7 +250,12 @@ export async function processBulkReassignItem(
   return {
     status: "unplaceable",
     targetUserId: null,
-    detail: "No agent was free and under their daily cap at the original time.",
+    // #3485: say availability, never the daily cap. Most event types carry no cap
+    // (`event_types.daily_cap` is null), so "nobody was free and under their daily
+    // cap" named a gate that never applied and pointed the reader at the wrong fix.
+    // "Available" is the one thing always true when a slot is genuinely full: free,
+    // within any cap, on shift, and not on time off.
+    detail: "No other advisor was available to take this appointment at its original time.",
   };
 }
 

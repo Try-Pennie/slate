@@ -34,11 +34,14 @@ import {
   formatCoverageNeedsHumanRecovery,
   COVERAGE_NEEDS_HUMAN_KEY,
   SWEEP_FINISH_WAIT_MS,
+  decodeSweepCause,
+  loadTimeOffWindows,
   type StrandedAppointment,
   type StrandedHolder,
   type StrandedItemRead,
   type StrandedRead,
   type CoverageOutAgent,
+  type SweepCause,
 } from "./coverage-needs-human";
 import { LANE_STALE_BOUNDS_MS } from "./health";
 
@@ -541,6 +544,243 @@ describe("countStranded excludes an agent who is bookable again (#3597)", () => 
     // genuinely away during the window, so their stranded call must keep paging.
     const res = countStranded([give(true, false)], ms("14:50:54"));
     expect(res.appointments).toHaveLength(1);
+  });
+});
+
+// #3485: the alert says WHY the agent will not be there, and links the booking and the
+// agent so a human can act in one tap. The reason lives on the sweep job (the time-off
+// request, offboarding, a pool exit, an admin). Dan, 2026-10-11: say the cause and the
+// window, never the agent's own free-text reason; and hyperlink the booking.
+const TIME_OFF: SweepCause = {
+  kind: "time-off",
+  timeOff: {
+    startsAt: "2026-10-13T14:30:00Z",
+    endsAt: "2026-10-13T20:00:00Z",
+    tzId: "America/Chicago",
+    tzLabel: "CT",
+  },
+};
+
+describe("decodeSweepCause (#3485)", () => {
+  const window = {
+    startsAt: "2026-10-13T14:30:00Z",
+    endsAt: "2026-10-13T20:00:00Z",
+    tzId: "America/Chicago",
+    tzLabel: "CT",
+  };
+
+  it("is time off when the job names an approved request and its window is read", () => {
+    // An OOO sweep carries created_by (the approver) AND the request id, so the request
+    // must win over admin: the reader needs the absence, not who approved it.
+    expect(
+      decodeSweepCause({ ooo_request_id: "o1", created_by: "approver" }, window),
+    ).toEqual({ kind: "time-off", timeOff: window });
+  });
+
+  it("is unknown, never a half-stated reason, when the time-off window could not be read", () => {
+    expect(decodeSweepCause({ ooo_request_id: "o1" }, null)).toEqual({ kind: "unknown" });
+  });
+
+  it("distinguishes offboarding, a pool exit, a demotion and an admin", () => {
+    expect(decodeSweepCause({ offboarding_deactivated_at: "t" })).toEqual({ kind: "offboarded" });
+    expect(decodeSweepCause({ redistribute_marked_at: "t" })).toEqual({ kind: "redistribute" });
+    expect(decodeSweepCause({ demotion_marked_at: "t" })).toEqual({ kind: "demotion" });
+    expect(decodeSweepCause({ created_by: "admin" })).toEqual({ kind: "admin" });
+  });
+
+  it("is unknown when the job records no cause at all", () => {
+    expect(decodeSweepCause({})).toEqual({ kind: "unknown" });
+  });
+});
+
+describe("loadTimeOffWindows is best-effort enrichment (#3485)", () => {
+  const win = {
+    startsAt: "2026-10-13T14:30:00Z",
+    endsAt: "2026-10-13T20:00:00Z",
+    tzId: "America/Chicago",
+    tzLabel: "CT",
+  };
+
+  it("returns the windows keyed by request id on success", async () => {
+    const map = await loadTimeOffWindows(["o1"], async () => [{ id: "o1", ...win }]);
+    expect(map.get("o1")).toEqual(win);
+  });
+
+  // THE failure path: a window read is only for the page's reason clause. If it throws it
+  // must NOT propagate and take the whole stranded check to "unreadable", which would
+  // suppress a real page. It degrades to no window and reports (review finding).
+  it("degrades to an empty map and reports, never rethrowing, when the fetch fails", async () => {
+    const errs: unknown[] = [];
+    const map = await loadTimeOffWindows(
+      ["o1"],
+      async () => {
+        throw new Error("ooo_requests read failed");
+      },
+      (err) => errs.push(err),
+    );
+    expect(map.size).toBe(0);
+    expect(errs).toHaveLength(1);
+  });
+
+  it("does not call the fetch when there are no request ids", async () => {
+    let called = false;
+    const map = await loadTimeOffWindows([], async () => {
+      called = true;
+      return [];
+    });
+    expect(called).toBe(false);
+    expect(map.size).toBe(0);
+  });
+});
+
+describe("the cause flows from the sweep to the holder (#3485)", () => {
+  const agents: CoverageOutAgent[] = [{ id: "u1", name: "Dana Ruiz", email: "dana@example.com" }];
+
+  it("carries a single shared cause onto the holder", () => {
+    const holders = strandedHoldersFromItems(
+      [item({ bookingId: "b1", outUserId: "u1", cause: TIME_OFF })],
+      agents,
+    );
+    expect(holders[0].cause).toMatchObject({ kind: "time-off" });
+  });
+
+  it("marks the cause unknown when a holder's items disagree on why", () => {
+    const holders = strandedHoldersFromItems(
+      [
+        item({ bookingId: "b1", outUserId: "u1", cause: TIME_OFF }),
+        item({ bookingId: "b2", outUserId: "u1", cause: { kind: "offboarded" } }),
+      ],
+      agents,
+    );
+    expect(holders[0].cause).toEqual({ kind: "unknown" });
+  });
+
+  // Two separate approved time offs share the KIND but not the window, so stating one
+  // window for both would be wrong for the other's calls (review finding, 2026-10-11).
+  it("marks the cause unknown when two time offs have different windows", () => {
+    const other: SweepCause = {
+      kind: "time-off",
+      timeOff: { startsAt: "2026-10-20T14:30:00Z", endsAt: "2026-10-20T20:00:00Z", tzId: "America/Chicago", tzLabel: "CT" },
+    };
+    const holders = strandedHoldersFromItems(
+      [
+        item({ bookingId: "b1", outUserId: "u1", cause: TIME_OFF }),
+        item({ bookingId: "b2", outUserId: "u1", cause: other }),
+      ],
+      agents,
+    );
+    expect(holders[0].cause).toEqual({ kind: "unknown" });
+  });
+
+  // An unresolved cause on one call is a disagreement: a later call's reason must not be
+  // claimed for it (review finding, 2026-10-11), in either order.
+  it("stays unknown when one of a holder's calls has no resolved cause", () => {
+    const first = strandedHoldersFromItems(
+      [item({ bookingId: "b1", outUserId: "u1" }), item({ bookingId: "b2", outUserId: "u1", cause: TIME_OFF })],
+      agents,
+    );
+    expect(first[0].cause).toEqual({ kind: "unknown" });
+    const second = strandedHoldersFromItems(
+      [item({ bookingId: "b1", outUserId: "u1", cause: TIME_OFF }), item({ bookingId: "b2", outUserId: "u1" })],
+      agents,
+    );
+    expect(second[0].cause).toEqual({ kind: "unknown" });
+  });
+
+  it("keeps the time-off cause when two give ups share the same window", () => {
+    const holders = strandedHoldersFromItems(
+      [
+        item({ bookingId: "b1", outUserId: "u1", cause: TIME_OFF }),
+        item({ bookingId: "b2", outUserId: "u1", cause: { ...TIME_OFF } }),
+      ],
+      agents,
+    );
+    expect(holders[0].cause).toMatchObject({ kind: "time-off" });
+  });
+
+  it("carries the sweep cause through countStranded onto the counted appointment", () => {
+    const asOf = Date.parse("2026-10-13T12:00:00Z");
+    const read: StrandedItemRead = {
+      bookingId: "b1",
+      status: "unplaceable",
+      settledAt: "2026-10-11T17:22:00Z",
+      assignedUserId: "u1",
+      assignedAgentInPool: true,
+      sweep: {
+        outUserId: "u1",
+        status: "done",
+        updatedAt: "2026-10-11T17:22:30Z",
+        fromRedistribute: false,
+        cause: TIME_OFF,
+      },
+    };
+    const res = countStranded([read], asOf);
+    expect(res.appointments[0].cause).toMatchObject({ kind: "time-off" });
+  });
+});
+
+describe("the coverage alert says why the agent will not be there (#3485)", () => {
+  it("states approved time off and its window when that is the cause", () => {
+    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 1, cause: TIME_OFF })]);
+    expect(text).toMatch(/approved time off/i);
+    // The window, in the request's own display zone, not the agent's typed reason.
+    expect(text).toContain("Oct 13");
+    expect(text).toContain("CT");
+  });
+
+  it("never blames the daily cap, which is off for most call types", () => {
+    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 1, cause: TIME_OFF })]);
+    expect(text).not.toMatch(/daily cap/i);
+  });
+
+  it("gives a short generic reason for the other causes", () => {
+    expect(formatCoverageNeedsHumanAlert([holder({ cause: { kind: "offboarded" } })])).toMatch(
+      /left the pool/i,
+    );
+    expect(formatCoverageNeedsHumanAlert([holder({ cause: { kind: "redistribute" } })])).toMatch(
+      /routing pool/i,
+    );
+  });
+
+  it("adds no reason clause when the cause is unknown or absent", () => {
+    expect(formatCoverageNeedsHumanAlert([holder({ cause: { kind: "unknown" } })])).not.toMatch(
+      /approved time off|left the pool|routing pool/i,
+    );
+    expect(formatCoverageNeedsHumanAlert([holder()])).not.toMatch(
+      /approved time off|left the pool|routing pool/i,
+    );
+  });
+});
+
+describe("the coverage alert links the booking and the agent (#3485)", () => {
+  const BASE = "https://slate.example.com";
+  const BK = "e100e755-1aca-4df5-8f40-da0f10fc2173";
+
+  it("hyperlinks each stranded booking to its admin page when a base url is given", () => {
+    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 1, bookingIds: [BK] })], BASE);
+    expect(text).toContain(`<${BASE}/admin/bookings/${BK}|${BK}>`);
+  });
+
+  it("links the agent to their move-bookings page", () => {
+    const text = formatCoverageNeedsHumanAlert([holder({ userId: "u1", unplaceable: 1 })], BASE);
+    expect(text).toContain(`<${BASE}/admin/agents/u1|`);
+  });
+
+  it("renders plain ids and no links when no base url is given (backward compatible)", () => {
+    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 1, bookingIds: [BK] })]);
+    expect(text).toContain(BK);
+    expect(text).not.toContain("<http");
+  });
+
+  // A display name is DB text: a stray > ends the link and a stray | splits the label
+  // (review finding, 2026-10-11). The label must be escaped.
+  it("escapes the agent label so a name with > or | cannot break the link", () => {
+    const text = formatCoverageNeedsHumanAlert(
+      [holder({ userId: "u1", name: "A>B|C", email: "a@example.com", unplaceable: 1 })],
+      BASE,
+    );
+    expect(text).toContain("A&gt;B/C");
+    expect(text).not.toContain("A>B|C");
   });
 });
 
