@@ -101,6 +101,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The warehouse self-check is failing; it passes again and the reconcile lane can see it.",
   },
   {
+    key: "db_saturation",
+    kind: "condition",
+    why: "The database's committed memory is critically high (#3588), which slows every booking and availability request; it falls back under the threshold and the monitor lane sees it on its next pass.",
+  },
+  {
     key: "cron_lane_stale:*",
     kind: "condition",
     suffix: "bounded",
@@ -1023,6 +1028,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "stopped was a test one and the page is the partner's to fix, so nobody is woken; the " +
       "full report is in the log. There is no all-clear worth sending: a working staging " +
       "page sends no report at all, and absence of reports is the healthy state.",
+  },
+  {
+    key: "db_saturation_warn",
+    kind: "info",
+    why:
+      "The database's committed memory is elevated but not yet critical (#3588), an early " +
+      "warning so somebody can scale proactively. Nothing is broken for leads at this level, so " +
+      "nobody is woken, and there is no all-clear worth sending: a healthy database simply stops " +
+      "whispering, and absence of the whisper is the healthy state. The critical page (db_saturation) " +
+      "is the one that resolves.",
   },
   {
     key: "cron_cpu_not_configured",

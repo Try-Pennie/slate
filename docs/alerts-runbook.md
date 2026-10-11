@@ -605,6 +605,36 @@ nothing either way; re-run it.
 
 ---
 
+## The database is running low on memory
+
+Keys: `db_saturation` (the page), `db_saturation_warn` (the whisper).
+
+**What fired it.** The Supabase database instance itself is memory pressured (#3588), not
+a query, a lane or anything inside Slate. On 2026-10-10 committed memory sat at ~92% of
+its ceiling with heavy swap, CPU was 4%, and Postgres query execution looked idle, so
+every query based check read healthy while `/api/availability` slowed from ~60ms to a
+median of 653ms and a p95 of 1874ms that leads felt. This check reads the database's
+committed memory and swap straight from Supabase's privileged metrics endpoint, so the
+class pages on the cause rather than on the latency symptom. The page fires when
+committed memory is at or over 90% of its ceiling for two consecutive ticks; the whisper
+fires one step earlier, when committed memory is over 80% or swap use is over 10%.
+
+**First checks.** The alert itself carries the two figures (committed percent and swap
+percent); that is the first read, not any Slate log. Confirm it against the Supabase
+dashboard's database health view. Sustained swap use is abnormal for this database, so
+the whisper's swap line is low (10%), and it is worth acting on even below the page.
+
+**Fix or escalate.** The repair is infrastructure, not code: scale the database instance
+up (more memory) or shed load. There is nothing to fix in Slate. The page is a condition
+and clears itself once committed memory falls fully back under the 80% warning line (it
+deliberately holds through the 80 to 90% band so it does not flap); the whisper is an
+info and simply stops once the reading is healthy. If instead
+`monitor_step_failing:db_saturation` is what paged, the check could not READ the metrics
+(a wrong credential's 4xx, a renamed metric, or a dead endpoint), so follow the quiet
+lane family above: the memory figure is unknown, not healthy, until the read is fixed.
+
+---
+
 ## Something was measured and is only worth knowing
 
 Keys: `rate_limit_blocked:*`, `ooo_agent_dm`, `ooo_approvals_digest`,

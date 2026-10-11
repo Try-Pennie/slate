@@ -423,6 +423,12 @@ import {
   formatCalendarWindowRecovery,
 } from "@/lib/monitor/calendar-window-coverage";
 import {
+  formatDbSaturationAlert,
+  formatDbSaturationRecovery,
+  formatDbSaturationWarn,
+  judgeDbSaturation,
+} from "@/lib/monitor/db-saturation";
+import {
   formatOooCoverageGapAlert,
   formatOooCoverageGapRecovery,
   formatOooCoverageGapWhisper,
@@ -2132,6 +2138,40 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "covered again, with new calendars still joining the rotation",
     channel: "recovery",
     text: formatCalendarWindowRecovery(2),
+  },
+
+  // --- the database running low on memory (#3588) ------------------------------
+  {
+    key: "db_saturation",
+    state: "committed memory critically high with swap in use",
+    channel: "alert",
+    text: formatDbSaturationAlert(
+      judgeDbSaturation({
+        committedBytes: 1.55 * 1024 ** 3,
+        limitBytes: 1.69 * 1024 ** 3,
+        swapTotalBytes: 1 * 1024 ** 3,
+        swapFreeBytes: 0.6 * 1024 ** 3,
+      }),
+    ),
+  },
+  {
+    key: "db_saturation",
+    state: "committed memory fully back under the 80% warning line",
+    channel: "recovery",
+    text: formatDbSaturationRecovery(),
+  },
+  {
+    key: "db_saturation_warn",
+    state: "memory elevated but not yet critical",
+    channel: "info",
+    text: formatDbSaturationWarn(
+      judgeDbSaturation({
+        committedBytes: 0.85 * 1024 ** 3,
+        limitBytes: 1 * 1024 ** 3,
+        swapTotalBytes: 1 * 1024 ** 3,
+        swapFreeBytes: 0.95 * 1024 ** 3,
+      }),
+    ),
   },
 
   // --- busy time on a calendar the cache has not picked up (#1591) -------------

@@ -57,6 +57,11 @@ import {
   type CalendarWindowSourceRow,
 } from "@/lib/monitor/calendar-window-coverage";
 import {
+  runDbSaturationCheck,
+  fetchDbSaturationMetrics,
+  type DbSaturationResult,
+} from "@/lib/monitor/db-saturation";
+import {
   runBusyDriftSample,
   reportBusyDrift,
   sampleForTick,
@@ -3234,6 +3239,27 @@ export async function GET(req: NextRequest) {
       },
     );
 
+    // --- Is the database itself memory pressured (#3588)? Read its committed memory and
+    // swap straight from Supabase's privileged metrics endpoint, so this class pages
+    // early rather than surfacing as the availability latency a lead already felt. The
+    // metrics fetch is an external HTTP call, so it lives inside this step's own boundary:
+    // a throw here cannot take out the checks around it. It reads with the Supabase secret
+    // key the server already holds, so there is no inert "not configured" state: a read
+    // that fails or a body that cannot be parsed (a wrong key's 4xx, a renamed metric) is a
+    // configured blind spot that THROWS, which a sustained one pages through
+    // monitor_step_failing:db_saturation rather than reading healthy. No shared setup read,
+    // so no setup gate. ---
+    const dbSaturation = await steps.run<DbSaturationResult | null>("db_saturation", null, async () =>
+      runDbSaturationCheck({
+        loadMetrics: fetchDbSaturationMetrics,
+        cooldownMs: {
+          page: cooldownMs.db_saturation,
+          warn: cooldownMs.db_saturation_warn,
+        },
+        logTick: (fields) => log.info("db-saturation", { msg: "tick", ...fields }),
+      }),
+    );
+
     // --- Does the cached busy index agree with Google (#1262)? A rotating sample's
     // cached blocks are compared against a live freeBusy for the same window, and
     // every difference is LOGGED (tag=busy-drift). Since #1591 a difference that
@@ -4047,6 +4073,10 @@ export async function GET(req: NextRequest) {
       // inside when the roster read failed: "could not check coverage" must not
       // render as "every calendar is covered" (#1262).
       calendarWindow,
+      // Database memory pressure (#3588). null when the step threw (a metrics read that
+      // failed or a body that could not be parsed): "could not measure the database" is a
+      // thrown blind spot (monitor_step_failing), never rendered as "the database is healthy".
+      dbSaturation,
       // Findings are in the logs (tag=busy-drift), and drift that persists pages
       // (#1591). null when the step failed or its gate stood it down; status
       // "unreadable" when a side could not be read.
