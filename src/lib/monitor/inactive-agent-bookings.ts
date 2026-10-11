@@ -1,7 +1,7 @@
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
-import { logAlertSendFailure } from "@/lib/notify/send-failure";
+import { logAlertSendFailure, logAllClearFailure } from "@/lib/notify/send-failure";
 import { log } from "@/lib/log";
 
 /**
@@ -38,6 +38,10 @@ import { log } from "@/lib/log";
  *  and the settings screen refer to the one constant. */
 export const INACTIVE_AGENT_BOOKINGS_KEY = "inactive_agent_bookings";
 
+/** alert_state row key for the demotion backstop (#3582), a SEPARATE alert from the pool-exit one
+ *  so a failed demotion read can never blind the #1215 departed-agent check. */
+export const DEMOTED_AGENT_BOOKINGS_KEY = "demoted_agent_bookings";
+
 /**
  * Consecutive monitor ticks holding bookings before this pages. The monitor lane
  * runs every 5 minutes, so 12 ticks is about an hour of the gap standing open.
@@ -55,9 +59,11 @@ export const INACTIVE_BOOKINGS_ALERT_AFTER_TICKS = 12;
  *  consecutive ticks land in the same window, with slack for a delayed tick. */
 export const INACTIVE_BOOKINGS_WINDOW_SECONDS = 2 * 60 * 60;
 
-/** How an agent left the bookable pool. The remediation differs, so the alert
- *  says which. */
-export type OutOfPoolReason = "deactivated" | "not_bookable";
+/** Why an agent can no longer serve a booking they still hold. `deactivated` and `not_bookable`
+ *  are the pool-exit axes (#1215); `demoted` is a still-bookable agent a Twilio tier/backend
+ *  change took off the pool the booking needs (#3582), whose reroute did not complete. The
+ *  remediation differs, so the alert says which per agent. */
+export type OutOfPoolReason = "deactivated" | "not_bookable" | "demoted";
 
 /** An agent the roster read found outside the bookable pool. */
 export interface OutOfPoolAgent {
@@ -133,6 +139,46 @@ export function inactiveHoldersFromBookings(
     .sort((x, y) => y.bookingCount - x.bookingCount || x.userId.localeCompare(y.userId));
 }
 
+/** A still-bookable agent a Twilio demotion took off a pool the bookings they hold need (#3582),
+ *  with how many of those bookings they can no longer serve, already computed from the filtered
+ *  demotion snapshot (`unservedBookingIds`). */
+export interface DemotedAgent {
+  id: string;
+  name: string | null;
+  email: string | null;
+  /** Bookings the agent no longer serves, per the demotion snapshot (excludes agent_link and
+   *  manual-member bookings, exactly as the reroute does). */
+  unservedCount: number;
+  /**
+   * True while a debounced demotion sweep is still legitimately pending for them
+   * (`demotionSweepPending`): the sweep has not run yet, so they hold the lost-pool calls by
+   * design for that window, not through neglect. Only once that window lapses (or the sweep ran
+   * and could not place a booking) is an un-rerouted held booking a real gap. The safe value is
+   * `false`: a missed case pages rather than going quiet.
+   */
+  coveredByPendingSweep: boolean;
+}
+
+/**
+ * The demoted agents who still hold a booking they no longer serve and are NOT inside the sweep's
+ * debounce window (#3582): an un-rerouted held booking the automatic reroute was due to move but
+ * did not (the sweep failed, or found no eligible advisor and left it unplaceable). The complement
+ * of `inactiveHoldersFromBookings`, which covers agents OUT of the pool; a demoted agent is still
+ * bookable, so the pool-exit read never sees them. Pure, so the rule is pinned by tests.
+ */
+export function demotedHolders(agents: DemotedAgent[]): InactiveHolder[] {
+  return agents
+    .filter((a) => !a.coveredByPendingSweep && a.unservedCount > 0)
+    .map((a) => ({
+      userId: a.id,
+      name: a.name,
+      email: a.email,
+      reason: "demoted" as OutOfPoolReason,
+      bookingCount: a.unservedCount,
+    }))
+    .sort((x, y) => y.bookingCount - x.bookingCount || x.userId.localeCompare(y.userId));
+}
+
 // Match the other monitor notices' list cap so a broad gap stays one readable
 // Slack post rather than a wall of names.
 const NAME_CAP = 8;
@@ -144,7 +190,8 @@ const plural = (n: number, one: string, many: string): string => `${n} ${n === 1
 function holderLine(h: InactiveHolder): string {
   const who = h.name?.trim() || h.email || h.userId;
   const contact = h.email && h.email !== who ? `${who} (${h.email})` : who;
-  const why = h.reason === "deactivated" ? "deactivated" : "not bookable";
+  const why =
+    h.reason === "deactivated" ? "deactivated" : h.reason === "demoted" ? "demoted off a pool" : "not bookable";
   return `${contact}, ${why}, ${plural(h.bookingCount, "appointment", "appointments")}`;
 }
 
@@ -179,6 +226,41 @@ export function formatInactiveAgentBookingsAlert(holders: InactiveHolder[]): str
 }
 
 /**
+ * The demotion backstop page (#3582). A separate alert from the pool-exit one above, deliberately:
+ * the cause and the remediation differ (a demoted agent is still bookable; their held booking
+ * needs REROUTING to an eligible advisor, which the automatic reroute should have done), and
+ * keeping them separate means a failed demotion read can never blind the #1215 departed-agent
+ * check (L11, L71). The reassign control is the same coverage panel, so the remediation line
+ * matches, but the opening states the distinct cause.
+ */
+export function formatDemotedAgentBookingsAlert(holders: InactiveHolder[]): string {
+  const totalBookings = holders.reduce((n, h) => n + h.bookingCount, 0);
+  const lines = holders.slice(0, NAME_CAP).map(holderLine);
+  const more = holders.length > NAME_CAP ? `\n(and ${holders.length - NAME_CAP} more)` : "";
+  const oneAgent = holders.length === 1;
+  const oneBooking = totalBookings === 1;
+  return (
+    `${plural(holders.length, "agent", "agents")} ${oneAgent ? "is" : "are"} still holding ` +
+    `${plural(totalBookings, "appointment", "appointments")} in a pool they were moved off, which ` +
+    `the automatic reroute has not moved. ` +
+    `${oneBooking ? "That customer is" : "Those customers are"} booked with an advisor who can no ` +
+    `longer take ${oneBooking ? "it" : "them"}, so reassign ${oneBooking ? "it" : "them"} from the ` +
+    `agent's page in Admin, under ${COVERAGE_PANEL_NAME}.\n` +
+    lines.join("\n") +
+    more
+  );
+}
+
+/** The demotion backstop all-clear (#3582), the sibling of the pool-exit recovery. */
+export function formatDemotedAgentBookingsRecovery(): string {
+  return (
+    `No agent moved off a pool is holding a future appointment they can no longer serve any more. ` +
+    `The bookings behind the earlier page have been rerouted, reassigned or have passed, so every ` +
+    `upcoming appointment belongs to an advisor who can take it. No action is needed.`
+  );
+}
+
+/**
  * The all-clear. Says the customers are covered again, and deliberately does NOT
  * repeat the page's remediation: the reader is being told to stand down, and
  * carrying "reassign them from the coverage panel" into the all-clear is how a
@@ -186,9 +268,9 @@ export function formatInactiveAgentBookingsAlert(holders: InactiveHolder[]): str
  */
 export function formatInactiveAgentBookingsRecovery(): string {
   return (
-    `No agent who has left the booking pool is holding future appointments any more. ` +
+    `No agent is holding a future appointment they can no longer serve any more. ` +
     `The bookings behind the earlier page have been reassigned or have passed, so every upcoming ` +
-    `appointment belongs to an agent Slate still routes to. No action is needed.`
+    `appointment belongs to an agent Slate can still route it to. No action is needed.`
   );
 }
 
@@ -224,7 +306,16 @@ export async function runInactiveAgentBookingsCheck(deps: {
   loadHolders: () => Promise<InactiveHolder[]>;
   cooldownMs: number;
   log?: (fields: Record<string, unknown>) => void;
+  /** The alert_state key, streak and copy. Defaults to the pool-exit check (#1215); the demotion
+   *  backstop (#3582) passes its own so the two are fully independent (a failed read of one can
+   *  never blind or false-clear the other). */
+  key?: string;
+  formatAlert?: (holders: InactiveHolder[]) => string;
+  formatRecovery?: () => string;
 }): Promise<InactiveAgentBookingsResult> {
+  const key = deps.key ?? INACTIVE_AGENT_BOOKINGS_KEY;
+  const formatAlert = deps.formatAlert ?? formatInactiveAgentBookingsAlert;
+  const formatRecovery = deps.formatRecovery ?? formatInactiveAgentBookingsRecovery;
   let holders: InactiveHolder[];
   try {
     holders = await deps.loadHolders();
@@ -232,36 +323,32 @@ export async function runInactiveAgentBookingsCheck(deps: {
     // Fail loud in the logs, silent on the alert channels. The lane heartbeat and
     // the migration-drift page cover a database that cannot be read at all; what
     // must not happen is this check turning an unread result into an all-clear.
-    log.error("inactive-agent-bookings", { msg: "holder read failed" }, err);
-    deps.log?.({ status: "unreadable" });
+    log.error("inactive-agent-bookings", { msg: "holder read failed", key }, err);
+    deps.log?.({ status: "unreadable", key });
     return { status: "unreadable", agents: 0, bookings: 0 };
   }
 
   const bookings = holders.reduce((n, h) => n + h.bookingCount, 0);
 
   if (holders.length === 0) {
-    await clearFailureStreak(INACTIVE_AGENT_BOOKINGS_KEY);
+    await clearFailureStreak(key);
     // alert-key: inactive_agent_bookings
-    await resolveAlert(INACTIVE_AGENT_BOOKINGS_KEY, formatInactiveAgentBookingsRecovery()).catch(
-      () => {},
-    );
-    deps.log?.({ status: "clear", agents: 0, bookings: 0 });
+    // alert-key: demoted_agent_bookings
+    await resolveAlert(key, formatRecovery()).catch(logAllClearFailure(key));
+    deps.log?.({ status: "clear", agents: 0, bookings: 0, key });
     return { status: "clear", agents: 0, bookings: 0 };
   }
 
   const sustained = await recordConsecutiveStreak(
-    INACTIVE_AGENT_BOOKINGS_KEY,
+    key,
     INACTIVE_BOOKINGS_WINDOW_SECONDS,
     INACTIVE_BOOKINGS_ALERT_AFTER_TICKS,
   );
   if (sustained) {
     // alert-key: inactive_agent_bookings
-    await sendThrottledAlert(
-      INACTIVE_AGENT_BOOKINGS_KEY,
-      deps.cooldownMs,
-      formatInactiveAgentBookingsAlert(holders),
-    ).catch(logAlertSendFailure(INACTIVE_AGENT_BOOKINGS_KEY));
+    // alert-key: demoted_agent_bookings
+    await sendThrottledAlert(key, deps.cooldownMs, formatAlert(holders)).catch(logAlertSendFailure(key));
   }
-  deps.log?.({ status: "holding", agents: holders.length, bookings, sustained });
+  deps.log?.({ status: "holding", agents: holders.length, bookings, sustained, key });
   return { status: "holding", agents: holders.length, bookings };
 }

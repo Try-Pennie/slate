@@ -215,6 +215,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   ooo_coverage_stop: "time-off-cover-or-protection-is-in-doubt",
   coverage_needs_human: "time-off-cover-or-protection-is-in-doubt",
   inactive_agent_bookings: "time-off-cover-or-protection-is-in-doubt",
+  demoted_agent_bookings: "time-off-cover-or-protection-is-in-doubt",
   ooo_protection_lost: "time-off-cover-or-protection-is-in-doubt",
   ooo_busy_block_fallback: "time-off-cover-or-protection-is-in-doubt",
   ooo_event_mismatch: "time-off-cover-or-protection-is-in-doubt",

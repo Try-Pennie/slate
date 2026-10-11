@@ -38,6 +38,7 @@ export const ALERT_KEYS = [
   "migration_version_lag",
   "sync_staleness",
   "inactive_agent_bookings",
+  "demoted_agent_bookings",
   "coverage_needs_human",
   "ooo_coverage_gap",
   "ooo_calcom_unprotected",
@@ -200,6 +201,12 @@ export const ALERT_FIELDS: {
     urgency: "alert",
     label: "Orphaned-appointment alert cooldown",
     help: "An agent who has left the booking pool (deactivated or not bookable) still holds future appointments, so those customers are booked with nobody.",
+  },
+  {
+    key: "demoted_agent_bookings",
+    urgency: "alert",
+    label: "Demoted-appointment alert cooldown",
+    help: "An agent moved off a pool a booking they hold needs is still holding it, and the automatic reroute has not moved it, so that customer is booked with an advisor who can no longer take them.",
   },
   {
     key: "coverage_needs_human",
@@ -494,6 +501,9 @@ export const MONITOR_DEFAULTS = {
     // stays wrong until a human reassigns, and it only pages after an hour of the
     // gap standing open, so repeat while it lasts. Hourly, like the two above.
     inactive_agent_bookings: 60 * 60_000,
+    // Demoted-agent appointments (#3582): a held booking the reroute did not move stays wrong
+    // until a human places it, so repeat while it lasts, hourly, like the page it sits beside.
+    demoted_agent_bookings: 60 * 60_000,
     // Stranded appointments (#1242): the sweep has already given up, so the state
     // is terminal and stays wrong until a human places it. Repeat while it lasts,
     // hourly, like the orphaned-appointment page it sits beside.

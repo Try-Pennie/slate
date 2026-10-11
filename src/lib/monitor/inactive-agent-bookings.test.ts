@@ -25,10 +25,15 @@ vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert, resolveAlert }));
 import {
   runInactiveAgentBookingsCheck,
   inactiveHoldersFromBookings,
+  demotedHolders,
   formatInactiveAgentBookingsAlert,
+  formatDemotedAgentBookingsAlert,
+  formatDemotedAgentBookingsRecovery,
+  DEMOTED_AGENT_BOOKINGS_KEY,
   INACTIVE_AGENT_BOOKINGS_KEY,
   INACTIVE_BOOKINGS_ALERT_AFTER_TICKS,
   INACTIVE_BOOKINGS_WINDOW_SECONDS,
+  type DemotedAgent,
   type InactiveHolder,
   type OutOfPoolAgent,
 } from "./inactive-agent-bookings";
@@ -165,6 +170,14 @@ describe("formatInactiveAgentBookingsAlert (#1215)", () => {
     expect(text).toMatch(/still holds 1 appointment/);
   });
 
+  it("the demotion backstop page names its distinct cause and the demoted reason", () => {
+    const text = formatDemotedAgentBookingsAlert([holder({ reason: "demoted", bookingCount: 2 })]);
+    expect(text).toContain("in a pool they were moved off");
+    expect(text).toContain("automatic reroute has not moved");
+    expect(text).toContain("demoted off a pool");
+    expect(text).not.toContain("left the booking pool");
+  });
+
   it("agrees its verbs with several agents", () => {
     const text = formatInactiveAgentBookingsAlert([
       holder({ userId: "u1", bookingCount: 1 }),
@@ -272,5 +285,76 @@ describe("runInactiveAgentBookingsCheck (#1215)", () => {
   it("does not throw when the all-clear fails to send", async () => {
     resolveAlert.mockRejectedValueOnce(new Error("slack down"));
     await expect(run([])).resolves.toMatchObject({ status: "clear" });
+  });
+});
+
+// --- the demotion backstop (#3582): a SEPARATE alert from the pool-exit one -----
+describe("the demotion backstop (#3582)", () => {
+  const demotedAgent = (over: Partial<DemotedAgent> = {}): DemotedAgent => ({
+    id: "d1",
+    name: "Del Vane",
+    email: "del@example.com",
+    unservedCount: 2,
+    coveredByPendingSweep: false,
+    ...over,
+  });
+
+  it("demotedHolders keeps only past-window demoted agents still holding unserved bookings", () => {
+    const out = demotedHolders([
+      demotedAgent({ id: "d1", unservedCount: 1 }),
+      demotedAgent({ id: "d2", unservedCount: 3 }),
+      demotedAgent({ id: "d3", unservedCount: 0 }), // serves everything: dropped
+      demotedAgent({ id: "d4", unservedCount: 5, coveredByPendingSweep: true }), // mid-debounce: dropped
+    ]);
+    expect(out.map((h) => h.userId)).toEqual(["d2", "d1"]);
+    expect(out.every((h) => h.reason === "demoted")).toBe(true);
+    expect(out[0].bookingCount).toBe(3);
+  });
+
+  const runDemoted = (holders: InactiveHolder[]) =>
+    runInactiveAgentBookingsCheck({
+      loadHolders: async () => holders,
+      cooldownMs: COOLDOWN_MS,
+      key: DEMOTED_AGENT_BOOKINGS_KEY,
+      formatAlert: formatDemotedAgentBookingsAlert,
+      formatRecovery: formatDemotedAgentBookingsRecovery,
+    });
+
+  it("pages on its OWN key with the demotion copy, not the pool-exit alert", async () => {
+    recordConsecutiveStreak.mockResolvedValueOnce(true);
+    await runDemoted([holder({ reason: "demoted" })]);
+    expect(recordConsecutiveStreak).toHaveBeenCalledWith(
+      DEMOTED_AGENT_BOOKINGS_KEY,
+      INACTIVE_BOOKINGS_WINDOW_SECONDS,
+      INACTIVE_BOOKINGS_ALERT_AFTER_TICKS,
+    );
+    const [key, , body] = sendThrottledAlert.mock.calls[0];
+    expect(key).toBe(DEMOTED_AGENT_BOOKINGS_KEY);
+    expect(body).toContain("automatic reroute has not moved");
+    expect(body).not.toContain("left the booking pool");
+  });
+
+  it("clears on its OWN key with the demotion recovery copy", async () => {
+    await runDemoted([]);
+    expect(clearFailureStreak).toHaveBeenCalledWith(DEMOTED_AGENT_BOOKINGS_KEY);
+    const [key, text] = resolveAlert.mock.calls[0];
+    expect(key).toBe(DEMOTED_AGENT_BOOKINGS_KEY);
+    expect(text).toContain("No agent moved off a pool is holding");
+  });
+
+  it("neither pages nor clears when the demotion read fails, so it cannot false-all-clear", async () => {
+    const res = await runInactiveAgentBookingsCheck({
+      loadHolders: async () => {
+        throw new Error("demotion read failed");
+      },
+      cooldownMs: COOLDOWN_MS,
+      key: DEMOTED_AGENT_BOOKINGS_KEY,
+      formatAlert: formatDemotedAgentBookingsAlert,
+      formatRecovery: formatDemotedAgentBookingsRecovery,
+    });
+    expect(res.status).toBe("unreadable");
+    expect(resolveAlert).not.toHaveBeenCalled();
+    expect(clearFailureStreak).not.toHaveBeenCalled();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 });
