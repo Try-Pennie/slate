@@ -15,6 +15,7 @@ import { readDemotionChange, type DemotionChange } from "@/lib/booking/demotion-
 import { bookingIsActionable } from "@/lib/booking/detail";
 import { parseStampMs } from "@/lib/date/stamp";
 import type { AuditEntry } from "@/lib/audit";
+import { describeDemotionChange } from "@/lib/booking/demotion-copy";
 
 /** One call a demotion sweep handled, joined with its sweep: what the undo is about. */
 export interface DemotionMoveRecord {
@@ -232,4 +233,86 @@ export async function moveBackDemotionReroute(
     },
   });
   return { kind: "moved-back", toUserId: m.outUserId };
+}
+
+/**
+ * What the booking page shows about an automatic move (#3615), or null when no demotion sweep
+ * moved this call. Built here, not in the component, so every sentence is tested and the page
+ * holds markup only. Dates are left to the History card below it, which already shows them in
+ * the reader's own zone (L605).
+ */
+export type DemotionMoveView =
+  | {
+      state: "can-move-back";
+      summary: string;
+      buttonLabel: string;
+      confirmMessage: string;
+      confirmLabel: string;
+      keepLabel: string;
+      overCapText: string;
+      /** Every refusal in its own words, for one that arrives after the page was drawn. */
+      refusals: Record<RevertRefusal, string>;
+    }
+  | { state: "moved-back"; summary: string }
+  | { state: "cannot"; summary: string; reason: string };
+
+export function demotionMoveView(input: {
+  move: DemotionMoveRecord | null;
+  booking: { status: string; assigned_user_id: string | null; starts_at: string };
+  original: { email: string | null; deactivated_at: string | null } | null;
+  nowMs: number;
+  nameOf: (userId: string | null) => string;
+}): DemotionMoveView | null {
+  const { move, booking, nameOf } = input;
+  if (!move || move.status !== "moved" || !move.toUserId) return null;
+  const original = nameOf(move.outUserId);
+  const movedTo = nameOf(move.toUserId);
+  const what = describeDemotionChange(move.change) ?? "What changed in Twilio was not recorded.";
+  if (move.revertedAt) {
+    return {
+      state: "moved-back",
+      summary: `${nameOf(move.revertedBy)} moved this call back to ${original} after Slate moved it automatically.`,
+    };
+  }
+  const summary = `Slate moved this call from ${original} to ${movedTo} automatically. ${what}`;
+  const plan = planDemotionRevert(input);
+  if (plan.kind === "refused") {
+    return {
+      state: "cannot",
+      summary,
+      reason: revertRefusalText(plan.reason, { original, current: nameOf(booking.assigned_user_id) }),
+    };
+  }
+  const refusals = Object.fromEntries(
+    REVERT_REFUSALS.map((r) => [r, revertRefusalText(r, { original, current: movedTo })]),
+  ) as Record<RevertRefusal, string>;
+  if (plan.kind === "record-only") {
+    return {
+      state: "can-move-back",
+      summary: `This call is back with ${original}, but the move back was not recorded, so Slate could move it again.`,
+      buttonLabel: `Record the move back to ${original}`,
+      confirmMessage: `Nothing moves: this records that the call belongs with ${original}, so Slate leaves it there.`,
+      confirmLabel: "Record it",
+      keepLabel: "Not now",
+      overCapText: moveBackOverCapText(original),
+      refusals,
+    };
+  }
+  return {
+    state: "can-move-back",
+    summary,
+    buttonLabel: `Move back to ${original}`,
+    confirmMessage:
+      `${original} takes this call again and the lead gets an updated invite; ${movedTo}'s calendar loses it. ` +
+      `${original} still lacks the tier this call's pool needs, so Slate will leave the call with ${original} and stop flagging it.`,
+    confirmLabel: "Move back",
+    keepLabel: `Keep with ${movedTo}`,
+    overCapText: moveBackOverCapText(original),
+    refusals,
+  };
+}
+
+/** The second ask when the original advisor is already at their daily limit. */
+export function moveBackOverCapText(original: string): string {
+  return `${original} is already at their daily limit of calls on that day. Move the call back anyway?`;
 }

@@ -5,7 +5,14 @@
  */
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
-import { demotionMoveFromRow, type DemotionMoveRecord, type DemotionMoveRow } from "@/lib/booking/demotion-revert";
+import {
+  demotionMoveFromRow,
+  demotionMoveView,
+  latestDemotionMove,
+  type DemotionMoveRecord,
+  type DemotionMoveRow,
+  type DemotionMoveView,
+} from "@/lib/booking/demotion-revert";
 
 /** The demotion moves of one booking, scoped to the org through the sweep that made them. */
 export async function loadDemotionMoves(bookingId: string, orgId: string): Promise<DemotionMoveRecord[]> {
@@ -39,4 +46,31 @@ export async function markDemotionMoveReverted(itemId: string, byUserId: string)
     "record a moved back demotion reroute",
   ) as { id: string }[] | null;
   return (rows ?? []).length === 1;
+}
+
+/**
+ * What the booking page shows about an automatic move of this call (#3615), or null when no
+ * demotion sweep moved it. Throws on a read it could not make, so the page can say it could not
+ * check rather than hiding the undo (L10).
+ */
+export async function loadDemotionMoveView(
+  booking: { id: string; status: string; assigned_user_id: string | null; starts_at: string },
+  orgId: string,
+): Promise<DemotionMoveView | null> {
+  const move = latestDemotionMove(await loadDemotionMoves(booking.id, orgId));
+  if (!move) return null;
+  const ids = [move.outUserId, move.toUserId, move.revertedBy].filter((x): x is string => typeof x === "string");
+  const people = unwrap(
+    // cap-safe: at most three users, by primary key.
+    await supabaseAdmin().from("users").select("id, name, email, deactivated_at").in("id", ids),
+    "demotion move people",
+  ) as { id: string; name: string | null; email: string | null; deactivated_at: string | null }[] | null;
+  const byId = new Map((people ?? []).map((p) => [p.id, p]));
+  return demotionMoveView({
+    move,
+    booking,
+    original: byId.get(move.outUserId) ?? null,
+    nowMs: Date.now(),
+    nameOf: (uid) => (uid ? (byId.get(uid)?.name ?? byId.get(uid)?.email ?? "another advisor") : "someone"),
+  });
 }

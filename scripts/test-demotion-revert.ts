@@ -6,6 +6,8 @@
 // reader somewhere different.
 import {
   demotionMoveFromRow,
+  demotionMoveView,
+  moveBackOverCapText,
   latestDemotionMove,
   moveBackDemotionReroute,
   pinnedBookingIds,
@@ -288,6 +290,46 @@ const actor = { userId: "admin1", actingAsUserId: null };
   eq(demotionMoveFromRow({ ...row, bulk_reassign_jobs: { ...row.bulk_reassign_jobs, demotion_change: "junk" } })?.change, null, "a malformed change reads as unrecorded");
   eq(demotionMoveFromRow({ ...row, bulk_reassign_jobs: null }), null, "a row with no sweep is not a demotion move");
   eq(demotionMoveFromRow({ ...row, bulk_reassign_jobs: { ...row.bulk_reassign_jobs, demotion_marked_at: null } }), null, "nor is a sweep that was not a demotion");
+}
+
+// --- what the booking page shows -----------------------------------------------------------
+
+{
+  const names = (id: string | null) => ({ jordan: "Jordan Lee", sam: "Sam Park", alex: "Alex Kim", admin1: "Dan Wright" })[id ?? ""] ?? "someone";
+  const change = { from: { debtTeam: ["ultra_high", "high"], backendService: [] }, to: { debtTeam: ["high"], backendService: [] } };
+  const view = (over: Parameters<typeof demotionMoveView>[0] extends infer T ? Partial<T> : never) =>
+    demotionMoveView({ move: move({ change }), booking: booking(), original: jordan, nowMs: NOW, nameOf: names, ...over });
+
+  const can = view({});
+  eq(can?.state, "can-move-back", "a revertable move offers the move back");
+  if (can?.state === "can-move-back") {
+    eq(can.summary, "Slate moved this call from Jordan Lee to Sam Park automatically. Debt tiers went from Ultra High and High to High.", "it says who, and what changed");
+    eq(can.buttonLabel, "Move back to Jordan Lee", "the button names who it goes back to");
+    assert(can.confirmMessage.includes("Jordan Lee takes this call again"), "the confirm says the consequence for the advisor");
+    assert(can.confirmMessage.includes("updated invite"), "and for the lead");
+    assert(can.confirmMessage.includes("leave the call with Jordan Lee"), "and that Slate will not move it again");
+    eq(can.keepLabel, "Keep with Sam Park", "the way out names who keeps it");
+    eq(can.refusals["moved-since"], revertRefusalText("moved-since", { original: "Jordan Lee", current: "Sam Park" }), "a refusal arriving later reads in the shared words");
+  }
+
+  const back = view({ move: move({ change, revertedAt: "2026-10-12T14:00:00.000Z", revertedBy: "admin1" }), booking: booking({ assigned_user_id: "jordan" }) });
+  eq(back?.state, "moved-back", "an undone move says so instead of offering it again");
+  if (back?.state === "moved-back") eq(back.summary, "Dan Wright moved this call back to Jordan Lee after Slate moved it automatically.", "naming who undid it");
+
+  const unrecorded = view({ booking: booking({ assigned_user_id: "jordan" }) });
+  eq(unrecorded?.state, "can-move-back", "a move back that landed without its record can still be finished");
+  if (unrecorded?.state === "can-move-back") eq(unrecorded.buttonLabel, "Record the move back to Jordan Lee", "with a button saying that is all it does");
+
+  const since = view({ booking: booking({ assigned_user_id: "alex" }) });
+  eq(since?.state, "cannot", "a call moved again since cannot be moved back");
+  if (since?.state === "cannot") eq(since.reason, revertRefusalText("moved-since", { original: "Jordan Lee", current: "Alex Kim" }), "and says why, naming who holds it");
+
+  eq(view({ move: null }), null, "a call no demotion sweep moved shows nothing at all");
+  const unrecordedChange = view({ move: move() });
+  assert(unrecordedChange !== null && unrecordedChange.summary.endsWith("What changed in Twilio was not recorded."), "an unrecorded change says so");
+
+  eq(moveBackOverCapText("Jordan Lee"), "Jordan Lee is already at their daily limit of calls on that day. Move the call back anyway?", "the over cap second ask");
+  for (const t of [can, back, since].map((v) => JSON.stringify(v))) assert(!DASH.test(t), "no dash punctuation in anything the page shows");
 }
 
 finish();
