@@ -46,8 +46,17 @@ describe("POST /admin/bookings/[id]/reroute", () => {
     service.adminStartReroute.mockResolvedValueOnce({ kind: "move", holdId: HOLD, secondsRemaining: 300 });
     const res = await POST(req({ bucketCode: "512" }), params);
     expect(res.status).toBe(200);
-    expect(service.adminStartReroute).toHaveBeenCalledWith("bk1", "512", { userId: "mgr1", actingAsUserId: null });
+    expect(service.adminStartReroute).toHaveBeenCalledWith("bk1", "512", { userId: "mgr1", actingAsUserId: null }, false);
     expect((await res.json()).holdId).toBe(HOLD);
+  });
+
+  it("honours the exclude-current flag, so the service leaves the current advisor out (#3596)", async () => {
+    service.adminStartReroute.mockResolvedValueOnce({ kind: "none" });
+    const res = await POST(req({ bucketCode: "512", excludeCurrent: true }), params);
+    expect(res.status).toBe(200);
+    // The flag is passed; the id to exclude is resolved from the booking in the service,
+    // never named by the request.
+    expect(service.adminStartReroute).toHaveBeenCalledWith("bk1", "512", { userId: "mgr1", actingAsUserId: null }, true);
   });
 
   it("refuses a request from another site before touching anything", async () => {

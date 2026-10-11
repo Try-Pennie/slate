@@ -3322,9 +3322,18 @@ function realRerouteDeps(actor: BookingActor): RerouteDeps {
   };
 }
 
-/** Find who should take a booking in a corrected bucket, holding them when new (#3249). */
-export function adminStartReroute(bookingId: string, bucketCode: string, actor: BookingActor): Promise<RerouteProposal> {
-  return startReroute(realRerouteDeps(actor), { bookingId, bucketCode, actor });
+/**
+ * Find who should take a booking in a corrected bucket, holding them when new (#3249).
+ * `excludeCurrent` is "look for a different advisor" (#3596): leave the booking's current
+ * advisor out of the search so a keep becomes a move to the next eligible advisor.
+ */
+export function adminStartReroute(
+  bookingId: string,
+  bucketCode: string,
+  actor: BookingActor,
+  excludeCurrent = false,
+): Promise<RerouteProposal> {
+  return startReroute(realRerouteDeps(actor), { bookingId, bucketCode, actor, excludeCurrent });
 }
 
 /** Confirm a reroute: a move with its hold, or a keep into `bucketCode` (#3249). */

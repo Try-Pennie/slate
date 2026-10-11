@@ -130,9 +130,17 @@ export default function ReroutePanel({
     }
   }
 
-  function find() {
+  // `excludeCurrent` is "look for a different advisor" (#3596): the only thing the body
+  // says is to leave out the current advisor; the server resolves which id that is from
+  // the booking, so the panel cannot name an arbitrary exclusion.
+  function runFind(excludeCurrent: boolean) {
     return run<RerouteProposal>(
-      () => postJson(base, { bucketCode: chosenCode }, { timeoutMs: REQUEST_TIMEOUT_MS }),
+      () =>
+        postJson(
+          base,
+          excludeCurrent ? { bucketCode: chosenCode, excludeCurrent: true } : { bucketCode: chosenCode },
+          { timeoutMs: REQUEST_TIMEOUT_MS },
+        ),
       (proposal) => {
         // A search that lands after the panel closed holds somebody nobody will confirm.
         if (!open.current) {
@@ -143,6 +151,15 @@ export default function ReroutePanel({
         setShown({ kind: "proposal", proposal, receivedAt: Date.now() });
       },
     );
+  }
+
+  // Named rather than bound inline so an onClick's MouseEvent is never passed in as the
+  // excludeCurrent flag.
+  function find() {
+    return runFind(false);
+  }
+  function findDifferent() {
+    return runFind(true);
   }
 
 
@@ -318,6 +335,15 @@ export default function ReroutePanel({
                     className={PRIMARY_CLS}
                   >
                     {copy.primary}
+                  </button>
+                )}
+                {/* On a keep, the current advisor can technically take the call but you
+                    may want it moved off them (#3596). Re-run excluding them, which
+                    becomes a move to the next eligible advisor or an honest "nobody
+                    else is free". */}
+                {shown?.kind === "proposal" && proposal?.kind === "keep" && (
+                  <button type="button" onClick={findDifferent} disabled={busy} className={SECONDARY_CLS}>
+                    Look for a different advisor
                   </button>
                 )}
                 {copy.cancel && (

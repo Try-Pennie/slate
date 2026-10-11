@@ -8,7 +8,10 @@ import { crossOriginRefusal } from "@/lib/api/same-origin";
 
 export const dynamic = "force-dynamic";
 
-const schema = z.object({ bucketCode: z.string().min(1).max(16) });
+// `excludeCurrent` is the only thing the body says about who to exclude: the id itself
+// is resolved server side from the booking (#3596), so a caller cannot name an arbitrary
+// advisor to leave out.
+const schema = z.object({ bucketCode: z.string().min(1).max(16), excludeCurrent: z.boolean().optional() });
 
 /**
  * Start a reroute (#3249): find who should take this booking in the corrected
@@ -28,7 +31,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const parsed = await readRerouteBody(req, schema);
   if (!parsed.ok) return parsed.response;
   try {
-    return NextResponse.json(await adminStartReroute(id, parsed.data.bucketCode, actor));
+    return NextResponse.json(await adminStartReroute(id, parsed.data.bucketCode, actor, parsed.data.excludeCurrent ?? false));
   } catch (err) {
     return mapRerouteError(err, "admin/bookings/[id]/reroute");
   }
