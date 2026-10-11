@@ -330,6 +330,28 @@ describe("BulkReassignCoverage: what the move says it did (#2122)", () => {
     expect(screen.getByText(/cancelled before it could be moved/)).toBeTruthy();
   });
 
+  // #3615: a demotion sweep's moved calls, each linking to the booking where it can be moved
+  // back. Nothing else tells a person which calls an automatic reroute moved.
+  it("lists the calls an automatic demotion reroute moved, each linking to its move back", async () => {
+    await openOnJob({
+      ...mixedFixture,
+      moved: [
+        { bookingId: "bk-moved", status: "moved", detail: null, startsAt: "2026-07-27T15:00:00.000Z", attendeeName: "Robin" },
+      ],
+    });
+    expect(screen.getByText("Moved (1)")).toBeTruthy();
+    const link = screen.getByRole("link", { name: /move back/i });
+    expect(link.getAttribute("href")).toBe("/admin/bookings/bk-moved");
+    // The call that could not be placed keeps its own control; one row, one control.
+    expect(screen.getAllByRole("link", { name: /place by hand/i })).toHaveLength(1);
+  });
+
+  it("shows no moved list when the reply carries none, as an older server's does", async () => {
+    await openOnJob(mixedFixture);
+    expect(screen.queryByText(/^Moved \(/)).toBeNull();
+    expect(screen.queryByRole("link", { name: /move back/i })).toBeNull();
+  });
+
   it("lists the skipped bookings, with no control, because there is nothing to do", async () => {
     await openOnJob(mixedFixture);
 

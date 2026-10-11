@@ -9,6 +9,7 @@ import {
   BULK_REASSIGN_ITEMS_PER_TICK,
   MAX_ITEM_ATTEMPTS,
   buildBulkReassignProgress,
+  isBulkReassignProgress,
   drainBulkReassign,
   parseBulkReassignRange,
   processBulkReassignItem,
@@ -401,6 +402,20 @@ async function run() {
   // not have to guard, and an absent field would read as "could not tell".
   const progNone = buildBulkReassignProgress(job, [itemRow({ id: "x", booking_id: "bkZ", status: "moved" })], new Map());
   assert(Array.isArray(progNone.skipped) && progNone.skipped.length === 0, "no skips is an empty list");
+
+  // #3615: a DEMOTION sweep also lists the calls it moved, each a link to the booking where the
+  // move back lives. Nothing else told a person which calls an automatic reroute moved. Any other
+  // sweep lists none: its moves were asked for by the person watching.
+  const demotion = { ...job, created_by: null, demotion_marked_at: "2026-10-11T18:00:00.000Z", demotion_change: null };
+  const ctxMoved = new Map([["bkA", { startsAt: "2026-10-14T15:00:00.000Z", attendeeName: "Ann" }]]);
+  const progDemotion = buildBulkReassignProgress(demotion, [itemRow({ id: "m1", booking_id: "bkA", status: "moved" }), itemRow({ id: "m2", booking_id: "bkB", status: "unplaceable" })], ctxMoved);
+  assert(progDemotion.moved.length === 1 && progDemotion.moved[0].bookingId === "bkA", "a demotion sweep lists the call it moved");
+  assert(progDemotion.moved[0].attendeeName === "Ann", "with the lead's name to recognise it by");
+  assert(progNone.moved.length === 0, "any other sweep lists no moved calls");
+  assert(isBulkReassignProgress(progDemotion), "the payload with moved calls is a valid progress reply");
+  const { moved: _drop, ...older } = progDemotion;
+  assert(isBulkReassignProgress(older), "a reply from a server older than the moved list still reads (L598)");
+  assert(!isBulkReassignProgress({ ...progDemotion, moved: "x" }), "a moved list of the wrong shape is refused");
 
   // --- #3615: an audit row for every call a DEMOTION sweep moves ---
   //

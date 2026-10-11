@@ -15,6 +15,10 @@ export const ACTIONABLE_ITEM_STATUSES: BulkReassignItemStatus[] = ["unplaceable"
  *  own counts. */
 export const SKIPPED_ITEM_STATUSES: BulkReassignItemStatus[] = ["skipped"];
 
+/** The status of a call the sweep moved (#3615), listed for a demotion sweep so its moves can be
+ *  found and undone. */
+export const MOVED_ITEM_STATUSES: BulkReassignItemStatus[] = ["moved"];
+
 /**
  * How many items the bulk-reassign drain processes per tick. Each item does a
  * live verify wave plus a reassign (a Google create + delete), so this is kept
@@ -370,6 +374,13 @@ export interface BulkReassignProgress {
    * its own detail saying which of the three it was.
    */
   skipped: BulkReassignActionableItem[];
+  /**
+   * The calls a DEMOTION sweep moved (#3615), each linking to the booking where the move back
+   * lives. Nothing else tells a person which calls an automatic reroute moved. Empty for every
+   * other sweep, whose moves the person watching asked for. Optional on the wire: a reply from a
+   * server older than this field reads as none (L598).
+   */
+  moved?: BulkReassignActionableItem[];
 }
 
 /**
@@ -397,7 +408,13 @@ export function buildBulkReassignProgress(
       }));
   // One shape for both lists, from one function, so the panel can draw them with
   // one row component and the two cannot drift into different fields.
-  return { job, summary, actionable: rowsOf(ACTIONABLE_ITEM_STATUSES), skipped: rowsOf(SKIPPED_ITEM_STATUSES) };
+  return {
+    job,
+    summary,
+    actionable: rowsOf(ACTIONABLE_ITEM_STATUSES),
+    skipped: rowsOf(SKIPPED_ITEM_STATUSES),
+    moved: job.demotion_marked_at ? rowsOf(MOVED_ITEM_STATUSES) : [],
+  };
 }
 
 /**
@@ -436,7 +453,11 @@ export function isBulkReassignProgress(value: unknown): value is BulkReassignPro
     if (!Number.isFinite(c[status])) return false;
   }
 
-  return isProgressRowList(v.actionable) && isProgressRowList(v.skipped);
+  return (
+    isProgressRowList(v.actionable) &&
+    isProgressRowList(v.skipped) &&
+    (v.moved === undefined || isProgressRowList(v.moved))
+  );
 }
 
 /** One `actionable` / `skipped` row, as the panel draws it. A row whose status is

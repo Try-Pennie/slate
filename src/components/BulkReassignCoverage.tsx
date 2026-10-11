@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 
 import type { ReasonOption } from "@/lib/booking/core";
 import type { BulkReassignActionableItem, BulkReassignProgress } from "@/lib/booking/bulk-reassign";
-import { isBulkReassignProgress, SKIPPED_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
+import { isBulkReassignProgress, MOVED_ITEM_STATUSES, SKIPPED_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
 import { formatSlotTime } from "@/lib/booking/slot-label";
 import {
   moveOutcomeSentence,
@@ -487,6 +487,8 @@ function Progress({
   }
 
   const { summary, actionable, skipped } = progress;
+  // #3615: a demotion sweep's moved calls. Absent from an older server's reply, which reads as none.
+  const moved = progress.moved ?? [];
   const mark = moveSegments(summary);
   const said = moveOutcomeSentence(summary);
   const label = moveProgressLabel(summary);
@@ -603,6 +605,20 @@ function Progress({
         </div>
       )}
 
+      {/* #3615: the calls an automatic demotion reroute moved, after the ones in trouble and
+          before the ones nobody can act on. Nothing else tells a person which calls it moved,
+          and each row links to the booking, where the move back is. */}
+      {moved.length > 0 && (
+        <div className="mt-5 border-t border-border pt-4">
+          <p className="pn-eyebrow text-fg-muted">Moved ({moved.length})</p>
+          <ul className="mt-2 divide-y divide-border">
+            {moved.map((it) => (
+              <MoveOutcomeRow key={it.bookingId} item={it} />
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* #2122: the skips, which used to be a bare number nobody could act on.
           Dan, meeting it: "now it says nothing about the skipped one. what am I
           supposed to do about that". The answer is nothing, and that is why the
@@ -649,6 +665,9 @@ function MoveOutcomeRow({ item }: { item: BulkReassignActionableItem }) {
   // and the drift here would put a Place by hand link on a booking that no longer
   // exists.
   const canPlace = !SKIPPED_ITEM_STATUSES.includes(item.status);
+  // #3615: a call the sweep MOVED is not placed by hand; its control is the move back, which
+  // lives on the booking. Asked of the engine's own list, like the skip above.
+  const wasMoved = MOVED_ITEM_STATUSES.includes(item.status);
   return (
     <li className="flex items-center justify-between gap-3 py-2 text-sm">
       <span className="min-w-0">
@@ -663,7 +682,7 @@ function MoveOutcomeRow({ item }: { item: BulkReassignActionableItem }) {
           href={`/admin/bookings/${item.bookingId}`}
           className="shrink-0 text-pennie-blue underline dark:text-pennie-sky"
         >
-          Place by hand
+          {wasMoved ? "Move back" : "Place by hand"}
         </a>
       )}
     </li>

@@ -577,7 +577,8 @@ async function reportDemotionMoves(result: TwilioSyncResult): Promise<void> {
           email: s.email,
           bookings: s.bookings,
           change: s.change,
-          url: `${appUrl()}/admin/agents/${encodeURIComponent(s.userId)}`,
+          // Opened ON the sweep, where its moved calls are listed with their move back.
+          url: `${appUrl()}/admin/agents/${encodeURIComponent(s.userId)}?job=${encodeURIComponent(s.jobId)}`,
         })),
       ),
     ).catch(logAlertSendFailure("demotion_reroute_moved"));

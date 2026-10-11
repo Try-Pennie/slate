@@ -86,6 +86,8 @@ import type { TwilioWorker } from "@/lib/twilio/client";
 export interface DemotionSweepReport {
   email: string;
   userId: string;
+  /** The sweep, so the report can open the agent's page ON it, where its moves are listed. */
+  jobId: string;
   bookings: number;
   change: DemotionChange | null;
 }
@@ -143,7 +145,7 @@ export interface TwilioSyncDeps {
      *  on, recorded on the job at the moment it decides to move anybody. Null for a mark stamped
      *  before the earlier tiers were saved. */
     change: DemotionChange | null;
-  }) => Promise<{ itemCount: number }>;
+  }) => Promise<{ itemCount: number; jobId: string }>;
   fetchWorkers: () => Promise<TwilioWorker[]>;
   loadRoster: () => Promise<TwilioRosterRow[]>;
   applyBookable: (userId: string, bookable: boolean) => Promise<BookableResult>;
@@ -413,13 +415,13 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
       if (dw.sweepMarkedAtIso) {
         try {
           const change = demotionChangeOf(dw.attributes);
-          const { itemCount } = await deps.startDemotionSweep({
+          const { itemCount, jobId } = await deps.startDemotionSweep({
             outUserId: dw.userId,
             markedAtIso: dw.sweepMarkedAtIso,
             attributes: dw.attributes,
             change,
           });
-          if (itemCount > 0) demotionSweeps.push({ email: dw.email, userId: dw.userId, bookings: itemCount, change });
+          if (itemCount > 0) demotionSweeps.push({ email: dw.email, userId: dw.userId, jobId, bookings: itemCount, change });
         } catch (err) {
           demotionSweepFailures++;
           log.error(
@@ -737,7 +739,7 @@ export async function defaultTwilioSyncDeps(orgId?: string): Promise<TwilioSyncD
     // demotion mark, moving only the FILTERED set the agent no longer serves (demotionBookings),
     // never the full coverage read.
     startDemotionSweep: async ({ outUserId, markedAtIso, attributes, change }) => {
-      const { itemCount } = await startBulkReassign({
+      const { itemCount, jobId } = await startBulkReassign({
         outUserId,
         rangeStartIso: markedAtIso,
         rangeEndIso: null,
@@ -748,7 +750,7 @@ export async function defaultTwilioSyncDeps(orgId?: string): Promise<TwilioSyncD
         // Filter by the decision's attributes, not a fresh DB read (see demotionBookings).
         snapshotBookings: () => demotionBookings(outUserId, markedAtIso, null, attributes),
       });
-      return { itemCount };
+      return { itemCount, jobId };
     },
     fetchWorkers: () => fetchTwilioWorkers(),
     loadRoster: async () => {

@@ -1784,8 +1784,8 @@ describe("syncSalesforceNow (#491, #2071)", () => {
         { updated: 0 },
         twilioOk({
           demotionSweeps: [
-            { email: "a@x", userId: "u1", bookings: 2, change: null },
-            { email: "b@x", userId: "u2", bookings: 1, change: null },
+            { email: "a@x", userId: "u1", jobId: "j1", bookings: 2, change: null },
+            { email: "b@x", userId: "u2", jobId: "j2", bookings: 1, change: null },
           ],
         }),
       ),

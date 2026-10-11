@@ -17,8 +17,8 @@ import {
 /** The demotion moves of one booking, scoped to the org through the sweep that made them. */
 export async function loadDemotionMoves(bookingId: string, orgId: string): Promise<DemotionMoveRecord[]> {
   const rows = unwrap(
-    // cap-safe: one booking's sweep items, a handful at most (one per sweep that ever held it).
     await supabaseAdmin()
+      // cap-safe: one booking's sweep items, a handful at most (one per sweep that ever held it).
       .from("bulk_reassign_items")
       .select(
         "id, booking_id, status, target_user_id, updated_at, reverted_at, reverted_by, bulk_reassign_jobs!inner(id, org_id, out_user_id, demotion_marked_at, demotion_change)",
