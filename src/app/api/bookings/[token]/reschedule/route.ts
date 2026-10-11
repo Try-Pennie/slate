@@ -23,6 +23,7 @@ import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { isBookingWriteFailure } from "@/lib/booking/gated-write";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { internalErrorResponse, reportInternalError } from "@/lib/api/errors";
+import { isTestManageTokenForPaging } from "@/lib/monitor/test-traffic";
 import { noStore } from "@/lib/api/no-store";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 import { bookingIdentityFrom } from "@/lib/booking/booking-identity";
@@ -279,7 +280,12 @@ async function handlePost(
       // goes through, so somebody is paged rather than only counted.
       if (isBookingWriteFailure(err)) {
         recordApiOutcome("error", "", "reschedule_write_failed", { by: "manageToken", token });
-        await reportInternalError(err, "bookings/[token]/reschedule");
+        // #3580: the smoke canary reschedules its own test bookings here, so withhold
+        // the page for test traffic (resolved server-side from the booking's bucket);
+        // a real one still pages, and an unreadable marker pages.
+        await reportInternalError(err, "bookings/[token]/reschedule", {
+          page: !(await isTestManageTokenForPaging(token)),
+        });
         // refusal: reschedule_write_failed
         return NextResponse.json({ error: err.message }, { status: 503 });
       }
@@ -348,8 +354,10 @@ async function handlePost(
         return NextResponse.json({ error: err.message }, { status: 404 });
       }
       recordApiOutcome("error", "", "reschedule_internal", { by: "manageToken", token });
-      // refusal: reschedule_internal
-      return internalErrorResponse(err, "bookings/[token]/reschedule");
+      // refusal: reschedule_internal (#3580: test traffic is logged but does not page)
+      return internalErrorResponse(err, "bookings/[token]/reschedule", {
+        page: !(await isTestManageTokenForPaging(token)),
+      });
     }));
   }
 }
