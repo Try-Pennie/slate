@@ -72,17 +72,26 @@ export const PILOT_SETTINGS_STALE_MS = 60 * 60_000;
  */
 export function createPilotSettingsCache(read: () => Promise<PilotSettings>) {
   let kept: { atMs: number; settings: PilotSettings } | null = null;
+  /**
+   * The settings and when Salesforce was read for them (#3641): a kept or stale served
+   * reading carries the time of its own read, so a stored sample never claims a look
+   * at Salesforce that did not happen.
+   */
+  async function readTimed(nowMs: number = Date.now()): Promise<{ settings: PilotSettings; readAtMs: number }> {
+    if (kept && nowMs - kept.atMs < PILOT_SETTINGS_TTL_MS) return { settings: kept.settings, readAtMs: kept.atMs };
+    try {
+      const settings = await read();
+      kept = { atMs: nowMs, settings };
+      return { settings, readAtMs: nowMs };
+    } catch (err) {
+      if (kept && nowMs - kept.atMs < PILOT_SETTINGS_STALE_MS) return { settings: kept.settings, readAtMs: kept.atMs };
+      throw err;
+    }
+  }
   return {
+    readTimed,
     async read(nowMs: number = Date.now()): Promise<PilotSettings> {
-      if (kept && nowMs - kept.atMs < PILOT_SETTINGS_TTL_MS) return kept.settings;
-      try {
-        const settings = await read();
-        kept = { atMs: nowMs, settings };
-        return settings;
-      } catch (err) {
-        if (kept && nowMs - kept.atMs < PILOT_SETTINGS_STALE_MS) return kept.settings;
-        throw err;
-      }
+      return (await readTimed(nowMs)).settings;
     },
   };
 }

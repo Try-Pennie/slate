@@ -9,7 +9,8 @@
 // (id, CreatedDate, XBC_SO__c, Lead__c, Email_SO__c, Mobile_Number_SO__c), the
 // applications behind any cal.com booking that carries no id (by Email_SO__c), and
 // `WebsiteConfiguration__c` as it is now. Slate: every real, routed booking made since
-// the window opened. cal.com: every booking MADE since the window opened, a day and a
+// the window opened, and the quarter hourly readings of the split stored over the
+// window (`pilot_settings_samples`, #3641). cal.com: every booking MADE since the window opened, a day and a
 // status at a time (#2945: a `past` listing's first page was measured at up to 117 s
 // over a week, and never over 3.5 s for a day). Regal: `regal_call_outcomes` (#2944)
 // for the booked applications' Leads. Every list read is paginated and refuses on a
@@ -19,7 +20,9 @@
 // The judgement lives in scripts/lib/pilot-compare.ts and is pinned offline by
 // scripts/test-pilot-compare.ts. Only the readout exits 0; every way of learning
 // nothing exits on its own code (L98, L11), and every run says what it compared and
-// that the 50 split is ASSUMED, not checked.
+// what the stored readings say about the 50 split: CHECKED, CHECKED IN PART (an edit
+// inside the window, with the span it leaves unverified), THE SPLIT CHANGED, or, with
+// no successful reading, ASSUMED, NOT CHECKED (#3641).
 //
 // | exit | what it met |
 // |---|---|
@@ -28,7 +31,7 @@
 // | 2 | nothing to judge yet: the window has not opened, or a rehearsal's span has not closed |
 // | 3 | Salesforce could not be read |
 // | 4 | cal.com could not be read |
-// | 5 | Slate could not be read |
+// | 5 | Slate could not be read, its bookings or its stored readings of the split |
 // | 6 | the Regal call store could not be read |
 // | 7 | no application in a pilot tier was made in the cohort |
 // | 8 | one side holds no applications |
@@ -40,6 +43,7 @@
 // | 14 | what Salesforce holds now contradicts the assumed split |
 // | 15 | an input could not be read, or a row carried a time that does not parse |
 // | 16 | partial: the window is open and no span has closed yet, so these are rates so far |
+// | 17 | a stored reading saw a split other than the assumed one inside the window |
 //
 // PARTIAL (#2976): between the window opening and the first closed span (the first
 // whole day is judgeable from 2026-10-10 03:00 ET), the run reports the booking and
@@ -49,7 +53,7 @@
 // and the report says so. It always exits 16 unless it refused, never 0, 11 or 12.
 //
 // Once a comparison is printed, the run exits on the first condition that holds of
-// 13, 14, 11, 12, 0, and prints every one that holds.
+// 13, 17, 14, 11, 12, 0, and prints every one that holds.
 //
 // It is deliberately NOT named `test-*.ts`: that glob is the offline unit suite.
 import { loadEnvFiles } from "./smoke-env.ts";
@@ -57,6 +61,7 @@ import { ENV_FILES, judgeSupabaseCredentials } from "./lib/supabase-credentials.
 import {
   planWindow,
   refusal,
+  readSplitReadings,
   calcomChains,
   matchBookings,
   leadKeysToRead,
@@ -69,6 +74,7 @@ import {
   type PilotSettings,
 } from "./lib/pilot-compare.ts";
 import { CALCOM_LISTING_STATUSES, followRescheduleChains, phoneKey, type CalcomListedBooking } from "../src/lib/calcom/upcoming-bookings.ts";
+import type { PilotSettingsRow } from "../src/lib/monitor/pilot-settings-samples.ts";
 
 loadEnvFiles(ENV_FILES);
 const env = process.env;
@@ -171,6 +177,21 @@ try {
 } catch (err) {
   print(refusal(PILOT_COMPARE_EXIT.slateUnreadable, `Slate's bookings could not be read: ${errText(err)}`).lines, PILOT_COMPARE_EXIT.slateUnreadable);
 }
+
+// --- Slate: the stored readings of the split over the window (#3641) ---------------------
+// A refusal rather than an empty list when they cannot be read: no readings is the old
+// assumption, so an unreadable table must never pass for one that holds nothing.
+const readingsRead = await readSplitReadings(() =>
+  selectAllPages<PilotSettingsRow>("pilot compare split readings", "sampled_at", () =>
+    supabaseAdmin()
+      .from("pilot_settings_samples")
+      .select("sampled_at, ok, read_at, active, percent, tiers, record_modified_at, error")
+      .gte("sampled_at", new Date(window.startMs).toISOString())
+      .lte("sampled_at", new Date(window.readEndMs).toISOString()),
+  ),
+);
+if (!readingsRead.ok) print(readingsRead.lines, readingsRead.exit);
+const readings = readingsRead.ok ? readingsRead.rows : [];
 
 // --- cal.com: every booking made since the window opened, a day and a status at a time ----
 const calcom: CalcomListedBooking[] = [];
@@ -284,5 +305,5 @@ try {
   print(refusal(PILOT_COMPARE_EXIT.regalUnreadable, `the Regal call store could not be read: ${errText(err)}`).lines, PILOT_COMPARE_EXIT.regalUnreadable);
 }
 
-const result = judgePilotCompare({ window, settings: settings!, matched, calls: { calls, storedInSpan, storeBeganMs } });
+const result = judgePilotCompare({ window, settings: settings!, readings, matched, calls: { calls, storedInSpan, storeBeganMs } });
 print(result.lines, result.exit);

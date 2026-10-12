@@ -154,7 +154,8 @@ export type PilotOfferOutcome =
   | { sampled: false }
   | { sampled: true; calcom: "ok" | "failed"; slate: "ok" | "failed" };
 
-const reasonOf = (err: unknown): string => (err instanceof Error ? err.message : String(err)).slice(0, 300);
+/** A failed read's reason as stored on a sample row: the message, capped. Shared with the split readings (#3641). */
+export const reasonOf = (err: unknown): string => (err instanceof Error ? err.message : String(err)).slice(0, 300);
 
 /**
  * Take one sample when one is due. Each system has its own failure boundary, so one

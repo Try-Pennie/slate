@@ -34,12 +34,16 @@
 //    time, starting from 15 minutes before to 60 minutes after the final start
 //    (Dan, 2026-10-01 on #2945: never summed across calls). A cancelled booking is
 //    not held.
-// 7. THE SPLIT IS ASSUMED, NOT CHECKED. Salesforce keeps no history of
-//    SlatePilotActive__c, SlatePilotPercent__c or SlatePilotTiers__c, and none will
-//    be turned on (Dan, 2026-10-01, #2946), so the comparison trusts that the split
-//    held at 50 on tiers 1 to 5 across the window and says so on EVERY run. What
-//    Salesforce holds NOW is read and printed, and a current value that contradicts
-//    the assumption has its own exit code.
+// 7. THE SPLIT IS CHECKED FROM STORED READINGS, and assumed only where none can vouch
+//    for it (#3641). Salesforce keeps no history of SlatePilotActive__c,
+//    SlatePilotPercent__c or SlatePilotTiers__c, and none will be turned on (Dan,
+//    2026-10-01, #2946), so the monitor lane stores a reading every quarter hour with
+//    the record's last edit time, and `checkSplitReadings` judges the window from them:
+//    a reading off the split is a change with its own exit code, an edit inside the
+//    window leaves the span before it unverified (only the last edit is visible), and
+//    with no successful reading the run states the old assumption. Every run says which.
+//    What Salesforce holds NOW is still read and printed, and a current value that
+//    contradicts the assumption has its own exit code too.
 // 8. A READOUT DATE fixed once. The first readable run proposes one; it is then
 //    recorded in READOUT_DATE below, in git, so later runs cannot move it. A run
 //    after the first span closes and before that date is PROVISIONAL (one before the
@@ -56,6 +60,8 @@ import { DateTime } from "luxon";
 import { slateBucket, leadKey, compareHalves, daysNeeded, normalCdf, MIN_LEADS_PER_HALF, MIN_OUTCOMES_PER_HALF } from "./pilot-split.ts";
 import type { CalcomListedBooking } from "../../src/lib/calcom/upcoming-bookings.ts";
 import type { PilotSettings } from "../../src/lib/salesforce/pilot-settings.ts";
+import type { PilotSettingsRow } from "../../src/lib/monitor/pilot-settings-samples.ts";
+import { reasonOf } from "../../src/lib/monitor/pilot-offers.ts";
 
 export type Side = "slate" | "calcom";
 
@@ -95,6 +101,8 @@ export const PILOT_COMPARE_EXIT = {
   inputUnreadable: 15,
   /** Rates so far before the first span closes (#2976): a trend to watch, never a result. */
   partial: 16,
+  /** A stored reading inside the window saw a split other than the assumed one (#3641). */
+  splitChanged: 17,
 } as const;
 
 const EXIT_LABEL: Record<number, string> = {
@@ -756,6 +764,8 @@ export interface CallsRead {
 export interface CompareInput {
   window: PilotWindow;
   settings: PilotSettings;
+  /** The quarter hourly readings of the split stored over the window (#3641). */
+  readings: readonly PilotSettingsRow[];
   matched: Matched;
   calls: CallsRead;
 }
@@ -774,6 +784,143 @@ export function settingsDisagreement(s: PilotSettings): string | null {
   return problems.length === 0 ? null : problems.join(", ");
 }
 
+/** The most edits named one by one; the rest are counted. */
+const MAX_EDITS_LISTED = 10;
+
+export interface SplitCheck {
+  /** unchecked: no successful reading; checked: every reading agreed; changed: one did not. */
+  status: "unchecked" | "checked" | "changed";
+  lines: string[];
+  /** Readings carrying a time that could not be read, refused like any other (L50). */
+  unreadable: number;
+}
+
+/**
+ * What the stored readings of the split say about the window (#3641, replacing rule 7's
+ * assumption wherever there are readings). Salesforce keeps no history of the split, but
+ * every reading carries the record's last edit time, and a record not edited since the
+ * previous reading cannot have changed in between, however long the gap. So:
+ *
+ * - a reading off the assumed split is a CHANGE, named with the readings that saw it;
+ * - an edit inside the window with the split the same on both sides is not a change,
+ *   but a change UNDONE before that edit cannot be ruled out (only the last edit is
+ *   visible), so the span from the reading before it, or the window's opening, to the
+ *   edit is named as unverified;
+ * - a span with no edit in it is checked, however few readings it had;
+ * - after the last reading the split is assumed, and says so.
+ *
+ * Readings are deduplicated by when Salesforce was read, since two samples served from
+ * one cached read are one look. A failed reading is counted and never read as a split.
+ */
+export function checkSplitReadings(rows: readonly PilotSettingsRow[], fromMs: number, toMs: number): SplitCheck {
+  let unreadable = 0;
+  let failed = 0;
+  const byRead = new Map<number, { readMs: number; modifiedMs: number; disagree: string | null }>();
+  for (const r of rows) {
+    // parse-ok: every stamp here is judged by Number.isFinite before use.
+    const sampledMs = Date.parse(r.sampled_at);
+    if (!Number.isFinite(sampledMs)) {
+      unreadable++;
+      continue;
+    }
+    if (!r.ok) {
+      failed++;
+      continue;
+    }
+    const readMs = Date.parse(r.read_at ?? "");
+    const modifiedMs = Date.parse(r.record_modified_at ?? "");
+    if (!Number.isFinite(readMs) || !Number.isFinite(modifiedMs)) {
+      unreadable++;
+      continue;
+    }
+    byRead.set(readMs, {
+      readMs,
+      modifiedMs,
+      disagree: settingsDisagreement({ active: r.active, percent: r.percent === null ? null : Number(r.percent), tiers: r.tiers, lastModified: null }),
+    });
+  }
+  const readings = [...byRead.values()].sort((a, b) => a.readMs - b.readMs);
+  const failedLine =
+    failed > 0
+      ? `${plural(failed, "reading")} failed to read Salesforce and ${failed === 1 ? "is" : "are"} left out; the edit times of the readings either side still cover the span between them.`
+      : null;
+  if (readings.length === 0) {
+    return {
+      status: "unchecked",
+      lines: [ASSUMPTION_LINE, ...(failed > 0 ? [`Every one of the ${plural(failed, "reading")} of Salesforce stored over the window failed, so none could check it.`] : [])],
+      unreadable,
+    };
+  }
+
+  const split = `${ASSUMED_PERCENT}% Slate on tiers ${ASSUMED_TIERS.join(";")}`;
+  const firstMs = readings[0]!.readMs;
+  const lastMs = readings[readings.length - 1]!.readMs;
+  const lines: string[] = [];
+
+  // Changes: runs of consecutive readings that disagree the same way.
+  const changes: { fromMs: number; toMs: number; what: string }[] = [];
+  for (const r of readings) {
+    const run = changes[changes.length - 1];
+    if (r.disagree === null) continue;
+    const prev = readings[readings.indexOf(r) - 1];
+    if (run && prev && prev.disagree === r.disagree && run.toMs === prev.readMs) run.toMs = r.readMs;
+    else changes.push({ fromMs: r.readMs, toMs: r.readMs, what: r.disagree });
+  }
+  for (const c of changes) {
+    lines.push(
+      `THE SPLIT CHANGED inside the window: Salesforce read ${c.what} ` +
+        (c.fromMs === c.toMs ? `at ${etLabel(c.fromMs)}` : `in the readings from ${etLabel(c.fromMs)} to ${etLabel(c.toMs)}`) +
+        `, not the assumed ${split}, so the comparison above mixes leads split two ways.`,
+    );
+  }
+
+  // Edits with the split the same on both sides: a change undone before them cannot be
+  // ruled out, from the reading before (or the window's opening) to the edit.
+  const edits: { afterMs: number; editMs: number }[] = [];
+  readings.forEach((r, i) => {
+    const prev = i === 0 ? null : readings[i - 1]!;
+    const afterMs = prev === null ? fromMs : prev.readMs;
+    const editedInside = prev === null ? r.modifiedMs >= fromMs : r.modifiedMs > prev.readMs;
+    if (!editedInside || r.disagree !== null || (prev !== null && prev.disagree !== null)) return;
+    edits.push({ afterMs, editMs: r.modifiedMs });
+  });
+
+  const span = `in ${plural(readings.length, "reading")} of Salesforce from ${etLabel(firstMs)} to ${etLabel(lastMs)}`;
+  if (changes.length === 0 && edits.length === 0) {
+    lines.push(
+      `CHECKED: the split read ${split} ${span}, and the record holding it was not edited from ${etLabel(fromMs)} to ${etLabel(lastMs)}, ` +
+        `so it held throughout that time. After ${etLabel(lastMs)} it is assumed.`,
+    );
+  } else if (changes.length === 0) {
+    lines.push(
+      `CHECKED IN PART: the split read ${split} ${span}, but the record holding it was edited inside the window, and Salesforce keeps no ` +
+        `history, so a change undone before an edit cannot be ruled out in the spans below. Ask whoever edited it. After ${etLabel(lastMs)} it is assumed.`,
+    );
+  }
+  for (const e of edits.slice(0, MAX_EDITS_LISTED)) {
+    lines.push(`  edited at ${etLabel(e.editMs)}: unverified from ${etLabel(e.afterMs)} to ${etLabel(e.editMs)}`);
+  }
+  if (edits.length > MAX_EDITS_LISTED) lines.push(`  and ${plural(edits.length - MAX_EDITS_LISTED, "more edit")} like these`);
+  if (failedLine !== null) lines.push(failedLine);
+  if (lastMs < toMs && changes.length > 0) lines.push(`After ${etLabel(lastMs)} the split is assumed.`);
+  return { status: changes.length > 0 ? "changed" : "checked", lines, unreadable };
+}
+
+/**
+ * The command's read of the stored readings (#3641). A failed read REFUSES on exit 5
+ * rather than answering an empty list: no readings is the old assumption, so an
+ * unreadable table must never pass for one that holds nothing.
+ */
+export async function readSplitReadings(
+  fetchRows: () => Promise<PilotSettingsRow[]>,
+): Promise<{ ok: true; rows: PilotSettingsRow[] } | { ok: false; exit: number; lines: string[] }> {
+  try {
+    return { ok: true, rows: await fetchRows() };
+  } catch (err) {
+    return { ok: false, ...refusal(PILOT_COMPARE_EXIT.slateUnreadable, `the stored readings of the split could not be read: ${reasonOf(err)}`) };
+  }
+}
+
 /** The exits `judgeLines` gives when it judged something; every other exit is a refusal. */
 export const JUDGED_EXITS: ReadonlySet<number> = new Set([
   PILOT_COMPARE_EXIT.compared,
@@ -782,6 +929,7 @@ export const JUDGED_EXITS: ReadonlySet<number> = new Set([
   PILOT_COMPARE_EXIT.provisional,
   PILOT_COMPARE_EXIT.settingsNowDiffer,
   PILOT_COMPARE_EXIT.tooFewToRead,
+  PILOT_COMPARE_EXIT.splitChanged,
 ]);
 
 export function judgePilotCompare(input: CompareInput): { exit: number; lines: string[]; proposedReadout: string | null } {
@@ -803,6 +951,10 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
   const { window, settings, matched, calls } = input;
   const partial = window.partial;
   const lines: string[] = [];
+  // A rehearsal's days are before any reading was stored, so it keeps the assumption.
+  const split: SplitCheck = window.rehearsal
+    ? { status: "unchecked", lines: [ASSUMPTION_LINE], unreadable: 0 }
+    : checkSplitReadings(input.readings, window.startMs, window.readEndMs);
   const callsByLead = new Map<string, RegalCall[]>();
   for (const c of calls.calls) {
     const list = callsByLead.get(c.leadKey) ?? [];
@@ -828,26 +980,26 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
           (created.length > 0
             ? `; the oldest application here has had ${ageDays(created.reduce((a, b) => Math.min(a, b), Infinity))} of its ${spanLabel(window.spanMs)}s, the newest ${ageDays(created.reduce((a, b) => Math.max(a, b), -Infinity))}.`
             : "."),
-        ASSUMPTION_LINE,
+        ...split.lines,
       ]
     : [
         `${window.rehearsal ? "REHEARSAL (not a result: these days were not the 50/50 split on every tier). " : ""}` +
           `Slate against cal.com, intention to treat by hash side, tiers ${ASSUMED_TIERS.join(";")}.`,
         `Cohort: applications made from ${etLabel(window.startMs)} to ${etLabel(window.cohortEndMs)} (${days.toFixed(window.rehearsal ? 2 : 0)} days), ` +
           `each judged on what happened within ${spanLabel(window.spanMs)}s of being made.`,
-        ASSUMPTION_LINE,
+        ...split.lines,
       ];
   header.push(
     `Salesforce now holds: active ${String(settings.active)}, ${String(settings.percent)}%, tiers ${settings.tiers ?? "empty"}, last modified ${settings.lastModified ?? "unknown"}.`,
   );
 
-  const unreadableRows = c.unreadable + calls.calls.filter((call) => !Number.isFinite(Date.parse(call.startedAt))).length;
+  const unreadableRows = c.unreadable + split.unreadable + calls.calls.filter((call) => !Number.isFinite(Date.parse(call.startedAt))).length;
   if (unreadableRows > 0) {
     return {
       exit: PILOT_COMPARE_EXIT.inputUnreadable,
       lines: [
         `FAILED (input-unreadable): ${plural(unreadableRows, "row")} carried a time that could not be read (an application's creation, a ` +
-          "booking's creation or start, or a call's start). An unreadable time compares false against every bound, so it would leave the " +
+          "booking's creation or start, a call's start, or a reading of the split). An unreadable time compares false against every bound, so it would leave the " +
           "cohort or miss a show in silence (L50).",
         ...header,
         comparedLine,
@@ -1097,10 +1249,13 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
     lines.push(`SETTINGS NOW DIFFER from the assumed split: ${disagree}. The comparison above assumed 50% on tiers ${ASSUMED_TIERS.join(";")} throughout, and that is now known to be false at least today.`);
   }
   // One precedence, worst first, so no code is lost under another: a rehearsal is never
-  // a result (13); then settings that contradict the assumption now (14); then a sample
-  // too small on either headline rate (11); then provisional (12); then the readout (0).
-  // Every condition that holds is still printed above, whichever names the run.
+  // a result (13); then a reading that saw the split change inside the window (17), which
+  // is proof where 14 is only today's value; then settings that contradict the
+  // assumption now (14); then a sample too small on either headline rate (11); then
+  // provisional (12); then the readout (0). Every condition that holds is still printed
+  // above, whichever names the run.
   if (window.rehearsal) exit = PILOT_COMPARE_EXIT.rehearsal;
+  else if (split.status === "changed") exit = PILOT_COMPARE_EXIT.splitChanged;
   else if (disagree !== null) exit = PILOT_COMPARE_EXIT.settingsNowDiffer;
   else if (!overall.readableBooking || !overall.readableShow) exit = PILOT_COMPARE_EXIT.tooFewToRead;
   return { exit, lines, proposedReadout };

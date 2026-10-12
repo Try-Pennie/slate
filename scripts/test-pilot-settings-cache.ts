@@ -57,6 +57,18 @@ function fake() {
   assert(PILOT_SETTINGS_STALE_MS > PILOT_SETTINGS_TTL_MS, "the stale bound is longer than the window");
 }
 {
+  // #3641: the quarter hourly reading stores WHEN Salesforce was read, so a kept or a
+  // stale served reading must carry the time of its own read, never the time it was asked.
+  const { state, cache } = fake();
+  eq(await cache.readTimed(100), { settings: settings(50), readAtMs: 100 }, "a fresh read is timed at the ask");
+  eq((await cache.readTimed(100 + PILOT_SETTINGS_TTL_MS - 1)).readAtMs, 100, "a kept reading carries its own read time");
+  state.answer = "throws";
+  eq((await cache.readTimed(100 + PILOT_SETTINGS_TTL_MS)).readAtMs, 100, "and so does one served stale after a failed read");
+  state.answer = settings(100);
+  eq(await cache.readTimed(100 + PILOT_SETTINGS_TTL_MS + 1), { settings: settings(100), readAtMs: 100 + PILOT_SETTINGS_TTL_MS + 1 }, "a recovered read is timed afresh");
+  eq(await cache.read(100 + PILOT_SETTINGS_TTL_MS + 2), settings(100), "and read still answers the settings alone, from the same kept reading");
+}
+{
   // Nothing ever read: a failure throws, never a guessed split.
   const { state, cache } = fake();
   state.answer = "throws";
