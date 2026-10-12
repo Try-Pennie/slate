@@ -30,11 +30,31 @@
 // runner's watch cannot cover them). Both decide with resolveTripwireMode, so the
 // two are armed and disarmed by one rule.
 //
+// THE WATCH CAN DROP WRITES ON macOS, SILENTLY (#3524). Under load fseventsd drops
+// events and marks the batch with kFSEventStreamEventFlagUserDropped or KernelDropped,
+// and libuv, which is what node's fs.watch is on macOS, skips every event carrying
+// those flags (kFSEventsSystem in src/unix/fsevents.c), so node is never told. libuv
+// also runs ONE FSEventStream per process for every watcher, so a stall takes all
+// three dirs at once. A write in a dropped window was simply never reported, and the
+// end fence, which re-touches its probe until it is seen, waits the stall out and
+// passes: the run read clean. So the watch is backed by a BEFORE AND AFTER
+// COMPARISON of every file's size, mtime and inode, taken when the run starts and
+// when it stops. Any file that differs and the watch never named still fails the run,
+// labelled as found by the comparison. The watch is still what sees a file made and
+// removed again inside the run (the #2712 hazard itself) and what names suspects.
+// The comparison also judges the opposite error: macOS can deliver an event for a
+// write made just BEFORE the stream existed after the start fence, which read as a
+// write in the run. A path the watch named that is identical at both ends was not
+// touched during the run, so that event is dropped.
+//
 // WHAT IT CANNOT SEE, so a clean run is never read as more than it is (L400):
-// writes anywhere outside scripts/, src/ and worker/, and, in the vitest arm, WHICH
-// vitest file made a write (the global setup runs in vitest's main process and is
-// told nothing about the files its workers are running).
-import { watch, writeFileSync, rmSync, type FSWatcher } from "node:fs";
+// writes anywhere outside scripts/, src/ and worker/; on macOS under load, a file
+// created AND removed again inside a window the platform dropped (the comparison sees
+// net changes only); and, in the vitest arm, WHICH vitest file made a write (the
+// global setup runs in vitest's main process and is told nothing about the files its
+// workers are running). A write the comparison alone found names nobody, since by
+// then nothing says when it happened.
+import { lstatSync, readdirSync, watch, writeFileSync, rmSync, type Dirent, type FSWatcher } from "node:fs";
 import { join, resolve } from "node:path";
 
 export const TRIPWIRE_WATCHED_DIRS = ["scripts", "src", "worker"] as const;
@@ -105,6 +125,8 @@ export interface TreeWrite {
   path: string;
   /** Suites running or just finished when the event arrived: suspects, not a verdict. */
   suspects: string[];
+  /** True when only the before and after comparison found it: the watch never reported it. */
+  missedByWatch?: boolean;
 }
 
 /**
@@ -141,6 +163,12 @@ export function formatTripwireFindings(r: TripwireResult): string[] {
       `=== TREE WRITES: ${r.writes.length} path(s) under scripts/, src/ or worker/ were written during the run ===`,
     );
     for (const w of r.writes) {
+      if (w.missedByWatch) {
+        lines.push(
+          `  ${w.path}  (found by the before and after comparison; the file watch never reported it, so nobody can be named)`,
+        );
+        continue;
+      }
       const who = w.suspects.length > 0 ? w.suspects.join(", ") : "none";
       lines.push(`  ${w.path}  (running or just finished when it was seen: ${who})`);
     }
@@ -153,7 +181,7 @@ export function formatTripwireFindings(r: TripwireResult): string[] {
   if (r.watchFailures.length > 0) {
     if (lines.length > 0) lines.push("");
     lines.push(
-      `=== TREE WATCH FAILED: the tripwire stopped watching part of the tree, so this run is unverified ===`,
+      `${WATCH_FAILED_HEADER}: the tripwire stopped watching part of the tree, so this run is unverified ===`,
     );
     for (const f of r.watchFailures) lines.push(`  ${f}`);
     lines.push(
@@ -165,13 +193,176 @@ export function formatTripwireFindings(r: TripwireResult): string[] {
   return lines;
 }
 
-const FENCE_TIMEOUT_MS = 15_000;
+/**
+ * How long a fence waits for a watcher to report its own probe (#3524).
+ *
+ * It waits on the EVENT, so this bound costs a healthy machine nothing; it only says
+ * how long a stalled stream is given before the run is refused. Measured 2026-10-12
+ * on a loaded macOS developer machine (load 10 to 30): 52 fresh watches, 50 live
+ * within 1.2s, one at 13.9s and one at 22.5s, every dir at the same instant, which is
+ * the one shared stream stalling and recovering rather than a dead watcher. The old
+ * 15s refused both, and refusing is what blocked pushes, so the bound is well over
+ * twice the slowest start seen.
+ */
+export const TRIPWIRE_FENCE_TIMEOUT_MS = 60_000;
+const FENCE_TIMEOUT_MS = TRIPWIRE_FENCE_TIMEOUT_MS;
 const PROBE_RETOUCH_MS = 50;
+
+/**
+ * The words each arm uses when its watch could not start, and the heading of a
+ * watch that broke mid run. One spelling, here, so the recogniser below cannot drift
+ * from what the runner and the vitest arm actually print (L41).
+ */
+export const TRIPWIRE_COULD_NOT_START = "tree write tripwire could not start";
+const WATCH_FAILED_HEADER = "=== TREE WATCH FAILED";
+
+/**
+ * Whether a run's output says it could not watch the tree, so it measured nothing
+ * either way. A run that caught a write, or ran clean, is a measurement and is not.
+ * The end to end tests use this to re-run an unmeasured run rather than read the
+ * machine's file watching as the behaviour under test (L411).
+ */
+export function reportsWatchUnavailable(output: string): boolean {
+  return output.includes(TRIPWIRE_COULD_NOT_START) || output.includes(WATCH_FAILED_HEADER);
+}
+
+/**
+ * Every file under the watched dirs as `size:mtimeMs:ino`, every directory below them
+ * as `mtimeMs:ino`, and any dir it could not read. Files are what the comparison
+ * reports; directories are only ever used to judge whether a path the WATCH named was
+ * touched during the run, since a dir's mtime moves whenever an entry in it does.
+ */
+interface TreeSnapshot {
+  files: Map<string, string>;
+  dirs: Map<string, string>;
+  /** Dirs that could not be read (repo relative, no trailing slash), and why. */
+  unreadable: Array<{ dir: string; why: string }>;
+}
+
+/** Lists one directory's entries; the seam the snapshot reads through. */
+export type ReadDir = (path: string) => Dirent[];
+const realReadDir: ReadDir = (path) => readdirSync(path, { withFileTypes: true });
+
+/**
+ * Read every file under the watched dirs. Never throws, and tells two failures apart
+ * (L11). A NESTED dir gone between its parent's listing and its own read is absent,
+ * exactly as a file gone before its stat is: whatever was in it is reported as
+ * removed, which is what happened. Any other failure, and a watched dir itself
+ * missing, is listed as unreadable rather than treated as empty, because an empty
+ * read on one side would report every file in it as removed or as new (L50).
+ */
+function snapshotTree(root: string, readDir: ReadDir): TreeSnapshot {
+  const files = new Map<string, string>();
+  const dirs = new Map<string, string>();
+  const unreadable: Array<{ dir: string; why: string }> = [];
+  const walk = (abs: string, rel: string, top: boolean) => {
+    let entries: Dirent[];
+    try {
+      entries = readDir(abs);
+    } catch (err) {
+      const gone = (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
+      if (gone && !top) return;
+      unreadable.push({ dir: rel, why: reason(err) });
+      return;
+    }
+    for (const e of entries) {
+      const childRel = `${rel}/${e.name}`;
+      const childAbs = join(abs, e.name);
+      if (e.isDirectory()) {
+        try {
+          const s = lstatSync(childAbs);
+          dirs.set(childRel, `${s.mtimeMs}:${s.ino}`);
+        } catch {
+          // Removed between the listing and the stat: absent, and the walk below says so.
+        }
+        walk(childAbs, childRel, false);
+        continue;
+      }
+      if (isAllowedTreeWrite(childRel)) continue;
+      try {
+        const s = lstatSync(childAbs);
+        files.set(childRel, `${s.size}:${s.mtimeMs}:${s.ino}`);
+      } catch {
+        // Removed between the listing and the stat: absent.
+      }
+    }
+  };
+  for (const dir of TRIPWIRE_WATCHED_DIRS) walk(join(root, dir), dir, true);
+  return { files, dirs, unreadable };
+}
+
+/**
+ * Whether a path the watch named is IDENTICAL at both ends of the run, so its event
+ * was a late delivery of something done before the run began rather than a write in
+ * it (#3524). A write always moves the file's mtime, and an entry made or removed in
+ * a dir moves the dir's, so an identical signature at both ends means nothing touched
+ * it during the run. A path absent from either end (a file made and removed again
+ * inside the run, the #2712 hazard) is never judged stale, so it stays a write.
+ */
+function unchangedThroughout(path: string, before: TreeSnapshot, after: TreeSnapshot): boolean {
+  for (const key of ["files", "dirs"] as const) {
+    const b = before[key].get(path);
+    if (b !== undefined) return after[key].get(path) === b;
+  }
+  return false;
+}
+
+/**
+ * Who to name beside a write the watch saw: the suites running when the event
+ * arrived, and those that ended within `graceMs` of it, since an event lands a little
+ * after its write. Suspects for a person to read, never a verdict.
+ *
+ * An event that arrives after EVERY suite has ended and outside the grace names the
+ * suite that ended last, and says how long before the event it ended (#3524). It used
+ * to say "none", which claims nothing ran when the honest answer is that the event
+ * was late: measured 2026-10-12 at load 15 to 20, three in twenty events for a
+ * one-suite run arrived past the 2s grace. The grace is not widened instead, because
+ * at the gate's concurrency every extra second names several more unrelated suites.
+ */
+export function nameSuspects(
+  now: number,
+  running: ReadonlySet<string>,
+  endedAt: ReadonlyMap<string, number>,
+  graceMs: number,
+): string[] {
+  const recent = [...endedAt].filter(([, t]) => now - t <= graceMs).map(([f]) => f);
+  const named = [...new Set([...running, ...recent])];
+  if (named.length > 0) return named;
+  let last: [string, number] | null = null;
+  for (const entry of endedAt) if (last === null || entry[1] > last[1]) last = entry;
+  if (last === null) return [];
+  const lateBy = ((now - last[1]) / 1000).toFixed(1);
+  return [`none; it arrived ${lateBy}s after the last suite ended, which was ${last[0]}`];
+}
+
+/**
+ * Whether a path is an event about a watched dir ITSELF. libuv names an event on the
+ * watched path by its basename, so `src/` reports its own creation, or a change to
+ * its entries, as "src", which reads as a file src/src. It identifies no written file:
+ * a write inside the dir is reported under its own path, and a dir removed or replaced
+ * breaks the end fence. Only when no such entry exists at either end, so a real
+ * src/src is still judged; a src/src made and removed inside the run is the one thing
+ * this cannot tell apart (#3524).
+ */
+function isWatchedDirSelfEvent(path: string, before: TreeSnapshot, after: TreeSnapshot): boolean {
+  if (!TRIPWIRE_WATCHED_DIRS.some((d) => path === `${d}/${d}`)) return false;
+  return ![before, after].some((s) => s.files.has(path) || s.dirs.has(path));
+}
+
+/** The paths that differ between two snapshots: new, changed or removed, sorted. */
+function changedPaths(before: Map<string, string>, after: Map<string, string>): string[] {
+  const changed = new Set<string>();
+  for (const [p, sig] of after) if (before.get(p) !== sig) changed.add(p);
+  for (const p of before.keys()) if (!after.has(p)) changed.add(p);
+  return [...changed].sort();
+}
 
 /** Seams for the tripwire's own failure paths; production passes none. */
 export interface TreeWatchDeps {
   watch?: typeof watch;
   writeProbe?: (path: string, data: string) => void;
+  /** How the before and after comparison lists a directory. */
+  readDir?: ReadDir;
 }
 
 const reason = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -190,6 +381,7 @@ export async function startTreeWatch(
 ): Promise<{ watch: TreeWatch } | { error: string }> {
   const watchFn = deps.watch ?? watch;
   const writeProbe = deps.writeProbe ?? ((path: string, data: string) => writeFileSync(path, data));
+  const readDir = deps.readDir ?? realReadDir;
   const writes: TreeWrite[] = [];
   const watchFailures: string[] = [];
   const seen = new Set<string>();
@@ -297,13 +489,35 @@ export async function startTreeWatch(
   // entries as writes. The run starts here, so its record does too.
   writes.length = 0;
   seen.clear();
+  // The comparison's baseline is taken at the same moment, so the two records start
+  // together (#3524).
+  const before = snapshotTree(root, readDir);
 
   return {
     watch: {
       async stop() {
         const endFailures = await fence();
         closeAll();
-        return { writes, watchFailures: [...watchFailures, ...endFailures] };
+        const after = snapshotTree(root, readDir);
+        const unreadEntries = [...before.unreadable, ...after.unreadable];
+        const unread = [...new Set(unreadEntries.map((u) => `${u.dir}/ (${u.why})`))].map(
+          (d) => `the before and after comparison could not read ${d}, so it checked nothing there`,
+        );
+        // A dir unread at EITHER end is missing from that snapshot, so every file in
+        // it would differ; the comparison claims nothing there rather than report
+        // writes it never measured (L11). The unread line above already fails the run.
+        const unreadDirs = [...new Set(unreadEntries.map((u) => u.dir))];
+        const underUnread = (p: string) => unreadDirs.some((d) => p === d || p.startsWith(`${d}/`));
+        // A late event for something done before the run is dropped; everything the
+        // watch named that the comparison cannot clear stays (#3524).
+        const found = writes.filter(
+          (w) => !unchangedThroughout(w.path, before, after) && !isWatchedDirSelfEvent(w.path, before, after),
+        );
+        const reported = new Set(found.map((w) => w.path));
+        for (const path of changedPaths(before.files, after.files)) {
+          if (!reported.has(path) && !underUnread(path)) found.push({ path, suspects: [], missedByWatch: true });
+        }
+        return { writes: found, watchFailures: [...watchFailures, ...endFailures, ...unread] };
       },
     },
   };
