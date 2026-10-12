@@ -344,6 +344,22 @@ describe("cspViolationPage (#2575)", () => {
     ).toEqual({ page: false, why: "extension" });
   });
 
+  it("does not page when Chrome strips the extension id to the bare scheme word (#3634)", async () => {
+    // Chrome removes the extension id from CSP reports for privacy, so an
+    // extension-injected inline handler arrives with source-file as the bare word
+    // "chrome-extension": no "://id" and no colon. Measured in production
+    // 2026-10-12 on /book (directive script-src-attr, blocked inline), this paged
+    // although it is the extension's own code, not Slate's page failing a lead.
+    const { cspViolationPage } = await import("./csp");
+    expect(
+      cspViolationPage(
+        summariseViolation(
+          enforced({ "violated-directive": "script-src-attr", "blocked-uri": "inline", "source-file": "chrome-extension" }),
+        ),
+      ),
+    ).toEqual({ page: false, why: "extension" });
+  });
+
   it("reads the modern report's disposition too", async () => {
     const { cspViolationPage } = await import("./csp");
     const modern = (disposition: string) =>
