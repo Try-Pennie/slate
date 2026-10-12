@@ -699,7 +699,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "inactive_agent_bookings",
     kind: "condition",
-    why: "Customers hold appointments with an agent who has left the pool until someone reassigns them; the monitor lane re-measures every 5 minutes.",
+    why: "Customers hold appointments with an agent who has left the pool that no coverage sweep has picked up, until someone reassigns them; a call a sweep holds is left to coverage_needs_human. The monitor lane re-measures every 5 minutes.",
   },
   {
     key: "demoted_agent_bookings",
@@ -731,7 +731,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "ooo_coverage_gap",
     kind: "condition",
-    why: "An agent on approved time off is holding an appointment inside 48 hours that no coverage sweep ever saw, so that customer meets nobody. It stays true until a person places it or it passes, and the monitor lane re-measures every 5 minutes.",
+    why: "An agent on approved time off is holding an appointment inside 48 hours that no coverage sweep ever saw, so that customer is booked with someone who will not be there. It stays true until a person places it or it passes, and the monitor lane re-measures every 5 minutes.",
   },
   {
     key: "calendar_window_uncovered",

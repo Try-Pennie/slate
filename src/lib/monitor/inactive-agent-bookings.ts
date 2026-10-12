@@ -3,8 +3,9 @@ import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure, logAllClearFailure } from "@/lib/notify/send-failure";
 import { log } from "@/lib/log";
-import type { Attributes, Criteria } from "@/lib/db/types";
+import type { Attributes, BulkReassignItemStatus, Criteria } from "@/lib/db/types";
 import { selectDemotionBookings, type DemotionCandidateRow } from "@/lib/booking/demotion-snapshot";
+import { ACTIONABLE_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
 
 /**
  * Appointments still held by an agent who has left the bookable pool (#1215).
@@ -95,6 +96,40 @@ export interface InactiveHolder {
   bookingCount: number;
 }
 
+/** Item statuses that leave a booking in a coverage sweep's hands: still being worked
+ *  (`pending`, including a call the hourly retry re-armed), or given up on and paged by
+ *  `coverage_needs_human` (the actionable ones). */
+export const SWEEP_HELD_ITEM_STATUSES: readonly BulkReassignItemStatus[] = ["pending", ...ACTIONABLE_ITEM_STATUSES];
+const SWEEP_HELD = new Set<string>(SWEEP_HELD_ITEM_STATUSES);
+
+/**
+ * The bookings a coverage sweep holds, so this check leaves them to it.
+ *
+ * Without this, a call the sweep could not place was paged by BOTH alerts: the stranded
+ * page an hour before it starts, and this one every hour all night, telling a person to
+ * run the very sweep that had already failed on it (Alana Lambert, 2026-10-12: 18
+ * attempts per call, then a page at 2am, 3am, 4am...). This check exists for the call
+ * NOTHING is working, which is the case "Move upcoming bookings" actually fixes.
+ *
+ * Held means the SAME thing the stranded page counts by (#3303, L342): an item in
+ * `SWEEP_HELD_ITEM_STATUSES` on a sweep whose out agent is the booking's CURRENT holder.
+ * An item from a sweep for somebody else (a call an earlier sweep moved onto this agent)
+ * is not working this agent's departure, and a settled item (moved, skipped, cancelled)
+ * is working nothing, so both stay counted here. Pure, so the rule is pinned by tests.
+ */
+export function sweepHeldBookingIds(
+  holderByBooking: ReadonlyMap<string, string | null>,
+  items: { booking_id: string; status: string; out_user_id: string }[],
+): Set<string> {
+  const held = new Set<string>();
+  for (const it of items) {
+    if (!SWEEP_HELD.has(it.status)) continue;
+    const holder = holderByBooking.get(it.booking_id);
+    if (holder != null && holder === it.out_user_id) held.add(it.booking_id);
+  }
+  return held;
+}
+
 /**
  * Group one bulk booking read by assigned agent, keeping only the out-of-pool
  * agents who actually hold something.
@@ -103,19 +138,22 @@ export interface InactiveHolder {
  * agent, because the roster target is 100 to 200 agents and a count each would
  * spend a subrequest budget this lane shares with three others. Pure so the
  * "which bookings count" rule is pinned by tests rather than living inside a
- * query nothing can assert against. A booking assigned to nobody, or to an agent
- * still in the pool, is not this check's business.
+ * query nothing can assert against. A booking assigned to nobody, to an agent
+ * still in the pool, or held by a coverage sweep (`sweepHeldBookingIds`) is not
+ * this check's business. `heldBySweep` is required so `tsc` names every caller.
  *
  * Ordered worst-holder-first so a truncated list in the alert names the biggest
  * gap rather than an arbitrary one.
  */
 export function inactiveHoldersFromBookings(
   agents: OutOfPoolAgent[],
-  bookings: { assigned_user_id: string | null }[],
+  bookings: { id: string; assigned_user_id: string | null }[],
+  heldBySweep: ReadonlySet<string>,
 ): InactiveHolder[] {
   const byAgent = new Map<string, number>();
   for (const b of bookings) {
     if (!b.assigned_user_id) continue;
+    if (heldBySweep.has(b.id)) continue;
     byAgent.set(b.assigned_user_id, (byAgent.get(b.assigned_user_id) ?? 0) + 1);
   }
   return agents
@@ -251,6 +289,11 @@ function holderLine(h: InactiveHolder): string {
  * enough: "1 agent who HAVE left the pool still HOLD 1 appointment" satisfies
  * every singular/plural assertion about "agent" and "appointment" and still reads
  * wrong, which is only visible rendered (`pnpm preview:alerts`).
+ *
+ * It no longer says the customers "will meet nobody": a missed call is redistributed
+ * by Regal to whoever is free (Dan, 2026-10-12). What it can say truthfully, since
+ * sweep-held calls are excluded, is that nothing has tried to move these yet, which is
+ * exactly what makes the panel the right place to send the reader.
  */
 export function formatInactiveAgentBookingsAlert(holders: InactiveHolder[]): string {
   const totalBookings = holders.reduce((n, h) => n + h.bookingCount, 0);
@@ -261,10 +304,10 @@ export function formatInactiveAgentBookingsAlert(holders: InactiveHolder[]): str
   return (
     `${plural(holders.length, "agent", "agents")} who ${oneAgent ? "has" : "have"} left ` +
     `the booking pool still ${oneAgent ? "holds" : "hold"} ` +
-    `${plural(totalBookings, "appointment", "appointments")} in the future. ` +
+    `${plural(totalBookings, "appointment", "appointments")} in the future that no coverage ` +
+    `sweep has picked up. ` +
     `${oneBooking ? "That customer is" : "Those customers are"} booked with someone Slate no ` +
-    `longer routes to, so they will meet nobody unless the ` +
-    `${oneBooking ? "appointment is" : "appointments are"} moved. Reassign ` +
+    `longer routes to. Reassign ` +
     `${oneBooking ? "it" : "them"} from the agent's page in Admin, under ${COVERAGE_PANEL_NAME}.\n` +
     lines.join("\n") +
     more
@@ -311,12 +354,16 @@ export function formatDemotedAgentBookingsRecovery(): string {
  * repeat the page's remediation: the reader is being told to stand down, and
  * carrying "reassign them from the coverage panel" into the all-clear is how a
  * recovery notice sends someone to redo work that is already done.
+ *
+ * It must not claim every booking was reassigned: a call a sweep picked up and could not
+ * place clears this alert too, and is still with the departed agent. So it says where
+ * such a call went, and that the stranded-call page speaks for it from there.
  */
 export function formatInactiveAgentBookingsRecovery(): string {
   return (
-    `No agent is holding a future appointment they can no longer serve any more. ` +
-    `The bookings behind the earlier page have been reassigned or have passed, so every upcoming ` +
-    `appointment belongs to an agent Slate can still route it to. No action is needed.`
+    `Every future appointment held by an agent Slate no longer routes to has been reassigned, ` +
+    `has passed, or has been picked up by a coverage sweep, which pages on its own if it cannot ` +
+    `place one before it starts. No action is needed.`
   );
 }
 

@@ -28,6 +28,8 @@ import {
   demotedHolders,
   demotedAgentsFrom,
   formatInactiveAgentBookingsAlert,
+  formatInactiveAgentBookingsRecovery,
+  sweepHeldBookingIds,
   formatDemotedAgentBookingsAlert,
   formatDemotedAgentBookingsRecovery,
   DEMOTED_AGENT_BOOKINGS_KEY,
@@ -71,13 +73,12 @@ describe("inactiveHoldersFromBookings (#1215)", () => {
     { id: "u2", name: null, email: "sam@example.com", deactivated: false, coveredByPendingSweep: false },
     { id: "u3", name: "Kim Ito", email: "kim@example.com", deactivated: true, coveredByPendingSweep: false },
   ];
+  let seq = 0;
+  const bk = (assigned_user_id: string | null, id = `bk${++seq}`) => ({ id, assigned_user_id });
+  const NONE_HELD = new Set<string>();
 
   it("counts each out-of-pool agent's bookings and drops the ones holding none", () => {
-    const holders = inactiveHoldersFromBookings(agents, [
-      { assigned_user_id: "u1" },
-      { assigned_user_id: "u1" },
-      { assigned_user_id: "u2" },
-    ]);
+    const holders = inactiveHoldersFromBookings(agents, [bk("u1"), bk("u1"), bk("u2")], NONE_HELD);
     expect(holders.map((h) => [h.userId, h.bookingCount])).toEqual([
       ["u1", 2],
       ["u2", 1],
@@ -85,30 +86,44 @@ describe("inactiveHoldersFromBookings (#1215)", () => {
   });
 
   it("says WHY each agent is out of the pool, so the remediation differs", () => {
-    const holders = inactiveHoldersFromBookings(agents, [
-      { assigned_user_id: "u1" },
-      { assigned_user_id: "u2" },
-    ]);
+    const holders = inactiveHoldersFromBookings(agents, [bk("u1"), bk("u2")], NONE_HELD);
     expect(holders.find((h) => h.userId === "u1")?.reason).toBe("deactivated");
     expect(holders.find((h) => h.userId === "u2")?.reason).toBe("not_bookable");
   });
 
   it("ignores a booking assigned to someone still in the pool", () => {
-    const holders = inactiveHoldersFromBookings(agents, [
-      { assigned_user_id: "still-active" },
-      { assigned_user_id: null },
-    ]);
+    const holders = inactiveHoldersFromBookings(agents, [bk("still-active"), bk(null)], NONE_HELD);
     expect(holders).toEqual([]);
   });
 
   it("orders the worst holder first, so a truncated list names the biggest gap", () => {
-    const holders = inactiveHoldersFromBookings(agents, [
-      { assigned_user_id: "u1" },
-      { assigned_user_id: "u3" },
-      { assigned_user_id: "u3" },
-      { assigned_user_id: "u3" },
-    ]);
+    const holders = inactiveHoldersFromBookings(agents, [bk("u1"), bk("u3"), bk("u3"), bk("u3")], NONE_HELD);
     expect(holders.map((h) => h.userId)).toEqual(["u3", "u1"]);
+  });
+
+  // 2026-10-12: Alana Lambert's offboarding sweep moved 4 calls and could not place 5.
+  // The hourly retry kept working them and `coverage_needs_human` paged an hour before
+  // each, yet this alert paged every hour all night telling a person to run the sweep
+  // that had already failed 18 times. A call a sweep holds belongs to that pipeline.
+  it("leaves a booking a coverage sweep already holds to that sweep", () => {
+    const holders = inactiveHoldersFromBookings(
+      agents,
+      [bk("u1", "held1"), bk("u1", "held2")],
+      new Set(["held1", "held2"]),
+    );
+    expect(holders).toEqual([]);
+  });
+
+  it("still counts the bookings no sweep has picked up", () => {
+    const holders = inactiveHoldersFromBookings(
+      agents,
+      [bk("u1", "held1"), bk("u1", "loose1"), bk("u3", "loose2")],
+      new Set(["held1"]),
+    );
+    expect(holders.map((h) => [h.userId, h.bookingCount])).toEqual([
+      ["u1", 1],
+      ["u3", 1],
+    ]);
   });
 
   // #3599: the redistribute turn-off now takes an agent out of the pool a sync before
@@ -118,7 +133,7 @@ describe("inactiveHoldersFromBookings (#1215)", () => {
     const mid: OutOfPoolAgent[] = [
       { id: "u2", name: null, email: "sam@example.com", deactivated: false, coveredByPendingSweep: true },
     ];
-    const holders = inactiveHoldersFromBookings(mid, [{ assigned_user_id: "u2" }, { assigned_user_id: "u2" }]);
+    const holders = inactiveHoldersFromBookings(mid, [bk("u2"), bk("u2")], NONE_HELD);
     expect(holders).toEqual([]);
   });
 
@@ -128,7 +143,7 @@ describe("inactiveHoldersFromBookings (#1215)", () => {
     const dead: OutOfPoolAgent[] = [
       { id: "u1", name: "Dana", email: "dana@example.com", deactivated: true, coveredByPendingSweep: true },
     ];
-    const holders = inactiveHoldersFromBookings(dead, [{ assigned_user_id: "u1" }]);
+    const holders = inactiveHoldersFromBookings(dead, [bk("u1")], NONE_HELD);
     expect(holders.map((h) => h.userId)).toEqual(["u1"]);
   });
 
@@ -137,8 +152,56 @@ describe("inactiveHoldersFromBookings (#1215)", () => {
       { id: "u1", name: "Dana Ruiz", email: "dana@example.com", deactivated: true, coveredByPendingSweep: false },
       { id: "u2", name: null, email: "sam@example.com", deactivated: false, coveredByPendingSweep: true },
     ];
-    const holders = inactiveHoldersFromBookings(mixed, [{ assigned_user_id: "u1" }, { assigned_user_id: "u2" }]);
+    const holders = inactiveHoldersFromBookings(mixed, [bk("u1"), bk("u2")], NONE_HELD);
     expect(holders.map((h) => h.userId)).toEqual(["u1"]);
+  });
+});
+
+// --- which bookings a coverage sweep holds ----------------------------------
+//
+// The SAME ownership rule the stranded-call page counts by (#3303, #3485): an item still
+// in the sweep's hands (pending, or given up as unplaceable or failed) on a sweep whose
+// out agent is the booking's CURRENT holder. Anything looser lets one alert hand a call
+// to the other while neither pages about it.
+describe("sweepHeldBookingIds", () => {
+  const holderOf = new Map([
+    ["b1", "u1"],
+    ["b2", "u1"],
+    ["b3", "u1"],
+    ["b4", "u1"],
+  ]);
+  const item = (booking_id: string, status: string, out_user_id = "u1") => ({ booking_id, status, out_user_id });
+
+  it("holds a booking the sweep is still working or gave up on", () => {
+    const held = sweepHeldBookingIds(holderOf, [
+      item("b1", "pending"),
+      item("b2", "unplaceable"),
+      item("b3", "failed"),
+    ]);
+    expect([...held].sort()).toEqual(["b1", "b2", "b3"]);
+  });
+
+  // A settled item says nothing about who covers the booking now: moved went elsewhere,
+  // skipped and cancelled left the call where it was, with nobody working it.
+  it("does not hold a booking whose item is settled", () => {
+    const held = sweepHeldBookingIds(holderOf, [
+      item("b1", "moved"),
+      item("b2", "skipped"),
+      item("b3", "cancelled"),
+    ]);
+    expect(held.size).toBe(0);
+  });
+
+  // A call an earlier sweep moved ONTO u1, who has since left: that sweep's item is about
+  // its own out agent (u9), not u1, so nothing is working the call for u1's departure.
+  it("does not hold a booking on behalf of a sweep for a different agent", () => {
+    const held = sweepHeldBookingIds(holderOf, [item("b4", "unplaceable", "u9")]);
+    expect(held.size).toBe(0);
+  });
+
+  it("does not hold a booking it has no current holder for", () => {
+    const held = sweepHeldBookingIds(holderOf, [item("gone", "unplaceable")]);
+    expect(held.size).toBe(0);
   });
 });
 
@@ -151,6 +214,21 @@ describe("formatInactiveAgentBookingsAlert (#1215)", () => {
     // #1876: the panel's real name, derived rather than spelled here.
     expect(text).toContain(COVERAGE_PANEL_NAME);
     expect(text).toContain("dana@example.com");
+  });
+
+  // The page used to say the customers "will meet nobody". That was never true: when the
+  // booked advisor does not call, Regal redistributes the lead (Dan, 2026-10-12). What IS
+  // true, now that sweep-held calls are excluded, is that nothing has tried to move these.
+  it("says no sweep has picked them up, and does not claim the customer meets nobody", () => {
+    const text = formatInactiveAgentBookingsAlert([holder({ bookingCount: 5 })]);
+    expect(text).not.toContain("meet nobody");
+    expect(text).toContain("no coverage sweep has picked up");
+  });
+
+  it("the all-clear says a held call is now with a sweep that pages on its own", () => {
+    const text = formatInactiveAgentBookingsRecovery();
+    expect(text).toContain("picked up by a coverage sweep");
+    expect(text).toContain("No action is needed");
   });
 
   // "1 of 97 bookable agent" shipped once (#1153). Both forms get read.
