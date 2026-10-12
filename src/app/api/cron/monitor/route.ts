@@ -352,6 +352,8 @@ import {
   formatDemotedAgentBookingsRecovery,
   inactiveHoldersFromBookings,
   runInactiveAgentBookingsCheck,
+  sweepHeldBookingIds,
+  SWEEP_HELD_ITEM_STATUSES,
   type DemotedAgent,
   type OutOfPoolAgent,
 } from "@/lib/monitor/inactive-agent-bookings";
@@ -2737,7 +2739,7 @@ export async function GET(req: NextRequest) {
       }));
       // Every page: an offboarding backlog can hold more than 1,000 upcoming
       // bookings between them, and a truncated page would under-report the gap.
-      const bookings = await selectAllPages<{ assigned_user_id: string | null }>(
+      const bookings = await selectAllPages<{ id: string; assigned_user_id: string | null }>(
         "monitor inactive-agent bookings",
         "id",
         () =>
@@ -2745,12 +2747,45 @@ export async function GET(req: NextRequest) {
             // agent-link-ok: an upcoming call held by somebody who has left needs
             // a person however it was booked, including through their own link (#2073).
             .from("bookings")
-            .select("assigned_user_id")
+            .select("id, assigned_user_id")
             .in("assigned_user_id", outOfPool.map((a) => a.id))
             .in("status", ACTIVE_BOOKING_STATUSES)
             .gte("starts_at", new Date(now).toISOString()),
       );
-      return inactiveHoldersFromBookings(outOfPool, bookings);
+      if (bookings.length === 0) return [];
+      // The calls a coverage sweep already holds are left to it: it retries them hourly and
+      // `coverage_needs_human` pages for any it cannot place before they start. Paging here
+      // too sent a person to rerun a sweep that had already failed (2026-10-12). Only the
+      // held statuses are read, so the healthy case stays one small read per chunk, and
+      // split across requests because an offboarding backlog can exceed the `in` URL budget
+      // (#2388). It THROWS on failure like the reads above: an unread held set would count
+      // every held call and re-page, which is noisy, but treating it as "all held" would
+      // silence a real gap, so the check reports unreadable rather than guess either way.
+      const heldItems = (
+        await inIdChunks("monitor inactive-agent sweep items", bookings.map((b) => b.id), (batch) =>
+          selectAllPages<{
+            id: string;
+            booking_id: string;
+            status: string;
+            bulk_reassign_jobs: { out_user_id: string } | null;
+          }>("monitor inactive-agent sweep items", "id", () =>
+            db
+              .from("bulk_reassign_items")
+              .select("id, booking_id, status, bulk_reassign_jobs!inner(out_user_id)")
+              .in("booking_id", batch)
+              .in("status", SWEEP_HELD_ITEM_STATUSES),
+          ),
+        )
+      ).flat();
+      const heldBySweep = sweepHeldBookingIds(
+        new Map(bookings.map((b) => [b.id, b.assigned_user_id])),
+        heldItems.flatMap((it) =>
+          it.bulk_reassign_jobs
+            ? [{ booking_id: it.booking_id, status: it.status, out_user_id: it.bulk_reassign_jobs.out_user_id }]
+            : [],
+        ),
+      );
+      return inactiveHoldersFromBookings(outOfPool, bookings, heldBySweep);
     };
     // #3582: the demotion backstop. A BOOKABLE agent a Twilio tier/backend change took off a pool
     // the bookings they hold need is invisible to the pool-exit read above (they are still in the

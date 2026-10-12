@@ -699,7 +699,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "inactive_agent_bookings",
     kind: "condition",
-    why: "Customers hold appointments with an agent who has left the pool until someone reassigns them; the monitor lane re-measures every 5 minutes.",
+    why: "Customers hold appointments with an agent who has left the pool that no coverage sweep has picked up, until someone reassigns them; a call a sweep holds is left to coverage_needs_human. The monitor lane re-measures every 5 minutes.",
   },
   {
     key: "demoted_agent_bookings",
