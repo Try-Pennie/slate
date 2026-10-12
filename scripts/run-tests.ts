@@ -24,6 +24,7 @@ import { discoverSuiteNames } from "./lib/suite-discovery.ts";
 import { formatRunSummary } from "./lib/run-summary.ts";
 import { nodeOptionsWithHook } from "./lib/clock-shift.ts";
 import {
+  TRIPWIRE_COULD_NOT_START,
   formatTripwireFindings,
   resolveTripwireMode,
   startTreeWatch,
@@ -149,7 +150,7 @@ async function main() {
   if (tripwire.kind === "on") {
     const started = await startTreeWatch(watchRoot, suspects);
     if ("error" in started) {
-      console.error(`run-tests: tree write tripwire could not start: ${started.error}. Nothing was run.`);
+      console.error(`run-tests: ${TRIPWIRE_COULD_NOT_START}: ${started.error}. Nothing was run.`);
       process.exit(1);
     }
     treeWatch = started.watch;

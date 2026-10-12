@@ -20,6 +20,7 @@
 // global setup error rather than a statement about when it happened, so the
 // findings are printed in full above it and the thrown message says where they are.
 import {
+  TRIPWIRE_COULD_NOT_START,
   formatTripwireFindings,
   resolveTripwireMode,
   startTreeWatch,
@@ -47,7 +48,7 @@ export default async function setup(): Promise<void | (() => Promise<void>)> {
   }
   const started = await startTreeWatch(tripwireWatchRoot(process.env, repoRoot), suspects);
   if ("error" in started) {
-    throw new Error(`tree write tripwire could not start: ${started.error}. Nothing was run.`);
+    throw new Error(`${TRIPWIRE_COULD_NOT_START}: ${started.error}. Nothing was run.`);
   }
   console.log(`tree write tripwire ON (${mode.why}): any write into scripts/, src/ or worker/ fails this vitest run.`);
 

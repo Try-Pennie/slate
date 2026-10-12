@@ -16,11 +16,13 @@
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
+  appendFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
+  unlinkSync,
   watch,
   writeFileSync,
   type FSWatcher,
@@ -29,14 +31,18 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  TRIPWIRE_COULD_NOT_START,
+  TRIPWIRE_FENCE_TIMEOUT_MS,
   TRIPWIRE_WATCHED_DIRS,
   formatTripwireFindings,
   isAllowedTreeWrite,
   probeName,
+  reportsWatchUnavailable,
   resolveTripwireMode,
   startTreeWatch,
   tripwireFailed,
 } from "./lib/tree-write-tripwire.ts";
+import { TRIPWIRE_RUN_ATTEMPTS, untilWatched } from "./lib/tripwire-retry.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -125,19 +131,28 @@ function makeRoot(): string {
   return realpathSync(root);
 }
 
-function runRunner(files: string[], env: Record<string, string | undefined>) {
+// Long enough for a runner whose fences BOTH wait out a stalled stream, plus the run
+// itself; derived from the fence so the two cannot drift apart (#3524).
+const RUNNER_TIMEOUT_MS = 2 * TRIPWIRE_FENCE_TIMEOUT_MS + 60_000;
+
+// A run whose own tripwire says it could not watch measured nothing, so it is re-run
+// (untilWatched), never read as the behaviour under test (#3524, L411).
+async function runRunner(files: string[], env: Record<string, string | undefined>) {
   const childEnv: Record<string, string | undefined> = { ...process.env };
   // The run under test must not inherit whatever armed or disarmed THIS one.
   delete childEnv.SLATE_TREE_TRIPWIRE;
   delete childEnv.GITHUB_ACTIONS;
   Object.assign(childEnv, env);
   for (const k of Object.keys(childEnv)) if (childEnv[k] === undefined) delete childEnv[k];
-  const r = spawnSync(
-    "node",
-    ["--experimental-strip-types", "--import", "./scripts/register-paths.mjs", runner, ...files],
-    { cwd: repoRoot, encoding: "utf8", env: childEnv as NodeJS.ProcessEnv, timeout: 60_000 },
-  );
-  return { status: r.status, out: (r.stdout || "") + (r.stderr || "") };
+  const label = files.map((f) => f.split("/").pop()).join(" + ");
+  return untilWatched(async () => {
+    const r = spawnSync(
+      "node",
+      ["--experimental-strip-types", "--import", "./scripts/register-paths.mjs", runner, ...files],
+      { cwd: repoRoot, encoding: "utf8", env: childEnv as NodeJS.ProcessEnv, timeout: RUNNER_TIMEOUT_MS },
+    );
+    return { status: r.status, out: (r.stdout || "") + (r.stderr || "") };
+  }, label);
 }
 
 try {
@@ -146,7 +161,7 @@ try {
   // recursive watch on Linux, which is what CI runs.
   {
     const root = makeRoot();
-    const r = runRunner([fx("writes-tree.ts")], {
+    const r = await runRunner([fx("writes-tree.ts")], {
       SLATE_TREE_TRIPWIRE: "on",
       SLATE_TREE_TRIPWIRE_ROOT: root,
       TRIPWIRE_FIXTURE_TARGET: join(root, "src", "a", "b", "c.ts"),
@@ -164,7 +179,7 @@ try {
   // A new file in a NEW directory is caught too.
   {
     const root = makeRoot();
-    const r = runRunner([fx("writes-tree.ts")], {
+    const r = await runRunner([fx("writes-tree.ts")], {
       SLATE_TREE_TRIPWIRE: "on",
       SLATE_TREE_TRIPWIRE_ROOT: root,
       TRIPWIRE_FIXTURE_TARGET: join(root, "worker", "fresh.ts"),
@@ -179,7 +194,7 @@ try {
     // Beside the watched root, not inside it.
     const outside = join(base, "outside");
     mkdirSync(outside, { recursive: true });
-    const r = runRunner([fx("writes-tree.ts"), fx("pass-a.ts")], {
+    const r = await runRunner([fx("writes-tree.ts"), fx("pass-a.ts")], {
       SLATE_TREE_TRIPWIRE: "on",
       SLATE_TREE_TRIPWIRE_ROOT: root,
       TRIPWIRE_FIXTURE_TARGET: join(outside, "scratch.txt"),
@@ -193,7 +208,7 @@ try {
   // Off in a developer's run: the same tree write passes, and SAYS it was unwatched.
   {
     const root = makeRoot();
-    const r = runRunner([fx("writes-tree.ts")], {
+    const r = await runRunner([fx("writes-tree.ts")], {
       SLATE_TREE_TRIPWIRE_ROOT: root,
       TRIPWIRE_FIXTURE_TARGET: join(root, "src", "a", "b", "c.ts"),
     });
@@ -205,7 +220,7 @@ try {
   // CI arms it with nothing else set.
   {
     const root = makeRoot();
-    const r = runRunner([fx("writes-tree.ts")], {
+    const r = await runRunner([fx("writes-tree.ts")], {
       GITHUB_ACTIONS: "true",
       SLATE_TREE_TRIPWIRE_ROOT: root,
       TRIPWIRE_FIXTURE_TARGET: join(root, "src", "a", "b", "c.ts"),
@@ -216,7 +231,7 @@ try {
   // Suites are told an outer run covers them, so a runner they start stays off.
   {
     const root = makeRoot();
-    const r = runRunner([fx("reports-tripwire-env.ts")], {
+    const r = await runRunner([fx("reports-tripwire-env.ts")], {
       SLATE_TREE_TRIPWIRE: "on",
       SLATE_TREE_TRIPWIRE_ROOT: root,
     });
@@ -226,7 +241,7 @@ try {
 
   // An unknown value refuses before running anything.
   {
-    const r = runRunner([fx("fail-a.ts")], { SLATE_TREE_TRIPWIRE: "enforce" });
+    const r = await runRunner([fx("fail-a.ts")], { SLATE_TREE_TRIPWIRE: "enforce" });
     assert(r.status === 1 && r.out.includes('"enforce"'), "an unknown SLATE_TREE_TRIPWIRE is refused by name");
     assert(!r.out.includes("fail-a marker ALPHA"), "and no suite ran");
   }
@@ -346,6 +361,107 @@ try {
       assert(result !== null && tripwireFailed(result), "and it fails the run");
     }
   }
+
+  // --- the before and after comparison catches what the watch dropped (#3524) ---
+  //
+  // macOS drops file events under load, and libuv throws the "events were dropped"
+  // flags away (kFSEventsSystem in src/unix/fsevents.c), so a write can vanish while
+  // the end fence still passes and the run reads clean. This watcher forwards ONLY the
+  // tripwire's own probes: the failure at its worst, a live watch that saw nothing else.
+  const probesOnly = ((path: string, opts: object, listener: (e: string, f: string | null) => void) =>
+    watch(path, opts, (e, f) => {
+      if (String(f).includes(".tree-write-tripwire-probe-")) listener(e, f as string | null);
+    })) as unknown as typeof watch;
+  {
+    const root = makeRoot();
+    // tree-write-ok: `root` is makeRoot(), a dir inside this suite's mkdtempSync(tmpdir()) base
+    writeFileSync(join(root, "src", "gone.ts"), "export const g = 1;\n");
+    const started = await startTreeWatch(root, () => ["scripts/test-x.ts"], { watch: probesOnly });
+    assert("watch" in started, "the watch starts when only its own probes are delivered");
+    if ("watch" in started) {
+      // tree-write-ok: every path below is under makeRoot(), inside this suite's mkdtempSync(tmpdir()) base
+      appendFileSync(join(root, "src", "a", "b", "c.ts"), "// touched\n");
+      // tree-write-ok: as above, a throwaway root
+      writeFileSync(join(root, "worker", "fresh.ts"), "export const f = 1;\n");
+      // tree-write-ok: as above, a throwaway root
+      unlinkSync(join(root, "src", "gone.ts"));
+      const result = await started.watch.stop();
+      const paths = result.writes.map((w) => w.path).sort();
+      eq(paths.join(","), "src/a/b/c.ts,src/gone.ts,worker/fresh.ts", "a changed, a new and a removed file the watch never reported all fail the run");
+      assert(tripwireFailed(result), "and they fail the run");
+      const report = formatTripwireFindings(result).join("\n");
+      assert(
+        /TREE WRITES/.test(report) && /before and after comparison/.test(report),
+        "and the report says the before and after comparison found them, not the watch",
+      );
+    }
+  }
+
+  // The comparison's negative control: an untouched tree reports nothing, the
+  // tripwire's own probes (written and removed at both fences) included.
+  {
+    const root = makeRoot();
+    const started = await startTreeWatch(root, () => [], { watch: probesOnly });
+    assert("watch" in started, "the watch starts on an untouched root");
+    if ("watch" in started) {
+      const result = await started.watch.stop();
+      eq(result.writes.length, 0, "an untouched tree reports no write, the tripwire's own probes included");
+    }
+  }
+
+  // A write the watch DID report is reported once, under the watch's suspects, not
+  // again by the comparison.
+  {
+    const root = makeRoot();
+    const started = await startTreeWatch(root, () => ["scripts/test-x.ts"]);
+    assert("watch" in started, "the watch starts with the real watcher");
+    if ("watch" in started) {
+      // tree-write-ok: `root` is makeRoot(), a dir inside this suite's mkdtempSync(tmpdir()) base
+      appendFileSync(join(root, "src", "a", "b", "c.ts"), "// touched\n");
+      const result = await started.watch.stop();
+      const hits = result.writes.filter((w) => w.path === "src/a/b/c.ts");
+      eq(hits.length, 1, "a write the watch reported is listed once");
+    }
+  }
+
+  // --- a run that could not watch is recognised by its own words (#3524) -------
+  {
+    const unavailable = formatTripwireFindings({ writes: [], watchFailures: ["the watcher on src/ stalled"] }).join("\n");
+    assert(reportsWatchUnavailable(unavailable), "a finished run whose watch failed is recognised as unmeasured");
+    assert(
+      reportsWatchUnavailable(`run-tests: ${TRIPWIRE_COULD_NOT_START}: the watcher on src/ never reported. Nothing was run.`),
+      "a run refused at the start is recognised as unmeasured",
+    );
+    const wrote = formatTripwireFindings({ writes: [{ path: "src/x.ts", suspects: [] }], watchFailures: [] }).join("\n");
+    assert(!reportsWatchUnavailable(wrote), "a run that caught a write is a measurement, not an unmeasured run");
+    assert(!reportsWatchUnavailable("PASS: 1 passed, 0 failed"), "and so is a clean run");
+  }
+
+  // The end to end cases re-run an UNMEASURED run, and only that, a bounded number
+  // of times: a run that measured something is returned at once.
+  {
+    const outs = ["=== TREE WATCH FAILED: x ===", "=== TREE WATCH FAILED: x ===", "PASS: measured"];
+    let calls = 0;
+    const r = await untilWatched(async () => ({ out: outs[calls++] ?? "unreachable" }), "a case", () => {});
+    eq(calls, 3, "an unmeasured run is re-run until one measures");
+    eq(r.out, "PASS: measured", "and the measured run is the one returned");
+
+    let always = 0;
+    const capped = await untilWatched(async () => ({ out: `=== TREE WATCH FAILED: ${++always} ===` }), "a case", () => {});
+    eq(always, TRIPWIRE_RUN_ATTEMPTS, "a run that never measures stops at the attempt cap");
+    assert(reportsWatchUnavailable(capped.out), "and the last unmeasured run is returned, so the case fails on it");
+
+    let once = 0;
+    await untilWatched(async () => ({ out: `FAIL: measured ${++once}` }), "a case", () => {});
+    eq(once, 1, "a measured run, red or green, is never re-run");
+  }
+
+  // --- the fence waits out a stalled stream (#3524) -----------------------------
+  // Measured 2026-10-12 on the work MacBook at load 10 to 30: 52 fresh watches, 50
+  // live within 1.2s, one at 13.9s and one at 22.5s, all three dirs at the same
+  // instant (one shared stream stalling, not a dead watcher). 15s refused both. The
+  // fence waits on the event, so a longer bound costs a healthy machine nothing.
+  assert(TRIPWIRE_FENCE_TIMEOUT_MS >= 2 * 22_500, "the fence waits at least twice the slowest start measured");
 } finally {
   rmSync(base, { recursive: true, force: true });
 }

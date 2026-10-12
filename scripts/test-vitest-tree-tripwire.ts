@@ -22,7 +22,8 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { TRIPWIRE_WATCHED_DIRS } from "./lib/tree-write-tripwire.ts";
+import { TRIPWIRE_FENCE_TIMEOUT_MS, TRIPWIRE_WATCHED_DIRS } from "./lib/tree-write-tripwire.ts";
+import { untilWatched } from "./lib/tripwire-retry.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -63,7 +64,21 @@ function makeRoot(): string {
 // the fixture in place would write into scripts/ (the #2712 hazard, which the
 // outer run's tripwire would rightly fail). Measured: the first draft of this
 // suite ran in place and left scripts/__fixtures__/vitest-tripwire/node_modules.
+// Long enough for a vitest whose global setup and teardown fences BOTH wait out a
+// stalled stream, plus the run; derived from the fence so they cannot drift (#3524).
+const VITEST_TIMEOUT_MS = 2 * TRIPWIRE_FENCE_TIMEOUT_MS + 60_000;
+
+// A run whose own tripwire says it could not watch measured nothing, so it is re-run,
+// each attempt on a fresh copy, never read as the behaviour under test (#3524, L411).
 function runVitest(env: Record<string, string | undefined>): Promise<{ status: number | null; out: string }> {
+  const label = `vitest with ${Object.entries(env)
+    .filter(([k]) => k === "SLATE_TREE_TRIPWIRE" || k === "GITHUB_ACTIONS")
+    .map(([k, v]) => `${k}=${v}`)
+    .join(" ") || "nothing armed"}`;
+  return untilWatched(() => runVitestOnce(env), label);
+}
+
+function runVitestOnce(env: Record<string, string | undefined>): Promise<{ status: number | null; out: string }> {
   const copy = join(base, `vitest-${made++}`);
   cpSync(fixtureDir, copy, { recursive: true });
   const childEnv: Record<string, string | undefined> = {
@@ -83,7 +98,7 @@ function runVitest(env: Record<string, string | undefined>): Promise<{ status: n
     let out = "";
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (out += d));
-    const timer = setTimeout(() => child.kill("SIGKILL"), 60_000);
+    const timer = setTimeout(() => child.kill("SIGKILL"), VITEST_TIMEOUT_MS);
     child.on("error", (err) => {
       clearTimeout(timer);
       res({ status: null, out: out + `\n<could not start vitest: ${err.message}>` });
