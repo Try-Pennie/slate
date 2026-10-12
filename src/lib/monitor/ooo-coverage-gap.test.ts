@@ -355,6 +355,17 @@ describe("the copy a person reads at 7am (#1238)", () => {
     expect(many).toContain("2 agents");
   });
 
+  // A customer whose advisor is away does not "meet nobody": when the booked advisor does
+  // not call, Regal redistributes the lead to whoever is free (Dan, 2026-10-12).
+  it("says the advisor will not be there, not that the customer meets nobody", () => {
+    const one = formatOooCoverageGapAlert([holder({ imminent: 1 })]);
+    const many = formatOooCoverageGapAlert([holder({ imminent: 2 })]);
+    expect(one).not.toContain("meet nobody");
+    expect(many).not.toContain("meet nobody");
+    expect(one).toContain("that customer is booked with someone who will not be there");
+    expect(many).toContain("those customers are booked with someone who will not be there");
+  });
+
   it("names who and when, so the reader can triage without opening the admin", () => {
     const body = formatOooCoverageGapAlert([holder()]);
     expect(body).toContain("Dana Ruiz");
