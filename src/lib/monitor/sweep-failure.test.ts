@@ -21,8 +21,11 @@ import {
   reportSweepFailures,
   COMPLETION_SWEEP_FAILING_KEY,
   WEBHOOK_RETRY_SWEEP_FAILING_KEY,
+  COVERAGE_RETRY_SWEEP_FAILING_KEY,
   SWEEP_FAILURE_ALERT_AFTER_RUNS,
   SWEEP_FAILURE_WINDOW_SECONDS,
+  COVERAGE_RETRY_SWEEP_FAILURE_ALERT_AFTER_RUNS,
+  COVERAGE_RETRY_SWEEP_FAILURE_WINDOW_SECONDS,
 } from "./sweep-failure";
 
 const completion = (ok: boolean) => ({ key: COMPLETION_SWEEP_FAILING_KEY, ok });
@@ -100,6 +103,19 @@ describe("reportSweepFailures (#2544)", () => {
     expect(resolveRecovered.mock.calls[0]![0].map((r) => r.key)).toEqual([
       COMPLETION_SWEEP_FAILING_KEY,
     ]);
+  });
+
+  // #3485: the hourly coverage-retry sweep counts against its OWN longer window, because
+  // two runs an hour apart would never land in the five-minute lanes' 30 minute window.
+  it("uses the hourly window and threshold for the coverage-retry sweep", async () => {
+    recordConsecutiveStreak.mockResolvedValueOnce(false);
+    await reportSweepFailures([{ key: COVERAGE_RETRY_SWEEP_FAILING_KEY, ok: false }]);
+    expect(recordConsecutiveStreak).toHaveBeenCalledWith(
+      COVERAGE_RETRY_SWEEP_FAILING_KEY,
+      COVERAGE_RETRY_SWEEP_FAILURE_WINDOW_SECONDS,
+      COVERAGE_RETRY_SWEEP_FAILURE_ALERT_AFTER_RUNS,
+    );
+    expect(COVERAGE_RETRY_SWEEP_FAILURE_WINDOW_SECONDS).toBeGreaterThan(SWEEP_FAILURE_WINDOW_SECONDS);
   });
 
   // Monitoring must never take down the lane it watches (L71).

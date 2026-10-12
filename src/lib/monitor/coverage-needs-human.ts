@@ -180,6 +180,12 @@ export interface StrandedItemRead {
     /** Why this sweep's out agent will not be there (#3485), decoded from the job. */
     cause?: SweepCause;
   };
+  /**
+   * The booking's start (#3485 part C), so the page can hold until the call is within the
+   * lead window. Optional: absent means no lead gate (the call is paged whenever it is
+   * otherwise countable), the safe direction when the time is unknown.
+   */
+  startsAt?: string;
   /** Who holds the booking now, or null when it is no longer active and upcoming. */
   assignedUserId: string | null;
   /**
@@ -219,6 +225,15 @@ export interface StrandedItemRead {
  */
 export const SWEEP_FINISH_WAIT_MS = 30 * 60_000;
 
+/**
+ * How long before a stranded call's start the page is allowed to fire (#3485 part C).
+ * Dan, 2026-10-11: retry hourly, page one hour before. Until the call is within this
+ * window of its start it is held (counts as `waiting`, never a false all-clear) while
+ * the hourly retry works it; inside the window it pages. A call whose start is unknown
+ * is never held, the safe direction.
+ */
+export const COVERAGE_PAGE_LEAD_MS = 60 * 60_000;
+
 /** What `countStranded` found: the calls to page about, and the ones held back. */
 export interface CountedStranded {
   /** One per distinct booking, each still with its sweep's out agent. */
@@ -237,22 +252,46 @@ export interface CountedStranded {
  * item settled: dating it by the item would put it before a page sent between the
  * two, and a sweep finishing just after a page would never read as news. The bound
  * can make it countable earlier than that, so the earlier of the two wins.
+ *
+ * `leadMs` is the paging lead window (#3485 part C): a give up is NOT pageable until the
+ * call is within `leadMs` of its start, so a call stranded days out is held (it reads as
+ * `waiting`, never a false all-clear) while the hourly retry works it. When it enters the
+ * window, that moment (start minus lead) is when it became pageable, which is the news
+ * moment the cooldown fires on, not the old give-up. `Infinity` (the default) disables the
+ * gate, and an absent or unreadable start is never held, the safe direction.
  */
-function countableAt(it: StrandedItemRead, asOfMs: number): number | null | false {
+function countableAt(it: StrandedItemRead, asOfMs: number, leadMs: number): number | null | false {
   const settledMs = parseStampMs(it.settledAt);
   const boundMs = settledMs === null ? null : settledMs + SWEEP_FINISH_WAIT_MS;
-  if (it.sweep.status !== "active") {
-    const finishedMs = parseStampMs(it.sweep.updatedAt);
-    // Read as finished, but after the measurement began: count it next tick, so it
-    // lands on exactly one page rather than this one and then again as news.
-    if (finishedMs !== null && finishedMs > asOfMs && (boundMs === null || boundMs > asOfMs)) return false;
-    const known = [finishedMs, boundMs].filter((m): m is number => m !== null && m <= asOfMs);
-    // A customer is never dropped for a bookkeeping reason: an unreadable stamp
-    // still counts, it just cannot be news.
-    return known.length > 0 ? Math.min(...known) : null;
-  }
-  if (boundMs === null) return null;
-  return boundMs <= asOfMs ? boundMs : false;
+  const base: number | null | false = (() => {
+    if (it.sweep.status !== "active") {
+      const finishedMs = parseStampMs(it.sweep.updatedAt);
+      // Read as finished, but after the measurement began: count it next tick, so it
+      // lands on exactly one page rather than this one and then again as news.
+      if (finishedMs !== null && finishedMs > asOfMs && (boundMs === null || boundMs > asOfMs)) return false;
+      const known = [finishedMs, boundMs].filter((m): m is number => m !== null && m <= asOfMs);
+      // A customer is never dropped for a bookkeeping reason: an unreadable stamp
+      // still counts, it just cannot be news.
+      return known.length > 0 ? Math.min(...known) : null;
+    }
+    if (boundMs === null) return null;
+    return boundMs <= asOfMs ? boundMs : false;
+  })();
+  if (base === false) return false;
+  // No lead gate (the default): keep the #3303 give-up moment unchanged.
+  if (!Number.isFinite(leadMs)) return base;
+  // An absent or unreadable start is never held (page it): the safe side.
+  const startMs = it.startsAt ? parseStampMs(it.startsAt) : null;
+  if (startMs === null) return base;
+  const leadBound = startMs - leadMs;
+  if (leadBound > asOfMs) return false; // not within the lead window yet: held as waiting
+  // Pageable at the LATER of the give-up moment and when it entered the window: a call
+  // stranded well before the window becomes news as it enters (leadBound), while one
+  // stranded inside the window becomes news when it was given up (base), never dated before
+  // it existed. This is stable across the hourly retry because the retry leaves the sweep
+  // `done` (it does not reactivate it), so the finish time `base` reads does not churn. A
+  // base of null (unreadable give-up stamp) still cannot be news, so it stays null.
+  return base === null ? null : Math.max(base, leadBound);
 }
 
 /**
@@ -270,8 +309,17 @@ function countableAt(it: StrandedItemRead, asOfMs: number): number | null | fals
  *
  * `asOfMs` must be taken BEFORE the reads, so a fact that lands while they run is
  * left for the next tick and reads as news there.
+ *
+ * `leadMs` is the paging lead window (#3485 part C): a give up whose call is more than
+ * `leadMs` from its start is held as `waiting` rather than counted, so a call stranded
+ * days out does not page until it is imminent. The default is `Infinity` (no gate), so
+ * existing callers are unchanged.
  */
-export function countStranded(items: StrandedItemRead[], asOfMs: number): CountedStranded {
+export function countStranded(
+  items: StrandedItemRead[],
+  asOfMs: number,
+  leadMs: number = Infinity,
+): CountedStranded {
   const counted = new Map<string, { appt: StrandedAppointment; atMs: number | null; settledMs: number }>();
   const held = new Set<string>();
   for (const it of items) {
@@ -283,7 +331,7 @@ export function countStranded(items: StrandedItemRead[], asOfMs: number): Counte
     // STAYS in the pool but is away during the window, so an in-pool holder there is still
     // stranded. A departed agent is not in the pool, so their stranded calls still count.
     if (it.assignedAgentInPool && it.sweep.fromRedistribute) continue;
-    const at = countableAt(it, asOfMs);
+    const at = countableAt(it, asOfMs, leadMs);
     if (at === false) {
       held.add(it.bookingId);
       continue;

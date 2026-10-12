@@ -48,6 +48,28 @@ export const RESCHEDULE_PIN_SWEEP_FAILING_KEY = "reschedule_pin_sweep_failing";
 export const REASSIGN_INTENT_SWEEP_FAILING_KEY = "reassign_intent_sweep_failing";
 
 /**
+ * The hourly coverage-reassignment RETRY lane (#3485 part C). Unlike the lanes above it runs
+ * once an hour, not every few minutes, so it needs its own threshold and streak window (set
+ * on its `SWEEP_SUBJECT` entry below). It is the one hourly lane given a failure signal:
+ * Slate does not watchdog hourly lanes by STALENESS (that bound is noisy at 60 minutes,
+ * `health.ts`), but a sweep that THROWS every run is a fault the streak can still catch, and
+ * the retry failing silently would otherwise only show as more stranded-booking pages.
+ */
+/** alert-key: coverage_retry_sweep_failing */
+export const COVERAGE_RETRY_SWEEP_FAILING_KEY = "coverage_retry_sweep_failing";
+
+/**
+ * Two consecutive HOURLY failures (about two hours of the retry not working) before paging.
+ * That is well short of a call's lead time, and the stranded-booking page covers each
+ * customer in the meantime, so a slower threshold than the five-minute lanes is right.
+ */
+export const COVERAGE_RETRY_SWEEP_FAILURE_ALERT_AFTER_RUNS = 2;
+
+/** Streak window for the hourly retry: it must hold two runs an hour apart plus slack for a
+ *  tick delayed by lock contention, so genuinely consecutive hourly runs land in one window. */
+export const COVERAGE_RETRY_SWEEP_FAILURE_WINDOW_SECONDS = 3 * 60 * 60;
+
+/**
  * Consecutive failing runs before paging. The complete lane runs every 5 minutes,
  * so three runs is about fifteen minutes of the sweep not working, which clears a
  * transient blip and is well inside the `complete` lane's own 20 minute heartbeat
@@ -80,7 +102,7 @@ const SWEEP_FAILURE_COOLDOWN_MS = 30 * 60_000;
  */
 const SWEEP_SUBJECT: Record<
   string,
-  { what: string; cost: string; back: string; tag: string; afterRuns: number }
+  { what: string; cost: string; back: string; tag: string; afterRuns: number; windowSeconds?: number }
 > = {
   [COMPLETION_SWEEP_FAILING_KEY]: {
     tag: "complete",
@@ -136,7 +158,22 @@ const SWEEP_SUBJECT: Record<
       "contact owner change goes unnoticed.",
     back: "Abandoned reassigns are being cleaned up and reported again",
   },
+  [COVERAGE_RETRY_SWEEP_FAILING_KEY]: {
+    tag: "bulk-reassign-retry",
+    afterRuns: COVERAGE_RETRY_SWEEP_FAILURE_ALERT_AFTER_RUNS,
+    windowSeconds: COVERAGE_RETRY_SWEEP_FAILURE_WINDOW_SECONDS,
+    what: "The hourly coverage reassignment retry",
+    cost:
+      "Stranded calls that could be placed as calendars open are not being re-attempted, so " +
+      "each one waits for a person; they still page an hour before the call.",
+    back: "Stranded calls are being re-attempted hourly again",
+  },
 };
+
+/** The streak window for this key, defaulting to the five-minute lanes' shared window. */
+export function sweepFailureWindowSeconds(key: string): number {
+  return SWEEP_SUBJECT[key]!.windowSeconds ?? SWEEP_FAILURE_WINDOW_SECONDS;
+}
 
 /** How many consecutive failing runs page for this key, set by its lane's cadence. */
 export function sweepFailureAfterRuns(key: string): number {
@@ -199,6 +236,7 @@ export async function reportSweepFailures(outcomes: SweepRunOutcome[]): Promise<
     // alert-key: reservation_drain_failing
     // alert-key: reschedule_pin_sweep_failing
     // alert-key: reassign_intent_sweep_failing
+    // alert-key: coverage_retry_sweep_failing
     await resolveRecovered(recovered).catch(logAllClearFailure(recovered.map((r) => r.key)));
   }
 
@@ -207,7 +245,7 @@ export async function reportSweepFailures(outcomes: SweepRunOutcome[]): Promise<
     const afterRuns = sweepFailureAfterRuns(o.key);
     const sustained = await recordConsecutiveStreak(
       o.key,
-      SWEEP_FAILURE_WINDOW_SECONDS,
+      sweepFailureWindowSeconds(o.key),
       afterRuns,
     ).catch(() => false);
     if (!sustained) continue;
@@ -217,6 +255,7 @@ export async function reportSweepFailures(outcomes: SweepRunOutcome[]): Promise<
     // alert-key: reservation_drain_failing
     // alert-key: reschedule_pin_sweep_failing
     // alert-key: reassign_intent_sweep_failing
+    // alert-key: coverage_retry_sweep_failing
     await sendThrottledAlert(
       o.key,
       SWEEP_FAILURE_COOLDOWN_MS,

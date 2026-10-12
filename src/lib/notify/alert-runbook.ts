@@ -81,6 +81,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   reservation_drain_failing: "a-lane-or-schedule-has-gone-quiet",
   reschedule_pin_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
   reassign_intent_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
+  // #3485. The same family for the hourly coverage-reassignment retry.
+  coverage_retry_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
   detector_parked: "a-lane-or-schedule-has-gone-quiet",
   detector_unpark: "a-lane-or-schedule-has-gone-quiet",
   migration_version_lag: "a-lane-or-schedule-has-gone-quiet",

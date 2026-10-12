@@ -49,7 +49,11 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // arrive bookable=false; the sync never re-activates anyone. Runs hourly (was
   // daily) so a new hire is eligible within the hour; the unlocked */15 reaper
   // on the retired slate-cron worker is gone.
-  "0 * * * *": "/api/cron/agents",
+  // Plus the hourly coverage-reassign RETRY (cron_bulk_reassign_retry, #3485): it re-arms
+  // every still-upcoming unplaceable call so the */5 drain re-attempts it. A cheap
+  // database-only re-arm (no Google calls), under its own lock and independent request, so
+  // it never contends with the roster reconcile beside it.
+  "0 * * * *": ["/api/cron/agents", "/api/cron/bulk-reassign-retry"],
   // Pending-OOO morning digest. Two UTC slots straddle DST so it lands at 9am
   // ET on weekdays; the route's isDigestTime gate lets exactly one fire.
   // Weekdays are written as NAMES: Cloudflare counts 1 = Sunday, so `1-5` ran

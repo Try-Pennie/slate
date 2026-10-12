@@ -462,6 +462,7 @@ import {
   RESERVATION_DRAIN_FAILING_KEY,
   RESCHEDULE_PIN_SWEEP_FAILING_KEY,
   REASSIGN_INTENT_SWEEP_FAILING_KEY,
+  COVERAGE_RETRY_SWEEP_FAILING_KEY,
   sweepFailureAfterRuns,
 } from "@/lib/monitor/sweep-failure";
 import { formatLaneFailureAlert } from "@/lib/monitor/lane-failure";
@@ -2450,6 +2451,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     RESERVATION_DRAIN_FAILING_KEY,
     RESCHEDULE_PIN_SWEEP_FAILING_KEY,
     REASSIGN_INTENT_SWEEP_FAILING_KEY,
+    COVERAGE_RETRY_SWEEP_FAILING_KEY,
   ].flatMap((key) => [
     {
       key,

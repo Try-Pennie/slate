@@ -332,6 +332,17 @@ describe("runCoverageNeedsHumanCheck (#1242)", () => {
     expect(res).toEqual({ status: "waiting", agents: 0, appointments: 0, waiting: 2 });
   });
 
+  // #3485 part C: the hourly retry re-arms a stranded call to `pending` for up to a drain
+  // cycle. The loader counts such in-flight pending items into `waiting`, so a tick that
+  // finds no actionable holders while a retry is in flight must NOT read as resolved and
+  // send a false all-clear (#1152): the call is still stranded, just momentarily pending.
+  it("neither pages nor clears while a retry holds the only stranded call as pending", async () => {
+    const res = await run(strandedRead([], { waiting: 1 }));
+    expect(resolveAlert).not.toHaveBeenCalled();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    expect(res).toEqual({ status: "waiting", agents: 0, appointments: 0, waiting: 1 });
+  });
+
   it("pages what finished sweeps gave up on while another sweep is still running", async () => {
     const res = await run(strandedRead([holder({ unplaceable: 2 })], { waiting: 1 }));
     expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
@@ -524,6 +535,65 @@ describe("countStranded (#3303)", () => {
       ]);
       expect(res.newestCountableMs).toBe(ms("14:47:25"));
     });
+  });
+});
+
+// #3485 part C: a stranded call is retried hourly and only paged ONE HOUR before its
+// start, so a call stranded days out stays silent (not a false all-clear, just not yet
+// due) while the retry works it, and pages once it is imminent.
+describe("countStranded holds a give up until the call is within the paging lead window (#3485)", () => {
+  const LEAD = 60 * 60_000;
+  const giveFuture = (startsAt: string | undefined): StrandedItemRead => ({
+    bookingId: "b1",
+    status: "unplaceable",
+    settledAt: "2026-10-11T17:22:00Z",
+    assignedUserId: "u1",
+    assignedAgentInPool: false,
+    sweep: { outUserId: "u1", status: "done", updatedAt: "2026-10-11T17:23:00Z", fromRedistribute: false },
+    startsAt,
+  });
+
+  it("does not count a stranded call more than the lead window before its start", () => {
+    const asOf = Date.parse("2026-10-13T15:00:00Z"); // call at 17:00, two hours out
+    const res = countStranded([giveFuture("2026-10-13T17:00:00Z")], asOf, LEAD);
+    expect(res.appointments).toEqual([]);
+    expect(res.waiting).toBe(1);
+    expect(res.newestCountableMs).toBeNull();
+  });
+
+  it("counts it once within the lead window, dated to when it entered that window", () => {
+    const asOf = Date.parse("2026-10-13T16:30:00Z"); // 30 minutes out, inside the hour
+    const res = countStranded([giveFuture("2026-10-13T17:00:00Z")], asOf, LEAD);
+    expect(res.appointments).toHaveLength(1);
+    // Entered the window at start minus lead, which is the news moment, not the old give-up.
+    expect(res.newestCountableMs).toBe(Date.parse("2026-10-13T16:00:00Z"));
+  });
+
+  it("dates a call GIVEN UP inside the window at the give-up, not before it existed", () => {
+    const asOf = Date.parse("2026-10-13T16:30:00Z"); // inside the hour
+    // The sweep gave up at 16:25, AFTER the window opened at 16:00 (a time off approved late).
+    // The news moment is the give-up (16:25), never the earlier window entry, so a genuinely
+    // new stranded call is not mis-dated into the past where the cooldown would swallow it.
+    const givenUpLate: StrandedItemRead = {
+      ...giveFuture("2026-10-13T17:00:00Z"),
+      settledAt: "2026-10-13T16:25:00Z",
+      sweep: { outUserId: "u1", status: "done", updatedAt: "2026-10-13T16:25:00Z", fromRedistribute: false },
+    };
+    const res = countStranded([givenUpLate], asOf, LEAD);
+    expect(res.appointments).toHaveLength(1);
+    expect(res.newestCountableMs).toBe(Date.parse("2026-10-13T16:25:00Z")); // the give-up, not 16:00
+  });
+
+  it("counts regardless of lead when the start is unknown, the safe direction", () => {
+    const asOf = Date.parse("2026-10-13T15:00:00Z");
+    const res = countStranded([giveFuture(undefined)], asOf, LEAD);
+    expect(res.appointments).toHaveLength(1);
+  });
+
+  it("applies no lead gate by default, so existing callers are unchanged", () => {
+    const asOf = Date.parse("2026-10-13T15:00:00Z");
+    const res = countStranded([giveFuture("2026-10-13T17:00:00Z")], asOf);
+    expect(res.appointments).toHaveLength(1);
   });
 });
 

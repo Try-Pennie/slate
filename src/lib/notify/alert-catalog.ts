@@ -178,6 +178,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "neither cleaned up nor reported. It ends when a run comes back with a result (#3077).",
   },
   {
+    key: "coverage_retry_sweep_failing",
+    kind: "condition",
+    why:
+      "The hourly coverage reassignment retry is throwing, so stranded calls are not being " +
+      "re-attempted as calendars open. It ends when a run comes back with a result, which the " +
+      "lane measures every hour (#3485).",
+  },
+  {
     key: "reconcile_cancelled_saturated",
     kind: "condition",
     why: "The cancelled-booking reconcile sweep is saturated; a tick under the cap ends it.",

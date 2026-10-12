@@ -360,6 +360,7 @@ import { demotionSweepPending, storedDemotionStamp } from "@/lib/booking/demotio
 import { criteriaMapOrThrow, type DemotionCandidateRow } from "@/lib/booking/demotion-snapshot";
 import {
   countStranded,
+  COVERAGE_PAGE_LEAD_MS,
   decodeSweepCause,
   loadTimeOffWindows,
   runCoverageNeedsHumanCheck,
@@ -369,6 +370,7 @@ import {
   type StrandedRead,
   type StrandedStatus,
 } from "@/lib/monitor/coverage-needs-human";
+import { selectRetryableUnplaceable } from "@/lib/booking/coverage-retry";
 import { hasLeftPool, POOL_STATE_COLUMNS, type PoolStateRow } from "@/lib/bookable/left-pool";
 import { runOooProtectionCheck } from "@/lib/monitor/ooo-protection";
 import { runOooEventMismatchCheck } from "@/lib/monitor/ooo-event-mismatch";
@@ -2876,7 +2878,19 @@ export async function GET(req: NextRequest) {
           .select("booking_id, status, job_id, updated_at")
           .in("status", ACTIONABLE_ITEM_STATUSES),
       );
-      if (items.length === 0) return nothing;
+      // #3485 part C: pending items are coverage work still in flight: a fresh sweep's items
+      // before the drain, or a stranded call the hourly retry just re-armed. The ones for an
+      // active, UPCOMING booking count as `waiting`, so an empty actionable read mid-retry is
+      // not read as "all placed" and does not send a false all-clear (#1152). Scoped to
+      // upcoming below (via the shared booking read), so an orphaned pending row for a passed
+      // booking, or one a dead drain abandoned on a past call, can never keep the alert from
+      // clearing for ever.
+      const pendingItems = await selectAllPages<{ id: string; job_id: string; booking_id: string }>(
+        "monitor in-flight coverage items",
+        "id",
+        () => db.from("bulk_reassign_items").select("id, job_id, booking_id").eq("status", "pending"),
+      );
+      if (items.length === 0 && pendingItems.length === 0) return nothing;
       // Only an UPCOMING appointment needs a person: a stranded one that has passed
       // is history, and paging about it would never clear.
       //
@@ -2887,8 +2901,9 @@ export async function GET(req: NextRequest) {
       // quiet direction: the stranded appointments stay stranded and unreported.
       const bookingPages = await inIdChunks(
         "monitor stranded coverage bookings",
-        // Deduped: two sweeps over one day name the same booking twice (#3303).
-        [...new Set(items.map((it) => it.booking_id))],
+        // Deduped: two sweeps over one day name the same booking twice (#3303). Covers the
+        // pending items too (#3485 part C), so their bookings are judged active+upcoming here.
+        [...new Set([...items, ...pendingItems].map((it) => it.booking_id))],
         async (batch) =>
           (unwrap(
             await db
@@ -2900,7 +2915,9 @@ export async function GET(req: NextRequest) {
               // the pool (a cleared Redistribute flap) is no longer counted stranded,
               // judged by the same hasLeftPool rule the sweep uses so a departed agent is
               // not mistaken for a covered one.
-              .select(`id, assigned_user_id, users!bookings_assigned_user_id_fkey(${POOL_STATE_COLUMNS})`)
+              // #3485 part C: also read starts_at, so the page can hold until the call is
+              // within the lead window (it is already filtered on below).
+              .select(`id, assigned_user_id, starts_at, users!bookings_assigned_user_id_fkey(${POOL_STATE_COLUMNS})`)
               .in("id", batch)
               .in("status", ACTIVE_BOOKING_STATUSES)
               .gte("starts_at", new Date(now).toISOString()),
@@ -2908,28 +2925,32 @@ export async function GET(req: NextRequest) {
           ) ?? []) as {
             id: string;
             assigned_user_id: string | null;
+            starts_at: string;
             users: PoolStateRow | null;
           }[],
       );
       // Who holds each active, upcoming booking NOW (#3303): `countStranded` keeps
       // a give up only while that is still the sweep's out agent. Also whether that
       // holder is back in the pool (#3597): a missing user row reads as NOT in the pool,
-      // the safe direction (the call stays stranded and reported).
+      // the safe direction (the call stays stranded and reported). And when it starts
+      // (#3485 part C), for the paging lead window.
       const holderByBooking = new Map(
         bookingPages.flat().map((b) => [
           b.id,
-          { userId: b.assigned_user_id, inPool: b.users != null && !hasLeftPool(b.users) },
+          { userId: b.assigned_user_id, inPool: b.users != null && !hasLeftPool(b.users), startsAt: b.starts_at },
         ]),
       );
       const live = items.filter((it) => holderByBooking.has(it.booking_id));
-      if (live.length === 0) return nothing;
-      // The out agent lives on the job, so resolve the jobs these belong to. Split
-      // across requests (#2388): `bulk_reassign_jobs` accumulates over time, so the
-      // distinct job ids behind a set of actionable items are bounded by nothing in
-      // particular, unlike the AGENT ids below, which the roster bounds.
+      // Pending coverage items for an active, upcoming booking: candidate in-flight work.
+      const livePending = pendingItems.filter((p) => holderByBooking.has(p.booking_id));
+      // The out agent lives on the job, so resolve the jobs behind BOTH the actionable and
+      // the pending items in one read, so the shared "still stranded" predicate can judge
+      // each. Split across requests (#2388): `bulk_reassign_jobs` accumulates over time, so
+      // the distinct job ids behind these items are bounded by nothing in particular, unlike
+      // the AGENT ids below, which the roster bounds.
       const jobPages = await inIdChunks(
         "monitor stranded coverage jobs",
-        [...new Set(live.map((it) => it.job_id))],
+        [...new Set([...live, ...livePending].map((it) => it.job_id))],
         async (batch) =>
           (unwrap(
             await db
@@ -2958,6 +2979,30 @@ export async function GET(req: NextRequest) {
           >[],
       );
       const jobById = new Map(jobPages.flat().map((j) => [j.id, j]));
+      // In-flight = distinct bookings among the pending items that are STILL stranded by the
+      // SAME predicate the stranded page uses (#3485 part C, L342): on the sweep's out agent,
+      // active+upcoming, and not a Redistribute flap whose agent is back. So a pending item
+      // for a call already moved off, or a covered Redistribute one, does not keep the
+      // all-clear from firing; a dead drain's genuinely-stranded pending item does (correctly,
+      // there is unresolved work), and the drain's own lane watchdog pages for the dead drain.
+      const retryablePendingIds = new Set(
+        selectRetryableUnplaceable({
+          items: livePending,
+          holderByBooking: new Map(
+            [...holderByBooking].map(([id, h]) => [id, { assignedUserId: h.userId, inPool: h.inPool }]),
+          ),
+          jobById: new Map(
+            [...jobById].map(([id, j]) => [
+              id,
+              { status: j.status, outUserId: j.out_user_id, fromRedistribute: j.redistribute_marked_at != null },
+            ]),
+          ),
+        }).map((r) => r.itemId),
+      );
+      const inFlight = new Set(
+        livePending.filter((p) => retryablePendingIds.has(p.id)).map((p) => p.booking_id),
+      ).size;
+      if (live.length === 0) return { ...nothing, waiting: inFlight };
       // #3485: for every sweep triggered by approved time off, read that request's
       // absence window in its OWN display zone, so the page can say "on approved time
       // off, Mon Oct 13 ..." without touching the agent's free-text reason. Bounded by
@@ -3030,14 +3075,25 @@ export async function GET(req: NextRequest) {
                     job.ooo_request_id ? oooById.get(job.ooo_request_id) ?? null : null,
                   ),
                 },
+                startsAt: holderByBooking.get(it.booking_id)?.startsAt,
                 assignedUserId: holderByBooking.get(it.booking_id)?.userId ?? null,
                 assignedAgentInPool: holderByBooking.get(it.booking_id)?.inPool ?? false,
               },
             ]
           : [];
       });
-      const counted = countStranded(reads, asOfMs);
-      const found = { waiting: counted.waiting, newestCountableMs: counted.newestCountableMs, asOfMs, appBaseUrl };
+      // #3485 part C: page only once a call is within the lead window; before that it is
+      // held (waiting), the hourly bulk-reassign-retry lane re-attempts it.
+      const counted = countStranded(reads, asOfMs, COVERAGE_PAGE_LEAD_MS);
+      // Fold in the in-flight pending items (#3485 part C): a tick that can clear must see
+      // no stranded holders AND no coverage work in progress, or a retry mid-flight reads
+      // as resolved and clears a real page.
+      const found = {
+        waiting: counted.waiting + inFlight,
+        newestCountableMs: counted.newestCountableMs,
+        asOfMs,
+        appBaseUrl,
+      };
       const stranded = counted.appointments;
       if (stranded.length === 0) return { ...found, holders: [] };
       const agents = (unwrap(
