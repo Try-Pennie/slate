@@ -249,8 +249,8 @@ export function formatOooCoverageGapAlert(holders: OooGapHolder[]): string {
     `${oneAgent ? "holds" : "hold"} ${plural(total, "appointment", "appointments")} ` +
     `starting within ${OOO_GAP_IMMINENT_HOURS} hours. No coverage sweep has picked ` +
     `${oneBooking ? "it" : "them"} up, so ` +
-    `${oneBooking ? "that customer" : "those customers"} will meet nobody unless ` +
-    `${oneBooking ? "it is" : "they are"} moved. Reassign ` +
+    `${oneBooking ? "that customer is" : "those customers are"} booked with someone who will ` +
+    `not be there. Reassign ` +
     `${oneBooking ? "it" : "them"} from the agent's page in Admin, under ${COVERAGE_PANEL_NAME}.\n` +
     lines.join("\n") +
     more

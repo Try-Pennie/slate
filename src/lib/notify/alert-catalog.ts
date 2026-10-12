@@ -731,7 +731,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "ooo_coverage_gap",
     kind: "condition",
-    why: "An agent on approved time off is holding an appointment inside 48 hours that no coverage sweep ever saw, so that customer meets nobody. It stays true until a person places it or it passes, and the monitor lane re-measures every 5 minutes.",
+    why: "An agent on approved time off is holding an appointment inside 48 hours that no coverage sweep ever saw, so that customer is booked with someone who will not be there. It stays true until a person places it or it passes, and the monitor lane re-measures every 5 minutes.",
   },
   {
     key: "calendar_window_uncovered",

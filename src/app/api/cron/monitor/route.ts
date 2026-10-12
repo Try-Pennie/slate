@@ -2746,6 +2746,8 @@ export async function GET(req: NextRequest) {
           db
             // agent-link-ok: an upcoming call held by somebody who has left needs
             // a person however it was booked, including through their own link (#2073).
+            // test-data-ok: scoped to outOfPool, which are is_test=false agents (filtered on
+            // the users read above), so no test fixtures can be counted.
             .from("bookings")
             .select("id, assigned_user_id")
             .in("assigned_user_id", outOfPool.map((a) => a.id))
