@@ -235,7 +235,8 @@ export function reportsWatchUnavailable(output: string): boolean {
 interface TreeSnapshot {
   files: Map<string, string>;
   dirs: Map<string, string>;
-  unreadable: string[];
+  /** Dirs that could not be read (repo relative, no trailing slash), and why. */
+  unreadable: Array<{ dir: string; why: string }>;
 }
 
 /** Lists one directory's entries; the seam the snapshot reads through. */
@@ -253,7 +254,7 @@ const realReadDir: ReadDir = (path) => readdirSync(path, { withFileTypes: true }
 function snapshotTree(root: string, readDir: ReadDir): TreeSnapshot {
   const files = new Map<string, string>();
   const dirs = new Map<string, string>();
-  const unreadable: string[] = [];
+  const unreadable: Array<{ dir: string; why: string }> = [];
   const walk = (abs: string, rel: string, top: boolean) => {
     let entries: Dirent[];
     try {
@@ -261,7 +262,7 @@ function snapshotTree(root: string, readDir: ReadDir): TreeSnapshot {
     } catch (err) {
       const gone = (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
       if (gone && !top) return;
-      unreadable.push(`${rel}/ (${reason(err)})`);
+      unreadable.push({ dir: rel, why: reason(err) });
       return;
     }
     for (const e of entries) {
@@ -498,9 +499,15 @@ export async function startTreeWatch(
         const endFailures = await fence();
         closeAll();
         const after = snapshotTree(root, readDir);
-        const unread = [...new Set([...before.unreadable, ...after.unreadable])].map(
+        const unreadEntries = [...before.unreadable, ...after.unreadable];
+        const unread = [...new Set(unreadEntries.map((u) => `${u.dir}/ (${u.why})`))].map(
           (d) => `the before and after comparison could not read ${d}, so it checked nothing there`,
         );
+        // A dir unread at EITHER end is missing from that snapshot, so every file in
+        // it would differ; the comparison claims nothing there rather than report
+        // writes it never measured (L11). The unread line above already fails the run.
+        const unreadDirs = [...new Set(unreadEntries.map((u) => u.dir))];
+        const underUnread = (p: string) => unreadDirs.some((d) => p === d || p.startsWith(`${d}/`));
         // A late event for something done before the run is dropped; everything the
         // watch named that the comparison cannot clear stays (#3524).
         const found = writes.filter(
@@ -508,7 +515,7 @@ export async function startTreeWatch(
         );
         const reported = new Set(found.map((w) => w.path));
         for (const path of changedPaths(before.files, after.files)) {
-          if (!reported.has(path)) found.push({ path, suspects: [], missedByWatch: true });
+          if (!reported.has(path) && !underUnread(path)) found.push({ path, suspects: [], missedByWatch: true });
         }
         return { writes: found, watchFailures: [...watchFailures, ...endFailures, ...unread] };
       },

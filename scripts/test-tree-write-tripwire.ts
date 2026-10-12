@@ -473,6 +473,11 @@ try {
         "an unreadable directory is a watch failure naming the directory and the error",
       );
       assert(tripwireFailed(result), "and it fails the run");
+      eq(
+        result.writes.map((w) => w.path).join(","),
+        "",
+        "and its files are not reported as removed: the comparison checked nothing there, so it claims nothing there",
+      );
     }
   }
 
