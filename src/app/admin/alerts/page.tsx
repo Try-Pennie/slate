@@ -152,7 +152,7 @@ const ALERT_TUNING_FIELDS: Partial<
     {
       name: "pool_nearly_full_open_pct",
       label: "Percent still open",
-      help: "A pool is named when fewer than this percentage of its possible starts, across the days the booker shows, are still open.",
+      help: "A debt tier is named when fewer than this percentage of its possible starts, across the days the booker shows, are still open.",
       bounds: POOL_NEARLY_FULL_BOUNDS.openPct,
       defaultValue: MONITOR_DEFAULTS.poolNearlyFullOpenPct,
     },

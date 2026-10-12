@@ -51,7 +51,8 @@ import {
   STALE_ALARM_MS,
 } from "../availability/precompute-cron.ts";
 import { groupRowsByPool, type PoolGroup } from "./pool-rows.ts";
-import { rungExcludesLow, tierLadder } from "../routing/tiers.ts";
+import { rungExcludesLow, tierLadder, wholeTierPoolCode } from "../routing/tiers.ts";
+import { DEBT_TIER } from "../xbc.ts";
 import { offeredWindowFor, servedSlotsForRung } from "../availability/offered-window.ts";
 import { computedAtLabel } from "./bucket-supply-copy.ts";
 
@@ -221,6 +222,40 @@ export interface BucketSupplyRow {
 }
 
 /**
+ * One DEBT TIER as a single reading (#3637), which is what the nearly full
+ * notice judges.
+ *
+ * Dan, 2026-10-12: "all we really care about is the debt bucket. not
+ * beyond/achieve or legal". A lead whose own Beyond or Achieve pool is full is
+ * served by the rest of the tier (`tierLadder`), so judging those pools one by one
+ * named "Low with Beyond: none of 2 starts still open" while the same leads were
+ * being offered 63 times.
+ *
+ * The offered times are the tier's WHOLE pool's (`wholeTierPoolCode`, which
+ * selects every agent in the debt team whatever their backend), so every
+ * advisor's open time is in it exactly once and nothing is added up across pools
+ * that share people. The booked times are every code in the tier's, because a
+ * call taken through a Beyond or Achieve code was taken by somebody in that whole
+ * pool; the pool's own row keeps only its own pool's bookings, as the supply page
+ * draws it.
+ *
+ * A tier whose whole pool code is not a bucket here has no reading at all, rather
+ * than one of its narrower pools standing in for it.
+ */
+export interface TierSupply {
+  /** The debt tier digit, "1" (Low) to "5" (Ultra High). */
+  tier: string;
+  /** The tier in words, from `DEBT_TIER`. */
+  label: string;
+  /** Every bucket code in the tier on this report, ascending. */
+  codes: string[];
+  /** The days the booker shows on the whole pool code, as `BucketSupplyRow`. */
+  offeredDays: string[] | null;
+  /** One cell per entry of `days`, counted as a row's are. */
+  cells: SupplyCell[];
+}
+
+/**
  * The whole report, or the reason there is no report.
  *
  * A union rather than a `measurable` flag beside the rows, so a caller cannot
@@ -258,6 +293,8 @@ export type BucketSupplyReport =
       nowMs: number;
       days: SupplyDay[];
       rows: BucketSupplyRow[];
+      /** One reading per debt tier, highest tier first (#3637). */
+      tiers: TierSupply[];
       /** False when the bucket list could not be read, so the rows came from the
        *  cache and a never-computed bucket is missing from the page entirely. */
       bucketListReadable: boolean;
@@ -496,6 +533,16 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
     for (const [iso, starts] of byDate) pooled.set(iso, [...(pooled.get(iso) ?? []), ...starts]);
     bookedByPoolAndDate.set(key, pooled);
   }
+  // The same bookings by DEBT TIER (#3637), for the tier readings: every code in a
+  // tier, whatever its backend or legal digit.
+  const bookedByTierAndDate = new Map<string, Map<string, string[]>>();
+  for (const [code, byDate] of input.bookedByCodeAndDate ?? []) {
+    if (!XBC_CODE.test(code)) continue;
+    const pooled = bookedByTierAndDate.get(code[0]!) ?? new Map<string, string[]>();
+    for (const [iso, starts] of byDate) pooled.set(iso, [...(pooled.get(iso) ?? []), ...starts]);
+    bookedByTierAndDate.set(code[0]!, pooled);
+  }
+  const tierReadings: TierSupply[] = [];
 
   // Each code's times as the BOOKER would serve them on a rung (#1296 hours
   // filter, then `servedSlotsForRung`, the booker's own Low exclusion for a rung
@@ -584,6 +631,9 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
     const bookingsReadable = input.bookedByCodeAndDate !== null;
 
     let cells: SupplyCell[];
+    // Only the whole tier pool code carries its tier's reading (#3637).
+    const tierDigit = XBC_CODE.test(d.code) && d.code === wholeTierPoolCode(d.code[0]!) ? d.code[0]! : null;
+    let tierCells: SupplyCell[] | null = null;
     let offeredLater = false;
     let offeredDays: string[] | null = null;
     if (cacheState !== "measured" || eventType === null || !Array.isArray(slots) || !bookingsReadable) {
@@ -634,7 +684,7 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
         windowEndMs === null ||
         DateTime.fromISO(iso, { zone: hours.zone }).startOf("day").toMillis() < windowEndMs;
 
-      cells = days.map((day) => {
+      const cellsFor = (bookedOn: Map<string, string[]>): SupplyCell[] => days.map((day) => {
         const dayRoom = capacityFor(eventType, day);
         if (dayRoom.state === "closed") return { kind: "closed" };
         // The org's own day still decides whether an appointment could EVER have
@@ -652,7 +702,7 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
         // stamp is DROPPED rather than becoming a NaN that joins nothing and
         // inflates the ceiling by one (L50).
         const taken = new Set<number>();
-        for (const iso of bookedByDate.get(day.iso) ?? []) {
+        for (const iso of bookedOn.get(day.iso) ?? []) {
           const ms = parseStampMs(iso);
           if (ms !== null) taken.add(ms);
         }
@@ -684,6 +734,20 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
           capacity: possible.size,
           share: taken.size / possible.size,
         };
+      });
+      cells = cellsFor(bookedByDate);
+      if (tierDigit !== null) tierCells = cellsFor(bookedByTierAndDate.get(tierDigit) ?? new Map());
+    }
+    if (tierDigit !== null) {
+      tierReadings.push({
+        tier: tierDigit,
+        label: DEBT_TIER[tierDigit]!.label,
+        codes: drivers
+          .map((b) => b.code)
+          .filter((c) => XBC_CODE.test(c) && c[0] === tierDigit)
+          .sort(),
+        offeredDays,
+        cells: tierCells ?? cells,
       });
     }
 
@@ -725,6 +789,7 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
     nowMs,
     days,
     rows,
+    tiers: tierReadings.sort((a, b) => Number(b.tier) - Number(a.tier)),
     bucketListReadable: input.buckets !== null,
     depthReadable: input.depthByCode !== null,
   };

@@ -1,5 +1,5 @@
 /**
- * A pool that is nearly full, said quietly before it reaches zero (#1256).
+ * A debt tier that is nearly full, said quietly before it reaches zero (#1256).
  *
  * The booked solid page (#1412) fires when a tier has no times at all. Thin tier
  * staffing (#569) whispers when a tier rests on one or two people. Neither notices a
@@ -17,23 +17,32 @@
  * the function the booker cuts its strip with, so a change to the offered days
  * moves this notice with it.
  *
- * ## The measurement is the supply page's, not a second one
+ * ## The debt tier, never a backend or legal pool (#3637)
  *
- * The share comes from `bucketSupplyReport` (#1254), the same report /admin/supply
- * draws, read off its `counted` cells: the times still offered against the times
- * the pool could have taken (offered plus already booked, as distinct starts on one
- * grid). Nothing here re-derives the slot grid, the notice cutoff or the pooling of
- * bookings across a pool's codes (L107). A pool's codes carry one reading, so the
- * pool is judged once and named once, by `supplyPoolGroups`, the grouping the page
- * itself uses.
+ * Dan, 2026-10-12: "all we really care about is the debt bucket. not
+ * beyond/achieve or legal". This used to judge every pool the supply page draws,
+ * and on 2026-10-12 at 1:40pm ET it said "Low with Beyond: none of 2 starts still
+ * open" while those same leads were being offered 63 Low with Achieve times,
+ * because a lead whose own pool is full is served by the rest of the tier. With
+ * Beyond wound down to one or two people, a single booking took that pool under
+ * the line, so it would have named it most days.
+ *
+ * ## The measurement is the supply report's, not a second one
+ *
+ * The share comes from `bucketSupplyReport` (#1254), read off the `counted` cells
+ * of its tier readings (`TierSupply`): the times the tier's whole pool still
+ * offers against the times it could have taken (offered plus booked through any of
+ * the tier's codes, as distinct starts on one grid). Nothing here re-derives the
+ * slot grid, the notice cutoff or the pooling of bookings (L107).
  *
  * ## The zero case is the booked solid page's (#1412)
  *
- * This owns the warning BEFORE zero; #1412 owns the moment it arrives. So a pool
- * whose codes the booked solid page named on this tick is left to it, rather than
+ * This owns the warning BEFORE zero; #1412 owns the moment it arrives. That page
+ * names a code only when nothing on its whole ladder has a time, so any of a tier's
+ * codes on it means the tier is at zero, and the tier is left to it rather than
  * telling the same person the same thing twice in two voices. When the scan's answer
- * is unknown (it was skipped or failed this tick), a pool with nothing open may be on
- * that page, so it is held back too; a pool with something left is still named.
+ * is unknown (it was skipped or failed this tick), a tier with nothing open may be on
+ * that page, so it is held back too; a tier with something left is still named.
  *
  * ## A whisper, never a page
  *
@@ -44,19 +53,22 @@
  * drives every branch node natively.
  */
 import { DateTime } from "luxon";
-import { supplyPoolGroups, type BucketSupplyReport } from "../admin/bucket-supply.ts";
+import type { BucketSupplyReport } from "../admin/bucket-supply.ts";
 import type { ThrottledNotify } from "./alert-deps.ts";
 
-/** alert_state key for the whisper; the settings screen names it too. */
+/** alert_state key for the whisper; the settings screen names it too. It and the
+ *  function names keep "pool" from before #3637, because the key and the settings
+ *  column `pool_nearly_full_open_pct` are stored under it. */
 export const POOL_NEARLY_FULL_KEY = "pool_nearly_full";
 
-export interface NearlyFullPool {
-  /** The pool in words, or null when the roster could not say which pool it is. */
-  label: string | null;
+export interface NearlyFullTier {
+  /** The debt tier in words ("Low"). */
+  label: string;
+  /** Every bucket code in the tier. */
   codes: string[];
   /** Starts still offered across the days the booker shows. */
   open: number;
-  /** Starts the pool could have taken across those days: offered plus booked. */
+  /** Starts the tier could have taken across those days: offered plus booked. */
   capacity: number;
   /** The org local dates those are, which the notice names. */
   days: string[];
@@ -64,17 +76,17 @@ export interface NearlyFullPool {
 
 export type PoolFullnessResult =
   | { status: "unmeasured"; why: string }
-  | { status: "measured"; judged: number; nearlyFull: NearlyFullPool[] };
+  | { status: "measured"; judged: number; nearlyFull: NearlyFullTier[] };
 
 /**
- * Which pools are nearly full over the days the booker shows.
+ * Which debt tiers are nearly full over the days the booker shows.
  *
- * `openShare` is the line from the monitor settings (#3559): a pool is named when
+ * `openShare` is the line from the monitor settings (#3559): a tier is named when
  * FEWER than that share of its possible starts are still open; exactly the share
  * is not named. `bookedSolidCodes` is what the booked solid page named on this
  * tick, or null when the scan did not reach a verdict.
  *
- * A pool is judged only when EVERY one of its window days was read: one unknown
+ * A tier is judged only when EVERY one of its window days was read: one unknown
  * day, or a day the report does not hold, would put a share over part of the
  * strip in front of somebody as the whole of it (L530). A closed day, or one with
  * nothing countable, adds nothing to either side.
@@ -90,17 +102,16 @@ export function judgePoolFullness(input: {
 
   const paged = input.bookedSolidCodes === null ? null : new Set(input.bookedSolidCodes);
   let judged = 0;
-  const nearlyFull: NearlyFullPool[] = [];
-  for (const group of supplyPoolGroups(report.rows, report.nowMs)) {
-    const row = group.rows[0];
-    const days = row?.offeredDays;
-    if (!row || !days || days.length === 0) continue;
+  const nearlyFull: NearlyFullTier[] = [];
+  for (const tier of report.tiers) {
+    const days = tier.offeredDays;
+    if (!days || days.length === 0) continue;
     let open = 0;
     let capacity = 0;
     let readable = true;
     for (const iso of days) {
       const i = column.get(iso);
-      const cell = i === undefined ? undefined : row.cells[i];
+      const cell = i === undefined ? undefined : tier.cells[i];
       if (!cell || cell.kind === "unknown") {
         readable = false;
         break;
@@ -112,11 +123,11 @@ export function judgePoolFullness(input: {
     if (!readable || capacity <= 0) continue;
     judged++;
     if (open / capacity >= input.openShare) continue;
-    // The zero case (#1412): the page owns a pool it named, and an unknown scan
-    // might have named any pool with nothing open.
-    if (paged !== null && group.codes.some((c) => paged.has(c))) continue;
+    // The zero case (#1412): the page owns a tier any of whose codes it named, and
+    // an unknown scan might have named any tier with nothing open.
+    if (paged !== null && tier.codes.some((c) => paged.has(c))) continue;
     if (paged === null && open === 0) continue;
-    nearlyFull.push({ label: group.label, codes: group.codes, open, capacity, days });
+    nearlyFull.push({ label: tier.label, codes: tier.codes, open, capacity, days });
   }
   return { status: "measured", judged, nearlyFull };
 }
@@ -127,37 +138,36 @@ function dayList(days: string[]): string {
   return days.map((iso) => DateTime.fromISO(iso).toFormat("ccc LLL d")).join(", ");
 }
 
-function poolLine(p: NearlyFullPool, ownDays: boolean): string {
-  const name = p.label ?? `bucket ${p.codes.join(", ")}`;
-  const left = p.open === 0 ? "none" : `${p.open}`;
-  const when = ownDays ? ` (${dayList(p.days)})` : "";
-  return `${name}: ${left} of ${p.capacity} starts still open${when}.`;
+function tierLine(t: NearlyFullTier, ownDays: boolean): string {
+  const left = t.open === 0 ? "none" : `${t.open}`;
+  const when = ownDays ? ` (${dayList(t.days)})` : "";
+  return `${t.label}: ${left} of ${t.capacity} starts still open${when}.`;
 }
 
 /**
- * The whisper, or "" when no pool is nearly full, so nothing is sent rather than a
- * "0 pools" post. The days are named once in the opening line and each pool gets
- * one total (Dan, 2026-10-09), so no fact is said twice. Pools whose booker shows
+ * The whisper, or "" when no tier is nearly full, so nothing is sent rather than a
+ * "0 tiers" post. The days are named once in the opening line and each tier gets
+ * one total (Dan, 2026-10-09), so no fact is said twice. Tiers whose booker shows
  * different days (different notice) each name their own on their line instead,
- * because a shared list would claim days a pool's total does not cover.
+ * because a shared list would claim days a tier's total does not cover.
  */
-export function formatPoolNearlyFullNotice(pools: NearlyFullPool[], openShare: number): string {
-  if (!pools.length) return "";
-  const what = pools.length === 1 ? "1 pool has" : `${pools.length} pools have`;
-  const whose = pools.length === 1 ? "its" : "their";
-  const shared = pools.every((p) => p.days.join() === pools[0].days.join());
-  const where = shared ? ` (${dayList(pools[0].days)})` : "";
+export function formatPoolNearlyFullNotice(tiers: NearlyFullTier[], openShare: number): string {
+  if (!tiers.length) return "";
+  const what = tiers.length === 1 ? "1 debt tier has" : `${tiers.length} debt tiers have`;
+  const whose = tiers.length === 1 ? "its" : "their";
+  const shared = tiers.every((t) => t.days.join() === tiers[0].days.join());
+  const where = shared ? ` (${dayList(tiers[0].days)})` : "";
   return (
     `${what} fewer than ${Math.round(openShare * 100)}% of ${whose} possible starts still open ` +
     `across the days leads can book${where}. Nothing is broken: the calendars ` +
     `are filling up, so this is a nudge to add coverage before leads run out of times.\n` +
-    pools.map((p) => poolLine(p, !shared)).join("\n")
+    tiers.map((t) => tierLine(t, !shared)).join("\n")
   );
 }
 
 /**
  * One monitor tick: build the supply report, judge the days the booker shows,
- * whisper if any pool is nearly full. A failed load is `unmeasured` and sends
+ * whisper if any debt tier is nearly full. A failed load is `unmeasured` and sends
  * nothing; a refused post never fails the tick.
  */
 export async function runPoolFullnessCheck(deps: {
@@ -196,7 +206,7 @@ export async function runPoolFullnessCheck(deps: {
           judged: result.judged,
           nearly_full: result.nearlyFull.length,
           open_share: deps.openShare,
-          pools: result.nearlyFull.length ? result.nearlyFull.map((p) => p.codes.join("+")).join(",") : null,
+          tiers: result.nearlyFull.length ? result.nearlyFull.map((t) => t.label).join(",") : null,
         }
       : { status: "unmeasured", why: result.why },
   );
