@@ -358,6 +358,23 @@ describe("cspViolationPage (#2575)", () => {
         ),
       ),
     ).toEqual({ page: false, why: "extension" });
+    // The same bare word in blocked-uri, which is the other field a report can name it in.
+    expect(
+      cspViolationPage(summariseViolation(enforced({ "violated-directive": "script-src-elem", "blocked-uri": "chrome-extension" }))),
+    ).toEqual({ page: false, why: "extension" });
+  });
+
+  it("still pages a value that only starts with the scheme word, or names it in a host", async () => {
+    // The bare word is matched only as a whole scheme segment: followed by the end, a
+    // colon or a slash. A value that merely begins with it is somebody else's, and a URL
+    // whose HOST contains it is an ordinary origin, so both still page.
+    const { cspViolationPage } = await import("./csp");
+    for (const source of ["chrome-extension.example.com/x.js", "chrome-extensions", "https://chrome-extension.example.com/x.js"]) {
+      expect(
+        cspViolationPage(summariseViolation(enforced({ "blocked-uri": "inline", "source-file": source }))).page,
+        source,
+      ).toBe(true);
+    }
   });
 
   it("reads the modern report's disposition too", async () => {

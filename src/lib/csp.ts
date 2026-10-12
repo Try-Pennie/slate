@@ -238,8 +238,10 @@ export function summariseViolation(payload: unknown): ViolationSummary {
  * measured in production 2026-10-12 on /book: a `script-src-attr` inline refusal
  * that paged although it was an extension's own injected handler). Safari sends
  * the full `safari-web-extension://<uuid>/...` and was already caught. The
- * `(?:$|[:/])` keeps it anchored to the scheme segment, so a host such as
- * `chrome-extension.example.com` is not mistaken for an extension.
+ * `(?:$|[:/])` matches the word only as a whole scheme segment, so a value that
+ * merely begins with it (`chrome-extension.example.com/x.js`, `chrome-extensions`)
+ * still pages; the `^` already keeps an ordinary URL whose host contains the word
+ * (`https://chrome-extension.example.com/...`) from matching.
  */
 const EXTENSION_SCHEME = /^(chrome|moz|safari|safari-web|ms-browser)-extension(?:$|[:/])/i;
 
