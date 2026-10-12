@@ -404,13 +404,17 @@ export function resetBookingRefreshesForTests(): void {
 }
 
 /**
- * Refresh the pool a just-booked code is in, so the booked time stops being offered
- * (#2345, #2968), sharing one compute with the pool's other bookings inside the
- * window (#3258). Resolves when the refresh covering this booking has finished, and
- * REJECTS when a pool stored no row, so `afterResponse` logs the job as failed
- * rather than reporting a refresh that never landed; the recompute lane backstops it.
+ * Refresh the pool a code is in, so a stale time stops being offered, sharing one
+ * compute with everything else refreshing that pool inside the window (#3258).
+ * Resolves when the refresh covering it has finished, and REJECTS when a pool stored
+ * no row, so the caller logs a failed job rather than a refresh that never landed; the
+ * recompute lane backstops it.
+ *
+ * Two callers, one mechanism (L613): a confirmed booking, so the booked time stops
+ * being offered (#2345, #2968); and a `candidate_read_empty` refusal whose stored row
+ * was proven to still offer the refused instant (#3633, via `refusal-stored-offer.ts`).
  */
-export async function refreshPoolAfterBooking(code: string): Promise<void> {
+export async function refreshPoolOf(code: string): Promise<void> {
   const key = await poolKeyOfCode(code);
   await poolRefreshes.request(key, code, recomputePoolsOf);
 }
@@ -433,7 +437,7 @@ const recomputePoolsOf = (codes: string[]): Promise<void> =>
  * `slot-splice.ts` for the fence that keeps an older full compute from putting the
  * time back.
  *
- * It replaces `refreshPoolAfterBooking` for a confirmed booking, and since #3334 for
+ * It replaces `refreshPoolOf` for a confirmed booking, and since #3334 for
  * a reschedule or reassign too (`booked.freed`, the time the move left, goes back on
  * offer in every pool the old advisor serves): no whole pool compute, no coalescing
  * window to wait out, and the advisors' OTHER pools are covered too. The recompute

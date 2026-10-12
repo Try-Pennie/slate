@@ -12,19 +12,49 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const rpc = vi.hoisted(() => vi.fn());
 const maybeSingle = vi.hoisted(() => vi.fn());
 const upsert = vi.hoisted(() => vi.fn());
+/**
+ * The `routing_decisions` read (#3633): a chain that records every call it is
+ * given, and answers each `.range()` page from `page`, so a test can see both the
+ * filters the store asked for and how it walked the pages.
+ */
+const routing = vi.hoisted(() => {
+  const calls: unknown[][] = [];
+  const page = vi.fn<(from: number, to: number) => { data: unknown[] | null; error: { message: string } | null }>();
+  const builder = () => {
+    const b: Record<string, unknown> = {};
+    for (const method of ["select", "not", "gte", "lt", "order"]) {
+      b[method] = (...args: unknown[]) => {
+        calls.push([method, ...args]);
+        return b;
+      };
+    }
+    b.range = async (from: number, to: number) => {
+      calls.push(["range", from, to]);
+      return page(from, to);
+    };
+    return b;
+  };
+  return { calls, page, builder };
+});
 const from = vi.hoisted(() =>
-  vi.fn(() => ({
-    select: () => ({ eq: () => ({ maybeSingle }) }),
-    upsert,
-  })),
+  vi.fn((table: string) =>
+    table === "routing_decisions"
+      ? routing.builder()
+      : {
+          select: () => ({ eq: () => ({ maybeSingle }) }),
+          upsert,
+        },
+  ),
 );
 const admin = vi.hoisted(() => ({ supabaseAdmin: vi.fn(() => ({ rpc, from })) }));
 vi.mock("@/lib/supabase/admin", () => admin);
 
-import { loadRateState, saveRateState, readTodayOutcomes } from "./booking-failure-rate-store";
+import { loadRateState, saveRateState, readTodayOutcomes, readRefusedPeople } from "./booking-failure-rate-store";
+import { PAGE_SIZE } from "@/lib/supabase/paginate";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  routing.calls.length = 0;
   upsert.mockResolvedValue({ error: null });
 });
 
@@ -199,5 +229,48 @@ describe("readTodayOutcomes", () => {
     const reading = await readTodayOutcomes(Date.UTC(2026, 7, 11, 18, 0, 0));
     expect(reading.attempts).toBe(0);
     expect(reading.failures).toBe(0);
+  });
+});
+
+// #3633: who was refused a time, for the page to lead with.
+describe("readRefusedPeople", () => {
+  const SINCE = Date.UTC(2026, 9, 12, 4, 15, 0);
+  const UNTIL = Date.UTC(2026, 9, 12, 4, 25, 0);
+
+  it("reads only the window's refusals, and joins each to its bucket's test marker", async () => {
+    routing.page.mockReturnValue({
+      data: [
+        { id: "1", lead_id: "00QUi000011BI7B", buckets: { is_test: false } },
+        { id: "2", lead_id: "00QUi000011BI7B", buckets: { is_test: false } },
+        { id: "3", lead_id: "SMOKE0000000001", buckets: { is_test: true } },
+        // The bucket was deleted (`on delete set null`): counted, as real.
+        { id: "4", lead_id: "00QUl00000OipHQ", buckets: null },
+      ],
+      error: null,
+    });
+    const out = await readRefusedPeople(SINCE, UNTIL);
+    expect(out).toEqual({ people: 2, refusals: 3, withoutLead: 0 });
+    expect(from).toHaveBeenCalledWith("routing_decisions");
+    expect(routing.calls).toContainEqual(["select", "id, lead_id, buckets(is_test)"]);
+    expect(routing.calls).toContainEqual(["not", "refusal_stage", "is", null]);
+    expect(routing.calls).toContainEqual(["gte", "created_at", new Date(SINCE).toISOString()]);
+    expect(routing.calls).toContainEqual(["lt", "created_at", new Date(UNTIL).toISOString()]);
+  });
+
+  it("walks every page, so a big outage is not cut off at the first one", async () => {
+    const full = Array.from({ length: PAGE_SIZE }, (_, i) => ({ id: `a${i}`, lead_id: `L${i}`, buckets: { is_test: false } }));
+    const rest = Array.from({ length: 5 }, (_, i) => ({ id: `b${i}`, lead_id: `M${i}`, buckets: { is_test: false } }));
+    routing.page.mockImplementation((start) => ({ data: start === 0 ? full : rest, error: null }));
+    const out = await readRefusedPeople(SINCE, UNTIL);
+    expect(out).toEqual({ people: PAGE_SIZE + 5, refusals: PAGE_SIZE + 5, withoutLead: 0 });
+    expect(routing.calls.filter((c) => c[0] === "range")).toEqual([
+      ["range", 0, PAGE_SIZE - 1],
+      ["range", PAGE_SIZE, 2 * PAGE_SIZE - 1],
+    ]);
+  });
+
+  it("THROWS when a page fails, rather than counting the pages it did get", async () => {
+    routing.page.mockReturnValue({ data: null, error: { message: "statement timeout" } });
+    await expect(readRefusedPeople(SINCE, UNTIL)).rejects.toThrow(/statement timeout/);
   });
 });

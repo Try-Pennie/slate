@@ -13,8 +13,14 @@
 import { DateTime } from "luxon";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
+import { selectAllPages, type PageableQuery } from "@/lib/supabase/paginate";
 import { normalizeMix, type OutcomeMix, type RawMix } from "@/lib/monitor/booking-api-outcome";
-import type { OutcomeReading, RateWindowState } from "@/lib/monitor/booking-failure-rate";
+import {
+  countRefusedPeople,
+  type OutcomeReading,
+  type RateWindowState,
+  type RefusedPeople,
+} from "@/lib/monitor/booking-failure-rate";
 import type { BookingFailureRateState } from "@/lib/db/types";
 
 /** The whole roster runs in one zone, and the tally buckets by ET day (#832), so
@@ -123,4 +129,40 @@ export async function readTodayOutcomes(nowMs: number): Promise<OutcomeReading> 
   // `mix.total` is summed over OUTCOME_ORDER alone, so the refusals below are
   // NOT in `attempts` and the failure share is untouched by carrying them here.
   return { day, attempts: mix.total, failures, byCode, refusals: mix.refusals };
+}
+
+/**
+ * Who was refused a time from `sinceMs` to `untilMs` (#3633): every routing decision
+ * that refused a confirm, with its lead id and its bucket's test marker, counted by
+ * `countRefusedPeople`. Paged, because `routing_decisions` grows with traffic and a
+ * real outage can put hundreds of refusals in one window; bounded above so a refusal
+ * landing while it pages cannot shift a later page. THROWS on a failed page: a short
+ * read would understate how many people were refused, and the caller already sends
+ * the page without people when this throws.
+ *
+ * The bucket join is a LEFT one, so a refusal whose bucket was deleted (the column is
+ * `on delete set null`) still counts, as real, which is the direction the tally takes.
+ * Off site testers (#2752) cannot be left out here, because a routing decision does
+ * not record the host page; at worst they add a person, never hide one.
+ *
+ * The join's shape is measured, not assumed: `bucket_id` is a many to one key, and on
+ * 2026-10-12 production returned `buckets` as a single object with a boolean
+ * `is_test` (never an array), and this read reproduced the SQL answer exactly over
+ * three windows (2 leads and 10 refusals for the 04:15Z cluster; 69 and 108 over a
+ * week). No refusal has yet come from a test bucket, so the exclusion itself is
+ * proven by `countRefusedPeople`'s unit test rather than by live data.
+ */
+export async function readRefusedPeople(sinceMs: number, untilMs: number): Promise<RefusedPeople> {
+  const rows = await selectAllPages<{ lead_id: string | null; buckets: { is_test: boolean } | null }>(
+    "booking failure rate refused people",
+    "id",
+    () =>
+      supabaseAdmin()
+        .from("routing_decisions")
+        .select("id, lead_id, buckets(is_test)")
+        .not("refusal_stage", "is", null)
+        .gte("created_at", new Date(sinceMs).toISOString())
+        .lt("created_at", new Date(untilMs).toISOString()) as unknown as PageableQuery,
+  );
+  return countRefusedPeople(rows.map((r) => ({ lead_id: r.lead_id, is_test: r.buckets?.is_test ?? null })));
 }

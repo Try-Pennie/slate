@@ -1297,10 +1297,10 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: catchallClearText(0.018, 24),
   },
   {
-    // #1313. The fixture is the 2026-08-06 cal.com shape: a wave of customers
+    // #1313. The fixture is the 2026-08-06 cal.com shape: a wave of attempts
     // refused on times that were offered to them.
     key: "booking_failure_rate",
-    state: "a wave of customers turned away",
+    state: "a wave of attempts refused",
     channel: "alert",
     text: formatFailureRateAlert({
       attempts: 82,
@@ -1314,8 +1314,36 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     }),
   },
   {
+    // #3633, the 2026-10-12 shape: two leads retrying two dead times, ten refusals.
+    // With the refused people counted, the page leads with people.
     key: "booking_failure_rate",
-    state: "a single failure (the sentence has to read in the singular too)",
+    state: "refusals traced to the people behind them",
+    channel: "alert",
+    text: formatFailureRateAlert({
+      attempts: 49,
+      failures: 10,
+      pct: 20,
+      windowMinutes: 180,
+      topCodes: [{ code: "slot_unavailable", count: 10 }],
+      refused: { people: 2, refusals: 10, withoutLead: 0 },
+    }),
+  },
+  {
+    key: "booking_failure_rate",
+    state: "some refusals carry no lead id, so the people count is a floor",
+    channel: "alert",
+    text: formatFailureRateAlert({
+      attempts: 82,
+      failures: 38,
+      pct: 46,
+      windowMinutes: 180,
+      topCodes: [{ code: "slot_unavailable", count: 35 }],
+      refused: { people: 4, refusals: 35, withoutLead: 2 },
+    }),
+  },
+  {
+    key: "booking_failure_rate",
+    state: "a single failed attempt",
     channel: "alert",
     text: formatFailureRateAlert({
       attempts: 24,

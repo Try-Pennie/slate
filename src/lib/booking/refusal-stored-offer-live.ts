@@ -2,14 +2,16 @@ import { afterResponse } from "@/lib/after-response";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
+import { refreshPoolOf } from "@/lib/availability/slot-cache";
 import { refusalTraceOf } from "@/lib/booking/refusal-trace";
 import { checkStoredOffer, storedOfferCodes, type StoredSlotRow } from "@/lib/booking/refusal-stored-offer";
 
 /**
  * Schedule the stored row check for a refused confirm (#3366), after the response so
  * the lead's 409 never waits on it. A refusal that is not `candidate_read_empty`, or
- * an error with no trace, schedules nothing and reads nothing. The decision and the
- * log line are `refusal-stored-offer.ts`; this binds the one read.
+ * an error with no trace, schedules nothing and reads nothing. The decision, the log
+ * line and the refresh are `refusal-stored-offer.ts`; this binds the one read and the
+ * pool refresh.
  */
 export function scheduleStoredOfferCheck(err: unknown): void {
   const trace = refusalTraceOf(err);
@@ -18,6 +20,10 @@ export function scheduleStoredOfferCheck(err: unknown): void {
     checkStoredOffer(trace, {
       nowMs: () => Date.now(),
       log,
+      // #3633: the same coalesced per pool refresh the booking and push paths use, so
+      // a pool proven stale by a refusal shares one recompute with everything else
+      // refreshing it inside the window.
+      refreshPool: refreshPoolOf,
       // One primary key read of the ladder's rows: at most a handful of codes, and
       // `bucket_slots` holds one row per bucket, so it can never reach a page cap.
       readRows: async (codes) =>
