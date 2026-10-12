@@ -53,7 +53,6 @@ const holder = (over: Partial<StrandedHolder> = {}): StrandedHolder => ({
   email: "dana@example.com",
   unplaceable: 2,
   failed: 0,
-  bookingIds: [],
   ...over,
 });
 
@@ -179,7 +178,8 @@ describe("formatCoverageNeedsHumanAlert (#1242)", () => {
     const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 1, failed: 0 })]);
     expect(text).toContain("1 appointment");
     expect(text).not.toContain("1 appointments");
-    expect(text).toMatch(/That customer|it/);
+    expect(text).toContain("that time");
+    expect(text).toContain("It is still with an advisor");
   });
 
   it("reads correctly for several appointments across several agents", () => {
@@ -192,23 +192,40 @@ describe("formatCoverageNeedsHumanAlert (#1242)", () => {
   });
 
   // Counting the nouns is not enough: several appointments spread across several
-  // agents still said "still with AN AGENT", which satisfied every count assertion
+  // advisors still said "still with AN ADVISOR", which satisfied every count assertion
   // and read wrong. Only visible rendered (`pnpm preview:alerts`).
-  it("agrees the agent noun with how many agents are actually involved", () => {
+  it("agrees the advisor noun with how many advisors are actually involved", () => {
     const oneAgent = formatCoverageNeedsHumanAlert([holder({ unplaceable: 4 })]);
-    expect(oneAgent).toContain("still with an agent who will not be there");
+    expect(oneAgent).toContain("still with an advisor who will not be there");
     const twoAgents = formatCoverageNeedsHumanAlert([
       holder({ userId: "u1", unplaceable: 2 }),
       holder({ userId: "u2", email: "sam@example.com", unplaceable: 2 }),
     ]);
-    expect(twoAgents).toContain("still with agents who will not be there");
-    expect(twoAgents).not.toContain("still with an agent");
+    expect(twoAgents).toContain("still with advisors who will not be there");
+    expect(twoAgents).not.toContain("still with an advisor");
   });
 
-  it("says which outcome each agent's appointments hit", () => {
+  // Why it could not be moved is stated once up front; a move that kept erroring is the
+  // exception, called out on its own holder line (#3485 readability, 2026-10-11).
+  it("states the reason up front and calls out a move that kept failing", () => {
     const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 1, failed: 2 })]);
-    expect(text).toMatch(/could not be placed|nobody was free/i);
-    expect(text).toMatch(/kept failing|error/i);
+    expect(text).toMatch(/no one else was free/i);
+    expect(text).toMatch(/kept failing/i);
+  });
+
+  // When EVERY call is a failed move (nobody was ever found to be free), the headline must
+  // not claim "no one else was free", a reason that was never measured (review finding).
+  it("says the move kept failing, not that no one was free, when every call is a failed move", () => {
+    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 0, failed: 2 })]);
+    expect(text).toMatch(/because the move kept failing/i);
+    expect(text).not.toMatch(/no one else was free/i);
+  });
+
+  // The failed count is a SUBSET of the total, rendered as "N appointments, M where the
+  // move kept failing" so it never reads as N plus M (review finding).
+  it("renders the failed count as a subset of the holder total", () => {
+    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 4, failed: 2 })]);
+    expect(text).toContain("6 appointments, 2 where the move kept failing");
   });
 
   it("caps the named agents and says how many more there are", () => {
@@ -547,10 +564,10 @@ describe("countStranded excludes an agent who is bookable again (#3597)", () => 
   });
 });
 
-// #3485: the alert says WHY the agent will not be there, and links the booking and the
-// agent so a human can act in one tap. The reason lives on the sweep job (the time-off
-// request, offboarding, a pool exit, an admin). Dan, 2026-10-11: say the cause and the
-// window, never the agent's own free-text reason; and hyperlink the booking.
+// #3485: the alert says WHY the agent will not be there, and links the advisor to their
+// Move-bookings page so a human can act in one tap. The reason lives on the sweep job (the
+// time-off request, offboarding, a pool exit, an admin). Dan, 2026-10-11: say the cause and
+// the window, never the agent's own free-text reason.
 const TIME_OFF: SweepCause = {
   kind: "time-off",
   timeOff: {
@@ -720,9 +737,9 @@ describe("the cause flows from the sweep to the holder (#3485)", () => {
 });
 
 describe("the coverage alert says why the agent will not be there (#3485)", () => {
-  it("states approved time off and its window when that is the cause", () => {
+  it("states time off and its window when that is the cause", () => {
     const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 1, cause: TIME_OFF })]);
-    expect(text).toMatch(/approved time off/i);
+    expect(text).toMatch(/on time off/i);
     // The window, in the request's own display zone, not the agent's typed reason.
     expect(text).toContain("Oct 13");
     expect(text).toContain("CT");
@@ -744,37 +761,37 @@ describe("the coverage alert says why the agent will not be there (#3485)", () =
 
   it("adds no reason clause when the cause is unknown or absent", () => {
     expect(formatCoverageNeedsHumanAlert([holder({ cause: { kind: "unknown" } })])).not.toMatch(
-      /approved time off|left the pool|routing pool/i,
+      /on time off|left the pool|routing pool/i,
     );
     expect(formatCoverageNeedsHumanAlert([holder()])).not.toMatch(
-      /approved time off|left the pool|routing pool/i,
+      /on time off|left the pool|routing pool/i,
     );
   });
 });
 
-describe("the coverage alert links the booking and the agent (#3485)", () => {
+describe("the coverage alert links the advisor, with no booking-id wall (#3485, readability 2026-10-11)", () => {
   const BASE = "https://slate.example.com";
-  const BK = "e100e755-1aca-4df5-8f40-da0f10fc2173";
 
-  it("hyperlinks each stranded booking to its admin page when a base url is given", () => {
-    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 1, bookingIds: [BK] })], BASE);
-    expect(text).toContain(`<${BASE}/admin/bookings/${BK}|${BK}>`);
-  });
-
-  it("links the agent to their move-bookings page", () => {
+  it("links the advisor to their move-bookings page when a base url is given", () => {
     const text = formatCoverageNeedsHumanAlert([holder({ userId: "u1", unplaceable: 1 })], BASE);
     expect(text).toContain(`<${BASE}/admin/agents/u1|`);
   });
 
-  it("renders plain ids and no links when no base url is given (backward compatible)", () => {
-    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 1, bookingIds: [BK] })]);
-    expect(text).toContain(BK);
+  it("carries no raw booking uuids and no booking links", () => {
+    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 3 })], BASE);
+    expect(text).not.toContain("/admin/bookings/");
+    expect(text).toContain("3 appointments");
+  });
+
+  it("renders the advisor plainly and no links when no base url is given", () => {
+    const text = formatCoverageNeedsHumanAlert([holder({ userId: "u1", unplaceable: 1 })]);
     expect(text).not.toContain("<http");
+    expect(text).toContain("Dana Ruiz");
   });
 
   // A display name is DB text: a stray > ends the link and a stray | splits the label
   // (review finding, 2026-10-11). The label must be escaped.
-  it("escapes the agent label so a name with > or | cannot break the link", () => {
+  it("escapes the advisor label so a name with > or | cannot break the link", () => {
     const text = formatCoverageNeedsHumanAlert(
       [holder({ userId: "u1", name: "A>B|C", email: "a@example.com", unplaceable: 1 })],
       BASE,
@@ -784,31 +801,13 @@ describe("the coverage alert links the booking and the agent (#3485)", () => {
   });
 });
 
-// #3594: the alert names WHICH bookings are stranded, so nobody has to query the database
-// to find the call about to meet nobody (it took several queries on 2026-10-10).
-describe("the coverage alert names the stranded bookings (#3594)", () => {
-  const agents: CoverageOutAgent[] = [{ id: "u1", name: "Dana Ruiz", email: "dana@example.com" }];
-
-  it("carries the booking ids per holder, in the order seen", () => {
-    const holders = strandedHoldersFromItems(
-      [item({ bookingId: "b1", outUserId: "u1" }), item({ bookingId: "b2", outUserId: "u1" })],
-      agents,
-    );
-    expect(holders[0].bookingIds).toEqual(["b1", "b2"]);
-  });
-
-  it("names the booking id in the page so it is actionable without a database query", () => {
-    const bk = "1ec69300-f649-4eda-b08a-ca0aee01f5dc";
-    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 1, bookingIds: [bk] })]);
-    expect(text).toContain(bk);
-  });
-
-  it("caps the named ids and summarises the rest, so a broad gap stays readable on a phone", () => {
-    const ids = Array.from({ length: 8 }, (_, i) => `bk-${i}`);
-    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 8, bookingIds: ids })]);
-    expect(text).toContain("bk-0");
-    expect(text).toContain("bk-4");
-    expect(text).not.toContain("bk-5"); // past the cap
-    expect(text).toContain("and 3 more");
+// Superseded by the readability redesign (2026-10-11): the per-booking uuid list (#3594)
+// rendered as a wall on a phone, so the specific calls now live on the advisor's page the
+// name links to, and the alert carries no booking ids.
+describe("the coverage alert is readable without a booking-id wall", () => {
+  it("names how many calls per advisor, not the ids", () => {
+    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 8 })]);
+    expect(text).toContain("8 appointments");
+    expect(text).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/); // no uuid anywhere
   });
 });

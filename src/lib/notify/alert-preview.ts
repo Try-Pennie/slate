@@ -2046,10 +2046,10 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatCalcomRetiredSweepEnding(),
   },
   {
-    // #3485: why the agent will not be there (approved time off, with its window), and
-    // the booking and agent as links. The common real case, David Shearer's on 2026-10-11.
+    // #3485: why the advisor will not be there (time off, with its window), advisor linked,
+    // no booking-id wall (readability, 2026-10-11). The common real case, David Shearer's.
     key: "coverage_needs_human",
-    state: "one appointment nobody was free for (time off, linked)",
+    state: "one appointment, advisor on time off (linked)",
     channel: "alert",
     text: formatCoverageNeedsHumanAlert(
       [
@@ -2059,7 +2059,6 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
           email: "dana.ruiz@example.com",
           unplaceable: 1,
           failed: 0,
-          bookingIds: ["1ec69300-f649-4eda-b08a-ca0aee01f5dc"],
           cause: {
             kind: "time-off",
             timeOff: {
@@ -2087,7 +2086,6 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
           email: "dana.ruiz@example.com",
           unplaceable: 4,
           failed: 2,
-          bookingIds: Array.from({ length: 6 }, (_, i) => `bk-ruiz-${i}`),
           cause: {
             kind: "time-off",
             timeOff: {
@@ -2098,8 +2096,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
             },
           },
         },
-        { userId: "u2", name: "Sam Okafor", email: "sam.okafor@example.com", unplaceable: 0, failed: 1, bookingIds: ["bk-okafor-1"], cause: { kind: "offboarded" } },
-        { userId: "u3", name: null, email: "kim.ito@example.com", unplaceable: 1, failed: 0, bookingIds: ["bk-ito-1"] },
+        { userId: "u2", name: "Sam Okafor", email: "sam.okafor@example.com", unplaceable: 0, failed: 1, cause: { kind: "offboarded" } },
+        { userId: "u3", name: null, email: "kim.ito@example.com", unplaceable: 1, failed: 0 },
       ],
       "https://slate.example.com",
     ),
@@ -2118,7 +2116,6 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
           email: `agent${i}@example.com`,
           unplaceable,
           failed,
-          bookingIds: Array.from({ length: unplaceable + failed }, (_, j) => `bk-${i}-${j}`),
         };
       }),
     ),

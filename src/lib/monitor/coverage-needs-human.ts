@@ -36,7 +36,7 @@ export interface TimeOffWindow {
 
 /**
  * Best-effort time-off windows for the stranded page's reason clause (#3485). This read
- * ONLY enriches the page with "on approved time off, <when>", so a failure must degrade
+ * ONLY enriches the page with "on time off <when>", so a failure must degrade
  * to no window and NEVER propagate: were it to throw out of the loader, the whole
  * stranded check would report `unreadable` and a real page would be suppressed for the
  * sake of a cosmetic clause (review finding, 2026-10-11). On failure it reports through
@@ -338,12 +338,6 @@ export interface StrandedHolder {
   /** The move itself kept erroring until it ran out of attempts. */
   failed: number;
   /**
-   * The booking ids this agent is stranded with (#3594), in the order seen, so the alert
-   * can name WHICH call needs a hand rather than only how many. Finding the stranded
-   * booking otherwise took several database queries. Capped when rendered, not here.
-   */
-  bookingIds: string[];
-  /**
    * Why this agent will not be there (#3485), so the alert says the reason rather than
    * only "an agent who will not be there". Undefined when the loader did not resolve it;
    * `unknown` when a holder's stranded calls came from sweeps that disagree on why, so
@@ -400,14 +394,12 @@ export function strandedHoldersFromItems(
         email: agent?.email ?? null,
         unplaceable: 0,
         failed: 0,
-        bookingIds: [],
         cause,
       };
       holders.set(it.outUserId, h);
     } else if (!sameCause(h.cause ?? { kind: "unknown" }, cause)) {
       h.cause = { kind: "unknown" };
     }
-    h.bookingIds.push(it.bookingId);
     if (it.status === "failed") h.failed++;
     else h.unplaceable++;
   }
@@ -433,7 +425,7 @@ const whoIs = (h: StrandedHolder): string => {
  * Escape a Slack link LABEL (#3485). An agent name is DB text, so a stray `<`, `>`,
  * `&` or `|` would break the `<url|label>` link or the message around it: `>` ends the
  * link, `|` is the url/label separator. Slack escapes the first three as entities; `|`
- * has no entity, so it becomes a slash. The booking ids are uuids and need none of this.
+ * has no entity, so it becomes a slash.
  */
 const slackLabel = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\|/g, "/");
@@ -447,67 +439,65 @@ const whoLink = (h: StrandedHolder, appBaseUrl?: string): string =>
   appBaseUrl ? `<${appBaseUrl}/admin/agents/${h.userId}|${slackLabel(whoIs(h))}>` : whoIs(h);
 
 /**
- * Why the agent will not be there, as a clause for the holder line (#3485), or null
- * when there is nothing specific to say. Never the agent's own free-text reason: the
- * kind, and for time off the window in the request's display zone (Dan, 2026-10-11).
+ * Why the agent will not be there, as a short NOUN phrase for the holder line (#3485), or
+ * null when there is nothing specific to say. Reads as "<name>, <phrase>: N appointments".
+ * Never the agent's own free-text reason: the kind, and for time off the window in the
+ * request's display zone (Dan, 2026-10-11).
  */
 function causePhrase(cause: SweepCause | undefined): string | null {
   if (!cause) return null;
   switch (cause.kind) {
     case "time-off": {
       const { startsAt, endsAt, tzId, tzLabel } = cause.timeOff;
-      return `is on approved time off, ${formatWhenLine(startsAt, endsAt, tzId ?? "Etc/UTC", tzLabel ?? undefined)}`;
+      return `on time off ${formatWhenLine(startsAt, endsAt, tzId ?? "Etc/UTC", tzLabel ?? undefined)}`;
     }
     case "offboarded":
-      return "has left the pool";
+      return "left the pool";
     case "redistribute":
-      return "was taken out of the routing pool";
+      return "taken out of the routing pool";
     case "demotion":
-      return "changed routing tier, so this call is no longer theirs to take";
+      return "changed routing tier";
     case "admin":
-      return "was taken out of this pool by an admin";
+      return "taken out of this pool by an admin";
     case "unknown":
       return null;
   }
 }
 
-/** How many stranded booking ids to name per holder before the rest are summarised: a
- *  handful is enough to act on without turning a phone alert into a wall of uuids. */
-const BOOKING_ID_CAP = 5;
-
-/** Human line for one holder: who, how many, which outcome (since the remediation differs
- *  per outcome), and WHICH bookings (#3594), so nobody has to query the database to find
- *  the stranded call. */
+/**
+ * One holder line (#3485, redesigned for readability 2026-10-11): the advisor, linked to
+ * their Move-bookings page, their absence reason, and how many calls. NO booking ids: Dan,
+ * 2026-10-11, chose the clean advisor-link form over the per-booking uuid list (#3594),
+ * which rendered as a wall of ids on a phone; the specific calls are on the advisor's page
+ * the name links to. The two outcomes stay distinct only when a move actually kept failing,
+ * since that needs different handling (L11); otherwise the count is just the appointments.
+ */
 function holderLine(h: StrandedHolder, appBaseUrl?: string): string {
-  const parts: string[] = [];
-  if (h.unplaceable > 0) {
-    parts.push(`${plural(h.unplaceable, "appointment", "appointments")} nobody was free for`);
+  const total = h.unplaceable + h.failed;
+  // The failed count is a SUBSET of the total, so render it as "N appointments, M where the
+  // move kept failing" (not "4, 2" which reads as 4 plus 2 = 6 or as 4 of which 2). The two
+  // outcomes need different handling (L11), so a move that kept erroring is still called out.
+  let count: string;
+  if (h.unplaceable > 0 && h.failed > 0) {
+    count = `${plural(total, "appointment", "appointments")}, ${h.failed} where the move kept failing`;
+  } else if (h.failed > 0) {
+    count = `${plural(h.failed, "appointment", "appointments")} where the move kept failing`;
+  } else {
+    count = plural(h.unplaceable, "appointment", "appointments");
   }
-  if (h.failed > 0) {
-    parts.push(`${plural(h.failed, "appointment", "appointments")} where the move kept failing`);
-  }
-  // #3485: each booking id is a link to its page in Admin when a base url is known, so
-  // the stranded call is one tap away; a bare id otherwise.
-  const linkId = (id: string): string => (appBaseUrl ? `<${appBaseUrl}/admin/bookings/${id}|${id}>` : id);
-  const shown = h.bookingIds.slice(0, BOOKING_ID_CAP).map(linkId).join(", ");
-  const extra = h.bookingIds.length > BOOKING_ID_CAP ? ` and ${h.bookingIds.length - BOOKING_ID_CAP} more` : "";
-  const ids = h.bookingIds.length > 0 ? ` (booking ${shown}${extra})` : "";
   const who = whoLink(h, appBaseUrl);
   const phrase = causePhrase(h.cause);
-  // With a reason the line reads "<who> is on approved time off, <when>. N appointment..."
-  // Without one the existing "<who>, N appointment..." shape is kept (#3485).
-  return phrase ? `${who} ${phrase}. ${parts.join(", ")}${ids}` : `${who}, ${parts.join(", ")}${ids}`;
+  return phrase ? `${who}, ${phrase}: ${count}` : `${who}: ${count}`;
 }
 
 /**
- * The page. States the customer-facing consequence first, because that is what
- * decides whether someone acts at 7am, then names the agents, which outcome they hit,
- * and WHICH bookings (#3594: the id is named so nobody has to query the database to find
- * the stranded call, which took several queries on 2026-10-10), and WHY the agent will not
- * be there (#3485: the sweep's cause, and for time off the absence window, so the reader
- * knows what they are fixing), then points at the ONE place that fixes it. With a base url
- * the booking and the agent are links. The bookings' OWN times are still left out: the
- * coverage panel has them and a page is read on a phone.
+ * The page. States the customer-facing consequence and the reason first (could not be
+ * moved, because no one else was free), then each advisor: their name linked to the
+ * Move-bookings page that fixes it, WHY they will not be there (#3485: the sweep's cause,
+ * and for time off the absence window), and how many calls. Redesigned for readability on
+ * 2026-10-11 (Dan): the per-booking uuid links (#3594) rendered as a wall on a phone, so
+ * the specific calls now live on the advisor's page the name links to, and the alert
+ * carries no booking ids. The bookings' OWN times are left out for the same reason.
  *
  * Verbs agree with the subject in both directions. Counting the nouns is not
  * enough, which is only visible rendered (`pnpm preview:alerts`).
@@ -518,13 +508,25 @@ export function formatCoverageNeedsHumanAlert(holders: StrandedHolder[], appBase
   const oneAgent = holders.length === 1;
   const lines = holders.slice(0, NAME_CAP).map((h) => holderLine(h, appBaseUrl));
   const more = holders.length > NAME_CAP ? `\n(and ${holders.length - NAME_CAP} more)` : "";
+  // Why it could not be moved is stated once, up front, because that is the question a
+  // reader asks (Dan, 2026-10-11), and it may claim only what is true (L11). There are only
+  // two outcomes: no one else was free, or the move kept erroring. When every call is one
+  // outcome the headline gives that reason; when a page mixes them it splits the count by
+  // reason, so "no one was free" is never claimed for a failed move. The specific calls live
+  // on the advisor's page the name links to, so the alert carries no booking ids.
+  const totalUnplaceable = holders.reduce((n, h) => n + h.unplaceable, 0);
+  const totalFailed = holders.reduce((n, h) => n + h.failed, 0);
+  const headline =
+    totalFailed === 0
+      ? `${plural(total, "appointment", "appointments")} could not be moved to another advisor, because no one else was free at ${one ? "that time" : "those times"}.`
+      : totalUnplaceable === 0
+        ? `${plural(total, "appointment", "appointments")} could not be moved to another advisor, because the move kept failing.`
+        : `${plural(total, "appointment", "appointments")} could not be moved to another advisor: ${totalUnplaceable} because no one else was free, and ${totalFailed} because the move kept failing.`;
   return (
-    `${plural(total, "appointment", "appointments")} could not be moved to another advisor and ` +
-    `${one ? "is" : "are"} still with ` +
-    `${oneAgent ? "an agent who will not be there" : "agents who will not be there"}. ` +
-    `${one ? "That customer" : "Those customers"} will meet nobody unless someone moves ` +
-    `${one ? "it" : "them"} by hand. Reassign ` +
-    `${one ? "it" : "them"} from the agent's page in Admin, under ${COVERAGE_PANEL_NAME}.\n` +
+    `${headline} ` +
+    `${one ? "It is" : "They are"} still with ` +
+    `${oneAgent ? "an advisor who will not be there" : "advisors who will not be there"}, so ` +
+    `${one ? "it" : "each"} must be moved by hand from the advisor's page in Admin, under ${COVERAGE_PANEL_NAME}:\n` +
     lines.join("\n") +
     more
   );
@@ -557,8 +559,8 @@ export interface StrandedRead {
   /** Taken before the reads began, so anything landing during them reads as news next tick. */
   asOfMs: number;
   /**
-   * The deployment's base url (#3485), so the page can link the booking and the agent.
-   * Optional: omitted, the page renders bare ids and names, as it did before.
+   * The deployment's base url (#3485), so the page can link each advisor to their page.
+   * Optional: omitted, the page renders each advisor's plain name instead of a link.
    */
   appBaseUrl?: string;
 }
