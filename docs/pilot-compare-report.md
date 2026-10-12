@@ -66,7 +66,10 @@ memory, and never printed.
   `scripts/lib/pilot-compare.ts`, in a commit, so nobody can move it by setting a
   variable. Before the first span closes a run is a PARTIAL look (exit 16); after
   that and before the readout date it is PROVISIONAL (exit 12), and from the
-  readout date on the cohort stops growing.
+  readout date on the cohort stops growing. **Fixed at 2026-10-24** (Dan,
+  2026-10-12): the cohort is applications made from 2026-10-02 through 2026-10-23
+  Eastern, and the first run that can be the readout is from 2026-10-31 03:00 ET,
+  once the last of them has had its 7 days plus the 3 hour grace.
 
 ## What it cannot see
 

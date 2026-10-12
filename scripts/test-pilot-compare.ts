@@ -19,6 +19,7 @@ import {
   ASSUMED_PERCENT,
   MAX_UNMATCHED_SHARE,
   SPAN_DAYS,
+  READOUT_DATE,
   type Application,
   type SlateBookingRow,
   type RegalCall,
@@ -148,7 +149,8 @@ const clean = (lines: string[]) => !lines.some((l) => /undefined|NaN|\[object Ob
 
   // Ten days in: applications made on 10-02 and 10-03 have closed their 7 day span plus grace.
   const now = Date.parse("2026-10-12T12:00:00Z");
-  const w = planWindow(now, {});
+  // null explicitly: this case is about a run before any date is fixed, not the committed one.
+  const w = planWindow(now, {}, null);
   assert(w.ok, "ten days in the window is open");
   if (w.ok) {
     eq(w.window.startMs, WINDOW_START, "the cohort starts at the window");
@@ -191,6 +193,18 @@ const clean = (lines: string[]) => !lines.some((l) => /undefined|NaN|\[object Ob
   const partFixed = planWindow(midway, {}, "2026-10-20");
   eq(partFixed.ok && partFixed.window.readout.reached, false, "a fixed readout date does not make a partial run reached");
   eq(reh.ok && reh.window.partial, false, "a rehearsal is never partial");
+}
+
+// The committed readout date (rule 8), fixed on 2026-10-12 from the first provisional
+// run's proposal: the window start plus the 22 day show rate estimate.
+{
+  eq(READOUT_DATE, "2026-10-24", "the readout date is fixed at 2026-10-24");
+  const before = planWindow(Date.parse("2026-10-12T12:00:00Z"), {});
+  assert(before.ok && before.window.readout.date === "2026-10-24" && !before.window.readout.reached, "a run before it reads the committed date and is provisional");
+  // 2026-10-24 ET plus the 7 day span plus the 3 hour grace has passed by 2026-11-01.
+  const after = planWindow(Date.parse("2026-11-01T12:00:00Z"), {});
+  assert(after.ok && after.window.readout.reached, "once its span has closed the readout is reached");
+  if (after.ok) eq(iso(after.window.cohortEndMs), "2026-10-24T04:00:00.000Z", "and the cohort stops at midnight Eastern on 2026-10-24");
 }
 
 // --- 3. cal.com reschedule chains -------------------------------------------------------------

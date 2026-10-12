@@ -131,9 +131,11 @@ export const JUDGE_GRACE_MS = 3 * 3_600_000;
 /**
  * The fixed readout date (rule 8), as an Eastern calendar date, or null until the
  * first readable run proposes one. Recording it is a code change on purpose: it is
- * reviewed, and nobody can move it by setting a variable.
+ * reviewed, and nobody can move it by setting a variable. Fixed on 2026-10-12 from
+ * that run's proposal (the window start plus the 22 day show rate estimate), when the
+ * booking rate already read Slate higher and held calls could not be told apart.
  */
-export const READOUT_DATE: string | null = null;
+export const READOUT_DATE: string | null = "2026-10-24";
 
 /** A show: one human call of at least this much talk time... */
 export const SHOW_MIN_TALK_S = 300;
