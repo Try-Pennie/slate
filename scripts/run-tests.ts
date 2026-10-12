@@ -26,6 +26,7 @@ import { nodeOptionsWithHook } from "./lib/clock-shift.ts";
 import {
   TRIPWIRE_COULD_NOT_START,
   formatTripwireFindings,
+  nameSuspects,
   resolveTripwireMode,
   startTreeWatch,
   tripwireFailed,
@@ -135,16 +136,19 @@ async function main() {
     process.exit(1);
   }
 
-  // Who to name beside a tree write. An event is delivered a little after the
-  // write, and a suite whose child wrote on its way out has often exited by then,
-  // so a suite that finished within SUSPECT_GRACE_MS is named too. These are
-  // suspects for a person to read, never a verdict anything acts on.
+  // Who to name beside a tree write: nameSuspects in the tripwire library decides,
+  // including the late event that arrives after every suite has ended (#3524). These
+  // are suspects for a person to read, never a verdict anything acts on.
   const running = new Set<string>();
   const endedAt = new Map<string, number>();
   const suspects = () => {
-    const now = performance.now();
-    const recent = [...endedAt].filter(([, t]) => now - t <= SUSPECT_GRACE_MS).map(([f]) => f);
-    return [...new Set([...running, ...recent])].map((f) => relative(repoRoot, f));
+    const rel = (f: string) => relative(repoRoot, f);
+    return nameSuspects(
+      performance.now(),
+      new Set([...running].map(rel)),
+      new Map([...endedAt].map(([f, t]) => [rel(f), t] as const)),
+      SUSPECT_GRACE_MS,
+    );
   };
   let treeWatch: TreeWatch | null = null;
   if (tripwire.kind === "on") {

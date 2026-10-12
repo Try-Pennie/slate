@@ -42,6 +42,10 @@
 // when it stops. Any file that differs and the watch never named still fails the run,
 // labelled as found by the comparison. The watch is still what sees a file made and
 // removed again inside the run (the #2712 hazard itself) and what names suspects.
+// The comparison also judges the opposite error: macOS can deliver an event for a
+// write made just BEFORE the stream existed after the start fence, which read as a
+// write in the run. A path the watch named that is identical at both ends was not
+// touched during the run, so that event is dropped.
 //
 // WHAT IT CANNOT SEE, so a clean run is never read as more than it is (L400):
 // writes anywhere outside scripts/, src/ and worker/; on macOS under load, a file
@@ -50,7 +54,7 @@
 // global setup runs in vitest's main process and is told nothing about the files its
 // workers are running). A write the comparison alone found names nobody, since by
 // then nothing says when it happened.
-import { lstatSync, readdirSync, watch, writeFileSync, rmSync, type FSWatcher } from "node:fs";
+import { lstatSync, readdirSync, watch, writeFileSync, rmSync, type Dirent, type FSWatcher } from "node:fs";
 import { join, resolve } from "node:path";
 
 export const TRIPWIRE_WATCHED_DIRS = ["scripts", "src", "worker"] as const;
@@ -222,26 +226,41 @@ export function reportsWatchUnavailable(output: string): boolean {
   return output.includes(TRIPWIRE_COULD_NOT_START) || output.includes(WATCH_FAILED_HEADER);
 }
 
-/** Every file under the watched dirs as `size:mtimeMs:ino`, plus any dir it could not read. */
+/**
+ * Every file under the watched dirs as `size:mtimeMs:ino`, every directory below them
+ * as `mtimeMs:ino`, and any dir it could not read. Files are what the comparison
+ * reports; directories are only ever used to judge whether a path the WATCH named was
+ * touched during the run, since a dir's mtime moves whenever an entry in it does.
+ */
 interface TreeSnapshot {
   files: Map<string, string>;
+  dirs: Map<string, string>;
   unreadable: string[];
 }
 
+/** Lists one directory's entries; the seam the snapshot reads through. */
+export type ReadDir = (path: string) => Dirent[];
+const realReadDir: ReadDir = (path) => readdirSync(path, { withFileTypes: true });
+
 /**
- * Read every file under the watched dirs. Never throws: a dir that cannot be read is
- * listed as unreadable rather than treated as empty, because an empty read on one
- * side would report every file in it as removed or as new (L50). A file gone between
- * the listing and its stat is simply absent, which is what it is by then.
+ * Read every file under the watched dirs. Never throws, and tells two failures apart
+ * (L11). A NESTED dir gone between its parent's listing and its own read is absent,
+ * exactly as a file gone before its stat is: whatever was in it is reported as
+ * removed, which is what happened. Any other failure, and a watched dir itself
+ * missing, is listed as unreadable rather than treated as empty, because an empty
+ * read on one side would report every file in it as removed or as new (L50).
  */
-function snapshotTree(root: string): TreeSnapshot {
+function snapshotTree(root: string, readDir: ReadDir): TreeSnapshot {
   const files = new Map<string, string>();
+  const dirs = new Map<string, string>();
   const unreadable: string[] = [];
-  const walk = (abs: string, rel: string) => {
-    let entries;
+  const walk = (abs: string, rel: string, top: boolean) => {
+    let entries: Dirent[];
     try {
-      entries = readdirSync(abs, { withFileTypes: true });
+      entries = readDir(abs);
     } catch (err) {
+      const gone = (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
+      if (gone && !top) return;
       unreadable.push(`${rel}/ (${reason(err)})`);
       return;
     }
@@ -249,7 +268,13 @@ function snapshotTree(root: string): TreeSnapshot {
       const childRel = `${rel}/${e.name}`;
       const childAbs = join(abs, e.name);
       if (e.isDirectory()) {
-        walk(childAbs, childRel);
+        try {
+          const s = lstatSync(childAbs);
+          dirs.set(childRel, `${s.mtimeMs}:${s.ino}`);
+        } catch {
+          // Removed between the listing and the stat: absent, and the walk below says so.
+        }
+        walk(childAbs, childRel, false);
         continue;
       }
       if (isAllowedTreeWrite(childRel)) continue;
@@ -261,8 +286,66 @@ function snapshotTree(root: string): TreeSnapshot {
       }
     }
   };
-  for (const dir of TRIPWIRE_WATCHED_DIRS) walk(join(root, dir), dir);
-  return { files, unreadable };
+  for (const dir of TRIPWIRE_WATCHED_DIRS) walk(join(root, dir), dir, true);
+  return { files, dirs, unreadable };
+}
+
+/**
+ * Whether a path the watch named is IDENTICAL at both ends of the run, so its event
+ * was a late delivery of something done before the run began rather than a write in
+ * it (#3524). A write always moves the file's mtime, and an entry made or removed in
+ * a dir moves the dir's, so an identical signature at both ends means nothing touched
+ * it during the run. A path absent from either end (a file made and removed again
+ * inside the run, the #2712 hazard) is never judged stale, so it stays a write.
+ */
+function unchangedThroughout(path: string, before: TreeSnapshot, after: TreeSnapshot): boolean {
+  for (const key of ["files", "dirs"] as const) {
+    const b = before[key].get(path);
+    if (b !== undefined) return after[key].get(path) === b;
+  }
+  return false;
+}
+
+/**
+ * Who to name beside a write the watch saw: the suites running when the event
+ * arrived, and those that ended within `graceMs` of it, since an event lands a little
+ * after its write. Suspects for a person to read, never a verdict.
+ *
+ * An event that arrives after EVERY suite has ended and outside the grace names the
+ * suite that ended last, and says how long before the event it ended (#3524). It used
+ * to say "none", which claims nothing ran when the honest answer is that the event
+ * was late: measured 2026-10-12 at load 15 to 20, three in twenty events for a
+ * one-suite run arrived past the 2s grace. The grace is not widened instead, because
+ * at the gate's concurrency every extra second names several more unrelated suites.
+ */
+export function nameSuspects(
+  now: number,
+  running: ReadonlySet<string>,
+  endedAt: ReadonlyMap<string, number>,
+  graceMs: number,
+): string[] {
+  const recent = [...endedAt].filter(([, t]) => now - t <= graceMs).map(([f]) => f);
+  const named = [...new Set([...running, ...recent])];
+  if (named.length > 0) return named;
+  let last: [string, number] | null = null;
+  for (const entry of endedAt) if (last === null || entry[1] > last[1]) last = entry;
+  if (last === null) return [];
+  const lateBy = ((now - last[1]) / 1000).toFixed(1);
+  return [`none; it arrived ${lateBy}s after the last suite ended, which was ${last[0]}`];
+}
+
+/**
+ * Whether a path is an event about a watched dir ITSELF. libuv names an event on the
+ * watched path by its basename, so `src/` reports its own creation, or a change to
+ * its entries, as "src", which reads as a file src/src. It identifies no written file:
+ * a write inside the dir is reported under its own path, and a dir removed or replaced
+ * breaks the end fence. Only when no such entry exists at either end, so a real
+ * src/src is still judged; a src/src made and removed inside the run is the one thing
+ * this cannot tell apart (#3524).
+ */
+function isWatchedDirSelfEvent(path: string, before: TreeSnapshot, after: TreeSnapshot): boolean {
+  if (!TRIPWIRE_WATCHED_DIRS.some((d) => path === `${d}/${d}`)) return false;
+  return ![before, after].some((s) => s.files.has(path) || s.dirs.has(path));
 }
 
 /** The paths that differ between two snapshots: new, changed or removed, sorted. */
@@ -277,6 +360,8 @@ function changedPaths(before: Map<string, string>, after: Map<string, string>): 
 export interface TreeWatchDeps {
   watch?: typeof watch;
   writeProbe?: (path: string, data: string) => void;
+  /** How the before and after comparison lists a directory. */
+  readDir?: ReadDir;
 }
 
 const reason = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -295,6 +380,7 @@ export async function startTreeWatch(
 ): Promise<{ watch: TreeWatch } | { error: string }> {
   const watchFn = deps.watch ?? watch;
   const writeProbe = deps.writeProbe ?? ((path: string, data: string) => writeFileSync(path, data));
+  const readDir = deps.readDir ?? realReadDir;
   const writes: TreeWrite[] = [];
   const watchFailures: string[] = [];
   const seen = new Set<string>();
@@ -404,22 +490,27 @@ export async function startTreeWatch(
   seen.clear();
   // The comparison's baseline is taken at the same moment, so the two records start
   // together (#3524).
-  const before = snapshotTree(root);
+  const before = snapshotTree(root, readDir);
 
   return {
     watch: {
       async stop() {
         const endFailures = await fence();
         closeAll();
-        const after = snapshotTree(root);
+        const after = snapshotTree(root, readDir);
         const unread = [...new Set([...before.unreadable, ...after.unreadable])].map(
           (d) => `the before and after comparison could not read ${d}, so it checked nothing there`,
         );
-        const reported = new Set(writes.map((w) => w.path));
+        // A late event for something done before the run is dropped; everything the
+        // watch named that the comparison cannot clear stays (#3524).
+        const found = writes.filter(
+          (w) => !unchangedThroughout(w.path, before, after) && !isWatchedDirSelfEvent(w.path, before, after),
+        );
+        const reported = new Set(found.map((w) => w.path));
         for (const path of changedPaths(before.files, after.files)) {
-          if (!reported.has(path)) writes.push({ path, suspects: [], missedByWatch: true });
+          if (!reported.has(path)) found.push({ path, suspects: [], missedByWatch: true });
         }
-        return { writes, watchFailures: [...watchFailures, ...endFailures, ...unread] };
+        return { writes: found, watchFailures: [...watchFailures, ...endFailures, ...unread] };
       },
     },
   };

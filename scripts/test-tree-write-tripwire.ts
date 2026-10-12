@@ -20,6 +20,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   unlinkSync,
@@ -36,6 +37,7 @@ import {
   TRIPWIRE_WATCHED_DIRS,
   formatTripwireFindings,
   isAllowedTreeWrite,
+  nameSuspects,
   probeName,
   reportsWatchUnavailable,
   resolveTripwireMode,
@@ -137,7 +139,11 @@ const RUNNER_TIMEOUT_MS = 2 * TRIPWIRE_FENCE_TIMEOUT_MS + 60_000;
 
 // A run whose own tripwire says it could not watch measured nothing, so it is re-run
 // (untilWatched), never read as the behaviour under test (#3524, L411).
-async function runRunner(files: string[], env: Record<string, string | undefined>) {
+async function runRunner(
+  files: string[],
+  env: Record<string, string | undefined>,
+  alsoUnmeasured?: (out: string) => string | null,
+) {
   const childEnv: Record<string, string | undefined> = { ...process.env };
   // The run under test must not inherit whatever armed or disarmed THIS one.
   delete childEnv.SLATE_TREE_TRIPWIRE;
@@ -152,8 +158,19 @@ async function runRunner(files: string[], env: Record<string, string | undefined
       { cwd: repoRoot, encoding: "utf8", env: childEnv as NodeJS.ProcessEnv, timeout: RUNNER_TIMEOUT_MS },
     );
     return { status: r.status, out: (r.stdout || "") + (r.stderr || "") };
-  }, label);
+  }, label, undefined, alsoUnmeasured);
 }
+
+// The positive control's write caught only by the before and after comparison: the
+// watch dropped the event, so no event existed to name a suite with and attribution
+// was not exercised (#3524). Measured: 1 in 20 runs at load 15 to 20. A LATE event is
+// not this: it names the suite that ended last, so it is judged like any other.
+const attributionUnmeasured = (path: string) => (out: string) => {
+  const line = out.split("\n").find((l) => l.includes(path)) ?? "";
+  return /before and after comparison/.test(line)
+    ? `the write to ${path} was caught only by the before and after comparison, so no event named a suite`
+    : null;
+};
 
 try {
   // THE POSITIVE CONTROL: a child process modifies an EXISTING file two levels
@@ -161,19 +178,21 @@ try {
   // recursive watch on Linux, which is what CI runs.
   {
     const root = makeRoot();
-    const r = await runRunner([fx("writes-tree.ts")], {
-      SLATE_TREE_TRIPWIRE: "on",
-      SLATE_TREE_TRIPWIRE_ROOT: root,
-      TRIPWIRE_FIXTURE_TARGET: join(root, "src", "a", "b", "c.ts"),
-    });
+    const r = await runRunner(
+      [fx("writes-tree.ts")],
+      {
+        SLATE_TREE_TRIPWIRE: "on",
+        SLATE_TREE_TRIPWIRE_ROOT: root,
+        TRIPWIRE_FIXTURE_TARGET: join(root, "src", "a", "b", "c.ts"),
+      },
+      attributionUnmeasured("src/a/b/c.ts"),
+    );
     assert(r.status === 1, `a suite whose child writes into the tree fails the run (status ${r.status})`);
     assert(r.out.includes("src/a/b/c.ts"), "and the run names the path written");
-    assert(
-      /writes-tree\.ts/.test(r.out.slice(r.out.indexOf("src/a/b/c.ts"))),
-      "and names the suite that was running when it was written",
-    );
+    const attributed = /writes-tree\.ts/.test(r.out.slice(r.out.indexOf("src/a/b/c.ts")));
+    assert(attributed, "and names the suite that was running when it was written");
     assert(/1 passed, 0 failed/.test(r.out), "the suite itself passed, so it is the tripwire that failed the run");
-    if (r.status !== 1) console.error(r.out);
+    if (r.status !== 1 || !attributed) console.error(r.out);
   }
 
   // A new file in a NEW directory is caught too.
@@ -409,6 +428,106 @@ try {
     }
   }
 
+  // A directory gone between the listing and the read is ABSENT, not an unreadable
+  // tree: the files that were in it are reported as removed, never as a broken watch,
+  // which would send the reader after the machine instead of the suite (L11).
+  {
+    const root = makeRoot();
+    let vanish = false;
+    const enoent = () => Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+    const started = await startTreeWatch(root, () => [], {
+      watch: probesOnly,
+      readDir: (p) => {
+        if (vanish && p === join(root, "src", "a")) throw enoent();
+        return readdirSync(p, { withFileTypes: true });
+      },
+    });
+    assert("watch" in started, "the watch starts with the real directory reader behind the seam");
+    if ("watch" in started) {
+      vanish = true;
+      const result = await started.watch.stop();
+      eq(result.watchFailures.length, 0, "a directory gone between listing and read is not a watch failure");
+      eq(result.writes.map((w) => w.path).join(","), "src/a/b/c.ts", "and the files that were in it are reported as removed");
+    }
+  }
+
+  // Any OTHER failure to read is unreadable, and says which directory and why, so a
+  // comparison that checked nothing there never reads as one that found nothing.
+  {
+    const root = makeRoot();
+    let deny = false;
+    const started = await startTreeWatch(root, () => [], {
+      watch: probesOnly,
+      readDir: (p) => {
+        if (deny && p === join(root, "src", "a")) {
+          throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+        }
+        return readdirSync(p, { withFileTypes: true });
+      },
+    });
+    if ("watch" in started) {
+      deny = true;
+      const result = await started.watch.stop();
+      assert(
+        result.watchFailures.some((f) => f.includes("src/a/") && /EACCES/.test(f)),
+        "an unreadable directory is a watch failure naming the directory and the error",
+      );
+      assert(tripwireFailed(result), "and it fails the run");
+    }
+  }
+
+  // A LATE event for something done before the run is not a write in it. macOS
+  // delivers writes made a moment before the stream existed, and under load that can
+  // land after the start fence; the negative control then failed with "2 passed, 0
+  // failed" and exit 1. The comparison judges it: a path the watch named whose file
+  // or directory is identical at both ends was not written during the run.
+  const lateEvents = (root: string) => {
+    const listeners: Array<(e: string, f: string | null) => void> = [];
+    const w = ((path: string, opts: object, listener: (e: string, f: string | null) => void) => {
+      if (path === join(root, "src")) listeners.push(listener);
+      return watch(path, opts, listener);
+    }) as unknown as typeof watch;
+    // "src" is the watched dir's OWN creation: libuv names an event on the watched
+    // path itself by its basename, which reads as a file src/src that never existed.
+    // Measured: a fresh root's three dirs arrived as scripts/scripts, src/src and
+    // worker/worker, failing a run that wrote nothing (#3524).
+    const deliver = () => {
+      for (const l of listeners) for (const f of ["src", "a", "a/b", "a/b/c.ts"]) l("rename", f);
+    };
+    return { w, deliver };
+  };
+  {
+    const root = makeRoot();
+    const late = lateEvents(root);
+    const started = await startTreeWatch(root, () => ["scripts/test-x.ts"], { watch: late.w });
+    assert("watch" in started, "the watch starts with a hook to deliver late events");
+    if ("watch" in started) {
+      late.deliver();
+      const result = await started.watch.stop();
+      eq(
+        result.writes.map((w) => w.path).join(","),
+        "",
+        "a late event for a file and dirs unchanged since the run began is not a write",
+      );
+    }
+  }
+  // Its control (L1): the same late event for a file that DID change is still a
+  // write, and still carries the watch's suspects, not the comparison's "nobody".
+  {
+    const root = makeRoot();
+    const late = lateEvents(root);
+    const started = await startTreeWatch(root, () => ["scripts/test-x.ts"], { watch: late.w });
+    if ("watch" in started) {
+      // tree-write-ok: `root` is makeRoot(), a dir inside this suite's mkdtempSync(tmpdir()) base
+      appendFileSync(join(root, "src", "a", "b", "c.ts"), "// touched\n");
+      late.deliver();
+      const result = await started.watch.stop();
+      const hit = result.writes.find((w) => w.path === "src/a/b/c.ts");
+      assert(hit !== undefined && !hit.missedByWatch, "a late event for a file that changed is still the watch's write");
+      assert(hit !== undefined && hit.suspects.includes("scripts/test-x.ts"), "and still names the suspects");
+    }
+  }
+
   // A write the watch DID report is reported once, under the watch's suspects, not
   // again by the comparison.
   {
@@ -422,6 +541,30 @@ try {
       const hits = result.writes.filter((w) => w.path === "src/a/b/c.ts");
       eq(hits.length, 1, "a write the watch reported is listed once");
     }
+  }
+
+  // --- who to name beside a write (#3524) ----------------------------------------
+  // Measured 2026-10-12 at load 15 to 20: three in twenty events for the positive
+  // control arrived more than the 2s grace after its one suite ended, and the runner
+  // said "none", which claims more than it measured. A late event names the suite
+  // that ended last, and says how late, so a reader can weigh it.
+  {
+    const ended = new Map<string, number>([
+      ["scripts/test-a.ts", 1_000],
+      ["scripts/test-b.ts", 9_000],
+    ]);
+    eq(
+      nameSuspects(9_500, new Set(["scripts/test-c.ts"]), ended, 2_000).join(","),
+      "scripts/test-c.ts,scripts/test-b.ts",
+      "the running suites and those that ended within the grace are named",
+    );
+    const late = nameSuspects(12_100, new Set(), ended, 2_000);
+    eq(late.length, 1, "an event after every suite has ended names one entry");
+    assert(
+      /scripts\/test-b\.ts/.test(late[0] ?? "") && /3\.1s/.test(late[0] ?? "") && !/test-a/.test(late[0] ?? ""),
+      "the suite that ended LAST, with how long before the event it ended",
+    );
+    eq(nameSuspects(500, new Set(), new Map(), 2_000).length, 0, "and before any suite has ended, nobody");
   }
 
   // --- a run that could not watch is recognised by its own words (#3524) -------
@@ -454,6 +597,20 @@ try {
     let once = 0;
     await untilWatched(async () => ({ out: `FAIL: measured ${++once}` }), "a case", () => {});
     eq(once, 1, "a measured run, red or green, is never re-run");
+
+    // A case may name its OWN unmeasured outcome (the positive control's write caught
+    // too late to name a suite), and it is re-run under the same cap and the same log.
+    let tries = 0;
+    const lines: string[] = [];
+    const named = await untilWatched(
+      async () => ({ out: ++tries < 2 ? "src/x.ts (seen: none)" : "src/x.ts (seen: scripts/a.ts)" }),
+      "a case",
+      (l) => lines.push(l),
+      (out) => (/seen: none/.test(out) ? "the write came too late to name a suite" : null),
+    );
+    eq(tries, 2, "a case's own unmeasured outcome is re-run");
+    eq(named.out, "src/x.ts (seen: scripts/a.ts)", "and the measured run is returned");
+    assert(lines.some((l) => l.includes("the write came too late to name a suite")), "and the retry line gives the case's own reason");
   }
 
   // --- the fence waits out a stalled stream (#3524) -----------------------------
