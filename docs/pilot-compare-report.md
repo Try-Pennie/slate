@@ -56,11 +56,32 @@ memory, and never printed.
   with an advisor serving both systems as one cluster. Overall and per tier, each
   with a days needed estimate (the show rate one is a lower bound, since it ignores
   the clustering).
-- **The split is ASSUMED, NOT CHECKED.** Salesforce keeps no history of
-  `SlatePilotActive__c`, `SlatePilotPercent__c` or `SlatePilotTiers__c` and none will
-  be turned on, so the report trusts that the split held at 50 on tiers 1 to 5 and
-  says so on every run. What Salesforce holds NOW is printed, and a current value
-  that contradicts the assumption exits 14 with the comparison still printed.
+- **The split is CHECKED from stored readings, and assumed only where none can
+  vouch for it** (#3641). Salesforce keeps no history of `SlatePilotActive__c`,
+  `SlatePilotPercent__c` or `SlatePilotTiers__c` and none will be turned on (Dan,
+  2026-10-01), so before #3641 the report could only trust that the split held
+  at 50 on tiers 1 to 5. Now the monitor lane stores, every quarter hour, what
+  Salesforce held, when it was read, and when the record holding it was last edited
+  (`pilot_settings_samples`, `src/lib/monitor/pilot-settings-samples.ts`). The edit
+  time is what does the work: a record not edited since the previous reading cannot
+  have changed in between, however long the gap, and a first reading whose record
+  was last edited before the window opened vouches for the days before readings
+  began. So every run says one of:
+  - `CHECKED`: every reading saw the assumed split and the record was not edited
+    inside the window, up to the last reading;
+  - `CHECKED IN PART`: every reading saw it, but the record was edited inside the
+    window. Only the last edit is visible, so a change undone before it cannot be
+    ruled out, and each edit is listed with the span it leaves unverified (from the
+    reading before it, or the window's opening, to the edit). The 2026-10-12 edit at
+    11:00 ET reads this way, leaving 2026-10-02 to that edit unverified;
+  - `THE SPLIT CHANGED`: a reading saw something else, named with the readings that
+    saw it, which exits **17** with the comparison still printed;
+  - the old `ASSUMED, NOT CHECKED` line, when no reading succeeded over the window.
+
+  After the last reading the split is assumed, and the run says so. Two samples
+  served from one cached Salesforce read count as one reading, and a failed reading
+  is counted and never read as a split. What Salesforce holds NOW is still printed,
+  and a current value that contradicts the assumption exits 14.
 - **A readout date fixed once.** The first run proposes one (the window start plus
   the longer days estimate). Record it as `READOUT_DATE` in
   `scripts/lib/pilot-compare.ts`, in a commit, so nobody can move it by setting a
@@ -73,7 +94,8 @@ memory, and never printed.
 
 ## What it cannot see
 
-- A change to the split inside the window (no history, above).
+- A change to the split undone before a later edit of the record (only the last edit
+  is visible, above), and anything after the last stored reading.
 - A gap in the Regal call store in the MIDDLE of the window. The run refuses when
   shows were due before the store's first call, and when the store holds nothing
   over the span; a partial gap is the #2944 monitor's job, which pages under 80%
@@ -122,9 +144,10 @@ is why the store start check exists.
 
 ## Exit codes
 
-Exits 1 to 10 and 15 refuse before any result, and 16 is a partial look (above), never a result. Once a comparison is printed, more
+Exits 1 to 10 and 15 refuse before any result (5 also when the stored readings of the split cannot be read), and 16 is a partial look (above), never a result. Once a comparison is printed, more
 than one condition can hold, and the run exits on the first of these: **13**
-(rehearsal, never a result), then **14** (settings now differ), then **11** (too few
+(rehearsal, never a result), then **17** (a reading saw the split change), then
+**14** (settings now differ), then **11** (too few
 on either headline rate), then **12** (provisional), then **0** (the readout). Every
 condition that holds is still printed, whichever one names the run.
 
@@ -135,7 +158,7 @@ condition that holds is still printed, whichever one names the run.
 | 2 | nothing to judge yet: the window has not opened, or a rehearsal's span has not closed |
 | 3 | Salesforce could not be read, including a short read |
 | 4 | cal.com could not be read |
-| 5 | Slate could not be read |
+| 5 | Slate could not be read: its bookings, or its stored readings of the split |
 | 6 | the Regal call store could not be read |
 | 7 | no application in a pilot tier was made in the cohort |
 | 8 | one side holds no applications |
@@ -147,6 +170,7 @@ condition that holds is still printed, whichever one names the run.
 | 14 | what Salesforce holds now contradicts the assumed split |
 | 15 | an input could not be read (`PILOT_COMPARE_LIFT`, the rehearsal values, `READOUT_DATE`), or a row carried a time that does not parse |
 | 16 | partial: the window is open and no span has closed yet, so these are rates so far (until 2026-10-10 03:00 ET) |
+| 17 | a stored reading saw a split other than 50% on tiers 1 to 5 inside the window, so the comparison mixes leads split two ways |
 
 ## Where the code lives
 

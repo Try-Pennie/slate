@@ -1221,6 +1221,7 @@ export type BookingReservationInsert = {
  *  the code that writes and judges it. */
 export type { CallerSeenRow as ApiCallerSeen } from "@/lib/booking/caller-seen";
 export type { PilotOfferRow as PilotOfferSample } from "@/lib/monitor/pilot-offers";
+export type { PilotSettingsRow as PilotSettingsSample } from "@/lib/monitor/pilot-settings-samples";
 
 /** Dead-man's switch heartbeat (#420): one row per cron lane, stamped each tick. */
 export interface LaneHeartbeat {

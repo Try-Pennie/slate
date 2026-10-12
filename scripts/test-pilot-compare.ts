@@ -14,6 +14,8 @@ import {
   judgePilotCompare,
   leadKeysToRead,
   settingsDisagreement,
+  checkSplitReadings,
+  readSplitReadings,
   etMidnightMs,
   PILOT_COMPARE_EXIT,
   ASSUMED_PERCENT,
@@ -33,6 +35,7 @@ import { slateBucket, compareHalves } from "./lib/pilot-split.ts";
 import type { CalcomListedBooking } from "../src/lib/calcom/upcoming-bookings.ts";
 import { collectSoqlComplete, type SoqlPage } from "../src/lib/salesforce/rest.ts";
 import { settingsFromRecords } from "../src/lib/salesforce/pilot-settings.ts";
+import type { PilotSettingsRow } from "../src/lib/monitor/pilot-settings-samples.ts";
 
 const H = 3_600_000;
 const D = 24 * H;
@@ -402,13 +405,21 @@ function cohort(n: number, rates: { slate: [number, number]; calcom: [number, nu
 
 function run(
   c: ReturnType<typeof cohort>,
-  over: { window?: Partial<PilotWindow>; settings?: PilotSettings; storedInSpan?: number; storeBeganMs?: number | null; contact?: Application[] } = {},
+  over: {
+    window?: Partial<PilotWindow>;
+    settings?: PilotSettings;
+    storedInSpan?: number;
+    storeBeganMs?: number | null;
+    contact?: Application[];
+    readings?: PilotSettingsRow[];
+  } = {},
 ) {
   const window = windowAt(over.window);
   const matched = matchBookings({ window, applications: c.apps, contactApplications: over.contact ?? [], slate: c.slate, calcom: c.cal });
   return judgePilotCompare({
     window,
     settings: over.settings ?? settingsOk,
+    readings: over.readings ?? [],
     matched,
     calls: {
       calls: c.calls,
@@ -582,6 +593,146 @@ function run(
   }
   for (const code of [PILOT_COMPARE_EXIT.noApplications, PILOT_COMPARE_EXIT.emptyHalf, PILOT_COMPARE_EXIT.tooManyUnmatched, PILOT_COMPARE_EXIT.noCallsStored, PILOT_COMPARE_EXIT.inputUnreadable]) {
     eq(JUDGED_EXITS.has(code), false, `exit ${code} is a refusal, so a partial look keeps it`);
+  }
+}
+
+// --- 7c. the split readings (#3641) -----------------------------------------------------------
+// Every quarter hour the monitor lane stores what Salesforce held for the split, when it
+// was read, and when the record holding it was last edited. The edit time is what lets a
+// span with no readings be checked: a record not edited since the previous reading cannot
+// have changed in between, however long the gap.
+const reading = (readAt: number, over: Partial<PilotSettingsRow> = {}): PilotSettingsRow => ({
+  sampled_at: iso(readAt),
+  ok: true,
+  read_at: iso(readAt),
+  active: true,
+  percent: 50,
+  tiers: "1;2;3;4;5",
+  record_modified_at: iso(WINDOW_START - 2 * D),
+  error: null,
+  ...over,
+});
+const failedReading = (at: number): PilotSettingsRow => ({
+  sampled_at: iso(at),
+  ok: false,
+  read_at: null,
+  active: null,
+  percent: null,
+  tiers: null,
+  record_modified_at: null,
+  error: "Salesforce answered 503",
+});
+const FROM = WINDOW_START;
+const TO = WINDOW_START + 22 * D;
+{
+  // No readings: exactly the old assumption, so nothing claims a look that never happened.
+  const none = checkSplitReadings([], FROM, TO);
+  eq(none.status, "unchecked", "with no readings the split is unchecked");
+  assert(hasAssumption(none.lines), "and the assumption is stated as before");
+
+  // Every reading failed: still unchecked, and it says the readings failed.
+  const allFailed = checkSplitReadings([failedReading(FROM + D), failedReading(FROM + 2 * D)], FROM, TO);
+  eq(allFailed.status, "unchecked", "readings that all failed check nothing");
+  assert(allFailed.lines.some((l) => /2 readings/.test(l) && /failed/.test(l)), "and say so rather than reading as no readings");
+
+  // Readings start late, but the record was last edited before the window opened: the
+  // whole window up to the last reading is checked, including the days before readings.
+  const late = checkSplitReadings([reading(FROM + 11 * D), reading(FROM + 11 * D + 15 * 60_000), reading(FROM + 12 * D)], FROM, TO);
+  eq(late.status, "checked", "readings that agree, with no edit inside the window, check the split");
+  assert(late.lines.some((l) => /^CHECKED:/.test(l) && /3 readings/.test(l)), "and say how many readings");
+  assert(late.lines.some((l) => l.includes("2026-10-02 00:00 ET") && l.includes("2026-10-14 00:00 ET")), "and that it held from the window's opening to the last reading");
+  assert(late.lines.some((l) => /after .*assumed/i.test(l)), "and that after the last reading it is assumed");
+  assert(!late.lines.some((l) => /ASSUMED, NOT CHECKED/.test(l)), "and the old assumption line is gone");
+
+  // The 2026-10-12 shape: the record was edited inside the window before readings
+  // began, and the readings agree. A change undone before that edit cannot be ruled
+  // out, from the window's opening to the edit.
+  const edit = FROM + 10 * D + 11 * H;
+  const before = checkSplitReadings([reading(FROM + 11 * D, { record_modified_at: iso(edit) }), reading(FROM + 12 * D, { record_modified_at: iso(edit) })], FROM, TO);
+  eq(before.status, "checked", "an edit with the split the same after it is not a change");
+  assert(before.lines.some((l) => /^CHECKED IN PART:/.test(l)), "but the check is partial");
+  assert(
+    before.lines.some((l) => l.includes(`edited at ${"2026-10-12 11:00 ET"}`) && l.includes("unverified from 2026-10-02 00:00 ET to 2026-10-12 11:00 ET")),
+    `and names the edit and the span it leaves unverified (${before.lines.join(" | ")})`,
+  );
+
+  // An edit between two readings that both agree: unverified only between the earlier
+  // reading and the edit, and a gap with NO edit across it is checked however long.
+  const a = FROM + 3 * D;
+  const m = FROM + 5 * D;
+  const between = checkSplitReadings(
+    [reading(FROM + D), reading(a), failedReading(a + D), reading(FROM + 6 * D, { record_modified_at: iso(m) }), reading(FROM + 7 * D, { record_modified_at: iso(m) })],
+    FROM,
+    TO,
+  );
+  const unverified = between.lines.filter((l) => /unverified from/.test(l));
+  eq(unverified.length, 1, `one edit, one unverified span (${between.lines.join(" | ")})`);
+  assert(unverified[0]!.includes("unverified from 2026-10-05 00:00 ET to 2026-10-07 00:00 ET"), `from the reading before it to the edit (${unverified[0]})`);
+  assert(between.lines.some((l) => /1 reading failed/.test(l)), "a failed reading is counted, not read as a split");
+
+  // Two readings of one cached Salesforce read are one reading.
+  const cached = checkSplitReadings([reading(FROM + D), { ...reading(FROM + D), sampled_at: iso(FROM + D + 15 * 60_000) }], FROM, TO);
+  assert(cached.lines.some((l) => /^CHECKED:/.test(l) && /1 reading /.test(l)), `a reading served twice from the cache counts once (${cached.lines.join(" | ")})`);
+
+  // A reading that disagrees is a change inside the window, named with when.
+  const changed = checkSplitReadings(
+    [reading(FROM + D), reading(FROM + 2 * D, { percent: 70, record_modified_at: iso(FROM + 2 * D - H) }), reading(FROM + 3 * D, { percent: 70, record_modified_at: iso(FROM + 2 * D - H) }), reading(FROM + 4 * D, { record_modified_at: iso(FROM + 4 * D - H) })],
+    FROM,
+    TO,
+  );
+  eq(changed.status, "changed", "a reading off the assumed split is a change");
+  assert(
+    changed.lines.some((l) => /^THE SPLIT CHANGED/.test(l) && /SlatePilotPercent__c is 70/.test(l) && l.includes("2026-10-04 00:00 ET") && l.includes("2026-10-05 00:00 ET")),
+    `naming the field and the readings that saw it (${changed.lines.join(" | ")})`,
+  );
+  const off = checkSplitReadings([reading(FROM + D, { active: false })], FROM, TO);
+  eq(off.status, "changed", "the pilot switched off is a change");
+  const unreadablePercent = checkSplitReadings([reading(FROM + D, { percent: null })], FROM, TO);
+  eq(unreadablePercent.status, "changed", "a percent Salesforce sent unreadable is not the assumed split");
+
+  // An unreadable stamp is counted, never compared (L50).
+  eq(checkSplitReadings([reading(FROM + D, { read_at: "soon" })], FROM, TO).unreadable, 1, "an unreadable read time is counted as unreadable");
+  for (const r of [none, allFailed, late, before, between, cached, changed]) assert(clean(r.lines), "nothing renders undefined or NaN");
+}
+{
+  // Through the whole judgement: a change has its own exit, after a rehearsal and before
+  // the settings now differing, with the comparison still printed.
+  const full = cohort(400, { slate: [0.4, 0.6], calcom: [0.3, 0.5] });
+  const changedReadings = [reading(FROM + D), reading(FROM + 2 * D, { percent: 70, record_modified_at: iso(FROM + 2 * D - H) })];
+  const readout = { readout: { date: "2026-10-16", reached: true } };
+  const r = run(full, { window: readout, readings: changedReadings });
+  eq(r.exit, PILOT_COMPARE_EXIT.splitChanged, "a change inside the window has its own exit");
+  assert(r.lines.some((l) => /^THE SPLIT CHANGED/.test(l)) && r.lines.some((l) => /  booking rate/.test(l)), "and the comparison is still printed beside it");
+  eq(run(full, { window: readout, readings: changedReadings, settings: { ...settingsOk, percent: 70 } }).exit, PILOT_COMPARE_EXIT.splitChanged, "it outranks the settings differing now");
+  eq(run(full, { window: { ...readout, rehearsal: true }, readings: changedReadings }).exit, PILOT_COMPARE_EXIT.rehearsal, "a rehearsal stays a rehearsal");
+  eq(JUDGED_EXITS.has(PILOT_COMPARE_EXIT.splitChanged), true, "it is a judgement, not a refusal");
+
+  const ok = run(full, { window: readout, readings: [reading(FROM + D), reading(FROM + 20 * D)] });
+  eq(ok.exit, PILOT_COMPARE_EXIT.compared, "readings that agree leave the readout a readout");
+  assert(ok.lines.some((l) => /^CHECKED:/.test(l)) && !hasAssumption(ok.lines), "and the run says the split was checked, not assumed");
+
+  const reh = run(full, { window: { rehearsal: true }, readings: [reading(FROM + D)] });
+  assert(hasAssumption(reh.lines) && !reh.lines.some((l) => /^CHECKED/.test(l)), "a rehearsal's days are before any reading, so it keeps the assumption");
+
+  const bad = run(full, { window: readout, readings: [reading(FROM + D, { record_modified_at: "never" })] });
+  eq(bad.exit, PILOT_COMPARE_EXIT.inputUnreadable, "an unreadable reading refuses the run like any unreadable time");
+}
+
+{
+  // The command's read of the stored readings (#3641): the rows pass through as read,
+  // and a failed read REFUSES on exit 5, never an empty list, because no readings is the
+  // old assumption and an unreadable table must not pass for one holding nothing.
+  const rows = [reading(FROM + D)];
+  const got = await readSplitReadings(async () => rows);
+  eq(got, { ok: true, rows }, "readings that can be read pass through");
+  const failedRead = await readSplitReadings(async () => {
+    throw new Error("relation pilot_settings_samples does not exist");
+  });
+  assert(!failedRead.ok, "a failed read is not a list");
+  if (!failedRead.ok) {
+    eq(failedRead.exit, PILOT_COMPARE_EXIT.slateUnreadable, "it refuses on exit 5");
+    assert(failedRead.lines[0]!.includes("stored readings of the split could not be read") && failedRead.lines[0]!.includes("does not exist"), "naming what could not be read and why");
+    assert(failedRead.lines.some((l) => /^Compared: nothing/.test(l)), "and that nothing was compared");
   }
 }
 

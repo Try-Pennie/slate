@@ -133,6 +133,7 @@ import {
 } from "@/lib/monitor/cross-system-bookings";
 import { loadSlateUpcomingBookings } from "@/lib/monitor/cross-system-bookings-store";
 import { runPilotOfferSampleLive } from "@/lib/monitor/pilot-offers-live";
+import { runPilotSettingsSampleLive } from "@/lib/monitor/pilot-settings-samples-live";
 import { runTierVolumeChecks } from "@/lib/monitor/tier-volume";
 import { MEASURED_VOLUME_BASELINE } from "@/lib/monitor/volume-baseline";
 import { runPageVolumeCheck, type PageVolumeResult } from "@/lib/monitor/page-volume";
@@ -1552,6 +1553,15 @@ export async function GET(req: NextRequest) {
     // with its reason, never as zero times; only a refused insert throws, and the
     // step streak pages on that.
     await steps.run("pilot_offers", null, () => runPilotOfferSampleLive(db, now));
+
+    // --- What the pilot split settings were (#3641) ---
+    // Salesforce keeps no history of the three split fields, so the comparison could
+    // only assume the split held. Every quarter hour this stores what Salesforce held,
+    // when it was read and when the record was last edited, through the same per
+    // isolate cache the per page alarm reads above, so in business hours it usually
+    // costs no Salesforce call of its own. A failed read is stored as a failure, never
+    // as a split; only a refused insert throws, and the step streak pages on that.
+    await steps.run("pilot_settings", null, () => runPilotSettingsSampleLive(db, now));
 
     // --- Customers failing to complete a booking (#1313) ---
     // The lagging half of the pair with #1315: this one sees customers already

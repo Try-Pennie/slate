@@ -17,6 +17,7 @@ import type {
   ApiCallerSeen,
   FrameOriginDaily,
   PilotOfferSample,
+  PilotSettingsSample,
   AuditEntry,
   AvailabilityRule,
   AvailabilitySchedule,
@@ -203,6 +204,7 @@ export interface Database {
       api_caller_seen: Table<ApiCallerSeen>;
       frame_origin_daily: Table<FrameOriginDaily>;
       pilot_offer_samples: Table<PilotOfferSample>;
+      pilot_settings_samples: Table<PilotSettingsSample>;
       selfheal_scan_cursor: Table<SelfhealScanCursor>;
       audit_log_chain_verify: Table<AuditLogChainVerify>;
       export_cursor: Table<ExportCursor>;
