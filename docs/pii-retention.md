@@ -197,7 +197,7 @@ only after backups roll off**. Supabase daily backups (and PITR, if enabled per
 - A restore from a backup taken before an erasure **reintroduces** that PII.
 - Any restore must **re-run the erasure log** (the `audit_log` erasure entries)
   as a post-restore reconciliation step.
-- The **daily off platform dump in Cloudflare R2** (#3076,
+- The **twice-daily off platform dump in Cloudflare R2** (#3076,
   `.github/workflows/db-backup.yml`) is a full copy of the database, contact data
   included, and holds pre-erasure rows the same way. The bucket
   (`slate-db-backups`) expires each dump after **30 days** through an R2 lifecycle
