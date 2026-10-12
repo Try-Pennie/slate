@@ -344,6 +344,39 @@ describe("cspViolationPage (#2575)", () => {
     ).toEqual({ page: false, why: "extension" });
   });
 
+  it("does not page when Chrome strips the extension id to the bare scheme word (#3634)", async () => {
+    // Chrome removes the extension id from CSP reports for privacy, so an
+    // extension-injected inline handler arrives with source-file as the bare word
+    // "chrome-extension": no "://id" and no colon. Measured in production
+    // 2026-10-12 on /book (directive script-src-attr, blocked inline), this paged
+    // although it is the extension's own code, not Slate's page failing a lead.
+    const { cspViolationPage } = await import("./csp");
+    expect(
+      cspViolationPage(
+        summariseViolation(
+          enforced({ "violated-directive": "script-src-attr", "blocked-uri": "inline", "source-file": "chrome-extension" }),
+        ),
+      ),
+    ).toEqual({ page: false, why: "extension" });
+    // The same bare word in blocked-uri, which is the other field a report can name it in.
+    expect(
+      cspViolationPage(summariseViolation(enforced({ "violated-directive": "script-src-elem", "blocked-uri": "chrome-extension" }))),
+    ).toEqual({ page: false, why: "extension" });
+  });
+
+  it("still pages a value that only starts with the scheme word, or names it in a host", async () => {
+    // The bare word is matched only as a whole scheme segment: followed by the end, a
+    // colon or a slash. A value that merely begins with it is somebody else's, and a URL
+    // whose HOST contains it is an ordinary origin, so both still page.
+    const { cspViolationPage } = await import("./csp");
+    for (const source of ["chrome-extension.example.com/x.js", "chrome-extensions", "https://chrome-extension.example.com/x.js"]) {
+      expect(
+        cspViolationPage(summariseViolation(enforced({ "blocked-uri": "inline", "source-file": source }))).page,
+        source,
+      ).toBe(true);
+    }
+  });
+
   it("reads the modern report's disposition too", async () => {
     const { cspViolationPage } = await import("./csp");
     const modern = (disposition: string) =>

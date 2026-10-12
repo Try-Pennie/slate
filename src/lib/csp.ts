@@ -229,8 +229,21 @@ export function summariseViolation(payload: unknown): ViolationSummary {
   };
 }
 
-/** The schemes a browser extension's own resources load from. */
-const EXTENSION_SCHEME = /^(chrome|moz|safari|safari-web|ms-browser)-extension:/i;
+/**
+ * The schemes a browser extension's own resources load from.
+ *
+ * Matches the bare scheme word as well as the full `scheme://id/...` URL, because
+ * Chrome strips the extension id out of CSP reports for privacy and sends the
+ * source as the bare word `chrome-extension`, no `://id` and no colon (#3634,
+ * measured in production 2026-10-12 on /book: a `script-src-attr` inline refusal
+ * that paged although it was an extension's own injected handler). Safari sends
+ * the full `safari-web-extension://<uuid>/...` and was already caught. The
+ * `(?:$|[:/])` matches the word only as a whole scheme segment, so a value that
+ * merely begins with it (`chrome-extension.example.com/x.js`, `chrome-extensions`)
+ * still pages; the `^` already keeps an ordinary URL whose host contains the word
+ * (`https://chrome-extension.example.com/...`) from matching.
+ */
+const EXTENSION_SCHEME = /^(chrome|moz|safari|safari-web|ms-browser)-extension(?:$|[:/])/i;
 
 interface RawReport {
   directive?: string;
