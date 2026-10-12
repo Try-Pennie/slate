@@ -15,9 +15,15 @@ const heartbeatRoute = readFileSync(join(root, "src/app/api/smoke/heartbeat/rout
 const health = readFileSync(join(root, "src/lib/monitor/health.ts"), "utf8");
 
 const MIN = 60_000;
-const DAY = 24 * 60 * MIN;
-/** The GitHub lateness a successful scheduled run must be allowed without paging. */
-const LATENESS_ALLOWANCE_MS = 60 * MIN;
+/** The GitHub lateness a successful scheduled run must be allowed without paging.
+ *  GitHub does not run these at their cron minute: every scheduled backup from
+ *  2026-10-04 to 2026-10-12 fired SIX TO NINE HOURS late, and on 2026-10-05 and
+ *  2026-10-12 the gap between two successful runs crossed the 26 hour bound and paged
+ *  even though nothing had failed. One daily slot (a 24 hour cadence, ~1h40m of slack
+ *  under the 26 hour bound) never left room for that, so the bound must leave real
+ *  slack and the schedule must run more than once a day. Two slots half a day apart cut
+ *  the cadence to 12 hours, which leaves ~13h40m of lateness tolerance. */
+const LATENESS_ALLOWANCE_MS = 10 * 60 * MIN;
 
 /** Each step's text, keyed by its name (or its `uses` for an unnamed step). */
 function steps(text: string): { name: string; body: string }[] {
@@ -35,22 +41,48 @@ function backupBoundMs(src: string): number | null {
   return m ? Number(m[1]) * 60 * MIN : null;
 }
 
+/** Every daily cron's minute-of-day (UTC), in the order they appear. */
+function dailySlotMinutes(text: string): number[] {
+  return [...text.matchAll(/cron:\s*"(\d+) (\d+) \* \* \*"/g)].map(
+    (m) => Number(m[2]) * 60 + Number(m[1]),
+  );
+}
+
+/** The largest gap in minutes between consecutive daily slots, wrapping midnight. This
+ *  is the real cadence the staleness bound must cover: the longest a successful run can
+ *  be the newest one before the next slot is even due. */
+function maxSlotGapMin(slots: number[]): number {
+  const sorted = [...slots].sort((a, b) => a - b);
+  let max = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    const next = i + 1 < sorted.length ? sorted[i + 1]! : sorted[0]! + 1440;
+    max = Math.max(max, next - sorted[i]!);
+  }
+  return max;
+}
+
 function problems(text: string, route = heartbeatRoute, healthSrc = health): string[] {
   const out: string[] = [];
   const all = steps(text);
   const index = (re: RegExp) => all.findIndex((s) => re.test(s.name));
 
-  // An explicit job timeout (L313), and a daily schedule the bound is derived from.
+  // An explicit job timeout (L313), and a schedule whose cadence the bound can cover
+  // with room for GitHub's observed lateness.
   const timeout = /timeout-minutes:\s*(\d+)/.exec(text);
   if (!timeout) out.push("the job has no explicit timeout-minutes");
-  const cron = /cron:\s*"(\d+) (\d+) \* \* \*"/.exec(text);
-  if (!cron) out.push("the schedule is not a once a day cron");
+  const slots = dailySlotMinutes(text);
+  if (slots.length < 2) {
+    out.push(`the schedule has ${slots.length} daily slot(s), fewer than the two GitHub's lateness needs`);
+  }
   const bound = backupBoundMs(healthSrc);
   if (bound === null) out.push("BACKUP_STALE_BOUNDS_MS has no db-backup bound");
-  if (bound !== null && timeout) {
-    const slack = bound - DAY - Number(timeout[1]) * MIN;
+  if (bound !== null && timeout && slots.length > 0) {
+    const cadence = maxSlotGapMin(slots) * MIN;
+    const slack = bound - cadence - Number(timeout[1]) * MIN;
     if (slack < LATENESS_ALLOWANCE_MS) {
-      out.push(`the bound leaves ${slack / MIN} minutes for GitHub lateness after a day and the timeout, under an hour`);
+      out.push(
+        `the bound leaves ${slack / MIN} minutes for GitHub lateness after the ${cadence / MIN} minute cadence and the timeout, under the ${LATENESS_ALLOWANCE_MS / MIN} GitHub has needed`,
+      );
     }
   }
 
@@ -122,7 +154,9 @@ function problems(text: string, route = heartbeatRoute, healthSrc = health): str
 // --- and each rule catches its own breakage ----------------------------------
 const broken: [string, string, RegExp][] = [
   ["no timeout", workflow.replace(/timeout-minutes:\s*\d+/, ""), /no explicit timeout/],
-  ["a long timeout eats the lateness", workflow.replace(/timeout-minutes:\s*\d+/, "timeout-minutes: 90"), /under an hour/],
+  ["a long timeout eats the lateness", workflow.replace(/timeout-minutes:\s*\d+/, "timeout-minutes: 360"), /leaves .* for GitHub lateness/],
+  ["only one daily slot", workflow.replace(/\n    - cron: "40 19 \* \* \*"/, ""), /fewer than the two/],
+  ["two slots only hours apart", workflow.replace(/"40 19 \* \* \*"/, '"40 9 * * *"'), /leaves .* for GitHub lateness/],
   ["the stamp ungated", workflow.replace(/(Stamp the backup heartbeat[^\n]*\n\s*)if: success\(\)\n/, "$1"), /not gated on success/],
   ["the history dump dropped", workflow.replace(/\n.*history_data\.sql.*/, ""), /does not write history_data\.sql/],
   ["the judge removed", workflow.replace(/\n      - name: Refuse a dump[\s\S]*?(?=\n      - name:)/, ""), /a required step is missing/],
@@ -158,8 +192,8 @@ assert(
   "caught: the heartbeat route no longer accepting the lane",
 );
 assert(
-  problems(workflow, heartbeatRoute, health.replace(/"db-backup":\s*26/, '"db-backup": 24')).some((p) => /under an hour/.test(p)),
-  "caught: a bound one late run would cross",
+  problems(workflow, heartbeatRoute, health.replace(/"db-backup":\s*26/, '"db-backup": 20')).some((p) => /leaves .* for GitHub lateness/.test(p)),
+  "caught: a bound too tight for the cadence plus GitHub's lateness",
 );
 
 finish();

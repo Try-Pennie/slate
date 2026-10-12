@@ -20,6 +20,15 @@ name: Database backup
 # than 26 hours (BACKUP_STALE_BOUNDS_MS in src/lib/monitor/health.ts), and also when it
 # has never been stamped at all, after one bound's grace.
 #
+# IT RUNS TWICE A DAY, for resilience rather than a tighter recovery point. GitHub does
+# not run a scheduled workflow at its cron minute: every backup run from 2026-10-04 to
+# 2026-10-12 fired six to nine hours late, and with one daily slot that drift twice
+# pushed the gap between successful runs past the 26 hour bound and paged though nothing
+# had failed (2026-10-05 and 2026-10-12). A second slot half a day from the first cuts
+# the cadence to twelve hours, so one delayed or dropped slot is covered by the other
+# well inside the bound. The recovery objective is still a day; this just stops the alarm
+# crying wolf. scripts/test-db-backup-workflow.ts pins both slots and the bound.
+#
 # A MISSING SECRET FAILS THE RUN RED rather than skipping it. A backup is not optional,
 # and a run that skipped quietly would leave the heartbeat unstamped with nothing in the
 # Actions tab saying why.
@@ -30,20 +39,24 @@ name: Database backup
 # token scoped to Object Read and Write on the one backup bucket), and the SLATE_BASE_URL
 # repo variable.
 #
-# COST: one ubuntu job a day. Installing the CLI and pulling the Postgres image the dump
+# COST: two ubuntu jobs a day. Installing the CLI and pulling the Postgres image the dump
 # runs in is most of it; measured against a local copy of the schema the five dumps take
-# about 20 seconds. Budget 2 to 4 billed minutes a day, so 60 to 120 a month at the 1x
-# Linux rate, against the plan's included minutes.
+# about 20 seconds. Budget 2 to 4 billed minutes a run, so 120 to 240 a month at the 1x
+# Linux rate, against the plan's included minutes. The second daily dump doubles the R2
+# objects, each still expiring on the bucket's 30 day lifecycle rule, which is cents.
 #
 # NOT AN ARTIFACT. The dump holds customer contact data, so it goes to R2 and nowhere
 # else: never upload-artifact, never the job log.
 on:
   schedule:
-    # 07:40 UTC, which is the small hours Eastern, when nothing is booking. Not on the
-    # hour, where GitHub's scheduling queue is busiest and runs are most often dropped,
-    # and clear of the burst counter at 10:50, the parity sweep at 12:20 and the weekly
-    # replay at 13:20.
+    # 07:40 and 19:40 UTC: two slots half a day apart (see the header on why twice a day).
+    # Both are off the hour, where GitHub's scheduling queue is busiest and runs are most
+    # often dropped, and clear of the burst counter at 10:50, the parity sweep at 12:20 and
+    # the weekly replay at 13:20. 07:40 is the small hours Eastern; the 19:40 slot is the
+    # afternoon Eastern, which is fine because the dump is a read-only pg_dump (it takes
+    # only ACCESS SHARE locks) and does not disturb booking.
     - cron: "40 7 * * *"
+    - cron: "40 19 * * *"
   # No inputs, so a hand dispatch is the same run the schedule makes. This is also the
   # remedy the staleness page names when GitHub dropped a scheduled run.
   workflow_dispatch:
@@ -59,8 +72,9 @@ jobs:
   backup:
     # The CLI install, the image pull and five dumps. Twenty minutes is several times the
     # expected run, and an explicit timeout is required of every job here (L313).
-    # scripts/test-db-backup-workflow.ts holds the 26 hour staleness bound above this
-    # cadence plus this timeout plus an hour of GitHub lateness.
+    # scripts/test-db-backup-workflow.ts holds the 26 hour staleness bound above the
+    # twelve hour cadence of the two daily slots plus this timeout plus ten hours of
+    # GitHub lateness (the lateness seen has been six to nine).
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
