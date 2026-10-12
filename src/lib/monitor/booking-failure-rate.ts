@@ -264,9 +264,63 @@ export function judgeFailureRate(
   return { status: over ? "breach" : "healthy", attempts, failures, pct, topCodes };
 }
 
-/** "1 customer" / "3 customers": the count reads as a sentence either way. */
+/**
+ * Who was refused a time in the window (#3633), read from `routing_decisions`, the
+ * one place a refusal carries a person: the daily tally above counts attempts and
+ * holds no identity, and of its failures only the refusals (`slot_unavailable`) can
+ * be traced to a lead at all. Measured 2026-10-12 over seven days: 101 refusals in
+ * the tally, 101 refusal rows, 98% of them with a lead id. The other failure codes
+ * (internal errors, bad requests) carry nobody, so the page counts people for the
+ * refusals only and says so.
+ *
+ * `refusals` comes from the same read as `people`, so the two numbers the page puts
+ * side by side always describe the same rows.
+ */
+export interface RefusedPeople {
+  /** Distinct lead ids among the refusals. */
+  people: number;
+  /** Refusals in the window, test buckets left out. */
+  refusals: number;
+  /** Refusals with no lead id, which can be no person in particular. */
+  withoutLead: number;
+}
+
+/** One refusal row as the store reads it. `is_test` null is a bucket that could not
+ *  be read, which counts as real: the tally takes the same direction, because hiding
+ *  a real refusal is worse than counting a test one (test-traffic.ts). */
+export interface RefusalRow {
+  lead_id: string | null;
+  is_test: boolean | null;
+}
+
+/** Count the people among the window's refusals, leaving test buckets out exactly as
+ *  the tally does, so both halves of the page describe one population. */
+export function countRefusedPeople(rows: RefusalRow[]): RefusedPeople {
+  const leads = new Set<string>();
+  let refusals = 0;
+  let withoutLead = 0;
+  for (const row of rows) {
+    if (row.is_test === true) continue;
+    refusals += 1;
+    if (row.lead_id) leads.add(row.lead_id);
+    else withoutLead += 1;
+  }
+  return { people: leads.size, refusals, withoutLead };
+}
+
+/** "1 refusal" / "5 refusals". */
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * "4 people were" / "1 person was", and "At least 3 people were" when some refusal
+ * had no lead id: that refusal could be one of the people counted or somebody else,
+ * so the count is a floor and the page must not state it as exact (L11).
+ */
+function peopleWere(r: RefusedPeople): string {
+  const who = r.people === 1 ? "1 person was" : `${r.people} people were`;
+  return r.withoutLead > 0 ? `At least ${who}` : who;
 }
 
 /** The top few codes as "slot_unavailable (35), internal (3)". */
@@ -337,15 +391,26 @@ export function formatFailureRateAlert(input: {
   pct: number;
   windowMinutes: number;
   topCodes: CodeCount[];
+  /** Who was refused a time in the same window, or null when that read failed. */
+  refused?: RefusedPeople | null;
 }): string {
   const codes = codeList(input.topCodes);
   const naming = codes ? ` Failing with: ${codes}.` : "";
   const guidance = guidanceFor(input.topCodes[0]?.code);
-  return (
-    `${plural(input.failures, "customer")} could not complete a booking in the last ` +
-    `${input.windowMinutes} minutes, out of ${input.attempts} who tried (${input.pct}%).` +
-    `${naming}${guidance} The per call breakdown is in the booking outcome panel.`
-  );
+  // #3633: the window counts ATTEMPTS, and one lead retrying a dead time five times
+  // is five of them, which the page used to call five customers. With the refused
+  // people counted it leads with them (Dan's choice, 2026-10-12); without them (the
+  // read failed, or no failure carried a person) it says attempts, which is all the
+  // tally can claim.
+  const r = input.refused;
+  const opening =
+    r && r.people > 0
+      ? `${peopleWere(r)} refused a time in the last ${input.windowMinutes} minutes ` +
+        `(${plural(r.refusals, "refusal")}); ${input.failures} of ${input.attempts} attempts ` +
+        `failed overall (${input.pct}%).`
+      : `${input.failures} of ${input.attempts} booking attempts failed in the last ` +
+        `${input.windowMinutes} minutes (${input.pct}%).`;
+  return `${opening}${naming}${guidance} The per call breakdown is in the booking outcome panel.`;
 }
 
 export type FailureRateResult =
@@ -395,6 +460,17 @@ export async function runBookingFailureRateCheck(deps: {
   saveState: (state: RateWindowState) => Promise<void>;
   /** Today's cumulative tally, or null when the read failed. */
   readToday: () => Promise<OutcomeReading | null>;
+  /**
+   * Who was refused a time since `sinceMs` (#3633). Called only on an ARMED BREACH
+   * tick, never on a healthy, insufficient or disarmed one, since four cron lanes
+   * share one invocation's subrequest budget. It still runs on every breaching tick
+   * while the page's cooldown holds, because the cooldown lives inside `notify` and
+   * asking it first would cost the same subrequest the skip would save: one paged
+   * read per five minute tick, only while the rate is breaching. Required, so `tsc`
+   * names any caller that forgot it rather than the page quietly staying in the
+   * attempts form. May throw; the page then goes out without it.
+   */
+  readRefusedPeople: (sinceMs: number) => Promise<RefusedPeople>;
   thresholds: RateThresholds;
   armed: boolean;
   cooldownMs: number;
@@ -410,7 +486,7 @@ export async function runBookingFailureRateCheck(deps: {
    * passes the Error object straight through to `log.error`, which is how
    * Cloudflare gets a serialized stack.
    */
-  onError?: (context: "saveState" | "notify" | "resolve", err: unknown) => void;
+  onError?: (context: "saveState" | "notify" | "resolve" | "refusedPeople", err: unknown) => void;
 }): Promise<FailureRateResult> {
   let prev: RateWindowState | null;
   try {
@@ -445,11 +521,19 @@ export async function runBookingFailureRateCheck(deps: {
   });
 
   if (deps.armed && verdict.status === "breach") {
+    // The people count refines the page and is never a condition of it: a failed read
+    // is reported and the page goes out in the attempts form.
+    const refused = await deps
+      .readRefusedPeople(deps.nowMs - deps.thresholds.windowMs)
+      .catch((err) => {
+        deps.onError?.("refusedPeople", err);
+        return null;
+      });
     await deps
       .notify(
         FAILURE_RATE_ALERT_KEY,
         deps.cooldownMs,
-        formatFailureRateAlert({ ...verdict, windowMinutes }),
+        formatFailureRateAlert({ ...verdict, windowMinutes, refused }),
       )
       .catch((err) => deps.onError?.("notify", err));
   }

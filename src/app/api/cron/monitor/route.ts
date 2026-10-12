@@ -175,6 +175,7 @@ import {
   loadRateState,
   saveRateState,
   readTodayOutcomes,
+  readRefusedPeople,
 } from "@/lib/monitor/booking-failure-rate-store";
 import {
   runAvailabilityTruthCheck,
@@ -1583,6 +1584,7 @@ export async function GET(req: NextRequest) {
           loadState: loadRateState,
           saveState: saveRateState,
           readToday: () => readTodayOutcomes(now),
+          readRefusedPeople: (sinceMs) => readRefusedPeople(sinceMs, now),
           thresholds: FAILURE_RATE_THRESHOLDS,
           armed: settings!.failureRateArmed,
           cooldownMs: cooldownMs.booking_failure_rate,

@@ -1582,7 +1582,7 @@ Since #3334 a reschedule or reassign splices too: the new time out of every pool
 advisor serves and the old time back into every pool the old advisor serves, from the
 same seven reads (one busy statement covers both windows however far apart they are),
 with one compare and swap per changed code carrying both windows. Only cancels still
-schedule the coalesced pool refresh (`refreshPoolAfterBooking`), under the same job
+schedule the coalesced pool refresh (`refreshPoolOf`), under the same job
 name, and the reads only arm reads that refresh's inputs for them. So runs from before #3324 (the #3293 coalesced
 refresh, and the 2026-10-04 per code refresh) are a different `on`: compare a new arm
 only with new arms. What to read off the next run, per #3324: computes per booking

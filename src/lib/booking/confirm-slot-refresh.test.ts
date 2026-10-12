@@ -21,7 +21,7 @@ vi.mock("@/lib/after-response", () => after);
 
 const slotCache = vi.hoisted(() => ({
   recomputeBucketSlotsForToday: vi.fn(async (_code: string) => {}),
-  refreshPoolAfterBooking: vi.fn(async (_code: string) => {}),
+  refreshPoolOf: vi.fn(async (_code: string) => {}),
   readPoolInputsAfterBooking: vi.fn(async (_code: string) => {}),
   spliceBookedTimeAfterBooking: vi.fn(async (_code: string, _booked: unknown) => {}),
   readSpliceInputsAfterBooking: vi.fn(async (_code: string, _booked: unknown) => {}),
@@ -45,16 +45,16 @@ describe("a user-facing booking's slot refresh runs after the response (#2345)",
     expect(after.afterResponse.mock.calls[0][0]).toBe("post-confirm-recompute");
     // Nothing has been computed yet: the confirm carries on without sharing its
     // thread with a pool compute.
-    expect(slotCache.refreshPoolAfterBooking).not.toHaveBeenCalled();
+    expect(slotCache.refreshPoolOf).not.toHaveBeenCalled();
 
     await after.afterResponse.mock.calls[0][1]();
-    expect(slotCache.refreshPoolAfterBooking).toHaveBeenCalledWith("411");
+    expect(slotCache.refreshPoolOf).toHaveBeenCalledWith("411");
     // #3258: never the per code compute the load run measured crowding the confirms.
     expect(slotCache.recomputeBucketSlotsForToday).not.toHaveBeenCalled();
   });
 
   it("lets a failed refresh REJECT, so afterResponse logs it and its profile says it failed", async () => {
-    slotCache.refreshPoolAfterBooking.mockRejectedValueOnce(new Error("bucket_slots write refused"));
+    slotCache.refreshPoolOf.mockRejectedValueOnce(new Error("bucket_slots write refused"));
 
     await realDeps(after.deferWebhookSend).invalidateSlots("411");
     const work = after.afterResponse.mock.calls[0][1];
@@ -66,7 +66,7 @@ describe("a user-facing booking's slot refresh runs after the response (#2345)",
 });
 
 // #3258: the user facing refresh is the booked code's POOL, coalesced with the
-// pool's other bookings (refreshPoolAfterBooking), never the per code recompute the
+// pool's other bookings (refreshPoolOf), never the per code recompute the
 // load run measured crowding the confirms. The cron drains keep the per code float.
 describe("a cron drain's slot refresh keeps the #503 float", () => {
   it("starts the recompute directly and never asks waitUntil to hold the lane open", async () => {
@@ -107,7 +107,7 @@ describe("the post confirm recompute arm (#3258)", () => {
     await withEnv({ SLATE_LOADTEST: "true", [VAR]: "off" }, async () => {
       await realDeps(after.deferWebhookSend).invalidateSlots("212");
       expect(after.afterResponse).not.toHaveBeenCalled();
-      expect(slotCache.refreshPoolAfterBooking).not.toHaveBeenCalled();
+      expect(slotCache.refreshPoolOf).not.toHaveBeenCalled();
     });
   });
 
@@ -118,7 +118,7 @@ describe("the post confirm recompute arm (#3258)", () => {
       expect(after.afterResponse.mock.calls[0][0]).toBe("post-confirm-recompute-reads-only");
       await after.afterResponse.mock.calls[0][1]();
       expect(slotCache.readPoolInputsAfterBooking).toHaveBeenCalledWith("212");
-      expect(slotCache.refreshPoolAfterBooking).not.toHaveBeenCalled();
+      expect(slotCache.refreshPoolOf).not.toHaveBeenCalled();
     });
   });
 
@@ -127,7 +127,7 @@ describe("the post confirm recompute arm (#3258)", () => {
       await realDeps(after.deferWebhookSend).invalidateSlots("212");
       expect(after.afterResponse.mock.calls[0][0]).toBe("post-confirm-recompute");
       await after.afterResponse.mock.calls[0][1]();
-      expect(slotCache.refreshPoolAfterBooking).toHaveBeenCalledWith("212");
+      expect(slotCache.refreshPoolOf).toHaveBeenCalledWith("212");
     });
   });
 
@@ -174,7 +174,7 @@ describe("a confirmed booking splices its window (#3324)", () => {
         fenceAtMs: Date.parse("2026-10-12T15:00:00.000Z"),
       });
       // The whole pool compute it replaces is not run beside it.
-      expect(slotCache.refreshPoolAfterBooking).not.toHaveBeenCalled();
+      expect(slotCache.refreshPoolOf).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -189,7 +189,7 @@ describe("a confirmed booking splices its window (#3324)", () => {
   it("a refresh with no booked window (a cancel) still refreshes the pool", async () => {
     await realDeps(after.deferWebhookSend).invalidateSlots("411");
     await after.afterResponse.mock.calls[0][1]();
-    expect(slotCache.refreshPoolAfterBooking).toHaveBeenCalledWith("411");
+    expect(slotCache.refreshPoolOf).toHaveBeenCalledWith("411");
     expect(slotCache.spliceBookedTimeAfterBooking).not.toHaveBeenCalled();
   });
 
@@ -212,7 +212,7 @@ describe("a confirmed booking splices its window (#3324)", () => {
         ...MOVE,
         fenceAtMs: Date.parse("2026-10-12T15:00:00.000Z"),
       });
-      expect(slotCache.refreshPoolAfterBooking).not.toHaveBeenCalled();
+      expect(slotCache.refreshPoolOf).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

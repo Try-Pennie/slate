@@ -11,6 +11,7 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-refusal-stored-offer.ts
 import {
   checkStoredOffer,
+  offeredCodes,
   storedOfferCodes,
   storedOfferFields,
   type StoredOfferDeps,
@@ -117,31 +118,83 @@ const row = (code: string, slots: string[], computedAt = "2026-10-06T04:08:00.00
   eq(anyRung.stored_row_offers_start, true, "offered on any rung is offered");
 }
 
-// The IO: one read, a log line, and it never throws.
+// Which pools a proven-stale refusal names for a refresh (#3633): exactly the rows
+// that still offer the refused instant, so the confirm's own verdict decides which
+// pool is recomputed, and a row that was right is left alone.
+{
+  eq(
+    offeredCodes(trace(), [row("112", [START])]),
+    ["112"],
+    "a row still offering the refused instant is a pool to refresh",
+  );
+  eq(
+    offeredCodes(trace(), [row("112", ["2026-10-06T16:50:00.000Z"])]),
+    [],
+    "a row that no longer offers it names no pool: it was right",
+  );
+  eq(
+    offeredCodes(trace(), []),
+    [],
+    "no row is not a pool to refresh (the verdict is unknown, never stale)",
+  );
+  eq(
+    offeredCodes(trace({ stage: "verify_busy" }), [row("112", [START])]),
+    [],
+    "a refusal this check is not for names no pool",
+  );
+  // Only the rung whose stored row still offers it, never the whole ladder.
+  const t = trace({
+    bucketCode: "411",
+    rungs: [
+      { code: "411", members: 3, read: 0, claimed: 0, checked: null, stage: "candidate_read_empty" },
+      { code: "311", members: 9, read: 0, claimed: 0, checked: null, stage: "candidate_read_empty" },
+    ],
+  });
+  eq(
+    offeredCodes(t, [row("411", []), row("311", [START], undefined, { slotsWithoutLow: [START] })]),
+    ["311"],
+    "only the pool whose row still offers it is refreshed",
+  );
+}
+
+// The IO: one read, a log line, a refresh of the proven-stale pool, and it never throws.
 {
   const lines: { level: string; fields: Record<string, unknown> }[] = [];
   const reads: string[][] = [];
-  const deps = (readRows: StoredOfferDeps["readRows"]): StoredOfferDeps => ({
+  const refreshed: string[] = [];
+  const deps = (
+    readRows: StoredOfferDeps["readRows"],
+    refreshImpl?: (code: string) => Promise<void>,
+  ): StoredOfferDeps => ({
     readRows: async (codes) => { reads.push(codes); return readRows(codes); },
     nowMs: () => NOW,
+    refreshPool: async (code) => { refreshed.push(code); if (refreshImpl) await refreshImpl(code); },
     log: {
       info: (_tag, fields) => { lines.push({ level: "info", fields }); },
       warn: (_tag, fields) => { lines.push({ level: "warn", fields }); },
     },
   });
+  const reset = () => { lines.length = 0; reads.length = 0; refreshed.length = 0; };
 
   await checkStoredOffer(trace(), deps(async () => [row("112", [START])]));
   eq(reads, [["112"]], "one read for the rung codes");
   eq(lines.length, 1, "one line");
   eq(lines[0].level, "info", "at info");
   eq(lines[0].fields.stored_row_offers_start, true, "carrying the verdict");
+  eq(refreshed, ["112"], "the pool the confirm proved stale is refreshed");
 
-  lines.length = 0; reads.length = 0;
+  reset();
+  await checkStoredOffer(trace(), deps(async () => [row("112", ["2026-10-06T16:50:00.000Z"])]));
+  eq(lines.length, 1, "a correct row still logs its one line");
+  eq(refreshed, [], "a row that was right is never refreshed");
+
+  reset();
   await checkStoredOffer(trace({ stage: "verify_busy" }), deps(async () => [row("112", [START])]));
   eq(reads.length, 0, "a refusal that is not checked reads nothing");
   eq(lines.length, 0, "and logs nothing");
+  eq(refreshed, [], "and refreshes nothing");
 
-  lines.length = 0;
+  reset();
   let threw = false;
   try {
     await checkStoredOffer(trace(), deps(async () => { throw new Error("db down"); }));
@@ -153,6 +206,43 @@ const row = (code: string, slots: string[], computedAt = "2026-10-06T04:08:00.00
   eq(lines[0].level, "warn", "at warn");
   eq(lines[0].fields.stored_offer, "112:unreadable", "naming every code as unreadable, never as not offered");
   eq(lines[0].fields.stored_row_offers_start, null, "the overall answer is unknown");
+  eq(refreshed, [], "an unreadable row refreshes nothing: stale was never proven");
+
+  // A refresh that rejects is logged, never thrown: the lead already has their 409.
+  reset();
+  threw = false;
+  try {
+    await checkStoredOffer(
+      trace(),
+      deps(async () => [row("112", [START])], async () => { throw new Error("bucket_slots write refused"); }),
+    );
+  } catch {
+    threw = true;
+  }
+  assert(!threw, "a failed refresh never throws out of the check");
+  eq(refreshed, ["112"], "the refresh was attempted");
+  assert(lines.some((l) => l.level === "warn"), "and its failure is said at warn");
+
+  // A SYNCHRONOUS throw from refreshPool (before it returns a promise) must be caught
+  // too, not just a rejected promise, or it escapes the "never throws" contract.
+  reset();
+  threw = false;
+  const syncThrowDeps: StoredOfferDeps = {
+    readRows: async () => [row("112", [START])],
+    nowMs: () => NOW,
+    refreshPool: (code) => { refreshed.push(code); throw new Error("sync boom"); },
+    log: {
+      info: (_tag, fields) => { lines.push({ level: "info", fields }); },
+      warn: (_tag, fields) => { lines.push({ level: "warn", fields }); },
+    },
+  };
+  try {
+    await checkStoredOffer(trace(), syncThrowDeps);
+  } catch {
+    threw = true;
+  }
+  assert(!threw, "a synchronous throw from the refresh never escapes the check");
+  assert(lines.some((l) => l.level === "warn"), "and is said at warn like a rejection");
 }
 
 finish();

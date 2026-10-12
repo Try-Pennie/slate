@@ -41,7 +41,7 @@ import {
 import {
   recomputeBucketSlotsForToday,
   readPoolInputsAfterBooking,
-  refreshPoolAfterBooking,
+  refreshPoolOf,
   readSpliceInputsAfterBooking,
   spliceBookedTimeAfterBooking,
   getBucketSlotsWithFallback,
@@ -1376,7 +1376,7 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     // failure is logged by afterResponse under the job's own name.
     //
     // #3258: and it refreshes the booked code's POOL, sharing one compute with the
-    // pool's other bookings inside a ten second window (`refreshPoolAfterBooking`).
+    // pool's other bookings inside a ten second window (`refreshPoolOf`).
     // The three arm load run measured the per booking compute as the code half of
     // the confirm slowdown, crowding the Worker that answers the next confirms.
     //
@@ -1404,7 +1404,7 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
         const target = booked ? { ...booked, fenceAtMs: Date.now() } : null;
         const refresh = postConfirmRefresh(postConfirmRecomputeMode(), bucketCode, {
           recompute: (code) =>
-            target ? spliceBookedTimeAfterBooking(code, target) : refreshPoolAfterBooking(code),
+            target ? spliceBookedTimeAfterBooking(code, target) : refreshPoolOf(code),
           // The reads of the same work the on arm does, so the arms stay comparable.
           readsOnly: (code) =>
             target ? readSpliceInputsAfterBooking(code, target) : readPoolInputsAfterBooking(code),

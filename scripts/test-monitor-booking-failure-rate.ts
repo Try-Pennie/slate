@@ -13,11 +13,13 @@ import {
   judgeFailureRate,
   formatFailureRateAlert,
   formatFailureRateAllClear,
+  countRefusedPeople,
   FAILURE_RATE_ALERT_KEY,
   type FailureRateResult,
   type OutcomeReading,
   type RateThresholds,
   type RateWindowState,
+  type RefusedPeople,
 } from "../src/lib/monitor/booking-failure-rate.ts";
 import { FAILURE_RATE_FIT, MEASURED_ATTEMPT_TRAFFIC, SHIPPED_FAILURE_RATE_THRESHOLDS } from "../src/lib/monitor/failure-rate-thresholds.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -240,8 +242,8 @@ const reading = (
       { code: "internal", count: 3 },
     ],
   });
-  assert(msg.includes("38"), "the page states how many customers were turned away");
-  assert(msg.includes("82"), "the page states how many tried");
+  assert(msg.includes("38"), "the page states how many attempts failed");
+  assert(msg.includes("82"), "the page states how many attempts there were");
   assert(msg.includes("slot_unavailable"), "the page names the dominant failure so it is actionable");
   assert(!DASHES.test(msg), "the page uses no em/en dashes (copy rule)");
   assert(!/^Slate\b/.test(msg), "the page does not open with the word Slate (it arrives under Slate's own name)");
@@ -253,8 +255,92 @@ const reading = (
     windowMinutes: 60,
     topCodes: [{ code: "internal", count: 1 }],
   });
-  assert(/\b1 customer\b/.test(one), "a single failure reads as '1 customer', not '1 customers'");
-  assert(/\b38 customers\b/.test(msg), "several failures read as 'customers'");
+  // #3633: the window counts attempts, not people, and one lead retrying five times
+  // is five attempts. The page says attempts so it cannot read as five customers.
+  assert(!/customer/i.test(msg), "the page never calls an attempt a customer");
+  assert(!/customer/i.test(one), "the single case never calls an attempt a customer either");
+  assert(/\b38 of 82 booking attempts failed\b/.test(msg), "it reads as attempts failed out of attempts");
+  assert(/\b1 of 21 booking attempts failed\b/.test(one), "and reads the same way for a single failure");
+
+  // #3633: with the refused people counted, the page LEADS with people, and the
+  // refusal count beside them comes from the same read, so the two always agree.
+  const base = {
+    attempts: 82,
+    failures: 38,
+    pct: 46,
+    windowMinutes: 180,
+    topCodes: [{ code: "slot_unavailable", count: 35 }],
+  };
+  const people = formatFailureRateAlert({ ...base, refused: { people: 4, refusals: 35, withoutLead: 0 } });
+  assert(
+    people.startsWith(
+      "4 people were refused a time in the last 180 minutes (35 refusals); 38 of 82 attempts failed overall (46%).",
+    ),
+    `it leads with people, then attempts overall (got: ${people})`,
+  );
+  assert(people.includes("slot_unavailable (35)"), "and still names the failing code");
+  assert(!DASHES.test(people), "no dashes in the people form either");
+
+  const single = formatFailureRateAlert({ ...base, refused: { people: 1, refusals: 1, withoutLead: 0 } });
+  assert(
+    single.startsWith("1 person was refused a time in the last 180 minutes (1 refusal);"),
+    `one person and one refusal read in the singular (got: ${single})`,
+  );
+  const oneRetrying = formatFailureRateAlert({ ...base, refused: { people: 1, refusals: 5, withoutLead: 0 } });
+  assert(
+    oneRetrying.startsWith("1 person was refused a time in the last 180 minutes (5 refusals);"),
+    "one lead retrying five times reads as one person, five refusals",
+  );
+
+  // A refusal with no lead id cannot be told apart from anybody, so the count is a
+  // floor and says so (L11: claim only what was measured).
+  const floor = formatFailureRateAlert({ ...base, refused: { people: 3, refusals: 6, withoutLead: 2 } });
+  assert(floor.startsWith("At least 3 people were refused a time"), `an unidentified refusal makes it a floor (got: ${floor})`);
+
+  // No people form when nothing was refused (the failures were internal errors and
+  // the like, which carry nobody) or when the people read failed.
+  const noneRefused = formatFailureRateAlert({ ...base, refused: { people: 0, refusals: 0, withoutLead: 0 } });
+  assert(noneRefused.startsWith("38 of 82 booking attempts failed"), "zero refusals falls back to attempts");
+  const unread = formatFailureRateAlert({ ...base, refused: null });
+  assert(unread.startsWith("38 of 82 booking attempts failed"), "an unread people count falls back to attempts");
+  // Refusals happened but not one carried a lead id: there is nobody to count, and
+  // "At least 0 people" would be a claim about people the page cannot make.
+  const nobodyKnown = formatFailureRateAlert({ ...base, refused: { people: 0, refusals: 4, withoutLead: 4 } });
+  assert(
+    nobodyKnown.startsWith("38 of 82 booking attempts failed"),
+    `refusals with no lead id at all fall back to attempts (got: ${nobodyKnown})`,
+  );
+  assert(!/\b0 people\b/.test(nobodyKnown), "and never say 0 people");
+
+  // countRefusedPeople: distinct leads among the window's refusals (#3633).
+  const counted: RefusedPeople = countRefusedPeople([
+    { lead_id: "00QUi000011BI7B", is_test: false },
+    { lead_id: "00QUi000011BI7B", is_test: false },
+    { lead_id: "00QUi000011BI7B", is_test: false },
+    { lead_id: "00QUl00000OipHQ", is_test: false },
+    { lead_id: "00QUl00000OipHQ", is_test: false },
+  ]);
+  eq(counted, { people: 2, refusals: 5, withoutLead: 0 }, "the 2026-10-12 shape: two leads, five refusals");
+
+  eq(
+    countRefusedPeople([
+      { lead_id: "SMOKE0000000001", is_test: true },
+      { lead_id: "00QUi000011BI7B", is_test: false },
+    ]),
+    { people: 1, refusals: 1, withoutLead: 0 },
+    "a test bucket's refusal is left out, as the tally leaves it out",
+  );
+  eq(
+    countRefusedPeople([{ lead_id: "00QUi000011BI7B", is_test: null }]),
+    { people: 1, refusals: 1, withoutLead: 0 },
+    "a bucket that could not be read counts as real, the direction the tally takes",
+  );
+  eq(
+    countRefusedPeople([{ lead_id: null, is_test: false }, { lead_id: "", is_test: false }]),
+    { people: 0, refusals: 2, withoutLead: 2 },
+    "a refusal with no lead id is a refusal, never a person",
+  );
+  eq(countRefusedPeople([]), { people: 0, refusals: 0, withoutLead: 0 }, "nothing refused is nothing");
 
   // L36: never embed canned remediation that can steer a diagnosis wrong. The
   // slot_unavailable guidance ("the times being offered are not really free") is
@@ -388,6 +474,8 @@ interface Harness {
   resolved: string[];
   saved: RateWindowState[];
   errors: { context: string; err: unknown }[];
+  /** The `sinceMs` of every refused-people read the check made. */
+  peopleReads: number[];
 }
 
 function harness(overrides: {
@@ -398,16 +486,20 @@ function harness(overrides: {
   armed?: boolean;
   notifyThrows?: boolean;
   saveThrows?: boolean;
+  /** What the refused-people read answers, or "throws". Defaults to nobody refused. */
+  refused?: RefusedPeople | "throws";
 }): Harness {
   const notified: { key: string; text: string }[] = [];
   const resolved: string[] = [];
   const saved: RateWindowState[] = [];
   const errors: { context: string; err: unknown }[] = [];
+  const peopleReads: number[] = [];
   return {
     notified,
     resolved,
     saved,
     errors,
+    peopleReads,
     run: () =>
       runBookingFailureRateCheck({
         nowMs: T0 + MIN,
@@ -424,6 +516,11 @@ function harness(overrides: {
         saveState: async (s) => {
           if (overrides.saveThrows) throw new Error("state write failed");
           saved.push(s);
+        },
+        readRefusedPeople: async (sinceMs) => {
+          peopleReads.push(sinceMs);
+          if (overrides.refused === "throws") throw new Error("routing_decisions read failed");
+          return overrides.refused ?? { people: 0, refusals: 0, withoutLead: 0 };
         },
         thresholds: THRESHOLDS,
         armed: overrides.armed ?? true,
@@ -559,6 +656,42 @@ function harness(overrides: {
     ).status;
   eq(at(k - 1), "healthy", `${k - 1} failures out of the floor of ${n} do not page`);
   eq(at(k), "breach", `${k} failures out of the floor of ${n} do`);
+}
+
+// #3633: the refused-people read. It happens only on an armed breach tick, because
+// four cron lanes share one invocation's subrequest budget and a read on every
+// healthy five minute tick would spend it to say nothing.
+{
+  const h = harness({ state: BREACHING, refused: { people: 2, refusals: 10, withoutLead: 0 } });
+  await h.run();
+  eq(h.peopleReads, [T0 + MIN - THRESHOLDS.windowMs], "an armed breach reads people over exactly the page's window");
+  eq(h.notified.length, 1, "and pages");
+  assert(
+    h.notified[0].text.startsWith("2 people were refused a time in the last 60 minutes (10 refusals);"),
+    `and the page leads with them (got: ${h.notified[0]?.text})`,
+  );
+}
+{
+  const h = harness({ state: HEALTHY });
+  await h.run();
+  eq(h.peopleReads.length, 0, "a healthy window reads no people");
+}
+{
+  const h = harness({ state: BREACHING, armed: false });
+  await h.run();
+  eq(h.peopleReads.length, 0, "a disarmed breach sends nothing, so it reads no people");
+}
+{
+  // The people count is a refinement of the page, never a condition of it.
+  const h = harness({ state: BREACHING, refused: "throws" });
+  const out = await h.run();
+  eq(out.status, "checked", "a failed people read does not fail the tick");
+  eq(h.notified.length, 1, "the page still goes out");
+  assert(
+    /^\d+ of \d+ booking attempts failed/.test(h.notified[0].text),
+    `in the attempts form (got: ${h.notified[0]?.text})`,
+  );
+  eq(h.errors.map((e) => e.context), ["refusedPeople"], "and the failed read is reported, not swallowed");
 }
 
 finish();
