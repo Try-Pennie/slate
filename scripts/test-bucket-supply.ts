@@ -977,4 +977,84 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   assert(sameSupplyReading(base, { ...base, code: "121" }, AUG_4_1119_ET), "the same reading is the same");
 }
 
+// ---------------------------------------------------------------------------
+// One reading per DEBT TIER (#3637). The nearly full notice judges the tier, not
+// its Beyond, Achieve or legal pools, because a lead whose own pool is full is
+// served by the rest of the tier. The tier's offered times are its whole pool's
+// (the `T11` code, which selects every agent in the debt team), and its booked
+// times are every code in the tier's, since a call taken through 120 or 130 was
+// taken by somebody in that whole pool. Measured 2026-10-12: 5 of 533 Low
+// bookings over three days went through a Beyond or Achieve code.
+// ---------------------------------------------------------------------------
+{
+  const all = slotsFrom1320(21);
+  const TIERED = new Map([
+    ["111", { depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low" }],
+    ["120", { depth: 1, effectiveDepth: 1, poolKey: "pool-low-beyond", poolLabel: "Low with Beyond" }],
+    ["130", { depth: 9, effectiveDepth: 9, poolKey: "pool-low-achieve", poolLabel: "Low with Achieve" }],
+    ["211", { depth: 5, effectiveDepth: 5, poolKey: "pool-mid", poolLabel: "Medium" }],
+  ]);
+  const input = {
+    hours: WEEK,
+    horizonDays: 4,
+    nowMs: AUG_4_1119_ET,
+    buckets: [
+      { code: "211", name: "Medium | Both | Legal" },
+      { code: "111", name: "Low | Both | Legal" },
+      { code: "120", name: "Low | Beyond | No Legal Param" },
+      { code: "130", name: "Low | Achieve | No Legal Param" },
+    ],
+    depthByCode: TIERED,
+    cacheRows: [
+      cachedRow("111", all.slice(3), FRESH_STAMP),
+      cachedRow("120", [], FRESH_STAMP),
+      cachedRow("130", all.slice(3), FRESH_STAMP),
+      cachedRow("211", all, FRESH_STAMP),
+    ],
+    // One start booked through each Low code, and one Medium booking that must
+    // not leak into Low.
+    bookedByCodeAndDate: new Map([
+      ["111", new Map([["2026-08-04", [all[2]]]])],
+      ["120", new Map([["2026-08-04", [all[0]]]])],
+      ["130", new Map([["2026-08-04", [all[1]]]])],
+      ["211", new Map([["2026-08-04", [all[5]]]])],
+    ]),
+  };
+  const report = bucketSupplyReport(input);
+  if (!report.measurable) {
+    fail("the tiered case produces a report");
+  } else {
+    const low = report.tiers.find((t) => t.tier === "1");
+    const mid = report.tiers.find((t) => t.tier === "2");
+    eq(report.tiers.map((t) => t.tier), ["2", "1"], "one reading per tier, highest tier first like the rows");
+    eq(low?.label, "Low", "named by the debt tier, never a backend pool");
+    eq(low?.codes, ["111", "120", "130"], "carrying every code in the tier");
+    eq(
+      low?.cells[0],
+      { kind: "counted", booked: 3, capacity: 21, share: 3 / 21 },
+      "the tier counts the bookings taken through its Beyond and Achieve codes too",
+    );
+    eq(
+      report.rows.find((r) => r.code === "111")?.cells[0],
+      { kind: "counted", booked: 1, capacity: 19, share: 1 / 19 },
+      "while the whole tier POOL's row on the supply page keeps its own bookings",
+    );
+    eq(low?.offeredDays, report.rows.find((r) => r.code === "111")?.offeredDays, "judged over the days the booker shows the whole tier code");
+    eq(mid?.cells[0], { kind: "counted", booked: 1, capacity: 21, share: 1 / 21 }, "and another tier's bookings never leak in");
+  }
+
+  // A tier with no whole tier bucket has no reading: its Beyond pool alone would
+  // be judged as if it were the tier, which is the false alarm this replaces.
+  const noWhole = bucketSupplyReport({ ...input, buckets: input.buckets.filter((b) => b.code !== "111") });
+  eq(noWhole.measurable ? noWhole.tiers.map((t) => t.tier) : "unmeasurable", ["2"], "no whole tier code, no tier reading");
+
+  // Unreadable bookings make the tier's days unknown, never a zero nobody measured.
+  const blind = bucketSupplyReport({ ...input, bookedByCodeAndDate: null });
+  eq(
+    blind.measurable ? blind.tiers.find((t) => t.tier === "1")?.cells[0]?.kind : "unmeasurable",
+    "unknown",
+    "an unreadable booking read leaves the tier unknown",
+  );
+}
+
 finish();

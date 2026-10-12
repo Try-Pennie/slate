@@ -1151,8 +1151,8 @@ export const ALERT_CATALOG: AlertEntry[] = [
     key: "pool_nearly_full",
     kind: "info",
     why:
-      "Fewer than the set share (10% by default) of a pool's possible starts across the days " +
-      "the booker shows are still open (#1256, #3559): good news " +
+      "Fewer than the set share (10% by default) of a debt tier's possible starts across the days " +
+      "the booker shows are still open (#1256, #3559, #3637): good news " +
       "and a nudge to add coverage, never something broken. The moment it reaches zero is " +
       "the booked solid page's, so this has nothing of its own to end.",
   },

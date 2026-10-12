@@ -53,6 +53,7 @@ const REPORT: BucketSupplyReport = {
   nowMs: NOW_MS,
   days: [{ iso: "2026-08-04", weekday: 2 }],
   rows: [row("110", "Low | Both | No Legal Param"), row("111", "Low | Both | Legal")],
+  tiers: [],
   bucketListReadable: true,
   depthReadable: true,
 };

@@ -3540,24 +3540,24 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: formatEdgeLimiterRecovery(),
   },
-  // --- a pool nearly full over the days the booker shows (#1256, #3559) --------
+  // --- a debt tier nearly full over the days the booker shows (#1256, #3559, #3637)
   {
     key: "pool_nearly_full",
-    state: "one pool with five starts left across the three days",
+    state: "one debt tier with five starts left across the three days",
     channel: "info",
     text: formatPoolNearlyFullNotice(
-      [{ label: "Low", codes: ["111", "112"], open: 5, capacity: 148, days: PREVIEW_TIER_DAYS }],
+      [{ label: "Low", codes: ["111", "112", "120", "130"], open: 5, capacity: 148, days: PREVIEW_TIER_DAYS }],
       0.1,
     ),
   },
   {
     key: "pool_nearly_full",
-    state: "two pools, one full and one without a name, at a 20% line",
+    state: "two debt tiers, one full, at a 20% line",
     channel: "info",
     text: formatPoolNearlyFullNotice(
       [
-        { label: "Very High with Beyond", codes: ["421", "422"], open: 0, capacity: 18, days: PREVIEW_TIER_DAYS },
-        { label: null, codes: ["999"], open: 1, capacity: 14, days: PREVIEW_TIER_DAYS },
+        { label: "Very High", codes: ["411", "421", "431"], open: 0, capacity: 18, days: PREVIEW_TIER_DAYS },
+        { label: "Medium", codes: ["211", "221", "231"], open: 1, capacity: 14, days: PREVIEW_TIER_DAYS },
       ],
       0.2,
     ),
