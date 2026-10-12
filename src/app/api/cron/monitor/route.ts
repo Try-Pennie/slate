@@ -1927,16 +1927,18 @@ export async function GET(req: NextRequest) {
       }),
     );
 
-    // --- A pool nearly full (#1256): a quiet whisper when fewer than the set share
-    // (10% by default) of a pool's possible starts across the days the booker
-    // shows are still open (#3559), well before the booked solid page (#1412)
-    // fires at zero. The measurement is the
-    // supply page's own (#1254), built from the setup reads this tick already holds
-    // (the slot rows, the week, the horizon, the bucket list) plus the shared depth
-    // read above, so the only new subrequests are the paginated read of today's
-    // window of bookings. A pool the scan just paged as booked solid is left to
-    // that page; with the scan's answer unknown or cut short, a pool with nothing
-    // open is held back for the same reason. ---
+    // --- A debt tier nearly full (#1256, #3637): a quiet whisper when fewer than the
+    // set share (10% by default) of a debt tier's possible starts across the days
+    // the booker shows are still open (#3559), well before the booked solid page
+    // (#1412) fires at zero. Judged per tier, never per Beyond, Achieve or legal
+    // pool, because a lead whose own pool is full is served by the rest of the
+    // tier. The measurement is the supply report's own (#1254), built from the
+    // setup reads this tick already holds (the slot rows, the week, the horizon,
+    // the bucket list) plus the shared depth read above, so the only new
+    // subrequests are the paginated read of today's window of bookings. A tier any
+    // of whose codes the scan just paged as booked solid is left to that page;
+    // with the scan's answer unknown or cut short, a tier with nothing open is
+    // held back for the same reason. ---
     await steps.run("pool_fullness", null, async () => {
       if (!gates.poolFullness.run) {
         log.warn("monitor", { msg: "nearly full pool check skipped", why: gates.poolFullness.why });

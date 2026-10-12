@@ -169,8 +169,8 @@ export const ALERT_FIELDS: {
   {
     key: "pool_nearly_full",
     urgency: "notice",
-    label: "Nearly full pool cooldown",
-    help: "Fewer than a set share (10% unless changed) of a pool's possible starts, across the days the booker shows, are still open. A full calendar is good news; this is the nudge to add coverage before leads run out of times.",
+    label: "Nearly full debt tier cooldown",
+    help: "Fewer than a set share (10% unless changed) of a debt tier's possible starts, across the days the booker shows, are still open. A full calendar is good news; this is the nudge to add coverage before leads run out of times.",
   },
   {
     key: "agents_without_schedule",
