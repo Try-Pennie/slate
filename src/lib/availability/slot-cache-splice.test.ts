@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fakeBucketSlotsTable, type SlotRow } from "../../../scripts/lib/fake-bucket-slots-table";
 
 // #3324: the REAL wiring of the booked window splice, against a database fake that
@@ -149,8 +149,16 @@ const slotsOf = (code: string) =>
   (world.table.rows.find((r) => r.bucket_code === code)!.payload as { slots: string[] }).slots;
 const READS = 7;
 
+// The fixture's times are fixed (BOOKED_AT is 2026-10-13 14:00 UTC) and the splice
+// reads the real clock, so from that instant on the booked window was in the past
+// and every case asserting a changed offer went red with no code change (L130).
+// Only Date is faked, so the module's awaits and timers run as they always did.
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useFakeTimers({ toFake: ["Date"], now: new Date(BOOKED.fenceAtMs) });
+});
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("spliceBookedTimeAfterBooking (#3324): the call budget", () => {
