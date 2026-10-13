@@ -395,18 +395,35 @@ export async function search(input: {
   toIso: string;
   query: QueryFn;
 }): Promise<Judgement> {
+  return (await countSlice(input)).judge(0);
+}
+
+/**
+ * The two counts behind one slice's judgement, kept so the judgement can be made again when
+ * the needle count turns out to need correcting (a row the listing proves was counted twice).
+ */
+async function countSlice(input: {
+  needle: string;
+  control: string;
+  fromIso: string;
+  toIso: string;
+  query: QueryFn;
+}): Promise<{ judge: (repeated: number) => Judgement }> {
   const [needle, control] = await Promise.all([
     input.query(buildCountQuery({ needle: input.needle, fromIso: input.fromIso, toIso: input.toIso })),
     input.query(buildCountQuery({ needle: input.control, fromIso: input.fromIso, toIso: input.toIso })),
   ]);
   // The CONTROL's frontier decides recency, never the needle's: a needle with no matches
   // has no frontier at all, and that is precisely the case being judged (#1533).
-  return judge({
-    needleCount: needle.count,
-    controlCount: control.count,
-    controlNewestMs: control.newestMs,
-    windowEndMs: Date.parse(input.toIso),
-  });
+  return {
+    judge: (repeated) =>
+      judge({
+        needleCount: Math.max(0, needle.count - repeated),
+        controlCount: control.count,
+        controlNewestMs: control.newestMs,
+        windowEndMs: Date.parse(input.toIso),
+      }),
+  };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -558,7 +575,16 @@ export interface SliceCount extends Slice {
   judgement: Judgement;
 }
 
-/** Count needle and control in EACH slice (the control over exactly that slice), then merge. */
+/**
+ * Count needle and control in EACH slice (the control over exactly that slice), then merge.
+ *
+ * Adjacent slices share their boundary instant, and a row stamped on exactly that millisecond
+ * is counted by both. A count has no ids to tell, so this path can overstate by one row per
+ * such boundary; `--lines` sees the ids and corrects it (`listLines`). The slices are left
+ * touching rather than made disjoint because whether Cloudflare's `to` is inclusive is not
+ * documented, and guessing wrong would open a one millisecond gap: a missed row reads as
+ * absence, which is the worse error for this tool (#3299).
+ */
 export async function searchSliced(input: {
   needle: string;
   control: string;
@@ -700,11 +726,11 @@ export async function listLines(input: {
   const seen = new Set<string>();
   const lines: LogLine[] = [];
   for (const s of sliceWindow(input)) {
-    const [judgement, listed] = await Promise.all([
-      search({ ...input, fromIso: s.fromIso, toIso: s.toIso }),
+    const [counted, listed] = await Promise.all([
+      countSlice({ ...input, fromIso: s.fromIso, toIso: s.toIso }),
       input.events(buildEventsQuery({ needle: input.needle, fromIso: s.fromIso, toIso: s.toIso, limit })),
     ]);
-    slices.push({ ...s, judgement });
+    const judgement = counted.judge(0);
     const reasons: string[] = [];
     if (listed.length >= limit) {
       reasons.push(
@@ -735,11 +761,10 @@ export async function listLines(input: {
     }
     // Take the repeat out of this slice's count too, or the merged count is higher than the
     // rows it describes and the printed list reads as short with nothing flagged (L16). It
-    // stays counted once, in the earlier slice that already holds it.
-    if (repeated > 0) {
-      const last = slices[slices.length - 1];
-      last.judgement = { ...last.judgement, needleCount: Math.max(0, last.judgement.needleCount - repeated) };
-    }
+    // stays counted once, in the earlier slice that already holds it. The slice is JUDGED
+    // again rather than having its number edited, so a slice whose only row was the repeat
+    // reads as an absence and its sentence matches its count.
+    slices.push({ ...s, judgement: repeated > 0 ? counted.judge(repeated) : judgement });
   }
   lines.sort((a, b) => (a.timestampMs ?? Infinity) - (b.timestampMs ?? Infinity));
   return { slices, judgement: mergeJudgements(slices.map((s) => s.judgement)), lines, incomplete };

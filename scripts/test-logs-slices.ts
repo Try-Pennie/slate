@@ -344,6 +344,24 @@ function fakeCloudflare(opts: {
   eq(r.slices[0].judgement.needleCount + r.slices[1].judgement.needleCount, 3, "the per slice counts printed above it agree");
   eq(r.incomplete.length, 0, "and a duplicate is not mistaken for a missing line");
 }
+{
+  // The later slice's ONLY row is the repeat: once it is taken out, that slice is an absence,
+  // and its verdict and sentence must say so rather than "present" over a count of zero.
+  const shared = { id: "only-row", timestampMs: T0 + HOUR, level: "info", message: "slate tag=x" };
+  const count: Parameters<typeof listLines>[0]["query"] = async (q) => {
+    const needle = q.parameters.filters.find((f) => f.key === "message")!.value;
+    if (needle === CONTROL_NEEDLE) return { count: 60, newestMs: q.timeframe.to - MIN };
+    return { count: 1, newestMs: T0 + HOUR };
+  };
+  const events: Parameters<typeof listLines>[0]["events"] = async () => [shared];
+  const r = await listLines({ needle: "tag=x", control: CONTROL_NEEDLE, fromIso: iso(T0), toIso: iso(T0 + 2 * HOUR), query: count, events });
+  const later = r.slices[1].judgement;
+  eq(later.needleCount, 0, "the slice holding only the repeat counts nothing");
+  eq(later.verdict, "absent", "and is judged an absence, not left reading as present");
+  assert(!/found 1 matching/.test(later.reason), "with a sentence that no longer claims the row");
+  eq(r.judgement.needleCount, 1, "while the window still holds the one row, once");
+  eq(r.judgement.verdict, "present", "and is present");
+}
 
 // --- The token: where it comes from, and that it is never printed.
 {
