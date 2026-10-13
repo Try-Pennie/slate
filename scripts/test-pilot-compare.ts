@@ -35,6 +35,9 @@ import {
   sourceGroup,
   sourceCuts,
   PORTAL_FIX_MS,
+  bookingWindowCatch,
+  etDayFloorMs,
+  JUDGE_GRACE_MS,
 } from "./lib/pilot-compare.ts";
 import { SF_TIMEOUT_MS } from "../src/lib/salesforce/retry.ts";
 import { slateBucket, compareHalves } from "./lib/pilot-split.ts";
@@ -71,6 +74,7 @@ function windowAt(over: Partial<PilotWindow> = {}): PilotWindow {
     partial: false,
     readout: { date: null, reached: false },
     lift: 0.02,
+    update: null,
     ...over,
   };
 }
@@ -419,6 +423,7 @@ function run(
     storeBeganMs?: number | null;
     contact?: Application[];
     readings?: PilotSettingsRow[];
+    reference?: ReturnType<typeof matchBookings> | null;
   } = {},
 ) {
   const window = windowAt(over.window);
@@ -433,6 +438,7 @@ function run(
       storedInSpan: over.storedInSpan ?? 5000,
       storeBeganMs: over.storeBeganMs === undefined ? Date.parse("2026-10-01T17:12:00Z") : over.storeBeganMs,
     },
+    reference: over.reference ?? null,
   });
 }
 
@@ -908,6 +914,70 @@ const TO = WINDOW_START + 22 * D;
   assert(r.lines.some((l) => /showed cal\.com to partner leads on Slate's side/.test(l)), "the run says why partners are also reported from the fix");
   assert(clean(r.lines), "no undefined or NaN in the by source lines");
   eq(r.exit, run({ apps: both.apps.map((a) => ({ ...a, source: null })), slate: both.slate, cal: both.cal, calls: both.calls }).exit, "the source cuts never change how the run exits");
+}
+
+// --- #3698: a booking update through yesterday --------------------------------------------
+{
+  const UPDATE = { PILOT_COMPARE_BOOKING_UPDATE: "1" };
+  const now = WINDOW_START + 11 * D + 15 * H;
+  const u = planWindow(now, UPDATE);
+  assert(u.ok, "an update plans a window");
+  if (u.ok) {
+    eq(u.window.spanMs, D, "an update counts bookings made within 24 hours of the application");
+    eq(u.window.cohortEndMs, now - D - JUDGE_GRACE_MS, "its cohort runs to the last application whose 24 hours and grace have passed");
+    eq(u.window.update?.referenceEndMs ?? null, etDayFloorMs(now - SPAN_DAYS * D - JUDGE_GRACE_MS), "it measures the 24 hour window against the newest closed 7 day cohort");
+    eq(u.window.readout.date, null, "an update is never a readout");
+    eq(u.window.rehearsal || u.window.partial, false, "nor a rehearsal or a partial look");
+  }
+  const early = planWindow(WINDOW_START + 3 * D, UPDATE);
+  eq(early.ok ? early.window.update?.referenceEndMs ?? null : "refused", null, "before any 7 day cohort has closed there is nothing to measure the window against");
+  const tooSoon = planWindow(WINDOW_START + 20 * H, UPDATE);
+  eq(tooSoon.ok ? "planned" : tooSoon.exit, PILOT_COMPARE_EXIT.windowNotOpen, "before any 24 hours have passed an update refuses, never a partial look");
+  const typo = planWindow(now, { PILOT_COMPARE_BOOKING_UPDATE: "yes" });
+  eq(typo.ok ? "planned" : typo.exit, PILOT_COMPARE_EXIT.inputUnreadable, "anything but 1 is refused rather than read as off");
+  const both = planWindow(now, { ...UPDATE, PILOT_COMPARE_REHEARSAL_START: "2026-09-30" });
+  eq(both.ok ? "planned" : both.exit, PILOT_COMPARE_EXIT.inputUnreadable, "an update and a rehearsal cannot be combined");
+
+  // How much a 24 hour window misses, measured where 7 days have closed. Slate's side
+  // books 40 of 100, ten of them after the first day; cal.com's 30, three after it.
+  const apps: Application[] = [];
+  const slate: SlateBookingRow[] = [];
+  const cal: CalcomListedBooking[] = [];
+  for (const side of ["slate", "calcom"] as const) {
+    for (let i = 0; i < 100; i++) {
+      const a = app(side, { createdAt: iso(WINDOW_START + (i % 4) * D + H) });
+      apps.push(a);
+      const late = side === "slate" ? i >= 30 && i < 40 : i >= 27 && i < 30;
+      const booked = side === "slate" ? i < 40 : i < 30;
+      if (!booked) continue;
+      const madeMs = Date.parse(a.createdAt) + (late ? 3 * D : H);
+      if (side === "slate") slate.push(slateRow(a, { createdAt: iso(madeMs), startsAt: iso(madeMs + D) }));
+      else cal.push(calRow({ submissionId: a.id, createdAt: iso(madeMs), start: iso(madeMs + D) }));
+    }
+  }
+  const referenceWindow = windowAt({ cohortEndMs: WINDOW_START + 4 * D });
+  const reference = matchBookings({ window: referenceWindow, applications: apps, contactApplications: [], slate, calcom: cal });
+  const caught = bookingWindowCatch(reference, D);
+  eq(caught.slate, { within: 30, booked: 40 }, "on Slate's side 30 of 40 bookings came within 24 hours");
+  eq(caught.calcom, { within: 27, booked: 30 }, "on cal.com's side 27 of 30");
+
+  // The judgement: bookings only, every line labelled, its own exit, and no call store
+  // refusal, since an update reads no calls.
+  const c = cohort(300, { slate: [0.4, 0.6], calcom: [0.3, 0.5] });
+  const updateWindow = windowAt({ spanMs: D, update: { referenceEndMs: WINDOW_START + 4 * D } });
+  const r = run(c, { window: updateWindow, storedInSpan: 0, storeBeganMs: null, reference: { ...reference, apps: reference.apps } });
+  eq(r.exit, PILOT_COMPARE_EXIT.bookingUpdate, "an update exits on its own code");
+  assert(r.lines.every((l) => l.startsWith("[UPDATE] ")), "every line says it is an update");
+  assert(!r.lines.some((l) => /^\[UPDATE\] +(held per application|show rate)\b|A show is one/.test(l)), "no held call or show rate figures are printed");
+  assert(r.lines.some((l) => /booking rate  Slate 120\/300 .*cal\.com 90\/300/.test(l)), "the booking rate is");
+  assert(r.lines.some((l) => /A 24 hour window caught 30 of 40 bookings on Slate's side \(75\.0%\) and 27 of 30 on cal\.com's \(90\.0%\)/.test(l)), "and how much the 24 hour window misses");
+  assert(r.lines.some((l) => /BOOKING UPDATE: not a readout/.test(l)), "and that it is not a readout");
+  assert(clean(r.lines), "no undefined or NaN in an update");
+  const unmeasured = run(c, { window: updateWindow, storedInSpan: 0, storeBeganMs: null, reference: null });
+  assert(unmeasured.lines.some((l) => /not measured yet/.test(l)), "with no closed 7 day cohort the miss is said to be unmeasured, never zero");
+  const changed = run(c, { window: updateWindow, storedInSpan: 0, storeBeganMs: null, readings: [reading(WINDOW_START + D, { percent: 70, record_modified_at: iso(WINDOW_START + D - H) })] });
+  eq(changed.exit, PILOT_COMPARE_EXIT.splitChanged, "a split change inside the window still has its own exit in an update");
+  eq(JUDGED_EXITS.has(PILOT_COMPARE_EXIT.bookingUpdate), true, "an update is a judgement, not a refusal");
 }
 
 finish();

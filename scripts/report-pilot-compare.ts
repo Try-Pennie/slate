@@ -4,6 +4,7 @@
 //   pnpm report:pilot-compare
 //   PILOT_COMPARE_LIFT=0.03 pnpm report:pilot-compare            (size the days estimate for 3 points)
 //   PILOT_COMPARE_REHEARSAL_START=2026-09-30 PILOT_COMPARE_REHEARSAL_SPAN_HOURS=12 pnpm report:pilot-compare
+//   PILOT_COMPARE_BOOKING_UPDATE=1 pnpm report:pilot-compare      (bookings within 24 hours through yesterday, #3698)
 //
 // WHAT IT READS, all read only. Salesforce: every `Submission__c` made in the cohort
 // (id, CreatedDate, XBC_SO__c, Lead__c, Email_SO__c, Mobile_Number_SO__c,
@@ -45,6 +46,7 @@
 // | 15 | an input could not be read, or a row carried a time that does not parse |
 // | 16 | partial: the window is open and no span has closed yet, so these are rates so far |
 // | 17 | a stored reading saw a split other than the assumed one inside the window |
+// | 18 | a booking update: bookings within 24 hours through yesterday, never a readout |
 //
 // PARTIAL (#2976): between the window opening and the first closed span (the first
 // whole day is judgeable from 2026-10-10 03:00 ET), the run reports the booking and
@@ -69,6 +71,7 @@ import {
   judgePilotCompare,
   PILOT_COMPARE_EXIT,
   SHOW_BEFORE_MS,
+  SPAN_DAYS,
   CONTACT_READ_TIMEOUT_MS,
   readEveryBatch,
   type Application,
@@ -272,44 +275,61 @@ const matched = matchBookings({ window, applications: applications!, contactAppl
 const calls: RegalCall[] = [];
 let storedInSpan = 0;
 let storeBeganMs: number | null = null;
-try {
-  const db = supabaseAdmin();
-  const from = new Date(window.startMs - SHOW_BEFORE_MS).toISOString();
-  const to = new Date(window.readEndMs).toISOString();
-  const keys = leadKeysToRead(matched);
-  // 200 ids a request: the PostgREST in() list is measured to fit at 200 and refuse at 400.
-  for (let i = 0; i < keys.length; i += 200) {
-    const chunk = keys.slice(i, i + 200);
-    const rows = await selectAllPages<{ lead_key: string; started_at: string; talk_time_s: number; is_ai_agent: boolean }>(
-      "pilot compare calls",
-      "id",
-      () =>
-        db
-          .from("regal_call_outcomes")
-          .select("lead_key, started_at, talk_time_s, is_ai_agent")
-          .in("lead_key", chunk)
-          .gte("started_at", from)
-          .lt("started_at", to)
-          .order("event_id"),
-    );
-    calls.push(...rows.map((r) => ({ leadKey: r.lead_key, startedAt: r.started_at, talkTimeS: r.talk_time_s, isAiAgent: r.is_ai_agent })));
+// A booking update (#3698) reports bookings only, so it reads no calls.
+if (window.update === null) {
+  try {
+    const db = supabaseAdmin();
+    const from = new Date(window.startMs - SHOW_BEFORE_MS).toISOString();
+    const to = new Date(window.readEndMs).toISOString();
+    const keys = leadKeysToRead(matched);
+    // 200 ids a request: the PostgREST in() list is measured to fit at 200 and refuse at 400.
+    for (let i = 0; i < keys.length; i += 200) {
+      const chunk = keys.slice(i, i + 200);
+      const rows = await selectAllPages<{ lead_key: string; started_at: string; talk_time_s: number; is_ai_agent: boolean }>(
+        "pilot compare calls",
+        "id",
+        () =>
+          db
+            .from("regal_call_outcomes")
+            .select("lead_key, started_at, talk_time_s, is_ai_agent")
+            .in("lead_key", chunk)
+            .gte("started_at", from)
+            .lt("started_at", to)
+            .order("event_id"),
+      );
+      calls.push(...rows.map((r) => ({ leadKey: r.lead_key, startedAt: r.started_at, talkTimeS: r.talk_time_s, isAiAgent: r.is_ai_agent })));
+    }
+    const { count, error } = await db
+      .from("regal_call_outcomes")
+      .select("id", { count: "exact", head: true })
+      .gte("started_at", from)
+      .lt("started_at", to);
+    if (error) throw new Error(error.message);
+    if (count === null) throw new Error("the count of stored calls came back empty");
+    storedInSpan = count;
+    // The store's first call ever: shows due before it cannot be judged (rule in the judge).
+    const first = await db.from("regal_call_outcomes").select("started_at").order("started_at", { ascending: true }).limit(1);
+    if (first.error) throw new Error(first.error.message);
+    const firstAt = (first.data ?? [])[0]?.started_at;
+    storeBeganMs = typeof firstAt === "string" && Number.isFinite(Date.parse(firstAt)) ? Date.parse(firstAt) : null;
+  } catch (err) {
+    print(refusal(PILOT_COMPARE_EXIT.regalUnreadable, `the Regal call store could not be read: ${errText(err)}`).lines, PILOT_COMPARE_EXIT.regalUnreadable);
   }
-  const { count, error } = await db
-    .from("regal_call_outcomes")
-    .select("id", { count: "exact", head: true })
-    .gte("started_at", from)
-    .lt("started_at", to);
-  if (error) throw new Error(error.message);
-  if (count === null) throw new Error("the count of stored calls came back empty");
-  storedInSpan = count;
-  // The store's first call ever: shows due before it cannot be judged (rule in the judge).
-  const first = await db.from("regal_call_outcomes").select("started_at").order("started_at", { ascending: true }).limit(1);
-  if (first.error) throw new Error(first.error.message);
-  const firstAt = (first.data ?? [])[0]?.started_at;
-  storeBeganMs = typeof firstAt === "string" && Number.isFinite(Date.parse(firstAt)) ? Date.parse(firstAt) : null;
-} catch (err) {
-  print(refusal(PILOT_COMPARE_EXIT.regalUnreadable, `the Regal call store could not be read: ${errText(err)}`).lines, PILOT_COMPARE_EXIT.regalUnreadable);
 }
 
-const result = judgePilotCompare({ window, settings: settings!, readings, matched, calls: { calls, storedInSpan, storeBeganMs } });
+// A booking update measures its 24 hour window against the newest cohort whose full 7
+// days have closed, matched over that full span from the same reads (#3698).
+const referenceEndMs = window.update?.referenceEndMs ?? null;
+const reference =
+  referenceEndMs === null
+    ? null
+    : matchBookings({
+        window: { ...window, spanMs: SPAN_DAYS * DAY, cohortEndMs: referenceEndMs, update: null },
+        applications: applications!,
+        contactApplications,
+        slate: slate!,
+        calcom,
+      });
+
+const result = judgePilotCompare({ window, settings: settings!, readings, matched, calls: { calls, storedInSpan, storeBeganMs }, reference });
 print(result.lines, result.exit);

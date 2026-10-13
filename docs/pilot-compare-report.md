@@ -13,6 +13,7 @@ population and stays for the booker level bounce.
 pnpm report:pilot-compare
 PILOT_COMPARE_LIFT=0.03 pnpm report:pilot-compare      # size the days estimate for 3 points (default 0.02)
 PILOT_COMPARE_REHEARSAL_START=2026-09-30 PILOT_COMPARE_REHEARSAL_SPAN_HOURS=6 pnpm report:pilot-compare
+PILOT_COMPARE_BOOKING_UPDATE=1 pnpm report:pilot-compare   # bookings within 24 hours through yesterday (#3698)
 ```
 
 Needs `SF_CLIENT_ID`, `SF_CLIENT_SECRET`, `SF_INSTANCE_URL`, `CALCOM_API_KEY`,
@@ -149,6 +150,26 @@ for one:
 The refusals (no applications, one side empty, too many unmatched, the call store)
 still refuse on their own codes, with every line labelled partial.
 
+## Booking update (#3698)
+
+`PILOT_COMPARE_BOOKING_UPDATE=1` answers "how are bookings going through yesterday"
+without waiting for 7 day spans to close. Every application made since the window
+opened whose 24 hours (plus the 3 hour grace) have passed is counted as booked when it
+booked within those 24 hours. It prints:
+
+- the booking rates, overall, per tier and per source, with intervals and a days
+  estimate for the booking rate;
+- how much a 24 hour window misses, measured on the newest cohort whose full 7 days
+  have closed, per side (on 2026-10-13 it caught 97% of bookings on both sides), or
+  "not measured yet" before one has, never a zero;
+- the stored split check over the same window, exactly as the full report runs it.
+
+It reads no calls and prints no held per application, show rate or readout date. Every
+line starts `[UPDATE]` and it exits **18**, never 0, 12 or 16; a split change still
+exits 17 and settings that differ now 14. It refuses before any application's 24 hours
+have passed (exit 2) rather than showing rates so far, and refuses when combined with
+`PILOT_COMPARE_REHEARSAL_START` or set to anything but `1` (exit 15).
+
 ## Rehearsal
 
 `PILOT_COMPARE_REHEARSAL_START` (an Eastern date) runs the same reads over earlier
@@ -189,6 +210,7 @@ condition that holds is still printed, whichever one names the run.
 | 15 | an input could not be read (`PILOT_COMPARE_LIFT`, the rehearsal values, `READOUT_DATE`), or a row carried a time that does not parse |
 | 16 | partial: the window is open and no span has closed yet, so these are rates so far (until 2026-10-10 03:00 ET) |
 | 17 | a stored reading saw a split other than 50% on tiers 1 to 5 inside the window, so the comparison mixes leads split two ways |
+| 18 | a booking update (`PILOT_COMPARE_BOOKING_UPDATE=1`): bookings within 24 hours through yesterday, never a readout |
 
 ## Where the code lives
 
