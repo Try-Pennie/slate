@@ -508,8 +508,12 @@ async function escalateMismatches(input: {
   const approvedById = new Map(input.requests.map((r) => [r.id, r]));
   const agentIds = [...new Set([...input.mismatches.map((m) => m.agentId), ...records.map((r) => r.agentId)])];
   const people = agentIds.length > 0 ? await input.loadPeople(agentIds) : new Map<string, EscalationPerson>();
-  const managerIds = [...new Set([...people.values()].flatMap((p) => (p.managerId ? [p.managerId] : [])))]
-    .filter((id) => !people.has(id));
+  // The agents' current managers, and every manager a record says was told: the
+  // all-clear goes to whoever was told, even if the agent's manager has changed since.
+  const toldManagers = records.flatMap((r) => (r.role === "manager" && r.outcome.kind === "told" ? [r.outcome.managerId] : []));
+  const managerIds = [
+    ...new Set([...[...people.values()].flatMap((p) => (p.managerId ? [p.managerId] : [])), ...toldManagers]),
+  ].filter((id) => !people.has(id));
   if (managerIds.length > 0) for (const [id, p] of await input.loadPeople(managerIds)) people.set(id, p);
 
   const departed = new Set<string>();

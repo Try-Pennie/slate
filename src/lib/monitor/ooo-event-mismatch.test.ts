@@ -668,6 +668,15 @@ describe("who is told, and when (#3372)", () => {
     expect(e.store.rows.get(managerDeliveredKey("u-heather", "r-later"))).toBe(NOW);
   });
 
+  it("the all-clear reaches the manager who was told, even after the agent's manager changed", async () => {
+    const e = escalationDeps({
+      people: [{ ...HEATHER, managerId: "u-new" }, PAT, { ...PAT, id: "u-new", email: "new@trypennie.com" }],
+      store: fakeStore({ ...toldAgent("r-later", NOW - 3 * 24 * HOUR), ...toldManager("r-later", NOW - HOUR) }),
+    });
+    await tick({ requests: [later()], mirrors: [laterMatch()] }, e);
+    expect(e.messenger.sent.map((m) => m.email).sort()).toEqual(["heather@trypennie.com", "pat@trypennie.com"]);
+  });
+
   describe("unmeasured never messages anybody (#3655)", () => {
     const farOut = () =>
       request({ id: "580540c1", startsAt: "2026-11-05T06:00:00.000Z", endsAt: "2026-11-09T06:00:00.000Z" });
