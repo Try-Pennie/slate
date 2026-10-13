@@ -1,8 +1,9 @@
 // #3372: the messages an agent and their manager read when an approved time off and
 // the agent's Google Calendar stop matching, and the ones that say it is over.
 //
-// Pure builders with no clock, so every sentence is pinned here and rendered by
-// `pnpm preview:alerts`.
+// Pure builders with no clock, so every sentence is pinned here. The alerts channel
+// page is also rendered by `pnpm preview:alerts`; the DMs are not, since they go to a
+// person rather than to a catalogued alert key, so this suite is where they are read.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-ooo-mismatch-notice-copy.ts
 import {
@@ -150,19 +151,45 @@ eq(seenAgent.size, cases.length, "every reason reads differently to the agent (L
   assert(/no longer approved/i.test(a), "claims only that it is no longer approved");
 }
 
-// The alerts channel.
+// The alerts channel: one reason per combination of who was reached (L11).
 {
-  const neither = oooEventMismatchAlert("Heather McLellen", [shortened], APP, { kind: "neither-acted" });
-  const none = oooEventMismatchAlert("Heather McLellen", [shortened], APP, { kind: "no-manager" });
-  const lost = oooEventMismatchAlert("Heather McLellen", [shortened], APP, { kind: "manager-unreachable" });
-  for (const [t, w] of [[neither, "neither acted"], [none, "no manager"], [lost, "manager unreachable"]] as const) {
-    clean(t, `the alerts channel page (${w})`);
-    assert(t.includes("req_9f2"), `the alerts channel page names the request (${w})`);
+  const page = (agent: "told" | "unreachable", manager: "told" | "none" | "unreachable") =>
+    oooEventMismatchAlert("Heather McLellen", [shortened], APP, { agent, manager });
+  const neither = page("told", "told");
+  const none = page("told", "none");
+  const lost = page("told", "unreachable");
+  const agentLost = page("unreachable", "told");
+  const agentLostNone = page("unreachable", "none");
+  const bothLost = page("unreachable", "unreachable");
+  const all = [neither, none, lost, agentLost, agentLostNone, bothLost];
+  for (const t of all) {
+    clean(t, "the alerts channel page");
+    assert(t.includes("req_9f2"), "the alerts channel page names the request");
   }
   assert(/both told/i.test(neither) && /manager/i.test(neither), "the page says the agent and the manager were told and neither acted");
   assert(/no manager of record/i.test(none), "the page says there was no manager to tell");
   assert(/could not be delivered/i.test(lost), "the page says the manager's message did not arrive");
-  eq(new Set([neither, none, lost]).size, 3, "three causes, three pages (L11)");
+  for (const t of [agentLost, agentLostNone, bothLost]) {
+    assert(/message to Heather McLellen could not be delivered|Heather McLellen nor/i.test(t) && !/both told/i.test(t),
+      `an agent who was never reached is never said to have been told (${t.slice(0, 160)})`);
+  }
+  eq(new Set(all).size, 6, "six histories, six pages");
+}
+{
+  // Two requests that reached the channel for different reasons: neither reason is
+  // stated for both, each line carries its own.
+  const other = { ...shortened, requestId: "req_a41" };
+  const t = oooEventMismatchAlert("Heather McLellen", [shortened, other], APP, [
+    { agent: "told", manager: "told" },
+    { agent: "told", manager: "none" },
+  ]);
+  clean(t, "a page with mixed reasons");
+  const lines = t.split("\n");
+  const l1 = lines.find((l) => l.includes("req_9f2")) ?? "";
+  const l2 = lines.find((l) => l.includes("req_a41")) ?? "";
+  assert(/both told/i.test(l1) && !/no manager of record/i.test(l1), `the first request's line carries its own reason (${l1})`);
+  assert(/no manager of record/i.test(l2) && !/both told/i.test(l2), `the second request's line carries its own reason (${l2})`);
+  assert(!/both told/i.test(lines[0] ?? ""), "and the opening sentence states neither reason for every request");
 }
 
 finish();

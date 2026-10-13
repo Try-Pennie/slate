@@ -8,6 +8,7 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-ooo-mismatch-escalation.ts
 import {
   agentNoticeKey,
+  agentOutcomeKey,
   managerNoticeKey,
   parseNoticeRow,
   escalationPace,
@@ -19,6 +20,7 @@ import {
   URGENT_LEAD_MS,
   SOON_LEAD_MS,
   PACES,
+  STALE_SEND_MS,
   type MeasuredMismatch,
   type NoticeRecord,
 } from "../src/lib/ooo/mismatch-escalation.ts";
@@ -161,6 +163,14 @@ const mm = (over: Partial<MeasuredMismatch> = {}): MeasuredMismatch => ({
 const agentRec = (requestId: string, toldAtMs: number | null, agentId = "u1"): NoticeRecord => ({
   role: "agent", agentId, requestId, toldAtMs, key: agentNoticeKey(agentId, requestId),
 });
+// The agent was told: an attempt and its delivered outcome, as the lane writes them.
+const outcomeRec = (requestId: string, toldAtMs: number | null, outcome: "told" | "unreachable"): NoticeRecord => ({
+  role: "agent-outcome", agentId: "u1", requestId, outcome, toldAtMs, key: agentOutcomeKey("u1", requestId, outcome),
+});
+const told = (requestId: string, toldAtMs: number | null): NoticeRecord[] => [
+  agentRec(requestId, toldAtMs),
+  outcomeRec(requestId, toldAtMs, "told"),
+];
 type Outcome = Extract<NoticeRecord, { role: "manager" }>["outcome"];
 const TOLD: Outcome = { kind: "told", managerId: "m1" };
 const mgrRec = (requestId: string, toldAtMs: number | null, outcome: Outcome = TOLD): NoticeRecord => ({
@@ -185,19 +195,19 @@ const ids = (list: { requestId: string }[]) => list.map((x) => x.requestId);
   eq(ids(p.pageDan), [], "the alerts channel is not told on the first step");
 }
 {
-  const p = plan({ mismatches: [mm()], records: [agentRec("r1", NOW - PACES.relaxed.agentGraceMs + HOUR)] });
+  const p = plan({ mismatches: [mm()], records: [...told("r1", NOW - PACES.relaxed.agentGraceMs + HOUR)] });
   eq([...ids(p.tellAgent), ...ids(p.tellManager), ...ids(p.pageDan)], [],
     "a week out, the agent's wait is not over, so nobody else hears yet");
 }
 {
-  const p = plan({ mismatches: [mm()], records: [agentRec("r1", NOW - PACES.relaxed.agentGraceMs)] });
+  const p = plan({ mismatches: [mm()], records: [...told("r1", NOW - PACES.relaxed.agentGraceMs)] });
   eq(ids(p.tellManager), ["r1"], "once the agent's wait is over, the manager is told");
   eq(ids(p.tellAgent), [], "the agent is not told twice");
 }
 {
   // The same record, an hour and a half old: too young for a week out, old enough
   // for a gap tomorrow and for a call already booked inside it.
-  const rec = [agentRec("r1", NOW - 90 * 60_000)];
+  const rec = [...told("r1", NOW - 90 * 60_000)];
   eq(ids(plan({ mismatches: [mm({ gapStartMs: NOW + 12 * HOUR })], records: rec }).tellManager), ["r1"],
     "a gap starting tomorrow reaches the manager sooner");
   eq(ids(plan({ mismatches: [mm({ bookedInGap: true })], records: rec }).tellManager), ["r1"],
@@ -207,26 +217,26 @@ const ids = (list: { requestId: string }[]) => list.map((x) => x.requestId);
 {
   const p = plan({
     mismatches: [mm()],
-    records: [agentRec("r1", NOW - 5 * DAY), mgrRec("r1", NOW - PACES.relaxed.managerGraceMs + HOUR)],
+    records: [...told("r1", NOW - 5 * DAY), mgrRec("r1", NOW - PACES.relaxed.managerGraceMs + HOUR)],
   });
   eq([...ids(p.tellManager), ...ids(p.pageDan)], [], "the manager's wait is not over, so the alerts channel waits");
 }
 {
   const p = plan({
     mismatches: [mm()],
-    records: [agentRec("r1", NOW - 5 * DAY), mgrRec("r1", NOW - PACES.relaxed.managerGraceMs)],
+    records: [...told("r1", NOW - 5 * DAY), mgrRec("r1", NOW - PACES.relaxed.managerGraceMs)],
   });
   eq(ids(p.pageDan), ["r1"], "the alerts channel hears only once neither the agent nor the manager acted");
   eq(ids(p.tellManager), [], "the manager is not told twice");
 }
 {
-  const p = plan({ mismatches: [mm()], records: [agentRec("r1", NOW - 5 * DAY), mgrRec("r1", NOW, { kind: "none" })] });
+  const p = plan({ mismatches: [mm()], records: [...told("r1", NOW - 5 * DAY), mgrRec("r1", NOW, { kind: "none" })] });
   eq(ids(p.pageDan), ["r1"], "with no manager to tell, the alerts channel hears without a second wait");
-  const q = plan({ mismatches: [mm()], records: [agentRec("r1", NOW - 5 * DAY), mgrRec("r1", NOW, { kind: "unreachable" })] });
+  const q = plan({ mismatches: [mm()], records: [...told("r1", NOW - 5 * DAY), mgrRec("r1", NOW, { kind: "unreachable" })] });
   eq(ids(q.pageDan), ["r1"], "with the manager's message undelivered, the alerts channel hears without a second wait");
 }
 {
-  const p = plan({ mismatches: [mm()], records: [agentRec("r1", null)] });
+  const p = plan({ mismatches: [mm()], records: [...told("r1", null)] });
   eq(ids(p.tellManager), ["r1"], "an unreadable stamp counts as the wait being over, the loud direction");
 }
 
@@ -234,7 +244,7 @@ const ids = (list: { requestId: string }[]) => list.map((x) => x.requestId);
 // findings the judge MEASURED. A request in the approved set that is neither a
 // mismatch nor agreed (unmeasured, unreadable, out of the pool) is held exactly.
 {
-  const held = plan({ records: [agentRec("r1", NOW - 30 * DAY), mgrRec("r1", NOW - 30 * DAY)] });
+  const held = plan({ records: [...told("r1", NOW - 30 * DAY), mgrRec("r1", NOW - 30 * DAY)] });
   eq([...ids(held.tellAgent), ...ids(held.tellManager), ...ids(held.pageDan)], [],
     "a request this tick could not measure is never escalated, however old its records");
   eq(held.clear, [], "and it is never cleared either: nothing was compared");
@@ -246,13 +256,13 @@ const ids = (list: { requestId: string }[]) => list.map((x) => x.requestId);
 
 // The stop, whichever side changed.
 {
-  const p = plan({ agreed: new Set(["r1"]), records: [agentRec("r1", NOW - DAY), mgrRec("r1", NOW - HOUR)] });
+  const p = plan({ agreed: new Set(["r1"]), records: [...told("r1", NOW - DAY), mgrRec("r1", NOW - HOUR)] });
   eq(p.clear.length, 1, "a request measured agreeing again is cleared");
   eq(p.clear[0]!.why, "agreed", "and says it agrees again");
-  eq(p.clear[0]!.records.map((r) => r.role).sort(), ["agent", "manager"], "everybody who was told hears it");
+  eq(p.clear[0]!.records.map((r) => r.role).sort(), ["agent", "agent-outcome", "manager"], "everybody who was told hears it");
 }
 {
-  const p = plan({ approved: new Set(), records: [agentRec("r1", NOW - DAY)] });
+  const p = plan({ approved: new Set(), records: [...told("r1", NOW - DAY)] });
   eq(p.clear.length, 1, "a request no longer approved (changed, cancelled or passed) is cleared");
   eq(p.clear[0]!.why, "left-approved", "and says the request moved, not that the calendar was fixed");
 }
@@ -262,7 +272,7 @@ const ids = (list: { requestId: string }[]) => list.map((x) => x.requestId);
 }
 {
   const p = plan({ mismatches: [mm({ requestId: "r2" })], approved: new Set(["r1", "r2"]),
-    agreed: new Set(["r1"]), records: [agentRec("r1", NOW - DAY), agentRec("r2", NOW - HOUR)] });
+    agreed: new Set(["r1"]), records: [...told("r1", NOW - DAY), ...told("r2", NOW - HOUR)] });
   eq(p.clear.map((c) => c.requestId), ["r1"], "one request agreeing clears that request alone");
   eq([...ids(p.tellManager), ...ids(p.tellAgent)], [], "while the other keeps its own clock");
 }
@@ -272,11 +282,59 @@ const ids = (list: { requestId: string }[]) => list.map((x) => x.requestId);
   const p = plan({
     mismatches: [mm()],
     departedAgents: new Set(["u1"]),
-    records: [agentRec("r1", NOW - 30 * DAY), mgrRec("r1", NOW - 30 * DAY)],
+    records: [...told("r1", NOW - 30 * DAY), mgrRec("r1", NOW - 30 * DAY)],
   });
   eq([...ids(p.tellAgent), ...ids(p.tellManager), ...ids(p.pageDan)], [], "a departed agent's mismatch messages nobody");
   eq(p.clear, [], "and sends no all-clear to somebody who has left");
-  eq(p.forget.length, 2, "their records are dropped quietly");
+  eq(p.forget.length, 3, "their records are dropped quietly");
+}
+
+// The attempt and its outcome are two records, so a run that dies between claiming
+// and sending can be told apart from one that sent (#3372 review, L766).
+{
+  const k = agentOutcomeKey("u1", "r1", "told");
+  const lost = agentOutcomeKey("u1", "r1", "unreachable");
+  assert(new Set([agentNoticeKey("u1", "r1"), k, lost]).size === 3, "the attempt and each outcome have their own keys");
+  eq(parseNoticeRow({ key: lost, last_sent_at: iso(NOW) }),
+    { role: "agent-outcome", agentId: "u1", requestId: "r1", outcome: "unreachable", toldAtMs: NOW, key: lost },
+    "an undelivered agent message reads back as such");
+  eq(parseNoticeRow({ key: `${OOO_MISMATCH_NOTICE_PREFIX}outcome:u1:r1:maybe`, last_sent_at: iso(NOW) }), null,
+    "an outcome that is neither told nor unreachable is not read as either");
+}
+{
+  const fresh = plan({ mismatches: [mm()], records: [agentRec("r1", NOW - STALE_SEND_MS + 60_000)] });
+  eq([...ids(fresh.tellAgent), ...ids(fresh.tellManager), ...ids(fresh.pageDan)], [],
+    "an attempt still inside its send window is left alone: it may yet answer");
+  const stale = plan({ mismatches: [mm()], records: [agentRec("r1", NOW - STALE_SEND_MS)] });
+  eq(ids(stale.tellAgent), ["r1"], "an attempt that never recorded an outcome is tried again once no send can still be answering");
+  eq(stale.tellAgent[0]!.staleKey, agentNoticeKey("u1", "r1"), "naming the dead attempt to remove");
+  eq(ids(stale.tellManager), [], "and the manager is not told about a message nobody may have read");
+  eq(ids(plan({ mismatches: [mm()], records: [agentRec("r1", null)] }).tellAgent), ["r1"],
+    "an attempt whose stamp cannot be read is tried again, the loud direction");
+}
+{
+  const p = plan({ mismatches: [mm()], records: [agentRec("r1", NOW), outcomeRec("r1", NOW, "unreachable")] });
+  eq(ids(p.tellManager), ["r1"], "an agent who could not be reached sends the manager the message with no wait");
+  eq(p.tellManager[0]!.agentTold, "unreachable", "saying the agent could not be reached");
+  const q = plan({ mismatches: [mm()], records: told("r1", NOW - PACES.relaxed.agentGraceMs) });
+  eq(q.tellManager[0]!.agentTold, { atMs: NOW - PACES.relaxed.agentGraceMs }, "a delivered message gives the manager when it was sent");
+}
+{
+  // Three requests, three different histories: each page line carries its own reason.
+  const p = plan({
+    approved: new Set(["r1", "r2", "r3"]),
+    mismatches: [mm(), mm({ requestId: "r2" }), mm({ requestId: "r3" })],
+    records: [
+      ...told("r1", NOW - 5 * DAY), mgrRec("r1", NOW - 2 * DAY),
+      ...told("r2", NOW - 5 * DAY), mgrRec("r2", NOW, { kind: "none" }),
+      agentRec("r3", NOW - 5 * DAY), outcomeRec("r3", NOW - 5 * DAY, "unreachable"), mgrRec("r3", NOW - 2 * DAY),
+    ],
+  });
+  eq(p.pageDan.map((x) => [x.requestId, x.reason]), [
+    ["r1", { agent: "told", manager: "told" }],
+    ["r2", { agent: "told", manager: "none" }],
+    ["r3", { agent: "unreachable", manager: "told" }],
+  ], "each request reaches the alerts channel with its own reason, never another request's");
 }
 
 finish();

@@ -37,9 +37,11 @@ import { deterministicEventId, freshEventId, TOMBSTONE_FRESH_IDS } from "@/lib/b
 import { BUSY_WINDOW_AHEAD_DAYS } from "@/lib/google/sync-coalesce";
 import {
   agentNoticeKey,
+  agentOutcomeKey,
   managerNoticeKey,
   parseNoticeRow,
   PACES,
+  STALE_SEND_MS,
   type EscalationPerson,
   type NoticeRecord,
 } from "@/lib/ooo/mismatch-escalation";
@@ -70,6 +72,12 @@ function fakeStore(initial: Record<string, number> = {}) {
   };
   return store satisfies MismatchNoticeStore;
 }
+
+// The agent was told: the attempt and its delivered outcome, as the lane writes them.
+const toldAgent = (requestId: string, atMs: number) => ({
+  [agentNoticeKey("u-heather", requestId)]: atMs,
+  [agentOutcomeKey("u-heather", requestId, "told")]: atMs,
+});
 
 function fakeMessenger(opts: { undeliverable?: string[]; available?: boolean } = {}) {
   const sent: { email: string; text: string }[] = [];
@@ -390,14 +398,14 @@ describe("who is told, and when (#3372)", () => {
   });
 
   it("never tells the agent twice about the same request", async () => {
-    const e = escalationDeps({ store: fakeStore({ [agentNoticeKey("u-heather", "r-later")]: NOW - HOUR }) });
+    const e = escalationDeps({ store: fakeStore({ ...toldAgent("r-later", NOW - HOUR) }) });
     await tick({ requests: [later()], mirrors: [laterShort()] }, e);
     expect(e.messenger.sent).toEqual([]);
   });
 
   it("a week out, the manager waits while the agent has time to fix it", async () => {
     const e = escalationDeps({
-      store: fakeStore({ [agentNoticeKey("u-heather", "r-later")]: NOW - PACES.relaxed.agentGraceMs + HOUR }),
+      store: fakeStore({ ...toldAgent("r-later", NOW - PACES.relaxed.agentGraceMs + HOUR) }),
     });
     await tick({ requests: [later()], mirrors: [laterShort()] }, e);
     expect(e.messenger.sent).toEqual([]);
@@ -406,7 +414,7 @@ describe("who is told, and when (#3372)", () => {
 
   it("second: once the agent's wait is over, tells the manager, naming the agent, the request and the hours", async () => {
     const e = escalationDeps({
-      store: fakeStore({ [agentNoticeKey("u-heather", "r-later")]: NOW - PACES.relaxed.agentGraceMs }),
+      store: fakeStore({ ...toldAgent("r-later", NOW - PACES.relaxed.agentGraceMs) }),
     });
     await tick({ requests: [later()], mirrors: [laterShort()] }, e);
     expect(e.messenger.sent.map((m) => m.email)).toEqual(["pat@trypennie.com"]);
@@ -420,13 +428,13 @@ describe("who is told, and when (#3372)", () => {
 
   it("a gap starting tomorrow reaches the manager after an hour and a half, not two days", async () => {
     // The default request starts 21 hours after NOW: urgent.
-    const e = escalationDeps({ store: fakeStore({ [agentNoticeKey("u-heather", "13137fb6")]: NOW - 90 * 60_000 }) });
+    const e = escalationDeps({ store: fakeStore({ ...toldAgent("13137fb6", NOW - 90 * 60_000) }) });
     await tick({ requests: [request()], mirrors: [mirror()] }, e);
     expect(e.messenger.sent.map((m) => m.email)).toEqual(["pat@trypennie.com"]);
   });
 
   it("a call already booked inside the gap reaches the manager sooner, however far out", async () => {
-    const e = escalationDeps({ store: fakeStore({ [agentNoticeKey("u-heather", "r-later")]: NOW - 90 * 60_000 }) });
+    const e = escalationDeps({ store: fakeStore({ ...toldAgent("r-later", NOW - 90 * 60_000) }) });
     await tick(
       {
         requests: [later()],
@@ -440,7 +448,7 @@ describe("who is told, and when (#3372)", () => {
   });
 
   it("another agent's call does not count as booked inside this agent's gap", async () => {
-    const e = escalationDeps({ store: fakeStore({ [agentNoticeKey("u-heather", "r-later")]: NOW - 90 * 60_000 }) });
+    const e = escalationDeps({ store: fakeStore({ ...toldAgent("r-later", NOW - 90 * 60_000) }) });
     await tick(
       {
         requests: [later()],
@@ -462,7 +470,7 @@ describe("who is told, and when (#3372)", () => {
   it("third: the alerts channel hears only once neither the agent nor the manager acted", async () => {
     const e = escalationDeps({
       store: fakeStore({
-        [agentNoticeKey("u-heather", "r-later")]: NOW - 5 * 24 * HOUR,
+        ...toldAgent("r-later", NOW - 5 * 24 * HOUR),
         [managerNoticeKey("u-heather", "r-later", TOLD_PAT)]: NOW - PACES.relaxed.managerGraceMs,
       }),
     });
@@ -476,7 +484,7 @@ describe("who is told, and when (#3372)", () => {
   it("the alerts channel waits while the manager still has time", async () => {
     const e = escalationDeps({
       store: fakeStore({
-        [agentNoticeKey("u-heather", "r-later")]: NOW - 5 * 24 * HOUR,
+        ...toldAgent("r-later", NOW - 5 * 24 * HOUR),
         [managerNoticeKey("u-heather", "r-later", TOLD_PAT)]: NOW - HOUR,
       }),
     });
@@ -487,7 +495,7 @@ describe("who is told, and when (#3372)", () => {
   it("with no manager of record who can act, the alerts channel hears once the agent's wait is over", async () => {
     const e = escalationDeps({
       people: [{ ...HEATHER, managerId: null }],
-      store: fakeStore({ [agentNoticeKey("u-heather", "r-later")]: NOW - PACES.relaxed.agentGraceMs }),
+      store: fakeStore({ ...toldAgent("r-later", NOW - PACES.relaxed.agentGraceMs) }),
     });
     await tick({ requests: [later()], mirrors: [laterShort()] }, e);
     expect(e.messenger.sent).toEqual([]);
@@ -499,7 +507,7 @@ describe("who is told, and when (#3372)", () => {
   it("a manager whose message cannot be delivered sends the alerts channel the page in the same tick", async () => {
     const e = escalationDeps({
       messenger: fakeMessenger({ undeliverable: ["pat@trypennie.com"] }),
-      store: fakeStore({ [agentNoticeKey("u-heather", "r-later")]: NOW - PACES.relaxed.agentGraceMs }),
+      store: fakeStore({ ...toldAgent("r-later", NOW - PACES.relaxed.agentGraceMs) }),
     });
     await tick({ requests: [later()], mirrors: [laterShort()] }, e);
     expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
@@ -511,7 +519,7 @@ describe("who is told, and when (#3372)", () => {
   it("stop: once the event and the request agree again, tells the agent and the manager, and forgets them", async () => {
     const e = escalationDeps({
       store: fakeStore({
-        [agentNoticeKey("u-heather", "r-later")]: NOW - 3 * 24 * HOUR,
+        ...toldAgent("r-later", NOW - 3 * 24 * HOUR),
         [managerNoticeKey("u-heather", "r-later", TOLD_PAT)]: NOW - HOUR,
       }),
     });
@@ -524,7 +532,7 @@ describe("who is told, and when (#3372)", () => {
 
   it("stop: a request changed in My time off tells whoever was told that it is back for approval", async () => {
     const e = escalationDeps({
-      store: fakeStore({ [agentNoticeKey("u-heather", "r-later")]: NOW - HOUR }),
+      store: fakeStore({ ...toldAgent("r-later", NOW - HOUR) }),
       requests: {
         "r-later": {
           status: "pending",
@@ -545,7 +553,7 @@ describe("who is told, and when (#3372)", () => {
   it("stop: no all-clear goes to a manager the first message never reached", async () => {
     const e = escalationDeps({
       store: fakeStore({
-        [agentNoticeKey("u-heather", "r-later")]: NOW - 3 * 24 * HOUR,
+        ...toldAgent("r-later", NOW - 3 * 24 * HOUR),
         [managerNoticeKey("u-heather", "r-later", { kind: "unreachable" })]: NOW - HOUR,
       }),
     });
@@ -555,7 +563,7 @@ describe("who is told, and when (#3372)", () => {
   });
 
   it("the all-clear is sent once, by whichever run removes the record", async () => {
-    const store = fakeStore({ [agentNoticeKey("u-heather", "r-later")]: NOW - HOUR });
+    const store = fakeStore({ ...toldAgent("r-later", NOW - HOUR) });
     // Another run removed it between this run's read and its release.
     store.release.mockImplementation(async () => false);
     const e = escalationDeps({ store });
@@ -566,7 +574,7 @@ describe("who is told, and when (#3372)", () => {
   it("a departed agent is skipped: no message to anybody, and their records are dropped", async () => {
     const e = escalationDeps({
       store: fakeStore({
-        [agentNoticeKey("u-heather", "r-later")]: NOW - 5 * 24 * HOUR,
+        ...toldAgent("r-later", NOW - 5 * 24 * HOUR),
         [managerNoticeKey("u-heather", "r-later", TOLD_PAT)]: NOW - 3 * 24 * HOUR,
       }),
     });
@@ -579,11 +587,60 @@ describe("who is told, and when (#3372)", () => {
   it("a departed agent whose request has left the approved set gets no all-clear either", async () => {
     const e = escalationDeps({
       people: [{ ...HEATHER, deactivatedAt: "2026-10-05T00:00:00.000Z" }, PAT],
-      store: fakeStore({ [agentNoticeKey("u-heather", "r-later")]: NOW - 5 * 24 * HOUR }),
+      store: fakeStore({ ...toldAgent("r-later", NOW - 5 * 24 * HOUR) }),
     });
     await tick({ requests: [], mirrors: [] }, e);
     expect(e.messenger.sent).toEqual([]);
     expect(e.store.rows.size).toBe(0);
+  });
+
+  it("records that the message was delivered, separately from the attempt", async () => {
+    const e = escalationDeps();
+    await tick({ requests: [later()], mirrors: [laterShort()] }, e);
+    expect(e.store.rows.get(agentOutcomeKey("u-heather", "r-later", "told"))).toBe(NOW);
+  });
+
+  it("an agent whose message never arrived is not thanked when it agrees again", async () => {
+    // The first message failed, so the record says so; the all-clear goes only to the
+    // manager, who was told.
+    const e = escalationDeps({ messenger: fakeMessenger({ undeliverable: ["heather@trypennie.com"] }) });
+    await tick({ requests: [later()], mirrors: [laterShort()] }, e);
+    expect(e.store.rows.has(agentOutcomeKey("u-heather", "r-later", "unreachable"))).toBe(true);
+    e.messenger.sent.length = 0;
+    await tick({ requests: [later()], mirrors: [laterMatch()] }, e);
+    expect(e.messenger.sent.map((m) => m.email)).toEqual(["pat@trypennie.com"]);
+    expect(e.store.rows.size).toBe(0);
+  });
+
+  it("an attempt still inside its send window is left alone", async () => {
+    const e = escalationDeps({ store: fakeStore({ [agentNoticeKey("u-heather", "r-later")]: NOW - STALE_SEND_MS + 60_000 }) });
+    await tick({ requests: [later()], mirrors: [laterShort()] }, e);
+    expect(e.messenger.sent).toEqual([]);
+  });
+
+  it("an attempt that died before recording an outcome is tried again, not waited out", async () => {
+    // The run claimed the agent's record and died before the message went, so nobody
+    // was told; the manager must not inherit a grace period for a message never read.
+    const e = escalationDeps({ store: fakeStore({ [agentNoticeKey("u-heather", "r-later")]: NOW - 5 * 24 * HOUR }) });
+    await tick({ requests: [later()], mirrors: [laterShort()] }, e);
+    expect(e.messenger.sent.map((m) => m.email)).toEqual(["heather@trypennie.com"]);
+    expect(e.store.rows.get(agentNoticeKey("u-heather", "r-later"))).toBe(NOW);
+    expect(e.store.rows.get(agentOutcomeKey("u-heather", "r-later", "told"))).toBe(NOW);
+  });
+
+  it("a page after an undelivered agent message says the agent was never reached", async () => {
+    const e = escalationDeps({
+      store: fakeStore({
+        [agentNoticeKey("u-heather", "r-later")]: NOW - 5 * 24 * HOUR,
+        [agentOutcomeKey("u-heather", "r-later", "unreachable")]: NOW - 5 * 24 * HOUR,
+        [managerNoticeKey("u-heather", "r-later", TOLD_PAT)]: NOW - PACES.relaxed.managerGraceMs,
+      }),
+    });
+    await tick({ requests: [later()], mirrors: [laterShort()] }, e);
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    const text = sendThrottledAlert.mock.calls[0]![2];
+    expect(text).toContain("message to Heather McLellen could not be delivered");
+    expect(text).not.toContain("both told");
   });
 
   describe("unmeasured never messages anybody (#3655)", () => {
@@ -600,7 +657,7 @@ describe("who is told, and when (#3372)", () => {
 
     it("an unmeasured request with old records is neither escalated nor cleared", async () => {
       const recs = {
-        [agentNoticeKey("u-heather", "580540c1")]: NOW - 30 * 24 * HOUR,
+        ...toldAgent("580540c1", NOW - 30 * 24 * HOUR),
         [managerNoticeKey("u-heather", "580540c1", TOLD_PAT)]: NOW - 30 * 24 * HOUR,
       };
       const e = escalationDeps({ store: fakeStore(recs) });
@@ -862,6 +919,7 @@ describe("noticeSyncedOooEvents (the page at the moment the sync sees the edit)"
     expect(messenger.sent.map((m) => m.email)).toEqual(["heather@trypennie.com"]);
     expect(messenger.sent[0]!.text).toContain("11:30am MT");
     expect(store.rows.has(agentNoticeKey("u-heather", "13137fb6"))).toBe(true);
+    expect(store.rows.has(agentOutcomeKey("u-heather", "13137fb6", "told"))).toBe(true);
     // Dan hears only if neither the agent nor the manager acts (#3372).
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
@@ -1009,7 +1067,7 @@ describe("the copy", () => {
       },
     ],
     APP,
-    { kind: "neither-acted" },
+    { agent: "told", manager: "told" },
   );
 
   it("names the request, the approved window and the open span in the agent's zone", () => {

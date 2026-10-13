@@ -5344,7 +5344,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       requestId: "req_9f2", startsAt: "2026-10-07T06:00:00.000Z", endsAt: "2026-10-08T05:59:00.000Z",
       displayTzId: "America/Denver", displayTzLabel: "MT",
       coverage: { kind: "uncovered", spans: [{ startMs: 1791352800000, endMs: 1791394200000 }] },
-    }], "https://slate.trypennie.app", { kind: "neither-acted" }) },
+    }], "https://slate.trypennie.app", { agent: "told", manager: "told" }) },
   { key: "ooo_event_mismatch:*", state: "two requests, one event gone, no manager of record", channel: "alert",
     text: oooEventMismatchAlert("Heather McLellen", [
       { requestId: "req_9f2", startsAt: "2026-10-07T06:00:00.000Z", endsAt: "2026-10-08T05:59:00.000Z",
@@ -5352,15 +5352,30 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
         coverage: { kind: "uncovered", spans: [{ startMs: 1791352800000, endMs: 1791394200000 }] } },
       { requestId: "req_a41", startsAt: "2026-10-09T06:00:00.000Z", endsAt: "2026-10-10T05:59:00.000Z",
         displayTzId: "America/Denver", displayTzLabel: "MT", coverage: { kind: "not-blocking", unmeasured: null } },
-    ], "https://slate.trypennie.app", { kind: "no-manager" }) },
+    ], "https://slate.trypennie.app", { agent: "told", manager: "none" }) },
   // #3655: a request straddling the calendar's mirrored horizon whose event is gone.
   // Only the part inside the horizon was checked, so the sentence names only that.
-  { key: "ooo_event_mismatch:*", state: "the event is gone, part of the window too far ahead to check, manager unreachable", channel: "alert",
+  { key: "ooo_event_mismatch:*", state: "the event is gone, part of the window too far ahead to check, neither message delivered", channel: "alert",
     text: oooEventMismatchAlert("Heather McLellen", [
       { requestId: "req_c07", startsAt: "2026-10-26T06:00:00.000Z", endsAt: "2026-10-30T06:00:00.000Z",
         displayTzId: "America/Denver", displayTzLabel: "MT",
         coverage: { kind: "not-blocking", unmeasured: { startMs: 1793178000000, endMs: 1793340000000 } } },
-    ], "https://slate.trypennie.app", { kind: "manager-unreachable" }) },
+    ], "https://slate.trypennie.app", { agent: "unreachable", manager: "unreachable" }) },
+  { key: "ooo_event_mismatch:*", state: "the agent's message never arrived, and the manager did not fix it", channel: "alert",
+    text: oooEventMismatchAlert("Heather McLellen", [{
+      requestId: "req_9f2", startsAt: "2026-10-07T06:00:00.000Z", endsAt: "2026-10-08T05:59:00.000Z",
+      displayTzId: "America/Denver", displayTzLabel: "MT",
+      coverage: { kind: "uncovered", spans: [{ startMs: 1791352800000, endMs: 1791394200000 }] },
+    }], "https://slate.trypennie.app", { agent: "unreachable", manager: "told" }) },
+  // #3372: two requests that reached the channel for different reasons, each on its line.
+  { key: "ooo_event_mismatch:*", state: "two requests, each with its own reason", channel: "alert",
+    text: oooEventMismatchAlert("Heather McLellen", [
+      { requestId: "req_9f2", startsAt: "2026-10-07T06:00:00.000Z", endsAt: "2026-10-08T05:59:00.000Z",
+        displayTzId: "America/Denver", displayTzLabel: "MT",
+        coverage: { kind: "uncovered", spans: [{ startMs: 1791352800000, endMs: 1791394200000 }] } },
+      { requestId: "req_a41", startsAt: "2026-10-09T06:00:00.000Z", endsAt: "2026-10-10T05:59:00.000Z",
+        displayTzId: "America/Denver", displayTzLabel: "MT", coverage: { kind: "not-blocking", unmeasured: null } },
+    ], "https://slate.trypennie.app", [{ agent: "told", manager: "told" }, { agent: "told", manager: "none" }]) },
   { key: "ooo_event_mismatch:*", state: "the calendar and the request agree again", channel: "recovery",
     text: oooEventMismatchRecovery("Heather McLellen", { kind: "agreed", compared: 2 }) },
   { key: "ooo_event_mismatch:*", state: "nothing approved is ahead any more", channel: "recovery",

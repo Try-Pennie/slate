@@ -15,6 +15,7 @@ import {
 } from "@/lib/ooo/alert-copy";
 import {
   agentNoticeKey,
+  agentOutcomeKey,
   bookedInsideGap,
   gapSpans,
   managerNoticeKey,
@@ -530,11 +531,12 @@ async function escalateMismatches(input: {
   };
   const emailOfAgent = (id: string) =>
     people.get(id)?.email ?? input.requests.find((q) => q.userId === id)?.agentEmail ?? null;
-  const agentRecordOf = (requestId: string) =>
-    records.find((r) => r.role === "agent" && r.requestId === requestId);
-
-  // The alerts channel's page, once per agent, saying why it is hearing (L11).
-  const page = async (agentId: string, items: MeasuredMismatch[], escalation: OooEventMismatchEscalation) => {
+  // The alerts channel's page, once per agent, saying why each request is there (L11).
+  const page = async (
+    agentId: string,
+    items: MeasuredMismatch[],
+    escalation: OooEventMismatchEscalation | OooEventMismatchEscalation[],
+  ) => {
     const key = oooEventMismatchKey(agentId);
     // alert-key: ooo_event_mismatch:*
     await sendThrottledAlert(
@@ -553,12 +555,13 @@ async function escalateMismatches(input: {
     agentTold: { atMs: number | null } | "unreachable",
   ) => {
     const agent = people.get(agentId);
+    const reached = agentTold === "unreachable" ? "unreachable" : "told";
     const manager = agent ? managerToTell(agent, agent.managerId ? (people.get(agent.managerId) ?? null) : null) : null;
     if (!manager) {
       const outcome: ManagerOutcome = { kind: "none" };
       const won = [];
       for (const m of items) if (await input.notices.claim(managerNoticeKey(agentId, m.requestId, outcome), input.nowMs)) won.push(m);
-      if (won.length > 0) await page(agentId, won, { kind: "no-manager" });
+      if (won.length > 0) await page(agentId, won, { agent: reached, manager: "none" });
       return;
     }
     const outcome: ManagerOutcome = { kind: "told", managerId: manager.id };
@@ -583,10 +586,12 @@ async function escalateMismatches(input: {
       await input.notices.claim(managerNoticeKey(agentId, m.requestId, unreachable), input.nowMs);
     }
     log.warn("ooo-event-mismatch", { msg: "a manager could not be told about a time off mismatch", agent_id: agentId });
-    await page(agentId, won, { kind: "manager-unreachable" });
+    await page(agentId, won, { agent: reached, manager: "unreachable" });
   };
 
   for (const [agentId, items] of groupByAgent(plan.tellAgent)) {
+    // An attempt that died before recording an outcome: remove it, so this one can claim.
+    for (const m of items) if (m.staleKey) await input.notices.release(m.staleKey);
     const res = await tellAgentAboutMismatches({
       store: input.notices,
       messenger: input.messenger,
@@ -596,33 +601,30 @@ async function escalateMismatches(input: {
       items: items.map((m) => ({ agentId, requestId: m.requestId, finding: m.finding })),
     });
     if (res.told.length > 0) counts.told_agents++;
-    // An agent nobody could reach: their manager hears in the same tick.
+    // An agent nobody could reach: that is recorded, so no all-clear is ever sent for a
+    // message never read, and their manager hears in the same tick.
     const unreachable = new Set(res.unreachable.map((u) => u.requestId));
+    for (const id of unreachable) await input.notices.claim(agentOutcomeKey(agentId, id, "unreachable"), input.nowMs);
     const passOn = items.filter((m) => unreachable.has(m.requestId));
     if (passOn.length > 0) await tellManager(agentId, passOn, "unreachable");
   }
 
   for (const [agentId, items] of groupByAgent(plan.tellManager)) {
-    const toldAt = items
-      .map((m) => agentRecordOf(m.requestId)?.toldAtMs ?? null)
-      .reduce<number | null>((a, b) => (a === null ? b : b === null ? a : Math.min(a, b)), null);
-    await tellManager(agentId, items, { atMs: toldAt });
+    // One message to the manager, so one history: undelivered if any of these was,
+    // otherwise the earliest time the agent was told.
+    const told = items.map((m) => m.agentTold);
+    const agentTold = told.some((t) => t === "unreachable")
+      ? ("unreachable" as const)
+      : {
+          atMs: told
+            .map((t) => (t === "unreachable" ? null : t.atMs))
+            .reduce<number | null>((a, b) => (a === null ? b : b === null ? a : Math.min(a, b)), null),
+        };
+    await tellManager(agentId, items, agentTold);
   }
 
   for (const [agentId, items] of groupByAgent(plan.pageDan)) {
-    const managerRec = records.find(
-      (r) => r.role === "manager" && r.agentId === agentId && items.some((m) => m.requestId === r.requestId),
-    );
-    const outcome = managerRec?.role === "manager" ? managerRec.outcome : { kind: "told" as const, managerId: "" };
-    await page(
-      agentId,
-      items,
-      outcome.kind === "none"
-        ? { kind: "no-manager" }
-        : outcome.kind === "unreachable"
-          ? { kind: "manager-unreachable" }
-          : { kind: "neither-acted" },
-    );
+    await page(agentId, items, items.map((m) => m.reason));
   }
 
   // The all-clears: whoever was told hears it is over, once, by whichever run removes
@@ -638,9 +640,13 @@ async function escalateMismatches(input: {
         ? { startsAt: state.startsAt, endsAt: state.endsAt, displayTzId: state.displayTzId, displayTzLabel: state.displayTzLabel }
         : null,
     };
+    // The agent hears the all-clear only if their first message was delivered.
+    const agentWasTold = c.records.some((r) => r.role === "agent-outcome" && r.outcome === "told");
     for (const rec of c.records) {
       if (!(await input.notices.release(rec.key))) continue;
+      if (rec.role === "agent-outcome") continue;
       if (rec.role === "agent") {
+        if (!agentWasTold) continue;
         const email = emailOfAgent(c.agentId);
         if (email && (await input.messenger.dm(email, agentMismatchClearedDm(cleared)))) counts.all_clears++;
       } else if (rec.outcome.kind === "told") {

@@ -2,7 +2,7 @@
 // in tests (a "@/" value import is not erased).
 import { parseStampMs } from "../date/stamp.ts";
 import { canHoldManagerOfRecord } from "./core.ts";
-import type { OooEventMismatch } from "./alert-copy.ts";
+import type { OooEventMismatch, OooEventMismatchEscalation } from "./alert-copy.ts";
 import type { Span } from "./event-coverage.ts";
 import type { Role } from "@/lib/db/types";
 
@@ -44,10 +44,34 @@ export type ManagerOutcome =
   | { kind: "none" }
   | { kind: "unreachable" };
 
-/** The record that the agent was told about one request. */
+/**
+ * The record that an attempt to tell the agent about one request STARTED. It is
+ * claimed before the message is sent, so two runs never both send; what happened is
+ * recorded separately (`agentOutcomeKey`) once the send has answered.
+ */
 export function agentNoticeKey(agentId: string, requestId: string): string {
   return `${OOO_MISMATCH_NOTICE_PREFIX}agent:${agentId}:${requestId}`;
 }
+
+/** What the attempt to tell the agent did: delivered, or could not be delivered. */
+export type AgentOutcome = "told" | "unreachable";
+
+/**
+ * The record of how the attempt to tell the agent ended. Written after the send, so an
+ * attempt record with no outcome means the run died between claiming and recording,
+ * and `STALE_SEND_MS` later the next run tries again rather than letting a grace
+ * period run out on a message nobody may have read.
+ */
+export function agentOutcomeKey(agentId: string, requestId: string, outcome: AgentOutcome): string {
+  return `${OOO_MISMATCH_NOTICE_PREFIX}outcome:${agentId}:${requestId}:${outcome}`;
+}
+
+/**
+ * How long an attempt may stand with no outcome before it is taken for a run that
+ * died mid send. A send answers in seconds and the lane runs every five minutes, so
+ * ten minutes is two whole ticks past any send that could still be in flight.
+ */
+export const STALE_SEND_MS = 10 * 60_000;
 
 /**
  * The record that the manager step ran for one request. It names the manager who was
@@ -60,6 +84,14 @@ export function managerNoticeKey(agentId: string, requestId: string, outcome: Ma
 
 export type NoticeRecord =
   | { role: "agent"; agentId: string; requestId: string; toldAtMs: number | null; key: string }
+  | {
+      role: "agent-outcome";
+      agentId: string;
+      requestId: string;
+      outcome: AgentOutcome;
+      toldAtMs: number | null;
+      key: string;
+    }
   | {
       role: "manager";
       agentId: string;
@@ -80,6 +112,9 @@ export function parseNoticeRow(row: { key: string; last_sent_at: string }): Noti
   const toldAtMs = parseStampMs(row.last_sent_at);
   if (parts[0] === "agent" && parts.length === 3 && parts[1] && parts[2]) {
     return { role: "agent", agentId: parts[1], requestId: parts[2], toldAtMs, key: row.key };
+  }
+  if (parts[0] === "outcome" && parts.length === 4 && parts[1] && parts[2] && (parts[3] === "told" || parts[3] === "unreachable")) {
+    return { role: "agent-outcome", agentId: parts[1], requestId: parts[2], outcome: parts[3], toldAtMs, key: row.key };
   }
   if (parts[0] === "manager" && parts.length === 4 && parts[1] && parts[2] && parts[3]) {
     return {
@@ -197,13 +232,20 @@ export interface MeasuredMismatch {
   bookedInGap: boolean;
 }
 
+/** Why the alerts channel hears about one request: the page's own type, so the two cannot drift. */
+export type EscalationReason = OooEventMismatchEscalation;
+
 export interface EscalationPlan {
-  /** Nobody has been told: the agent hears now. */
-  tellAgent: MeasuredMismatch[];
-  /** The agent was told and their wait is over. */
-  tellManager: MeasuredMismatch[];
-  /** The manager step ran and its wait is over, or nobody could be told. */
-  pageDan: MeasuredMismatch[];
+  /**
+   * Nobody has been told: the agent hears now. `staleKey` is set when an earlier
+   * attempt died before recording its outcome; that record is removed and the agent
+   * is told again.
+   */
+  tellAgent: (MeasuredMismatch & { staleKey?: string })[];
+  /** The agent was told and their wait is over, or the agent could not be reached. */
+  tellManager: (MeasuredMismatch & { agentTold: { atMs: number | null } | "unreachable" })[];
+  /** The manager step ran and its wait is over, or nobody could be told. Each request carries its own reason. */
+  pageDan: (MeasuredMismatch & { reason: EscalationReason })[];
   /** Requests that no longer need anybody, with the records of who to tell so. */
   clear: { agentId: string; requestId: string; why: "agreed" | "left-approved"; records: NoticeRecord[] }[];
   /** Records of a departed agent, dropped without a message. */
@@ -235,17 +277,31 @@ export function planEscalation(input: {
   for (const m of input.mismatches) {
     if (input.departedAgents.has(m.agentId)) continue;
     const recs = byRequest.get(m.requestId) ?? [];
-    const agent = recs.find((r) => r.role === "agent");
-    const manager = recs.find((r) => r.role === "manager");
+    const attempt = recs.find((r) => r.role === "agent");
+    const outcome = recs.find((r): r is Extract<NoticeRecord, { role: "agent-outcome" }> => r.role === "agent-outcome");
+    const manager = recs.find((r): r is Extract<NoticeRecord, { role: "manager" }> => r.role === "manager");
     const pace = PACES[escalationPace(m.gapStartMs, input.nowMs, m.bookedInGap)];
-    if (!agent && !manager) plan.tellAgent.push(m);
-    else if (!manager) {
-      if (waited(agent!.toldAtMs, pace.agentGraceMs, input.nowMs)) plan.tellManager.push(m);
-    } else if (
-      (manager.role === "manager" && manager.outcome.kind !== "told") ||
-      waited(manager.toldAtMs, pace.managerGraceMs, input.nowMs)
-    ) {
-      plan.pageDan.push(m);
+    if (manager) {
+      if (manager.outcome.kind !== "told" || waited(manager.toldAtMs, pace.managerGraceMs, input.nowMs)) {
+        plan.pageDan.push({
+          ...m,
+          reason: { agent: outcome?.outcome ?? "told", manager: manager.outcome.kind },
+        });
+      }
+    } else if (outcome?.outcome === "unreachable") {
+      // Normally done in the tick that found it unreachable; this covers a run that
+      // died between recording that and telling the manager.
+      plan.tellManager.push({ ...m, agentTold: "unreachable" });
+    } else if (outcome) {
+      if (waited(outcome.toldAtMs, pace.agentGraceMs, input.nowMs)) {
+        plan.tellManager.push({ ...m, agentTold: { atMs: outcome.toldAtMs } });
+      }
+    } else if (attempt) {
+      // Started and never recorded: in flight, or the run died mid send. Only the
+      // second is acted on, once no send could still be answering.
+      if (waited(attempt.toldAtMs, STALE_SEND_MS, input.nowMs)) plan.tellAgent.push({ ...m, staleKey: attempt.key });
+    } else {
+      plan.tellAgent.push(m);
     }
   }
 

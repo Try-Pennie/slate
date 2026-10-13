@@ -7,6 +7,7 @@ import { log } from "@/lib/log";
 import {
   OOO_MISMATCH_NOTICE_PREFIX,
   agentNoticeKey,
+  agentOutcomeKey,
   parseNoticeRow,
   type NoticeRecord,
 } from "@/lib/ooo/mismatch-escalation";
@@ -102,10 +103,12 @@ export interface AgentNoticeItem {
 
 /**
  * Tell an agent about the requests they have not yet been told about, in one
- * message, and record it first. Shared by the monitor lane and the calendar sync, so
- * the two can never tell an agent twice about one request (the record is the claim).
+ * message. The attempt is claimed first, so the monitor lane and the calendar sync can
+ * never both send about one request (the record is the claim), and once the message
+ * is delivered that is recorded as its own row (`agentOutcomeKey`). An attempt with no
+ * outcome is a run that died mid send, which the lane retries (`STALE_SEND_MS`).
  *
- *  - `told`: the requests this call told them about.
+ *  - `told`: the requests this call told them about, with the delivery recorded.
  *  - `unreachable`: claimed, but the agent has no address or the DM failed, so they
  *    were NOT told. The caller decides what that means: the lane goes straight to the
  *    manager, the sync releases the claim and leaves it to the lane.
@@ -135,6 +138,9 @@ export async function tellAgentAboutMismatches(deps: {
       has_email: deps.agentEmail !== null,
     });
     return { told: [], unreachable: won };
+  }
+  for (const item of won) {
+    await deps.store.claim(agentOutcomeKey(item.agentId, item.requestId, "told"), deps.nowMs);
   }
   return { told: won, unreachable: [] };
 }
