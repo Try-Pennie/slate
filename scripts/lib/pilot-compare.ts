@@ -158,6 +158,35 @@ export const MAX_UNMATCHED_SHARE = 0.1;
 export const DEFAULT_LIFT = 0.02;
 
 /**
+ * How long each attempt of the contact read may take (#3695). That read filters
+ * `Submission__c` on `Email_SO__c`, which is not a selective filter, so a 50 address
+ * batch can run past the 10 s an ordinary Salesforce attempt is given; on 2026-10-13
+ * two of four runs refused there, and a retry of the same 10 s attempt fails the same
+ * way. A minute is generous for one batch and still ends a hung read.
+ */
+export const CONTACT_READ_TIMEOUT_MS = 60_000;
+
+/**
+ * Read every batch in turn and return all their records, or throw. A failed batch
+ * refuses the whole read, never a short one (a short read would report fewer matched
+ * bookings as a finding), and the refusal says which batch failed and how many were
+ * read before it, so a slow Salesforce reads differently from one that answered
+ * nothing (#3695).
+ */
+export async function readEveryBatch<B, R>(batches: readonly B[], read: (batch: B) => Promise<readonly R[]>): Promise<R[]> {
+  const records: R[] = [];
+  for (const [i, batch] of batches.entries()) {
+    try {
+      records.push(...(await read(batch)));
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(`batch ${i + 1} of ${batches.length} failed (${i} of ${batches.length} batches were read): ${reason}`, { cause: err });
+    }
+  }
+  return records;
+}
+
+/**
  * The cal.com event types a lead books an advisor call on: every "Senior Loan
  * Advisor Call" type on the team, plus the 1:1 review, read from
  * `/organizations/19474/teams/19546/event-types` on 2026-10-01. The pennie

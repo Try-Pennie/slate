@@ -11,7 +11,7 @@
  * query that never ran is indistinguishable from Salesforce holding nothing.
  */
 import { sfClientId, sfClientSecret, sfInstanceUrl } from "@/lib/env";
-import { fetchSfWithRetry } from "@/lib/salesforce/retry";
+import { fetchSfWithRetry, type SfFetchOptions } from "@/lib/salesforce/retry";
 
 export async function sfToken(): Promise<{ token: string; instanceUrl: string }> {
   const res = await fetchSfWithRetry(`${sfInstanceUrl()}/services/oauth2/token`, {
@@ -90,11 +90,15 @@ export async function collectSoqlComplete<T>(getPage: (path: string | null) => P
   return records;
 }
 
-/** `collectSoqlComplete` against the live org. */
-export async function querySoqlComplete<T>(instanceUrl: string, token: string, soql: string): Promise<T[]> {
+/**
+ * `collectSoqlComplete` against the live org. `opts` reaches every page's request, so
+ * a caller whose query is known to be slow can give it a longer time limit than the
+ * default each attempt gets (#3695).
+ */
+export async function querySoqlComplete<T>(instanceUrl: string, token: string, soql: string, opts: SfFetchOptions = {}): Promise<T[]> {
   return collectSoqlComplete<T>(async (path) => {
     const url = path === null ? `${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}` : `${instanceUrl}${path}`;
-    const res = await fetchSfWithRetry(url, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetchSfWithRetry(url, { headers: { Authorization: `Bearer ${token}` } }, opts);
     if (!res.ok) throw new Error(`SF query failed: ${res.status} ${await res.text()}`);
     return (await res.json()) as SoqlPage<T>;
   });

@@ -30,10 +30,13 @@ import {
   type AppOutcome,
   type Chain,
   JUDGED_EXITS,
+  CONTACT_READ_TIMEOUT_MS,
+  readEveryBatch,
 } from "./lib/pilot-compare.ts";
+import { SF_TIMEOUT_MS } from "../src/lib/salesforce/retry.ts";
 import { slateBucket, compareHalves } from "./lib/pilot-split.ts";
 import type { CalcomListedBooking } from "../src/lib/calcom/upcoming-bookings.ts";
-import { collectSoqlComplete, type SoqlPage } from "../src/lib/salesforce/rest.ts";
+import { collectSoqlComplete, querySoqlComplete, type SoqlPage } from "../src/lib/salesforce/rest.ts";
 import { settingsFromRecords } from "../src/lib/salesforce/pilot-settings.ts";
 import type { PilotSettingsRow } from "../src/lib/monitor/pilot-settings-samples.ts";
 
@@ -806,6 +809,59 @@ const TO = WINDOW_START + 22 * D;
     }
   }
   eq(threw, 2, "no record, or two, is refused: the settings are read from exactly one");
+}
+
+// --- #3695: the contact read has its own time limit, and says how far it got -------------
+{
+  // The contact read filters on Email_SO__c, which is not selective, so one batch can
+  // run past the 10 s each Salesforce attempt is given by default; on 2026-10-13 two
+  // runs died that way. The limit passed to querySoqlComplete must be the one used: a
+  // hung Salesforce given 5 ms fails at once, where the default would hold this suite.
+  const hung: typeof fetch = (_url, init) =>
+    new Promise((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)));
+  let caught: unknown = null;
+  const startedAt = Date.now();
+  // AbortSignal.timeout's timer does not hold the process open, so without a timer
+  // that does, node would exit on an empty loop before the limit ever fired.
+  const keepAlive = setInterval(() => {}, 1_000);
+  try {
+    await querySoqlComplete("https://sf.example", "token", "SELECT Id FROM Submission__c", {
+      timeoutMs: 5,
+      maxAttempts: 1,
+      fetchImpl: hung,
+      sleep: async () => {},
+    });
+  } catch (err) {
+    caught = err;
+  } finally {
+    clearInterval(keepAlive);
+  }
+  eq((caught as { name?: unknown } | null)?.name, "TimeoutError", "a hung read ends on the time limit it was given");
+  assert(Date.now() - startedAt < SF_TIMEOUT_MS, "the limit passed in is the one used, not the 10 s default");
+  assert(CONTACT_READ_TIMEOUT_MS > SF_TIMEOUT_MS, "the contact read is given longer than an ordinary Salesforce attempt");
+
+  // Every batch read: the records come back in batch order.
+  const all = await readEveryBatch(["a", "b", "c"], async (b) => [`${b}1`, `${b}2`]);
+  eq(all, ["a1", "a2", "b1", "b2", "c1", "c2"], "every batch's records are returned, in order");
+
+  // A batch that fails refuses the whole read, never a short one, and says how far it got.
+  const timeout = Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+  let refused: unknown = null;
+  const readCalls: string[] = [];
+  try {
+    await readEveryBatch(["a", "b", "c", "d"], async (b) => {
+      readCalls.push(b);
+      if (b === "c") throw timeout;
+      return [b];
+    });
+  } catch (err) {
+    refused = err;
+  }
+  const message = refused instanceof Error ? refused.message : "";
+  assert(message.includes("batch 3 of 4"), `the refusal names the batch that failed: ${message}`);
+  assert(message.includes("2 of 4 batches were read"), `the refusal says how many were read first: ${message}`);
+  assert(message.includes("aborted due to timeout"), `the refusal keeps Salesforce's own reason: ${message}`);
+  eq(readCalls, ["a", "b", "c"], "nothing after the failed batch is read");
 }
 
 finish();
