@@ -32,6 +32,9 @@ import {
   JUDGED_EXITS,
   CONTACT_READ_TIMEOUT_MS,
   readEveryBatch,
+  sourceGroup,
+  sourceCuts,
+  PORTAL_FIX_MS,
 } from "./lib/pilot-compare.ts";
 import { SF_TIMEOUT_MS } from "../src/lib/salesforce/retry.ts";
 import { slateBucket, compareHalves } from "./lib/pilot-split.ts";
@@ -49,7 +52,7 @@ const iso = (ms: number) => new Date(ms).toISOString();
 // The hash itself is pinned against trypennie's own output in test-pilot-split.ts;
 // here it only sorts invented ids onto the side each fixture needs.
 const pool = { slate: [] as string[], calcom: [] as string[] };
-for (let i = 0; pool.slate.length < 4000 || pool.calcom.length < 4000; i++) {
+for (let i = 0; pool.slate.length < 6000 || pool.calcom.length < 6000; i++) {
   const id = `a04Ui0000${String(i).padStart(6, "0")}XYZ`;
   (slateBucket(id) < ASSUMED_PERCENT ? pool.slate : pool.calcom).push(id);
 }
@@ -82,6 +85,7 @@ function app(side: "slate" | "calcom", over: Partial<Application> = {}): Applica
     leadId: `00QUi0000${String(leadN).padStart(6, "0")}AAA`,
     email: `lead${leadN}@example.test`,
     phone10: `555${String(leadN).padStart(7, "0")}`,
+    source: "trypennie.com",
     ...over,
   };
 }
@@ -385,7 +389,7 @@ const clean = (lines: string[]) => !lines.some((l) => /undefined|NaN|\[object Ob
 
 // --- 7. the whole judgement ----------------------------------------------------------------------
 /** A realistic cohort: `n` applications a side, with booking and show rates given. */
-function cohort(n: number, rates: { slate: [number, number]; calcom: [number, number] }) {
+function cohort(n: number, rates: { slate: [number, number]; calcom: [number, number] }, source: string | null = "trypennie.com") {
   const apps: Application[] = [];
   const slate: SlateBookingRow[] = [];
   const cal: CalcomListedBooking[] = [];
@@ -393,7 +397,7 @@ function cohort(n: number, rates: { slate: [number, number]; calcom: [number, nu
   for (const side of ["slate", "calcom"] as const) {
     const [book, show] = rates[side];
     for (let i = 0; i < n; i++) {
-      const a = app(side, { createdAt: iso(WINDOW_START + (i % 10) * D + H), xbc: `${(i % 5) + 1}12` });
+      const a = app(side, { createdAt: iso(WINDOW_START + (i % 10) * D + H), xbc: `${(i % 5) + 1}12`, source });
       apps.push(a);
       if (i >= n * book) continue;
       const start = Date.parse(a.createdAt) + 2 * D;
@@ -862,6 +866,48 @@ const TO = WINDOW_START + 22 * D;
   assert(message.includes("2 of 4 batches were read"), `the refusal says how many were read first: ${message}`);
   assert(message.includes("aborted due to timeout"), `the refusal keeps Salesforce's own reason: ${message}`);
   eq(readCalls, ["a", "b", "c"], "nothing after the failed batch is read");
+}
+
+// --- #3701: results by where the application came from -----------------------------------
+{
+  eq(sourceGroup("trypennie.com"), "form", "an application made on the trypennie.com form is a form application");
+  eq(sourceGroup("Engine"), "partner", "an application a partner sent in is a partner application");
+  eq(sourceGroup(null), "partner", "one with no source is counted with partners and other sources, never dropped");
+  eq(new Date(PORTAL_FIX_MS).toISOString(), "2026-10-04T20:03:19.000Z", "the offer portal fix is pinned to its production deploy (trypennie #522)");
+
+  // A window that opens before the fix reports partners both ways (Dan, 2026-10-13);
+  // one that opens after it has only one partner cut, and says nothing about the fix.
+  const before = sourceCuts(windowAt()).map((c) => c.label);
+  eq(before.length, 3, `a window opening before the fix has three cuts: ${before.join(" | ")}`);
+  assert(before[0] === "trypennie.com form applications", `the form cut comes first: ${before[0]}`);
+  assert(/^Partner and other applications, from 2026-10-02 00:00 ET/.test(before[1] ?? ""), `partners from the window start: ${before[1]}`);
+  assert(/^Partner and other applications, from the offer portal fix at 2026-10-04 16:03 ET/.test(before[2] ?? ""), `partners from the fix: ${before[2]}`);
+  const after = sourceCuts(windowAt({ startMs: Date.parse("2026-10-05T04:00:00Z") })).map((c) => c.label);
+  eq(after.length, 2, `a window opening after the fix has one partner cut: ${after.join(" | ")}`);
+  assert(!after.some((l) => /fix/.test(l)), "and does not mention the fix");
+
+  // The whole judgement: form applications favour Slate, partner ones favour cal.com.
+  // Partner applications made on days 0 to 2 (Oct 2 to Oct 4 01:00 ET) are before the
+  // fix, so the cut from the fix keeps the 210 a side made from day 3.
+  const form = cohort(300, { slate: [0.45, 0.6], calcom: [0.3, 0.6] });
+  const partner = cohort(300, { slate: [0.2, 0.6], calcom: [0.25, 0.6] }, "Engine");
+  const both = { apps: [...form.apps, ...partner.apps], slate: [...form.slate, ...partner.slate], cal: [...form.cal, ...partner.cal], calls: [...form.calls, ...partner.calls] };
+  const r = run(both);
+  const at = r.lines.findIndex((l) => l.startsWith("By where the application came from"));
+  assert(at > 0, "the run reports by where the application came from");
+  const blockAfter = (label: RegExp) => {
+    const i = r.lines.findIndex((l, n) => n > at && label.test(l));
+    return i < 0 ? "" : (r.lines[i + 2] ?? "");
+  };
+  const formRate = blockAfter(/^trypennie\.com form applications:/);
+  assert(/Slate 135\/300 .*cal\.com 90\/300/.test(formRate), `form booking rate: ${formRate}`);
+  const partnerAll = blockAfter(/^Partner and other applications, from 2026-10-02 00:00 ET/);
+  assert(/Slate 60\/300 .*cal\.com 75\/300/.test(partnerAll), `partners from the window start: ${partnerAll}`);
+  const partnerFix = blockAfter(/^Partner and other applications, from the offer portal fix/);
+  assert(/Slate 42\/210 .*cal\.com 51\/210/.test(partnerFix), `partners from the fix: ${partnerFix}`);
+  assert(r.lines.some((l) => /showed cal\.com to partner leads on Slate's side/.test(l)), "the run says why partners are also reported from the fix");
+  assert(clean(r.lines), "no undefined or NaN in the by source lines");
+  eq(r.exit, run({ apps: both.apps.map((a) => ({ ...a, source: null })), slate: both.slate, cal: both.cal, calls: both.calls }).exit, "the source cuts never change how the run exits");
 }
 
 finish();

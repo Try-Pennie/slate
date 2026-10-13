@@ -186,6 +186,61 @@ export async function readEveryBatch<B, R>(batches: readonly B[], read: (batch: 
   return records;
 }
 
+// --- by where the application came from (#3701) ------------------------------------------
+
+/** The `Source__c` an application made on trypennie.com's own form carries. */
+export const FORM_SOURCE = "trypennie.com";
+
+/**
+ * When trypennie's offer portal started choosing the booker after the income form
+ * created the Submission (trypennie #522, its merge commit's production deploy).
+ * Before it the page chose before any Submission existed, so it showed cal.com to
+ * partner leads on Slate's side: 125 of the 131 Slate side partner applications that
+ * booked on cal.com from Oct 2 to 12 did so before this instant.
+ */
+export const PORTAL_FIX_MS = Date.parse("2026-10-04T20:03:19Z");
+
+/**
+ * Form or partner. Anything that is not the form, a missing source included, counts
+ * with partners and other sources, so no application drops out of the cuts.
+ */
+export function sourceGroup(source: string | null): "form" | "partner" {
+  return source === FORM_SOURCE ? "form" : "partner";
+}
+
+export interface SourceCut {
+  label: string;
+  keep: (j: Judged) => boolean;
+  /** Days of applications the cut covers, for its days estimate. */
+  days: number;
+}
+
+/**
+ * The by source cuts a window reports. Partner applications are reported both from the
+ * window start and from the offer portal fix when the window opens before it (Dan,
+ * 2026-10-13, on #3701), so nothing in the design fixed on 2026-10-01 is dropped and
+ * the clean days can be read on their own.
+ */
+export function sourceCuts(window: PilotWindow): SourceCut[] {
+  const days = (fromMs: number) => (window.cohortEndMs - fromMs) / 86_400_000;
+  const cuts: SourceCut[] = [
+    { label: "trypennie.com form applications", keep: (j) => sourceGroup(j.source) === "form", days: days(window.startMs) },
+    {
+      label: `Partner and other applications, from ${etLabel(window.startMs)}`,
+      keep: (j) => sourceGroup(j.source) === "partner",
+      days: days(window.startMs),
+    },
+  ];
+  if (window.startMs < PORTAL_FIX_MS && window.cohortEndMs > PORTAL_FIX_MS) {
+    cuts.push({
+      label: `Partner and other applications, from the offer portal fix at ${etLabel(PORTAL_FIX_MS)}`,
+      keep: (j) => sourceGroup(j.source) === "partner" && j.createdMs >= PORTAL_FIX_MS,
+      days: days(PORTAL_FIX_MS),
+    });
+  }
+  return cuts;
+}
+
 /**
  * The cal.com event types a lead books an advisor call on: every "Senior Loan
  * Advisor Call" type on the team, plus the 1:1 review, read from
@@ -216,6 +271,8 @@ export interface Application {
   email: string | null;
   /** Last ten digits of `Mobile_Number_SO__c`. */
   phone10: string | null;
+  /** `Source__c`: `trypennie.com` for the form, a partner's name otherwise (#3701). */
+  source: string | null;
 }
 
 /** One real, routed Slate booking. Slate reschedules in place, so a row is a whole chain. */
@@ -452,6 +509,8 @@ export interface AppOutcome {
   side: Side;
   createdMs: number;
   leadKey: string | null;
+  /** Where the application came from (#3701). */
+  source: string | null;
   /** Chains made inside the application's span. */
   chains: Chain[];
 }
@@ -528,6 +587,7 @@ export function matchBookings(input: {
       side: slateBucket(key) < ASSUMED_PERCENT ? "slate" : "calcom",
       createdMs: created,
       leadKey: a.leadId === null ? null : leadKey(a.leadId),
+      source: a.source,
       chains: [],
     });
   }
@@ -630,6 +690,9 @@ export function leadKeysToRead(m: Matched): string[] {
 export interface Judged {
   key: string;
   tier: string;
+  /** Where the application came from, and when, for the by source cuts (#3701). */
+  source: string | null;
+  createdMs: number;
   side: Side;
   booked: boolean;
   /** The system of its first booking, or null when it booked nothing. */
@@ -669,6 +732,8 @@ export function judgeApplication(app: AppOutcome, spanMs: number, callsByLead: R
   return {
     key: app.key,
     tier: app.tier,
+    source: app.source,
+    createdMs: app.createdMs,
     side: app.side,
     booked: chains.length > 0,
     system: chains[0]?.system ?? null,
@@ -1168,6 +1233,26 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
       continue;
     }
     lines.push(...rateBlock(`Tier ${tier} (${TIER_LABEL[tier] ?? tier})`, set, days).out);
+  }
+
+  // --- by where the application came from (#3701) --------------------------------------
+  // Form and partner applications have moved in opposite directions, so the headline
+  // alone hides both. These cuts are judged by the same rules and never change the exit.
+  const cuts = sourceCuts(window);
+  lines.push("By where the application came from (each judged by the same rules; the headline above stays the readout):");
+  if (cuts.length > 2) {
+    lines.push(
+      `  Partner applications are also reported from ${etLabel(PORTAL_FIX_MS)}: until then trypennie's offer portal, where partner leads apply and book, ` +
+        "chose its booker before the application existed and so showed cal.com to partner leads on Slate's side (trypennie #522).",
+    );
+  }
+  for (const cut of cuts) {
+    const set = judged.filter(cut.keep);
+    if (set.length === 0) {
+      lines.push(`${cut.label}: no applications.`);
+      continue;
+    }
+    lines.push(...rateBlock(cut.label, set, cut.days).out);
   }
 
   // --- the second row: by the system that took the booking ------------------------------
