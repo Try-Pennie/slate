@@ -969,7 +969,12 @@ export const ALERT_CATALOG: AlertEntry[] = [
     // would put a database round-trip on the booker's hot path, which is exactly what the
     // edge limiter exists to avoid. So the durable half lives in edge_limiter_unusable,
     // which the monitor lane measures once a minute and CAN clear.
-    why: "The limiter failed open for specific requests already served; a later request simply works. The ongoing state, a limiter that is unusable in the running deployment, is a separate condition (edge_limiter_unusable) that resolves.",
+    //
+    // #3670: and it no longer pages on ONE request. A single failed count is a log line;
+    // the page needs LIMITER_FAIL_OPEN_PAGE_AFTER in one area inside
+    // LIMITER_FAIL_OPEN_WINDOW_MS on one isolate, and says that count, never that the limit
+    // "has stopped working right now", which only the condition measures.
+    why: "A run of requests in one area failed open on one server inside a window, all already served; a later request simply works. The ongoing state, a limiter that is unusable in the running deployment, is a separate condition (edge_limiter_unusable) that resolves.",
   },
   {
     key: "confirm_line_unreachable",
@@ -985,7 +990,8 @@ export const ALERT_CATALOG: AlertEntry[] = [
     key: "rate_limit_refund_broken:*",
     kind: "incident",
     suffix: "bounded",
-    why: "One refund of a counted hit failed; the window expires regardless.",
+    // #3670: paged on the same sustained run as rate_limit_broken, never on one refund.
+    why: "A run of refunds of counted hits failed on one server inside a window; each counted window expires regardless.",
   },
   {
     key: "ooo_agent_calendar",

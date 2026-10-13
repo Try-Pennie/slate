@@ -21,6 +21,7 @@
  * scripts/test-confirm-line-alert.ts drives it. Production wiring is in service.ts.
  */
 import type { LineReason } from "./shared-confirm-line.ts";
+import { makeSustainedFailureGate } from "../notify/sustained-failure.ts";
 
 /** Failures inside one window, on one isolate, before it pages. */
 export const CONFIRM_LINE_PAGE_AFTER = 3;
@@ -80,10 +81,14 @@ export function makeReachFailureReporter(deps: {
   log: (fields: Record<string, string | number | boolean | null | undefined>) => void;
   page: (text: string) => void;
 }): (reason: LineReason, err: unknown) => void {
-  let recent: { at: number; reason: LineReason }[] = [];
-  // #3349: when this isolate last paged, so it waits out the alert's cooldown and then
-  // can page about a later, separate outage. It used to latch for the isolate's life.
-  let lastPagedAt: number | null = null;
+  // The window and the cooldown are the shared gate's (#3670), the one the rate limiter's
+  // fail open pages use too. #3349: it waits out the alert's cooldown and then can page
+  // about a later, separate outage; it used to latch for the isolate's life.
+  const gate = makeSustainedFailureGate<LineReason>({
+    pageAfter: CONFIRM_LINE_PAGE_AFTER,
+    windowMs: CONFIRM_LINE_PAGE_WINDOW_MS,
+    cooldownMs: CONFIRM_LINE_ALERT_COOLDOWN_MS,
+  });
   return (reason, err) => {
     deps.log({
       msg: "a confirm could not use the shared confirm line and used its isolate's own",
@@ -91,11 +96,7 @@ export function makeReachFailureReporter(deps: {
       ...(err ? { error: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200) } : {}),
     });
     if (NEVER_PAGES.has(reason) || !deps.onWorkers()) return;
-    const t = deps.now();
-    recent = [...recent.filter((f) => t - f.at < CONFIRM_LINE_PAGE_WINDOW_MS), { at: t, reason }];
-    if (recent.length < CONFIRM_LINE_PAGE_AFTER) return;
-    if (lastPagedAt !== null && t - lastPagedAt < CONFIRM_LINE_ALERT_COOLDOWN_MS) return;
-    lastPagedAt = t;
-    deps.page(confirmLineAlertFor(recent.map((f) => f.reason)));
+    const verdict = gate.record(CONFIRM_LINE_ALERT_KEY, deps.now(), reason);
+    if (verdict.page) deps.page(confirmLineAlertFor(verdict.recent()));
   };
 }
