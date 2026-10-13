@@ -1,9 +1,31 @@
 // Read Slate's production Worker logs without walking into the traps (#807).
 //
-//   CLOUDFLARE_API_TOKEN=... node --experimental-strip-types --import ./scripts/register-paths.mjs \
-//     scripts/logs.ts "tag=booking-api" [--minutes 60] [--control "tag=recompute"]
+//   node --experimental-strip-types --import ./scripts/register-paths.mjs \
+//     scripts/logs.ts "tag=booking-api" [--minutes 60 | --from <iso> --to <iso>] \
+//     [--lines] [--slice-minutes 60] [--control "tag=recompute"]
 //
-// Exit: 0 found, 1 trustworthy absence, 2 UNVERIFIABLE (the query itself is broken).
+// Counts by default; `--lines` also PRINTS each matching line (UTC timestamp, level or a
+// dash, text) through the API's events view (#3664). Every request covers at most one hour,
+// and a wider window is read one hour at a time and merged, because one wide query silently
+// drops rows (#3299). The output says how many slices it read.
+//
+// Exit: 0 found, 1 trustworthy absence, 2 UNVERIFIABLE (the query itself is broken, or it
+// was refused), 3 found but the printed list is incomplete (fewer lines listed than counted,
+// or a slice filled the request limit), so the list must not be read as every line.
+//
+// THE TOKEN. A read only Workers Observability API token, stored in `.env.local` at the
+// checkout root as `CLOUDFLARE_LOGS_READ_TOKEN=<token>` (or `CLOUDFLARE_API_TOKEN` set in the
+// shell for one run). Never `CLOUDFLARE_API_TOKEN` in `.env.local`: wrangler reads that file
+// too and would sign every `wrangler tail` and deploy in with this read only token. The tool
+// reads only that one name from the file and never prints the token, not even inside an API
+// error. To create it (once, by a person, in the Cloudflare dashboard):
+//   1. dash.cloudflare.com, My Profile, API Tokens, Create Token, Create Custom Token.
+//   2. Name it "Slate logs read only (<which Mac>)".
+//   3. Permissions: Account, Workers Observability, Read. Nothing else.
+//   4. Account Resources: Include, Pennie. Then Continue to summary, Create Token.
+//   5. Copy the token into `.env.local` as above. It is shown once.
+//   6. Check it: `logs.ts "tag=recompute" --minutes 60` must exit 0 (PRESENT).
+// docs/cloudflare-platform-notes.md has the same steps beside the rest of the log traps.
 //
 // WHY THIS EXISTS. Querying these logs keeps returning zero rows from data that
 // is really there, and a zero looks exactly like an outage. It has produced a
@@ -33,9 +55,12 @@
 // One trap above needs a boundary drawn on it: the events-view schema error is the
 // MCP TOOL's validation, not the API's. A `view: "events"` query sent straight to the
 // API returned app log rows normally on 2026-08-17, with the line in `source.message`.
-// This tool still counts via `calculations`, which also gives it the per-bucket series
-// the freshness rule reads.
+// This tool still COUNTS via `calculations`, which also gives it the per-bucket series
+// the freshness rule reads, and `--lines` lists through the raw events view. The verdict
+// always comes from the controlled count, never from the length of a listing.
+import { readFileSync } from "node:fs";
 import { isEntryPoint } from "./lib/run-alerter.ts";
+import { parseEnvFile } from "./smoke-env.ts";
 
 /** The Worker whose logs we read, and the account it lives in. */
 const SERVICE = "slate";
@@ -362,28 +387,6 @@ export interface QueryResult {
 /** Injectable HTTP boundary, so the core above is testable with a fake. */
 export type QueryFn = (q: CountQuery) => Promise<QueryResult>;
 
-/** Run one count against Cloudflare's observability API. */
-export const cloudflareCount =
-  (token: string): QueryFn =>
-  async (q: CountQuery): Promise<QueryResult> => {
-    const res = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/observability/telemetry/query`,
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify(q),
-      },
-    );
-    if (!res.ok) {
-      throw new Error(`observability query failed: HTTP ${res.status} ${await res.text()}`);
-    }
-    // One parse, two readings: the count (which THROWS on an unrecognised shape rather
-    // than defaulting to 0) and the frontier (which returns null, because the caller maps
-    // null to the fail-safe side).
-    const body = await res.json();
-    return { count: countFromResponse(body), newestMs: newestBucketMsFromResponse(body) };
-  };
-
 /** Count the needle AND the control in the same window, then judge. */
 export async function search(input: {
   needle: string;
@@ -406,72 +409,565 @@ export async function search(input: {
   });
 }
 
-async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
-  const needle = argv.find((a) => !a.startsWith("--"));
-  if (!needle) {
-    console.error('usage: logs.ts "<needle>" [--minutes 60] [--control "<line>"]');
-    process.exit(2);
-  }
-  const flag = (name: string, fallback: string): string => {
-    const i = argv.indexOf(`--${name}`);
-    return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
-  };
-  const token = process.env.CLOUDFLARE_API_TOKEN;
-  if (!token) {
-    console.error("CLOUDFLARE_API_TOKEN is not set (needs Workers Observability read).");
-    process.exit(2);
-  }
+// ---------------------------------------------------------------------------------------
+// Narrow windows (#3299). A single query over a WIDE window silently returns an incomplete
+// set: on 2026-10-05, `tag=booking-reminder msg="cycle"` over 25 hours came back as 26 rows
+// from the events view, and as 287 (12 an hour) when the same question was asked one hour
+// at a time. An investigation reading the wide answer reads the missing rows as absence.
+// So every request this tool sends covers at most `SLICE_MS`, for counting and for printing,
+// and the results are merged.
+// ---------------------------------------------------------------------------------------
 
-  const minutes = Number(flag("minutes", "60"));
-  const control = flag("control", CONTROL_NEEDLE);
-  const nowMs = Date.now();
-  const win = assertWindowSane({
-    fromIso: new Date(nowMs - minutes * 60_000).toISOString(),
-    toIso: new Date(nowMs).toISOString(),
-    nowMs,
-  });
-  if (win.lagWarning) {
-    console.warn(
-      "note: this window ends now, and ingestion lags 1-2 minutes, so recent lines may not have landed yet.",
+/** The widest single request: the size #3299 measured as complete. Narrower is allowed. */
+export const SLICE_MS = 60 * 60_000;
+
+/** Cloudflare keeps Workers logs for 7 days, so older slices could only ever read empty. */
+export const MAX_WINDOW_MS = 7 * 24 * 60 * 60_000;
+
+export interface Slice {
+  fromIso: string;
+  toIso: string;
+}
+
+/**
+ * Split a window into contiguous slices of at most `sliceMs`, the last one short when the
+ * window is not a whole number of slices. Each slice starts exactly where the previous one
+ * ended, so nothing falls between them. A slice wider than `SLICE_MS` is REFUSED rather than
+ * honoured, because that is the size known to drop rows.
+ */
+export function sliceWindow(input: { fromIso: string; toIso: string; sliceMs?: number }): Slice[] {
+  const sliceMs = input.sliceMs ?? SLICE_MS;
+  if (!Number.isFinite(sliceMs) || sliceMs <= 0) {
+    throw new Error("slice: must be a positive number of minutes");
+  }
+  if (sliceMs > SLICE_MS) {
+    throw new Error(
+      `slice: ${Math.round(sliceMs / 60_000)} minutes is wider than the ${SLICE_MS / 60_000} minute ` +
+        "slice measured as complete (#3299); a wider query silently drops rows.",
     );
   }
+  const fromMs = Date.parse(input.fromIso);
+  const toMs = Date.parse(input.toIso);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) throw new Error("window: unparseable timestamp");
+  if (fromMs >= toMs) throw new Error("window: `from` is not before `to`");
+  if (toMs - fromMs > MAX_WINDOW_MS) {
+    throw new Error(
+      "window: longer than the 7 days Cloudflare keeps Workers logs, so its oldest part could only ever read as empty.",
+    );
+  }
+  const slices: Slice[] = [];
+  for (let start = fromMs; start < toMs; start += sliceMs) {
+    slices.push({
+      fromIso: new Date(start).toISOString(),
+      toIso: new Date(Math.min(start + sliceMs, toMs)).toISOString(),
+    });
+  }
+  return slices;
+}
 
-  const j = await search({
-    needle,
-    control,
-    fromIso: win.fromIso,
-    toIso: win.toIso,
-    query: cloudflareCount(token),
-  });
+/** A judgement over several slices, carrying how many there were and how many could not be checked. */
+export interface MergedJudgement extends Judgement {
+  slices: number;
+  unverifiedSlices: number;
+}
+
+/**
+ * Merge per slice judgements into one, keeping the control rule PER SLICE.
+ *
+ * - A hit in a slice whose control is live is a real hit, whatever another slice says, so
+ *   any such slice makes the window present. When some other slice could not be checked the
+ *   count is called a floor, because lines there may be missing.
+ * - An ABSENCE over the window needs every slice to be a trustworthy absence. One slice
+ *   whose control found nothing (or whose recency could not be read) leaves a stretch of the
+ *   window nobody could see into, so the whole absence is unverifiable.
+ * - A stale control warning survives the merge as the largest lag any slice saw.
+ */
+export function mergeJudgements(judgements: Judgement[]): MergedJudgement {
+  if (judgements.length === 0) throw new Error("merge: no slices to merge");
+  const n = judgements.length;
+  const unverified = judgements.filter((j) => !j.trustworthy);
+  const stale = judgements
+    .map((j) => j.staleControlMinutes)
+    .filter((m): m is number => m !== undefined);
+  const staleControlMinutes = stale.length > 0 ? Math.max(...stale) : undefined;
+  const base = {
+    needleCount: judgements.reduce((s, j) => s + j.needleCount, 0),
+    controlCount: judgements.reduce((s, j) => s + j.controlCount, 0),
+    slices: n,
+    unverifiedSlices: unverified.length,
+    ...(staleControlMinutes !== undefined ? { staleControlMinutes } : {}),
+  };
+  if (n === 1) return { ...judgements[0], slices: 1, unverifiedSlices: unverified.length };
+
+  const hits = judgements.filter((j) => j.trustworthy && j.verdict === "present");
+  if (hits.length > 0) {
+    const trusted = hits.reduce((s, j) => s + j.needleCount, 0);
+    return {
+      ...base,
+      verdict: "present",
+      trustworthy: true,
+      reason:
+        unverified.length === 0
+          ? `found ${base.needleCount} matching line(s) across ${n} slices.`
+          : `found at least ${trusted} matching line(s); ${unverified.length} of ${n} slices could ` +
+            "not be checked (their control found nothing, or its recency could not be read), so " +
+            "lines there may be missing.",
+    };
+  }
+  if (unverified.length > 0) {
+    return {
+      ...base,
+      verdict: "unverifiable",
+      trustworthy: false,
+      reason:
+        `${unverified.length} of ${n} slices could not be checked, so an absence over the whole ` +
+        `window cannot be vouched for. The first of them: ${unverified[0].reason}`,
+    };
+  }
+  const staleOne = judgements.find(
+    (j) => staleControlMinutes !== undefined && j.staleControlMinutes === staleControlMinutes,
+  );
+  return {
+    ...base,
+    verdict: "absent",
+    trustworthy: true,
+    reason: staleOne
+      ? `no matching line in any of ${n} slices, BUT in one of them ${staleOne.reason.replace(/^no matching line, BUT /, "")}`
+      : `no matching line in any of ${n} slices, each with a live control whose newest data reaches that slice's end.`,
+  };
+}
+
+export interface SliceCount extends Slice {
+  judgement: Judgement;
+}
+
+/** Count needle and control in EACH slice (the control over exactly that slice), then merge. */
+export async function searchSliced(input: {
+  needle: string;
+  control: string;
+  fromIso: string;
+  toIso: string;
+  query: QueryFn;
+  sliceMs?: number;
+}): Promise<{ slices: SliceCount[]; judgement: MergedJudgement }> {
+  const slices: SliceCount[] = [];
+  // One slice at a time: a 7 day window is 168 slices, and firing them all at once is how a
+  // read only tool earns a rate limit refusal in the middle of an investigation.
+  for (const s of sliceWindow(input)) {
+    slices.push({ ...s, judgement: await search({ ...input, fromIso: s.fromIso, toIso: s.toIso }) });
+  }
+  return { slices, judgement: mergeJudgements(slices.map((s) => s.judgement)) };
+}
+
+// ---------------------------------------------------------------------------------------
+// Printing the lines (#3664). The `events` view, sent straight to the API, returns app log
+// rows with the line in `source.message`; only the MCP tool's own validation breaks on them.
+// ---------------------------------------------------------------------------------------
+
+/** The most rows one events request returns. A slice that fills it may have been cut off. */
+export const EVENTS_LIMIT = 2000;
+
+export interface EventsQuery {
+  view: "events";
+  queryId: string;
+  dry: false;
+  limit: number;
+  parameters: CountQuery["parameters"];
+  timeframe: { from: number; to: number };
+}
+
+/** The same filters as the count (bare `message`, no level), asking for the rows themselves. */
+export function buildEventsQuery(input: {
+  needle: string;
+  fromIso: string;
+  toIso: string;
+  service?: string;
+  limit?: number;
+}): EventsQuery {
+  const count = buildCountQuery(input);
+  return {
+    view: "events",
+    queryId: "slate-log-lines",
+    dry: false,
+    limit: input.limit ?? EVENTS_LIMIT,
+    parameters: { ...count.parameters, calculations: [] },
+    timeframe: count.timeframe,
+  };
+}
+
+export interface LogLine {
+  id: string | null;
+  timestampMs: number | null;
+  /** null for a console.log line, which Cloudflare stores with no level. Never invented. */
+  level: string | null;
+  /** null when the event carried no readable text: kept and printed as such, never dropped. */
+  message: string | null;
+}
+
+const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
+
+function eventToLine(raw: unknown): LogLine {
+  const ev = (raw ?? {}) as {
+    $metadata?: { id?: unknown; level?: unknown; message?: unknown };
+    timestamp?: unknown;
+    source?: unknown;
+  };
+  const source = ev.source as { message?: unknown; level?: unknown } | string | undefined;
+  const message =
+    typeof source === "string" ? source : (str(source?.message) ?? str(ev.$metadata?.message));
+  const ts = typeof ev.timestamp === "number" ? ev.timestamp : Date.parse(str(ev.timestamp) ?? "");
+  return {
+    id: str(ev.$metadata?.id),
+    timestampMs: Number.isFinite(ts) ? ts : null,
+    level: str(ev.$metadata?.level) ?? (typeof source === "object" ? str(source?.level) : null),
+    message,
+  };
+}
+
+/**
+ * The lines out of an events response (`result.events.events`). THROWS when there is no
+ * events list at all, for the reason `countFromResponse` does: a parser that read a changed
+ * payload as "no lines" would manufacture the false absence this tool exists to prevent.
+ */
+export function linesFromResponse(body: unknown): LogLine[] {
+  const events = (body as { result?: { events?: { events?: unknown } } })?.result?.events?.events;
+  if (!Array.isArray(events)) {
+    throw new Error(
+      "observability response did not match the expected shape (result.events.events). " +
+        "Refusing to report no lines, which would be a false absence. The API payload has probably changed.",
+    );
+  }
+  return events.map(eventToLine);
+}
+
+/** One printed line: UTC timestamp, level (a dash when there is none), text. */
+export function formatLine(line: LogLine): string {
+  const when = line.timestampMs === null ? "(no timestamp)" : new Date(line.timestampMs).toISOString();
+  const text =
+    line.message ?? "(the line text could not be read from this event; the payload shape may have changed)";
+  return `${when}  ${line.level ?? "-"}  ${text}`;
+}
+
+export type EventsFn = (q: EventsQuery) => Promise<LogLine[]>;
+
+export interface IncompleteSlice extends Slice {
+  reason: string;
+}
+
+/**
+ * Count AND list each slice, merge, and say where the listing is not the whole set.
+ *
+ * The verdict still comes from the controlled COUNT, never from the length of the list: a
+ * short list is exactly the #3299 failure, and reading it as the complete set would repeat
+ * it. A slice is incomplete when it listed fewer lines than it counted, when it filled the
+ * request limit (so it may hold more), or when an event's text could not be read.
+ */
+export async function listLines(input: {
+  needle: string;
+  control: string;
+  fromIso: string;
+  toIso: string;
+  query: QueryFn;
+  events: EventsFn;
+  sliceMs?: number;
+  limit?: number;
+}): Promise<{
+  slices: SliceCount[];
+  judgement: MergedJudgement;
+  lines: LogLine[];
+  incomplete: IncompleteSlice[];
+}> {
+  const limit = input.limit ?? EVENTS_LIMIT;
+  const slices: SliceCount[] = [];
+  const incomplete: IncompleteSlice[] = [];
+  const seen = new Set<string>();
+  const lines: LogLine[] = [];
+  for (const s of sliceWindow(input)) {
+    const [judgement, listed] = await Promise.all([
+      search({ ...input, fromIso: s.fromIso, toIso: s.toIso }),
+      input.events(buildEventsQuery({ needle: input.needle, fromIso: s.fromIso, toIso: s.toIso, limit })),
+    ]);
+    slices.push({ ...s, judgement });
+    const reasons: string[] = [];
+    if (listed.length >= limit) {
+      reasons.push(
+        `listed ${listed.length} lines, the most one request returns, so this slice may hold more; ` +
+          "re-run with a narrower --slice-minutes",
+      );
+    } else if (listed.length < judgement.needleCount) {
+      reasons.push(
+        `listed ${listed.length} of ${judgement.needleCount} counted lines, so ` +
+          `${judgement.needleCount - listed.length} are missing from what is printed`,
+      );
+    }
+    const unreadable = listed.filter((l) => l.message === null).length;
+    if (unreadable > 0) reasons.push(`${unreadable} line(s) carried no readable text`);
+    if (reasons.length > 0) incomplete.push({ ...s, reason: reasons.join("; ") });
+    for (const line of listed) {
+      // Adjacent slices share a boundary instant, so a row stamped exactly on it can come
+      // back from both. Its id says it is one row.
+      if (line.id !== null) {
+        if (seen.has(line.id)) continue;
+        seen.add(line.id);
+      }
+      lines.push(line);
+    }
+  }
+  lines.sort((a, b) => (a.timestampMs ?? Infinity) - (b.timestampMs ?? Infinity));
+  return { slices, judgement: mergeJudgements(slices.map((s) => s.judgement)), lines, incomplete };
+}
+
+// ---------------------------------------------------------------------------------------
+// The token. Read by NAME from the environment or `.env.local`, and never printed: every
+// line this tool writes passes through `redact`, including an API error body, which is
+// text somebody else wrote and could echo whatever was sent.
+// ---------------------------------------------------------------------------------------
+
+/**
+ * The name the logs token is stored under in `.env.local`, and deliberately NOT
+ * `CLOUDFLARE_API_TOKEN`. Wrangler 4 loads `.env` AND `.env.local` into its own environment
+ * on every command (`getDefaultEnvFiles`, read in wrangler 4.127.1 on 2026-10-13) and
+ * authenticates with `CLOUDFLARE_API_TOKEN` whenever it is set, so a read only token stored
+ * in the checkout under that name would replace the OAuth login for every `wrangler tail`
+ * and deploy run there, and they would fail on permissions this token does not have.
+ */
+export const TOKEN_ENV = "CLOUDFLARE_LOGS_READ_TOKEN";
+
+/** Still honoured from the SHELL, where this tool always documented it. Never read from the file. */
+export const SHELL_TOKEN_ENV = "CLOUDFLARE_API_TOKEN";
+
+/**
+ * The token: `TOKEN_ENV` from the environment, then `SHELL_TOKEN_ENV` from the environment,
+ * then `TOKEN_ENV` from the `.env.local` text. Blank is absent.
+ */
+export function resolveToken(io: {
+  env: Record<string, string | undefined>;
+  readFile: () => string | null;
+}): string | null {
+  const fromEnv = io.env[TOKEN_ENV]?.trim() || io.env[SHELL_TOKEN_ENV]?.trim();
+  if (fromEnv) return fromEnv;
+  const content = io.readFile();
+  if (content === null) return null;
+  // Only the one name is taken out of the file; nothing else in it reaches this process.
+  const fromFile = parseEnvFile(content)[TOKEN_ENV]?.trim();
+  return fromFile ? fromFile : null;
+}
+
+export function redact(text: string, secret: string | null): string {
+  return secret ? text.split(secret).join("[redacted]") : text;
+}
+
+export const TOKEN_MISSING =
+  `${TOKEN_ENV} is not set in .env.local or the environment (nor ${SHELL_TOKEN_ENV} in the ` +
+  "environment), so nothing was queried. " +
+  "It needs a read only Workers Observability token; the steps to create one and where to " +
+  "put it are in docs/cloudflare-platform-notes.md (Reading production logs).";
+
+type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
+
+/** Count and list against Cloudflare's observability API, with the fetch injectable. */
+export function cloudflareClient(token: string, fetchFn: FetchFn = fetch): { count: QueryFn; events: EventsFn } {
+  const post = async (q: CountQuery | EventsQuery): Promise<unknown> => {
+    const res = await fetchFn(
+      `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/observability/telemetry/query`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(q),
+      },
+    );
+    if (!res.ok) {
+      const body = redact(await res.text(), token).slice(0, 500);
+      throw new Error(`observability query failed: HTTP ${res.status} ${body}`);
+    }
+    return res.json();
+  };
+  return {
+    // One parse, two readings: the count (which THROWS on an unrecognised shape rather than
+    // defaulting to 0) and the frontier (null, which the caller maps to the fail-safe side).
+    count: async (q) => {
+      const body = await post(q);
+      return { count: countFromResponse(body), newestMs: newestBucketMsFromResponse(body) };
+    },
+    events: async (q) => linesFromResponse(await post(q)),
+  };
+}
+
+export interface RunIo {
+  env: Record<string, string | undefined>;
+  /** The `.env.local` text, or null when there is no such file. */
+  readFile: () => string | null;
+  nowMs: number;
+  out: (line: string) => void;
+  err: (line: string) => void;
+  fetch: FetchFn;
+}
+
+const USAGE =
+  'usage: logs.ts "<needle>" [--minutes 60 | --from <iso> --to <iso>] [--lines] ' +
+  '[--slice-minutes 60] [--control "<line>"]';
+
+/**
+ * The command. Exit codes: 0 found, 1 trustworthy absence, 2 UNVERIFIABLE or refused, 3
+ * found but the printed list is incomplete. Every line it writes passes through `redact`.
+ */
+export async function run(argv: string[], io: RunIo): Promise<number> {
+  let token: string | null = null;
+  const out = (l: string) => io.out(redact(l, token));
+  const err = (l: string) => io.err(redact(l, token));
+  try {
+    return await runChecked(argv, io, out, err, (t) => {
+      token = t;
+    });
+  } catch (e) {
+    err(`FAILED: ${e instanceof Error ? e.message : String(e)}`);
+    return 2;
+  }
+}
+
+async function runChecked(
+  argv: string[],
+  io: RunIo,
+  out: (l: string) => void,
+  err: (l: string) => void,
+  setToken: (t: string) => void,
+): Promise<number> {
+  const VALUED = new Set(["minutes", "control", "from", "to", "slice-minutes"]);
+  const flags = new Map<string, string>();
+  let lines = false;
+  let needle: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--lines") lines = true;
+    else if (a.startsWith("--") && VALUED.has(a.slice(2)) && argv[i + 1] !== undefined) {
+      flags.set(a.slice(2), argv[++i]);
+    } else if (a.startsWith("--")) {
+      err(`unknown or incomplete option ${a}\n${USAGE}`);
+      return 2;
+    } else if (needle === undefined) needle = a;
+    else {
+      err(`more than one needle given ("${needle}", "${a}"); quote a needle that has spaces\n${USAGE}`);
+      return 2;
+    }
+  }
+  if (!needle) {
+    err(USAGE);
+    return 2;
+  }
+  const minutesOf = (name: string, fallback: string): number => {
+    const v = Number(flags.get(name) ?? fallback);
+    if (!Number.isFinite(v) || v <= 0) throw new Error(`--${name} must be a positive number of minutes`);
+    return v;
+  };
+  const minutes = minutesOf("minutes", "60");
+  const sliceMs = minutesOf("slice-minutes", String(SLICE_MS / 60_000)) * 60_000;
+  const isoOf = (name: string): string | undefined => {
+    const v = flags.get(name);
+    if (v === undefined) return undefined;
+    const ms = Date.parse(v);
+    if (!Number.isFinite(ms)) throw new Error(`--${name} is not a readable timestamp: ${v}`);
+    return new Date(ms).toISOString();
+  };
+  const toIso = isoOf("to") ?? new Date(io.nowMs).toISOString();
+  const fromIso = isoOf("from") ?? new Date(Date.parse(toIso) - minutes * 60_000).toISOString();
+  const control = flags.get("control") ?? CONTROL_NEEDLE;
+
+  // Every refusal about the window comes BEFORE the token and before any request.
+  const win = assertWindowSane({ fromIso, toIso, nowMs: io.nowMs });
+  const slices = sliceWindow({ fromIso, toIso, sliceMs });
+
+  const token = resolveToken({ env: io.env, readFile: io.readFile });
+  if (!token) {
+    err(TOKEN_MISSING);
+    return 2;
+  }
+  setToken(token);
+
+  if (win.lagWarning) {
+    err("note: this window ends now, and ingestion lags 1-2 minutes, so recent lines may not have landed yet.");
+  }
+  err(
+    `note: ${fromIso} to ${toIso} is read as ${slices.length} ${slices.length === 1 ? "slice" : "slices"} ` +
+      `of at most ${sliceMs / 60_000} minutes, because one wide query silently drops rows (#3299); ` +
+      "counts are summed and lines merged across them.",
+  );
+
+  const client = cloudflareClient(token, io.fetch);
+  const result = lines
+    ? await listLines({ needle, control, fromIso, toIso, query: client.count, events: client.events, sliceMs })
+    : {
+        ...(await searchSliced({ needle, control, fromIso, toIso, query: client.count, sliceMs })),
+        lines: [] as LogLine[],
+        incomplete: [] as IncompleteSlice[],
+      };
+  const j = result.judgement;
+
+  if (result.slices.length > 1) {
+    for (const s of result.slices) {
+      const flag = s.judgement.trustworthy ? "" : "  (could not be checked)";
+      err(`  ${s.fromIso} to ${s.toIso}: needle ${s.judgement.needleCount}, control ${s.judgement.controlCount}${flag}`);
+    }
+  }
+  for (const line of result.lines) out(formatLine(line));
 
   if (!j.trustworthy) {
-    // The REASON comes from judge, not from a second copy of the wording here: there is
-    // more than one way to be unverifiable now (a dead control, and a control that is
-    // alive but behind), and they need different actions. Printing one canned cause for
-    // both would send the reader to fix a query that is working (L11).
-    console.error(
+    // The REASON comes from judge, not from a second copy of the wording here: there is more
+    // than one way to be unverifiable (a dead control, a control alive but behind, a slice
+    // nobody could see into), and they need different actions (L11).
+    err(
       `UNVERIFIABLE (control "${control}", ${j.controlCount} line(s)): ${j.reason}\n` +
         `Do NOT read the needle count (${j.needleCount}) as absence.`,
     );
-    process.exit(exitCodeFor(j));
+    return exitCodeFor(j);
   }
-
   if (j.staleControlMinutes !== undefined) {
-    // stderr, and before the verdict, so it is seen even when stdout is piped somewhere
-    // and even when only the last line is read.
-    console.error(
-      `WARNING: the log data is ${j.staleControlMinutes} minutes behind the end of this window, ` +
+    // stderr, and before the verdict, so it is seen even when stdout is piped somewhere and
+    // even when only the last line is read.
+    err(
+      `WARNING: the log data is ${j.staleControlMinutes} minutes behind the end of a slice, ` +
         "so this result does NOT cover its recent part. Do not read it as an absence there; " +
         "use `npx wrangler tail` for anything recent. (#1535 will turn this into a refusal " +
         "once the normal lag has been measured.)",
     );
   }
-  console.log(
-    `${j.verdict.toUpperCase()}: "${needle}" matched ${j.needleCount} line(s) between ${win.fromIso} and ${win.toIso}.`,
-  );
-  console.log(`control ("${control}") matched ${j.controlCount}: ${j.reason}`);
-  process.exit(exitCodeFor(j));
+  if (result.incomplete.length > 0) {
+    err(
+      `WARNING: the printed list is incomplete in ${result.incomplete.length} of ${result.slices.length} ` +
+        "slice(s); do not read it as every matching line:",
+    );
+    for (const s of result.incomplete) err(`  ${s.fromIso} to ${s.toIso}: ${s.reason}`);
+  }
+  out(`${j.verdict.toUpperCase()}: "${needle}" matched ${j.needleCount} line(s) between ${fromIso} and ${toIso}.`);
+  out(`control ("${control}") matched ${j.controlCount}: ${j.reason}`);
+  if (lines && j.verdict === "absent" && result.lines.length > 0) {
+    // The listing found rows the count did not. The rows are real, so they win.
+    out(`note: the count found none, but the listing printed ${result.lines.length} line(s) above; read those.`);
+    return 0;
+  }
+  if (result.incomplete.length > 0) return 3;
+  return exitCodeFor(j);
+}
+
+/** `.env.local` at the checkout root, or null when there is none. Any other read error is loud. */
+function readEnvLocal(): string | null {
+  try {
+    return readFileSync(new URL("../.env.local", import.meta.url), "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
+  }
+}
+
+async function main(): Promise<void> {
+  const code = await run(process.argv.slice(2), {
+    env: process.env,
+    readFile: readEnvLocal,
+    nowMs: Date.now(),
+    out: (l) => console.log(l),
+    err: (l) => console.error(l),
+    fetch,
+  });
+  process.exit(code);
 }
 
 if (isEntryPoint(import.meta.url)) {
