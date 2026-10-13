@@ -23,6 +23,7 @@ import {
   updateEventContact,
   syncEvents,
   createEvent,
+  findLiveEventByClientId,
   freeBusyMany,
   updateEventTime,
   GOOGLE_CONFIRM_TIMEOUT_MS,
@@ -247,6 +248,67 @@ describe("a create never adopts a cancelled event on a 409 (#3217)", () => {
     await expect(createEvent("a@b.com", event, "slateabc")).resolves.toBe("slateabc");
     await expect(createEventOnCalendar("a@b.com", "primary", event, "slateabc")).resolves.toBe("slateabc");
     expect(calls.filter((c) => c.method === "POST").map((c) => c.id)).toEqual(["slateabc", "slateabc"]);
+  });
+});
+
+// #3660 (L766): a create that timed out may have landed, so the undo reads the
+// calendar back rather than assume either way. The read walks the SAME chain a create
+// walks past a cancelled tombstone (#3217), so it finds whichever id that create
+// landed on, and stops at the first id nothing holds, because a create only moves to
+// the next id past a tombstone.
+describe("findLiveEventByClientId (#3660)", () => {
+  beforeEach(() => dwd.getDelegatedToken.mockResolvedValue("tok"));
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** A calendar answering GETs: a status per id, 404 for an id it does not hold. */
+  function calendarHolding(held: Record<string, string | number>) {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      expect(init.method ?? "GET").toBe("GET");
+      urls.push(url);
+      const id = decodeURIComponent(url.split("/events/")[1]);
+      const status = held[id];
+      if (status === undefined) return new Response("not found", { status: 404 });
+      if (typeof status === "number") return new Response("err", { status });
+      return new Response(JSON.stringify({ id, status }), { status: 200 });
+    });
+    return urls;
+  }
+
+  it("answers null after one read when nothing holds the id", async () => {
+    const urls = calendarHolding({});
+    await expect(findLiveEventByClientId("a@b.com", "mgr@group.calendar.google.com", "slateabc")).resolves.toBeNull();
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toContain(`/calendars/${encodeURIComponent("mgr@group.calendar.google.com")}/events/slateabc`);
+  });
+
+  it("returns the id itself when the event under it is live", async () => {
+    calendarHolding({ slateabc: "confirmed" });
+    await expect(findLiveEventByClientId("a@b.com", "primary", "slateabc")).resolves.toBe("slateabc");
+  });
+
+  it("walks past a cancelled tombstone to the live event a later create made", async () => {
+    calendarHolding({ slateabc: "cancelled", [freshEventId("slateabc", 1)]: "confirmed" });
+    await expect(findLiveEventByClientId("a@b.com", "primary", "slateabc")).resolves.toBe(freshEventId("slateabc", 1));
+  });
+
+  it("reads a 410 as a tombstone too, and stops at the first id nothing holds", async () => {
+    const urls = calendarHolding({ slateabc: 410 });
+    await expect(findLiveEventByClientId("a@b.com", "primary", "slateabc")).resolves.toBeNull();
+    expect(urls).toHaveLength(2);
+  });
+
+  it("answers null when every id in the chain is a tombstone, with no read past the chain", async () => {
+    const held: Record<string, string> = { slateabc: "cancelled" };
+    for (let n = 1; n <= TOMBSTONE_FRESH_IDS; n++) held[freshEventId("slateabc", n)] = "cancelled";
+    const urls = calendarHolding(held);
+    await expect(findLiveEventByClientId("a@b.com", "primary", "slateabc")).resolves.toBeNull();
+    expect(urls).toHaveLength(TOMBSTONE_FRESH_IDS + 1);
+  });
+
+  it("THROWS when the calendar cannot be read, so could not look never reads as nothing there", async () => {
+    calendarHolding({ slateabc: 503 });
+    await expect(findLiveEventByClientId("a@b.com", "primary", "slateabc")).rejects.toThrow(/503/);
   });
 });
 
