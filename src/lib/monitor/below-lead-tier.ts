@@ -289,6 +289,9 @@ export function teamAtTime(
   if (startMs < offer.computedAtMs + offer.minNoticeMin * 60_000) return { kind: "unchecked", why: "inside-notice" };
   if (offered.length === 0 || startMs > Math.max(...offered)) return { kind: "unchecked", why: "past-horizon" };
   const day = etDay(startMs);
+  // A day that cannot be named would make every time "that day", so a time named as
+  // the nearest would be one nobody measured as being on it.
+  if (day === null) return { kind: "unchecked", why: "unreadable" };
   let nearestMs: number | null = null;
   for (const ms of offered) {
     if (ms < nowMs || etDay(ms) !== day) continue;

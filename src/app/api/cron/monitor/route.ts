@@ -2266,6 +2266,13 @@ export async function GET(req: NextRequest) {
       if (!gates.belowLeadTier.run) return null;
       const realBuckets = buckets!.filter((b) => !b.is_test);
       let session: Promise<{ token: string; instanceUrl: string }> | null = null;
+      // #3665: each code's minimum notice, indexed once per tick rather than scanned
+      // per finding.
+      const noticeByCode = new Map<string, number>();
+      for (const r of slotRows ?? []) {
+        const notice = r.payload?.eventType?.min_notice_min;
+        if (typeof notice === "number") noticeByCode.set(r.bucket_code, notice);
+      }
       return runBelowLeadTierCheck({
         loadBookings: () =>
           loadUpcomingBookingsInBuckets(
@@ -2308,11 +2315,10 @@ export async function GET(req: NextRequest) {
           if (slotByCode === null || slotRows === null) return "unreadable";
           const health = slotByCode.get(code);
           if (health === undefined) return null;
-          const notice = slotRows.find((r) => r.bucket_code === code)?.payload?.eventType?.min_notice_min;
           return {
             offeredMs: health.offeredMs,
             computedAtMs: health.computedAtMs,
-            minNoticeMin: typeof notice === "number" ? notice : null,
+            minNoticeMin: noticeByCode.get(code) ?? null,
           };
         },
         // #3665: the lead's newest submissions, asked only for leads about to be

@@ -356,6 +356,10 @@ async function main(): Promise<void> {
     });
     assert(chunks.length > 1, "a long list is split");
     assert(chunks.every((q) => encodeURIComponent(q).length < 16_384), "every query fits the URI cap");
+    // The row limit is shared by a query's leads, so a query holds few enough leads
+    // that ordinary histories cannot reach it.
+    assert(chunks.every((q) => (q.match(/'00Q/g)?.length ?? 0) <= 20), "no query asks about more than 20 leads");
+    eq(chunks.reduce((n, q) => n + (q.match(/'00Q/g)?.length ?? 0), 0), 900, "and every lead is asked exactly once");
 
     let truncated = false;
     try {

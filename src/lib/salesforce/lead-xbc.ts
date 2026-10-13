@@ -237,6 +237,15 @@ export const SUBMISSION_HISTORY_PER_LEAD = 10;
 const SUBMISSION_HISTORY_ROW_LIMIT = 2000;
 
 /**
+ * At most this many leads share one history query, on top of the URI budget. The
+ * row limit is shared by every lead in a query, so a chunk sized only by URI length
+ * (about 450 leads) would reach it at about four submissions each and refuse the
+ * whole answer. Twenty leads leave a hundred a lead a year, far above the ten in the
+ * 2026-10-13 case, and a tick pages a handful of leads, so this is still one query.
+ */
+const SUBMISSION_HISTORY_LEADS_PER_QUERY = 20;
+
+/**
  * Each lead's newest submission scores, newest first, keyed by `leadIdKey`, for the
  * below tier page (#3665): ten submissions alternating 212 and 312 are a score on a
  * tier line, and a manager reading the page should know that before moving a call.
@@ -252,7 +261,12 @@ export async function readRecentSubmissionScores(
 ): Promise<Map<string, string[]>> {
   const rowsByLead = new Map<string, { xbc: string; atMs: number | null }[]>();
   if (leadIds.length === 0) return new Map();
-  for (const chunk of chunkSoqlValues(leadIds)) {
+  const chunks = chunkSoqlValues(leadIds).flatMap((c) => {
+    const out: string[][] = [];
+    for (let i = 0; i < c.length; i += SUBMISSION_HISTORY_LEADS_PER_QUERY) out.push(c.slice(i, i + SUBMISSION_HISTORY_LEADS_PER_QUERY));
+    return out;
+  });
+  for (const chunk of chunks) {
     const records = await run(
       `SELECT Id, Lead__c, XBC_SO__c, CreatedDate FROM Submission__c WHERE Lead__c IN (${sfInList(chunk)}) ` +
         `AND CreatedDate = LAST_N_DAYS:365 ORDER BY CreatedDate DESC LIMIT ${SUBMISSION_HISTORY_ROW_LIMIT}`,
