@@ -62,6 +62,7 @@ import {
   noticeSyncedOooEvents,
   type SyncedApprovedRequest,
 } from "@/lib/monitor/ooo-event-mismatch";
+import { alertStateNoticeStore, slackMismatchMessenger } from "@/lib/monitor/ooo-mismatch-notices";
 
 // Renew well before Google's ~7-day watch TTL so a cron outage can't drop push.
 const WATCH_RENEW_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
@@ -524,13 +525,15 @@ async function noticeEditedTimeOff(
           }),
         );
       },
-      loadAgentName: async (id) => {
+      loadAgentEmail: async (id) => {
         const u = unwrap(
-          await db.from("users").select("name, email").eq("id", id).maybeSingle(),
-          "sync time off agent name",
-        ) as { name: string | null; email: string | null } | null;
-        return u?.name?.trim() || u?.email || id;
+          await db.from("users").select("email").eq("id", id).maybeSingle(),
+          "sync time off agent email",
+        ) as { email: string | null } | null;
+        return u?.email ?? null;
       },
+      notices: alertStateNoticeStore(),
+      messenger: slackMismatchMessenger(),
     });
   } catch (err) {
     log.error("google-sync", { msg: "time off event check failed", user_id: userId }, err);

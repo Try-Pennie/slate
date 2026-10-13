@@ -87,16 +87,23 @@ import {
   grantBookingRetryCredit,
   bookingRetryCredit,
   exactCeilingWithinLimit,
+  resetLimiterAlertGatesForTests,
 } from "./rate-limit";
 import {
   DIRECT_BOOKING_API_HOURLY_RATE_RULES,
   DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
   friendlyRateArea,
   limiterFailOpenAlert,
+  refundFailedAlert,
+  LIMITER_FAIL_OPEN_PAGE_AFTER,
+  LIMITER_FAIL_OPEN_WINDOW_MS,
+  LANDING_LIMITER,
+  LANDING_IDENTITY_HOURLY_RATE_RULES,
   type RateLimitRule,
 } from "@/lib/rate-limit-core";
 import {
   BURST_ESCALATE_AT,
+  BURST_MEMO_MS,
   burstEscalateAt,
   applyCounterRequest,
   readCounterRequest,
@@ -114,6 +121,15 @@ import {
   EDGE_LIMITERS,
 } from "@/lib/rate-limit-core";
 
+/** #3670: a single fail open pages nothing, so a case about the PAGE drives the sustained run
+ *  that raises one: the threshold's worth of the same failure, inside the window. Returns the
+ *  last answer, which every one of them shares. */
+async function sustained<T>(call: () => Promise<T>): Promise<T> {
+  let last!: T;
+  for (let i = 0; i < LIMITER_FAIL_OPEN_PAGE_AFTER; i++) last = await call();
+  return last;
+}
+
 const RULES: RateLimitRule[] = [
   { prefix: "test:m", windowSeconds: 60, max: 5 },
   { prefix: "test:h", windowSeconds: 3600, max: 50 },
@@ -126,6 +142,11 @@ const ADDRESS = { kind: "address", ip: "1.2.3.4", policy: BOOKING_LIMITER } as c
 beforeEach(() => {
   vi.clearAllMocks();
   afterQueue.length = 0;
+  resetLimiterAlertGatesForTests();
+  // clearAllMocks keeps implementations, so a case that sets a lasting answer for the earned
+  // row read (the sustained retry credit case, #3670) would otherwise leak it into every later
+  // case that reads the row without its own once answer.
+  earnedRow.read.mockResolvedValue({ data: null, error: null });
   rpc.mockResolvedValue({ data: true, error: null });
   isWorkersRuntime.mockReturnValue(true);
 });
@@ -146,7 +167,7 @@ describe("allowRequest (#597)", () => {
     rpc.mockResolvedValue({ data: null, error: { message: "relation does not exist" } });
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const allowed = await allowRequest(ADDRESS, RULES);
+    const allowed = await sustained(() => allowRequest(ADDRESS, RULES));
 
     // Still fails open: a limiter outage must not block real bookings.
     expect(allowed).toBe(true);
@@ -171,7 +192,7 @@ describe("allowRequest (#597)", () => {
     rpc.mockResolvedValue({ data: null, error: { message: "db down" } });
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
-    await expect(allowRequest(ADDRESS, RULES)).resolves.toBe(true);
+    await expect(sustained(() => allowRequest(ADDRESS, RULES))).resolves.toBe(true);
     const logged = await flushFailedSend();
     expect(sendThrottledAlert).toHaveBeenCalled();
     expect(logged).toMatch(/alert failed/);
@@ -342,9 +363,12 @@ describe("the booking retry credit (#3364)", () => {
   // The failure paths: the exemption fails CLOSED, so the lead keeps the 429 they would
   // have had anyway, and LOUD, so a credit that has quietly stopped working is heard.
   it("keeps the 429 and alerts, raw error to the logs only, when the earned row cannot be read", async () => {
-    earnedRow.read.mockResolvedValueOnce({ data: null, error: { message: "permission denied for rate_limits" } });
+    earnedRow.read.mockResolvedValue({ data: null, error: { message: "permission denied for rate_limits" } });
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(bookingRetryCredit("198.51.100.24")).resolves.toBe("unreadable");
+    // A different address each time: the credit's own in isolate gate answers a repeat from
+    // one address without reading, so only distinct callers make a sustained run of reads.
+    let n = 0;
+    await expect(sustained(() => bookingRetryCredit(`198.51.100.${40 + n++}`))).resolves.toBe("unreadable");
     await flushAfter();
     expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
     const [key, , text] = sendThrottledAlert.mock.calls[0]!;
@@ -375,9 +399,9 @@ describe("the booking retry credit (#3364)", () => {
   });
 
   it("never throws when earning fails, and alerts on the earned key", async () => {
-    rpc.mockResolvedValueOnce({ data: null, error: { message: "db down" } });
+    rpc.mockResolvedValue({ data: null, error: { message: "db down" } });
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(grantBookingRetryCredit("198.51.100.27")).resolves.toBeUndefined();
+    await expect(sustained(() => grantBookingRetryCredit("198.51.100.27"))).resolves.toBeUndefined();
     await flushAfter();
     expect(sendThrottledAlert.mock.calls[0]?.[0]).toBe("rate_limit_refund_broken:book:retry:earned");
     consoleErr.mockRestore();
@@ -398,7 +422,7 @@ describe("refundRequest (#796)", () => {
     rpc.mockResolvedValue({ data: null, error: { message: "refund fn missing" } });
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await refundRequest(ADDRESS, RULES2);
+    await sustained(() => refundRequest(ADDRESS, RULES2));
 
     await flushAfter();
     expect(sendThrottledAlert).toHaveBeenCalled();
@@ -413,7 +437,7 @@ describe("refundRequest (#796)", () => {
     rpc.mockResolvedValue({ data: null, error: { message: "db down" } });
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
-    await expect(refundRequest(ADDRESS, RULES2)).resolves.toBeUndefined();
+    await expect(sustained(() => refundRequest(ADDRESS, RULES2))).resolves.toBeUndefined();
     const logged = await flushFailedSend();
     expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
     expect(logged).toMatch(/alert failed/);
@@ -521,7 +545,10 @@ describe("availabilityWithinLimit (#796)", () => {
     };
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     let allowed = false;
-    for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+    // Past escalation, where the counter is asked at all, and then a sustained run of it
+    // (#3670), one memo period apart so each one really asks rather than reusing the last answer.
+    for (let i = 0; i < BURST_ESCALATE_AT + LIMITER_FAIL_OPEN_PAGE_AFTER; i++) {
+      vi.setSystemTime(clock + i * BURST_MEMO_MS);
       allowed = await availabilityWithinLimit("8.8.8.8");
     }
     expect(allowed).toBe(true);
@@ -554,7 +581,8 @@ describe("availabilityWithinLimit (#796)", () => {
     });
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     await withinCallBudget(12_000, "the booking confirm", async () => {
-      for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+      for (let i = 0; i < BURST_ESCALATE_AT + LIMITER_FAIL_OPEN_PAGE_AFTER; i++) {
+        vi.setSystemTime(clock + i * BURST_MEMO_MS);
         await expect(availabilityWithinLimit("7.7.7.7")).resolves.toBe(true);
       }
       // Nothing is sent while the request is still answering...
@@ -572,7 +600,7 @@ describe("availabilityWithinLimit (#796)", () => {
     cf.env = { AVAIL_RATE_LIMITER: { limit } };
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+    await expect(sustained(() => availabilityWithinLimit("1.2.3.4"))).resolves.toBe(true);
 
     await flushAfter();
     expect(sendThrottledAlert).toHaveBeenCalled();
@@ -613,7 +641,7 @@ describe("availabilityWithinLimit (#796)", () => {
     limit.mockRejectedValue(new Error("limiter unavailable"));
 
     // Still fails open.
-    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+    await expect(sustained(() => availabilityWithinLimit("1.2.3.4"))).resolves.toBe(true);
 
     await flushAfter();
     expect(sendThrottledAlert).toHaveBeenCalled();
@@ -628,7 +656,7 @@ describe("availabilityWithinLimit (#796)", () => {
     cf.env = {};
 
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+    await expect(sustained(() => availabilityWithinLimit("1.2.3.4"))).resolves.toBe(true);
 
     await flushAfter();
     expect(sendThrottledAlert).toHaveBeenCalled();
@@ -659,9 +687,9 @@ describe("availabilityWithinLimit (#796)", () => {
   it("re-alerts once the cooldown has passed, so a lasting outage is not forgotten", async () => {
     limit.mockRejectedValue(new Error("limiter unavailable"));
 
-    await availabilityWithinLimit("1.2.3.4");
+    await sustained(() => availabilityWithinLimit("1.2.3.4"));
     vi.setSystemTime(clock + 31 * 60_000);
-    await availabilityWithinLimit("1.2.3.4");
+    await sustained(() => availabilityWithinLimit("1.2.3.4"));
 
     await flushAfter();
     expect(sendThrottledAlert).toHaveBeenCalledTimes(2);
@@ -671,7 +699,7 @@ describe("availabilityWithinLimit (#796)", () => {
     limit.mockRejectedValue(new Error("limiter unavailable"));
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
-    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+    await expect(sustained(() => availabilityWithinLimit("1.2.3.4"))).resolves.toBe(true);
     const logged = await flushFailedSend();
     expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
     expect(logged).toMatch(/alert failed/);
@@ -719,7 +747,7 @@ describe("availabilityWithinLimit (#796)", () => {
     });
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+    await expect(sustained(() => availabilityWithinLimit("1.2.3.4"))).resolves.toBe(true);
 
     await flushAfter();
     expect(sendThrottledAlert).toHaveBeenCalled();
@@ -735,20 +763,20 @@ describe("availabilityWithinLimit (#796)", () => {
     limit.mockRejectedValue(new Error("limiter unavailable"));
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await availabilityWithinLimit("1.2.3.4");
-    vi.setSystemTime(clock + 11_000);
-    await availabilityWithinLimit("1.2.3.4");
-    vi.setSystemTime(clock + 22_000);
-    await availabilityWithinLimit("1.2.3.4");
+    for (let i = 0; i < LIMITER_FAIL_OPEN_PAGE_AFTER; i++) {
+      vi.setSystemTime(clock + i * 11_000);
+      await availabilityWithinLimit("1.2.3.4");
+    }
 
     // One alert (the DB round-trip stays bounded)...
     await flushAfter();
     expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
-    // ...but three records of the outage.
+    // ...but a record of every one of them, each counting the run so far (#3670).
     const failOpenLines = consoleErr.mock.calls.filter((c) =>
       String(c[0] ?? "").includes("limiter failing open"),
     );
-    expect(failOpenLines).toHaveLength(3);
+    expect(failOpenLines).toHaveLength(LIMITER_FAIL_OPEN_PAGE_AFTER);
+    expect(String(failOpenLines.at(-1)?.[0])).toMatch(new RegExp(`in_window=${LIMITER_FAIL_OPEN_PAGE_AFTER}\\b`));
     consoleErr.mockRestore();
   });
 
@@ -804,7 +832,7 @@ describe("bookingWithinLimit (#237)", () => {
   it("fails OPEN and ALERTS in plain language when the limiter throws", async () => {
     limit.mockRejectedValue(new Error("limiter unavailable"));
 
-    await expect(bookingWithinLimit("1.2.3.4")).resolves.toBe(true);
+    await expect(sustained(() => bookingWithinLimit("1.2.3.4"))).resolves.toBe(true);
 
     await flushAfter();
     expect(sendThrottledAlert).toHaveBeenCalled();
@@ -817,7 +845,7 @@ describe("bookingWithinLimit (#237)", () => {
     cf.env = {};
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await expect(bookingWithinLimit("1.2.3.4")).resolves.toBe(true);
+    await expect(sustained(() => bookingWithinLimit("1.2.3.4"))).resolves.toBe(true);
 
     await flushAfter();
     expect(sendThrottledAlert).toHaveBeenCalled();
@@ -870,8 +898,8 @@ describe("edge per-minute limiters (#961)", () => {
     await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
 
-    limit.mockRejectedValueOnce(new Error("limiter unavailable"));
-    await expect(routingWithinLimit("1.2.3.4")).resolves.toBe(true); // fail open
+    limit.mockRejectedValue(new Error("limiter unavailable"));
+    await expect(sustained(() => routingWithinLimit("1.2.3.4"))).resolves.toBe(true); // fail open
     await flushAfter();
     const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
     expect(text).toMatch(/routing/i);
@@ -1259,7 +1287,7 @@ describe("every limiter page goes after the response, outside the lead's budget 
       arrange: () => {
         cf.env = { AVAIL_RATE_LIMITER: { limit } };
       },
-      act: () => availabilityWithinLimit("1.2.3.4"),
+      act: () => sustained(() => availabilityWithinLimit("1.2.3.4")),
     },
     {
       name: "the native limiter throws (its catch)",
@@ -1267,14 +1295,14 @@ describe("every limiter page goes after the response, outside the lead's budget 
         cf.env = { AVAIL_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
         limit.mockRejectedValue(new Error("limiter exploded"));
       },
-      act: () => availabilityWithinLimit("1.2.3.4"),
+      act: () => sustained(() => availabilityWithinLimit("1.2.3.4")),
     },
     {
       name: "the native binding is missing",
       arrange: () => {
         cf.env = { BURST_LIMITER: burstNamespace() };
       },
-      act: () => availabilityWithinLimit("1.2.3.4"),
+      act: () => sustained(() => availabilityWithinLimit("1.2.3.4")),
     },
     {
       name: "the request context cannot be read (the context catch)",
@@ -1283,14 +1311,14 @@ describe("every limiter page goes after the response, outside the lead's budget 
           throw new Error("no context");
         });
       },
-      act: () => availabilityWithinLimit("1.2.3.4"),
+      act: () => sustained(() => availabilityWithinLimit("1.2.3.4")),
     },
     {
       name: "the database limiter fails",
       arrange: () => {
         rpc.mockResolvedValue({ data: null, error: { message: "db down" } });
       },
-      act: () => allowRequest(ADDRESS, [RULES[0]!]),
+      act: () => sustained(() => allowRequest(ADDRESS, [RULES[0]!])),
     },
     {
       name: "a machine ceiling blocks",
@@ -1310,7 +1338,7 @@ describe("every limiter page goes after the response, outside the lead's budget 
       arrange: () => {
         rpc.mockResolvedValue({ data: null, error: { message: "refund fn missing" } });
       },
-      act: () => refundRequest(ADDRESS, [RULES[0]!]),
+      act: () => sustained(() => refundRequest(ADDRESS, [RULES[0]!])),
     },
   ];
 
@@ -1509,7 +1537,7 @@ describe("exactCeilingWithinLimit, the hourly ceilings at the edge (#3416)", () 
     it(`serves the request and pages, as allowRequest does, when ${c.name}`, async () => {
       c.arrange();
       const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-      await expect(exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES)).resolves.toBe(true);
+      await expect(sustained(() => exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES))).resolves.toBe(true);
       // Nothing is sent while the caller waits; the page goes after the response.
       expect(sendThrottledAlert).not.toHaveBeenCalled();
       await flushAfter();
@@ -1518,7 +1546,13 @@ describe("exactCeilingWithinLimit, the hourly ceilings at the edge (#3416)", () 
       expect(key).toBe(`rate_limit_broken:${KEY_RULE.prefix}`);
       // The same words allowRequest pages with for this rule (built by the same builder from
       // the same prefix), and no internal name or raw error in them.
-      expect(text).toBe(limiterFailOpenAlert(friendlyRateArea(KEY_RULE.prefix)));
+      expect(text).toBe(
+        limiterFailOpenAlert(friendlyRateArea(KEY_RULE.prefix), {
+          count: LIMITER_FAIL_OPEN_PAGE_AFTER,
+          windowMs: LIMITER_FAIL_OPEN_WINDOW_MS,
+          atLeast: false,
+        }),
+      );
       expect(text).toMatch(/booking API/);
       expect(text).not.toMatch(/BURST_LIMITER|object unreachable|no context/);
       consoleErr.mockRestore();
@@ -1531,8 +1565,10 @@ describe("exactCeilingWithinLimit, the hourly ceilings at the edge (#3416)", () 
     // A short budget stands for a confirm with little left: the hit waits only for that, as
     // the Supabase request it replaced did, and is then served rather than held.
     await expect(
-      withinCallBudget(30, "the booking confirm", () =>
-        exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES),
+      sustained(() =>
+        withinCallBudget(30, "the booking confirm", () =>
+          exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES),
+        ),
       ),
     ).resolves.toBe(true);
     await flushAfter();
@@ -1549,6 +1585,148 @@ describe("exactCeilingWithinLimit, the hourly ceilings at the edge (#3416)", () 
     }
     await flushAfter();
     expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    consoleErr.mockRestore();
+  });
+});
+
+// #3670. `rate_limit_broken:landing:h` paged on 2026-10-13 for ONE hourly count that failed, saying
+// the limit "has stopped working ... right now", and `pnpm verify:burst-counter` passed minutes
+// later. Dan: "we probably shouldn't alert on one instance". A fail open is now counted per area on
+// the isolate that saw it, and pages only once LIMITER_FAIL_OPEN_PAGE_AFTER of them land inside
+// LIMITER_FAIL_OPEN_WINDOW_MS, worded as the count it measured. Every negative assertion below
+// flushes the deferred work first, because a page is handed to after() and a "not called" read
+// before the flush passes whatever the code does.
+describe("a single fail open pages nothing; a sustained run pages (#3670)", () => {
+  const LANDING_CALLER = { kind: "address", ip: "198.51.100.4", policy: LANDING_LIMITER } as const;
+  const LANDING_RULE = LANDING_IDENTITY_HOURLY_RATE_RULES[0]!;
+  const brokenCounter = () => ({
+    idFromName: (name: string) => ({ name }),
+    get: () => ({ fetch: async () => new Response("nope", { status: 500 }) }),
+  });
+  const failOpenLines = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.filter((c) => String(c[0] ?? "").includes("limiter failing open"));
+
+  // Each case starts well past the last one's window AND cooldown, so none inherits a count.
+  let clock = Date.UTC(2031, 0, 1);
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock += 3 * 60 * 60_000;
+    vi.setSystemTime(clock);
+    cf.env = { BURST_LIMITER: brokenCounter(), AVAIL_RATE_LIMITER: { limit } };
+    limit.mockResolvedValue({ success: true });
+    getCloudflareContext.mockImplementation(() => ({ env: cf.env }));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("the worked case: one failed landing count is served, logged, and pages nothing", async () => {
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(exactCeilingWithinLimit(LANDING_CALLER, LANDING_IDENTITY_HOURLY_RATE_RULES)).resolves.toBe(true);
+    await flushAfter();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    // Never silent full stop: the single instance is still a log line.
+    expect(failOpenLines(consoleErr)).toHaveLength(1);
+    expect(JSON.stringify(consoleErr.mock.calls)).toMatch(/landing:h/);
+    consoleErr.mockRestore();
+  });
+
+  it("one short of the threshold inside the window pages nothing", async () => {
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (let i = 0; i < LIMITER_FAIL_OPEN_PAGE_AFTER - 1; i++) {
+      await exactCeilingWithinLimit(LANDING_CALLER, LANDING_IDENTITY_HOURLY_RATE_RULES);
+    }
+    await flushAfter();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    consoleErr.mockRestore();
+  });
+
+  it("the threshold spread wider than the window pages nothing", async () => {
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (let i = 0; i < LIMITER_FAIL_OPEN_PAGE_AFTER * 2; i++) {
+      vi.setSystemTime(clock + i * LIMITER_FAIL_OPEN_WINDOW_MS);
+      await exactCeilingWithinLimit(LANDING_CALLER, LANDING_IDENTITY_HOURLY_RATE_RULES);
+    }
+    await flushAfter();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    consoleErr.mockRestore();
+  });
+
+  it("a sustained run inside the window pages once, worded as the count it measured", async () => {
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (let i = 0; i < LIMITER_FAIL_OPEN_PAGE_AFTER + 3; i++) {
+      vi.setSystemTime(clock + i * 1_000);
+      await expect(exactCeilingWithinLimit(LANDING_CALLER, LANDING_IDENTITY_HOURLY_RATE_RULES)).resolves.toBe(true);
+    }
+    await flushAfter();
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    const [key, , text] = sendThrottledAlert.mock.calls[0]!;
+    expect(key).toBe(`rate_limit_broken:${LANDING_RULE.prefix}`);
+    expect(text).toBe(
+      limiterFailOpenAlert(friendlyRateArea(LANDING_RULE.prefix), {
+        count: LIMITER_FAIL_OPEN_PAGE_AFTER,
+        windowMs: LIMITER_FAIL_OPEN_WINDOW_MS,
+        atLeast: false,
+      }),
+    );
+    expect(text).not.toMatch(/stopped working|right now/);
+    consoleErr.mockRestore();
+  });
+
+  it("a native limiter that throws once pages nothing", async () => {
+    limit.mockRejectedValue(new Error("limiter unavailable"));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+    await flushAfter();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    expect(failOpenLines(consoleErr)).toHaveLength(1);
+    consoleErr.mockRestore();
+  });
+
+  it("allowRequest: one failed database count pages nothing, a sustained run pages per rule", async () => {
+    rpc.mockResolvedValue({ data: null, error: { message: "db down" } });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(allowRequest(ADDRESS, RULES)).resolves.toBe(true);
+    await flushAfter();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    for (let i = 1; i < LIMITER_FAIL_OPEN_PAGE_AFTER; i++) await allowRequest(ADDRESS, RULES);
+    await flushAfter();
+    expect(sendThrottledAlert.mock.calls.map((c) => c[0]).sort()).toEqual(
+      RULES.map((r) => `rate_limit_broken:${r.prefix}`).sort(),
+    );
+    consoleErr.mockRestore();
+  });
+
+  it("refundRequest: one failed refund pages nothing, a sustained run pages with its count", async () => {
+    const REFUND_RULES: RateLimitRule[] = [{ prefix: "book:m", windowSeconds: 60, max: 3 }];
+    rpc.mockResolvedValue({ data: null, error: { message: "refund fn missing" } });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await refundRequest(ADDRESS, REFUND_RULES);
+    await flushAfter();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    for (let i = 1; i < LIMITER_FAIL_OPEN_PAGE_AFTER; i++) await refundRequest(ADDRESS, REFUND_RULES);
+    await flushAfter();
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    const [key, , text] = sendThrottledAlert.mock.calls[0]!;
+    expect(key).toBe("rate_limit_refund_broken:book:m");
+    expect(text).toBe(
+      refundFailedAlert(friendlyRateArea("book:m"), {
+        count: LIMITER_FAIL_OPEN_PAGE_AFTER,
+        windowMs: LIMITER_FAIL_OPEN_WINDOW_MS,
+        atLeast: false,
+      }),
+    );
+    consoleErr.mockRestore();
+  });
+
+  it("off the Workers runtime a sustained run is logged and still never pages (#1525)", async () => {
+    isWorkersRuntime.mockReturnValue(false);
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (let i = 0; i < LIMITER_FAIL_OPEN_PAGE_AFTER * 2; i++) {
+      await exactCeilingWithinLimit(LANDING_CALLER, LANDING_IDENTITY_HOURLY_RATE_RULES);
+    }
+    await flushAfter();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
     consoleErr.mockRestore();
   });
 });
