@@ -1803,22 +1803,19 @@ from data that is really there):
 cycle` line is always there). If the control is also zero, the query is wrong.
 
 **And check the control is RECENT, not merely present (#1533).** A passing control
-proves the query shape, the credentials and the field names; it cannot prove the
-query reached the part of the window you are asking about, because a line from
-hours ago satisfies it as well as one from a minute ago. Measured on 2026-08-17
-the query pipeline ran about **three hours** behind: `tag=recompute` returned 0
-over 1h, 50 over 4h and 290 over 8h for a lane that emits every minute, while
-`npx wrangler tail` captured lines live that the API reported zero of. That
-produced a wrong conclusion the same day, a 4h window covering 14:44 reading as a
-trustworthy absence when its recent end simply held nothing yet.
+proves the query shape and credentials, not that the query reached the part of the
+window you ask about. On 2026-08-17 the pipeline ran about **three hours** behind
+(`tag=recompute`, every minute: 0 over 1h, 50 over 4h, 290 over 8h) while
+`npx wrangler tail` saw lines live, and a 4h window read as a trustworthy absence
+when its recent end simply held nothing yet. **For anything within the last few
+hours use `npx wrangler tail`** (for a cron lane, attach and wait one cadence).
 
-So the lag is usually small and can be hours. **For anything within the last few
-hours use `npx wrangler tail`**, which streams live from the deployed Worker and
-was accurate every time it was checked; it only shows traffic while attached, so
-for a cron lane attach and wait one cadence. `scripts/logs.ts` now enforces the
-rule: it reads the control's newest non-empty bucket and reports UNVERIFIABLE when
-that is more than `CONTROL_FRESHNESS_MS` behind the window's end, in its own
-wording so a lagging pipeline is never mistaken for a broken query.
+**Read one hour at a time, never one wide window (#3299).** 25 hours in one query
+returned 26 rows; the same hours one at a time returned 287. `scripts/logs.ts`
+slices, sums, judges the control per slice and flags a lagging one, and `--lines`
+prints the lines rather than counting them (#3664). Its read only token goes in
+`.env.local` as `CLOUDFLARE_LOGS_READ_TOKEN`, never as `CLOUDFLARE_API_TOKEN`,
+which wrangler also reads from that file.
 
 **Stitching one request's lines together needs nothing from us.** Workers Logs has an
 Invocations view that groups every line from one invocation, so a request's confirm-path
