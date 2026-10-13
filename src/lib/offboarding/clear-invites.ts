@@ -64,12 +64,13 @@ export const CLEAR_INVITES_BUDGET_MS = 6_000;
 export const CLEAR_INVITES_CONCURRENCY = 5;
 
 export async function clearLeaverInvites(deps: ClearInvitesDeps): Promise<ClearInvitesResult> {
+  // The clock starts BEFORE the reads, so a slow lookup spends the budget too and the
+  // reply still lands inside the automation's wait.
+  const startMs = deps.nowMs();
+  const spent = () => deps.nowMs() - startMs >= deps.budgetMs;
   const invites = await deps.loadInvites();
   const total = invites.length;
   if (total === 0) return { total, cleared: 0, failed: 0, unanswered: 0, notStarted: 0 };
-
-  const startMs = deps.nowMs();
-  const spent = () => deps.nowMs() - startMs >= deps.budgetMs;
   let next = 0;
   let inFlight = 0;
   let cleared = 0;
@@ -91,7 +92,7 @@ export async function clearLeaverInvites(deps: ClearInvitesDeps): Promise<ClearI
   };
 
   const workers = Promise.all(Array.from({ length: Math.min(deps.concurrency, total) }, worker));
-  await Promise.race([workers, deps.sleep(deps.budgetMs)]);
+  await Promise.race([workers, deps.sleep(Math.max(0, deps.budgetMs - (deps.nowMs() - startMs)))]);
   // A snapshot: a delete still in flight may land after this returns, and is
   // counted as unanswered because nothing here saw it answer.
   return { total, cleared, failed, unanswered: inFlight, notStarted: total - cleared - failed - inFlight };

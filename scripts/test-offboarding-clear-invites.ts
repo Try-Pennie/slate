@@ -114,6 +114,28 @@ function fakeTime() {
   for (const p of pending) p();
 }
 
+// The budget covers the reads too: a slow lookup of the advisor's bookings spends it,
+// so the reply still lands inside the automation's wait.
+{
+  const t = fakeTime();
+  let calls = 0;
+  const r = await clearLeaverInvites({
+    loadInvites: async () => {
+      t.advance(7000);
+      return [invite(1), invite(2)];
+    },
+    deleteInvite: async () => {
+      calls++;
+    },
+    nowMs: t.nowMs,
+    sleep: t.sleep,
+    budgetMs: 6000,
+    concurrency: 2,
+  });
+  eq(calls, 0, "no delete starts once a slow read has spent the budget");
+  eq(r, { total: 2, cleared: 0, failed: 0, unanswered: 0, notStarted: 2 }, "and the result says none was started");
+}
+
 // An unreadable list of invites throws: the caller reports it, it is never zero.
 {
   const t = fakeTime();
