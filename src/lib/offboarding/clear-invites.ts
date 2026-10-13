@@ -74,7 +74,9 @@ export async function clearLeaverInvites(deps: ClearInvitesDeps): Promise<ClearI
   const loading = deps.loadInvites();
   const loaded = await Promise.race([loading, deps.sleep(remaining()).then(() => null)]);
   if (loaded === null) {
-    loading.catch(() => {}); // the read may still settle; nothing is waiting for it
+    // swallow-ok: this read has already been given up on and reported, by the throw just
+    // below, which the caller logs as failed; a late rejection of it is that same failure.
+    loading.catch(() => {});
     throw new Error("offboarding clear invites: the bookings read did not answer within the budget");
   }
   const invites: LeaverInvite[] = loaded;
