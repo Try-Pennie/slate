@@ -341,6 +341,8 @@ import {
   BOOKING_LIMITER,
   CLIENT_ERROR_ADDRESS_POLICY,
   refundFailedAlert,
+  LIMITER_FAIL_OPEN_PAGE_AFTER,
+  LIMITER_FAIL_OPEN_WINDOW_MS,
 } from "@/lib/rate-limit-core";
 import { confirmLineUnreachableAlert, confirmLineAlertFor } from "@/lib/booking/confirm-line-alert";
 import { evaluateRecon } from "@/lib/snowflake/reconcile-core";
@@ -5313,8 +5315,14 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // about the shape of its own input (L48).
   { key: "rate_limit_blocked:*", state: "a caller throttled", channel: "alert",
     text: limiterBlockedAlert(friendlyRateArea("book"), "203.0.113.9", 30, 60) },
-  { key: "rate_limit_broken:*", state: "the limiter failed open", channel: "alert",
-    text: limiterFailOpenAlert(friendlyRateArea("bookapi")) },
+  // #3670: these page only on a sustained run, so the count is the threshold or more, and a
+  // flood that outgrew what one server keeps is a floor ("At least").
+  { key: "rate_limit_broken:*", state: "a sustained run of fail opens", channel: "alert",
+    text: limiterFailOpenAlert(friendlyRateArea("landing:h"), {
+      count: LIMITER_FAIL_OPEN_PAGE_AFTER, windowMs: LIMITER_FAIL_OPEN_WINDOW_MS, atLeast: false }) },
+  { key: "rate_limit_broken:*", state: "a flood of fail opens past what one server keeps", channel: "alert",
+    text: limiterFailOpenAlert(friendlyRateArea("bookapi"), {
+      count: 1000, windowMs: LIMITER_FAIL_OPEN_WINDOW_MS, atLeast: true }) },
   // #1557: the two answers a ceiling can give a caller it cannot identify. They read
   // differently on purpose: the reader has to know whether anything was turned away.
   { key: "rate_limit_unidentified:*", state: "a ceiling that served the request anyway",
@@ -5330,8 +5338,9 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: confirmLineUnreachableAlert("bad-answer") },
   { key: "confirm_line_unreachable", state: "a mix of failures in one window", channel: "alert",
     text: confirmLineAlertFor(["reach-timeout", "reach-timeout", "bad-answer"]) },
-  { key: "rate_limit_refund_broken:*", state: "a refund of a counted hit failed", channel: "alert",
-    text: refundFailedAlert(friendlyRateArea("book")) },
+  { key: "rate_limit_refund_broken:*", state: "a sustained run of failed refunds", channel: "alert",
+    text: refundFailedAlert(friendlyRateArea("book"), {
+      count: LIMITER_FAIL_OPEN_PAGE_AFTER, windowMs: LIMITER_FAIL_OPEN_WINDOW_MS, atLeast: false }) },
 
   // --- time off ----------------------------------------------------------------
   { key: "ooo_manager_calendar", state: "manager calendar unreachable", channel: "alert",

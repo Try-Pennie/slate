@@ -234,8 +234,9 @@ What moved is where the number is kept, and nothing else:
 - the direction: a hit that cannot be counted (no context, no binding, an error,
   no answer inside the Supabase request's own deadline and the call budget, or an
   answer for a different window, which is what an object still running older code
-  gives during a rollout) is SERVED and paged as `rate_limit_broken:<prefix>`,
-  exactly as an unreadable row was.
+  gives during a rollout) is SERVED and reported as `rate_limit_broken:<prefix>`,
+  exactly as an unreadable row was: a log line each time, and a page only once a
+  sustained run of them lands on one server (#3670).
 
 A hit is charged to a confirm's profile as its own dependency, `edge-counter`, so a
 run reads the counter's time apart from Supabase's. The objects are keyed by a

@@ -308,7 +308,7 @@ assert(
     assert(text.length > 40, `${label} alert actually explains something`);
   };
 
-  const failOpen = limiterFailOpenAlert("booking availability");
+  const failOpen = limiterFailOpenAlert("booking availability", { count: 5, windowMs: 10 * 60_000, atLeast: false });
   clean("fail-open", failOpen);
   assert(/availab/i.test(failOpen), "fail-open alert names the affected area in plain words");
 
@@ -317,8 +317,40 @@ assert(
   assert(blocked.includes("203.0.113.7"), "blocked alert keeps the human-meaningful IP");
   assert(blocked.includes("per minute"), "blocked alert states the window in plain words");
 
-  const refund = refundFailedAlert("booking API");
+  const refund = refundFailedAlert("booking API", { count: 5, windowMs: 10 * 60_000, atLeast: false });
   clean("refund", refund);
+}
+
+// #3670: the fail-open and refund pages say what was MEASURED, a count of requests in a window
+// on one server, and never that the limit "has stopped working ... right now". That claim is an
+// ongoing state, which only the monitor lane's edge_limiter_unusable condition measures (L11).
+{
+  const TEN_MIN = 10 * 60_000;
+  const five = limiterFailOpenAlert("lead landing pages", { count: 5, windowMs: TEN_MIN, atLeast: false });
+  assert(
+    five.startsWith("5 requests could not be counted against the rate limit for lead landing pages in the last 10 minutes on one server"),
+    `fail-open opens with the measured count, area and window (got: ${five})`,
+  );
+  assert(/let through/.test(five), "fail-open says the requests were let through");
+  assert(/one server/.test(five), "fail-open says the count is from one server, which is all it measured");
+  assert(!/stopped working/i.test(five), "fail-open never claims the limit stopped working");
+  assert(!/right now/i.test(five), "fail-open never claims an ongoing state it did not measure");
+
+  const one = limiterFailOpenAlert("lead landing pages", { count: 1, windowMs: TEN_MIN, atLeast: false });
+  assert(one.startsWith("1 request could not be counted against the rate limit for lead landing pages"), `singular reads as singular (got: ${one})`);
+  assert(/it was let through/.test(one), "singular: it was let through");
+
+  const flood = limiterFailOpenAlert("lead landing pages", { count: 1000, windowMs: TEN_MIN, atLeast: true });
+  assert(flood.startsWith("At least 1000 requests"), `a count that dropped entries says at least (got: ${flood})`);
+
+  const refundFive = refundFailedAlert("public booking", { count: 5, windowMs: TEN_MIN, atLeast: false });
+  assert(
+    refundFive.startsWith("5 attempts to give back booking allowance for public booking could not be made in the last 10 minutes on one server"),
+    `refund opens with the measured count, area and window (got: ${refundFive})`,
+  );
+  const refundOne = refundFailedAlert("public booking", { count: 1, windowMs: TEN_MIN, atLeast: false });
+  assert(refundOne.startsWith("1 attempt to give back"), `refund singular reads as singular (got: ${refundOne})`);
+  assert(/Each was owed|It was owed/.test(refundFive) && /It was owed/.test(refundOne), "refund agrees in number with its count");
 }
 
 finish();

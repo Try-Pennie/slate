@@ -18,7 +18,13 @@ import {
   LATENCY_SAMPLES,
   LATENCY_RECHECK_DELAY_MS,
   AVAILABILITY_P50_BUDGET_MS,
+  readSlotCache,
+  parseServerTiming,
+  classifySlowReads,
+  latencyCause,
+  formatSamples,
   type LatencyRun,
+  type LatencySample,
 } from "./lib/latency-slo.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -55,10 +61,16 @@ eq(median([1, 2, 3, 10]), 2.5, "an even count takes the mean of the two middles"
   const v = judgeLatency([700, 800, 900, 850, 820]);
   eq(v.regressed, true, "a sustained slow read is a regression");
   assert(v.message !== null && /median/.test(v.message), "and the message names the median");
+  // #3653: these bare numbers carry no x-slot-cache, so the message may NOT claim the
+  // cache stopped serving (it used to, and on 2026-10-12 8 of 10 reads were hits). It
+  // says it could not tell, which still names the cache as the open question.
   assert(
-    v.message !== null && /cache/.test(v.message),
-    "and points at the likely cause, since the budget is far above the warm number so " +
-      "the realistic explanation is a read that stopped being cached",
+    v.message !== null && /could not tell/.test(v.message) && /cache/.test(v.message),
+    `and says it could not tell whether the cache served the reads (${v.message})`,
+  );
+  assert(
+    v.message !== null && !/stopped being served|stopped serving/.test(v.message),
+    "and never claims a cache miss it did not measure",
   );
 }
 {
@@ -153,7 +165,10 @@ const SUSTAINED = [700, 800, 900, 850, 820];
     run.message !== null && /835ms/.test(run.message) && /again/.test(run.message),
     `the page names the recheck, so the reader knows it was not one slow minute (${run.message})`,
   );
-  assert(run.message !== null && /cache/.test(run.message), "and still points at the cache");
+  assert(
+    run.message !== null && /could not tell/.test(run.message) && !/stopped serving/.test(run.message),
+    `and, with no cache header on these samples, says it could not tell rather than blaming the cache (${run.message})`,
+  );
 }
 {
   // Slow, then the endpoint stops answering at all. That is not a blip to swallow: the
@@ -283,5 +298,171 @@ const SUSTAINED = [700, 800, 900, 850, 820];
     assert(d.message !== null && /real bucket 100/.test(d.message), `and names the real bucket (${d.message})`);
   }
 }
+
+// --- #3653: the page says what the cache did, from what the responses said ------
+//
+// On 2026-10-12 at 10:50 PM ET the page told the reader to "look for a read that has
+// stopped being served from the cache", and the Worker's logs showed 8 of bucket 100's
+// 10 reads were `slot_cache="hit"`. The check never looked: every availability response
+// carries `x-slot-cache`, and `sample()` threw it away. So each sample now carries what
+// the response said, and the cause sentence is built only from that.
+const s = (ms: number, cache: LatencySample["cache"], server: LatencySample["server"] = null): LatencySample => ({
+  ms,
+  cache,
+  server,
+});
+const w = (workerMs: number, limitMs: number | null = null, slotsMs: number | null = null) => ({
+  workerMs,
+  limitMs,
+  slotsMs,
+});
+
+// --- reading the two headers ----------------------------------------------------
+eq(readSlotCache("hit"), "hit", "x-slot-cache hit");
+eq(readSlotCache("miss"), "miss", "x-slot-cache miss (the stored row answered)");
+eq(readSlotCache("nostore"), "nostore", "x-slot-cache nostore (computed live)");
+eq(readSlotCache(" HIT "), "hit", "read case and whitespace tolerantly");
+eq(readSlotCache(null), null, "an absent header is unknown, never a guessed hit");
+eq(readSlotCache("stale"), null, "a value the route never sends is unknown too");
+
+{
+  // The route's own shape (src/lib/api/server-timing.ts, round tripped in
+  // scripts/test-server-timing.ts).
+  const t = parseServerTiming("limit;dur=40, slots;dur=12, worker;dur=60");
+  eq(t, { workerMs: 60, limitMs: 40, slotsMs: 12 }, "reads the Worker total and both spans");
+}
+{
+  // Cloudflare can add entries of its own, with a quoted desc that may hold a comma.
+  // Only the names the route writes are read, and a comma inside quotes splits nothing.
+  const t = parseServerTiming('cfL4;desc="?proto=TCP&rtt=21,x=1", worker;dur=7.5');
+  eq(t, { workerMs: 7.5, limitMs: null, slotsMs: null }, "ignores foreign entries and quoted commas");
+}
+eq(parseServerTiming(null), null, "no header is null, so it reads as not measured rather than 0ms");
+eq(parseServerTiming("cfL4;desc=\"x\""), null, "a header with none of the route's entries is null too");
+eq(parseServerTiming("worker;dur=abc"), null, "an unreadable duration is not a number of milliseconds (L50)");
+eq(parseServerTiming("worker;dur=-3"), null, "nor is a negative one");
+eq(parseServerTiming("worker;dur="), null, "an empty duration is not 0ms (Number('') is 0)");
+eq(parseServerTiming("worker;dur= "), null, "nor is a blank one");
+eq(parseServerTiming("constructor;dur=5, toString;dur=6"), null, "an inherited property name is not one of the route's");
+
+// --- classifying the reads over budget -------------------------------------------
+{
+  // The shape of the 2026-10-12 page: split, fast and slow reads in one batch, and
+  // the slow ones cache hits. The check classifies only the reads OVER budget, because
+  // a fast hit says nothing about where a slow read's time went.
+  const kept = [s(1112, "hit"), s(145, "hit"), s(1218, "hit"), s(376, "hit"), s(1052, "hit"), s(3367, "miss")];
+  const c = classifySlowReads(kept, AVAILABILITY_P50_BUDGET_MS);
+  eq(c.kind, "hits", "mostly hits among the slow reads");
+  eq([c.over, c.hits, c.rows, c.computed, c.unread], [4, 3, 1, 0, 0], "counts only the reads over budget");
+  const cause = latencyCause(kept, AVAILABILITY_P50_BUDGET_MS);
+  assert(/3 of 4 reads over budget were edge cache hits/.test(cause), `names the measured split (${cause})`);
+  assert(/Worker/.test(cause) && /limiter/.test(cause) && /network/.test(cause), `and points past the cache (${cause})`);
+  assert(!/stopped serving/.test(cause), "and does not blame a cache that was serving");
+}
+{
+  const kept = [s(900, "miss"), s(950, "nostore"), s(990, "miss"), s(60, "hit")];
+  const c = classifySlowReads(kept, AVAILABILITY_P50_BUDGET_MS);
+  eq(c.kind, "misses", "mostly misses among the slow reads");
+  const cause = latencyCause(kept, AVAILABILITY_P50_BUDGET_MS);
+  assert(/3 of 3 reads over budget were not served from the edge cache/.test(cause), `counts them (${cause})`);
+  assert(/2 from the stored row/.test(cause) && /1 computed live/.test(cause), `and says which tier answered (${cause})`);
+  // A stored row read is the designed second tier, not a broken cache, so the page
+  // names the tier and the database read behind it rather than blaming the cache.
+  assert(/behind the edge cache/.test(cause) && /database/.test(cause), `so it points at the read behind the edge cache (${cause})`);
+  assert(!/stopped serving/.test(cause), `and never says the cache stopped serving, which it did not measure (${cause})`);
+}
+{
+  // No header at all: an older deploy, or something in front stripping it. The one
+  // thing the message may say is that it could not tell.
+  const kept = [s(900, null), s(950, null), s(990, null)];
+  const c = classifySlowReads(kept, AVAILABILITY_P50_BUDGET_MS);
+  eq(c.kind, "unknown", "no header is unknown");
+  const cause = latencyCause(kept, AVAILABILITY_P50_BUDGET_MS);
+  assert(/no x-slot-cache header/.test(cause) && /could not tell/.test(cause), `says so (${cause})`);
+  assert(!/stopped serving|were edge cache hits/.test(cause), "and claims neither direction");
+}
+{
+  const kept = [s(900, "hit"), s(950, "miss"), s(990, null), s(800, "hit"), s(700, "miss")];
+  const c = classifySlowReads(kept, AVAILABILITY_P50_BUDGET_MS);
+  eq(c.kind, "mixed", "an even split, with one unread, is mixed rather than a majority");
+  const cause = latencyCause(kept, AVAILABILITY_P50_BUDGET_MS);
+  assert(/2 cache hits/.test(cause) && /2 misses/.test(cause) && /1 without the header/.test(cause), `itemises it (${cause})`);
+}
+{
+  // A minority read is not a majority: two hits of five slow reads, the rest unread,
+  // must not be worded as "mostly hits".
+  const kept = [s(900, "hit"), s(950, "hit"), s(990, null), s(800, null), s(700, null)];
+  eq(classifySlowReads(kept, AVAILABILITY_P50_BUDGET_MS).kind, "mixed", "a minority of hits is not 'hits'");
+}
+{
+  eq(
+    latencyCause([s(900, "hit")], AVAILABILITY_P50_BUDGET_MS).includes("1 of 1 read over budget was an edge cache hit"),
+    true,
+    "a single slow read is worded in the singular",
+  );
+}
+
+// --- the Worker's own time, beside the canary's -----------------------------------
+{
+  // Worker time near the client wait: the time was spent inside the Worker, and the
+  // split names the limiter and the slot read.
+  const kept = [s(1100, "hit", w(1050, 990, 20)), s(1200, "hit", w(1150, 1100, 15)), s(1000, "hit", w(960, 900, 30))];
+  const cause = latencyCause(kept, AVAILABILITY_P50_BUDGET_MS);
+  assert(/Worker's own clock read a median 1050ms of their 1100ms/.test(cause), `compares the medians (${cause})`);
+  assert(/burst limiter 990ms/.test(cause) && /slot read 20ms/.test(cause), `and splits it (${cause})`);
+  assert(/inside the Worker/.test(cause), `and says where (${cause})`);
+}
+{
+  // Worker time small against a long wait: most of it was outside what the Worker times.
+  // The Worker's clock advances only at I/O, so CPU is named as well as transit.
+  const kept = [s(1100, "hit", w(40)), s(1200, "hit", w(35)), s(1000, "hit", w(50))];
+  const cause = latencyCause(kept, AVAILABILITY_P50_BUDGET_MS);
+  assert(/outside it/.test(cause) && /transit/.test(cause) && /CPU/.test(cause), `attributes it honestly (${cause})`);
+}
+{
+  const cause = latencyCause([s(1100, "hit"), s(1200, "hit")], AVAILABILITY_P50_BUDGET_MS);
+  assert(/No Server-Timing/.test(cause) && /cannot be told apart/.test(cause), `says the split was not measured (${cause})`);
+}
+
+// --- the confirmed page carries the measured cause --------------------------------
+{
+  const first = [s(50, "hit"), s(900, "hit"), s(900, "hit"), s(900, "hit"), s(100, "hit")];
+  const recheck = [s(50, "hit"), s(900, "hit"), s(900, "hit"), s(900, "miss"), s(900, "hit")];
+  const sleeps: number[] = [];
+  let i = 0;
+  const run = await measureLatency({
+    takeBatch: async () => [first, recheck][i++] ?? [],
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+  eq(run.kind, "confirmed", "slow on both batches");
+  assert(
+    run.message !== null && /6 of 7 reads over budget were edge cache hits/.test(run.message),
+    `the page classifies both batches' slow reads, cold ones dropped (${run.message})`,
+  );
+  assert(run.message !== null && !/stopped serving/.test(run.message), "and does not blame the cache");
+  eq(run.first.kept.length, 4, "the verdict keeps its samples, cold one dropped");
+}
+{
+  // The first batch was slow and the recheck read nothing: the cause is the first
+  // batch's, since that is all that was measured.
+  let i = 0;
+  const run = await measureLatency({
+    takeBatch: async () => [[s(1, "miss"), s(900, "miss"), s(900, "miss"), s(900, "miss")], []][i++] ?? [],
+    sleep: async () => {},
+  });
+  eq(run.kind, "recheck-unmeasured", "a recheck that measured nothing");
+  assert(run.message !== null && /behind the edge cache/.test(run.message), `names the first batch's misses (${run.message})`);
+  assert(run.message !== null && /answering at all/.test(run.message), "and still asks whether it answers at all");
+}
+
+// --- the log line ------------------------------------------------------------------
+eq(
+  formatSamples([s(1112, "hit", w(95, 80, 10)), s(145, "miss", w(30)), s(300, null)]),
+  "1112 hit worker=95(limit=80,slots=10), 145 miss worker=30, 300 nohdr",
+  "each sample names its cache outcome and, when sent, the Worker's own time and split",
+);
+eq(formatSamples([]), "", "an empty batch prints nothing between the brackets");
 
 finish();

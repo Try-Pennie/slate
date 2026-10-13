@@ -1,10 +1,11 @@
 /**
  * Is the edge rate limiter usable in the deployed Worker? (#1529, from #1525)
  *
- * The hot path already reports a fail-open per request (`src/lib/rate-limit.ts`). That
- * report is an INCIDENT and is right to be: it is per IP, per datacenter, throttled to
- * bound a DB round-trip on a hot path, and one colo having a bad minute is a finished
- * event. What it cannot do is tell anybody the limiter is BACK.
+ * The hot path already reports fail opens (`src/lib/rate-limit.ts`): a log line per
+ * request, and a page only for a sustained run on one isolate (#3670). That report is an
+ * INCIDENT and is right to be: it is per isolate, throttled to bound a DB round-trip on a
+ * hot path, and one colo having a bad minute is a finished event. What it cannot do is
+ * tell anybody the limiter is BACK.
  *
  * On 2026-08-17 `rate_limit_broken:availability` paged at 14:44 UTC and then went quiet,
  * and that quiet was produced by three unrelated things at once: a 30 minute cooldown, a

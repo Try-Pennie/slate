@@ -53,7 +53,11 @@ import {
   limiterFailOpenAlert,
   limiterBlockedAlert,
   refundFailedAlert,
+  LIMITER_FAIL_OPEN_PAGE_AFTER,
+  LIMITER_FAIL_OPEN_WINDOW_MS,
+  type MeasuredFailures,
 } from "@/lib/rate-limit-core";
+import { makeSustainedFailureGate } from "@/lib/notify/sustained-failure";
 
 /**
  * Availability throttle (#56) via the AVAIL_RATE_LIMITER Workers binding —
@@ -257,14 +261,13 @@ const retryCredits = new RetryCredits({
   },
 });
 
-/** Report a credit we could not earn or check, once per cooldown, raw cause to the logs. Under
- *  the refund alert, because to the lead it is the same loss: allowance they were owed. */
+/** Report a credit we could not earn or check, raw cause to the logs, paged only on a sustained
+ *  run (#3670). Under the refund alert, because to the lead it is the same loss: allowance they
+ *  were owed. */
 function retryCreditBroken(prefix: string, msg: string, err: unknown): void {
   log.error("rate-limit", { msg, rule: prefix }, err);
-  alertBestEffort(
-    `rate_limit_refund_broken:${prefix}`,
-    refundFailedAlert(friendlyRateArea(prefix)),
-    prefix,
+  pageIfSustained(`rate_limit_refund_broken:${prefix}`, prefix, (m) =>
+    refundFailedAlert(friendlyRateArea(prefix), m),
   );
 }
 
@@ -452,15 +455,55 @@ async function nativeWithinLimit(
   }
 }
 
-/** Last time THIS isolate tried to alert about a given edge limiter, keyed by area.
+/** How often a broken limiter may re-alert. Long enough not to spam a channel during
+ *  a sustained outage, short enough that nobody sits blind for a shift. Declared above the
+ *  gate below, which reads it when the module loads. */
+const LIMITER_BROKEN_COOLDOWN_MS = 30 * 60_000;
+
+/** Every fail open and failed refund on THIS isolate, counted per alert key (#3670).
  *
- *  The alert's real throttle is alert_state, in Postgres, which means attempting it costs a
- *  DB round-trip. Everywhere else that is fine; here it is not. These are hot paths, and the
- *  limiter is likeliest to fail under exactly the traffic flood it exists to absorb, so alerting
- *  per request would answer a dead limiter by adding a database query to every one of those
- *  requests. This gate keeps that bounded. It is per-isolate and best-effort by design (a few
- *  duplicate attempts across isolates are harmless); alert_state still makes the alert correct. */
-const lastEdgeAlertAttemptMs = new Map<string, number>();
+ *  A page goes out only once `LIMITER_FAIL_OPEN_PAGE_AFTER` of them land on one key inside
+ *  `LIMITER_FAIL_OPEN_WINDOW_MS`, and then at most once per `LIMITER_BROKEN_COOLDOWN_MS`. One
+ *  failed count used to page on its own (`rate_limit_broken:landing:h`, 2026-10-13, with the
+ *  counter answering again minutes later), and "we probably shouldn't alert on one instance".
+ *
+ *  Counted in memory, never in a shared store, for two reasons. The alert's real throttle is
+ *  alert_state, in Postgres, so even ATTEMPTING a page costs a DB round-trip; these are hot
+ *  paths, and the limiter is likeliest to fail under exactly the traffic flood it exists to
+ *  absorb, so anything per request would answer a dead limiter with a database query on every
+ *  one of those requests. And the store most likely to be failing is the one that would hold
+ *  the count (L345): the Durable Object behind the exact ceilings, or the database behind
+ *  `rate_limit_hit`. So this gate also keeps the alert's round trips bounded, as the per area
+ *  attempt gate it replaces did; alert_state still throttles the page across isolates. */
+const newFailOpenGate = () =>
+  makeSustainedFailureGate<true>({
+    pageAfter: LIMITER_FAIL_OPEN_PAGE_AFTER,
+    windowMs: LIMITER_FAIL_OPEN_WINDOW_MS,
+    cooldownMs: LIMITER_BROKEN_COOLDOWN_MS,
+  });
+let failOpenGate = newFailOpenGate();
+
+/** Tests only: forget every count and log stamp this isolate holds, so a case cannot inherit a
+ *  run, a cooldown or a log gate from the one before it. */
+export function resetLimiterAlertGatesForTests(): void {
+  failOpenGate = newFailOpenGate();
+  lastEdgeLogMs.clear();
+}
+
+/** Count one failure under `key`, and page, worded from what was counted, only when that makes
+ *  the run sustained. Returns how many failures this isolate holds for the key in the window, so
+ *  the log line can carry it. */
+function pageIfSustained(key: string, label: string, text: (m: MeasuredFailures) => string): number {
+  const verdict = failOpenGate.record(key, Date.now(), true);
+  if (verdict.page) {
+    alertBestEffort(
+      key,
+      text({ count: verdict.inWindow, windowMs: LIMITER_FAIL_OPEN_WINDOW_MS, atLeast: verdict.truncated }),
+      label,
+    );
+  }
+  return verdict.inWindow;
+}
 
 /** Last time THIS isolate LOGGED a fail-open, keyed by area. Deliberately a separate,
  *  far looser gate than the alert's (#1525).
@@ -496,8 +539,17 @@ function alertEdgeLimiterDown(
   const failure: EdgeLimiterFailure = isWorkersRuntime() ? "outage" : "no-platform";
   const now = Date.now();
 
+  // #3670: counted on every failure, paged only on a sustained run, and never off the
+  // runtime, where nothing is counted at all because nothing is about production.
+  const inWindow =
+    failure === "outage"
+      ? pageIfSustained(`rate_limit_broken:${cfg.area}`, cfg.area, (m) => limiterFailOpenAlert(cfg.friendly, m))
+      : null;
+
   // The raw reason (a missing binding, or String(err) that off-platform is a Next.js
-  // config stack trace) goes to the LOGS, never to the human-facing Slack line.
+  // config stack trace) goes to the LOGS, never to the human-facing Slack line. A single
+  // fail open is ONLY this line now (#3670), so it carries how many this isolate has seen
+  // in the paging window.
   if (now - (lastEdgeLogMs.get(cfg.area) ?? 0) >= LIMITER_LOG_COOLDOWN_MS) {
     lastEdgeLogMs.set(cfg.area, now);
     if (failure === "no-platform") {
@@ -508,18 +560,9 @@ function alertEdgeLimiterDown(
         reason,
       });
     } else {
-      log.error("rate-limit", { msg: "limiter failing open", area: cfg.area, reason });
+      log.error("rate-limit", { msg: "limiter failing open", area: cfg.area, reason, in_window: inWindow });
     }
   }
-
-  if (failure === "no-platform") return;
-  if (now - (lastEdgeAlertAttemptMs.get(cfg.area) ?? 0) < LIMITER_BROKEN_COOLDOWN_MS) return;
-  lastEdgeAlertAttemptMs.set(cfg.area, now);
-  alertBestEffort(
-    `rate_limit_broken:${cfg.area}`,
-    limiterFailOpenAlert(cfg.friendly),
-    cfg.area,
-  );
 }
 
 /**
@@ -528,10 +571,6 @@ function alertEdgeLimiterDown(
  * key). Fails OPEN: a limiter hiccup must never block a real booking - the
  * verify-on-book and unique-slot index still bound the damage.
  */
-
-/** How often a broken limiter may re-alert. Long enough not to spam a channel during
- *  a sustained outage, short enough that nobody sits blind for a shift. */
-const LIMITER_BROKEN_COOLDOWN_MS = 30 * 60_000;
 
 /** True when the request is allowed under every rule. */
 export async function allowRequest(
@@ -566,12 +605,14 @@ export async function allowRequest(
       // Best effort: the alert writes to alert_state, so the outage that broke the limiter
       // can break the alert too. Swallow that. A failed alert must not turn a limiter
       // failure into a BOOKING failure, which would be the exact opposite of failing open.
-      log.error("rate-limit", { msg: "rate_limit_hit failed", rule: rule.prefix }, error);
-      alertBestEffort(
-        `rate_limit_broken:${rule.prefix}`,
-        limiterFailOpenAlert(friendlyRateArea(rule.prefix)),
-        rule.prefix,
+      //
+      // #3670: and paged only on a sustained run, counted on this isolate, so one failed
+      // count is this log line and nothing more. This path used to attempt a page (an
+      // alert_state round trip) on EVERY failure; the gate bounds that too.
+      const inWindow = pageIfSustained(`rate_limit_broken:${rule.prefix}`, rule.prefix, (m) =>
+        limiterFailOpenAlert(friendlyRateArea(rule.prefix), m),
       );
+      log.error("rate-limit", { msg: "rate_limit_hit failed", rule: rule.prefix, in_window: inWindow }, error);
       continue; // fail open
     }
     if (data === false) {
@@ -625,9 +666,9 @@ const EXACT_CEILING_CALL_LABEL = "edge-counter";
  *    that errors, does not answer inside the deadline, or answers for another window) fails
  *    OPEN, exactly as `allowRequest` continues past an unreadable row, and LOUD, under the same
  *    `rate_limit_broken:<prefix>` key and the same plain words. The page is gated per isolate
- *    like every edge limiter's (`alertEdgeLimiterDown`), so an outage costs one alert read per
- *    half hour rather than one per request, and off the Workers runtime it is logged, never
- *    paged (#1525).
+ *    like every edge limiter's (`alertEdgeLimiterDown`): a single failure is a log line, a
+ *    sustained run pages (#3670), an outage costs one alert read per half hour rather than one
+ *    per request, and off the Workers runtime it is logged, never paged (#1525).
  */
 export async function exactCeilingWithinLimit(caller: CallerKey, rules: RateLimitRule[]): Promise<boolean> {
   const verdict = judgeCaller(callerPolicy(caller), rateLimitKey(caller));
@@ -771,12 +812,11 @@ export async function refundRequest(
       p_key: `${rule.prefix}:${key}`,
     });
     if (error) {
-      log.error("rate-limit", { msg: "rate_limit_refund failed", rule: rule.prefix }, error);
-      alertBestEffort(
-        `rate_limit_refund_broken:${rule.prefix}`,
-        refundFailedAlert(friendlyRateArea(rule.prefix)),
-        rule.prefix,
+      // #3670: one failed refund is this log line; a sustained run pages with its count.
+      const inWindow = pageIfSustained(`rate_limit_refund_broken:${rule.prefix}`, rule.prefix, (m) =>
+        refundFailedAlert(friendlyRateArea(rule.prefix), m),
       );
+      log.error("rate-limit", { msg: "rate_limit_refund failed", rule: rule.prefix, in_window: inWindow }, error);
     }
   }
 }

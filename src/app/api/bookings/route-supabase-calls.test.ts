@@ -135,6 +135,7 @@ vi.mock("@/lib/booking/orchestration", async (importOriginal) => {
 
 import { POST } from "./route";
 import { POOL_GROUPING_RETRY_MS } from "@/lib/booking/pool-grouping-reader";
+import { LIMITER_FAIL_OPEN_PAGE_AFTER } from "@/lib/rate-limit-core";
 
 const BODY = {
   bucketCode: "411",
@@ -388,6 +389,11 @@ describe("the hourly ceilings on the edge counter, through the route (#3416)", (
     expect(out.status).toBe(200);
     expect(out.reachedLine).toBe(true);
     expect(beyondSwitch(out.beforeLine)).toEqual([]);
+    // #3670: one count that could not be made is a log line, never a page. `confirm` has
+    // already run the deferred work, so this reads what was really sent.
+    expect(seen.alertKeys).not.toContain("eq.rate_limit_broken:bookapi:h");
+    // A sustained run of them pages, after the answer, as before.
+    for (let i = 1; i < LIMITER_FAIL_OPEN_PAGE_AFTER; i++) expect((await confirm("lead")).status).toBe(200);
     expect(seen.alertKeys).toEqual(expect.arrayContaining(["eq.rate_limit_broken:bookapi:h"]));
   });
 });

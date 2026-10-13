@@ -412,6 +412,12 @@ Keys: `edge_limiter_unusable`, `rate_limit_broken:*`, `rate_limit_refund_broken:
 it. Every limiter here fails OPEN, so the page means requests are being served
 UNMETERED, not that anybody is being turned away.
 
+`rate_limit_broken` and `rate_limit_refund_broken` never page on one request (#3670):
+one count that could not be made is only a `tag=rate-limit` log line. They page when
+five in one area fail on one server inside ten minutes, and the page says that count.
+It is not a statement that the limit is down across the deployment; that is
+`edge_limiter_unusable`, which the monitor lane measures and clears.
+
 **First checks.**
 - Is the binding there? A deploy without the `ratelimits` block or the
   `durable_objects` block silently removes the ceiling.
