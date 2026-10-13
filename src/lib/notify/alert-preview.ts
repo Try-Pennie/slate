@@ -306,6 +306,7 @@ import {
   oooCoverageStopAlert,
   oooUndoManagerAlert,
   oooUndoUnrecordedAlert,
+  type OooEventMismatch,
 } from "@/lib/ooo/alert-copy";
 import {
   auditWriteFailedAlert,
@@ -916,6 +917,20 @@ function previewBudgetSpend(
   }
   return v.spend;
 }
+
+// #3360: the 2026-10-06 shape, an all day request whose event was edited to begin at
+// 11:30 AM MT, and a second request whose event is gone. The edit was the true one that
+// day, so every page built from these asks for the two to agree rather than for the
+// event to be put back.
+const MISMATCH_SHORTENED: OooEventMismatch = {
+  requestId: "req_9f2", startsAt: "2026-10-07T06:00:00.000Z", endsAt: "2026-10-08T05:59:00.000Z",
+  displayTzId: "America/Denver", displayTzLabel: "MT",
+  coverage: { kind: "uncovered", spans: [{ startMs: 1791352800000, endMs: 1791394200000 }] },
+};
+const MISMATCH_GONE: OooEventMismatch = {
+  requestId: "req_a41", startsAt: "2026-10-09T06:00:00.000Z", endsAt: "2026-10-10T05:59:00.000Z",
+  displayTzId: "America/Denver", displayTzLabel: "MT", coverage: { kind: "not-blocking", unmeasured: null },
+};
 
 export const ALERT_PREVIEWS: AlertPreview[] = [
   // --- calendar sync and push watches ---------------------------------------
@@ -5340,19 +5355,10 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // at 11:30 AM MT. The edit was the true one that day, so the page must ask for
   // the two to agree rather than for the event to be put back.
   { key: "ooo_event_mismatch:*", state: "the event was shortened, and neither the agent nor the manager fixed it", channel: "alert",
-    text: oooEventMismatchAlert("Heather McLellen", [{
-      requestId: "req_9f2", startsAt: "2026-10-07T06:00:00.000Z", endsAt: "2026-10-08T05:59:00.000Z",
-      displayTzId: "America/Denver", displayTzLabel: "MT",
-      coverage: { kind: "uncovered", spans: [{ startMs: 1791352800000, endMs: 1791394200000 }] },
-    }], "https://slate.trypennie.app", { agent: "told", manager: "told" }) },
+    text: oooEventMismatchAlert("Heather McLellen", [MISMATCH_SHORTENED], "https://slate.trypennie.app", { agent: "told", manager: "told" }) },
   { key: "ooo_event_mismatch:*", state: "two requests, one event gone, no manager of record", channel: "alert",
-    text: oooEventMismatchAlert("Heather McLellen", [
-      { requestId: "req_9f2", startsAt: "2026-10-07T06:00:00.000Z", endsAt: "2026-10-08T05:59:00.000Z",
-        displayTzId: "America/Denver", displayTzLabel: "MT",
-        coverage: { kind: "uncovered", spans: [{ startMs: 1791352800000, endMs: 1791394200000 }] } },
-      { requestId: "req_a41", startsAt: "2026-10-09T06:00:00.000Z", endsAt: "2026-10-10T05:59:00.000Z",
-        displayTzId: "America/Denver", displayTzLabel: "MT", coverage: { kind: "not-blocking", unmeasured: null } },
-    ], "https://slate.trypennie.app", { agent: "told", manager: "none" }) },
+    text: oooEventMismatchAlert("Heather McLellen", [MISMATCH_SHORTENED, MISMATCH_GONE], "https://slate.trypennie.app",
+      { agent: "told", manager: "none" }) },
   // #3655: a request straddling the calendar's mirrored horizon whose event is gone.
   // Only the part inside the horizon was checked, so the sentence names only that.
   { key: "ooo_event_mismatch:*", state: "the event is gone, part of the window too far ahead to check, neither message delivered", channel: "alert",
@@ -5362,20 +5368,11 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
         coverage: { kind: "not-blocking", unmeasured: { startMs: 1793178000000, endMs: 1793340000000 } } },
     ], "https://slate.trypennie.app", { agent: "unreachable", manager: "unreachable" }) },
   { key: "ooo_event_mismatch:*", state: "the agent's message never arrived, and the manager did not fix it", channel: "alert",
-    text: oooEventMismatchAlert("Heather McLellen", [{
-      requestId: "req_9f2", startsAt: "2026-10-07T06:00:00.000Z", endsAt: "2026-10-08T05:59:00.000Z",
-      displayTzId: "America/Denver", displayTzLabel: "MT",
-      coverage: { kind: "uncovered", spans: [{ startMs: 1791352800000, endMs: 1791394200000 }] },
-    }], "https://slate.trypennie.app", { agent: "unreachable", manager: "told" }) },
+    text: oooEventMismatchAlert("Heather McLellen", [MISMATCH_SHORTENED], "https://slate.trypennie.app", { agent: "unreachable", manager: "told" }) },
   // #3372: two requests that reached the channel for different reasons, each on its line.
   { key: "ooo_event_mismatch:*", state: "two requests, each with its own reason", channel: "alert",
-    text: oooEventMismatchAlert("Heather McLellen", [
-      { requestId: "req_9f2", startsAt: "2026-10-07T06:00:00.000Z", endsAt: "2026-10-08T05:59:00.000Z",
-        displayTzId: "America/Denver", displayTzLabel: "MT",
-        coverage: { kind: "uncovered", spans: [{ startMs: 1791352800000, endMs: 1791394200000 }] } },
-      { requestId: "req_a41", startsAt: "2026-10-09T06:00:00.000Z", endsAt: "2026-10-10T05:59:00.000Z",
-        displayTzId: "America/Denver", displayTzLabel: "MT", coverage: { kind: "not-blocking", unmeasured: null } },
-    ], "https://slate.trypennie.app", [{ agent: "told", manager: "told" }, { agent: "told", manager: "none" }]) },
+    text: oooEventMismatchAlert("Heather McLellen", [MISMATCH_SHORTENED, MISMATCH_GONE], "https://slate.trypennie.app",
+      [{ agent: "told", manager: "told" }, { agent: "told", manager: "none" }]) },
   { key: "ooo_event_mismatch:*", state: "the calendar and the request agree again", channel: "recovery",
     text: oooEventMismatchRecovery("Heather McLellen", { kind: "agreed", compared: 2 }) },
   { key: "ooo_event_mismatch:*", state: "nothing approved is ahead any more", channel: "recovery",

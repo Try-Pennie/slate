@@ -557,16 +557,19 @@ async function escalateMismatches(input: {
     const agent = people.get(agentId);
     const reached = agentTold === "unreachable" ? "unreachable" : "told";
     const manager = agent ? managerToTell(agent, agent.managerId ? (people.get(agent.managerId) ?? null) : null) : null;
-    if (!manager) {
-      const outcome: ManagerOutcome = { kind: "none" };
-      const won = [];
+    // The requests this run claims the manager step for; another run's claim is left to it.
+    const claimFor = async (outcome: ManagerOutcome) => {
+      const won: MeasuredMismatch[] = [];
       for (const m of items) if (await input.notices.claim(managerNoticeKey(agentId, m.requestId, outcome), input.nowMs)) won.push(m);
+      return won;
+    };
+    if (!manager) {
+      const won = await claimFor({ kind: "none" });
       if (won.length > 0) await page(agentId, won, { agent: reached, manager: "none" });
       return;
     }
     const outcome: ManagerOutcome = { kind: "told", managerId: manager.id };
-    const won = [];
-    for (const m of items) if (await input.notices.claim(managerNoticeKey(agentId, m.requestId, outcome), input.nowMs)) won.push(m);
+    const won = await claimFor(outcome);
     if (won.length === 0) return;
     const text = managerMismatchDm({
       agentName: nameOfAgent(agentId),
