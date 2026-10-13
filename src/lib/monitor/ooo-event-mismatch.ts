@@ -11,7 +11,35 @@ import {
   oooEventMismatchRecovery,
   type OooEventMismatch,
   type OooEventMismatchCleared,
+  type OooEventMismatchEscalation,
 } from "@/lib/ooo/alert-copy";
+import {
+  agentNoticeKey,
+  agentOutcomeKey,
+  bookedInsideGap,
+  managerDeliveredKey,
+  gapSpans,
+  managerNoticeKey,
+  managerToTell,
+  planEscalation,
+  type EscalationPerson,
+  type ManagerOutcome,
+  type MeasuredMismatch,
+  type NoticeRecord,
+} from "@/lib/ooo/mismatch-escalation";
+import {
+  agentMismatchClearedDm,
+  managerMismatchClearedDm,
+  managerMismatchDm,
+  type ClearedTimeOff,
+  type ClearedWhy,
+} from "@/lib/ooo/mismatch-notice-copy";
+import {
+  tellAgentAboutMismatches,
+  type MismatchMessenger,
+  type MismatchNoticeStore,
+} from "@/lib/monitor/ooo-mismatch-notices";
+import type { OooStatus } from "@/lib/db/types";
 import { log } from "@/lib/log";
 
 /**
@@ -41,6 +69,13 @@ import { log } from "@/lib/log";
  * Keyed per agent (`ooo_event_mismatch:<user id>`), a suffix the roster bounds,
  * rather than per request, which would grow `alert_state` without limit; and not one
  * fleet wide key, whose cooldown would let one agent's page silence another's (L707).
+ *
+ * WHO hears is #3372's (`planEscalation`): the agent first, by Slack DM, then their
+ * manager, then the alerts channel, which is this module's page, only once neither
+ * has acted. The sync half tells the agent and nothing more; the lane runs the rest.
+ * Only a MEASURED finding ever messages anybody: a window the lane could not compare
+ * is neither escalated nor cleared, because a false message to an agent is worse
+ * than none (#3655).
  */
 
 export const OOO_EVENT_MISMATCH_FAMILY = "ooo_event_mismatch";
@@ -85,6 +120,12 @@ export interface ApprovedEventRequest {
    * nothing, and nobody can be booked with them anyway.
    */
   inPool: boolean;
+  /**
+   * The agent has left (`deactivated_at` is set), so nobody is told anything about
+   * their time off, and any record of who was told is dropped (#3372), as
+   * `verify:ooo-protection` skips them (`agent-deactivated`).
+   */
+  departed: boolean;
   /**
    * `agent_calendars.sync_window_to` of the agent's PRIMARY calendar, the one
    * Slate writes the time off event on, or null when no such row has one (#3655).
@@ -165,6 +206,25 @@ export interface EventMirror {
   endsAt: string;
 }
 
+/**
+ * A call the agent is booked on, from the busy blocks a Slate booking writes through
+ * (`booking_id` set). One inside the open hours speeds the escalation up (#3372).
+ */
+export interface BookedCall {
+  userId: string;
+  startsAt: string;
+  endsAt: string;
+}
+
+/** A request as it stands now, read back for one that left the approved set (#3372). */
+export interface RequestState {
+  status: OooStatus;
+  startsAt: string;
+  endsAt: string;
+  displayTzId: string;
+  displayTzLabel: string | null;
+}
+
 const nameOf = (r: Pick<ApprovedEventRequest, "agentName" | "agentEmail" | "userId">) =>
   r.agentName?.trim() || r.agentEmail || r.userId;
 
@@ -224,9 +284,12 @@ function judgeEventsByAgent(
   found: Map<string, { agentName: string; found: OooEventMismatch[] }>;
   unmeasured: Set<string>;
   compared: Map<string, number>;
+  /** Requests whose every hour still ahead was compared this tick and agrees (#3372). */
+  agreed: Set<string>;
   beyondHorizon: number;
 } {
   let beyondHorizon = 0;
+  const agreed = new Set<string>();
   const unmeasured = new Set<string>();
   const compared = new Map<string, number>();
   const byEvent = new Map<string, EventMirror[]>();
@@ -266,13 +329,14 @@ function judgeEventsByAgent(
       beyondHorizon++;
     } else if (verdict.kind === "covered") {
       compared.set(r.userId, (compared.get(r.userId) ?? 0) + 1);
+      agreed.add(r.id);
     }
     if (verdict.kind !== "uncovered" && verdict.kind !== "not-blocking") continue;
     const entry = out.get(r.userId) ?? { agentName: nameOf(r), found: [] };
     entry.found.push(finding(r, verdict));
     out.set(r.userId, entry);
   }
-  return { found: out, unmeasured, compared, beyondHorizon };
+  return { found: out, unmeasured, compared, agreed, beyondHorizon };
 }
 
 export interface OooEventMismatchResult {
@@ -285,55 +349,81 @@ export interface OooEventMismatchResult {
   reachedVerdict: boolean;
 }
 
+/** What the escalation needs beyond the judgement: who was told, and how to reach people (#3372). */
+export interface EscalationDeps {
+  notices: MismatchNoticeStore;
+  messenger: MismatchMessenger;
+  /** People by id, agents and managers alike. Throws on a failed read. */
+  loadPeople: (ids: string[]) => Promise<Map<string, EscalationPerson>>;
+  /** Requests as they stand now, for ones that left the approved set. Throws on a failed read. */
+  loadRequests: (ids: string[]) => Promise<Map<string, RequestState>>;
+}
+
 /**
  * One monitor tick. A failed read pages nothing and clears nothing: an unread list
  * comes back empty, and an empty list here would read as "everything agrees"
- * (#1134, #1152). A failed read of the firing markers still lets the pages go out;
+ * (#1134, #1152). A failed read of the firing markers still lets the messages go out;
  * it only defers the all-clears to the next tick.
+ *
+ * A sustained mismatch climbs `planEscalation`'s ladder: the agent, then their
+ * manager, then this module's page to the alerts channel. An unreadable record of
+ * who was told THROWS, failing the step (#2382), because guessing it would either
+ * tell everybody again or tell nobody.
  */
-export async function runOooEventMismatchCheck(deps: {
-  load: () => Promise<{ requests: ApprovedEventRequest[]; mirrors: EventMirror[] }>;
-  /** Names for paged agents who no longer appear in the approved set. */
-  loadAgentNames: (ids: string[]) => Promise<Map<string, string>>;
-  nowMs: number;
-  appBaseUrl: string;
-  log?: (fields: Record<string, unknown>) => void;
-}): Promise<OooEventMismatchResult> {
+export async function runOooEventMismatchCheck(
+  deps: {
+    load: () => Promise<{ requests: ApprovedEventRequest[]; mirrors: EventMirror[]; calls: BookedCall[] }>;
+    /** Names for paged agents who no longer appear in the approved set. */
+    loadAgentNames: (ids: string[]) => Promise<Map<string, string>>;
+    nowMs: number;
+    appBaseUrl: string;
+    log?: (fields: Record<string, unknown>) => void;
+  } & EscalationDeps,
+): Promise<OooEventMismatchResult> {
   let requests: ApprovedEventRequest[];
   let mirrors: EventMirror[];
+  let calls: BookedCall[];
   try {
-    ({ requests, mirrors } = await deps.load());
+    ({ requests, mirrors, calls } = await deps.load());
   } catch (err) {
     log.error("ooo-event-mismatch", { msg: "approved time off read failed" }, err);
     deps.log?.({ status: "unreadable" });
     return { status: "unreadable", scanned: 0, mismatchedAgents: 0, cleared: 0, reachedVerdict: false };
   }
 
-  const { found, unmeasured, compared, beyondHorizon } = judgeEventsByAgent(
+  const { found, unmeasured, compared, agreed, beyondHorizon } = judgeEventsByAgent(
     requests,
     mirrors,
     deps.nowMs,
   );
 
-  for (const [agentId, { agentName, found: list }] of found) {
-    const key = oooEventMismatchKey(agentId);
+  const mismatches: MeasuredMismatch[] = [];
+  for (const [agentId, { found: list }] of found) {
     const sustained = await recordConsecutiveStreak(
-      key,
+      oooEventMismatchKey(agentId),
       OOO_EVENT_MISMATCH_WINDOW_SECONDS,
       OOO_EVENT_MISMATCH_ALERT_AFTER_TICKS,
     );
     if (!sustained) continue;
-    // alert-key: ooo_event_mismatch:*
-    await sendThrottledAlert(
-      key,
-      OOO_EVENT_MISMATCH_COOLDOWN_MS,
-      oooEventMismatchAlert(agentName, list, deps.appBaseUrl),
-    ).catch(logAlertSendFailure(key));
+    const theirCalls = calls.filter((c) => c.userId === agentId);
+    for (const f of list) {
+      const gap = gapSpans(f, deps.nowMs);
+      if (gap.length === 0) continue;
+      mismatches.push({
+        agentId,
+        requestId: f.requestId,
+        finding: f,
+        gapStartMs: Math.min(...gap.map((g) => g.startMs)),
+        bookedInGap: bookedInsideGap(gap, theirCalls),
+      });
+    }
   }
 
-  // The all-clear, only for agents with an outstanding page and only off this
-  // tick's measured read: every window ahead was compared and agrees, or nothing
-  // approved is ahead at all. The copy says which.
+  const told = await escalateMismatches({ ...deps, requests, mismatches, agreed });
+
+  // The all-clear for the alerts channel's page, only for agents with an outstanding
+  // page and only off this tick's measured read: every window ahead was compared and
+  // agrees, or nothing approved is ahead at all. The copy says which.
   let cleared = 0;
   let firing: string[] = [];
   try {
@@ -378,8 +468,215 @@ export async function runOooEventMismatchCheck(deps: {
     mismatched_agents: found.size,
     beyond_horizon: beyondHorizon,
     cleared,
+    ...told,
   });
   return { status, scanned: requests.length, mismatchedAgents: found.size, cleared, reachedVerdict: true };
+}
+
+/** Why a request that left the approved set no longer needs anybody, from how it stands now. */
+function whyLeft(state: RequestState | undefined, nowMs: number): ClearedWhy {
+  if (!state) return "gone";
+  if (state.status === "pending") return "changed";
+  if (state.status === "cancelled") return "cancelled";
+  if (state.status === "rejected") return "declined";
+  const end = parseStampMs(state.endsAt);
+  return end !== null && end <= nowMs ? "passed" : "gone";
+}
+
+const groupByAgent = <T extends { agentId: string }>(items: T[]) => {
+  const out = new Map<string, T[]>();
+  for (const i of items) out.set(i.agentId, [...(out.get(i.agentId) ?? []), i]);
+  return out;
+};
+
+/**
+ * Act on one tick's plan (#3372). Returns counts for the tick's log line. Nothing is
+ * read, sent or recorded where no message may be sent (a laptop, a load run, Slack
+ * unconfigured), so a dev server can neither message a real agent nor use up the
+ * record the real lane needs.
+ */
+async function escalateMismatches(input: {
+  requests: ApprovedEventRequest[];
+  mismatches: MeasuredMismatch[];
+  agreed: Set<string>;
+  nowMs: number;
+  appBaseUrl: string;
+} & EscalationDeps): Promise<Record<string, number>> {
+  const counts = { told_agents: 0, told_managers: 0, paged: 0, all_clears: 0 };
+  if (!input.messenger.available()) return counts;
+
+  const records = await input.notices.list();
+  const approvedById = new Map(input.requests.map((r) => [r.id, r]));
+  const agentIds = [...new Set([...input.mismatches.map((m) => m.agentId), ...records.map((r) => r.agentId)])];
+  const people = agentIds.length > 0 ? await input.loadPeople(agentIds) : new Map<string, EscalationPerson>();
+  // The agents' current managers, and every manager a record says was told: the
+  // all-clear goes to whoever was told, even if the agent's manager has changed since.
+  const toldManagers = records.flatMap((r) => (r.role === "manager" && r.outcome.kind === "told" ? [r.outcome.managerId] : []));
+  const managerIds = [
+    ...new Set([...[...people.values()].flatMap((p) => (p.managerId ? [p.managerId] : [])), ...toldManagers]),
+  ].filter((id) => !people.has(id));
+  if (managerIds.length > 0) for (const [id, p] of await input.loadPeople(managerIds)) people.set(id, p);
+
+  const departed = new Set<string>();
+  for (const r of input.requests) if (r.departed) departed.add(r.userId);
+  for (const id of agentIds) if (people.get(id)?.deactivatedAt) departed.add(id);
+
+  const plan = planEscalation({
+    nowMs: input.nowMs,
+    mismatches: input.mismatches,
+    agreed: input.agreed,
+    approved: new Set(input.requests.map((r) => r.id)),
+    departedAgents: departed,
+    records,
+  });
+  const nameOfAgent = (id: string) => {
+    const p = people.get(id);
+    const r = input.requests.find((q) => q.userId === id);
+    return p?.name?.trim() || r?.agentName?.trim() || p?.email || r?.agentEmail || id;
+  };
+  const emailOfAgent = (id: string) =>
+    people.get(id)?.email ?? input.requests.find((q) => q.userId === id)?.agentEmail ?? null;
+  // The alerts channel's page, once per agent, saying why each request is there (L11).
+  const page = async (
+    agentId: string,
+    items: MeasuredMismatch[],
+    escalation: OooEventMismatchEscalation | OooEventMismatchEscalation[],
+  ) => {
+    const key = oooEventMismatchKey(agentId);
+    // alert-key: ooo_event_mismatch:*
+    await sendThrottledAlert(
+      key,
+      OOO_EVENT_MISMATCH_COOLDOWN_MS,
+      oooEventMismatchAlert(nameOfAgent(agentId), items.map((i) => i.finding), input.appBaseUrl, escalation),
+    ).catch(logAlertSendFailure(key));
+    counts.paged++;
+  };
+
+  // The manager step for one agent's requests. `agentTold` is what the message says
+  // about the agent having been asked.
+  const tellManager = async (
+    agentId: string,
+    items: MeasuredMismatch[],
+    agentTold: { atMs: number | null } | "unreachable",
+  ) => {
+    const agent = people.get(agentId);
+    const reached = agentTold === "unreachable" ? "unreachable" : "told";
+    const manager = agent ? managerToTell(agent, agent.managerId ? (people.get(agent.managerId) ?? null) : null) : null;
+    // The requests this run claims the manager step for; another run's claim is left to it.
+    const claimFor = async (outcome: ManagerOutcome) => {
+      const won: MeasuredMismatch[] = [];
+      for (const m of items) if (await input.notices.claim(managerNoticeKey(agentId, m.requestId, outcome), input.nowMs)) won.push(m);
+      return won;
+    };
+    if (!manager) {
+      const won = await claimFor({ kind: "none" });
+      if (won.length > 0) await page(agentId, won, { agent: reached, manager: "none" });
+      return;
+    }
+    const outcome: ManagerOutcome = { kind: "told", managerId: manager.id };
+    const won = await claimFor(outcome);
+    if (won.length === 0) return;
+    const text = managerMismatchDm({
+      agentName: nameOfAgent(agentId),
+      items: won.map((m) => ({ finding: m.finding, bookedInGap: m.bookedInGap })),
+      agentTold,
+      appBaseUrl: input.appBaseUrl,
+    });
+    if (await input.messenger.dm(manager.email!, text)) {
+      for (const m of won) await input.notices.claim(managerDeliveredKey(agentId, m.requestId), input.nowMs);
+      counts.told_managers++;
+      return;
+    }
+    // Not delivered: the record must say nobody read it, so no all-clear goes to them
+    // and the alerts channel hears now rather than after a wait on a message never read.
+    const unreachable: ManagerOutcome = { kind: "unreachable" };
+    for (const m of won) {
+      await input.notices.release(managerNoticeKey(agentId, m.requestId, outcome));
+      await input.notices.claim(managerNoticeKey(agentId, m.requestId, unreachable), input.nowMs);
+    }
+    log.warn("ooo-event-mismatch", { msg: "a manager could not be told about a time off mismatch", agent_id: agentId });
+    await page(agentId, won, { agent: reached, manager: "unreachable" });
+  };
+
+  for (const [agentId, items] of groupByAgent(plan.tellAgent)) {
+    // An attempt that died before recording an outcome: remove it, so this one can claim.
+    for (const m of items) if (m.staleKey) await input.notices.release(m.staleKey);
+    const res = await tellAgentAboutMismatches({
+      store: input.notices,
+      messenger: input.messenger,
+      nowMs: input.nowMs,
+      appBaseUrl: input.appBaseUrl,
+      agentEmail: emailOfAgent(agentId),
+      items: items.map((m) => ({ agentId, requestId: m.requestId, finding: m.finding })),
+    });
+    if (res.told.length > 0) counts.told_agents++;
+    // An agent nobody could reach: that is recorded, so no all-clear is ever sent for a
+    // message never read, and their manager hears in the same tick.
+    const unreachable = new Set(res.unreachable.map((u) => u.requestId));
+    for (const id of unreachable) await input.notices.claim(agentOutcomeKey(agentId, id, "unreachable"), input.nowMs);
+    const passOn = items.filter((m) => unreachable.has(m.requestId));
+    if (passOn.length > 0) await tellManager(agentId, passOn, "unreachable");
+  }
+
+  for (const [agentId, items] of groupByAgent(plan.tellManager)) {
+    // A manager message that died before its delivery was recorded: remove it, so this one can claim.
+    for (const m of items) if (m.staleKey) await input.notices.release(m.staleKey);
+    // One message to the manager, so one history: undelivered if any of these was,
+    // otherwise the earliest time the agent was told.
+    const told = items.map((m) => m.agentTold);
+    const agentTold = told.some((t) => t === "unreachable")
+      ? ("unreachable" as const)
+      : {
+          atMs: told
+            .map((t) => (t === "unreachable" ? null : t.atMs))
+            .reduce<number | null>((a, b) => (a === null ? b : b === null ? a : Math.min(a, b)), null),
+        };
+    await tellManager(agentId, items, agentTold);
+  }
+
+  for (const [agentId, items] of groupByAgent(plan.pageDan)) {
+    await page(agentId, items, items.map((m) => m.reason));
+  }
+
+  // The all-clears: whoever was told hears it is over, once, by whichever run removes
+  // the record. A manager the first message never reached is told nothing.
+  const left = plan.clear.filter((c) => c.why === "left-approved").map((c) => c.requestId);
+  const states = left.length > 0 ? await input.loadRequests(left) : new Map<string, RequestState>();
+  for (const c of plan.clear) {
+    const approved = approvedById.get(c.requestId);
+    const state = approved ?? states.get(c.requestId);
+    const cleared: ClearedTimeOff = {
+      why: c.why === "agreed" ? "agreed" : whyLeft(states.get(c.requestId), input.nowMs),
+      when: state
+        ? { startsAt: state.startsAt, endsAt: state.endsAt, displayTzId: state.displayTzId, displayTzLabel: state.displayTzLabel }
+        : null,
+    };
+    // The agent hears the all-clear only if their first message was delivered.
+    const agentWasTold = c.records.some((r) => r.role === "agent-outcome" && r.outcome === "told");
+    // And the manager only if theirs was delivered.
+    const managerWasTold = c.records.some((r) => r.role === "manager-delivered");
+    // The told records first: they decide who hears, once, by whichever run removes
+    // them. Their delivery records go after, so a run that dies midway never leaves a
+    // told record whose delivery was already removed, which would silence its all-clear.
+    const isDelivery = (r: NoticeRecord) => r.role === "agent-outcome" || r.role === "manager-delivered";
+    const ordered = [...c.records.filter((r) => !isDelivery(r)), ...c.records.filter(isDelivery)];
+    for (const rec of ordered) {
+      if (!(await input.notices.release(rec.key))) continue;
+      if (isDelivery(rec)) continue;
+      if (rec.role === "agent") {
+        if (!agentWasTold) continue;
+        const email = emailOfAgent(c.agentId);
+        if (email && (await input.messenger.dm(email, agentMismatchClearedDm(cleared)))) counts.all_clears++;
+      } else if (rec.outcome.kind === "told" && managerWasTold) {
+        const email = people.get(rec.outcome.managerId)?.email;
+        if (email && (await input.messenger.dm(email, managerMismatchClearedDm(nameOfAgent(c.agentId), cleared)))) {
+          counts.all_clears++;
+        }
+      }
+    }
+  }
+  for (const rec of plan.forget) await input.notices.release(rec.key);
+  return counts;
 }
 
 /**
@@ -403,20 +700,22 @@ export function isTimeOffEventIdShape(id: string): boolean {
 /** One approved request the sync may hold an event for. */
 export type SyncedApprovedRequest = Omit<
   ApprovedEventRequest,
-  "inPool" | "agentName" | "agentEmail" | "mirroredUntil"
+  "inPool" | "agentName" | "agentEmail" | "mirroredUntil" | "departed"
 >;
 
 /**
- * The page at the moment the sync sees an edited time off event (#3360). Reads
- * nothing unless the batch holds a CANDIDATE: a busy event (only a shortened busy
- * event pages here) whose id has the time off shape and is not one of the agent's
- * Slate bookings the sync already loaded. Nearly every pass that applies events
- * applies none, and the read would otherwise spend a subrequest on every active
- * calendar's pass from the budget four cron lanes share. Asks for the agent's name
- * only when there is something to say. Pages a SHORTENED event only (see the module header for why a
- * deleted one waits for the monitor lane), and never clears: the all-clear needs
- * every approved request of the agent judged, which only the monitor lane does.
- * Returns how many requests it paged about. Throws on a failed read; the sync's
+ * The first message at the moment the sync sees an edited time off event (#3360):
+ * the agent is told by Slack DM, recorded in the same place the monitor lane reads
+ * (#3372), so the two can never tell them twice. The manager and the alerts channel
+ * are the lane's to decide. Reads nothing unless the batch holds a CANDIDATE: a busy
+ * event whose id has the time off shape and is not one of the agent's Slate bookings
+ * the sync already loaded. Nearly every pass that applies events applies none, and
+ * the read would otherwise spend a subrequest on every active calendar's pass from
+ * the budget four cron lanes share. Reads nothing at all where no message may be
+ * sent. Tells about a SHORTENED event only (see the module header for why a deleted
+ * one waits for the monitor lane), and never clears: the all-clear needs every
+ * approved request of the agent judged, which only the monitor lane does. Returns
+ * how many requests the agent was told about. Throws on a failed read; the sync's
  * wrapper contains it so a detector can never fail the sync it rides on.
  */
 export async function noticeSyncedOooEvents(deps: {
@@ -432,8 +731,13 @@ export async function noticeSyncedOooEvents(deps: {
    */
   bookingEventIds: Set<string>;
   loadApproved: (userId: string) => Promise<SyncedApprovedRequest[]>;
-  loadAgentName: (userId: string) => Promise<string>;
+  /** The agent's address for the DM, or null when they have none. Read only when there is something to say. */
+  loadAgentEmail: (userId: string) => Promise<string | null>;
+  notices: MismatchNoticeStore;
+  messenger: MismatchMessenger;
 }): Promise<number> {
+  // Where no message may be sent, nothing is read either: the read exists only to tell.
+  if (!deps.messenger.available()) return 0;
   const byEvent = new Map<string, GoogleEvent>();
   for (const ev of deps.events) {
     if (!ev.id || !isBusyEvent(ev)) continue;
@@ -470,13 +774,18 @@ export async function noticeSyncedOooEvents(deps: {
     }
   }
   if (found.length === 0) return 0;
-  const key = oooEventMismatchKey(deps.userId);
-  const name = await deps.loadAgentName(deps.userId);
-  // alert-key: ooo_event_mismatch:*
-  await sendThrottledAlert(
-    key,
-    OOO_EVENT_MISMATCH_COOLDOWN_MS,
-    oooEventMismatchAlert(name, found, deps.appBaseUrl),
-  ).catch(logAlertSendFailure(key));
-  return found.length;
+  const agentEmail = await deps.loadAgentEmail(deps.userId);
+  const res = await tellAgentAboutMismatches({
+    store: deps.notices,
+    messenger: deps.messenger,
+    nowMs: deps.nowMs,
+    appBaseUrl: deps.appBaseUrl,
+    agentEmail,
+    items: found.map((f) => ({ agentId: deps.userId, requestId: f.requestId, finding: f })),
+  });
+  // Not delivered: the claim is released and the lane takes it from here, whose own
+  // attempt fails the same way and goes straight to the manager, rather than the
+  // manager waiting out a grace period for a message nobody read.
+  for (const u of res.unreachable) await deps.notices.release(agentNoticeKey(u.agentId, u.requestId));
+  return res.told.length;
 }

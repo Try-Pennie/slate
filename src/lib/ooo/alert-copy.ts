@@ -217,32 +217,97 @@ function mismatchLine(f: OooEventMismatch, appBaseUrl: string): string {
 }
 
 /**
+ * Why the alerts channel is hearing about one request (#3372): whether the message to
+ * the agent arrived, and what happened on the manager step. The agent is told first
+ * and their manager second; this page goes out only once neither has acted, or once
+ * there was nobody else who could be told. Each combination is its own sentence
+ * (L11), because they send the reader to fix different things: the calendar, the
+ * roster, or Slack.
+ */
+export interface OooEventMismatchEscalation {
+  agent: "told" | "unreachable";
+  manager: "told" | "none" | "unreachable";
+}
+
+function escalationSentence(agentName: string, e: OooEventMismatchEscalation): string {
+  if (e.agent === "told") {
+    switch (e.manager) {
+      case "told":
+        return `${agentName} and their manager were both told on Slack and neither has fixed it.`;
+      case "none":
+        return (
+          `${agentName} was told on Slack and has not fixed it, and has no manager of record ` +
+          `who can act on time off, so nobody else was told.`
+        );
+      case "unreachable":
+        return (
+          `${agentName} was told on Slack and has not fixed it, and the message to their ` +
+          `manager could not be delivered.`
+        );
+    }
+  }
+  switch (e.manager) {
+    case "told":
+      return (
+        `The Slack message to ${agentName} could not be delivered, and their manager was told ` +
+        `and has not fixed it.`
+      );
+    case "none":
+      return (
+        `The Slack message to ${agentName} could not be delivered, and they have no manager of ` +
+        `record who can act on time off, so nobody else was told.`
+      );
+    case "unreachable":
+      return `Neither the Slack message to ${agentName} nor the one to their manager could be delivered.`;
+  }
+}
+
+const sameReason = (a: OooEventMismatchEscalation, b: OooEventMismatchEscalation) =>
+  a.agent === b.agent && a.manager === b.manager;
+
+/**
  * Condition (#3360): an agent's Google Calendar and their approved time off
- * disagree.
+ * disagree, and the agent and their manager have not fixed it (#3372).
  *
  * It deliberately does not say which one is wrong. On 2026-10-06 the edit in
  * Google was the true one (the agent was working that morning) and the request was
  * stale, so a page insisting the event be put back would have told somebody to
  * reverse a real schedule. It says what Slate does meanwhile (holds the approved
  * window, so nobody rushes to protect it), and offers both repairs.
- *
- * Who is told is #3372's job; this goes to the alerts channel until then.
  */
 export function oooEventMismatchAlert(
   agentName: string,
   found: OooEventMismatch[],
   appBaseUrl: string,
+  /**
+   * Why each request reached the alerts channel: one reason for every request, or one
+   * per request in `found`'s order. When the requests differ, each line carries its
+   * own and the opening sentence states none of them, so no request is described by
+   * another's history.
+   */
+  escalation: OooEventMismatchEscalation | OooEventMismatchEscalation[],
 ): string {
   const one = found.length === 1;
+  const reasons = Array.isArray(escalation) ? escalation : found.map(() => escalation);
+  if (reasons.length !== found.length) {
+    throw new Error(`time off mismatch page: ${reasons.length} reasons for ${found.length} requests`);
+  }
+  const shared = reasons.every((r) => sameReason(r, reasons[0]!)) ? reasons[0]! : null;
+  const why = shared
+    ? escalationSentence(agentName, shared)
+    : `Each request reached this channel for its own reason, given on its line.`;
   return (
     `${agentName}'s Google Calendar no longer matches ` +
     `${one ? "an approved time off" : `${found.length} approved time off requests`}, ` +
-    `and only a person can say which is right. Slate is still blocking the whole approved ` +
+    `and only a person can say which is right. ${why} ` +
+    `Slate is still blocking the whole approved ` +
     `window, so no lead can be booked into it meanwhile. Make the two agree: if those ` +
     `hours are being worked, change the request in My time off (it goes back to the ` +
     `manager to approve); if they are not, put the calendar event back to the approved ` +
     `times.\n` +
-    found.map((f) => mismatchLine(f, appBaseUrl)).join("\n")
+    found
+      .map((f, i) => mismatchLine(f, appBaseUrl) + (shared ? "" : ` ${escalationSentence(agentName, reasons[i]!)}`))
+      .join("\n")
   );
 }
 
