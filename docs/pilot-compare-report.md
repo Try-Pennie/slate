@@ -92,6 +92,24 @@ memory, and never printed.
   Eastern, and the first run that can be the readout is from 2026-10-31 03:00 ET,
   once the last of them has had its 7 days plus the 3 hour grace.
 
+## By where the application came from (#3701)
+
+About half the pilot tier applications are made on trypennie.com's own form
+(`Submission__c.Source__c = 'trypennie.com'`) and about half are sent in by partners
+(Engine, Borrow Better, Lead Economy, AmOne, TLG) whose leads apply and book on
+trypennie.com/offerportal. Measured 2026-10-13 they move in opposite directions:
+with a 24 hour booking window over Oct 5 to 12, form applications booked +3.2 points
+on Slate's side and partner ones -1.5 points, which together read as no difference.
+So every run also prints the same rate blocks per source, judged by the same rules,
+after the tiers. They never change the exit: the headline stays the readout.
+
+Partner applications are printed twice when the window opens before
+`PORTAL_FIX_MS` (2026-10-04 16:03 ET), from the window start and from that instant
+(Dan, 2026-10-13). Until then the offer portal chose its booker before the
+Submission existed and so showed cal.com to partner leads on Slate's side; trypennie
+#522 made it choose again once the form had created the Submission. A missing source
+counts with partners and other sources (`sourceGroup`), so nothing drops out.
+
 ## What it cannot see
 
 - A change to the split undone before a later edit of the record (only the last edit

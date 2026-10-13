@@ -6,7 +6,8 @@
 //   PILOT_COMPARE_REHEARSAL_START=2026-09-30 PILOT_COMPARE_REHEARSAL_SPAN_HOURS=12 pnpm report:pilot-compare
 //
 // WHAT IT READS, all read only. Salesforce: every `Submission__c` made in the cohort
-// (id, CreatedDate, XBC_SO__c, Lead__c, Email_SO__c, Mobile_Number_SO__c), the
+// (id, CreatedDate, XBC_SO__c, Lead__c, Email_SO__c, Mobile_Number_SO__c,
+// Source__c), the
 // applications behind any cal.com booking that carries no id (by Email_SO__c), and
 // `WebsiteConfiguration__c` as it is now. Slate: every real, routed booking made since
 // the window opened, and the quarter hourly readings of the split stored over the
@@ -118,8 +119,9 @@ interface SubmissionRecord {
   Lead__c: string | null;
   Email_SO__c: string | null;
   Mobile_Number_SO__c: string | null;
+  Source__c: string | null;
 }
-const SUBMISSION_FIELDS = "Id, CreatedDate, XBC_SO__c, Lead__c, Email_SO__c, Mobile_Number_SO__c";
+const SUBMISSION_FIELDS = "Id, CreatedDate, XBC_SO__c, Lead__c, Email_SO__c, Mobile_Number_SO__c, Source__c";
 const toApplication = (r: SubmissionRecord): Application => ({
   id: r.Id,
   createdAt: r.CreatedDate,
@@ -127,6 +129,7 @@ const toApplication = (r: SubmissionRecord): Application => ({
   leadId: r.Lead__c,
   email: r.Email_SO__c,
   phone10: phoneKey(r.Mobile_Number_SO__c),
+  source: r.Source__c,
 });
 
 // --- Salesforce: the cohort and the settings ---------------------------------------------
