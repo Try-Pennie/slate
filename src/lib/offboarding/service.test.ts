@@ -85,6 +85,12 @@ vi.mock("@/lib/bookable/routable-write", async () => {
 const booking = vi.hoisted(() => ({ startBulkReassign: vi.fn() }));
 vi.mock("@/lib/booking/service", () => booking);
 
+// #3667: the invites are cleared before the sweep, while Google still answers. The
+// real module reads bookings and calls Google; this records the call and its order.
+const calls = vi.hoisted(() => ({ order: [] as string[] }));
+const invites = vi.hoisted(() => ({ clearInvitesForLeaver: vi.fn() }));
+vi.mock("@/lib/offboarding/clear-invites-io", () => invites);
+
 // #2378. The real module talks to the Supabase auth admin API, which no test may
 // reach; these stand in for it and mimic its two answers, so a test can drive the
 // failure path as well as the success one.
@@ -110,8 +116,17 @@ beforeEach(() => {
   selectError = null;
   updateError = null;
   updateMatchesNothing = false;
+  calls.order.length = 0;
   booking.startBulkReassign.mockReset();
-  booking.startBulkReassign.mockResolvedValue({ jobId: "job1", itemCount: 0 });
+  booking.startBulkReassign.mockImplementation(async () => {
+    calls.order.push("sweep");
+    return { jobId: "job1", itemCount: 0 };
+  });
+  invites.clearInvitesForLeaver.mockReset();
+  invites.clearInvitesForLeaver.mockImplementation(async () => {
+    calls.order.push("clear");
+    return { total: 2, cleared: 2, failed: 0, unanswered: 0, notStarted: 0 };
+  });
   logError.mockReset();
   logWarn.mockReset();
   sessions.revokeSupabaseSessions.mockReset();
@@ -398,6 +413,52 @@ describe("the offboarding API sweeps the departed agent's appointments (#1241)",
     // The deactivation itself still happened.
     expect(updates).toHaveLength(1);
     expect(updates[0].patch.deactivated_at).toEqual(expect.any(String));
+  });
+});
+
+describe("a leaver's invites are cleared before their Google account is archived (#3667)", () => {
+  it("clears the invites first, then starts the sweep, and tells the automation how it went", async () => {
+    row = { id: "u9", deactivated_at: null };
+    const res = await applyLifecycleByEmail("leaver@trypennie.com", "deactivate");
+    expect(invites.clearInvitesForLeaver).toHaveBeenCalledWith("u9", updates[0].patch.deactivated_at);
+    expect(calls.order).toEqual(["clear", "sweep"]);
+    expect(res).toMatchObject({
+      status: "applied",
+      invitesCleared: { total: 2, cleared: 2, failed: 0, unanswered: 0, notStarted: 0 },
+    });
+  });
+
+  it("a retried call clears again, so invites the first call could not reach are tried once more", async () => {
+    row = { id: "u9", deactivated_at: "2026-10-13T20:00:00.000Z" };
+    await applyLifecycleByEmail("leaver@trypennie.com", "deactivate");
+    expect(invites.clearInvitesForLeaver).toHaveBeenCalledWith("u9", "2026-10-13T20:00:00.000Z");
+  });
+
+  it("a clear that throws is reported, and never stops the deactivation or the sweep", async () => {
+    row = { id: "u9", deactivated_at: null };
+    invites.clearInvitesForLeaver.mockImplementation(async () => {
+      throw new Error("bookings read failed");
+    });
+    const res = await applyLifecycleByEmail("leaver@trypennie.com", "deactivate");
+    expect(updates).toHaveLength(1);
+    expect(booking.startBulkReassign).toHaveBeenCalledTimes(1);
+    expect(res).toMatchObject({ status: "applied", invitesCleared: "failed" });
+    expect(logError).toHaveBeenCalled();
+  });
+
+  it("clears nothing on reactivate", async () => {
+    row = { id: "u9", deactivated_at: "2026-10-13T20:00:00.000Z" };
+    await applyLifecycleByEmail("leaver@trypennie.com", "reactivate");
+    expect(invites.clearInvitesForLeaver).not.toHaveBeenCalled();
+  });
+
+  it("on the admin path, clears only when the admin chose to move the bookings", async () => {
+    row = { id: "u9", deactivated_at: null };
+    await applyLifecycleByUserId("u9", "deactivate");
+    expect(invites.clearInvitesForLeaver).not.toHaveBeenCalled();
+    row = { id: "u8", deactivated_at: null };
+    await applyLifecycleByUserId("u8", "deactivate", { sweepCoverage: true });
+    expect(invites.clearInvitesForLeaver).toHaveBeenCalledTimes(1);
   });
 });
 
