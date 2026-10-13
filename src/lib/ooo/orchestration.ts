@@ -1239,14 +1239,28 @@ async function narrowHeldArtifacts(
  * Google applied after both waits gave up is on the calendar all the same. No id at
  * all: either calendar could hold one. A fallback recorded on main: the manager's own
  * calendar was tried first and may. A plain success: nothing else was attempted, so
- * nothing is read, and an ordinary cancel costs no extra call.
+ * nothing is read, not even the manager, and an ordinary cancel costs no extra call.
+ *
+ * One function decides both whether the manager is read and which calendars are, so
+ * the two cannot drift apart. THROWS when the manager cannot be read.
  */
-function untrackedManagerCalendars(request: OooRequest, preferred: string, main: string): string[] {
+async function untrackedManagerCalendars(request: OooRequest, deps: OooDeps): Promise<string[]> {
+  const fellBack = request.side_effects?.[EFFECTS.managerEvent]?.startsWith(MAIN_FALLBACK_OK) ?? false;
+  if (request.manager_event_id && !fellBack) return [];
+  const main = deps.mainOooCalendarId();
+  const preferred = await preferredManagerCalendar(request, deps);
   if (!request.manager_event_id) return [...new Set([preferred, main])];
   const recorded = request.manager_event_calendar_id ?? main;
-  const fellBack = request.side_effects?.[EFFECTS.managerEvent]?.startsWith(MAIN_FALLBACK_OK) ?? false;
-  return fellBack && preferred !== recorded ? [preferred] : [];
+  return preferred !== recorded ? [preferred] : [];
 }
+
+/**
+ * The key a read back that could not be made pages on (#3660). Its own family, so a
+ * removal that failed on `ooo_undo` minutes earlier, for any request, cannot hold it
+ * back: the two say different things, which is why the coverage stop has its own key
+ * too. Per agent, which the roster bounds.
+ */
+const undoUncheckedKey = (agentId: string) => `ooo_undo_unchecked:${agentId}`;
 
 /**
  * Read `calendarId` back for an event this request's approval may have written under
@@ -1260,6 +1274,7 @@ function untrackedManagerCalendars(request: OooRequest, preferred: string, main:
 async function removeUntrackedEvent(
   deps: OooDeps,
   requestId: string,
+  agentId: string,
   whose: "manager" | "agent",
   actorEmail: string,
   calendarId: string,
@@ -1269,7 +1284,7 @@ async function removeUntrackedEvent(
   try {
     found = await deps.findCalendarEvent(actorEmail, calendarId, clientId);
   } catch (e) {
-    await deps.alertOps("ooo_undo", oooUndoUnrecordedAlert(requestId, whose, String(e).slice(0, 200)));
+    await deps.alertOps(undoUncheckedKey(agentId), oooUndoUnrecordedAlert(requestId, whose, String(e).slice(0, 200)));
     return;
   }
   if (!found) return;
@@ -1291,42 +1306,34 @@ async function undoPostApproval(
   deps: OooDeps,
 ): Promise<Partial<OooRequest>> {
   const actor = deps.oooCalendarActorEmail();
-  const main = deps.mainOooCalendarId();
-  // #3660: only a request that may hold an unrecorded manager event pays the read
-  // of who its manager is, which is what names their calendar.
-  const mayHaveUntracked =
-    !request.manager_event_id ||
-    (request.side_effects?.[EFFECTS.managerEvent]?.startsWith(MAIN_FALLBACK_OK) ?? false);
-  let preferred: string | null = null;
-  if (mayHaveUntracked) {
-    try {
-      preferred = await preferredManagerCalendar(request, deps);
-    } catch (e) {
-      // The undo never failed on this read before #3660 and must not start: the
-      // recorded events and the busy block below still come down. The calendar it
-      // would have named is what could not be checked, so that is what is paged.
-      await deps.alertOps(
-        "ooo_undo",
-        oooUndoUnrecordedAlert(request.id, "manager", `its manager could not be read: ${String(e).slice(0, 160)}`),
-      );
-    }
+  let untracked: string[] = [];
+  try {
+    untracked = await untrackedManagerCalendars(request, deps);
+  } catch (e) {
+    // The undo never failed on this read before #3660 and must not start: the
+    // recorded events and the busy block below still come down. The calendar it
+    // would have named is what could not be checked, so that is what is paged.
+    await deps.alertOps(
+      undoUncheckedKey(agent.id),
+      oooUndoUnrecordedAlert(request.id, "manager", `its manager could not be read: ${String(e).slice(0, 160)}`),
+    );
   }
-  if (preferred !== null) {
-    for (const calendarId of untrackedManagerCalendars(request, preferred, main)) {
-      await removeUntrackedEvent(
-        deps,
-        request.id,
-        "manager",
-        actor,
-        calendarId,
-        await managerEventClientId(request.id, calendarId),
-      );
-    }
+  for (const calendarId of untracked) {
+    await removeUntrackedEvent(
+      deps,
+      request.id,
+      agent.id,
+      "manager",
+      actor,
+      calendarId,
+      await managerEventClientId(request.id, calendarId),
+    );
   }
   if (!request.agent_event_id) {
     await removeUntrackedEvent(
       deps,
       request.id,
+      agent.id,
       "agent",
       agent.email,
       "primary",

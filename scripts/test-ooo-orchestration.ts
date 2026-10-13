@@ -1212,7 +1212,10 @@ const input = {
     "#3660: and deletes the event it finds there",
   );
   eq(w.landed.size, 0, "#3660: nothing this request wrote is left on a calendar");
-  assert(!w.alerts.some((a) => a.key === "ooo_undo"), "#3660: a clean read back and delete pages nothing");
+  assert(
+    !w.alerts.some((a) => a.key.startsWith("ooo_undo")),
+    "#3660: a clean read back and delete pages nothing",
+  );
 }
 {
   // The manager's own calendar landed and timed out, and the main calendar took the
@@ -1264,8 +1267,8 @@ const input = {
   w.failFind = true;
   const res = await cancelOoo(id, agent, w.deps);
   assert(res.ok && w.requests.get(id)!.status === "cancelled", "#3660: an unreadable calendar does not stop the cancel");
-  const page = w.alerts.find((a) => a.key === "ooo_undo");
-  assert(page !== undefined, "#3660: could not look is paged, never read as nothing there");
+  const page = w.alerts.find((a) => a.key === `ooo_undo_unchecked:${agent.id}`);
+  assert(page !== undefined, "#3660: could not look is paged, on a key of its own, never read as nothing there");
   assert(
     !!page && page.message.includes(id) && page.message.includes("may still be on the agent's own calendar"),
     "#3660: and the page says the event may still be there, naming the request and whose calendar",
@@ -1294,7 +1297,7 @@ const input = {
     w.deletedEvents.some((e) => e.eventId === agentEventId),
     "#3660: the recorded agent event still comes down",
   );
-  const page = w.alerts.find((a) => a.key === "ooo_undo");
+  const page = w.alerts.find((a) => a.key === `ooo_undo_unchecked:${agent.id}`);
   assert(
     !!page && page.message.includes("the manager OOO calendar") && page.message.includes("its manager could not be read"),
     "#3660: and the manager calendar nobody could check is paged, saying why",
