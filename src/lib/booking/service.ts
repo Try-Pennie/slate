@@ -202,6 +202,7 @@ import {
   reservationDrainRecovery,
   reservationDrainStuckAlert,
   verifyReadFailedAlert,
+  type TimeoutReach,
 } from "@/lib/booking/alert-copy";
 // #1135: the one way an error reaches alert copy. A Postgres error message can be
 // long and multi-line (a constraint body, a nested detail), and a page is read on
@@ -2451,6 +2452,8 @@ export function bookingFailureAlert(
   err: unknown,
   /** #3511: where the confirm's time went, read from its own profile. */
   spent: TimeSpent | null = null,
+  /** #3663: how far the request had got, which the booking API's timeout path knows. */
+  reach: TimeoutReach = "booking",
 ): { key: string; cooldownMs: number; message: string } | null {
   // #3102: the same incident as the verify outage from the lead's side, so the
   // same key and cooldown, with words that name what did not answer.
@@ -2458,7 +2461,7 @@ export function bookingFailureAlert(
     return {
       key: VERIFY_OUTAGE_ALERT_KEY,
       cooldownMs: VERIFY_OUTAGE_ALERT_COOLDOWN_MS,
-      message: dependencyTimeoutAlert({ ...err, spent }),
+      message: dependencyTimeoutAlert({ ...err, spent, reach }),
     };
   }
   if (err instanceof orchestration.VerifyUnavailableError) {
@@ -2510,12 +2513,22 @@ async function alertOnBookingFailure<T>(op: () => Promise<T>): Promise<T> {
  * deadline that struck BEFORE the service was reached (#3102) and must page about
  * it the same way. Never throws, and never holds the answer: a send that fails is
  * logged.
+ *
+ * Two options, both from the booking API's timeout path (#3663). `reach` is how far
+ * the request had got, so a dry run or a request whose body was never read is not
+ * worded as a lead waiting on a reservation. `isTestTraffic` says whether it was the
+ * canary's or a test bucket's, which may read the bucket, so it is asked after the
+ * response with the page, and a check that throws counts as real and pages.
  */
-export async function pageBookingFailure(err: unknown): Promise<void> {
+export async function pageBookingFailure(
+  err: unknown,
+  opts: { reach?: TimeoutReach; isTestTraffic?: () => Promise<boolean> } = {},
+): Promise<void> {
   // #3511: read NOW, while the confirm's request is still open, since the page
   // itself is deferred past the response, where the request is closed.
-  const spec = bookingFailureAlert(err, timeSpentInThisRequest());
+  const spec = bookingFailureAlert(err, timeSpentInThisRequest(), opts.reach);
   if (!spec) return;
+  const isTestTraffic = opts.isTestTraffic;
   // #3416: after the response, never in front of it. Nothing in the answer reads
   // the page, and the page reads `alert_state` (and on its first send claims and
   // stamps it): a burst whose confirms time out waiting in line made every one of
@@ -2524,7 +2537,11 @@ export async function pageBookingFailure(err: unknown): Promise<void> {
   // (`afterResponse`), so a budget the timeout spent cannot fail the page's own
   // read, which is what the cleanup allowance used to be for here (#3102), and
   // `after()` keeps it alive past the response as #3145 does for the limiter pages.
-  afterResponse("booking-failure-page", () =>
+  afterResponse("booking-failure-page", async () => {
+    if (isTestTraffic && (await isTestTraffic().catch(() => false))) {
+      log.info("booking", { msg: "test traffic hit a booking outage; not paged", key: spec.key });
+      return;
+    }
     // alert-text-ok: `spec.message` is the alert's own copy, built by
     // bookingFailureAlert from the pure builders in booking/alert-copy.ts. The
     // name ends in `.message` and is not an error; the widened #2418 scan reads
@@ -2532,8 +2549,8 @@ export async function pageBookingFailure(err: unknown): Promise<void> {
     // alert-key: verify_on_book_outage
     // alert-key: reschedule_lock_outage
     // alert-key: no_eligible_agents:*
-    sendThrottledAlert(spec.key, spec.cooldownMs, spec.message).catch(logAlertSendFailure(spec.key)),
-  );
+    await sendThrottledAlert(spec.key, spec.cooldownMs, spec.message).catch(logAlertSendFailure(spec.key));
+  });
 }
 
 /**

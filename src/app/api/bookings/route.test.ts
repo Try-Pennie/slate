@@ -116,6 +116,7 @@ vi.mock("@/lib/monitor/test-traffic", async (importOriginal) => ({
 }));
 
 import { POST, GET } from "./route";
+import { resolveTrafficMarkers, type AttemptSource } from "@/lib/monitor/test-traffic";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { deadlineWithinBudget } from "@/lib/call-budget";
 import { BOOKING_CONFIRM_BUDGET_MS } from "@/lib/booking/confirm-budget";
@@ -1355,5 +1356,138 @@ describe("#3580 lookup page suppression", () => {
     expect(res.status).toBe(500);
     expect(testTraffic.isTestOwnedBookingForPaging).not.toHaveBeenCalled();
     expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #3663: at 03:37 UTC on 2026-10-13 the canary's dry run ran out of the request's 12
+// seconds while Google's token mint was in flight. The timeout callback recorded it as
+// bucket '' with `is_test = false` under "a dependency timed out before the request was
+// read", and paged verify_on_book_outage telling the reader the lead saw an error and to
+// check booking_reservations. The request had been read and authenticated, and there was
+// no lead and no row. The callback now records what the request had established.
+describe("POST /api/bookings: a timeout records what the request already knew (#3663)", () => {
+  const tokenMintStall = () => new DeadlineExceededError("google token mint", 8000);
+
+  beforeEach(() => {
+    regalKey.primary.mockReturnValue("");
+    regalKey.secondary.mockReturnValue("");
+    env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
+      slot === "primary" && (caller === "canary" || caller === "regal") ? `${caller}-secret` : "",
+    );
+    rateLimit.exactCeilingWithinLimit.mockReset();
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
+    rateLimit.bearerFailureWithinLimit.mockReset();
+    rateLimit.bearerFailureWithinLimit.mockResolvedValue(true);
+    monitor.recordApiOutcome.mockReset();
+    service.pageBookingFailure.mockClear();
+    service.previewBooking.mockReset();
+    service.bookViaApi.mockReset();
+    testTraffic.isTestBucketForPaging.mockReset();
+    testTraffic.isTestBucketForPaging.mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    env.bookingApiKeyFor.mockReset();
+    env.bookingApiKeyFor.mockImplementation(regalKeyFor);
+  });
+
+  /** The one tally row the timeout wrote, and the markers it resolves to. */
+  async function recordedTimeout() {
+    const calls = monitor.recordApiOutcome.mock.calls.filter((c) => c[2] === "VERIFY_UNAVAILABLE");
+    expect(calls).toHaveLength(1);
+    const [outcome, bucket, code, source] = calls[0]! as [string, string, string, AttemptSource];
+    return { outcome, bucket, code, source };
+  }
+
+  /**
+   * The one page the timeout handed over: how far the request got, and its test
+   * traffic answer. The bucket flag is read after the response with the page
+   * (#3416), so it must not have been read by the time the 503 came back.
+   */
+  async function pageAsked() {
+    expect(service.pageBookingFailure).toHaveBeenCalledOnce();
+    const opts = (service.pageBookingFailure.mock.calls[0] as unknown[])[1] as {
+      reach: string;
+      isTestTraffic: () => Promise<boolean>;
+    };
+    expect(testTraffic.isTestBucketForPaging).not.toHaveBeenCalled();
+    return { reach: opts.reach, isTest: await opts.isTestTraffic() };
+  }
+
+  it("records the canary's dry run timeout under its bucket as test traffic, and pages nobody", async () => {
+    service.previewBooking.mockRejectedValueOnce(tokenMintStall());
+    const res = await post("Bearer canary-secret", { ...VALID_BODY, bucketCode: "SMOKE", dryRun: true });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: "VERIFY_UNAVAILABLE" });
+    const row = await recordedTimeout();
+    expect(row.bucket).toBe("SMOKE");
+    expect(row.source.by).not.toBe("unidentifiable");
+    // The real resolver, not a mock: the row the tally would write is is_test.
+    expect((await resolveTrafficMarkers(row.source)).isTest).toBe(true);
+    // Test traffic by its key, so the page stands down without reading the bucket.
+    expect(await pageAsked()).toEqual({ reach: "dry-run", isTest: true });
+    expect(testTraffic.isTestBucketForPaging).not.toHaveBeenCalled();
+  });
+
+  it("records a canary timeout in the ceilings, after its key was accepted, as test traffic", async () => {
+    rateLimit.exactCeilingWithinLimit.mockRejectedValueOnce(
+      new DeadlineExceededError("supabase", 4000, { label: "the booking confirm", totalMs: 12_000 }),
+    );
+    const res = await post("Bearer canary-secret", { ...VALID_BODY, bucketCode: "SMOKE", dryRun: true });
+    expect(res.status).toBe(503);
+    const row = await recordedTimeout();
+    expect(row.bucket).toBe("");
+    expect((await resolveTrafficMarkers(row.source)).isTest).toBe(true);
+    expect(service.previewBooking).not.toHaveBeenCalled();
+    expect(await pageAsked()).toEqual({ reach: "before-body", isTest: true });
+  });
+
+  it("keeps a timeout before any key was accepted unidentifiable, and says so", async () => {
+    rateLimit.bearerFailureWithinLimit.mockRejectedValueOnce(
+      new DeadlineExceededError("supabase", 4000, { label: "the booking confirm", totalMs: 12_000 }),
+    );
+    const res = await post("Bearer not-a-key", VALID_BODY);
+    expect(res.status).toBe(503);
+    const row = await recordedTimeout();
+    expect(row.bucket).toBe("");
+    expect(row.source).toEqual({ by: "unidentifiable", why: expect.stringContaining("before the API key was accepted") });
+    expect((await resolveTrafficMarkers(row.source)).isTest).toBe(false);
+    expect(await pageAsked()).toEqual({ reach: "before-body", isTest: false });
+  });
+
+  it("names the stage for a real caller's timeout after its key, before its body, and still pages", async () => {
+    rateLimit.exactCeilingWithinLimit.mockRejectedValueOnce(
+      new DeadlineExceededError("supabase", 4000, { label: "the booking confirm", totalMs: 12_000 }),
+    );
+    const res = await post("Bearer regal-secret", VALID_BODY);
+    expect(res.status).toBe(503);
+    const row = await recordedTimeout();
+    expect(row.source).toEqual({ by: "unidentifiable", why: expect.stringContaining("after the regal key was accepted") });
+    expect(row.source).not.toEqual(expect.objectContaining({ why: expect.stringContaining("before the request was read") }));
+    expect(await pageAsked()).toEqual({ reach: "before-body", isTest: false });
+  });
+
+  it("pages a real lead's dry run timeout as a dry run, recorded under its bucket", async () => {
+    service.previewBooking.mockRejectedValueOnce(tokenMintStall());
+    const res = await post("Bearer regal-secret", { ...VALID_BODY, dryRun: true });
+    expect(res.status).toBe(503);
+    const row = await recordedTimeout();
+    expect(row.bucket).toBe(VALID_BODY.bucketCode);
+    expect(row.source).toMatchObject({ by: "bucket", code: VALID_BODY.bucketCode });
+    expect(await pageAsked()).toEqual({ reach: "dry-run", isTest: false });
+    expect(testTraffic.isTestBucketForPaging).toHaveBeenCalledWith(VALID_BODY.bucketCode);
+  });
+
+  it("does not page a partner's timeout on a test bucket, which the bucket's flag decides", async () => {
+    service.previewBooking.mockRejectedValueOnce(tokenMintStall());
+    testTraffic.isTestBucketForPaging.mockResolvedValue(true);
+    const res = await post("Bearer regal-secret", { ...VALID_BODY, bucketCode: PUBLIC_TEST, dryRun: true });
+    expect(res.status).toBe(503);
+    const row = await recordedTimeout();
+    expect(row.source).toMatchObject({ by: "bucket", code: PUBLIC_TEST });
+    expect(await pageAsked()).toEqual({ reach: "dry-run", isTest: true });
+    expect(testTraffic.isTestBucketForPaging).toHaveBeenCalledWith(PUBLIC_TEST);
   });
 });

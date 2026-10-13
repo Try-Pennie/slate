@@ -4661,6 +4661,25 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       budget: { label: "the booking confirm", totalMs: 12_000 },
     }),
   },
+  // #3663: the booking API's timeout path knows how far the request got, so a dry
+  // run and a request whose body was never read are not worded as a lead's booking.
+  {
+    key: "verify_on_book_outage",
+    state: "a real caller's dry run timed out on a dependency (#3663)",
+    channel: "alert",
+    text: dependencyTimeoutAlert({ dependency: "google token mint", timeoutMs: 8000, budget: null, reach: "dry-run" }),
+  },
+  {
+    key: "verify_on_book_outage",
+    state: "a request timed out before Slate read its body, budget spent (#3663)",
+    channel: "alert",
+    text: dependencyTimeoutAlert({
+      dependency: "supabase",
+      timeoutMs: 0,
+      budget: { label: "the booking confirm", totalMs: 12_000 },
+      reach: "before-body",
+    }),
+  },
   {
     key: "verify_on_book_outage",
     state: "too little budget left to write the booking, so nothing was started (#3338)",

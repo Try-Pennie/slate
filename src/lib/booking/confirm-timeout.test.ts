@@ -28,7 +28,7 @@ async function flushAfter(): Promise<void> {
   while (afterQueue.length > 0) await afterQueue.shift()!();
 }
 
-import { createBooking as serviceCreateBooking, bookingFailureAlert } from "./service";
+import { createBooking as serviceCreateBooking, bookingFailureAlert, pageBookingFailure } from "./service";
 import {
   DependencyTimeoutError,
   SlotUnavailableError,
@@ -176,6 +176,41 @@ describe("a timeout on the confirm path (#3102)", () => {
     expect(alert).toHaveBeenCalledOnce();
     expect(inBudget).toEqual([false]);
     expect(deadlineWithinBudget(60_000, "probe").reportAs.budget).toBeNull();
+  });
+
+  // #3663: the booking API timeout path asks whether the request was test traffic
+  // (the canary key, or a test bucket's flag), and that may read the bucket. The
+  // read is deferred with the page, never in front of the 503, for #3416's reason.
+  it("decides a timeout's test traffic after the answer, and pages only real traffic (#3663)", async () => {
+    const timeout = timeoutAsRetryable(new DeadlineExceededError("google token mint", 8000));
+    for (const isTest of [true, false]) {
+      alert.mockClear();
+      const asked = vi.fn(async () => isTest);
+      await pageBookingFailure(timeout, { reach: "dry-run", isTestTraffic: asked });
+      expect(asked).not.toHaveBeenCalled();
+      await flushAfter();
+      expect(asked).toHaveBeenCalledOnce();
+      if (isTest) {
+        expect(alert).not.toHaveBeenCalled();
+      } else {
+        expect(alert).toHaveBeenCalledOnce();
+        const [key, , message] = alert.mock.calls[0]! as unknown as [string, number, string];
+        expect(key).toBe("verify_on_book_outage");
+        expect(message).toMatch(/^A dry run booking check failed/);
+      }
+    }
+  });
+
+  it("pages a timeout whose test traffic check throws, so a real one is still heard (#3663)", async () => {
+    const timeout = timeoutAsRetryable(new DeadlineExceededError("google token mint", 8000));
+    await pageBookingFailure(timeout, {
+      reach: "dry-run",
+      isTestTraffic: async () => {
+        throw new Error("unreadable");
+      },
+    });
+    await flushAfter();
+    expect(alert).toHaveBeenCalledOnce();
   });
 
   // #3134: an open Google breaker refuses verify-on-book's reads at once. It must
