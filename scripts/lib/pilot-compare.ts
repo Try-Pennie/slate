@@ -103,6 +103,11 @@ export const PILOT_COMPARE_EXIT = {
   partial: 16,
   /** A stored reading inside the window saw a split other than the assumed one (#3641). */
   splitChanged: 17,
+  /**
+   * A booking update (#3698): bookings within 24 hours through yesterday, with no held
+   * calls or show rates. A trend to read between readouts, never a result.
+   */
+  bookingUpdate: 18,
 } as const;
 
 const EXIT_LABEL: Record<number, string> = {
@@ -312,6 +317,12 @@ export interface PilotWindow {
   partial: boolean;
   readout: { date: string | null; reached: boolean };
   lift: number;
+  /**
+   * A booking update (#3698), or null for every other run. `referenceEndMs` closes the
+   * newest cohort whose full span has passed, which the 24 hour window is measured
+   * against, or is null before any has.
+   */
+  update: { referenceEndMs: number | null } | null;
 }
 
 /** Midnight Eastern on an ISO calendar date, as epoch ms: the one ET to UTC conversion. */
@@ -347,6 +358,57 @@ export type WindowPlan = { ok: true; window: PilotWindow } | { ok: false; exit: 
  * prove them before the window has a closed span. It is labelled on every line that
  * matters and exits on its own code: its days were not a 50/50 split on every tier.
  */
+/** The span a booking update counts a booking inside (#3698). */
+export const UPDATE_SPAN_MS = 24 * 3_600_000;
+
+/**
+ * A booking update (#3698): every application whose 24 hours and grace have passed,
+ * judged on bookings made in those 24 hours. Not floored to whole days, so it runs
+ * through yesterday. Before any application's 24 hours have passed it refuses, never a
+ * partial look: an update that showed rates so far would be one more way to read a
+ * trend as a result.
+ */
+function planBookingUpdate(nowMs: number, lift: number, refuse: (exit: number, message: string) => WindowPlan): WindowPlan {
+  const startMs = etMidnightMs(WINDOW_START_ET) as number;
+  const cohortEndMs = nowMs - UPDATE_SPAN_MS - JUDGE_GRACE_MS;
+  if (cohortEndMs <= startMs) {
+    return refuse(
+      PILOT_COMPARE_EXIT.windowNotOpen,
+      `no application made since ${etLabel(startMs)} has had its 24 hours close yet, so there is no booking to count. The first is countable from ${etLabel(startMs + UPDATE_SPAN_MS + JUDGE_GRACE_MS)}.`,
+    );
+  }
+  const closed = etDayFloorMs(nowMs - SPAN_DAYS * 86_400_000 - JUDGE_GRACE_MS);
+  return {
+    ok: true,
+    window: {
+      startMs,
+      spanMs: UPDATE_SPAN_MS,
+      cohortEndMs,
+      readEndMs: nowMs,
+      rehearsal: false,
+      partial: false,
+      readout: { date: null, reached: false },
+      lift,
+      update: { referenceEndMs: closed > startMs ? closed : null },
+    },
+  };
+}
+
+/**
+ * How many of each side's bookings came within `withinMs` of the application, out of
+ * every booking in its span: what a booking update's 24 hour window misses, measured on
+ * a cohort whose full span has closed (#3698).
+ */
+export function bookingWindowCatch(m: Matched, withinMs: number): Record<Side, { within: number; booked: number }> {
+  const out: Record<Side, { within: number; booked: number }> = { slate: { within: 0, booked: 0 }, calcom: { within: 0, booked: 0 } };
+  for (const a of m.apps) {
+    if (a.chains.length === 0) continue;
+    out[a.side].booked++;
+    if (a.chains.some((c) => c.createdMs < a.createdMs + withinMs)) out[a.side].within++;
+  }
+  return out;
+}
+
 export function planWindow(nowMs: number, env: Record<string, string | undefined>, readoutDate: string | null = READOUT_DATE): WindowPlan {
   const refuse = (exit: number, message: string): WindowPlan => ({
     ok: false,
@@ -358,7 +420,17 @@ export function planWindow(nowMs: number, env: Record<string, string | undefined
   if (!Number.isFinite(lift) || lift <= 0 || lift >= 1) {
     return refuse(PILOT_COMPARE_EXIT.inputUnreadable, `PILOT_COMPARE_LIFT="${liftRaw}" is not a fraction above 0 and below 1 (0.02 for two points).`);
   }
+  const updateRaw = (env.PILOT_COMPARE_BOOKING_UPDATE ?? "").trim();
+  if (updateRaw !== "" && updateRaw !== "1") {
+    return refuse(PILOT_COMPARE_EXIT.inputUnreadable, `PILOT_COMPARE_BOOKING_UPDATE="${updateRaw}" is not 1; set it to 1 for a booking update, or leave it unset.`);
+  }
   const rehearsalStart = (env.PILOT_COMPARE_REHEARSAL_START ?? "").trim();
+  if (updateRaw === "1") {
+    if (rehearsalStart !== "") {
+      return refuse(PILOT_COMPARE_EXIT.inputUnreadable, "PILOT_COMPARE_BOOKING_UPDATE and PILOT_COMPARE_REHEARSAL_START cannot be combined: an update reads the real window.");
+    }
+    return planBookingUpdate(nowMs, lift, refuse);
+  }
   let startMs: number;
   let spanMs = SPAN_DAYS * 86_400_000;
   if (rehearsalStart !== "") {
@@ -386,7 +458,7 @@ export function planWindow(nowMs: number, env: Record<string, string | undefined
   if (readoutMs !== null && cohortEndMs > readoutMs) cohortEndMs = readoutMs;
   // Rule 9: the window has opened but no span has closed, so look at what is there so far.
   if (cohortEndMs <= startMs && !rehearsal && nowMs > startMs) {
-    return { ok: true, window: { startMs, spanMs, cohortEndMs: nowMs, readEndMs: nowMs, rehearsal, partial: true, readout: { date: null, reached: false }, lift } };
+    return { ok: true, window: { startMs, spanMs, cohortEndMs: nowMs, readEndMs: nowMs, rehearsal, partial: true, readout: { date: null, reached: false }, lift, update: null } };
   }
   if (cohortEndMs <= startMs) {
     const firstMs = firstJudgeableMs(startMs, spanMs);
@@ -395,7 +467,7 @@ export function planWindow(nowMs: number, env: Record<string, string | undefined
       : `the window opens at ${etLabel(startMs)}, so no application has been made in it yet.`;
     return refuse(PILOT_COMPARE_EXIT.windowNotOpen, `${why} The first whole day is judgeable from ${etLabel(firstMs)}.`);
   }
-  return { ok: true, window: { startMs, spanMs, cohortEndMs, readEndMs: nowMs, rehearsal, partial: false, readout: { date: rehearsal ? null : readoutDate, reached }, lift } };
+  return { ok: true, window: { startMs, spanMs, cohortEndMs, readEndMs: nowMs, rehearsal, partial: false, readout: { date: rehearsal ? null : readoutDate, reached }, lift, update: null } };
 }
 
 /** When the first whole Eastern day of applications can be judged. */
@@ -862,6 +934,8 @@ export interface CompareInput {
   readings: readonly PilotSettingsRow[];
   matched: Matched;
   calls: CallsRead;
+  /** A booking update only (#3698): the newest closed cohort, matched over its full span, or null before one has closed. */
+  reference?: Matched | null;
 }
 
 /** Settings now, against the assumption: null when they agree. */
@@ -1024,10 +1098,16 @@ export const JUDGED_EXITS: ReadonlySet<number> = new Set([
   PILOT_COMPARE_EXIT.settingsNowDiffer,
   PILOT_COMPARE_EXIT.tooFewToRead,
   PILOT_COMPARE_EXIT.splitChanged,
+  PILOT_COMPARE_EXIT.bookingUpdate,
 ]);
 
 export function judgePilotCompare(input: CompareInput): { exit: number; lines: string[]; proposedReadout: string | null } {
   const result = judgeLines(input);
+  if (input.window.update !== null) {
+    // An update is labelled on every line, like a partial look, so no line of it can be
+    // quoted as a result; a refusal keeps its own code.
+    return { ...result, lines: result.lines.map((l) => `[UPDATE] ${l}`), proposedReadout: null };
+  }
   if (!input.window.partial) return result;
   // Rule 9: a partial look is labelled on every line, and exits on its own code
   // unless it refused, so it can never be read or scripted as a result.
@@ -1044,6 +1124,8 @@ export function judgePilotCompare(input: CompareInput): { exit: number; lines: s
 function judgeLines(input: CompareInput): { exit: number; lines: string[]; proposedReadout: string | null } {
   const { window, settings, matched, calls } = input;
   const partial = window.partial;
+  /** A booking update (#3698): bookings only, no calls read, never a readout. */
+  const update = window.update !== null;
   const lines: string[] = [];
   // A rehearsal's days are before any reading was stored, so it keeps the assumption.
   const split: SplitCheck = window.rehearsal
@@ -1066,7 +1148,14 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
   const created = matched.apps.map((a) => a.createdMs);
   const firstMs = firstJudgeableMs(window.startMs, window.spanMs);
   const ageDays = (ms: number) => ((window.readEndMs - ms) / 86_400_000).toFixed(2);
-  const header = partial
+  const header = update
+    ? [
+        `BOOKING UPDATE (not a readout): Slate against cal.com bookings, intention to treat by hash side, tiers ${ASSUMED_TIERS.join(";")}.`,
+        `Cohort: applications made from ${etLabel(window.startMs)} to ${etLabel(window.cohortEndMs)} (${days.toFixed(2)} days), ` +
+          "each counted as booked when it booked within 24 hours of being made. Held calls and show rates are left out: many calls are booked days ahead.",
+        ...split.lines,
+      ]
+    : partial
     ? [
         `Not a readout: no application's ${spanLabel(window.spanMs)} span has closed yet. Slate against cal.com so far, intention to treat by hash side, tiers ${ASSUMED_TIERS.join(";")}.`,
         `Cohort so far: applications made from ${etLabel(window.startMs)} to now, ${etLabel(window.readEndMs)} (${days.toFixed(2)} days), every one with its span still open.`,
@@ -1140,7 +1229,7 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
       : matched.apps.filter((a) =>
           a.chains.some((ch) => ch.finalStartMs !== null && ch.finalStartMs < a.createdMs + window.spanMs && ch.finalStartMs + SHOW_AFTER_MS < (calls.storeBeganMs as number)),
         ).length;
-  if (dueBeforeStore > 0) {
+  if (dueBeforeStore > 0 && !update) {
     return {
       exit: PILOT_COMPARE_EXIT.noCallsStored,
       lines: [
@@ -1152,7 +1241,7 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
       proposedReadout: null,
     };
   }
-  if (calls.storedInSpan === 0 || calls.storeBeganMs === null) {
+  if (!update && (calls.storedInSpan === 0 || calls.storeBeganMs === null)) {
     return {
       exit: PILOT_COMPARE_EXIT.noCallsStored,
       lines: [
@@ -1194,6 +1283,17 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
       caveat: "biased low, not a result" | "early, not a result" = "biased low, not a result",
     ) => (partial ? partialIntervalText(readable, d, caveat) : readable ? intervalText(d) : "not yet readable");
     out.push(`${label}:`);
+    if (update) {
+      out.push(
+        `  applications  Slate ${s.length}, cal.com ${k.length}`,
+        `  booking rate  Slate ${sb}/${s.length} (${pct(booking.slateRate)}), cal.com ${kb}/${k.length} (${pct(booking.calcomRate)}); ` +
+          (readableBooking ? intervalText(booking) : "not yet readable"),
+      );
+      const perDayUpdate = (s.length + k.length) / Math.max(perDayDays, 1e-9);
+      const dUpdate = daysNeeded({ leadsPerDay: perDayUpdate, percent: ASSUMED_PERCENT, baseRate: booking.calcomRate, lift: window.lift });
+      out.push(`  days needed to see ${points(window.lift)}: booking rate ${dUpdate.ok ? plural(dUpdate.days, "day") : `none (${dUpdate.reason})`}`);
+      return { out, readableBooking, readableShow: false, dBook: dUpdate, dShow: dUpdate };
+    }
     out.push(
       `  applications  Slate ${s.length}, cal.com ${k.length}`,
       `  booking rate  Slate ${sb}/${s.length} (${pct(booking.slateRate)}), cal.com ${kb}/${k.length} (${pct(booking.calcomRate)}); ` +
@@ -1219,6 +1319,21 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
 
   const overall = rateBlock(partial ? "All pilot tiers so far (intention to treat)" : "All pilot tiers (headline, intention to treat)", judged, days);
   lines.push(...overall.out);
+  if (update) {
+    const ref = input.reference ?? null;
+    const refEnd = window.update?.referenceEndMs ?? null;
+    if (ref === null || refEnd === null) {
+      lines.push("How much a 24 hour window misses: not measured yet, because no cohort has had its full 7 days close. Read the booking rates as low on both sides.");
+    } else {
+      const c24 = bookingWindowCatch(ref, window.spanMs);
+      const share = (x: { within: number; booked: number }) => (x.booked > 0 ? pct(x.within / x.booked) : "no bookings");
+      lines.push(
+        `A 24 hour window caught ${c24.slate.within} of ${c24.slate.booked} bookings on Slate's side (${share(c24.slate)}) and ` +
+          `${c24.calcom.within} of ${c24.calcom.booked} on cal.com's (${share(c24.calcom)}), measured on applications made ` +
+          `${etLabel(window.startMs)} to ${etLabel(refEnd)}, whose 7 days have closed.`,
+      );
+    }
+  }
   if (partial) {
     lines.push(
       `Read with care: the booking rate is biased low on both sides, because every application here has had less than its ${spanLabel(window.spanMs)}s to book. ` +
@@ -1263,6 +1378,8 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
   lines.push(
     "By the system that took the booking (NOT randomised: who books where is chosen by the lead and the page, so this row can differ from the headline for reasons that are not the booker):",
     `  booked applications  Slate ${booked.filter((j) => j.system === "slate").length}, cal.com ${booked.filter((j) => j.system === "calcom").length}`,
+  );
+  if (!update) lines.push(
     `  show rate  Slate ${bySystem.slate.outcomes}/${bySystem.slate.units} (${pct(bySystem.slate.rate)}), cal.com ${bySystem.calcom.outcomes}/${bySystem.calcom.units} (${pct(bySystem.calcom.rate)}); ` +
       (partial
         ? partialIntervalText(
@@ -1302,7 +1419,7 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
   if (c.unresolved > 0) left.push(`${plural(c.unresolved, "cal.com reschedule")} whose new booking could not be read (booked, show not judged)`);
   const other = Object.entries(c.otherEventTypes);
   if (other.length > 0) left.push(`cal.com bookings on event types that are not a lead booking: ${other.map(([id, n]) => `${id} (${n})`).join(", ")}`);
-  if (notJudgeable > 0) {
+  if (notJudgeable > 0 && !update) {
     left.push(
       `${plural(notJudgeable, "booked application")} whose final start fell after the span${partial ? " or whose call is still ahead" : ""}, so its show is not judged`,
     );
@@ -1313,13 +1430,22 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
     `Matching: ${c.byId} bookings by the id they carry, ${c.byContact} cal.com bookings by email and phone (${c.unmatched + c.ambiguous} of ${c.needingContact} not tied, ${pct(missShare)}).`,
   );
   if (left.length > 0) lines.push(`Left out: ${left.join("; ")}.`);
-  lines.push(
+  if (!update) lines.push(
     `A show is one human Regal call of at least ${SHOW_MIN_TALK_S} s starting from 15 minutes before to 60 minutes after the final start; ` +
       `${plural(calls.storedInSpan, "call")} were stored over the span read. Booking rate is per application; GA4's per visitor rate (report:pilot-split) is a different population.`,
   );
 
   // --- the verdict -----------------------------------------------------------------------
   const disagree = settingsDisagreement(settings);
+  if (update) {
+    lines.push(
+      "BOOKING UPDATE: not a readout. Bookings within 24 hours only, from applications whose 24 hours have passed; held calls, show rates " +
+        "and a readout date come only from the full report.",
+    );
+    if (disagree !== null) lines.push(`SETTINGS NOW DIFFER from the assumed split: ${disagree}.`);
+    const exit = split.status === "changed" ? PILOT_COMPARE_EXIT.splitChanged : disagree !== null ? PILOT_COMPARE_EXIT.settingsNowDiffer : PILOT_COMPARE_EXIT.bookingUpdate;
+    return { exit, lines, proposedReadout: null };
+  }
   if (partial) {
     if (disagree !== null) lines.push(`SETTINGS NOW DIFFER from the assumed split: ${disagree}.`);
     return { exit: PILOT_COMPARE_EXIT.partial, lines, proposedReadout: null };
