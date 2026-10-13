@@ -153,15 +153,29 @@ export interface OooEventMismatch {
   displayTzLabel: string | null;
   coverage:
     | { kind: "uncovered"; spans: { startMs: number; endMs: number }[] }
-    | { kind: "not-blocking" };
+    /**
+     * `unmeasured` is the tail of the window too far ahead for Slate's copy of the
+     * calendar to answer (#3655), or null when the whole window was checked. The
+     * sentence then names only the part that was checked (L11).
+     */
+    | { kind: "not-blocking"; unmeasured: { startMs: number; endMs: number } | null };
 }
+
+const NOT_BLOCKING_WHY = "(it was deleted, cancelled, marked free or moved)";
 
 function mismatchLine(f: OooEventMismatch, appBaseUrl: string): string {
   const label = f.displayTzLabel ?? undefined;
   const approved = formatWhenLine(f.startsAt, f.endsAt, f.displayTzId, label);
   const calendar =
     f.coverage.kind === "not-blocking"
-      ? "The calendar shows no busy time off event inside that window (it was deleted, cancelled, marked free or moved)."
+      ? f.coverage.unmeasured === null
+        ? `The calendar shows no busy time off event inside that window ${NOT_BLOCKING_WHY}.`
+        : `The calendar shows no busy time off event for ${formatWhenLine(
+            f.startsAt,
+            new Date(f.coverage.unmeasured.startMs).toISOString(),
+            f.displayTzId,
+            label,
+          )} ${NOT_BLOCKING_WHY}; the rest of the window is too far ahead to check yet.`
       : `The calendar event leaves ${f.coverage.spans
           .map((s) =>
             formatWhenLine(

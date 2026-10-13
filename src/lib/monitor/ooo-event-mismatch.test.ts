@@ -22,6 +22,8 @@ vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert, resolveAlert, firi
 import {
   eventMismatchesByAgent,
   isTimeOffEventIdShape,
+  mirroredHorizonMs,
+  primaryMirroredHorizons,
   noticeSyncedOooEvents,
   oooEventMismatchKey,
   runOooEventMismatchCheck,
@@ -32,6 +34,7 @@ import {
 } from "./ooo-event-mismatch";
 import { oooEventMismatchAlert, oooEventMismatchRecovery } from "@/lib/ooo/alert-copy";
 import { deterministicEventId, freshEventId, TOMBSTONE_FRESH_IDS } from "@/lib/booking/core";
+import { BUSY_WINDOW_AHEAD_DAYS } from "@/lib/google/sync-coalesce";
 
 const NOW = Date.parse("2026-10-06T09:00:00.000Z");
 const APP = "https://slate.example.com";
@@ -48,6 +51,9 @@ const request = (over: Partial<ApprovedEventRequest> = {}): ApprovedEventRequest
   displayTzLabel: "MT",
   agentEventId: "evt-ooo",
   inPool: true,
+  // The primary calendar's mirrored horizon, NOW plus the 21 day write window, as a
+  // calendar hydrated this morning carries it (#3655).
+  mirroredUntil: "2026-10-27T09:00:00.000Z",
   ...over,
 });
 const mirror = (over: Partial<EventMirror> = {}): EventMirror => ({
@@ -241,6 +247,159 @@ describe("runOooEventMismatchCheck", () => {
   });
 });
 
+describe("the calendar's mirrored horizon (#3655)", () => {
+  // On 2026-10-12 three approved requests 24 to 69 days out paged as "no busy time
+  // off event", and `verify:ooo-protection` read all three intact in Google. The
+  // sync deletes the mirror of an event that changes while it starts past the write
+  // window (#1264), so past the horizon an absent mirror measures the sync, not the
+  // calendar.
+  const run = (requests: ApprovedEventRequest[], mirrors: EventMirror[]) =>
+    runOooEventMismatchCheck({
+      load: async () => ({ requests, mirrors }),
+      loadAgentNames: async (ids) => new Map(ids.map((id) => [id, `name of ${id}`])),
+      nowMs: NOW,
+      appBaseUrl: APP,
+    });
+  // 30 days out, the shape of the first false page.
+  const farOut = () =>
+    request({ id: "580540c1", startsAt: "2026-11-05T06:00:00.000Z", endsAt: "2026-11-09T06:00:00.000Z" });
+  // Straddles the horizon at 2026-10-27T09:00Z.
+  const straddling = () =>
+    request({ id: "r-straddle", startsAt: "2026-10-25T06:00:00.000Z", endsAt: "2026-10-29T06:00:00.000Z" });
+
+  it("pages nothing for an approved request 30 days out whose mirror is gone", async () => {
+    expect(eventMismatchesByAgent([farOut()], [], NOW).size).toBe(0);
+    const res = await run([farOut()], []);
+    expect(recordConsecutiveStreak).not.toHaveBeenCalled();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ status: "clear", mismatchedAgents: 0, reachedVerdict: true });
+  });
+
+  it("never sends an all-clear off a window past the horizon: nothing was compared", async () => {
+    // The two live pages are exactly this: an agent paged, whose only windows ahead
+    // are past the horizon. The page stands without repeating until the horizon
+    // reaches them and a real comparison ends it.
+    firingFamilyMembers.mockImplementation(async () => ["u-heather"]);
+    const res = await run([farOut()], []);
+    expect(resolveAlert).not.toHaveBeenCalled();
+    expect(clearFailureStreak).not.toHaveBeenCalled();
+    expect(res.cleared).toBe(0);
+  });
+
+  it("still pages a request inside the horizon whose mirror is gone", async () => {
+    // The control for the two above: same agent, same empty mirror set, the window
+    // just moved inside the horizon, and it pages.
+    const res = await run([request()], []);
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    expect(sendThrottledAlert.mock.calls[0]![2]).toContain("shows no busy time off event inside that window");
+    expect(res).toMatchObject({ status: "mismatched", mismatchedAgents: 1 });
+  });
+
+  it("judges a straddling request only up to the horizon: a mirror covering that part pages nothing", async () => {
+    const res = await run(
+      [straddling()],
+      [mirror({ startsAt: "2026-10-25T06:00:00.000Z", endsAt: "2026-10-27T09:00:00.000Z" })],
+    );
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    expect(res.mismatchedAgents).toBe(0);
+  });
+
+  it("holds back the all-clear for a straddling request, whose tail was not compared", async () => {
+    firingFamilyMembers.mockImplementation(async () => ["u-heather"]);
+    await run(
+      [straddling()],
+      [mirror({ startsAt: "2026-10-25T06:00:00.000Z", endsAt: "2026-10-27T09:00:00.000Z" })],
+    );
+    expect(resolveAlert).not.toHaveBeenCalled();
+  });
+
+  it("pages a straddling request with no mirror, naming only the part it could check", async () => {
+    const found = eventMismatchesByAgent([straddling()], [], NOW).get("u-heather")!.found;
+    expect(found[0]!.coverage).toEqual({
+      kind: "not-blocking",
+      unmeasured: { startMs: Date.parse("2026-10-27T09:00:00.000Z"), endMs: Date.parse("2026-10-29T06:00:00.000Z") },
+    });
+    await run([straddling()], []);
+    const text = sendThrottledAlert.mock.calls[0]![2];
+    expect(text).not.toContain("inside that window");
+    expect(text).toContain("too far ahead to check yet");
+  });
+
+  it("treats a calendar never mirrored at all as measuring nothing ahead", async () => {
+    const res = await run([request({ mirroredUntil: null })], []);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    expect(res.mismatchedAgents).toBe(0);
+  });
+
+  describe("primaryMirroredHorizons (the loader's calendar match)", () => {
+    const agents = new Map([
+      ["u-heather", { email: "Heather@TryPennie.com" }],
+      ["u-no-mail", { email: null }],
+    ]);
+    it("takes the horizon of the calendar whose id is the agent's address, ignoring case", () => {
+      const got = primaryMirroredHorizons(
+        [
+          { user_id: "u-heather", calendar_id: "team-room@group.calendar.google.com", sync_window_to: "2027-01-01T00:00:00.000Z" },
+          { user_id: "u-heather", calendar_id: "heather@trypennie.com", sync_window_to: "2026-10-27T09:00:00.000Z" },
+        ],
+        agents,
+      );
+      expect(got.get("u-heather")).toBe("2026-10-27T09:00:00.000Z");
+    });
+    it("never borrows a secondary calendar's horizon when the primary row is missing", () => {
+      const got = primaryMirroredHorizons(
+        [{ user_id: "u-heather", calendar_id: "team-room@group.calendar.google.com", sync_window_to: "2027-01-01T00:00:00.000Z" }],
+        agents,
+      );
+      expect(got.has("u-heather")).toBe(false);
+    });
+    it("keeps a primary row's null stamp as null, and matches nothing for an agent with no address", () => {
+      const got = primaryMirroredHorizons(
+        [
+          { user_id: "u-heather", calendar_id: "heather@trypennie.com", sync_window_to: null },
+          { user_id: "u-no-mail", calendar_id: "someone@trypennie.com", sync_window_to: "2026-10-27T09:00:00.000Z" },
+          { user_id: "u-unknown", calendar_id: "x@trypennie.com", sync_window_to: "2026-10-27T09:00:00.000Z" },
+        ],
+        agents,
+      );
+      expect(got.get("u-heather")).toBeNull();
+      expect(got.has("u-no-mail")).toBe(false);
+      expect(got.has("u-unknown")).toBe(false);
+    });
+  });
+
+  it("reads a failed calendar horizon read as unreadable: pages nothing, clears nothing", async () => {
+    // The loader `unwrap`s the agent_calendars read, so a refused read throws out of
+    // `load`, which the lane already treats as a tick that measured nothing.
+    firingFamilyMembers.mockImplementation(async () => ["u-heather"]);
+    const res = await runOooEventMismatchCheck({
+      load: async () => {
+        throw new Error("monitor time off mirrored horizon: permission denied");
+      },
+      loadAgentNames: async () => new Map(),
+      nowMs: NOW,
+      appBaseUrl: APP,
+    });
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    expect(resolveAlert).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ status: "unreadable", reachedVerdict: false });
+  });
+
+  describe("mirroredHorizonMs", () => {
+    const DAY = 24 * 60 * 60_000;
+    it("is the calendar's stamped sync_window_to when that is inside the write window", () => {
+      expect(mirroredHorizonMs("2026-10-26T09:00:00.000Z", NOW)).toBe(Date.parse("2026-10-26T09:00:00.000Z"));
+    });
+    it("never reaches past now plus the write window, whatever is stamped", () => {
+      expect(mirroredHorizonMs("2027-06-01T00:00:00.000Z", NOW)).toBe(NOW + BUSY_WINDOW_AHEAD_DAYS * DAY);
+    });
+    it("is now for a calendar with no stamp, or an unreadable one: nothing ahead is measured", () => {
+      expect(mirroredHorizonMs(null, NOW)).toBe(NOW);
+      expect(mirroredHorizonMs("not a timestamp", NOW)).toBe(NOW);
+    });
+  });
+});
+
 describe("noticeSyncedOooEvents (the page at the moment the sync sees the edit)", () => {
   // The shape Slate mints for every agent time off event (#1469, #3217).
   const OOO_ID = `slate${"a1".repeat(32)}`;
@@ -271,6 +430,29 @@ describe("noticeSyncedOooEvents (the page at the moment the sync sees the edit)"
     expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
     expect(sendThrottledAlert.mock.calls[0]![0]).toBe(oooEventMismatchKey("u-heather"));
     expect(sendThrottledAlert.mock.calls[0]![2]).toContain("13137fb6");
+  });
+
+  it("still pages a shortened event 30 days out: it judges the event Google sent, not the cache", async () => {
+    // The cache's horizon (#3655) bounds what an ABSENT mirror can say. The sync has
+    // the event itself in hand, which is a measurement at any distance.
+    const d = deps({
+      events: [
+        event({
+          start: { dateTime: "2026-11-05T11:30:00-07:00" },
+          end: { dateTime: "2026-11-08T23:00:00-07:00" },
+        }),
+      ],
+      loadApproved: vi.fn(async () => [
+        request({
+          agentEventId: OOO_ID,
+          startsAt: "2026-11-05T06:00:00.000Z",
+          endsAt: "2026-11-09T06:00:00.000Z",
+          mirroredUntil: "2026-10-27T09:00:00.000Z",
+        }),
+      ]),
+    });
+    expect(await noticeSyncedOooEvents(d)).toBe(1);
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
   });
 
   it("stays quiet when the event still covers the approved window", async () => {

@@ -377,7 +377,7 @@ import {
 import { selectRetryableUnplaceable } from "@/lib/booking/coverage-retry";
 import { hasLeftPool, POOL_STATE_COLUMNS, type PoolStateRow } from "@/lib/bookable/left-pool";
 import { runOooProtectionCheck } from "@/lib/monitor/ooo-protection";
-import { runOooEventMismatchCheck } from "@/lib/monitor/ooo-event-mismatch";
+import { primaryMirroredHorizons, runOooEventMismatchCheck } from "@/lib/monitor/ooo-event-mismatch";
 import {
   runOooCoverageGapCheck,
   oooCoverageHolders,
@@ -3280,8 +3280,34 @@ export async function GET(req: NextRequest) {
     // The mirror rows are the gcal rows the sync wrote for each request's own event.
     // A mirror lying wholly outside [now, last end] is not read, and is judged as the
     // calendar blocking nothing inside the approved window, which is what it is.
+    //
+    // #3655: the mirrors answer only up to each calendar's mirrored horizon, because
+    // the sync deletes rather than updates the mirror of an event that changes while
+    // it starts past its write window. So the primary calendar's `sync_window_to` (the
+    // calendar Slate writes the time off event on, whose id is the agent's address)
+    // rides along, and the judge treats the part of a window past it as unmeasured.
+    // One read, and only on a tick with approved time off ahead; the ooo_protection
+    // check above does not need it, so it is not added to the shared read.
     const loadOooEventMismatch = async () => {
       const { requests, byId, blocks } = await approvedTimeOff();
+      const userIds = [...byId.keys()];
+      // Paged: the roster bounds the AGENTS, but each has a row per selectable
+      // calendar, so the row count is not bounded by one page, and a truncated read
+      // would drop some agents' primary row and quietly blind the lane for them.
+      const calendars =
+        userIds.length === 0
+          ? []
+          : await selectAllPages<{ user_id: string; calendar_id: string; sync_window_to: string | null }>(
+              "monitor time off mirrored horizon",
+              "id",
+              () =>
+                db
+                  .from("agent_calendars")
+                  .select("id, user_id, calendar_id, sync_window_to")
+                  // in-chunk-ok: bounded by the roster, the agents with approved time off ahead.
+                  .in("user_id", userIds),
+            );
+      const primaryHorizon = primaryMirroredHorizons(calendars, byId);
       return {
         requests: requests.map((r) => {
           const agent = byId.get(r.user_id);
@@ -3296,6 +3322,8 @@ export async function GET(req: NextRequest) {
             displayTzLabel: r.display_tz_label,
             agentEventId: r.agent_event_id,
             inPool: agent !== undefined && agent.bookable && agent.deactivated_at === null,
+            // No primary row is "nothing mirrored ahead", never the default window.
+            mirroredUntil: primaryHorizon.get(r.user_id) ?? null,
           };
         }),
         mirrors: blocks
@@ -3332,8 +3360,10 @@ export async function GET(req: NextRequest) {
     // and a calendar disagreeing rather than hours left open; it asks a person to
     // make them agree. The sync pages a shortened event at once; this pages what
     // the sync cannot see (a deleted event) after two ticks, and is the only place
-    // the all-clear is decided. Shares the read above, so it costs no subrequest
-    // unless a page has to end for an agent no longer in the approved set. ---
+    // the all-clear is decided. Shares the read above, so it costs one subrequest of
+    // its own (the calendars' mirrored horizon, #3655) on a tick with approved time
+    // off ahead, plus one when a page has to end for an agent no longer in the
+    // approved set. ---
     await steps.run("ooo_event_mismatch", null, () =>
       runOooEventMismatchCheck({
         load: loadOooEventMismatch,
