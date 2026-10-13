@@ -341,6 +341,9 @@ eq(parseServerTiming(null), null, "no header is null, so it reads as not measure
 eq(parseServerTiming("cfL4;desc=\"x\""), null, "a header with none of the route's entries is null too");
 eq(parseServerTiming("worker;dur=abc"), null, "an unreadable duration is not a number of milliseconds (L50)");
 eq(parseServerTiming("worker;dur=-3"), null, "nor is a negative one");
+eq(parseServerTiming("worker;dur="), null, "an empty duration is not 0ms (Number('') is 0)");
+eq(parseServerTiming("worker;dur= "), null, "nor is a blank one");
+eq(parseServerTiming("constructor;dur=5, toString;dur=6"), null, "an inherited property name is not one of the route's");
 
 // --- classifying the reads over budget -------------------------------------------
 {

@@ -88,7 +88,11 @@ export function readSlotCache(header: string | null): SlotCacheOutcome | null {
  * nothing outside scripts/; scripts/test-server-timing.ts drives both and fails if
  * they disagree.
  */
-const TIMING_NAMES = { worker: "workerMs", limit: "limitMs", slots: "slotsMs" } as const;
+const TIMING_NAMES: ReadonlyMap<string, keyof ServerTiming> = new Map([
+  ["worker", "workerMs"],
+  ["limit", "limitMs"],
+  ["slots", "slotsMs"],
+]);
 
 /** Split on commas outside double quotes: a `desc="a,b"` must not split an entry. */
 function splitOutsideQuotes(s: string, sep: string): string[] {
@@ -117,10 +121,13 @@ export function parseServerTiming(header: string | null): ServerTiming | null {
   let found = false;
   for (const entry of splitOutsideQuotes(header, ",")) {
     const [rawName, ...params] = splitOutsideQuotes(entry, ";").map((p) => p.trim());
-    const field = TIMING_NAMES[rawName as keyof typeof TIMING_NAMES];
+    // A Map, so a name like `constructor` cannot match an inherited property.
+    const field = TIMING_NAMES.get(rawName ?? "");
     if (!field) continue;
-    const dur = params.find((p) => /^dur=/i.test(p));
-    const n = dur === undefined ? Number.NaN : Number(dur.slice(4));
+    // Digits only: `Number("")` is 0, so an empty `dur=` would otherwise read as a
+    // measured 0ms, the healthy side of every comparison downstream (L50).
+    const dur = params.find((p) => /^dur=/i.test(p))?.slice(4).trim() ?? "";
+    const n = /^\d+(\.\d+)?$/.test(dur) ? Number(dur) : Number.NaN;
     if (!Number.isFinite(n) || n < 0) continue;
     t[field] = n;
     found = true;
