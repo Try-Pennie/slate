@@ -166,7 +166,8 @@ function refuse(
  * authentication: a flood of bad keys buys no work beyond the refusal (L498). It DOES
  * run for a good key the ceilings then refuse with a 429, so whatever it starts must
  * cost per server and never per request; `startConfirmPrelude` states that bound. It
- * must not throw or await.
+ * must not throw or await. It is handed the caller (#3663), so a deadline that strikes
+ * in the ceilings below still knows whose request it was.
  */
 export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCaller>(
   req: NextRequest,
@@ -174,7 +175,7 @@ export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCa
   hourlyIpRules: RateLimitRule[] | null = DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
   readPath = false,
   callers: readonly C[] = FULL_API_CALLERS as readonly C[],
-  onAuthenticated?: () => void,
+  onAuthenticated?: (caller: BookingApiCaller) => void,
   /**
    * #3529: told as each ceiling answers (`AuthStep`), so the load test's marks can split
    * the auth wait by the call it waited on. Never changes what is asked, or in what order.
@@ -213,7 +214,7 @@ export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCa
       auth.tokenPresent,
     );
   }
-  onAuthenticated?.();
+  onAuthenticated?.(auth.caller);
   const keyBudget = "Rate limit exceeded for this API key.";
   // Per CALLER (#2645): edge per-minute burst window first (no DB round-trip), then
   // the hourly cap. Keyed on who the key belongs to, not which slot matched, so a

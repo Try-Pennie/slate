@@ -67,7 +67,12 @@ import { ACTIVATION_BUDGET_MS } from "@/lib/bookable/activation-allowance";
 import { formatUnsetHoursAlert, formatUnsetHoursRecovery } from "@/lib/monitor/unset-hours";
 import {
   formatBelowLeadTierAlert,
+  submissionAgreement,
+  teamAtTime,
   type BelowFinding,
+  type LeadTierOffer,
+  type PageFacts,
+  type SubmissionHistory,
 } from "@/lib/monitor/below-lead-tier";
 import { formatOffsiteOriginAlert, type OffsiteFinding } from "@/lib/monitor/offsite-origin";
 import { BUDGET_WARN_SHARE, judgeBudgets, sloBudgetClearText, sloBudgetPageText } from "@/lib/monitor/slo-budget";
@@ -300,6 +305,7 @@ import {
   oooUndoAgentAlert,
   oooCoverageStopAlert,
   oooUndoManagerAlert,
+  oooUndoUnrecordedAlert,
 } from "@/lib/ooo/alert-copy";
 import {
   auditWriteFailedAlert,
@@ -671,6 +677,44 @@ const PREVIEW_BELOW_TIER: BelowFinding = {
   lead: { kind: "tier", rank: 5, key: "ultra_high", label: "Ultra High", code: "512" },
 };
 const PREVIEW_BELOW_TIER_URL = "https://slate.trypennie.app/admin/bookings/5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a";
+
+/** #3665: the states above hold the lead's team as free and their history steady,
+ *  so each reads as the routing sentence it is about. */
+const PREVIEW_TEAM_FREE: PageFacts = { team: { kind: "free" }, history: { kind: "steady" } };
+
+/** #3665: the 2026-10-13 shape, booking 899afc25: a High lead (XBC 312) booked with
+ *  the Medium team at 3:00pm ET from a 212 submission, ten submissions alternating
+ *  212 and 312, and the 312 pool offering no 3:00pm. */
+const PREVIEW_FLIPPING: BelowFinding = {
+  kind: "below",
+  booking: {
+    ...PREVIEW_BELOW_TIER.booking,
+    id: "899afc25-6d1e-4b8a-9f0c-2e7a5b3c1d40",
+    bucket_id: "b-212",
+    starts_at: "2026-10-13T19:00:00.000Z",
+  },
+  bucket: { id: "b-212", code: "212", name: "Medium | Both | Non-Legal", criteria: { debt_team: "medium" } },
+  pool: { rank: 2, label: "Medium" },
+  lead: { kind: "tier", rank: 3, key: "high", label: "High", code: "312" },
+};
+const PREVIEW_FLIPPING_URL = "https://slate.trypennie.app/admin/bookings/899afc25-6d1e-4b8a-9f0c-2e7a5b3c1d40";
+const PREVIEW_FLIPPING_ROUTING = { catchall: false, requestedCode: "212", tierFallback: false, rungsDropped: 0 };
+const PREVIEW_FLIPPING_HISTORY = submissionAgreement(["312", "212", "312", "212", "312", "212", "312", "212", "312", "312"]);
+/** The 312 pool's offer as the lane's shared slot rows give it: 1:00pm and 4:30pm
+ *  that day, and the next morning, computed at 8:10am ET. */
+const PREVIEW_FLIPPING_OFFER: LeadTierOffer = {
+  offeredMs: [Date.UTC(2026, 9, 13, 17, 0), Date.UTC(2026, 9, 13, 20, 30), Date.UTC(2026, 9, 14, 15, 0)],
+  computedAtMs: Date.UTC(2026, 9, 13, 12, 10),
+  minNoticeMin: 120,
+};
+const PREVIEW_FLIPPING_NOW = Date.UTC(2026, 9, 13, 12, 20);
+/** The 899afc25 page for one offer and one history, through the real judge and copy. */
+function previewFlipping(offer: LeadTierOffer | "unreadable", history: SubmissionHistory): string {
+  return formatBelowLeadTierAlert(PREVIEW_FLIPPING, PREVIEW_FLIPPING_ROUTING, PREVIEW_FLIPPING_URL, {
+    team: teamAtTime(offer, PREVIEW_FLIPPING.booking.starts_at, PREVIEW_FLIPPING_NOW),
+    history,
+  });
+}
 
 /** #2594: the same lead booked correctly on XBC 422 into the Very High pool, then
  *  re-scored to 512 four minutes later. #3501: the score came from the submission
@@ -1501,7 +1545,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_below_lead_tier:*",
     state: "the catch-all chose the Low pool for an Ultra High lead",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: true, requestedCode: "", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: true, requestedCode: "", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   // #2594: the arrival code tells a re-score after booking apart from a routing
   // fault, so each gets its own state, plus the one where the code cannot say.
@@ -1509,7 +1553,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_below_lead_tier:*",
     state: "arrived on a lower code than the submission they booked from now scores",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_RESCORED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_RESCORED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   // #3501, #3508: a rise is named by what was measured: a Lead edit after the
   // latest submission, a newer submission than the one booked from, or (when the
@@ -1519,43 +1563,76 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_below_lead_tier:*",
     state: "arrived on a lower code, and their latest submission is a newer one",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_RESUBMITTED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_RESUBMITTED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "arrived on a lower code, and the Lead score was edited after the submission",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_LEAD_EDIT, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_LEAD_EDIT, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "arrived on a lower code, and the booking recorded no submission to tell why",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_RISE_UNATTRIBUTED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_RISE_UNATTRIBUTED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "arrived on today's code, and the routing placed it lower",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: "512", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: "512", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "routed on its own code, and the arrival code is not recorded",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: null, tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: null, tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "no routing record for the booking",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, null, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, null, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "the routing record could not be read",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, "unreadable", PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, "unreadable", PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
+  },
+  // #3665: what the lead's own team offers at the call's time, judged by the real
+  // `teamAtTime` from an offer shaped like the lane's slot rows, and whether the
+  // lead's submissions agree on the tier, by the real `submissionAgreement`.
+  {
+    key: "booking_below_lead_tier:*",
+    state: "the lead's team is not free at the call's time, a later time that day is, and the submissions flip between tiers",
+    channel: "alert",
+    text: previewFlipping(PREVIEW_FLIPPING_OFFER, PREVIEW_FLIPPING_HISTORY),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "the lead's team has no free time at all on the call's day",
+    channel: "alert",
+    text: previewFlipping({ ...PREVIEW_FLIPPING_OFFER, offeredMs: [Date.UTC(2026, 9, 14, 15, 0)] }, { kind: "steady" }),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "the lead's team is free at the call's time",
+    channel: "alert",
+    text: previewFlipping({ ...PREVIEW_FLIPPING_OFFER, offeredMs: [Date.UTC(2026, 9, 13, 19, 0)] }, { kind: "steady" }),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "the lead's team could not be checked, because the shared slot read failed",
+    channel: "alert",
+    text: previewFlipping("unreadable", { kind: "steady" }),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "the lead's submission history could not be read",
+    channel: "alert",
+    text: previewFlipping(PREVIEW_FLIPPING_OFFER, { kind: "unreadable" }),
   },
   // #2933: one state per way the two bookings can match, since each sends the reader
   // to check a different thing, plus a Slate booking with no lead id. Each pair is
@@ -4661,6 +4738,25 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       budget: { label: "the booking confirm", totalMs: 12_000 },
     }),
   },
+  // #3663: the booking API's timeout path knows how far the request got, so a dry
+  // run and a request whose body was never read are not worded as a lead's booking.
+  {
+    key: "verify_on_book_outage",
+    state: "a real caller's dry run timed out on a dependency (#3663)",
+    channel: "alert",
+    text: dependencyTimeoutAlert({ dependency: "google token mint", timeoutMs: 8000, budget: null, reach: "dry-run" }),
+  },
+  {
+    key: "verify_on_book_outage",
+    state: "a request timed out before Slate read its body, budget spent (#3663)",
+    channel: "alert",
+    text: dependencyTimeoutAlert({
+      dependency: "supabase",
+      timeoutMs: 0,
+      budget: { label: "the booking confirm", totalMs: 12_000 },
+      reach: "before-body",
+    }),
+  },
   {
     key: "verify_on_book_outage",
     state: "too little budget left to write the booking, so nothing was started (#3338)",
@@ -5255,7 +5351,15 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
         displayTzId: "America/Denver", displayTzLabel: "MT",
         coverage: { kind: "uncovered", spans: [{ startMs: 1791352800000, endMs: 1791394200000 }] } },
       { requestId: "req_a41", startsAt: "2026-10-09T06:00:00.000Z", endsAt: "2026-10-10T05:59:00.000Z",
-        displayTzId: "America/Denver", displayTzLabel: "MT", coverage: { kind: "not-blocking" } },
+        displayTzId: "America/Denver", displayTzLabel: "MT", coverage: { kind: "not-blocking", unmeasured: null } },
+    ], "https://slate.trypennie.app") },
+  // #3655: a request straddling the calendar's mirrored horizon whose event is gone.
+  // Only the part inside the horizon was checked, so the sentence names only that.
+  { key: "ooo_event_mismatch:*", state: "the event is gone, part of the window too far ahead to check", channel: "alert",
+    text: oooEventMismatchAlert("Heather McLellen", [
+      { requestId: "req_c07", startsAt: "2026-10-26T06:00:00.000Z", endsAt: "2026-10-30T06:00:00.000Z",
+        displayTzId: "America/Denver", displayTzLabel: "MT",
+        coverage: { kind: "not-blocking", unmeasured: { startMs: 1793178000000, endMs: 1793340000000 } } },
     ], "https://slate.trypennie.app") },
   { key: "ooo_event_mismatch:*", state: "the calendar and the request agree again", channel: "recovery",
     text: oooEventMismatchRecovery("Heather McLellen", { kind: "agreed", compared: 2 }) },
@@ -5280,6 +5384,15 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: oooUndoManagerAlert("req_9f2", "404 notFound") },
   { key: "ooo_undo", state: "undoing the agent event failed", channel: "alert",
     text: oooUndoAgentAlert("req_9f2", "404 notFound") },
+  { key: "ooo_undo_unchecked:*", state: "an untracked manager event could not be checked for", channel: "alert",
+    text: oooUndoUnrecordedAlert("req_9f2", [{ whose: "manager", reason: "503 backendError" }]) },
+  { key: "ooo_undo_unchecked:*", state: "an untracked agent event could not be checked for", channel: "alert",
+    text: oooUndoUnrecordedAlert("req_9f2", [{ whose: "agent", reason: "503 backendError" }]) },
+  { key: "ooo_undo_unchecked:*", state: "neither calendar could be checked, in one page", channel: "alert",
+    text: oooUndoUnrecordedAlert("req_9f2", [
+      { whose: "manager", reason: "its manager could not be read: PostgREST 500" },
+      { whose: "agent", reason: "503 backendError" },
+    ]) },
   { key: "ooo_coverage_stop", state: "the sweep could not be stopped after the request was closed",
     channel: "alert", text: oooCoverageStopAlert("req_9f2", "count failed [cancel-pending-coverage-items]") },
 ];

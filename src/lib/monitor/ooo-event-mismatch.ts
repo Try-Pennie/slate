@@ -4,6 +4,8 @@ import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failur
 import { eventWindow, isBusyEvent } from "@/lib/google/sync-core";
 import type { GoogleEvent } from "@/lib/google/calendar";
 import { judgeEventCoverage } from "@/lib/ooo/event-coverage";
+import { BUSY_WINDOW_AHEAD_DAYS } from "@/lib/google/sync-coalesce";
+import { parseStampMs } from "@/lib/date/stamp";
 import {
   oooEventMismatchAlert,
   oooEventMismatchRecovery,
@@ -32,7 +34,9 @@ import { log } from "@/lib/log";
  *    approved future request, judged against the event's own mirror row in the busy
  *    cache. It pages what the sync could not see (a deleted event, a disagreement
  *    already standing when this shipped) once it has held for two ticks, and it is
- *    the ONLY place the all-clear is decided, off a measured read.
+ *    the ONLY place the all-clear is decided, off a measured read. The cache answers
+ *    only up to the calendar's mirrored horizon (`mirroredHorizonMs`, #3655), so the
+ *    part of a window past it is judged unmeasured: it neither pages nor clears.
  *
  * Keyed per agent (`ooo_event_mismatch:<user id>`), a suffix the roster bounds,
  * rather than per request, which would grow `alert_state` without limit; and not one
@@ -81,6 +85,76 @@ export interface ApprovedEventRequest {
    * nothing, and nobody can be booked with them anyway.
    */
   inPool: boolean;
+  /**
+   * `agent_calendars.sync_window_to` of the agent's PRIMARY calendar, the one
+   * Slate writes the time off event on, or null when no such row has one (#3655).
+   * How far ahead the mirror rows below can answer; see `mirroredHorizonMs`.
+   */
+  mirroredUntil: string | null;
+}
+
+/**
+ * How far ahead a calendar's mirror rows are a measurement of the calendar (#3655).
+ *
+ * The sync DELETES rather than updates the mirror of an event that changes while it
+ * starts past its write window (`partitionBusyWrites`, #1264), and the mirror comes
+ * back only when a full window fetch reaches the event. `sync_window_to` is the
+ * `timeMax` of the last such fetch that completed, so it is the horizon actually
+ * MEASURED: every event starting before it was written by that fetch, and no later
+ * delta can have deleted it, because a delta deletes only what starts a full write
+ * window past ITS own clock, which is later still.
+ *
+ * Not now plus `BUSY_WINDOW_AHEAD_DAYS`, which is what the sync intends rather than
+ * what it reached (L513). The rotation re-fetches each calendar about once a day, so
+ * that horizon runs up to a day ahead of the stamp, and an event its mirror was
+ * deleted for would read as gone for that day and page; a calendar whose fetches are
+ * failing would read so for as long as they fail. It is kept as a ceiling, so a
+ * stamp left by a wider window than today's can never claim more than the sync
+ * keeps now. A missing or unreadable stamp is "nothing measured ahead", never the
+ * default window (the column's own contract): the horizon is now.
+ */
+export function mirroredHorizonMs(syncWindowTo: string | null, nowMs: number): number {
+  const stamped = syncWindowTo === null ? null : parseStampMs(syncWindowTo);
+  if (stamped === null) return nowMs;
+  return Math.min(stamped, nowMs + BUSY_WINDOW_AHEAD_DAYS * 24 * 60 * 60_000);
+}
+
+/**
+ * Each agent's PRIMARY calendar horizon, from their `agent_calendars` rows (#3655).
+ * The time off event is written on the agent's primary calendar, whose stored id is
+ * the agent's address (`selectableCalendarIds` keeps Google's own id for it), so that
+ * row's `sync_window_to` is the one that bounds the event's mirror. Matched ignoring
+ * case.
+ *
+ * An agent whose only row carries ANOTHER personal address (a Slate email that is an
+ * alias of the Google one) is given that row: only primaries are stored since #42, so
+ * it is still their primary, and leaving them out would read every window of theirs
+ * as unmeasured, silencing the lane for that agent alone with nothing saying so.
+ * Measured 2026-10-13: all 112 live agents have exactly one row and it matches, so
+ * this covers the next alias rather than a live one. A shared calendar's id (Google's
+ * `@group.calendar.google.com`) is never a primary, so it is never borrowed, and an
+ * agent with several rows none of which is theirs is not guessed at. An agent with no
+ * usable row is simply absent, which the caller reads as "nothing mirrored ahead".
+ */
+export function primaryMirroredHorizons(
+  calendars: { user_id: string; calendar_id: string; sync_window_to: string | null }[],
+  agents: Map<string, { email: string | null }>,
+): Map<string, string | null> {
+  const out = new Map<string, string | null>();
+  const rowsOf = new Map<string, typeof calendars>();
+  for (const c of calendars) {
+    if (!agents.has(c.user_id)) continue;
+    rowsOf.set(c.user_id, [...(rowsOf.get(c.user_id) ?? []), c]);
+  }
+  for (const [userId, rows] of rowsOf) {
+    const email = agents.get(userId)?.email;
+    if (!email) continue;
+    const matched = rows.find((c) => c.calendar_id.toLowerCase() === email.toLowerCase());
+    const only = rows.length === 1 && !/calendar\.google\.com$/i.test(rows[0]!.calendar_id) ? rows[0] : undefined;
+    const row = matched ?? only;
+    if (row) out.set(userId, row.sync_window_to);
+  }
+  return out;
 }
 
 /** One cached mirror of a calendar event (a source='gcal' busy block). */
@@ -132,10 +206,15 @@ export function eventMismatchesByAgent(
  *    agents back rather than read their absence from `found` as health. A skipped
  *    request is held back like an unreadable one because the lane does not remember
  *    which request it paged about, so the one it skipped may be that one. It does not
- *    re-page; the page simply stands until the request leaves the approved set.
+ *    re-page; the page simply stands until the request leaves the approved set. A
+ *    window reaching past the calendar's mirrored horizon (#3655) is held back the
+ *    same way, until the horizon reaches it and a real comparison can end the page.
  *  - `compared`: how many windows still ahead were compared and agree, per agent,
  *    which the all-clear states (L440). An agent absent here with nothing unmeasured
  *    has nothing approved ahead at all.
+ *  - `beyondHorizon`: how many requests reach past their calendar's mirrored
+ *    horizon, logged each tick so a horizon that stopped advancing shows up as a
+ *    count rather than as a quiet lane (L98).
  */
 function judgeEventsByAgent(
   requests: ApprovedEventRequest[],
@@ -145,7 +224,9 @@ function judgeEventsByAgent(
   found: Map<string, { agentName: string; found: OooEventMismatch[] }>;
   unmeasured: Set<string>;
   compared: Map<string, number>;
+  beyondHorizon: number;
 } {
+  let beyondHorizon = 0;
   const unmeasured = new Set<string>();
   const compared = new Map<string, number>();
   const byEvent = new Map<string, EventMirror[]>();
@@ -164,15 +245,34 @@ function judgeEventsByAgent(
       continue;
     }
     const cover = byEvent.get(`${r.userId}\u0000${r.agentEventId}`) ?? null;
-    const verdict = judgeEventCoverage({ startsAt: r.startsAt, endsAt: r.endsAt, nowMs, cover });
+    const verdict = judgeEventCoverage({
+      startsAt: r.startsAt,
+      endsAt: r.endsAt,
+      nowMs,
+      measuredUntilMs: mirroredHorizonMs(r.mirroredUntil, nowMs),
+      cover,
+    });
     if (verdict.kind === "unreadable") unmeasured.add(r.userId);
-    if (verdict.kind === "covered") compared.set(r.userId, (compared.get(r.userId) ?? 0) + 1);
+    // Past the mirrored horizon, wholly or in part, is "could not tell" (#3655): an
+    // absent mirror there measures the sync's cut off, so it neither pages nor counts
+    // towards the all-clear. Inside the horizon an absent mirror still pages.
+    if (verdict.kind === "unmeasured") {
+      unmeasured.add(r.userId);
+      beyondHorizon++;
+      continue;
+    }
+    if ("unmeasured" in verdict && verdict.unmeasured !== null) {
+      unmeasured.add(r.userId);
+      beyondHorizon++;
+    } else if (verdict.kind === "covered") {
+      compared.set(r.userId, (compared.get(r.userId) ?? 0) + 1);
+    }
     if (verdict.kind !== "uncovered" && verdict.kind !== "not-blocking") continue;
     const entry = out.get(r.userId) ?? { agentName: nameOf(r), found: [] };
     entry.found.push(finding(r, verdict));
     out.set(r.userId, entry);
   }
-  return { found: out, unmeasured, compared };
+  return { found: out, unmeasured, compared, beyondHorizon };
 }
 
 export interface OooEventMismatchResult {
@@ -209,7 +309,11 @@ export async function runOooEventMismatchCheck(deps: {
     return { status: "unreadable", scanned: 0, mismatchedAgents: 0, cleared: 0, reachedVerdict: false };
   }
 
-  const { found, unmeasured, compared } = judgeEventsByAgent(requests, mirrors, deps.nowMs);
+  const { found, unmeasured, compared, beyondHorizon } = judgeEventsByAgent(
+    requests,
+    mirrors,
+    deps.nowMs,
+  );
 
   for (const [agentId, { agentName, found: list }] of found) {
     const key = oooEventMismatchKey(agentId);
@@ -268,7 +372,13 @@ export async function runOooEventMismatchCheck(deps: {
   }
 
   const status = found.size > 0 ? "mismatched" : "clear";
-  deps.log?.({ status, scanned: requests.length, mismatched_agents: found.size, cleared });
+  deps.log?.({
+    status,
+    scanned: requests.length,
+    mismatched_agents: found.size,
+    beyond_horizon: beyondHorizon,
+    cleared,
+  });
   return { status, scanned: requests.length, mismatchedAgents: found.size, cleared, reachedVerdict: true };
 }
 
@@ -291,7 +401,10 @@ export function isTimeOffEventIdShape(id: string): boolean {
 }
 
 /** One approved request the sync may hold an event for. */
-export type SyncedApprovedRequest = Omit<ApprovedEventRequest, "inPool" | "agentName" | "agentEmail">;
+export type SyncedApprovedRequest = Omit<
+  ApprovedEventRequest,
+  "inPool" | "agentName" | "agentEmail" | "mirroredUntil"
+>;
 
 /**
  * The page at the moment the sync sees an edited time off event (#3360). Reads
@@ -340,6 +453,9 @@ export async function noticeSyncedOooEvents(deps: {
       startsAt: r.startsAt,
       endsAt: r.endsAt,
       nowMs: deps.nowMs,
+      // The cover is the event Google just sent, not a cached mirror, so it is a
+      // measurement at any distance: the cache's horizon (#3655) does not apply.
+      measuredUntilMs: Infinity,
       cover: [{ startsAt: win.start, endsAt: win.end }],
     });
     if (verdict.kind === "uncovered") {

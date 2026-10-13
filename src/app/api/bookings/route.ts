@@ -41,6 +41,13 @@ import { isTestBucketForPaging, isTestOwnedBookingForPaging } from "@/lib/monito
 import type { BookingOriginFacts } from "@/lib/monitor/offsite-origin";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 import { mayBookTestBuckets } from "@/lib/booking/api-auth";
+import {
+  newApiRequestProgress,
+  timeoutAttemptSource,
+  timeoutIsTestTraffic,
+  timeoutReach,
+  type ApiRequestProgress,
+} from "@/lib/booking/api-timeout-facts";
 
 export const dynamic = "force-dynamic";
 
@@ -75,22 +82,40 @@ export async function POST(req: NextRequest) {
   // #3221: one line per call with how long the caller waited for the answer, kept
   // apart from the work deferred past the response; a dry run says so on it.
   const facts: ConfirmLineFacts = waitFactsFor(req);
+  // #3663: what the request has established so far (the caller once its key is
+  // accepted, the bucket and dry run flag once its body parses), for the timeout below.
+  const progress = newApiRequestProgress();
   // #3102: one budget for the whole request; see `confirm-budget.ts`. A deadline
   // from a read before the booking's own try (the key ceilings, the hourly cap) is
   // the same outage the booking path answers with VERIFY_UNAVAILABLE, rather than
-  // escaping as an unhandled 500.
+  // escaping as an unhandled 500. So is a dry run's, which the preview does not
+  // classify itself.
   const res = stampSeenIp(
     await answerTimed(
       "booking-api",
       () =>
         withinBookingRequest(
-          () => handlePost(req, facts),
+          () => handlePost(req, facts, progress),
           async (timeout) => {
             // #3300: the line says it timed out, and carries the profile and the lead.
             noteRefusal(facts, timeout);
             return timeStage(facts.profile, "failure-path", async () => {
-              await pageBookingFailure(timeout);
-              recordApiOutcome("error", "", "VERIFY_UNAVAILABLE", { by: "unidentifiable", why: "a dependency timed out before the request was read" });
+              // #3663: recorded and paged by what the request had established, never
+              // as though nothing had been read. The canary's own key, or a test
+              // bucket, is test traffic: counted as such and not paged, since the
+              // canary reports its own failure. A real one pages, worded by how far
+              // it got, so a dry run never sends the reader to a lead or a row. The
+              // bucket flag is read after the response, with the page (#3416).
+              await pageBookingFailure(timeout, {
+                reach: timeoutReach(progress),
+                isTestTraffic: () => timeoutIsTestTraffic(progress, isTestBucketForPaging),
+              });
+              recordApiOutcome(
+                "error",
+                progress.request?.bucketCode ?? "",
+                "VERIFY_UNAVAILABLE",
+                timeoutAttemptSource(progress),
+              );
               // refusal: api_verify_unavailable
               return NextResponse.json(await apiErrorBody(timeout, "VERIFY_UNAVAILABLE", "book", "Booking failed"), {
                 status: 503,
@@ -146,7 +171,7 @@ async function isTestTrafficForPaging(code: string, bucketCode: string): Promise
   return isTestBucketForPaging(bucketCode);
 }
 
-async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
+async function handlePost(req: NextRequest, facts: ConfirmLineFacts, progress: ApiRequestProgress) {
   facts.marks?.mark("handler");
   // #3300: the key, the ceilings and reading the body, as one stage, ended where the
   // booking starts; a refusal on the way is charged up to its answer.
@@ -168,7 +193,11 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
     DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
     false,
     FULL_API_CALLERS,
-    () => startConfirmPrelude(facts),
+    (caller) => {
+      // #3663: known from here on, so a deadline in the ceilings knows whose it was.
+      progress.caller = caller;
+      startConfirmPrelude(facts);
+    },
     // #3529: under the load test, auth's wait split by the ceiling it waited on.
     facts.marks ? (step) => facts.marks?.mark(step) : undefined,
   );
@@ -200,6 +229,8 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
   // #2752: a server caller has no framing page, and whatever prefill it sends is what
   // the booking row stores, so the tally judges the same facts the off site page would.
   const apiHost: BookingOriginFacts = { prefill: v.prefill, referrer_origin: null };
+  // #3663: the body has named its bucket, so a timeout from here on is recorded under it.
+  progress.request = { bucketCode: v.bucketCode, dryRun: v.dryRun, host: apiHost };
   // #2669: the test bucket opt in follows the CALLER. The canary's hidden buckets
   // (#396) only for the canary callers, the public one (#2660) for anyone; a partner
   // naming SMOKE meets the same 422 UNKNOWN_BUCKET a typo does (#601).

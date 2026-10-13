@@ -377,7 +377,7 @@ import {
 import { selectRetryableUnplaceable } from "@/lib/booking/coverage-retry";
 import { hasLeftPool, POOL_STATE_COLUMNS, type PoolStateRow } from "@/lib/bookable/left-pool";
 import { runOooProtectionCheck } from "@/lib/monitor/ooo-protection";
-import { runOooEventMismatchCheck } from "@/lib/monitor/ooo-event-mismatch";
+import { primaryMirroredHorizons, runOooEventMismatchCheck } from "@/lib/monitor/ooo-event-mismatch";
 import {
   runOooCoverageGapCheck,
   oooCoverageHolders,
@@ -406,7 +406,7 @@ import {
 } from "@/lib/monitor/below-lead-tier-store";
 import { runOffsiteOriginCheck, OFFSITE_ORIGIN_LOOKBACK_MS } from "@/lib/monitor/offsite-origin";
 import { loadRecentBookingsInBuckets } from "@/lib/monitor/offsite-origin-store";
-import { readLeadScores, type LeadXbcRecord } from "@/lib/salesforce/lead-xbc";
+import { readLeadScores, readRecentSubmissionScores, type LeadXbcRecord } from "@/lib/salesforce/lead-xbc";
 import { querySoqlAll, sfToken } from "@/lib/salesforce/rest";
 import { pilotSettingsCache } from "@/lib/salesforce/pilot-settings";
 import type { OrgDefaults } from "@/lib/schedule-core";
@@ -2252,6 +2252,12 @@ export async function GET(req: NextRequest) {
     // thousands, and this lane has its own invocation rather than the one the
     // four minute lanes share.
     //
+    // #3665 adds at most one more Salesforce query per ~450 leads, and only on an
+    // ARMED tick with a booking to page: the newest submissions of just those leads,
+    // to say when their score keeps flipping between tiers. Whether the lead's own
+    // team is free at the call's time costs nothing, being read off the slot rows
+    // and org hours this lane already holds.
+    //
     // Gated on the shared bucket list, which says both each pool's tier and which
     // buckets are real. Disarmed until somebody has watched it on real traffic
     // (migration 0136); it measures and logs either way, and a failed read on
@@ -2260,6 +2266,13 @@ export async function GET(req: NextRequest) {
       if (!gates.belowLeadTier.run) return null;
       const realBuckets = buckets!.filter((b) => !b.is_test);
       let session: Promise<{ token: string; instanceUrl: string }> | null = null;
+      // #3665: each code's minimum notice, indexed once per tick rather than scanned
+      // per finding.
+      const noticeByCode = new Map<string, number>();
+      for (const r of slotRows ?? []) {
+        const notice = r.payload?.eventType?.min_notice_min;
+        if (typeof notice === "number") noticeByCode.set(r.bucket_code, notice);
+      }
       return runBelowLeadTierCheck({
         loadBookings: () =>
           loadUpcomingBookingsInBuckets(
@@ -2292,6 +2305,30 @@ export async function GET(req: NextRequest) {
         // firing read settles NOTHING, and an unmeasurable booking keeps its page.
         settle: settleAlertsSilently,
         cooldownMs: cooldownMs.booking_below_lead_tier,
+        nowMs: now,
+        // #3665: is anybody on the lead's own team free at the call's time? Asked of
+        // the served list the lane already holds (`slotByCode`, the stored rows
+        // through the org's current hours), so it costs no read and agrees with the
+        // availability checks. Either setup read failing is "unreadable", which the
+        // page says it could not check, never "nobody is free".
+        leadTierOffer: (code) => {
+          if (slotByCode === null || slotRows === null) return "unreadable";
+          const health = slotByCode.get(code);
+          if (health === undefined) return null;
+          return {
+            offeredMs: health.offeredMs,
+            computedAtMs: health.computedAtMs,
+            minNoticeMin: noticeByCode.get(code) ?? null,
+          };
+        },
+        // #3665: the lead's newest submissions, asked only for leads about to be
+        // paged, on the same token as the score read.
+        readSubmissionHistory: (ids) =>
+          readRecentSubmissionScores(ids, async (soql) => {
+            session ??= sfToken();
+            const { token, instanceUrl } = await session;
+            return querySoqlAll<LeadXbcRecord>(instanceUrl, token, soql);
+          }),
       }).then((result) => {
         if (result.status === "unreadable") {
           log.warn("monitor", { msg: "below lead tier unreadable", stage: result.stage, error: result.error });
@@ -2304,6 +2341,10 @@ export async function GET(req: NextRequest) {
             explained_by_tier_drop: result.explainedByTierDrop.length,
             paged: result.paged,
             cleared: result.cleared,
+            team_free: result.teamAtTime.free,
+            team_not_free: result.teamAtTime["not-free"],
+            team_unchecked: result.teamAtTime.unchecked,
+            submissions_disagree: result.submissionsDisagree,
             ...Object.fromEntries(
               Object.entries(result.unmeasured).map(([k, v]) => [`unmeasured_${k.replace(/-/g, "_")}`, v]),
             ),
@@ -3280,8 +3321,34 @@ export async function GET(req: NextRequest) {
     // The mirror rows are the gcal rows the sync wrote for each request's own event.
     // A mirror lying wholly outside [now, last end] is not read, and is judged as the
     // calendar blocking nothing inside the approved window, which is what it is.
+    //
+    // #3655: the mirrors answer only up to each calendar's mirrored horizon, because
+    // the sync deletes rather than updates the mirror of an event that changes while
+    // it starts past its write window. So the primary calendar's `sync_window_to` (the
+    // calendar Slate writes the time off event on, whose id is the agent's address)
+    // rides along, and the judge treats the part of a window past it as unmeasured.
+    // One read, and only on a tick with approved time off ahead; the ooo_protection
+    // check above does not need it, so it is not added to the shared read.
     const loadOooEventMismatch = async () => {
       const { requests, byId, blocks } = await approvedTimeOff();
+      const userIds = [...byId.keys()];
+      // Paged: the roster bounds the AGENTS, but each has a row per selectable
+      // calendar, so the row count is not bounded by one page, and a truncated read
+      // would drop some agents' primary row and quietly blind the lane for them.
+      const calendars =
+        userIds.length === 0
+          ? []
+          : await selectAllPages<{ user_id: string; calendar_id: string; sync_window_to: string | null }>(
+              "monitor time off mirrored horizon",
+              "id",
+              () =>
+                db
+                  .from("agent_calendars")
+                  .select("id, user_id, calendar_id, sync_window_to")
+                  // in-chunk-ok: bounded by the roster, the agents with approved time off ahead.
+                  .in("user_id", userIds),
+            );
+      const primaryHorizon = primaryMirroredHorizons(calendars, byId);
       return {
         requests: requests.map((r) => {
           const agent = byId.get(r.user_id);
@@ -3296,6 +3363,8 @@ export async function GET(req: NextRequest) {
             displayTzLabel: r.display_tz_label,
             agentEventId: r.agent_event_id,
             inPool: agent !== undefined && agent.bookable && agent.deactivated_at === null,
+            // No primary row is "nothing mirrored ahead", never the default window.
+            mirroredUntil: primaryHorizon.get(r.user_id) ?? null,
           };
         }),
         mirrors: blocks
@@ -3332,8 +3401,10 @@ export async function GET(req: NextRequest) {
     // and a calendar disagreeing rather than hours left open; it asks a person to
     // make them agree. The sync pages a shortened event at once; this pages what
     // the sync cannot see (a deleted event) after two ticks, and is the only place
-    // the all-clear is decided. Shares the read above, so it costs no subrequest
-    // unless a page has to end for an agent no longer in the approved set. ---
+    // the all-clear is decided. Shares the read above, so it costs one subrequest of
+    // its own (the calendars' mirrored horizon, #3655) on a tick with approved time
+    // off ahead, plus one when a page has to end for an agent no longer in the
+    // approved set. ---
     await steps.run("ooo_event_mismatch", null, () =>
       runOooEventMismatchCheck({
         load: loadOooEventMismatch,

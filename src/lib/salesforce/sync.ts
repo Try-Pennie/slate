@@ -36,9 +36,15 @@ import { chunkSoqlValues, sfInList } from "@/lib/salesforce/soql";
 import {
   hasUserIdConflicts,
   planSalesforceUserIds,
+  userIdConflictLogFields,
   type SfIdCandidate,
   type SlateRosterRow,
 } from "@/lib/salesforce/user-id-link";
+import {
+  API_ONLY_PROFILE_FIELD,
+  partitionApiOnly,
+  requireApiOnlyField,
+} from "@/lib/salesforce/api-only";
 import {
   agentProfileSoql,
   planOnboardingFlip,
@@ -110,7 +116,12 @@ interface SfUser {
   IsActive?: boolean;
   FirstName?: string | null;
   LastName?: string | null;
-  Profile?: { Name?: string } | null;
+  /**
+   * `PermissionsApiUserOnly` is selected by EVERY query in this file (#3669): it is
+   * what marks an integration account, which is never a person and must never
+   * answer for one. See `api-only.ts`.
+   */
+  Profile?: { Name?: string; PermissionsApiUserOnly?: boolean | null } | null;
   /** Custom picklist holding the agent's OOO approver by NAME (not the standard
    *  Manager lookup, which is a different person at Pennie). */
   Agent_Manager__c?: string | null;
@@ -123,9 +134,38 @@ interface SfUser {
   AchieveBackendServicer__c?: boolean;
 }
 
-/** The shared paginated query, typed to this file's record shape (#2593). */
-function queryAll(instanceUrl: string, token: string, soql: string): Promise<SfUser[]> {
-  return querySoqlAll<SfUser>(instanceUrl, token, soql);
+/**
+ * The API only integration accounts one run left out of its matching (#3669),
+ * keyed by Salesforce `User.Id`, with the address each one carried. The address is
+ * held only to count how many of them collide with a Slate roster row; it is never
+ * logged (L222).
+ */
+type ApiOnlyExclusions = Map<string, string>;
+
+/**
+ * The shared paginated query, typed to this file's record shape (#2593), with
+ * API only integration accounts taken out of every answer (#3669).
+ *
+ * It is the ONLY way this file queries Salesforce, so no query feeding the roster,
+ * the manager names, the cross system key or the presence read can see an
+ * integration account, and it refuses a query that does not select the flag that
+ * marks one, which would otherwise hand back records that all read as people.
+ * What it took out is recorded in `excluded` so the run can count it.
+ */
+async function queryPeople(
+  instanceUrl: string,
+  token: string,
+  soql: string,
+  excluded: ApiOnlyExclusions,
+): Promise<SfUser[]> {
+  requireApiOnlyField(soql);
+  const rows = await querySoqlAll<SfUser>(instanceUrl, token, soql);
+  const { people, apiOnly } = partitionApiOnly(rows);
+  for (const r of apiOnly) {
+    const id = (r.Id ?? "").trim() || `unidentified-${excluded.size + 1}`;
+    excluded.set(id, normalizeEmail(r.Email ?? ""));
+  }
+  return people;
 }
 
 /**
@@ -155,13 +195,18 @@ async function queryPresenceByEmail(
   instanceUrl: string,
   token: string,
   emails: string[],
+  excluded: ApiOnlyExclusions,
 ): Promise<Map<string, SalesforcePresence>> {
   const records: { email: string; isActive: boolean; recordId: string | null }[] = [];
   for (const chunk of chunkSoqlValues(emails)) {
-    const rows = await queryAll(
+    // An ACTIVE integration account beside a departed person's inactive record
+    // would read address wide as a refusal and keep the leaver in the roster, so
+    // this read leaves them out like every other (#3669).
+    const rows = await queryPeople(
       instanceUrl,
       token,
-      `SELECT Id, Email, IsActive FROM User WHERE Email IN (${sfInList(chunk)})`,
+      `SELECT Id, Email, ${API_ONLY_PROFILE_FIELD}, IsActive FROM User WHERE Email IN (${sfInList(chunk)})`,
+      excluded,
     );
     for (const r of rows) {
       records.push({
@@ -441,14 +486,18 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
   const backendFields = BACKEND_VALUES.map((v) => BACKEND_FIELD[v]);
   const debtFilter = debtFields.map((f) => `${f}=true`).join(" OR ");
   const soql =
-    `SELECT Id, Email, Name, Profile.Name, Agent_Manager__c, ` +
+    `SELECT Id, Email, Name, Profile.Name, ${API_ONLY_PROFILE_FIELD}, Agent_Manager__c, ` +
     `${debtFields.join(", ")}, ` +
     `${backendFields.join(", ")} FROM User ` +
     // Profiles first, tiers second (#2071): a hire on Chatter Free has no tier
     // yet and is exactly the person this used to leave with no Slate row at all.
     `WHERE IsActive = true AND Email != null AND (${agentProfileSoql()} OR ${debtFilter})`;
 
-  const sfUsers = await queryAll(instanceUrl, token, soql);
+  // Every API only integration account this run's queries returned and left out
+  // (#3669), so the run can say how many. An integration account carrying a tier
+  // never becomes a Slate row either: it is not a person who can take a call.
+  const apiOnlyExcluded: ApiOnlyExclusions = new Map();
+  const sfUsers = await queryPeople(instanceUrl, token, soql, apiOnlyExcluded);
   const db = supabaseAdmin();
   const org = await ensureDefaultOrg();
 
@@ -658,10 +707,11 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     unmatched: [],
   };
   if (managerNames.length) {
-    const mgrRecords = await queryAll(
+    const mgrRecords = await queryPeople(
       instanceUrl,
       token,
-      `SELECT Id, Name, Email FROM User WHERE Name IN (${sfInList(managerNames)}) AND Email != null`,
+      `SELECT Id, Name, Email, ${API_ONLY_PROFILE_FIELD} FROM User WHERE Name IN (${sfInList(managerNames)}) AND Email != null`,
+      apiOnlyExcluded,
     );
     sfIdCandidates.push(...idCandidates(mgrRecords));
     namePlan = planManagerNames(
@@ -688,10 +738,11 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
           .filter(Boolean),
       ),
     ];
-    const nameRows = await queryAll(
+    const nameRows = await queryPeople(
       instanceUrl,
       token,
-      `SELECT Id, FirstName, LastName, Email FROM User WHERE IsActive = true AND Email != null AND LastName IN (${sfInList(lastNames)})`,
+      `SELECT Id, FirstName, LastName, Email, ${API_ONLY_PROFILE_FIELD} FROM User WHERE IsActive = true AND Email != null AND LastName IN (${sfInList(lastNames)})`,
+      apiOnlyExcluded,
     );
     sfIdCandidates.push(...idCandidates(nameRows));
     namePlan = mergeManagerNamePlans(
@@ -957,10 +1008,13 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     .map((r) => normalizeEmail(r.email))
     .filter((e) => e && !coveredEmails.has(e));
   for (const chunk of chunkSoqlValues(remainingEmails)) {
-    const rows = await queryAll(
+    // The query the 2026-10-13 page came through: a staff member outside the debt
+    // team query, and an integration account carrying their address (#3669).
+    const rows = await queryPeople(
       instanceUrl,
       token,
-      `SELECT Id, Email FROM User WHERE IsActive = true AND Email != null AND Email IN (${sfInList(chunk)})`,
+      `SELECT Id, Email, ${API_ONLY_PROFILE_FIELD} FROM User WHERE IsActive = true AND Email != null AND Email IN (${sfInList(chunk)})`,
+      apiOnlyExcluded,
     );
     sfIdCandidates.push(...idCandidates(rows));
   }
@@ -1012,16 +1066,18 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     // many and what to do, and this line is where a reader finds which rows. Slate
     // user ids only, never the person's email or name, so a transcript or a log
     // search does not become a roster export (L222).
+    //
+    // Every conflict shape names its rows here, the ambiguous one included
+    // (#3668): the page points its reader at this line, and for an ambiguous email
+    // it used to carry only a count.
+    const conflictEntries = userIdConflictLogFields(idPlan);
+    const conflictFields: Record<string, number | string> = {};
+    // Counts first, then the rows, so the line reads the way it always has.
+    for (const entry of conflictEntries) conflictFields[entry.countKey] = entry.count;
+    for (const entry of conflictEntries) conflictFields[entry.idsKey] = entry.userIds;
     log.warn("sf-sync", {
       msg: "Salesforce user id conflicts, nothing written for these rows",
-      disagreements: idPlan.disagreements.length,
-      ambiguous: idPlan.ambiguous.length,
-      claimed: idPlan.claimed.length,
-      disagreeing_user_ids: idPlan.disagreements
-        .map((d) => d.userId)
-        .slice(0, 10)
-        .join(", "),
-      claimed_user_ids: idPlan.claimed.map((c) => c.userId).slice(0, 10).join(", "),
+      ...conflictFields,
     });
   }
 
@@ -1098,8 +1154,29 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     ),
   ];
   const presence: Map<string, SalesforcePresence> = presenceEmails.length
-    ? await queryPresenceByEmail(instanceUrl, token, presenceEmails)
+    ? await queryPresenceByEmail(instanceUrl, token, presenceEmails, apiOnlyExcluded)
     : new Map();
+
+  if (apiOnlyExcluded.size) {
+    // Counted every run it happens, so a real person mis-profiled as an integration
+    // is visible here rather than silently missing from the roster (#3669). Info,
+    // not warn: an integration account carrying a colleague's address is the
+    // expected state, and nothing pages on it. Salesforce ids of the ACCOUNTS (which
+    // name a login, not a person), never the address they carry (L222).
+    // `roster_matches` is how many of them carry an address a Slate row holds,
+    // which is the number that would otherwise have been a conflict.
+    const rosterEmails = new Set(
+      [...rosterRows.map((r) => normalizeEmail(r.email)), ...reapableRows.map((r) => normalizeEmail(r.email))].filter(
+        Boolean,
+      ),
+    );
+    log.info("sf-sync", {
+      msg: "left API only Salesforce accounts out of the roster's email matching",
+      count: apiOnlyExcluded.size,
+      roster_matches: [...apiOnlyExcluded.values()].filter((e) => rosterEmails.has(e)).length,
+      salesforce_user_ids: [...apiOnlyExcluded.keys()].slice(0, 10).join(", "),
+    });
+  }
 
   // Where each row stands with Salesforce, read ONCE (#2387) and handed to both
   // the reap and the reconcile below. Two readings of a shared address either side

@@ -66,14 +66,23 @@ export function uncoveredSpans(
  *  - `not-blocking`: the calendar shows no busy event for it at all, because it was
  *    deleted, cancelled, declined or marked free. Kept apart from `uncovered`
  *    because it reads differently to the person fixing it.
+ *  - `unmeasured`: what is left of the window lies wholly past `measuredUntilMs`,
+ *    so `cover` cannot say anything about it (#3655). Never a finding and never
+ *    coverage, exactly like `unreadable`.
  *  - `passed`: the window is over, so there is nothing left to reconcile.
  *  - `unreadable`: a stamp could not be read, so nothing was compared. Never a
  *    finding and never coverage (L50).
+ *
+ * The three compared verdicts carry `unmeasured`: the tail of the window past
+ * `measuredUntilMs`, or null when the whole of it was judged. A window straddling
+ * the horizon is judged up to it and no further, so `spans` never reach into the
+ * tail, and a caller deciding an all-clear can see that part was not compared.
  */
 export type EventCoverage =
-  | { kind: "covered" }
-  | { kind: "uncovered"; spans: Span[] }
-  | { kind: "not-blocking" }
+  | { kind: "covered"; unmeasured: Span | null }
+  | { kind: "uncovered"; spans: Span[]; unmeasured: Span | null }
+  | { kind: "not-blocking"; unmeasured: Span | null }
+  | { kind: "unmeasured" }
   | { kind: "passed" }
   | { kind: "unreadable" };
 
@@ -81,6 +90,19 @@ export function judgeEventCoverage(input: {
   startsAt: string;
   endsAt: string;
   nowMs: number;
+  /**
+   * How far ahead `cover` is a measurement of the calendar (#3655). REQUIRED, so
+   * every caller has to say where its cover came from (L168):
+   *
+   *  - the monitor lane reads cover from the busy cache, whose mirror of an event is
+   *    DELETED, not updated, when the event changes while it starts past the sync's
+   *    write window (#1264). Past the calendar's mirrored horizon an absent or short
+   *    mirror measures the sync's cut off rather than the calendar, so it passes
+   *    that horizon (`mirroredHorizonMs`), and the part past it is `unmeasured`.
+   *  - the calendar sync reads cover from the event Google just sent, which is a
+   *    measurement at any distance, so it passes `Infinity`.
+   */
+  measuredUntilMs: number;
   /**
    * What the calendar blocks for this request's event, as stored instants. `null`
    * or empty means it blocks nothing, which is never read as covered.
@@ -91,6 +113,11 @@ export function judgeEventCoverage(input: {
   const end = parseStampMs(input.endsAt);
   if (start === null || end === null) return { kind: "unreadable" };
   if (end <= input.nowMs) return { kind: "passed" };
+  // Only what is still ahead: hours already gone cannot be booked into.
+  const from = Math.max(start, input.nowMs);
+  if (from >= input.measuredUntilMs) return { kind: "unmeasured" };
+  const until = Math.min(end, input.measuredUntilMs);
+  const unmeasured: Span | null = end > until ? { startMs: until, endMs: end } : null;
   const cover: Span[] = [];
   for (const c of input.cover ?? []) {
     const s = parseStampMs(c.startsAt);
@@ -98,8 +125,9 @@ export function judgeEventCoverage(input: {
     if (s === null || e === null) return { kind: "unreadable" };
     if (e > s) cover.push({ startMs: s, endMs: e });
   }
-  if (cover.length === 0) return { kind: "not-blocking" };
-  // Only what is still ahead: hours already gone cannot be booked into.
-  const open = uncoveredSpans({ startMs: Math.max(start, input.nowMs), endMs: end }, cover);
-  return open.length === 0 ? { kind: "covered" } : { kind: "uncovered", spans: open };
+  if (cover.length === 0) return { kind: "not-blocking", unmeasured };
+  const open = uncoveredSpans({ startMs: from, endMs: until }, cover);
+  return open.length === 0
+    ? { kind: "covered", unmeasured }
+    : { kind: "uncovered", spans: open, unmeasured };
 }
