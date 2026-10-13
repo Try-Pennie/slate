@@ -18,6 +18,7 @@ import {
   sliceWindow,
   SLICE_MS,
   MAX_WINDOW_MS,
+  MAX_SLICES,
   EVENTS_LIMIT,
   buildEventsQuery,
   linesFromResponse,
@@ -89,6 +90,29 @@ const T0 = Date.parse("2026-10-05T00:00:00Z");
     threw = true;
   }
   assert(threw, "a window longer than the 7 day retention is refused rather than sliced into empty hours");
+
+  // Each slice is at least one request, made one after another, so the NUMBER of slices is
+  // the cost. A tiny slice over a long window would be millions of sequential calls.
+  eq(MAX_SLICES, 168, "at most 168 slices, a full 7 days at one hour each");
+  eq(
+    sliceWindow({ fromIso: iso(T0), toIso: iso(T0 + MAX_WINDOW_MS) }).length,
+    168,
+    "so the widest window at the default slice is allowed",
+  );
+  threw = false;
+  try {
+    sliceWindow({ fromIso: iso(T0), toIso: iso(T0 + 7 * 24 * HOUR), sliceMs: 0.001 * MIN });
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a slice under a minute is refused");
+  threw = false;
+  try {
+    sliceWindow({ fromIso: iso(T0), toIso: iso(T0 + 2 * 24 * HOUR), sliceMs: 10 * MIN });
+  } catch (e) {
+    threw = /narrow the window/.test(String(e));
+  }
+  assert(threw, "more than 168 slices is refused before any request, saying to narrow the window");
 }
 
 // --- The events query shape.
@@ -323,7 +347,7 @@ function fakeCloudflare(opts: {
   // fail. So the file is read for a name wrangler does not know, and never for that one.
   eq(TOKEN_ENV, "CLOUDFLARE_LOGS_READ_TOKEN", "the .env.local name is one wrangler never reads");
   assert(
-    TOKEN_ENV !== "CLOUDFLARE_API_TOKEN" && !TOKEN_ENV.startsWith("CF_"),
+    (TOKEN_ENV as string) !== "CLOUDFLARE_API_TOKEN" && !TOKEN_ENV.startsWith("CF_"),
     "and is not CLOUDFLARE_API_TOKEN or a deprecated CF_ alias wrangler would pick up",
   );
   eq(
@@ -440,6 +464,13 @@ function fakeCloudflare(opts: {
     healthy,
   );
   eq(between.code, 0, "an explicit --from and --to window works");
+
+  // --from fixes the start, so a --minutes beside it would be silently ignored; the caller
+  // would get a window they did not ask for. Refused, naming both flags.
+  const both = await drive(["tag=booking", "--from", iso(T0), "--minutes", "30"], healthy);
+  eq(both.code, 2, "--minutes together with --from is refused");
+  eq(both.requests.length, 0, "before any request");
+  assert(both.err.some((l) => /--minutes/.test(l) && /--from/.test(l)), "naming the two flags that conflict");
   assert(
     between.requests.every((r) => (r.body as { timeframe: { from: number } }).timeframe.from === T0),
     "and is the window queried",

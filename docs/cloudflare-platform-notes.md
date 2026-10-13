@@ -601,12 +601,14 @@ node --experimental-strip-types --import ./scripts/register-paths.mjs \
 Add **`--lines`** to PRINT every matching line (UTC timestamp, level or a dash for a
 `console.log` line, text) instead of only counting them (#3664). It lists through the
 raw API's events view, which serves app rows normally; only the MCP tool's validation
-breaks on them. A narrow window in the past is `--from <iso> --to <iso>`.
+breaks on them. A narrow window in the past is `--from <iso> --to <iso>` (`--minutes`
+beside `--from` is refused, since it could only be ignored).
 
 Every request covers **at most one hour** (#3299, above). A wider window is read one
 hour at a time, summed and merged, and the output says how many slices it read and
 prints each slice's needle and control counts. `--slice-minutes` asks for narrower
-slices; wider than 60 is refused. The positive control is judged PER SLICE: a hit in a
+slices, from 1 to 60 minutes; a run reads at most 168 slices (7 days at one hour),
+because they are read one after another. The positive control is judged PER SLICE: a hit in a
 slice whose control is live is a hit, but one slice whose control found nothing makes
 an absence over the whole window unverifiable, since nobody could see into it.
 
@@ -641,7 +643,11 @@ To create one, in the Cloudflare dashboard, signed in to the Pennie account:
 5. **Continue to summary**, then **Create Token**. It is shown once.
 6. Add it to `.env.local` in the checkout as `CLOUDFLARE_LOGS_READ_TOKEN=` followed by
    the token. Never paste it into a command or a chat.
-7. Check it: `scripts/logs.ts "tag=recompute" --minutes 60` must exit 0 (PRESENT).
+7. Check it from the checkout root; it must print PRESENT and exit 0:
+
+   ```sh
+   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/logs.ts "tag=recompute" --minutes 60
+   ```
 
 One more trap it encodes, found while building it: the REST API's `timeframe` takes
 **Unix milliseconds** and 400s on ISO strings, even though the Cloudflare MCP tool

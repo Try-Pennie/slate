@@ -24,7 +24,7 @@
 //   3. Permissions: Account, Workers Observability, Read. Nothing else.
 //   4. Account Resources: Include, Pennie. Then Continue to summary, Create Token.
 //   5. Copy the token into `.env.local` as above. It is shown once.
-//   6. Check it: `logs.ts "tag=recompute" --minutes 60` must exit 0 (PRESENT).
+//   6. Check it: the command above with "tag=recompute" --minutes 60 must exit 0 (PRESENT).
 // docs/cloudflare-platform-notes.md has the same steps beside the rest of the log traps.
 //
 // WHY THIS EXISTS. Querying these logs keeps returning zero rows from data that
@@ -424,6 +424,16 @@ export const SLICE_MS = 60 * 60_000;
 /** Cloudflare keeps Workers logs for 7 days, so older slices could only ever read empty. */
 export const MAX_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
+/**
+ * The most slices one run may read: the full 7 days at one hour each. Slices are read one
+ * after another, so their NUMBER is the run's cost, and a tiny slice over a long window
+ * would otherwise be millions of sequential requests.
+ */
+export const MAX_SLICES = MAX_WINDOW_MS / SLICE_MS;
+
+/** The narrowest slice: a minute, the ingestion pipeline's own resolution. */
+const MIN_SLICE_MS = 60_000;
+
 export interface Slice {
   fromIso: string;
   toIso: string;
@@ -437,8 +447,8 @@ export interface Slice {
  */
 export function sliceWindow(input: { fromIso: string; toIso: string; sliceMs?: number }): Slice[] {
   const sliceMs = input.sliceMs ?? SLICE_MS;
-  if (!Number.isFinite(sliceMs) || sliceMs <= 0) {
-    throw new Error("slice: must be a positive number of minutes");
+  if (!Number.isFinite(sliceMs) || sliceMs < MIN_SLICE_MS) {
+    throw new Error("slice: must be at least one minute");
   }
   if (sliceMs > SLICE_MS) {
     throw new Error(
@@ -453,6 +463,13 @@ export function sliceWindow(input: { fromIso: string; toIso: string; sliceMs?: n
   if (toMs - fromMs > MAX_WINDOW_MS) {
     throw new Error(
       "window: longer than the 7 days Cloudflare keeps Workers logs, so its oldest part could only ever read as empty.",
+    );
+  }
+  const count = Math.ceil((toMs - fromMs) / sliceMs);
+  if (count > MAX_SLICES) {
+    throw new Error(
+      `window: ${count} slices of ${sliceMs / 60_000} minutes is more than the ${MAX_SLICES} one run reads; ` +
+        "narrow the window, or use a wider slice (up to 60 minutes).",
     );
   }
   const slices: Slice[] = [];
@@ -859,6 +876,11 @@ async function runChecked(
     if (!Number.isFinite(v) || v <= 0) throw new Error(`--${name} must be a positive number of minutes`);
     return v;
   };
+  if (flags.has("from") && flags.has("minutes")) {
+    // --from fixes the start, so --minutes could only be silently ignored.
+    err(`--minutes and --from cannot be used together: give --from and --to, or --minutes (with --to if needed)\n${USAGE}`);
+    return 2;
+  }
   const minutes = minutesOf("minutes", "60");
   const sliceMs = minutesOf("slice-minutes", String(SLICE_MS / 60_000)) * 60_000;
   const isoOf = (name: string): string | undefined => {
