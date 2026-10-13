@@ -5,6 +5,8 @@ import { startBulkReassign } from "@/lib/booking/service";
 import { planLifecycleChange, type LifecycleAction } from "@/lib/offboarding/plan";
 import { writeRoutableState } from "@/lib/bookable/routable-write";
 import { planOffboardingCoverageSweep } from "@/lib/offboarding/coverage-trigger";
+import { clearInvitesForLeaver } from "@/lib/offboarding/clear-invites-io";
+import type { ClearInvitesResult } from "@/lib/offboarding/clear-invites";
 import {
   revokeSupabaseSessions,
   restoreSupabaseSessions,
@@ -30,11 +32,19 @@ export type CoverageSweepOutcome = "queued" | "none" | "failed";
  */
 export type SessionRevokeResult = SessionRevokeOutcome | "failed";
 
+/**
+ * What clearing the departed advisor's invites did before the sweep (#3667): the
+ * counts, or `failed` when the bookings could not even be read. Reported rather
+ * than thrown, for the reason `coverageSweep` is: the deactivation must stand.
+ */
+export type InvitesClearedResult = ClearInvitesResult | "failed";
+
 export type LifecycleResult =
   | { status: "not_found" }
   | {
       status: "noop";
       userId: string;
+      invitesCleared?: InvitesClearedResult;
       coverageSweep?: CoverageSweepOutcome;
       sessionRevoke?: SessionRevokeResult;
     }
@@ -42,6 +52,7 @@ export type LifecycleResult =
       status: "applied";
       userId: string;
       deactivate: boolean;
+      invitesCleared?: InvitesClearedResult;
       coverageSweep?: CoverageSweepOutcome;
       sessionRevoke?: SessionRevokeResult;
       /**
@@ -389,6 +400,12 @@ async function withAutomaticCoverage(
   if (!plan) return outcome.result;
   if (outcome.result.status === "not_found") return outcome.result;
 
+  // #3667: clear the invites FIRST. The automation archives the Google account 10
+  // seconds after this call, and from then on Google refuses every delete, so the
+  // lead would keep the departed advisor's invite beside the new one. The sweep's own
+  // reassign still deletes whatever this could not, exactly as before.
+  const invitesCleared = await clearInvitesReported(plan.outUserId, plan.deactivatedAtIso);
+
   try {
     const { itemCount } = await startBulkReassign({
       outUserId: plan.outUserId,
@@ -409,13 +426,25 @@ async function withAutomaticCoverage(
       user_id: plan.outUserId,
       queued: itemCount,
     });
-    return { ...outcome.result, coverageSweep: itemCount > 0 ? "queued" : "none" };
+    return { ...outcome.result, invitesCleared, coverageSweep: itemCount > 0 ? "queued" : "none" };
   } catch (e) {
     log.error(
       "offboarding",
       { msg: "coverage sweep enqueue failed", user_id: plan.outUserId },
       e,
     );
-    return { ...outcome.result, coverageSweep: "failed" };
+    return { ...outcome.result, invitesCleared, coverageSweep: "failed" };
+  }
+}
+
+/** `clearInvitesForLeaver`, logged, with a failure reported rather than thrown (#3667). */
+async function clearInvitesReported(userId: string, deactivatedAtIso: string): Promise<InvitesClearedResult> {
+  try {
+    const r = await clearInvitesForLeaver(userId, deactivatedAtIso);
+    log.info("offboarding", { msg: "invites cleared before archive", user_id: userId, ...r });
+    return r;
+  } catch (e) {
+    log.error("offboarding", { msg: "invites could not be cleared before archive", user_id: userId }, e);
+    return "failed";
   }
 }

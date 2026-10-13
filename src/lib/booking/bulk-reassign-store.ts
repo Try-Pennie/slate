@@ -138,6 +138,28 @@ export async function coverageBookings(
 }
 
 /**
+ * The invites on the bookings a coverage sweep over this window would move (#3667):
+ * the SAME window as `coverageBookings`, through the shared `applyUpcomingWindow`, so
+ * the invites cleared before the archive and the calls the sweep moves after it can
+ * never be two different sets (L16). A booking with no event id holds no invite and
+ * is left out.
+ */
+export async function coverageInvites(
+  outUserId: string,
+  rangeStartIso: string,
+): Promise<{ id: string; gcal_event_id: string }[]> {
+  const bounds = coverageSelectionBounds({ startIso: rangeStartIso, endIso: null }, new Date().toISOString());
+  const rows = await selectAllPages<{ id: string; gcal_event_id: string | null }>(
+    "bulk-reassign-coverage-invites",
+    "id",
+    () =>
+      // cap-safe: read every page via selectAllPages, which orders and pages it.
+      applyUpcomingWindow(supabaseAdmin().from("bookings").select("id, gcal_event_id"), outUserId, bounds),
+  );
+  return rows.flatMap((r) => (r.gcal_event_id ? [{ id: r.id, gcal_event_id: r.gcal_event_id }] : []));
+}
+
+/**
  * The shared reads behind the demotion snapshot and the demotion decision: the agent's upcoming
  * bookings (the same window as `coverageBookings`, plus bucket_id and kind), the criteria of the
  * buckets they reference, and the buckets they are a manual member of. The agent's ATTRIBUTES are

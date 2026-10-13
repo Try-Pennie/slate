@@ -648,7 +648,7 @@ An unknown or missing `action` is a `400`. Kept for callers not yet migrated
 - `POST /api/users/reactivate` body `{ "email": "…" }`
 
 Missing email: `400`. Response:
-`200 { "status", "userId"?, "deactivate"?, "coverageSweep"? }`.
+`200 { "status", "userId"?, "deactivate"?, "invitesCleared"?, "coverageSweep"? }`.
 Deactivating an unknown email is an idempotent `200`; activating one is `404`.
 
 **Deactivating also moves the appointments they still hold (#1241).** These
@@ -658,6 +658,16 @@ own: reason `coverage`, open ended from the moment they were deactivated,
 through the same engine the admin coverage panel uses. `coverageSweep` reports
 what it did: `queued` (bookings are on their way to a covering agent), `none`
 (they held nothing still ahead), or `failed`.
+
+**Before the sweep, it removes the invites on those appointments (#3667).** Once
+the Google account is archived Google refuses every change to that calendar, so
+the lead would keep the departed advisor's invite beside the new one (measured
+2026-10-13). So the call first deletes each upcoming invite without emailing the
+lead, within about 6 seconds, and replies only then. **Archive the Google account
+after the reply, not before**: the automation waits 10 seconds. `invitesCleared`
+reports it as `{ total, cleared, failed, unanswered, notStarted }`, or `failed`
+when the bookings could not be read; anything not cleared is still deleted (or
+queued for retry) by the sweep, as before, and the call can simply be repeated.
 
 A `failed` sweep does NOT fail the deactivate, because the deactivation is what
 stops them being offered for anything new and keeping that is strictly better
