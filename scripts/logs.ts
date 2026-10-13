@@ -720,14 +720,25 @@ export async function listLines(input: {
     const unreadable = listed.filter((l) => l.message === null).length;
     if (unreadable > 0) reasons.push(`${unreadable} line(s) carried no readable text`);
     if (reasons.length > 0) incomplete.push({ ...s, reason: reasons.join("; ") });
+    let repeated = 0;
     for (const line of listed) {
       // Adjacent slices share a boundary instant, so a row stamped exactly on it can come
-      // back from both. Its id says it is one row.
+      // back from both, in the listing AND in the count. Its id says it is one row.
       if (line.id !== null) {
-        if (seen.has(line.id)) continue;
+        if (seen.has(line.id)) {
+          repeated++;
+          continue;
+        }
         seen.add(line.id);
       }
       lines.push(line);
+    }
+    // Take the repeat out of this slice's count too, or the merged count is higher than the
+    // rows it describes and the printed list reads as short with nothing flagged (L16). It
+    // stays counted once, in the earlier slice that already holds it.
+    if (repeated > 0) {
+      const last = slices[slices.length - 1];
+      last.judgement = { ...last.judgement, needleCount: Math.max(0, last.judgement.needleCount - repeated) };
     }
   }
   lines.sort((a, b) => (a.timestampMs ?? Infinity) - (b.timestampMs ?? Infinity));
@@ -778,7 +789,7 @@ export const TOKEN_MISSING =
   `${TOKEN_ENV} is not set in .env.local or the environment (nor ${SHELL_TOKEN_ENV} in the ` +
   "environment), so nothing was queried. " +
   "It needs a read only Workers Observability token; the steps to create one and where to " +
-  "put it are in docs/cloudflare-platform-notes.md (Reading production logs).";
+  "put it are in docs/cloudflare-platform-notes.md, under \"The token (read only, one per Mac)\".";
 
 type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 

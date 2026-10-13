@@ -30,6 +30,7 @@ import {
   resolveToken,
   redact,
   TOKEN_ENV,
+  TOKEN_MISSING,
   run,
   exitCodeFor,
   CONTROL_NEEDLE,
@@ -37,6 +38,7 @@ import {
   type EventsQuery,
   type LogLine,
 } from "./logs.ts";
+import { readFileSync } from "node:fs";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const MIN = 60_000;
@@ -319,6 +321,30 @@ function fakeCloudflare(opts: {
   assert(/--slice-minutes/.test(r.incomplete[0]?.reason ?? ""), "and names the remedy, a narrower slice");
 }
 
+{
+  // A row stamped exactly on the boundary between two slices comes back from BOTH, in the
+  // count and in the listing. The listing keeps it once by id; the count must agree, or the
+  // printed list is one shorter than the count with nothing flagged.
+  const BOUNDARY_ID = "row-on-the-boundary";
+  const count: Parameters<typeof listLines>[0]["query"] = async (q) => {
+    const needle = q.parameters.filters.find((f) => f.key === "message")!.value;
+    if (needle === CONTROL_NEEDLE) return { count: 60, newestMs: q.timeframe.to - MIN };
+    return { count: 2, newestMs: q.timeframe.to - MIN };
+  };
+  const events: Parameters<typeof listLines>[0]["events"] = async (q) => {
+    const first = q.timeframe.from === T0;
+    const own = { id: `own-${q.timeframe.from}`, timestampMs: q.timeframe.from + 30 * MIN, level: "info", message: "slate tag=x" };
+    const shared = { id: BOUNDARY_ID, timestampMs: T0 + HOUR, level: "info", message: "slate tag=x boundary" };
+    return first ? [own, shared] : [shared, own];
+  };
+  const r = await listLines({ needle: "tag=x", control: CONTROL_NEEDLE, fromIso: iso(T0), toIso: iso(T0 + 2 * HOUR), query: count, events });
+  eq(r.lines.length, 3, "the boundary row is printed once");
+  eq(r.judgement.needleCount, 3, "and counted once, so the count matches the rows it describes");
+  assert(/found 3 matching/.test(r.judgement.reason), "the verdict's sentence carries the corrected count too");
+  eq(r.slices[0].judgement.needleCount + r.slices[1].judgement.needleCount, 3, "the per slice counts printed above it agree");
+  eq(r.incomplete.length, 0, "and a duplicate is not mistaken for a missing line");
+}
+
 // --- The token: where it comes from, and that it is never printed.
 {
   const TOKEN = "cfut_SECRET_value_never_print_9f3a";
@@ -440,6 +466,16 @@ function fakeCloudflare(opts: {
     missing.err.some((l) => /CLOUDFLARE_LOGS_READ_TOKEN/.test(l) && /\.env\.local/.test(l) && /cloudflare-platform-notes/.test(l)),
     "and says where the token goes and where the steps to create one are",
   );
+  {
+    // The section it names must be a real heading in that doc, or the pointer leads nowhere.
+    const named = TOKEN_MISSING.match(/cloudflare-platform-notes\.md, under "([^"]+)"/)?.[1];
+    assert(named !== undefined, "the token message names a section of the platform notes");
+    const headings = readFileSync(new URL("../docs/cloudflare-platform-notes.md", import.meta.url), "utf8")
+      .split("\n")
+      .filter((l) => /^#{1,6} /.test(l))
+      .map((l) => l.replace(/^#{1,6} /, "").trim());
+    assert(headings.includes(named ?? ""), `the section it names ("${named}") is a heading in that doc`);
+  }
 
   const dead = await drive(["tag=booking", "--lines", "--minutes", "60"], (b) => {
     if (b.view === "events") return json({ result: { events: { events: [] } } });
