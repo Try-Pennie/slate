@@ -48,7 +48,7 @@ interface Budget {
    * request's cleanup allowance is opened ONCE and every later cleanup reuses
    * it, even one opened after the first has returned.
    */
-  readonly request: { cleanup?: Budget; closed?: boolean; observer?: CallObserver };
+  readonly request: { cleanup?: Budget; closed?: boolean; observer?: CallObserver; label?: string };
 }
 
 /**
@@ -121,6 +121,16 @@ export function requestObserver(): CallObserver | undefined {
   return current()?.request.observer;
 }
 
+/**
+ * What the request in force here is (#3298): the label of the budget that OPENED
+ * it, never a nested one's, so a token mint inside a Google call's own budget
+ * still says it was for the booking confirm. None outside a request, which is
+ * where the cron lanes run.
+ */
+export function requestLabel(): string | undefined {
+  return current()?.request.label;
+}
+
 /** Resolved on first use, so the server runtime has installed its class by then. */
 function store(): ContextStore<Budget | undefined> {
   if (!found) {
@@ -154,7 +164,7 @@ export function withinCallBudget<T>(
   observer?: CallObserver,
 ): Promise<T> {
   const outer = current();
-  const own: Budget = { expiresAt: now() + ms, label, totalMs: ms, request: outer?.request ?? { observer } };
+  const own: Budget = { expiresAt: now() + ms, label, totalMs: ms, request: outer?.request ?? { observer, label } };
   const ran = store().run(outer && outer.expiresAt <= own.expiresAt ? outer : own, work);
   if (outer) return ran;
   // The ROOT of a request closes it when its work settles, success or failure. A

@@ -9,6 +9,7 @@ import {
   deadlineWithinBudget,
   fetchWithinBudget,
   outsideCallBudget,
+  requestLabel,
   withinCallBudget,
   withinCleanupBudget,
 } from "../src/lib/call-budget.ts";
@@ -368,6 +369,36 @@ t = 0;
     "observer: two requests interleaved in one isolate never see each other's calls",
   );
   t = 0;
+}
+
+// #3298: the request a call belongs to is named by its ROOT budget, so a token
+// mint inside a Google call's own nested budget still says it was for the booking
+// confirm. Outside any request there is none, and a closed request names nothing.
+{
+  eq(requestLabel(), undefined, "request label: none outside any budget");
+  let insideNested: string | undefined;
+  let insideRoot: string | undefined;
+  let afterRoot: () => string | undefined = () => "unset";
+  await withinCallBudget(
+    14_000,
+    "the booking confirm",
+    async () => {
+      insideRoot = requestLabel();
+      await withinCallBudget(8_000, "google freeBusy", async () => {
+        insideNested = requestLabel();
+      }, now);
+      afterRoot = () => requestLabel();
+    },
+    now,
+  );
+  eq(insideRoot, "the booking confirm", "request label: the root budget names the request");
+  eq(insideNested, "the booking confirm", "request label: a nested budget keeps the request's name, not its own");
+  eq(afterRoot(), undefined, "request label: a request that has answered names nothing");
+  eq(
+    outsideCallBudget(() => requestLabel()),
+    undefined,
+    "request label: work run outside the budget names no request",
+  );
 }
 
 finish();

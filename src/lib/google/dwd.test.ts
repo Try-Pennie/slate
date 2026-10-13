@@ -13,6 +13,7 @@ vi.mock("@/lib/env", () => ({
 
 import { getDelegatedToken, DELEGATED_TOKEN_TIMEOUT_MS, GMAIL_SEND_SCOPE } from "./dwd";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
+import { withinCallBudget } from "@/lib/call-budget";
 
 beforeAll(async () => {
   const pair = await crypto.subtle.generateKey(
@@ -118,5 +119,81 @@ describe("getDelegatedToken after a refused token (#3144)", () => {
     await getDelegatedToken(who, GMAIL_SEND_SCOPE, undefined, "tok-2");
     expect(await getDelegatedToken(who)).toBe("tok-1");
     expect(mints).toBe(3);
+  });
+});
+
+// #3298: every real mint writes one line naming its scope, how long it took, what
+// it was allowed and how it ended, so a week of them says how close ordinary mints
+// run to the deadline. A cache hit writes nothing: it never reaches Google.
+describe("getDelegatedToken mint timing line (#3298)", () => {
+  let lines: string[];
+  beforeEach(() => {
+    lines = [];
+    const keep = (line: unknown) => {
+      if (typeof line === "string" && line.includes("tag=google-token-mint")) lines.push(line);
+    };
+    vi.spyOn(console, "info").mockImplementation(keep);
+    vi.spyOn(console, "warn").mockImplementation(keep);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  const answered = async () =>
+    new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+
+  it("writes one line for a mint and none for the cache hits after it, never the address", async () => {
+    vi.stubGlobal("fetch", answered);
+    const who = "timed-mint@x.com";
+    await getDelegatedToken(who);
+    await getDelegatedToken(who);
+    await getDelegatedToken(who);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(
+      /^slate tag=google-token-mint msg="token mint" scope="calendar" outcome="ok" duration_ms=\d+ deadline_ms=8000 limit_ms=8000$/,
+    );
+    expect(lines[0]).not.toContain("@");
+  });
+
+  it("writes one line for a burst that shares one mint", async () => {
+    let answer: (r: Response) => void = () => {};
+    let calls = 0;
+    vi.stubGlobal("fetch", () => {
+      calls += 1;
+      return new Promise<Response>((r) => (answer = r));
+    });
+    const who = "timed-burst@x.com";
+    const burst = Promise.all([getDelegatedToken(who), getDelegatedToken(who), getDelegatedToken(who)]);
+    for (let i = 0; i < 200 && calls === 0; i++) await new Promise((r) => setTimeout(r, 1));
+    answer(await answered());
+    await burst;
+    expect(calls).toBe(1);
+    expect(lines).toHaveLength(1);
+  });
+
+  it("names a mint that ran out of time a timeout, with the time it waited", async () => {
+    vi.useFakeTimers();
+    let markSent = () => {};
+    const sent = new Promise<void>((r) => (markSent = r));
+    vi.stubGlobal("fetch", () => {
+      markSent();
+      return new Promise<Response>(() => {});
+    });
+    const pending = getDelegatedToken("timed-hung@x.com", GMAIL_SEND_SCOPE).catch((e: unknown) => e);
+    await sent;
+    await vi.advanceTimersByTimeAsync(DELEGATED_TOKEN_TIMEOUT_MS);
+    expect(await pending).toBeInstanceOf(DeadlineExceededError);
+    expect(lines).toEqual([
+      'slate tag=google-token-mint msg="token mint" scope="gmail.send" outcome="timeout" duration_ms=8000 deadline_ms=8000 limit_ms=8000',
+    ]);
+  });
+
+  it("names the request a mint was made for when it runs inside one", async () => {
+    vi.stubGlobal("fetch", answered);
+    await withinCallBudget(12_000, "the booking confirm", () => getDelegatedToken("timed-request@x.com", undefined, 8_000));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('request="the booking confirm"');
   });
 });

@@ -2,8 +2,9 @@ import { googleSaClientEmail, googleSaPrivateKey } from "@/lib/env";
 import { GoogleHttpError } from "@/lib/google/http-error";
 import { parseGoogleErrorReason } from "@/lib/google/reachability-classify";
 import { DeadlineExceededError, NO_DEADLINE, isDeadlineExceeded, type Deadline } from "@/lib/fetch-within-deadline";
-import { deadlineWithinBudget, fetchWithinBudget } from "@/lib/call-budget";
+import { deadlineWithinBudget, fetchWithinBudget, requestLabel } from "@/lib/call-budget";
 import { makeSharedInFlight } from "@/lib/concurrency";
+import { timedMint } from "@/lib/google/mint-log";
 
 /**
  * Google domain-wide delegation: mint an access token that impersonates a
@@ -16,12 +17,25 @@ const SCOPE =
 /** Send-only Gmail scope for the daily OOO-approvals digest (no read access). */
 export const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
+/** The name a mint's deadline and its errors carry. */
+const MINT_LABEL = "google token mint";
 
 /**
- * The deadline on minting a token when the caller names none (#3102): the Gmail
- * digest and the directory photo lane. A calendar call passes its OWN deadline
- * instead, and the mint also waits no longer than the enclosing call budget has
- * left, so a mint on the confirm path is held to what the lead can wait.
+ * The deadline on minting a token when the caller names none (#3102). Every Gmail
+ * send takes it: the 24 hour reminder email (`/api/cron/booking-reminders`) and
+ * the OOO approvals digest (`/api/cron/ooo-approvals`), and so does the directory
+ * photo lane (`src/lib/advisor-photos/google.ts`) and the smoke canary's event
+ * cleanup (`scripts/lib/smoke-event-cleanup.ts`). A calendar call passes its OWN
+ * deadline instead: `GOOGLE_CONFIRM_TIMEOUT_MS` on the confirm path and for the
+ * reminder lane's invite rewrite, `CALENDAR_WRITE_TIMEOUT_MS` for the OOO writes
+ * and the reminder lane's invite read, `GOOGLE_SYNC_TIMEOUT_MS` (15 seconds) on
+ * the sync lanes; the first two are 8 seconds as well. The mint also waits no
+ * longer than the enclosing call budget has left, so a mint on the confirm path
+ * is held to what the lead can wait.
+ *
+ * 8 seconds was borrowed from the lead facing call budget, not measured, and two
+ * mints have run out of it (#3298). Every mint now logs its duration
+ * (`mint-log.ts`); size this from that reading, not from this comment.
  */
 export const DELEGATED_TOKEN_TIMEOUT_MS = 8000;
 
@@ -112,8 +126,17 @@ export async function getDelegatedToken(
   // deadline of the caller that started it, so each caller ALSO holds the shared
   // wait to its own deadline and budget: joining a mint never lets a call wait
   // longer than it would have waited for a mint of its own.
-  const { waitMs, reportAs } = deadlineWithinBudget(deadline, "google token mint");
-  const mint = () => mintToken(cacheKey, email, scope, deadline);
+  const { waitMs, reportAs } = deadlineWithinBudget(deadline, MINT_LABEL);
+  // Each real mint writes one timing line (#3298); a cache hit and a joiner write
+  // none. What it was allowed is read as it starts, in the minting caller's own
+  // context, so a joiner's second attempt reports its own budget, not the leader's.
+  const mint = () =>
+    timedMint(() => mintToken(cacheKey, email, scope, deadline), {
+      scope,
+      deadlineMs: deadline,
+      limitMs: mintLimit(deadline),
+      request: requestLabel(),
+    });
   let led = false;
   // The load runs synchronously up to its first await, so `led` is settled before
   // the next line reads it.
@@ -143,6 +166,17 @@ export async function getDelegatedToken(
   }
 }
 
+/** What a mint starting now may wait: 0 when the budget is already spent, as the
+ *  mint's own request is then refused before it is sent. */
+function mintLimit(deadline: Deadline): Deadline {
+  try {
+    return deadlineWithinBudget(deadline, MINT_LABEL).waitMs;
+  } catch (err) {
+    if (isDeadlineExceeded(err)) return 0;
+    throw err;
+  }
+}
+
 async function mintToken(
   cacheKey: string,
   email: string,
@@ -162,7 +196,7 @@ async function mintToken(
       }),
     },
     deadline,
-    "google token mint",
+    MINT_LABEL,
   );
   if (!res.ok) {
     const text = await res.text();
