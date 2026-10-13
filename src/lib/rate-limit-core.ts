@@ -456,13 +456,45 @@ export function humanWindow(seconds: number): string {
   return `${seconds} seconds`;
 }
 
-/** The limiter stopped working and is allowing requests through uncapped. */
-export function limiterFailOpenAlert(area: string): string {
+/**
+ * How many fail opens, in one area on one server, inside `LIMITER_FAIL_OPEN_WINDOW_MS`, before
+ * a person is paged (#3670). One failed count is a finished event: the request was served, the
+ * next one is counted again, and on 2026-10-13 the counter answered minutes after the single
+ * failure that paged. An outage reaches every request on the server, so it crosses five quickly
+ * wherever there is traffic; the ongoing state of the deployment is the monitor lane's own
+ * condition (`edge_limiter_unusable`), and the burst counter answering is proved daily
+ * (`verify:burst-counter`). Per server because a count across servers would need a shared
+ * write on the request path during the very outage it reports.
+ */
+export const LIMITER_FAIL_OPEN_PAGE_AFTER = 5;
+/** The window those fail opens must fall in. */
+export const LIMITER_FAIL_OPEN_WINDOW_MS = 10 * 60_000;
+
+/** What a fail open page measured: how many, over what window, and whether that is a floor. */
+export interface MeasuredFailures {
+  count: number;
+  windowMs: number;
+  /** True when older failures inside the window were not kept, so `count` is a floor. */
+  atLeast: boolean;
+}
+
+function measuredCount({ count, atLeast }: MeasuredFailures, noun: string, plural: string): string {
+  return `${atLeast ? "At least " : ""}${count} ${count === 1 ? noun : plural}`;
+}
+
+/**
+ * Requests that could not be counted against their limit and were served anyway (#3670). Says
+ * the count, the window and that it is one server, which is all it measured; never that the
+ * limit "has stopped working right now", an ongoing state only the monitor lane measures (L11).
+ */
+export function limiterFailOpenAlert(area: string, m: MeasuredFailures): string {
+  const one = m.count === 1 && !m.atLeast;
   return (
-    `The rate limit for ${area} has stopped working, so those requests are ` +
-    `being allowed through with no cap right now. Requests still succeed; this is a ` +
-    `safeguard, not an outage. An engineer should check the rate limiter (the cause ` +
-    `is in the logs).`
+    `${measuredCount(m, "request", "requests")} could not be counted against the rate limit for ` +
+    `${area} in the last ${humanWindow(m.windowMs / 1000)} on one server, so ` +
+    `${one ? "it was" : "they were"} let through with no cap. Requests still succeed; this is a ` +
+    `safeguard, not an outage. An engineer should check the rate limiter (the cause is in the ` +
+    `logs under tag=rate-limit).`
   );
 }
 
@@ -481,13 +513,16 @@ export function limiterBlockedAlert(
   );
 }
 
-/** A rate-limit refund failed, so a customer may keep losing allowance unfairly. */
-export function refundFailedAlert(area: string): string {
+/** Rate-limit refunds that failed, so customers may keep losing allowance unfairly (#3670: the
+ *  count it measured, paged on the same sustained rule as a fail open). */
+export function refundFailedAlert(area: string, m: MeasuredFailures): string {
+  const one = m.count === 1 && !m.atLeast;
   return (
-    `Could not restore the ${area} booking allowance for a customer whose ` +
-    `booking failed through no fault of their own, so they may be left with less ` +
-    `allowance than they should have. An engineer should check the rate-limit refund ` +
-    `(the cause is in the logs).`
+    `${measuredCount(m, "attempt", "attempts")} to give back booking allowance for ${area} could ` +
+    `not be made in the last ${humanWindow(m.windowMs / 1000)} on one server. ` +
+    `${one ? "It was" : "Each was"} owed to a customer whose booking failed through no fault of ` +
+    `their own, so they may be left with less allowance than they should have. An engineer ` +
+    `should check the rate-limit refund (the cause is in the logs under tag=rate-limit).`
   );
 }
 
