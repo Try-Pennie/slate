@@ -122,6 +122,33 @@ export function oooUndoAgentAlert(requestId: string, reason: string): string {
 }
 
 /**
+ * Time-off orchestration incident (#3660): an undo could not READ a calendar back
+ * for an event the approval holds no id for. The approval's create was never
+ * confirmed (a timeout among the ways), so the event may have landed anyway, and
+ * nobody looked. It names the calendar owner
+ * so the reader knows whose calendar to open, and says "may", because the read that
+ * would have settled it is the thing that failed (L11).
+ */
+export interface UncheckedCalendar {
+  whose: "manager" | "agent";
+  /** Why it could not be checked, short and human. */
+  reason: string;
+}
+
+export function oooUndoUnrecordedAlert(requestId: string, unchecked: UncheckedCalendar[]): string {
+  const places = unchecked.map(
+    (u) => `${u.whose === "manager" ? "the manager OOO calendar" : "the agent's own calendar"} (${u.reason})`,
+  );
+  const many = unchecked.length > 1;
+  return (
+    `${many ? "OOO events" : "An OOO event"} for request ${requestId} may still be on ${places.join(" and on ")}: ` +
+    `${many ? "their creates were" : "its create was"} never confirmed, so Slate holds no id for ` +
+    `${many ? "them" : "it"}, and ${many ? "those calendars" : "that calendar"} could not be checked. ` +
+    `Look there and delete any event for this request that is present.`
+  );
+}
+
+/**
  * Time-off orchestration incident: oooCoverageStopAlert (#1665).
  *
  * The time off was cancelled or narrowed and the coverage sweep behind it could not

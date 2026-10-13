@@ -8,6 +8,7 @@ import {
 import {
   createEventOnCalendar,
   deleteEventOnCalendar,
+  findLiveEventByClientId,
   updateEventTimeOnCalendar,
 } from "@/lib/google/calendar";
 import { EventGone } from "@/lib/booking/core";
@@ -145,6 +146,9 @@ export function realDeps(): OooDeps {
       createEventOnCalendar(actorEmail, calendarId, args, clientId),
     deleteCalendarEvent: (actorEmail, calendarId, eventId) =>
       deleteEventOnCalendar(actorEmail, calendarId, eventId),
+    // #3660: what an undo reads back for an event whose create timed out unrecorded.
+    findCalendarEvent: (actorEmail, calendarId, clientId) =>
+      findLiveEventByClientId(actorEmail, calendarId, clientId),
     // #3365: a narrowed request's events move rather than being recreated. A 404/410
     // is the typed EventGone, answered as "gone" so the orchestration clears the id
     // and the next approval creates it afresh; anything else throws.
@@ -385,6 +389,7 @@ export function realDeps(): OooDeps {
       // alert-key: ooo_calcom
       // alert-key: ooo_calcom_stale_unrecorded:*
       // alert-key: ooo_undo
+      // alert-key: ooo_undo_unchecked:*
       // alert-key: ooo_coverage_stop
       sendThrottledAlert(key, OOO_ALERT_COOLDOWN_MS, message).catch(logAlertSendFailure(key)),
 
