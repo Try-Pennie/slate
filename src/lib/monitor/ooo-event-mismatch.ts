@@ -713,7 +713,8 @@ export async function noticeSyncedOooEvents(deps: {
    */
   bookingEventIds: Set<string>;
   loadApproved: (userId: string) => Promise<SyncedApprovedRequest[]>;
-  loadAgent: (userId: string) => Promise<{ name: string; email: string | null }>;
+  /** The agent's address for the DM, or null when they have none. Read only when there is something to say. */
+  loadAgentEmail: (userId: string) => Promise<string | null>;
   notices: MismatchNoticeStore;
   messenger: MismatchMessenger;
 }): Promise<number> {
@@ -755,13 +756,13 @@ export async function noticeSyncedOooEvents(deps: {
     }
   }
   if (found.length === 0) return 0;
-  const agent = await deps.loadAgent(deps.userId);
+  const agentEmail = await deps.loadAgentEmail(deps.userId);
   const res = await tellAgentAboutMismatches({
     store: deps.notices,
     messenger: deps.messenger,
     nowMs: deps.nowMs,
     appBaseUrl: deps.appBaseUrl,
-    agentEmail: agent.email,
+    agentEmail,
     items: found.map((f) => ({ agentId: deps.userId, requestId: f.requestId, finding: f })),
   });
   // Not delivered: the claim is released and the lane takes it from here, whose own

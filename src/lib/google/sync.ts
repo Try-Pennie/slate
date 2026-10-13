@@ -525,12 +525,12 @@ async function noticeEditedTimeOff(
           }),
         );
       },
-      loadAgent: async (id) => {
+      loadAgentEmail: async (id) => {
         const u = unwrap(
-          await db.from("users").select("name, email").eq("id", id).maybeSingle(),
-          "sync time off agent",
-        ) as { name: string | null; email: string | null } | null;
-        return { name: u?.name?.trim() || u?.email || id, email: u?.email ?? null };
+          await db.from("users").select("email").eq("id", id).maybeSingle(),
+          "sync time off agent email",
+        ) as { email: string | null } | null;
+        return u?.email ?? null;
       },
       notices: alertStateNoticeStore(),
       messenger: slackMismatchMessenger(),

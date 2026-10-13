@@ -905,7 +905,7 @@ describe("noticeSyncedOooEvents (the page at the moment the sync sees the edit)"
     appBaseUrl: APP,
     bookingEventIds: new Set<string>(),
     loadApproved: vi.fn(async () => [request({ agentEventId: OOO_ID })]),
-    loadAgent: vi.fn(async () => ({ name: "Heather McLellen", email: "heather@trypennie.com" })),
+    loadAgentEmail: vi.fn(async () => "heather@trypennie.com"),
     notices: store,
     messenger,
     ...over,
@@ -984,7 +984,7 @@ describe("noticeSyncedOooEvents (the page at the moment the sync sees the edit)"
   it("ignores events that belong to no approved time off", async () => {
     const d = deps({ events: [event({ id: `slate${"b2".repeat(32)}` })] });
     expect(await noticeSyncedOooEvents(d)).toBe(0);
-    expect(d.loadAgent).not.toHaveBeenCalled();
+    expect(d.loadAgentEmail).not.toHaveBeenCalled();
   });
 
   it("reads nothing when no event in the pass could be a time off event", async () => {
