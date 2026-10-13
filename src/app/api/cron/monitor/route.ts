@@ -378,6 +378,7 @@ import { selectRetryableUnplaceable } from "@/lib/booking/coverage-retry";
 import { hasLeftPool, POOL_STATE_COLUMNS, type PoolStateRow } from "@/lib/bookable/left-pool";
 import { runOooProtectionCheck } from "@/lib/monitor/ooo-protection";
 import { primaryMirroredHorizons, runOooEventMismatchCheck } from "@/lib/monitor/ooo-event-mismatch";
+import { alertStateNoticeStore, slackMismatchMessenger } from "@/lib/monitor/ooo-mismatch-notices";
 import {
   runOooCoverageGapCheck,
   oooCoverageHolders,
@@ -391,7 +392,7 @@ import { ACTIVE_BOOKING_STATUSES, pinnedDemotionBookingIds } from "@/lib/booking
 import { loadOooCoverageBookings, loadSnapshottedBookingIds } from "@/lib/monitor/ooo-coverage-bookings";
 import { inIdChunks } from "@/lib/db/id-batch";
 import { selectAllPages } from "@/lib/supabase/paginate";
-import type { Attributes, Bucket, BulkReassignJob, Criteria } from "@/lib/db/types";
+import type { Attributes, Bucket, BulkReassignJob, Criteria, OooStatus, Role } from "@/lib/db/types";
 import { log } from "@/lib/log";
 import { groupRulesBySchedule, runUnsetHoursCheck, type UnsetHoursAgent, type HoursSource } from "@/lib/monitor/unset-hours";
 import {
@@ -3234,6 +3235,7 @@ export async function GET(req: NextRequest) {
       ends_at: string;
       source: string;
       gcal_event_id: string | null;
+      booking_id: string | null;
     };
     let approvedTimeOffRead: ReturnType<typeof readApprovedTimeOff> | null = null;
     const readApprovedTimeOff = async () => {
@@ -3286,7 +3288,7 @@ export async function GET(req: NextRequest) {
       const blocks = await selectAllPages<ApprovedTimeOffBlock>("monitor time off busy blocks", "id", () =>
         db
           .from("busy_blocks")
-          .select("user_id, starts_at, ends_at, source, gcal_event_id")
+          .select("user_id, starts_at, ends_at, source, gcal_event_id, booking_id")
           // in-chunk-ok: bounded by the roster, see the note on userIds above.
           .in("user_id", userIds)
           .gte("ends_at", new Date(now).toISOString())
@@ -3363,6 +3365,7 @@ export async function GET(req: NextRequest) {
             displayTzLabel: r.display_tz_label,
             agentEventId: r.agent_event_id,
             inPool: agent !== undefined && agent.bookable && agent.deactivated_at === null,
+            departed: agent !== undefined && agent.deactivated_at !== null,
             // No primary row is "nothing mirrored ahead", never the default window.
             mirroredUntil: primaryHorizon.get(r.user_id) ?? null,
           };
@@ -3375,6 +3378,11 @@ export async function GET(req: NextRequest) {
             startsAt: b.starts_at,
             endsAt: b.ends_at,
           })),
+        // The calls a Slate booking wrote through, which speed the escalation up when
+        // one falls in the open hours (#3372). Same read, no subrequest of its own.
+        calls: blocks
+          .filter((b) => b.source === "slate" && b.booking_id !== null)
+          .map((b) => ({ userId: b.user_id, startsAt: b.starts_at, endsAt: b.ends_at })),
       };
     };
     const oooProtection = await steps.run(
@@ -3399,9 +3407,10 @@ export async function GET(req: NextRequest) {
     // --- An approved time off whose calendar event no longer covers it (#3360).
     // Slate holds the approved window whatever the event says, so this is a record
     // and a calendar disagreeing rather than hours left open; it asks a person to
-    // make them agree. The sync pages a shortened event at once; this pages what
-    // the sync cannot see (a deleted event) after two ticks, and is the only place
-    // the all-clear is decided. Shares the read above, so it costs one subrequest of
+    // make them agree. The sync tells the agent about a shortened event at once; this
+    // finds what the sync cannot see (a deleted event) after two ticks, climbs the
+    // ladder (agent, then manager, then the alerts channel, #3372), and is the only
+    // place an all-clear is decided. Shares the read above, so it costs one subrequest of
     // its own (the calendars' mirrored horizon, #3655) on a tick with approved time
     // off ahead, plus one when a page has to end for an agent no longer in the
     // approved set. ---
@@ -3423,6 +3432,55 @@ export async function GET(req: NextRequest) {
         nowMs: now,
         appBaseUrl: appUrl(),
         log: (fields) => log.info("ooo-event-mismatch", { msg: "tick", ...fields }),
+        notices: alertStateNoticeStore(),
+        messenger: slackMismatchMessenger(),
+        loadPeople: async (ids) => {
+          const rows = (unwrap(
+            await db
+              .from("users")
+              // cap-safe: primary-key lookup of agents with a mismatch and their managers.
+              .select("id, name, email, role, deactivated_at, manager_id")
+              // in-chunk-ok: bounded by the roster, agents told about a mismatch and their managers.
+              .in("id", ids),
+            "monitor time off mismatch people",
+          ) ?? []) as {
+            id: string;
+            name: string | null;
+            email: string | null;
+            role: Role;
+            deactivated_at: string | null;
+            manager_id: string | null;
+          }[];
+          return new Map(
+            rows.map((u) => [
+              u.id,
+              { id: u.id, name: u.name, email: u.email, role: u.role, deactivatedAt: u.deactivated_at, managerId: u.manager_id },
+            ]),
+          );
+        },
+        loadRequests: async (ids) => {
+          const rows = (unwrap(
+            await db
+              .from("ooo_requests")
+              .select("id, status, starts_at, ends_at, display_tz_id, display_tz_label")
+              // in-chunk-ok: bounded by the told records, one per request somebody was told about.
+              .in("id", ids),
+            "monitor time off mismatch requests",
+          ) ?? []) as {
+            id: string;
+            status: OooStatus;
+            starts_at: string;
+            ends_at: string;
+            display_tz_id: string;
+            display_tz_label: string | null;
+          }[];
+          return new Map(
+            rows.map((r) => [
+              r.id,
+              { status: r.status, startsAt: r.starts_at, endsAt: r.ends_at, displayTzId: r.display_tz_id, displayTzLabel: r.display_tz_label },
+            ]),
+          );
+        },
       }),
     );
 

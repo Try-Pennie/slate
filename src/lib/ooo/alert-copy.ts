@@ -217,27 +217,55 @@ function mismatchLine(f: OooEventMismatch, appBaseUrl: string): string {
 }
 
 /**
+ * Why the alerts channel is hearing about it (#3372). The agent is told first and
+ * their manager second; this page goes out only once neither has acted, or once
+ * there was nobody else who could be told. Three causes, three sentences (L11): the
+ * last two send the reader to fix the roster or Slack as well as the calendar.
+ */
+export type OooEventMismatchEscalation =
+  | { kind: "neither-acted" }
+  | { kind: "no-manager" }
+  | { kind: "manager-unreachable" };
+
+function escalationSentence(agentName: string, e: OooEventMismatchEscalation): string {
+  switch (e.kind) {
+    case "neither-acted":
+      return `${agentName} and their manager were both told on Slack and neither has fixed it.`;
+    case "no-manager":
+      return (
+        `${agentName} was told on Slack and has not fixed it, and has no manager of record ` +
+        `who can act on time off, so nobody else was told.`
+      );
+    case "manager-unreachable":
+      return (
+        `${agentName} was told on Slack and has not fixed it, and the message to their ` +
+        `manager could not be delivered.`
+      );
+  }
+}
+
+/**
  * Condition (#3360): an agent's Google Calendar and their approved time off
- * disagree.
+ * disagree, and the agent and their manager have not fixed it (#3372).
  *
  * It deliberately does not say which one is wrong. On 2026-10-06 the edit in
  * Google was the true one (the agent was working that morning) and the request was
  * stale, so a page insisting the event be put back would have told somebody to
  * reverse a real schedule. It says what Slate does meanwhile (holds the approved
  * window, so nobody rushes to protect it), and offers both repairs.
- *
- * Who is told is #3372's job; this goes to the alerts channel until then.
  */
 export function oooEventMismatchAlert(
   agentName: string,
   found: OooEventMismatch[],
   appBaseUrl: string,
+  escalation: OooEventMismatchEscalation,
 ): string {
   const one = found.length === 1;
   return (
     `${agentName}'s Google Calendar no longer matches ` +
     `${one ? "an approved time off" : `${found.length} approved time off requests`}, ` +
-    `and only a person can say which is right. Slate is still blocking the whole approved ` +
+    `and only a person can say which is right. ${escalationSentence(agentName, escalation)} ` +
+    `Slate is still blocking the whole approved ` +
     `window, so no lead can be booked into it meanwhile. Make the two agree: if those ` +
     `hours are being worked, change the request in My time off (it goes back to the ` +
     `manager to approve); if they are not, put the calendar event back to the approved ` +

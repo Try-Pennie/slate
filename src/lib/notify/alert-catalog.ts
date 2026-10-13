@@ -719,7 +719,8 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why:
       "An agent's Google Calendar no longer matches an approved time off (#3360). Slate " +
       "keeps blocking the approved window meanwhile, and only a person can say which side " +
-      "is right. It stays true until somebody makes the request and the event agree, or " +
+      "is right. The agent and then their manager are told first, by Slack DM; this pages " +
+      "only once neither has fixed it, or nobody else could be told (#3372). It stays true until somebody makes the request and the event agree, or " +
       "the request is changed or cancelled, or its window passes; the monitor lane " +
       "re-measures every 5 minutes and is the only place it clears.",
   },
