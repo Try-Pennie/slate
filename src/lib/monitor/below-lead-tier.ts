@@ -58,6 +58,8 @@ import type { Criteria } from "@/lib/db/types";
 import type { ThrottledNotify } from "./alert-deps";
 import { isTestSourceBooking, type BookingOriginFacts } from "./offsite-origin";
 import { tierLadder } from "@/lib/routing/tiers";
+import { parseStampMs } from "@/lib/date/stamp";
+import { DateTime } from "luxon";
 
 /** The alert family: one condition per booking, `booking_below_lead_tier:<id>`. */
 export const BELOW_LEAD_TIER_KEY = "booking_below_lead_tier";
@@ -221,6 +223,130 @@ export function compareBookingsToLeadTier(
   });
 }
 
+// ------------------------------------- is the lead's own team free then (#3665)
+
+/**
+ * What the lead's OWN tier pool is offering, as the booker serves it.
+ *
+ * `offeredMs` and `computedAtMs` are the monitor lane's `SlotHealth` for that code
+ * (`slotHealthByCode`): the stored `bucket_slots` row through the org's current
+ * hours, the same served list the availability and debt tier checks read, so this
+ * page can never disagree with them about what is offered (L107), and it costs no
+ * read of its own. `minNoticeMin` is the row's own event type, null when the row
+ * does not say.
+ */
+export interface LeadTierOffer {
+  /** null: the row could not be judged (`SlotHealth.offeredMs`). */
+  offeredMs: number[] | null;
+  /** 0 when the row's stamp could not be read (`SlotHealth.computedAtMs`). */
+  computedAtMs: number;
+  minNoticeMin: number | null;
+}
+
+export type TeamAtTime =
+  /** The pool offers the booked start, so somebody on it is free then. */
+  | { kind: "free" }
+  /** The pool's row covers the start and does not offer it. `nearestMs` is the
+   *  offered time closest to it on the same ET day, still ahead, or null for none. */
+  | { kind: "not-free"; nearestMs: number | null }
+  /** The row cannot answer, and says nothing either way. */
+  | { kind: "unchecked"; why: "no-row" | "unreadable" | "inside-notice" | "past-horizon" };
+
+/** The ET calendar day of an instant, for "that day". */
+function etDay(ms: number): string | null {
+  return DateTime.fromMillis(ms, { zone: ALERT_ZONE }).toISODate();
+}
+
+/**
+ * Whether anybody on the lead's own team is free at the booked start (#3665).
+ *
+ * On 2026-10-13 the page asked a manager to reassign booking 899afc25 to the High
+ * team at 3:00 PM ET while the 312 pool offered no 3:00 PM at all. So the page is
+ * now told what the pool offers.
+ *
+ * OFFERED is positive evidence and needs nothing else. NOT offered is evidence only
+ * where the row could have offered it, so each place it could not is UNCHECKED, never
+ * "nobody is free" (L11): no row (`null`), a read that failed (`"unreadable"`), a row
+ * or start that cannot be read, a start inside the row's minimum notice when it was
+ * computed (the row could never hold it, and a manager's reassign keeps no notice),
+ * and a start later than every time offered, which may be past the row's horizon.
+ *
+ * The nearest alternative is named only from the same list, on the call's own ET day
+ * and not yet past at `nowMs`, so every time the page names was measured.
+ */
+export function teamAtTime(
+  offer: LeadTierOffer | null | "unreadable",
+  startsAt: string,
+  nowMs: number,
+): TeamAtTime {
+  if (offer === null) return { kind: "unchecked", why: "no-row" };
+  if (offer === "unreadable" || offer.offeredMs === null) return { kind: "unchecked", why: "unreadable" };
+  const startMs = parseStampMs(startsAt);
+  if (startMs === null) return { kind: "unchecked", why: "unreadable" };
+  const offered = offer.offeredMs;
+  if (offered.includes(startMs)) return { kind: "free" };
+  if (offer.computedAtMs <= 0 || offer.minNoticeMin === null) return { kind: "unchecked", why: "unreadable" };
+  if (startMs < offer.computedAtMs + offer.minNoticeMin * 60_000) return { kind: "unchecked", why: "inside-notice" };
+  if (offered.length === 0 || startMs > Math.max(...offered)) return { kind: "unchecked", why: "past-horizon" };
+  const day = etDay(startMs);
+  // A day that cannot be named would make every time "that day", so a time named as
+  // the nearest would be one nobody measured as being on it.
+  if (day === null) return { kind: "unchecked", why: "unreadable" };
+  let nearestMs: number | null = null;
+  for (const ms of offered) {
+    if (ms < nowMs || etDay(ms) !== day) continue;
+    const better =
+      nearestMs === null ||
+      Math.abs(ms - startMs) < Math.abs(nearestMs - startMs) ||
+      (Math.abs(ms - startMs) === Math.abs(nearestMs - startMs) && ms < nearestMs);
+    if (better) nearestMs = ms;
+  }
+  return { kind: "not-free", nearestMs };
+}
+
+// ------------------------------------- do the lead's submissions agree (#3665)
+
+export type SubmissionHistory =
+  /** One tier across what was read, or nothing read: the page adds nothing. */
+  | { kind: "steady" }
+  /** More than one tier. `read` counts every submission read, `tiers` only those
+   *  that decode, most first, the higher tier first on a tie. */
+  | { kind: "disagree"; read: number; tiers: { label: string; count: number }[] }
+  /** The history read failed. */
+  | { kind: "unreadable" }
+  /** Not asked: the check is disarmed, so nothing pages. */
+  | { kind: "not-read" };
+
+/**
+ * Whether a lead's recent submission scores disagree on the TIER (#3665), decoded
+ * through `leadTierOf`, never a second decoder. The 899afc25 lead's ten alternated
+ * 212 and 312 because the credit report's debt sat at about $50,000, on the line
+ * between Medium and High. A score that never decodes counts toward what was read
+ * and toward no tier.
+ */
+export function submissionAgreement(codes: string[] | undefined): SubmissionHistory {
+  if (!codes || codes.length === 0) return { kind: "steady" };
+  const byRank = new Map<number, { label: string; count: number }>();
+  for (const code of codes) {
+    const t = leadTierOf(code);
+    if (t.kind !== "tier") continue;
+    const seen = byRank.get(t.rank) ?? { label: t.label, count: 0 };
+    seen.count++;
+    byRank.set(t.rank, seen);
+  }
+  if (byRank.size < 2) return { kind: "steady" };
+  const tiers = [...byRank.entries()]
+    .sort(([ra, a], [rb, b]) => b.count - a.count || rb - ra)
+    .map(([, t]) => t);
+  return { kind: "disagree", read: codes.length, tiers };
+}
+
+/** What the page says beyond the routing record: the team's time, and the history. */
+export interface PageFacts {
+  team: TeamAtTime;
+  history: SubmissionHistory;
+}
+
 // --------------------------------------------------------------- the copy
 
 /** One booking's routing record: whether the catch-all chose the pool, the
@@ -350,17 +476,75 @@ export function formatBelowLeadTierAlert(
   f: BelowFinding,
   routing: RoutingContext,
   bookingUrl: string,
+  facts: PageFacts,
 ): string {
   const when = `${formatSlotDay(f.booking.starts_at, ALERT_ZONE)} at ${formatSlotTime(f.booking.starts_at, ALERT_ZONE)} ET`;
-  const agent = f.booking.agent_name?.trim() || f.booking.agent_email || "an unassigned agent";
+  const named = f.booking.agent_name?.trim() || f.booking.agent_email || null;
+  const agent = named ?? "an unassigned agent";
   const article = /^[AEIOU]/.test(f.lead.label) ? "An" : "A";
+  const history = historyLine(facts.history);
   return (
     `${article} ${f.lead.label} lead is booked with the ${f.pool.label} team: Salesforce scores them ` +
     `XBC ${f.lead.code} today, and the call on ${when} is with ${agent} in bucket ` +
     `${f.bucket.code} (${f.bucket.name}). ${routingLine(f, routing)} ` +
-    `Reassign the call to somebody who works ${f.lead.label} leads, or correct the score in ` +
-    `Salesforce if it is wrong.\n${bookingUrl}`
+    (history === "" ? "" : `${history} `) +
+    `${actionLine(f, facts.team, named)}\n${bookingUrl}`
   );
+}
+
+/**
+ * What to do, from what the lead's own team is offering at the call's time (#3665).
+ * A reassignment is asked for only where one was measured to exist, a move is named
+ * only at a time the team was measured to offer, and a pool the row could not speak
+ * for says so, whatever the reason, because the manager's next step is the same.
+ */
+function actionLine(f: BelowFinding, team: TeamAtTime, agent: string | null): string {
+  const time = `${formatSlotTime(f.booking.starts_at, ALERT_ZONE)} ET`;
+  const tier = f.lead.label;
+  const correct = "correct the score in Salesforce if it is wrong.";
+  const keep = agent === null ? "keep the call where it is" : `keep the call with ${agent}`;
+  switch (team.kind) {
+    case "free":
+      return `Somebody on the ${tier} team is free at ${time}: reassign the call to them, or ${correct}`;
+    case "not-free": {
+      if (team.nearestMs === null) {
+        return (
+          `Nobody on the ${tier} team is free at ${time} or at any other time that day, so ${keep}, ` +
+          `or move it to another day. Or ${correct}`
+        );
+      }
+      const nearest = `${formatSlotTime(new Date(team.nearestMs).toISOString(), ALERT_ZONE)} ET`;
+      return (
+        `Nobody on the ${tier} team is free at ${time}, so ${keep}, or move it to ${nearest}, ` +
+        `the ${tier} team's nearest free time that day. Or ${correct}`
+      );
+    }
+    case "unchecked":
+      return (
+        `Whether anybody on the ${tier} team is free at ${time} could not be checked this time, so ` +
+        `look before reassigning the call to somebody who works ${tier} leads, or ${correct}`
+      );
+  }
+}
+
+/** "6 scored High and 4 Medium", "5 scored High, 3 Medium and 2 Low". */
+function tierCounts(tiers: { label: string; count: number }[]): string {
+  const parts = tiers.map((t, i) => (i === 0 ? `${t.count} scored ${t.label}` : `${t.count} ${t.label}`));
+  if (parts.length <= 1) return parts.join("");
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+/**
+ * Whether the lead's score is settled (#3665). Said only when the submissions were
+ * read and disagree; a steady or unasked history adds nothing, since the page never
+ * claimed it was settled, and a failed read says so rather than going quiet (L11).
+ */
+function historyLine(h: SubmissionHistory): string {
+  if (h.kind === "disagree") {
+    return `Of their last ${h.read} submissions, ${tierCounts(h.tiers)}, so the score itself is not settled.`;
+  }
+  if (h.kind === "unreadable") return "Whether their earlier submissions agree on the tier could not be read this time.";
+  return "";
 }
 
 // ------------------------------------------------------------- the runner
@@ -385,6 +569,11 @@ export type BelowLeadTierResult =
       unmeasured: Record<UnmeasuredReason, number>;
       paged: boolean;
       cleared: number;
+      /** #3665: what each paging finding's own tier pool offered at its call's time. */
+      teamAtTime: Record<TeamAtTime["kind"], number>;
+      /** #3665: paging findings whose submissions disagree on the tier; null when the
+       *  history was not read (disarmed, nothing to page, or the read failed). */
+      submissionsDisagree: number | null;
     };
 
 export interface BelowLeadTierDeps {
@@ -413,6 +602,21 @@ export interface BelowLeadTierDeps {
    */
   settle: (keys: string[]) => Promise<void>;
   cooldownMs: number;
+  /** The tick's clock, so a nearest free time already past is never named. */
+  nowMs: number;
+  /**
+   * #3665: what the pool for a lead's XBC code is offering, from the lane's shared
+   * slot rows (no read of its own): the offer, null for no row, or "unreadable" when
+   * the shared read failed this tick. May throw, which reads as unreadable.
+   */
+  leadTierOffer: (code: string) => LeadTierOffer | null | "unreadable";
+  /**
+   * #3665: each lead's newest submission scores, keyed by `leadIdKey`
+   * (`readRecentSubmissionScores`). Asked only when armed, and only for the leads
+   * about to be paged, so a quiet or disarmed tick costs no Salesforce call. THROWS
+   * on a refusal, which the page then says it could not read.
+   */
+  readSubmissionHistory: (leadIds: string[]) => Promise<Map<string, string[]>>;
 }
 
 /**
@@ -487,16 +691,58 @@ export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<Be
     else below.push(f);
   }
 
+  // #3665: the lead's own team at the call's time, from rows the lane already read,
+  // so it is judged whether or not the check is armed. A lookup that throws is a
+  // read this tick could not make, never an answer.
+  const teamCounts: Record<TeamAtTime["kind"], number> = { free: 0, "not-free": 0, unchecked: 0 };
+  const teamOf = new Map<BelowFinding, TeamAtTime>();
+  for (const f of below) {
+    let offer: LeadTierOffer | null | "unreadable";
+    try {
+      offer = deps.leadTierOffer(f.lead.code);
+    } catch {
+      offer = "unreadable";
+    }
+    const team = teamAtTime(offer, f.booking.starts_at, deps.nowMs);
+    teamOf.set(f, team);
+    teamCounts[team.kind]++;
+  }
+
+  // #3665: the submission history costs a Salesforce read, so it is asked only for
+  // what is about to page, once per tick, one question per lead.
+  let history: Map<string, string[]> | "unreadable" | null = null;
+  if (deps.armed && below.length > 0) {
+    const ids = new Map<string, string>();
+    for (const f of below) {
+      const id = leadIdOf(f.booking);
+      if (id !== null && !ids.has(leadIdKey(id))) ids.set(leadIdKey(id), id);
+    }
+    try {
+      history = await deps.readSubmissionHistory([...ids.values()]);
+    } catch {
+      history = "unreadable";
+    }
+  }
+  const historyOf = (f: BelowFinding): SubmissionHistory => {
+    if (history === null) return { kind: "not-read" };
+    if (history === "unreadable") return { kind: "unreadable" };
+    const id = leadIdOf(f.booking);
+    return submissionAgreement(id === null ? undefined : history.get(leadIdKey(id)));
+  };
+  const submissionsDisagree =
+    history === null || history === "unreadable" ? null : below.filter((f) => historyOf(f).kind === "disagree").length;
+
   let cleared = 0;
   if (deps.armed) {
     if (below.length > 0) {
       for (const f of below) {
         const context = contextOf(f);
+        const facts: PageFacts = { team: teamOf.get(f) ?? { kind: "unchecked", why: "unreadable" }, history: historyOf(f) };
         await deps
           .notify(
             belowLeadTierKey(f.booking.id),
             deps.cooldownMs,
-            formatBelowLeadTierAlert(f, context, deps.bookingUrl(f.booking.id)),
+            formatBelowLeadTierAlert(f, context, deps.bookingUrl(f.booking.id), facts),
           )
           .catch(logAlertSendFailure(belowLeadTierKey(f.booking.id)));
       }
@@ -531,5 +777,7 @@ export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<Be
     unmeasured,
     paged: deps.armed && below.length > 0,
     cleared,
+    teamAtTime: teamCounts,
+    submissionsDisagree,
   };
 }
