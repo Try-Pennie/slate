@@ -124,12 +124,12 @@ export function parseServerTiming(header: string | null): ServerTiming | null {
     // A Map, so a name like `constructor` cannot match an inherited property.
     const field = TIMING_NAMES.get(rawName ?? "");
     if (!field) continue;
-    // Digits only: `Number("")` is 0, so an empty `dur=` would otherwise read as a
-    // measured 0ms, the healthy side of every comparison downstream (L50).
+    // Digits only, which also rules out a negative or non-finite value: `Number("")`
+    // is 0, so an empty `dur=` would otherwise read as a measured 0ms, the healthy
+    // side of every comparison downstream (L50).
     const dur = params.find((p) => /^dur=/i.test(p))?.slice(4).trim() ?? "";
-    const n = /^\d+(\.\d+)?$/.test(dur) ? Number(dur) : Number.NaN;
-    if (!Number.isFinite(n) || n < 0) continue;
-    t[field] = n;
+    if (!/^\d+(\.\d+)?$/.test(dur)) continue;
+    t[field] = Number(dur);
     found = true;
   }
   return found ? t : null;
