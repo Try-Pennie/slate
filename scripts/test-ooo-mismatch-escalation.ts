@@ -9,6 +9,7 @@
 import {
   agentNoticeKey,
   agentOutcomeKey,
+  managerDeliveredKey,
   managerNoticeKey,
   parseNoticeRow,
   escalationPace,
@@ -176,6 +177,11 @@ const TOLD: Outcome = { kind: "told", managerId: "m1" };
 const mgrRec = (requestId: string, toldAtMs: number | null, outcome: Outcome = TOLD): NoticeRecord => ({
   role: "manager", agentId: "u1", requestId, outcome, toldAtMs, key: managerNoticeKey("u1", requestId, outcome),
 });
+// The manager was told: the told record and its delivery, as the lane writes them.
+const deliveredRec = (requestId: string, toldAtMs: number | null): NoticeRecord => ({
+  role: "manager-delivered", agentId: "u1", requestId, toldAtMs, key: managerDeliveredKey("u1", requestId),
+});
+const toldMgr = (requestId: string, toldAtMs: number | null): NoticeRecord[] => [mgrRec(requestId, toldAtMs), deliveredRec(requestId, toldAtMs)];
 const plan = (over: Partial<Parameters<typeof planEscalation>[0]> = {}) =>
   planEscalation({
     nowMs: NOW,
@@ -217,14 +223,14 @@ const ids = (list: { requestId: string }[]) => list.map((x) => x.requestId);
 {
   const p = plan({
     mismatches: [mm()],
-    records: [...told("r1", NOW - 5 * DAY), mgrRec("r1", NOW - PACES.relaxed.managerGraceMs + HOUR)],
+    records: [...told("r1", NOW - 5 * DAY), ...toldMgr("r1", NOW - PACES.relaxed.managerGraceMs + HOUR)],
   });
   eq([...ids(p.tellManager), ...ids(p.pageDan)], [], "the manager's wait is not over, so the alerts channel waits");
 }
 {
   const p = plan({
     mismatches: [mm()],
-    records: [...told("r1", NOW - 5 * DAY), mgrRec("r1", NOW - PACES.relaxed.managerGraceMs)],
+    records: [...told("r1", NOW - 5 * DAY), ...toldMgr("r1", NOW - PACES.relaxed.managerGraceMs)],
   });
   eq(ids(p.pageDan), ["r1"], "the alerts channel hears only once neither the agent nor the manager acted");
   eq(ids(p.tellManager), [], "the manager is not told twice");
@@ -244,7 +250,7 @@ const ids = (list: { requestId: string }[]) => list.map((x) => x.requestId);
 // findings the judge MEASURED. A request in the approved set that is neither a
 // mismatch nor agreed (unmeasured, unreadable, out of the pool) is held exactly.
 {
-  const held = plan({ records: [...told("r1", NOW - 30 * DAY), mgrRec("r1", NOW - 30 * DAY)] });
+  const held = plan({ records: [...told("r1", NOW - 30 * DAY), ...toldMgr("r1", NOW - 30 * DAY)] });
   eq([...ids(held.tellAgent), ...ids(held.tellManager), ...ids(held.pageDan)], [],
     "a request this tick could not measure is never escalated, however old its records");
   eq(held.clear, [], "and it is never cleared either: nothing was compared");
@@ -256,10 +262,10 @@ const ids = (list: { requestId: string }[]) => list.map((x) => x.requestId);
 
 // The stop, whichever side changed.
 {
-  const p = plan({ agreed: new Set(["r1"]), records: [...told("r1", NOW - DAY), mgrRec("r1", NOW - HOUR)] });
+  const p = plan({ agreed: new Set(["r1"]), records: [...told("r1", NOW - DAY), ...toldMgr("r1", NOW - HOUR)] });
   eq(p.clear.length, 1, "a request measured agreeing again is cleared");
   eq(p.clear[0]!.why, "agreed", "and says it agrees again");
-  eq(p.clear[0]!.records.map((r) => r.role).sort(), ["agent", "agent-outcome", "manager"], "everybody who was told hears it");
+  eq(p.clear[0]!.records.map((r) => r.role).sort(), ["agent", "agent-outcome", "manager", "manager-delivered"], "everybody who was told hears it");
 }
 {
   const p = plan({ approved: new Set(), records: [...told("r1", NOW - DAY)] });
@@ -282,11 +288,11 @@ const ids = (list: { requestId: string }[]) => list.map((x) => x.requestId);
   const p = plan({
     mismatches: [mm()],
     departedAgents: new Set(["u1"]),
-    records: [...told("r1", NOW - 30 * DAY), mgrRec("r1", NOW - 30 * DAY)],
+    records: [...told("r1", NOW - 30 * DAY), ...toldMgr("r1", NOW - 30 * DAY)],
   });
   eq([...ids(p.tellAgent), ...ids(p.tellManager), ...ids(p.pageDan)], [], "a departed agent's mismatch messages nobody");
   eq(p.clear, [], "and sends no all-clear to somebody who has left");
-  eq(p.forget.length, 3, "their records are dropped quietly");
+  eq(p.forget.length, 4, "their records are dropped quietly");
 }
 
 // The attempt and its outcome are two records, so a run that dies between claiming
@@ -325,9 +331,9 @@ const ids = (list: { requestId: string }[]) => list.map((x) => x.requestId);
     approved: new Set(["r1", "r2", "r3"]),
     mismatches: [mm(), mm({ requestId: "r2" }), mm({ requestId: "r3" })],
     records: [
-      ...told("r1", NOW - 5 * DAY), mgrRec("r1", NOW - 2 * DAY),
+      ...told("r1", NOW - 5 * DAY), ...toldMgr("r1", NOW - 2 * DAY),
       ...told("r2", NOW - 5 * DAY), mgrRec("r2", NOW, { kind: "none" }),
-      agentRec("r3", NOW - 5 * DAY), outcomeRec("r3", NOW - 5 * DAY, "unreachable"), mgrRec("r3", NOW - 2 * DAY),
+      agentRec("r3", NOW - 5 * DAY), outcomeRec("r3", NOW - 5 * DAY, "unreachable"), ...toldMgr("r3", NOW - 2 * DAY),
     ],
   });
   eq(p.pageDan.map((x) => [x.requestId, x.reason]), [
@@ -335,6 +341,17 @@ const ids = (list: { requestId: string }[]) => list.map((x) => x.requestId);
     ["r2", { agent: "told", manager: "none" }],
     ["r3", { agent: "unreachable", manager: "told" }],
   ], "each request reaches the alerts channel with its own reason, never another request's");
+}
+
+// The manager step has the same two halves: told is claimed before the send, and
+// delivered is written after it, so a run that died between them is retried.
+{
+  const fresh = plan({ mismatches: [mm()], records: [...told("r1", NOW - 5 * DAY), mgrRec("r1", NOW - STALE_SEND_MS + 60_000)] });
+  eq([...ids(fresh.tellManager), ...ids(fresh.pageDan)], [], "a manager message still inside its send window is left alone");
+  const stale = plan({ mismatches: [mm()], records: [...told("r1", NOW - 5 * DAY), mgrRec("r1", NOW - 3 * DAY)] });
+  eq(ids(stale.tellManager), ["r1"], "a manager message that never recorded its delivery is sent again");
+  eq(stale.tellManager[0]!.staleKey, managerNoticeKey("u1", "r1", TOLD), "naming the dead record to remove");
+  eq(ids(stale.pageDan), [], "and the alerts channel is not told the manager was told");
 }
 
 finish();

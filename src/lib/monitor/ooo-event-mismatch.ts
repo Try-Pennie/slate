@@ -17,6 +17,7 @@ import {
   agentNoticeKey,
   agentOutcomeKey,
   bookedInsideGap,
+  managerDeliveredKey,
   gapSpans,
   managerNoticeKey,
   managerToTell,
@@ -575,6 +576,7 @@ async function escalateMismatches(input: {
       appBaseUrl: input.appBaseUrl,
     });
     if (await input.messenger.dm(manager.email!, text)) {
+      for (const m of won) await input.notices.claim(managerDeliveredKey(agentId, m.requestId), input.nowMs);
       counts.told_managers++;
       return;
     }
@@ -610,6 +612,8 @@ async function escalateMismatches(input: {
   }
 
   for (const [agentId, items] of groupByAgent(plan.tellManager)) {
+    // A manager message that died before its delivery was recorded: remove it, so this one can claim.
+    for (const m of items) if (m.staleKey) await input.notices.release(m.staleKey);
     // One message to the manager, so one history: undelivered if any of these was,
     // otherwise the earliest time the agent was told.
     const told = items.map((m) => m.agentTold);
@@ -642,14 +646,16 @@ async function escalateMismatches(input: {
     };
     // The agent hears the all-clear only if their first message was delivered.
     const agentWasTold = c.records.some((r) => r.role === "agent-outcome" && r.outcome === "told");
+    // And the manager only if theirs was delivered.
+    const managerWasTold = c.records.some((r) => r.role === "manager-delivered");
     for (const rec of c.records) {
       if (!(await input.notices.release(rec.key))) continue;
-      if (rec.role === "agent-outcome") continue;
+      if (rec.role === "agent-outcome" || rec.role === "manager-delivered") continue;
       if (rec.role === "agent") {
         if (!agentWasTold) continue;
         const email = emailOfAgent(c.agentId);
         if (email && (await input.messenger.dm(email, agentMismatchClearedDm(cleared)))) counts.all_clears++;
-      } else if (rec.outcome.kind === "told") {
+      } else if (rec.outcome.kind === "told" && managerWasTold) {
         const email = people.get(rec.outcome.managerId)?.email;
         if (email && (await input.messenger.dm(email, managerMismatchClearedDm(nameOfAgent(c.agentId), cleared)))) {
           counts.all_clears++;

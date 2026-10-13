@@ -82,6 +82,16 @@ export function managerNoticeKey(agentId: string, requestId: string, outcome: Ma
   return `${OOO_MISMATCH_NOTICE_PREFIX}manager:${agentId}:${requestId}:${token}`;
 }
 
+/**
+ * The record that the message to the manager was DELIVERED. The told record
+ * (`managerNoticeKey`) is claimed before the send, so a told record with no delivery
+ * after `STALE_SEND_MS` is a run that died between them, and the manager is sent the
+ * message again rather than the alerts channel being told the manager was told.
+ */
+export function managerDeliveredKey(agentId: string, requestId: string): string {
+  return `${OOO_MISMATCH_NOTICE_PREFIX}delivered:${agentId}:${requestId}`;
+}
+
 export type NoticeRecord =
   | { role: "agent"; agentId: string; requestId: string; toldAtMs: number | null; key: string }
   | {
@@ -92,6 +102,7 @@ export type NoticeRecord =
       toldAtMs: number | null;
       key: string;
     }
+  | { role: "manager-delivered"; agentId: string; requestId: string; toldAtMs: number | null; key: string }
   | {
       role: "manager";
       agentId: string;
@@ -115,6 +126,9 @@ export function parseNoticeRow(row: { key: string; last_sent_at: string }): Noti
   }
   if (parts[0] === "outcome" && parts.length === 4 && parts[1] && parts[2] && (parts[3] === "told" || parts[3] === "unreachable")) {
     return { role: "agent-outcome", agentId: parts[1], requestId: parts[2], outcome: parts[3], toldAtMs, key: row.key };
+  }
+  if (parts[0] === "delivered" && parts.length === 3 && parts[1] && parts[2]) {
+    return { role: "manager-delivered", agentId: parts[1], requestId: parts[2], toldAtMs, key: row.key };
   }
   if (parts[0] === "manager" && parts.length === 4 && parts[1] && parts[2] && parts[3]) {
     return {
@@ -243,7 +257,7 @@ export interface EscalationPlan {
    */
   tellAgent: (MeasuredMismatch & { staleKey?: string })[];
   /** The agent was told and their wait is over, or the agent could not be reached. */
-  tellManager: (MeasuredMismatch & { agentTold: { atMs: number | null } | "unreachable" })[];
+  tellManager: (MeasuredMismatch & { agentTold: { atMs: number | null } | "unreachable"; staleKey?: string })[];
   /** The manager step ran and its wait is over, or nobody could be told. Each request carries its own reason. */
   pageDan: (MeasuredMismatch & { reason: EscalationReason })[];
   /** Requests that no longer need anybody, with the records of who to tell so. */
@@ -281,7 +295,14 @@ export function planEscalation(input: {
     const outcome = recs.find((r): r is Extract<NoticeRecord, { role: "agent-outcome" }> => r.role === "agent-outcome");
     const manager = recs.find((r): r is Extract<NoticeRecord, { role: "manager" }> => r.role === "manager");
     const pace = PACES[escalationPace(m.gapStartMs, input.nowMs, m.bookedInGap)];
-    if (manager) {
+    const delivered = recs.some((r) => r.role === "manager-delivered");
+    const agentTold = outcome?.outcome === "unreachable" ? ("unreachable" as const) : { atMs: outcome?.toldAtMs ?? null };
+    if (manager && manager.outcome.kind === "told" && !delivered) {
+      // Claimed and never confirmed: in flight, or the run died before the send.
+      if (waited(manager.toldAtMs, STALE_SEND_MS, input.nowMs)) {
+        plan.tellManager.push({ ...m, agentTold, staleKey: manager.key });
+      }
+    } else if (manager) {
       if (manager.outcome.kind !== "told" || waited(manager.toldAtMs, pace.managerGraceMs, input.nowMs)) {
         plan.pageDan.push({
           ...m,
