@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Public availability must HIDE synthetic test buckets (#396): a real lead (no
 // booking key) gets the same 404 as an unknown bucket — no hint a hidden bucket
@@ -746,5 +746,56 @@ describe("GET /api/availability names the layer that served it (#3366)", () => {
     cache.getBucketSlotsWithFallback.mockResolvedValue(null);
     await get("NOPE");
     expect(servedLine()).toBeUndefined();
+  });
+});
+
+// #3653 / #3652: the canary could time a read and could not say where the time went,
+// so a slow cached read on 2026-10-12 could not be told from a slow network. The pooled
+// read now carries a Server-Timing with the Worker's own elapsed time and the two spans
+// worth separating, the burst limiter and the slot read. The clock is faked (Date only)
+// and moved by the mocks, so the durations are exact and nothing waits.
+describe("GET /api/availability reports its own time (#3653)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-13T03:00:00.000Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  const tick = (ms: number) => vi.setSystemTime(Date.now() + ms);
+
+  it("names the limiter, the slot read and the Worker total", async () => {
+    rateLimit.availabilityWithinLimit.mockImplementationOnce(async () => {
+      tick(40);
+      return true;
+    });
+    cache.getBucketSlotsWithFallback.mockImplementationOnce(async () => {
+      tick(12);
+      return slotsFor(false);
+    });
+    const res = await get("411");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("server-timing")).toBe("limit;dur=40, slots;dur=12, worker;dur=52");
+    // The same total in the served line, so the Worker logs can answer #3652 too.
+    const served = vi
+      .mocked(log.info)
+      .mock.calls.find(([tag, fields]) => tag === "availability" && fields.msg === "slots served");
+    expect(served?.[1]).toMatchObject({ worker_ms: 52 });
+  });
+
+  it("does not change what is served or how it is cached", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(false));
+    const res = await get("411");
+    expect(res.headers.get("x-slot-cache")).toBe("hit");
+    expect(res.headers.get("cache-control")).toBeNull();
+    const body = await res.json();
+    expect(body.slots).toEqual(["2099-01-01T15:00:00.000Z"]);
+  });
+
+  it("adds nothing to the 404, so an unknown and a hidden bucket still answer alike (#601)", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(null);
+    const res = await get("NOPE");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("server-timing")).toBeNull();
   });
 });
