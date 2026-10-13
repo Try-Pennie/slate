@@ -25,6 +25,7 @@ import {
   type EscalationPerson,
   type ManagerOutcome,
   type MeasuredMismatch,
+  type NoticeRecord,
 } from "@/lib/ooo/mismatch-escalation";
 import {
   agentMismatchClearedDm,
@@ -654,9 +655,14 @@ async function escalateMismatches(input: {
     const agentWasTold = c.records.some((r) => r.role === "agent-outcome" && r.outcome === "told");
     // And the manager only if theirs was delivered.
     const managerWasTold = c.records.some((r) => r.role === "manager-delivered");
-    for (const rec of c.records) {
+    // The told records first: they decide who hears, once, by whichever run removes
+    // them. Their delivery records go after, so a run that dies midway never leaves a
+    // told record whose delivery was already removed, which would silence its all-clear.
+    const isDelivery = (r: NoticeRecord) => r.role === "agent-outcome" || r.role === "manager-delivered";
+    const ordered = [...c.records.filter((r) => !isDelivery(r)), ...c.records.filter(isDelivery)];
+    for (const rec of ordered) {
       if (!(await input.notices.release(rec.key))) continue;
-      if (rec.role === "agent-outcome" || rec.role === "manager-delivered") continue;
+      if (isDelivery(rec)) continue;
       if (rec.role === "agent") {
         if (!agentWasTold) continue;
         const email = emailOfAgent(c.agentId);

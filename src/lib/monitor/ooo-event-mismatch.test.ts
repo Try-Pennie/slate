@@ -52,6 +52,7 @@ import type { OooStatus } from "@/lib/db/types";
 const NOW = Date.parse("2026-10-06T09:00:00.000Z");
 const APP = "https://slate.example.com";
 const HOUR = 60 * 60_000;
+const DAY_MS = 24 * HOUR;
 
 // The record of who was told, in memory: the same claim and release rules as the
 // alert_state store, so a test drives the lane exactly as production does.
@@ -675,6 +676,21 @@ describe("who is told, and when (#3372)", () => {
     });
     await tick({ requests: [later()], mirrors: [laterMatch()] }, e);
     expect(e.messenger.sent.map((m) => m.email).sort()).toEqual(["heather@trypennie.com", "pat@trypennie.com"]);
+  });
+
+  it("clears the told records before their delivery records, so a run that dies midway loses no all-clear", async () => {
+    // Delivery records listed first, the order a store may return them in.
+    const store = fakeStore({
+      [agentOutcomeKey("u-heather", "r-later", "told")]: NOW - DAY_MS,
+      [managerDeliveredKey("u-heather", "r-later")]: NOW - HOUR,
+      [agentNoticeKey("u-heather", "r-later")]: NOW - DAY_MS,
+      [managerNoticeKey("u-heather", "r-later", TOLD_PAT)]: NOW - HOUR,
+    });
+    await tick({ requests: [later()], mirrors: [laterMatch()] }, escalationDeps({ store }));
+    const order = store.release.mock.calls.map(([k]) => k);
+    const last = (k: string) => order.lastIndexOf(k);
+    expect(last(agentNoticeKey("u-heather", "r-later"))).toBeLessThan(last(agentOutcomeKey("u-heather", "r-later", "told")));
+    expect(last(managerNoticeKey("u-heather", "r-later", TOLD_PAT))).toBeLessThan(last(managerDeliveredKey("u-heather", "r-later")));
   });
 
   describe("unmeasured never messages anybody (#3655)", () => {
