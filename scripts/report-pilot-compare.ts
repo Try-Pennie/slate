@@ -68,6 +68,8 @@ import {
   judgePilotCompare,
   PILOT_COMPARE_EXIT,
   SHOW_BEFORE_MS,
+  CONTACT_READ_TIMEOUT_MS,
+  readEveryBatch,
   type Application,
   type SlateBookingRow,
   type RegalCall,
@@ -245,14 +247,15 @@ try {
   // of this command at the URI budget alone timed out. So at most CONTACT_CHUNK.
   const CONTACT_CHUNK = 50;
   const chunks = chunkSoqlValues(emails).flatMap((c) => Array.from({ length: Math.ceil(c.length / CONTACT_CHUNK) }, (_, i) => c.slice(i * CONTACT_CHUNK, (i + 1) * CONTACT_CHUNK)));
-  for (const chunk of chunks) {
-    const records = await querySoqlComplete<SubmissionRecord>(
+  const records = await readEveryBatch(chunks, (chunk) =>
+    querySoqlComplete<SubmissionRecord>(
       auth!.instanceUrl,
       auth!.token,
       `SELECT ${SUBMISSION_FIELDS} FROM Submission__c WHERE Email_SO__c IN (${sfInList(chunk)})`,
-    );
-    contactApplications.push(...records.map(toApplication));
-  }
+      { timeoutMs: CONTACT_READ_TIMEOUT_MS },
+    ),
+  );
+  contactApplications.push(...records.map(toApplication));
 } catch (err) {
   print(
     refusal(PILOT_COMPARE_EXIT.salesforceUnreadable, `the applications behind cal.com bookings with no id could not be read: ${errText(err)}`).lines,

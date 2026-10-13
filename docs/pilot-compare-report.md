@@ -181,6 +181,10 @@ read is the shared reader in `src/lib/calcom/upcoming-bookings.ts`
 and one retry, because a `past` listing's first page was measured at up to 117 s
 over a week. Salesforce lists go through `querySoqlComplete`
 (`src/lib/salesforce/rest.ts`), which refuses a read that ends short of the
-`totalSize` it promised. The settings read is `src/lib/salesforce/pilot-settings.ts`,
+`totalSize` it promised. The contact read (applications behind cal.com bookings that carry no id)
+filters on `Email_SO__c`, which is not selective, so each 50 address batch is given
+`CONTACT_READ_TIMEOUT_MS` (a minute) per attempt rather than the ordinary 10 s, and a
+batch that still fails refuses the run naming which batch failed and how many were
+read first (#3695). The settings read is `src/lib/salesforce/pilot-settings.ts`,
 shared with `report:pilot-split`, which now takes its tiers from it rather than a
 hard coded Low.
