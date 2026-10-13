@@ -9,6 +9,8 @@ import {
   EventGone,
   adoptableEventId,
   createWithFreshIdOnTombstone,
+  freshEventId,
+  TOMBSTONE_FRESH_IDS,
   type CalendarBusy,
 } from "@/lib/booking/core";
 import { log } from "@/lib/log";
@@ -682,6 +684,43 @@ export async function deleteEventOnCalendar(
       parseGoogleErrorReason(text),
     );
   }
+}
+
+/**
+ * The LIVE event a create under `clientId` left on `calendarId`, or null when there is
+ * none (#3660, L766). A create that timed out may still have landed, and nothing else
+ * records that it did, so this is the read that settles it.
+ *
+ * It walks the chain `createWithFreshIdOnTombstone` writes: the id itself, then each
+ * fresh id past a cancelled tombstone. A cancelled event (or a 410) moves the walk on;
+ * an id nothing holds (404) ends it, because a create only ever moves to the next id
+ * past a tombstone, so nothing further along can exist. Any other answer THROWS, so a
+ * calendar that could not be read is never reported as one holding nothing.
+ */
+export async function findLiveEventByClientId(
+  actorEmail: string,
+  calendarId: string,
+  clientId: string,
+): Promise<string | null> {
+  // Nothing reaches Google under the flag (`createEventOnCalendar` is stubbed), so
+  // nothing can have landed there.
+  if (LOADTEST) return null;
+  for (let n = 0; n <= TOMBSTONE_FRESH_IDS; n++) {
+    const id = n === 0 ? clientId : freshEventId(clientId, n);
+    const res = await gfetch(
+      actorEmail,
+      `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(id)}`,
+      {},
+      CALENDAR_WRITE_TIMEOUT_MS,
+      "events.get",
+    );
+    if (res.status === 404) return null;
+    if (res.status === 410) continue;
+    await ok(res, "events.get");
+    const event = (await res.json()) as { id?: string; status?: string };
+    if (event.status !== "cancelled") return event.id ?? id;
+  }
+  return null;
 }
 
 export async function updateEventTime(

@@ -122,6 +122,27 @@ export function oooUndoAgentAlert(requestId: string, reason: string): string {
 }
 
 /**
+ * Time-off orchestration incident (#3660): an undo could not READ a calendar back
+ * for an event the approval holds no id for. The approval's create was never
+ * confirmed (a timeout among the ways), so the event may have landed anyway, and
+ * nobody looked. It names the calendar owner
+ * so the reader knows whose calendar to open, and says "may", because the read that
+ * would have settled it is the thing that failed (L11).
+ */
+export function oooUndoUnrecordedAlert(
+  requestId: string,
+  whose: "manager" | "agent",
+  reason: string,
+): string {
+  const where = whose === "manager" ? "the manager OOO calendar" : "the agent's own calendar";
+  return (
+    `An OOO event for request ${requestId} may still be on ${where}: its create was never confirmed, so ` +
+    `Slate holds no id for it, and the calendar could not be checked (${reason}). Look for the event ` +
+    `there and delete it if it is present.`
+  );
+}
+
+/**
  * Time-off orchestration incident: oooCoverageStopAlert (#1665).
  *
  * The time off was cancelled or narrowed and the coverage sweep behind it could not

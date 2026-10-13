@@ -11,6 +11,7 @@ import {
   oooAgentDmAlert,
   oooUndoManagerAlert,
   oooUndoAgentAlert,
+  oooUndoUnrecordedAlert,
   oooCoverageStopAlert,
   oooNarrowCalendarAlert,
   oooNarrowHoldAlert,
@@ -294,6 +295,18 @@ export interface OooDeps {
     calendarId: string,
     eventId: string,
   ): Promise<void>;
+  /**
+   * #3660 (L766): the LIVE event a create under `clientId` left on `calendarId`, read
+   * back from Google, or null when none is there. It walks the same fresh id chain a
+   * create walks past cancelled tombstones (#3217), so it finds whichever id that
+   * create landed on. THROWS when the calendar cannot be read, so "could not look" is
+   * never read as "nothing there".
+   */
+  findCalendarEvent(
+    actorEmail: string,
+    calendarId: string,
+    clientId: string,
+  ): Promise<string | null>;
   /**
    * Move an existing event to new times (#3365, a narrowed request). "gone" when
    * Google no longer has the event (404/410), so the caller can tell "moved" from
@@ -752,6 +765,25 @@ export const EFFECTS = {
  */
 const CALENDAR_CREATE_ATTEMPTS = 2;
 
+/** What a manager event created on the main calendar, after the manager's own refused, records. */
+const MAIN_FALLBACK_OK = "ok (main fallback)";
+
+/** The calendar a manager event is written to first: the manager's own OOO calendar, else main. */
+async function preferredManagerCalendar(request: OooRequest, deps: OooDeps): Promise<string> {
+  const manager = request.manager_id ? await deps.getUser(request.manager_id) : null;
+  return manager?.ooo_calendar_id || deps.mainOooCalendarId();
+}
+
+/**
+ * The deterministic client ids the approval creates its two events under (#1469).
+ * One derivation each, read by the create and by the undo's read back (#3660), so
+ * the id the undo looks for can never drift from the id the create wrote (L370).
+ */
+const managerEventClientId = (requestId: string, calendarId: string) =>
+  deterministicEventId(`ooo-manager:${requestId}`, calendarId);
+const agentEventClientId = (requestId: string, agentId: string) =>
+  deterministicEventId(`ooo-agent:${requestId}`, agentId);
+
 /**
  * Create a calendar event, retrying ONCE on a transient failure.
  *
@@ -821,10 +853,7 @@ async function runPostApproval(
 
   // 1. Manager OOO calendar event (per-manager calendar, main fallback).
   if (!managerEventNow) {
-    const manager = request.manager_id
-      ? await deps.getUser(request.manager_id)
-      : null;
-    const preferred = manager?.ooo_calendar_id || deps.mainOooCalendarId();
+    const preferred = await preferredManagerCalendar(request, deps);
     const actor = deps.oooCalendarActorEmail();
     try {
       patch.manager_event_id = await createEventWithRetry(
@@ -832,7 +861,7 @@ async function runPostApproval(
         actor,
         preferred,
         eventArgs,
-        await deterministicEventId(`ooo-manager:${request.id}`, preferred),
+        await managerEventClientId(request.id, preferred),
       );
       patch.manager_event_calendar_id = preferred;
       effects[EFFECTS.managerEvent] = "ok";
@@ -845,10 +874,10 @@ async function runPostApproval(
             actor,
             main,
             eventArgs,
-            await deterministicEventId(`ooo-manager:${request.id}`, main),
+            await managerEventClientId(request.id, main),
           );
           patch.manager_event_calendar_id = main;
-          effects[EFFECTS.managerEvent] = "ok (main fallback)";
+          effects[EFFECTS.managerEvent] = MAIN_FALLBACK_OK;
           await deps.alertOps(
             "ooo_manager_calendar",
             oooManagerCalendarAlert(request.id, String(e).slice(0, 200)),
@@ -885,7 +914,7 @@ async function runPostApproval(
             (request.notes ? `: ${request.notes}` : "") +
             `\nRequest ID: ${request.id}`,
         },
-        await deterministicEventId(`ooo-agent:${request.id}`, agent.id),
+        await agentEventClientId(request.id, agent.id),
       );
       effects[EFFECTS.agentEvent] = "ok";
     } catch (e) {
@@ -1204,6 +1233,57 @@ async function narrowHeldArtifacts(
   }
 }
 
+/**
+ * The manager calendars an approval may have left an event on that this request holds
+ * no id for (#3660, L766). A create waits 8 seconds and retries once, and an insert
+ * Google applied after both waits gave up is on the calendar all the same. No id at
+ * all: either calendar could hold one. A fallback recorded on main: the manager's own
+ * calendar was tried first and may. A plain success: nothing else was attempted, so
+ * nothing is read, and an ordinary cancel costs no extra call.
+ */
+function untrackedManagerCalendars(request: OooRequest, preferred: string, main: string): string[] {
+  if (!request.manager_event_id) return [...new Set([preferred, main])];
+  const recorded = request.manager_event_calendar_id ?? main;
+  const fellBack = request.side_effects?.[EFFECTS.managerEvent]?.startsWith(MAIN_FALLBACK_OK) ?? false;
+  return fellBack && preferred !== recorded ? [preferred] : [];
+}
+
+/**
+ * Read `calendarId` back for an event this request's approval may have written under
+ * `clientId` without recording it, and delete it if it is there (#3660, L766). The
+ * only step that ever looks: the approval recorded the create as failed, and an undo
+ * that deletes only the ids it holds left the event standing, which on the agent's own
+ * calendar is an opaque event the sync reads as busy. Never throws: a read that fails
+ * and a delete that fails are paged apart, because one says the event may be there and
+ * the other that it is (L11).
+ */
+async function removeUntrackedEvent(
+  deps: OooDeps,
+  requestId: string,
+  whose: "manager" | "agent",
+  actorEmail: string,
+  calendarId: string,
+  clientId: string,
+): Promise<void> {
+  let found: string | null;
+  try {
+    found = await deps.findCalendarEvent(actorEmail, calendarId, clientId);
+  } catch (e) {
+    await deps.alertOps("ooo_undo", oooUndoUnrecordedAlert(requestId, whose, String(e).slice(0, 200)));
+    return;
+  }
+  if (!found) return;
+  try {
+    await deps.deleteCalendarEvent(actorEmail, calendarId, found);
+  } catch (e) {
+    const reason = String(e).slice(0, 200);
+    await deps.alertOps(
+      "ooo_undo",
+      whose === "manager" ? oooUndoManagerAlert(requestId, reason) : oooUndoAgentAlert(requestId, reason),
+    );
+  }
+}
+
 /** Undo of every approval artifact (cancel + modify-of-approved share this). */
 async function undoPostApproval(
   request: OooRequest,
@@ -1211,6 +1291,48 @@ async function undoPostApproval(
   deps: OooDeps,
 ): Promise<Partial<OooRequest>> {
   const actor = deps.oooCalendarActorEmail();
+  const main = deps.mainOooCalendarId();
+  // #3660: only a request that may hold an unrecorded manager event pays the read
+  // of who its manager is, which is what names their calendar.
+  const mayHaveUntracked =
+    !request.manager_event_id ||
+    (request.side_effects?.[EFFECTS.managerEvent]?.startsWith(MAIN_FALLBACK_OK) ?? false);
+  let preferred: string | null = null;
+  if (mayHaveUntracked) {
+    try {
+      preferred = await preferredManagerCalendar(request, deps);
+    } catch (e) {
+      // The undo never failed on this read before #3660 and must not start: the
+      // recorded events and the busy block below still come down. The calendar it
+      // would have named is what could not be checked, so that is what is paged.
+      await deps.alertOps(
+        "ooo_undo",
+        oooUndoUnrecordedAlert(request.id, "manager", `its manager could not be read: ${String(e).slice(0, 160)}`),
+      );
+    }
+  }
+  if (preferred !== null) {
+    for (const calendarId of untrackedManagerCalendars(request, preferred, main)) {
+      await removeUntrackedEvent(
+        deps,
+        request.id,
+        "manager",
+        actor,
+        calendarId,
+        await managerEventClientId(request.id, calendarId),
+      );
+    }
+  }
+  if (!request.agent_event_id) {
+    await removeUntrackedEvent(
+      deps,
+      request.id,
+      "agent",
+      agent.email,
+      "primary",
+      await agentEventClientId(request.id, agent.id),
+    );
+  }
   if (request.manager_event_id) {
     try {
       await deps.deleteCalendarEvent(

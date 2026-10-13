@@ -182,6 +182,17 @@ interface World {
   failHeldRead: boolean;
   /** #3365: every held block window a change read, by block id. */
   heldReads: string[];
+  /**
+   * #3660 (L766): calendars where an insert LANDS on Google and the answer never
+   * comes back, on every attempt, so the approval records a failure while the event
+   * is really there. What landed is kept in `landed`, keyed `calendarId|clientId`.
+   */
+  landsThenTimesOut: Set<string>;
+  landed: Map<string, string>;
+  /** Every read back the undo made, in order. */
+  findCalls: { actor: string; calendarId: string; clientId: string }[];
+  /** Make the read back throw, so "could not look" is reachable. */
+  failFind: boolean;
 }
 
 function makeWorld(): World {
@@ -224,6 +235,10 @@ function makeWorld(): World {
     failHold: false,
     failHeldRead: false,
     heldReads: [],
+    landsThenTimesOut: new Set(),
+    landed: new Map(),
+    findCalls: [],
+    failFind: false,
     /** The roster getUser reads, exposed so a test can add its own fixture user. */
     users: new Map<string, User>(
       [agent, namelessAgent, manager, admin, superAdmin, teamLead, stranger].map(
@@ -326,12 +341,24 @@ function makeWorld(): World {
         world.transientAgentFailures--;
         throw new Error("AbortError: The operation was aborted");
       }
+      if (world.landsThenTimesOut.has(calendarId) && clientId) {
+        // The first attempt is applied by Google; neither attempt is answered in time.
+        const key = `${calendarId}|${clientId}`;
+        if (!world.landed.has(key)) world.landed.set(key, `evt-${++eventSeq}`);
+        throw new Error("google events.insert did not answer within 8000ms");
+      }
       const id = `evt-${++eventSeq}`;
       world.createdEvents.push({ actor: actorEmail, calendarId, summary: args.summary, id });
       return id;
     },
     deleteCalendarEvent: async (actorEmail, calendarId, eventId) => {
       world.deletedEvents.push({ actor: actorEmail, calendarId, eventId });
+      for (const [key, id] of world.landed) if (id === eventId) world.landed.delete(key);
+    },
+    findCalendarEvent: async (actorEmail, calendarId, clientId) => {
+      world.findCalls.push({ actor: actorEmail, calendarId, clientId });
+      if (world.failFind) throw new Error("503 backendError on events.get");
+      return world.landed.get(`${calendarId}|${clientId}`) ?? null;
     },
     moveCalendarEvent: async (actorEmail, calendarId, eventId, args) => {
       if (world.failMoveCalendars.has(calendarId)) throw new Error(`503 backendError on ${calendarId}`);
@@ -1142,6 +1169,153 @@ const input = {
     w.dms.some((d) => d.email === agent.email && d.text.includes("cancelled")),
     "agent DM'd the cancellation",
   );
+}
+
+// --- #3660 (L766): an event whose create timed out may still be on the calendar ---
+//
+// The creates wait 8 seconds and retry once. An insert Google applied after both
+// waits gave up is on the calendar while the request records a failure and holds no
+// id, so an undo that deletes only what it holds left it there: on the agent's own
+// calendar an opaque event the sync then reads as busy, so the advisor stayed
+// unbookable for time off nobody was taking any more, and a modify's re-approval
+// adopted it through its deterministic id at the OLD window.
+{
+  // CONTROL: a request whose events were all recorded reads nothing back, so an
+  // ordinary cancel costs no extra Google call.
+  const w = makeWorld();
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  await cancelOoo(id, agent, w.deps);
+  eq(w.findCalls.length, 0, "#3660: a cancel whose events were recorded reads nothing back");
+}
+{
+  // The agent's event landed and the approval recorded a failure.
+  const w = makeWorld();
+  w.landsThenTimesOut.add("primary");
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const approved = w.requests.get(id)!;
+  assert(approved.agent_event_id === null, "#3660 setup: the approval holds no agent event id");
+  assert(w.landed.size === 1, "#3660 setup: the event is on the agent's calendar all the same");
+  const landedId = [...w.landed.values()][0];
+
+  const res = await cancelOoo(id, agent, w.deps);
+  assert(res.ok, "#3660: the cancel succeeds");
+  assert(
+    w.findCalls.some((c) => c.calendarId === "primary" && c.actor === agent.email),
+    "#3660: the cancel reads the agent's calendar back for the event it holds no id for",
+  );
+  assert(
+    w.deletedEvents.some((e) => e.eventId === landedId && e.calendarId === "primary" && e.actor === agent.email),
+    "#3660: and deletes the event it finds there",
+  );
+  eq(w.landed.size, 0, "#3660: nothing this request wrote is left on a calendar");
+  assert(!w.alerts.some((a) => a.key === "ooo_undo"), "#3660: a clean read back and delete pages nothing");
+}
+{
+  // The manager's own calendar landed and timed out, and the main calendar took the
+  // fallback: the recorded event is on main, and the orphan is on the manager's.
+  const w = makeWorld();
+  w.landsThenTimesOut.add(manager.ooo_calendar_id!);
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const approved = w.requests.get(id)!;
+  assert(approved.manager_event_calendar_id === "main-ooo-cal", "#3660 setup: the fallback is what was recorded");
+  const orphan = [...w.landed.values()][0];
+
+  await cancelOoo(id, agent, w.deps);
+  assert(
+    w.deletedEvents.some((e) => e.eventId === approved.manager_event_id && e.calendarId === "main-ooo-cal"),
+    "#3660: the recorded fallback event is deleted as before",
+  );
+  assert(
+    w.deletedEvents.some((e) => e.eventId === orphan && e.calendarId === manager.ooo_calendar_id),
+    "#3660: and so is the orphan the timed out first attempt left on the manager's calendar",
+  );
+  assert(
+    !w.findCalls.some((c) => c.calendarId === "main-ooo-cal"),
+    "#3660: the calendar holding the recorded event is not read back as well",
+  );
+}
+{
+  // Both manager calendars landed and timed out, so nothing was recorded at all.
+  const w = makeWorld();
+  w.landsThenTimesOut.add(manager.ooo_calendar_id!);
+  w.landsThenTimesOut.add("main-ooo-cal");
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  assert(w.requests.get(id)!.manager_event_id === null, "#3660 setup: no manager event recorded");
+  eq(w.landed.size, 2, "#3660 setup: one event landed on each manager calendar");
+  await cancelOoo(id, agent, w.deps);
+  eq(w.landed.size, 0, "#3660: both are read back and deleted");
+}
+{
+  // The read back cannot be made: paged on the undo key, and the cancel still lands.
+  const w = makeWorld();
+  w.landsThenTimesOut.add("primary");
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  w.alerts.length = 0;
+  w.failFind = true;
+  const res = await cancelOoo(id, agent, w.deps);
+  assert(res.ok && w.requests.get(id)!.status === "cancelled", "#3660: an unreadable calendar does not stop the cancel");
+  const page = w.alerts.find((a) => a.key === "ooo_undo");
+  assert(page !== undefined, "#3660: could not look is paged, never read as nothing there");
+  assert(
+    !!page && page.message.includes(id) && page.message.includes("may still be on the agent's own calendar"),
+    "#3660: and the page says the event may still be there, naming the request and whose calendar",
+  );
+}
+{
+  // The manager cannot be read, so the calendar to check cannot be named. The undo
+  // never failed on that read before, and must not start to: what IS recorded still
+  // comes down, and the unchecked calendar is paged.
+  const w = makeWorld();
+  w.landsThenTimesOut.add(manager.ooo_calendar_id!);
+  w.landsThenTimesOut.add("main-ooo-cal");
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const agentEventId = w.requests.get(id)!.agent_event_id!;
+  w.alerts.length = 0;
+  const realGetUser = w.deps.getUser;
+  w.deps.getUser = async (userId) => {
+    if (userId === manager.id) throw new Error("PostgREST 500 on users");
+    return realGetUser(userId);
+  };
+  const res = await cancelOoo(id, agent, w.deps);
+  assert(res.ok && w.requests.get(id)!.status === "cancelled", "#3660: an unreadable manager does not stop the cancel");
+  assert(
+    w.deletedEvents.some((e) => e.eventId === agentEventId),
+    "#3660: the recorded agent event still comes down",
+  );
+  const page = w.alerts.find((a) => a.key === "ooo_undo");
+  assert(
+    !!page && page.message.includes("the manager OOO calendar") && page.message.includes("its manager could not be read"),
+    "#3660: and the manager calendar nobody could check is paged, saying why",
+  );
+}
+{
+  // A modify of an approved request undoes through the same path, so its
+  // re-approval cannot adopt the stale event at the earlier window.
+  const w = makeWorld();
+  w.landsThenTimesOut.add("primary");
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const res = await modifyOoo(
+    id,
+    agent,
+    { ...input, startIso: "2026-07-02T13:00:00Z", endIso: "2026-07-02T21:00:00Z" },
+    w.deps,
+  );
+  assert(res.ok, "#3660: the modify succeeds");
+  eq(w.landed.size, 0, "#3660: a modify of an approved request removes the orphan too");
 }
 
 // --- modify: pending updates in place and re-notifies ---
