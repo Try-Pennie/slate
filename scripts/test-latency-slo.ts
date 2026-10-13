@@ -366,7 +366,10 @@ eq(parseServerTiming("constructor;dur=5, toString;dur=6"), null, "an inherited p
   const cause = latencyCause(kept, AVAILABILITY_P50_BUDGET_MS);
   assert(/3 of 3 reads over budget were not served from the edge cache/.test(cause), `counts them (${cause})`);
   assert(/2 from the stored row/.test(cause) && /1 computed live/.test(cause), `and says which tier answered (${cause})`);
-  assert(/stopped serving/.test(cause), `so it says the cache stopped serving (${cause})`);
+  // A stored row read is the designed second tier, not a broken cache, so the page
+  // names the tier and the database read behind it rather than blaming the cache.
+  assert(/behind the edge cache/.test(cause) && /database/.test(cause), `so it points at the read behind the edge cache (${cause})`);
+  assert(!/stopped serving/.test(cause), `and never says the cache stopped serving, which it did not measure (${cause})`);
 }
 {
   // No header at all: an older deploy, or something in front stripping it. The one
@@ -450,7 +453,7 @@ eq(parseServerTiming("constructor;dur=5, toString;dur=6"), null, "an inherited p
     sleep: async () => {},
   });
   eq(run.kind, "recheck-unmeasured", "a recheck that measured nothing");
-  assert(run.message !== null && /stopped serving/.test(run.message), `names the first batch's misses (${run.message})`);
+  assert(run.message !== null && /behind the edge cache/.test(run.message), `names the first batch's misses (${run.message})`);
   assert(run.message !== null && /answering at all/.test(run.message), "and still asks whether it answers at all");
 }
 

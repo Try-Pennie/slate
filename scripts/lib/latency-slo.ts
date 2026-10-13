@@ -190,13 +190,16 @@ function cacheSentence(c: SlowReadCache): string {
         "slow reads were served from the cache."
       );
     case "misses": {
+      // A stored row read is the designed second tier, not a broken cache, so this names
+      // the tier and the database read behind it rather than claiming the cache stopped.
       const tiers = [
-        c.rows > 0 ? `${c.rows} from the stored row` : null,
+        c.rows > 0 ? `${c.rows} from the stored row in the database` : null,
         c.computed > 0 ? `${c.computed} computed live` : null,
       ].filter((p): p is string => p !== null);
       return (
-        `${ofOver(c.rows + c.computed)} not served from the edge cache (${tiers.join(", ")}), so look for ` +
-        "the slot cache having stopped serving."
+        `${ofOver(c.rows + c.computed)} not served from the edge cache (${tiers.join(", ")}), so the time ` +
+        "went to the read behind the edge cache: look at how long the database read took, and at why the " +
+        "edge cache did not hold these times."
       );
     }
     case "hits":
