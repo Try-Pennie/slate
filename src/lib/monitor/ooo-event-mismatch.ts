@@ -25,7 +25,6 @@ import {
   type EscalationPerson,
   type ManagerOutcome,
   type MeasuredMismatch,
-  type NoticeRecord,
 } from "@/lib/ooo/mismatch-escalation";
 import {
   agentMismatchClearedDm,
