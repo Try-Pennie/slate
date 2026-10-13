@@ -416,19 +416,6 @@ describe("the offboarding API sweeps the departed agent's appointments (#1241)",
   });
 });
 
-// #2124: the admin path sweeps when, and only when, the admin ASKED it to.
-//
-// Dan, 2026-09-09: "can we add a warning asking if they'd like to sweep? that way
-// it's a deliberate choice". That answers the objection #1241 recorded for
-// refusing the sweep here, which was that consolidating it would "silently start
-// moving customers' appointments out from under an admin who was only pausing
-// somebody". The objection was about SILENCE, not about the sweep, and a press
-// that asks is not silent.
-//
-// The default is what matters most and it is NOT sweeping: the caller has to say
-// so. A boolean that defaults to true would make every existing caller start
-// moving appointments the moment it shipped, which is exactly the silent change
-// the recorded comment refused.
 describe("a leaver's invites are cleared before their Google account is archived (#3667)", () => {
   it("clears the invites first, then starts the sweep, and tells the automation how it went", async () => {
     row = { id: "u9", deactivated_at: null };
@@ -475,6 +462,19 @@ describe("a leaver's invites are cleared before their Google account is archived
   });
 });
 
+// #2124: the admin path sweeps when, and only when, the admin ASKED it to.
+//
+// Dan, 2026-09-09: "can we add a warning asking if they'd like to sweep? that way
+// it's a deliberate choice". That answers the objection #1241 recorded for
+// refusing the sweep here, which was that consolidating it would "silently start
+// moving customers' appointments out from under an admin who was only pausing
+// somebody". The objection was about SILENCE, not about the sweep, and a press
+// that asks is not silent.
+//
+// The default is what matters most and it is NOT sweeping: the caller has to say
+// so. A boolean that defaults to true would make every existing caller start
+// moving appointments the moment it shipped, which is exactly the silent change
+// the recorded comment refused.
 describe("the admin UI path sweeps only when asked (#2124)", () => {
   it("enqueues nothing when the caller does not ask", async () => {
     row = { id: "u1", deactivated_at: null };
