@@ -11,10 +11,12 @@ import {
   oooAgentDmAlert,
   oooUndoManagerAlert,
   oooUndoAgentAlert,
+  oooUndoUnrecordedAlert,
   oooCoverageStopAlert,
   oooNarrowCalendarAlert,
   oooNarrowHoldAlert,
 } from "./alert-copy.ts";
+import type { UncheckedCalendar } from "./alert-copy.ts";
 import {
   declinedReleasedLine,
   modifyAgentDm,
@@ -294,6 +296,18 @@ export interface OooDeps {
     calendarId: string,
     eventId: string,
   ): Promise<void>;
+  /**
+   * #3660 (L766): the LIVE event a create under `clientId` left on `calendarId`, read
+   * back from Google, or null when none is there. It walks the same fresh id chain a
+   * create walks past cancelled tombstones (#3217), so it finds whichever id that
+   * create landed on. THROWS when the calendar cannot be read, so "could not look" is
+   * never read as "nothing there".
+   */
+  findCalendarEvent(
+    actorEmail: string,
+    calendarId: string,
+    clientId: string,
+  ): Promise<string | null>;
   /**
    * Move an existing event to new times (#3365, a narrowed request). "gone" when
    * Google no longer has the event (404/410), so the caller can tell "moved" from
@@ -752,6 +766,25 @@ export const EFFECTS = {
  */
 const CALENDAR_CREATE_ATTEMPTS = 2;
 
+/** What a manager event created on the main calendar, after the manager's own refused, records. */
+const MAIN_FALLBACK_OK = "ok (main fallback)";
+
+/** The calendar a manager event is written to first: the manager's own OOO calendar, else main. */
+async function preferredManagerCalendar(request: OooRequest, deps: OooDeps): Promise<string> {
+  const manager = request.manager_id ? await deps.getUser(request.manager_id) : null;
+  return manager?.ooo_calendar_id || deps.mainOooCalendarId();
+}
+
+/**
+ * The deterministic client ids the approval creates its two events under (#1469).
+ * One derivation each, read by the create and by the undo's read back (#3660), so
+ * the id the undo looks for can never drift from the id the create wrote (L370).
+ */
+const managerEventClientId = (requestId: string, calendarId: string) =>
+  deterministicEventId(`ooo-manager:${requestId}`, calendarId);
+const agentEventClientId = (requestId: string, agentId: string) =>
+  deterministicEventId(`ooo-agent:${requestId}`, agentId);
+
 /**
  * Create a calendar event, retrying ONCE on a transient failure.
  *
@@ -821,10 +854,7 @@ async function runPostApproval(
 
   // 1. Manager OOO calendar event (per-manager calendar, main fallback).
   if (!managerEventNow) {
-    const manager = request.manager_id
-      ? await deps.getUser(request.manager_id)
-      : null;
-    const preferred = manager?.ooo_calendar_id || deps.mainOooCalendarId();
+    const preferred = await preferredManagerCalendar(request, deps);
     const actor = deps.oooCalendarActorEmail();
     try {
       patch.manager_event_id = await createEventWithRetry(
@@ -832,7 +862,7 @@ async function runPostApproval(
         actor,
         preferred,
         eventArgs,
-        await deterministicEventId(`ooo-manager:${request.id}`, preferred),
+        await managerEventClientId(request.id, preferred),
       );
       patch.manager_event_calendar_id = preferred;
       effects[EFFECTS.managerEvent] = "ok";
@@ -845,10 +875,10 @@ async function runPostApproval(
             actor,
             main,
             eventArgs,
-            await deterministicEventId(`ooo-manager:${request.id}`, main),
+            await managerEventClientId(request.id, main),
           );
           patch.manager_event_calendar_id = main;
-          effects[EFFECTS.managerEvent] = "ok (main fallback)";
+          effects[EFFECTS.managerEvent] = MAIN_FALLBACK_OK;
           await deps.alertOps(
             "ooo_manager_calendar",
             oooManagerCalendarAlert(request.id, String(e).slice(0, 200)),
@@ -885,7 +915,7 @@ async function runPostApproval(
             (request.notes ? `: ${request.notes}` : "") +
             `\nRequest ID: ${request.id}`,
         },
-        await deterministicEventId(`ooo-agent:${request.id}`, agent.id),
+        await agentEventClientId(request.id, agent.id),
       );
       effects[EFFECTS.agentEvent] = "ok";
     } catch (e) {
@@ -1204,6 +1234,76 @@ async function narrowHeldArtifacts(
   }
 }
 
+/**
+ * The manager calendars an approval may have left an event on that this request holds
+ * no id for (#3660, L766). A create waits 8 seconds and retries once, and an insert
+ * Google applied after both waits gave up is on the calendar all the same. No id at
+ * all: either calendar could hold one. A fallback recorded on main: the manager's own
+ * calendar was tried first and may. A plain success: nothing else was attempted, so
+ * nothing is read, not even the manager, and an ordinary cancel costs no extra call.
+ *
+ * One function decides both whether the manager is read and which calendars are, so
+ * the two cannot drift apart. THROWS when the manager cannot be read.
+ */
+async function untrackedManagerCalendars(request: OooRequest, deps: OooDeps): Promise<string[]> {
+  const fellBack = request.side_effects?.[EFFECTS.managerEvent]?.startsWith(MAIN_FALLBACK_OK) ?? false;
+  if (request.manager_event_id && !fellBack) return [];
+  const main = deps.mainOooCalendarId();
+  const preferred = await preferredManagerCalendar(request, deps);
+  if (!request.manager_event_id) return [...new Set([preferred, main])];
+  const recorded = request.manager_event_calendar_id ?? main;
+  return preferred !== recorded ? [preferred] : [];
+}
+
+/**
+ * The key a read back that could not be made pages on (#3660). Its own family, so a
+ * removal that failed on `ooo_undo` minutes earlier, for any request, cannot hold it
+ * back: the two say different things, which is why the coverage stop has its own key
+ * too. Per agent, which the roster bounds (a per request key would grow without end,
+ * which the catalog refuses). One undo sends at most ONE page on it, naming every
+ * calendar it could not check, so a cancel that fails two reads is not cut to one by
+ * its own cooldown. What stays held is a second undo for the same advisor inside the
+ * cooldown, which is rare and names the same advisor's calendar.
+ */
+const undoUncheckedKey = (agentId: string) => `ooo_undo_unchecked:${agentId}`;
+
+/**
+ * Read `calendarId` back for an event this request's approval may have written under
+ * `clientId` without recording it, and delete it if it is there (#3660, L766). The
+ * only step that ever looks: the approval recorded the create as failed, and an undo
+ * that deletes only the ids it holds left the event standing, which on the agent's own
+ * calendar is an opaque event the sync reads as busy. Never throws. A read that fails
+ * is RETURNED, for the undo's one page about what it could not check; a delete that
+ * fails is paged here, on the removal key. The two are kept apart because one says the
+ * event may be there and the other that it is (L11).
+ */
+async function removeUntrackedEvent(
+  deps: OooDeps,
+  requestId: string,
+  whose: "manager" | "agent",
+  actorEmail: string,
+  calendarId: string,
+  clientId: string,
+): Promise<UncheckedCalendar | null> {
+  let found: string | null;
+  try {
+    found = await deps.findCalendarEvent(actorEmail, calendarId, clientId);
+  } catch (e) {
+    return { whose, reason: String(e).slice(0, 200) };
+  }
+  if (!found) return null;
+  try {
+    await deps.deleteCalendarEvent(actorEmail, calendarId, found);
+  } catch (e) {
+    const reason = String(e).slice(0, 200);
+    await deps.alertOps(
+      "ooo_undo",
+      whose === "manager" ? oooUndoManagerAlert(requestId, reason) : oooUndoAgentAlert(requestId, reason),
+    );
+  }
+  return null;
+}
+
 /** Undo of every approval artifact (cancel + modify-of-approved share this). */
 async function undoPostApproval(
   request: OooRequest,
@@ -1211,6 +1311,41 @@ async function undoPostApproval(
   deps: OooDeps,
 ): Promise<Partial<OooRequest>> {
   const actor = deps.oooCalendarActorEmail();
+  const unchecked: UncheckedCalendar[] = [];
+  let untracked: string[] = [];
+  try {
+    untracked = await untrackedManagerCalendars(request, deps);
+  } catch (e) {
+    // The undo never failed on this read before #3660 and must not start: the
+    // recorded events and the busy block below still come down. The calendar it
+    // would have named is what could not be checked, so that is what is paged.
+    unchecked.push({ whose: "manager", reason: `its manager could not be read: ${String(e).slice(0, 160)}` });
+  }
+  for (const calendarId of untracked) {
+    const missed = await removeUntrackedEvent(
+      deps,
+      request.id,
+      "manager",
+      actor,
+      calendarId,
+      await managerEventClientId(request.id, calendarId),
+    );
+    if (missed) unchecked.push(missed);
+  }
+  if (!request.agent_event_id) {
+    const missed = await removeUntrackedEvent(
+      deps,
+      request.id,
+      "agent",
+      agent.email,
+      "primary",
+      await agentEventClientId(request.id, agent.id),
+    );
+    if (missed) unchecked.push(missed);
+  }
+  if (unchecked.length > 0) {
+    await deps.alertOps(undoUncheckedKey(agent.id), oooUndoUnrecordedAlert(request.id, unchecked));
+  }
   if (request.manager_event_id) {
     try {
       await deps.deleteCalendarEvent(

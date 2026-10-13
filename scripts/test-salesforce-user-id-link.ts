@@ -31,6 +31,8 @@ import { assert, eq, finish } from "./lib/harness.ts";
 import {
   planSalesforceUserIds,
   requireSalesforceUserId,
+  USER_ID_CONFLICT_SHAPES,
+  userIdConflictLogFields,
   type SfIdCandidate,
   type SlateRosterRow,
 } from "../src/lib/salesforce/user-id-link.ts";
@@ -258,6 +260,71 @@ function cand(email: string, salesforceUserId: string): SfIdCandidate {
 {
   const linked = { id: "u1", email: "a@x.com", salesforce_user_id: ID_A };
   eq(requireSalesforceUserId(linked), ID_A, "a real id is returned unchanged");
+}
+
+// --- the conflict log line names the Slate rows of EVERY conflict shape (#3668) --
+//
+// The page tells the reader the sf-sync log line names the rows. For an ambiguous
+// email it used to carry only a count, so the page's pointer led nowhere for that
+// shape and finding the row took a hand query against Salesforce. Each shape is
+// driven here and its rows must appear under its own field.
+{
+  const plan = planSalesforceUserIds(
+    [
+      // disagreement: Slate holds ID_A, Salesforce now names ID_B for the address
+      row("u-dis", "dis@x.com", ID_A),
+      // ambiguous: two Salesforce users answer to one address
+      row("u-amb", "shared@x.com"),
+      // claimed: resolves to ID_C, which another Slate row already holds
+      row("u-cla", "claimer@x.com"),
+      row("u-holder", "holder@x.com", ID_C),
+    ],
+    [
+      cand("dis@x.com", ID_B),
+      cand("shared@x.com", "005000000000004AAA"),
+      cand("shared@x.com", "005000000000005AAA"),
+      cand("claimer@x.com", ID_C),
+      cand("holder@x.com", ID_C),
+    ],
+  );
+  eq(plan.ambiguous.length, 1, "the ambiguous shape is planned");
+  eq(plan.ambiguous[0].userIds, ["u-amb"], "and names the Slate row that hit it");
+
+  const fields = userIdConflictLogFields(plan);
+  const expected: Record<(typeof USER_ID_CONFLICT_SHAPES)[number], string> = {
+    disagreements: "u-dis",
+    ambiguous: "u-amb",
+    claimed: "u-cla",
+  };
+  for (const shape of USER_ID_CONFLICT_SHAPES) {
+    const entry = fields.find((f) => f.shape === shape);
+    assert(entry !== undefined, `the log line has an entry for the ${shape} shape`);
+    eq(entry?.count, 1, `the ${shape} count is on the line`);
+    assert(
+      (entry?.userIds ?? "").split(", ").includes(expected[shape]),
+      `the ${shape} rows are named on the line (${entry?.idsKey})`,
+    );
+  }
+  const keys = fields.map((f) => f.idsKey);
+  eq(new Set(keys).size, keys.length, "each shape names its rows under its own field");
+  // The two existing field names are what a saved log query searches on.
+  assert(keys.includes("disagreeing_user_ids"), "disagreements keep their field name");
+  assert(keys.includes("claimed_user_ids"), "claimed keeps its field name");
+  assert(keys.includes("ambiguous_user_ids"), "ambiguous rows are named under ambiguous_user_ids");
+  // Slate ids only: no email or Salesforce id reaches the line (L222).
+  const rendered = JSON.stringify(fields);
+  assert(!rendered.includes("@"), "no email reaches the line");
+  assert(!rendered.includes("005000"), "no Salesforce id reaches the line");
+}
+
+// Two Slate rows sharing one ambiguous address are ONE entry naming BOTH rows.
+{
+  const plan = planSalesforceUserIds(
+    [row("u1", "shared@x.com"), row("u2", "Shared@X.com")],
+    [cand("shared@x.com", ID_A), cand("shared@x.com", ID_B)],
+  );
+  eq(plan.ambiguous.length, 1, "one entry per ambiguous address");
+  eq(plan.ambiguous[0].userIds, ["u1", "u2"], "naming every row that hit it");
 }
 
 finish();

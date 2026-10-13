@@ -68,6 +68,11 @@ export interface UserIdDisagreement {
 export interface UserIdAmbiguity {
   email: string;
   matchCount: number;
+  /**
+   * Every Slate row carrying the address, so the log line can name them (#3668).
+   * The email is kept for the planner's own bookkeeping and never logged (L222).
+   */
+  userIds: string[];
 }
 
 /** The resolved id is already held by another Slate row, so no id is stored. */
@@ -137,8 +142,9 @@ export function planSalesforceUserIds(
     claimed: [],
     unresolved: [],
   };
-  // One entry per ambiguous email, not one per row that hit it.
-  const reportedAmbiguous = new Set<string>();
+  // One entry per ambiguous email, not one per row that hit it; each row that hit
+  // it is added to that entry's `userIds`.
+  const reportedAmbiguous = new Map<string, UserIdAmbiguity>();
   // Ids this very plan is about to hand out, so two rows in one pass cannot both
   // be assigned the same id and collide inside a single batch.
   const assignedThisPass = new Map<string, string>();
@@ -153,9 +159,13 @@ export function planSalesforceUserIds(
       // whether or not the row already holds an id, and it is deliberately NOT
       // reported as a disagreement even when the stored id is one of the matches:
       // nothing here can say which of them is right.
-      if (!reportedAmbiguous.has(email)) {
-        reportedAmbiguous.add(email);
-        plan.ambiguous.push({ email, matchCount: matches.length });
+      const entry = reportedAmbiguous.get(email);
+      if (entry) {
+        entry.userIds.push(r.id);
+      } else {
+        const created: UserIdAmbiguity = { email, matchCount: matches.length, userIds: [r.id] };
+        reportedAmbiguous.set(email, created);
+        plan.ambiguous.push(created);
       }
       continue;
     }
@@ -218,7 +228,66 @@ export interface UserIdLinkReport {
  * page and absence is reported in the run's counts and its log line.
  */
 export function hasUserIdConflicts(report: UserIdLinkReport): boolean {
-  return report.disagreements > 0 || report.ambiguous > 0 || report.claimed > 0;
+  return USER_ID_CONFLICT_SHAPES.some((shape) => report[shape] > 0);
+}
+
+/** The three plan shapes a person has to act on, which page and which the log names. */
+export const USER_ID_CONFLICT_SHAPES = ["disagreements", "ambiguous", "claimed"] as const;
+export type UserIdConflictShape = (typeof USER_ID_CONFLICT_SHAPES)[number];
+
+/** How many Slate ids each shape names on the log line, so one line stays readable. */
+const LOGGED_IDS_PER_SHAPE = 10;
+
+/**
+ * The field each shape's Slate ids go under. A `Record` over the shapes, so adding
+ * a fourth shape does not compile until somebody says where its rows are named.
+ * The first two keep the names they always had, which is what a saved log search
+ * looks for.
+ */
+const CONFLICT_IDS_KEY: Record<UserIdConflictShape, string> = {
+  disagreements: "disagreeing_user_ids",
+  ambiguous: "ambiguous_user_ids",
+  claimed: "claimed_user_ids",
+};
+
+function conflictUserIds(plan: UserIdLinkPlan, shape: UserIdConflictShape): string[] {
+  switch (shape) {
+    case "disagreements":
+      return plan.disagreements.map((d) => d.userId);
+    case "ambiguous":
+      return plan.ambiguous.flatMap((a) => a.userIds);
+    case "claimed":
+      return plan.claimed.map((c) => c.userId);
+  }
+}
+
+export interface UserIdConflictLogEntry {
+  shape: UserIdConflictShape;
+  /** The log field the count goes under, which is the shape's own name. */
+  countKey: UserIdConflictShape;
+  /** The log field the Slate ids go under. */
+  idsKey: string;
+  count: number;
+  /** Comma separated Slate user ids, at most `LOGGED_IDS_PER_SHAPE` of them. */
+  userIds: string;
+}
+
+/**
+ * What the sf-sync conflict log line carries for each shape (#3668).
+ *
+ * The page points its reader at this line for the rows, so every shape names its
+ * rows here. The ambiguous shape used to carry only a count, so for that shape the
+ * pointer led nowhere. Slate user ids only, never an email, a name or a Salesforce
+ * id, so a log search does not become a roster export (L222).
+ */
+export function userIdConflictLogFields(plan: UserIdLinkPlan): UserIdConflictLogEntry[] {
+  return USER_ID_CONFLICT_SHAPES.map((shape) => ({
+    shape,
+    countKey: shape,
+    idsKey: CONFLICT_IDS_KEY[shape],
+    count: plan[shape].length,
+    userIds: conflictUserIds(plan, shape).slice(0, LOGGED_IDS_PER_SHAPE).join(", "),
+  }));
 }
 
 /**
