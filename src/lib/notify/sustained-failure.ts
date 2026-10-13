@@ -38,8 +38,9 @@ export interface SustainedFailureVerdict<T> {
   page: boolean;
   /** Failures held for this key inside the window, this one included. */
   inWindow: number;
-  /** Those failures, oldest first. */
-  recent: T[];
+  /** Those failures, oldest first. A function, so the copy is made only when a page is
+   *  actually being worded, never on the hot path's ordinary failures. */
+  recent: () => T[];
   /** Whether older failures inside the window were dropped to keep memory bounded. */
   truncated: boolean;
 }
@@ -50,39 +51,62 @@ export interface SustainedFailureGate<T> {
 
 const DEFAULT_MAX_KEPT = 1000;
 
+/** One key's failures, oldest first, from `head` on. Advancing `head` instead of `shift()`ing
+ *  keeps a record O(1) amortised; the array is compacted once the dead prefix is the larger half. */
+interface Run<T> {
+  ats: number[];
+  items: T[];
+  head: number;
+  truncated: boolean;
+}
+
 export function makeSustainedFailureGate<T>(opts: SustainedFailureGateOptions): SustainedFailureGate<T> {
   if (!Number.isInteger(opts.pageAfter) || opts.pageAfter < 2) {
     throw new Error(`a sustained failure gate needs pageAfter of at least 2, got ${opts.pageAfter}`);
   }
   const maxKept = Math.max(opts.maxKept ?? DEFAULT_MAX_KEPT, opts.pageAfter);
-  const runs = new Map<string, { entries: { at: number; item: T }[]; truncated: boolean }>();
+  const runs = new Map<string, Run<T>>();
   const lastPagedAt = new Map<string, number>();
 
   return {
     record(key, at, item) {
-      const run = runs.get(key) ?? { entries: [], truncated: false };
+      let run = runs.get(key);
+      if (!run) {
+        run = { ats: [], items: [], head: 0, truncated: false };
+        runs.set(key, run);
+      }
       // Oldest first, so expired failures are always at the front. A dropped failure is older
       // than every one kept, so once any kept one has left the window every dropped one has
       // too, and the count is exact again.
-      while (run.entries.length > 0 && at - run.entries[0]!.at >= opts.windowMs) {
-        run.entries.shift();
+      while (run.head < run.ats.length && at - run.ats[run.head]! >= opts.windowMs) {
+        run.head += 1;
         run.truncated = false;
       }
-      run.entries.push({ at, item });
-      if (run.entries.length > maxKept) {
-        run.entries.shift();
+      run.ats.push(at);
+      run.items.push(item);
+      if (run.ats.length - run.head > maxKept) {
+        run.head += 1;
         run.truncated = true;
       }
-      runs.set(key, run);
+      if (run.head > 0 && run.head * 2 >= run.ats.length) {
+        run.ats = run.ats.slice(run.head);
+        run.items = run.items.slice(run.head);
+        run.head = 0;
+      }
 
+      const inWindow = run.ats.length - run.head;
       const paged = lastPagedAt.get(key);
-      const page =
-        run.entries.length >= opts.pageAfter && (paged === undefined || at - paged >= opts.cooldownMs);
+      const page = inWindow >= opts.pageAfter && (paged === undefined || at - paged >= opts.cooldownMs);
       if (page) lastPagedAt.set(key, at);
+      // The array as it stands now: a later record either appends past `to` or compacts into a
+      // new array, and neither changes this slice.
+      const items = run.items;
+      const from = run.head;
+      const to = run.items.length;
       return {
         page,
-        inWindow: run.entries.length,
-        recent: run.entries.map((e) => e.item),
+        inWindow,
+        recent: () => items.slice(from, to),
         truncated: run.truncated,
       };
     },

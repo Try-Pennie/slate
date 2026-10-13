@@ -97,6 +97,6 @@ export function makeReachFailureReporter(deps: {
     });
     if (NEVER_PAGES.has(reason) || !deps.onWorkers()) return;
     const verdict = gate.record(CONFIRM_LINE_ALERT_KEY, deps.now(), reason);
-    if (verdict.page) deps.page(confirmLineAlertFor(verdict.recent));
+    if (verdict.page) deps.page(confirmLineAlertFor(verdict.recent()));
   };
 }

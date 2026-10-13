@@ -41,7 +41,7 @@ const gate = (maxKept?: number) =>
   const pages = results.filter((r) => r.page);
   assert(pages.length === 1, `five inside the window page exactly once (got ${pages.length})`);
   assert(results[4]!.page, "the page is raised by the failure that makes the run sustained");
-  assert(results[4]!.recent.join(",") === "f0,f1,f2,f3,f4", `the page carries every failure it is about (got ${results[4]!.recent.join(",")})`);
+  assert(results[4]!.recent().join(",") === "f0,f1,f2,f3,f4", `the page carries every failure it is about (got ${results[4]!.recent().join(",")})`);
   assert(results[4]!.truncated === false, "nothing was dropped, so the count is exact");
   const more = g.record("landing:h", 7_000, "f5");
   assert(more.page === false, "a sixth inside the cooldown does not page again");
@@ -94,9 +94,27 @@ const gate = (maxKept?: number) =>
   for (let i = 1; i < 100; i++) last = g.record("k", i, "x");
   assert(last.inWindow === 20, `a flood keeps at most maxKept entries (got ${last.inWindow})`);
   assert(last.truncated === true, "and reports that older entries inside the window were dropped");
+  assert(last.recent().join(",") === Array(20).fill("x").join(","), "and holds exactly the kept entries");
   // The oldest kept entry is at 80; once it leaves the window so has everything dropped before it.
   const later = g.record("k", 80 + WINDOW, "x");
   assert(later.truncated === false, "the count is exact again once the dropped entries have left the window");
+}
+
+// --- a long flood keeps the newest entries, in order, through every compaction ---------
+// The run advances a head index rather than shifting, and compacts once the dead prefix is the
+// larger half (the review on #3670: a copy or a shift per record is O(n) on the hot path during
+// exactly the flood this counts). This drives many compactions and checks what survives them.
+{
+  const g = makeSustainedFailureGate<number>({ pageAfter: 5, windowMs: WINDOW, cooldownMs: COOLDOWN, maxKept: 7 });
+  let last = g.record("k", 0, 0);
+  const early = last;
+  for (let i = 1; i < 10_000; i++) last = g.record("k", i, i);
+  assert(last.inWindow === 7, `a long flood still holds maxKept (got ${last.inWindow})`);
+  assert(last.recent().join(",") === "9993,9994,9995,9996,9997,9998,9999", `the newest seven survive, in order (got ${last.recent().join(",")})`);
+  assert(early.recent().join(",") === "0", `a verdict read late still describes its own moment (got ${early.recent().join(",")})`);
+  // And expiry still works after compaction: one more, a full window later, is alone.
+  const after = g.record("k", 9_999 + WINDOW, -1);
+  assert(after.inWindow === 1 && after.truncated === false, `after the window everything expires (inWindow ${after.inWindow})`);
 }
 
 // --- a threshold of one would be the defect itself -------------------------------------
