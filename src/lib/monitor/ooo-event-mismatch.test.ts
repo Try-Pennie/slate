@@ -28,7 +28,6 @@ import {
   oooEventMismatchKey,
   runOooEventMismatchCheck,
   OOO_EVENT_MISMATCH_ALERT_AFTER_TICKS,
-  OOO_EVENT_MISMATCH_FAMILY,
   type ApprovedEventRequest,
   type EventMirror,
 } from "./ooo-event-mismatch";
