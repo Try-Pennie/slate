@@ -70,7 +70,9 @@ import {
   submissionAgreement,
   teamAtTime,
   type BelowFinding,
+  type LeadTierOffer,
   type PageFacts,
+  type SubmissionHistory,
 } from "@/lib/monitor/below-lead-tier";
 import { formatOffsiteOriginAlert, type OffsiteFinding } from "@/lib/monitor/offsite-origin";
 import { BUDGET_WARN_SHARE, judgeBudgets, sloBudgetClearText, sloBudgetPageText } from "@/lib/monitor/slo-budget";
@@ -699,12 +701,19 @@ const PREVIEW_FLIPPING_ROUTING = { catchall: false, requestedCode: "212", tierFa
 const PREVIEW_FLIPPING_HISTORY = submissionAgreement(["312", "212", "312", "212", "312", "212", "312", "212", "312", "312"]);
 /** The 312 pool's offer as the lane's shared slot rows give it: 1:00pm and 4:30pm
  *  that day, and the next morning, computed at 8:10am ET. */
-const PREVIEW_FLIPPING_OFFER = {
+const PREVIEW_FLIPPING_OFFER: LeadTierOffer = {
   offeredMs: [Date.UTC(2026, 9, 13, 17, 0), Date.UTC(2026, 9, 13, 20, 30), Date.UTC(2026, 9, 14, 15, 0)],
   computedAtMs: Date.UTC(2026, 9, 13, 12, 10),
   minNoticeMin: 120,
 };
 const PREVIEW_FLIPPING_NOW = Date.UTC(2026, 9, 13, 12, 20);
+/** The 899afc25 page for one offer and one history, through the real judge and copy. */
+function previewFlipping(offer: LeadTierOffer | "unreadable", history: SubmissionHistory): string {
+  return formatBelowLeadTierAlert(PREVIEW_FLIPPING, PREVIEW_FLIPPING_ROUTING, PREVIEW_FLIPPING_URL, {
+    team: teamAtTime(offer, PREVIEW_FLIPPING.booking.starts_at, PREVIEW_FLIPPING_NOW),
+    history,
+  });
+}
 
 /** #2594: the same lead booked correctly on XBC 422 into the Very High pool, then
  *  re-scored to 512 four minutes later. #3501: the score came from the submission
@@ -1598,54 +1607,31 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_below_lead_tier:*",
     state: "the lead's team is not free at the call's time, a later time that day is, and the submissions flip between tiers",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_FLIPPING, PREVIEW_FLIPPING_ROUTING, PREVIEW_FLIPPING_URL, {
-      team: teamAtTime(PREVIEW_FLIPPING_OFFER, PREVIEW_FLIPPING.booking.starts_at, PREVIEW_FLIPPING_NOW),
-      history: PREVIEW_FLIPPING_HISTORY,
-    }),
+    text: previewFlipping(PREVIEW_FLIPPING_OFFER, PREVIEW_FLIPPING_HISTORY),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "the lead's team has no free time at all on the call's day",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_FLIPPING, PREVIEW_FLIPPING_ROUTING, PREVIEW_FLIPPING_URL, {
-      team: teamAtTime(
-        { ...PREVIEW_FLIPPING_OFFER, offeredMs: [Date.UTC(2026, 9, 14, 15, 0)] },
-        PREVIEW_FLIPPING.booking.starts_at,
-        PREVIEW_FLIPPING_NOW,
-      ),
-      history: { kind: "steady" },
-    }),
+    text: previewFlipping({ ...PREVIEW_FLIPPING_OFFER, offeredMs: [Date.UTC(2026, 9, 14, 15, 0)] }, { kind: "steady" }),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "the lead's team is free at the call's time",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_FLIPPING, PREVIEW_FLIPPING_ROUTING, PREVIEW_FLIPPING_URL, {
-      team: teamAtTime(
-        { ...PREVIEW_FLIPPING_OFFER, offeredMs: [Date.UTC(2026, 9, 13, 19, 0)] },
-        PREVIEW_FLIPPING.booking.starts_at,
-        PREVIEW_FLIPPING_NOW,
-      ),
-      history: { kind: "steady" },
-    }),
+    text: previewFlipping({ ...PREVIEW_FLIPPING_OFFER, offeredMs: [Date.UTC(2026, 9, 13, 19, 0)] }, { kind: "steady" }),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "the lead's team could not be checked, because the shared slot read failed",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_FLIPPING, PREVIEW_FLIPPING_ROUTING, PREVIEW_FLIPPING_URL, {
-      team: teamAtTime("unreadable", PREVIEW_FLIPPING.booking.starts_at, PREVIEW_FLIPPING_NOW),
-      history: { kind: "steady" },
-    }),
+    text: previewFlipping("unreadable", { kind: "steady" }),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "the lead's submission history could not be read",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_FLIPPING, PREVIEW_FLIPPING_ROUTING, PREVIEW_FLIPPING_URL, {
-      team: teamAtTime(PREVIEW_FLIPPING_OFFER, PREVIEW_FLIPPING.booking.starts_at, PREVIEW_FLIPPING_NOW),
-      history: { kind: "unreadable" },
-    }),
+    text: previewFlipping(PREVIEW_FLIPPING_OFFER, { kind: "unreadable" }),
   },
   // #2933: one state per way the two bookings can match, since each sends the reader
   // to check a different thing, plus a Slate booking with no lead id. Each pair is
