@@ -5,7 +5,9 @@ import {
   VerifyUnavailableError,
   RescheduleLockUnavailableError,
   SlotUnavailableError,
+  timeoutAsRetryable,
 } from "./orchestration";
+import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 
 // The reactive half of the routing dead-zone monitor (#327) + the verify-outage
 // alert (#319): which silent-outage failures warrant a throttled alert, and
@@ -51,5 +53,16 @@ describe("bookingFailureAlert", () => {
 
   it("does NOT alert on an unrelated error", () => {
     expect(bookingFailureAlert(new Error("boom"))).toBeNull();
+  });
+  // #3663: the booking API timeout path says how far the request got, so a dry run
+  // is never worded as a lead waiting on a reservation row.
+  it("words a timed out dry run without a lead or a reservation row (#3663)", () => {
+    const timeout = timeoutAsRetryable(new DeadlineExceededError("google token mint", 8000));
+    const booking = bookingFailureAlert(timeout);
+    const dryRun = bookingFailureAlert(timeout, null, "dry-run");
+    expect(booking?.message).toContain("booking_reservations");
+    expect(dryRun?.key).toBe("verify_on_book_outage");
+    expect(dryRun?.message).toMatch(/^A dry run booking check failed/);
+    expect(dryRun?.message).not.toMatch(/booking_reservations|\blead\b/);
   });
 });

@@ -40,6 +40,243 @@ export interface LatencyVerdict {
   regressed: boolean;
   /** One sentence for the failure log, or null when there is nothing to say. */
   message: string | null;
+  /** The samples judged: the cold first one dropped, unusable ones left out. */
+  kept: LatencySample[];
+}
+
+/**
+ * Which tier answered a read, as the route's `x-slot-cache` header says (#257/#234):
+ * `hit` the edge cache, `miss` the stored row, `nostore` a cold live compute.
+ */
+export type SlotCacheOutcome = "hit" | "miss" | "nostore";
+
+/**
+ * The Worker's own account of a read, from its `Server-Timing` (#3653). Each field is
+ * null when the header did not carry it, never 0, so "not reported" cannot print as a
+ * measured zero. The Worker's clock advances only at I/O, so these are I/O waits and
+ * leave out CPU after the last I/O (see src/lib/api/server-timing.ts).
+ */
+export interface ServerTiming {
+  workerMs: number | null;
+  limitMs: number | null;
+  slotsMs: number | null;
+}
+
+/** One timed read: the wait at the canary, and what the response said about itself. */
+export interface LatencySample {
+  ms: number;
+  /** Null when the response carried no readable `x-slot-cache`. */
+  cache: SlotCacheOutcome | null;
+  /** Null when the response carried no `Server-Timing` entry the route writes. */
+  server: ServerTiming | null;
+}
+
+/** A bare number is a sample whose response said nothing about itself. */
+function toSample(v: number | LatencySample): LatencySample {
+  return typeof v === "number" ? { ms: v, cache: null, server: null } : v;
+}
+
+/** Read `x-slot-cache`. Anything the route does not send is unknown, never a guessed hit. */
+export function readSlotCache(header: string | null): SlotCacheOutcome | null {
+  const v = header?.trim().toLowerCase();
+  return v === "hit" || v === "miss" || v === "nostore" ? v : null;
+}
+
+/**
+ * The entry names the route writes. A COPY of `SERVER_TIMING_NAMES` in
+ * src/lib/api/server-timing.ts, because this file runs on bare node and may import
+ * nothing outside scripts/; scripts/test-server-timing.ts drives both and fails if
+ * they disagree.
+ */
+const TIMING_NAMES: ReadonlyMap<string, keyof ServerTiming> = new Map([
+  ["worker", "workerMs"],
+  ["limit", "limitMs"],
+  ["slots", "slotsMs"],
+]);
+
+/** Split on commas outside double quotes: a `desc="a,b"` must not split an entry. */
+function splitOutsideQuotes(s: string, sep: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let quoted = false;
+  for (const ch of s) {
+    if (ch === '"') quoted = !quoted;
+    if (ch === sep && !quoted) {
+      out.push(cur);
+      cur = "";
+    } else cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+/**
+ * Read the route's entries out of a `Server-Timing` header, ignoring any other entry
+ * (Cloudflare can add its own). Null when none of the route's entries is readable, so
+ * a response without one reads as not measured.
+ */
+export function parseServerTiming(header: string | null): ServerTiming | null {
+  if (!header) return null;
+  const t: ServerTiming = { workerMs: null, limitMs: null, slotsMs: null };
+  let found = false;
+  for (const entry of splitOutsideQuotes(header, ",")) {
+    const [rawName, ...params] = splitOutsideQuotes(entry, ";").map((p) => p.trim());
+    // A Map, so a name like `constructor` cannot match an inherited property.
+    const field = TIMING_NAMES.get(rawName ?? "");
+    if (!field) continue;
+    // Digits only, which also rules out a negative or non-finite value: `Number("")`
+    // is 0, so an empty `dur=` would otherwise read as a measured 0ms, the healthy
+    // side of every comparison downstream (L50).
+    const dur = params.find((p) => /^dur=/i.test(p))?.slice(4).trim() ?? "";
+    if (!/^\d+(\.\d+)?$/.test(dur)) continue;
+    t[field] = Number(dur);
+    found = true;
+  }
+  return found ? t : null;
+}
+
+/** How the reads over budget were served, from their `x-slot-cache`. */
+export interface SlowReadCache {
+  /**
+   *  - `misses`   more than half the slow reads were not served from the edge cache
+   *  - `hits`     more than half were edge cache hits
+   *  - `mixed`    neither is a majority (unread ones count against both)
+   *  - `unknown`  no slow read carried the header
+   */
+  kind: "misses" | "hits" | "mixed" | "unknown";
+  over: number;
+  hits: number;
+  /** Served from the stored row (`miss`). */
+  rows: number;
+  /** Computed live (`nostore`). */
+  computed: number;
+  unread: number;
+}
+
+/**
+ * Classify the reads OVER budget, not all of them. On 2026-10-12 a batch held 120ms
+ * reads beside 1.2s ones, and a fast hit says nothing about where a slow read's time
+ * went. When nothing is over budget (which a regressed median cannot produce) every
+ * kept read is classified instead, so the counts are never of an empty set.
+ */
+export function classifySlowReads(kept: LatencySample[], budgetMs: number): SlowReadCache {
+  const overBudget = kept.filter((x) => x.ms > budgetMs);
+  const set = overBudget.length > 0 ? overBudget : kept;
+  const hits = set.filter((x) => x.cache === "hit").length;
+  const rows = set.filter((x) => x.cache === "miss").length;
+  const computed = set.filter((x) => x.cache === "nostore").length;
+  const unread = set.length - hits - rows - computed;
+  const over = set.length;
+  const kind =
+    unread === over
+      ? "unknown"
+      : (rows + computed) * 2 > over
+        ? "misses"
+        : hits * 2 > over
+          ? "hits"
+          : "mixed";
+  return { kind, over, hits, rows, computed, unread };
+}
+
+const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
+
+/** The cache half of the cause: what the slow reads' headers said, and nothing more. */
+function cacheSentence(c: SlowReadCache): string {
+  const ofOver = (n: number) => `${n} of ${c.over} ${plural(c.over, "read", "reads")} over budget ${plural(n, "was", "were")}`;
+  switch (c.kind) {
+    case "unknown":
+      return (
+        "The responses carried no x-slot-cache header, so this check could not tell whether the " +
+        "slow reads were served from the cache."
+      );
+    case "misses": {
+      // A stored row read is the designed second tier, not a broken cache, so this names
+      // the tier and the database read behind it rather than claiming the cache stopped.
+      const tiers = [
+        c.rows > 0 ? `${c.rows} from the stored row in the database` : null,
+        c.computed > 0 ? `${c.computed} computed live` : null,
+      ].filter((p): p is string => p !== null);
+      return (
+        `${ofOver(c.rows + c.computed)} not served from the edge cache (${tiers.join(", ")}), so the time ` +
+        "went to the read behind the edge cache: look at how long the database read took, and at why the " +
+        "edge cache did not hold these times."
+      );
+    }
+    case "hits":
+      return (
+        `${ofOver(c.hits)} ${plural(c.hits, "an edge cache hit", "edge cache hits")}, so the cache was serving ` +
+        "and the time went elsewhere: the Worker, the burst limiter or the network between the runner and the edge."
+      );
+    case "mixed": {
+      const parts = [
+        `${c.hits} cache ${plural(c.hits, "hit", "hits")}`,
+        `${c.rows + c.computed} ${plural(c.rows + c.computed, "miss", "misses")}`,
+        c.unread > 0 ? `${c.unread} without the header` : null,
+      ].filter((p): p is string => p !== null);
+      return (
+        `The ${c.over} reads over budget were split (${parts.join(", ")}), so neither the cache nor ` +
+        "the path around it is ruled out."
+      );
+    }
+  }
+}
+
+/** The Worker half of the cause: its own clock against the canary's, on the slow reads. */
+function serverSentence(slow: LatencySample[]): string {
+  const timed = slow.filter((x) => x.server?.workerMs !== null && x.server?.workerMs !== undefined);
+  if (timed.length === 0) {
+    return "No Server-Timing came back, so the Worker's time and transit cannot be told apart.";
+  }
+  const client = median(timed.map((x) => x.ms))!;
+  const worker = median(timed.map((x) => x.server!.workerMs!))!;
+  const of = `The Worker's own clock read a median ${ms(worker)} of their ${ms(client)}`;
+  if (worker * 2 >= client) {
+    const limit = median(timed.flatMap((x) => (x.server!.limitMs === null ? [] : [x.server!.limitMs])));
+    const slots = median(timed.flatMap((x) => (x.server!.slotsMs === null ? [] : [x.server!.slotsMs])));
+    const split = [
+      limit === null ? null : `burst limiter ${ms(limit)}`,
+      slots === null ? null : `slot read ${ms(slots)}`,
+    ].filter((p): p is string => p !== null);
+    return `${of}${split.length ? ` (${split.join(", ")})` : ""}, so the wait was inside the Worker.`;
+  }
+  return (
+    `${of}, so most of the wait was outside it: transit between the runner and the edge, or CPU, ` +
+    "which that clock does not count."
+  );
+}
+
+/**
+ * Why a slow batch was slow, worded only from what its responses said (#3653).
+ *
+ * This replaces a sentence that told the reader to "look for a read that has stopped
+ * being served from the cache" on every page, which on 2026-10-12 sent them to a cache
+ * that had served 8 of 10 reads (L11). One builder, so the single batch, recheck and
+ * confirmed messages cannot drift into three ways of saying it.
+ */
+export function latencyCause(kept: LatencySample[], budgetMs: number = AVAILABILITY_P50_BUDGET_MS): string {
+  const c = classifySlowReads(kept, budgetMs);
+  const overBudget = kept.filter((x) => x.ms > budgetMs);
+  return `${cacheSentence(c)} ${serverSentence(overBudget.length > 0 ? overBudget : kept)}`;
+}
+
+/**
+ * The `samples=[...]` detail of the canary's log line: each read's wait, its cache
+ * outcome (`nohdr` when the header was absent) and, when sent, the Worker's own time
+ * with its split. Printed for every run, so #3652 can be answered from the log history.
+ */
+export function formatSamples(samples: LatencySample[]): string {
+  return samples
+    .map((x) => {
+      const t = x.server;
+      const split = t
+        ? [t.limitMs === null ? null : `limit=${Math.round(t.limitMs)}`, t.slotsMs === null ? null : `slots=${Math.round(t.slotsMs)}`]
+            .filter((p): p is string => p !== null)
+            .join(",")
+        : "";
+      const worker = t && t.workerMs !== null ? ` worker=${Math.round(t.workerMs)}${split ? `(${split})` : ""}` : "";
+      return `${Math.round(x.ms)} ${x.cache ?? "nohdr"}${worker}`;
+    })
+    .join(", ");
 }
 
 /** The middle value, or the mean of the two middles. */
@@ -62,17 +299,21 @@ export function median(values: number[]): number | null {
  * itself, and failing twice for one cause is how an alert stops naming its cause.
  */
 export function judgeLatency(
-  samples: number[],
+  samples: ReadonlyArray<number | LatencySample>,
   budgetMs: number = AVAILABILITY_P50_BUDGET_MS,
 ): LatencyVerdict {
-  const kept = samples.slice(1).filter((n) => Number.isFinite(n) && n >= 0);
-  const medianMs = median(kept);
+  const kept = samples
+    .slice(1)
+    .map(toSample)
+    .filter((x) => Number.isFinite(x.ms) && x.ms >= 0);
+  const medianMs = median(kept.map((x) => x.ms));
   if (medianMs === null) {
     return {
       medianMs: null,
       regressed: false,
       message:
         "latency was not measured this run (no usable samples), so this pass says nothing about it",
+      kept,
     };
   }
   if (medianMs > budgetMs) {
@@ -81,11 +322,11 @@ export function judgeLatency(
       regressed: true,
       message:
         `availability read median ${Math.round(medianMs)}ms over ${kept.length} samples, past the ` +
-        `${budgetMs}ms budget. That is an order of magnitude above the warm cached read, so look ` +
-        `for a read that has stopped being served from the cache rather than for a slow datacenter.`,
+        `${budgetMs}ms budget, an order of magnitude above the warm cached read. ${latencyCause(kept, budgetMs)}`,
+      kept,
     };
   }
-  return { medianMs, regressed: false, message: null };
+  return { medianMs, regressed: false, message: null, kept };
 }
 
 /**
@@ -130,8 +371,9 @@ export interface LatencyRun {
 }
 
 export interface LatencyRunDeps {
-  /** Take one batch of `LATENCY_SAMPLES` timed reads, in order, errors left out. */
-  takeBatch: () => Promise<number[]>;
+  /** Take one batch of `LATENCY_SAMPLES` timed reads, in order, errors left out. A bare
+   *  number is a read whose response said nothing about its cache or its timing. */
+  takeBatch: () => Promise<ReadonlyArray<number | LatencySample>>;
   /** Injected so a test never waits for real (L524). */
   sleep: (ms: number) => Promise<void>;
   budgetMs?: number;
@@ -168,8 +410,8 @@ export async function measureLatency(deps: LatencyRunDeps): Promise<LatencyRun> 
       measured: true,
       message:
         `availability read median ${ms(first.medianMs)}, past the ${budgetMs}ms budget, and it could not be ` +
-        `re-measured ${wait} later (no usable readings), so it cannot be ruled a passing blip. Look for a read ` +
-        `that has stopped being served from the cache, and at whether the endpoint is answering at all.`,
+        `re-measured ${wait} later (no usable readings), so it cannot be ruled a passing blip. ` +
+        `${latencyCause(first.kept, budgetMs)} Check too whether the endpoint is answering at all.`,
       first,
       recheck,
     };
@@ -192,9 +434,8 @@ export async function measureLatency(deps: LatencyRunDeps): Promise<LatencyRun> 
     measured: true,
     message:
       `availability read median ${ms(first.medianMs)}, and ${ms(recheck.medianMs)} again on a recheck ${wait} ` +
-      `later, both past the ${budgetMs}ms budget. That is an order of magnitude above the warm cached read and ` +
-      `it did not pass, so look for a read that has stopped being served from the cache rather than for a slow ` +
-      `datacenter.`,
+      `later, both past the ${budgetMs}ms budget, an order of magnitude above the warm cached read. ` +
+      latencyCause([...first.kept, ...recheck.kept], budgetMs),
     first,
     recheck,
   };

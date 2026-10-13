@@ -122,6 +122,33 @@ export function oooUndoAgentAlert(requestId: string, reason: string): string {
 }
 
 /**
+ * Time-off orchestration incident (#3660): an undo could not READ a calendar back
+ * for an event the approval holds no id for. The approval's create was never
+ * confirmed (a timeout among the ways), so the event may have landed anyway, and
+ * nobody looked. It names the calendar owner
+ * so the reader knows whose calendar to open, and says "may", because the read that
+ * would have settled it is the thing that failed (L11).
+ */
+export interface UncheckedCalendar {
+  whose: "manager" | "agent";
+  /** Why it could not be checked, short and human. */
+  reason: string;
+}
+
+export function oooUndoUnrecordedAlert(requestId: string, unchecked: UncheckedCalendar[]): string {
+  const places = unchecked.map(
+    (u) => `${u.whose === "manager" ? "the manager OOO calendar" : "the agent's own calendar"} (${u.reason})`,
+  );
+  const many = unchecked.length > 1;
+  return (
+    `${many ? "OOO events" : "An OOO event"} for request ${requestId} may still be on ${places.join(" and on ")}: ` +
+    `${many ? "their creates were" : "its create was"} never confirmed, so Slate holds no id for ` +
+    `${many ? "them" : "it"}, and ${many ? "those calendars" : "that calendar"} could not be checked. ` +
+    `Look there and delete any event for this request that is present.`
+  );
+}
+
+/**
  * Time-off orchestration incident: oooCoverageStopAlert (#1665).
  *
  * The time off was cancelled or narrowed and the coverage sweep behind it could not
@@ -153,15 +180,29 @@ export interface OooEventMismatch {
   displayTzLabel: string | null;
   coverage:
     | { kind: "uncovered"; spans: { startMs: number; endMs: number }[] }
-    | { kind: "not-blocking" };
+    /**
+     * `unmeasured` is the tail of the window too far ahead for Slate's copy of the
+     * calendar to answer (#3655), or null when the whole window was checked. The
+     * sentence then names only the part that was checked (L11).
+     */
+    | { kind: "not-blocking"; unmeasured: { startMs: number; endMs: number } | null };
 }
+
+const NOT_BLOCKING_WHY = "(it was deleted, cancelled, marked free or moved)";
 
 function mismatchLine(f: OooEventMismatch, appBaseUrl: string): string {
   const label = f.displayTzLabel ?? undefined;
   const approved = formatWhenLine(f.startsAt, f.endsAt, f.displayTzId, label);
   const calendar =
     f.coverage.kind === "not-blocking"
-      ? "The calendar shows no busy time off event inside that window (it was deleted, cancelled, marked free or moved)."
+      ? f.coverage.unmeasured === null
+        ? `The calendar shows no busy time off event inside that window ${NOT_BLOCKING_WHY}.`
+        : `The calendar shows no busy time off event for ${formatWhenLine(
+            f.startsAt,
+            new Date(f.coverage.unmeasured.startMs).toISOString(),
+            f.displayTzId,
+            label,
+          )} ${NOT_BLOCKING_WHY}; the rest of the window is too far ahead to check yet.`
       : `The calendar event leaves ${f.coverage.spans
           .map((s) =>
             formatWhenLine(

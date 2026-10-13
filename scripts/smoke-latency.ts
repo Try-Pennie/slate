@@ -27,9 +27,24 @@
 // `verdict:availability-latency` heartbeat and a check that has stopped measuring goes
 // stale and pages rather than reading as healthy (#1700).
 //
+// Each sample keeps what its response said about itself (#3653): which cache tier
+// answered (`x-slot-cache`) and the Worker's own time (`Server-Timing`). The page is
+// worded from those, and the log line prints them per sample, so a slow cached read
+// can be told from a cache that stopped serving, and Worker time from transit (#3652).
+//
 // Run: SLATE_BASE_URL=... node --experimental-strip-types scripts/smoke-latency.ts
 import { appendFileSync } from "node:fs";
-import { measureLatency, judgeLatency, decideDualLatency, LATENCY_SAMPLES, AVAILABILITY_P50_BUDGET_MS } from "./lib/latency-slo.ts";
+import {
+  measureLatency,
+  judgeLatency,
+  decideDualLatency,
+  formatSamples,
+  readSlotCache,
+  parseServerTiming,
+  LATENCY_SAMPLES,
+  AVAILABILITY_P50_BUDGET_MS,
+  type LatencySample,
+} from "./lib/latency-slo.ts";
 import { failureLogPath, recordFailure } from "./lib/smoke-failure-log.ts";
 
 const base = (process.env.SLATE_BASE_URL || "https://slate.trypennie.app").replace(/\/$/, "");
@@ -47,10 +62,11 @@ const io = {
 };
 const failureLog = failureLogPath(process.env);
 
-/** One timed read of a bucket. Returns the elapsed ms, or null when the request did not
- *  complete or did not answer 200: an error is not a latency measurement, and averaging
- *  one in would report a broken endpoint as a fast one. */
-async function sample(bucket: string, authed: boolean): Promise<number | null> {
+/** One timed read of a bucket: the elapsed ms, plus the response's own `x-slot-cache`
+ *  and `Server-Timing` (#3653), each null when absent rather than guessed. Null when the
+ *  request did not complete or did not answer 200: an error is not a latency
+ *  measurement, and averaging one in would report a broken endpoint as a fast one. */
+async function sample(bucket: string, authed: boolean): Promise<LatencySample | null> {
   const url = `${base}/api/availability?bucket=${encodeURIComponent(bucket)}`;
   const started = Date.now();
   try {
@@ -65,7 +81,11 @@ async function sample(bucket: string, authed: boolean): Promise<number | null> {
     // Drain the body: the response is not complete until it is read, and timing only
     // the headers would report a fraction of what a lead waits for.
     await res.text();
-    return elapsed;
+    return {
+      ms: elapsed,
+      cache: readSlotCache(res.headers.get("x-slot-cache")),
+      server: parseServerTiming(res.headers.get("server-timing")),
+    };
   } catch (err) {
     console.error(`latency: request failed, not counted as a sample: ${String(err)}`);
     return null;
@@ -74,27 +94,33 @@ async function sample(bucket: string, authed: boolean): Promise<number | null> {
 
 /** Take one batch of `LATENCY_SAMPLES` timed reads of `bucket`, errors left out, and
  *  record it in `into` for the log line's `samples=[...]ms` detail. */
-async function takeBatch(bucket: string, authed: boolean, into: number[][]): Promise<number[]> {
-  const samples: number[] = [];
+async function takeBatch(bucket: string, authed: boolean, into: LatencySample[][]): Promise<LatencySample[]> {
+  const samples: LatencySample[] = [];
   into.push(samples);
   for (let i = 0; i < LATENCY_SAMPLES; i++) {
-    const ms = await sample(bucket, authed);
-    if (ms !== null) samples.push(ms);
+    const s = await sample(bucket, authed);
+    if (s !== null) samples.push(s);
   }
   return samples;
 }
 
+// What each sample in `samples=[...]` says, printed on every line so the history reads
+// on its own: the canary's wait, the cache tier, and the Worker's own clock.
+const SAMPLE_LEGEND =
+  "first dropped as cold; each is the wait at the canary, x-slot-cache (nohdr when absent), " +
+  "and worker= the Worker's own I/O clock with its limiter and slot read split when sent";
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // The REAL bucket is the paging signal: full measurement with the #2811 recheck.
-const realBatches: number[][] = [];
+const realBatches: LatencySample[][] = [];
 const realRun = await measureLatency({
   takeBatch: () => takeBatch(realBucket, false, realBatches),
   sleep,
 });
 
 // The SMOKE bucket is a comparison only: one batch, no recheck, never pages.
-const smokeBatches: number[][] = [];
+const smokeBatches: LatencySample[][] = [];
 const smokeVerdict = judgeLatency(await takeBatch(smokeBucket, true, smokeBatches));
 
 const decision = decideDualLatency(realRun, smokeVerdict, realBucket);
@@ -106,7 +132,7 @@ const decision = decideDualLatency(realRun, smokeVerdict, realBucket);
 for (const [i, v] of [realRun.first, realRun.recheck].entries()) {
   if (!v) continue;
   console.log(
-    `latency${i === 0 ? "" : " recheck"}: samples=[${(realBatches[i] ?? []).join(", ")}]ms (first dropped as cold) median=${
+    `latency${i === 0 ? "" : " recheck"}: samples=[${formatSamples(realBatches[i] ?? [])}]ms (${SAMPLE_LEGEND}) median=${
       v.medianMs === null ? "none" : `${Math.round(v.medianMs)}ms`
     } budget=${AVAILABILITY_P50_BUDGET_MS}ms bucket=${realBucket}`,
   );
@@ -114,7 +140,7 @@ for (const [i, v] of [realRun.first, realRun.recheck].entries()) {
 // The SMOKE bucket is its own, differently-prefixed line, so it is never read as the
 // primary `latency:` sample: it is a comparison only and never pages (#3586).
 console.log(
-  `latency smoke(${smokeBucket}): samples=[${(smokeBatches[0] ?? []).join(", ")}]ms (first dropped as cold, comparison only) ` +
+  `latency smoke(${smokeBucket}): samples=[${formatSamples(smokeBatches[0] ?? [])}]ms (comparison only; ${SAMPLE_LEGEND}) ` +
     `median=${smokeVerdict.medianMs === null ? "none" : `${Math.round(smokeVerdict.medianMs)}ms`} budget=${AVAILABILITY_P50_BUDGET_MS}ms`,
 );
 if (decision.message) console.log(`latency: ${decision.message}`);

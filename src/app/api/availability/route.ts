@@ -23,6 +23,7 @@ import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { log } from "@/lib/log";
 import { agentLinkAvailabilityLive } from "@/lib/agent-link/service";
 import { bookingRescheduleTimesLive } from "@/lib/booking/reschedule-times-live";
+import { createServerTimer, SERVER_TIMING_NAMES } from "@/lib/api/server-timing";
 
 export const dynamic = "force-dynamic";
 
@@ -45,9 +46,14 @@ export async function GET(req: NextRequest) {
 }
 
 async function handle(req: NextRequest) {
+  // #3653: the Worker's own clock for this request, reported on the pooled read as a
+  // Server-Timing so the latency canary can tell time spent here from time in transit
+  // (#3652). It measures I/O waits, not CPU after the last I/O: see server-timing.ts.
+  const timer = createServerTimer();
+
   // Edge-throttle (#56) — in-datacenter, no DB round-trip, so the cached hot
   // path stays fast. Fails open.
-  if (!(await availabilityWithinLimit(clientIp(req.headers)))) {
+  if (!(await timer.span(SERVER_TIMING_NAMES.limiter, () => availabilityWithinLimit(clientIp(req.headers))))) {
     return NextResponse.json(
       { error: "Too many requests. Please try again in a moment." },
       { status: 429 },
@@ -118,7 +124,9 @@ async function handle(req: NextRequest) {
     authorizedForTest = true;
   }
 
-  const result = await getBucketSlotsWithFallback(code, from, authorizedForTest);
+  const result = await timer.span(SERVER_TIMING_NAMES.slots, () =>
+    getBucketSlotsWithFallback(code, from, authorizedForTest),
+  );
   if (!result) {
     // Unknown code and an unauthorized hidden test bucket both land here with
     // the identical response.
@@ -155,6 +163,10 @@ async function handle(req: NextRequest) {
     from_anchor: utcDayOf(from),
     colo: requestColo(req),
     slots: slots.length,
+    // #3653: the Worker's own time up to this line (the limiter and the slot read),
+    // so the Worker logs can answer #3652 as well as the canary. An empty result's
+    // explanation and an alert send come after it and are in the header's total only.
+    worker_ms: timer.totalMs(),
   });
 
   // #1328: with nothing to offer, the booker needs to know WHY. "All times are
@@ -220,7 +232,10 @@ async function handle(req: NextRequest) {
       emptyBecause,
       shownTier: result.routing.booked_tier,
     },
-    { headers },
+    // Server-Timing is added LAST, so its total covers everything above. Only this
+    // 200 carries it: the 404 an unknown and a hidden bucket share stays identical
+    // (#601). Diagnostic timing, never routing internals (#259).
+    { headers: { ...headers, "server-timing": timer.header() } },
   );
 }
 

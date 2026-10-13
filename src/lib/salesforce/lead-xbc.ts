@@ -226,6 +226,72 @@ export async function readLeadXbcLive(leadId: string): Promise<string | null | u
   return readOneLeadXbc(leadId, (soql) => querySoqlAll<LeadFieldRecord>(instanceUrl, token, soql));
 }
 
+/** How many of a lead's newest submissions the below tier page weighs (#3665). */
+export const SUBMISSION_HISTORY_PER_LEAD = 10;
+
+/**
+ * The most rows one history query may return. Reaching it means the answer may be
+ * cut short, which THROWS rather than counting part of a history as the whole: a
+ * lead whose missing submissions all scored one tier would read as steady.
+ */
+const SUBMISSION_HISTORY_ROW_LIMIT = 2000;
+
+/**
+ * At most this many leads share one history query, on top of the URI budget. The
+ * row limit is shared by every lead in a query, so a chunk sized only by URI length
+ * (about 450 leads) would reach it at about four submissions each and refuse the
+ * whole answer. Twenty leads leave a hundred a lead a year, far above the ten in the
+ * 2026-10-13 case, and a tick pages a handful of leads, so this is still one query.
+ */
+const SUBMISSION_HISTORY_LEADS_PER_QUERY = 20;
+
+/**
+ * Each lead's newest submission scores, newest first, keyed by `leadIdKey`, for the
+ * below tier page (#3665): ten submissions alternating 212 and 312 are a score on a
+ * tier line, and a manager reading the page should know that before moving a call.
+ *
+ * Held to the last year and to `SUBMISSION_HISTORY_PER_LEAD` per lead, each score
+ * kept VERBATIM (an empty one as ""), so the caller decides what decodes. A lead with
+ * no submission in that year is missing. Chunked by encoded length like every reader
+ * here (L81), and any refusal, or an answer that reached the row limit, THROWS.
+ */
+export async function readRecentSubmissionScores(
+  leadIds: string[],
+  run: LeadSoqlRunner,
+): Promise<Map<string, string[]>> {
+  const rowsByLead = new Map<string, { xbc: string; atMs: number | null }[]>();
+  if (leadIds.length === 0) return new Map();
+  const chunks = chunkSoqlValues(leadIds).flatMap((c) => {
+    const out: string[][] = [];
+    for (let i = 0; i < c.length; i += SUBMISSION_HISTORY_LEADS_PER_QUERY) out.push(c.slice(i, i + SUBMISSION_HISTORY_LEADS_PER_QUERY));
+    return out;
+  });
+  for (const chunk of chunks) {
+    const records = await run(
+      `SELECT Id, Lead__c, XBC_SO__c, CreatedDate FROM Submission__c WHERE Lead__c IN (${sfInList(chunk)}) ` +
+        `AND CreatedDate = LAST_N_DAYS:365 ORDER BY CreatedDate DESC LIMIT ${SUBMISSION_HISTORY_ROW_LIMIT}`,
+    );
+    if (records.length >= SUBMISSION_HISTORY_ROW_LIMIT) {
+      throw new Error(`submission history reached its ${SUBMISSION_HISTORY_ROW_LIMIT} row limit, so it may be incomplete`);
+    }
+    for (const r of records) {
+      const lead = textOrNull(r.Lead__c);
+      if (lead === null) continue;
+      const key = leadIdKey(lead);
+      const list = rowsByLead.get(key) ?? [];
+      list.push({ xbc: textOrNull(r.XBC_SO__c) ?? "", atMs: stampMs(r.CreatedDate) });
+      rowsByLead.set(key, list);
+    }
+  }
+  const out = new Map<string, string[]>();
+  for (const [key, list] of rowsByLead) {
+    // Newest first, and an unreadable time LAST: it cannot claim to be the newest.
+    list.sort((a, b) => (b.atMs ?? -Infinity) - (a.atMs ?? -Infinity));
+    out.set(key, list.slice(0, SUBMISSION_HISTORY_PER_LEAD).map((s) => s.xbc));
+  }
+  return out;
+}
+
 /** A Salesforce Submission id: the `a04` key prefix of `Submission__c`, 15 or 18 characters. */
 export function isSubmissionId(id: string): boolean {
   return /^a04[a-zA-Z0-9]{12}(?:[a-zA-Z0-9]{3})?$/.test(id);

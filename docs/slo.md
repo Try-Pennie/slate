@@ -126,6 +126,15 @@ at 39ms warm, a 500ms median means something structural changed, most likely a r
 that has stopped being served from the cache. A budget near the real number would page
 on ordinary variance, and an alert that cries wolf gets ignored.
 
+A page does not assume that cause, though (#3653). On 2026-10-12 it told the reader to
+look for a read that had stopped being cached while 8 of 10 reads were cache hits. Each
+sample now keeps the response's `x-slot-cache` and its `Server-Timing` (the Worker's own
+elapsed time, with the burst limiter and the slot read split out), the page is worded
+from what the reads over budget said (mostly misses, mostly hits, split, or no header),
+and the log line prints both per sample. The Worker's clock advances only at I/O, so a
+small Worker time against a long wait at the canary means transit or CPU, never only
+"network".
+
 The first sample is always discarded: the first request after an idle period pays
 isolate startup, so counting it measures how quiet the morning was. The median of the
 rest is judged, so one unlucky sample is not a regression.

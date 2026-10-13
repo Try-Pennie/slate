@@ -1039,6 +1039,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "One undo of a time-off decision failed and needs a human; nothing re-attempts it.",
   },
   {
+    key: "ooo_undo_unchecked:*",
+    kind: "incident",
+    // The suffix is the agent's user id, so the family is bounded by the roster.
+    suffix: "bounded",
+    why:
+      "An undo could not read a calendar back for a time off event whose create was " +
+      "never confirmed (#3660). The request is already closed and nothing looks again, " +
+      "so there is no healthy state to observe: a person checks that calendar by hand.",
+  },
+  {
     key: "ooo_coverage_stop",
     kind: "incident",
     why:
