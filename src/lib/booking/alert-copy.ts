@@ -479,12 +479,29 @@ export function dependencyTimeoutAlert(timeout: {
   neededMs?: number;
   /** #3511: where the confirm's time went, from its own profile, when one was read. */
   spent?: TimeSpent | null;
+  /** #3663: how far the request had got; a booking unless the route knows otherwise. */
+  reach?: TimeoutReach;
 }): string {
   // #3263: one wording for a missed deadline across every alert. A call refused
   // because the budget was already spent says the budget was used up before
   // Slate asked, never that the dependency "was not started".
   const found = { label: timeout.dependency, timeoutMs: timeout.timeoutMs, budget: timeout.budget, neededMs: timeout.neededMs };
   const what = deadlineReason(found);
+  // #3663: a dry run and a request whose body was never read wrote no row and were
+  // seen by nobody but the caller, so neither may send the reader to a lead or to
+  // booking_reservations. Their advice names the dependency that was in flight.
+  const reach = timeout.reach ?? "booking";
+  if (reach !== "booking") {
+    const opening =
+      reach === "dry-run"
+        ? `A dry run booking check failed because ${what}, not because the slot was full. The caller saw a retryable error, and a dry run writes nothing, so there is no booking or reservation to look for.`
+        : `A booking request failed before Slate had read its body, because ${what}. The caller saw a retryable error and no booking was attempted.`;
+    const advice = spentBeforeAsked(found)
+      ? (timeWentSentence(timeout.spent ?? null) ??
+        "The time went inside Slate before that call, so start from that request's confirm answered log line rather than Google Calendar API and Supabase health.")
+      : dependencyHealthAdvice(found.label);
+    return `${opening} ${advice}`;
+  }
   const head = `A booking failed because ${what}, not because the slot was full. The lead saw a retryable error. Check booking_reservations for a pending row before asking them to rebook`;
   // #3313: a budget spent before Slate asked means the dependency was never
   // asked, so pointing at its health is a claim nothing measured (L11): on
@@ -506,6 +523,21 @@ const DEPENDENCY_HEALTH = new Map<string, string>([
   ["google", "Google Calendar API"],
   ["supabase", "Supabase"],
 ]);
+
+/**
+ * #3663: how far a booking request had got when its deadline struck, which decides
+ * what its page may say happened. `booking` is a parsed booking that may have written
+ * a reservation; `dry-run` is a parsed dry run, which writes nothing; `before-body`
+ * is a request whose body Slate never parsed, so no bucket, lead or row exists.
+ */
+export type TimeoutReach = "booking" | "dry-run" | "before-body";
+
+/** Look at the named dependency's health, or at the request's own line for one with no health page. */
+function dependencyHealthAdvice(label: string): string {
+  // A Map, so a first word like `constructor` is an unknown dependency (L738).
+  const health = DEPENDENCY_HEALTH.get(label.split(" ")[0]!);
+  return health ? `Check ${health} health.` : "Start from that request's confirm answered log line.";
+}
 
 /**
  * Where a refused confirm's time went, said from its own profile (#3511), or null

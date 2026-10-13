@@ -61,6 +61,15 @@ function unreadable(where: string, detail: string): false {
  */
 export type AttemptSource =
   | { by: "bucket"; code: string; host: BookingOriginFacts }
+  /**
+   * #3663: the request was authenticated with a key only the smoke canary holds
+   * (`CANARY_CALLERS`), so it is the canary's whatever its body said or whether it
+   * was read at all. Still decided by the server: WHICH secret matched is not
+   * something a request can set. Recorded by the booking API's timeout path, where
+   * the deadline can strike before the body names a bucket. `host` is the body's
+   * page facts when it was read.
+   */
+  | { by: "canaryCaller"; host: BookingOriginFacts | null }
   | Exclude<TestTraffic, { by: "bucket" }>;
 
 /** Both markers the tally stores about one attempt. */
@@ -81,6 +90,9 @@ export async function resolveTrafficMarkers(source: AttemptSource): Promise<Traf
     return { isTest: await resolveTestTraffic(source), hostClass: bookingHostClass(source.host) };
   }
   if (source.by === "unidentifiable") return { isTest: false, hostClass: "none" };
+  if (source.by === "canaryCaller") {
+    return { isTest: true, hostClass: source.host ? bookingHostClass(source.host) : "none" };
+  }
   const row = await readManagedBooking(source.token);
   return {
     isTest: row?.buckets?.is_test === true,

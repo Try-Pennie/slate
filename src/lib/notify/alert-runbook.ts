@@ -232,6 +232,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   "ooo-digest-unrouted-unreachable": "something-was-measured-and-is-only-worth-knowing",
   ooo_calcom_stale_unrecorded: "time-off-cover-or-protection-is-in-doubt",
   ooo_undo: "something-was-measured-and-is-only-worth-knowing",
+  // #3660: an event may still be standing on a calendar, so it is a protection doubt,
+  // not a fact only worth knowing.
+  ooo_undo_unchecked: "time-off-cover-or-protection-is-in-doubt",
   // #2843: sales ops made the Ultra High and Very High cascade ordinary routing on
   // 2026-09-28, so the number is put on the record and nobody is sent to act on it.
   top_tier_cascade_rate: "something-was-measured-and-is-only-worth-knowing",
