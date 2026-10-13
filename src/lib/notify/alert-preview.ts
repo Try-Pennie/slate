@@ -67,7 +67,10 @@ import { ACTIVATION_BUDGET_MS } from "@/lib/bookable/activation-allowance";
 import { formatUnsetHoursAlert, formatUnsetHoursRecovery } from "@/lib/monitor/unset-hours";
 import {
   formatBelowLeadTierAlert,
+  submissionAgreement,
+  teamAtTime,
   type BelowFinding,
+  type PageFacts,
 } from "@/lib/monitor/below-lead-tier";
 import { formatOffsiteOriginAlert, type OffsiteFinding } from "@/lib/monitor/offsite-origin";
 import { BUDGET_WARN_SHARE, judgeBudgets, sloBudgetClearText, sloBudgetPageText } from "@/lib/monitor/slo-budget";
@@ -671,6 +674,37 @@ const PREVIEW_BELOW_TIER: BelowFinding = {
   lead: { kind: "tier", rank: 5, key: "ultra_high", label: "Ultra High", code: "512" },
 };
 const PREVIEW_BELOW_TIER_URL = "https://slate.trypennie.app/admin/bookings/5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a";
+
+/** #3665: the states above hold the lead's team as free and their history steady,
+ *  so each reads as the routing sentence it is about. */
+const PREVIEW_TEAM_FREE: PageFacts = { team: { kind: "free" }, history: { kind: "steady" } };
+
+/** #3665: the 2026-10-13 shape, booking 899afc25: a High lead (XBC 312) booked with
+ *  the Medium team at 3:00pm ET from a 212 submission, ten submissions alternating
+ *  212 and 312, and the 312 pool offering no 3:00pm. */
+const PREVIEW_FLIPPING: BelowFinding = {
+  kind: "below",
+  booking: {
+    ...PREVIEW_BELOW_TIER.booking,
+    id: "899afc25-6d1e-4b8a-9f0c-2e7a5b3c1d40",
+    bucket_id: "b-212",
+    starts_at: "2026-10-13T19:00:00.000Z",
+  },
+  bucket: { id: "b-212", code: "212", name: "Medium | Both | Non-Legal", criteria: { debt_team: "medium" } },
+  pool: { rank: 2, label: "Medium" },
+  lead: { kind: "tier", rank: 3, key: "high", label: "High", code: "312" },
+};
+const PREVIEW_FLIPPING_URL = "https://slate.trypennie.app/admin/bookings/899afc25-6d1e-4b8a-9f0c-2e7a5b3c1d40";
+const PREVIEW_FLIPPING_ROUTING = { catchall: false, requestedCode: "212", tierFallback: false, rungsDropped: 0 };
+const PREVIEW_FLIPPING_HISTORY = submissionAgreement(["312", "212", "312", "212", "312", "212", "312", "212", "312", "312"]);
+/** The 312 pool's offer as the lane's shared slot rows give it: 1:00pm and 4:30pm
+ *  that day, and the next morning, computed at 8:10am ET. */
+const PREVIEW_FLIPPING_OFFER = {
+  offeredMs: [Date.UTC(2026, 9, 13, 17, 0), Date.UTC(2026, 9, 13, 20, 30), Date.UTC(2026, 9, 14, 15, 0)],
+  computedAtMs: Date.UTC(2026, 9, 13, 12, 10),
+  minNoticeMin: 120,
+};
+const PREVIEW_FLIPPING_NOW = Date.UTC(2026, 9, 13, 12, 20);
 
 /** #2594: the same lead booked correctly on XBC 422 into the Very High pool, then
  *  re-scored to 512 four minutes later. #3501: the score came from the submission
@@ -1501,7 +1535,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_below_lead_tier:*",
     state: "the catch-all chose the Low pool for an Ultra High lead",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: true, requestedCode: "", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: true, requestedCode: "", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   // #2594: the arrival code tells a re-score after booking apart from a routing
   // fault, so each gets its own state, plus the one where the code cannot say.
@@ -1509,7 +1543,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_below_lead_tier:*",
     state: "arrived on a lower code than the submission they booked from now scores",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_RESCORED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_RESCORED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   // #3501, #3508: a rise is named by what was measured: a Lead edit after the
   // latest submission, a newer submission than the one booked from, or (when the
@@ -1519,43 +1553,99 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_below_lead_tier:*",
     state: "arrived on a lower code, and their latest submission is a newer one",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_RESUBMITTED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_RESUBMITTED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "arrived on a lower code, and the Lead score was edited after the submission",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_LEAD_EDIT, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_LEAD_EDIT, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "arrived on a lower code, and the booking recorded no submission to tell why",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_RISE_UNATTRIBUTED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_RISE_UNATTRIBUTED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "arrived on today's code, and the routing placed it lower",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: "512", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: "512", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "routed on its own code, and the arrival code is not recorded",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: null, tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: null, tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "no routing record for the booking",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, null, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, null, PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "the routing record could not be read",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, "unreadable", PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, "unreadable", PREVIEW_BELOW_TIER_URL, PREVIEW_TEAM_FREE),
+  },
+  // #3665: what the lead's own team offers at the call's time, judged by the real
+  // `teamAtTime` from an offer shaped like the lane's slot rows, and whether the
+  // lead's submissions agree on the tier, by the real `submissionAgreement`.
+  {
+    key: "booking_below_lead_tier:*",
+    state: "the lead's team is not free at the call's time, a later time that day is, and the submissions flip between tiers",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_FLIPPING, PREVIEW_FLIPPING_ROUTING, PREVIEW_FLIPPING_URL, {
+      team: teamAtTime(PREVIEW_FLIPPING_OFFER, PREVIEW_FLIPPING.booking.starts_at, PREVIEW_FLIPPING_NOW),
+      history: PREVIEW_FLIPPING_HISTORY,
+    }),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "the lead's team has no free time at all on the call's day",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_FLIPPING, PREVIEW_FLIPPING_ROUTING, PREVIEW_FLIPPING_URL, {
+      team: teamAtTime(
+        { ...PREVIEW_FLIPPING_OFFER, offeredMs: [Date.UTC(2026, 9, 14, 15, 0)] },
+        PREVIEW_FLIPPING.booking.starts_at,
+        PREVIEW_FLIPPING_NOW,
+      ),
+      history: { kind: "steady" },
+    }),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "the lead's team is free at the call's time",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_FLIPPING, PREVIEW_FLIPPING_ROUTING, PREVIEW_FLIPPING_URL, {
+      team: teamAtTime(
+        { ...PREVIEW_FLIPPING_OFFER, offeredMs: [Date.UTC(2026, 9, 13, 19, 0)] },
+        PREVIEW_FLIPPING.booking.starts_at,
+        PREVIEW_FLIPPING_NOW,
+      ),
+      history: { kind: "steady" },
+    }),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "the lead's team could not be checked, because the shared slot read failed",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_FLIPPING, PREVIEW_FLIPPING_ROUTING, PREVIEW_FLIPPING_URL, {
+      team: teamAtTime("unreadable", PREVIEW_FLIPPING.booking.starts_at, PREVIEW_FLIPPING_NOW),
+      history: { kind: "steady" },
+    }),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "the lead's submission history could not be read",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_FLIPPING, PREVIEW_FLIPPING_ROUTING, PREVIEW_FLIPPING_URL, {
+      team: teamAtTime(PREVIEW_FLIPPING_OFFER, PREVIEW_FLIPPING.booking.starts_at, PREVIEW_FLIPPING_NOW),
+      history: { kind: "unreadable" },
+    }),
   },
   // #2933: one state per way the two bookings can match, since each sends the reader
   // to check a different thing, plus a Slate booking with no lead id. Each pair is

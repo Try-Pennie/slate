@@ -35,6 +35,7 @@ import {
   poolTierOf,
   runBelowLeadTierCheck,
   type BelowLeadTierDeps,
+  type PageFacts,
   type PoolBucket,
   type UpcomingBooking,
 } from "@/lib/monitor/below-lead-tier";
@@ -70,6 +71,10 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
 }
 
 const SUB_A = "a04Ui00000subAAAAA";
+
+/** #3665's facts held constant, so the copy tests here are about the routing
+ *  sentence; scripts/test-below-lead-tier-team-free.ts drives every value of them. */
+const FACTS: PageFacts = { team: { kind: "free" }, history: { kind: "steady" } };
 
 /** A finding whose score came from the very submission the booking was made under:
  *  the one shape that may be called a re-score (#3501). */
@@ -172,7 +177,7 @@ function rescoredOwnSubmission<F extends { booking: UpcomingBooking; lead: { cod
     new Map([[leadIdKey(LEAD_A), "512"]]),
   );
   if (finding.kind !== "below") throw new Error("fixture must be a finding");
-  const withCatchall = formatBelowLeadTierAlert(finding, { catchall: true, requestedCode: "", tierFallback: false, rungsDropped: 0 }, "https://slate.example/admin/bookings/bk-1");
+  const withCatchall = formatBelowLeadTierAlert(finding, { catchall: true, requestedCode: "", tierFallback: false, rungsDropped: 0 }, "https://slate.example/admin/bookings/bk-1", FACTS);
   assert(withCatchall.startsWith("An Ultra High lead"), "the page names the lead's tier, with the right article");
   assert(withCatchall.includes("Low"), "the page names the pool's tier");
   assert(withCatchall.includes("512"), "the page names the XBC Salesforce holds");
@@ -180,11 +185,11 @@ function rescoredOwnSubmission<F extends { booking: UpcomingBooking; lead: { cod
   assert(withCatchall.includes("https://slate.example/admin/bookings/bk-1"), "the page links the booking");
   assert(/catch-all chose/i.test(withCatchall), "a catch-all booking says the catch-all chose the pool");
   assert(
-    !/catch-all chose/i.test(formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: null, tierFallback: false, rungsDropped: 0 }, "u")),
+    !/catch-all chose/i.test(formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: null, tierFallback: false, rungsDropped: 0 }, "u", FACTS)),
     "a routed booking does not blame the catch-all",
   );
-  assert(/not recorded/i.test(formatBelowLeadTierAlert(finding, null, "u")), "an unknown routing record says so rather than guessing");
-  assert(/could not be read/i.test(formatBelowLeadTierAlert(finding, "unreadable", "u")), "an unreadable routing record says so");
+  assert(/not recorded/i.test(formatBelowLeadTierAlert(finding, null, "u", FACTS)), "an unknown routing record says so rather than guessing");
+  assert(/could not be read/i.test(formatBelowLeadTierAlert(finding, "unreadable", "u", FACTS)), "an unreadable routing record says so");
   assert(!/[\u2014\u2013]/.test(withCatchall), "no dashes in the page");
   assert(!/NaN|undefined|null/.test(withCatchall), "no leaked values in the page");
   eq(belowLeadTierKey("bk-1"), `${BELOW_LEAD_TIER_KEY}:bk-1`, "the key family is per booking");
@@ -200,7 +205,7 @@ function rescoredOwnSubmission<F extends { booking: UpcomingBooking; lead: { cod
     new Map([[leadIdKey(LEAD_A), "512"]]),
   );
   if (finding.kind !== "below") throw new Error("fixture must be a finding");
-  const rescored = formatBelowLeadTierAlert(rescoredOwnSubmission(finding), { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u");
+  const rescored = formatBelowLeadTierAlert(rescoredOwnSubmission(finding), { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u", FACTS);
   assert(/re-scored/i.test(rescored), "a lead who arrived on a lower code than today's is named as re-scored");
   assert(/XBC 422 \(Very High\)/.test(rescored), "the page names the OLD code and the tier it decodes to");
   assert(/XBC 512/.test(rescored) && rescored.startsWith("An Ultra High lead"), "and the NEW code and tier");
@@ -217,7 +222,7 @@ function rescoredOwnSubmission<F extends { booking: UpcomingBooking; lead: { cod
     new Map([[leadIdKey(LEAD_A), "512"]]),
   );
   if (lowFinding.kind !== "below") throw new Error("fixture must be a finding");
-  const sameCode = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "512", tierFallback: false, rungsDropped: 0 }, "u");
+  const sameCode = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "512", tierFallback: false, rungsDropped: 0 }, "u", FACTS);
   assert(!/re-scored/i.test(sameCode), "a lead who arrived on today's code is not called re-scored");
   assert(/XBC 512 \(Ultra High\)/.test(sameCode), "it names the code the lead arrived with");
   assert(/below the code it was given/i.test(sameCode), "and says the routing placed the call below that code");
@@ -226,25 +231,25 @@ function rescoredOwnSubmission<F extends { booking: UpcomingBooking; lead: { cod
   // code. Calling it only a re-score would hide a routing fault, and "was routed on
   // it" would be false, so the page must name both causes.
   if (lowFinding.pool.rank >= 4) throw new Error("fixture must sit below the Very High pool");
-  const both = formatBelowLeadTierAlert(rescoredOwnSubmission(lowFinding), { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u");
+  const both = formatBelowLeadTierAlert(rescoredOwnSubmission(lowFinding), { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u", FACTS);
   assert(/re-scored/i.test(both), "a lead re-scored above an arrival code still reads as re-scored");
   assert(/below the code it was given/i.test(both), "and a pool below the arrival code is still named as a routing fault");
   assert(!/was routed on it/i.test(both), "and never claims the call was routed on the arrival code");
 
   // #3501: a finding that does not say where its score came from claims no re-score,
   // because a Lead's lagging copy reads exactly like one (the 2026-10-07 page).
-  const unattributed = formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u");
+  const unattributed = formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u", FACTS);
   assert(/could not tell/.test(unattributed) && !/submission they booked from/.test(unattributed), "a score of unknown source claims no cause");
-  const unattributedBoth = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u");
+  const unattributedBoth = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u", FACTS);
   assert(/could not tell/.test(unattributedBoth) && /below the code it was given/i.test(unattributedBoth), "and still names a routing fault beside it");
 
   // An arrival code in the same tier as today's score is not a re-score either.
-  const sameTier = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "501", tierFallback: false, rungsDropped: 0 }, "u");
+  const sameTier = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "501", tierFallback: false, rungsDropped: 0 }, "u", FACTS);
   assert(!/re-scored/i.test(sameTier), "an arrival code in today's tier is never called re-scored");
 
   // No readable arrival code: fall back to the two possible causes, naming neither as fact.
   for (const code of [null, "", "011", "  "]) {
-    const t = formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: code }, "u");
+    const t = formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: code }, "u", FACTS);
     assert(!/re-scored/i.test(t) && !/below the code it was given/i.test(t), `an arrival code of ${JSON.stringify(code)} claims no cause`);
     assert(/either that code was lower/i.test(t), `and names both possibilities for ${JSON.stringify(code)}`);
     assert(!/NaN|undefined|null/.test(t), "no leaked values");
@@ -252,7 +257,7 @@ function rescoredOwnSubmission<F extends { booking: UpcomingBooking; lead: { cod
 
   // The catch-all line wins over any arrival code: its code was blank or unreadable.
   assert(
-    /catch-all chose/i.test(formatBelowLeadTierAlert(finding, { catchall: true, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u")),
+    /catch-all chose/i.test(formatBelowLeadTierAlert(finding, { catchall: true, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u", FACTS)),
     "a catch-all booking says so whatever code it carried",
   );
 }
@@ -287,6 +292,9 @@ function deps(over: Partial<BelowLeadTierDeps> = {}, calls: Calls = { notified: 
       for (const key of keys) calls.resolved.push({ key, text: "" });
     },
     cooldownMs: 6 * 60 * 60_000,
+    nowMs: NOW,
+    leadTierOffer: () => null,
+    readSubmissionHistory: async () => new Map(),
     ...over,
   };
 }
