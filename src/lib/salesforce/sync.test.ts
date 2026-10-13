@@ -253,6 +253,7 @@ import {
   type ActivationAllowance,
 } from "@/lib/bookable/activation-allowance";
 import { planOnboardingFlip } from "@/lib/salesforce/onboarding";
+import { log } from "@/lib/log";
 import type { Attributes } from "@/lib/db/types";
 
 function sfResponse(records: unknown[]) {
@@ -1792,5 +1793,277 @@ describe("an address shared by two Salesforce records (#2387)", () => {
 
     await expect(syncSalesforceAgents()).rejects.toThrow(/SF query failed: 500/);
     expect(deactivatedIds()).toEqual([]);
+  });
+});
+
+/** The decoded SOQL of every Salesforce query this run sent. */
+function soqlOfRun(): string[] {
+  return sf.fetchSfWithRetry.mock.calls
+    .map((c) => String(c[0]))
+    .filter((url) => url.includes("q="))
+    .map((url) => decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " ")));
+}
+
+/**
+ * One fake Salesforce answering each of the sync's five User queries from its own
+ * list, so a test can put a record in exactly the query that would return it.
+ */
+function sfByQuery(opts: {
+  roster?: unknown[];
+  managerExact?: unknown[];
+  managerLastName?: unknown[];
+  byEmail?: unknown[];
+  presence?: unknown[];
+}) {
+  sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+    if (url.includes("oauth2/token")) {
+      return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
+    }
+    const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+    if (q.includes("IsActive = true AND Email != null AND (")) return sfResponse(opts.roster ?? []);
+    if (q.includes("LastName IN (")) return sfResponse(opts.managerLastName ?? []);
+    if (q.includes("Name IN (")) return sfResponse(opts.managerExact ?? []);
+    if (q.includes("IsActive = true AND Email != null AND Email IN")) return sfResponse(opts.byEmail ?? []);
+    if (q.includes("IsActive FROM User WHERE Email IN")) return sfResponse(opts.presence ?? []);
+    return sfResponse([]);
+  });
+}
+
+// #3668: the conflict page tells its reader the sf-sync log line names the Slate
+// rows. For an AMBIGUOUS email the line carried only a count, so the pointer led
+// nowhere and the row took a hand query against Salesforce to find. This drives all
+// three conflict shapes through the real sync in one run and reads the line itself.
+describe("the Salesforce id conflict log line names the rows of every shape (#3668)", () => {
+  const SF_A = "005AAAAAAAAAAAAAAA";
+  const SF_B = "005BBBBBBBBBBBBBBB";
+  const SF_C = "005CCCCCCCCCCCCCCC";
+
+  beforeEach(() => {
+    store.calls.length = 0;
+    store.config.errorOn = undefined;
+    store.config.existing = [];
+    store.config.reapable = [];
+    sf.fetchSfWithRetry.mockReset();
+  });
+
+  it("carries disagreeing, ambiguous and claimed Slate ids, and no email", async () => {
+    store.config.afterInsert = [
+      { id: "u-dis", email: "dis@x.com", manager_id: null, role: "agent", salesforce_user_id: SF_A },
+      { id: "u-amb", email: "shared@x.com", manager_id: null, role: "agent", salesforce_user_id: null },
+      { id: "u-cla", email: "claimer@x.com", manager_id: null, role: "agent", salesforce_user_id: null },
+      { id: "u-holder", email: "holder@x.com", manager_id: null, role: "agent", salesforce_user_id: SF_C },
+    ];
+    sfByQuery({
+      roster: [
+        { Id: SF_B, Email: "dis@x.com", Name: "Dis", HighDebt__c: true },
+        { Id: "005D1AAAAAAAAAAAAA", Email: "shared@x.com", Name: "Shared One", HighDebt__c: true },
+        { Id: "005D2AAAAAAAAAAAAA", Email: "shared@x.com", Name: "Shared Two", HighDebt__c: true },
+        { Id: SF_C, Email: "claimer@x.com", Name: "Claimer", HighDebt__c: true },
+      ],
+    });
+    const warn = vi.spyOn(log, "warn");
+    try {
+      const result = await syncSalesforceAgents();
+
+      // The fixture really produced all three shapes, or the line below proves nothing.
+      expect(result.salesforceIdDisagreements).toBe(1);
+      expect(result.salesforceIdAmbiguous).toBe(1);
+      expect(result.salesforceIdClaimed).toBe(1);
+
+      const line = warn.mock.calls.find(
+        ([tag, fields]) => tag === "sf-sync" && String(fields?.msg ?? "").includes("user id conflicts"),
+      )?.[1];
+      expect(line).toBeDefined();
+      expect(line).toMatchObject({ disagreements: 1, ambiguous: 1, claimed: 1 });
+      expect(String(line?.disagreeing_user_ids).split(", ")).toContain("u-dis");
+      expect(String(line?.ambiguous_user_ids).split(", ")).toContain("u-amb");
+      expect(String(line?.claimed_user_ids).split(", ")).toContain("u-cla");
+      // Slate ids only, so a log search never becomes a roster export (L222).
+      expect(JSON.stringify(line)).not.toContain("@");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+// #3669: an API only integration account is never a person, so it must never
+// answer for one. On 2026-10-13 one was created carrying a staff member's email (an
+// integration account needs a deliverable address), so the hourly sync found two
+// active users for that address and paged an ambiguous conflict about a person with
+// nothing wrong. The predicate is the PROFILE's API only permission, read against
+// the live org; the pure half is pinned in scripts/test-salesforce-api-only.ts.
+describe("API only Salesforce accounts are left out of the roster's matching (#3669)", () => {
+  const SF_PERSON = "005PPPPPPPPPPPPPPP";
+  const SF_BOT = "005IIIIIIIIIIIIIII";
+  const PERSON_PROFILE = { Name: "System Administrator", PermissionsApiUserOnly: false };
+  const BOT_PROFILE = { Name: "Salesforce API Only System Integrations", PermissionsApiUserOnly: true };
+
+  const idWrites = () =>
+    store.calls
+      .filter((c) => c.op === "upsert")
+      .flatMap((c) => (c.payload as Record<string, unknown>[]) ?? [])
+      .filter((row) => "salesforce_user_id" in row);
+
+  const exclusionLine = (info: ReturnType<typeof vi.spyOn>) =>
+    (info.mock.calls as [string, Record<string, unknown>][]).find(
+      ([tag, fields]) => tag === "sf-sync" && String(fields?.msg ?? "").includes("API only"),
+    )?.[1];
+
+  beforeEach(() => {
+    store.calls.length = 0;
+    store.config.errorOn = undefined;
+    store.config.existing = [];
+    store.config.reapable = [];
+    store.config.afterInsert = [];
+    sf.fetchSfWithRetry.mockReset();
+  });
+
+  it("links the person when an integration account shares their email, and counts the exclusion", async () => {
+    // The measured shape: a staff member outside the debt team query, reached by
+    // the by-email backfill, which also returns the integration account.
+    store.config.afterInsert = [
+      { id: "u-staff", email: "staff@x.com", manager_id: null, role: "admin", salesforce_user_id: null },
+    ];
+    sfByQuery({
+      byEmail: [
+        { Id: SF_PERSON, Email: "staff@x.com", Profile: PERSON_PROFILE },
+        { Id: SF_BOT, Email: "staff@x.com", Profile: BOT_PROFILE },
+      ],
+    });
+    const info = vi.spyOn(log, "info");
+    try {
+      const result = await syncSalesforceAgents();
+
+      expect(result.salesforceIdAmbiguous).toBe(0);
+      expect(result.salesforceIdsLinked).toBe(1);
+      expect(idWrites()).toEqual([expect.objectContaining({ id: "u-staff", salesforce_user_id: SF_PERSON })]);
+      expect(JSON.stringify(store.calls)).not.toContain(SF_BOT);
+
+      // Counted, so a real person mis-profiled as an integration is visible rather
+      // than silently dropped.
+      const line = exclusionLine(info);
+      expect(line).toMatchObject({ count: 1, roster_matches: 1 });
+      expect(String(line?.salesforce_user_ids)).toContain(SF_BOT);
+      expect(JSON.stringify(line)).not.toContain("@");
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("control: the same two records with no API only profile still page as ambiguous", async () => {
+    // Without this, the test above would pass on a sync that simply stopped
+    // reading the second record for any reason at all.
+    store.config.afterInsert = [
+      { id: "u-staff", email: "staff@x.com", manager_id: null, role: "admin", salesforce_user_id: null },
+    ];
+    sfByQuery({
+      byEmail: [
+        { Id: SF_PERSON, Email: "staff@x.com", Profile: PERSON_PROFILE },
+        { Id: SF_BOT, Email: "staff@x.com", Profile: PERSON_PROFILE },
+      ],
+    });
+    const info = vi.spyOn(log, "info");
+    try {
+      const result = await syncSalesforceAgents();
+      expect(result.salesforceIdAmbiguous).toBe(1);
+      expect(idWrites()).toHaveLength(0);
+      // Nothing was excluded, so the exclusion line is not written at all.
+      expect(exclusionLine(info)).toBeUndefined();
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("never creates a roster row for an integration account, even one carrying a tier", async () => {
+    sfByQuery({
+      roster: [
+        { Id: SF_BOT, Email: "bot@x.com", Name: "Integration Bot", HighDebt__c: true, Profile: BOT_PROFILE },
+        { Id: SF_PERSON, Email: "new@x.com", Name: "New Hire", HighDebt__c: true, Profile: { Name: "Sales", PermissionsApiUserOnly: false } },
+      ],
+    });
+    store.config.afterInsert = [
+      { id: "u-new", email: "new@x.com", manager_id: null, role: "agent", salesforce_user_id: null },
+    ];
+
+    const result = await syncSalesforceAgents();
+
+    const inserted = store.calls
+      .filter((c) => c.op === "insert" && c.table === "users")
+      .flatMap((c) => (c.payload as Record<string, unknown>[]) ?? []);
+    expect(inserted.map((r) => r.email)).toEqual(["new@x.com"]);
+    expect(result.inserted).toBe(1);
+  });
+
+  it("reaps a departed person whose address an active integration account also carries", async () => {
+    // Read address wide, an inactive person beside an ACTIVE record is a refusal
+    // (#2387). The active record here is not a person, so the person has left.
+    store.config.reapable = [{ id: "u-left", email: "left@x.com", salesforce_user_id: null }];
+    sfByQuery({
+      presence: [
+        { Id: "005OLDAAAAAAAAAAAA", Email: "left@x.com", IsActive: false, Profile: PERSON_PROFILE },
+        { Id: SF_BOT, Email: "left@x.com", IsActive: true, Profile: BOT_PROFILE },
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(result.deactivationsRefusedAmbiguous).toBe(0);
+    expect(result.deactivated).toBe(1);
+  });
+
+  it("does not let an integration account answer to a manager picklist name", async () => {
+    store.config.afterInsert = [
+      { id: "u1", email: "a@x.com", manager_id: null, role: "agent", salesforce_user_id: null },
+      { id: "u3", email: "mona@x.com", manager_id: null, role: "manager", salesforce_user_id: null },
+    ];
+    sfByQuery({
+      roster: [{ Id: SF_PERSON, Email: "a@x.com", Name: "Agent A", Agent_Manager__c: "Mona Manager", HighDebt__c: true }],
+      managerExact: [
+        { Id: "005MONAAAAAAAAAAAA", Name: "Mona Manager", Email: "mona@x.com", Profile: PERSON_PROFILE },
+        { Id: SF_BOT, Name: "Mona Manager", Email: "bot@x.com", Profile: BOT_PROFILE },
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    // Two records answering to the name would be an ambiguous manager (#1653).
+    expect(result.managersAmbiguous).toBe(0);
+    expect(result.managersLinked).toBe(1);
+  });
+
+  it("every User query the sync sends selects the profile's API only flag", async () => {
+    // All five queries are made to run: the roster, both manager name passes, the
+    // by-email backfill and the presence read. A query that does not SELECT the
+    // flag returns records the predicate reads as people, so the exclusion would
+    // stop applying to it in silence.
+    store.config.afterInsert = [
+      { id: "u1", email: "a@x.com", manager_id: null, role: "agent", salesforce_user_id: null },
+      { id: "u9", email: "boss@x.com", manager_id: null, role: "admin", salesforce_user_id: null },
+    ];
+    store.config.reapable = [{ id: "u-left", email: "left@x.com", salesforce_user_id: null }];
+    sfByQuery({
+      roster: [
+        { Id: SF_PERSON, Email: "a@x.com", Name: "Agent A", Agent_Manager__c: "Mona Manager", HighDebt__c: true },
+        { Id: "005B2AAAAAAAAAAAAA", Email: "b@x.com", Name: "Agent B", Agent_Manager__c: "Mike Dugan", HighDebt__c: true },
+      ],
+    });
+
+    await syncSalesforceAgents();
+
+    const sent = soqlOfRun();
+    const kinds = {
+      roster: sent.filter((q) => q.includes("IsActive = true AND Email != null AND (")),
+      managerExact: sent.filter((q) => q.includes("Name IN (") && !q.includes("LastName IN (")),
+      managerLastName: sent.filter((q) => q.includes("LastName IN (")),
+      byEmail: sent.filter((q) => q.includes("IsActive = true AND Email != null AND Email IN")),
+      presence: sent.filter((q) => q.includes("IsActive FROM User WHERE Email IN")),
+    };
+    for (const [kind, queries] of Object.entries(kinds)) {
+      expect(queries.length, `the ${kind} query ran`).toBeGreaterThan(0);
+    }
+    for (const q of sent) {
+      const selectClause = q.slice(0, q.indexOf(" FROM User"));
+      expect(selectClause, q).toContain("Profile.PermissionsApiUserOnly");
+    }
   });
 });
