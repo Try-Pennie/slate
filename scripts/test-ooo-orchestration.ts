@@ -1320,6 +1320,26 @@ const input = {
   assert(res.ok, "#3660: the modify succeeds");
   eq(w.landed.size, 0, "#3660: a modify of an approved request removes the orphan too");
 }
+{
+  // Both reads fail in one cancel: ONE page naming both calendars, so the undo's own
+  // cooldown cannot cut the second.
+  const w = makeWorld();
+  w.landsThenTimesOut.add("primary");
+  w.landsThenTimesOut.add(manager.ooo_calendar_id!);
+  w.landsThenTimesOut.add("main-ooo-cal");
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  w.alerts.length = 0;
+  w.failFind = true;
+  await cancelOoo(id, agent, w.deps);
+  const pages = w.alerts.filter((a) => a.key === `ooo_undo_unchecked:${agent.id}`);
+  eq(pages.length, 1, "#3660: one page for everything one undo could not check");
+  assert(
+    pages[0]?.message.includes("the manager OOO calendar") && pages[0]?.message.includes("the agent's own calendar"),
+    "#3660: and it names both calendars",
+  );
+}
 
 // --- modify: pending updates in place and re-notifies ---
 {

@@ -129,16 +129,22 @@ export function oooUndoAgentAlert(requestId: string, reason: string): string {
  * so the reader knows whose calendar to open, and says "may", because the read that
  * would have settled it is the thing that failed (L11).
  */
-export function oooUndoUnrecordedAlert(
-  requestId: string,
-  whose: "manager" | "agent",
-  reason: string,
-): string {
-  const where = whose === "manager" ? "the manager OOO calendar" : "the agent's own calendar";
+export interface UncheckedCalendar {
+  whose: "manager" | "agent";
+  /** Why it could not be checked, short and human. */
+  reason: string;
+}
+
+export function oooUndoUnrecordedAlert(requestId: string, unchecked: UncheckedCalendar[]): string {
+  const places = unchecked.map(
+    (u) => `${u.whose === "manager" ? "the manager OOO calendar" : "the agent's own calendar"} (${u.reason})`,
+  );
+  const many = unchecked.length > 1;
   return (
-    `An OOO event for request ${requestId} may still be on ${where}: its create was never confirmed, so ` +
-    `Slate holds no id for it, and the calendar could not be checked (${reason}). Look for the event ` +
-    `there and delete it if it is present.`
+    `${many ? "OOO events" : "An OOO event"} for request ${requestId} may still be on ${places.join(" and on ")}: ` +
+    `${many ? "their creates were" : "its create was"} never confirmed, so Slate holds no id for ` +
+    `${many ? "them" : "it"}, and ${many ? "those calendars" : "that calendar"} could not be checked. ` +
+    `Look there and delete any event for this request that is present.`
   );
 }
 

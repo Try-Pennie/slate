@@ -16,6 +16,7 @@ import {
   oooNarrowCalendarAlert,
   oooNarrowHoldAlert,
 } from "./alert-copy.ts";
+import type { UncheckedCalendar } from "./alert-copy.ts";
 import {
   declinedReleasedLine,
   modifyAgentDm,
@@ -1258,7 +1259,11 @@ async function untrackedManagerCalendars(request: OooRequest, deps: OooDeps): Pr
  * The key a read back that could not be made pages on (#3660). Its own family, so a
  * removal that failed on `ooo_undo` minutes earlier, for any request, cannot hold it
  * back: the two say different things, which is why the coverage stop has its own key
- * too. Per agent, which the roster bounds.
+ * too. Per agent, which the roster bounds (a per request key would grow without end,
+ * which the catalog refuses). One undo sends at most ONE page on it, naming every
+ * calendar it could not check, so a cancel that fails two reads is not cut to one by
+ * its own cooldown. What stays held is a second undo for the same advisor inside the
+ * cooldown, which is rare and names the same advisor's calendar.
  */
 const undoUncheckedKey = (agentId: string) => `ooo_undo_unchecked:${agentId}`;
 
@@ -1267,27 +1272,26 @@ const undoUncheckedKey = (agentId: string) => `ooo_undo_unchecked:${agentId}`;
  * `clientId` without recording it, and delete it if it is there (#3660, L766). The
  * only step that ever looks: the approval recorded the create as failed, and an undo
  * that deletes only the ids it holds left the event standing, which on the agent's own
- * calendar is an opaque event the sync reads as busy. Never throws: a read that fails
- * and a delete that fails are paged apart, because one says the event may be there and
- * the other that it is (L11).
+ * calendar is an opaque event the sync reads as busy. Never throws. A read that fails
+ * is RETURNED, for the undo's one page about what it could not check; a delete that
+ * fails is paged here, on the removal key. The two are kept apart because one says the
+ * event may be there and the other that it is (L11).
  */
 async function removeUntrackedEvent(
   deps: OooDeps,
   requestId: string,
-  agentId: string,
   whose: "manager" | "agent",
   actorEmail: string,
   calendarId: string,
   clientId: string,
-): Promise<void> {
+): Promise<UncheckedCalendar | null> {
   let found: string | null;
   try {
     found = await deps.findCalendarEvent(actorEmail, calendarId, clientId);
   } catch (e) {
-    await deps.alertOps(undoUncheckedKey(agentId), oooUndoUnrecordedAlert(requestId, whose, String(e).slice(0, 200)));
-    return;
+    return { whose, reason: String(e).slice(0, 200) };
   }
-  if (!found) return;
+  if (!found) return null;
   try {
     await deps.deleteCalendarEvent(actorEmail, calendarId, found);
   } catch (e) {
@@ -1297,6 +1301,7 @@ async function removeUntrackedEvent(
       whose === "manager" ? oooUndoManagerAlert(requestId, reason) : oooUndoAgentAlert(requestId, reason),
     );
   }
+  return null;
 }
 
 /** Undo of every approval artifact (cancel + modify-of-approved share this). */
@@ -1306,6 +1311,7 @@ async function undoPostApproval(
   deps: OooDeps,
 ): Promise<Partial<OooRequest>> {
   const actor = deps.oooCalendarActorEmail();
+  const unchecked: UncheckedCalendar[] = [];
   let untracked: string[] = [];
   try {
     untracked = await untrackedManagerCalendars(request, deps);
@@ -1313,32 +1319,32 @@ async function undoPostApproval(
     // The undo never failed on this read before #3660 and must not start: the
     // recorded events and the busy block below still come down. The calendar it
     // would have named is what could not be checked, so that is what is paged.
-    await deps.alertOps(
-      undoUncheckedKey(agent.id),
-      oooUndoUnrecordedAlert(request.id, "manager", `its manager could not be read: ${String(e).slice(0, 160)}`),
-    );
+    unchecked.push({ whose: "manager", reason: `its manager could not be read: ${String(e).slice(0, 160)}` });
   }
   for (const calendarId of untracked) {
-    await removeUntrackedEvent(
+    const missed = await removeUntrackedEvent(
       deps,
       request.id,
-      agent.id,
       "manager",
       actor,
       calendarId,
       await managerEventClientId(request.id, calendarId),
     );
+    if (missed) unchecked.push(missed);
   }
   if (!request.agent_event_id) {
-    await removeUntrackedEvent(
+    const missed = await removeUntrackedEvent(
       deps,
       request.id,
-      agent.id,
       "agent",
       agent.email,
       "primary",
       await agentEventClientId(request.id, agent.id),
     );
+    if (missed) unchecked.push(missed);
+  }
+  if (unchecked.length > 0) {
+    await deps.alertOps(undoUncheckedKey(agent.id), oooUndoUnrecordedAlert(request.id, unchecked));
   }
   if (request.manager_event_id) {
     try {

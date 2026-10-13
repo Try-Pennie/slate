@@ -5282,9 +5282,14 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   { key: "ooo_undo", state: "undoing the agent event failed", channel: "alert",
     text: oooUndoAgentAlert("req_9f2", "404 notFound") },
   { key: "ooo_undo_unchecked:*", state: "an untracked manager event could not be checked for", channel: "alert",
-    text: oooUndoUnrecordedAlert("req_9f2", "manager", "503 backendError") },
+    text: oooUndoUnrecordedAlert("req_9f2", [{ whose: "manager", reason: "503 backendError" }]) },
   { key: "ooo_undo_unchecked:*", state: "an untracked agent event could not be checked for", channel: "alert",
-    text: oooUndoUnrecordedAlert("req_9f2", "agent", "503 backendError") },
+    text: oooUndoUnrecordedAlert("req_9f2", [{ whose: "agent", reason: "503 backendError" }]) },
+  { key: "ooo_undo_unchecked:*", state: "neither calendar could be checked, in one page", channel: "alert",
+    text: oooUndoUnrecordedAlert("req_9f2", [
+      { whose: "manager", reason: "its manager could not be read: PostgREST 500" },
+      { whose: "agent", reason: "503 backendError" },
+    ]) },
   { key: "ooo_coverage_stop", state: "the sweep could not be stopped after the request was closed",
     channel: "alert", text: oooCoverageStopAlert("req_9f2", "count failed [cancel-pending-coverage-items]") },
 ];
