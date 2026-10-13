@@ -143,6 +143,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   afterQueue.length = 0;
   resetLimiterAlertGatesForTests();
+  // clearAllMocks keeps implementations, so a case that sets a lasting answer for the earned
+  // row read (the sustained retry credit case, #3670) would otherwise leak it into every later
+  // case that reads the row without its own once answer.
+  earnedRow.read.mockResolvedValue({ data: null, error: null });
   rpc.mockResolvedValue({ data: true, error: null });
   isWorkersRuntime.mockReturnValue(true);
 });
