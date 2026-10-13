@@ -516,6 +516,12 @@ rows** from data that is actually present, so none of them can be told apart fro
   normally on 2026-08-17, with the line in `source.message`, so the raw API is a
   way to read actual message text when you need it.
 - **A timeframe in the future silently returns zero rows.** Check `date -u` first.
+- **A WIDE window silently drops rows (#3299).** On 2026-10-05,
+  `tag=booking-reminder msg="cycle"` over 25 hours came back from the events view as
+  **26** rows, and as **287** (12 an hour, the lane's real rate) when the same question
+  was asked one hour at a time. Nothing in the wide answer says it is partial, so missing
+  rows read as absence. Ask one hour at a time and add the results up; `scripts/logs.ts`
+  does this for counts and for printed lines, and refuses a slice wider than an hour.
 - **Ingestion lags a minute or two, and a too-narrow window drops late arrivals.**
   A count taken immediately after emitting returns 0, and a window that ends too
   soon undercounts (a 50-line level read back as 30 until the window was widened).
@@ -554,10 +560,11 @@ usually small and can be hours. Two practical consequences:
 - **For anything within the last few hours, use `npx wrangler tail`**, which streams
   live from the deployed Worker and was accurate every time it was checked. It only
   shows traffic while it is attached, so for a cron lane, attach and wait one cadence.
-- **`scripts/logs.ts` now enforces this**: it reads the control's newest non-empty
-  bucket and reports **UNVERIFIABLE** when that is more than `CONTROL_FRESHNESS_MS`
-  behind the window's end, with its own wording so a lagging pipeline is never
-  mistaken for a broken query.
+- **`scripts/logs.ts` checks this**: it reads the control's newest non-empty bucket
+  and, when that is more than `CONTROL_FRESHNESS_MS` behind the end of a slice, says
+  the data is BEHIND in its own wording, so a lagging pipeline is never mistaken for a
+  broken query. Today it WARNS beside an absence rather than refusing it
+  (`CONTROL_FRESHNESS_MODE`), until #1535 has measured the normal lag.
 
 ### The sync lane's cycle line
 
@@ -587,13 +594,60 @@ above and *refuses* to report a zero unless the positive control found something
 the same window, so "absent" and "my query is broken" can never be confused again:
 
 ```sh
-CLOUDFLARE_API_TOKEN=... node --experimental-strip-types --import ./scripts/register-paths.mjs \
-  scripts/logs.ts "booking-api: authenticated request" --minutes 120
+node --experimental-strip-types --import ./scripts/register-paths.mjs \
+  scripts/logs.ts "tag=booking-api" --minutes 120
 ```
 
-Exit codes are grep-like, with a distinct one for a broken query: **0** found,
-**1** trustworthy absence, **2** UNVERIFIABLE (the control came back empty, so
-believe nothing). The token needs Workers Observability read.
+Add **`--lines`** to PRINT every matching line (UTC timestamp, level or a dash for a
+`console.log` line, text) instead of only counting them (#3664). It lists through the
+raw API's events view, which serves app rows normally; only the MCP tool's validation
+breaks on them. A narrow window in the past is `--from <iso> --to <iso>` (`--minutes`
+beside `--from` is refused, since it could only be ignored).
+
+Every request covers **at most one hour** (#3299, above). A wider window is read one
+hour at a time, summed and merged, and the output says how many slices it read and
+prints each slice's needle and control counts. `--slice-minutes` asks for narrower
+slices, from 1 to 60 minutes; a run reads at most 168 slices (7 days at one hour),
+because they are read one after another. The positive control is judged PER SLICE: a hit in a
+slice whose control is live is a hit, but one slice whose control found nothing makes
+an absence over the whole window unverifiable, since nobody could see into it.
+
+Exit codes are grep-like, with distinct ones for the cases that must not be believed:
+**0** found, **1** trustworthy absence, **2** UNVERIFIABLE or refused (the control came
+back empty, the token is missing, the API refused), **3** found but the printed list is
+incomplete (a slice listed fewer lines than it counted, or filled the 2,000 row request
+limit, or carried an event whose text could not be read). On a 3 the count is the
+answer and the printed list is not every line.
+
+### The token (read only, one per Mac)
+
+The tool needs a **read only Workers Observability** API token. It reads it from
+`.env.local` at the checkout root under the name **`CLOUDFLARE_LOGS_READ_TOKEN`**, or
+from `CLOUDFLARE_API_TOKEN` set in the shell for one run. It reads only that one name
+from the file and never prints the token, not even inside an API error body.
+
+**Never store it in `.env.local` as `CLOUDFLARE_API_TOKEN`.** Wrangler 4 loads `.env`
+AND `.env.local` into its own environment on every command (`getDefaultEnvFiles`,
+read in wrangler 4.127.1 on 2026-10-13) and signs in with `CLOUDFLARE_API_TOKEN`
+whenever it is set, so a read only token under that name would replace the OAuth login
+for every `wrangler tail` and deploy run from that checkout, and they would fail.
+
+To create one, in the Cloudflare dashboard, signed in to the Pennie account:
+
+1. My Profile, **API Tokens**, **Create Token**, then **Create Custom Token**.
+2. Name it `Slate logs read only (<which Mac>)`.
+3. Permissions: **Account**, **Workers Observability**, **Read**. Nothing else. (If the
+   page offers the newer Workers roles instead, choose the read only one, never Editor
+   or Admin.)
+4. Account Resources: **Include**, **Pennie**.
+5. **Continue to summary**, then **Create Token**. It is shown once.
+6. Add it to `.env.local` in the checkout as `CLOUDFLARE_LOGS_READ_TOKEN=` followed by
+   the token. Never paste it into a command or a chat.
+7. Check it from the checkout root; it must print PRESENT and exit 0:
+
+   ```sh
+   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/logs.ts "tag=recompute" --minutes 60
+   ```
 
 One more trap it encodes, found while building it: the REST API's `timeframe` takes
 **Unix milliseconds** and 400s on ISO strings, even though the Cloudflare MCP tool
