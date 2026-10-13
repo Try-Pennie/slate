@@ -124,20 +124,35 @@ export function mirroredHorizonMs(syncWindowTo: string | null, nowMs: number): n
  * The time off event is written on the agent's primary calendar, whose stored id is
  * the agent's address (`selectableCalendarIds` keeps Google's own id for it), so that
  * row's `sync_window_to` is the one that bounds the event's mirror. Matched ignoring
- * case. A secondary calendar's horizon is never borrowed: it says nothing about the
- * calendar the event is on. An agent with no matching row is simply absent, which the
- * caller reads as "nothing mirrored ahead".
+ * case.
+ *
+ * An agent whose only row carries ANOTHER personal address (a Slate email that is an
+ * alias of the Google one) is given that row: only primaries are stored since #42, so
+ * it is still their primary, and leaving them out would read every window of theirs
+ * as unmeasured, silencing the lane for that agent alone with nothing saying so.
+ * Measured 2026-10-13: all 112 live agents have exactly one row and it matches, so
+ * this covers the next alias rather than a live one. A shared calendar's id (Google's
+ * `@group.calendar.google.com`) is never a primary, so it is never borrowed, and an
+ * agent with several rows none of which is theirs is not guessed at. An agent with no
+ * usable row is simply absent, which the caller reads as "nothing mirrored ahead".
  */
 export function primaryMirroredHorizons(
   calendars: { user_id: string; calendar_id: string; sync_window_to: string | null }[],
   agents: Map<string, { email: string | null }>,
 ): Map<string, string | null> {
   const out = new Map<string, string | null>();
+  const rowsOf = new Map<string, typeof calendars>();
   for (const c of calendars) {
-    const email = agents.get(c.user_id)?.email;
-    if (email && c.calendar_id.toLowerCase() === email.toLowerCase()) {
-      out.set(c.user_id, c.sync_window_to);
-    }
+    if (!agents.has(c.user_id)) continue;
+    rowsOf.set(c.user_id, [...(rowsOf.get(c.user_id) ?? []), c]);
+  }
+  for (const [userId, rows] of rowsOf) {
+    const email = agents.get(userId)?.email;
+    if (!email) continue;
+    const matched = rows.find((c) => c.calendar_id.toLowerCase() === email.toLowerCase());
+    const only = rows.length === 1 && !/calendar\.google\.com$/i.test(rows[0]!.calendar_id) ? rows[0] : undefined;
+    const row = matched ?? only;
+    if (row) out.set(userId, row.sync_window_to);
   }
   return out;
 }

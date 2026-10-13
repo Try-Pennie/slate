@@ -353,6 +353,26 @@ describe("the calendar's mirrored horizon (#3655)", () => {
       );
       expect(got.has("u-heather")).toBe(false);
     });
+    it("takes an agent's only calendar row when its address is not theirs, since only primaries are stored", () => {
+      // A Slate address that is an alias of the Google one: the row is still the primary
+      // (selectableCalendarIds keeps primaries only, #42), and leaving the agent out would
+      // read every window of theirs as unmeasured, silencing the lane for them.
+      const got = primaryMirroredHorizons(
+        [{ user_id: "u-heather", calendar_id: "h.mclellen@trypennie.com", sync_window_to: "2026-10-27T09:00:00.000Z" }],
+        agents,
+      );
+      expect(got.get("u-heather")).toBe("2026-10-27T09:00:00.000Z");
+    });
+    it("guesses nothing when an agent has several rows and none is their address", () => {
+      const got = primaryMirroredHorizons(
+        [
+          { user_id: "u-heather", calendar_id: "h.mclellen@trypennie.com", sync_window_to: "2026-10-27T09:00:00.000Z" },
+          { user_id: "u-heather", calendar_id: "heather.m@trypennie.com", sync_window_to: "2027-01-01T00:00:00.000Z" },
+        ],
+        agents,
+      );
+      expect(got.has("u-heather")).toBe(false);
+    });
     it("keeps a primary row's null stamp as null, and matches nothing for an agent with no address", () => {
       const got = primaryMirroredHorizons(
         [
