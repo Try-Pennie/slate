@@ -20,7 +20,8 @@ function fakeTime() {
   const sleepers: Array<{ until: number; resolve: () => void }> = [];
   return {
     nowMs: () => now,
-    sleep: (ms: number) => new Promise<void>((resolve) => sleepers.push({ until: now + ms, resolve })),
+    sleep: (ms: number) =>
+      new Promise<void>((resolve) => (ms <= 0 ? resolve() : sleepers.push({ until: now + ms, resolve }))),
     advance(ms: number) {
       now += ms;
       for (const s of sleepers.splice(0)) {
@@ -134,6 +135,29 @@ function fakeTime() {
   });
   eq(calls, 0, "no delete starts once a slow read has spent the budget");
   eq(r, { total: 2, cleared: 0, failed: 0, unanswered: 0, notStarted: 2 }, "and the result says none was started");
+}
+
+// A read that never answers cannot hold the reply: it throws once the budget is
+// spent, which the caller reports as failed while the deactivation stands.
+{
+  const t = fakeTime();
+  let threw = "";
+  try {
+    await clearLeaverInvites({
+      loadInvites: () => {
+        t.advance(7000);
+        return new Promise<never>(() => {});
+      },
+      deleteInvite: async () => {},
+      nowMs: t.nowMs,
+      sleep: t.sleep,
+      budgetMs: 6000,
+      concurrency: 2,
+    });
+  } catch (e) {
+    threw = String((e as Error).message);
+  }
+  assert(/did not answer/.test(threw), `a hung bookings read throws at the budget (${threw})`);
 }
 
 // An unreadable list of invites throws: the caller reports it, it is never zero.

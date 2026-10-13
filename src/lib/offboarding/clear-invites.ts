@@ -68,7 +68,16 @@ export async function clearLeaverInvites(deps: ClearInvitesDeps): Promise<ClearI
   // reply still lands inside the automation's wait.
   const startMs = deps.nowMs();
   const spent = () => deps.nowMs() - startMs >= deps.budgetMs;
-  const invites = await deps.loadInvites();
+  const remaining = () => Math.max(0, deps.budgetMs - (deps.nowMs() - startMs));
+  // The read is raced against the budget too, so a hung lookup cannot hold the reply
+  // past the automation's wait. It throws, which the caller reports as failed.
+  const loading = deps.loadInvites();
+  const loaded = await Promise.race([loading, deps.sleep(remaining()).then(() => null)]);
+  if (loaded === null) {
+    loading.catch(() => {}); // the read may still settle; nothing is waiting for it
+    throw new Error("offboarding clear invites: the bookings read did not answer within the budget");
+  }
+  const invites: LeaverInvite[] = loaded;
   const total = invites.length;
   if (total === 0) return { total, cleared: 0, failed: 0, unanswered: 0, notStarted: 0 };
   let next = 0;
@@ -92,7 +101,7 @@ export async function clearLeaverInvites(deps: ClearInvitesDeps): Promise<ClearI
   };
 
   const workers = Promise.all(Array.from({ length: Math.min(deps.concurrency, total) }, worker));
-  await Promise.race([workers, deps.sleep(Math.max(0, deps.budgetMs - (deps.nowMs() - startMs)))]);
+  await Promise.race([workers, deps.sleep(remaining())]);
   // A snapshot: a delete still in flight may land after this returns, and is
   // counted as unanswered because nothing here saw it answer.
   return { total, cleared, failed, unanswered: inFlight, notStarted: total - cleared - failed - inFlight };
