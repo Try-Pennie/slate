@@ -932,6 +932,12 @@ const MISMATCH_GONE: OooEventMismatch = {
   displayTzId: "America/Denver", displayTzLabel: "MT", coverage: { kind: "not-blocking", unmeasured: null },
 };
 
+/** One agent's alerts channel page, as the preview renders every one of them. */
+const mismatchPage = (
+  found: OooEventMismatch[],
+  escalation: Parameters<typeof oooEventMismatchAlert>[3],
+): string => oooEventMismatchAlert("Heather McLellen", found, "https://slate.trypennie.app", escalation);
+
 export const ALERT_PREVIEWS: AlertPreview[] = [
   // --- calendar sync and push watches ---------------------------------------
   {
@@ -5355,24 +5361,22 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // at 11:30 AM MT. The edit was the true one that day, so the page must ask for
   // the two to agree rather than for the event to be put back.
   { key: "ooo_event_mismatch:*", state: "the event was shortened, and neither the agent nor the manager fixed it", channel: "alert",
-    text: oooEventMismatchAlert("Heather McLellen", [MISMATCH_SHORTENED], "https://slate.trypennie.app", { agent: "told", manager: "told" }) },
+    text: mismatchPage([MISMATCH_SHORTENED], { agent: "told", manager: "told" }) },
   { key: "ooo_event_mismatch:*", state: "two requests, one event gone, no manager of record", channel: "alert",
-    text: oooEventMismatchAlert("Heather McLellen", [MISMATCH_SHORTENED, MISMATCH_GONE], "https://slate.trypennie.app",
-      { agent: "told", manager: "none" }) },
+    text: mismatchPage([MISMATCH_SHORTENED, MISMATCH_GONE], { agent: "told", manager: "none" }) },
   // #3655: a request straddling the calendar's mirrored horizon whose event is gone.
   // Only the part inside the horizon was checked, so the sentence names only that.
   { key: "ooo_event_mismatch:*", state: "the event is gone, part of the window too far ahead to check, neither message delivered", channel: "alert",
-    text: oooEventMismatchAlert("Heather McLellen", [
+    text: mismatchPage([
       { requestId: "req_c07", startsAt: "2026-10-26T06:00:00.000Z", endsAt: "2026-10-30T06:00:00.000Z",
         displayTzId: "America/Denver", displayTzLabel: "MT",
         coverage: { kind: "not-blocking", unmeasured: { startMs: 1793178000000, endMs: 1793340000000 } } },
-    ], "https://slate.trypennie.app", { agent: "unreachable", manager: "unreachable" }) },
+    ], { agent: "unreachable", manager: "unreachable" }) },
   { key: "ooo_event_mismatch:*", state: "the agent's message never arrived, and the manager did not fix it", channel: "alert",
-    text: oooEventMismatchAlert("Heather McLellen", [MISMATCH_SHORTENED], "https://slate.trypennie.app", { agent: "unreachable", manager: "told" }) },
+    text: mismatchPage([MISMATCH_SHORTENED], { agent: "unreachable", manager: "told" }) },
   // #3372: two requests that reached the channel for different reasons, each on its line.
   { key: "ooo_event_mismatch:*", state: "two requests, each with its own reason", channel: "alert",
-    text: oooEventMismatchAlert("Heather McLellen", [MISMATCH_SHORTENED, MISMATCH_GONE], "https://slate.trypennie.app",
-      [{ agent: "told", manager: "told" }, { agent: "told", manager: "none" }]) },
+    text: mismatchPage([MISMATCH_SHORTENED, MISMATCH_GONE], [{ agent: "told", manager: "told" }, { agent: "told", manager: "none" }]) },
   { key: "ooo_event_mismatch:*", state: "the calendar and the request agree again", channel: "recovery",
     text: oooEventMismatchRecovery("Heather McLellen", { kind: "agreed", compared: 2 }) },
   { key: "ooo_event_mismatch:*", state: "nothing approved is ahead any more", channel: "recovery",
