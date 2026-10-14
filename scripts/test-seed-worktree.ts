@@ -127,6 +127,37 @@ async function main() {
     assert(existsSync(join(wt, "node_modules", "MARKER")), "spaced: the clone came from the main checkout git resolved");
   }
 
+  // 6b. A WORKTREE LIST LONGER THAN A PIPE HOLDS (#3742): the source is the listing's
+  //     first entry, and a reader that stopped there left git writing into a closed
+  //     pipe. Under pipefail that is exit 141 with nothing printed, which on 2026-10-14
+  //     (a 13.6KB listing) seeded no worktree at all. A stub git prints the real
+  //     source first and then far more than any pipe buffer holds.
+  {
+    const parent = mkdtempSync(join(tmpdir(), "seed-long-list-"));
+    created.push(parent);
+    const main = join(parent, "main");
+    const wt = join(parent, "wt");
+    const bin = join(parent, "bin");
+    mkdirSync(main);
+    mkdirSync(wt);
+    mkdirSync(bin);
+    writeFileSync(join(main, "pnpm-lock.yaml"), LOCK);
+    writeFileSync(join(wt, "pnpm-lock.yaml"), LOCK);
+    mkdirSync(join(main, "node_modules", ".pnpm"), { recursive: true });
+    writeFileSync(join(main, "node_modules", "MARKER"), "seeded-from-source");
+    writeFileSync(join(main, "node_modules", ".pnpm", "lock.yaml"), LOCK);
+    // 4,000 stanzas is about 400KB, many times any pipe buffer.
+    writeFileSync(
+      join(bin, "git"),
+      `#!/bin/bash\nprintf 'worktree %s\\nHEAD 0\\n\\n' ${JSON.stringify(main)}\nfor i in $(seq 1 4000); do printf 'worktree /tmp/agent-worktree-%05d\\nHEAD 0\\ndetached\\n\\n' "$i"; done\n`,
+      { mode: 0o755 },
+    );
+    const r = spawnSync("bash", [SCRIPT, wt], { encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` } });
+    const out = `${r.stdout}${r.stderr}`;
+    assert(r.status === 0, `long-list: seeds from the first worktree however long the listing is (got ${r.status}: ${out})`);
+    assert(existsSync(join(wt, "node_modules", "MARKER")), "long-list: the clone came from the listing's first entry");
+  }
+
   // 7. A SOURCE WHOSE LOCKFILE WAS PULLED BUT NEVER INSTALLED (#3734): both lockfiles
   //    match, yet the source's node_modules was installed from an older one. On
   //    2026-10-14 that cloned an install from 2026-09-02 that lacked two packages main
