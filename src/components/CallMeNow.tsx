@@ -99,7 +99,9 @@ export function useCallMeNow(config: CallMeNowConfig | null) {
       if (res.ok && (body.outcome === "requested" || body.outcome === "already-requested")) {
         setTextLine(typeof body.textLine === "string" ? body.textLine : null);
         setPhase("confirmed");
-      } else if (body.outcome === "refused" || res.status === 429) {
+      } else if (body.outcome === "refused") {
+        // Only the route's own refusal is final. A 429 (too many presses from this
+        // address) clears once its window passes, so it is a failure with Try again.
         setPhase("refused");
       } else {
         setPhase("failed");

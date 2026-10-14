@@ -205,6 +205,14 @@ describe("the inline card's Call me now row (#3718)", () => {
     expect(CALL_ME_NOW_COPY.failedBody("above")).toMatch(/below/);
   });
 
+  it("offers Try again when the press was turned away for coming too often, since that clears", async () => {
+    serve(OFFERED, { status: 429, body: { error: "Too many requests. Please try again in a moment." } });
+    render(<Booker {...baseProps} layout="inline" callMeNow={CMN} />);
+    fireEvent.click(await callButton());
+    expect(await screen.findByText(CALL_ME_NOW_COPY.failedHeading)).toBeTruthy();
+    expect(screen.getByRole("button", { name: CALL_ME_NOW_COPY.tryAgain })).toBeTruthy();
+  });
+
   it("offers no Try again for a refusal, since retrying cannot change it", async () => {
     serve(OFFERED, { status: 200, body: { outcome: "refused", retry: false } });
     render(<Booker {...baseProps} layout="inline" callMeNow={CMN} />);
