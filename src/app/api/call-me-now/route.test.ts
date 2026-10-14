@@ -98,7 +98,10 @@ describe("POST /api/call-me-now (#3718)", () => {
     // it to cause the other page, so the check must page on its own (L10, L11).
     await runDeferred();
     expect(notify.sendThrottledAlert).toHaveBeenCalledTimes(1);
-    expect(notify.sendThrottledAlert.mock.calls[0]![2]).toMatch(/button was hidden/i);
+    const [key, , page] = notify.sendThrottledAlert.mock.calls[0]!;
+    // Its own key, so a hidden button never silences the page about a lead who pressed.
+    expect(key).toBe("call_me_now_hidden");
+    expect(page).toMatch(/button was hidden/i);
   });
 
   it("a check that is simply refused pages nothing", async () => {

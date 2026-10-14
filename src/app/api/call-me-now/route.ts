@@ -17,20 +17,26 @@ import { log } from "@/lib/log";
 export const dynamic = "force-dynamic";
 
 /**
- * One page per window for every lead whose press failed: a run of failures is one
- * Salesforce outage, and each lead's id is in its own log line.
+ * One page per window per key: a run of failures is one Salesforce outage, and each
+ * lead's id is in its own log line, which the press page points at.
  */
 export const CALL_ME_NOW_ALERT_COOLDOWN_MS = 10 * 60_000;
 
 /**
  * Page about a failed check or press, after the response so the lead never waits on
- * Slack. One key for both: a run of either is one Salesforce outage.
+ * Slack. Two keys, so a hidden button never silences the page about a lead who pressed;
+ * within one key a run of failures is one outage, and the press page says where in the
+ * logs every lead in its quiet window is.
  */
+const FAILURE_KEY = { check: "call_me_now_hidden", press: "call_me_now_failed" } as const;
+
 function pageFailure(failure: { stage: CallMeNowFailedStage; error: unknown }, leadId: string, when: "check" | "press"): void {
   const page = formatCallMeNowFailedAlert({ stage: failure.stage, leadId, error: failure.error, when });
+  // alert-key: call_me_now_hidden
+  // alert-key: call_me_now_failed
   // alert-text-ok: the builder reduces the error to shortErrorReason's one line, which
   // scripts/test-call-me-now.ts pins; the full text is in the caller's log line.
-  afterResponse("call-me-now-alert", () => sendThrottledAlert("call_me_now_failed", CALL_ME_NOW_ALERT_COOLDOWN_MS, page));
+  afterResponse("call-me-now-alert", () => sendThrottledAlert(FAILURE_KEY[when], CALL_ME_NOW_ALERT_COOLDOWN_MS, page));
 }
 
 const text = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v.trim() : null);

@@ -867,7 +867,12 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "call_me_now_failed",
     kind: "incident",
-    why: "One lead pressed Call me now and Salesforce failed before the lead was marked for a call, or the check that shows the button failed and hid it (#3718). The lead was already shown the failure and the times to book; whether somebody calls them is a person's decision, and nothing Slate observes afterwards turns that press into a call, so there is no healthy state to announce.",
+    why: "A lead pressed Call me now and Salesforce failed before the lead was marked for a call (#3718). The lead was already shown the failure and the times to book; whether somebody calls them is a person's decision, and nothing Slate observes afterwards turns that press into a call, so there is no healthy state to announce.",
+  },
+  {
+    key: "call_me_now_hidden",
+    kind: "incident",
+    why: "The check that shows the Call me now button failed, so it was hidden for a lead who could still book a time (#3718). Its own key so it never silences a press page. Each check is a finished event: the next one reads Salesforce afresh, and a successful check is not evidence anybody missed the button, so there is no all clear worth sending.",
   },
   {
     key: "retired_booking_key:*",

@@ -219,6 +219,6 @@ export function formatCallMeNowFailedAlert(f: {
   return (
     `Call me now did not go through for lead ${f.leadId}: ${reason}. ` +
     `The lead was shown a notice with Try again and the times to book, so nobody has been asked to call them yet. ` +
-    `If they do not book or try again, call them from Salesforce.`
+    `This page covers every press in the next few minutes: find each lead in the logs under tag=call-me-now msg="press failed", and call any who did not book or try again.`
   );
 }

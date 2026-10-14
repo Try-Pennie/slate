@@ -1374,7 +1374,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatCallMeNowFailedAlert({ stage: "lead-read", leadId: "00QUi000010889ZMAQ", error: new Error("SF query failed: 500 Internal Server Error") }),
   },
   {
-    key: "call_me_now_failed",
+    key: "call_me_now_hidden",
     state: "Salesforce failed while reading the switch, so the button was hidden",
     channel: "alert",
     text: formatCallMeNowFailedAlert({ stage: "switch-read", leadId: "00QUi000010889ZMAQ", error: new Error("SF query failed: 503 Service Unavailable"), when: "check" }),

@@ -192,6 +192,8 @@ assert(!retryCanHelp({ kind: "requested" }) && !retryCanHelp({ kind: "already-re
   assert(/marking the lead for a call/.test(text), "and the step that failed, in words");
   assert(!text.includes("errorCode"), "never Salesforce's raw JSON");
   assert(/nobody has been asked to call/i.test(text), "and says plainly that no call is coming");
+  // One page covers every press in its quiet window, so it must say where the rest are.
+  assert(/tag=call-me-now/.test(text) && /press failed/.test(text), "and points at the log line that names every lead who pressed");
   assert(!/^Slate/.test(text), "and does not open with Slate's own name");
 }
 {
