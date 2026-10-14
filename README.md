@@ -276,6 +276,7 @@ src/lib/snowflake      archival mirror exporter (key-pair JWT client + MERGE bui
 src/lib/offboarding    deactivate / reactivate departed agents
 src/lib/bookable       move an agent in/out of the booking pool (bookable flag) + activation guard
 src/lib/auth           login provisioning + role/RBAC + admin impersonation
+src/lib/automations    Pennie's automations service: the texting line after Call me now (#3718)
 src/lib/http           edge-level request handling (http->https redirect, served by worker/index.ts)
 src/lib/platform       which runtime we are on, so a dev machine never pages about production
 src/lib/errors         what an error boundary says when a page could not finish

@@ -73,6 +73,9 @@ export const PRODUCTION_ONLY_SECRETS = [
   "TWILIO_API_KEY_SID",
   "TWILIO_API_KEY_SECRET",
   "TWILIO_WORKSPACE_SID",
+  // #3718: Pennie's automations service, asked for a lead's texting line. A load run
+  // never presses Call me now against a real lead, and must not hold its address.
+  "AUTOMATIONS_API_URL",
   "REASSIGN_API_KEY",
   "DUPLICATE_CANCEL_API_KEY",
   "OFFBOARDING_API_KEY",

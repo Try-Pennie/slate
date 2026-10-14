@@ -1,4 +1,4 @@
-import Booker from "@/components/Booker";
+import Booker, { type CallMeNowConfig } from "@/components/Booker";
 import StandaloneBookerShell from "@/components/StandaloneBookerShell";
 import { ClientErrorBeacon } from "@/components/ClientErrorBeacon";
 import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
@@ -88,6 +88,21 @@ export default async function BookEntry({
   // #3718: widget.js's inline embed asks for the compact card. Any other value is
   // ignored, since cal.com hosts send layouts of their own (`month_view`).
   const layout = first(sp, "layout") === "inline" ? ("inline" as const) : undefined;
+  // #3718: Call me now is a per page setting on the inline card, for a lead. Its
+  // contact details are the ones the PAGE sent (`entry.link`), never `attendee`
+  // below, which Slate read from Salesforce and would always match the Lead.
+  const cmnPosition = first(sp, "callMeNow");
+  const callMeNow: CallMeNowConfig | null =
+    layout === "inline" && externalId && (cmnPosition === "above" || cmnPosition === "below")
+      ? {
+          position: cmnPosition,
+          leadId: externalId,
+          email: entry.link.email || null,
+          phone: entry.link.phone || null,
+          submissionId: entry.submissionId ?? null,
+          firstName: entry.link.name.trim().split(/\s+/)[0] || null,
+        }
+      : null;
 
   // #2666: the public test bucket opens only for a page on an approved website.
   // The Referer here is the iframe document's own request, which a host sending
@@ -172,6 +187,7 @@ export default async function BookEntry({
         prefill={prefill}
         embedded={embedded}
         layout={layout}
+        callMeNow={callMeNow}
         theme={theme}
         brandColor={first(sp, "brand") || (embedded ? DEFAULT_BRAND_COLOR : undefined)}
         parentOrigin={first(sp, "parentOrigin") || undefined}

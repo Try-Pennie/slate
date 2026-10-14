@@ -12,8 +12,11 @@ import {
 } from "@/lib/salesforce/call-me-now";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { isSfAuthFailure } from "@/lib/salesforce/rest";
+import { isSubmissionId } from "@/lib/salesforce/lead-xbc";
 import { afterResponse } from "@/lib/after-response";
 import { log } from "@/lib/log";
+import { readTextingLine } from "@/lib/automations/texting-line";
+import { automationsApiUrl } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -43,17 +46,25 @@ function pageFailure(failure: { stage: CallMeNowFailedStage; error: unknown }, l
   afterResponse("call-me-now-alert", () => sendThrottledAlert(FAILURE_KEY[when], CALL_ME_NOW_ALERT_COOLDOWN_MS, page));
 }
 
+const submissionIdOf = (v: unknown): string | null => {
+  const id = text(v);
+  return id && isSubmissionId(id) ? id : null;
+};
+
 const text = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v.trim() : null);
 
 /**
- * Call me now for the inline booker (#3718). POST `{ action, leadId, email, phone }`:
+ * Call me now for the inline booker (#3718). POST
+ * `{ action, leadId, email, phone, submissionId }` (`submissionId` optional, used only
+ * to ask for the texting line, and only when shaped like one):
  *
  *  - `check` answers `{ offered }`: whether the card shows the button. Writes nothing.
  *    A failed check hides the button rather than erroring the card, since booking a
  *    time still works.
- *  - `request` marks the Lead for a call and answers `{ outcome }`: `requested`,
- *    `already-requested` (a call is pending), `refused` (no retry), or `failed` (503,
- *    with retry, and a page after the response).
+ *  - `request` marks the Lead for a call and answers `{ outcome }`: `requested` or
+ *    `already-requested` (a call is pending), each with `textLine`, the line the lead
+ *    can text or null; `refused` (no retry); or `failed` (503, with retry, and a page
+ *    after the response).
  *
  * No auth: the caller is the booker a lead has open. What stops a stranger sending an
  * advisor to call somebody is the contact check in `call-me-now.ts`, and the answer
@@ -101,5 +112,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ outcome: "refused", retry: retryCanHelp(out) });
   }
   log.info("call-me-now", { msg: "press answered", lead_id: leadId, outcome: out.kind });
-  return NextResponse.json({ outcome: out.kind });
+  // The line the lead can text, for the confirmation's Text us. Null when the service
+  // is not configured or does not answer usefully, and the card then shows no Text us.
+  const textLine = await readTextingLine(
+    // The submission id only when it is shaped like one: the contact check proves
+    // nothing about it, so a malformed value is never handed to the service.
+    { phone: out.leadPhone, submissionId: submissionIdOf(body.submissionId) },
+    {
+      baseUrl: automationsApiUrl(),
+      fetchImpl: fetch,
+      onUnread: (err) => log.warn("call-me-now", { msg: "texting line unread, no Text us", lead_id: leadId }, err),
+    },
+  );
+  return NextResponse.json({ outcome: out.kind, textLine });
 }

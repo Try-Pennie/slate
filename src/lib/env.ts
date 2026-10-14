@@ -318,3 +318,10 @@ export const calcomApiKey = (): string => process.env.CALCOM_API_KEY ?? "";
 export const twilioApiKeySid = (): string => process.env.TWILIO_API_KEY_SID ?? "";
 export const twilioApiKeySecret = (): string => process.env.TWILIO_API_KEY_SECRET ?? "";
 export const twilioWorkspaceSid = (): string => process.env.TWILIO_WORKSPACE_SID ?? "";
+
+/**
+ * Pennie's automations service, asked for the texting line a lead can message after
+ * Call me now (#3718). OPTIONAL and fails closed: unset, nothing is asked and the
+ * card shows no Text us (Dan, 2026-10-14).
+ */
+export const automationsApiUrl = (): string => process.env.AUTOMATIONS_API_URL ?? "";

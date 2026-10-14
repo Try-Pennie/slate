@@ -34,6 +34,7 @@ const ON: CallMeNowSwitch = { isActiveAlternate: true, pageAlternate: CALL_ME_NO
 const LEAD_ROW: CallMeNowLead = {
   email: "maria@example.com",
   phones: ["+1 (219) 758-8170"],
+  mobile: null,
   adv: 3,
   pending: false,
 };
@@ -62,12 +63,12 @@ eq(switchFromRecord({ IsActiveAlternate__c: "yes", PageAlternate__c: 4, MinimumA
 eq(switchFromRecord({ IsActiveAlternate__c: true, PageAlternate__c: "Call Me Now Button", MinimumAdv__c: "abc" }).minimumAdv, null, "a minimum that is not a number reads as unknown, never NaN (L50)");
 eq(
   leadFromRecord({ Id: LEAD, Email: " Maria@Example.com ", Phone: null, MobilePhone: "2197588170", ADV__c: 3, Call_Me_Now_Pending__c: true }),
-  { email: " Maria@Example.com ", phones: ["2197588170"], adv: 3, pending: true },
+  { email: " Maria@Example.com ", phones: ["2197588170"], mobile: "2197588170", adv: 3, pending: true },
   "the lead keeps every phone it has, and its ADV and pending flag as stored",
 );
 eq(
   leadFromRecord({ Id: LEAD, Email: null, Phone: 12, MobilePhone: "", ADV__c: "3", Call_Me_Now_Pending__c: null }),
-  { email: null, phones: [], adv: null, pending: null },
+  { email: null, phones: [], mobile: null, adv: null, pending: null },
   "empty or wrongly typed fields read as absent or unknown",
 );
 
@@ -96,7 +97,7 @@ const GIVEN = { leadId: LEAD, email: "maria@example.com", phone: null };
 
 {
   const { d, writes } = deps();
-  eq(await requestCallMeNow(GIVEN, d), { kind: "requested" }, "a matching, eligible lead is asked for a call");
+  eq(await requestCallMeNow(GIVEN, d), { kind: "requested", leadPhone: "+1 (219) 758-8170" }, "a matching, eligible lead is asked for a call, and the answer carries the phone Salesforce holds for them");
   eq(writes, [LEAD], "and exactly one write is made, for that lead");
 }
 {
@@ -130,7 +131,7 @@ const GIVEN = { leadId: LEAD, email: "maria@example.com", phone: null };
 }
 {
   const { d, writes } = deps({ readLead: async () => ({ ...LEAD_ROW, pending: true }) });
-  eq(await requestCallMeNow(GIVEN, d), { kind: "already-requested" }, "a lead whose call is already pending is told so");
+  eq(await requestCallMeNow(GIVEN, d), { kind: "already-requested", leadPhone: "+1 (219) 758-8170" }, "a lead whose call is already pending is told so");
   eq(writes.length, 0, "and is not asked for a second one");
 }
 {
@@ -179,7 +180,21 @@ eq(retryCanHelp({ kind: "failed", stage: "write", error: new Error("x") }), true
 for (const reason of ["not-a-lead", "no-such-lead", "no-contact", "contact-mismatch", "not-offered"] as const) {
   eq(retryCanHelp({ kind: "refused", reason }), false, `a ${reason} refusal can never be changed by retrying`);
 }
-assert(!retryCanHelp({ kind: "requested" }) && !retryCanHelp({ kind: "already-requested" }), "a success offers no retry");
+assert(
+  !retryCanHelp({ kind: "requested", leadPhone: null }) && !retryCanHelp({ kind: "already-requested", leadPhone: null }),
+  "a success offers no retry",
+);
+{
+  // The phone handed on is the LEAD's, from Salesforce, mobile first: a press can pass
+  // the check on its email alone, so the phone the page sent was never verified.
+  const { d } = deps({ readLead: async () => ({ ...LEAD_ROW, phones: ["2125550100", "+12197588170"], mobile: "+12197588170" }) });
+  const out = await requestCallMeNow({ ...GIVEN, phone: "9999999999" }, d);
+  eq(out, { kind: "requested", leadPhone: "+12197588170" }, "the mobile Salesforce holds, never the phone the page sent");
+}
+{
+  const { d } = deps({ readLead: async () => ({ ...LEAD_ROW, phones: [], mobile: null }) });
+  eq(await requestCallMeNow(GIVEN, d), { kind: "requested", leadPhone: null }, "no phone on the lead: none handed on");
+}
 
 // --- the page when a press did not go through ---------------------------------------
 {
