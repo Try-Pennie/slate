@@ -105,6 +105,14 @@ export function probeWindows(input: {
  *    would not have started.
  *  - CPU. Unchanged, since the same windows are computed; the full Low walk is
  *    roughly 8 x 1s of compute against the Worker's raised `limits.cpu_ms`.
+ *
+ * THE PREMISE ABOVE HAS MOVED (#2806, 2026-10-14). `computeBucketSlots` no longer
+ * asks Luxon about every candidate slot, and on a generated 80 member week
+ * (`scripts/bench-bucket-slots.ts`) its CPU fell from a median of about 750ms to
+ * about 13ms. A window is now almost all reads, so the 30/70 split this cap was
+ * chosen on no longer holds, and the CPU line above overstates the walk by about
+ * fifty times. Whether a different cap now pays was NOT re-measured; it needs the
+ * same live walk timing the numbers above came from, and is left as it was.
  */
 export const NEXT_WINDOW_CONCURRENCY = 2;
 
