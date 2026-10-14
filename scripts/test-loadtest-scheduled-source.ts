@@ -27,6 +27,7 @@ import {
   reconcileScheduled,
   type ScheduledReading,
 } from "./loadtest/platform-reading.ts";
+import { LOADTEST_PLACED_ORIGIN } from "../worker/lane-run.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 /** One `wrangler tail --format json` event, PRETTY PRINTED the way the real file is. */
@@ -113,6 +114,103 @@ function request(at = 1_757_000_000_000): string {
   // the judge decides from.
   const odd = tailEvent({ eventTimestamp: 1, event: { cron: 7 }, cpuTime: 100 });
   eq(readScheduledFromArchive(odd)?.invocations, 0, "an unreadable cron field is not a scheduled tick");
+}
+
+// --- placed lanes (#3693) -------------------------------------------------------
+//
+// Since #3693 a tick sends each lane over the Worker's binding to itself, so the lane's
+// CPU is spent in a FETCH invocation and the scheduled one holds only the dispatcher.
+// Read from scheduled events alone, the cron half would pass on the dispatcher's
+// few hundred milliseconds while a lane burned a minute.
+
+function tickWithTimings(cron: string, cpuMs: number, lanesPlaced: number, at = 1_757_000_000_000): string {
+  return tailEvent({
+    outcome: "ok",
+    scriptName: "slate-loadtest",
+    eventTimestamp: at,
+    event: { cron, scheduledTime: at },
+    logs: [
+      {
+        timestamp: at + 5,
+        message: [`slate tag=cron msg="lane timings" cron="${cron}" total_ms=900 lanes_ok=${lanesPlaced} lanes_failed=0 lanes_placed=${lanesPlaced}`],
+      },
+    ],
+    exceptions: [],
+    cpuTime: cpuMs,
+    wallTime: cpuMs + 900,
+  });
+}
+
+function placedLane(path: string, cpuMs: number, origin = LOADTEST_PLACED_ORIGIN, at = 1_757_000_000_000): string {
+  return tailEvent({
+    outcome: "ok",
+    scriptName: "slate-loadtest",
+    eventTimestamp: at,
+    event: { request: { url: `${origin}${path}`, method: "GET" } },
+    logs: [],
+    exceptions: [],
+    cpuTime: cpuMs,
+    wallTime: cpuMs + 50,
+  });
+}
+
+{
+  const archive = [
+    placedLane("/api/cron/sync", 30_000),
+    placedLane("/api/cron/recompute", 45_000),
+    tickWithTimings("* * * * *", 200, 2),
+    request(),
+  ].join("");
+  const r = readScheduledFromArchive(archive);
+  eq(r?.invocations, 3, "a placed lane counts as cron work beside the tick that sent it");
+  eq(r?.worstCpuMs, 45_000, "and its CPU is what the cron half judges, not the dispatcher's");
+  eq(r?.byCron["placed /api/cron/recompute"]?.worstCpuMs, 45_000, "named by its lane, so a finding can name it");
+  eq(r?.placedLanesReported, 2, "the ticks' own timings lines say how many lanes ran placed");
+  eq(r?.placedLanesSeen, 2, "and the archive holds every one of them");
+}
+
+{
+  // A request on any other origin is not a placed lane, even on a cron path: only the
+  // dispatcher addresses the placed origin, and anybody can request a path.
+  const r = readScheduledFromArchive(placedLane("/api/cron/sync", 9_000, "https://slate-loadtest.workers.dev"));
+  eq(r?.invocations, 0, "a cron path on another origin is not counted as a placed lane");
+}
+
+{
+  // The archive does not carry the placed invocations at all: the timings lines say
+  // four lanes ran placed and not one is in the stream. Judging the dispatcher would
+  // pass blind, so the cron half concludes nothing (L98).
+  const archive = [tickWithTimings("* * * * *", 200, 4), request()].join("");
+  const r = readScheduledFromArchive(archive);
+  eq(r?.placedLanesReported, 4, "four lanes reported placed");
+  eq(r?.placedLanesSeen, 0, "none of them in the archive");
+  const rec = reconcileScheduled({ platform: { ok: true, reading: { invocations: 0, worstCpuMs: 0, byCron: {} } }, archive: r });
+  assert(!rec.ok, "a cron half whose placed lanes were never read concludes nothing");
+  assert(!rec.ok && /placed/.test(rec.why) && /4/.test(rec.why), "and says so, with the count");
+  const viaPlatform = reconcileScheduled({
+    platform: { ok: true, reading: { invocations: 1, worstCpuMs: 200, byCron: { "* * * * *": { invocations: 1, worstCpuMs: 200 } } } },
+    archive: r,
+  });
+  assert(!viaPlatform.ok, "nor does a platform reading, which holds scheduled invocations only");
+}
+
+{
+  // A stream attached mid tick can miss a lane or two the tick reported; those are
+  // counted as ticks with no readable CPU rather than refusing the whole run.
+  const archive = [
+    placedLane("/api/cron/sync", 30_000),
+    placedLane("/api/cron/recompute", 45_000),
+    placedLane("/api/cron/outbox", 1_000),
+    tickWithTimings("* * * * *", 200, 4),
+  ].join("");
+  const r = readScheduledFromArchive(archive);
+  eq(r?.placedLanesSeen, 3, "three of four placed lanes were read");
+  eq(r?.unreadableCpu, 1, "and the missing one is counted as unread, never as cheap");
+  const rec = reconcileScheduled({ platform: { ok: true, reading: { invocations: 1, worstCpuMs: 200, byCron: {} } }, archive: r });
+  assert(rec.ok, "a run whose placed lanes were read is judged");
+  eq(rec.ok ? rec.source : "", "archive", "from the archive, the only source that carries placed lanes");
+  eq(rec.ok ? rec.reading.worstCpuMs : -1, 45_000, "on the lane's CPU");
+  assert(rec.ok && /placed/.test(rec.why ?? ""), "and says why the archive was preferred");
 }
 
 // --- reconciling the two sources ----------------------------------------------

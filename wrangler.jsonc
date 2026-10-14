@@ -21,10 +21,13 @@
 			"17 10 * * *"
 		]
 	},
-	// The every-minute cron runs four lanes (sync/recompute/outbox/selfheal) in ONE
+	// The every-minute cron ran four lanes (sync/recompute/outbox/selfheal) in ONE
 	// scheduled() invocation sharing its CPU budget; at scale they exceeded the
 	// default 30s cron-CPU ceiling ~5% of ticks (#760). Raise it to 2 min. This IS
-	// honored for a sub-hourly cron, despite the frequency-gated docs table.
+	// honored for a sub-hourly cron, despite the frequency-gated docs table. Since
+	// #3693 each lane runs as its own placed request over the SELF binding below,
+	// under this same limit, and only a lane that falls back to in process still
+	// shares the cron invocation's.
 	// Billed on actual CPU used, not the ceiling, so a high limit is free.
 	// Evidence and current headroom: docs/cloudflare-platform-notes.md.
 	//
@@ -286,6 +289,14 @@
 			"new_sqlite_classes": ["ConfirmLine"]
 		}
 	],
+	// #3693: the Worker's binding to ITSELF. Placement above moves only a fetch handler,
+	// never scheduled(), so worker/index.ts sends each cron lane through this binding to
+	// its own default fetch handler, where it runs as a placed request near the database
+	// instead of wherever Cloudflare ran the cron (Mumbai and Amsterdam in October 2026).
+	// No entrypoint, on purpose: placement does not apply to a named entrypoint. Without
+	// this binding every lane runs in process as before, and says so in the lane timings.
+	// Not inherited by env.loadtest, which binds its own Worker below.
+	"services": [{ "binding": "SELF", "service": "slate" }],
 	// --- the load test environment (#2242) ----------------------------------
 	//
 	// A SECOND Worker for the booking path scale run (#2243, #2244): ten times the
@@ -447,7 +458,10 @@
 					"tag": "v2",
 					"new_sqlite_classes": ["ConfirmLine"]
 				}
-			]
+			],
+			// #3693: the load test Worker's binding to ITSELF, never to production's
+			// `slate`, which would run the load run's lanes on production.
+			"services": [{ "binding": "SELF", "service": "slate-loadtest" }]
 		}
 	}
 }

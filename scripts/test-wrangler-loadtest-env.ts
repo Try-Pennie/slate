@@ -157,6 +157,36 @@ control("the missing burst counter", "Durable Object binding", (e) => {
 control("a missing Durable Object migration", "is never created", (e) => {
   e.migrations = [];
 });
+// #3693: the binding the cron lanes are placed through, in each way it can be wrong.
+control("a load test with no binding to itself", "services do NOT inherit", (e) => {
+  e.services = [];
+});
+control("a load test bound to production", "would run on PRODUCTION", (e) => {
+  e.services = [{ binding: "SELF", service: top.name ?? "slate" }];
+});
+control("a binding to a named entrypoint", "does not apply to a named entrypoint", (e) => {
+  e.services = [{ binding: "SELF", service: e.name ?? "", entrypoint: "LogShippingReceipt" }];
+});
+{
+  // The top level is judged too: production without the binding runs every lane in
+  // process, which is the regression this exists to stop.
+  const bare = clone(top);
+  bare.services = [];
+  assert(
+    loadtestEnvFaults(bare, env).some((f) => f.startsWith("the top level has no SELF")),
+    "a control catches production with no binding to itself",
+  );
+  eq(
+    JSON.stringify(top.services),
+    JSON.stringify([{ binding: "SELF", service: "slate" }]),
+    "production binds SELF to its own Worker",
+  );
+  eq(
+    JSON.stringify(env.services),
+    JSON.stringify([{ binding: "SELF", service: "slate-loadtest" }]),
+    "and the load test binds it to the load test Worker",
+  );
+}
 control("a var that did not inherit", "vars do NOT inherit", (e) => {
   delete e.vars!.CALCOM_ORG_ID;
 });

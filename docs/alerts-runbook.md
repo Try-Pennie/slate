@@ -70,8 +70,10 @@ not redeployed since the receipt shipped (`npx wrangler deploy -c wrangler.log-t
 **Fix or escalate.** A lane that is not firing is a platform-level problem (a bad
 deploy, a Cloudflare incident): redeploy, and check the deploy actually landed
 (`GET /api/smoke/version`). A lane that fires and throws is a code problem: the tail
-shows the error. Four lanes share one invocation budget, so a lane that got slow can
-starve its neighbours (`docs/cloudflare-platform-notes.md`).
+shows the error. Each lane runs as its own placed invocation (#3693), but a lane that
+fell back to in process (`<lane>_via=in_process` on the `lane timings` line) shares the
+cron's invocation budget, so a slow one can starve its neighbours
+(`docs/cloudflare-platform-notes.md`).
 
 ---
 

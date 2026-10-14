@@ -19,8 +19,8 @@
  * Why a route rather than a send from here: this entry is bundled separately from
  * the app, so a send here would be a second copy of the Supabase client and the
  * alert dispatcher, reading environment the app's handler fills in on its first
- * request. The route runs on the same in-process `fetch` the lanes do, so it adds
- * no network hop and nothing new to configure.
+ * request. The route runs in process (the lanes themselves are placed since #3693, see
+ * `dispatchLane`), so it adds no network hop and does not depend on the binding.
  *
  * The TICK ID. A cron tick fans out to several lanes, each its own request, and
  * until now the only thing tying a lane's lines to the tick that drove it was the
@@ -39,6 +39,7 @@ import {
 import { shortErrorReason } from "@/lib/notify/error-text";
 import type { LogFields } from "@/lib/log";
 import { CRON_BUDGET_ROUTE, cronBudgetCallsApp, wallPastLine } from "@/lib/monitor/cron-budget";
+import { cronStandby } from "./cron-standby";
 
 export { TICK_ID_HEADER };
 
@@ -48,16 +49,105 @@ export const LANE_FAILURE_PATH = "/api/cron/lane-failure";
 /** The origin the synthetic requests are addressed to. Never leaves the isolate. */
 export const CRON_ORIGIN = "https://slate.trypennie.app";
 
+// ------------------------------------------------------------------ placed lanes (#3693)
+
+/** The service binding the Worker holds to ITSELF (`services` in wrangler.jsonc). */
+export const SELF_BINDING = "SELF";
+
+/** Marks a lane request sent over the self binding, so a standby canary can refuse it. */
+export const PLACED_LANE_HEADER = "x-slate-placed-lane";
+
+/** Set by the entry on that refusal. Its value `standby` is the one answer that proves the
+ *  lane did NOT run, and so the one answer the dispatcher may run it in process after. */
+export const LANE_NOT_RUN_HEADER = "x-slate-lane-not-run";
+
+/**
+ * Where a placed lane request is addressed. It goes through the entry's own fetch handler,
+ * so it must pass that handler's guards: https, so no redirect, and under the load test
+ * never the production host, which `loadtestServingProductionHost` refuses (in process the
+ * lanes never met that guard). `.invalid` is reserved and never resolves, and the request
+ * only ever travels over the binding. Production keeps the origin the lanes always had.
+ */
+export const LOADTEST_PLACED_ORIGIN = "https://slate-loadtest.invalid";
+
+export function placedLaneOrigin(loadtest: boolean): string {
+  return loadtest ? LOADTEST_PLACED_ORIGIN : CRON_ORIGIN;
+}
+
+/** As much of a service binding as the dispatcher calls. */
+export interface SelfBinding {
+  fetch(request: Request): Promise<Response>;
+}
+
+export type SelfBindingUnavailable = "absent" | "unusable";
+
+/** The self binding from `env`, or why it cannot be used. Never throws. */
+export function resolveSelfBinding(
+  value: unknown,
+): { binding: SelfBinding } | { binding: null; unavailable: SelfBindingUnavailable } {
+  if (value === undefined || value === null) return { binding: null, unavailable: "absent" };
+  if (typeof value !== "object" || typeof (value as { fetch?: unknown }).fetch !== "function") {
+    return { binding: null, unavailable: "unusable" };
+  }
+  return { binding: value as SelfBinding };
+}
+
+/** What the dispatcher needs to send lanes placed. */
+export interface PlacedDispatch {
+  binding: SelfBinding | null;
+  unavailable?: SelfBindingUnavailable;
+  origin: string;
+}
+
+/** Why a lane meant to be placed ran in process. */
+export type LaneFallback =
+  | "binding_absent"
+  | "binding_unusable"
+  | "binding_threw_before_sending"
+  | "standby_canary";
+
+/**
+ * The entry's answer to a placed lane on a gradual deploy's canary (#3095), or null.
+ *
+ * A self binding call is routed by the deployment's split like any request, so during a
+ * split a lane the serving version sent can land on the canary, and code that has not
+ * passed its probe must never run a lane. The canary refuses it before the app is reached
+ * and says so, and the serving version then runs it in process. Only a request carrying
+ * the placed mark is refused; anybody can send the mark, and all it buys them is a 503
+ * from a canary that exists for a few minutes.
+ */
+export function placedLaneStandbyRefusal(request: Request, standbyValue: unknown): Response | null {
+  if (request.headers.get(PLACED_LANE_HEADER) === null) return null;
+  if (!cronStandby(standbyValue).standby) return null;
+  return new Response("This version is in cron standby, so it runs no lane.", {
+    status: 503,
+    headers: { "content-type": "text/plain; charset=utf-8", [LANE_NOT_RUN_HEADER]: "standby" },
+  });
+}
+
+/** The `cf-placement` value, when it reads as one (`remote-SEA`, `local-EWR`). */
+export function placementOf(headers: Headers): string | null {
+  const raw = headers.get("cf-placement");
+  if (raw === null) return null;
+  const value = raw.trim();
+  return /^[a-z]+-[a-z0-9]{2,8}$/i.test(value) ? value : "unreadable";
+}
+
 /** What the failure route is told. `status` is null when the lane THREW, because
  *  then there is no response to have a status. */
 export type LaneFailure = LaneFailureReport;
 
 export interface LaneRunDeps {
+  /** The app in process: the fallback for a lane, and always the path for a failure
+   *  report and the budget check, which must not depend on the binding they may report. */
   fetch(request: Request): Promise<Response>;
+  /** Send lanes over the self binding (#3693). Absent, every lane runs in process. */
+  placed?: PlacedDispatch;
   now(): number;
   log: {
     error(tag: string, fields: LogFields, err?: unknown): void;
     warn(tag: string, fields: LogFields, err?: unknown): void;
+    info(tag: string, fields: LogFields): void;
   };
 }
 
@@ -71,8 +161,13 @@ export function mintTickId(randomUUID: () => string): string {
   return randomUUID().replace(/-/g, "").slice(0, 16);
 }
 
-function laneRequest(path: string, tick: LaneTick, init: RequestInit = {}): Request {
-  return new Request(`${CRON_ORIGIN}${path}`, {
+function laneRequest(
+  path: string,
+  tick: LaneTick,
+  init: RequestInit = {},
+  origin: string = CRON_ORIGIN,
+): Request {
+  return new Request(`${origin}${path}`, {
     ...init,
     headers: {
       authorization: `Bearer ${tick.cronSecret}`,
@@ -95,8 +190,12 @@ export async function runLane(
   const startedAt = deps.now();
   let ok = false;
   let failure: LaneFailure | null = null;
+  // Which path ran it, written by the dispatch AS it decides, so a lane that throws on
+  // either path is still recorded on the path it took.
+  const route: LaneRoute = { via: "in_process", placement: null, fallback: null };
+  const via = () => route.via;
   try {
-    const res = await deps.fetch(laneRequest(path, tick));
+    const res = await dispatchLane(path, tick, deps, route);
     ok = res.ok;
     if (!res.ok) {
       // The body is read for the LOG only; the page carries the status, never a
@@ -113,6 +212,7 @@ export async function runLane(
         status: res.status,
         body: body.slice(0, 300),
         tick: tick.tickId,
+        via: via(),
         ...(alerted ? { alerted } : {}),
       });
       if (!alerted) failure = { lane, status: res.status, reason: `answered ${res.status}` };
@@ -120,13 +220,74 @@ export async function runLane(
   } catch (err) {
     // The error itself goes to the log as the third argument, so Cloudflare keeps
     // its message and stack; the page gets one short line of it.
-    deps.log.error("cron", { msg: "lane threw", path, tick: tick.tickId }, err);
+    deps.log.error("cron", { msg: "lane threw", path, tick: tick.tickId, via: via() }, err);
     failure = { lane, status: null, reason: shortErrorReason(err) };
   }
   // A thrown lane is still measured and still reported as failed: a lane that dies
   // is usually the FAST one, and leaving it out would quietly shrink the record on
   // exactly the tick worth reading.
-  return { run: { path, ms: deps.now() - startedAt, ok }, failure };
+  return { run: { path, ms: deps.now() - startedAt, ok, ...route }, failure };
+}
+
+/** The path a lane took, as the dispatch decided it. */
+interface LaneRoute {
+  via: "placed" | "in_process";
+  placement: string | null;
+  fallback: LaneFallback | null;
+}
+
+/**
+ * Send one lane: over the self binding when there is one, in process otherwise (#3693).
+ *
+ * The rule that keeps this safe is about WHEN the in process fallback may run, because a
+ * lane run twice can double a write. It runs only when the lane provably did not: there
+ * is no usable binding, the binding call threw synchronously (nothing was sent), or the
+ * entry answered with the standby refusal (refused before the app). A binding call that
+ * REJECTS is not one of those: the request may have reached the lane and run part of it,
+ * so the rejection propagates as the lane's own failure and is reported, never re-run.
+ * The same goes for a non-ok answer.
+ */
+async function dispatchLane(
+  path: string,
+  tick: LaneTick,
+  deps: LaneRunDeps,
+  route: LaneRoute,
+): Promise<Response> {
+  const placed = deps.placed;
+  if (placed) {
+    let fallbackErr: unknown = undefined;
+    if (!placed.binding) {
+      route.fallback = placed.unavailable === "unusable" ? "binding_unusable" : "binding_absent";
+    } else {
+      let pending: Promise<Response> | null = null;
+      try {
+        pending = placed.binding.fetch(
+          laneRequest(path, tick, { headers: { [PLACED_LANE_HEADER]: "1" } }, placed.origin),
+        );
+      } catch (err) {
+        route.fallback = "binding_threw_before_sending";
+        fallbackErr = err;
+      }
+      if (pending) {
+        // Sent: from here a rejection is the lane's own failure, recorded as placed.
+        route.via = "placed";
+        const res = await pending;
+        if (res.headers.get(LANE_NOT_RUN_HEADER) !== "standby") {
+          route.placement = placementOf(res.headers);
+          return res;
+        }
+        await res.body?.cancel().catch(() => {});
+        route.via = "in_process";
+        route.fallback = "standby_canary";
+      }
+    }
+    const fields = { msg: "lane ran in process, not placed", path, why: route.fallback, tick: tick.tickId };
+    // A standby refusal is a deploy split doing its job, so it is information; every
+    // other reason is a configuration fault and reads as one.
+    if (route.fallback === "standby_canary") deps.log.info("cron", fields);
+    else deps.log.warn("cron", fields, fallbackErr);
+  }
+  return deps.fetch(laneRequest(path, tick));
 }
 
 /**

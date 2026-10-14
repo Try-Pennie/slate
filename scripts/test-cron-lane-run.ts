@@ -13,13 +13,26 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   mintTickId,
+  placedLaneOrigin,
+  placedLaneStandbyRefusal,
+  placementOf,
+  recordCronBudget,
   reportLaneFailures,
+  resolveSelfBinding,
   runLane,
+  CRON_ORIGIN,
   LANE_FAILURE_PATH,
+  LANE_NOT_RUN_HEADER,
+  PLACED_LANE_HEADER,
+  SELF_BINDING,
   TICK_ID_HEADER,
   type LaneRunDeps,
   type LaneTick,
+  type SelfBinding,
 } from "../worker/lane-run.ts";
+import { laneTimingFields } from "../src/lib/monitor/lane-timing.ts";
+import { loadtestServingProductionHost } from "../src/lib/loadtest-guard.ts";
+import { httpsRedirect } from "../src/lib/http/https-redirect.ts";
 import {
   formatLaneFailureAlert,
   laneFailedKey,
@@ -34,10 +47,12 @@ const ROOT = join(import.meta.dirname, "..");
 interface Seen {
   requests: { url: string; method: string; headers: Headers; body: string }[];
   errors: { tag: string; fields: Record<string, unknown>; err: unknown }[];
+  warns: { tag: string; fields: Record<string, unknown>; err: unknown }[];
+  infos: { tag: string; fields: Record<string, unknown> }[];
 }
 
 function harness(answer: (req: Request) => Promise<Response>): { deps: LaneRunDeps; seen: Seen } {
-  const seen: Seen = { requests: [], errors: [] };
+  const seen: Seen = { requests: [], errors: [], warns: [], infos: [] };
   let clock = 1000;
   const deps: LaneRunDeps = {
     fetch: async (req) => {
@@ -54,10 +69,29 @@ function harness(answer: (req: Request) => Promise<Response>): { deps: LaneRunDe
       error: (tag, fields, err) => {
         seen.errors.push({ tag, fields: fields as Record<string, unknown>, err });
       },
-      warn: () => {},
+      warn: (tag, fields, err) => {
+        seen.warns.push({ tag, fields: fields as Record<string, unknown>, err });
+      },
+      info: (tag, fields) => {
+        seen.infos.push({ tag, fields: fields as Record<string, unknown> });
+      },
     },
   };
   return { deps, seen };
+}
+
+/** A fake of the Worker's binding to itself, recording what it was sent (#3693). */
+function selfBinding(answer: (req: Request) => Promise<Response>): { binding: SelfBinding; sent: Request[] } {
+  const sent: Request[] = [];
+  return {
+    sent,
+    binding: {
+      fetch: (req: Request) => {
+        sent.push(req);
+        return answer(req);
+      },
+    },
+  };
 }
 
 const tick: LaneTick = { tickId: "0123456789abcdef", cronSecret: "s3cret" };
@@ -217,6 +251,222 @@ eq(
   assert(!/[\u2014\u2013]/.test(thrownCopy + statusCopy), "and carries no dash punctuation");
 }
 
+// ------------------------------------------------------------ placed lanes (#3693)
+//
+// Placement moves only a fetch handler, never scheduled(), so each lane is sent over
+// the Worker's binding to itself and runs as a placed fetch near the database. The
+// in process path stays as the fallback, and a lane that was SENT is never run twice.
+
+const PLACED_ORIGIN = placedLaneOrigin(false);
+
+{
+  const { deps, seen } = harness(async () => new Response("in process", { status: 200 }));
+  const self = selfBinding(
+    async () => new Response("{}", { status: 200, headers: { "cf-placement": "remote-SEA" } }),
+  );
+  deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/recompute", tick, deps);
+  eq(self.sent.length, 1, "a lane goes over the self binding once");
+  eq(seen.requests.length, 0, "and is not also run in process");
+  eq(out.failure, null, "an ok placed lane is not a failure");
+  eq(out.run.ok, true, "and is timed as ok");
+  eq(out.run.via, "placed", "and recorded as placed");
+  eq(out.run.placement, "remote-SEA", "with the cf-placement value Cloudflare answered with");
+  const req = self.sent[0]!;
+  eq(req.url, `${PLACED_ORIGIN}/api/cron/recompute`, "to the lane's own path");
+  eq(req.headers.get("authorization"), "Bearer s3cret", "carrying the cron bearer exactly as in process");
+  eq(req.headers.get(TICK_ID_HEADER), tick.tickId, "and the tick id");
+  eq(req.headers.get(PLACED_LANE_HEADER), "1", "and the mark that lets a standby canary refuse it");
+  eq(seen.warns.length + seen.errors.length, 0, "and nothing is logged as a fault");
+}
+
+{
+  const { deps } = harness(async () => new Response("{}", { status: 200 }));
+  const self = selfBinding(async () => new Response("{}", { status: 200 }));
+  deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/sync", tick, deps);
+  eq(out.run.via, "placed", "a placed lane with no cf-placement header is still placed");
+  eq(out.run.placement, null, "and its placement is unknown rather than invented");
+  const fields = laneTimingFields([out.run], out.run.ms);
+  eq(fields.sync_via, "placed", "the timings line says which path ran");
+  eq(fields.sync_placement, "none", "and says the header was absent, not that the lane ran in process");
+}
+
+{
+  const { deps, seen } = harness(async () => new Response("{}", { status: 200 }));
+  deps.placed = { binding: null, unavailable: "absent", origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/outbox", tick, deps);
+  eq(seen.requests.length, 1, "with no binding the lane runs in process, as before");
+  eq(seen.requests[0]!.url, `${CRON_ORIGIN}/api/cron/outbox`, "on the in process origin");
+  eq(seen.requests[0]!.headers.get(PLACED_LANE_HEADER), null, "without the placed mark");
+  eq(out.run.via, "in_process", "and is recorded as in process");
+  eq(out.run.fallback, "binding_absent", "with the reason it fell back");
+  eq(out.failure, null, "which is not a lane failure");
+  eq(seen.warns.length, 1, "the fallback is logged");
+  eq(seen.warns[0]!.tag, "cron", "under the cron tag");
+  eq(seen.warns[0]!.fields.why, "binding_absent", "with its reason");
+  eq(seen.warns[0]!.fields.tick, tick.tickId, "and the tick id");
+  const fields = laneTimingFields([out.run], out.run.ms);
+  eq(fields.outbox_via, "in_process", "and the timings line says it ran in process");
+  eq(fields.outbox_fallback, "binding_absent", "and why");
+  eq(fields.lanes_placed, 0, "and counts no placed lane");
+}
+
+{
+  const { deps, seen } = harness(async () => new Response("{}", { status: 200 }));
+  deps.placed = { binding: null, unavailable: "unusable", origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/selfheal", tick, deps);
+  eq(seen.requests.length, 1, "a binding that is not a service binding falls back in process");
+  eq(out.run.fallback, "binding_unusable", "under its own reason");
+}
+
+{
+  const { deps, seen } = harness(async () => new Response("{}", { status: 200 }));
+  const thrown = new TypeError("Fetcher is not bound");
+  deps.placed = {
+    binding: {
+      fetch: () => {
+        throw thrown;
+      },
+    },
+    origin: PLACED_ORIGIN,
+  };
+  const out = await runLane("/api/cron/recompute", tick, deps);
+  eq(seen.requests.length, 1, "a binding call that throws BEFORE sending falls back in process");
+  eq(out.run.ok, true, "and the lane still runs");
+  eq(out.run.via, "in_process", "in process");
+  eq(out.run.fallback, "binding_threw_before_sending", "for that reason");
+  eq(seen.warns[0]!.err, thrown, "with the error kept on the log line");
+  eq(out.failure, null, "and no lane failure");
+}
+
+{
+  // A rejection is NOT a throw before sending: the request may have reached the lane
+  // and run part of it, so running it again in process could double a write.
+  const { deps, seen } = harness(async () => new Response("{}", { status: 200 }));
+  const self = selfBinding(async () => {
+    throw new Error("Worker threw exception");
+  });
+  deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/outbox", tick, deps);
+  eq(self.sent.length, 1, "a placed call that rejects was sent once");
+  eq(seen.requests.length, 0, "and is NEVER re-run in process");
+  eq(out.run.ok, false, "it is timed as failed");
+  eq(out.run.via, "placed", "on the placed path");
+  eq(out.failure?.lane, "outbox", "and reported as the lane's failure");
+  eq(out.failure?.status, null, "with no status, since there was no response");
+  eq(seen.errors.length, 1, "and logged as a thrown lane");
+}
+
+{
+  const { deps, seen } = harness(async () => new Response("{}", { status: 200 }));
+  const self = selfBinding(
+    async () => new Response("boom", { status: 500, headers: { "cf-placement": "remote-SEA" } }),
+  );
+  deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/sync", tick, deps);
+  eq(seen.requests.length, 0, "a lane that answered non-ok over the binding is NOT re-run in process");
+  eq(out.failure, { lane: "sync", status: 500, reason: "answered 500" }, "it is reported like any failed lane");
+  eq(out.run.via, "placed", "on the placed path");
+  eq(out.run.placement, "remote-SEA", "with where it ran");
+}
+
+{
+  // A gradual deploy's canary refuses a placed lane before the app runs it, and says
+  // so on the response, so the version that dispatched it runs it in process (#3095).
+  const { deps, seen } = harness(async () => new Response("{}", { status: 200 }));
+  const self = selfBinding(async (req) => placedLaneStandbyRefusal(req, "1") ?? new Response("ran"));
+  deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/recompute", tick, deps);
+  eq(self.sent.length, 1, "the placed request reached the canary");
+  eq(seen.requests.length, 1, "which refused it, so it ran in process exactly once");
+  eq(out.run.ok, true, "and succeeded");
+  eq(out.run.via, "in_process", "in process");
+  eq(out.run.fallback, "standby_canary", "because a standby canary refused it");
+  eq(seen.warns.length, 0, "an expected deploy split is not a warning");
+  eq(seen.infos.length, 1, "but is logged");
+}
+
+{
+  // A lane that fell back and then threw in process is recorded on the path it took.
+  const { deps } = harness(async () => {
+    throw new Error("in process blew up");
+  });
+  deps.placed = { binding: null, unavailable: "absent", origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/sync", tick, deps);
+  eq(out.run.via, "in_process", "a fallen back lane that threw is recorded as in process");
+  eq(out.run.fallback, "binding_absent", "with why it fell back");
+  eq(out.failure?.status, null, "and reported as a thrown lane");
+}
+
+{
+  const { deps, seen } = harness(async () => new Response("{}", { status: 200 }));
+  const self = selfBinding(
+    async () => new Response("no", { status: 503, headers: { [LANE_NOT_RUN_HEADER]: "something else" } }),
+  );
+  deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/recompute", tick, deps);
+  eq(seen.requests.length, 0, "only the exact standby answer means the lane did not run");
+  eq(out.failure?.status, 503, "anything else is the lane's own failure");
+}
+
+{
+  // The refusal the entry gives a placed lane on a standby canary.
+  const req = (mark: boolean) =>
+    new Request(`${PLACED_ORIGIN}/api/cron/sync`, { headers: mark ? { [PLACED_LANE_HEADER]: "1" } : {} });
+  const refused = placedLaneStandbyRefusal(req(true), "1");
+  assert(refused !== null, "a placed lane reaching a standby canary is refused");
+  eq(refused?.status, 503, "with a 503");
+  eq(refused?.headers.get(LANE_NOT_RUN_HEADER), "standby", "that says the lane did not run");
+  assert(placedLaneStandbyRefusal(req(true), "garbled") !== null, "an unreadable standby value refuses too");
+  eq(placedLaneStandbyRefusal(req(true), undefined), null, "the serving version runs a placed lane");
+  eq(placedLaneStandbyRefusal(req(true), "0"), null, "and so does one with standby off");
+  eq(placedLaneStandbyRefusal(req(false), "1"), null, "a request without the mark is untouched on a canary");
+}
+
+{
+  // The placed request passes the entry's own guards: https, so no redirect, and never
+  // the production host under the load test, or the host guard refuses every lane.
+  for (const loadtest of [false, true]) {
+    const url = `${placedLaneOrigin(loadtest)}/api/cron/sync`;
+    eq(httpsRedirect(new Request(url)), null, `the placed origin is https (loadtest ${loadtest})`);
+    eq(loadtestServingProductionHost({ loadtest, url }), null, `and passes the host guard (loadtest ${loadtest})`);
+  }
+  eq(placedLaneOrigin(false), CRON_ORIGIN, "production keeps the origin the lanes always had");
+  eq(
+    loadtestServingProductionHost({ loadtest: true, url: `${CRON_ORIGIN}/api/cron/sync` }) !== null,
+    true,
+    "control: the production origin IS refused under the load test, which is why it differs there",
+  );
+}
+
+{
+  eq(resolveSelfBinding(undefined), { binding: null, unavailable: "absent" }, "no binding is absent");
+  eq(resolveSelfBinding({}), { binding: null, unavailable: "unusable" }, "an object with no fetch is unusable");
+  eq(resolveSelfBinding("SELF"), { binding: null, unavailable: "unusable" }, "a var of the same name is unusable");
+  const fetcher = { fetch: async () => new Response("") };
+  eq(resolveSelfBinding(fetcher).binding, fetcher, "a fetcher is used as it is");
+  eq(SELF_BINDING, "SELF", "the binding name wrangler.jsonc declares");
+}
+
+{
+  eq(placementOf(new Headers({ "cf-placement": "local-EWR" })), "local-EWR", "a local placement is kept");
+  eq(placementOf(new Headers()), null, "an absent header is null");
+  eq(placementOf(new Headers({ "cf-placement": "x y=z ".repeat(20) })), "unreadable", "an odd value is not logged raw");
+}
+
+{
+  // Failure reports and the budget check stay in process: they must not depend on the
+  // binding whose absence or fault is one of the things being reported.
+  const { deps, seen } = harness(async () => new Response("{}", { status: 200 }));
+  const self = selfBinding(async () => new Response("{}", { status: 200 }));
+  deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+  await reportLaneFailures([{ lane: "sync", status: 500, reason: "answered 500" }], tick, deps);
+  await recordCronBudget("0 * * * *", 10, tick, deps);
+  eq(self.sent.length, 0, "a failure report and the budget check never go over the binding");
+  eq(seen.requests.length, 2, "they run in process");
+}
+
 // ------------------------------------------------------------ the wiring
 
 const entry = readFileSync(join(ROOT, "worker/index.ts"), "utf8");
@@ -228,6 +478,21 @@ assert(
   !/new Request\(/.test(entry.slice(entry.indexOf("async scheduled("))),
   "and no lane request is built beside runLane, which would carry no tick id",
 );
+assert(
+  /resolveSelfBinding\(\s*env\[SELF_BINDING\]\s*\)/.test(entry),
+  "scheduled() resolves the Worker's binding to itself (#3693)",
+);
+assert(/placed:\s*\{/.test(entry), "and hands it to the lane dispatcher");
+{
+  const fetchStart = entry.indexOf("fetch: (request: Request");
+  const fetchBody = entry.slice(fetchStart, entry.indexOf("async scheduled("));
+  const refusalAt = fetchBody.indexOf("placedLaneStandbyRefusal(");
+  const appAt = fetchBody.indexOf("app.fetch(");
+  assert(
+    refusalAt !== -1 && appAt !== -1 && refusalAt < appAt,
+    "the fetch handler refuses a placed lane on a standby canary before the app can run it",
+  );
+}
 assert(
   existsSync(join(ROOT, "src/app", LANE_FAILURE_PATH, "route.ts")),
   "the failure route the dispatcher posts to exists",

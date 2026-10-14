@@ -26,6 +26,7 @@
 // bounded poll rides out, which is why `shouldPollAgain` exists.
 
 import { tailObjects } from "./confirm-startup.ts";
+import { LOADTEST_PLACED_ORIGIN } from "../../worker/lane-run.ts";
 import { CRON_CPU_LIMIT_MS } from "../../src/lib/monitor/cron-budget.ts";
 import { graphqlAccountRows, graphqlEnvelopeRefusal } from "../../src/lib/cloudflare/graphql-envelope.ts";
 
@@ -106,6 +107,15 @@ export interface ScheduledReading {
    * never read. Absent on the analytics reading, whose rows always carry the field.
    */
   unreadableCpu?: number;
+  /**
+   * #3693: lanes the ticks' own `lane timings` lines say ran PLACED (over the Worker's
+   * binding to itself), and how many of those placed fetch invocations the archive holds.
+   * A placed lane's CPU is spent in its own fetch invocation, never in the scheduled one,
+   * so a cron half read without them judges the dispatcher alone. Archive only: the
+   * analytics dataset holds scheduled invocations and cannot see a placed lane at all.
+   */
+  placedLanesReported?: number;
+  placedLanesSeen?: number;
 }
 
 export type ReadResult<T> = { ok: true; reading: T } | { ok: false; why: string };
@@ -343,10 +353,16 @@ export function readScheduledFromArchive(archive: string): ScheduledReading | nu
   let worstCpuMs = 0;
   let invocations = 0;
   let unreadableCpu = 0;
+  let placedLanesReported = 0;
+  let placedLanesSeen = 0;
   let sawAny = false;
   for (const raw of tailObjects(archive)) {
     sawAny = true;
-    let event: { event?: { cron?: unknown }; cpuTime?: unknown };
+    let event: {
+      event?: { cron?: unknown; request?: { url?: unknown } | null } | null;
+      cpuTime?: unknown;
+      logs?: unknown;
+    };
     try {
       event = JSON.parse(raw) as typeof event;
     } catch {
@@ -356,10 +372,23 @@ export function readScheduledFromArchive(archive: string): ScheduledReading | nu
       continue;
     }
     const cron = event.event?.cron;
-    // A STRING, because that is what a cron expression is. Anything else is a
-    // payload this cannot read, and inventing a tick from it would be worse than
-    // missing one: the count is what says whether the window may be called empty.
-    if (typeof cron !== "string" || cron.trim() === "") continue;
+    // #3693: a lane sent over the Worker's binding to itself runs as its own FETCH
+    // invocation, addressed to the placed origin only the dispatcher uses, and that is
+    // where its CPU is. It is cron work, so it is counted beside the ticks, under its lane.
+    const placedPath = placedLanePath(event.event?.request?.url);
+    let key: string;
+    if (placedPath !== null) {
+      key = `placed ${placedPath}`;
+      placedLanesSeen += 1;
+    } else if (typeof cron === "string" && cron.trim() !== "") {
+      // A STRING, because that is what a cron expression is. Anything else is a
+      // payload this cannot read, and inventing a tick from it would be worse than
+      // missing one: the count is what says whether the window may be called empty.
+      key = cron;
+      placedLanesReported += lanesPlacedOf(event.logs);
+    } else {
+      continue;
+    }
     // MILLISECONDS already: the tail reports `cpuTime` in ms, unlike the analytics
     // API's `cpuTimeUs`. The two units met in one judge once and a reading a
     // thousand times too small sits comfortably under every budget.
@@ -369,7 +398,7 @@ export function readScheduledFromArchive(archive: string): ScheduledReading | nu
     // nothing to the maximum and is counted separately: folding it in as a zero
     // would be the permissive side of the CPU bar with nothing saying so (L50).
     const ms = typeof event.cpuTime === "number" && Number.isFinite(event.cpuTime) ? event.cpuTime : null;
-    const seen = (byCron[cron] ??= { invocations: 0, worstCpuMs: 0 });
+    const seen = (byCron[key] ??= { invocations: 0, worstCpuMs: 0 });
     seen.invocations += 1;
     if (ms === null) unreadableCpu += 1;
     else {
@@ -378,7 +407,41 @@ export function readScheduledFromArchive(archive: string): ScheduledReading | nu
     }
     invocations += 1;
   }
-  return sawAny ? { invocations, worstCpuMs, byCron, unreadableCpu } : null;
+  if (!sawAny) return null;
+  // A stream attached mid tick can miss a placed lane its tick then reported. Some
+  // seen and a few missing is that, and each missing one is a tick nobody read the CPU
+  // of (L50). None seen at all is a different fact, judged in `reconcileScheduled`.
+  if (placedLanesSeen > 0 && placedLanesReported > placedLanesSeen) {
+    unreadableCpu += placedLanesReported - placedLanesSeen;
+  }
+  return { invocations, worstCpuMs, byCron, unreadableCpu, placedLanesReported, placedLanesSeen };
+}
+
+/** The lane path of a placed lane request (#3693), or null for anything else. */
+function placedLanePath(url: unknown): string | null {
+  if (typeof url !== "string") return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.origin !== new URL(LOADTEST_PLACED_ORIGIN).origin) return null;
+  return parsed.pathname.startsWith("/api/cron/") ? parsed.pathname : null;
+}
+
+/** The `lanes_placed` count on a tick's `lane timings` line, or 0 when it carries none. */
+function lanesPlacedOf(logs: unknown): number {
+  if (!Array.isArray(logs)) return 0;
+  let total = 0;
+  for (const entry of logs as { message?: unknown }[]) {
+    const m = entry?.message;
+    const text = typeof m === "string" ? m : Array.isArray(m) ? m.filter((x) => typeof x === "string").join(" ") : "";
+    if (!text.includes('msg="lane timings"')) continue;
+    const found = /\blanes_placed=(\d+)\b/.exec(text);
+    if (found) total += Number(found[1]);
+  }
+  return total;
 }
 
 /** Which source the cron half was actually read from. */
@@ -418,6 +481,33 @@ export function reconcileScheduled(args: {
   archive: ScheduledReading | null;
 }): ScheduledReconciliation {
   const { platform, archive } = args;
+
+  // #3693: placed lanes spend their CPU in fetch invocations, which only the archive
+  // carries. Ticks reporting placed lanes with none of them in the archive means the
+  // stream did not carry them, and any reading left is the dispatcher's alone.
+  const reported = archive?.placedLanesReported ?? 0;
+  const seen = archive?.placedLanesSeen ?? 0;
+  if (archive !== null && reported > 0 && seen === 0) {
+    return {
+      ok: false,
+      why:
+        `the ticks' own timings lines say ${reported} lanes ran placed (over the Worker's binding ` +
+        "to itself, #3693) and this run's archived log holds none of those invocations, so their " +
+        "CPU was never read. A scheduled invocation holds only the dispatcher once lanes are placed, " +
+        "so judging it would pass on the cheap half.",
+    };
+  }
+  if (archive !== null && seen > 0) {
+    return {
+      ok: true,
+      source: SCHEDULED_SOURCE.archive,
+      reading: archive,
+      why:
+        `${seen} lanes ran placed (#3693), so their CPU is in fetch invocations that only this ` +
+        "run's archived log carries; the cron half was read from the log, where each placed lane " +
+        "is judged under its own name.",
+    };
+  }
 
   if (platform.ok && platform.reading.invocations > 0) {
     return { ok: true, source: SCHEDULED_SOURCE.platform, reading: platform.reading, why: null };

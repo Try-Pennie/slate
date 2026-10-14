@@ -1,9 +1,37 @@
 /**
  * Custom Worker entry: wraps the OpenNext-generated handler so Cloudflare
  * cron triggers can drive the app's cron routes. scheduled() builds a
- * synthetic authorized Request and calls the SAME in-process fetch handler -
- * no network hop, no self-fetch restriction, and isAuthorizedCron keeps
- * guarding the HTTP surface unchanged.
+ * synthetic authorized Request per lane, and isAuthorizedCron keeps guarding
+ * the HTTP surface unchanged.
+ *
+ * WHERE A LANE RUNS (#3693, reversing the original choice). Each lane used to be
+ * handed straight to the app in process, which cost no network hop and needed no
+ * binding. It also meant every lane ran wherever Cloudflare ran the cron, because
+ * placement (the `placement` block in wrangler.jsonc) moves only a FETCH handler and
+ * never scheduled(). Crons run "on underutilized machines": from 2026-10-13 the lanes
+ * ran from Mumbai and then Amsterdam at 160 to 260ms per Supabase call, against about
+ * 90ms from Newark before and about 21ms for the placed lead requests at Seattle.
+ * So each lane is now sent over `SELF`, a service binding to this same Worker, which
+ * reaches the default export's fetch handler below and so runs as a placed fetch near
+ * the database. The request passes that handler's guards (https, and under the load
+ * test an origin that is not the production host) and carries the same bearer and
+ * tick id as before.
+ *
+ * In process stays as the fallback, used only when the lane provably did not run: no
+ * usable binding, a binding call that threw before sending, or a gradual deploy's
+ * canary refusing it in cron standby (#3095). A placed call that rejected or answered
+ * non-ok is reported and never re-run, because it may have written. worker/lane-run.ts
+ * owns all of that; the lane timings line says which path each lane took and its
+ * `cf-placement`, so the effect is read off the logs and the Supabase edge colo.
+ *
+ * WHAT IT COSTS. Each placed lane is its own invocation of the fetch handler: about
+ * 7,500 a day on top of the 2,003 scheduled invocations (13 triggers; the minute
+ * trigger's four lanes alone are 5,760). Cloudflare's pricing says requests over a
+ * service binding carry no additional request fee and CPU is billed as the total
+ * across both, so the cost is log and analytics volume rather than money. Each lane
+ * also stops sharing one invocation's CPU ceiling with its neighbours (#760, #2021),
+ * and the hourly cron CPU reading (#3141) now sees only the dispatcher plus any lane
+ * that fell back, not the placed lanes' own CPU (see src/lib/monitor/cron-budget.ts).
  *
  * This file is bundled by wrangler (see wrangler.jsonc "main") AFTER
  * `opennextjs-cloudflare build` emits .open-next/worker.js; it is excluded
@@ -32,9 +60,13 @@ import { log } from "@/lib/log";
 import { laneTimingFields, type LaneRun } from "@/lib/monitor/lane-timing";
 import {
   mintTickId,
+  placedLaneOrigin,
+  placedLaneStandbyRefusal,
   recordCronBudget,
   reportLaneFailures,
+  resolveSelfBinding,
   runLane,
+  SELF_BINDING,
   type LaneRunDeps,
   type LaneTick,
 } from "./lane-run";
@@ -132,6 +164,12 @@ const worker = {
     // controls (L498), and the answer already says it. A cron tick logs instead.
     const idle = loadtestIdle({ loadtest, bindings: env as unknown as Record<string, unknown>, baked: bakedEnv, pathname: safePathname(request.url) });
     if (idle) return Response.json(loadtestIdleBody(idle), { status: 503 });
+    // #3693: a lane the serving version sent over its binding to itself can land on a
+    // gradual deploy's canary, which must run no lane (#3095). It is refused here, before
+    // the app, with the answer that tells the sender to run it in process. No log line:
+    // the mark is a header anybody can send, and the sender logs the fallback.
+    const standbyRefusal = placedLaneStandbyRefusal(request, env.SLATE_CRON_STANDBY);
+    if (standbyRefusal) return standbyRefusal;
     return httpsRedirect(request) ?? app.fetch(request, env, ctx, { loadtest, enteredAtMs });
   },
 
@@ -210,7 +248,8 @@ const worker = {
     // (`runLane` never throws, so Promise.all waits for every lane).
     //
     // #1245: each lane is timed individually, because the lanes on one expression
-    // SHARE this invocation's budget and nothing recorded what each of them cost.
+    // shared this invocation's budget (until #3693 placed them, and still do for a lane
+    // that falls back) and nothing recorded what each of them cost.
     // When that budget tripled in four days the only symptom was a page from the
     // recompute lane, which is the lane that noticed rather than necessarily the
     // one that spent it. A single timer around the Promise.all below would
@@ -225,8 +264,12 @@ const worker = {
       tickId: mintTickId(() => crypto.randomUUID()),
       cronSecret: env.CRON_SECRET ?? "",
     };
+    // #3693: each lane goes over the Worker's binding to itself, so it runs as a placed
+    // fetch near the database; failure reports and the budget check stay in process.
+    const self = resolveSelfBinding(env[SELF_BINDING]);
     const deps: LaneRunDeps = {
       fetch: (request) => app.fetch(request, env, ctx),
+      placed: { ...self, origin: placedLaneOrigin(env.SLATE_LOADTEST === "true") },
       now: () => performance.now(),
       log,
     };

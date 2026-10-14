@@ -1,8 +1,11 @@
 /**
- * Per-lane cost attribution for a shared cron invocation (#1245).
+ * Per-lane cost attribution for a cron tick (#1245).
  *
- * The `* * * * *` trigger drives four lanes (sync, recompute, outbox, selfheal)
- * inside ONE Worker invocation, so they share its CPU and subrequest budget. When
+ * The `* * * * *` trigger drives four lanes (sync, recompute, outbox, selfheal).
+ * Until #3693 they ran inside ONE Worker invocation and shared its CPU and
+ * subrequest budget; now each is sent to the Worker's own fetch handler as a
+ * placed request, and only a lane that falls back to in process runs on the
+ * scheduled invocation's budget (`via` says which). When
  * that budget tripled in four days on a flat workload, the only visible symptom
  * was a recompute headroom page: the lane that noticed, not necessarily the lane
  * that spent it. Nothing recorded what each lane cost, so the consumer was
@@ -25,6 +28,13 @@ export interface LaneRun {
   path: string;
   ms: number;
   ok: boolean;
+  /** Which path ran it (#3693): sent over the Worker's binding to itself, so it runs as
+   *  a placed fetch near the database, or run in process on the scheduled invocation. */
+  via?: "placed" | "in_process";
+  /** The `cf-placement` value a placed lane answered with, or null when it carried none. */
+  placement?: string | null;
+  /** Why a lane meant to be placed ran in process instead. */
+  fallback?: string | null;
 }
 
 /** `/api/cron/bulk-reassign` -> `bulk_reassign`: a queryable field name. */
@@ -49,10 +59,21 @@ export function laneTimingFields(
   const fields: Record<string, string | number> = { total_ms: Math.round(totalMs) };
   let slowest: LaneRun | null = null;
   const failed: string[] = [];
+  let placed = 0;
   for (const run of runs) {
-    fields[`${laneFieldName(run.path)}_ms`] = Math.round(run.ms);
+    const lane = laneFieldName(run.path);
+    fields[`${lane}_ms`] = Math.round(run.ms);
     if (!slowest || run.ms > slowest.ms) slowest = run;
-    if (!run.ok) failed.push(laneFieldName(run.path));
+    if (!run.ok) failed.push(lane);
+    // #3693: which path ran the lane, so the effect of placing them reads off this
+    // line. A placed lane with no `cf-placement` header says `none` rather than
+    // leaving the field out, so an absent header is never mistaken for in process.
+    if (run.via) fields[`${lane}_via`] = run.via;
+    if (run.via === "placed") {
+      placed += 1;
+      fields[`${lane}_placement`] = run.placement ?? "none";
+    }
+    if (run.fallback) fields[`${lane}_fallback`] = run.fallback;
   }
   if (slowest) fields.slowest = laneFieldName(slowest.path);
   // The outcome COUNTS, always present (#3138): the tail worker ships this line to
@@ -60,6 +81,7 @@ export function laneTimingFields(
   // be summed or charted beside one where it is not.
   fields.lanes_ok = runs.length - failed.length;
   fields.lanes_failed = failed.length;
+  fields.lanes_placed = placed;
   // Only when there is something to say: an always-present empty field is noise
   // in every line and reads as a measurement rather than an absence.
   if (failed.length > 0) fields.failed = failed.join(",");
