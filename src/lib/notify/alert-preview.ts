@@ -197,9 +197,19 @@ import {
 } from "@/lib/monitor/migration-drift";
 import { catchallPageText, catchallClearText } from "@/lib/monitor/catchall-rate";
 import {
+  formatFailureBurstEnded,
   formatFailureRateAlert,
   formatFailureRateAllClear,
 } from "@/lib/monitor/booking-failure-rate";
+
+/**
+ * #3275: instants for the booking failure copy, fixed so the render never reads the
+ * clock. 2026-10-14 is EDT, four hours behind UTC, so these read as the times the
+ * 6:00am page carried: failures recorded from 3:05am to 5:05am ET.
+ */
+const PREVIEW_BURST = { firstMs: Date.UTC(2026, 9, 14, 7, 5), newestMs: Date.UTC(2026, 9, 14, 9, 5) };
+/** A wave still under way: failures from 4:10pm to 5:55pm ET. */
+const PREVIEW_WAVE = { firstMs: Date.UTC(2026, 9, 14, 20, 10), newestMs: Date.UTC(2026, 9, 14, 21, 55) };
 import { refusalAllClear, refusalSignalCopy } from "@/lib/monitor/api-refusal-signals";
 import {
   BOOKING_API_IP_LIMITER,
@@ -1367,17 +1377,20 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     // #1313. The fixture is the 2026-08-06 cal.com shape: a wave of attempts
     // refused on times that were offered to them.
     key: "booking_failure_rate",
-    state: "a wave of attempts refused",
+    state: "a wave of attempts refused, still failing",
     channel: "alert",
     text: formatFailureRateAlert({
       attempts: 82,
       failures: 38,
       pct: 46,
-      windowMinutes: 60,
+      windowMinutes: 180,
       topCodes: [
         { code: "slot_unavailable", count: 35 },
         { code: "internal", count: 3 },
       ],
+      recentMinutes: 30,
+      recent: { attempts: 14, failures: 9 },
+      span: PREVIEW_WAVE,
     }),
   },
   {
@@ -1393,6 +1406,9 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       windowMinutes: 180,
       topCodes: [{ code: "slot_unavailable", count: 10 }],
       refused: { people: 2, refusals: 10, withoutLead: 0 },
+      recentMinutes: 30,
+      recent: { attempts: 7, failures: 4 },
+      span: PREVIEW_WAVE,
     }),
   },
   {
@@ -1406,18 +1422,26 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       windowMinutes: 180,
       topCodes: [{ code: "slot_unavailable", count: 35 }],
       refused: { people: 4, refusals: 35, withoutLead: 2 },
+      recentMinutes: 30,
+      recent: { attempts: 14, failures: 9 },
+      span: PREVIEW_WAVE,
     }),
   },
   {
+    // #3275: the singular forms, a quiet half hour whose one attempt failed and a
+    // window whose failures were all recorded by one tick.
     key: "booking_failure_rate",
-    state: "a single failed attempt",
+    state: "the only recent attempt failed, every failure recorded at one time",
     channel: "alert",
     text: formatFailureRateAlert({
       attempts: 24,
-      failures: 1,
-      pct: 4,
-      windowMinutes: 60,
-      topCodes: [{ code: "internal", count: 1 }],
+      failures: 5,
+      pct: 21,
+      windowMinutes: 180,
+      topCodes: [{ code: "internal", count: 5 }],
+      recentMinutes: 30,
+      recent: { attempts: 1, failures: 1 },
+      span: { firstMs: PREVIEW_WAVE.newestMs, newestMs: PREVIEW_WAVE.newestMs },
     }),
   },
   {
@@ -1430,11 +1454,14 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       attempts: 60,
       failures: 30,
       pct: 50,
-      windowMinutes: 60,
+      windowMinutes: 180,
       topCodes: [
         { code: "internal", count: 28 },
         { code: "no_eligible_agents", count: 2 },
       ],
+      recentMinutes: 30,
+      recent: { attempts: 10, failures: 6 },
+      span: PREVIEW_WAVE,
     }),
   },
   {
@@ -1448,8 +1475,11 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       attempts: 31,
       failures: 29,
       pct: 94,
-      windowMinutes: 60,
+      windowMinutes: 180,
       topCodes: [{ code: "API_KEY_REJECTED", count: 29 }],
+      recentMinutes: 30,
+      recent: { attempts: 6, failures: 6 },
+      span: PREVIEW_WAVE,
     }),
   },
   {
@@ -1460,8 +1490,11 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       attempts: 18,
       failures: 18,
       pct: 100,
-      windowMinutes: 60,
+      windowMinutes: 180,
       topCodes: [{ code: "API_NOT_CONFIGURED", count: 18 }],
+      recentMinutes: 30,
+      recent: { attempts: 5, failures: 5 },
+      span: PREVIEW_WAVE,
     }),
   },
   {
@@ -1472,15 +1505,103 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       attempts: 40,
       failures: 12,
       pct: 30,
-      windowMinutes: 60,
+      windowMinutes: 180,
       topCodes: [],
+      recentMinutes: 30,
+      recent: { attempts: 8, failures: 4 },
+      span: PREVIEW_WAVE,
     }),
   },
   {
+    // #3275: the all-clear stands on a measured clean run of recent attempts and
+    // quotes nothing else, never the window's share.
     key: "booking_failure_rate",
-    state: "bookings completing again",
+    state: "bookings completing again, nothing failed since",
     channel: "recovery",
-    text: formatFailureRateAllClear({ attempts: 90, failures: 2, pct: 2, windowMinutes: 60 }),
+    text: formatFailureRateAllClear({ recentMinutes: 30, recent: { attempts: 6, failures: 0 }, newestFailureMs: PREVIEW_WAVE.newestMs }),
+  },
+  {
+    key: "booking_failure_rate",
+    state: "bookings completing again, one ordinary failure in a busy half hour",
+    channel: "recovery",
+    text: formatFailureRateAllClear({ recentMinutes: 30, recent: { attempts: 24, failures: 1 }, newestFailureMs: PREVIEW_WAVE.newestMs }),
+  },
+  {
+    key: "booking_failure_rate",
+    state: "bookings completing again, no failure left in the window",
+    channel: "recovery",
+    text: formatFailureRateAllClear({ recentMinutes: 30, recent: { attempts: 9, failures: 0 }, newestFailureMs: null }),
+  },
+  {
+    // #3275, the 2026-10-14 6:00am shape: the window crossed the line an hour after
+    // its last failure. Reported once, as past, on its own key, so no all-clear
+    // follows it five minutes later.
+    key: "booking_failure_burst_ended",
+    state: "a burst that stopped, with a clean run since",
+    channel: "alert",
+    text: formatFailureBurstEnded({
+      attempts: 38,
+      failures: 8,
+      pct: 21,
+      windowMinutes: 180,
+      topCodes: [
+        { code: "slot_unavailable", count: 6 },
+        { code: "internal", count: 2 },
+      ],
+      recentMinutes: 30,
+      recent: { attempts: 6, failures: 0 },
+      span: PREVIEW_BURST,
+      minRecentAttempts: 5,
+    }),
+  },
+  {
+    key: "booking_failure_burst_ended",
+    state: "people counted, with a clean run since",
+    channel: "alert",
+    text: formatFailureBurstEnded({
+      attempts: 38,
+      failures: 8,
+      pct: 21,
+      windowMinutes: 180,
+      topCodes: [{ code: "slot_unavailable", count: 8 }],
+      refused: { people: 3, refusals: 5, withoutLead: 0 },
+      recentMinutes: 30,
+      recent: { attempts: 6, failures: 0 },
+      span: PREVIEW_BURST,
+      minRecentAttempts: 5,
+    }),
+  },
+  {
+    key: "booking_failure_burst_ended",
+    state: "too few attempts since to say bookings are completing",
+    channel: "alert",
+    text: formatFailureBurstEnded({
+      attempts: 38,
+      failures: 8,
+      pct: 21,
+      windowMinutes: 180,
+      topCodes: [{ code: "slot_unavailable", count: 8 }],
+      recentMinutes: 30,
+      recent: { attempts: 2, failures: 0 },
+      span: PREVIEW_BURST,
+      minRecentAttempts: 5,
+    }),
+  },
+  {
+    key: "booking_failure_burst_ended",
+    state: "nobody has tried to book since",
+    channel: "alert",
+    text: formatFailureBurstEnded({
+      attempts: 38,
+      failures: 8,
+      pct: 21,
+      windowMinutes: 180,
+      topCodes: [{ code: "internal", count: 8 }],
+      recentMinutes: 30,
+      recent: { attempts: 0, failures: 0 },
+      span: { firstMs: PREVIEW_BURST.newestMs, newestMs: PREVIEW_BURST.newestMs },
+      minRecentAttempts: 5,
+    }),
   },
   // #3179. Spends judged by the real judge against the documented projection, so the
   // budget figures in the copy are the ones docs/slo.md quotes.

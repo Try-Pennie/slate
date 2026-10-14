@@ -22,7 +22,11 @@
  *      it: the canary is uploaded with SLATE_CRON_STANDBY=1 and its scheduled() handler
  *      runs no lane at all (worker/cron-standby.ts). Whatever Cloudflare does, only the
  *      OLD version runs cron lanes during the split, and a tick that happens to be handed
- *      to the canary is dropped rather than run twice or run by unproven code.
+ *      to the canary is dropped rather than run twice or run by unproven code. Since
+ *      #3693 the old version sends each lane over its binding to itself, and a binding
+ *      call is routed by the split like any request, so the canary's fetch handler
+ *      refuses a placed lane before the app (`placedLaneStandbyRefusal`) and the old
+ *      version runs it in process instead.
  *   3. Durable Objects: each object is assigned ONE version per deployment by the same
  *      percentages, and requests to it use that version for the life of the deployment
  *      (developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/with-durable-objects/).
@@ -423,11 +427,11 @@ export function maxCronWaitMs(crons: string[], budgetMs = SPLIT_BUDGET_MS, margi
 // --- the run itself ----------------------------------------------------------------
 
 /**
- * #3500, #3555: the small workers that host Slate's Durable Objects, each deployed whole
+ * #3500, #3555, #3512: the small workers that host Slate's Durable Objects, each deployed whole
  * before Slate on every path that deploys it (this gradual deploy, the hand deploy, the
  * load run), because Slate binds its objects to them by script name.
  */
-export const OBJECT_WORKER_CONFIGS = ["wrangler.confirm-line.jsonc", "wrangler.burst-limiter.jsonc"] as const;
+export const OBJECT_WORKER_CONFIGS = ["wrangler.confirm-line.jsonc", "wrangler.burst-limiter.jsonc", "wrangler.token-holder.jsonc"] as const;
 
 /** How a run ended, as a process exit code. Each one is its own message and its own
  *  remedy, so none of them may share a number (scripts/test-gradual-deploy.ts). */

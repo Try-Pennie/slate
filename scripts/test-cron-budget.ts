@@ -181,6 +181,8 @@ const row = (cron: string, cpuTimeUs: unknown) => ({ cron, cpuTimeUs, status: "s
   const clear = formatCronCpuRecovery({ status: "within", crons, invocations: 1728 });
   assert(clear.includes("84.2s") && clear.includes("`*/5 * * * *`") && clear.includes("1,728"), "the all clear says what it measured and over how many ticks");
   assert(/cpuTimeUs/.test(clear), "and where the number came from");
+  // #3693: a placed lane is its own request, so the scheduled reading cannot vouch for it.
+  assert(/placed/.test(clear) && /not included/.test(clear), "and that a placed lane's CPU is not in it");
   const notConfigured = formatCronCpuNotConfigured();
   assert(notConfigured.includes(CF_ANALYTICS_TOKEN_ENV), "the unset state names the secret");
   assert(/not measured/i.test(notConfigured) && !/healthy|within|under the line/i.test(notConfigured), "and claims nothing about health");
@@ -354,6 +356,7 @@ const day = (worstMs: number) => async () => ({
     log: {
       error: (_tag, fields) => errors.push(String(fields.msg)),
       warn: (_tag, fields) => warns.push(fields),
+      info: () => {},
     },
   });
   const ok = deps(async (r) => {

@@ -70,8 +70,10 @@ not redeployed since the receipt shipped (`npx wrangler deploy -c wrangler.log-t
 **Fix or escalate.** A lane that is not firing is a platform-level problem (a bad
 deploy, a Cloudflare incident): redeploy, and check the deploy actually landed
 (`GET /api/smoke/version`). A lane that fires and throws is a code problem: the tail
-shows the error. Four lanes share one invocation budget, so a lane that got slow can
-starve its neighbours (`docs/cloudflare-platform-notes.md`).
+shows the error. Each lane runs as its own placed invocation (#3693), but a lane that
+fell back to in process (`<lane>_via=in_process` on the `lane timings` line) shares the
+cron's invocation budget, so a slow one can starve its neighbours
+(`docs/cloudflare-platform-notes.md`).
 
 ---
 
@@ -80,7 +82,8 @@ starve its neighbours (`docs/cloudflare-platform-notes.md`).
 Keys: `empty_tier:*`, `bucket_slots_stale`, `availability_booked_solid`,
 `availability_data_anomaly`, `availability_drift:*`, `fallback_covered_availability`,
 `thin_tier_staffing`, `tier_fallback_deep:*`, `no_eligible_agents:*`,
-`low_booking_volume`, `booking_failure_rate`, `booking_budget:*`, `calendar_window_uncovered`,
+`low_booking_volume`, `booking_failure_rate`, `booking_failure_burst_ended`,
+`booking_budget:*`, `calendar_window_uncovered`,
 `booker_unstaffed:*`, `public_booking_stopped`, `booking_race_contention`,
 `booking_race_bound_hit`, `pool_nearly_full`, `busy_cache_drift`.
 
@@ -131,6 +134,16 @@ reports the same silence as a drought and sends a reader after a funnel problem 
 not there, so **check the switch before anything else here**. The Overview and the admin
 business hours page both show it, and starting booking again is what ends the notice; if
 it is still meant to be off, nothing needs doing and the notice repeats while it stands.
+
+**`booking_failure_rate` pages only while failures are still happening** (#3275). It
+needs both the last 180 minutes over 20% failed AND the last 30 minutes holding more
+failures than a clean run allows, and it says "Still failing" and when the window's
+failures were recorded (ET). It stands down only when the last 30 minutes hold at least
+5 attempts with no more than 5% failed, so a quiet half hour clears nothing. A burst
+that had already stopped when the window crossed the line arrives instead as
+`booking_failure_burst_ended`, once, worded as past: nothing to stop, but the same
+investigation of what refused people, in `/admin/booking-outcomes` over the times it
+names.
 
 **`booking_budget:*` is the month, not the minute** (#3179). Half of what the booking
 success (98.5%) or availability (99.5%) target in `docs/slo.md` allows this month has been

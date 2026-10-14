@@ -117,6 +117,32 @@ eq(laneFieldName(""), "unknown", "an empty path still yields a usable field name
 }
 
 {
+  // #3693: which path each lane ran on, so the effect of placing them is measurable.
+  const fields = laneTimingFields(
+    [
+      { path: "/api/cron/sync", ms: 40, ok: true, via: "placed", placement: "remote-SEA" },
+      { path: "/api/cron/recompute", ms: 90, ok: true, via: "placed", placement: null },
+      { path: "/api/cron/outbox", ms: 20, ok: true, via: "in_process", fallback: "standby_canary" },
+      { path: "/api/cron/selfheal", ms: 10, ok: true },
+    ],
+    95,
+  );
+  eq(fields.sync_via, "placed", "a placed lane says so");
+  eq(fields.sync_placement, "remote-SEA", "with the cf-placement value");
+  eq(fields.recompute_placement, "none", "a placed lane with no header says none, never nothing");
+  eq(fields.outbox_via, "in_process", "a lane that fell back says in process");
+  eq(fields.outbox_fallback, "standby_canary", "and why");
+  assert(!("outbox_placement" in fields), "and carries no placement, since nothing placed it");
+  assert(!("selfheal_via" in fields), "a run with no recorded path claims none");
+  eq(fields.lanes_placed, 2, "and the placed lanes are counted, so the share charts");
+}
+
+{
+  const fields = laneTimingFields([{ path: "/api/cron/sync", ms: 5, ok: true }], 5);
+  eq(fields.lanes_placed, 0, "the placed count is present at zero, so it sums");
+}
+
+{
   const fields = laneTimingFields([], 3);
   eq(fields.total_ms, 3, "an invocation with no lanes still reports its own time");
   assert(!("slowest" in fields), "and names no slowest lane");

@@ -664,10 +664,12 @@ pnpm cf:build && npx wrangler deploy --env loadtest
 ```
 
 Before the FIRST deploy of a fresh setup, deploy the object workers the load test binds
-(#3500, #3555): `npx wrangler deploy -c wrangler.confirm-line.jsonc --env loadtest` and
-`npx wrangler deploy -c wrangler.burst-limiter.jsonc --env loadtest`. The load test
-Worker's `CONFIRM_LINE` and `BURST_LIMITER` name `slate-confirm-line-loadtest` and
-`slate-burst-limiter-loadtest` by script, so a Slate deployed without them has no object
+(#3500, #3555, #3512): `npx wrangler deploy -c wrangler.confirm-line.jsonc --env loadtest`,
+`npx wrangler deploy -c wrangler.burst-limiter.jsonc --env loadtest` and
+`npx wrangler deploy -c wrangler.token-holder.jsonc --env loadtest`. The load test
+Worker's `CONFIRM_LINE`, `BURST_LIMITER` and `TOKEN_HOLDER` name
+`slate-confirm-line-loadtest`, `slate-burst-limiter-loadtest` and
+`slate-token-holder-loadtest` by script, so a Slate deployed without them has no object
 to reach. The run's arm job deploys them again when it redeploys; it is idempotent.
 
 ### Three refusals, and no one of them answers for the others
@@ -1089,6 +1091,16 @@ sources say zero, which the judge asks for by name (`cronSource` must be
 saying how many ticks were counted and WHICH source counted them.
 
 Pinned offline by `scripts/test-loadtest-scheduled-source.ts`.
+
+**Placed lanes (#3693).** A tick now sends each lane over the Worker's binding to
+itself, so a lane's CPU is spent in its own FETCH invocation, addressed to
+`https://slate-loadtest.invalid/api/cron/<lane>`, and the scheduled invocation holds
+only the dispatcher. The archive reader counts those placed invocations as cron work
+under `placed /api/cron/<lane>`, and checks them against the `lanes_placed` count on
+each tick's `lane timings` line. Ticks reporting placed lanes with none of them in the
+archive refuse the cron half rather than judging the dispatcher; a few missing (a
+stream attached mid tick) are counted as unread CPU. The analytics dataset holds
+scheduled invocations only, so once lanes are placed the archive is the source.
 
 ### What the judge refuses to do
 

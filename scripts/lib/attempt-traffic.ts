@@ -27,16 +27,20 @@ export function reachedBy(values: readonly number[], coverage: number): number {
   return sorted[Math.floor((1 - coverage) * (sorted.length - 1))]!;
 }
 
+/** Every measured tier summed bucket by bucket over the span all of them cover. */
+interface SummedSeries {
+  list: [string, VolumeFixture][];
+  startMs: number;
+  bucketMinutes: number;
+  total: number[];
+}
+
 /**
- * The measurement, from the committed tier fixtures. Every fixture must share one
+ * The summed series, from the committed tier fixtures. Every fixture must share one
  * bucket length; the span is the stretch every one of them covers, so no tier is
  * counted as zero where it simply was not measured.
  */
-export function attemptTrafficFromFixtures(
-  fixtures: Readonly<Record<string, VolumeFixture>>,
-  coverage: number = FAILURE_RATE_FIT.windowCoverage,
-  maxWindowHours: number = FAILURE_RATE_FIT.maxWindowHours,
-): Omit<AttemptTrafficMeasurement, "slateShare" | "slateShareSource" | "excluded"> {
+function summedSeries(fixtures: Readonly<Record<string, VolumeFixture>>): SummedSeries {
   const list = Object.entries(fixtures).sort(([a], [b]) => a.localeCompare(b));
   if (list.length === 0) throw new Error("attempt traffic: no measurements to read");
   const bucketMinutes = list[0]![1].bucketMinutes;
@@ -50,9 +54,7 @@ export function attemptTrafficFromFixtures(
   };
   const startMs = Math.max(...list.map(([, f]) => spanOf(f)[0]));
   const endMs = Math.min(...list.map(([, f]) => spanOf(f)[1]));
-  const n = Math.floor((endMs - startMs) / per);
-  const perHourBuckets = 60 / bucketMinutes;
-  if (n < maxWindowHours * perHourBuckets) throw new Error("attempt traffic: the measurements share too short a span");
+  const n = Math.max(0, Math.floor((endMs - startMs) / per));
 
   const total = new Array<number>(n).fill(0);
   for (const [, f] of list) {
@@ -64,6 +66,61 @@ export function attemptTrafficFromFixtures(
       });
     }
   }
+  return { list, startMs, bucketMinutes, total };
+}
+
+/**
+ * The share of rolling windows `minutes` long that hold at least `floor` attempts at
+ * Slate's `share` of the measured traffic: around the clock, and only those ending
+ * between `fromHour` and `toHour` (exclusive) in ET. What #3275's recent sub window is
+ * judged against, from the same series and the same share as the window above it.
+ */
+export function shortWindowReach(
+  fixtures: Readonly<Record<string, VolumeFixture>>,
+  minutes: number,
+  floor: number,
+  share: number,
+  fromHour: number,
+  toHour: number,
+): { allDay: number; daytime: number } {
+  const { startMs, bucketMinutes, total } = summedSeries(fixtures);
+  if (minutes % bucketMinutes !== 0) throw new Error("attempt traffic: the window is not a whole number of buckets");
+  const w = minutes / bucketMinutes;
+  const per = bucketMinutes * 60_000;
+  const etHour = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hourCycle: "h23" });
+  let windows = 0;
+  let reached = 0;
+  let dayWindows = 0;
+  let dayReached = 0;
+  let sum = total.slice(0, w).reduce((s, v) => s + v, 0);
+  for (let i = w; i <= total.length; i++) {
+    const hits = sum * share >= floor;
+    const hour = Number(etHour.format(new Date(startMs + i * per)));
+    windows++;
+    if (hits) reached++;
+    if (hour >= fromHour && hour < toHour) {
+      dayWindows++;
+      if (hits) dayReached++;
+    }
+    if (i < total.length) sum += total[i]! - total[i - w]!;
+  }
+  if (windows === 0 || dayWindows === 0) throw new Error("attempt traffic: no windows to measure");
+  return { allDay: reached / windows, daytime: dayReached / dayWindows };
+}
+
+/**
+ * The measurement, from the committed tier fixtures (see `summedSeries` for the span).
+ */
+export function attemptTrafficFromFixtures(
+  fixtures: Readonly<Record<string, VolumeFixture>>,
+  coverage: number = FAILURE_RATE_FIT.windowCoverage,
+  maxWindowHours: number = FAILURE_RATE_FIT.maxWindowHours,
+): Omit<AttemptTrafficMeasurement, "slateShare" | "slateShareSource" | "excluded"> {
+  const { list, startMs, bucketMinutes, total } = summedSeries(fixtures);
+  const per = bucketMinutes * 60_000;
+  const n = total.length;
+  const perHourBuckets = 60 / bucketMinutes;
+  if (n < maxWindowHours * perHourBuckets) throw new Error("attempt traffic: the measurements share too short a span");
 
   const windowReach: Record<string, number> = {};
   for (let hours = 1; hours <= maxWindowHours; hours++) {
