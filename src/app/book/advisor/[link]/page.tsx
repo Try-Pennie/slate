@@ -11,6 +11,7 @@ import { headers } from "next/headers";
 import { agentLinkPoolCode, resolveAgentLink } from "@/lib/agent-link/store";
 import { agentLinkPoolHref } from "@/lib/agent-link/link";
 import { readHostColours } from "@/lib/embed/host-colours";
+import { prefillFromQuery } from "@/lib/booking/book-link";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -82,10 +83,7 @@ export default async function AgentLinkPage({
   const externalId = first(sp, "external_id") || null;
   const phone =
     first(sp, "phone") || first(sp, "attendeePhoneNumber") || first(sp, "smsReminderNumber");
-  const prefill: Record<string, string> = {};
-  for (const [k, v] of Object.entries(sp)) {
-    prefill[k] = Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
-  }
+  const prefill = prefillFromQuery(sp);
   // #2072's vocabulary already names this page: an advisor's direct link. A link
   // that says otherwise keeps its own value, as every other page's does.
   if (!prefill.source) prefill.source = "agent-direct";

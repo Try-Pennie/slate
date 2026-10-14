@@ -33,16 +33,34 @@ export interface BookEntryQuery {
   submissionId: string | null;
   /** The lead's details as the link carried them, "" for anything it did not. */
   link: { name: string; email: string; phone: string };
-  /** Every query value, first value per key: the booking records it as `prefill`. */
+  /** Every query value, first value per key, bar the display only ones: the booking records it as `prefill`. */
   prefill: Record<string, string>;
+}
+
+/**
+ * Link values that only decide how the booker LOOKS (#3718), so a booking has no
+ * use for them. A booking keeps at most `INPUT_LIMITS.prefillKeys` (20) link values
+ * and refuses one carrying more, and the inline card's link already uses about 13
+ * before a landing page's own tracking values join it, so these are not stored.
+ * `layout` is kept, because the pilot readout tells an inline card booking by it,
+ * and `parentOrigin` is kept, because the off site page reads it.
+ */
+export const DISPLAY_ONLY_PARAMS: readonly string[] = ["embed", "theme", "brand", "bg", "callMeNow"];
+const DISPLAY_ONLY = new Set(DISPLAY_ONLY_PARAMS);
+
+/** What a booking stores from its link: every value, first per key, bar the display only ones. */
+export function prefillFromQuery(sp: SP): Record<string, string> {
+  const prefill: Record<string, string> = {};
+  for (const [k, v] of Object.entries(sp)) {
+    if (DISPLAY_ONLY.has(k)) continue;
+    prefill[k] = Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
+  }
+  return prefill;
 }
 
 /** Read `/book`'s query the way the page does. */
 export function readBookEntryQuery(sp: SP): BookEntryQuery {
-  const prefill: Record<string, string> = {};
-  for (const [k, v] of Object.entries(sp)) {
-    prefill[k] = Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
-  }
+  const prefill = prefillFromQuery(sp);
   return {
     requestedCode: first(sp, "xbc"),
     externalId: first(sp, "external_id") || null,

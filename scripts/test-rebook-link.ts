@@ -17,6 +17,7 @@ import {
   loadRebookRow,
   parseRebookRow,
   readBookEntryQuery,
+  prefillFromQuery,
   rebookEntry,
   rebookHref,
   type RebookDeps,
@@ -174,6 +175,27 @@ async function main() {
   eq(readBookEntryQuery({ attendeePhoneNumber: "+12155550100" }).link.phone, "+12155550100", "attendeePhoneNumber alias");
   eq(readBookEntryQuery({ smsReminderNumber: "+12155550101" }).link.phone, "+12155550101", "smsReminderNumber alias");
   eq(readBookEntryQuery({ xbc: ["7", "8"] }).requestedCode, "7", "a repeated key reads its first value");
+
+  // --- what a booking stores from its link (#3718) ----------------------------
+  // A booking keeps at most 20 link values and refuses one carrying more, and the
+  // inline card's link already uses about 13 before a landing page adds its own
+  // tracking. The five that only decide how the booker LOOKS are not stored.
+  {
+    const link = {
+      xbc: "411", external_id: "00QUi000010889ZMAQ", email: "a@b.test", phone: "2197588170",
+      embed: "1", theme: "dark", brand: "#000000", bg: "#1D212F", callMeNow: "above",
+      layout: "inline", parentOrigin: "https://trypennie.com", utm_source: "google",
+    };
+    const stored = prefillFromQuery(link);
+    eq(Object.keys(stored).sort(), ["email", "external_id", "layout", "parentOrigin", "phone", "utm_source", "xbc"], "the display only values are left out, everything else is kept");
+    eq(readBookEntryQuery(link).prefill, stored, "and /book stores exactly that");
+    eq(prefillFromQuery({ source: ["offerhub", "x"] }), { source: "offerhub" }, "a repeated key keeps its first value");
+    for (const page of ["src/app/book/page.tsx", "src/app/booking/[id]/page.tsx", "src/app/book/advisor/[link]/page.tsx"]) {
+      const text = readFileSync(page, "utf8");
+      assert(text.includes("readBookEntryQuery(") || text.includes("prefillFromQuery("), `${page} builds its stored values through the shared reader`);
+      assert(!/prefill\[k\]\s*=/.test(text), `${page} has no copy of its own`);
+    }
+  }
 
   finish();
 }
