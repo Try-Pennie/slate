@@ -562,6 +562,8 @@
       iframe.style.display = "block";
     });
     retry.addEventListener("click", function () {
+      // A reload is a new load, judged afresh.
+      loaded = false;
       notice.style.display = "none";
       iframe.style.display = "block";
       // Setting src again reloads the frame, as the modal's retry does.

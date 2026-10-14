@@ -1260,6 +1260,19 @@ describe("widget.js inline embed (#3718)", () => {
     expect(inlineIframe(el)!.style.display).toBe("block");
   });
 
+  it("judges each Try again afresh, announcing a second failure as it did the first", () => {
+    vi.useFakeTimers();
+    const el = slot();
+    const failures: unknown[] = [];
+    cal()("on", { action: "linkFailed", callback: (e: { detail: { data: unknown } }) => failures.push(e.detail.data) });
+    cal()("inline", { elementOrSelector: "#slot", calLink: "router?xbc=411" });
+    vi.advanceTimersByTime(12000);
+    Array.from(el.querySelectorAll("button")).find((b) => /try again/i.test(b.textContent || ""))!.click();
+    vi.advanceTimersByTime(12000);
+    expect(failures).toHaveLength(2);
+    expect(el.querySelector<HTMLElement>('[role="alert"]')!.style.display).toBe("block");
+  });
+
   it("takes the notice down and shows the booker when it loads after the notice went up", () => {
     vi.useFakeTimers();
     const el = slot();
