@@ -97,6 +97,24 @@ describe("the inline card (#3718)", () => {
     await waitFor(() => expect(timeButtons()).toHaveLength(2));
   });
 
+  it("opens on the first day, which then says why, when no time at all fits the lead's calling hours", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        bucket: { code: "411" },
+        orgName: "Pennie",
+        eventType: { name: "Advisor Call", description: null, durationMin: 30 },
+        slots: [bookerSlotIso(3, 21), bookerSlotIso(4, 22)],
+      }),
+    })) as unknown as typeof fetch;
+    render(<Booker {...baseProps} layout="inline" />);
+    // Not a blank card and not the "pick a day" prompt: the first day, chosen, saying
+    // its times fall outside the lead's calling hours.
+    expect(await screen.findByText(/calling hours|8 AM|8 PM/i, { selector: "span.block" })).toBeTruthy();
+    expect(timeButtons()).toHaveLength(0);
+    expect(screen.queryByText(PICKER_COPY.pickADay, { selector: "span.block" })).toBeNull();
+  });
+
   it("leaves the ordinary booker as it was when no layout is asked for", async () => {
     render(<Booker {...baseProps} />);
     expect(await screen.findByRole("heading", { name: "Advisor Call" })).toBeTruthy();
