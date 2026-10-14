@@ -86,6 +86,7 @@ import {
   ladderFreeFrom,
   readRetryingTimeouts,
   refusalLadders,
+  rosterUnreadable,
   type LadderCandidate,
 } from "./burst-target.ts";
 import { poolDepthsFrom } from "./pool-depth.ts";
@@ -227,6 +228,12 @@ async function measuredCapacity(c: LadderCandidate, slot: string): Promise<Burst
 }
 
 // --- the roster and its ladders, measured -----------------------------------------
+/** One setup read, asked again when it only timed out (#3737); throws when it cannot answer. */
+async function readOrThrow<T>(what: string, read: () => Promise<T>): Promise<T> {
+  const r = await readRetryingTimeouts(read, { onRetry: (line) => console.log(`  ${what}: ${line}`) });
+  if (r.ok) return r.value;
+  throw new Error(r.reason);
+}
 let candidates: LadderCandidate[];
 let staffedPools = 0;
 let poolCount = 0;
@@ -234,20 +241,22 @@ try {
   const db = supabaseAdmin();
   // cap-safe: users is roster bounded, the seeded roster is ~94 rows against a
   // 200-agent design target
-  const agents = (unwrap(
-    await db
-      .from("users")
-      .select("id, attributes")
-      .eq("bookable", true)
-      .is("deactivated_at", null)
-      .eq("is_test", false),
-    "burst target agents",
-  ) ?? []) as { id: string; attributes: Attributes | null }[];
+  const agents = ((await readOrThrow("the roster", async () =>
+    unwrap(
+      await db
+        .from("users")
+        .select("id, attributes")
+        .eq("bookable", true)
+        .is("deactivated_at", null)
+        .eq("is_test", false),
+      "burst target agents",
+    ),
+  )) ?? []) as { id: string; attributes: Attributes | null }[];
   // The buckets and their hand named members through the app's OWN pool reader
   // (#3325), the one the recompute lane groups on, so the ladders below are read from
   // exactly the inputs the booker uses (L107). Test buckets are left out, as the
   // booking cascade leaves them out of every routed ladder.
-  const rows = (await listPoolBuckets()).filter((r) => !r.bucket.is_test);
+  const rows = (await readOrThrow("the pool buckets", () => listPoolBuckets())).filter((r) => !r.bucket.is_test);
   const depths = poolDepthsFrom({
     agents,
     buckets: rows.map((r) => ({ id: r.bucket.id, code: r.code, criteria: r.criteria })),
@@ -270,10 +279,7 @@ try {
   // Its OWN exit code. A roster this cannot read and a roster with nothing to burst at
   // send two different people to two different places (L11), and an empty list would
   // make every ladder look unreachable and pick nothing.
-  console.error(
-    `FAILED: the roster and its ladders could not be measured (${String(err)}), so no burst can be sized ` +
-      "against what its ladder holds. Set the branch's database credentials.",
-  );
+  console.error(rosterUnreadable(err instanceof Error ? err.message : String(err)));
   process.exit(4);
 }
 if (staffedPools === 0) {

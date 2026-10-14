@@ -394,3 +394,15 @@ export async function readRetryingTimeouts<T>(
       io.onRetry(`retrying a timed out read after attempt ${attempt}, in ${waitMs}ms: ${reason}`),
   });
 }
+
+/**
+ * The setup's refusal when the roster and its ladders could not be read (exit 4),
+ * worded by cause (L11, #3737): a read that timed out on every attempt is a slow
+ * database, and only any other failure points at the branch's credentials.
+ */
+export function rosterUnreadable(reason: string): string {
+  const head = `FAILED: the roster and its ladders could not be measured (${reason}), so no burst can be sized against what its ladder holds.`;
+  return isTimedOutRead(reason)
+    ? `${head} The branch's database did not answer in time on any attempt; read its logs for what held it, then run again.`
+    : `${head} Set the branch's database credentials.`;
+}

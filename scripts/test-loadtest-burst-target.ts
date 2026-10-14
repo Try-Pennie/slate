@@ -32,6 +32,7 @@ import {
   ladderFreeFrom,
   ladderRosterIds,
   readRetryingTimeouts,
+  rosterUnreadable,
   ladderSignature,
   poolKeysByCode,
   refusalLadders,
@@ -356,6 +357,15 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
     thrown = err;
   }
   assert(refused === 1 && thrown instanceof Error && thrown.message.includes("does not exist"), `read retry: a failure that is not a timeout is thrown at once, never retried (got ${refused} calls, ${String(thrown)})`);
+}
+
+// #3737: the roster refusal named credentials for every failure, so a database that
+// answered too slowly sent the reader to fix keys that were fine (L11).
+{
+  const slow = rosterUnreadable("read failed [burst target agents]: DeadlineExceededError: supabase did not answer within 15000ms (failed on all 3 attempt(s))");
+  assert(slow.includes("did not answer") && !/credentials/i.test(slow), `roster refusal: a timeout says the database was slow, not that credentials are wrong (got ${slow})`);
+  const denied = rosterUnreadable("read failed [burst target agents]: Invalid API key");
+  assert(/credentials/i.test(denied) && denied.includes("Invalid API key"), `roster refusal: any other failure still names the credentials and the cause (got ${denied})`);
 }
 
 finish();
