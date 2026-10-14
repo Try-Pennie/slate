@@ -356,6 +356,7 @@ const day = (worstMs: number) => async () => ({
     log: {
       error: (_tag, fields) => errors.push(String(fields.msg)),
       warn: (_tag, fields) => warns.push(fields),
+      info: () => {},
     },
   });
   const ok = deps(async (r) => {
