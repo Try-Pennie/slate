@@ -30,6 +30,7 @@ import type { LogFields } from "@/lib/log";
 import { shapePrecomputedRow } from "@/lib/availability/precompute-shape";
 import { servedSlotsForRung } from "@/lib/availability/offered-window";
 import { parseStampMs } from "@/lib/date/stamp";
+import { rowProvenance } from "@/lib/availability/slot-row-writer";
 
 /** A `bucket_slots` row as read for this check. */
 export interface StoredSlotRow {
@@ -115,9 +116,16 @@ export function storedOfferFields(t: RefusalTrace, rows: StoredSlotRow[], nowMs:
     stored_offer: verdicts.map((x) => `${x.code}:${x.v}`).join(","),
     stored_computed_at: verdicts.map((x) => `${x.code}:${x.row?.computed_at ?? "-"}`).join(","),
     stored_age_s: verdicts.map((x) => `${x.code}:${age(x.row?.computed_at)}`).join(","),
+    // #3381: which path wrote each row, and the newest booking splice since its
+    // compute ("+reoffer" when a move re-offered a window, the one splice that can add a
+    // time). "-" is not recorded, never a writer.
+    stored_written_by: verdicts.map((x) => `${x.code}:${provenance(x.row).writtenBy ?? "-"}`).join(","),
+    stored_spliced: verdicts.map((x) => `${x.code}:${provenance(x.row).spliced ?? "-"}`).join(","),
     stored_row_offers_start: overall(verdicts.map((x) => x.v)),
   };
 }
+
+const provenance = (row: StoredSlotRow | undefined) => rowProvenance(row?.payload);
 
 function common(t: RefusalTrace): LogFields {
   return { requested_start: t.requestedStart, bucket_code: t.bucketCode, lead_id: t.leadId ?? null };

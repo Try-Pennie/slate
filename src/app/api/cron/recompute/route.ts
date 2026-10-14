@@ -221,7 +221,7 @@ async function recomputeLocked(prefetched: PooledBucket[] | null) {
     const recomputed = await recomputeDueBuckets(
       duePools,
       (pool) =>
-        recomputePoolSlotsForToday(pool, (b) => eligibleAgentIdsCached(b), horizonDays),
+        recomputePoolSlotsForToday(pool, "lane", (b) => eligibleAgentIdsCached(b), horizonDays),
       () => withinBudget(Date.now(), deadlineMs),
       RECOMPUTE_CONCURRENCY,
       (pool) => pool.map((b) => b.code).join("+"),

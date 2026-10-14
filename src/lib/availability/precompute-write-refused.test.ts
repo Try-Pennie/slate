@@ -44,32 +44,32 @@ beforeEach(() => {
 
 describe("a refused slot row write (#3119)", () => {
   it("writeBucketSlotsRow returns the stamp when the row was stored", async () => {
-    await expect(writeBucketSlotsRow("411", PAYLOAD as never, 1_000)).resolves.toBe(
+    await expect(writeBucketSlotsRow("411", PAYLOAD as never, 1_000, "lane")).resolves.toBe(
       new Date(1_000).toISOString(),
     );
   });
 
   it("writeBucketSlotsRow throws SlotRowRefused when the database refuses the row", async () => {
     db.insertError = { code: "42501", message: "permission denied" };
-    await expect(writeBucketSlotsRow("411", PAYLOAD as never, 1_000)).rejects.toBeInstanceOf(
+    await expect(writeBucketSlotsRow("411", PAYLOAD as never, 1_000, "lane")).rejects.toBeInstanceOf(
       SlotRowRefused,
     );
   });
 
   it("storeBucketSlotsRow answers failed, for the pooled path to count", async () => {
     db.insertError = { code: "42501", message: "permission denied" };
-    await expect(storeBucketSlotsRow("411", PAYLOAD as never, 1_000)).resolves.toBe("failed");
+    await expect(storeBucketSlotsRow("411", PAYLOAD as never, 1_000, "lane")).resolves.toBe("failed");
   });
 
   it("recomputeBucketSlots does not report a refused write as a refresh", async () => {
     db.insertError = { code: "42501", message: "permission denied" };
     await expect(
-      recomputeBucketSlots("411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z"),
+      recomputeBucketSlots("411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z", "lane"),
     ).rejects.toBeInstanceOf(SlotRowRefused);
   });
 
   it("recomputeBucketSlots still returns the payload when the row was stored", async () => {
-    const res = await recomputeBucketSlots("411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z");
+    const res = await recomputeBucketSlots("411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z", "lane");
     expect(res?.slots).toEqual(PAYLOAD.slots);
   });
 });

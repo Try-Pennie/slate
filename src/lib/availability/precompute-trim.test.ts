@@ -65,7 +65,7 @@ beforeEach(() => {
 
 describe("recomputeBucketSlots bookable-day trim", () => {
   it("stores the first N days that HAVE times, walking past the empty Sunday", async () => {
-    await recomputeBucketSlots("411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z", undefined, 4);
+    await recomputeBucketSlots("411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z", "lane", undefined, 4);
 
     expect(daysIn(writtenSlots())).toEqual([
       "2026-08-13",
@@ -76,19 +76,19 @@ describe("recomputeBucketSlots bookable-day trim", () => {
   });
 
   it("keeps every time on a kept day, not just the first", async () => {
-    await recomputeBucketSlots("411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z", undefined, 4);
+    await recomputeBucketSlots("411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z", "lane", undefined, 4);
     // Thursday has two; both must survive or the day is offered half empty.
     expect(writtenSlots().filter((s) => s.startsWith("2026-08-13"))).toHaveLength(2);
   });
 
   it("drops the days beyond the count, so the row matches what is served", async () => {
-    await recomputeBucketSlots("411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z", undefined, 4);
+    await recomputeBucketSlots("411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z", "lane", undefined, 4);
     expect(writtenSlots().some((s) => s.startsWith("2026-08-18"))).toBe(false);
   });
 
   it("returns the trimmed payload, not the wider one it computed", async () => {
     const res = await recomputeBucketSlots(
-      "411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z", undefined, 4,
+      "411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z", "lane", undefined, 4,
     );
     expect(daysIn(res!.slots)).toHaveLength(4);
   });
@@ -96,7 +96,7 @@ describe("recomputeBucketSlots bookable-day trim", () => {
   it("stores everything when no count is given, so an untrimmed caller is unchanged", async () => {
     // The parameter is optional and the monitor's probe calls without it; that path
     // must keep seeing the full computed window rather than silently losing days.
-    await recomputeBucketSlots("411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z");
+    await recomputeBucketSlots("411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z", "lane");
     expect(writtenSlots()).toHaveLength(WIDE.slots.length);
   });
 
@@ -106,7 +106,7 @@ describe("recomputeBucketSlots bookable-day trim", () => {
     getBucketSlots.mockRejectedValueOnce(new Error("availability read failed"));
 
     const res = await recomputeBucketSlots(
-      "411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z", undefined, 4,
+      "411", "2026-08-13T04:00:00.000Z", "2026-08-19T04:00:00.000Z", "lane", undefined, 4,
     );
 
     expect(res).toBeNull();

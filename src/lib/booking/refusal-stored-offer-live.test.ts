@@ -60,7 +60,8 @@ describe("scheduleStoredOfferCheck (#3633)", () => {
     rows.current = [row([START])];
     scheduleStoredOfferCheck(new Error("refused"));
     await settle();
-    expect(slotCache.refreshPoolOf).toHaveBeenCalledWith("111");
+    // #3381: as the refusal's, so the row it writes names the refusal as its writer.
+    expect(slotCache.refreshPoolOf).toHaveBeenCalledWith("111", "refusal");
   });
 
   it("leaves the pool alone when the stored row was right", async () => {

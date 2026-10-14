@@ -33,6 +33,7 @@ function deps(over: Partial<ReadDeps>): ReadDeps {
     cacheGet: async () => null,
     cachePut: async () => {},
     readRow: async () => null,
+    nowMs: () => Date.parse("2026-06-22T12:00:00.000Z"),
     compute: async () => null,
     writeRow: async () => "2026-06-22T12:00:00.000Z",
     writeFailed: () => {
@@ -54,7 +55,7 @@ function deps(over: Partial<ReadDeps>): ReadDeps {
 
 // --- read: the business hours filter reaches both lists ---
 {
-  const r = await resolveBucketSlots("311", "2026-06-22T12:00:00.000Z", 4, deps({
+  const r = await resolveBucketSlots("311", 4, deps({
     readRow: async () => ({ payload: base(), computed_at: "2026-06-22T12:00:00.000Z" }),
   }));
   assert(!r!.slots.includes(MON_22), "an after hours time is filtered from the main list");
@@ -64,7 +65,7 @@ function deps(over: Partial<ReadDeps>): ReadDeps {
 // --- cold compute: the bookable day trim reaches both lists, each on its OWN days ---
 {
   let written: BucketSlots | null = null;
-  const r = await resolveBucketSlots("311", "2026-06-22T12:00:00.000Z", 1, deps({
+  const r = await resolveBucketSlots("311", 1, deps({
     compute: async () => base({ slotsWithoutLow: [TUE_10, WED_10] }),
     writeRow: async (_c, v) => { written = v; return "2026-06-22T12:00:00.000Z"; },
   }));

@@ -23,7 +23,8 @@ export function scheduleStoredOfferCheck(err: unknown): void {
       // #3633: the same coalesced per pool refresh the booking and push paths use, so
       // a pool proven stale by a refusal shares one recompute with everything else
       // refreshing it inside the window.
-      refreshPool: refreshPoolOf,
+      // #3381: named as the refusal's, so the row it writes says who wrote it.
+      refreshPool: (code) => refreshPoolOf(code, "refusal"),
       // One primary key read of the ladder's rows: at most a handful of codes, and
       // `bucket_slots` holds one row per bucket, so it can never reach a page cap.
       readRows: async (codes) =>

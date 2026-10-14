@@ -50,6 +50,10 @@ export interface SpliceWindow {
 /** One splice the row still has to defend: its window and the booking's instant. */
 export interface SpliceFence extends SpliceWindow {
   atMs: number;
+  /** The window a move LEFT (#3334), re-offered rather than taken. Recorded so a stored
+   *  row can say a splice since its compute may have ADDED times (#3381); the fence
+   *  itself defends the window the same way either way. */
+  reoffer?: true;
 }
 
 /**
@@ -313,7 +317,7 @@ export function splicePayload(
   const kept = (meta?.windows ?? []).filter((f) => f.atMs >= rowComputedAtMs);
   let spliced = withoutSpliceMeta(row);
   for (const p of parts) spliced = spliceLists(spliced, p.w, p.judge, p.reoffer);
-  const fences = parts.map((p) => ({ atMs: fenceAtMs, ...p.w }));
+  const fences: SpliceFence[] = parts.map((p) => ({ atMs: fenceAtMs, ...p.w, ...(p.reoffer ? { reoffer: true as const } : {}) }));
   return { ...spliced, splice: metaFor([...kept, ...fences], (meta?.seq ?? 0) + 1) };
 }
 

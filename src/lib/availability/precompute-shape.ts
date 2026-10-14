@@ -18,7 +18,9 @@ export function shapePrecomputedRow(
   // #3324: a booking's splice records its fence on the row (`splice`). That is the
   // write path's business and never part of what is served or cached, so it is
   // stripped here, the one place every stored row passes on its way out.
-  const { splice: _fence, ...unfenced } = p;
+  // #3381: so is the writer the write path stamps beside it; the read path reports it
+  // from the raw row (`rowProvenance`), never as part of the served payload.
+  const { splice: _fence, writtenBy: _writer, ...unfenced } = p;
   const shaped = unfenced as unknown as BucketSlots;
   // #2842: a malformed second list is dropped rather than failing the row. Absent
   // reads as UNKNOWN, which the cascade treats as "nobody without Low", so the

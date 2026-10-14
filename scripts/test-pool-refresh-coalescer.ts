@@ -42,10 +42,16 @@ function clock() {
 
 /** A refresh whose completion the test controls, recording when each one started. */
 function refreshes(c: ReturnType<typeof clock>) {
-  const starts: { key: string; at: number; codes: string[]; finish: (err?: Error) => void }[] = [];
-  const run = (key: string) => (codes: string[]) =>
+  const starts: { key: string; at: number; codes: string[]; reasons: string[]; finish: (err?: Error) => void }[] = [];
+  const run = (key: string) => (codes: string[], reasons: string[]) =>
     new Promise<void>((resolve, reject) => {
-      starts.push({ key, at: c.now(), codes: [...codes].sort(), finish: (err) => (err ? reject(err) : resolve()) });
+      starts.push({
+        key,
+        at: c.now(),
+        codes: [...codes].sort(),
+        reasons: [...reasons].sort(),
+        finish: (err) => (err ? reject(err) : resolve()),
+      });
     });
   return { starts, run };
 }
@@ -65,7 +71,7 @@ assert(
   const c = clock();
   const r = refreshes(c);
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt: new Map() });
-  const done = co.request("pool-a", "pool-a-code", r.run("pool-a"));
+  const done = co.request("pool-a", "pool-a-code", "booking", r.run("pool-a"));
   await flush();
   eq(r.starts.length, 1, "the first request starts a refresh immediately");
   eq(r.starts[0]!.at, c.now(), "with no wait");
@@ -79,17 +85,17 @@ assert(
   const r = refreshes(c);
   const lastStartedAt = new Map<string, number>();
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt });
-  const first = co.request("pool-a", "pool-a-code", r.run("pool-a"));
+  const first = co.request("pool-a", "pool-a-code", "booking", r.run("pool-a"));
   await flush();
   const t0 = c.now();
   eq(lastStartedAt.get("pool-a"), t0, "the shared map records when the pool's refresh started");
   // Three more bookings land while the first compute runs and inside the window.
   await c.advance(1_000);
-  const b = co.request("pool-a", "pool-a-code", r.run("pool-a"));
+  const b = co.request("pool-a", "pool-a-code", "booking", r.run("pool-a"));
   await c.advance(1_000);
-  const cReq = co.request("pool-a", "pool-a-code", r.run("pool-a"));
+  const cReq = co.request("pool-a", "pool-a-code", "booking", r.run("pool-a"));
   await c.advance(1_000);
-  const d = co.request("pool-a", "pool-a-code", r.run("pool-a"));
+  const d = co.request("pool-a", "pool-a-code", "booking", r.run("pool-a"));
   await flush();
   eq(r.starts.length, 1, "requests inside the window start nothing of their own");
   r.starts[0]!.finish();
@@ -109,15 +115,15 @@ assert(
   const c = clock();
   const r = refreshes(c);
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt: new Map() });
-  void co.request("pool-a", "pool-a-code", r.run("pool-a"));
+  void co.request("pool-a", "pool-a-code", "booking", r.run("pool-a"));
   await flush();
   await c.advance(500);
-  void co.request("pool-a", "pool-a-code", r.run("pool-a")); // trailing
+  void co.request("pool-a", "pool-a-code", "booking", r.run("pool-a")); // trailing
   r.starts[0]!.finish();
   await c.advance(9_500);
   eq(r.starts.length, 2, "the trailing refresh started");
   await c.advance(200);
-  const late = co.request("pool-a", "pool-a-code", r.run("pool-a")); // lands while the trailing one RUNS
+  const late = co.request("pool-a", "pool-a-code", "booking", r.run("pool-a")); // lands while the trailing one RUNS
   await flush();
   eq(r.starts.length, 2, "a request during a running refresh does not join it, since that one began before it");
   r.starts[1]!.finish();
@@ -132,10 +138,10 @@ assert(
   const c = clock();
   const r = refreshes(c);
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt: new Map() });
-  void co.request("pool-a", "pool-a-code", r.run("pool-a"));
+  void co.request("pool-a", "pool-a-code", "booking", r.run("pool-a"));
   await flush();
   await c.advance(1_000);
-  void co.request("pool-a", "pool-a-code", r.run("pool-a"));
+  void co.request("pool-a", "pool-a-code", "booking", r.run("pool-a"));
   await c.advance(12_000);
   eq(r.starts.length, 1, "no second compute of one pool runs beside the first");
   r.starts[0]!.finish();
@@ -148,8 +154,8 @@ assert(
   const c = clock();
   const r = refreshes(c);
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt: new Map() });
-  void co.request("pool-a", "pool-a-code", r.run("pool-a"));
-  void co.request("pool-b", "pool-b-code", r.run("pool-b"));
+  void co.request("pool-a", "pool-a-code", "booking", r.run("pool-a"));
+  void co.request("pool-b", "pool-b-code", "booking", r.run("pool-b"));
   await flush();
   eq(r.starts.map((s) => s.key), ["pool-a", "pool-b"], "a booking in another pool is never held for this one");
   r.starts.forEach((s) => s.finish());
@@ -160,11 +166,11 @@ assert(
   const c = clock();
   const r = refreshes(c);
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt: new Map() });
-  void co.request("pool-a", "pool-a-code", r.run("pool-a")).catch(() => {});
+  void co.request("pool-a", "pool-a-code", "booking", r.run("pool-a")).catch(() => {});
   await flush();
   await c.advance(1_000);
-  const joined = co.request("pool-a", "pool-a-code", r.run("pool-a"));
-  const joinedToo = co.request("pool-a", "pool-a-code", r.run("pool-a"));
+  const joined = co.request("pool-a", "pool-a-code", "booking", r.run("pool-a"));
+  const joinedToo = co.request("pool-a", "pool-a-code", "booking", r.run("pool-a"));
   r.starts[0]!.finish();
   await c.advance(9_000);
   r.starts[1]!.finish(new Error("bucket_slots write refused"));
@@ -175,7 +181,7 @@ assert(
     "a failed trailing refresh rejects for every request it covered, so each is logged",
   );
   await c.advance(10_000);
-  const after = co.request("pool-a", "pool-a-code", r.run("pool-a"));
+  const after = co.request("pool-a", "pool-a-code", "booking", r.run("pool-a"));
   await flush();
   eq(r.starts.length, 3, "and the next request starts a fresh refresh");
   r.starts[2]!.finish();
@@ -188,7 +194,7 @@ assert(
   const r = refreshes(c);
   const lastStartedAt = new Map<string, number>([["pool-a", c.now() - 2_000]]);
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt });
-  void co.request("pool-a", "pool-a-code", r.run("pool-a"));
+  void co.request("pool-a", "pool-a-code", "booking", r.run("pool-a"));
   await flush();
   eq(r.starts.length, 0, "a pool the push path refreshed two seconds ago waits out the rest of the window");
   await c.advance(8_000);
@@ -203,18 +209,44 @@ assert(
   const c = clock();
   const r = refreshes(c);
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt: new Map() });
-  void co.request("pool-a", "211", r.run("pool-a"));
+  void co.request("pool-a", "211", "booking", r.run("pool-a"));
   await flush();
   eq(r.starts[0]!.codes, ["211"], "a leading refresh is handed the one code that asked");
   await c.advance(1_000);
-  void co.request("pool-a", "212", r.run("pool-a"));
-  void co.request("pool-a", "222", r.run("pool-a"));
-  void co.request("pool-a", "212", r.run("pool-a"));
+  void co.request("pool-a", "212", "booking", r.run("pool-a"));
+  void co.request("pool-a", "222", "booking", r.run("pool-a"));
+  void co.request("pool-a", "212", "booking", r.run("pool-a"));
   r.starts[0]!.finish();
   await c.advance(9_000);
   eq(r.starts.length, 2, "one trailing refresh");
   eq(r.starts[1]!.codes, ["212", "222"], "handed every joiner's code, once each");
   r.starts[1]!.finish();
+}
+
+// --- #3381: a refresh is handed WHY it ran, every requester's reason once ------------------
+// The row it writes names its writer, and a refresh a refusal joined must not be
+// recorded as the booking's alone: that is the one case the divergence hunt asks about.
+{
+  const c = clock();
+  const r = refreshes(c);
+  const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt: new Map() });
+  void co.request("pool-a", "211", "push", r.run("pool-a"));
+  await flush();
+  eq(r.starts[0]!.reasons, ["push"], "a leading refresh is handed the one reason that asked");
+  await c.advance(1_000);
+  void co.request("pool-a", "212", "booking", r.run("pool-a"));
+  void co.request("pool-a", "211", "refusal", r.run("pool-a"));
+  void co.request("pool-a", "212", "booking", r.run("pool-a"));
+  r.starts[0]!.finish();
+  await c.advance(9_000);
+  eq(r.starts.length, 2, "one trailing refresh");
+  eq(r.starts[1]!.reasons, ["booking", "refusal"], "handed every joiner's reason, once each");
+  r.starts[1]!.finish();
+  await c.advance(10_001);
+  void co.request("pool-a", "211", "push", r.run("pool-a"));
+  await flush();
+  eq(r.starts[2]!.reasons, ["push"], "and the next refresh starts with only its own");
+  r.starts[2]!.finish();
 }
 
 // --- #3293 review: idle keys are evicted --------------------------------------------------
@@ -226,13 +258,13 @@ assert(
   const r = refreshes(c);
   const lastStartedAt = new Map<string, number>();
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt });
-  void co.request("code:999", "999", r.run("code:999"));
+  void co.request("code:999", "999", "booking", r.run("code:999"));
   await flush();
   r.starts[0]!.finish();
   await flush();
   eq(co.trackedKeys(), 1, "a key just refreshed is still held, for its window");
   await c.advance(10_001);
-  void co.request("pool-a", "112", r.run("pool-a"));
+  void co.request("pool-a", "112", "booking", r.run("pool-a"));
   await flush();
   eq(co.trackedKeys(), 1, "after its window, an idle key is evicted when the next request arrives");
   assert(!lastStartedAt.has("code:999"), "and so is its start time");
@@ -240,9 +272,9 @@ assert(
   r.starts[1]!.finish();
   // A key with a pending or running refresh is never evicted.
   await c.advance(500);
-  void co.request("pool-a", "111", r.run("pool-a"));
+  void co.request("pool-a", "111", "booking", r.run("pool-a"));
   await c.advance(10_000);
-  void co.request("pool-b", "211", r.run("pool-b"));
+  void co.request("pool-b", "211", "booking", r.run("pool-b"));
   await flush();
   assert(co.trackedKeys() >= 2, "a key with work in hand is kept");
   r.starts.forEach((x) => x.finish());

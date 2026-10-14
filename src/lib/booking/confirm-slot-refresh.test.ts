@@ -48,7 +48,7 @@ describe("a user-facing booking's slot refresh runs after the response (#2345)",
     expect(slotCache.refreshPoolOf).not.toHaveBeenCalled();
 
     await after.afterResponse.mock.calls[0][1]();
-    expect(slotCache.refreshPoolOf).toHaveBeenCalledWith("411");
+    expect(slotCache.refreshPoolOf).toHaveBeenCalledWith("411", "booking");
     // #3258: never the per code compute the load run measured crowding the confirms.
     expect(slotCache.recomputeBucketSlotsForToday).not.toHaveBeenCalled();
   });
@@ -73,7 +73,7 @@ describe("a cron drain's slot refresh keeps the #503 float", () => {
     await realDeps().invalidateSlots("411");
 
     expect(after.afterResponse).not.toHaveBeenCalled();
-    expect(slotCache.recomputeBucketSlotsForToday).toHaveBeenCalledWith("411");
+    expect(slotCache.recomputeBucketSlotsForToday).toHaveBeenCalledWith("411", "booking-code");
   });
 
   it("does not let a failed float reach the drain", async () => {
@@ -127,14 +127,14 @@ describe("the post confirm recompute arm (#3258)", () => {
       await realDeps(after.deferWebhookSend).invalidateSlots("212");
       expect(after.afterResponse.mock.calls[0][0]).toBe("post-confirm-recompute");
       await after.afterResponse.mock.calls[0][1]();
-      expect(slotCache.refreshPoolOf).toHaveBeenCalledWith("212");
+      expect(slotCache.refreshPoolOf).toHaveBeenCalledWith("212", "booking");
     });
   });
 
   it("the cron drain's float is not switched", async () => {
     await withEnv({ SLATE_LOADTEST: "true", [VAR]: "off" }, async () => {
       await realDeps().invalidateSlots("212");
-      expect(slotCache.recomputeBucketSlotsForToday).toHaveBeenCalledWith("212");
+      expect(slotCache.recomputeBucketSlotsForToday).toHaveBeenCalledWith("212", "booking-code");
     });
   });
 
@@ -189,7 +189,7 @@ describe("a confirmed booking splices its window (#3324)", () => {
   it("a refresh with no booked window (a cancel) still refreshes the pool", async () => {
     await realDeps(after.deferWebhookSend).invalidateSlots("411");
     await after.afterResponse.mock.calls[0][1]();
-    expect(slotCache.refreshPoolOf).toHaveBeenCalledWith("411");
+    expect(slotCache.refreshPoolOf).toHaveBeenCalledWith("411", "booking");
     expect(slotCache.spliceBookedTimeAfterBooking).not.toHaveBeenCalled();
   });
 

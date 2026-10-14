@@ -20,6 +20,7 @@
 // really send, interleaving by interleaving.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-booked-splice-race.ts
+import { rowProvenance } from "../src/lib/availability/slot-row-writer.ts";
 import { markSlotRowsInvalidated, spliceSlotRow, writeSlotRow } from "../src/lib/availability/slot-row-write.ts";
 import { shapePrecomputedRow } from "../src/lib/availability/precompute-shape.ts";
 import { spliceMetaOf, type SplicePart, type SpliceWindow } from "../src/lib/availability/slot-splice.ts";
@@ -70,7 +71,14 @@ const LANE_START_AFTER_BOOKING = at("10:00") + 2000;
   // The lane compute began BEFORE the booking, so it still thinks 14:40 is free, and
   // it also found 16:00 newly free outside the window.
   const laneAnswer = payload([...BEFORE, T("16:00")]);
-  eq(await writeSlotRow(t.db, "201", laneAnswer, LANE_START_BEFORE_BOOKING), "written", "the older compute still lands");
+  eq(await writeSlotRow(t.db, "201", laneAnswer, LANE_START_BEFORE_BOOKING, "push"), "written", "the older compute still lands");
+  // #3381: the merged row names the compute that wrote it AND the splice it kept, so a
+  // row offering a time nobody is free for can be traced to one or the other.
+  eq(
+    rowProvenance(t.rows[0]!.payload),
+    { writtenBy: "push", spliced: new Date(BOOKING_COMMIT).toISOString() },
+    "the merged row names its writer and the splice it kept",
+  );
   const s = slots(t.rows);
   assert(!s.includes(BOOKED), "but the booked time stays gone");
   assert(s.includes(T("16:00")), "while its own news outside the window is kept");
@@ -80,7 +88,7 @@ const LANE_START_AFTER_BOOKING = at("10:00") + 2000;
   // A full compute that began after the booking saw it, so the fence has done its job
   // and is cleared by the next one past it.
   const fresh = payload([T("14:00"), T("14:20"), T("15:00"), T("15:20"), T("16:00")]);
-  eq(await writeSlotRow(t.db, "201", fresh, LANE_START_AFTER_BOOKING), "written", "a later compute lands");
+  eq(await writeSlotRow(t.db, "201", fresh, LANE_START_AFTER_BOOKING, "lane"), "written", "a later compute lands");
   eq(slots(t.rows), fresh.slots, "exactly as computed");
   assert(!("splice" in (t.rows[0]!.payload as object)), "and the fence record is gone with it");
 }
@@ -88,7 +96,7 @@ const LANE_START_AFTER_BOOKING = at("10:00") + 2000;
 // --- an older full compute landing BEFORE the splice is spliced over ------------------
 {
   const t = table();
-  eq(await writeSlotRow(t.db, "201", payload(BEFORE), LANE_START_BEFORE_BOOKING), "written", "the lane lands first");
+  eq(await writeSlotRow(t.db, "201", payload(BEFORE), LANE_START_BEFORE_BOOKING, "lane"), "written", "the lane lands first");
   await spliceSlotRow(t.db, "201", [{ w: WINDOW, judge: WINDOW_ANSWER }], BOOKING_COMMIT, SPLICE_START);
   assert(!slots(t.rows).includes(BOOKED), "and the splice after it still removes the booked time");
 }
@@ -148,7 +156,7 @@ const LANE_START_AFTER_BOOKING = at("10:00") + 2000;
   await spliceSlotRow(t.db, "201", [{ w: WINDOW, judge: WINDOW_ANSWER }], BOOKING_COMMIT, SPLICE_START);
   await markSlotRowsInvalidated(t.db, LANE_START_AFTER_BOOKING);
   eq(
-    await writeSlotRow(t.db, "201", payload(BEFORE), LANE_START_BEFORE_BOOKING),
+    await writeSlotRow(t.db, "201", payload(BEFORE), LANE_START_BEFORE_BOOKING, "lane"),
     "invalidated",
     "a compute that straddles a save is still refused, fence or no fence (#3118)",
   );
@@ -278,7 +286,7 @@ const movedTable = (rowSlots: string[] = MOVED_ROW, extra: Record<string, unknow
   assert(slots(t.rows).includes(HELD), "the move re-offered its old time");
   // That compute read the booking at its OLD time: 15:20 free, 14:40 held.
   const laneAnswer = payload([...MOVED_ROW, T("16:00")]);
-  eq(await writeSlotRow(t.db, "201", laneAnswer, LANE_START_BEFORE_BOOKING), "written", "the older compute still lands");
+  eq(await writeSlotRow(t.db, "201", laneAnswer, LANE_START_BEFORE_BOOKING, "lane"), "written", "the older compute still lands");
   const s = slots(t.rows);
   assert(!s.includes(MOVED_TO), "but the moved booking's NEW time stays gone");
   assert(s.includes(T("16:00")), "while its news outside both windows is kept");
@@ -287,7 +295,7 @@ const movedTable = (rowSlots: string[] = MOVED_ROW, extra: Record<string, unknow
   // nothing can show that compute knew the time was free.
   assert(!s.includes(HELD), "and the old time is withheld again, the safe direction");
   const fresh = payload([T("14:00"), T("14:20"), HELD, T("15:00"), T("16:00")]);
-  eq(await writeSlotRow(t.db, "201", fresh, LANE_START_AFTER_BOOKING), "written", "until a compute past the move lands");
+  eq(await writeSlotRow(t.db, "201", fresh, LANE_START_AFTER_BOOKING, "lane"), "written", "until a compute past the move lands");
   assert(slots(t.rows).includes(HELD), "which offers it again");
 }
 
@@ -327,7 +335,7 @@ const movedTable = (rowSlots: string[] = MOVED_ROW, extra: Record<string, unknow
   );
   eq(JSON.stringify(t.rows), snapshot, "and leaves it exactly as it was");
   const fresh = payload([T("14:00"), T("14:20"), T("15:00"), T("15:20")]);
-  eq(await writeSlotRow(t.db, "201", fresh, LANE_START_AFTER_BOOKING), "written", "the lane's next compute covers it");
+  eq(await writeSlotRow(t.db, "201", fresh, LANE_START_AFTER_BOOKING, "lane"), "written", "the lane's next compute covers it");
   assert(!slots(t.rows).includes(BOOKED), "and the booked time is gone that way instead");
 }
 {

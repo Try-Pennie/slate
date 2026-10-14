@@ -388,7 +388,7 @@ describe("getBucketSlotsWithFallback", () => {
     expect(result).toBeNull();
     // Resolved exactly once (the requested code); the cascade never ran.
     expect(mockResolveBucketSlots).toHaveBeenCalledTimes(1);
-    expect(mockResolveBucketSlots).toHaveBeenCalledWith("411", expect.anything(), expect.anything(), expect.anything());
+    expect(mockResolveBucketSlots).toHaveBeenCalledWith("411", expect.anything(), expect.anything());
   });
 
   it("serves an authorized test bucket its own slots (#601)", async () => {
@@ -422,7 +422,7 @@ describe("getBucketSlotsWithFallback", () => {
     // Stands in for the real resolver: asks each dependency the way a stored row read
     // does (edge cache, then the row, then the hours on the way out).
     const resolveLikeARowRead = (slotsByCode: Record<string, string[]>) =>
-      async (code: string, _from: string, _horizon: number, deps: ReadDeps) => {
+      async (code: string, _horizon: number, deps: ReadDeps) => {
         await deps.cacheGet(`key:${code}`);
         await deps.readRow(code);
         await deps.businessHours();
