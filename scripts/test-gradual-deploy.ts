@@ -253,7 +253,7 @@ async function drive(s: Scenario): Promise<Run> {
 // uploaded before they exist would bind nothing. One that fails stops the run with nothing
 // of Slate's changed, and the message names which.
 {
-  eq([...OBJECT_WORKER_CONFIGS], ["wrangler.confirm-line.jsonc", "wrangler.burst-limiter.jsonc"], "the object workers are the line's and the burst limiter's");
+  eq([...OBJECT_WORKER_CONFIGS], ["wrangler.confirm-line.jsonc", "wrangler.burst-limiter.jsonc", "wrangler.token-holder.jsonc"], "the object workers are the line's, the burst limiter's and the token holder's");
   const r = await drive(HAPPY);
   const first = r.calls.indexOf("upload:canary");
   for (const c of OBJECT_WORKER_CONFIGS) {

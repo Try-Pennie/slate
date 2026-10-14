@@ -263,6 +263,16 @@
 				"name": "CONFIRM_LINE",
 				"class_name": "ConfirmLine",
 				"script_name": "slate-confirm-line"
+			},
+			// #3512: the shared Google token holder (src/lib/google/token-holder-object.ts),
+			// one object every isolate asks for an advisor's calendar token before minting
+			// one. Served by its own small Worker (wrangler.token-holder.jsonc), deployed before
+			// this one. The class was never Slate's, so Slate declares no migration for it and
+			// this binding ships through the gradual deploy (#3352 refuses only a migration).
+			{
+				"name": "TOKEN_HOLDER",
+				"class_name": "TokenHolder",
+				"script_name": "slate-token-holder"
 			}
 		]
 	},
@@ -420,6 +430,11 @@
 						"name": "CONFIRM_LINE",
 						"class_name": "ConfirmLine",
 						"script_name": "slate-confirm-line-loadtest"
+					},
+					{
+						"name": "TOKEN_HOLDER",
+						"class_name": "TokenHolder",
+						"script_name": "slate-token-holder-loadtest"
 					}
 				]
 			},
