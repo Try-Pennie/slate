@@ -13,16 +13,21 @@
  * 90ms from Newark before and about 21ms for the placed lead requests at Seattle.
  * So each lane is now sent over `SELF`, a service binding to this same Worker, which
  * reaches the default export's fetch handler below and so runs as a placed fetch near
- * the database. The request passes that handler's guards (https, and under the load
- * test an origin that is not the production host) and carries the same bearer and
- * tick id as before.
+ * the database. The placement is an explicit region hint (`aws:us-west-2`, the
+ * database's region), not Smart Placement: under Smart Placement the lanes were sent
+ * this way and still ran at Mumbai and Stockholm, because it moves a request only when
+ * it judges another location significantly faster. The request passes that handler's
+ * guards (https, and under the load test an origin that is not the production host)
+ * and carries the same bearer and tick id as before.
  *
  * In process stays as the fallback, used only when the lane provably did not run: no
  * usable binding, a binding call that threw before sending, or a gradual deploy's
  * canary refusing it in cron standby (#3095). A placed call that rejected or answered
  * non-ok is reported and never re-run, because it may have written. worker/lane-run.ts
  * owns all of that; the lane timings line says which path each lane took and its
- * `cf-placement`, so the effect is read off the logs and the Supabase edge colo.
+ * `cf-placement`, so the effect is read off the logs and the Supabase edge colo. Read
+ * the header's colo, not only its `remote-`/`local-` prefix: Cloudflare documents
+ * those in Smart Placement's terms, and a lane beside Oregon is placed either way.
  *
  * WHAT IT COSTS. Each placed lane is its own invocation of the fetch handler: about
  * 7,500 a day on top of the 2,003 scheduled invocations (13 triggers; the minute

@@ -546,7 +546,7 @@ async function main() {
     const answer = await stub.send({ v: 1, op: "enter", attempt: "a", line: "100", waitMs: 1 });
     assert(answer.kind === "lead" && answer.turn === "t1", "binding: the object's JSON answer comes back parsed");
     assert(asked[0]?.name === "confirm-line:v1:ladder:abc", `binding: one object per group, named from the group (got ${asked[0]?.name})`);
-    assert(asked[0]?.hint === "wnam", "binding: placed near the database, which smart placement puts the Worker beside");
+    assert(asked[0]?.hint === "wnam", "binding: placed near the database, which the placement hint puts the Worker beside");
     assert(JSON.parse(asked[0]?.body ?? "{}").op === "enter", "binding: the message is sent as the JSON body");
     const bad = durableLineNamespace({ ...ns, get: () => ({ fetch: async () => new Response("<html>", { status: 500 }) }) }).stubFor("code:1");
     let threw = false;

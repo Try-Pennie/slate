@@ -144,8 +144,9 @@ flowchart LR
 
 The every-minute trigger drives four lanes (`sync`, `recompute`, `outbox`,
 `selfheal`). Since #3693 each one is sent over the Worker's binding to itself and runs
-as its own placed invocation near the database, because placement never moves a
-`scheduled()` handler; a lane that falls back runs in process and shares the cron's
+as its own placed invocation near the database (an explicit placement hint pinned to
+the database's region, `aws:us-west-2`, not Smart Placement, which never moved them),
+because placement never moves a `scheduled()` handler; a lane that falls back runs in process and shares the cron's
 invocation, which is why per-lane subrequest cost still matters. The
 full lane list is in `docs/api.md`, and the platform ceilings are in
 `docs/cloudflare-platform-notes.md`.

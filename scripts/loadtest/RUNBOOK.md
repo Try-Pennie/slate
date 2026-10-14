@@ -62,6 +62,11 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
    secret key at all, which is why step 2b exists. A branch is a paid resource for as
    long as it exists, so name it `loadtest-<issue>` and hand that name to the
    workflow's `branch_name` input, which is what deletes it at teardown (#2322).
+   Create it in **us-west-2**, production's region: `env.loadtest` is pinned to the
+   placement hint `aws:us-west-2` (#3693), so a branch anywhere else would put the
+   Worker beside nothing and the run would measure a latency production never sees.
+   The Management API's create branch call takes an optional `region`; confirm the
+   branch's region afterwards (the connector's `get_project` on the branch ref).
 
 2. **Apply the schema to the branch**: run the repo migrations against it
    (`supabase db push` with the branch linked, or apply `supabase/migrations/*` in order).

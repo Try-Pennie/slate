@@ -29,12 +29,30 @@ export interface LaneRun {
   ms: number;
   ok: boolean;
   /** Which path ran it (#3693): sent over the Worker's binding to itself, so it runs as
-   *  a placed fetch near the database, or run in process on the scheduled invocation. */
+   *  a fetch the placement hint applies to, or run in process on the scheduled
+   *  invocation. Sent is not proof of moved: `placement` says where it ran. */
   via?: "placed" | "in_process";
-  /** The `cf-placement` value a placed lane answered with, or null when it carried none. */
+  /** The `cf-placement` value a placed lane answered with (`remote-SEA`, `local-BOM`),
+   *  or null when it carried none. The airport code is where the lane ran. */
   placement?: string | null;
   /** Why a lane meant to be placed ran in process instead. */
   fallback?: string | null;
+}
+
+/**
+ * The Cloudflare colos beside the database (#3693). Slate's Supabase project is in AWS
+ * us-west-2 (Oregon), which `wrangler.jsonc` pins placement to; its nearest Cloudflare
+ * data centers are Portland and Seattle, and lead fetches measured about 20ms of origin
+ * time from SEA. A lane that ran at one of these is where it should be, whether the
+ * header calls it `remote-` (Cloudflare moved it) or `local-` (its tick already ran
+ * there), so the count reads the airport code, never only the prefix.
+ */
+export const NEAR_DATABASE_COLOS: readonly string[] = ["SEA", "PDX"];
+
+/** True when a `cf-placement` value names a colo beside the database. */
+export function ranNearDatabase(placement: string | null | undefined): boolean {
+  const colo = placement?.split("-").pop()?.toUpperCase();
+  return colo !== undefined && NEAR_DATABASE_COLOS.includes(colo);
 }
 
 /** `/api/cron/bulk-reassign` -> `bulk_reassign`: a queryable field name. */
@@ -60,6 +78,7 @@ export function laneTimingFields(
   let slowest: LaneRun | null = null;
   const failed: string[] = [];
   let placed = 0;
+  let nearDb = 0;
   for (const run of runs) {
     const lane = laneFieldName(run.path);
     fields[`${lane}_ms`] = Math.round(run.ms);
@@ -68,10 +87,19 @@ export function laneTimingFields(
     // #3693: which path ran the lane, so the effect of placing them reads off this
     // line. A placed lane with no `cf-placement` header says `none` rather than
     // leaving the field out, so an absent header is never mistaken for in process.
+    //
+    // `placed` means SENT over the self binding, which is not the same as MOVED:
+    // under Smart Placement every lane was sent and every one answered `local-BOM`.
+    // The header is the only thing that says where the lane actually ran, so it is
+    // logged raw (the airport code is the answer: near Oregon or not), and
+    // `lanes_near_db` counts the lanes that ran beside the database, by the airport
+    // code, so a lane whose cron already ran there and reads `local-SEA` counts, and
+    // one Cloudflare moved somewhere else (`remote-ARN`) does not.
     if (run.via) fields[`${lane}_via`] = run.via;
     if (run.via === "placed") {
       placed += 1;
       fields[`${lane}_placement`] = run.placement ?? "none";
+      if (ranNearDatabase(run.placement)) nearDb += 1;
     }
     if (run.fallback) fields[`${lane}_fallback`] = run.fallback;
   }
@@ -82,6 +110,7 @@ export function laneTimingFields(
   fields.lanes_ok = runs.length - failed.length;
   fields.lanes_failed = failed.length;
   fields.lanes_placed = placed;
+  fields.lanes_near_db = nearDb;
   // Only when there is something to say: an always-present empty field is noise
   // in every line and reads as a measurement rather than an absence.
   if (failed.length > 0) fields.failed = failed.join(",");

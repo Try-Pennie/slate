@@ -151,9 +151,20 @@
 		// halves (every public/ file covered, /_next/ still excluded).
 		"run_worker_first": ["/widget.js", "/embed-example.html", "/brand/*"]
 	},
-	// Run the Worker near the data (Supabase us-west) since this app is DB-bound.
+	// Run the Worker near the data, since this app is DB-bound (#3693). An explicit
+	// Placement Hint naming the database's cloud region: Supabase reports the project
+	// in `us-west-2` (West US, Oregon), and Cloudflare runs a hinted Worker "in the data
+	// center with the lowest latency to your specified cloud region". Smart Placement
+	// was the setting until October 2026 and never moved the cron lanes near the
+	// database (they ran at Mumbai, then Amsterdam and Stockholm), because it only
+	// moves a request when it judges a location "significantly faster". A hint moves
+	// every fetch, the lanes sent over SELF below and the lead requests alike.
+	// Cloudflare's docs list `mode`, `region`, `host` and `hostname` as mutually
+	// exclusive; wrangler's own schema also accepts `"mode": "targeted"` beside a
+	// region, which is this same hint spelled out, and the test accepts both forms.
+	// scripts/test-worker-placement.ts pins this region in both environments.
 	"placement": {
-		"mode": "smart"
+		"region": "aws:us-west-2"
 	},
 	"observability": {
 		"enabled": true
@@ -291,7 +302,7 @@
 	],
 	// #3693: the Worker's binding to ITSELF. Placement above moves only a fetch handler,
 	// never scheduled(), so worker/index.ts sends each cron lane through this binding to
-	// its own default fetch handler, where it runs as a placed request near the database
+	// its own default fetch handler, where the region hint runs it near the database
 	// instead of wherever Cloudflare ran the cron (Mumbai and Amsterdam in October 2026).
 	// No entrypoint, on purpose: placement does not apply to a named entrypoint. Without
 	// this binding every lane runs in process as before, and says so in the lane timings.
@@ -461,7 +472,16 @@
 			],
 			// #3693: the load test Worker's binding to ITSELF, never to production's
 			// `slate`, which would run the load run's lanes on production.
-			"services": [{ "binding": "SELF", "service": "slate-loadtest" }]
+			"services": [{ "binding": "SELF", "service": "slate-loadtest" }],
+			// #3693: the same hint as production, written out although `placement`
+			// inherits (measured through unstable_readConfig), so the load run
+			// measures the placement production runs with and a later top level edit
+			// cannot move it silently. The throwaway branch must be in the same
+			// region for that to mean anything: Supabase's create branch API takes
+			// an optional `region`, so create it in us-west-2 (RUNBOOK step 1).
+			"placement": {
+				"region": "aws:us-west-2"
+			}
 		}
 	}
 }
