@@ -29,9 +29,11 @@ export interface LaneRun {
   ms: number;
   ok: boolean;
   /** Which path ran it (#3693): sent over the Worker's binding to itself, so it runs as
-   *  a placed fetch near the database, or run in process on the scheduled invocation. */
+   *  a fetch the placement hint applies to, or run in process on the scheduled
+   *  invocation. Sent is not proof of moved: `placement` says where it ran. */
   via?: "placed" | "in_process";
-  /** The `cf-placement` value a placed lane answered with, or null when it carried none. */
+  /** The `cf-placement` value a placed lane answered with (`remote-SEA`, `local-BOM`),
+   *  or null when it carried none. The airport code is where the lane ran. */
   placement?: string | null;
   /** Why a lane meant to be placed ran in process instead. */
   fallback?: string | null;
@@ -60,6 +62,7 @@ export function laneTimingFields(
   let slowest: LaneRun | null = null;
   const failed: string[] = [];
   let placed = 0;
+  let remote = 0;
   for (const run of runs) {
     const lane = laneFieldName(run.path);
     fields[`${lane}_ms`] = Math.round(run.ms);
@@ -68,10 +71,19 @@ export function laneTimingFields(
     // #3693: which path ran the lane, so the effect of placing them reads off this
     // line. A placed lane with no `cf-placement` header says `none` rather than
     // leaving the field out, so an absent header is never mistaken for in process.
+    //
+    // `placed` means SENT over the self binding, which is not the same as MOVED:
+    // under Smart Placement every lane was sent and every one answered `local-BOM`.
+    // The header is the only thing that says where the lane actually ran, so it is
+    // logged raw (the airport code is the answer: near Oregon or not), and
+    // `lanes_remote` counts the lanes Cloudflare says it routed elsewhere. With the
+    // region hint a lane whose cron already ran beside the database may honestly
+    // read `local-<that colo>`, so read the colo, not only the count.
     if (run.via) fields[`${lane}_via`] = run.via;
     if (run.via === "placed") {
       placed += 1;
       fields[`${lane}_placement`] = run.placement ?? "none";
+      if (run.placement?.startsWith("remote-")) remote += 1;
     }
     if (run.fallback) fields[`${lane}_fallback`] = run.fallback;
   }
@@ -82,6 +94,7 @@ export function laneTimingFields(
   fields.lanes_ok = runs.length - failed.length;
   fields.lanes_failed = failed.length;
   fields.lanes_placed = placed;
+  fields.lanes_remote = remote;
   // Only when there is something to say: an always-present empty field is noise
   // in every line and reads as a measurement rather than an absence.
   if (failed.length > 0) fields.failed = failed.join(",");

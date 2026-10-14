@@ -28,7 +28,10 @@ What follows from it:
   back (no usable binding, a binding call that threw before sending, a gradual
   deploy's canary refusing it) runs in process and shares the scheduled invocation
   as before. The `lane timings` line says which path each lane took
-  (`<lane>_via`, `<lane>_placement`, `<lane>_fallback`, `lanes_placed`).
+  (`<lane>_via`, `<lane>_placement`, `<lane>_fallback`). `lanes_placed` counts the
+  lanes SENT over the binding, and `lanes_remote` the ones whose `cf-placement`
+  says Cloudflare routed them elsewhere; #3720 read `lanes_placed=4` on ticks where
+  every lane ran `local-BOM`, so sent is never read as moved.
 - **Cost.** About 7,500 extra fetch invocations a day (5,760 of them the minute
   trigger's four lanes). Cloudflare's pricing page: requests over a service binding
   carry no additional request fee, and CPU is billed as the total across both.
@@ -36,7 +39,46 @@ What follows from it:
   dispatcher and any lane that fell back.
 - **Measure it** with the Supabase edge logs (`request.cf.colo` and
   `response.origin_time` on the lanes' tables) and the `cf-placement` value on the
-  timings line (`remote-SEA` placed, `local-XXX` not).
+  timings line, read by its colo: beside Oregon is placed, anywhere else is not,
+  whichever of `remote-` or `local-` it carries (the next section).
+
+## Placement is an explicit region hint, not Smart Placement (#3693)
+
+`wrangler.jsonc` pins `"placement": { "region": "aws:us-west-2" }`, the AWS region
+the Supabase project is in (West US, Oregon, as the Management API reports it), in
+production and in `env.loadtest` alike. `scripts/test-worker-placement.ts` resolves
+both through wrangler and fails on Smart Placement, on any other region, and on a
+missing block.
+
+Smart Placement was the setting until 2026-10-14 and the lane dispatch above shipped
+under it (#3720). It never moved the lanes: their timings line read `local-BOM` or
+no header, and Supabase's edge logs showed lane traffic moving from Mumbai (origin
+p50 about 261ms) to Stockholm (about 189ms), never to Seattle (about 20ms). Its docs
+say why: it forwards a request only when "a candidate location is significantly
+faster". A hint has no such judgement. The docs: "Placement Hints run your Worker in
+the data center with the lowest latency to your specified cloud region."
+
+Three things follow, all from the same page
+(developers.cloudflare.com/workers/configuration/placement/):
+
+- **It applies to every fetch**, lead requests included. They ran at SEA under Smart
+  Placement already, so for them the expected change is none; a lead far from Oregon
+  pays the forwarding hop to the hinted colo, then makes its several database calls
+  from beside the database, which is the trade Slate wants because it is DB bound.
+  Static assets are unaffected ("always served from the location nearest to the
+  incoming request").
+- **It still does not move `scheduled()`**: "Placement only affects the execution of
+  fetch event handlers. It does not affect RPC methods or named entrypoints." That is
+  why the lanes go over `SELF` to the default fetch handler, with no entrypoint.
+- **`cf-placement` is documented only in Smart Placement's terms**: `remote-LHR` routed
+  elsewhere, `local-EWR` ran where the request arrived. The docs do not say what a
+  hinted request reports, so the lane timings line logs the header raw and the
+  airport code is the reading that matters: a colo beside Oregon (SEA is where lead
+  requests already measure about 21ms to Supabase) means the hint worked.
+  `local-<that colo>` is possible and fine when the cron already ran there;
+  `local-BOM` or `local-AMS` means it did not. Confirm it the first day on the
+  Supabase edge logs (`request.cf.colo` for the lanes' tables), which do not depend
+  on a header Cloudflare says "may be removed before Smart Placement exits beta".
 
 ## CPU is the real ceiling, and `limits.cpu_ms` DOES raise it
 

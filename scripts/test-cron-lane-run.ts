@@ -254,7 +254,8 @@ eq(
 // ------------------------------------------------------------ placed lanes (#3693)
 //
 // Placement moves only a fetch handler, never scheduled(), so each lane is sent over
-// the Worker's binding to itself and runs as a placed fetch near the database. The
+// the Worker's binding to itself and runs as a fetch the region hint places near the
+// database (wrangler.jsonc, pinned by scripts/test-worker-placement.ts). The
 // in process path stays as the fallback, and a lane that was SENT is never run twice.
 
 const PLACED_ORIGIN = placedLaneOrigin(false);

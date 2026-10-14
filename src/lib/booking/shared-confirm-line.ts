@@ -495,9 +495,10 @@ export interface DurableLineNamespace {
 
 /**
  * One object's transport: a JSON message posted on the role's path, a JSON message
- * back. Created near the database: smart placement runs the Worker beside Supabase (us
- * west), and an object is created where its first request comes from, so the hint
- * keeps it there even when that first request does not. An answer that is not the
+ * back. Created near the database: the placement hint (`aws:us-west-2`, #3693) runs
+ * the Worker beside Supabase (Oregon), and an object is created where its first
+ * request comes from, so the `wnam` location hint keeps it there even when that first
+ * request does not. An answer that is not the
  * protocol's JSON is a failed call, never a guess.
  */
 function objectStub(ns: DurableLineNamespace, group: string, path: string): LineStub {

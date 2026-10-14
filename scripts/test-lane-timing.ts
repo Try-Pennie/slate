@@ -135,11 +135,29 @@ eq(laneFieldName(""), "unknown", "an empty path still yields a usable field name
   assert(!("outbox_placement" in fields), "and carries no placement, since nothing placed it");
   assert(!("selfheal_via" in fields), "a run with no recorded path claims none");
   eq(fields.lanes_placed, 2, "and the placed lanes are counted, so the share charts");
+  eq(fields.lanes_remote, 1, "and only the one Cloudflare says it moved counts as moved");
+}
+
+{
+  // #3693: what #3720 shipped read `lanes_placed=4` while every lane ran `local-BOM`,
+  // so the count said placed and the header said not moved. Sent over the binding and
+  // moved by Cloudflare are two different facts, and the line carries both.
+  const fields = laneTimingFields(
+    [
+      { path: "/api/cron/sync", ms: 40, ok: true, via: "placed", placement: "local-BOM" },
+      { path: "/api/cron/recompute", ms: 90, ok: true, via: "placed", placement: "local-BOM" },
+      { path: "/api/cron/outbox", ms: 20, ok: true, via: "placed", placement: "unreadable" },
+    ],
+    95,
+  );
+  eq(fields.lanes_placed, 3, "every lane went over the binding");
+  eq(fields.lanes_remote, 0, "and none of them was moved, which the line now says");
 }
 
 {
   const fields = laneTimingFields([{ path: "/api/cron/sync", ms: 5, ok: true }], 5);
   eq(fields.lanes_placed, 0, "the placed count is present at zero, so it sums");
+  eq(fields.lanes_remote, 0, "and so is the moved count");
 }
 
 {
