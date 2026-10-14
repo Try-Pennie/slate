@@ -27,8 +27,17 @@ function arg(name: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
-const samples = Number(arg("samples") ?? 20);
-const warmup = Number(arg("warmup") ?? 3);
+/** A count flag, refused unless it is a positive whole number (L50): a NaN here
+ *  would run zero samples and print a summary of nothing. */
+function countArg(name: string, fallback: number): number {
+  const raw = arg(name);
+  const n = raw === undefined ? fallback : Number(raw);
+  if (!Number.isInteger(n) || n < 1) throw new Error(`--${name} must be a positive whole number, got ${raw}`);
+  return n;
+}
+
+const samples = countArg("samples", 20);
+const warmup = countArg("warmup", 3);
 const modulePath = arg("module");
 const mod = (await import(
   modulePath ? pathToFileURL(modulePath).href : "../src/lib/availability/compute.ts"
