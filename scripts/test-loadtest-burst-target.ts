@@ -20,6 +20,8 @@
 //
 // Run: node --experimental-strip-types scripts/test-loadtest-burst-target.ts
 import { readBurstPlan, DROP_SLOTS_TO_MEASURE } from "./loadtest/book-plan.ts";
+import { DeadlineExceededError } from "../src/lib/fetch-within-deadline.ts";
+import { unwrap } from "../src/lib/db/result.ts";
 import {
   assembleBurstPlan,
   dropLadders,
@@ -31,6 +33,8 @@ import {
   ladderCandidates,
   ladderFreeFrom,
   ladderRosterIds,
+  readRetryingTimeouts,
+  rosterUnreadable,
   ladderSignature,
   poolKeysByCode,
   refusalLadders,
@@ -315,6 +319,69 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
 
   const second = await chooseRefusalSlots(["500", "520"], io(hardAt16, { "500": [at(14)], "520": times }), opts);
   assert(second.kind === "chosen" && second.ladder === "520", `refusal choice: a ladder with nothing fit gives way to the next (got ${JSON.stringify(second)})`);
+}
+
+// #3737: one read that timed out ended load run 19 in setup, before any traffic. A
+// TIMED OUT read is retried, visibly, a bounded number of times; anything else is an
+// answer the planner refuses on at once, and running out of attempts is still a failure.
+{
+  const timeout = new Error("read failed [bucket pool agents]: DeadlineExceededError: supabase did not answer within 15000ms");
+  const waits: number[] = [];
+  const retries: string[] = [];
+  const io = { sleep: async (ms: number) => void waits.push(ms), onRetry: (line: string) => void retries.push(line) };
+
+  let calls = 0;
+  const recovered = await readRetryingTimeouts(async () => {
+    calls++;
+    if (calls === 1) throw timeout;
+    return 7;
+  }, io);
+  assert(recovered.ok && recovered.value === 7 && recovered.attempts === 2, `read retry: a read that timed out once answers on the second attempt (got ${JSON.stringify(recovered)})`);
+  assert(retries.length === 1 && retries[0]!.includes("did not answer within 15000ms") && retries[0]!.includes("attempt 1"), `read retry: the retry is printed with the attempt and why (got ${JSON.stringify(retries)})`);
+  assert(waits.length === 1, `read retry: one wait between two attempts, on the injected sleep (got ${JSON.stringify(waits)})`);
+
+  let stuck = 0;
+  const exhausted = await readRetryingTimeouts(async () => {
+    stuck++;
+    throw timeout;
+  }, { sleep: async () => {}, onRetry: () => {} });
+  assert(!exhausted.ok && exhausted.attempts === 3 && stuck === 3, `read retry: a read that never answers fails after three attempts (got ${JSON.stringify(exhausted)}, ${stuck} calls)`);
+  assert(!exhausted.ok && exhausted.reason.includes("did not answer within 15000ms"), `read retry: exhaustion keeps the timeout as its reason (got ${JSON.stringify(exhausted)})`);
+
+  let refused = 0;
+  let thrown: unknown = null;
+  try {
+    await readRetryingTimeouts(async () => {
+      refused++;
+      throw new Error("read failed [bucket pool agents]: column users.attributes does not exist");
+    }, { sleep: async () => {}, onRetry: () => {} });
+  } catch (err) {
+    thrown = err;
+  }
+  assert(refused === 1 && thrown instanceof Error && thrown.message.includes("does not exist"), `read retry: a failure that is not a timeout is thrown at once, never retried (got ${refused} calls, ${String(thrown)})`);
+}
+
+// #3737: the roster refusal named credentials for every failure, so a database that
+// answered too slowly sent the reader to fix keys that were fine (L11).
+{
+  const slow = rosterUnreadable("read failed [burst target agents]: DeadlineExceededError: supabase did not answer within 15000ms (failed on all 3 attempt(s))");
+  assert(slow.includes("did not answer") && !/credentials/i.test(slow), `roster refusal: a timeout says the database was slow, not that credentials are wrong (got ${slow})`);
+  const denied = rosterUnreadable("read failed [burst target agents]: Invalid API key");
+  assert(/credentials/i.test(denied) && denied.includes("Invalid API key"), `roster refusal: any other failure still names the credentials and the cause (got ${denied})`);
+}
+
+// #3737: the retry knows a timeout only by its wording, because `unwrap` flattens the
+// app's error to text. Build the REAL error the app throws and pass it through the
+// REAL unwrap, so rewording either one fails here instead of silently ending retries.
+{
+  const real = new DeadlineExceededError("supabase", 15000);
+  let calls = 0;
+  const viaApp = await readRetryingTimeouts(async () => {
+    calls++;
+    if (calls === 1) return unwrap({ data: null, error: { message: `${real.name}: ${real.message}` } }, "bucket pool agents");
+    return 1;
+  }, { sleep: async () => {}, onRetry: () => {} });
+  assert(viaApp.ok && viaApp.attempts === 2, `read retry: the app's own deadline error, through the app's own unwrap, is recognised as a timeout (got ${JSON.stringify(viaApp)})`);
 }
 
 finish();

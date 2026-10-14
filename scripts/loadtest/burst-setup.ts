@@ -84,7 +84,9 @@ import {
   HARD_REFUSAL_MIN_FREE,
   ladderCandidates,
   ladderFreeFrom,
+  readRetryingTimeouts,
   refusalLadders,
+  rosterUnreadable,
   type LadderCandidate,
 } from "./burst-target.ts";
 import { poolDepthsFrom } from "./pool-depth.ts";
@@ -203,21 +205,35 @@ async function ladderFreeAt(code: string, slot: string): Promise<{ rung0Free: nu
   return ladderFreeFrom(perRung);
 }
 
-/** `ladderFreeAt`, or the refusal its own exit code names when the read fails (L11). */
+/**
+ * `ladderFreeAt`, or the refusal its own exit code names when the read fails (L11).
+ * A read that only timed out is asked again, visibly, before that (#3737).
+ */
 async function measuredCapacity(c: LadderCandidate, slot: string): Promise<BurstCapacity> {
+  let reason: string;
   try {
-    const free = await ladderFreeAt(c.code, slot);
-    return { ladderRoster: c.ladderRoster, rung0Free: free.rung0Free, ladderFree: free.ladderFree };
+    const read = await readRetryingTimeouts(() => ladderFreeAt(c.code, slot), {
+      onRetry: (line) => console.log(`  ${c.code} at ${slot}: ${line}`),
+    });
+    if (read.ok) return { ladderRoster: c.ladderRoster, rung0Free: read.value.rung0Free, ladderFree: read.value.ladderFree };
+    reason = read.reason;
   } catch (err) {
-    console.error(
-      `FAILED: who is free at ${slot} on ${c.code}'s ladder could not be read (${String(err)}), so the burst's ` +
-        "capacity there is unknown and the crowd cannot be sized against it.",
-    );
-    process.exit(10);
+    reason = String(err);
   }
+  console.error(
+    `FAILED: who is free at ${slot} on ${c.code}'s ladder could not be read (${reason}), so the burst's ` +
+      "capacity there is unknown and the crowd cannot be sized against it.",
+  );
+  process.exit(10);
 }
 
 // --- the roster and its ladders, measured -----------------------------------------
+/** One setup read, asked again when it only timed out (#3737); throws when it cannot answer. */
+async function readOrThrow<T>(what: string, read: () => Promise<T>): Promise<T> {
+  const r = await readRetryingTimeouts(read, { onRetry: (line) => console.log(`  ${what}: ${line}`) });
+  if (r.ok) return r.value;
+  throw new Error(r.reason);
+}
 let candidates: LadderCandidate[];
 let staffedPools = 0;
 let poolCount = 0;
@@ -225,20 +241,22 @@ try {
   const db = supabaseAdmin();
   // cap-safe: users is roster bounded, the seeded roster is ~94 rows against a
   // 200-agent design target
-  const agents = (unwrap(
-    await db
-      .from("users")
-      .select("id, attributes")
-      .eq("bookable", true)
-      .is("deactivated_at", null)
-      .eq("is_test", false),
-    "burst target agents",
-  ) ?? []) as { id: string; attributes: Attributes | null }[];
+  const agents = ((await readOrThrow("the roster", async () =>
+    unwrap(
+      await db
+        .from("users")
+        .select("id, attributes")
+        .eq("bookable", true)
+        .is("deactivated_at", null)
+        .eq("is_test", false),
+      "burst target agents",
+    ),
+  )) ?? []) as { id: string; attributes: Attributes | null }[];
   // The buckets and their hand named members through the app's OWN pool reader
   // (#3325), the one the recompute lane groups on, so the ladders below are read from
   // exactly the inputs the booker uses (L107). Test buckets are left out, as the
   // booking cascade leaves them out of every routed ladder.
-  const rows = (await listPoolBuckets()).filter((r) => !r.bucket.is_test);
+  const rows = (await readOrThrow("the pool buckets", () => listPoolBuckets())).filter((r) => !r.bucket.is_test);
   const depths = poolDepthsFrom({
     agents,
     buckets: rows.map((r) => ({ id: r.bucket.id, code: r.code, criteria: r.criteria })),
@@ -261,10 +279,7 @@ try {
   // Its OWN exit code. A roster this cannot read and a roster with nothing to burst at
   // send two different people to two different places (L11), and an empty list would
   // make every ladder look unreachable and pick nothing.
-  console.error(
-    `FAILED: the roster and its ladders could not be measured (${String(err)}), so no burst can be sized ` +
-      "against what its ladder holds. Set the branch's database credentials.",
-  );
+  console.error(rosterUnreadable(err instanceof Error ? err.message : String(err)));
   process.exit(4);
 }
 if (staffedPools === 0) {
