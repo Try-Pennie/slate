@@ -56,6 +56,11 @@ export function longDayLabel(iso: string, zone: string, opts?: { year?: boolean 
 export const INLINE_CARD_COPY = {
   title: "Connect with your loan advisor:",
   chooseTime: "Choose a time for your call below:",
+  /**
+   * The zone the times are in, under them (Dan, 2026-10-14): the card has no zone
+   * picker, so it names the zone in the booker's own words (`zoneLabel`).
+   */
+  timesIn: (zone: string) => `Times in ${zone}`,
 };
 
 export const PICKER_COPY = {

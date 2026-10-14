@@ -81,6 +81,7 @@ import {
   deviceTimeZone,
   timezoneOptions,
   resolveZone,
+  zoneLabel as zoneReadName,
 } from "@/lib/booking/timezones";
 import { withinLeadCallingWindow } from "@/lib/booking/lead-calling-window";
 import { SelectField } from "@/components/ui/SelectField";
@@ -2391,6 +2392,9 @@ export default function Booker({
             </>
           )}
           {timesPanel}
+          {!selectedSlot && (
+            <p className={`mt-3 text-center text-xs ${c.faint}`}>{INLINE_CARD_COPY.timesIn(zoneReadName(zone))}</p>
+          )}
         </div>
       </div>
     );

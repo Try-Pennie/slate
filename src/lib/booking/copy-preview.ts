@@ -219,6 +219,7 @@ export function bookerCopyScreens(): CopyScreen[] {
       lines: [
         { state: "the card's title", text: INLINE_CARD_COPY.title },
         { state: "over the day strip and times", text: INLINE_CARD_COPY.chooseTime },
+        { state: "under the times, naming their zone", text: INLINE_CARD_COPY.timesIn("Eastern time (New York)") },
       ],
     },
     {

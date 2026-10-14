@@ -14,6 +14,7 @@ import Booker from "@/components/Booker";
 import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
 import { bookerSlotIso } from "@/components/booker-test-slot";
 import { INLINE_CARD_COPY, PICKER_COPY } from "@/lib/booking/booker-copy";
+import { deviceTimeZone, resolveZone, zoneLabel } from "@/lib/booking/timezones";
 
 const firstDay = Array.from({ length: 9 }, (_, i) => bookerSlotIso(3, 9 + i));
 const secondDay = [bookerSlotIso(4, 10), bookerSlotIso(4, 11)];
@@ -62,6 +63,12 @@ describe("the inline card (#3718)", () => {
     expect(screen.queryByText(/^Times on /)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: PICKER_COPY.viewMore }));
     expect(timeButtons()).toHaveLength(9);
+  });
+
+  it("names the time zone the times are in, in the booker's own words (Dan, 2026-10-14)", async () => {
+    render(<Booker {...baseProps} layout="inline" />);
+    await screen.findByRole("button", { name: PICKER_COPY.viewMore });
+    expect(screen.getByText(INLINE_CARD_COPY.timesIn(zoneLabel(resolveZone(deviceTimeZone()))))).toBeTruthy();
   });
 
   it("leaves the ordinary booker as it was when no layout is asked for", async () => {
