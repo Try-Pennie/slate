@@ -520,3 +520,35 @@ describe("/book Call me now (#3718)", () => {
     expect(bookerElement(noLead).callMeNow).toBeNull();
   });
 });
+
+// #3718: a host page sets the card's background and the button colour; one it
+// sends that text cannot be read on is refused, logged, and Slate's own is used.
+describe("/book host colours (#3718)", () => {
+  const open = (extra: Record<string, string>) =>
+    BookEntry({ searchParams: Promise.resolve({ xbc: "111", embed: "1", ...extra }) });
+  beforeEach(() => {
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));
+    vi.mocked(log.warn).mockClear();
+  });
+
+  it("hands the inline card the host's background, with the text colour that reads on it", async () => {
+    const el = await open({ layout: "inline", bg: "#1D212F", brand: "#000000" });
+    expect(bookerElement(el)).toMatchObject({
+      brandColor: "#000000",
+      cardSurface: { background: "#1D212F", ink: "var(--pennie-beige)" },
+    });
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("uses Slate's own colours for one text cannot be read on, and logs why", async () => {
+    const el = await open({ layout: "inline", bg: "#7A7A7A", brand: "#808080" });
+    expect(bookerElement(el)).toMatchObject({ brandColor: "#82D0FF", cardSurface: undefined });
+    expect(vi.mocked(log.warn).mock.calls.map((c) => (c[1] as { which: string }).which)).toEqual(["brand", "bg"]);
+  });
+
+  it("gives the pop up booker no card colour, since it has no card", async () => {
+    const el = await open({ bg: "#1D212F" });
+    expect(bookerElement(el).cardSurface).toBeUndefined();
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+});

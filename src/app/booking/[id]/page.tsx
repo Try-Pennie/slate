@@ -5,7 +5,7 @@ import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { resolveLandingCode } from "@/lib/routing/landing-code";
 import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
 import { existingCallForLanding, landingAttendee } from "@/lib/booking/service";
-import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
+import { readHostColours } from "@/lib/embed/host-colours";
 import { prefillFromQuery } from "@/lib/booking/book-link";
 import { landingLookupId } from "@/lib/booking/landing-identity-gate";
 import { headers } from "next/headers";
@@ -109,7 +109,7 @@ export default async function BookingPage({
         prefill={prefill}
         embedded={embedded}
         theme={theme}
-        brandColor={first(sp, "brand") || (embedded ? DEFAULT_BRAND_COLOR : undefined)}
+        brandColor={readHostColours({ brand: first(sp, "brand") || null, bg: null, embedded }, "/booking").brandColor}
         isTest={isTest}
         horizonDays={horizonDays}
         rescheduleReasons={reasonOptions.reschedule.active}

@@ -186,6 +186,7 @@ export function CallMeNowConfirmation({
   firstName,
   textLine,
   onBackToTimes,
+  onCardStyle,
   palette,
   titleClass,
   mutedClass,
@@ -193,6 +194,8 @@ export function CallMeNowConfirmation({
   firstName: string | null;
   textLine: string | null;
   onBackToTimes: () => void;
+  /** The text colour for the line sitting on the card itself, when a host set the card's colour. */
+  onCardStyle?: CSSProperties;
   palette: BookerButtonPalette;
   titleClass: string;
   mutedClass: string;
@@ -241,7 +244,7 @@ export function CallMeNowConfirmation({
           </div>
         )}
       </div>
-      <p className={`mt-3.5 text-center text-sm ${titleClass}`}>
+      <p className={`mt-3.5 text-center text-sm ${titleClass}`} style={onCardStyle}>
         {CALL_ME_NOW_COPY.instead}{" "}
         <button
           type="button"

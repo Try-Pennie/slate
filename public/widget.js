@@ -347,7 +347,14 @@
     // Forward the namespace's ui config so the booker matches the host page.
     var ui = (namespaces[ns] || namespaces[""] || {}).ui || {};
     if (ui.theme) params.set("theme", ui.theme);
-    if (ui.brandColor) params.set("brand", ui.brandColor);
+    // cal.com's per theme colours (#3718), for the theme the booker will draw in:
+    // `cal-brand` is the button and wins over the single brandColor, as on cal.com;
+    // `cal-bg` is the inline card's background. Slate judges both, and keeps its own
+    // for one that text cannot be read on.
+    var themeVars = (ui.cssVarsPerTheme || {})[ui.theme === "dark" ? "dark" : "light"] || {};
+    var brand = themeVars["cal-brand"] || ui.brandColor;
+    if (brand) params.set("brand", brand);
+    if (themeVars["cal-bg"]) params.set("bg", themeVars["cal-bg"]);
     params.set("embed", "1");
     // The inline embed asks for the compact card (#3718); the modal sends no
     // layout, so its URL is exactly what it always was.

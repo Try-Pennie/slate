@@ -350,6 +350,21 @@ Pennie's sky through as the default** `brandColor`; a host page may still overri
 it via `ui.brandColor`. It is NOT sky-only-ignore. The brand color tints the
 Booker's dots / selected-ring / confirm / avatar (inline, since the hex is dynamic).
 
+**Host colours on the inline card, and the contrast refusal (#3718).** A host
+passes cal.com's `cssVarsPerTheme` in its `ui` call; widget.js forwards the
+entry for the theme the booker draws in: `cal-brand` as `brand` (it wins over
+the single `brandColor`, as on cal.com) and `cal-bg` as `bg`, the inline card's
+background. `/book` reads `bg` only on the inline card. Every booker page reads
+`brand` through `readHostColours` (`src/lib/embed/host-colours.ts`), which keeps
+a colour only when graphite or beige text on it reaches 4.5:1 and uses the better
+one as the text colour. A colour that fails, or is not `#rgb` / `#rrggbb`, is
+refused: Slate keeps its own default and logs
+`tag=host-colours msg="host colour refused"` with the page, the colour and why.
+The card paints its background and that text colour only on what sits directly
+on it (the title and the line under the Call me now confirmation); the panels
+keep their own surface. trypennie's pop up sends `#000000`, which reads at
+18:1, so the rule changes nothing live.
+
 ---
 
 ## ResizeObserver gotcha (load-bearing)
