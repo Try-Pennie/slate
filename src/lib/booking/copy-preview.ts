@@ -20,6 +20,7 @@
  * the clock. A diff in `pnpm preview:booker` therefore means the copy changed,
  * never that the day did.
  */
+import { zoneLabel } from "@/lib/booking/timezones";
 import {
   ADD_TO_CALENDAR_COPY,
   BOOKING_ERROR_COPY,
@@ -38,6 +39,7 @@ import {
   BOOKER_PHONE_COPY,
   NEXT_DAYS_COPY,
   PICKER_COPY,
+  INLINE_CARD_COPY,
   CLOSED_BODY,
   UNCLASSIFIED_EMPTY_NOTICE,
   UNCLASSIFIED_EMPTY_RETRY,
@@ -176,6 +178,8 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "the days are still loading", text: PICKER_COPY.loading },
         { state: "the load failed", text: PICKER_COPY.failed },
         { state: "days are offered and none is chosen yet", text: PICKER_COPY.pickADay },
+        // #3718: the inline card shows six times and offers the rest.
+        { state: "the inline card, more times than it shows", text: PICKER_COPY.viewMore },
         { state: "a chosen day whose times have all gone", text: PICKER_COPY.dayEmpty(DAY) },
         // #2310: the day HAS times, all before 8 AM or from 8 PM on the lead's
         // clock. Read beside the line above: this must not say nothing is left.
@@ -208,6 +212,15 @@ export function bookerCopyScreens(): CopyScreen[] {
           state: "the link arrived with a number, and no time is picked yet",
           text: phoneEchoLine(PHONE),
         },
+      ],
+    },
+    {
+      screen: "Booker: the inline card on a landing page",
+      purpose: "A landing page draws this card in place (#3718). It is a card in someone else's page, so it names what it is for before anything else.",
+      lines: [
+        { state: "the card's title", text: INLINE_CARD_COPY.title },
+        { state: "over the day strip and times", text: INLINE_CARD_COPY.chooseTime },
+        { state: "under the times, naming their zone", text: INLINE_CARD_COPY.timesIn(zoneLabel("America/New_York")) },
       ],
     },
     {

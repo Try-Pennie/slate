@@ -47,8 +47,26 @@ export function longDayLabel(iso: string, zone: string, opts?: { year?: boolean 
 // neighbour's is not. `dayEmpty` names the day AND says "above", because "pick
 // another" on its own never said another what.
 
+/**
+ * The inline card on a landing page (#3718), as settled in
+ * docs/design/inline-booker.html: the card's title, and a label over the day
+ * strip and times. The Call me now row the design puts under the title is a
+ * later change.
+ */
+export const INLINE_CARD_COPY = {
+  title: "Connect with your loan advisor:",
+  chooseTime: "Choose a time for your call below:",
+  /**
+   * The zone the times are in, under them (Dan, 2026-10-14): the card has no zone
+   * picker, so it names the zone in the booker's own words (`zoneLabel`).
+   */
+  timesIn: (zone: string) => `Times in ${zone}`,
+};
+
 export const PICKER_COPY = {
   pickADay: "Pick a day above to see the times available.",
+  /** #3718: the inline card shows the first few times and offers the rest. */
+  viewMore: "View more times",
   loading: "Finding the days you can book.",
   failed: "Could not load available times. Check your connection.",
   dayEmpty: (day: string) => `Nothing left on ${day}. Pick another day above.`,
