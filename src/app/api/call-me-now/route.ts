@@ -59,6 +59,12 @@ export async function POST(req: NextRequest) {
     const out = await checkCallMeNow(input, deps);
     if (out.kind === "failed") {
       log.warn("call-me-now", { msg: "check failed, button hidden", lead_id: leadId, stage: out.stage }, out.error);
+      // A Salesforce outage hides the button for every lead, and then nobody can press it
+      // to cause the press page, so the check pages on its own.
+      const page = formatCallMeNowFailedAlert({ stage: out.stage, leadId, error: out.error, when: "check" });
+      // alert-text-ok: the builder reduces the error to shortErrorReason's one line, which
+      // scripts/test-call-me-now.ts pins; the full text is in the log line above.
+      afterResponse("call-me-now-alert", () => sendThrottledAlert("call_me_now_failed", CALL_ME_NOW_ALERT_COOLDOWN_MS, page));
     } else if (out.kind === "refused") {
       log.info("call-me-now", { msg: "check refused", lead_id: leadId, reason: out.reason });
     }

@@ -1359,7 +1359,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: refusalAllClear.credential,
   },
-  // #3718: one state per step, since each names a different failure.
+  // #3718: one state per step a press can fail at, plus the failed check that hides the
+  // button, which reads differently because nobody pressed anything.
   {
     key: "call_me_now_failed",
     state: "Salesforce failed while marking the lead for a call",
@@ -1371,6 +1372,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "Salesforce failed while reading the lead",
     channel: "alert",
     text: formatCallMeNowFailedAlert({ stage: "lead-read", leadId: "00QUi000010889ZMAQ", error: new Error("SF query failed: 500 Internal Server Error") }),
+  },
+  {
+    key: "call_me_now_failed",
+    state: "Salesforce failed while reading the switch, so the button was hidden",
+    channel: "alert",
+    text: formatCallMeNowFailedAlert({ stage: "switch-read", leadId: "00QUi000010889ZMAQ", error: new Error("SF query failed: 503 Service Unavailable"), when: "check" }),
   },
   // #2879: one state per kind of host, since each names the caller differently, plus a
   // second retired key from the same host kind, which pages on its own key.

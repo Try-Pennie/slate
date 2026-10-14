@@ -94,6 +94,16 @@ describe("POST /api/call-me-now (#3718)", () => {
     const res = await check();
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ offered: false });
+    // A Salesforce outage hides the button for every lead, and then nobody can press
+    // it to cause the other page, so the check must page on its own (L10, L11).
+    await runDeferred();
+    expect(notify.sendThrottledAlert).toHaveBeenCalledTimes(1);
+    expect(notify.sendThrottledAlert.mock.calls[0]![2]).toMatch(/button was hidden/i);
+  });
+
+  it("a check that is simply refused pages nothing", async () => {
+    live.deps.readSwitch = async () => ({ ...ON, isActiveAlternate: false });
+    expect(await (await check()).json()).toEqual({ offered: false });
     await runDeferred();
     expect(notify.sendThrottledAlert).not.toHaveBeenCalled();
   });

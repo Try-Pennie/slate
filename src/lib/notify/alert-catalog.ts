@@ -867,7 +867,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "call_me_now_failed",
     kind: "incident",
-    why: "One lead pressed Call me now and Salesforce failed before the lead was marked for a call (#3718). The lead was already shown the failure and the times to book; whether somebody calls them is a person's decision, and nothing Slate observes afterwards turns that press into a call, so there is no healthy state to announce.",
+    why: "One lead pressed Call me now and Salesforce failed before the lead was marked for a call, or the check that shows the button failed and hid it (#3718). The lead was already shown the failure and the times to book; whether somebody calls them is a person's decision, and nothing Slate observes afterwards turns that press into a call, so there is no healthy state to announce.",
   },
   {
     key: "retired_booking_key:*",

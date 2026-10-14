@@ -173,6 +173,11 @@ export async function requestCallMeNow(input: CallMeNowInput, deps: CallMeNowDep
   const v = await vet(input, deps);
   if (!("lead" in v)) return v;
   if (v.lead.pending === true) return { kind: "already-requested" };
+  // A Salesforce checkbox is never empty, so null here is a read that went wrong rather
+  // than a lead with nothing pending: a failed read, with Try again, never a second ask.
+  if (v.lead.pending === null) {
+    return { kind: "failed", stage: "lead-read", error: new Error("Call_Me_Now_Pending__c came back unreadable") };
+  }
   try {
     await deps.writeRequested(input.leadId);
   } catch (error) {
@@ -197,10 +202,23 @@ const STAGE_WORDS: Record<CallMeNowFailedStage, string> = {
  * reduced to its short reason (the full text is in the log line beside it). Built here
  * so `pnpm preview:alerts` renders the words that ship.
  */
-export function formatCallMeNowFailedAlert(f: { stage: CallMeNowFailedStage; leadId: string; error: unknown }): string {
+export function formatCallMeNowFailedAlert(f: {
+  stage: CallMeNowFailedStage;
+  leadId: string;
+  error: unknown;
+  /** A press the lead made, or the check that decides whether the button shows. */
+  when?: "press" | "check";
+}): string {
+  const reason = `Salesforce failed while ${STAGE_WORDS[f.stage]} (${shortErrorReason(f.error)})`;
+  if (f.when === "check") {
+    return (
+      `The Call me now button was hidden for lead ${f.leadId}: ${reason}. ` +
+      `They can still book a time. While this lasts the button is hidden for every lead, so nobody can press it.`
+    );
+  }
   return (
-    `Call me now did not go through for lead ${f.leadId}: Salesforce failed while ${STAGE_WORDS[f.stage]} ` +
-    `(${shortErrorReason(f.error)}). The lead was shown a notice with Try again and the times to book, so nobody has been asked to call them yet. ` +
+    `Call me now did not go through for lead ${f.leadId}: ${reason}. ` +
+    `The lead was shown a notice with Try again and the times to book, so nobody has been asked to call them yet. ` +
     `If they do not book or try again, call them from Salesforce.`
   );
 }

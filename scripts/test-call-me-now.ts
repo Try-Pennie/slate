@@ -59,6 +59,7 @@ eq(switchFromRecord({ IsActiveAlternate__c: "yes", PageAlternate__c: 4, MinimumA
   pageAlternate: null,
   minimumAdv: null,
 }, "a field of the wrong type, or a blank minimum, reads as unknown rather than a default");
+eq(switchFromRecord({ IsActiveAlternate__c: true, PageAlternate__c: "Call Me Now Button", MinimumAdv__c: "abc" }).minimumAdv, null, "a minimum that is not a number reads as unknown, never NaN (L50)");
 eq(
   leadFromRecord({ Id: LEAD, Email: " Maria@Example.com ", Phone: null, MobilePhone: "2197588170", ADV__c: 3, Call_Me_Now_Pending__c: true }),
   { email: " Maria@Example.com ", phones: ["2197588170"], adv: 3, pending: true },
@@ -133,6 +134,14 @@ const GIVEN = { leadId: LEAD, email: "maria@example.com", phone: null };
   eq(writes.length, 0, "and is not asked for a second one");
 }
 {
+  // A Salesforce checkbox is never empty, so an unreadable pending flag is a read that
+  // went wrong, not a lead with nothing pending: Try again, never a second request.
+  const { d, writes } = deps({ readLead: async () => ({ ...LEAD_ROW, pending: null }) });
+  const out = await requestCallMeNow(GIVEN, d);
+  assert(out.kind === "failed" && out.stage === "lead-read", "an unreadable pending flag is a failed lead read");
+  eq(writes.length, 0, "and nothing is written");
+}
+{
   const boom = new Error("SF query failed: 503");
   const { d, writes } = deps({ readLead: async () => { throw boom; } });
   const out = await requestCallMeNow(GIVEN, d);
@@ -184,6 +193,11 @@ assert(!retryCanHelp({ kind: "requested" }) && !retryCanHelp({ kind: "already-re
   assert(!text.includes("errorCode"), "never Salesforce's raw JSON");
   assert(/nobody has been asked to call/i.test(text), "and says plainly that no call is coming");
   assert(!/^Slate/.test(text), "and does not open with Slate's own name");
+}
+{
+  const text = formatCallMeNowFailedAlert({ stage: "switch-read", leadId: LEAD, error: new Error("x"), when: "check" });
+  assert(/button was hidden/i.test(text), "a failed check says the button was hidden, since nobody pressed anything");
+  assert(!/nobody has been asked to call/i.test(text), "and does not claim a press it never saw");
 }
 for (const [stage, words] of [
   ["lead-read", /reading the lead/],
