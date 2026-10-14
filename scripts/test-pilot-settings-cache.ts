@@ -92,7 +92,7 @@ function fake() {
 }
 {
   // #3718: a kept reading can be dropped, so the next ask reads afresh inside the window
-  // (Call me now drops its kept Salesforce login after any failure, in case it was revoked).
+  // (Call me now drops its kept Salesforce login when Salesforce refuses it with a 401).
   let reads = 0;
   const cache = createReadingCache(async () => ++reads, { ttlMs: 60_000, staleMs: 60_000 });
   eq(await cache.read(0), 1, "the first ask reads");
