@@ -54,14 +54,17 @@ const submissionIdOf = (v: unknown): string | null => {
 const text = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v.trim() : null);
 
 /**
- * Call me now for the inline booker (#3718). POST `{ action, leadId, email, phone }`:
+ * Call me now for the inline booker (#3718). POST
+ * `{ action, leadId, email, phone, submissionId }` (`submissionId` optional, used only
+ * to ask for the texting line, and only when shaped like one):
  *
  *  - `check` answers `{ offered }`: whether the card shows the button. Writes nothing.
  *    A failed check hides the button rather than erroring the card, since booking a
  *    time still works.
- *  - `request` marks the Lead for a call and answers `{ outcome }`: `requested`,
- *    `already-requested` (a call is pending), `refused` (no retry), or `failed` (503,
- *    with retry, and a page after the response).
+ *  - `request` marks the Lead for a call and answers `{ outcome }`: `requested` or
+ *    `already-requested` (a call is pending), each with `textLine`, the line the lead
+ *    can text or null; `refused` (no retry); or `failed` (503, with retry, and a page
+ *    after the response).
  *
  * No auth: the caller is the booker a lead has open. What stops a stranger sending an
  * advisor to call somebody is the contact check in `call-me-now.ts`, and the answer
