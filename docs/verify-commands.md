@@ -127,6 +127,11 @@ only. It stamps on every tick that read both the live calendar and the cache for
 least one agent, drift or not, and never on an unreadable side or a sample where
 every calendar errored. Its bound is six hours for the same reason as the five above.
 
+`verdict:offered-nobody-free` (#3381) watches the served versus confirm check. It
+stamps on every tick that judged at least one served time with the confirm's candidate
+read, found free or not, and never on an unreadable pool list or marker set or a tick
+whose every read failed. Six hours, like the tier staffing alarm.
+
 `verdict:regal-call-outcomes` (#2944) watches the call outcome ratio: outcome rows
 written to `regal_call_outcomes` against completed calls received, over two hours.
 It stamps on a judged ratio (healthy or short) and never on a window with no calls

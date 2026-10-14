@@ -34,6 +34,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
   assert(g.busyDrift.run, "a healthy tick runs the busy drift sampler");
   assert(g.belowLeadTier.run, "a healthy tick runs the below lead tier check");
   assert(g.offsiteOrigin.run, "a healthy tick runs the off site origin check");
+  assert(g.offeredNobodyFree.run, "a healthy tick runs the served versus confirm check");
 }
 
 // --- each read, alone, gates exactly the checks that depend on it --------------
@@ -90,6 +91,11 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     // from a test one, and nothing else.
     const offsite = c.name !== "buckets";
     eq(g.offsiteOrigin.run, offsite, `${c.name} unreadable: off site origin check runs = ${offsite}`);
+    // #3381: the served versus confirm check judges what the stored rows SERVE, through
+    // the org's week, so exactly those two reads stand it down; the bucket list, the
+    // shifts and the horizon it does not consume must not silence it.
+    const offered = c.name !== "slotHealth" && c.name !== "businessHours";
+    eq(g.offeredNobodyFree.run, offered, `${c.name} unreadable: served versus confirm check runs = ${offered}`);
   }
 }
 
@@ -216,6 +222,8 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     poolFullness: true,
     tierStaffing: true,
     offsiteOrigin: true,
+    // #3381: it has no arming switch, only a cooldown, so it keeps judging.
+    offeredNobodyFree: true,
     // An armed switch (and, for the volume alarm, the floors) decides whether each
     // of these pages, so none may judge on a guessed one.
     availabilityTruth: false,

@@ -552,6 +552,11 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // matching the sibling above keeps two bounds that mean the same thing from
   // being two different numbers nobody can re-derive.
   "verdict:tier-staffing": 6 * 60 * MIN,
+  // The served versus confirm check (#3381). It concludes on every 5 minute tick that
+  // has any served time to judge and can read it, which is every tick while any bucket
+  // offers a time, so this bound is a maintenance window rather than a measure of the
+  // cadence, the same six hours as the tier staffing alarm beside it.
+  "verdict:offered-nobody-free": 6 * 60 * MIN,
   // The Twilio half of the hourly roster sync (#2114). Six missed runs.
   //
   // It is the only thing watching that job at all: the hourly roster sync has no

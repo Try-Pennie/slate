@@ -39,6 +39,7 @@ import {
   REGAL_CALL_OUTCOMES_VERDICT_LANE,
   ADVISOR_PHOTOS_VERDICT_LANE,
   BUSY_DRIFT_VERDICT_LANE,
+  OFFERED_NOBODY_FREE_VERDICT_LANE,
   CRON_BUDGET_VERDICT_LANE,
   parkedDetector,
   type DetectorVerdictLane,
@@ -426,6 +427,11 @@ const VERDICT_SUBJECT: Record<DetectorVerdictLane, VerdictSubject> = {
     what: "the check asking whether anybody Slate routes no bookings to is placing calls in Regal",
     cost: "somebody could be working the phones while Slate offers leads none of their time, and the pool would read as an ordinary quiet day",
     look: 'the Worker logs for msg="regal calls" under tag=monitor, and whether rows are arriving in regal_call_events at all',
+  },
+  [OFFERED_NOBODY_FREE_VERDICT_LANE]: {
+    what: "the check judging the times the booker serves with the confirm's own candidate read",
+    cost: "the booker could go on offering times the confirm refuses, as it did for bucket 112 on 2026-10-06, and the only sign would be leads being turned away",
+    look: 'the Worker logs for msg="offered nobody free" under tag=monitor, and whether the pool listing, the markers in alert_state or the ladder read are failing',
   },
   [TIER_STAFFING_VERDICT_LANE]: {
     what: "the check asking whether each debt tier is offering a lead any booking time on the days the booker shows",

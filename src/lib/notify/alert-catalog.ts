@@ -313,6 +313,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "the whole family stops being read.",
   },
   {
+    key: "offered_nobody_free",
+    kind: "condition",
+    why: "A stored row is serving a time nobody in its pool is free for by the confirm's own candidate read, and has gone on serving it past the recompute lane's freshness window (#3381); it ends when every remembered time has been taken off or found free, which the monitor lane re-judges on its next pass.",
+  },
+  {
     key: "availability_drift:*",
     kind: "condition",
     suffix: "bounded",

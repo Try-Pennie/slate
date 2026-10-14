@@ -38,6 +38,8 @@ import {
   AVAILABILITY_SCAN_VERDICT_LANE,
   CALENDAR_WINDOW_VERDICT_LANE,
   BUSY_DRIFT_VERDICT_LANE,
+  OFFERED_NOBODY_FREE_VERDICT_LANE,
+  offeredNobodyFreeReachedVerdict,
   CRON_BUDGET_VERDICT_LANE,
   OFFSITE_ORIGIN_VERDICT_LANE,
   AUTH_SIGN_IN_VERDICT_LANE,
@@ -226,6 +228,7 @@ const HOUR = 60 * 60_000;
         AVAILABILITY_LATENCY_VERDICT_LANE,
         BUSY_DRIFT_VERDICT_LANE,
         CRON_BUDGET_VERDICT_LANE,
+        OFFERED_NOBODY_FREE_VERDICT_LANE,
       ]
         .sort()
         .join(","),
@@ -501,6 +504,32 @@ assert(
   !tierStaffingReachedVerdict(null),
   "a tick that skipped or threw has not concluded either",
 );
+
+// --- the served versus confirm check's verdict (#3381) ----------------------------
+//
+// Only a tick that JUDGED a served time concludes: an unreadable read, a tick whose
+// every candidate read failed, and a tick with nothing served are all silent, and
+// stamping them would let a check that never once held a served time against the
+// confirm read as one that keeps finding them agree.
+{
+  const measured = (judged: number) => ({
+    status: "measured" as const,
+    judged,
+    nobodyFree: 0,
+    unreadable: judged === 0 ? 2 : 0,
+    persisting: [],
+    suspects: 0,
+    paged: false,
+    cleared: false,
+  });
+  assert(offeredNobodyFreeReachedVerdict(measured(1)), "a tick that judged a served time has concluded");
+  assert(!offeredNobodyFreeReachedVerdict(measured(0)), "a tick that judged nothing has NOT concluded");
+  assert(
+    !offeredNobodyFreeReachedVerdict({ status: "unreadable", why: "could not read the pools" }),
+    "an unreadable tick has not concluded",
+  );
+  assert(!offeredNobodyFreeReachedVerdict(null), "a tick that skipped or threw has not concluded either");
+}
 
 // --- a lane outside the family is named as a code fault, never a crash (L11) ---------
 // Every family lane has copy, which tsc enforces on VERDICT_SUBJECT's type. A string
