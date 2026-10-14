@@ -36,8 +36,10 @@ if [ -z "$source" ]; then
   # `Documents - Dan’s MacBook Pro`, and `print $2` kept only `.../Documents` (#3050).
   # awk reads the WHOLE listing and prints the first at the end: stopping at the first
   # line closed the pipe while git was still writing a long listing, and under pipefail
-  # that SIGPIPE ended the script with exit 141 and no message (#3742).
-  source="$(git -C "$target" worktree list --porcelain 2>/dev/null | awk '/^worktree / && !found {sub(/^worktree /, ""); first=$0; found=1} END {if (found) print first}')"
+  # that SIGPIPE ended the script with exit 141 and no message (#3742). A git that
+  # fails (no repo here) leaves the source empty for the refusal just below, rather
+  # than ending the script with git's own status and nothing said.
+  source="$(git -C "$target" worktree list --porcelain 2>/dev/null | awk '/^worktree / && !found {sub(/^worktree /, ""); first=$0; found=1} END {if (found) print first}')" || source=""
   if [ -z "$source" ]; then
     echo "seed-worktree: could not resolve the source checkout (not a git worktree?); pass SOURCE_DIR." >&2
     exit 2

@@ -158,6 +158,16 @@ async function main() {
     assert(existsSync(join(wt, "node_modules", "MARKER")), "long-list: the clone came from the listing's first entry");
   }
 
+  // 6c. A TARGET OUTSIDE ANY GIT REPO, no source given (#3742 review): git fails, and
+  //     under pipefail that failure ended the script with git's 128 and nothing said,
+  //     before the refusal written for exactly this case could run.
+  {
+    const lone = tmp("seed-nogit-", LOCK, false);
+    const r = spawnSync("bash", [SCRIPT, lone], { encoding: "utf8", env: { ...scrubbedGitEnv(), GIT_CEILING_DIRECTORIES: tmpdir() } });
+    const out = `${r.stdout}${r.stderr}`;
+    assert(r.status === 2 && /could not resolve the source checkout/.test(out), `no-git: refuses with its own message and exit 2 (got ${r.status}: ${out})`);
+  }
+
   // 7. A SOURCE WHOSE LOCKFILE WAS PULLED BUT NEVER INSTALLED (#3734): both lockfiles
   //    match, yet the source's node_modules was installed from an older one. On
   //    2026-10-14 that cloned an install from 2026-09-02 that lacked two packages main
