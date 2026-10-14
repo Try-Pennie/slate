@@ -7,6 +7,7 @@ import {
   formatCallMeNowFailedAlert,
   requestCallMeNow,
   retryCanHelp,
+  type CallMeNowFailedStage,
   type CallMeNowInput,
 } from "@/lib/salesforce/call-me-now";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
@@ -20,6 +21,17 @@ export const dynamic = "force-dynamic";
  * Salesforce outage, and each lead's id is in its own log line.
  */
 export const CALL_ME_NOW_ALERT_COOLDOWN_MS = 10 * 60_000;
+
+/**
+ * Page about a failed check or press, after the response so the lead never waits on
+ * Slack. One key for both: a run of either is one Salesforce outage.
+ */
+function pageFailure(failure: { stage: CallMeNowFailedStage; error: unknown }, leadId: string, when: "check" | "press"): void {
+  const page = formatCallMeNowFailedAlert({ stage: failure.stage, leadId, error: failure.error, when });
+  // alert-text-ok: the builder reduces the error to shortErrorReason's one line, which
+  // scripts/test-call-me-now.ts pins; the full text is in the caller's log line.
+  afterResponse("call-me-now-alert", () => sendThrottledAlert("call_me_now_failed", CALL_ME_NOW_ALERT_COOLDOWN_MS, page));
+}
 
 const text = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v.trim() : null);
 
@@ -61,10 +73,7 @@ export async function POST(req: NextRequest) {
       log.warn("call-me-now", { msg: "check failed, button hidden", lead_id: leadId, stage: out.stage }, out.error);
       // A Salesforce outage hides the button for every lead, and then nobody can press it
       // to cause the press page, so the check pages on its own.
-      const page = formatCallMeNowFailedAlert({ stage: out.stage, leadId, error: out.error, when: "check" });
-      // alert-text-ok: the builder reduces the error to shortErrorReason's one line, which
-      // scripts/test-call-me-now.ts pins; the full text is in the log line above.
-      afterResponse("call-me-now-alert", () => sendThrottledAlert("call_me_now_failed", CALL_ME_NOW_ALERT_COOLDOWN_MS, page));
+      pageFailure(out, leadId, "check");
     } else if (out.kind === "refused") {
       log.info("call-me-now", { msg: "check refused", lead_id: leadId, reason: out.reason });
     }
@@ -74,10 +83,7 @@ export async function POST(req: NextRequest) {
   const out = await requestCallMeNow(input, deps);
   if (out.kind === "failed") {
     log.error("call-me-now", { msg: "press failed", lead_id: leadId, stage: out.stage }, out.error);
-    const page = formatCallMeNowFailedAlert({ stage: out.stage, leadId, error: out.error });
-    // alert-text-ok: the builder reduces the error to shortErrorReason's one line, which
-    // scripts/test-call-me-now.ts pins; the full text is in the log line above.
-    afterResponse("call-me-now-alert", () => sendThrottledAlert("call_me_now_failed", CALL_ME_NOW_ALERT_COOLDOWN_MS, page));
+    pageFailure(out, leadId, "press");
     return NextResponse.json({ outcome: "failed", retry: retryCanHelp(out) }, { status: 503 });
   }
   if (out.kind === "refused") {
