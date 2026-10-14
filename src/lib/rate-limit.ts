@@ -32,6 +32,8 @@ import {
   MANAGE_LIMITER,
   LANDING_LIMITER,
   LANDING_IDENTITY_HOURLY_RATE_RULES,
+  CALL_ME_NOW_LIMITER,
+  CALL_ME_NOW_HOURLY_RATE_RULES,
   BEARER_FAILURE_LIMITER,
   BOOKING_RETRY_CREDIT_RULES,
 } from "@/lib/rate-limit-core";
@@ -360,6 +362,15 @@ export async function landingIdentityAllowed(ip: string): Promise<boolean> {
     { kind: "address", ip, policy: LANDING_LIMITER },
     LANDING_IDENTITY_HOURLY_RATE_RULES,
   );
+}
+
+/**
+ * Whether a lead may check or press Call me now (#3718): the per minute edge window, then
+ * the exact hourly cap. A false answer hides the button; booking a time is untouched.
+ */
+export async function callMeNowAllowed(ip: string): Promise<boolean> {
+  if (!(await edgeWithinLimit(ip, CALL_ME_NOW_LIMITER))) return false;
+  return allowRequest({ kind: "address", ip, policy: CALL_ME_NOW_LIMITER }, CALL_ME_NOW_HOURLY_RATE_RULES);
 }
 
 /**

@@ -13,7 +13,8 @@
 import { sfClientId, sfClientSecret, sfInstanceUrl } from "@/lib/env";
 import { fetchSfWithRetry, type SfFetchOptions } from "@/lib/salesforce/retry";
 
-export async function sfToken(): Promise<{ token: string; instanceUrl: string }> {
+/** The token exchange. `opts` lets a caller a person is waiting on bound its attempts (#3718). */
+export async function sfToken(opts: SfFetchOptions = {}): Promise<{ token: string; instanceUrl: string }> {
   const res = await fetchSfWithRetry(`${sfInstanceUrl()}/services/oauth2/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -22,10 +23,46 @@ export async function sfToken(): Promise<{ token: string; instanceUrl: string }>
       client_id: sfClientId(),
       client_secret: sfClientSecret(),
     }),
-  });
+  }, opts);
   if (!res.ok) throw new Error(`SF token failed: ${res.status} ${await res.text()}`);
   const data = (await res.json()) as { access_token: string; instance_url: string };
   return { token: data.access_token, instanceUrl: data.instance_url };
+}
+
+/** A Salesforce object API name or record id: letters, digits and underscores only. */
+const SF_NAME = /^[A-Za-z0-9_]+$/;
+
+/**
+ * Slate's one Salesforce WRITE path (#3718): PATCH one record's fields.
+ *
+ * Throws on anything but a 2xx, with the status and Salesforce's reason, so a refused
+ * write is never read as a done one. The object and id must be plain Salesforce names,
+ * checked before any request, so caller text can never steer the URL. Retries go
+ * through `fetchSfWithRetry`, which is safe only for a write that is the same however
+ * many times it lands, as setting fields to fixed values is; `opts` lets a caller a
+ * person is waiting on bound the attempts.
+ */
+export async function updateSfRecord(
+  instanceUrl: string,
+  token: string,
+  sobject: string,
+  id: string,
+  fields: Record<string, string | number | boolean | null>,
+  opts: SfFetchOptions = {},
+): Promise<void> {
+  if (!SF_NAME.test(sobject) || !SF_NAME.test(id)) {
+    throw new Error(`SF update refused: ${JSON.stringify(sobject)} ${JSON.stringify(id)} is not a plain object name and record id`);
+  }
+  const res = await fetchSfWithRetry(
+    `${instanceUrl}/services/data/v60.0/sobjects/${sobject}/${id}`,
+    {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(fields),
+    },
+    opts,
+  );
+  if (!res.ok) throw new Error(`SF update failed: ${res.status} ${await res.text()}`);
 }
 
 /** Every record a SOQL query returns, following `nextRecordsUrl` to the end. */

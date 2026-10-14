@@ -222,6 +222,17 @@ export const LANDING_IDENTITY_HOURLY_RATE_RULES: RateLimitRule[] = [
 ];
 
 /**
+ * Call me now on the inline booker (#3718), per address per hour. Each ask costs up to
+ * three Salesforce calls (a token, the lead, the switch) against the org's daily API
+ * allowance, and the contact check behind it should not be guessable at speed. A real
+ * lead checks once when the card draws and presses once, so twenty an hour is far past
+ * anybody genuine; over it the button is hidden and booking a time is untouched.
+ */
+export const CALL_ME_NOW_HOURLY_RATE_RULES: RateLimitRule[] = [
+  { prefix: "cmn:h", windowSeconds: 3600, max: 20 },
+];
+
+/**
  * Every DB limiter rule above, in one list, so the prune below covers each one by
  * construction (#3109). scripts/test-rate-limit-prune.ts reads this module's
  * exports and fails when a rule set exists that this list leaves out.
@@ -244,6 +255,7 @@ const DB_RATE_LIMIT_RULE_SETS: readonly RateLimitRule[][] = [
   ROUTING_HOURLY_RATE_RULES,
   WEBHOOK_TEST_SEND_RATE_RULES,
   LANDING_IDENTITY_HOURLY_RATE_RULES,
+  CALL_ME_NOW_HOURLY_RATE_RULES,
 ];
 
 /**
@@ -879,6 +891,26 @@ export const LANDING_LIMITER = {
 } as const satisfies EdgeLimiterSpec;
 
 /**
+ * Call me now on the inline booker (#3718), keyed per address. Shares
+ * `MANAGE_RATE_LIMITER` under its own key prefix, as the landing lookup does, rather than
+ * adding a binding (a deploy time change). The exact hourly cap is
+ * `CALL_ME_NOW_HOURLY_RATE_RULES`.
+ */
+export const CALL_ME_NOW_LIMITER = {
+  binding: "MANAGE_RATE_LIMITER",
+  nativeKeyPrefix: "cmn:",
+  area: "call-me-now",
+  friendly: "Call me now",
+  keyKind: "ip",
+  audience: "lead",
+  onUnidentified: "refuse",
+  unidentifiedWhy:
+    "a refusal here costs the lead only the Call me now button, never booking a time, so a caller we cannot identify is not counted into a bucket every such caller shares",
+  perMinute: 20,
+  burstCeilingPerMinute: 200,
+} as const satisfies EdgeLimiterSpec;
+
+/**
  * Failed credentials on the key authenticated routes (#3142), keyed per address and counted
  * only on the failure path, so a caller holding a good key never spends it.
  *
@@ -915,6 +947,7 @@ export const EDGE_LIMITERS = [
   BOOKING_API_READ_LIMITER,
   MANAGE_LIMITER,
   LANDING_LIMITER,
+  CALL_ME_NOW_LIMITER,
   BEARER_FAILURE_LIMITER,
 ] as const;
 

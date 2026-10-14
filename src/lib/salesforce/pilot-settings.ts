@@ -66,34 +66,41 @@ export const PILOT_SETTINGS_TTL_MS = 10 * 60_000;
 export const PILOT_SETTINGS_STALE_MS = 60 * 60_000;
 
 /**
- * A kept reading per isolate. A failure is never kept, so the next ask tries again. The
+ * A kept reading per isolate, for any value read from Salesforce on a window. A
+ * failure is never kept, so the next ask tries again; a failed read serves the last
+ * good reading while it is younger than `staleMs` and throws once it is older. The
  * clock is passed in, so the windows are tested without waiting; a caller with no clock
  * of its own (a page rendering) leaves it to be read here.
  */
-export function createPilotSettingsCache(read: () => Promise<PilotSettings>) {
-  let kept: { atMs: number; settings: PilotSettings } | null = null;
+export function createReadingCache<T>(read: () => Promise<T>, windows: { ttlMs: number; staleMs: number }) {
+  let kept: { atMs: number; settings: T } | null = null;
   /**
-   * The settings and when Salesforce was read for them (#3641): a kept or stale served
+   * The reading and when Salesforce was read for it (#3641): a kept or stale served
    * reading carries the time of its own read, so a stored sample never claims a look
    * at Salesforce that did not happen.
    */
-  async function readTimed(nowMs: number = Date.now()): Promise<{ settings: PilotSettings; readAtMs: number }> {
-    if (kept && nowMs - kept.atMs < PILOT_SETTINGS_TTL_MS) return { settings: kept.settings, readAtMs: kept.atMs };
+  async function readTimed(nowMs: number = Date.now()): Promise<{ settings: T; readAtMs: number }> {
+    if (kept && nowMs - kept.atMs < windows.ttlMs) return { settings: kept.settings, readAtMs: kept.atMs };
     try {
       const settings = await read();
       kept = { atMs: nowMs, settings };
       return { settings, readAtMs: nowMs };
     } catch (err) {
-      if (kept && nowMs - kept.atMs < PILOT_SETTINGS_STALE_MS) return { settings: kept.settings, readAtMs: kept.atMs };
+      if (kept && nowMs - kept.atMs < windows.staleMs) return { settings: kept.settings, readAtMs: kept.atMs };
       throw err;
     }
   }
   return {
     readTimed,
-    async read(nowMs: number = Date.now()): Promise<PilotSettings> {
+    async read(nowMs: number = Date.now()): Promise<T> {
       return (await readTimed(nowMs)).settings;
     },
   };
+}
+
+/** The pilot settings' cache, on the pilot windows. */
+export function createPilotSettingsCache(read: () => Promise<PilotSettings>) {
+  return createReadingCache(read, { ttlMs: PILOT_SETTINGS_TTL_MS, staleMs: PILOT_SETTINGS_STALE_MS });
 }
 
 /** The isolate's one cache, for the monitor lane and the admin alerts page. */

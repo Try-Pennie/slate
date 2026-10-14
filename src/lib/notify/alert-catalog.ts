@@ -865,6 +865,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "One real booking was already made from a host page that is not the production site, and its reminder texts and call task have already gone out. A person cancels it or confirms the lead is real; nothing turns an off site booking into an on site one, so there is no healthy state to announce (#2715).",
   },
   {
+    key: "call_me_now_failed",
+    kind: "incident",
+    why: "One lead pressed Call me now and Salesforce failed before the lead was marked for a call (#3718). The lead was already shown the failure and the times to book; whether somebody calls them is a person's decision, and nothing Slate observes afterwards turns that press into a call, so there is no healthy state to announce.",
+  },
+  {
     key: "retired_booking_key:*",
     kind: "incident",
     suffix: "bounded",
