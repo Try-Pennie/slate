@@ -58,10 +58,18 @@ export function contrastRatio(l1: number, l2: number): number {
  * the no-brand sky CTA).
  */
 export function labelColorFor(brandColor: string): string {
-  const lum = hexLuminance(brandColor);
-  if (lum === null) return GRAPHITE.css;
-  return contrastRatio(lum, GRAPHITE.luminance) >=
-    contrastRatio(lum, BEIGE.luminance)
-    ? GRAPHITE.css
-    : BEIGE.css;
+  return bestLabelFor(brandColor)?.css ?? GRAPHITE.css;
+}
+
+/**
+ * Text on a host colour (#3718): graphite or beige, whichever reads better, with
+ * the ratio it reaches, so a caller can refuse a colour neither reads on. Null
+ * when the colour does not parse.
+ */
+export function bestLabelFor(colour: string): { css: string; ratio: number } | null {
+  const lum = hexLuminance(colour);
+  if (lum === null) return null;
+  const onGraphite = contrastRatio(lum, GRAPHITE.luminance);
+  const onBeige = contrastRatio(lum, BEIGE.luminance);
+  return onGraphite >= onBeige ? { css: GRAPHITE.css, ratio: onGraphite } : { css: BEIGE.css, ratio: onBeige };
 }

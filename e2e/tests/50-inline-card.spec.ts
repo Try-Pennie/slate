@@ -40,7 +40,12 @@ const WIDTHS = [
   { name: "phone", viewport: { width: 390, height: 844 }, column: 358, across: 2 },
 ] as const;
 
-function hostPage(theme: "light" | "dark", column: number, link = `router?xbc=${seed.bucketCode}`): string {
+function hostPage(
+  theme: "light" | "dark",
+  column: number,
+  link = `router?xbc=${seed.bucketCode}`,
+  ui: Record<string, unknown> = {},
+): string {
   const call = JSON.stringify({ elementOrSelector: "#slot", calLink: link });
   return `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>A landing page</title></head>
 <body style="margin:0;padding:16px;background:${theme === "dark" ? "#0c0b0e" : "#f9f6f0"}">
@@ -48,7 +53,7 @@ function hostPage(theme: "light" | "dark", column: number, link = `router?xbc=${
 <script src="${E2E_APP_ORIGIN}/widget.js"></script>
 <script>
   Cal("init", "landing", { origin: ${JSON.stringify(E2E_APP_ORIGIN)} });
-  Cal.ns.landing("ui", { theme: ${JSON.stringify(theme)} });
+  Cal.ns.landing("ui", ${JSON.stringify({ theme, ...ui })});
   Cal.ns.landing("inline", ${call});
 </script></body></html>`;
 }
@@ -87,6 +92,27 @@ for (const theme of ["light", "dark"] as const) {
       await expectAccessible(page, `the inline card, ${theme}, ${w.name}`);
     });
   }
+}
+
+// #3718: a host page sets the card's background per theme through cal.com's
+// cssVarsPerTheme; the card paints it, with text that reads on it.
+for (const [theme, bg, rgb] of [
+  ["light", "#FFE7A8", "rgb(255, 231, 168)"],
+  ["dark", "#1D212F", "rgb(29, 33, 47)"],
+] as const) {
+  test(`a host's card colour is painted and still reads, ${theme}`, async ({ page }) => {
+    await page.setViewportSize(WIDTHS[0].viewport);
+    hostHtml = hostPage(theme, WIDTHS[0].column, undefined, { cssVarsPerTheme: { [theme]: { "cal-bg": bg } } });
+    await page.goto(`${HOST}/landing`);
+    const card = page.frameLocator("#slot iframe");
+    const title = card.getByText("Connect with your loan advisor:");
+    await expect(title).toBeVisible({ timeout: 20_000 });
+    await expect(card.getByRole("button", { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first()).toBeVisible({ timeout: 20_000 });
+    const painted = await title.evaluate((el) => getComputedStyle(el.parentElement!).backgroundColor);
+    expect(painted).toBe(rgb);
+    await page.locator("#slot").screenshot({ path: `e2e/.artifacts/inline-card-host-colour-${theme}.png` });
+    await expectAccessible(page, `the inline card on a host colour, ${theme}`);
+  });
 }
 
 test("picking a time in the card goes on to the details step inside it", async ({ page }) => {

@@ -10,7 +10,7 @@ import { landingLookupId } from "@/lib/booking/landing-identity-gate";
 import { headers } from "next/headers";
 import { agentLinkPoolCode, resolveAgentLink } from "@/lib/agent-link/store";
 import { agentLinkPoolHref } from "@/lib/agent-link/link";
-import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
+import { readHostColours } from "@/lib/embed/host-colours";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -114,7 +114,7 @@ export default async function AgentLinkPage({
         prefill={prefill}
         embedded={embedded}
         theme={theme}
-        brandColor={first(sp, "brand") || (embedded ? DEFAULT_BRAND_COLOR : undefined)}
+        brandColor={readHostColours({ brand: first(sp, "brand") || null, bg: null, embedded }, "/book/advisor").brandColor}
         parentOrigin={first(sp, "parentOrigin") || undefined}
         isTest={isTest}
         horizonDays={horizonDays}

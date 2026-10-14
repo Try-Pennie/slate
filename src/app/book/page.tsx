@@ -6,7 +6,7 @@ import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { codeNeedsLookup, resolveLandingCode } from "@/lib/routing/landing-code";
 import { existingCallForLanding, landingAttendee } from "@/lib/booking/service";
-import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
+import { readHostColours } from "@/lib/embed/host-colours";
 import { headers } from "next/headers";
 import { TestAccessRefused } from "@/components/TestAccessRefused";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
@@ -88,6 +88,12 @@ export default async function BookEntry({
   // #3718: widget.js's inline embed asks for the compact card. Any other value is
   // ignored, since cal.com hosts send layouts of their own (`month_view`).
   const layout = first(sp, "layout") === "inline" ? ("inline" as const) : undefined;
+  // #3718: the host's button colour, and on the inline card its background, kept only
+  // when text on them reads; a refused one is logged and Slate's own is used.
+  const colours = readHostColours(
+    { brand: first(sp, "brand") || null, bg: layout === "inline" ? first(sp, "bg") || null : null, embedded },
+    "/book",
+  );
   // #3718: Call me now is a per page setting on the inline card, for a lead. Its
   // contact details are the ones the PAGE sent (`entry.link`), never `attendee`
   // below, which Slate read from Salesforce and would always match the Lead.
@@ -189,7 +195,8 @@ export default async function BookEntry({
         layout={layout}
         callMeNow={callMeNow}
         theme={theme}
-        brandColor={first(sp, "brand") || (embedded ? DEFAULT_BRAND_COLOR : undefined)}
+        brandColor={colours.brandColor}
+        cardSurface={colours.cardSurface}
         parentOrigin={first(sp, "parentOrigin") || undefined}
         isTest={isTest}
         testPass={testPass}
