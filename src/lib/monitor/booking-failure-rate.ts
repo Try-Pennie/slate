@@ -29,12 +29,27 @@
  * the caller from booking-failure-rate-store.ts.
  */
 
+import { DateTime } from "luxon";
+import { formatClockTime } from "../date/parse.ts";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 /** alert_state row key for the page and its all-clear. One constant, so the two
  *  can never drift onto different keys and leave a page that cannot be cleared. */
 
 export const FAILURE_RATE_ALERT_KEY = "booking_failure_rate";
+
+/**
+ * alert_state key for the notice about a burst that had ALREADY ENDED by the time
+ * the window first read as over the line (#3275). Its own key, and an INCIDENT
+ * rather than a condition, because it reports a finished event: put on the
+ * condition key above, it would open a page whose all-clear follows five minutes
+ * later, which is the 6:00 and 6:05am pair of 2026-10-14 again with better words.
+ */
+export const FAILURE_BURST_ENDED_ALERT_KEY = "booking_failure_burst_ended";
+
+/** The zone every time in this copy is given in, labelled ET (the roster's zone and
+ *  the one the tally is bucketed in). */
+const COPY_ZONE = "America/New_York";
 
 /** One tick's reading of the CUMULATIVE totals for the current ET day. */
 export interface OutcomeReading {
@@ -84,6 +99,18 @@ export interface RateSample {
   /** The reminder lane's window only: how a booking handed back earlier in the
    *  window ended on this tick, `sent` or `kept`, so it stops counting as retried. */
   settled?: Record<string, string>;
+  /**
+   * The booking lane's window only (#3275): a page (`live`) was asked for on this
+   * tick (sent, or held by its cooldown). It rides on the sample so it ages out of the
+   * window with the failures it was about. While any sample in the window carries it, a
+   * burst that ends is not reported as past: somebody was paged about these failures,
+   * and the all-clear tells them it is over. A notice about a burst that had already
+   * ended is NOT stored here: nothing would read it (that notice's own cooldown keeps
+   * it to once per burst), so it is recorded on the `failure rate` log line only (L46).
+   * Kept in the existing jsonb `samples` column, so it needs no migration, and optional
+   * so a sample written before it reads as "nobody told", which at worst sends one notice.
+   */
+  told?: "live";
 }
 
 /** The single persisted state row: the last reading (the baseline the next delta
@@ -265,6 +292,90 @@ export function judgeFailureRate(
 }
 
 /**
+ * The recent sub window the page stands down on (#3275).
+ *
+ * The judged window is a share over three hours, so it crosses the line in BOTH
+ * directions as old samples age out with nothing new having happened: a success
+ * leaving it raises the share, a failure leaving it lowers it. On 2026-10-14 that
+ * paged at 6:00am on 8 of 38, an hour after the last failure, then said
+ * "completing again" at 6:05am on 7 of 39 because a 3:02am failure aged out. So the
+ * window still decides whether there WAS a wave, and the recent sub window decides
+ * whether it is still happening and whether it has measurably stopped. The shipped
+ * numbers, and the traffic they were measured against, are in
+ * failure-rate-thresholds.ts.
+ *
+ * Deliberately NOT part of `RateThresholds` or `judgeFailureRate`: the reminder lane
+ * (`reminder-rate.ts`) is judged by that same function with its own thresholds, and
+ * this changes nothing there.
+ */
+export interface RecentThresholds {
+  /** How far back "recent" reaches. */
+  windowMs: number;
+  /** Fewest attempts the recent window must hold before it can stand anything down. */
+  minAttempts: number;
+  /** Highest share (percent) of those attempts that may fail and still count as
+   *  bookings completing. MET, not exceeded: the opposite comparison to `failPct`. */
+  recoverPct: number;
+}
+
+export interface RecentReading {
+  attempts: number;
+  failures: number;
+  /**
+   * A MEASURED clean run: at least `minAttempts` attempts, of which no more than
+   * `recoverPct` failed. The only thing the all-clear may hang off. Too few attempts
+   * is false, never true: a quiet half hour measured nothing (L98, L695).
+   */
+  completing: boolean;
+}
+
+/** What the recent sub window holds as of `atMs`, aged by the window's own rule. */
+export function readRecent(state: RateWindowState, atMs: number, recent: RecentThresholds): RecentReading {
+  let attempts = 0;
+  let failures = 0;
+  for (const s of prune(state.samples, atMs, recent.windowMs)) {
+    attempts += s.attempts;
+    failures += s.failures;
+  }
+  const completing = attempts >= recent.minAttempts && failures * 100 <= recent.recoverPct * attempts;
+  return { attempts, failures, completing };
+}
+
+/**
+ * When the window's failures were recorded: the ticks of the first and of the
+ * newest sample holding one. A sample is recorded by the five minute tick that
+ * measured it, up to one tick after the failure itself, which is why the copy says
+ * "recorded". Null when the window holds no failure.
+ */
+export interface FailureSpan {
+  firstMs: number;
+  newestMs: number;
+}
+
+export function failureSpan(state: RateWindowState, atMs: number, windowMs: number): FailureSpan | null {
+  let firstMs: number | null = null;
+  let newestMs: number | null = null;
+  for (const s of prune(state.samples, atMs, windowMs)) {
+    if (s.failures <= 0) continue;
+    if (firstMs === null || s.atMs < firstMs) firstMs = s.atMs;
+    if (newestMs === null || s.atMs > newestMs) newestMs = s.atMs;
+  }
+  return firstMs === null || newestMs === null ? null : { firstMs, newestMs };
+}
+
+/** "5:05am ET", in the one spelling every surface uses (`formatClockTime`). */
+function etTime(ms: number): string {
+  return `${formatClockTime(DateTime.fromMillis(ms, { zone: COPY_ZONE })) ?? "an unreadable time"} ET`;
+}
+
+/** "between 3:05am and 5:05am ET", or "at 5:05am ET" when one tick recorded them all. */
+function spanWords(span: FailureSpan): string {
+  if (span.firstMs === span.newestMs) return `at ${etTime(span.newestMs)}`;
+  const first = formatClockTime(DateTime.fromMillis(span.firstMs, { zone: COPY_ZONE })) ?? "an unreadable time";
+  return `between ${first} and ${etTime(span.newestMs)}`;
+}
+
+/**
  * Who was refused a time in the window (#3633), read from `routing_decisions`, the
  * one place a refusal carries a person: the daily tally above counts attempts and
  * holds no identity, and of its failures only the refusals (`slot_unavailable`) can
@@ -385,7 +496,8 @@ function guidanceFor(code: string | undefined): string {
   return advice ? ` ${advice}` : "";
 }
 
-export function formatFailureRateAlert(input: {
+/** What the window measured, shared by the page and the burst notice. */
+interface WindowCounts {
   attempts: number;
   failures: number;
   pct: number;
@@ -393,24 +505,107 @@ export function formatFailureRateAlert(input: {
   topCodes: CodeCount[];
   /** Who was refused a time in the same window, or null when that read failed. */
   refused?: RefusedPeople | null;
-}): string {
+}
+
+/**
+ * The window's counts as one clause with no closing full stop, so the burst notice
+ * can say when they were recorded inside the same sentence.
+ *
+ * #3633: the window counts ATTEMPTS, and one lead retrying a dead time five times is
+ * five of them, which the page used to call five customers. With the refused people
+ * counted it leads with them (Dan's choice, 2026-10-12); without them (the read
+ * failed, or no failure carried a person) it says attempts, which is all the tally
+ * can claim.
+ */
+function countsClause(input: WindowCounts): string {
+  const r = input.refused;
+  return r && r.people > 0
+    ? `${peopleWere(r)} refused a time in the last ${input.windowMinutes} minutes ` +
+        `(${plural(r.refusals, "refusal")}); ${input.failures} of ${input.attempts} attempts ` +
+        `failed overall (${input.pct}%)`
+    : `${input.failures} of ${input.attempts} booking attempts failed in the last ` +
+        `${input.windowMinutes} minutes (${input.pct}%)`;
+}
+
+/** What the recent sub window held, as a page reads it. */
+interface RecentCounts {
+  recentMinutes: number;
+  recent: { attempts: number; failures: number };
+}
+
+/**
+ * The page, for failures that are still happening: the window is over the line AND
+ * the recent sub window holds more failures than a clean run allows (#3275). It says
+ * so in words ("Still failing"), with how many of the last half hour's attempts
+ * failed and when the window's failures were recorded, so a reader can tell a live
+ * outage from the tail of one without opening anything.
+ */
+export function formatFailureRateAlert(
+  input: WindowCounts &
+    RecentCounts & {
+      /** When the window's failures were recorded. A breach always has one. */
+      span: FailureSpan;
+    },
+): string {
   const codes = codeList(input.topCodes);
   const naming = codes ? ` Failing with: ${codes}.` : "";
   const guidance = guidanceFor(input.topCodes[0]?.code);
-  // #3633: the window counts ATTEMPTS, and one lead retrying a dead time five times
-  // is five of them, which the page used to call five customers. With the refused
-  // people counted it leads with them (Dan's choice, 2026-10-12); without them (the
-  // read failed, or no failure carried a person) it says attempts, which is all the
-  // tally can claim.
-  const r = input.refused;
-  const opening =
-    r && r.people > 0
-      ? `${peopleWere(r)} refused a time in the last ${input.windowMinutes} minutes ` +
-        `(${plural(r.refusals, "refusal")}); ${input.failures} of ${input.attempts} attempts ` +
-        `failed overall (${input.pct}%).`
-      : `${input.failures} of ${input.attempts} booking attempts failed in the last ` +
-        `${input.windowMinutes} minutes (${input.pct}%).`;
-  return `${opening}${naming}${guidance} The per call breakdown is in the booking outcome panel.`;
+  const { attempts, failures } = input.recent;
+  const now =
+    attempts === 1 && failures === 1
+      ? `the only attempt in the last ${input.recentMinutes} minutes failed`
+      : `${failures} of ${attempts} attempts in the last ${input.recentMinutes} minutes failed`;
+  const when =
+    input.span.firstMs === input.span.newestMs
+      ? `The failures in that window were all recorded ${spanWords(input.span)}.`
+      : `The failures in that window were recorded ${spanWords(input.span)}.`;
+  return (
+    `${countsClause(input)}. Still failing: ${now}. ${when}${naming}${guidance} ` +
+    "The per call breakdown is in the booking outcome panel."
+  );
+}
+
+/**
+ * The notice for a burst that had already ENDED when the window first read as over
+ * the line (#3275): no failure in the recent sub window. Sent once per burst, on its
+ * own incident key, and never when somebody was already paged about these failures.
+ *
+ * Still sent rather than held, because a burst that refused people is worth knowing
+ * about even after it stopped (2026-10-14's included a Google token stall and a
+ * stored row offering full times). But it is worded as past, says when the failures
+ * were, and says what the last half hour measured: a clean run, too few attempts to
+ * call it, or none at all. Only the first may say bookings have stopped failing in so
+ * many words (L11).
+ */
+export function formatFailureBurstEnded(
+  input: WindowCounts &
+    RecentCounts & {
+      span: FailureSpan;
+      /** The recent floor, so the copy can tell a measured clean run from a thin one. */
+      minRecentAttempts: number;
+    },
+): string {
+  const codes = codeList(input.topCodes);
+  const naming = codes ? ` Failed with: ${codes}.` : "";
+  const guidance = guidanceFor(input.topCodes[0]?.code);
+  const since = etTime(input.span.newestMs);
+  const n = input.recent.attempts;
+  const minutes = input.recentMinutes;
+  const lead =
+    n >= input.minRecentAttempts
+      ? `Bookings failed in a burst that has stopped: nothing has failed since ${since}, and all ${n} ` +
+        `attempts in the last ${minutes} minutes completed.`
+      : n > 0
+        ? `Bookings failed in a burst, and nothing has failed since ${since}, but only ` +
+          `${plural(n, "attempt")} came in the last ${minutes} minutes, too few to say bookings are ` +
+          "completing again."
+        : `Bookings failed in a burst, and nothing has failed since ${since}, but nobody has tried ` +
+          `to book in the last ${minutes} minutes, so whether bookings are completing again is not ` +
+          "yet known.";
+  return (
+    `${lead} ${countsClause(input)}, recorded ${spanWords(input.span)}.${naming}${guidance} ` +
+    "The per call breakdown is in the booking outcome panel."
+  );
 }
 
 export type FailureRateResult =
@@ -432,19 +627,25 @@ export type FailureRateResult =
        * windows, which is how two things that must agree drift apart (L53).
        */
       state: RateWindowState;
+      /** What the recent sub window measured (#3275). */
+      recent: RecentReading;
     };
 
 /**
  * The monitor-lane step: read, advance the window, judge, and decide whether a
  * human hears about it.
  *
- * Three rules this encodes, each of which has shipped wrong somewhere before:
+ * Four rules this encodes, each of which has shipped wrong somewhere before:
  *
  *  - A read that failed is `unverified`, never an empty window scored as zero
  *    failures. An empty result here is indistinguishable from a healthy one, so
  *    it must fail loud rather than degrade (#277, #1134, #1152).
- *  - The all-clear hangs off a MEASURED healthy verdict. Not off "we did not
- *    page this tick", which is also true of every tick that could not measure.
+ *  - The all-clear hangs off a MEASURED clean run of recent attempts (#3275). Not
+ *    off "we did not page this tick", which is also true of every tick that could
+ *    not measure, and not off the window's share dipping under the line, which
+ *    happens whenever an old failure ages out (2026-10-04, 2026-10-14).
+ *  - Only failures that are still happening page the condition. Failures that have
+ *    aged into the past are reported once, worded as past, on their own key.
  *  - While disarmed it measures and logs but stays silent in BOTH directions
  *    (L56): its first live run must not also be its first enforcing run, and an
  *    all-clear for a page nobody received is noise.
@@ -461,17 +662,20 @@ export async function runBookingFailureRateCheck(deps: {
   /** Today's cumulative tally, or null when the read failed. */
   readToday: () => Promise<OutcomeReading | null>;
   /**
-   * Who was refused a time since `sinceMs` (#3633). Called only on an ARMED BREACH
-   * tick, never on a healthy, insufficient or disarmed one, since four cron lanes
-   * share one invocation's subrequest budget. It still runs on every breaching tick
-   * while the page's cooldown holds, because the cooldown lives inside `notify` and
-   * asking it first would cost the same subrequest the skip would save: one paged
-   * read per five minute tick, only while the rate is breaching. Required, so `tsc`
-   * names any caller that forgot it rather than the page quietly staying in the
-   * attempts form. May throw; the page then goes out without it.
+   * Who was refused a time since `sinceMs` (#3633). Called only on an ARMED tick that
+   * sends a live page or a burst notice, never on a healthy, insufficient or disarmed
+   * one, since four cron lanes share one invocation's subrequest budget. It still
+   * runs on every live tick while the page's cooldown holds, because the cooldown
+   * lives inside `notify` and asking it first would cost the same subrequest the skip
+   * would save: one paged read per five minute tick, only while failures are live.
+   * Required, so `tsc` names any caller that forgot it rather than the page quietly
+   * staying in the attempts form. May throw; the page then goes out without it.
    */
   readRefusedPeople: (sinceMs: number) => Promise<RefusedPeople>;
   thresholds: RateThresholds;
+  /** The recent sub window the page stands down on (#3275). Required, so `tsc`
+   *  names a caller that would otherwise judge on the window's share alone. */
+  recent: RecentThresholds;
   armed: boolean;
   cooldownMs: number;
   notify: ThrottledNotify;
@@ -503,10 +707,43 @@ export async function runBookingFailureRateCheck(deps: {
   }
 
   const windowMinutes = Math.round(deps.thresholds.windowMs / 60_000);
-  const { state, rebased } = advanceWindow(prev, reading, deps.nowMs, deps.thresholds.windowMs);
+  const recentMinutes = Math.round(deps.recent.windowMs / 60_000);
+  const advanced = advanceWindow(prev, reading, deps.nowMs, deps.thresholds.windowMs);
+  const { rebased } = advanced;
+  const verdict = judgeFailureRate(advanced.state, deps.nowMs, deps.thresholds);
+  const recent = readRecent(advanced.state, deps.nowMs, deps.recent);
+  const span = failureSpan(advanced.state, deps.nowMs, deps.thresholds.windowMs);
+
+  // #3275. The window says whether there WAS a wave; the recent sub window says
+  // whether it is still happening. Three decisions, each on a measured reading:
+  //  - live: over the line AND the last half hour holds more failures than a clean
+  //    run allows. Only this pages the condition, so failures that have aged into
+  //    the past can never re-page it as the share wobbles.
+  //  - past: over the line with NO failure in the last half hour, and nobody paged
+  //    about these failures. One notice, on its own incident key.
+  //  - clear: the last half hour is a measured clean run. Only this may all-clear,
+  //    never the share dipping under the line, and never a quiet half hour.
+  //
+  // `past` is asked for on EVERY such tick and held to once by its own cooldown, not
+  // by the window's marker: the dispatcher answers a failed post with a short retry
+  // stamp, which only helps if the check asks again, so a marker that stopped the
+  // asking would lose the notice to one Slack failure (L33). The marker gates it only
+  // on a LIVE page, whose all-clear is already the end of that story.
+  const breach = verdict.status === "breach" && span !== null;
+  const live = deps.armed && breach && recent.failures > 0 && !recent.completing;
+  const pagedLive = advanced.state.samples.some((s) => s.told === "live");
+  const past = deps.armed && breach && recent.failures === 0 && !pagedLive;
+  const clear = deps.armed && recent.completing;
+
+  // Recorded on the newest sample BEFORE the save, so the record survives a Slack
+  // that hangs. A page held by its cooldown still counts: one is open.
+  const told: RateSample["told"] = live ? "live" : undefined;
+  const samples = advanced.state.samples;
+  const newest = samples[samples.length - 1];
+  const state: RateWindowState =
+    told && newest ? { ...advanced.state, samples: [...samples.slice(0, -1), { ...newest, told }] } : advanced.state;
   // Persist BEFORE notifying: a hung Slack must not cost us the window.
   await deps.saveState(state).catch((err) => deps.onError?.("saveState", err));
-  const verdict = judgeFailureRate(state, deps.nowMs, deps.thresholds);
 
   deps.log?.({
     msg: "failure rate",
@@ -518,43 +755,105 @@ export async function runBookingFailureRateCheck(deps: {
     failures: verdict.failures,
     pct: verdict.status === "insufficient" ? null : verdict.pct,
     top_code: verdict.status === "insufficient" ? null : (verdict.topCodes[0]?.code ?? null),
+    recent_attempts: recent.attempts,
+    recent_failures: recent.failures,
+    recent_completing: recent.completing,
+    newest_failure_min_ago: span === null ? null : Math.round((deps.nowMs - span.newestMs) / 60_000),
+    // What this tick knows before any resolve answers: whether a page is open for
+    // these failures (`told`) and whether a burst has ended (`burst_ended`). Whether
+    // the ended burst's notice actually went out is decided after the all-clear and
+    // logged on its own line below, so this line never claims a notice it held.
+    told: told ?? null,
+    burst_ended: past,
   });
 
-  if (deps.armed && verdict.status === "breach") {
-    // The people count refines the page and is never a condition of it: a failed read
-    // is reported and the page goes out in the attempts form.
-    const refused = await deps
-      .readRefusedPeople(deps.nowMs - deps.thresholds.windowMs)
-      .catch((err) => {
-        deps.onError?.("refusedPeople", err);
-        return null;
-      });
+  // The people count refines a page and is never a condition of one: a failed read is
+  // reported and the message goes out in the attempts form.
+  const readRefused = () =>
+    deps.readRefusedPeople(deps.nowMs - deps.thresholds.windowMs).catch((err) => {
+      deps.onError?.("refusedPeople", err);
+      return null;
+    });
+
+  if (live && verdict.status === "breach" && span !== null) {
+    const refused = await readRefused();
     await deps
       .notify(
         FAILURE_RATE_ALERT_KEY,
         deps.cooldownMs,
-        formatFailureRateAlert({ ...verdict, windowMinutes, refused }),
+        formatFailureRateAlert({ ...verdict, windowMinutes, refused, recentMinutes, recent, span }),
       )
       .catch((err) => deps.onError?.("notify", err));
   }
-  if (deps.armed && verdict.status === "healthy") {
-    await deps
-      .resolve(FAILURE_RATE_ALERT_KEY, formatFailureRateAllClear({ ...verdict, windowMinutes }))
-      .catch((err) => deps.onError?.("resolve", err));
+
+  let settled = false;
+  if (clear) {
+    const answer = await deps
+      .resolve(
+        FAILURE_RATE_ALERT_KEY,
+        formatFailureRateAllClear({ recentMinutes, recent, newestFailureMs: span?.newestMs ?? null }),
+      )
+      .catch((err) => {
+        deps.onError?.("resolve", err);
+        return false;
+      });
+    settled = answer === true;
   }
-  return { status: "checked", armed: deps.armed, verdict, rebased, state };
+
+  // A page that was open and has just been all-cleared already told this story, so
+  // the burst notice would say it twice. A resolve that THREW cannot say whether one
+  // was open, and the notice still goes: a duplicate is better than a burst nobody
+  // hears about.
+  if (past && settled) {
+    deps.log?.({ msg: "burst ended notice", outcome: "held_page_cleared" });
+  }
+  if (past && !settled && verdict.status === "breach" && span !== null) {
+    deps.log?.({ msg: "burst ended notice", outcome: "asked" });
+    const refused = await readRefused();
+    // The cooldown is the window's length, and it is what holds this to once per
+    // burst: a burst reads as ended only from 30 minutes after its newest failure
+    // until that failure leaves the window, a stretch shorter than the window, so a
+    // delivered notice is never repeated for it. The cost, accepted: a SECOND burst
+    // that ends within the same three hours goes unreported by this key.
+    await deps
+      .notify(
+        FAILURE_BURST_ENDED_ALERT_KEY,
+        deps.thresholds.windowMs,
+        formatFailureBurstEnded({
+          ...verdict,
+          windowMinutes,
+          refused,
+          recentMinutes,
+          recent,
+          span,
+          minRecentAttempts: deps.recent.minAttempts,
+        }),
+      )
+      .catch((err) => deps.onError?.("notify", err));
+  }
+  return { status: "checked", armed: deps.armed, verdict, rebased, state, recent };
 }
 
-/** The all-clear. Hung off a MEASURED healthy window, never off a quiet tick, so
- *  it can only ever say something the check actually observed. */
-export function formatFailureRateAllClear(input: {
-  attempts: number;
-  failures: number;
-  pct: number;
-  windowMinutes: number;
-}): string {
-  return (
-    `Bookings are completing again: ${input.failures} of ${input.attempts} attempts failed ` +
-    `in the last ${input.windowMinutes} minutes (${input.pct}%).`
-  );
+/**
+ * The all-clear. Hung off a MEASURED clean run in the recent sub window (#3275),
+ * never off the window's share dipping under the line, and never off a quiet tick,
+ * so it can only say something the check observed. It quotes the recent attempts and
+ * nothing else: "completing again" beside the window's 18% read as a contradiction
+ * (Dan, 2026-10-14), and the window's share was never what ended it.
+ */
+export function formatFailureRateAllClear(
+  input: RecentCounts & {
+    /** The window's newest failure, or null when none is left in it. */
+    newestFailureMs: number | null;
+  },
+): string {
+  const { attempts, failures } = input.recent;
+  if (failures > 0) {
+    return (
+      `Bookings are completing again: ${attempts - failures} of ${attempts} attempts in the last ` +
+      `${input.recentMinutes} minutes completed.`
+    );
+  }
+  const since = input.newestFailureMs === null ? "" : `, and nothing has failed since ${etTime(input.newestFailureMs)}`;
+  return `Bookings are completing again: all ${attempts} attempts in the last ${input.recentMinutes} minutes completed${since}.`;
 }

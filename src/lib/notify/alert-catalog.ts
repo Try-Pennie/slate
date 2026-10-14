@@ -560,7 +560,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "booking_failure_rate",
     kind: "condition",
-    why: "Customers are being turned away right now; it ends when bookings start completing again, and the monitor re-measures the window every 5 minutes.",
+    why: "Bookings are failing right now; it ends when the last 30 minutes hold a measured clean run of attempts (#3275), which the monitor re-measures every 5 minutes, never when the window's share merely dips under the line.",
+  },
+  {
+    // #3275. An INCIDENT: a burst of failed bookings that had already stopped by the
+    // time the window first read as over the line. The event is over when the notice
+    // is sent, so there is no healthy state left to announce; an all-clear would say
+    // that a thing that already ended has ended.
+    key: "booking_failure_burst_ended",
+    kind: "incident",
+    why: "A burst of failed bookings that had already stopped before the window crossed the line; the notice reports a finished event, says nothing has failed since, and is sent once per burst.",
   },
   {
     // #3179. One key per budget (booking success, availability), so each clears on
