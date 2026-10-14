@@ -49,8 +49,9 @@ export function longDayLabel(iso: string, zone: string, opts?: { year?: boolean 
 
 /**
  * The inline card on a landing page (#3718), as settled in
- * docs/design/inline-booker.html: a title over the Call me now row, and a label
- * over the day strip and times.
+ * docs/design/inline-booker.html: the card's title, and a label over the day
+ * strip and times. The Call me now row the design puts under the title is a
+ * later change.
  */
 export const INLINE_CARD_COPY = {
   title: "Connect with your loan advisor:",
