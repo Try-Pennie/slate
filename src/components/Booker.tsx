@@ -2398,11 +2398,13 @@ export default function Booker({
         />
       ) : null;
     const rowShown = cmnRow !== null && ["offered", "pressing", "failed", "refused"].includes(cmn.phase);
-    if (cmn.phase === "confirmed") {
-      return (
-        <div ref={rootRef} data-theme={theme} className={shell}>
-          {testBand}
-          <p className={`mb-3.5 text-[length:var(--fs-h5,1.25rem)] font-semibold ${c.title}`}>{INLINE_CARD_COPY.title}</p>
+    // One frame and one title for both bodies: the confirmation after a press that
+    // went through, or the times with the row beside them.
+    return (
+      <div ref={rootRef} data-theme={theme} className={shell}>
+        {testBand}
+        <p className={`mb-3.5 text-[length:var(--fs-h5,1.25rem)] font-semibold ${c.title}`}>{INLINE_CARD_COPY.title}</p>
+        {cmn.phase === "confirmed" ? (
           <CallMeNowConfirmation
             firstName={callMeNow?.firstName ?? null}
             textLine={cmn.textLine}
@@ -2411,13 +2413,8 @@ export default function Booker({
             titleClass={c.title}
             mutedClass={c.faint}
           />
-        </div>
-      );
-    }
-    return (
-      <div ref={rootRef} data-theme={theme} className={shell}>
-        {testBand}
-        <p className={`mb-3.5 text-[length:var(--fs-h5,1.25rem)] font-semibold ${c.title}`}>{INLINE_CARD_COPY.title}</p>
+        ) : (
+          <>
         {rowShown && callMeNow?.position === "above" && <div className="mb-3">{cmnRow}</div>}
         <div className="rounded-2xl bg-surface p-[18px]">
           {!selectedSlot && (
@@ -2449,6 +2446,8 @@ export default function Booker({
           )}
         </div>
         {rowShown && callMeNow?.position === "below" && <div className="mt-3">{cmnRow}</div>}
+          </>
+        )}
       </div>
     );
   }
