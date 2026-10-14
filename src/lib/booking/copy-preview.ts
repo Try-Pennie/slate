@@ -251,7 +251,7 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "the press did not go through", text: CALL_ME_NOW_COPY.failedHeading },
         { state: "the line under it, the row above the times", text: CALL_ME_NOW_COPY.failedBody("above") },
         { state: "the line under it, the row below the times", text: CALL_ME_NOW_COPY.failedBody("below") },
-        { state: "and the retry, offered only when Salesforce failed", text: CALL_ME_NOW_COPY.tryAgain },
+        { state: "and the retry, offered when Salesforce failed or the press came too often, never on a refusal", text: CALL_ME_NOW_COPY.tryAgain },
       ],
     },
     {
