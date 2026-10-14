@@ -119,6 +119,25 @@ describe("timedMint (#3298)", () => {
     ).catch(() => {});
     expect(h.lines.map((l) => l.outcome)).toEqual(["ok", "error"]);
   });
+
+  // #3512: a mint says why the shared token holder did not answer instead, on success
+  // and on failure alike, so a week of lines says how often and why a mint was needed.
+  it("carries why the holder did not answer, however the mint ends", async () => {
+    const h = harness();
+    await timedMint(async () => "a", { scope: CALENDAR, deadlineMs: 8_000, limitMs: 8_000, holder: "miss" }, h.now, h.write);
+    await timedMint(
+      async () => {
+        throw new GoogleHttpError("Delegated token failed: 503", 503, "backendError");
+      },
+      { scope: CALENDAR, deadlineMs: 8_000, limitMs: 8_000, holder: "timeout" },
+      h.now,
+      h.write,
+    ).catch(() => {});
+    expect(h.lines.map((l) => [l.outcome, l.holder])).toEqual([
+      ["ok", "miss"],
+      ["error", "timeout"],
+    ]);
+  });
 });
 
 describe("mintScopeName (#3298)", () => {

@@ -143,7 +143,7 @@ import {
   type FailureRateResult,
   type RateThresholds,
 } from "@/lib/monitor/booking-failure-rate";
-import { SHIPPED_FAILURE_RATE_THRESHOLDS } from "@/lib/monitor/failure-rate-thresholds";
+import { SHIPPED_FAILURE_RATE_RECENT, SHIPPED_FAILURE_RATE_THRESHOLDS } from "@/lib/monitor/failure-rate-thresholds";
 import {
   catchallVerdict,
   catchallPageText,
@@ -1579,7 +1579,8 @@ export async function GET(req: NextRequest) {
     // all-clear-proof: scripts/test-monitor-booking-failure-rate.ts - pins that an
     // unreadable tally, an unreadable state row, and a window too small to judge
     // each send NOTHING, in either direction. The all-clear hangs only off a
-    // measured healthy verdict.
+    // measured clean run in the last 30 minutes (#3275), never off the window's
+    // share dipping, and a half hour too quiet to judge clears nothing.
     const failureRate = await steps.run<
       FailureRateResult | { status: "errored" } | { status: "skipped"; why: string }
     >(
@@ -1597,10 +1598,12 @@ export async function GET(req: NextRequest) {
           readToday: () => readTodayOutcomes(now),
           readRefusedPeople: (sinceMs) => readRefusedPeople(sinceMs, now),
           thresholds: FAILURE_RATE_THRESHOLDS,
+          recent: SHIPPED_FAILURE_RATE_RECENT,
           armed: settings!.failureRateArmed,
           cooldownMs: cooldownMs.booking_failure_rate,
           notify: (key, cooldownMs, text) => {
             // alert-key: booking_failure_rate
+            // alert-key: booking_failure_burst_ended
             // alert-text-ok: our own copy from booking-failure-rate.ts, built from
             // measured counts; no error text can reach it.
             return sendThrottledAlert(key, cooldownMs, text);

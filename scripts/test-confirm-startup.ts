@@ -42,7 +42,8 @@ import { assert, eq, finish } from "./lib/harness.ts";
  * would go on passing over a format the reader can no longer parse.
  */
 function tailLine(opts: {
-  eventTimestamp: number;
+  /** Null for an event that carried no `eventTimestamp` at all (#3436). */
+  eventTimestamp: number | null;
   logTimestamp: number;
   totalMs: number;
   isolateAgeMs: number;
@@ -65,9 +66,9 @@ function tailLine(opts: {
   return JSON.stringify({
     ...(opts.scriptVersion ? { scriptVersion: { id: opts.scriptVersion } } : {}),
     cpuTime: opts.cpuTime ?? 400,
-    wallTime: opts.logTimestamp - opts.eventTimestamp,
+    ...(opts.eventTimestamp !== null ? { wallTime: opts.logTimestamp - opts.eventTimestamp } : {}),
     outcome: "ok",
-    eventTimestamp: opts.eventTimestamp,
+    ...(opts.eventTimestamp !== null ? { eventTimestamp: opts.eventTimestamp } : {}),
     event: { request: { url: "https://x/api/bookings", method: "POST" } },
     logs: [
       {
@@ -666,6 +667,107 @@ const RUN_37520312761_STAMP_COLD = [
   );
   eq(r.indexUnknown, 0, "every one carried the Worker's count");
   eq(r.samples, r.cold + r.warm + r.indexUnknown, "and every sample is on exactly one side or counted as on neither");
+}
+
+// --- #3436: the isolate's own start, from the invocation to the Worker's entry ---------------
+// Every span on the report's span line starts at the Worker's entry stamp, so the time
+// before it (the runtime starting the invocation, then a fresh isolate evaluating the
+// bundle before the fetch handler runs) was in no span. On run 37520312761 it was the
+// biggest single piece of the startup bar's miss: cold pre profile p95 2801ms against a
+// "whole" p95 of 1780ms.
+//
+// The entry stamp is now written on the answer line (`wait_entry_at_ms`), and the span is
+// measured from the event's own `eventTimestamp` to it. That run predates the field, so
+// these are its 8 confirms above with the stamp put where that run's own marks place the
+// entry: the profile's start (log time less the profile's total) less the marks' whole
+// span, which begins at the entry. Computed here from the copied figures, never typed in,
+// so the fixture holds what the run measured (L48): 611, 585, 638 and 1,021ms on the four
+// first requests, and 0 on the four the Worker counted above 0, as on all but 6 of that
+// run's 518 warm confirms (the other 6 were 1 or 2ms).
+function entryStampOf(c: (typeof RUN_37520312761_STAMP_COLD)[number]): number {
+  return c.eventTimestamp + c.logOffset - c.totalMs - c.wholeMs;
+}
+{
+  const archive = RUN_37520312761_STAMP_COLD.map((c) =>
+    tailLine({
+      eventTimestamp: c.eventTimestamp,
+      logTimestamp: c.eventTimestamp + c.logOffset,
+      totalMs: c.totalMs,
+      isolateAgeMs: c.isolateAgeMs,
+      index: c.index,
+      answer: { wait_total_ms: c.wholeMs, wait_entry_at_ms: entryStampOf(c) },
+    }),
+  ).join("\n");
+  const r = readConfirmStartup(archive)!;
+  eq([...r.isolateStart.cold].sort((a, b) => a - b).join(","), "585,611,638,1021", "a first request's isolate start is the gap before the Worker's entry");
+  eq(r.isolateStart.warm.join(","), "0,0,0,0", "and a later request on a running isolate has none");
+  eq(`${r.isolateStart.unstamped.cold} ${r.isolateStart.unstamped.warm}`, "0 0", "every one carried both stamps");
+  // Control: the isolate start and the marks' whole span add up to the wait the bar
+  // judges, so the new span is the part the old ones could not see, not a second copy.
+  const sum = RUN_37520312761_STAMP_COLD.filter((c) => c.index === 0).map((c) => entryStampOf(c) - c.eventTimestamp + c.wholeMs);
+  eq(sum.sort((a, b) => a - b).join(","), [...r.coldPreProfileMs].sort((a, b) => a - b).join(","), "control: isolate start plus the whole span is the cold wait before the profile");
+}
+
+{
+  // A confirm with no entry stamp (a deployment older than #3436, or a request the
+  // Worker did not stamp) is COUNTED on its side and gives no span, never a zero, which
+  // would be the fastest isolate start there is and pull every percentile down (L622).
+  const real = RUN_37520312761_STAMP_COLD[3]!; // a first request, 611ms before the entry
+  const unstamped = readConfirmStartup(
+    tailLine({ eventTimestamp: real.eventTimestamp, logTimestamp: real.eventTimestamp + real.logOffset, totalMs: real.totalMs, isolateAgeMs: real.isolateAgeMs, index: 0, answer: { wait_total_ms: real.wholeMs } }),
+  )!;
+  eq(unstamped.cold, 1, "it is still a cold confirm");
+  eq(unstamped.isolateStart.cold.length, 0, "with no isolate start read");
+  eq(unstamped.isolateStart.unstamped.cold, 1, "and counted as carrying no entry stamp");
+  // Control: the same confirm with its stamp gives its span, so the fixture is not one
+  // the reader could never measure.
+  const stamped = readConfirmStartup(
+    tailLine({ eventTimestamp: real.eventTimestamp, logTimestamp: real.eventTimestamp + real.logOffset, totalMs: real.totalMs, isolateAgeMs: real.isolateAgeMs, index: 0, answer: { wait_total_ms: real.wholeMs, wait_entry_at_ms: entryStampOf(real) } }),
+  )!;
+  eq(stamped.isolateStart.cold.join(","), "611", "control: stamped, the span is read");
+  eq(stamped.isolateStart.unstamped.cold, 0, "and nothing is counted unstamped");
+
+  // A warm one with no stamp is counted on the warm side, so neither side's count is
+  // short of its confirms in silence.
+  const warm = RUN_37520312761_STAMP_COLD[0]!;
+  const w = readConfirmStartup(
+    tailLine({ eventTimestamp: warm.eventTimestamp, logTimestamp: warm.eventTimestamp + warm.logOffset, totalMs: warm.totalMs, isolateAgeMs: warm.isolateAgeMs, index: warm.index, answer: { wait_total_ms: warm.wholeMs, wait_entry_at_ms: "soon" } }),
+  )!;
+  eq(`${w.isolateStart.unstamped.warm} ${w.isolateStart.warm.length}`, "1 0", "an unreadable stamp on a warm confirm is counted as no stamp, never read (L50)");
+}
+
+{
+  // A confirm whose event carried no `eventTimestamp` cannot be placed at all: it was
+  // never a sample, so it is counted unreadable, and gives no isolate start either.
+  const real = RUN_37520312761_STAMP_COLD[6]!; // the 2801ms first request
+  const r = readConfirmStartup(
+    tailLine({ eventTimestamp: null, logTimestamp: real.eventTimestamp + real.logOffset, totalMs: real.totalMs, isolateAgeMs: real.isolateAgeMs, index: 0, answer: { wait_total_ms: real.wholeMs, wait_entry_at_ms: entryStampOf(real) } }),
+  )!;
+  eq(r.unreadable, 1, "a confirm with no invocation start is counted as unreadable");
+  eq(r.samples, 0, "and is not a sample");
+  eq(r.isolateStart.cold.length + r.isolateStart.warm.length, 0, "so no isolate start is read from its entry stamp alone");
+}
+
+{
+  // An entry stamp EARLIER than the invocation's start is two clocks disagreeing. It is
+  // counted rather than read as a negative span or clamped to the most flattering zero.
+  const real = RUN_37520312761_STAMP_COLD[4]!;
+  const r = readConfirmStartup(
+    tailLine({ eventTimestamp: real.eventTimestamp, logTimestamp: real.eventTimestamp + real.logOffset, totalMs: real.totalMs, isolateAgeMs: real.isolateAgeMs, index: 0, answer: { wait_total_ms: real.wholeMs, wait_entry_at_ms: real.eventTimestamp - 5 } }),
+  )!;
+  eq(r.isolateStart.cold.length, 0, "no span is read from a stamp before the invocation began");
+  eq(r.isolateStart.beforeStart.cold, 1, "and it is counted as such");
+}
+
+{
+  // A confirm on neither side (no invocation index) has no side to file its isolate
+  // start under; it is already counted as `indexUnknown`, and is not counted twice.
+  const real = RUN_37520312761_STAMP_COLD[3]!;
+  const r = readConfirmStartup(
+    tailLine({ eventTimestamp: real.eventTimestamp, logTimestamp: real.eventTimestamp + real.logOffset, totalMs: real.totalMs, isolateAgeMs: real.isolateAgeMs, answer: { wait_total_ms: real.wholeMs, wait_entry_at_ms: entryStampOf(real) } }),
+  )!;
+  eq(r.indexUnknown, 1, "no index, on neither side");
+  eq(r.isolateStart.cold.length + r.isolateStart.warm.length + r.isolateStart.unstamped.cold + r.isolateStart.unstamped.warm, 0, "and its isolate start is on neither side either");
 }
 
 {
