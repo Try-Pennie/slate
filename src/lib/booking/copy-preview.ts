@@ -20,6 +20,7 @@
  * the clock. A diff in `pnpm preview:booker` therefore means the copy changed,
  * never that the day did.
  */
+import { zoneLabel } from "@/lib/booking/timezones";
 import {
   ADD_TO_CALENDAR_COPY,
   BOOKING_ERROR_COPY,
@@ -219,7 +220,7 @@ export function bookerCopyScreens(): CopyScreen[] {
       lines: [
         { state: "the card's title", text: INLINE_CARD_COPY.title },
         { state: "over the day strip and times", text: INLINE_CARD_COPY.chooseTime },
-        { state: "under the times, naming their zone", text: INLINE_CARD_COPY.timesIn("Eastern time (New York)") },
+        { state: "under the times, naming their zone", text: INLINE_CARD_COPY.timesIn(zoneLabel("America/New_York")) },
       ],
     },
     {
