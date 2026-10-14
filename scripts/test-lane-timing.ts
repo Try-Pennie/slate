@@ -135,7 +135,7 @@ eq(laneFieldName(""), "unknown", "an empty path still yields a usable field name
   assert(!("outbox_placement" in fields), "and carries no placement, since nothing placed it");
   assert(!("selfheal_via" in fields), "a run with no recorded path claims none");
   eq(fields.lanes_placed, 2, "and the placed lanes are counted, so the share charts");
-  eq(fields.lanes_remote, 1, "and only the one Cloudflare says it moved counts as moved");
+  eq(fields.lanes_near_db, 1, "and only the one that ran beside the database counts as near it");
 }
 
 {
@@ -151,13 +151,29 @@ eq(laneFieldName(""), "unknown", "an empty path still yields a usable field name
     95,
   );
   eq(fields.lanes_placed, 3, "every lane went over the binding");
-  eq(fields.lanes_remote, 0, "and none of them was moved, which the line now says");
+  eq(fields.lanes_near_db, 0, "and none of them ran near the database, which the line now says");
+}
+
+{
+  // #3693 lessons review: under the region hint, a lane whose tick already ran beside
+  // the database can answer `local-SEA`. That lane IS where it should be, so the count
+  // reads the airport code, never only the remote prefix.
+  const fields = laneTimingFields(
+    [
+      { path: "/api/cron/sync", ms: 40, ok: true, via: "placed", placement: "local-SEA" },
+      { path: "/api/cron/recompute", ms: 90, ok: true, via: "placed", placement: "remote-PDX" },
+      { path: "/api/cron/outbox", ms: 20, ok: true, via: "placed", placement: "local-BOM" },
+      { path: "/api/cron/selfheal", ms: 10, ok: true, via: "placed", placement: "remote-ARN" },
+    ],
+    95,
+  );
+  eq(fields.lanes_near_db, 2, "local-SEA and remote-PDX are near the database; local-BOM and remote-ARN are not");
 }
 
 {
   const fields = laneTimingFields([{ path: "/api/cron/sync", ms: 5, ok: true }], 5);
   eq(fields.lanes_placed, 0, "the placed count is present at zero, so it sums");
-  eq(fields.lanes_remote, 0, "and so is the moved count");
+  eq(fields.lanes_near_db, 0, "and so is the near the database count");
 }
 
 {

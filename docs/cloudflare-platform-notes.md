@@ -29,9 +29,11 @@ What follows from it:
   deploy's canary refusing it) runs in process and shares the scheduled invocation
   as before. The `lane timings` line says which path each lane took
   (`<lane>_via`, `<lane>_placement`, `<lane>_fallback`). `lanes_placed` counts the
-  lanes SENT over the binding, and `lanes_remote` the ones whose `cf-placement`
-  says Cloudflare routed them elsewhere; #3720 read `lanes_placed=4` on ticks where
-  every lane ran `local-BOM`, so sent is never read as moved.
+  lanes SENT over the binding, and `lanes_near_db` the ones whose `cf-placement`
+  names a colo beside the database (SEA or PDX, `NEAR_DATABASE_COLOS` in
+  `src/lib/monitor/lane-timing.ts`), whichever prefix it carries; #3720 read
+  `lanes_placed=4` on ticks where every lane ran `local-BOM`, so sent is never read
+  as moved, and a `local-SEA` lane is where it should be.
 - **Cost.** About 7,500 extra fetch invocations a day (5,760 of them the minute
   trigger's four lanes). Cloudflare's pricing page: requests over a service binding
   carry no additional request fee, and CPU is billed as the total across both.
