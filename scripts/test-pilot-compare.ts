@@ -1005,6 +1005,11 @@ const TO = WINDOW_START + 22 * D;
   eq(m.apps.map((a) => a.key), [plain.id.slice(0, 15)], "an application that booked through the inline card leaves the cohort, on either side");
   eq(m.counts.inlineCardApps, 2, "and how many left is counted");
   eq(m.counts.outsideCohort, 0, "its bookings, the cal.com one included, are not then read as bookings by an application outside the cohort");
+  // One made before the window was never in the cohort, so nothing left it: its
+  // booking is outside the cohort as any other, and is not silently dropped.
+  const older = app("slate", { createdAt: iso(WINDOW_START - 3 * D) });
+  const m2 = matchBookings({ window: w, applications: [older, plain], contactApplications: [], slate: [slateRow(older, { inlineCard: true }), slateRow(plain)], calcom: [] });
+  eq([m2.counts.inlineCardApps, m2.counts.outsideCohort], [0, 1], "an inline card booking by an application outside the cohort is counted outside it, never dropped");
   // On a realistic cohort, so the run judges rather than refusing for an empty side.
   const c = cohort(60, { slate: [0.5, 0.6], calcom: [0.5, 0.6] });
   c.apps.push(viaCardSlateSide, viaCardCalSide);

@@ -717,12 +717,16 @@ export function matchBookings(input: {
   // Slate, so it is not part of the split. The WHOLE application leaves, on whichever
   // side its hash put it, before any booking is tied to it: dropping only its Slate
   // booking would leave a cal.com side application reading as one that never booked.
+  // Only an application that WAS in the cohort leaves it; one never in it (made before
+  // the window, too recently, or in another tier) keeps its bookings counted as
+  // outside the cohort, like any other.
   const viaInlineCard = new Set(
-    input.slate.filter((r) => r.inlineCard && r.submissionId !== null).map((r) => leadKey(r.submissionId as string)),
+    input.slate
+      .filter((r) => r.inlineCard && r.submissionId !== null)
+      .map((r) => leadKey(r.submissionId as string))
+      .filter((key) => cohort.delete(key)),
   );
-  for (const key of viaInlineCard) {
-    if (cohort.delete(key)) counts.inlineCardApps++;
-  }
+  counts.inlineCardApps = viaInlineCard.size;
 
   const attach = (chain: Chain, key: string) => {
     // A booking by an application left out above is neither attached nor counted
