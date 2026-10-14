@@ -18,6 +18,7 @@ import {
   readLoadtestLeg,
   WAIT_SPAN_FIELDS,
   AUTH_STEPS,
+  ENTRY_STAMP_FIELD,
 } from "../src/lib/booking/wait-marks.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -165,7 +166,8 @@ function clock(start: number) {
     t += 10;
     m.mark(p);
   }
-  const written = Object.keys(m.fields()).filter((k) => k.startsWith("wait_"));
+  // The entry stamp is the one `wait_` field that is not a span (#3436).
+  const written = Object.keys(m.fields()).filter((k) => k.startsWith("wait_") && k !== ENTRY_STAMP_FIELD);
   eq(written.sort().join(","), [...WAIT_SPAN_FIELDS].sort().join(","), "and every span the marks write is in the list, and nothing else");
 }
 
@@ -207,6 +209,25 @@ function clock(start: number) {
   const none = readEntryMarks(new Headers());
   eq(none.entryAtMs, null, "no stamp reads as absent");
   eq(none.invocationIndex, null, "no invocation index reads as absent, not as a first request");
+}
+
+// --- #3436: the Worker's entry stamp itself, so the isolate's own start can be read ----
+// Every span above starts at the entry stamp, so the time from the invocation starting
+// to the Worker's handler being entered (a fresh isolate starting up) was in none of
+// them. The archive carries the invocation's start (`eventTimestamp`); the line carries
+// the entry stamp, and the reader measures the span between the two directly rather
+// than as a residual of other spans (L699).
+{
+  eq(ENTRY_STAMP_FIELD, "wait_entry_at_ms", "the stamp's field name, read by the load run's reader from this one constant");
+  assert(!(WAIT_SPAN_FIELDS as readonly string[]).includes(ENTRY_STAMP_FIELD), "it is a stamp, not a span, so it is not in the span list");
+  const c = clock(1_791_317_362_000);
+  const m = makeWaitMarks(c.now, 1_791_317_361_805);
+  m.mark("handler");
+  eq(m.fields()[ENTRY_STAMP_FIELD], 1_791_317_361_805, "the Worker's own stamp is written as it was given, on the Worker's clock");
+  const none = makeWaitMarks(c.now, null);
+  none.mark("handler");
+  eq(none.fields()[ENTRY_STAMP_FIELD], undefined, "no stamp given, none written, never a zero or the handler's time (L90)");
+  eq(none.fields().wait_missing, "entry,authed,line_start,line_turn,decided,profile", "and the entry is still named missing");
 }
 
 // --- #3354: which leg of the run sent a confirm, as its driver names it ------------
