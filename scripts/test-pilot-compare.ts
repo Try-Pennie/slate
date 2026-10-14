@@ -98,6 +98,7 @@ function slateRow(a: Application, over: Partial<SlateBookingRow> = {}): SlateBoo
   return {
     id: `b-${a.id}`,
     submissionId: a.id,
+    inlineCard: false,
     createdAt: iso(Date.parse(a.createdAt) + H),
     startsAt: iso(Date.parse(a.createdAt) + D),
     status: "confirmed",
@@ -978,6 +979,47 @@ const TO = WINDOW_START + 22 * D;
   const changed = run(c, { window: updateWindow, storedInSpan: 0, storeBeganMs: null, readings: [reading(WINDOW_START + D, { percent: 70, record_modified_at: iso(WINDOW_START + D - H) })] });
   eq(changed.exit, PILOT_COMPARE_EXIT.splitChanged, "a split change inside the window still has its own exit in an update");
   eq(JUDGED_EXITS.has(PILOT_COMPARE_EXIT.bookingUpdate), true, "an update is a judgement, not a refusal");
+}
+
+// --- #3718: applications that booked through a landing page's inline card -----------------
+// Those pages always offer Slate, so an application that booked on one is not part of the
+// split. The WHOLE application leaves the cohort, on whichever side its hash put it, along
+// with every booking it made: dropping only the booking row would leave a cal.com side
+// application reading as one that never booked, understating cal.com's booking rate.
+{
+  const w = windowAt();
+  const viaCardSlateSide = app("slate");
+  const viaCardCalSide = app("calcom");
+  const plain = app("slate");
+  const m = matchBookings({
+    window: w,
+    applications: [viaCardSlateSide, viaCardCalSide, plain],
+    contactApplications: [],
+    slate: [
+      slateRow(viaCardSlateSide, { inlineCard: true }),
+      slateRow(viaCardCalSide, { inlineCard: true }),
+      slateRow(plain),
+    ],
+    calcom: [calRow({ submissionId: viaCardCalSide.id })],
+  });
+  eq(m.apps.map((a) => a.key), [plain.id.slice(0, 15)], "an application that booked through the inline card leaves the cohort, on either side");
+  eq(m.counts.inlineCardApps, 2, "and how many left is counted");
+  eq(m.counts.outsideCohort, 0, "its bookings, the cal.com one included, are not then read as bookings by an application outside the cohort");
+  // One made before the window was never in the cohort, so nothing left it: its
+  // booking is outside the cohort as any other, and is not silently dropped.
+  const older = app("slate", { createdAt: iso(WINDOW_START - 3 * D) });
+  const m2 = matchBookings({ window: w, applications: [older, plain], contactApplications: [], slate: [slateRow(older, { inlineCard: true }), slateRow(plain)], calcom: [] });
+  eq([m2.counts.inlineCardApps, m2.counts.outsideCohort], [0, 1], "an inline card booking by an application outside the cohort is counted outside it, never dropped");
+  // On a realistic cohort, so the run judges rather than refusing for an empty side.
+  const c = cohort(60, { slate: [0.5, 0.6], calcom: [0.5, 0.6] });
+  c.apps.push(viaCardSlateSide, viaCardCalSide);
+  c.slate.push(slateRow(viaCardSlateSide, { inlineCard: true }), slateRow(viaCardCalSide, { inlineCard: true }));
+  c.cal.push(calRow({ submissionId: viaCardCalSide.id }));
+  const out = run(c);
+  assert(
+    out.lines.some((l) => /2 applications that booked through a landing page's inline card/.test(l)),
+    "the readout says how many it left out, so the exclusion is visible",
+  );
 }
 
 finish();

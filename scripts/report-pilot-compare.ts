@@ -176,6 +176,8 @@ try {
   slate = rows.map((r) => ({
     id: r.id,
     submissionId: partnerKeysFrom(r.prefill).submissionId,
+    // #3718: the inline card's link always carries `layout=inline`, kept in `prefill`.
+    inlineCard: r.prefill?.layout === "inline",
     createdAt: r.created_at,
     startsAt: r.starts_at,
     status: r.status,
