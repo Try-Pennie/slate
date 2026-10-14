@@ -12,9 +12,11 @@
  *
  * Under the load test an HTTP request also carries the Worker's entry stamp and its
  * invocation index to the route (`withEntryMarks`); off the load test nothing is
- * stamped and the count is a module scope integer, nothing more.
+ * stamped. The count itself is the isolate's one record (`recordIsolateRun`, #3713),
+ * which the availability route reads on every lead's read.
  */
 import { withEntryMarks } from "@/lib/booking/wait-marks";
+import { recordIsolateRun } from "@/lib/api/isolate-runs";
 
 /** As much of the OpenNext handler as the Worker calls. */
 export interface AppHandler<Env, Ctx> {
@@ -30,10 +32,11 @@ export interface CountedApp<Env, Ctx> {
 }
 
 export function countedApp<Env, Ctx>(handler: AppHandler<Env, Ctx>): CountedApp<Env, Ctx> {
-  let runs = 0;
   return {
     fetch(request, env, ctx, stamp) {
-      const invocationIndex = runs++;
+      // #3713: the count lives in the isolate's one record, which the availability route
+      // also reads for every lead's read, so the two can never be different counts.
+      const invocationIndex = recordIsolateRun(stamp?.enteredAtMs ?? Date.now());
       const req = stamp
         ? withEntryMarks(request, { loadtest: stamp.loadtest, nowMs: stamp.enteredAtMs, invocationIndex })
         : request;
