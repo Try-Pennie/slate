@@ -886,6 +886,29 @@ function slowRun(made = 100): JudgeInput {
   // in that wait too (L11). It now points at the measured split instead.
   assert(!/server bundle/.test(slowDetail), `and it claims no cause it did not measure (got: ${slowDetail})`);
   assert(/span line/.test(slowDetail), `and it points at the report's span line, which splits the wait (got: ${slowDetail})`);
+  // #3436: the list of where the wait can go names the isolate's own start first, which
+  // on run 37520312761 was the biggest piece of the miss and was in no span.
+  assert(/the isolate starting before the Worker's entry, then route, auth/.test(slowDetail), `and it names the isolate's own start among the spans (got: ${slowDetail})`);
+  // The verdict is still read from the whole wait before the profile, which already
+  // begins at the invocation's start: the same slow cold confirms with no entry stamp
+  // at all fail the bar exactly as before, so a missing stamp never moves the verdict.
+  const unstampedSlow = broken((i) => {
+    i.confirmStartup = startupReading([
+      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false })),
+      ...Array.from({ length: 3 }, () => ({ handlerMs: 900, beforeMs: 4_000, cold: true, answer: { wait_total_ms: 3_000 } })),
+    ]);
+  });
+  const stampedSlow = broken((i) => {
+    i.confirmStartup = startupReading([
+      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false })),
+      ...Array.from({ length: 3 }, () => ({ handlerMs: 900, beforeMs: 4_000, cold: true, answer: { wait_total_ms: 3_000, wait_entry_at_ms: 1_000 } })),
+    ]);
+  });
+  eq(
+    unstampedSlow.findings.find((f) => f.bar === "confirm startup")?.detail,
+    stampedSlow.findings.find((f) => f.bar === "confirm startup")?.detail,
+    "the bar's finding is the same with or without the entry stamp: the span is reported, never judged",
+  );
 
   // #3418: the bar judges the confirms the WORKER counted as their isolate's first
   // request, never the module stamp's. A slow confirm the stamp alone calls cold (the
@@ -2722,6 +2745,57 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   const unmarked = waitSpanText(startupReading([{ handlerMs: 900, beforeMs: 500, cold: false, index: null }]));
   assert(/no confirm carried marks/.test(unmarked), `a run with no marks says the wait was not split, never a zero (got: ${unmarked})`);
   assert(/not read/.test(waitSpanText(null)), "and a run with no archive says so");
+}
+
+// --- #3436: the isolate's own start, before the Worker's entry, as its own span --------
+// Every span starts at the Worker's entry, so on run 37520312761 the four first requests'
+// 585 to 1,021ms before it was in no span, and "whole" (p95 1780ms) read as the whole of
+// a cold wait whose p95 was 2801ms. The line now leads each side with the isolate start,
+// measured from the invocation's start to the entry stamp, and says how many carried no
+// stamp rather than reading them as zero (L622).
+{
+  // That run's four first requests and two of its warm confirms: before the profile, the
+  // marks' whole span, and where the entry sat (the fixtures' event starts at 0).
+  const cold = [
+    { before: 1_121, whole: 510 },
+    { before: 1_482, whole: 897 },
+    { before: 1_502, whole: 864 },
+    { before: 2_801, whole: 1_780 },
+  ];
+  const rows = [
+    ...cold.map((c) => ({ handlerMs: 2_000, beforeMs: c.before, cold: true, answer: { wait_total_ms: c.whole, wait_entry_at_ms: c.before - c.whole } })),
+    { handlerMs: 2_000, beforeMs: 1_107, cold: false, answer: { wait_total_ms: 1_107, wait_entry_at_ms: 0 } },
+    { handlerMs: 2_000, beforeMs: 859, cold: false, answer: { wait_total_ms: 858, wait_entry_at_ms: 1 } },
+  ];
+  const text = waitSpanText(startupReading(rows));
+  const p = percentiles([611, 585, 638, 1_021])!;
+  assert(text.includes(`cold n=4, 4 marked: isolate start p50 ${p.p50}ms p95 ${p.p95}ms, `), `the cold side leads with the isolate start, through the judge's own percentile (got: ${text})`);
+  const w = percentiles([0, 1])!;
+  assert(text.includes(`warm n=2, 2 marked: isolate start p50 ${w.p50}ms p95 ${w.p95}ms, `), `and so does the warm side, where it is next to nothing (got: ${text})`);
+  assert(/whole from the Worker's entry p50/.test(text), `the whole span says where it starts, so it is not read as the whole wait (got: ${text})`);
+  assert(!/no entry stamp/.test(text), `nothing is named missing when every confirm carried the stamp (got: ${text})`);
+
+  // A confirm with no entry stamp is counted on its side, never read as zero.
+  const some = waitSpanText(startupReading([...rows, { handlerMs: 2_000, beforeMs: 1_400, cold: true, answer: { wait_total_ms: 800 } }]));
+  assert(some.includes(`cold n=5, 5 marked: isolate start p50 ${p.p50}ms p95 ${p.p95}ms (1 with no entry stamp)`), `a cold confirm with no stamp is counted, the span read from the other four (got: ${some})`);
+
+  // An archive from before the stamp existed: measured nowhere, said so, never a zero.
+  const none = waitSpanText(startupReading(cold.map((c) => ({ handlerMs: 2_000, beforeMs: c.before, cold: true, answer: { wait_total_ms: c.whole } }))));
+  assert(
+    /cold n=4, 4 marked: isolate start not measured, none of the 4 carried the Worker's entry stamp \(a deployment with #3436 writes it\)/.test(none),
+    `a run whose confirms carried no stamp says the isolate start was not measured (got: ${none})`,
+  );
+  assert(!/isolate start p50 0ms/.test(none), `and never reports a zero (got: ${none})`);
+
+  // A stamp before the invocation began is two clocks disagreeing, counted, not read.
+  const early = waitSpanText(startupReading([...rows, { handlerMs: 2_000, beforeMs: 1_400, cold: true, answer: { wait_total_ms: 800, wait_entry_at_ms: -3 } }]));
+  assert(/\(1 stamped before its invocation began\)/.test(early), `a stamp earlier than the invocation is named (got: ${early})`);
+
+  // The cold after deploy line carries the same span, by the same clause.
+  const result = { mode: "cold" as const, planned: 4, attempts: [1, 2, 3, 4].map((i) => ({ i, slot: { code: "112", start: `s${i}` }, deployOk: true, version: "unknown", sentAtMs: i, status: 200, outcome: "created" })) };
+  const legReading = startupReading(cold.map((c) => ({ handlerMs: 2_000, beforeMs: c.before, cold: true, answer: { wait_total_ms: c.whole, wait_entry_at_ms: c.before - c.whole, loadtest_leg: "cold" } })), { leg: "cold" });
+  const leg = coldAfterDeployText({ expected: 4, result, reading: legReading });
+  assert(leg.includes(`by span isolate start p50 ${p.p50}ms, `), `the cold leg's spans lead with the isolate start (got: ${leg})`);
 }
 
 // --- #3354: the shared line's wait, split by the object's own log of its calls --------

@@ -840,8 +840,35 @@ export const WAIT_SPAN_LABELS: Record<WaitSpanField, string> = {
   wait_line_ms: "line",
   wait_decide_ms: "person decision",
   wait_to_profile_ms: "to the profile",
-  wait_total_ms: "whole",
+  // #3436: every span starts at the Worker's entry, so this is not the whole wait the
+  // startup bar judges; the isolate's own start before it is reported beside it.
+  wait_total_ms: "whole from the Worker's entry",
 };
+
+/**
+ * #3436: the isolate's own start on one side, as the clause that leads that side's
+ * spans, since it ends where every span begins (the Worker's entry). Read by the
+ * judge's own `percentiles` (L41). Confirms with no entry stamp, or with one before their
+ * invocation began, are counted and never read as zero (L622); with none measured the
+ * clause says so. Null when the side has no confirm at all.
+ */
+function isolateStartClause(cs: ConfirmStartupReading, side: "cold" | "warm", withP95: boolean): string | null {
+  const values = cs.isolateStart[side];
+  const unstamped = cs.isolateStart.unstamped[side];
+  const before = cs.isolateStart.beforeStart[side];
+  const total = values.length + unstamped + before;
+  if (total === 0) return null;
+  const p = percentiles(values);
+  if (p === null && unstamped === total) {
+    return `isolate start not measured, none of the ${total} carried the Worker's entry stamp (a deployment with #3436 writes it)`;
+  }
+  const notes = [
+    ...(unstamped > 0 ? [`${unstamped} with no entry stamp`] : []),
+    ...(before > 0 ? [`${before} stamped before ${before === 1 ? "its invocation" : "their invocations"} began`] : []),
+  ];
+  if (p === null) return `isolate start not measured (${notes.join(", ")})`;
+  return `isolate start p50 ${p.p50}ms${withP95 ? ` p95 ${p.p95}ms` : ""}${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`;
+}
 
 /**
  * #3354: the wait before the confirm's profile, by span, as one report line. A
@@ -864,10 +891,15 @@ export function waitSpanText(cs: ConfirmStartupReading | null): string {
     // The confirms that carried marks or an invocation index, counted by the reader,
     // never the longest span list, which misses a confirm that carried only an index.
     const marked = cs.markedBySide[label];
-    const parts = WAIT_SPAN_FIELDS.flatMap((f) => {
-      const p = percentiles(spans[f] ?? []);
-      return p === null ? [] : [`${WAIT_SPAN_LABELS[f]} p50 ${p.p50}ms p95 ${p.p95}ms`];
-    });
+    // #3436: the isolate's own start first, since it ends where every span begins.
+    const start = isolateStartClause(cs, label, true);
+    const parts = [
+      ...(start === null ? [] : [start]),
+      ...WAIT_SPAN_FIELDS.flatMap((f) => {
+        const p = percentiles(spans[f] ?? []);
+        return p === null ? [] : [`${WAIT_SPAN_LABELS[f]} p50 ${p.p50}ms p95 ${p.p95}ms`];
+      }),
+    ];
     return `${label} n=${n}, ${marked} marked${parts.length > 0 ? `: ${parts.join(", ")}` : ""}`;
   };
   // #3418: cold n IS the count of first requests, so it is not printed again in other
@@ -1055,10 +1087,14 @@ export function coldAfterDeployText(input: {
   const otherLegs = r.otherLegs ?? 0;
   const leftOut = otherLegs > 0 ? ` (${otherLegs} confirm${otherLegs === 1 ? "" : "s"} from another leg left out)` : "";
   const p = percentiles(own.cold);
-  const spans = WAIT_SPAN_FIELDS.flatMap((f) => {
-    const q = percentiles(r.waitSpans.cold[f] ?? []);
-    return q === null ? [] : [`${WAIT_SPAN_LABELS[f]} p50 ${q.p50}ms`];
-  });
+  const start = isolateStartClause(r, "cold", false);
+  const spans = [
+    ...(start === null ? [] : [start]),
+    ...WAIT_SPAN_FIELDS.flatMap((f) => {
+      const q = percentiles(r.waitSpans.cold[f] ?? []);
+      return q === null ? [] : [`${WAIT_SPAN_LABELS[f]} p50 ${q.p50}ms`];
+    }),
+  ];
   // #3418: one count of first requests, the Worker's, which is how `own.cold` is filed;
   // a confirm with no invocation index is read, on neither side, and named.
   const noIndex = own.unknown.length;
@@ -2248,8 +2284,9 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
         `own share is taken out: ${cs.cold} of ${cs.samples} confirms here were their isolate's ` +
         `first request, by the Worker's own count, against ` +
         `${m.confirmWarmStartup === null ? "no" : `p95 ${m.confirmWarmStartup.p95}ms`} ` +
-        "on a warm one. The report's span line says where that wait went (#3354: route, auth, " +
-        "the confirm line, the person decision); nothing here assumes which. The confirm itself " +
+        "on a warm one. The report's span line says where that wait went (#3354, #3436: the " +
+        "isolate starting before the Worker's entry, then route, auth, the confirm line, the " +
+        "person decision); nothing here assumes which. The confirm itself " +
         "is judged separately",
     );
   }

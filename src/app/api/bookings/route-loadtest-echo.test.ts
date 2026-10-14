@@ -184,6 +184,9 @@ describe("POST /api/bookings under SLATE_LOADTEST", () => {
     expect(typeof fields.wait_route_ms).toBe("number");
     expect(typeof fields.wait_auth_ms).toBe("number");
     expect(String(fields.wait_missing)).toBe("line_start,line_turn,decided,profile");
+    // #3436: the Worker's entry stamp itself, which the load run measures the isolate's
+    // own start up to, from the invocation's start in the tail.
+    expect(fields.wait_entry_at_ms).toBe(entered);
     expect(seen?.isolateInvocationIndex).toBe(0);
     // #3354: a trace for this confirm's shared line calls, and the leg its driver named.
     expect(seen?.lineTrace).toMatch(/^[0-9a-f-]{36}$/);

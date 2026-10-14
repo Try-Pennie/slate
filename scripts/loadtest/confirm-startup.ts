@@ -194,6 +194,30 @@ export interface ConfirmStartupReading {
    * carry, or carried unreadably, contributes nothing rather than a zero (L90).
    */
   waitSpans: { cold: Record<string, number[]>; warm: Record<string, number[]> };
+  /**
+   * #3436: the isolate's own start, from the invocation beginning (the event's
+   * `eventTimestamp`) to the Worker's fetch handler being entered (the entry stamp the
+   * answer line carries as `wait_entry_at_ms`), filed cold and warm like the spans.
+   *
+   * Every span above starts AT the entry, so this was in none of them, and on run
+   * 37520312761 it was the biggest single piece of the startup bar's miss: the four first
+   * requests waited 585, 611, 638 and 1,021ms there, against 0 to 2ms on every confirm
+   * counted above 0. Measured from its own two ends, never as the wait less the marks'
+   * whole span (L699).
+   *
+   * Read only from a confirm carrying both stamps. One with no readable entry stamp is
+   * counted in `unstamped` on its side, never read as zero, which would be the fastest
+   * start there is (L622); one whose event carried no `eventTimestamp` was never a sample
+   * and is in `unreadable`. A stamp earlier than the invocation's start is two clocks
+   * disagreeing, counted in `beforeStart` rather than read as a negative or clamped. A
+   * confirm on neither side is in `indexUnknown` and nowhere here.
+   */
+  isolateStart: {
+    cold: number[];
+    warm: number[];
+    unstamped: { cold: number; warm: number };
+    beforeStart: { cold: number; warm: number };
+  };
   /** Profiles whose invocation logged a `confirm answered` line with marks or an invocation index. */
   markedSamples: number;
   /** The same, split by the cold or warm call, so each side says how many carried marks. */
@@ -230,7 +254,7 @@ export interface ConfirmStartupReading {
 
 /** The spans `wait-marks.ts` writes, in the order a confirm passes them. */
 export { WAIT_SPAN_FIELDS } from "../../src/lib/booking/wait-marks.ts";
-import { WAIT_SPAN_FIELDS, type LoadtestLeg } from "../../src/lib/booking/wait-marks.ts";
+import { ENTRY_STAMP_FIELD, WAIT_SPAN_FIELDS, type LoadtestLeg } from "../../src/lib/booking/wait-marks.ts";
 
 const ANSWER_MSG = 'msg="confirm answered"';
 
@@ -415,6 +439,7 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
     unreadable: 0,
     unparsable: 0,
     waitSpans: { cold: {}, warm: {} },
+    isolateStart: { cold: [], warm: [], unstamped: { cold: 0, warm: 0 }, beforeStart: { cold: 0, warm: 0 } },
     markedSamples: 0,
     markedBySide: { cold: 0, warm: 0 },
     stampColdNotFirst: 0,
@@ -525,6 +550,15 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
       const version = inv.scriptVersion ?? "unknown";
       (reading.byVersion[version] ??= { cold: [], warm: [], unknown: [] })[group].push(preProfileMs);
       (reading.byLeg[leg] ??= { cold: [], warm: [], unknown: [] })[group].push(preProfileMs);
+      // #3436: the isolate's own start, from this invocation's start to the Worker's
+      // entry stamp on its own answer line. `startedAt` is known to be there (a confirm
+      // without it is unreadable above), so only the entry stamp can be missing.
+      if (side !== null) {
+        const entryAt = answerText !== null ? field(answerText, ENTRY_STAMP_FIELD) : null;
+        if (entryAt === null) reading.isolateStart.unstamped[side] += 1;
+        else if (entryAt < startedAt) reading.isolateStart.beforeStart[side] += 1;
+        else reading.isolateStart[side].push(entryAt - startedAt);
+      }
       const lineTrace = answerText !== null ? textField(answerText, "line_trace") : null;
       if (lineTrace) {
         tracedConfirms.push({ side, trace: lineTrace, shared: textField(answerText ?? "", "line") === "shared", waitLineMs: field(answerText ?? "", "wait_line_ms") });
