@@ -29,6 +29,22 @@ export async function sfToken(opts: SfFetchOptions = {}): Promise<{ token: strin
   return { token: data.access_token, instanceUrl: data.instance_url };
 }
 
+/**
+ * A Salesforce answer that was not a success, carrying its HTTP status as a field so a
+ * caller decides by the status rather than by reading the message (L35).
+ */
+export class SfHttpError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+/** Whether Salesforce refused the login itself (401), the one failure a fresh login can fix. */
+export function isSfAuthFailure(err: unknown): boolean {
+  return err instanceof SfHttpError && err.status === 401;
+}
+
 /** A Salesforce object API name or record id: letters, digits and underscores only. */
 const SF_NAME = /^[A-Za-z0-9_]+$/;
 
@@ -62,7 +78,7 @@ export async function updateSfRecord(
     },
     opts,
   );
-  if (!res.ok) throw new Error(`SF update failed: ${res.status} ${await res.text()}`);
+  if (!res.ok) throw new SfHttpError(`SF update failed: ${res.status} ${await res.text()}`, res.status);
 }
 
 /** Every record a SOQL query returns, following `nextRecordsUrl` to the end. */
@@ -136,7 +152,7 @@ export async function querySoqlComplete<T>(instanceUrl: string, token: string, s
   return collectSoqlComplete<T>(async (path) => {
     const url = path === null ? `${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}` : `${instanceUrl}${path}`;
     const res = await fetchSfWithRetry(url, { headers: { Authorization: `Bearer ${token}` } }, opts);
-    if (!res.ok) throw new Error(`SF query failed: ${res.status} ${await res.text()}`);
+    if (!res.ok) throw new SfHttpError(`SF query failed: ${res.status} ${await res.text()}`, res.status);
     return (await res.json()) as SoqlPage<T>;
   });
 }

@@ -11,8 +11,9 @@
  * taken on every card load: the button check runs on each one, and Slate's Salesforce
  * user is shared with other integrations under one hourly login ceiling. Fifteen minutes
  * is the shortest session Salesforce can be set to, so a kept login cannot expire while
- * in use whatever the org's setting; any failure drops it (`forgetCallMeNowLogin`), so a
- * revoked one costs one failed ask, not fifteen minutes of them.
+ * in use whatever the org's setting; a login Salesforce refuses (401) is dropped
+ * (`forgetCallMeNowLogin`), so a revoked one costs one failed ask, not fifteen minutes of
+ * them, while an outage does not turn every card load back into a fresh login.
  *
  * The switch is read through its own cache, a minute long, because trypennie may turn
  * Call me now off when nobody is there to call, and the button should follow within a
@@ -41,7 +42,7 @@ const loginCache = createReadingCache(() => sfToken(CALL_ME_NOW_SF_OPTS), {
   staleMs: CALL_ME_NOW_LOGIN_TTL_MS,
 });
 
-/** Drops the kept login after any failure, in case it was the login that failed. */
+/** Drops the kept login after Salesforce refuses it, so the next ask logs in afresh. */
 export function forgetCallMeNowLogin(): void {
   loginCache.forget();
 }

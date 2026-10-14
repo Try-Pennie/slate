@@ -9,7 +9,7 @@
 //    a refused write is never read as a done one;
 //  - an id or object name that is not plainly a Salesforce name is refused before any
 //    request, so caller text can never steer the URL.
-import { updateSfRecord } from "../src/lib/salesforce/rest.ts";
+import { isSfAuthFailure, updateSfRecord } from "../src/lib/salesforce/rest.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const INSTANCE = "https://example.my.salesforce.com";
@@ -48,6 +48,19 @@ const noSleep = async () => {};
     err = e;
   }
   assert(err instanceof Error && /SF update failed: 400/.test(err.message) && /INVALID_FIELD/.test(err.message), "a refused write throws with its status and Salesforce's reason");
+  eq((err as { status?: unknown }).status, 400, "and carries the status as a field, so nothing has to read it out of the message (L35)");
+  eq(isSfAuthFailure(err), false, "a 400 is not the login being refused");
+}
+{
+  const { impl } = fakeFetch(401, '[{"errorCode":"INVALID_SESSION_ID"}]');
+  let err: unknown = null;
+  try {
+    await updateSfRecord(INSTANCE, "tok", "Lead", "00QUi000010889ZMAQ", { CallMeNow__c: true }, { fetchImpl: impl, sleep: noSleep });
+  } catch (e) {
+    err = e;
+  }
+  eq(isSfAuthFailure(err), true, "a 401 is the login being refused");
+  eq(isSfAuthFailure(new Error("SF update failed: 401")), false, "a plain error that merely mentions 401 is not judged by its text");
 }
 {
   const { impl } = fakeFetch(200, "{}");

@@ -480,11 +480,19 @@ A missing or unknown `action`, or no `leadId`: `400`.
 { "outcome": "requested" }                     // 200, the Lead is marked for a call
 { "outcome": "already-requested" }             // 200, a call was already pending; nothing written
 { "outcome": "refused", "retry": false }       // 200, never says why (missing lead, contact mismatch, button off)
-{ "outcome": "failed", "retry": true }         // 503, Salesforce failed; pages `call_me_now_failed` after the response
+{ "outcome": "failed", "retry": true }         // 503, Salesforce failed
 ```
 
-The button is offered when the `WebsiteConfiguration__c` switch says so (as trypennie's
-`calculateBookingPageVariant` decides), and anything unreadable hides it.
+**Pages** (after the response, so the lead never waits on Slack): a failed press pages
+`call_me_now_failed`, naming the first lead and where in the logs the rest are; a failed
+check pages `call_me_now_hidden`, because during an outage the button is hidden for every
+lead and nobody can press it. Separate keys, so neither silences the other.
+
+The button is offered exactly when trypennie's `calculateBookingPageVariant` would show
+it: the `WebsiteConfiguration__c` record has `IsActiveAlternate__c` on, `PageAlternate__c`
+is "Call Me Now Button", and the Lead's `ADV__c` is at or over `MinimumAdv__c`. Anything
+unreadable hides it. One Salesforce login is kept for fifteen minutes and dropped only
+when Salesforce refuses it.
 
 ---
 

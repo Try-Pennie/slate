@@ -11,6 +11,7 @@ import {
   type CallMeNowInput,
 } from "@/lib/salesforce/call-me-now";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { isSfAuthFailure } from "@/lib/salesforce/rest";
 import { afterResponse } from "@/lib/after-response";
 import { log } from "@/lib/log";
 
@@ -31,8 +32,9 @@ export const CALL_ME_NOW_ALERT_COOLDOWN_MS = 10 * 60_000;
 const FAILURE_KEY = { check: "call_me_now_hidden", press: "call_me_now_failed" } as const;
 
 function pageFailure(failure: { stage: CallMeNowFailedStage; error: unknown }, leadId: string, when: "check" | "press"): void {
-  // The kept login may be what failed (revoked), so the next ask logs in afresh.
-  forgetCallMeNowLogin();
+  // Only a refused login is fixed by logging in afresh. Dropping it on any failure would
+  // log in again on every card load for the length of a Salesforce outage.
+  if (isSfAuthFailure(failure.error)) forgetCallMeNowLogin();
   const page = formatCallMeNowFailedAlert({ stage: failure.stage, leadId, error: failure.error, when });
   // alert-key: call_me_now_hidden
   // alert-key: call_me_now_failed

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { CallMeNowDeps } from "@/lib/salesforce/call-me-now";
+import { SfHttpError } from "@/lib/salesforce/rest";
 
 // The Call me now endpoint the inline booker calls (#3718). The decision itself is
 // pinned in scripts/test-call-me-now.ts; this pins the route glue around the REAL
@@ -107,7 +108,7 @@ describe("POST /api/call-me-now (#3718)", () => {
     // Its own key, so a hidden button never silences the page about a lead who pressed.
     expect(key).toBe("call_me_now_hidden");
     expect(page).toMatch(/button was hidden/i);
-    expect(live.forget).toHaveBeenCalledTimes(1);
+    expect(live.forget).not.toHaveBeenCalled();
   });
 
   it("a check that is simply refused pages nothing", async () => {
@@ -150,8 +151,16 @@ describe("POST /api/call-me-now (#3718)", () => {
     const [key, , text] = notify.sendThrottledAlert.mock.calls[0]!;
     expect(key).toBe("call_me_now_failed");
     expect(text).toContain(LEAD);
-    // The kept Salesforce login may be the thing that failed (revoked), so it is dropped
-    // and the lead's Try again logs in afresh.
+    // A 503 is Salesforce down, not the login refused: dropping the login here would
+    // log in afresh on every card load for the whole outage.
+    expect(live.forget).not.toHaveBeenCalled();
+  });
+
+  it("drops the kept login only when Salesforce refuses it", async () => {
+    live.deps.writeRequested = async () => {
+      throw new SfHttpError("SF update failed: 401 INVALID_SESSION_ID", 401);
+    };
+    expect((await press()).status).toBe(503);
     expect(live.forget).toHaveBeenCalledTimes(1);
   });
 
