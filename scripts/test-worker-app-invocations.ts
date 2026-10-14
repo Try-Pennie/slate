@@ -10,6 +10,7 @@
 import { readFileSync } from "node:fs";
 import { countedApp, workerAppCallsOutsideWrapper } from "../worker/app-invocations.ts";
 import { readEntryMarks } from "../src/lib/booking/wait-marks.ts";
+import { readIsolateRuns } from "../src/lib/api/isolate-runs.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const seen: Request[] = [];
@@ -34,6 +35,16 @@ await app.fetch(plain, {}, {}, { loadtest: false, enteredAtMs: 1 });
 assert(seen[2] === plain, "off the load test the request reaches the app untouched");
 await app.fetch(new Request("https://x.test/api/bookings"), {}, {}, { loadtest: true, enteredAtMs: 2 });
 eq(readEntryMarks(seen[3]!.headers).invocationIndex, 3, "and the count still counted the unstamped run");
+
+// --- #3713: the count is the one the route reads ------------------------------------
+// The route cannot see the Worker's closure, and off the load test nothing is stamped on
+// the request, so the count lives in ONE record on the isolate's global (L83). Four runs
+// above, the first a cron tick with no entry stamp of its own.
+{
+  const record = readIsolateRuns();
+  eq(record?.runs, 4, "the record the route reads counted every run of the app, cron tick included");
+  eq(record?.firstRunAtMs !== undefined && Number.isFinite(record.firstRunAtMs), true, "and when the first one ran");
+}
 
 // --- the Worker reaches the app only through the wrapper -------------------------
 const entry = readFileSync(new URL("../worker/index.ts", import.meta.url), "utf8");

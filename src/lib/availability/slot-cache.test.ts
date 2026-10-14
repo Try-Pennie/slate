@@ -23,7 +23,17 @@ const OPEN_ALL_WEEK = {
   exceptions: [],
 };
 
+// #3713: the stored row read is one of the parts the slot read's timing names, so the
+// test can drive it without a database.
+const mockReadRow = vi.hoisted(() => vi.fn());
+vi.mock("./precompute", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./precompute")>()),
+  readBucketSlotsRow: mockReadRow,
+}));
+
 import { getBucketSlotsWithFallback } from "./slot-cache";
+import type { ReadDeps } from "./precompute-core";
+import { SERVER_TIMING_NAMES, type SpanTimer } from "@/lib/api/server-timing";
 import type { BucketSlots } from "./service";
 import type { Bucket, EventType } from "@/lib/db/types";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
@@ -392,6 +402,76 @@ describe("getBucketSlotsWithFallback", () => {
     expect(result).not.toBeNull();
     expect(result!.bucket.code).toBe("411");
     expect(result!.slots).toEqual([SLOT]);
+  });
+
+  // #3713: lead reads spend about half a second inside the Worker in the evening, and
+  // the one `slots` span could not say which read inside it waited. Each part is now a
+  // span of its own, recorded on the REQUESTED bucket only, and every lower tier the
+  // fallback walk reads is one `fallback` span, so no time is counted twice.
+  describe("names the parts of the slot read (#3713)", () => {
+    function recordingTimer() {
+      const spans: string[] = [];
+      const timer: SpanTimer = {
+        span: async (name, fn) => {
+          spans.push(name);
+          return fn();
+        },
+      };
+      return { timer, spans };
+    }
+    // Stands in for the real resolver: asks each dependency the way a stored row read
+    // does (edge cache, then the row, then the hours on the way out).
+    const resolveLikeARowRead = (slotsByCode: Record<string, string[]>) =>
+      async (code: string, _from: string, _horizon: number, deps: ReadDeps) => {
+        await deps.cacheGet(`key:${code}`);
+        await deps.readRow(code);
+        await deps.businessHours();
+        return makeBucketSlots(code, slotsByCode[code] ?? []);
+      };
+
+    it("records the edge cache, the stored row and the business hours, and no fallback when the lead's own tier serves", async () => {
+      mockReadRow.mockResolvedValue(null);
+      mockResolveBucketSlots.mockImplementation(resolveLikeARowRead({ "411": [SLOT] }));
+      const { timer, spans } = recordingTimer();
+
+      const result = await getBucketSlotsWithFallback("411", FROM_ISO, false, Date.parse(FROM_ISO), timer);
+
+      expect(result!.slots).toEqual([SLOT]);
+      // The real dependencies ran inside the spans, not beside them.
+      expect(mockReadRow).toHaveBeenCalledWith("411");
+      expect(spans).toContain(SERVER_TIMING_NAMES.cache);
+      expect(spans).toContain(SERVER_TIMING_NAMES.row);
+      // Twice: the served filter, then the offered window.
+      expect(spans.filter((s) => s === SERVER_TIMING_NAMES.hours)).toHaveLength(2);
+      expect(spans).not.toContain(SERVER_TIMING_NAMES.fallback);
+    });
+
+    it("records each lower tier the walk reads as one fallback span, without splitting its parts into the lead's own", async () => {
+      mockReadRow.mockResolvedValue(null);
+      mockResolveBucketSlots.mockImplementation(resolveLikeARowRead({ "311": [SLOT] }));
+      const { timer, spans } = recordingTimer();
+
+      const result = await getBucketSlotsWithFallback("411", FROM_ISO, false, Date.parse(FROM_ISO), timer);
+
+      expect(result!.bucket.code).toBe("311");
+      expect(spans.filter((s) => s === SERVER_TIMING_NAMES.fallback)).toHaveLength(1);
+      // Only the requested bucket's own read is split: 311's cache and row reads are
+      // inside its fallback span, so they are not counted a second time here.
+      expect(spans.filter((s) => s === SERVER_TIMING_NAMES.cache)).toHaveLength(1);
+      expect(spans.filter((s) => s === SERVER_TIMING_NAMES.row)).toHaveLength(1);
+      expect(mockReadRow).toHaveBeenCalledWith("311");
+    });
+
+    it("still records the hours span when the hours cannot be read, and still serves", async () => {
+      mockBusinessHours.mockRejectedValue(new Error("business hours are unusable"));
+      mockResolveBucketSlots.mockResolvedValue(makeBucketSlots("411", [SLOT]));
+      const { timer, spans } = recordingTimer();
+
+      const result = await getBucketSlotsWithFallback("411", FROM_ISO, false, Date.parse(FROM_ISO), timer);
+
+      expect(result!.slots).toEqual([SLOT]);
+      expect(spans).toEqual([SERVER_TIMING_NAMES.hours]);
+    });
   });
 
   it("returns the requested bucket with empty slots and tier_fallback=false when no tier has slots", async () => {

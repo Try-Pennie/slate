@@ -38,6 +38,7 @@ import { selectWithTierFallback } from "@/lib/routing/tier-fallback";
 import { tierKeyOf } from "@/lib/routing/tiers";
 import { log } from "@/lib/log";
 import { parseStampMs } from "@/lib/date/stamp";
+import { SERVER_TIMING_NAMES, type SpanTimer } from "@/lib/api/server-timing";
 // The window and the served slot rule are shared with the bucket availability
 // page, which has to say what this function produces (2026-10-02).
 import { offeredWindowEndFor, servedSlotsForRung } from "./offered-window";
@@ -75,42 +76,49 @@ export async function getCachedBucketSlots(
   code: string,
   fromIso: string,
   horizonDays = HORIZON_DAYS,
+  // #3713: when given, each read below is recorded under its own Server-Timing name.
+  // The route passes one for the requested bucket only; see getBucketSlotsWithFallback.
+  timing?: SpanTimer,
 ): Promise<ResolvedBucketSlots | null> {
   const cache = slotCache();
+  const timed = spanOrRun(timing);
   const deps: ReadDeps = {
-    cacheGet: async (key) => {
-      if (!cache) return null;
-      try {
-        const hit = await cache.match(keyRequest(key));
-        if (hit) return JSON.parse(await hit.text()) as CachedBucketSlots;
-      } catch { /* fall through */ }
-      return null;
-    },
-    cachePut: async (key, val) => {
-      if (!cache) return;
-      try {
-        await cache.put(
-          keyRequest(key),
-          new Response(JSON.stringify(val), {
-            headers: {
-              "content-type": "application/json",
-              "cache-control": `public, max-age=${SLOT_TTL_SECONDS}`,
-            },
-          }),
-        );
-      } catch { /* ignore */ }
-    },
-    readRow: (c) => readBucketSlotsRow(c),
-    compute: (c, from, to) => getBucketSlots(c, from, to),
+    cacheGet: (key) =>
+      timed(SERVER_TIMING_NAMES.cache, async () => {
+        if (!cache) return null;
+        try {
+          const hit = await cache.match(keyRequest(key));
+          if (hit) return JSON.parse(await hit.text()) as CachedBucketSlots;
+        } catch { /* fall through */ }
+        return null;
+      }),
+    cachePut: (key, val) =>
+      timed(SERVER_TIMING_NAMES.cache, async () => {
+        if (!cache) return;
+        try {
+          await cache.put(
+            keyRequest(key),
+            new Response(JSON.stringify(val), {
+              headers: {
+                "content-type": "application/json",
+                "cache-control": `public, max-age=${SLOT_TTL_SECONDS}`,
+              },
+            }),
+          );
+        } catch { /* ignore */ }
+      }),
+    readRow: (c) => timed(SERVER_TIMING_NAMES.row, () => readBucketSlotsRow(c)),
+    compute: (c, from, to) => timed(SERVER_TIMING_NAMES.compute, () => getBucketSlots(c, from, to)),
     // #3118: a write a settings save superseded is answered as such, so the read
     // redoes the compute rather than serving and caching slots from the old settings.
     // A refused row still throws (#3119) and reaches writeFailed below.
-    writeRow: async (c, val, computedAtMs) => {
-      const outcome = await storeBucketSlotsRow(c, val, computedAtMs);
-      if (outcome === "failed") throw new SlotRowRefused(c);
-      if (outcome === "invalidated") return SUPERSEDED_BY_SAVE;
-      return new Date(computedAtMs).toISOString();
-    },
+    writeRow: (c, val, computedAtMs) =>
+      timed(SERVER_TIMING_NAMES.compute, async () => {
+        const outcome = await storeBucketSlotsRow(c, val, computedAtMs);
+        if (outcome === "failed") throw new SlotRowRefused(c);
+        if (outcome === "invalidated") return SUPERSEDED_BY_SAVE;
+        return new Date(computedAtMs).toISOString();
+      }),
     // #3119: the lead is still served what was computed; the row it could not store
     // is said here, and the next request or the cron backstop computes it again.
     writeFailed: (c, err) =>
@@ -118,9 +126,14 @@ export async function getCachedBucketSlots(
     // #1296: the CURRENT org hours, so a narrowing filters the cached slots on the
     // very next request rather than waiting for a recompute. One read per isolate
     // per SLOT_TTL_SECONDS; a failed refresh serves the last known week.
-    businessHours: loadBusinessHoursCached,
+    businessHours: () => timed(SERVER_TIMING_NAMES.hours, loadBusinessHoursCached),
   };
   return resolveBucketSlots(code, fromIso, horizonDays, deps);
+}
+
+/** Record `fn` under `name` when a timer was given, otherwise just run it. */
+function spanOrRun(timing: SpanTimer | undefined) {
+  return <T>(name: string, fn: () => Promise<T>): Promise<T> => (timing ? timing.span(name, fn) : fn());
 }
 
 // Best-effort per-isolate dedupe: collapse a burst of recompute requests for the
@@ -755,15 +768,22 @@ export interface AvailabilityRoutingMeta {
  * caller gets null here, BEFORE the tier cascade runs, so a hidden test bucket
  * does the same single resolve an unknown code does and its 404 timing doesn't
  * reveal that it exists (#601).
+ *
+ * `timing` (#3713) records where the read waited: the requested bucket's edge cache,
+ * stored row, live compute and business hours each under their own Server-Timing
+ * name, and every lower tier the walk reads under ONE `fallback` span, whole. Its
+ * parts are not split, so no wait is counted under two names.
  */
 export async function getBucketSlotsWithFallback(
   code: string,
   from: string,
   authorizedForTest = false,
-  // Injected so the window can be driven at a fixed instant; the route passes none.
+  // Injected so the window can be driven at a fixed instant; the route passes its own.
   nowMs = Date.now(),
+  timing?: SpanTimer,
 ): Promise<(ResolvedBucketSlots & { routing: AvailabilityRoutingMeta }) | null> {
-  const requested = await getCachedBucketSlots(code, from);
+  const timed = spanOrRun(timing);
+  const requested = await getCachedBucketSlots(code, from, HORIZON_DAYS, timing);
   if (!requested) return null;
   if (requested.bucket.is_test && !authorizedForTest) return null;
 
@@ -794,7 +814,9 @@ export async function getBucketSlotsWithFallback(
   // stored rows already hold the horizon the settings ask for, which is exactly
   // what was served before this existed, so an unreadable week degrades to the
   // old behaviour rather than to no times at all.
-  const windowEndMs = await offeredWindowEndMs(nowMs, requested.eventType.min_notice_min);
+  const windowEndMs = await timed(SERVER_TIMING_NAMES.hours, () =>
+    offeredWindowEndMs(nowMs, requested.eventType.min_notice_min),
+  );
   const inWindow = (slots: string[]) =>
     windowEndMs === null ? slots : slots.filter((s) => (parseStampMs(s) ?? Infinity) < windowEndMs);
 
@@ -803,7 +825,7 @@ export async function getBucketSlotsWithFallback(
   const seen = new Map<string, ResolvedBucketSlots | null>([[code, requested]]);
   const walk = (narrow: (slots: string[]) => string[]) =>
     selectWithTierFallback(code, async (c) => {
-      if (!seen.has(c)) seen.set(c, await getCachedBucketSlots(c, from));
+      if (!seen.has(c)) seen.set(c, await timed(SERVER_TIMING_NAMES.fallback, () => getCachedBucketSlots(c, from)));
       const row = seen.get(c);
       // Skip synthetic test buckets on the LOWER rungs (the booking cascade skips
       // them too), so a real lower tier wins. The requested bucket is never

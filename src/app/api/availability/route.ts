@@ -24,8 +24,13 @@ import { log } from "@/lib/log";
 import { agentLinkAvailabilityLive } from "@/lib/agent-link/service";
 import { bookingRescheduleTimesLive } from "@/lib/booking/reschedule-times-live";
 import { createServerTimer, SERVER_TIMING_NAMES } from "@/lib/api/server-timing";
+import { makeFreshnessReader } from "@/lib/api/isolate-runs";
 
 export const dynamic = "force-dynamic";
+
+// #3713: this module's own count of the requests it has handled in this isolate, beside the
+// Worker's count of the isolate's runs. Module scope on purpose: see isolate-runs.ts.
+const isolateFreshness = makeFreshnessReader();
 
 /**
  * GET /api/availability?bucket=411&from=ISO&to=ISO
@@ -50,6 +55,9 @@ async function handle(req: NextRequest) {
   // Server-Timing so the latency canary can tell time spent here from time in transit
   // (#3652). It measures I/O waits, not CPU after the last I/O: see server-timing.ts.
   const timer = createServerTimer();
+  // #3713: counted before any branch can return, so a request this module answered with
+  // a 429, a 404 or an advisor's times still counts toward how warm the module is.
+  const fresh = isolateFreshness(Date.now());
 
   // Edge-throttle (#56) — in-datacenter, no DB round-trip, so the cached hot
   // path stays fast. Fails open.
@@ -124,8 +132,10 @@ async function handle(req: NextRequest) {
     authorizedForTest = true;
   }
 
+  // #3713: the same timer goes in, so the slot read's parts (edge cache, business
+  // hours, stored row, live compute, tier fallback) land on this request's header.
   const result = await timer.span(SERVER_TIMING_NAMES.slots, () =>
-    getBucketSlotsWithFallback(code, from, authorizedForTest),
+    getBucketSlotsWithFallback(code, from, authorizedForTest, now, timer),
   );
   if (!result) {
     // Unknown code and an unauthorized hidden test bucket both land here with
@@ -167,6 +177,17 @@ async function handle(req: NextRequest) {
     // so the Worker logs can answer #3652 as well as the canary. An empty result's
     // explanation and an alert send come after it and are in the header's total only.
     worker_ms: timer.totalMs(),
+    // #3713: each span by its Server-Timing name (`limit_ms`, `slots_ms`, then the slot
+    // read's parts `cache_ms`, `hours_ms`, `row_ms`, `compute_ms`, `fallback_ms`). A part
+    // that did not run is absent, never 0. On the Worker's clock a span is I/O waits
+    // plus the CPU since the previous I/O, and CPU after a span's last I/O is in none of
+    // them, so worker_ms minus the spans is not a measured CPU figure: Cloudflare's own
+    // invocation CPU time is the number for that.
+    ...spanFields(timer),
+    // #3713: whether the isolate was fresh. No key outside the Worker, never a guess.
+    ...(fresh.isolateRuns === null ? {} : { isolate_runs: fresh.isolateRuns }),
+    ...(fresh.isolateAgeMs === null ? {} : { isolate_age_ms: fresh.isolateAgeMs }),
+    route_requests: fresh.routeRequests,
   });
 
   // #1328: with nothing to offer, the booker needs to know WHY. "All times are
@@ -237,6 +258,22 @@ async function handle(req: NextRequest) {
     // (#601). Diagnostic timing, never routing internals (#259).
     { headers: { ...headers, "server-timing": timer.header() } },
   );
+}
+
+/**
+ * Every span the timer recorded, as `<name>_ms`, derived from the names so a part added
+ * to the read is logged without a second list to keep in step (L41). The total is
+ * logged on its own as `worker_ms`, as it was before #3713. A span that never ran gets
+ * no key at all, so it cannot be read as a measured 0.
+ */
+function spanFields(timer: ReturnType<typeof createServerTimer>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const name of Object.values(SERVER_TIMING_NAMES)) {
+    if (name === SERVER_TIMING_NAMES.total) continue;
+    const ms = timer.spanMs(name);
+    if (ms !== null) out[`${name}_ms`] = ms;
+  }
+  return out;
 }
 
 /** The UTC day a `from` anchors to (YYYY-MM-DD), or "unreadable" (#3366). */

@@ -94,9 +94,14 @@ import { HIDDEN_TEST_BUCKET_CODES, PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/
 import { TEST_PASS_HEADER, TEST_PASS_REFUSAL_CODES } from "@/lib/embed/test-pass-header";
 import { TEST_PASS_TTL_MS, mintTestPass } from "@/lib/embed/test-pass";
 import { log } from "@/lib/log";
+import type { SpanTimer } from "@/lib/api/server-timing";
 import { GET } from "./route";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
+
+// #3713: the slot read is handed the request's own clock and its timer, so the parts of
+// the read are timed on the same request's Server-Timing.
+const READ_TIMING = [expect.any(Number), expect.anything()] as const;
 
 function slotsFor(isTest: boolean) {
   return {
@@ -135,14 +140,14 @@ describe("GET /api/availability test-bucket hiding (#396)", () => {
     cache.getBucketSlotsWithFallback.mockResolvedValue(null);
     const res = await get("SMOKE");
     expect(res.status).toBe(404);
-    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith("SMOKE", expect.any(String), false);
+    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith("SMOKE", expect.any(String), false, ...READ_TIMING);
   });
 
   it("forwards authorizedForTest=false when the bearer key is wrong", async () => {
     cache.getBucketSlotsWithFallback.mockResolvedValue(null);
     const res = await get("SMOKE", "Bearer not-the-key");
     expect(res.status).toBe(404);
-    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith("SMOKE", expect.any(String), false);
+    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith("SMOKE", expect.any(String), false, ...READ_TIMING);
   });
 
   it("serves a test bucket's slots to the key-authed smoke test", async () => {
@@ -151,14 +156,14 @@ describe("GET /api/availability test-bucket hiding (#396)", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.slots).toHaveLength(1);
-    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith("SMOKE", expect.any(String), true);
+    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith("SMOKE", expect.any(String), true, ...READ_TIMING);
   });
 
   it("hides a test bucket from a partner's key (#2854)", async () => {
     cache.getBucketSlotsWithFallback.mockResolvedValue(null);
     const res = await get("SMOKE", "Bearer regal-key");
     expect(res.status).toBe(404);
-    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith("SMOKE", expect.any(String), false);
+    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith("SMOKE", expect.any(String), false, ...READ_TIMING);
   });
 
   it("serves a normal (non-test) bucket publicly with no auth", async () => {
@@ -183,7 +188,7 @@ describe("GET /api/availability test-bucket hiding (#396)", () => {
     const res = await get(PUBLIC_TEST, undefined, goodPass());
     expect(res.status).toBe(200);
     expect((await res.json()).bucket).toEqual({ code: PUBLIC_TEST });
-    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith(PUBLIC_TEST, expect.any(String), true);
+    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith(PUBLIC_TEST, expect.any(String), true, ...READ_TIMING);
   });
 
   it("refuses the public test bucket with no pass, before reading anything", async () => {
@@ -226,6 +231,7 @@ describe("GET /api/availability test-bucket hiding (#396)", () => {
       HIDDEN_TEST_BUCKET_CODES[0],
       expect.any(String),
       false,
+      ...READ_TIMING,
     );
   });
 
@@ -246,7 +252,7 @@ describe("GET /api/availability test-bucket hiding (#396)", () => {
     cache.getBucketSlotsWithFallback.mockResolvedValue(null);
     const res = await get(`${PUBLIC_TEST}2`);
     expect(res.status).toBe(404);
-    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith(`${PUBLIC_TEST}2`, expect.any(String), false);
+    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith(`${PUBLIC_TEST}2`, expect.any(String), false, ...READ_TIMING);
   });
 
   it("never exposes the routing block in the public response (#259)", async () => {
@@ -751,9 +757,9 @@ describe("GET /api/availability names the layer that served it (#3366)", () => {
 
 // #3653 / #3652: the canary could time a read and could not say where the time went,
 // so a slow cached read on 2026-10-12 could not be told from a slow network. The pooled
-// read now carries a Server-Timing with the Worker's own elapsed time and the two spans
-// worth separating, the burst limiter and the slot read. The clock is faked (Date only)
-// and moved by the mocks, so the durations are exact and nothing waits.
+// read now carries a Server-Timing with the Worker's own elapsed time, the burst limiter
+// and the slot read, and since #3713 the slot read's own parts. The clock is faked (Date
+// only) and moved by the mocks, so the durations are exact and nothing waits.
 describe("GET /api/availability reports its own time (#3653)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -798,4 +804,84 @@ describe("GET /api/availability reports its own time (#3653)", () => {
     expect(res.status).toBe(404);
     expect(res.headers.get("server-timing")).toBeNull();
   });
+
+  // #3713: evening lead reads spend about half a second in the Worker on cached times,
+  // and one `slots` span could not say which read inside it waited, nor whether the
+  // isolate was fresh. The slot read now records its parts on the timer the route
+  // hands it, and the served line carries each part and the isolate's facts.
+  it("splits the slot read into its parts, in the header and on the served line", async () => {
+    rateLimit.availabilityWithinLimit.mockImplementationOnce(async () => {
+      tick(5);
+      return true;
+    });
+    cache.getBucketSlotsWithFallback.mockImplementationOnce(
+      async (_code: string, _from: string, _test: boolean, _now: number, timer: SpanTimer) => {
+        await timer.span("cache", async () => tick(3));
+        await timer.span("hours", async () => tick(280));
+        await timer.span("hours", async () => tick(0));
+        return slotsFor(false);
+      },
+    );
+    const res = await get("411");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("server-timing")).toBe(
+      "limit;dur=5, cache;dur=3, hours;dur=280, slots;dur=283, worker;dur=288",
+    );
+    const fields = servedFields();
+    expect(fields).toMatchObject({ limit_ms: 5, slots_ms: 283, cache_ms: 3, hours_ms: 280, worker_ms: 288 });
+    // A part that never ran is absent from the line, never a measured 0 (L90), and not
+    // a null key either: the fields carry only the parts that ran.
+    for (const absent of ["row_ms", "compute_ms", "fallback_ms"]) expect(fields).not.toHaveProperty(absent);
+  });
+
+  it("names the isolate's runs, its age and the route's own request count on the served line", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(false));
+    const key = Symbol.for("slate.isolate-runs");
+    const g = globalThis as unknown as Record<symbol, unknown>;
+    const saved = g[key];
+    try {
+      // As the Worker records it: two earlier runs of the app, the first 90s ago, and
+      // this read the third.
+      g[key] = { runs: 3, firstRunAtMs: Date.now() - 90_000 };
+      await get("411");
+      const first = servedFields();
+      expect(first).toMatchObject({ isolate_runs: 3, isolate_age_ms: 90_000 });
+      const before = first?.route_requests as number;
+      expect(before).toBeGreaterThanOrEqual(1);
+
+      // A request that never reaches the pooled read still loaded and ran this module,
+      // so it counts: otherwise a module first evaluated by a 404 or a 429 would read
+      // as fresh on the next served read (lessons review on this change).
+      cache.getBucketSlotsWithFallback.mockResolvedValueOnce(null);
+      expect((await get("NOPE")).status).toBe(404);
+      rateLimit.availabilityWithinLimit.mockResolvedValueOnce(false);
+      expect((await get("411")).status).toBe(429);
+
+      vi.mocked(log.info).mockClear();
+      await get("411");
+      expect(servedFields()?.route_requests).toBe(before + 3);
+    } finally {
+      g[key] = saved;
+    }
+  });
+
+  it("leaves the isolate's facts off the line when no Worker recorded them, never a guessed fresh isolate", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(false));
+    const key = Symbol.for("slate.isolate-runs");
+    const g = globalThis as unknown as Record<symbol, unknown>;
+    const saved = g[key];
+    try {
+      delete g[key];
+      await get("411");
+      const fields = servedFields();
+      expect(fields).not.toHaveProperty("isolate_runs");
+      expect(fields).not.toHaveProperty("isolate_age_ms");
+      expect(typeof fields?.route_requests).toBe("number");
+    } finally {
+      g[key] = saved;
+    }
+  });
+
+  const servedFields = () =>
+    vi.mocked(log.info).mock.calls.find(([tag, fields]) => tag === "availability" && fields.msg === "slots served")?.[1];
 });

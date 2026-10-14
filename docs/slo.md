@@ -133,7 +133,23 @@ elapsed time, with the burst limiter and the slot read split out), the page is w
 from what the reads over budget said (mostly misses, mostly hits, split, or no header),
 and the log line prints both per sample. The Worker's clock advances only at I/O, so a
 small Worker time against a long wait at the canary means transit or CPU, never only
-"network".
+"network". Since #3713 the slot read is split further into its parts (edge cache,
+business hours, stored row, live compute, lower tiers), on the header and on the
+Worker's `slots served` line, which also says how fresh the isolate was (its runs of the
+app, its age, and the route's own request count). A part is I/O waits plus the CPU since
+the I/O before it, so the parts never add up to a CPU figure; Cloudflare's invocation
+CPU time is the number for that.
+
+**A slow run served entirely outside North America does not page** (#3712). Each sample
+records the Cloudflare colo that served it, from `cf-ray`. On 2026-10-13 two of four
+pages came from the runner being routed through London and Dublin, which no lead is, so
+a run whose every read behind the page came from a colo outside North America is logged
+with where it went and why, pages nobody, and stamps no verdict, so a canary stuck on
+that route goes stale and pages through the verdict heartbeat instead. The line is the
+whole continent, Mexico, Central America and the Caribbean included, in
+`scripts/lib/cloudflare-colos.ts`. Any read
+from North America, from a colo on neither list, or with no readable colo keeps the old
+rule, so a gap in that list costs a page and never hides one.
 
 The first sample is always discarded: the first request after an idle period pays
 isolate startup, so counting it measures how quiet the morning was. The median of the

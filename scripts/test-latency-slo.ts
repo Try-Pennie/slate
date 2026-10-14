@@ -23,9 +23,13 @@ import {
   classifySlowReads,
   latencyCause,
   formatSamples,
+  readColo,
+  coloRegion,
   type LatencyRun,
   type LatencySample,
+  type ServerTiming,
 } from "./lib/latency-slo.ts";
+import { NORTH_AMERICA_COLOS, OTHER_COLOS } from "./lib/cloudflare-colos.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- the median ---------------------------------------------------------------
@@ -306,15 +310,32 @@ const SUSTAINED = [700, 800, 900, 850, 820];
 // 10 reads were `slot_cache="hit"`. The check never looked: every availability response
 // carries `x-slot-cache`, and `sample()` threw it away. So each sample now carries what
 // the response said, and the cause sentence is built only from that.
-const s = (ms: number, cache: LatencySample["cache"], server: LatencySample["server"] = null): LatencySample => ({
+const s = (
+  ms: number,
+  cache: LatencySample["cache"],
+  server: LatencySample["server"] = null,
+  colo: LatencySample["colo"] = { kind: "absent" },
+): LatencySample => ({
   ms,
   cache,
   server,
+  colo,
 });
-const w = (workerMs: number, limitMs: number | null = null, slotsMs: number | null = null) => ({
+const w = (
+  workerMs: number,
+  limitMs: number | null = null,
+  slotsMs: number | null = null,
+  parts: Partial<Pick<ServerTiming, "cacheMs" | "hoursMs" | "rowMs" | "computeMs" | "fallbackMs">> = {},
+): ServerTiming => ({
   workerMs,
   limitMs,
   slotsMs,
+  cacheMs: null,
+  hoursMs: null,
+  rowMs: null,
+  computeMs: null,
+  fallbackMs: null,
+  ...parts,
 });
 
 // --- reading the two headers ----------------------------------------------------
@@ -329,13 +350,18 @@ eq(readSlotCache("stale"), null, "a value the route never sends is unknown too")
   // The route's own shape (src/lib/api/server-timing.ts, round tripped in
   // scripts/test-server-timing.ts).
   const t = parseServerTiming("limit;dur=40, slots;dur=12, worker;dur=60");
-  eq(t, { workerMs: 60, limitMs: 40, slotsMs: 12 }, "reads the Worker total and both spans");
+  eq(t, w(60, 40, 12), "reads the Worker total and both spans");
+}
+{
+  // #3713: the slot read's parts, as the route writes them.
+  const t = parseServerTiming("limit;dur=5, cache;dur=3, hours;dur=280, row;dur=40, slots;dur=323, worker;dur=330");
+  eq(t, w(330, 5, 323, { cacheMs: 3, hoursMs: 280, rowMs: 40 }), "reads the slot read's parts, absent ones null");
 }
 {
   // Cloudflare can add entries of its own, with a quoted desc that may hold a comma.
   // Only the names the route writes are read, and a comma inside quotes splits nothing.
   const t = parseServerTiming('cfL4;desc="?proto=TCP&rtt=21,x=1", worker;dur=7.5');
-  eq(t, { workerMs: 7.5, limitMs: null, slotsMs: null }, "ignores foreign entries and quoted commas");
+  eq(t, w(7.5), "ignores foreign entries and quoted commas");
 }
 eq(parseServerTiming(null), null, "no header is null, so it reads as not measured rather than 0ms");
 eq(parseServerTiming("cfL4;desc=\"x\""), null, "a header with none of the route's entries is null too");
@@ -413,6 +439,15 @@ eq(parseServerTiming("constructor;dur=5, toString;dur=6"), null, "an inherited p
   assert(/inside the Worker/.test(cause), `and says where (${cause})`);
 }
 {
+  // #3713: with the slot read's parts sent, the page names the read inside it that
+  // waited, so "business hours on a fresh isolate" is read off the page, not guessed.
+  const parts = { cacheMs: 3, hoursMs: 280 };
+  const kept = [s(700, "hit", w(690, 5, 285, parts)), s(720, "hit", w(700, 6, 290, parts)), s(650, "hit", w(640, 4, 283, parts))];
+  const cause = latencyCause(kept, AVAILABILITY_P50_BUDGET_MS);
+  assert(/slot read 285ms: edge cache 3ms, business hours 280ms/.test(cause), `names the parts of the slot read (${cause})`);
+  assert(!/stored row|lower tiers/.test(cause), `and only the parts that ran (${cause})`);
+}
+{
   // Worker time small against a long wait: most of it was outside what the Worker times.
   // The Worker's clock advances only at I/O, so CPU is named as well as transit.
   const kept = [s(1100, "hit", w(40)), s(1200, "hit", w(35)), s(1000, "hit", w(50))];
@@ -458,11 +493,147 @@ eq(parseServerTiming("constructor;dur=5, toString;dur=6"), null, "an inherited p
 }
 
 // --- the log line ------------------------------------------------------------------
+const DFW = { kind: "read", code: "DFW" } as const;
+const LHR = { kind: "read", code: "LHR" } as const;
+const DUB = { kind: "read", code: "DUB" } as const;
+const YYZ = { kind: "read", code: "YYZ" } as const;
 eq(
-  formatSamples([s(1112, "hit", w(95, 80, 10)), s(145, "miss", w(30)), s(300, null)]),
-  "1112 hit worker=95(limit=80,slots=10), 145 miss worker=30, 300 nohdr",
-  "each sample names its cache outcome and, when sent, the Worker's own time and split",
+  formatSamples([s(1112, "hit", w(95, 80, 10), DFW), s(145, "miss", w(30)), s(300, null, null, { kind: "unreadable" })]),
+  "1112 hit DFW worker=95(limit=80,slots=10), 145 miss nocfray worker=30, 300 nohdr cfray-unreadable",
+  "each sample names its cache outcome, its colo (or why there is none) and, when sent, the Worker's own time and split",
+);
+eq(
+  formatSamples([s(330, "hit", w(330, 5, 323, { cacheMs: 3, hoursMs: 280, rowMs: 40 }), YYZ)]),
+  "330 hit YYZ worker=330(limit=5,slots=323,cache=3,hours=280,row=40)",
+  "#3713: the slot read's parts follow it, only the ones that ran",
 );
 eq(formatSamples([]), "", "an empty batch prints nothing between the brackets");
+
+// --- #3712: which Cloudflare colo served each read ------------------------------------
+//
+// On 2026-10-13 two of four latency pages came from the GitHub runner being routed
+// through London and Dublin, which no lead uses. `cf-ray` ends in the colo that served
+// the response, so each sample keeps it and the verdict reads it.
+eq(readColo("8c1a2b3c4d5e6f70-LHR"), LHR, "the colo is the cf-ray's suffix");
+eq(readColo(" 8c1a2b3c4d5e6f70-DFW "), DFW, "whitespace around the header is tolerated");
+eq(readColo(null), { kind: "absent" }, "no cf-ray is its own outcome, never a guessed colo");
+eq(readColo(""), { kind: "unreadable" }, "an empty cf-ray was sent but says nothing");
+eq(readColo("8c1a2b3c4d5e6f70"), { kind: "unreadable" }, "a cf-ray without a colo suffix is unreadable");
+eq(readColo("8c1a2b3c4d5e6f70-lhr"), { kind: "unreadable" }, "a suffix in a shape Cloudflare does not send is unreadable");
+
+eq(coloRegion(DFW), "north-america", "Dallas is North America");
+eq(coloRegion(YYZ), "north-america", "Toronto is North America");
+eq(coloRegion(LHR), "outside", "London is outside it");
+eq(coloRegion(DUB), "outside", "Dublin is outside it");
+eq(coloRegion({ kind: "read", code: "ZZZ" }), "unrecognised", "a code on neither list is unrecognised, not outside");
+eq(coloRegion({ kind: "absent" }), "unknown", "no cf-ray is unknown, never North America");
+eq(coloRegion({ kind: "unreadable" }), "unknown", "an unreadable cf-ray is unknown too");
+eq(coloRegion({ kind: "read", code: "constructor" }), "unknown", "an inherited property name is not a colo");
+{
+  // The table's two halves never share a code, or a colo could read both ways.
+  const both = [...NORTH_AMERICA_COLOS.keys()].filter((c) => OTHER_COLOS.has(c));
+  eq(both, [], "no colo is on both lists");
+  // The ones the 2026-10-13 pages entered at, so the table cannot drift past them.
+  for (const c of ["DFW", "YYZ", "ORD", "IAD", "LAX"]) assert(NORTH_AMERICA_COLOS.has(c), `${c} is on the North America list`);
+  for (const c of ["LHR", "DUB", "BOM", "FRA"]) assert(OTHER_COLOS.has(c), `${c} is on the other list`);
+  // The table's own rule is the whole continent, so a colo in Central America or the
+  // Caribbean pages even where the source filed it under South America (the lessons
+  // review on this change found six it had put on the other list); Guyana does not.
+  for (const c of ["SJO", "PTY", "TGU", "SAP", "POS", "GND", "MEX", "SJU"]) {
+    assert(NORTH_AMERICA_COLOS.has(c), `${c} (Central America, the Caribbean or Mexico) is on the North America list`);
+  }
+  assert(OTHER_COLOS.has("GEO"), "Guyana is in South America, so GEO is on the other list");
+}
+
+// A batch of slow reads, all served through one colo.
+const slowVia = (colo: LatencySample["colo"]) => [s(50, "hit", null, colo), ...[700, 800, 900, 850, 820].map((ms) => s(ms, "hit", null, colo))];
+function runOf(batches: LatencySample[][]) {
+  let i = 0;
+  return measureLatency({ takeBatch: async () => batches[i++] ?? [], sleep: async () => {} });
+}
+
+{
+  // The 2026-10-13 9:02 PM page: every read entered at London, on both batches.
+  const run = await runOf([slowVia(LHR), slowVia(LHR)]);
+  eq(run.kind, "outside-north-america", "a slow run served only outside North America is its own outcome");
+  eq(run.page, false, "and pages nobody: it timed a route no lead takes");
+  eq(run.measured, false, "and is not a latency verdict, so a canary stuck routing through Europe goes stale (#1700, L98)");
+  assert(
+    run.message !== null && /London \(LHR\)/.test(run.message) && /no lead/.test(run.message),
+    `the record says, in the reader's words, where the reads went and why that is not a lead's wait (${run.message})`,
+  );
+  assert(run.message !== null && /820ms/.test(run.message) && /Nobody is paged/.test(run.message), `and what was skipped (${run.message})`);
+}
+{
+  // Dublin then London: both outside, both named.
+  const run = await runOf([slowVia(DUB), slowVia(LHR)]);
+  eq(run.kind, "outside-north-america", "two European colos are still outside");
+  assert(run.message !== null && /Dublin \(DUB\)/.test(run.message) && /London \(LHR\)/.test(run.message), `names both (${run.message})`);
+}
+{
+  // Slow through London, and the recheck read nothing: the only evidence is London's.
+  const run = await runOf([slowVia(LHR), []]);
+  eq(run.kind, "outside-north-america", "a London only first batch with an empty recheck is skipped too");
+  eq(run.page, false, "and pages nobody");
+}
+{
+  // The YYZ and DFW pages are real (#3652's open question) and still page, naming the colo.
+  const run = await runOf([slowVia(DFW), slowVia(DFW)]);
+  eq(run.kind, "confirmed", "a slow run served from Dallas is confirmed exactly as before");
+  eq(run.page, true, "and pages");
+  assert(run.message !== null && /Dallas-Fort Worth \(DFW\)/.test(run.message), `and the page names the colo (${run.message})`);
+}
+{
+  // Mixed: slow through London, then slow again through Dallas. The Dallas reads are
+  // a lead's route, so this pages; the page says some went through London.
+  const run = await runOf([slowVia(LHR), slowVia(DFW)]);
+  eq(run.kind, "confirmed", "mixed colos are judged as they stand");
+  eq(run.page, true, "and a slow North American batch still pages");
+  assert(
+    run.message !== null && /London \(LHR\)/.test(run.message) && /Dallas-Fort Worth \(DFW\)/.test(run.message),
+    `and the page names both colos, so the reader sees the split (${run.message})`,
+  );
+}
+{
+  // Mixed inside one batch: one read through Toronto among London ones is enough to keep paging.
+  const batch = [s(50, "hit", null, LHR), s(900, "hit", null, LHR), s(900, "hit", null, YYZ), s(900, "hit", null, LHR), s(900, "hit", null, LHR)];
+  const run = await runOf([batch, batch]);
+  eq(run.page, true, "a single North American read in the evidence keeps the page");
+}
+{
+  // No cf-ray at all (an older deploy, something in front stripping it): unknown, so the
+  // run is judged exactly as before, and the page says the colo could not be read.
+  const run = await runOf([slowVia({ kind: "absent" }), slowVia({ kind: "absent" })]);
+  eq(run.page, true, "a slow run with no cf-ray pages as it always did");
+  assert(run.message !== null && /cf-ray/.test(run.message), `and says the colo was not sent (${run.message})`);
+}
+{
+  const run = await runOf([slowVia({ kind: "unreadable" }), slowVia({ kind: "unreadable" })]);
+  eq(run.page, true, "a slow run whose cf-ray had no readable colo pages too");
+  assert(run.message !== null && /cf-ray named a colo that could be read/.test(run.message) && /unknown/.test(run.message), `and says the colo is unknown (${run.message})`);
+}
+{
+  // A colo the snapshot does not hold could be a new US colo: it pages, and the page
+  // says which list to update, so a gap in the table costs a page and never hides one.
+  const run = await runOf([slowVia({ kind: "read", code: "ZZZ" }), slowVia({ kind: "read", code: "ZZZ" })]);
+  eq(run.page, true, "an unrecognised colo pages");
+  assert(run.message !== null && /ZZZ/.test(run.message) && /cloudflare-colos/.test(run.message), `and names the list (${run.message})`);
+}
+{
+  // A healthy run is healthy wherever it was served: a fast read through London crossed
+  // the Atlantic for its database reads and was still fast.
+  const run = await runOf([[s(50, "hit", null, LHR), s(60, "hit", null, LHR), s(70, "hit", null, LHR)]]);
+  eq(run.kind, "healthy", "a fast run through London is healthy");
+  eq(run.measured, true, "and counts as measured");
+}
+{
+  // The pass's verdict: the real bucket's skip carries through, names the bucket, and
+  // stamps nothing.
+  const real = await runOf([slowVia(LHR), slowVia(LHR)]);
+  const d = decideDualLatency(real, judgeLatency(slowVia(LHR)), "100");
+  eq(d.page, false, "the pass pages nobody");
+  eq(d.measured, false, "and stamps no verdict");
+  assert(d.message !== null && /London/.test(d.message) && /real bucket 100/.test(d.message), `and the log says why (${d.message})`);
+}
 
 finish();
