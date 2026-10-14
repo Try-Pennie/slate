@@ -32,6 +32,12 @@
 // worded from those, and the log line prints them per sample, so a slow cached read
 // can be told from a cache that stopped serving, and Worker time from transit (#3652).
 //
+// Each sample also keeps the Cloudflare colo that served it, from `cf-ray` (#3712). The
+// runner is sometimes routed through Europe, which no lead is, so a slow run served
+// ENTIRELY outside North America is logged with where it went and why, and pages nobody;
+// it stamps no verdict either, so a canary stuck on that route goes stale (#1700). Any
+// North American, unrecognised or unreadable read in the evidence keeps the old rule.
+//
 // Run: SLATE_BASE_URL=... node --experimental-strip-types scripts/smoke-latency.ts
 import { appendFileSync } from "node:fs";
 import {
@@ -41,6 +47,7 @@ import {
   formatSamples,
   readSlotCache,
   parseServerTiming,
+  readColo,
   LATENCY_SAMPLES,
   AVAILABILITY_P50_BUDGET_MS,
   type LatencySample,
@@ -85,6 +92,9 @@ async function sample(bucket: string, authed: boolean): Promise<LatencySample | 
       ms: elapsed,
       cache: readSlotCache(res.headers.get("x-slot-cache")),
       server: parseServerTiming(res.headers.get("server-timing")),
+      // #3712: the colo that served it, which decides whether a slow run timed a lead's
+      // route at all.
+      colo: readColo(res.headers.get("cf-ray")),
     };
   } catch (err) {
     console.error(`latency: request failed, not counted as a sample: ${String(err)}`);
@@ -108,7 +118,8 @@ async function takeBatch(bucket: string, authed: boolean, into: LatencySample[][
 // on its own: the canary's wait, the cache tier, and the Worker's own clock.
 const SAMPLE_LEGEND =
   "first dropped as cold; each is the wait at the canary, x-slot-cache (nohdr when absent), " +
-  "and worker= the Worker's own I/O clock with its limiter and slot read split when sent";
+  "the Cloudflare colo from cf-ray (nocfray when absent, cfray-unreadable when it names none), " +
+  "and worker= the Worker's own I/O clock with its limiter, slot read and the slot read's parts when sent";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 

@@ -19,7 +19,12 @@
  *     regression detector, not a performance target: at 39ms warm, a 500ms median
  *     means something structural changed (a cache miss on every read, a live Google
  *     call that should not be there), not that a datacenter was busy.
+ *   - a slow run served ENTIRELY from Cloudflare colos outside North America does not
+ *     page (#3712). The runner is sometimes routed through London or Dublin, where
+ *     Slate has no warm isolate or cached slot entry and every database read crosses
+ *     the Atlantic, so the run timed a route no lead takes.
  */
+import { NORTH_AMERICA_COLOS, OTHER_COLOS } from "./cloudflare-colos.ts";
 
 /** Samples to take. Enough that the median is not one request, few enough to be free. */
 export const LATENCY_SAMPLES = 5;
@@ -60,7 +65,23 @@ export interface ServerTiming {
   workerMs: number | null;
   limitMs: number | null;
   slotsMs: number | null;
+  /** #3713: the parts of the slot read. Each is null when that part did not run. */
+  cacheMs: number | null;
+  hoursMs: number | null;
+  rowMs: number | null;
+  computeMs: number | null;
+  fallbackMs: number | null;
 }
+
+/**
+ * Which Cloudflare data centre served a read, from its `cf-ray` (#3712). A missing
+ * header and one whose colo cannot be read are kept apart, because they send a reader
+ * to different places: one to whatever stripped the header, one to its new shape.
+ */
+export type ColoReading =
+  | { kind: "read"; code: string }
+  | { kind: "absent" }
+  | { kind: "unreadable" };
 
 /** One timed read: the wait at the canary, and what the response said about itself. */
 export interface LatencySample {
@@ -69,11 +90,113 @@ export interface LatencySample {
   cache: SlotCacheOutcome | null;
   /** Null when the response carried no `Server-Timing` entry the route writes. */
   server: ServerTiming | null;
+  /** The colo that served it (#3712). */
+  colo: ColoReading;
 }
 
 /** A bare number is a sample whose response said nothing about itself. */
 function toSample(v: number | LatencySample): LatencySample {
-  return typeof v === "number" ? { ms: v, cache: null, server: null } : v;
+  return typeof v === "number" ? { ms: v, cache: null, server: null, colo: { kind: "absent" } } : v;
+}
+
+/** The shape of a colo code: the IATA code Cloudflare names a data centre by. */
+const COLO_CODE = /^[A-Z]{3,4}$/;
+
+/**
+ * Read the colo out of a `cf-ray` header (`8c1a2b3c4d5e6f70-LHR`). The same suffix the
+ * route reads for its own log line (`requestColo` in src/app/api/availability/route.ts),
+ * copied because this runs on bare node.
+ */
+export function readColo(header: string | null): ColoReading {
+  if (header === null) return { kind: "absent" };
+  const m = /-([A-Z]{3,4})$/.exec(header.trim());
+  return m ? { kind: "read", code: m[1]! } : { kind: "unreadable" };
+}
+
+/**
+ * Where a read was served, for the paging decision (#3712):
+ *
+ *  - `north-america`  a colo on that list: a lead's route, judged as always.
+ *  - `outside`        a colo on the other list: a route no lead takes.
+ *  - `unrecognised`   a code on neither list, possibly a colo opened since the snapshot.
+ *  - `unknown`        no colo could be read at all.
+ *
+ * Only `outside` changes anything; the other three are judged exactly as before #3712,
+ * so a gap in the table or a missing header can only cost a page, never hide one.
+ */
+export type ColoRegion = "north-america" | "outside" | "unrecognised" | "unknown";
+
+export function coloRegion(c: ColoReading): ColoRegion {
+  if (c.kind !== "read" || !COLO_CODE.test(c.code)) return "unknown";
+  if (NORTH_AMERICA_COLOS.has(c.code)) return "north-america";
+  if (OTHER_COLOS.has(c.code)) return "outside";
+  return "unrecognised";
+}
+
+/** A colo as a reader names it: `London (LHR)`, or the bare code when it is not listed. */
+function coloName(code: string): string {
+  const city = NORTH_AMERICA_COLOS.get(code) ?? OTHER_COLOS.get(code);
+  return city ? `${city} (${code})` : code;
+}
+
+/** The colo as the log line prints it. */
+function coloLabel(c: ColoReading): string {
+  if (c.kind === "read") return c.code;
+  return c.kind === "absent" ? "nocfray" : "cfray-unreadable";
+}
+
+/** `a`, `a and b`, `a, b and c`. */
+function listWords(items: string[]): string {
+  return items.length <= 1 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+
+/**
+ * Where the reads behind a page were served, in the reader's words (#3712). Only ever
+ * part of a page, so it says what was seen and leaves the verdict to the sentence it
+ * sits in.
+ */
+function coloSentence(samples: LatencySample[]): string {
+  if (samples.length === 0) return "";
+  const NOT_LISTED = "not on the canary's colo list (scripts/lib/cloudflare-colos.ts), so judged as before";
+  // Each group says where its reads came from, worded to follow a count ("5 came ...").
+  const counts = new Map<string, number>();
+  for (const x of samples) {
+    const where =
+      x.colo.kind === "absent"
+        ? "with no cf-ray header"
+        : x.colo.kind === "unreadable"
+          ? "with a cf-ray naming no colo that could be read"
+          : coloRegion(x.colo) === "north-america" || coloRegion(x.colo) === "outside"
+            ? `from ${coloName(x.colo.code)}`
+            : `from ${x.colo.code}, ${NOT_LISTED}`;
+    counts.set(where, (counts.get(where) ?? 0) + 1);
+  }
+  if (counts.size === 1) {
+    const only = samples[0]!.colo;
+    if (only.kind === "absent") return "No response carried a cf-ray header, so which colo served the reads is unknown.";
+    if (only.kind === "unreadable") return "No response's cf-ray named a colo that could be read, so where the reads were served is unknown.";
+    const region = coloRegion(only);
+    return region === "north-america" || region === "outside"
+      ? `Every read was served from ${coloName(only.code)}.`
+      : `Every read was served from ${only.code}, ${NOT_LISTED}.`;
+  }
+  const parts = [...counts].map(([where, n]) => `${n} came ${where}`);
+  const outside = samples.filter((x) => coloRegion(x.colo) === "outside").length;
+  const note =
+    outside > 0
+      ? ` The ${outside} through a colo outside North America took a route no lead uses; the rest did not, so the run is judged as it stands.`
+      : "";
+  return `Of the ${samples.length} reads, ${listWords(parts)}.${note}`;
+}
+
+/** True only when there was evidence and ALL of it came from outside North America. */
+function allOutside(samples: LatencySample[]): boolean {
+  return samples.length > 0 && samples.every((x) => coloRegion(x.colo) === "outside");
+}
+
+/** The distinct colos, by name, in the order first seen. */
+function coloNames(samples: LatencySample[]): string[] {
+  return [...new Set(samples.flatMap((x) => (x.colo.kind === "read" ? [x.colo.code] : [])))].map(coloName);
 }
 
 /** Read `x-slot-cache`. Anything the route does not send is unknown, never a guessed hit. */
@@ -86,13 +209,36 @@ export function readSlotCache(header: string | null): SlotCacheOutcome | null {
  * The entry names the route writes. A COPY of `SERVER_TIMING_NAMES` in
  * src/lib/api/server-timing.ts, because this file runs on bare node and may import
  * nothing outside scripts/; scripts/test-server-timing.ts drives both and fails if
- * they disagree.
+ * they disagree in either direction.
  */
-const TIMING_NAMES: ReadonlyMap<string, keyof ServerTiming> = new Map([
+export const CANARY_TIMING_NAMES: ReadonlyMap<string, keyof ServerTiming> = new Map([
   ["worker", "workerMs"],
   ["limit", "limitMs"],
   ["slots", "slotsMs"],
+  ["cache", "cacheMs"],
+  ["hours", "hoursMs"],
+  ["row", "rowMs"],
+  ["compute", "computeMs"],
+  ["fallback", "fallbackMs"],
 ]);
+
+/** The slot read's parts, in the order a read reaches them, with the word the log prints. */
+const SLOT_PARTS: ReadonlyArray<readonly [keyof ServerTiming, string]> = [
+  ["cacheMs", "cache"],
+  ["hoursMs", "hours"],
+  ["rowMs", "row"],
+  ["computeMs", "compute"],
+  ["fallbackMs", "fallback"],
+];
+
+/** What each part is called in a page, where the log line's word would be cryptic. */
+const SLOT_PART_WORDS: Readonly<Record<string, string>> = {
+  cache: "edge cache",
+  hours: "business hours",
+  row: "stored row",
+  compute: "live compute",
+  fallback: "lower tiers",
+};
 
 /** Split on commas outside double quotes: a `desc="a,b"` must not split an entry. */
 function splitOutsideQuotes(s: string, sep: string): string[] {
@@ -117,12 +263,21 @@ function splitOutsideQuotes(s: string, sep: string): string[] {
  */
 export function parseServerTiming(header: string | null): ServerTiming | null {
   if (!header) return null;
-  const t: ServerTiming = { workerMs: null, limitMs: null, slotsMs: null };
+  const t: ServerTiming = {
+    workerMs: null,
+    limitMs: null,
+    slotsMs: null,
+    cacheMs: null,
+    hoursMs: null,
+    rowMs: null,
+    computeMs: null,
+    fallbackMs: null,
+  };
   let found = false;
   for (const entry of splitOutsideQuotes(header, ",")) {
     const [rawName, ...params] = splitOutsideQuotes(entry, ";").map((p) => p.trim());
     // A Map, so a name like `constructor` cannot match an inherited property.
-    const field = TIMING_NAMES.get(rawName ?? "");
+    const field = CANARY_TIMING_NAMES.get(rawName ?? "");
     if (!field) continue;
     // Digits only, which also rules out a negative or non-finite value: `Number("")`
     // is 0, so an empty `dur=` would otherwise read as a measured 0ms, the healthy
@@ -231,11 +386,19 @@ function serverSentence(slow: LatencySample[]): string {
   const worker = median(timed.map((x) => x.server!.workerMs!))!;
   const of = `The Worker's own clock read a median ${ms(worker)} of their ${ms(client)}`;
   if (worker * 2 >= client) {
-    const limit = median(timed.flatMap((x) => (x.server!.limitMs === null ? [] : [x.server!.limitMs])));
-    const slots = median(timed.flatMap((x) => (x.server!.slotsMs === null ? [] : [x.server!.slotsMs])));
+    const med = (field: keyof ServerTiming) =>
+      median(timed.flatMap((x) => (x.server![field] === null ? [] : [x.server![field]!])));
+    const limit = med("limitMs");
+    const slots = med("slotsMs");
+    // #3713: the slot read's parts, where the route sent them, so the page names the
+    // read inside it that waited. Medians over the reads that ran that part.
+    const parts = SLOT_PARTS.flatMap(([field, word]) => {
+      const m = med(field);
+      return m === null ? [] : [`${SLOT_PART_WORDS[word] ?? word} ${ms(m)}`];
+    });
     const split = [
       limit === null ? null : `burst limiter ${ms(limit)}`,
-      slots === null ? null : `slot read ${ms(slots)}`,
+      slots === null ? null : `slot read ${ms(slots)}${parts.length ? `: ${parts.join(", ")}` : ""}`,
     ].filter((p): p is string => p !== null);
     return `${of}${split.length ? ` (${split.join(", ")})` : ""}, so the wait was inside the Worker.`;
   }
@@ -261,20 +424,23 @@ export function latencyCause(kept: LatencySample[], budgetMs: number = AVAILABIL
 
 /**
  * The `samples=[...]` detail of the canary's log line: each read's wait, its cache
- * outcome (`nohdr` when the header was absent) and, when sent, the Worker's own time
- * with its split. Printed for every run, so #3652 can be answered from the log history.
+ * outcome (`nohdr` when the header was absent), the colo that served it (`nocfray` with
+ * no cf-ray, `cfray-unreadable` when it had no colo, #3712) and, when sent, the Worker's
+ * own time with its split, the slot read's parts after it (#3713). Printed for every
+ * run, so #3652 can be answered from the log history.
  */
 export function formatSamples(samples: LatencySample[]): string {
   return samples
     .map((x) => {
       const t = x.server;
+      const fields: ReadonlyArray<readonly [keyof ServerTiming, string]> = [["limitMs", "limit"], ["slotsMs", "slots"], ...SLOT_PARTS];
       const split = t
-        ? [t.limitMs === null ? null : `limit=${Math.round(t.limitMs)}`, t.slotsMs === null ? null : `slots=${Math.round(t.slotsMs)}`]
-            .filter((p): p is string => p !== null)
+        ? fields
+            .flatMap(([field, word]) => (t[field] === null ? [] : [`${word}=${Math.round(t[field]!)}`]))
             .join(",")
         : "";
       const worker = t && t.workerMs !== null ? ` worker=${Math.round(t.workerMs)}${split ? `(${split})` : ""}` : "";
-      return `${Math.round(x.ms)} ${x.cache ?? "nohdr"}${worker}`;
+      return `${Math.round(x.ms)} ${x.cache ?? "nohdr"} ${coloLabel(x.colo)}${worker}`;
     })
     .join(", ");
 }
@@ -350,13 +516,27 @@ export const LATENCY_RECHECK_DELAY_MS = 2 * 60_000;
  *  - `confirmed`           over budget on both batches. Pages.
  *  - `recheck-unmeasured`  over budget, and the recheck got no usable readings. Pages,
  *                          because the only thing known is that the read was slow.
+ *  - `outside-north-america`  would have been `confirmed` or `recheck-unmeasured`, but
+ *                          EVERY read it rests on was served from a colo outside North
+ *                          America (#3712). Not a page, and not a measured reading
+ *                          either: it timed a route no lead takes, so it stamps no
+ *                          verdict, and a canary that keeps being routed through Europe
+ *                          goes stale and pages through #1700 rather than reading as
+ *                          healthy. A run with even one North American, unrecognised or
+ *                          unreadable read in that evidence is judged as before.
+ *
+ * A HEALTHY run through Europe still counts as healthy and measured, as it did before
+ * #3712. Whether a fast reading taken there should stamp the verdict is a separate
+ * question from whether a slow one should page, and nothing has measured it; the log
+ * line names the colo on every sample, so it can be answered from the history.
  */
 export type LatencyRunKind =
   | "not-measured"
   | "healthy"
   | "passing-blip"
   | "confirmed"
-  | "recheck-unmeasured";
+  | "recheck-unmeasured"
+  | "outside-north-america";
 
 export interface LatencyRun {
   kind: LatencyRunKind;
@@ -404,6 +584,15 @@ export async function measureLatency(deps: LatencyRunDeps): Promise<LatencyRun> 
   const recheck = judgeLatency(await deps.takeBatch(), budgetMs);
   const wait = `${Math.round(delayMs / 60_000)} minutes`;
   if (recheck.medianMs === null) {
+    if (allOutside(first.kept)) {
+      return outsideNorthAmerica(
+        first,
+        recheck,
+        `availability read median ${ms(first.medianMs)} was past the ${budgetMs}ms budget and could not be ` +
+          `re-measured ${wait} later`,
+        first.kept,
+      );
+    }
     return {
       kind: "recheck-unmeasured",
       page: true,
@@ -411,7 +600,7 @@ export async function measureLatency(deps: LatencyRunDeps): Promise<LatencyRun> 
       message:
         `availability read median ${ms(first.medianMs)}, past the ${budgetMs}ms budget, and it could not be ` +
         `re-measured ${wait} later (no usable readings), so it cannot be ruled a passing blip. ` +
-        `${latencyCause(first.kept, budgetMs)} Check too whether the endpoint is answering at all.`,
+        `${latencyCause(first.kept, budgetMs)} ${coloSentence(first.kept)} Check too whether the endpoint is answering at all.`,
       first,
       recheck,
     };
@@ -428,6 +617,16 @@ export async function measureLatency(deps: LatencyRunDeps): Promise<LatencyRun> 
       recheck,
     };
   }
+  const evidence = [...first.kept, ...recheck.kept];
+  if (allOutside(evidence)) {
+    return outsideNorthAmerica(
+      first,
+      recheck,
+      `availability read median ${ms(first.medianMs)}, and ${ms(recheck.medianMs)} again on a recheck ${wait} ` +
+        `later, both past the ${budgetMs}ms budget`,
+      evidence,
+    );
+  }
   return {
     kind: "confirmed",
     page: true,
@@ -435,7 +634,31 @@ export async function measureLatency(deps: LatencyRunDeps): Promise<LatencyRun> 
     message:
       `availability read median ${ms(first.medianMs)}, and ${ms(recheck.medianMs)} again on a recheck ${wait} ` +
       `later, both past the ${budgetMs}ms budget, an order of magnitude above the warm cached read. ` +
-      latencyCause([...first.kept, ...recheck.kept], budgetMs),
+      `${latencyCause(evidence, budgetMs)} ${coloSentence(evidence)}`,
+    first,
+    recheck,
+  };
+}
+
+/**
+ * The skipped run (#3712): what was slow, where every read went, and why that is not a
+ * lead's wait. Kept as the run's message so the log says it was skipped and why, rather
+ * than the run passing in silence (L98).
+ */
+function outsideNorthAmerica(
+  first: LatencyVerdict,
+  recheck: LatencyVerdict,
+  whatWasSlow: string,
+  evidence: LatencySample[],
+): LatencyRun {
+  return {
+    kind: "outside-north-america",
+    page: false,
+    measured: false,
+    message:
+      `${whatWasSlow}, but every read was routed through ${listWords(coloNames(evidence))}, outside North ` +
+      "America, which no lead uses. That timed the runner's route to Cloudflare, not a lead's wait. " +
+      "Nobody is paged, and this run does not count as a latency verdict.",
     first,
     recheck,
   };
