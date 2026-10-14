@@ -14,6 +14,8 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { isSfAuthFailure } from "@/lib/salesforce/rest";
 import { afterResponse } from "@/lib/after-response";
 import { log } from "@/lib/log";
+import { readTextingLine } from "@/lib/automations/texting-line";
+import { automationsApiUrl } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -101,5 +103,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ outcome: "refused", retry: retryCanHelp(out) });
   }
   log.info("call-me-now", { msg: "press answered", lead_id: leadId, outcome: out.kind });
-  return NextResponse.json({ outcome: out.kind });
+  // The line the lead can text, for the confirmation's Text us. Null when the service
+  // is not configured or does not answer usefully, and the card then shows no Text us.
+  const textLine = await readTextingLine(
+    { phone: input.phone, submissionId: text(body.submissionId) },
+    {
+      baseUrl: automationsApiUrl(),
+      fetchImpl: fetch,
+      onUnread: (err) => log.warn("call-me-now", { msg: "texting line unread, no Text us", lead_id: leadId }, err),
+    },
+  );
+  return NextResponse.json({ outcome: out.kind, textLine });
 }
