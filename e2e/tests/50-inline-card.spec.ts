@@ -96,4 +96,10 @@ test("picking a time in the card goes on to the details step inside it", async (
   await expect(card.getByRole("textbox", { name: /email/i })).toBeVisible();
   await expect(card.getByRole("button", { name: /confirm/i })).toBeVisible();
   await page.locator("#slot").screenshot({ path: "e2e/.artifacts/inline-card-light-details.png" });
+
+  // The strip is gone on the details step, so Back is the way to another time: it
+  // must bring the card's day strip and times back.
+  await card.getByRole("button", { name: /back/i }).click();
+  await expect(card.getByText("Choose a time for your call below:")).toBeVisible();
+  await expect(times.first()).toBeVisible();
 });

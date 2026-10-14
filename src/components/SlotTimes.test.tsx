@@ -178,6 +178,19 @@ describe("SlotTimes", () => {
       expect(screen.queryAllByRole("button", { name: /^2026/ })).toHaveLength(6);
     });
 
+    it("folds a day again when the lead comes back to it from another", () => {
+      const { rerender } = render(<SlotTimes {...base} firstShown={6} view={times(nine)} />);
+      fireEvent.click(screen.getByRole("button", { name: "View more times" }));
+      rerender(<SlotTimes {...base} firstShown={6} view={times(nine, "2026-08-17")} />);
+      rerender(<SlotTimes {...base} firstShown={6} view={times(nine)} />);
+      expect(screen.queryAllByRole("button", { name: /^2026/ })).toHaveLength(6);
+    });
+
+    it("styles View more times with its own class when the surface gives one", () => {
+      render(<SlotTimes {...base} firstShown={6} classes={{ ...base.classes, viewMore: "the-more-class" }} view={times(nine)} />);
+      expect(screen.getByRole("button", { name: "View more times" }).className).toBe("the-more-class");
+    });
+
     it("leaves the day heading off when asked, and keeps it otherwise", () => {
       const { rerender } = render(<SlotTimes {...base} dayHeading={false} view={times(nine)} />);
       expect(screen.queryByText(/^Times on /)).toBeNull();

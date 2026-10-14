@@ -2252,6 +2252,7 @@ export default function Booker({
                 retry: `inline-flex min-h-9 items-center rounded-md border px-3 text-sm ${c.toggleBorder} ${c.body} ${c.navHover}`,
                 // #3718: the card lays its times out three across, two on a phone.
                 grid: inline ? "grid grid-cols-2 gap-2 @sm:grid-cols-3" : "space-y-2",
+                viewMore: `mx-auto mt-1 flex min-h-11 items-center px-3 text-sm font-semibold ${c.title}`,
               }}
               firstShown={inline ? 6 : undefined}
               dayHeading={!inline}

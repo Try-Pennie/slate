@@ -441,6 +441,20 @@
     );
   }
 
+  // How long a booker frame may take to load before it is reported as failed
+  // (#628), the modal's and an inline one's alike (#3718).
+  var LOAD_TIMEOUT_MS = 12000;
+
+  // The two ways a frame itself can fail to show a booker (#2658), announced as
+  // `linkFailed` beside the two the Booker reports from inside the frame. These
+  // sentences are read by an analyst in a GA4 report, never by a lead, which is
+  // why they sit outside the copy block above: the lead's own words for the same
+  // moment are `COPY.loadFailed`, on screen.
+  var LOAD_FAILED = {
+    timeout: { code: "load_timeout", msg: "The booking form did not load in time" },
+    error: { code: "load_error", msg: "The booking form could not be loaded" },
+  };
+
   // One booker iframe, the modal's and an inline one alike (#3718), so the
   // attributes both carry live once. `css` follows the shared base.
   function bookerIframe(bookUrl, css) {
@@ -484,9 +498,14 @@
       return;
     }
     var config = opts.config && typeof opts.config === "object" ? opts.config : {};
+    // Drop this element's earlier frame, and any frame whose element has left the
+    // page, so a page that redraws neither stacks bookers nor keeps trusting a
+    // window that is gone.
     inlineFrames = inlineFrames.filter(function (f) {
-      if (f.el !== el) return true;
+      if (f.el !== el && f.iframe.isConnected) return true;
+      f.stop();
       if (f.iframe.parentNode) f.iframe.parentNode.removeChild(f.iframe);
+      if (f.notice.parentNode) f.notice.parentNode.removeChild(f.notice);
       return false;
     });
     var reduceMotion = prefersReducedMotion();
@@ -495,7 +514,58 @@
       "min-height:360px" + (reduceMotion ? "" : ";transition:height .15s ease"),
     );
     el.appendChild(iframe);
-    inlineFrames.push({ iframe: iframe, el: el });
+
+    // A frame that never loads must not leave a blank box (#628, L10): after the
+    // same wait as the modal it says so in the lead's words, offers Try again,
+    // and announces `linkFailed`, so the host can react too. Plain inline styles,
+    // since the host page has none of Slate's.
+    var notice = document.createElement("div");
+    notice.setAttribute("role", "alert");
+    notice.style.cssText =
+      "display:none;padding:16px;font-family:-apple-system,BlinkMacSystemFont," +
+      "'Segoe UI',system-ui,sans-serif;font-size:14px;line-height:1.5;color:rgb(52,52,52)";
+    var noticeText = document.createElement("p");
+    noticeText.style.cssText = "margin:0 0 12px";
+    noticeText.textContent = COPY.loadFailed;
+    var retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = COPY.retry;
+    retry.style.cssText =
+      "min-height:44px;padding:0 16px;border:1px solid rgba(52,52,52,0.4);border-radius:16px;" +
+      "background:#fff;color:rgb(52,52,52);font:inherit;font-weight:600;cursor:pointer";
+    notice.appendChild(noticeText);
+    notice.appendChild(retry);
+    el.appendChild(notice);
+
+    var timer = null;
+    var loaded = false;
+    function stop() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    }
+    function arm() {
+      stop();
+      timer = setTimeout(function () {
+        timer = null;
+        if (loaded) return;
+        iframe.style.display = "none";
+        notice.style.display = "block";
+        emit("linkFailed", LOAD_FAILED.timeout);
+      }, LOAD_TIMEOUT_MS);
+    }
+    iframe.addEventListener("load", function () {
+      loaded = true;
+      stop();
+    });
+    retry.addEventListener("click", function () {
+      notice.style.display = "none";
+      iframe.style.display = "block";
+      // Setting src again reloads the frame, as the modal's retry does.
+      iframe.src = iframe.src;
+      arm();
+    });
+    arm();
+    inlineFrames.push({ iframe: iframe, el: el, notice: notice, stop: stop });
   }
 
   function buildFrame(bookUrl) {
@@ -608,7 +678,6 @@
     // timeout converts the spinner into a plain-language error + retry (#628),
     // so the lead always sees "working" and "failed" as distinct states rather
     // than an indefinite spinner on this first-impression surface.
-    var LOAD_TIMEOUT_MS = 12000;
     var loadTimer = null;
     // "loading" until the iframe's first load, then "loaded"; "failed" while the
     // error and its retry are up. The timer runs only while "loading", from the
@@ -699,16 +768,6 @@
       // while hidden must leave the host page's focus where it is (#2679).
       if (visible) retry.focus();
     }
-
-    // The two ways the modal itself can fail to show a booker (#2658), announced
-    // as `linkFailed` beside the two the Booker reports from inside the frame.
-    // These sentences are read by an analyst in a GA4 report, never by a lead,
-    // which is why they sit outside the copy block above: the lead's own words
-    // for the same moment are `COPY.loadFailed`, on screen.
-    var LOAD_FAILED = {
-      timeout: { code: "load_timeout", msg: "The booking form did not load in time" },
-      error: { code: "load_error", msg: "The booking form could not be loaded" },
-    };
 
     function armLoadTimer() {
       if (loadTimer) clearTimeout(loadTimer);

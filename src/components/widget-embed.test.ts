@@ -1243,6 +1243,34 @@ describe("widget.js inline embed (#3718)", () => {
     expect(new URL(iframe.getAttribute("src")!).searchParams.has("layout")).toBe(false);
   });
 
+  it("says so, and offers Try again, when the booker never loads, rather than leaving a blank box", () => {
+    vi.useFakeTimers();
+    const el = slot();
+    const failures: unknown[] = [];
+    cal()("on", { action: "linkFailed", callback: (e: { detail: { data: unknown } }) => failures.push(e.detail.data) });
+    cal()("inline", { elementOrSelector: "#slot", calLink: "router?xbc=411" });
+    vi.advanceTimersByTime(12000);
+    expect(failures).toContainEqual({ code: "load_timeout", msg: "The booking form did not load in time" });
+    expect(el.textContent).toMatch(/couldn.t load the booking form/i);
+    const retry = Array.from(el.querySelectorAll("button")).find((b) => /try again/i.test(b.textContent || ""));
+    expect(retry).toBeTruthy();
+    retry!.click();
+    // Try again hides the message and shows the frame, reloading it.
+    expect(el.querySelector<HTMLElement>('[role="alert"]')!.style.display).toBe("none");
+    expect(inlineIframe(el)!.style.display).toBe("block");
+  });
+
+  it("announces no failure for a booker that loaded", () => {
+    vi.useFakeTimers();
+    const el = slot();
+    const failures: unknown[] = [];
+    cal()("on", { action: "linkFailed", callback: (e: { detail: { data: unknown } }) => failures.push(e.detail.data) });
+    cal()("inline", { elementOrSelector: "#slot", calLink: "router?xbc=411" });
+    inlineIframe(el)!.dispatchEvent(new Event("load"));
+    vi.advanceTimersByTime(12000);
+    expect(failures).toEqual([]);
+  });
+
   it("does nothing, and throws nothing, when the element is not on the page", () => {
     expect(() => cal()("inline", { elementOrSelector: "#missing", calLink: "router?xbc=411" })).not.toThrow();
     expect(document.querySelector("iframe")).toBeNull();
