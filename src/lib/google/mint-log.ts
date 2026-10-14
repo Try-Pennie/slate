@@ -40,6 +40,15 @@ export interface MintContext {
   limitMs: Deadline;
   /** The request it was made for (`requestLabel`), absent on the cron lanes. */
   request?: string;
+  /**
+   * Why the shared token holder (#3512) did not answer instead, so a week of lines says
+   * how often a mint was still needed and for which reason: `miss`, `expired`, `timeout`,
+   * `error` or `unbound` from the read itself; `refused` when Google refused the token
+   * the caller held (#3144), which skips the holder; `not-held` for a scope the holder
+   * does not keep; `no-budget` when the enclosing budget was spent before it could ask;
+   * `refresh` and `nudge` for a mint made AFTER a response to refresh an ageing token.
+   */
+  holder?: string;
 }
 
 /** The fields of the line, in the order they are written. */
@@ -50,6 +59,8 @@ export interface MintLine {
   deadline_ms?: number;
   limit_ms?: number;
   request?: string;
+  /** Why the shared holder did not answer instead (#3512). */
+  holder?: string;
   /** Set on a timeout an enclosing budget cut short, rather than the mint's own deadline. */
   cut_by_budget?: true;
   status?: number;
@@ -81,6 +92,7 @@ function lineFor(ctx: MintContext, durationMs: number, err: unknown, failed: boo
   if (deadline !== undefined) line.deadline_ms = deadline;
   if (limit !== undefined) line.limit_ms = limit;
   if (ctx.request !== undefined) line.request = ctx.request;
+  if (ctx.holder !== undefined) line.holder = ctx.holder;
   if (!failed) return line;
   const missed = findDeadlineExceeded(err);
   if (missed) {
@@ -125,4 +137,32 @@ export async function timedMint<T>(
   // never reported as failed by its own log line.
   write(lineFor(ctx, now() - startedAt, undefined, false));
   return value;
+}
+
+/**
+ * Which tier answered a token request (#3512): the isolate's own cache, the shared
+ * holder, or a mint. One line per answer from the holder or a mint, and per answer from
+ * the isolate only inside a request (`requestLabel`, the lead facing paths), so the share
+ * of confirms that still wait on a mint is readable without a line for every cron lane
+ * cache hit. `holder` says why a mint was needed, as on the mint line. Like that line it
+ * names no address and no token.
+ *
+ *   slate tag=google-token-read msg="token read" tier="holder" scope="calendar" ms=14
+ *     request="the booking confirm"
+ */
+export type TokenTier = "isolate" | "holder" | "mint";
+
+export interface TokenReadLine {
+  tier: TokenTier;
+  scope: string;
+  ms: number;
+  holder?: string;
+  request?: string;
+}
+
+export function writeTokenReadLine(line: TokenReadLine): void {
+  const fields: Record<string, string | number> = { msg: "token read", tier: line.tier, scope: mintScopeName(line.scope), ms: line.ms };
+  if (line.holder !== undefined) fields.holder = line.holder;
+  if (line.request !== undefined) fields.request = line.request;
+  log.info("google-token-read", fields);
 }

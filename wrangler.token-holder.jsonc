@@ -1,0 +1,67 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	// The small Worker hosting the shared Google token holder (#3512), so a confirm on an
+	// isolate holding no token for its advisor reads one in milliseconds instead of minting
+	// one on the lead's path. Slate binds TOKEN_HOLDER to it by script name (wrangler.jsonc).
+	// It must be deployed BEFORE Slate, because Slate's binding names it:
+	//
+	//   npx wrangler deploy -c wrangler.token-holder.jsonc                 (production)
+	//   npx wrangler deploy -c wrangler.token-holder.jsonc --env loadtest  (load test)
+	//
+	// Both run from the same list as the other object workers (OBJECT_WORKER_CONFIGS in
+	// scripts/lib/gradual-deploy.ts), which scripts/deploy-gradual.ts, scripts/deploy-verified.ts
+	// and loadtest.yml read. scripts/test-token-holder-worker.ts pins it.
+	//
+	// It holds NO secret and needs none: it never mints. Slate mints and puts the token here.
+	// Tokens live in the object's memory only, never its storage. The migration below is
+	// what every Durable Object class needs to exist at all; nothing is ever written to the
+	// SQLite storage it provides.
+	"name": "slate-token-holder",
+	"main": "worker/token-holder/index.ts",
+	"account_id": "3e7f907a9c19e51417873e2cce4fbc5c",
+	"compatibility_date": "2025-08-01",
+	"compatibility_flags": ["nodejs_compat"],
+	// No address at all: only Slate's binding reaches the object.
+	"workers_dev": false,
+	"preview_urls": false,
+	"observability": {
+		"enabled": true
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "TOKEN_HOLDER",
+				"class_name": "TokenHolder"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["TokenHolder"]
+		}
+	],
+	"env": {
+		// The load test's own copy, so a load run never shares tokens with production.
+		// durable_objects and migrations do not inherit, so both are repeated.
+		"loadtest": {
+			"name": "slate-token-holder-loadtest",
+			"workers_dev": false,
+			"preview_urls": false,
+			"durable_objects": {
+				"bindings": [
+					{
+						"name": "TOKEN_HOLDER",
+						"class_name": "TokenHolder"
+					}
+				]
+			},
+			"migrations": [
+				{
+					"tag": "v1",
+					"new_sqlite_classes": ["TokenHolder"]
+				}
+			]
+		}
+	}
+}
