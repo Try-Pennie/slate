@@ -186,10 +186,10 @@ export const SHIPPED_FAILURE_RATE_THRESHOLDS: RateThresholds = deriveFailureRate
  * - **At least 5 attempts.** The same count `FAILURE_RATE_FIT` sets as the failures a
  *   page takes at the floor. Fewer is a quiet half hour that measured nothing, and
  *   it says nothing either way (L98, L695). Five clean attempts in a row would happen
- *   by chance about 31% of the time under a failure rate sitting exactly on the 20%
- *   line, 17% at 30% and 2% at 46% (the 2026-08-06 wave), so a real outage almost
- *   never stands down on luck; one sitting on the line can, and its next failure
- *   pages again, which is a measured fact and not an old one.
+ *   by chance about 33% of the time under a failure rate sitting exactly on the 20%
+ *   line, 17% at 30% and 5% at 46% (the 2026-08-06 wave), so a wave well over the
+ *   line rarely stands down on luck; one sitting on the line can, and its next
+ *   failure pages again, which is a measured fact and not an old one.
  * - **At most 5% failing.** A quarter of `failPct`. Zero failures until a clean run
  *   reaches 20 attempts, then one: an ordinary race at a busy hour does not hold a
  *   page open, and the gap between 5% to stand down and 20% to page is the

@@ -101,13 +101,14 @@ export interface RateSample {
   settled?: Record<string, string>;
   /**
    * The booking lane's window only (#3275): a page (`live`) or a notice about a
-   * burst that had already ended (`past`) went out on this tick, or was held by its
-   * cooldown. It rides on the sample so it ages out of the window with the failures
-   * it was about, and while any sample in the window carries it, a burst that ends
-   * is not reported again: somebody has already been told about these failures.
-   * Kept in the existing jsonb `samples` column, so it needs no migration, and
-   * optional so a sample written before it reads as "nobody told", which at worst
-   * sends one notice.
+   * burst that had already ended (`past`) was asked for on this tick (sent, or held
+   * by its cooldown). It rides on the sample so it ages out of the window with the
+   * failures it was about. While any sample in the window carries `live`, a burst
+   * that ends is not reported as past: somebody was paged about these failures, and
+   * the all-clear tells them it is over. `past` gates nothing (that notice's own
+   * cooldown does) and is kept as the record of what the lane did. Kept in the
+   * existing jsonb `samples` column, so it needs no migration, and optional so a
+   * sample written before it reads as "nobody told", which at worst sends one notice.
    */
   told?: "live" | "past";
 }
@@ -718,14 +719,20 @@ export async function runBookingFailureRateCheck(deps: {
   //  - live: over the line AND the last half hour holds more failures than a clean
   //    run allows. Only this pages the condition, so failures that have aged into
   //    the past can never re-page it as the share wobbles.
-  //  - past: over the line with NO failure in the last half hour, and nobody told
-  //    about these failures yet. One notice, on its own incident key.
+  //  - past: over the line with NO failure in the last half hour, and nobody paged
+  //    about these failures. One notice, on its own incident key.
   //  - clear: the last half hour is a measured clean run. Only this may all-clear,
   //    never the share dipping under the line, and never a quiet half hour.
+  //
+  // `past` is asked for on EVERY such tick and held to once by its own cooldown, not
+  // by the window's marker: the dispatcher answers a failed post with a short retry
+  // stamp, which only helps if the check asks again, so a marker that stopped the
+  // asking would lose the notice to one Slack failure (L33). The marker gates it only
+  // on a LIVE page, whose all-clear is already the end of that story.
   const breach = verdict.status === "breach" && span !== null;
   const live = deps.armed && breach && recent.failures > 0 && !recent.completing;
-  const alreadyTold = advanced.state.samples.some((s) => s.told !== undefined);
-  const past = deps.armed && breach && recent.failures === 0 && !alreadyTold;
+  const pagedLive = advanced.state.samples.some((s) => s.told === "live");
+  const past = deps.armed && breach && recent.failures === 0 && !pagedLive;
   const clear = deps.armed && recent.completing;
 
   // Recorded on the newest sample BEFORE the save, so the record survives a Slack
@@ -794,9 +801,11 @@ export async function runBookingFailureRateCheck(deps: {
   // hears about.
   if (past && !settled && verdict.status === "breach" && span !== null) {
     const refused = await readRefused();
-    // The cooldown is the window's length: a burst stays inside the window for at
-    // most that long after its newest failure, so even with the `told` marker lost
-    // (a failed state write) one burst cannot be reported twice.
+    // The cooldown is the window's length, and it is what holds this to once per
+    // burst: a burst reads as ended only from 30 minutes after its newest failure
+    // until that failure leaves the window, a stretch shorter than the window, so a
+    // delivered notice is never repeated for it. The cost, accepted: a SECOND burst
+    // that ends within the same three hours goes unreported by this key.
     await deps
       .notify(
         FAILURE_BURST_ENDED_ALERT_KEY,

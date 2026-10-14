@@ -69,6 +69,13 @@ eq(
   eq(pct(thirty.allDay), 74, "around the clock, 74% do");
   eq(pct(at(15).daytime), 52, "a 15 minute window would hold it in only 52% of daytime windows");
   assert(thirty.daytime >= 0.9, "the all-clear can stand down on ordinary daytime traffic");
+
+  // The chance a wave still under way produces a clean run of the floor by luck, at
+  // the failure rates the comment quotes, from the SHIPPED floor (L107).
+  const luck = (failPct: number) => pct((1 - failPct / 100) ** r.minAttempts);
+  eq(luck(FAILURE_RATE_FIT.failPct), 33, "a wave sitting on the line stands down on luck about 33% of the time");
+  eq(luck(30), 17, "17% at a 30% failure rate");
+  eq(luck(46), 5, "5% at the 2026-08-06 wave's 46%");
 }
 
 // --- the floor: how many failures a page takes at it -------------------------------

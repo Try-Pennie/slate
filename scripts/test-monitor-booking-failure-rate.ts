@@ -973,6 +973,48 @@ const windowOf = (samples: RateSample[]): RateWindowState => ({
   eq(notified, [FAILURE_BURST_ENDED_ALERT_KEY], "and the burst is still reported");
 }
 {
+  // A burst notice whose send FAILED is asked for again on the next tick (L33): the
+  // dispatcher leaves a short retry stamp on a failed post, which only helps if the
+  // check calls it again. Its own cooldown, not the window's marker, holds a
+  // delivered notice to once.
+  let state: RateWindowState | null = windowOf([
+    sample(T0 - 50 * MIN, 10, 6),
+    sample(T0 - 45 * MIN, 5, 0),
+    sample(T0 - 20 * MIN, 7, 0),
+  ]);
+  const calls: { key: string; cooldownMs: number }[] = [];
+  let slackDown = true;
+  const tick = (nowMs: number) =>
+    runBookingFailureRateCheck({
+      nowMs,
+      loadState: async () => state,
+      saveState: async (s) => {
+        state = s;
+      },
+      readToday: async () => reading("2026-08-11", 1000, 100, { slot_unavailable: 90, internal: 10 }),
+      readRefusedPeople: async () => ({ people: 0, refusals: 0, withoutLead: 0 }),
+      thresholds: THRESHOLDS,
+      recent: RECENT,
+      armed: true,
+      cooldownMs: 30 * MIN,
+      notify: async (key, cooldownMs) => {
+        calls.push({ key, cooldownMs });
+        if (slackDown) throw new Error("slack down");
+      },
+      resolve: async () => false,
+      onError: () => {},
+    });
+  await tick(T0 + MIN);
+  slackDown = false;
+  await tick(T0 + 6 * MIN);
+  eq(
+    calls.map((c) => c.key),
+    [FAILURE_BURST_ENDED_ALERT_KEY, FAILURE_BURST_ENDED_ALERT_KEY],
+    "a burst notice that failed to send is asked for again on the next tick",
+  );
+  eq(calls[0]?.cooldownMs, THRESHOLDS.windowMs, "on a cooldown as long as the window, so a delivered one goes once per burst");
+}
+{
   // Disarmed: measured, never told, so nothing is marked as told either.
   const ended = windowOf([sample(T0 - 50 * MIN, 10, 6), sample(T0 - 45 * MIN, 5, 0), sample(T0 - 20 * MIN, 7, 0)]);
   const h = harness({ state: ended, armed: false });
