@@ -21,10 +21,13 @@
 			"17 10 * * *"
 		]
 	},
-	// The every-minute cron runs four lanes (sync/recompute/outbox/selfheal) in ONE
+	// The every-minute cron ran four lanes (sync/recompute/outbox/selfheal) in ONE
 	// scheduled() invocation sharing its CPU budget; at scale they exceeded the
 	// default 30s cron-CPU ceiling ~5% of ticks (#760). Raise it to 2 min. This IS
-	// honored for a sub-hourly cron, despite the frequency-gated docs table.
+	// honored for a sub-hourly cron, despite the frequency-gated docs table. Since
+	// #3693 each lane runs as its own placed request over the SELF binding below,
+	// under this same limit, and only a lane that falls back to in process still
+	// shares the cron invocation's.
 	// Billed on actual CPU used, not the ceiling, so a high limit is free.
 	// Evidence and current headroom: docs/cloudflare-platform-notes.md.
 	//

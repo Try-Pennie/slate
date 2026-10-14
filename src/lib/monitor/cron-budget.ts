@@ -274,6 +274,9 @@ export function formatCronCpuRecovery(health: Extract<CronCpuHealth, { status: "
     `No cron schedule used more than ${secs(CRON_BUDGET_WARN_MS)} of CPU in one tick in the last day, ` +
     `across ${health.invocations.toLocaleString("en-US")} scheduled invocations.` +
     (worst ? ` The worst was \`${worst.cron}\` at ${secs(worst.maxCpuMs)}.` : "") +
+    // #3693: a placed lane runs as its own request, so its CPU is not in this figure, and an
+    // all clear may claim only what was read (L11).
+    ` This counts the scheduled invocations only: a lane that ran placed is its own request and its CPU is not included.` +
     `\n${SOURCE}`
   );
 }
