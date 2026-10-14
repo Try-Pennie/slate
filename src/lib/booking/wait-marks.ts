@@ -130,6 +130,17 @@ export const WAIT_SPAN_FIELDS: readonly WaitSpanField[] = [
   "wait_total_ms",
 ];
 
+/**
+ * #3436: the Worker's entry stamp ITSELF, written beside the spans. Every span starts at
+ * the entry, so the time before it (the invocation starting, then a fresh isolate
+ * evaluating the bundle before the fetch handler runs) is in none of them. The load
+ * run's reader measures that from the tail event's own `eventTimestamp` to this stamp,
+ * each end on its own boundary rather than as what is left over between other spans
+ * (L699). A stamp, not a span, so it is not in `WAIT_SPAN_FIELDS`; written only when
+ * the Worker gave one, never as a zero.
+ */
+export const ENTRY_STAMP_FIELD = "wait_entry_at_ms";
+
 export interface WaitMarks {
   /** Stamp a point now. The first stamp of a point wins; later ones are counted. */
   mark(point: WaitPoint | AuthStep): void;
@@ -181,6 +192,8 @@ export function makeWaitMarks(now: () => number, entryAtMs: number | null | unde
       if (ends.every(([a, b]) => a !== undefined && b !== undefined && b >= a)) {
         AUTH_SPLIT.forEach((s, i) => (out[s.name] = ends[i]![1]! - ends[i]![0]!));
       }
+      const entryAt = at.get("entry");
+      if (entryAt !== undefined) out[ENTRY_STAMP_FIELD] = entryAt;
       const first = WAIT_POINTS.map((p) => at.get(p)).find((t) => t !== undefined);
       const end = at.get("profile");
       if (first !== undefined && end !== undefined && end >= first) out.wait_total_ms = end - first;

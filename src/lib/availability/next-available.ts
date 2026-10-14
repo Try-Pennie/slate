@@ -105,6 +105,14 @@ export function probeWindows(input: {
  *    would not have started.
  *  - CPU. Unchanged, since the same windows are computed; the full Low walk is
  *    roughly 8 x 1s of compute against the Worker's raised `limits.cpu_ms`.
+ *
+ * THE PREMISE ABOVE HAS MOVED (#2806, 2026-10-14). `computeBucketSlots` no longer
+ * asks Luxon about every candidate slot, and on a generated 80 member week
+ * (`scripts/bench-bucket-slots.ts`) its CPU fell from a median of about 750ms to
+ * about 13ms. A window is now almost all reads, so the 30/70 split this cap was
+ * chosen on no longer holds, and the CPU line above overstates the walk by about
+ * fifty times. Whether a different cap now pays was NOT re-measured; it needs the
+ * same live walk timing the numbers above came from, and is left as it was.
  */
 export const NEXT_WINDOW_CONCURRENCY = 2;
 
@@ -113,6 +121,13 @@ export const NEXT_WINDOW_CONCURRENCY = 2;
  * 2026-09-25 (#1365): a Low bucket, 79 staffed agents, about 2.5s per 7 day window
  * (0.5s fixed plus about 30ms per eligible agent). The booker's wait is derived
  * from this, so a re-measurement is a change to one number here.
+ *
+ * Measured BEFORE #2806, when about 870ms of each window was `computeBucketSlots`;
+ * that is now about 13ms, so this figure overstates a window today. It is left
+ * standing on purpose: it only sets how long the booker waits before calling the
+ * request failed, and an overstated cost errs toward waiting longer, never toward
+ * giving up on a walk that would have answered. Lowering it needs the same live
+ * measurement it came from, not the local benchmark.
  */
 export const NEXT_WINDOW_COST_MS = 2_500;
 
@@ -120,8 +135,10 @@ export const NEXT_WINDOW_COST_MS = 2_500;
  * The slowest walk the server can make: every window, and no overlap at all.
  *
  * Deliberately pessimistic. Concurrency hides a window's reads behind another's
- * compute, but compute dominates and cannot overlap on one thread, so the honest
+ * compute, but compute dominated and cannot overlap on one thread, so the honest
  * bound for a client to wait on is the serial one rather than the optimistic one.
+ * Since #2806 reads dominate instead, which makes the serial bound more
+ * pessimistic still, and so still safe to wait on.
  */
 export const NEXT_WALK_WORST_CASE_MS =
   Math.ceil(MAX_LOOKAHEAD_DAYS / PROBE_WINDOW_DAYS) * NEXT_WINDOW_COST_MS;

@@ -139,6 +139,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // the kill switch.
   public_booking_stopped: "the-booker-is-offering-nothing-or-too-little",
   booking_failure_rate: "the-booker-is-offering-nothing-or-too-little",
+  // #3275. The same failures as the page above, reported once they had already
+  // stopped; the investigation is the same one.
+  booking_failure_burst_ended: "the-booker-is-offering-nothing-or-too-little",
   // #3179. The same population as the hourly page, judged over the month.
   booking_budget: "the-booker-is-offering-nothing-or-too-little",
 

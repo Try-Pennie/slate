@@ -241,9 +241,154 @@ export function isUnderDailyCap(
 ): boolean {
   if (dailyCap === null) return true;
   const dayKey = DateTime.fromMillis(startMs, { zone: timezone }).toISODate();
+  return underCapOn(dayKey, bookingStartsMs, timezone, dailyCap, dayCounts);
+}
+
+/** The cap decision once the agent's local date is known (#2806). */
+function underCapOn(
+  dayKey: string | null,
+  bookingStartsMs: number[],
+  timezone: string,
+  dailyCap: number,
+  dayCounts?: Map<string, number>,
+): boolean {
   if (dayKey === null) return true;
   const counts = dayCounts ?? bookingsPerLocalDay(bookingStartsMs, timezone);
   return (counts.get(dayKey) ?? 0) < dailyCap;
+}
+
+/**
+ * One local calendar day on which the zone's offset never changes (#2806): the
+ * ground the per day shortcuts below stand on.
+ *
+ * Profiled on 2026-10-14 (80 agents, 7 days, the live 20 minute call on a 10 minute
+ * grid), about 90 percent of `computeBucketSlots` was Luxon resolving a zone offset
+ * through `Intl`: stepping the grid with `DateTime.plus` and, inside the predicate,
+ * re-deriving the local day, the shift windows and the date for the cap on every
+ * slot. Every one of those answers is the same for every instant of one local day.
+ *
+ * It is built only for a day whose offset is the SAME at its first and last
+ * millisecond. On such a day every instant reads the same local date, and the start
+ * of day `isWithinWorkingHours` and `isOrgOpen` derive from any of them is `day`
+ * itself (same instant, same offset), so a window `timeOnDay` resolves from it is the
+ * one they would resolve. A day with a clock change in it gets nothing and is judged
+ * the general way, instant by instant, exactly as before.
+ */
+interface SteadyDay {
+  day: DateTime;
+  startMs: number;
+  /** Exclusive: 24 hours on, which is this date's end because the offset is steady. */
+  endMs: number;
+  isoDate: string;
+}
+
+const DAY_MS_LOCAL = 24 * 60 * MIN;
+
+function steadyDay(zone: string, instantMs: number): SteadyDay | undefined {
+  const day = DateTime.fromMillis(instantMs, { zone }).startOf("day");
+  const isoDate = day.toISODate();
+  if (!day.isValid || isoDate === null) return undefined;
+  const startMs = day.toMillis();
+  const endMs = startMs + DAY_MS_LOCAL;
+  // One offset at both ends, and the last instant still on this date. A day whose
+  // midnight does not exist starts at 01:00, so with an unchanged offset its last
+  // millisecond is tomorrow's 00:59 and this refuses it too. This asks whether ONE
+  // zone's clock moves within a day, not whether two zones keep the same clock,
+  // which is `zonesKeepSameClock`'s question (#2128) and is not asked here.
+  const offsetAtMidnight = day.offset;
+  const last = DateTime.fromMillis(endMs - 1, { zone });
+  if (last.offset !== offsetAtMidnight || last.toISODate() !== isoDate) return undefined;
+  return { day, startMs, endMs, isoDate };
+}
+
+/**
+ * `timeOnDay(steady.day, minutes)` as an instant, without asking Luxon when it need
+ * not. On a steady day local midnight is `startMs` and the offset never moves, so
+ * the wall clock `minutes` after it is exactly `minutes` later. 24:00 (the next
+ * day's start, where the NEXT day's clock change can sit) and anything that is not a
+ * whole minute of the day still go through `timeOnDay` itself.
+ */
+function steadyWallClockMs(steady: SteadyDay, minutes: number): number {
+  if (Number.isInteger(minutes) && minutes >= 0 && minutes < 1440) return steady.startMs + minutes * MIN;
+  return timeOnDay(steady.day, minutes).toMillis();
+}
+
+/**
+ * What the slot walk has already worked out about ONE of the agent's local days
+ * (#2806), so the per slot predicate need not ask Luxon again for every candidate.
+ * Valid only for an instant inside `[startMs, endMs)`; `bookableSlotReason` judges
+ * any other instant the general way, so a caller can never get a different answer
+ * by handing it facts, only a faster one.
+ */
+export interface AgentLocalDay {
+  startMs: number;
+  endMs: number;
+  /** The zone offset across the day, in minutes, as Luxon reports it. */
+  offsetMin: number;
+  /** The agent's local date (yyyy-mm-dd), the key the daily cap counts on. */
+  isoDate: string;
+  /** The agent's shift windows on this date, in rule order, as `timeOnDay` resolves them. */
+  shiftWindows: { start: number; end: number }[];
+}
+
+/**
+ * Build the facts for the agent's local date containing `instantMs`, or undefined
+ * when that date has a clock change in it (or cannot be read), in which case the
+ * caller judges each slot the general way.
+ */
+export function agentLocalDay(
+  rules: WorkingRule[],
+  timezone: string,
+  instantMs: number,
+): AgentLocalDay | undefined {
+  const steady = steadyDay(timezone, instantMs);
+  if (steady === undefined) return undefined;
+  const { day, startMs, endMs, isoDate } = steady;
+  const shiftWindows: { start: number; end: number }[] = [];
+  for (const rule of rules) {
+    if (rule.weekday !== day.weekday) continue;
+    shiftWindows.push({
+      start: steadyWallClockMs(steady, rule.start_minute),
+      end: steadyWallClockMs(steady, rule.end_minute),
+    });
+  }
+  return { startMs, endMs, offsetMin: day.offset, isoDate, shiftWindows };
+}
+
+/**
+ * `isOrgOpen`, remembering each steady org day it has resolved (#2806), for a caller
+ * asking about many instants against one week: the slot walk asks about every
+ * distinct start it meets, which on a 7 day window over the roster's zones is over a
+ * thousand, each paying the zone conversion again for the same eight or so days.
+ *
+ * The verdict is `isOrgOpen`'s by construction: inside a steady day the date, the
+ * weekday, the window `windowOnDate` picks and its resolved edges are what `isOrgOpen`
+ * derives for any instant of it, and an instant on a day with a clock change is
+ * handed to `isOrgOpen` itself. Like `memoisedOrgOpen` it must not outlive the
+ * request: it holds the hours it was built with.
+ */
+export function orgOpenByDay(hours: BusinessHoursRules): OrgOpenJudge {
+  const days: { startMs: number; endMs: number; window: { start: number; end: number } | null }[] = [];
+  return (startMs, endMs) => {
+    let known = days.find((d) => startMs >= d.startMs && startMs < d.endMs);
+    if (known === undefined) {
+      const steady = steadyDay(hours.zone, startMs);
+      if (steady === undefined) return isOrgOpen(hours, startMs, endMs);
+      const w = windowOnDate(hours, steady.isoDate, steady.day.weekday);
+      known = {
+        startMs: steady.startMs,
+        endMs: steady.endMs,
+        window: w
+          ? {
+              start: steadyWallClockMs(steady, w.start_minute),
+              end: steadyWallClockMs(steady, w.end_minute),
+            }
+          : null,
+      };
+      days.push(known);
+    }
+    return known.window !== null && startMs >= known.window.start && endMs <= known.window.end;
+  };
 }
 
 /**
@@ -292,6 +437,12 @@ export function bookableSlotReason(
     dayCounts?: Map<string, number>;
     enforceDailyCap?: boolean;
     businessOpen?: Map<number, boolean>;
+    /** Who answers gate 1 on a `businessOpen` miss: `orgOpenByDay` over the SAME
+     *  `rules.businessHours` (#2806). Absent, it is `isOrgOpen` directly. */
+    orgOpen?: OrgOpenJudge;
+    /** Facts about the agent's local day built by `agentLocalDay` for THIS member's
+     *  rules and zone (#2806). Consulted only for an instant inside its range. */
+    localDay?: AgentLocalDay;
   },
 ): UnbookableReason | null {
   const endMs = startMs + rules.durationMin * MIN;
@@ -316,14 +467,25 @@ export function bookableSlotReason(
   const memo = opts?.businessOpen;
   let orgOpen = memo?.get(startMs);
   if (orgOpen === undefined) {
-    orgOpen = isOrgOpen(bh, startMs, endMs);
+    orgOpen = opts?.orgOpen ? opts.orgOpen(startMs, endMs) : isOrgOpen(bh, startMs, endMs);
     memo?.set(startMs, orgOpen);
   }
   if (!orgOpen) return "business_hours";
-  if (!isWithinWorkingHours(m.rules, m.timezone, startMs, endMs)) return "working_hours";
+  // #2806: the same two questions, answered from the day's facts when the walk has
+  // them for this instant. Outside their range (or without them) it is the general
+  // per instant derivation, unchanged.
+  const ld = opts?.localDay;
+  const onDay = ld !== undefined && startMs >= ld.startMs && startMs < ld.endMs;
+  const onShift = onDay
+    ? ld.shiftWindows.some((w) => startMs >= w.start && endMs <= w.end)
+    : isWithinWorkingHours(m.rules, m.timezone, startMs, endMs);
+  if (!onShift) return "working_hours";
   if (
     (opts?.enforceDailyCap ?? true) &&
-    !isUnderDailyCap(m.bookingStartsMs, m.timezone, startMs, rules.dailyCap, opts?.dayCounts)
+    rules.dailyCap !== null &&
+    !(onDay
+      ? underCapOn(ld.isoDate, m.bookingStartsMs, m.timezone, rules.dailyCap, opts?.dayCounts)
+      : isUnderDailyCap(m.bookingStartsMs, m.timezone, startMs, rules.dailyCap, opts?.dayCounts))
   ) {
     return "daily_cap";
   }
@@ -352,6 +514,8 @@ export function isBookableSlotForAgent(
     dayCounts?: Map<string, number>;
     enforceDailyCap?: boolean;
     businessOpen?: Map<number, boolean>;
+    orgOpen?: OrgOpenJudge;
+    localDay?: AgentLocalDay;
   },
 ): boolean {
   return bookableSlotReason(m, rules, startMs, nowMs, opts) === null;
@@ -436,6 +600,7 @@ function memberOpenStarts(
   m: MemberAvailability,
   input: SlotComputeInput,
   businessOpen?: Map<number, boolean>,
+  orgOpen?: OrgOpenJudge,
 ): Set<number> {
   const open = new Set<number>();
   const fromMs = Date.parse(input.from);
@@ -477,24 +642,38 @@ function memberOpenStarts(
       dayKey !== null &&
       (dayCounts.get(dayKey) ?? 0) >= input.dailyCap;
 
-    if (!capped) {
-      for (const rule of rulesByDay.get(day.weekday) ?? []) {
-        const windowStart = timeOnDay(day, rule.start_minute);
-        const windowEnd = timeOnDay(day, rule.end_minute);
+    const dayRules = capped ? [] : (rulesByDay.get(day.weekday) ?? []);
+    // #2806: built once per local day rather than re-derived per slot. Undefined on a
+    // day with a clock change, where the predicate judges each slot the general way.
+    const localDay = dayRules.length > 0 ? agentLocalDay(m.rules, m.timezone, day.toMillis()) : undefined;
+    // When `day` IS the facts' day (same instant, same offset, so the same Luxon state)
+    // its shift windows are already resolved, in this same rule order: `dayRules` and
+    // `shiftWindows` both keep the rules of this weekday in `m.rules` order.
+    const sameDay =
+      localDay !== undefined && localDay.startMs === day.toMillis() && localDay.offsetMin === day.offset;
+    for (let i = 0; i < dayRules.length; i++) {
+      const rule = dayRules[i]!;
+      const resolved = sameDay ? localDay.shiftWindows[i] : undefined;
+      const windowStartMs = resolved ? resolved.start : timeOnDay(day, rule.start_minute).toMillis();
+      const windowEndMs = resolved ? resolved.end : timeOnDay(day, rule.end_minute).toMillis();
 
-        let slot = windowStart;
-        while (slot.plus({ minutes: input.durationMin }) <= windowEnd) {
-          const startMs = slot.toMillis();
-          const endMs = startMs + durMs;
-
-          const inWindow = startMs >= fromMs && endMs <= toMs;
-          if (
-            inWindow &&
-            isBookableSlotForAgent(m, rules, startMs, input.nowMs, { dayCounts, businessOpen })
-          ) {
-            open.add(startMs);
-          }
-          slot = slot.plus({ milliseconds: stepMs });
+      // Stepped in plain milliseconds (#2806). The old walk's `slot.plus({ minutes })`
+      // and `plus({ milliseconds })` are exact duration adds (Luxon moves the instant,
+      // never the wall clock, for units below a day), so this visits the same instants
+      // without a zone lookup per step. The WINDOW edges stay wall clock, above.
+      for (let startMs = windowStartMs; startMs + durMs <= windowEndMs; startMs += stepMs) {
+        const endMs = startMs + durMs;
+        const inWindow = startMs >= fromMs && endMs <= toMs;
+        if (
+          inWindow &&
+          isBookableSlotForAgent(m, rules, startMs, input.nowMs, {
+            dayCounts,
+            businessOpen,
+            orgOpen,
+            localDay,
+          })
+        ) {
+          open.add(startMs);
         }
       }
     }
@@ -515,8 +694,10 @@ export function computeBucketSlots(input: SlotComputeInput): string[] {
   // is open or shut regardless of whose diary we are looking at. Scoped to this call
   // so it can never outlive a change to the stored hours.
   const businessOpen = new Map<number, boolean>();
+  // And on a miss, one resolution per org DAY rather than per instant (#2806).
+  const orgOpen = orgOpenByDay(input.businessHours);
   for (const m of input.members) {
-    for (const ms of memberOpenStarts(m, input, businessOpen)) union.add(ms);
+    for (const ms of memberOpenStarts(m, input, businessOpen, orgOpen)) union.add(ms);
   }
   return [...union].sort((a, b) => a - b).map((ms) => new Date(ms).toISOString());
 }

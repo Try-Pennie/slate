@@ -152,7 +152,7 @@ describe("getDelegatedToken mint timing line (#3298)", () => {
     await getDelegatedToken(who);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(
-      /^slate tag=google-token-mint msg="token mint" scope="calendar" outcome="ok" duration_ms=\d+ deadline_ms=8000 limit_ms=8000$/,
+      /^slate tag=google-token-mint msg="token mint" scope="calendar" outcome="ok" duration_ms=\d+ deadline_ms=8000 limit_ms=8000 holder="unbound"$/,
     );
     expect(lines[0]).not.toContain("@");
   });
@@ -186,7 +186,7 @@ describe("getDelegatedToken mint timing line (#3298)", () => {
     await vi.advanceTimersByTimeAsync(DELEGATED_TOKEN_TIMEOUT_MS);
     expect(await pending).toBeInstanceOf(DeadlineExceededError);
     expect(lines).toEqual([
-      'slate tag=google-token-mint msg="token mint" scope="gmail.send" outcome="timeout" duration_ms=8000 deadline_ms=8000 limit_ms=8000',
+      'slate tag=google-token-mint msg="token mint" scope="gmail.send" outcome="timeout" duration_ms=8000 deadline_ms=8000 limit_ms=8000 holder="not-held"',
     ]);
   });
 

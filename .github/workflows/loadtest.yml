@@ -203,7 +203,7 @@ jobs:
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.LOADTEST_SUPABASE_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN: trypennie.com
         run: pnpm cf:build
-      # #3500, #3555: the load test's CONFIRM_LINE and BURST_LIMITER bindings name these
+      # #3500, #3555, #3512: the load test's CONFIRM_LINE, BURST_LIMITER and TOKEN_HOLDER bindings name these
       # workers by script, so they are deployed first, from the list the production deploy
       # uses (OBJECT_WORKER_CONFIGS). Idempotent; the fault and cold legs redeploy only
       # Slate, so the objects are not restarted under them.
@@ -213,7 +213,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          for config in wrangler.confirm-line.jsonc wrangler.burst-limiter.jsonc; do
+          for config in wrangler.confirm-line.jsonc wrangler.burst-limiter.jsonc wrangler.token-holder.jsonc; do
             bash scripts/loadtest/retry-cloudflare-api.sh npx wrangler deploy -c "$config" --env loadtest
           done
       # `--var` MERGES with the vars block, so everything in env.loadtest survives
