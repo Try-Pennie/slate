@@ -23,6 +23,7 @@ import {
   TWILIO_ROSTER_VERDICT_LANE,
   LANE_WATCHDOG_VERDICT_LANE,
   TIER_STAFFING_VERDICT_LANE,
+  OFFERED_NOBODY_FREE_VERDICT_LANE,
   BELOW_LEAD_TIER_VERDICT_LANE,
   CROSS_SYSTEM_BOOKINGS_VERDICT_LANE,
   BURST_COUNTER_VERDICT_LANE,
@@ -108,6 +109,7 @@ const STAMP: Record<WorkerStampedVerdictLane, () => Promise<void>> = {
   [REGAL_CALL_OUTCOMES_VERDICT_LANE]: () => recordHeartbeat("verdict:regal-call-outcomes"),
   [ADVISOR_PHOTOS_VERDICT_LANE]: () => recordHeartbeat("verdict:advisor-photos"),
   [BUSY_DRIFT_VERDICT_LANE]: () => recordHeartbeat("verdict:busy-drift"),
+  [OFFERED_NOBODY_FREE_VERDICT_LANE]: () => recordHeartbeat("verdict:offered-nobody-free"),
   [CRON_BUDGET_VERDICT_LANE]: () => recordHeartbeat("verdict:cron-budget"),
 };
 

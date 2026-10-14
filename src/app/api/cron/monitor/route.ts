@@ -191,6 +191,14 @@ import {
   driftAlertContext,
   markBucketDrifting,
 } from "@/lib/monitor/availability-truth-store";
+import { runOfferedNobodyFreeCheck, type OfferedNobodyFreeResult } from "@/lib/monitor/offered-nobody-free";
+import {
+  loadRealPools,
+  readOfferedSuspects,
+  markOfferedSuspect,
+  clearOfferedSuspect,
+  judgeOfferedTime,
+} from "@/lib/monitor/offered-nobody-free-live";
 import { recordHeartbeat, readHeartbeatMs, readHeartbeatMsStrict } from "@/lib/monitor/heartbeat";
 import { recordDetectorVerdict } from "@/lib/monitor/verdict-store";
 import {
@@ -211,6 +219,8 @@ import {
   calendarWindowReachedVerdict,
   BUSY_DRIFT_VERDICT_LANE,
   busyDriftReachedVerdict,
+  OFFERED_NOBODY_FREE_VERDICT_LANE,
+  offeredNobodyFreeReachedVerdict,
   OFFSITE_ORIGIN_VERDICT_LANE,
   offsiteOriginReachedVerdict,
   AUTH_SIGN_IN_VERDICT_LANE,
@@ -1919,6 +1929,47 @@ export async function GET(req: NextRequest) {
           onError: (context, err) =>
             log.error("monitor", { msg: "availability truth step failed", step: context }, err),
         }),
+    );
+
+    // --- Is the booker serving a time the confirm refuses (#3381)? ---
+    // The truth probe above asks Google about a fresh compute; this asks the confirm's
+    // own candidate read about what the booker is SERVING, which is the disagreement
+    // the 2026-10-06 and 2026-10-14 refusals were. A handful of times a tick (one ladder
+    // request each, see offered-nobody-free.ts for the measured cost), a
+    // time found once is remembered, and it pages only if it is still served with
+    // nobody free a freshness window later. Its own boundary, gated on the two setup
+    // reads it consumes: the stored rows ARE what is served, and the org's week filters
+    // them.
+    if (!gates.offeredNobodyFree.run) {
+      log.warn("monitor", { msg: "offered nobody free skipped", why: gates.offeredNobodyFree.why });
+    }
+    const offeredNobodyFree = await steps.run<OfferedNobodyFreeResult | null>("offered_nobody_free", null, async () =>
+      !gates.offeredNobodyFree.run
+        ? null
+        : runOfferedNobodyFreeCheck({
+        nowMs: now,
+        rows: slotRows!,
+        hours: businessHours!,
+        loadPools: loadRealPools,
+        readSuspects: readOfferedSuspects,
+        judge: judgeOfferedTime,
+        markSuspect: markOfferedSuspect,
+        clearSuspect: clearOfferedSuspect,
+        cooldownMs: cooldownMs.offered_nobody_free,
+        notify: (key, cooldown, text) => {
+          // alert-key: offered_nobody_free
+          // alert-text-ok: our own copy from offered-nobody-free.ts, built from bucket
+          // codes, instants and counts; no error text can reach it.
+          return sendThrottledAlert(key, cooldown, text);
+        },
+        // alert-key: offered_nobody_free
+        // all-clear-proof: scripts/test-offered-nobody-free.ts - pins that an unreadable
+        // pool list or marker set, a candidate read that cannot answer, a remembered time
+        // left unexamined, a first sighting and a tick with nothing served each send NO
+        // all clear. It hangs only off a tick that judged and found every time free.
+        resolve: (key, text) => resolveAlert(key, text),
+        log: (fields) => log.info("monitor", { ...fields }),
+      }),
     );
 
     // --- Thin-tier staffing early warning (#569): a slow, low-priority whisper
@@ -4357,6 +4408,8 @@ export async function GET(req: NextRequest) {
     // the signal the lane watchdog reads.
     await Promise.all([
       recordDetectorVerdict(AVAILABILITY_TRUTH_VERDICT_LANE, truthReachedVerdict(availabilityTruth)),
+      // #3381: only a tick that judged at least one served time stamps.
+      recordDetectorVerdict(OFFERED_NOBODY_FREE_VERDICT_LANE, offeredNobodyFreeReachedVerdict(offeredNobodyFree)),
       recordDetectorVerdict(FAILURE_RATE_VERDICT_LANE, failureRateReachedVerdict(failureRate)),
       recordDetectorVerdict(LOW_VOLUME_VERDICT_LANE, lowVolumeReachedVerdict(volume)),
       recordDetectorVerdict(

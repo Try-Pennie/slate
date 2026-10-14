@@ -44,6 +44,7 @@ import type { StrandedHiresResult } from "@/lib/monitor/stranded-hires";
 import type { AuditChainResult } from "@/lib/monitor/audit-chain";
 import type { RegalFeedQuietResult, RegalFeedUnreadableResult } from "@/lib/monitor/regal-call-feed";
 import type { RegalCallOutcomesResult } from "@/lib/monitor/regal-call-outcomes";
+import type { OfferedNobodyFreeResult } from "@/lib/monitor/offered-nobody-free";
 import type { monitorSetupGates } from "@/lib/monitor/setup-gates";
 
 /**
@@ -268,6 +269,14 @@ export const BUSY_DRIFT_VERDICT_LANE = "verdict:busy-drift";
 export const CRON_BUDGET_VERDICT_LANE = "verdict:cron-budget";
 
 /**
+ * The served versus confirm check (#3381): is the booker offering a time the confirm's
+ * own candidate read refuses? Silent on a healthy day and silent on a broken one, like
+ * the tier staffing alarm, so the stamp is the only thing that tells a working check
+ * from one that has stopped judging anything.
+ */
+export const OFFERED_NOBODY_FREE_VERDICT_LANE = "verdict:offered-nobody-free";
+
+/**
  * Verdict lanes whose detector needs an OPTIONAL secret to run at all, by the secret's name.
  *
  * Unset, such a detector cannot conclude by construction, and it says so in its own quiet state
@@ -320,7 +329,8 @@ export type DetectorVerdictLane =
   | typeof ADVISOR_PHOTOS_VERDICT_LANE
   | typeof AVAILABILITY_LATENCY_VERDICT_LANE
   | typeof BUSY_DRIFT_VERDICT_LANE
-  | typeof CRON_BUDGET_VERDICT_LANE;
+  | typeof CRON_BUDGET_VERDICT_LANE
+  | typeof OFFERED_NOBODY_FREE_VERDICT_LANE;
 
 /**
  * Did this availability truth tick compare real calendars and decide?
@@ -498,6 +508,19 @@ export function calendarWindowReachedVerdict(result: CalendarWindowResult | null
  */
 export function busyDriftReachedVerdict(result: BusyDriftResult | null): boolean {
   return result !== null && result.status === "observed" && result.agentsChecked > 0;
+}
+
+/**
+ * Did the served versus confirm check JUDGE at least one served time? (#3381)
+ *
+ * `judged > 0` and nothing less. An unreadable pool list or marker set, a tick whose
+ * every candidate read failed, and a tick with nothing served to judge all measured
+ * nothing, and stamping them would let a check that never once held a served time
+ * against the confirm read as one that keeps finding them agree (L98). A null result
+ * is a step that skipped or threw.
+ */
+export function offeredNobodyFreeReachedVerdict(result: OfferedNobodyFreeResult | null): boolean {
+  return result?.status === "measured" && result.judged > 0;
 }
 
 /**
@@ -803,4 +826,5 @@ export const GATED_CHECK_VERDICT_COVERAGE: Record<MonitorGatedCheck, DetectorVer
   regalCallsQuiet: { lane: REGAL_CALL_FEED_VERDICT_LANE },
   regalCallsUnreadable: { lane: REGAL_CALL_FEED_VERDICT_LANE },
   regalCallOutcomes: { lane: REGAL_CALL_OUTCOMES_VERDICT_LANE },
+  offeredNobodyFree: { lane: OFFERED_NOBODY_FREE_VERDICT_LANE },
 };

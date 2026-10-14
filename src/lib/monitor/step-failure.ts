@@ -149,6 +149,7 @@ const GATE_NAMES: Record<keyof ReturnType<typeof monitorSetupGates>, string> = {
   regalCalls: "the unroutable Regal caller alarm",
   regalCallsUnreadable: "the unreadable Regal events alarm",
   regalCallOutcomes: "the missing Regal call outcomes alarm",
+  offeredNobodyFree: "the served time the confirm refuses alarm",
 };
 
 /**

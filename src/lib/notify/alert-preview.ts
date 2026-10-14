@@ -75,6 +75,11 @@ import {
   type SubmissionHistory,
 } from "@/lib/monitor/below-lead-tier";
 import { formatOffsiteOriginAlert, type OffsiteFinding } from "@/lib/monitor/offsite-origin";
+import {
+  formatOfferedNobodyFreeAlert,
+  formatOfferedNobodyFreeAllClear,
+  type OfferedFinding,
+} from "@/lib/monitor/offered-nobody-free";
 import { BUDGET_WARN_SHARE, judgeBudgets, sloBudgetClearText, sloBudgetPageText } from "@/lib/monitor/slo-budget";
 import {
   findCrossSystemBookings,
@@ -944,6 +949,19 @@ const MISMATCH_GONE: OooEventMismatch = {
   displayTzId: "America/Denver", displayTzLabel: "MT", coverage: { kind: "not-blocking", unmeasured: null },
 };
 
+/** The served versus confirm check's fixture (#3381): 4:30 PM ET in bucket 112, first
+ *  seen five minutes before the page, on a row the recompute lane wrote two minutes
+ *  before that. Fixed instants, so the render never reads the clock. */
+const OFFERED_NOW_MS = Date.UTC(2026, 9, 14, 8, 51);
+const OFFERED_112: OfferedFinding = {
+  code: "112",
+  startMs: Date.UTC(2026, 9, 14, 20, 30),
+  firstSeenMs: Date.UTC(2026, 9, 14, 8, 46),
+  members: 74,
+  rowComputedAt: "2026-10-14T08:44:39.000Z",
+  writtenBy: "lane",
+};
+
 /** One agent's alerts channel page, as the preview renders every one of them. */
 const mismatchPage = (
   found: OooEventMismatch[],
@@ -1045,6 +1063,35 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "no longer widespread, but two buckets are still wrong",
     channel: "recovery",
     text: formatAvailabilityDriftAggregateAllClear({ stillDrifting: 2, totalBuckets: 60 }),
+  },
+  {
+    // #3381. The 2026-10-14 shape: one time in bucket 112, a stored row two minutes old,
+    // none of the pool's 74 advisors free, and the row's writer named.
+    key: "offered_nobody_free",
+    state: "one served time nobody in its pool is free for, past the freshness window",
+    channel: "alert",
+    text: formatOfferedNobodyFreeAlert([OFFERED_112], OFFERED_NOW_MS),
+  },
+  {
+    // A pool with nobody in it, a row from before writers were recorded, and more
+    // findings than the page lists, so the truncation has to say so.
+    key: "offered_nobody_free",
+    state: "several served times nobody is free for, one in an empty pool, more than the page lists",
+    channel: "alert",
+    text: formatOfferedNobodyFreeAlert(
+      [
+        OFFERED_112,
+        { ...OFFERED_112, code: "211", members: 0, writtenBy: null },
+        ...["311", "312", "411", "412"].map((code) => ({ ...OFFERED_112, code, members: 9, writtenBy: "booking+push+refusal" })),
+      ],
+      OFFERED_NOW_MS,
+    ),
+  },
+  {
+    key: "offered_nobody_free",
+    state: "every remembered time taken off or found free",
+    channel: "recovery",
+    text: formatOfferedNobodyFreeAllClear(6),
   },
   {
     // #370, previewable and classified since #1390. The fixture is a real drought

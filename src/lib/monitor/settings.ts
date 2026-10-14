@@ -47,6 +47,7 @@ export const ALERT_KEYS = [
   "booking_budget",
   "catchall_rate",
   "availability_drift",
+  "offered_nobody_free",
   "booker_empty_reason",
   "roster_coverage_gap",
   "roster_coverage_upcoming_gap",
@@ -315,6 +316,12 @@ export const ALERT_FIELDS: {
     urgency: "alert",
     label: "Time off not blocked in cal.com",
     help: "An agent is on approved time off right now with no cal.com block in place, so cal.com can still book them while they are away. It stops once cal.com is marked retired, lower down these settings.",
+  },
+  {
+    key: "offered_nobody_free",
+    urgency: "page",
+    label: "Offered times nobody in the pool can take",
+    help: "A bucket has kept offering a time for longer than a few minutes that the confirm's own check finds nobody in its pool free for, so a lead choosing it is refused at the last step unless a lower tier can take it.",
   },
   {
     key: "availability_drift",
@@ -607,6 +614,10 @@ export const MONITOR_DEFAULTS = {
     // (a few hours), so a fast repeat would say nothing new. Hourly, matching the
     // other conditions that persist until something is fixed.
     availability_drift: 60 * 60_000,
+    // A served time the confirm refuses (#3381) stays true until a recompute drops it or
+    // somebody fixes the writer that put it back, and the check re-judges it every five
+    // minutes, so a faster repeat would say nothing new. Hourly, as the drift page above.
+    offered_nobody_free: 60 * 60_000,
     // The booker unable to explain an empty week (#1420) is a config read that
     // stays broken until somebody fixes it, and the lane re-measures it every
     // minute, so a fast repeat would say nothing new. Hourly, matching the other

@@ -115,6 +115,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   regalCalls: SetupGate;
   regalCallsUnreadable: SetupGate;
   regalCallOutcomes: SetupGate;
+  offeredNobodyFree: SetupGate;
 } {
   return {
     // The scan compares every bucket's cached slot count against a live recompute,
@@ -221,5 +222,12 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // #2944: the call outcome ratio does both of its reads itself, and pages on the
     // same Regal arming switch as the three checks above.
     regalCallOutcomes: gate(readiness, ["settings"]),
+    // #3381: judges SERVED times with the confirm's own candidate read. The cached slot
+    // rows ARE what is served, and the org's week is the filter every served list passes
+    // through, so it must skip on either rather than guess: an unreadable row map would
+    // judge nothing (and must not read as a quiet day), and a guessed week would have it
+    // judging times no lead is being shown. The pools and the candidate reads it does
+    // itself, inside its own step.
+    offeredNobodyFree: gate(readiness, ["slotHealth", "businessHours"]),
   };
 }
