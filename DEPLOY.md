@@ -77,6 +77,7 @@ wrangler secret put CALCOM_API_KEY          # optional; cal.com dual-write durin
 wrangler secret put TWILIO_API_KEY_SID      # required; TaskRouter-scoped API key SID. The hourly roster sync reads Twilio for the Redistribute tag (#2097). Empty (any of the three) = the Twilio half REFUSES by name and pages on twilio_sync_failures from the second consecutive hourly run (#2774); nobody is taken out of the bookable pool for the tag.
 wrangler secret put TWILIO_API_KEY_SECRET   # required; the matching API key secret.
 wrangler secret put TWILIO_WORKSPACE_SID    # required; the TaskRouter workspace holding the workers. Not really a secret, but set here so all three live in one place rather than split with wrangler.jsonc.
+wrangler secret put AUTOMATIONS_API_URL     # optional; Pennie's automations service, the same address trypennie.com uses, asked for the texting line the inline card's Call me now confirmation offers (#3718). Unset, the card shows no Text us and no error.
 wrangler secret put REASSIGN_API_KEY        # optional; bearer for the reassign API. Empty = POST /api/bookings/reassign returns 503.
 # wrangler secret put REASSIGN_API_KEY_2 # optional; the rotation slot (#3110), set only when rotating. See "Rotating a credential".
 wrangler secret put DUPLICATE_CANCEL_API_KEY # optional; bearer for the duplicate-cancel API (#2369). Empty = POST /api/bookings/cancel-duplicate returns 503.
