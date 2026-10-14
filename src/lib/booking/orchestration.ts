@@ -4890,6 +4890,19 @@ async function createChecked(
   // Only a stable key can match a prior booking; a synthetic key (below) is fresh
   // per request, so there's nothing to look up. It runs BEFORE the Salesforce
   // read below, so a retry of a booking that exists never depends on it.
+  // #3491: the in flight reservation is read by the same key alone, so a confirm
+  // that already holds its turn starts it HERE, alongside the replay, rather than
+  // after the bucket, the person check and the calling window, which made it wait
+  // for the two in turn (each about 130 to 220ms median, 440 to 590ms p95, on load
+  // runs 20 and 21). It is still USED where it always was (`createHeld`): a replay
+  // answers first and a refusal refuses first, and a failure of this read reaches
+  // the lead only from there; the guard keeps it from becoming an unhandled
+  // rejection on the paths that never read it. A "late" confirm has not joined the
+  // line yet and may be answered as a follower without running, so it reads in its
+  // turn as before: a crowd's followers add no read to the database (#3221).
+  const inFlightRead: Promise<BookingReservation | null> | null =
+    stableKey && held !== "late" ? deps.loadReservationByKey(stableKey) : null;
+  inFlightRead?.catch(() => undefined);
   if (stableKey) {
     const existing = await profile.time("idempotency-lookup", () => replayOf(deps, stableKey));
     // A replay settles nothing about the slot for anybody else in line.
@@ -4945,7 +4958,7 @@ async function createChecked(
   // #3257: most confirms joined the line before any of the reads above
   // (`createBookingWithVerdict`) and already hold their turn here. Only a booker
   // link Salesforce routed joins now, once its bucket is known.
-  const ctx: HeldCreate = { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, loadtestWindow, seat: null, queued: false };
+  const ctx: HeldCreate = { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, loadtestWindow, seat: null, queued: false, inFlightRead };
   if (held !== "late") return createHeld({ ...ctx, seat: held.seat, queued: held.queued, lostRace: held.lostRace, start: held.start, ...(held.move ? { move: true as const } : {}) }, deps);
   return inConfirmTurn(
     deps,
@@ -4974,6 +4987,8 @@ interface HeldCreate {
   loadtestWindow: { read(): ConfirmProfileReading } | null;
   /** #3257: this confirm's claim on an advisor in its slot's line, or none. */
   seat: SharedSeat | null;
+  /** #3491: the in flight reservation read, started with the replay; null to read it here. */
+  inFlightRead: Promise<BookingReservation | null> | null;
   /** #3338: it waited behind another confirm for its turn (`LineTurn.queued`). */
   queued: boolean;
   /** #3462: tells the line at once how a lost race was refused (`HeldTurn.lostRace`). */
@@ -5101,7 +5116,9 @@ async function createHeld(
   // could land on a different agent and duplicate the calendar event). Only a
   // stable key can name a prior in-flight reservation.
   if (stableKey) {
-    const inFlight = await profile.time("inflight-lookup", () => deps.loadReservationByKey(stableKey));
+    // The time still left to wait on a read started with the replay (#3491).
+    const started = ctx.inFlightRead;
+    const inFlight = await profile.time("inflight-lookup", () => started ?? deps.loadReservationByKey(stableKey));
     // A resumed reservation was pinned by an earlier request, so it says nothing
     // about who else the slot has room for: the next confirm in line runs.
     if (inFlight) return { result: answerCommitted(await profile.time("complete-reservation", () => completeReservation(deps, inFlight))), verdict: { full: false } };
