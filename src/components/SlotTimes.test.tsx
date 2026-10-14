@@ -178,6 +178,13 @@ describe("SlotTimes", () => {
       expect(screen.queryAllByRole("button", { name: /^2026/ })).toHaveLength(6);
     });
 
+    it("leaves the day heading off when asked, and keeps it otherwise", () => {
+      const { rerender } = render(<SlotTimes {...base} dayHeading={false} view={times(nine)} />);
+      expect(screen.queryByText(/^Times on /)).toBeNull();
+      rerender(<SlotTimes {...base} view={times(nine)} />);
+      expect(screen.getByText("Times on Sat, Aug 15")).toBeTruthy();
+    });
+
     it("shows every time, as today, when no limit is given", () => {
       render(<SlotTimes {...base} view={times(nine)} />);
       expect(screen.queryAllByRole("button", { name: /^2026/ })).toHaveLength(9);

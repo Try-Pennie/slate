@@ -2068,11 +2068,17 @@ export default function Booker({
     // scrolls inside it rather than growing it. The confirm step also starts
     // closer to the row above, since the strip that sat between them is gone.
     <section
-      className={`flex flex-col p-6 ${selectedSlot ? "" : "max-h-[420px]"}${
-        embedded
-          ? ` @3xl:min-h-0 @3xl:flex-1 ${selectedSlot ? "pt-2 @3xl:overflow-y-auto" : "@3xl:max-h-none"}`
-          : ""
-      }`}
+      className={
+        // #3718: the inline card's panel carries its own padding and grows with its
+        // times, so the section adds neither.
+        inline
+          ? "flex flex-col"
+          : `flex flex-col p-6 ${selectedSlot ? "" : "max-h-[420px]"}${
+              embedded
+                ? ` @3xl:min-h-0 @3xl:flex-1 ${selectedSlot ? "pt-2 @3xl:overflow-y-auto" : "@3xl:max-h-none"}`
+                : ""
+            }`
+      }
     >
       {selectedSlot ? (
         /* The step ARRIVES rather than appearing in the same frame the times
@@ -2248,6 +2254,7 @@ export default function Booker({
                 grid: inline ? "grid grid-cols-2 gap-2 @sm:grid-cols-3" : "space-y-2",
               }}
               firstShown={inline ? 6 : undefined}
+              dayHeading={!inline}
               noDaysNode={closurePanel}
               renderSlot={(iso) => (
                 <button

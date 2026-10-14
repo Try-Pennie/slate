@@ -118,6 +118,7 @@ export function SlotTimes({
   reader,
   failedMessage = null,
   firstShown,
+  dayHeading = true,
 }: {
   view: SlotPickerView;
   /** The viewer's zone: day headings and the announcement are read in it. */
@@ -145,6 +146,11 @@ export function SlotTimes({
    * card). Choosing another day folds them away again. Unset shows every time.
    */
   firstShown?: number;
+  /**
+   * The `Times on <day>` line over the times. The inline card leaves it off
+   * (#3718), since its chosen day chip already names the day (L605).
+   */
+  dayHeading?: boolean;
 }) {
   // A day is a bare YYYY-MM-DD keyed in `timeZone`. Reading it back at noon UTC
   // keeps the label on that calendar day for every zone, east or west.
@@ -214,7 +220,7 @@ export function SlotTimes({
         <div className="space-y-3">
           {/* Extra room above the heading at desktop width only; mobile spacing
               is already right, so this is not a change to the base value. */}
-          <p className={`${classes.heading} md:mt-1`}>Times on {dayLabel(view.day)}</p>
+          {dayHeading && <p className={`${classes.heading} md:mt-1`}>Times on {dayLabel(view.day)}</p>}
           {(() => {
             const folded =
               firstShown !== undefined && expandedDay !== view.day && view.slots.length > firstShown;

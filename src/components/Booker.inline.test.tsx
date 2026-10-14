@@ -58,6 +58,8 @@ describe("the inline card (#3718)", () => {
     render(<Booker {...baseProps} layout="inline" />);
     await screen.findByRole("button", { name: PICKER_COPY.viewMore });
     expect(timeButtons()).toHaveLength(6);
+    // The chosen day chip already names the day, so no "Times on" line repeats it (L605).
+    expect(screen.queryByText(/^Times on /)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: PICKER_COPY.viewMore }));
     expect(timeButtons()).toHaveLength(9);
   });
