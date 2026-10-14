@@ -47,6 +47,16 @@ export function longDayLabel(iso: string, zone: string, opts?: { year?: boolean 
 // neighbour's is not. `dayEmpty` names the day AND says "above", because "pick
 // another" on its own never said another what.
 
+/**
+ * The inline card on a landing page (#3718), as settled in
+ * docs/design/inline-booker.html: a title over the Call me now row, and a label
+ * over the day strip and times.
+ */
+export const INLINE_CARD_COPY = {
+  title: "Connect with your loan advisor:",
+  chooseTime: "Choose a time for your call below:",
+};
+
 export const PICKER_COPY = {
   pickADay: "Pick a day above to see the times available.",
   /** #3718: the inline card shows the first few times and offers the rest. */

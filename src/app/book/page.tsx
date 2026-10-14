@@ -85,6 +85,9 @@ export default async function BookEntry({
   const bucketCode = resolved.code;
   const embedded = first(sp, "embed") === "1";
   const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
+  // #3718: widget.js's inline embed asks for the compact card. Any other value is
+  // ignored, since cal.com hosts send layouts of their own (`month_view`).
+  const layout = first(sp, "layout") === "inline" ? ("inline" as const) : undefined;
 
   // #2666: the public test bucket opens only for a page on an approved website.
   // The Referer here is the iframe document's own request, which a host sending
@@ -168,6 +171,7 @@ export default async function BookEntry({
         attendee={attendee}
         prefill={prefill}
         embedded={embedded}
+        layout={layout}
         theme={theme}
         brandColor={first(sp, "brand") || (embedded ? DEFAULT_BRAND_COLOR : undefined)}
         parentOrigin={first(sp, "parentOrigin") || undefined}
