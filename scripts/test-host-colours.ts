@@ -6,7 +6,7 @@
 // label, and the card's title, must reach 4.5:1 in graphite or beige, whichever is
 // better. A colour that cannot, or does not parse, is REFUSED: Slate keeps its own
 // default and the refusal is returned, so the page can log it.
-import { judgeHostColours } from "../src/lib/embed/host-colours.ts";
+import { judgeHostColours, readHostColours } from "../src/lib/embed/host-colours.ts";
 import { DEFAULT_BRAND_COLOR } from "../src/lib/brand-label.ts";
 import { eq, finish } from "./lib/harness.ts";
 
@@ -48,6 +48,23 @@ const BEIGE = "var(--pennie-beige)";
   const r = judgeHostColours({ brand: "#808080", bg: "url(x)", embedded: true });
   eq(r.refused.map((x) => x.which), ["brand", "bg"], "both refusals are returned together");
   eq(r.refused.every((x) => x.reason.length > 0), true, "each with a reason");
+}
+
+{
+  // A browser drops a colour with no "#", so keeping one would leave Slate's card
+  // under a text colour chosen for a background that never painted.
+  for (const bare of ["FFF4D6", "bed", "000"]) {
+    const r = judgeHostColours({ brand: bare, bg: bare, embedded: true });
+    eq([r.brandColor, r.cardSurface, r.refused.length], [DEFAULT_BRAND_COLOR, undefined, 2], `"${bare}" with no # is refused`);
+  }
+}
+{
+  // The value is whatever the page sent, so the log line carries a short piece of it.
+  const lines: Record<string, string>[] = [];
+  readHostColours({ brand: "#" + "a".repeat(5000), bg: null, embedded: true }, "/book", (f) => lines.push(f));
+  eq(lines.length, 1, "a refused colour is logged once");
+  eq((lines[0]?.value.length ?? 0) <= 33, true, "and the value logged is cut short, never the whole of what was sent");
+  eq(lines[0]?.page, "/book", "naming the page");
 }
 
 finish();

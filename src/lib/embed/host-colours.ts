@@ -25,6 +25,9 @@ import { log } from "../log.ts";
 /** WCAG AA for normal text: the button label and the "Rather pick a time" line are 14px. */
 export const MIN_TEXT_CONTRAST = 4.5;
 
+/** How much of a refused value is logged: a #rrggbb colour fits several times over. */
+const LOGGED_VALUE_CHARS = 32;
+
 export interface HostColours {
   /** The button colour to paint, or undefined for the palette's own. */
   brandColor: string | undefined;
@@ -35,7 +38,10 @@ export interface HostColours {
 }
 
 function judge(value: string): { ok: true; ink: string } | { ok: false; reason: string } {
-  const label = bestLabelFor(value);
+  // The "#" is required here although `hexLuminance` would take a bare hex: a
+  // browser drops a colour without one, which would leave Slate's card painted under
+  // a text colour chosen for a background that never appeared.
+  const label = value.trim().startsWith("#") ? bestLabelFor(value) : null;
   if (label === null) return { ok: false, reason: "not a #rgb or #rrggbb colour" };
   if (label.ratio < MIN_TEXT_CONTRAST) {
     return { ok: false, reason: `text on it reaches ${label.ratio.toFixed(2)}:1, under ${MIN_TEXT_CONTRAST}:1` };
@@ -73,6 +79,10 @@ export function readHostColours(
   warn: (fields: Record<string, string>) => void = (fields) => log.warn("host-colours", fields),
 ): HostColours {
   const colours = judgeHostColours(input);
-  for (const r of colours.refused) warn({ msg: "host colour refused", page, which: r.which, value: r.value, reason: r.reason });
+  // The value is whatever the page sent, of any length, so only its start is logged:
+  // enough to recognise a colour, never a payload a caller chose to put in our logs.
+  for (const r of colours.refused) {
+    warn({ msg: "host colour refused", page, which: r.which, value: r.value.slice(0, LOGGED_VALUE_CHARS), reason: r.reason });
+  }
   return colours;
 }
