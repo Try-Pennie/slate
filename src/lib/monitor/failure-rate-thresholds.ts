@@ -1,4 +1,4 @@
-import type { RateThresholds } from "./booking-failure-rate.ts";
+import type { RateThresholds, RecentThresholds } from "./booking-failure-rate.ts";
 
 /**
  * When a wave of refused bookings is a page rather than ordinary contention.
@@ -162,6 +162,47 @@ export const SHIPPED_FAILURE_RATE_THRESHOLDS: RateThresholds = deriveFailureRate
   MEASURED_ATTEMPT_TRAFFIC,
   FAILURE_RATE_FIT,
 );
+
+/**
+ * The recent sub window the booking failure page stands down on (#3275): whether
+ * failures are still happening, and whether they have measurably stopped.
+ *
+ * The three hour window above decides whether there was a wave. It cannot say when a
+ * wave ended, because its share moves in both directions as old samples age out with
+ * nothing new happening. On 2026-10-14 it paged at 6:00am on 8 of 38 (21%), an hour
+ * after the last failure, then said "completing again" at 6:05am on 7 of 39 (18%)
+ * because a 3:02am failure aged out. On 2026-10-04 it paged and all-cleared in the
+ * same minute at 9:01pm with no new refusal. These three numbers are what the page now
+ * stands down on instead.
+ *
+ * - **30 minutes.** Long enough to hold a clean run on ordinary traffic, short enough
+ *   that "nothing has failed in the last half hour" still means the wave is over
+ *   rather than that it is old news. Measured with the same fixtures and the same
+ *   half share as the window above (`scripts/test-failure-rate-fit.ts` re-derives
+ *   it): between 9am and 8pm ET, 96% of 30 minute windows hold at least 5 attempts;
+ *   around the clock, 74%. A 15 minute window holds 5 in only 52% of daytime windows,
+ *   so the all-clear would wait on traffic most of the day; 60 minutes would keep a
+ *   page open for an hour after the last failure.
+ * - **At least 5 attempts.** The same count `FAILURE_RATE_FIT` sets as the failures a
+ *   page takes at the floor. Fewer is a quiet half hour that measured nothing, and
+ *   it says nothing either way (L98, L695). Five clean attempts in a row would happen
+ *   by chance about 31% of the time under a failure rate sitting exactly on the 20%
+ *   line, 17% at 30% and 2% at 46% (the 2026-08-06 wave), so a real outage almost
+ *   never stands down on luck; one sitting on the line can, and its next failure
+ *   pages again, which is a measured fact and not an old one.
+ * - **At most 5% failing.** A quarter of `failPct`. Zero failures until a clean run
+ *   reaches 20 attempts, then one: an ordinary race at a busy hour does not hold a
+ *   page open, and the gap between 5% to stand down and 20% to page is the
+ *   hysteresis that stops a share sitting near the line from paging and clearing in
+ *   turn.
+ *
+ * Re-measure alongside the window when Slate's share of the split moves.
+ */
+export const SHIPPED_FAILURE_RATE_RECENT: RecentThresholds = {
+  windowMs: 30 * 60_000,
+  minAttempts: FAILURE_RATE_FIT.failuresToBreachAtFloor,
+  recoverPct: FAILURE_RATE_FIT.failPct / 4,
+};
 
 /**
  * When a wave of reminder emails that did not go out is a page rather than one

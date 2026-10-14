@@ -11,11 +11,12 @@
 // - a tier left out of the measurement is left out with a reason, and the day a
 //   measurement for it is committed this fails until it is counted.
 import { assert, eq, finish } from "./lib/harness.ts";
-import { attemptTrafficFromFixtures, reachedBy } from "./lib/attempt-traffic.ts";
+import { attemptTrafficFromFixtures, reachedBy, shortWindowReach } from "./lib/attempt-traffic.ts";
 import { readTierFixtures } from "./lib/volume-floor-scope.ts";
 import {
   FAILURE_RATE_FIT,
   MEASURED_ATTEMPT_TRAFFIC,
+  SHIPPED_FAILURE_RATE_RECENT,
   SHIPPED_FAILURE_RATE_THRESHOLDS,
   deriveFailureRateThresholds,
   failuresToBreach,
@@ -48,6 +49,27 @@ eq(
   deriveFailureRateThresholds(MEASURED_ATTEMPT_TRAFFIC, FAILURE_RATE_FIT),
   "the shipped thresholds are derived from the measurement",
 );
+
+// --- #3275: the recent sub window is reachable on the traffic it judges ------------
+//
+// The page stands down only on a measured clean run in the last 30 minutes, so a
+// recent floor the traffic rarely reaches would hold every page open. The figures the
+// comment on SHIPPED_FAILURE_RATE_RECENT quotes are re-derived here from the same
+// fixtures and the same share as the window, so they cannot drift from it (L107).
+{
+  const tiers = readTierFixtures();
+  const fixtures = tiers as Record<string, NonNullable<(typeof tiers)[keyof typeof tiers]>>;
+  const r = SHIPPED_FAILURE_RATE_RECENT;
+  const share = MEASURED_ATTEMPT_TRAFFIC.slateShare;
+  const at = (minutes: number) => shortWindowReach(fixtures, minutes, r.minAttempts, share, 9, 20);
+  const pct = (x: number) => Math.round(x * 100);
+  const thirty = at(r.windowMs / 60_000);
+  eq(r.windowMs, 30 * 60_000, "the recent window is the 30 minutes the comment measures");
+  eq(pct(thirty.daytime), 96, "between 9am and 8pm ET, 96% of 30 minute windows hold the recent floor (update the comment if this moves)");
+  eq(pct(thirty.allDay), 74, "around the clock, 74% do");
+  eq(pct(at(15).daytime), 52, "a 15 minute window would hold it in only 52% of daytime windows");
+  assert(thirty.daytime >= 0.9, "the all-clear can stand down on ordinary daytime traffic");
+}
 
 // --- the floor: how many failures a page takes at it -------------------------------
 {
