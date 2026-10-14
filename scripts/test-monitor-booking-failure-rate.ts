@@ -515,6 +515,8 @@ interface Harness {
   errors: { context: string; err: unknown }[];
   /** The `sinceMs` of every refused-people read the check made. */
   peopleReads: number[];
+  /** Every structured log line the check wrote. */
+  logs: Record<string, string | number | boolean | null | undefined>[];
 }
 
 function harness(overrides: {
@@ -535,12 +537,14 @@ function harness(overrides: {
   const saved: RateWindowState[] = [];
   const errors: { context: string; err: unknown }[] = [];
   const peopleReads: number[] = [];
+  const logs: Harness["logs"] = [];
   return {
     notified,
     resolved,
     saved,
     errors,
     peopleReads,
+    logs,
     run: () =>
       runBookingFailureRateCheck({
         nowMs: T0 + MIN,
@@ -577,6 +581,9 @@ function harness(overrides: {
         },
         onError: (context, err) => {
           errors.push({ context, err });
+        },
+        log: (fields) => {
+          logs.push(fields);
         },
       }),
   };
@@ -888,9 +895,15 @@ const windowOf = (samples: RateSample[]): RateWindowState => ({
   assert(out.status === "checked" && out.verdict.status === "breach", "the window is still over the line (6 of 22)");
   eq(h.notified.map((n) => n.key), [FAILURE_BURST_ENDED_ALERT_KEY], "an ended burst sends one past notice and no page");
   eq(h.resolved, [FAILURE_RATE_ALERT_KEY], "the clean recent run still settles any page that was open");
+  // Once per burst is the past notice's own cooldown, not a stored marker: only a live
+  // page gates anything, so only `live` is stored (a stored value nothing reads, L46).
   assert(
-    out.status === "checked" && out.state.samples.some((s) => s.told === "past"),
-    "and the window remembers it was told, so the notice is once per burst",
+    out.status === "checked" && !out.state.samples.some((s) => s.told !== undefined),
+    "an ended burst stores no marker in the window: its notice's own cooldown keeps it to once",
+  );
+  assert(
+    h.logs.some((l) => l.told === "past"),
+    "and the decision is still recorded, on the log line",
   );
 }
 {

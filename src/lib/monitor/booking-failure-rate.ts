@@ -100,17 +100,17 @@ export interface RateSample {
    *  window ended on this tick, `sent` or `kept`, so it stops counting as retried. */
   settled?: Record<string, string>;
   /**
-   * The booking lane's window only (#3275): a page (`live`) or a notice about a
-   * burst that had already ended (`past`) was asked for on this tick (sent, or held
-   * by its cooldown). It rides on the sample so it ages out of the window with the
-   * failures it was about. While any sample in the window carries `live`, a burst
-   * that ends is not reported as past: somebody was paged about these failures, and
-   * the all-clear tells them it is over. `past` gates nothing (that notice's own
-   * cooldown does) and is kept as the record of what the lane did. Kept in the
-   * existing jsonb `samples` column, so it needs no migration, and optional so a
-   * sample written before it reads as "nobody told", which at worst sends one notice.
+   * The booking lane's window only (#3275): a page (`live`) was asked for on this
+   * tick (sent, or held by its cooldown). It rides on the sample so it ages out of the
+   * window with the failures it was about. While any sample in the window carries it, a
+   * burst that ends is not reported as past: somebody was paged about these failures,
+   * and the all-clear tells them it is over. A notice about a burst that had already
+   * ended is NOT stored here: nothing would read it (that notice's own cooldown keeps
+   * it to once per burst), so it is recorded on the `failure rate` log line only (L46).
+   * Kept in the existing jsonb `samples` column, so it needs no migration, and optional
+   * so a sample written before it reads as "nobody told", which at worst sends one notice.
    */
-  told?: "live" | "past";
+  told?: "live";
 }
 
 /** The single persisted state row: the last reading (the baseline the next delta
@@ -737,7 +737,7 @@ export async function runBookingFailureRateCheck(deps: {
 
   // Recorded on the newest sample BEFORE the save, so the record survives a Slack
   // that hangs. A page held by its cooldown still counts: one is open.
-  const told: RateSample["told"] = live ? "live" : past ? "past" : undefined;
+  const told: RateSample["told"] = live ? "live" : undefined;
   const samples = advanced.state.samples;
   const newest = samples[samples.length - 1];
   const state: RateWindowState =
@@ -759,7 +759,7 @@ export async function runBookingFailureRateCheck(deps: {
     recent_failures: recent.failures,
     recent_completing: recent.completing,
     newest_failure_min_ago: span === null ? null : Math.round((deps.nowMs - span.newestMs) / 60_000),
-    told: told ?? null,
+    told: live ? "live" : past ? "past" : null,
   });
 
   // The people count refines a page and is never a condition of one: a failed read is

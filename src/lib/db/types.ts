@@ -1257,10 +1257,9 @@ export interface BookingFailureRateState {
     /** The reminder lane's row only: how a booking handed back earlier in the
      *  window ended, `sent` or `kept`. Optional, so older samples read as none. */
     settled?: Record<string, string>;
-    /** The booking lane's row only (#3275): a page (`live`) or a burst notice
-     *  (`past`) went out on this tick. Optional, so older samples read as nobody
-     *  told. */
-    told?: "live" | "past";
+    /** The booking lane's row only (#3275): a page (`live`) went out on this tick.
+     *  Optional, so older samples read as nobody told. */
+    told?: "live";
   }[];
   updated_at: string;
 }
