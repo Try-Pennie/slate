@@ -284,6 +284,12 @@ export interface Application {
 export interface SlateBookingRow {
   id: string;
   submissionId: string | null;
+  /**
+   * Made through a landing page's inline card (#3718), which always offers Slate:
+   * its stored link carried `layout=inline`. The application it ties to is not part
+   * of the split and leaves the cohort, on both sides.
+   */
+  inlineCard: boolean;
   createdAt: string;
   startsAt: string;
   status: string;
@@ -606,6 +612,8 @@ export interface Matched {
     outsideCohort: number;
     /** Made after the application's span closed. */
     afterSpan: number;
+    /** Applications left out because they booked through the inline card (#3718). */
+    inlineCardApps: number;
     beganBeforeWindow: number;
     unresolved: number;
     otherEventTypes: Record<string, number>;
@@ -698,13 +706,32 @@ export function matchBookings(input: {
     ambiguous: 0,
     outsideCohort: 0,
     afterSpan: 0,
+    inlineCardApps: 0,
     beganBeforeWindow: cal.beganBeforeWindow,
     unresolved: cal.unresolved,
     otherEventTypes: cal.otherEventTypes,
     unreadable,
   };
 
+  // #3718: an application that booked through a landing page's inline card always got
+  // Slate, so it is not part of the split. The WHOLE application leaves, on whichever
+  // side its hash put it, before any booking is tied to it: dropping only its Slate
+  // booking would leave a cal.com side application reading as one that never booked.
+  // Only an application that WAS in the cohort leaves it; one never in it (made before
+  // the window, too recently, or in another tier) keeps its bookings counted as
+  // outside the cohort, like any other.
+  const viaInlineCard = new Set(
+    input.slate
+      .filter((r) => r.inlineCard && r.submissionId !== null)
+      .map((r) => leadKey(r.submissionId as string))
+      .filter((key) => cohort.delete(key)),
+  );
+  counts.inlineCardApps = viaInlineCard.size;
+
   const attach = (chain: Chain, key: string) => {
+    // A booking by an application left out above is neither attached nor counted
+    // as outside the cohort: its absence is already said once, as that application.
+    if (viaInlineCard.has(key)) return;
     const app = cohort.get(key);
     if (app === undefined) {
       counts.outsideCohort++;
@@ -1410,6 +1437,9 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
   const left: string[] = [];
   if (matched.outsideTiers > 0) left.push(`${plural(matched.outsideTiers, "application")} in tiers outside the pilot`);
   if (matched.noTier > 0) left.push(`${plural(matched.noTier, "application")} with no XBC`);
+  if (c.inlineCardApps > 0) {
+    left.push(`${plural(c.inlineCardApps, "application")} that booked through a landing page's inline card, which always offers Slate (#3718)`);
+  }
   if (c.slateWithoutId > 0) left.push(`${plural(c.slateWithoutId, "Slate booking")} carrying no application id (API bookings)`);
   if (c.unmatched > 0) left.push(`${plural(c.unmatched, "cal.com booking")} matching no application by email and phone`);
   if (c.ambiguous > 0) left.push(`${plural(c.ambiguous, "cal.com booking")} matching applications on several Leads`);
