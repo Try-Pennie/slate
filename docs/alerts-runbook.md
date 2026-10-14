@@ -85,7 +85,7 @@ Keys: `empty_tier:*`, `bucket_slots_stale`, `availability_booked_solid`,
 `low_booking_volume`, `booking_failure_rate`, `booking_failure_burst_ended`,
 `booking_budget:*`, `calendar_window_uncovered`,
 `booker_unstaffed:*`, `public_booking_stopped`, `booking_race_contention`,
-`booking_race_bound_hit`, `pool_nearly_full`, `busy_cache_drift`.
+`booking_race_bound_hit`, `pool_nearly_full`, `busy_cache_drift`, `offered_nobody_free`.
 
 **What fired it.** Something between the roster and the cache means a lead sees fewer
 times than they should, or none. The alerts are deliberately split by CAUSE, because
@@ -101,6 +101,20 @@ and none of them has an opening (a schedule, a calendar or a capacity repair). A
 bucket or a backend inside a tier that is still offering times is deliberately NOT
 reported: since #2486 the ladder tries every bucket in the tier before dropping
 one, so those leads are served.
+
+**`offered_nobody_free` is the opposite direction: a bucket is serving a time nobody in
+its own pool is free for** (#3381). The monitor lane judges a few served times every five
+minutes with the confirm's own candidate read, remembers one it finds nobody free for,
+and pages only if it is still served that way a recompute freshness window later, so a
+calendar change the lane has not reached yet never pages. The page names the bucket, the
+time, how long, and which path wrote the stored row (`written_by`, #3381).
+
+- Read the Worker logs for `msg="offered time nobody is free for"` and the matching
+  `msg="slots served"` line. A row whose writer recomputed it AFTER the first sighting
+  and still offers the time is a compute that disagrees with the confirm: compare what
+  that writer feeds the compute against the candidate read. A row that has not been
+  recomputed since is the lane falling behind, and `bucket_slots_stale` says so too.
+- It clears once every remembered time has been taken off or judged free.
 
 **`booker_unstaffed:*` means a real customer arrived and was shown nothing**
 (#2158). It is a narrower witness than `empty_tier:*`: that one measures the tier

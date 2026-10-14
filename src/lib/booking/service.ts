@@ -12,7 +12,7 @@ import { placeRerouteHold, releaseRerouteHold } from "@/lib/booking/reroute-hold
 import { rerouteHoldStoreDeps } from "@/lib/booking/reroute-hold-store-live";
 import type { ClaimRerouteHoldRefusal, RerouteSwapRefusal } from "@/lib/db/reroute-hold-refusals";
 import { loadCurrentAgentPicture } from "@/lib/availability/service";
-import { ladderInputsFrom, ladderWindows } from "@/lib/availability/ladder-inputs";
+import { readLadderInputsLive } from "@/lib/availability/ladder-inputs-live";
 import { reportWriteFailure } from "@/lib/db/result";
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -1067,23 +1067,8 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     roundRobinCandidates,
     // #3489: the whole ladder's candidate inputs in one request (migration 0176), read
     // strictly: a failed or unreadable answer throws, never reads as an empty ladder.
-    readLadderInputs: async (codes, startIso, eventType) => {
-      const windows = ladderWindows(startIso, eventType, Date.now());
-      const data = unwrap(
-        await supabaseAdmin().rpc("ladder_candidate_inputs", {
-          p_codes: [...codes],
-          p_busy_from: windows.busyFrom,
-          p_busy_to: windows.busyTo,
-          p_cap_from: windows.capFrom,
-          p_cap_to: windows.capTo,
-          p_share_from: windows.shareFrom,
-          p_share_to: windows.shareTo,
-          p_exceptions_from: windows.exceptionsFrom,
-        }),
-        "ladder candidate inputs",
-      );
-      return ladderInputsFrom(data, windows);
-    },
+    // Shared with the monitor lane's served versus confirm check (#3381).
+    readLadderInputs: readLadderInputsLive,
     // The org's opening hours (#1295). Throws on an unreadable week rather than
     // degrading, so a narrowing can never be silently re-opened by a failed read.
     businessHours: loadBusinessHours,

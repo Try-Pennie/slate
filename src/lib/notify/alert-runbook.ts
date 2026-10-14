@@ -105,6 +105,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   availability_booked_solid: "the-booker-is-offering-nothing-or-too-little",
   availability_data_anomaly: "the-booker-is-offering-nothing-or-too-little",
   availability_drift: "the-booker-is-offering-nothing-or-too-little",
+  // #3381. The same question as the drift probe one level in: what the booker serves
+  // against what the confirm accepts.
+  offered_nobody_free: "the-booker-is-offering-nothing-or-too-little",
   fallback_covered_availability: "the-booker-is-offering-nothing-or-too-little",
   thin_tier_staffing: "the-booker-is-offering-nothing-or-too-little",
   // #1256: a pool close to offering nothing today; the same family as the booked
