@@ -73,6 +73,9 @@ function world(over: {
   pools?: string[][] | Error;
   suspects?: Suspect[] | Error;
   judge?: (code: string, startMs: number) => Judgment | null | Error;
+  /** The marker writes refuse, as an `alert_state` write that fails would. */
+  markThrows?: boolean;
+  clearThrows?: boolean;
 }): World {
   const markers = new Map<string, Suspect>();
   for (const s of Array.isArray(over.suspects) ? over.suspects : []) markers.set(suspectId(s.code, s.startMs), s);
@@ -96,9 +99,11 @@ function world(over: {
       return r;
     },
     markSuspect: async (code, startMs, firstSeenMs) => {
+      if (over.markThrows) throw new Error("alert_state write refused");
       markers.set(suspectId(code, startMs), { code, startMs, firstSeenMs });
     },
     clearSuspect: async (code, startMs) => {
+      if (over.clearThrows) throw new Error("alert_state delete refused");
       markers.delete(suspectId(code, startMs));
     },
     notify: async (key, _cooldown, text) => {
@@ -170,6 +175,49 @@ assert(OFFERED_CHECK_CADENCE_MS >= PERSIST_MS, "so the very next tick's look is 
   assert(w.sent[0]!.text.includes("112 at 4:30pm ET on Wednesday, October 14"), "naming the bucket and the time in Eastern");
   eq(w.resolved.length, 0, "and clears nothing");
   assert(w.markers.has(suspectId("112", T1630)), "the marker stays while it is true, keeping the first sighting");
+}
+
+// --- a marker write that fails costs neither a finding nor an honest all clear -----
+{
+  // A remembered time has persisted, and a NEW time found this tick cannot be marked.
+  // The page for the persisting one must still go out (lessons review on #3726).
+  const later = NOW + OFFERED_CHECK_CADENCE_MS;
+  const w = world({
+    nowMs: later,
+    // A second pool serving one time, so this tick is certain to sample a NEW time.
+    pools: [["112"], ["111"]],
+    rows: [row("112", [T1630]), row("111", [T1610])],
+    suspects: [{ code: "112", startMs: T1630, firstSeenMs: NOW }],
+    judge: () => ({ free: 0, members: 74 }),
+    markThrows: true,
+  });
+  const r = await runOfferedNobodyFreeCheck(w.deps);
+  assert(w.judged.includes(suspectId("111", T1610)), "the new time was sampled, so its marker write was attempted");
+  assert(r.status === "measured" && r.persisting.length === 1, "the persisting time is still found");
+  eq(w.sent.length, 1, "and still pages, though another time's marker could not be written");
+  assert(
+    w.logs.some((l) => l.msg === "offered time marker not written" && l.op === "mark"),
+    "and the failed write is logged by name",
+  );
+}
+{
+  // A remembered time found free whose marker cannot be cleared is still remembered,
+  // so no all clear goes out off a store that did not change.
+  const w = world({
+    nowMs: NOW + OFFERED_CHECK_CADENCE_MS,
+    pools: [["112"]],
+    rows: [row("112", [T1630])],
+    suspects: [{ code: "112", startMs: T1630, firstSeenMs: NOW }],
+    judge: () => ({ free: 1, members: 74 }),
+    clearThrows: true,
+  });
+  const r = await runOfferedNobodyFreeCheck(w.deps);
+  assert(r.status === "measured" && !r.cleared, "a marker that could not be cleared holds the all clear back");
+  eq(w.resolved.length, 0, "so nothing is resolved");
+  assert(
+    w.logs.some((l) => l.msg === "offered time marker not written" && l.op === "clear"),
+    "and the failed clear is logged by name",
+  );
 }
 
 // --- the second look, before the window: not yet ------------------------------------

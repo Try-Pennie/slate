@@ -270,6 +270,27 @@ export async function runOfferedNobodyFreeCheck(deps: OfferedNobodyFreeDeps): Pr
     return { status: "unreadable", why };
   }
 
+  // A marker write is bookkeeping for the NEXT tick, so one that fails must not take
+  // this tick's findings with it: it is logged by name and answered false, and the
+  // callers below count a failed clear as a time still remembered (which holds the all
+  // clear back) and a failed mark as a time judged but not remembered (a later tick's
+  // sample finds it again). Lessons review on #3726.
+  const marked = async (op: "mark" | "clear", code: string, startMs: number, write: () => Promise<void>) => {
+    try {
+      await write();
+      return true;
+    } catch (err) {
+      deps.log({
+        msg: "offered time marker not written",
+        op,
+        bucket: code,
+        start: new Date(startMs).toISOString(),
+        why: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  };
+
   const served = servedStarts(deps.rows, deps.hours, nowMs);
   const isOffered = (code: string, startMs: number) => served.get(code)?.starts.includes(startMs) ?? false;
 
@@ -280,8 +301,7 @@ export async function runOfferedNobodyFreeCheck(deps: OfferedNobodyFreeDeps): Pr
   for (const s of [...suspects].sort((a, b) => a.firstSeenMs - b.firstSeenMs)) {
     if (!isOffered(s.code, s.startMs)) {
       // No longer offered (the row dropped it, or it is now too close or past): over.
-      await deps.clearSuspect(s.code, s.startMs);
-      suspectsLeft--;
+      if (await marked("clear", s.code, s.startMs, () => deps.clearSuspect(s.code, s.startMs))) suspectsLeft--;
       continue;
     }
     if (plan.length >= MAX_JUDGMENTS_PER_TICK) continue;
@@ -320,8 +340,7 @@ export async function runOfferedNobodyFreeCheck(deps: OfferedNobodyFreeDeps): Pr
     }
     judged++;
     if (j.free > 0) {
-      if (p.suspect) {
-        await deps.clearSuspect(p.code, p.startMs);
+      if (p.suspect && (await marked("clear", p.code, p.startMs, () => deps.clearSuspect(p.code, p.startMs)))) {
         suspectsLeft--;
       }
       continue;
@@ -348,8 +367,7 @@ export async function runOfferedNobodyFreeCheck(deps: OfferedNobodyFreeDeps): Pr
           writtenBy: row.writtenBy,
         });
       }
-    } else {
-      await deps.markSuspect(p.code, p.startMs, nowMs);
+    } else if (await marked("mark", p.code, p.startMs, () => deps.markSuspect(p.code, p.startMs, nowMs))) {
       suspectsLeft++;
     }
   }
