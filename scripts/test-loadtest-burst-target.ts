@@ -20,6 +20,8 @@
 //
 // Run: node --experimental-strip-types scripts/test-loadtest-burst-target.ts
 import { readBurstPlan, DROP_SLOTS_TO_MEASURE } from "./loadtest/book-plan.ts";
+import { DeadlineExceededError } from "../src/lib/fetch-within-deadline.ts";
+import { unwrap } from "../src/lib/db/result.ts";
 import {
   assembleBurstPlan,
   dropLadders,
@@ -366,6 +368,20 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
   assert(slow.includes("did not answer") && !/credentials/i.test(slow), `roster refusal: a timeout says the database was slow, not that credentials are wrong (got ${slow})`);
   const denied = rosterUnreadable("read failed [burst target agents]: Invalid API key");
   assert(/credentials/i.test(denied) && denied.includes("Invalid API key"), `roster refusal: any other failure still names the credentials and the cause (got ${denied})`);
+}
+
+// #3737: the retry knows a timeout only by its wording, because `unwrap` flattens the
+// app's error to text. Build the REAL error the app throws and pass it through the
+// REAL unwrap, so rewording either one fails here instead of silently ending retries.
+{
+  const real = new DeadlineExceededError("supabase", 15000);
+  let calls = 0;
+  const viaApp = await readRetryingTimeouts(async () => {
+    calls++;
+    if (calls === 1) return unwrap({ data: null, error: { message: `${real.name}: ${real.message}` } }, "bucket pool agents");
+    return 1;
+  }, { sleep: async () => {}, onRetry: () => {} });
+  assert(viaApp.ok && viaApp.attempts === 2, `read retry: the app's own deadline error, through the app's own unwrap, is recognised as a timeout (got ${JSON.stringify(viaApp)})`);
 }
 
 finish();
