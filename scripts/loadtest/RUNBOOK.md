@@ -1090,6 +1090,16 @@ saying how many ticks were counted and WHICH source counted them.
 
 Pinned offline by `scripts/test-loadtest-scheduled-source.ts`.
 
+**Placed lanes (#3693).** A tick now sends each lane over the Worker's binding to
+itself, so a lane's CPU is spent in its own FETCH invocation, addressed to
+`https://slate-loadtest.invalid/api/cron/<lane>`, and the scheduled invocation holds
+only the dispatcher. The archive reader counts those placed invocations as cron work
+under `placed /api/cron/<lane>`, and checks them against the `lanes_placed` count on
+each tick's `lane timings` line. Ticks reporting placed lanes with none of them in the
+archive refuse the cron half rather than judging the dispatcher; a few missing (a
+stream attached mid tick) are counted as unread CPU. The analytics dataset holds
+scheduled invocations only, so once lanes are placed the archive is the source.
+
 ### What the judge refuses to do
 
 **It will not judge an incomplete run.** Three driver files out of four, or a
