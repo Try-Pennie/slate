@@ -15,6 +15,7 @@
  */
 import { allLaneNames } from "../../worker/lanes-disabled.ts";
 import { parseSharedLineDefault } from "../../src/lib/booking/shared-line-switch-core.ts";
+import { SELF_BINDING } from "../../worker/lane-run.ts";
 
 /** The fault switch's two settings (#3104), which the fault leg adds with --var and
  *  nothing commits. */
@@ -71,6 +72,7 @@ export interface WranglerLike {
   migrations?: { tag?: string; new_sqlite_classes?: string[] }[] | null;
   triggers?: { crons?: string[] } | null;
   limits?: { cpu_ms?: number } | null;
+  services?: { binding?: string; service?: string; entrypoint?: string }[] | null;
 }
 
 /**
@@ -335,6 +337,48 @@ export function loadtestEnvFaults(top: WranglerLike, env: WranglerLike): string[
     );
   }
 
+  faults.push(...selfBindingFaults(top, env));
+  return faults;
+}
+
+/**
+ * The Worker's binding to itself (#3693), judged in BOTH environments: the cron lanes go
+ * over it to run as placed fetches near the database. `services` do not inherit, so each
+ * environment names its own, and the load test's must name the load test Worker: one
+ * naming `slate` would run the load run's lanes, under the load test's ticks, on
+ * production.
+ */
+function selfBindingFaults(top: WranglerLike, env: WranglerLike): string[] {
+  const faults: string[] = [];
+  const sides: [string, WranglerLike][] = [
+    ["the top level", top],
+    ["env.loadtest", env],
+  ];
+  for (const [label, cfg] of sides) {
+    const self = (cfg.services ?? []).find((b) => b.binding === SELF_BINDING);
+    if (!self) {
+      faults.push(
+        `${label} has no ${SELF_BINDING} service binding, so every cron lane runs in process ` +
+          `wherever Cloudflare ran the cron rather than as a placed fetch near the database. ` +
+          `services do NOT inherit.`,
+      );
+      continue;
+    }
+    if (self.service !== cfg.name) {
+      const production = cfg === env && self.service === top.name;
+      faults.push(
+        `${label} binds ${SELF_BINDING} to ${String(self.service)}, not to its own Worker ` +
+          `${String(cfg.name)}` +
+          (production ? `, so the load run's lanes would run on PRODUCTION.` : `.`),
+      );
+    }
+    if (self.entrypoint) {
+      faults.push(
+        `${label} binds ${SELF_BINDING} to the ${self.entrypoint} entrypoint. Placement does not ` +
+          `apply to a named entrypoint, so the lanes would not be placed.`,
+      );
+    }
+  }
   return faults;
 }
 

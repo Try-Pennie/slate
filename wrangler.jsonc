@@ -276,6 +276,14 @@
 			"new_sqlite_classes": ["ConfirmLine"]
 		}
 	],
+	// #3693: the Worker's binding to ITSELF. Placement above moves only a fetch handler,
+	// never scheduled(), so worker/index.ts sends each cron lane through this binding to
+	// its own default fetch handler, where it runs as a placed request near the database
+	// instead of wherever Cloudflare ran the cron (Mumbai and Amsterdam in October 2026).
+	// No entrypoint, on purpose: placement does not apply to a named entrypoint. Without
+	// this binding every lane runs in process as before, and says so in the lane timings.
+	// Not inherited by env.loadtest, which binds its own Worker below.
+	"services": [{ "binding": "SELF", "service": "slate" }],
 	// --- the load test environment (#2242) ----------------------------------
 	//
 	// A SECOND Worker for the booking path scale run (#2243, #2244): ten times the
@@ -432,7 +440,10 @@
 					"tag": "v2",
 					"new_sqlite_classes": ["ConfirmLine"]
 				}
-			]
+			],
+			// #3693: the load test Worker's binding to ITSELF, never to production's
+			// `slate`, which would run the load run's lanes on production.
+			"services": [{ "binding": "SELF", "service": "slate-loadtest" }]
 		}
 	}
 }

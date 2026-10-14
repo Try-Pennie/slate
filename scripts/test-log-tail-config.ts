@@ -98,7 +98,13 @@ assert(/async tail\(/.test(entry), "the tail worker exports a tail() handler");
     /confirmReceipt\(env\.SLATE\)/.test(entry) && /SLATE\?: ReceiptBinding/.test(entry),
     "and the tail handler calls it through that binding",
   );
-  eq((loadtest.services ?? []).length, 0, "the load test environment binds nothing to Slate");
+  // #3693 gave the load test Worker a binding to ITSELF (`SELF`, for the cron lanes); what
+  // must never appear is a binding to production's Worker or to the receipt entrypoint.
+  eq(
+    (loadtest.services ?? []).filter((s) => s.service === slate.name || s.entrypoint === "LogShippingReceipt").length,
+    0,
+    "the load test environment binds nothing to production Slate or its receipt",
+  );
 }
 
 // --- positive controls: the judge must speak (L1) -----------------------------

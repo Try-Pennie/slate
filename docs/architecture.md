@@ -142,8 +142,11 @@ flowchart LR
   truth[["pnpm verify:availability-truth"]] -.->|"asks Google, not the cache"| rows
 ```
 
-Four lanes share ONE Worker invocation budget on the every-minute trigger (`sync`,
-`recompute`, `outbox`, `selfheal`), which is why per-lane subrequest cost matters. The
+The every-minute trigger drives four lanes (`sync`, `recompute`, `outbox`,
+`selfheal`). Since #3693 each one is sent over the Worker's binding to itself and runs
+as its own placed invocation near the database, because placement never moves a
+`scheduled()` handler; a lane that falls back runs in process and shares the cron's
+invocation, which is why per-lane subrequest cost still matters. The
 full lane list is in `docs/api.md`, and the platform ceilings are in
 `docs/cloudflare-platform-notes.md`.
 

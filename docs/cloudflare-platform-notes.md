@@ -10,12 +10,33 @@ Established across #724 / #760 (limits) and #708 (logs). Numbers refreshed
 
 `pnpm dev` (Node) enforces none of these limits. Only the deployed Worker does.
 
-## The four minute lanes share ONE budget
+## Each lane is its own placed invocation (#3693), unless it falls back
 
-The four every minute lanes (`sync`, `recompute`, `outbox`, `selfheal`) run
-in process in a single `scheduled()` invocation (`worker/index.ts` calls
-`handler.fetch(...)`, no network hop). They therefore share that one invocation's
-CPU and subrequest budgets. **Budget the combined total, never per lane.**
+Until #3693 the four every minute lanes (`sync`, `recompute`, `outbox`, `selfheal`)
+ran in process in a single `scheduled()` invocation and shared its CPU and
+subrequest budgets. They do not any more: `scheduled()` sends each lane over `SELF`,
+a service binding to this same Worker, so each one runs as its own invocation of the
+fetch handler. The reason is placement, not the budget. **Placement (smart or a
+hint) moves only a fetch handler, never `scheduled()`**, and Cloudflare runs crons
+"on underutilized machines": from 2026-10-13 the lanes ran from Mumbai (Supabase
+origin p50 about 263ms) and then Amsterdam (about 161 to 166ms), against about 90ms
+from Newark before and about 21ms for the placed lead requests at Seattle.
+
+What follows from it:
+
+- **Budget per lane, not the combined total**, for a placed lane. A lane that falls
+  back (no usable binding, a binding call that threw before sending, a gradual
+  deploy's canary refusing it) runs in process and shares the scheduled invocation
+  as before. The `lane timings` line says which path each lane took
+  (`<lane>_via`, `<lane>_placement`, `<lane>_fallback`, `lanes_placed`).
+- **Cost.** About 7,500 extra fetch invocations a day (5,760 of them the minute
+  trigger's four lanes). Cloudflare's pricing page: requests over a service binding
+  carry no additional request fee, and CPU is billed as the total across both.
+- **The hourly cron CPU reading below no longer sees a placed lane's CPU**, only the
+  dispatcher and any lane that fell back.
+- **Measure it** with the Supabase edge logs (`request.cf.colo` and
+  `response.origin_time` on the lanes' tables) and the `cf-placement` value on the
+  timings line (`remote-SEA` placed, `local-XXX` not).
 
 ## CPU is the real ceiling, and `limits.cpu_ms` DOES raise it
 
@@ -35,7 +56,8 @@ interval pins your ceiling. It does not. Two independent proofs:
    runs reach **44.7s**, well past the old 30s ceiling, and `exceededCpu` has been
    **zero since 2026-07-09**.
 
-Current headroom for the every minute cron (7 days, 19,260 ticks):
+Headroom for the every minute cron while its four lanes shared it in process (7 days,
+19,260 ticks, before #3693):
 
 | metric | value | vs the 120s ceiling |
 |---|---|---|

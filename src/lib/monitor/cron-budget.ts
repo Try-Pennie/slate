@@ -1,8 +1,9 @@
 /**
  * Cron CPU headroom, measured hourly from Cloudflare's own numbers (#3141).
  *
- * Every cron expression's invocation is killed at `limits.cpu_ms` in wrangler.jsonc, and the
- * every minute one shares that budget across four lanes. Cloudflare kills on CPU, not wall time.
+ * Every cron expression's invocation is killed at `limits.cpu_ms` in wrangler.jsonc, and until
+ * #3693 the every minute one shared that budget across four lanes (see below for what placing
+ * them changed). Cloudflare kills on CPU, not wall time.
  *
  * THE FIRST VERSION JUDGED WALL TIME, AND THAT IS SWITCHED OFF. The Workers runtime gives a
  * running invocation no reading of its own CPU, so #3168 timed each tick and paged when its WALL
@@ -37,6 +38,13 @@
  * watchdog does not call its verdict lane blind (`unconfiguredDetector` in verdict-freshness.ts).
  * An open `cron_budget_headroom` page stays open until a measured day clears it, which needs the
  * token: there is no all clear without a measurement.
+ *
+ * WHAT THIS STOPPED SEEING (#3693). Each lane is now sent over the Worker's binding to itself
+ * and runs as its own placed FETCH invocation, so a scheduled invocation's `cpuTimeUs` holds the
+ * dispatcher plus any lane that fell back to in process, and NOT the placed lanes' own CPU. A
+ * quiet reading here therefore no longer says a lane is far from its ceiling; each placed lane
+ * has its own `limits.cpu_ms` as a request does. Reading the placed lanes' CPU needs a per
+ * request dataset that names the path, which this does not query.
  *
  * PURE: every branch is driven offline by scripts/test-cron-budget.ts. Its value imports are
  * relative, so the node suite reads it without the alias hook.
