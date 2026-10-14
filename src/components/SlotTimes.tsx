@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { BobbingDots } from "@/components/BobbingDots";
 import { PICKER_COPY, timesAvailableAnnouncement } from "@/lib/booking/booker-copy";
@@ -45,6 +45,8 @@ export interface SlotTimesClasses {
   retry: string;
   /** Wraps the rendered slots (a column on the booker, a grid on a panel). */
   grid: string;
+  /** The View more times control (#3718); falls back to the retry style when unset. */
+  viewMore?: string;
 }
 
 /** Ready-made maps for the surfaces, so a new caller does not invent a fifth. */
@@ -117,6 +119,8 @@ export function SlotTimes({
   noDaysNode,
   reader,
   failedMessage = null,
+  firstShown,
+  dayHeading = true,
 }: {
   view: SlotPickerView;
   /** The viewer's zone: day headings and the announcement are read in it. */
@@ -139,10 +143,31 @@ export function SlotTimes({
    * one, so no retry is offered beside it; the sentence says what does.
    */
   failedMessage?: string | null;
+  /**
+   * Show only this many times, with a control for the rest (#3718, the inline
+   * card). Choosing another day folds them away again. Unset shows every time.
+   */
+  firstShown?: number;
+  /**
+   * The `Times on <day>` line over the times. The inline card leaves it off
+   * (#3718), since its chosen day chip already names the day (L605).
+   */
+  dayHeading?: boolean;
 }) {
   // A day is a bare YYYY-MM-DD keyed in `timeZone`. Reading it back at noon UTC
   // keeps the label on that calendar day for every zone, east or west.
   const dayLabel = (day: string) => formatSlotDay(`${day}T12:00:00.000Z`, timeZone);
+  // Keyed by the day it was opened on, and cleared whenever the day changes, so
+  // every day a lead lands on starts folded, the one they come back to included.
+  // The reset happens while rendering, React's way of adjusting state to a changed
+  // prop, rather than in an effect that would draw the stale state first.
+  const [expandedDay, setExpandedDay] = useState<string | null>(null);
+  const shownDay = view.kind === "times" ? view.day : null;
+  const [lastDay, setLastDay] = useState<string | null>(shownDay);
+  if (shownDay !== lastDay) {
+    setLastDay(shownDay);
+    setExpandedDay(null);
+  }
   const working = useStalledAfter(view.kind === "loading", WORKING_SIGNAL_AFTER_MS);
   const outsideHours = (day: string) =>
     reader.kind === "staff"
@@ -206,8 +231,22 @@ export function SlotTimes({
         <div className="space-y-3">
           {/* Extra room above the heading at desktop width only; mobile spacing
               is already right, so this is not a change to the base value. */}
-          <p className={`${classes.heading} md:mt-1`}>Times on {dayLabel(view.day)}</p>
-          <div className={classes.grid}>{view.slots.map((iso) => renderSlot(iso))}</div>
+          {dayHeading && <p className={`${classes.heading} md:mt-1`}>Times on {dayLabel(view.day)}</p>}
+          {(() => {
+            const folded =
+              firstShown !== undefined && expandedDay !== view.day && view.slots.length > firstShown;
+            const shown = folded ? view.slots.slice(0, firstShown) : view.slots;
+            return (
+              <>
+                <div className={classes.grid}>{shown.map((iso) => renderSlot(iso))}</div>
+                {folded && (
+                  <button type="button" onClick={() => setExpandedDay(view.day)} className={classes.viewMore ?? classes.retry}>
+                    {COPY.viewMore}
+                  </button>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
     </>

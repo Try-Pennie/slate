@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { SlotTimes, SLOT_TIMES_CLASSES } from "@/components/SlotTimes";
 
 // #1336: the booker and the two reschedule panels each owned a private copy of
@@ -150,5 +150,57 @@ describe("SlotTimes", () => {
     expect(region()?.textContent).toBe("Nothing left on Sat, Aug 15. Pick another day above.");
     rerender(<SlotTimes {...base} view={{ kind: "failed" }} />);
     expect(region()?.textContent).toBe("");
+  });
+
+  // #3718: the inline card shows a few times and lets the lead ask for the rest.
+  describe("showing the first few times (#3718)", () => {
+    const nine = Array.from({ length: 9 }, (_, i) => `2026-08-15T${String(14 + i).padStart(2, "0")}:00:00.000Z`);
+    const times = (slots: string[], day = "2026-08-15") => ({ kind: "times" as const, day, slots });
+
+    it("shows the first six and a View more times control, then every time once it is pressed", () => {
+      render(<SlotTimes {...base} firstShown={6} view={times(nine)} />);
+      expect(screen.queryAllByRole("button", { name: /^2026/ })).toHaveLength(6);
+      fireEvent.click(screen.getByRole("button", { name: "View more times" }));
+      expect(screen.queryAllByRole("button", { name: /^2026/ })).toHaveLength(9);
+      expect(screen.queryByRole("button", { name: "View more times" })).toBeNull();
+    });
+
+    it("offers no control when the day has no more than that", () => {
+      render(<SlotTimes {...base} firstShown={6} view={times(nine.slice(0, 6))} />);
+      expect(screen.queryAllByRole("button", { name: /^2026/ })).toHaveLength(6);
+      expect(screen.queryByRole("button", { name: "View more times" })).toBeNull();
+    });
+
+    it("goes back to the first six when another day is chosen", () => {
+      const { rerender } = render(<SlotTimes {...base} firstShown={6} view={times(nine)} />);
+      fireEvent.click(screen.getByRole("button", { name: "View more times" }));
+      rerender(<SlotTimes {...base} firstShown={6} view={times(nine, "2026-08-17")} />);
+      expect(screen.queryAllByRole("button", { name: /^2026/ })).toHaveLength(6);
+    });
+
+    it("folds a day again when the lead comes back to it from another", () => {
+      const { rerender } = render(<SlotTimes {...base} firstShown={6} view={times(nine)} />);
+      fireEvent.click(screen.getByRole("button", { name: "View more times" }));
+      rerender(<SlotTimes {...base} firstShown={6} view={times(nine, "2026-08-17")} />);
+      rerender(<SlotTimes {...base} firstShown={6} view={times(nine)} />);
+      expect(screen.queryAllByRole("button", { name: /^2026/ })).toHaveLength(6);
+    });
+
+    it("styles View more times with its own class when the surface gives one", () => {
+      render(<SlotTimes {...base} firstShown={6} classes={{ ...base.classes, viewMore: "the-more-class" }} view={times(nine)} />);
+      expect(screen.getByRole("button", { name: "View more times" }).className).toBe("the-more-class");
+    });
+
+    it("leaves the day heading off when asked, and keeps it otherwise", () => {
+      const { rerender } = render(<SlotTimes {...base} dayHeading={false} view={times(nine)} />);
+      expect(screen.queryByText(/^Times on /)).toBeNull();
+      rerender(<SlotTimes {...base} view={times(nine)} />);
+      expect(screen.getByText("Times on Sat, Aug 15")).toBeTruthy();
+    });
+
+    it("shows every time, as today, when no limit is given", () => {
+      render(<SlotTimes {...base} view={times(nine)} />);
+      expect(screen.queryAllByRole("button", { name: /^2026/ })).toHaveLength(9);
+    });
   });
 });

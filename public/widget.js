@@ -172,6 +172,10 @@
       // stub queued before this script ran finds it undefined, and nothing is
       // open then anyway.
       if (frames && frames[ns]) frames[ns].hide();
+    } else if (method === "inline") {
+      // cal.com's inline embed (#3718): the booker drawn inside an element on the
+      // host page rather than in a modal.
+      renderInline(ns, args[1]);
     }
     // "prerender" and anything else: accepted, no-op (kept API-compatible).
   }
@@ -202,6 +206,9 @@
     } else if (method === "closeModal") {
       // Global form: whichever modal is on screen (only one ever is).
       if (activeModalHide) activeModalHide();
+    } else if (method === "inline") {
+      // Global form: the default namespace, as cal.com's own snippet calls it.
+      renderInline("", args[1]);
     }
     // "initNamespace" and others: no-op.
   }
@@ -318,7 +325,7 @@
     return out;
   }
 
-  function bookingUrl(link, ns, config) {
+  function bookingUrl(link, ns, config, layout) {
     var params = new URLSearchParams();
     var q = link.indexOf("?");
     if (q >= 0) {
@@ -342,6 +349,9 @@
     if (ui.theme) params.set("theme", ui.theme);
     if (ui.brandColor) params.set("brand", ui.brandColor);
     params.set("embed", "1");
+    // The inline embed asks for the compact card (#3718); the modal sends no
+    // layout, so its URL is exactly what it always was.
+    if (layout) params.set("layout", layout);
     // Tell the Booker which origin to target its outbound postMessages at, so the
     // slate:bookingSuccessful lead PII is never broadcast to "*" (#593). This is
     // the host page's own origin — the frame the modal lives in.
@@ -424,11 +434,149 @@
     frames[ns] = buildFrame(bookingUrl(link, ns, readTriggerConfig(trigger)));
   }
 
+  function prefersReducedMotion() {
+    return !!(
+      window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
+  }
+
+  // How long a booker frame may take to load before it is reported as failed
+  // (#628), the modal's and an inline one's alike (#3718).
+  var LOAD_TIMEOUT_MS = 12000;
+
+  // The two ways a frame itself can fail to show a booker (#2658), announced as
+  // `linkFailed` beside the two the Booker reports from inside the frame. These
+  // sentences are read by an analyst in a GA4 report, never by a lead, which is
+  // why they sit outside the copy block above: the lead's own words for the same
+  // moment are `COPY.loadFailed`, on screen.
+  var LOAD_FAILED = {
+    timeout: { code: "load_timeout", msg: "The booking form did not load in time" },
+    error: { code: "load_error", msg: "The booking form could not be loaded" },
+  };
+
+  // One booker iframe, the modal's and an inline one alike (#3718), so the
+  // attributes both carry live once. `css` follows the shared base.
+  function bookerIframe(bookUrl, css) {
+    var iframe = document.createElement("iframe");
+    iframe.src = bookUrl;
+    iframe.style.cssText = "display:block;width:100%;border:0;" + css;
+    iframe.setAttribute("title", COPY.frameTitle);
+    iframe.allow = "fullscreen";
+    return iframe;
+  }
+
+  // --- inline (#3718) ---------------------------------------------------------
+
+  // Every inline frame this file built, with the element it lives in. A message
+  // is taken from one of these only, exactly as the modal's are from `frames`.
+  var inlineFrames = [];
+
+  function inlineFor(source) {
+    if (!source) return null;
+    for (var i = 0; i < inlineFrames.length; i++) {
+      if (inlineFrames[i].iframe.contentWindow === source) return inlineFrames[i];
+    }
+    return null;
+  }
+
+  // `Cal("inline", { elementOrSelector, calLink, config })`. Called again for the
+  // same element it REPLACES that element's frame, so a page that redraws never
+  // stacks bookers. A missing element or link draws nothing and says so once,
+  // never throwing into the host page.
+  function renderInline(ns, opts) {
+    opts = opts || {};
+    var target = opts.elementOrSelector;
+    var el = null;
+    try {
+      el = typeof target === "string" ? document.querySelector(target) : target;
+    } catch (_e) {
+      el = null;
+    }
+    if (!el || typeof el.appendChild !== "function" || typeof opts.calLink !== "string") {
+      embedWarn('Cal("inline") needs an element on the page and a calLink, so nothing was drawn.');
+      return;
+    }
+    var config = opts.config && typeof opts.config === "object" ? opts.config : {};
+    // Drop this element's earlier frame, and any frame whose element has left the
+    // page, so a page that redraws neither stacks bookers nor keeps trusting a
+    // window that is gone.
+    inlineFrames = inlineFrames.filter(function (f) {
+      if (f.el !== el && f.iframe.isConnected) return true;
+      f.stop();
+      if (f.iframe.parentNode) f.iframe.parentNode.removeChild(f.iframe);
+      if (f.notice.parentNode) f.notice.parentNode.removeChild(f.notice);
+      return false;
+    });
+    var reduceMotion = prefersReducedMotion();
+    var iframe = bookerIframe(
+      bookingUrl(opts.calLink, ns, config, "inline"),
+      "min-height:360px" + (reduceMotion ? "" : ";transition:height .15s ease"),
+    );
+    el.appendChild(iframe);
+
+    // A frame that never loads must not leave a blank box (#628, L10): after the
+    // same wait as the modal it says so in the lead's words, offers Try again,
+    // and announces `linkFailed`, so the host can react too. Plain inline styles,
+    // since the host page has none of Slate's.
+    var notice = document.createElement("div");
+    notice.setAttribute("role", "alert");
+    notice.style.cssText =
+      "display:none;padding:16px;font-family:-apple-system,BlinkMacSystemFont," +
+      "'Segoe UI',system-ui,sans-serif;font-size:14px;line-height:1.5;color:rgb(52,52,52)";
+    var noticeText = document.createElement("p");
+    noticeText.style.cssText = "margin:0 0 12px";
+    noticeText.textContent = COPY.loadFailed;
+    var retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = COPY.retry;
+    retry.style.cssText =
+      "min-height:44px;padding:0 16px;border:1px solid rgba(52,52,52,0.4);border-radius:16px;" +
+      "background:#fff;color:rgb(52,52,52);font:inherit;font-weight:600;cursor:pointer";
+    notice.appendChild(noticeText);
+    notice.appendChild(retry);
+    el.appendChild(notice);
+
+    var timer = null;
+    var loaded = false;
+    function stop() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    }
+    function arm() {
+      stop();
+      timer = setTimeout(function () {
+        timer = null;
+        if (loaded) return;
+        iframe.style.display = "none";
+        notice.style.display = "block";
+        emit("linkFailed", LOAD_FAILED.timeout);
+      }, LOAD_TIMEOUT_MS);
+    }
+    iframe.addEventListener("load", function () {
+      loaded = true;
+      stop();
+      // A booker that arrives after the notice went up replaces it: the lead
+      // must never read "couldn't load" over a booker that did.
+      notice.style.display = "none";
+      iframe.style.display = "block";
+    });
+    retry.addEventListener("click", function () {
+      // A reload is a new load, judged afresh.
+      loaded = false;
+      notice.style.display = "none";
+      iframe.style.display = "block";
+      // Setting src again reloads the frame, as the modal's retry does.
+      iframe.src = iframe.src;
+      arm();
+    });
+    arm();
+    inlineFrames.push({ iframe: iframe, el: el, notice: notice, stop: stop });
+  }
+
   function buildFrame(bookUrl) {
     ensureChromeStyle();
-    var reduceMotion =
-      window.matchMedia &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var reduceMotion = prefersReducedMotion();
 
     // Built hidden; show() is what puts it on screen. Until that first show it is
     // hidden with `visibility`, not `display:none` (#2679): a frame inside a
@@ -536,7 +684,6 @@
     // timeout converts the spinner into a plain-language error + retry (#628),
     // so the lead always sees "working" and "failed" as distinct states rather
     // than an indefinite spinner on this first-impression surface.
-    var LOAD_TIMEOUT_MS = 12000;
     var loadTimer = null;
     // "loading" until the iframe's first load, then "loaded"; "failed" while the
     // error and its retry are up. The timer runs only while "loading", from the
@@ -628,16 +775,6 @@
       if (visible) retry.focus();
     }
 
-    // The two ways the modal itself can fail to show a booker (#2658), announced
-    // as `linkFailed` beside the two the Booker reports from inside the frame.
-    // These sentences are read by an analyst in a GA4 report, never by a lead,
-    // which is why they sit outside the copy block above: the lead's own words
-    // for the same moment are `COPY.loadFailed`, on screen.
-    var LOAD_FAILED = {
-      timeout: { code: "load_timeout", msg: "The booking form did not load in time" },
-      error: { code: "load_error", msg: "The booking form could not be loaded" },
-    };
-
     function armLoadTimer() {
       if (loadTimer) clearTimeout(loadTimer);
       loadTimer = setTimeout(function () {
@@ -667,18 +804,16 @@
     // reopen is not a load, since the frame is kept (#2678).
     var loads = 0;
 
-    var iframe = document.createElement("iframe");
-    iframe.src = bookUrl;
     // #2729: the floor sits under the two column booker's shortest loaded height
     // (about 447px, measured in the 896px modal). At 560 the frame outgrew a
     // booker that no longer stacks, and a strip of empty page showed beneath it.
     // display:block, because an inline frame sits on a text baseline and left
     // a 6px strip of the modal's white under a dark booker (#2766).
-    iframe.style.cssText =
-      "display:block;width:100%;border:0;min-height:440px;opacity:0" +
-      (reduceMotion ? "" : ";transition:opacity .15s ease,height .15s ease");
-    iframe.setAttribute("title", COPY.frameTitle);
-    iframe.allow = "fullscreen";
+    var iframe = bookerIframe(
+      bookUrl,
+      "min-height:440px;opacity:0" +
+        (reduceMotion ? "" : ";transition:opacity .15s ease,height .15s ease"),
+    );
     iframe.addEventListener("load", function () {
       stopLoadTimer();
       loadState = "loaded";
@@ -1064,13 +1199,16 @@
     // posted again, so it is announced when it arrives. A frame that has never
     // been shown (a pre build, #2679) holds its stages until its first show
     // instead, since nobody has viewed it yet.
+    // An inline frame (#3718) is on screen from the start and never hidden, so a
+    // booking from it is taken like one from the modal on screen, and its stages
+    // are announced at once rather than held.
     var frame = frameFor(e.source);
-    if (d.type === "slate:resize" && typeof d.height === "number" && frame) {
-      frame.iframe.style.height = d.height + "px";
+    var inline = inlineFor(e.source);
+    if (d.type === "slate:resize" && typeof d.height === "number" && (frame || inline)) {
+      (frame || inline).iframe.style.height = d.height + "px";
     } else if (
       d.type === "slate:bookingSuccessful" &&
-      activeIframe &&
-      e.source === activeIframe.contentWindow
+      ((activeIframe && e.source === activeIframe.contentWindow) || inline)
     ) {
       // The original event stays byte for byte for the hosts written against it
       // (#2643); the V2 event is derived beside it, never instead of it.
@@ -1079,6 +1217,8 @@
       if (v2) emit(v2, v2Payload(d.data));
     } else if (LIFECYCLE[d.type] && frame) {
       frame.announce(LIFECYCLE[d.type], d.data);
+    } else if (LIFECYCLE[d.type] && inline) {
+      emit(LIFECYCLE[d.type], d.data);
     } else if (
       d.type === "slate:escape" &&
       activeModalHide &&

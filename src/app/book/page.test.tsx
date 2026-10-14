@@ -464,3 +464,20 @@ describe("/book with no code and no Lead id, but a submission id (#3246)", () =>
     await expect(BookEntry({ searchParams: Promise.resolve({ submissionId: SUB }) })).rejects.toThrow(/temporary issue/);
   });
 });
+
+// #3718: widget.js's inline embed asks for the compact card with `layout=inline`.
+describe("/book layout (#3718)", () => {
+  it("hands the Booker the inline layout when the address asks for it", async () => {
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: "111", embed: "1", layout: "inline" }) });
+    expect(bookerElement(el)).toMatchObject({ layout: "inline" });
+  });
+
+  it("hands it no layout otherwise, and none for a value it does not know", async () => {
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));
+    const plain = await BookEntry({ searchParams: Promise.resolve({ xbc: "111", embed: "1" }) });
+    expect(bookerElement(plain).layout).toBeUndefined();
+    const odd = await BookEntry({ searchParams: Promise.resolve({ xbc: "111", layout: "month_view" }) });
+    expect(bookerElement(odd).layout).toBeUndefined();
+  });
+});

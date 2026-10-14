@@ -47,6 +47,7 @@ import {
   BOOKING_ERROR_COPY,
   CONFIRMED_COPY,
   DETAILS_COPY,
+  INLINE_CARD_COPY,
   chosenWhen,
   longDayLabel,
   DUPLICATE_COPY,
@@ -80,6 +81,7 @@ import {
   deviceTimeZone,
   timezoneOptions,
   resolveZone,
+  zoneLabel as zoneReadName,
 } from "@/lib/booking/timezones";
 import { withinLeadCallingWindow } from "@/lib/booking/lead-calling-window";
 import { SelectField } from "@/components/ui/SelectField";
@@ -228,6 +230,13 @@ interface BookerProps {
   prefill: Record<string, string>;
   /** True when rendered inside the embed iframe (drives postMessage to host). */
   embedded?: boolean;
+  /**
+   * #3718: the compact card a landing page draws in place through cal.com's
+   * `Cal("inline")` (widget.js asks for `layout=inline`), as settled in
+   * docs/design/inline-booker.html. Its first screen is the card; picking a time
+   * goes on into the same details and confirm steps as the full booker.
+   */
+  layout?: "inline";
   /** Palette, from the embed `ui` config. Defaults to light. */
   theme?: "light" | "dark";
   /** Brand accent (hex) from the embed `ui` config; tints dots/ring/confirm. */
@@ -330,6 +339,8 @@ const PALETTE = {
     skeleton: "bg-fg/10",
     confirm: "bg-accent text-fg-on-sky hover:bg-accent-hover",
     backHover: "hover:text-fg",
+    // #3718: the inline card's surface, the booker's raised grey (round seven).
+    card: "bg-surface-elevated",
   },
   // Every wash below is the LIGHT half of a pair whose dark half, above, swaps it
   // for an accent tint. `--fg` is graphite while this half applies, so the pair
@@ -361,6 +372,9 @@ const PALETTE = {
     skeleton: "bg-[var(--pennie-wild-sand)]",
     confirm: "bg-accent text-fg-on-sky hover:bg-accent-hover",
     backHover: "hover:text-fg",
+    // #3718: the inline card's surface, Geoff's sky wash (round six).
+    // theme-pair-ok: light half of a two map palette, see the note above
+    card: "bg-pennie-sky-soft",
   },
 };
 
@@ -376,6 +390,7 @@ export default function Booker({
   attendee: initialAttendee,
   prefill,
   embedded = false,
+  layout,
   theme = "light",
   brandColor,
   parentOrigin,
@@ -668,6 +683,13 @@ export default function Booker({
   const refusedSlot = refused?.slot ?? null;
   const activeDay = picker.selectedDay;
   const loading = picker.view.kind === "loading";
+  const inline = layout === "inline";
+  // #3718: the inline card opens on the first bookable day with its times showing,
+  // as settled; the full booker still waits for the lead to choose (#1336). A day
+  // is still chosen before any time is drawn, so that rule holds here too.
+  useEffect(() => {
+    if (inline && activeDay === null && picker.days.length > 0) picker.selectDay(picker.days[0]!);
+  }, [inline, activeDay, picker]);
 
   // The single origin every outbound embed message targets. Never "*": the
   // success payload carries lead PII, so a wildcard could hand it to whatever
@@ -1205,9 +1227,15 @@ export default function Booker({
   // which is the height the host set from `slate:resize`), as a column, so a
   // shorter screen centres in the held box rather than leaving the page beneath
   // it showing (#2766). The standalone page keeps its own layout.
-  const shell = `@container mx-auto max-w-4xl overflow-hidden rounded-xl shadow-xs ${c.shell}${
-    embedded ? " flex min-h-screen flex-col" : ""
-  }`;
+  //
+  // #3718: the inline card IS the frame's content, sized to itself rather than
+  // filling the frame, because the host sizes the frame from it: filling would
+  // hold the frame at the tallest step it had drawn.
+  const shell = inline
+    ? `@container overflow-hidden rounded-2xl p-5 ${c.card} ${c.body}`
+    : `@container mx-auto max-w-4xl overflow-hidden rounded-xl shadow-xs ${c.shell}${
+        embedded ? " flex min-h-screen flex-col" : ""
+      }`;
   /**
    * #2769: the ONE box every step fills in the widget's desktop modal. Everything
    * under the test band is this tall at two columns, on every screen: the picker's
@@ -2041,11 +2069,17 @@ export default function Booker({
     // scrolls inside it rather than growing it. The confirm step also starts
     // closer to the row above, since the strip that sat between them is gone.
     <section
-      className={`flex flex-col p-6 ${selectedSlot ? "" : "max-h-[420px]"}${
-        embedded
-          ? ` @3xl:min-h-0 @3xl:flex-1 ${selectedSlot ? "pt-2 @3xl:overflow-y-auto" : "@3xl:max-h-none"}`
-          : ""
-      }`}
+      className={
+        // #3718: the inline card's panel carries its own padding and grows with its
+        // times, so the section adds neither.
+        inline
+          ? "flex flex-col"
+          : `flex flex-col p-6 ${selectedSlot ? "" : "max-h-[420px]"}${
+              embedded
+                ? ` @3xl:min-h-0 @3xl:flex-1 ${selectedSlot ? "pt-2 @3xl:overflow-y-auto" : "@3xl:max-h-none"}`
+                : ""
+            }`
+      }
     >
       {selectedSlot ? (
         /* The step ARRIVES rather than appearing in the same frame the times
@@ -2217,14 +2251,18 @@ export default function Booker({
                 muted: `text-sm ${c.faint}`,
                 heading: `text-sm font-semibold tabular-nums ${c.title}`,
                 retry: `inline-flex min-h-9 items-center rounded-md border px-3 text-sm ${c.toggleBorder} ${c.body} ${c.navHover}`,
-                grid: "space-y-2",
+                // #3718: the card lays its times out three across, two on a phone.
+                grid: inline ? "grid grid-cols-2 gap-2 @sm:grid-cols-3" : "space-y-2",
+                viewMore: `mx-auto mt-1 flex min-h-11 items-center px-3 text-sm font-semibold ${c.title}`,
               }}
+              firstShown={inline ? 6 : undefined}
+              dayHeading={!inline}
               noDaysNode={closurePanel}
               renderSlot={(iso) => (
                 <button
                   key={iso}
                   onClick={() => chooseSlot(iso)}
-                  className={`flex min-h-11 w-full items-center rounded-md border px-3 py-2.5 text-left text-sm tabular-nums ${c.slot}`}
+                  className={`flex min-h-11 w-full items-center rounded-md border px-3 py-2.5 text-sm tabular-nums ${inline ? "justify-center" : "text-left"} ${c.slot}`}
                 >
                   <MarkedLabel
                     className="gap-2"
@@ -2323,6 +2361,46 @@ export default function Booker({
       </div>
     </aside>
   );
+
+  if (inline) {
+    // #3718: the card, as settled: a title, then a panel holding the day strip and
+    // the times. Once a time is chosen the panel holds the details step instead.
+    return (
+      <div ref={rootRef} data-theme={theme} className={shell}>
+        {testBand}
+        <p className={`mb-3.5 text-[length:var(--fs-h5,1.25rem)] font-semibold ${c.title}`}>{INLINE_CARD_COPY.title}</p>
+        <div className="rounded-2xl bg-surface p-[18px]">
+          {!selectedSlot && (
+            <>
+              <p className={`mb-3 text-sm ${c.body}`}>{INLINE_CARD_COPY.chooseTime}</p>
+              <div className="mb-3">
+                {loading ? (
+                  <BookerStripSkeleton skeletonClass={c.skeleton} count={horizonDays} />
+                ) : (
+                  <BookerStrip
+                    today={today}
+                    days={picker.days}
+                    activeDay={activeDay}
+                    zone={zone}
+                    onSelect={(iso) => {
+                      picker.selectDay(iso);
+                      setSelectedSlot(null);
+                    }}
+                  />
+                )}
+              </div>
+            </>
+          )}
+          {timesPanel}
+          {/* Only over times actually on screen: while loading, failed or closed
+              there are none for the zone to describe (L11). */}
+          {!selectedSlot && picker.view.kind === "times" && (
+            <p className={`mt-3 text-center text-xs ${c.faint}`}>{INLINE_CARD_COPY.timesIn(zoneReadName(zone))}</p>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div ref={rootRef} data-theme={theme} className={shell}>
