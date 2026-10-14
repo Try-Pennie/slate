@@ -40,8 +40,11 @@ export type CallMeNowPhase =
   | "confirmed"
   | "dismissed";
 
-/** How long a press may run before it is treated as failed, past the route's own worst case. */
-const PRESS_GIVE_UP_MS = 20_000;
+/**
+ * How long a check or a press may run before it is given up, past the route's own
+ * worst case: a check then hides the row, a press fails with Try again.
+ */
+const GIVE_UP_MS = 20_000;
 
 function post(config: CallMeNowConfig, action: "check" | "request", signal?: AbortSignal) {
   return fetch("/api/call-me-now", {
@@ -66,16 +69,20 @@ export function useCallMeNow(config: CallMeNowConfig | null) {
   useEffect(() => {
     if (!config) return;
     let live = true;
-    post(config, "check")
+    const abort = new AbortController();
+    const giveUp = setTimeout(() => abort.abort(), GIVE_UP_MS);
+    post(config, "check", abort.signal)
       .then(async (res) => {
         const body = (await res.json()) as { offered?: unknown };
         if (live) setPhase(res.ok && body.offered === true ? "offered" : "hidden");
       })
       .catch(() => {
         if (live) setPhase("hidden");
-      });
+      })
+      .finally(() => clearTimeout(giveUp));
     return () => {
       live = false;
+      clearTimeout(giveUp);
     };
     // The check is about this lead; the rest of the config cannot change while mounted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -85,7 +92,7 @@ export function useCallMeNow(config: CallMeNowConfig | null) {
     if (!config) return;
     setPhase("pressing");
     const abort = new AbortController();
-    const giveUp = setTimeout(() => abort.abort(), PRESS_GIVE_UP_MS);
+    const giveUp = setTimeout(() => abort.abort(), GIVE_UP_MS);
     try {
       const res = await post(config, "request", abort.signal);
       const body = (await res.json().catch(() => ({}))) as { outcome?: unknown; textLine?: unknown };

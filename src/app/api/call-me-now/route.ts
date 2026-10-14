@@ -106,7 +106,7 @@ export async function POST(req: NextRequest) {
   // The line the lead can text, for the confirmation's Text us. Null when the service
   // is not configured or does not answer usefully, and the card then shows no Text us.
   const textLine = await readTextingLine(
-    { phone: input.phone, submissionId: text(body.submissionId) },
+    { phone: out.leadPhone, submissionId: text(body.submissionId) },
     {
       baseUrl: automationsApiUrl(),
       fetchImpl: fetch,

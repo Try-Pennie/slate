@@ -478,7 +478,7 @@ A missing or unknown `action`, or no `leadId`: `400`.
 
 // action "request"
 { "outcome": "requested", "textLine": "+1…" }      // 200, the Lead is marked for a call
-{ "outcome": "already-requested", "textLine": null } // 200, a call was already pending; nothing written
+{ "outcome": "already-requested", "textLine": "+1…" } // 200, a call was already pending; nothing written
 { "outcome": "refused", "retry": false }       // 200, never says why (missing lead, contact mismatch, button off)
 { "outcome": "failed", "retry": true }         // 503, Salesforce failed
 ```
@@ -495,8 +495,9 @@ unreadable hides it. One Salesforce login is kept for fifteen minutes and droppe
 when Salesforce refuses it.
 
 `textLine` is the line the lead can text, asked of Pennie's automations service
-(`AUTOMATIONS_API_URL`, `/get-phone-line`) as trypennie.com asks it, after a successful
-press only. It is `null` whenever there is no usable number, including while the service
+(`AUTOMATIONS_API_URL`, `/get-phone-line`) as trypennie.com asks it, after `requested`
+and `already-requested` only, with the phone Salesforce holds for the lead (never the
+one the page sent, which a press matched on email alone never verified). It is `null` whenever there is no usable number, including while the service
 address is unset, which is deliberate: the card then shows no Text us and no error.
 
 ---

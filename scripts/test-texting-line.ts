@@ -11,8 +11,8 @@
 //  - only a valid phone number is ever returned; anything else (a refusal, a body
 //    that is not the expected shape, `success: false`, a number that does not parse)
 //    is no line, and a failure is reported so the logs say why;
-//  - the lead is never kept waiting: past the deadline the answer is no line, on an
-//    injected timer rather than a real one (L524).
+//  - the lead waits no longer than the deadline: past it the answer is no line, on
+//    an injected timer rather than a real one (L524).
 import { readTextingLine, TEXTING_LINE_DEADLINE_MS } from "../src/lib/automations/texting-line.ts";
 import type { ScheduleTimer } from "../src/lib/read-within-deadline.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -51,6 +51,22 @@ const LEAD = { phone: "(219) 758-8170", submissionId: "a0XUi000001" };
   eq(seen[0]?.url, "https://automations.example/api/get-phone-line", "to the service's get-phone-line, the trailing slash not doubled");
   eq(seen[0]?.method, "POST", "as a POST");
   eq(seen[0]?.body, { phone: "2197588170", submission_id: "a0XUi000001" }, "carrying the phone as digits and the submission id, as trypennie sends them");
+}
+{
+  // Cloudflare's fetch throws "Illegal invocation" when called as a method of another
+  // object, so the module must call it bare. This stand in refuses a receiver the same way.
+  const strictFetch = function (this: unknown) {
+    if (this !== undefined) throw new TypeError("Illegal invocation");
+    return Promise.resolve(new Response(JSON.stringify(OK), { status: 200 }));
+  } as unknown as typeof fetch;
+  const errs: unknown[] = [];
+  eq(await readTextingLine(LEAD, { baseUrl: "https://a.example", fetchImpl: strictFetch, timer: never, onUnread: (e) => errs.push(e) }), "+12125550188", "fetch is called bare, as Cloudflare's fetch requires");
+  eq(errs.length, 0, "with nothing refused");
+}
+{
+  const { seen, fetchImpl } = service(200, OK);
+  await readTextingLine({ phone: "+12197588170", submissionId: null }, { baseUrl: "https://a.example", fetchImpl, timer: never, onUnread: () => {} });
+  eq(seen[0]?.body, { phone: "2197588170" }, "a stored +1 number is sent as the ten digits trypennie sends");
 }
 {
   const { seen, fetchImpl } = service(200, OK);

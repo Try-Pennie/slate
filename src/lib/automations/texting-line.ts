@@ -41,13 +41,18 @@ export async function readTextingLine(
   deps: TextingLineDeps,
 ): Promise<string | null> {
   const base = deps.baseUrl.trim().replace(/\/+$/, "");
-  const phone = (lead.phone ?? "").replace(/\D/g, "");
+  // The ten digits trypennie sends: a stored +1 number loses its country code.
+  const digits = (lead.phone ?? "").replace(/\D/g, "");
+  const phone = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
   if (base === "" || phone === "") return null;
   const body: Record<string, string> = { phone };
   if (lead.submissionId) body.submission_id = lead.submissionId;
+  // Called bare: Cloudflare's fetch throws "Illegal invocation" when called as a
+  // method of another object, which `deps.fetchImpl(...)` would be.
+  const doFetch = deps.fetchImpl;
   return readWithinDeadline(
     async () => {
-      const res = await deps.fetchImpl(`${base}/get-phone-line`, {
+      const res = await doFetch(`${base}/get-phone-line`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
