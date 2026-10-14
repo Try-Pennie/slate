@@ -21,20 +21,28 @@ function seed(target: string, source: string): { code: number; out: string } {
   return { code: r.status ?? -1, out: `${r.stdout}${r.stderr}` };
 }
 
-/** A fake checkout dir with a lockfile and (optionally) a populated node_modules. */
-function makeCheckout(prefix: string, lock: string, withModules: boolean): string {
+/**
+ * A fake checkout dir with a lockfile and (optionally) a populated node_modules.
+ * pnpm records the lockfile an install was made from at node_modules/.pnpm/lock.yaml;
+ * `installed` is that record, the same as the lockfile by default, null for none (#3734).
+ */
+function makeCheckout(prefix: string, lock: string, withModules: boolean, installed: string | null = lock): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   writeFileSync(join(dir, "pnpm-lock.yaml"), lock);
   if (withModules) {
     mkdirSync(join(dir, "node_modules", ".bin"), { recursive: true });
     writeFileSync(join(dir, "node_modules", "MARKER"), "seeded-from-source");
+    if (installed !== null) {
+      mkdirSync(join(dir, "node_modules", ".pnpm"), { recursive: true });
+      writeFileSync(join(dir, "node_modules", ".pnpm", "lock.yaml"), installed);
+    }
   }
   return dir;
 }
 
 const created: string[] = [];
-function tmp(prefix: string, lock: string, withModules: boolean): string {
-  const d = makeCheckout(prefix, lock, withModules);
+function tmp(prefix: string, lock: string, withModules: boolean, installed: string | null = lock): string {
+  const d = makeCheckout(prefix, lock, withModules, installed);
   created.push(d);
   return d;
 }
@@ -108,6 +116,8 @@ async function main() {
     writeFileSync(join(main, "pnpm-lock.yaml"), LOCK);
     mkdirSync(join(main, "node_modules"));
     writeFileSync(join(main, "node_modules", "MARKER"), "seeded-from-source");
+    mkdirSync(join(main, "node_modules", ".pnpm"));
+    writeFileSync(join(main, "node_modules", ".pnpm", "lock.yaml"), LOCK);
     const setup = [git(main, "init", "-q"), git(main, "add", "pnpm-lock.yaml"), git(main, "commit", "-q", "-m", "seed"), git(main, "worktree", "add", "-q", "--detach", wt)];
     const broken = setup.find((r) => r.status !== 0);
     assert(broken === undefined, `spaced: the throwaway repo and worktree were set up (${broken?.stderr ?? "ok"})`);
@@ -115,6 +125,31 @@ async function main() {
     const out = `${r.stdout}${r.stderr}`;
     assert(r.status === 0, `spaced: seeds a worktree under a path with spaces and a curly apostrophe (got ${r.status}: ${out})`);
     assert(existsSync(join(wt, "node_modules", "MARKER")), "spaced: the clone came from the main checkout git resolved");
+  }
+
+  // 7. A SOURCE WHOSE LOCKFILE WAS PULLED BUT NEVER INSTALLED (#3734): both lockfiles
+  //    match, yet the source's node_modules was installed from an older one. On
+  //    2026-10-14 that cloned an install from 2026-09-02 that lacked two packages main
+  //    imports, the seed said it succeeded, and the load run's build failed later.
+  {
+    const OLD = "lockfileVersion: '9.0'\npackages:\n  foo@0.9.0: {}\n";
+    const source = tmp("seed-src7-", LOCK, true, OLD);
+    const target = tmp("seed-tgt7-", LOCK, false);
+    const r = seed(target, source);
+    assert(r.code === 4, `stale-install: refuses on the lockfile mismatch exit (got ${r.code}: ${r.out})`);
+    assert(!existsSync(join(target, "node_modules")), "stale-install: does not seed the stale install");
+    assert(/installed/i.test(r.out) && /pnpm install/.test(r.out), `stale-install: says the source's install is out of date and to install (got ${r.out})`);
+  }
+
+  // 8. A SOURCE WITH NO RECORD OF WHAT IT INSTALLED: nothing says which lockfile its
+  //    node_modules came from, so it cannot be judged current and is not cloned.
+  {
+    const source = tmp("seed-src8-", LOCK, true, null);
+    const target = tmp("seed-tgt8-", LOCK, false);
+    const r = seed(target, source);
+    assert(r.code === 4, `no-install-record: refuses (got ${r.code}: ${r.out})`);
+    assert(!existsSync(join(target, "node_modules")), "no-install-record: does not seed");
+    assert(/\.pnpm\/lock\.yaml/.test(r.out), `no-install-record: names the missing record (got ${r.out})`);
   }
 
   // tree-write-ok: `created` only ever holds makeCheckout's mkdtempSync(tmpdir()) dirs

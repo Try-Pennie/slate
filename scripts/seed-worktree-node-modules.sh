@@ -21,7 +21,8 @@
 #   0  node_modules is ready (freshly seeded, or already present)
 #   2  usage / resolution error
 #   3  source has no node_modules to clone      -> run `pnpm install`
-#   4  target lockfile differs from source's     -> run `pnpm install` to reconcile
+#   4  target lockfile differs from source's, or from the lockfile the source's
+#      node_modules was actually installed from  -> run `pnpm install` to reconcile
 set -euo pipefail
 
 target="${1:-$PWD}"
@@ -73,6 +74,21 @@ src_lock="$source/pnpm-lock.yaml"
 tgt_lock="$target/pnpm-lock.yaml"
 if [ -f "$src_lock" ] && [ -f "$tgt_lock" ] && ! cmp -s "$src_lock" "$tgt_lock"; then
   echo "seed-worktree: pnpm-lock.yaml differs between target and source; run 'pnpm install' in $target to reconcile." >&2
+  exit 4
+fi
+
+# The source's lockfile says what it DEPENDS on, not what it INSTALLED: a pulled checkout
+# carries the new lockfile over an old install (#3734: an install from 2026-09-02 under a
+# current lockfile, missing two packages main imported, cloned and reported as seeded).
+# pnpm records the lockfile each install was made from at node_modules/.pnpm/lock.yaml,
+# so judge the clone by that record, and refuse when there is none to judge by.
+installed_lock="$source/node_modules/.pnpm/lock.yaml"
+if [ ! -f "$installed_lock" ]; then
+  echo "seed-worktree: source '$source' has no node_modules/.pnpm/lock.yaml, so nothing says which lockfile its install came from; run 'pnpm install' in $target." >&2
+  exit 4
+fi
+if [ -f "$tgt_lock" ] && ! cmp -s "$installed_lock" "$tgt_lock"; then
+  echo "seed-worktree: the source's node_modules was installed from a different lockfile than this worktree's pnpm-lock.yaml (its install is out of date); run 'pnpm install' in $target." >&2
   exit 4
 fi
 
