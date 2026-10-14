@@ -170,6 +170,18 @@ describe("the inline card's Call me now row (#3718)", () => {
     expect(sent[0]).toEqual({ action: "check", leadId: CMN.leadId, email: CMN.email, phone: CMN.phone, submissionId: CMN.submissionId });
   });
 
+  it("paints a host's card colour, with its text colour on the title and on the way back to the times (#3718)", async () => {
+    serve(OFFERED, { status: 200, body: { outcome: "requested", textLine: null } });
+    const surface = { background: "#1D212F", ink: "var(--pennie-beige)" };
+    const { container } = render(<Booker {...baseProps} layout="inline" callMeNow={CMN} cardSurface={surface} />);
+    const title = await screen.findByText(INLINE_CARD_COPY.title);
+    expect((container.firstElementChild as HTMLElement).style.backgroundColor).toBe("rgb(29, 33, 47)");
+    expect(title.style.color).toBe("var(--pennie-beige)");
+    fireEvent.click(await callButton());
+    const back = await screen.findByText(CALL_ME_NOW_COPY.instead, { exact: false });
+    expect(back.style.color).toBe("var(--pennie-beige)");
+  });
+
   it("puts the row below the times when the page asks for below", async () => {
     serve(OFFERED, { status: 200, body: { outcome: "requested", textLine: null } });
     render(<Booker {...baseProps} layout="inline" callMeNow={{ ...CMN, position: "below" }} />);

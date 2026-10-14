@@ -254,6 +254,13 @@ interface BookerProps {
   theme?: "light" | "dark";
   /** Brand accent (hex) from the embed `ui` config; tints dots/ring/confirm. */
   brandColor?: string;
+  /**
+   * #3718: the inline card's background as the host page set it, with the text
+   * colour that reads on it (`judgeHostColours`). Undefined keeps Slate's card. It
+   * paints only what sits directly on the card: the title and the line under the
+   * confirmation. The panels keep their own surface.
+   */
+  cardSurface?: { background: string; ink: string };
   /** Host page origin (from widget.js), used as the postMessage target so the
    *  booking-success payload is never broadcast to "*" (#593). */
   parentOrigin?: string;
@@ -409,6 +416,7 @@ export default function Booker({
   callMeNow = null,
   theme = "light",
   brandColor,
+  cardSurface,
   parentOrigin,
   isTest = false,
   testPass = null,
@@ -2408,15 +2416,24 @@ export default function Booker({
     const rowShown = cmnRow !== null && ["offered", "pressing", "failed", "refused"].includes(cmn.phase);
     // One frame and one title for both bodies: the confirmation after a press that
     // went through, or the times with the row beside them.
+    const inkStyle = cardSurface ? { color: cardSurface.ink } : undefined;
     return (
-      <div ref={rootRef} data-theme={theme} className={shell}>
+      <div
+        ref={rootRef}
+        data-theme={theme}
+        className={shell}
+        style={cardSurface ? { backgroundColor: cardSurface.background } : undefined}
+      >
         {testBand}
-        <p className={`mb-3.5 text-[length:var(--fs-h5,1.25rem)] font-semibold ${c.title}`}>{INLINE_CARD_COPY.title}</p>
+        <p className={`mb-3.5 text-[length:var(--fs-h5,1.25rem)] font-semibold ${c.title}`} style={inkStyle}>
+          {INLINE_CARD_COPY.title}
+        </p>
         {cmn.phase === "confirmed" ? (
           <CallMeNowConfirmation
             firstName={callMeNow?.firstName ?? null}
             textLine={cmn.textLine}
             onBackToTimes={cmn.backToTimes}
+            onCardStyle={inkStyle}
             palette={c}
             titleClass={c.title}
             mutedClass={c.faint}

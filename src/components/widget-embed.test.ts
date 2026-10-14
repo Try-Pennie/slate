@@ -1229,6 +1229,30 @@ describe("widget.js inline embed (#3718)", () => {
     expect(srcParams(f).get("theme")).toBe("dark");
   });
 
+  it("forwards cal.com's per theme colours for the page's theme: the card's background and the button", () => {
+    const el = slot("colours");
+    cal()("init", "colourtest", { origin: "https://slate.example" });
+    cal().ns.colourtest("ui", {
+      theme: "dark",
+      brandColor: "#82D0FF",
+      cssVarsPerTheme: { light: { "cal-bg": "#FFF4D6", "cal-brand": "#000000" }, dark: { "cal-bg": "#1D212F", "cal-brand": "#FFD166" } },
+    });
+    cal().ns.colourtest("inline", { elementOrSelector: "#colours", calLink: "router?xbc=411" });
+    const p = srcParams(inlineIframe(el)!);
+    expect(p.get("bg")).toBe("#1D212F");
+    // The theme's own button colour wins over the single brandColor, as on cal.com.
+    expect(p.get("brand")).toBe("#FFD166");
+  });
+
+  it("keeps brandColor, and sends no background, when the page sets no per theme colours", () => {
+    const el = slot("plain-colours");
+    cal()("init", "plaincolours", { origin: "https://slate.example" });
+    cal().ns.plaincolours("ui", { brandColor: "#000000" });
+    cal().ns.plaincolours("inline", { elementOrSelector: "#plain-colours", calLink: "router?xbc=411" });
+    const p = srcParams(inlineIframe(el)!);
+    expect([p.get("brand"), p.has("bg")]).toEqual(["#000000", false]);
+  });
+
   it("replaces its own frame when called again for the same element, rather than stacking", () => {
     const el = slot();
     cal()("inline", { elementOrSelector: "#slot", calLink: "router?xbc=411" });
