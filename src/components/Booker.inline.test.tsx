@@ -79,6 +79,24 @@ describe("the inline card (#3718)", () => {
     expect(screen.queryByText(/^Times in /)).toBeNull();
   });
 
+  it("opens on the first day with a time the lead can book, skipping a day whose times all fall outside their calling hours", async () => {
+    // Day one's times are all after 8pm on the lead's clock, so none can be offered
+    // (#2310); opening on it would show a card with no times at all.
+    const late = [bookerSlotIso(3, 21), bookerSlotIso(3, 22)];
+    const bookable = [bookerSlotIso(4, 10), bookerSlotIso(4, 11)];
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        bucket: { code: "411" },
+        orgName: "Pennie",
+        eventType: { name: "Advisor Call", description: null, durationMin: 30 },
+        slots: [...late, ...bookable],
+      }),
+    })) as unknown as typeof fetch;
+    render(<Booker {...baseProps} layout="inline" />);
+    await waitFor(() => expect(timeButtons()).toHaveLength(2));
+  });
+
   it("leaves the ordinary booker as it was when no layout is asked for", async () => {
     render(<Booker {...baseProps} />);
     expect(await screen.findByRole("heading", { name: "Advisor Call" })).toBeTruthy();

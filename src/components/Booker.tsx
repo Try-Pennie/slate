@@ -705,9 +705,17 @@ export default function Booker({
   // #3718: the inline card opens on the first bookable day with its times showing,
   // as settled; the full booker still waits for the lead to choose (#1336). A day
   // is still chosen before any time is drawn, so that rule holds here too.
+  //
+  // The day holding the EARLIEST BOOKABLE slot, not the first day on the strip: a day
+  // whose times all fall outside the lead's calling hours (#2310) is still on the
+  // strip, and opening on it would show a card with no times. Only when nothing is
+  // bookable at all does it open on the first day, whose own message then says why.
   useEffect(() => {
-    if (inline && activeDay === null && picker.days.length > 0) picker.selectDay(picker.days[0]!);
-  }, [inline, activeDay, picker]);
+    if (!inline || activeDay !== null || picker.days.length === 0) return;
+    const earliest = [...picker.slots].sort()[0];
+    const day = earliest ? DateTime.fromISO(earliest, { zone }).toISODate() : null;
+    picker.selectDay(day && picker.days.includes(day) ? day : picker.days[0]!);
+  }, [inline, activeDay, picker, zone]);
 
   // The single origin every outbound embed message targets. Never "*": the
   // success payload carries lead PII, so a wildcard could hand it to whatever
