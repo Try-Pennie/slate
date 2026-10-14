@@ -11,6 +11,12 @@ import { BookerStrip, BookerStripSkeleton } from "@/components/BookerStrip";
 import { SlotTimes } from "@/components/SlotTimes";
 import { useSlotPicker } from "@/components/use-slot-picker";
 import {
+  CallMeNowConfirmation,
+  CallMeNowRow,
+  useCallMeNow,
+  type CallMeNowConfig,
+} from "@/components/CallMeNow";
+import {
   EMBED_MESSAGE,
   LINK_FAILED,
   type BookingCancelledDetail,
@@ -237,6 +243,13 @@ interface BookerProps {
    * goes on into the same details and confirm steps as the full booker.
    */
   layout?: "inline";
+  /**
+   * #3718: the inline card's Call me now row, or null for none. Set only when the
+   * page asked for it (`callMeNow=above|below`) for a lead. The contact details are
+   * the ones the HOST PAGE sent, never ones Slate looked up, because the press checks
+   * them against the Lead and Salesforce's own values would always match.
+   */
+  callMeNow?: CallMeNowConfig | null;
   /** Palette, from the embed `ui` config. Defaults to light. */
   theme?: "light" | "dark";
   /** Brand accent (hex) from the embed `ui` config; tints dots/ring/confirm. */
@@ -310,6 +323,8 @@ interface AvailabilityResponse {
    *  named none, and then nothing is handed back. */
   shownTier?: string | null;
 }
+
+export type { CallMeNowConfig };
 
 /**
  * Pennie token-driven palette. Both keys lean on the semantic vars
@@ -391,6 +406,7 @@ export default function Booker({
   prefill,
   embedded = false,
   layout,
+  callMeNow = null,
   theme = "light",
   brandColor,
   parentOrigin,
@@ -684,12 +700,22 @@ export default function Booker({
   const activeDay = picker.selectedDay;
   const loading = picker.view.kind === "loading";
   const inline = layout === "inline";
+  // #3718: the Call me now row, only on the inline card and only when the page asked.
+  const cmn = useCallMeNow(inline ? callMeNow : null);
   // #3718: the inline card opens on the first bookable day with its times showing,
   // as settled; the full booker still waits for the lead to choose (#1336). A day
   // is still chosen before any time is drawn, so that rule holds here too.
+  //
+  // The day holding the EARLIEST BOOKABLE slot, not the first day on the strip: a day
+  // whose times all fall outside the lead's calling hours (#2310) is still on the
+  // strip, and opening on it would show a card with no times. Only when nothing is
+  // bookable at all does it open on the first day, whose own message then says why.
   useEffect(() => {
-    if (inline && activeDay === null && picker.days.length > 0) picker.selectDay(picker.days[0]!);
-  }, [inline, activeDay, picker]);
+    if (!inline || activeDay !== null || picker.days.length === 0) return;
+    const earliest = [...picker.slots].sort()[0];
+    const day = earliest ? DateTime.fromISO(earliest, { zone }).toISODate() : null;
+    picker.selectDay(day && picker.days.includes(day) ? day : picker.days[0]!);
+  }, [inline, activeDay, picker, zone]);
 
   // The single origin every outbound embed message targets. Never "*": the
   // success payload carries lead PII, so a wildcard could hand it to whatever
@@ -2364,11 +2390,40 @@ export default function Booker({
 
   if (inline) {
     // #3718: the card, as settled: a title, then a panel holding the day strip and
-    // the times. Once a time is chosen the panel holds the details step instead.
+    // the times. Once a time is chosen the panel holds the details step instead. The
+    // Call me now row sits above or below that panel, as the page asked, and a press
+    // that went through replaces the panel with its confirmation.
+    const cmnRow =
+      callMeNow && !selectedSlot ? (
+        <CallMeNowRow
+          phase={cmn.phase}
+          position={callMeNow.position}
+          onPress={cmn.press}
+          palette={c}
+          titleClass={c.title}
+          mutedClass={c.faint}
+          confirmStyle={confirmStyle}
+        />
+      ) : null;
+    const rowShown = cmnRow !== null && ["offered", "pressing", "failed", "refused"].includes(cmn.phase);
+    // One frame and one title for both bodies: the confirmation after a press that
+    // went through, or the times with the row beside them.
     return (
       <div ref={rootRef} data-theme={theme} className={shell}>
         {testBand}
         <p className={`mb-3.5 text-[length:var(--fs-h5,1.25rem)] font-semibold ${c.title}`}>{INLINE_CARD_COPY.title}</p>
+        {cmn.phase === "confirmed" ? (
+          <CallMeNowConfirmation
+            firstName={callMeNow?.firstName ?? null}
+            textLine={cmn.textLine}
+            onBackToTimes={cmn.backToTimes}
+            palette={c}
+            titleClass={c.title}
+            mutedClass={c.faint}
+          />
+        ) : (
+          <>
+        {rowShown && callMeNow?.position === "above" && <div className="mb-3">{cmnRow}</div>}
         <div className="rounded-2xl bg-surface p-[18px]">
           {!selectedSlot && (
             <>
@@ -2398,6 +2453,9 @@ export default function Booker({
             <p className={`mt-3 text-center text-xs ${c.faint}`}>{INLINE_CARD_COPY.timesIn(zoneReadName(zone))}</p>
           )}
         </div>
+        {rowShown && callMeNow?.position === "below" && <div className="mt-3">{cmnRow}</div>}
+          </>
+        )}
       </div>
     );
   }

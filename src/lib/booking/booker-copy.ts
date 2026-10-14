@@ -50,8 +50,7 @@ export function longDayLabel(iso: string, zone: string, opts?: { year?: boolean 
 /**
  * The inline card on a landing page (#3718), as settled in
  * docs/design/inline-booker.html: the card's title, and a label over the day
- * strip and times. The Call me now row the design puts under the title is a
- * later change.
+ * strip and times. The Call me now row's own words are `CALL_ME_NOW_COPY` below.
  */
 export const INLINE_CARD_COPY = {
   title: "Connect with your loan advisor:",
@@ -61,6 +60,46 @@ export const INLINE_CARD_COPY = {
    * picker, so it names the zone in the booker's own words (`zoneLabel`).
    */
   timesIn: (zone: string) => `Times in ${zone}`,
+};
+
+/**
+ * The inline card's Call me now row and what follows a press (#3718), settled in
+ * design rounds 1 to 3 (docs/design/inline-booker.html). The confirmation is
+ * trypennie.com's own (its /my-offers/call-me-now page), word for word, bar the one
+ * dash in its text message, which Slate's copy rules refuse.
+ */
+export const CALL_ME_NOW_COPY = {
+  ready: "Ready to speak now?",
+  haveCall: "Have an advisor call you.",
+  button: "Call me now",
+  /** The button's label while the press is in flight. */
+  pressing: "Requesting your call",
+  thanks: (firstName: string | null): string => (firstName ? `Thanks, ${firstName}!` : "Thanks!"),
+  momentarily: "You will receive a call momentarily from your advisor.",
+  expect: "Here is what you should expect on the call:",
+  steps: [
+    { title: "Complete income verification call", body: "Verify financial information to ensure accuracy" },
+    {
+      title: "Review terms and rates with loan advisor",
+      body: "Carefully review the offer terms and rates to make sure they meet your needs",
+    },
+    { title: "Accept and get funded!", body: "That's it. Accepted offers fund as soon as the next business day." },
+  ],
+  textHeading: "Connect with us via text",
+  textBody: "Text us to receive important call and offer information.",
+  textButton: "Text us",
+  /** The message the Text us link starts. trypennie's has a dash; this one has a full stop. */
+  textMessage: "Hi, I just requested a call. Here is the number to reach me.",
+  instead: "Rather pick a time?",
+  insteadLink: "Choose a time instead",
+  failedHeading: "We couldn't request your call right now.",
+  /**
+   * Points at the times, which sit on the other side of the row from where the page
+   * put it: a row above the times says below, a row below them says above.
+   */
+  failedBody: (rowPosition: "above" | "below"): string =>
+    `Choose a time ${rowPosition === "above" ? "below" : "above"} and your advisor will call you then.`,
+  tryAgain: "Try again",
 };
 
 export const PICKER_COPY = {

@@ -45,6 +45,8 @@ export interface CallMeNowLead {
   email: string | null;
   /** Every phone the Lead holds (Home, Mobile), as stored. */
   phones: string[];
+  /** The Lead's mobile, as stored, or null. */
+  mobile: string | null;
   adv: number | null;
   pending: boolean | null;
 }
@@ -54,8 +56,11 @@ export type CallMeNowRefusal = "not-a-lead" | "no-such-lead" | "no-contact" | "c
 export type CallMeNowFailedStage = "lead-read" | "switch-read" | "write";
 
 export type CallMeNowOutcome =
-  | { kind: "requested" }
-  | { kind: "already-requested" }
+  // `leadPhone` is the phone Salesforce holds for the lead, mobile first, for the
+  // texting line lookup. Never the phone the page sent: a press can pass the check
+  // on its email alone, so that one was never verified.
+  | { kind: "requested"; leadPhone: string | null }
+  | { kind: "already-requested"; leadPhone: string | null }
   | { kind: "refused"; reason: CallMeNowRefusal }
   | { kind: "failed"; stage: CallMeNowFailedStage; error: unknown };
 
@@ -97,6 +102,7 @@ export function leadFromRecord(r: Record<string, unknown>): CallMeNowLead {
   return {
     email: typeof r.Email === "string" && r.Email.trim() !== "" ? r.Email : null,
     phones,
+    mobile: typeof r.MobilePhone === "string" && r.MobilePhone.trim() !== "" ? r.MobilePhone : null,
     adv: finite(r.ADV__c),
     pending: typeof r.Call_Me_Now_Pending__c === "boolean" ? r.Call_Me_Now_Pending__c : null,
   };
@@ -172,7 +178,8 @@ export async function checkCallMeNow(input: CallMeNowInput, deps: CallMeNowDeps)
 export async function requestCallMeNow(input: CallMeNowInput, deps: CallMeNowDeps): Promise<CallMeNowOutcome> {
   const v = await vet(input, deps);
   if (!("lead" in v)) return v;
-  if (v.lead.pending === true) return { kind: "already-requested" };
+  const leadPhone = v.lead.mobile ?? v.lead.phones[0] ?? null;
+  if (v.lead.pending === true) return { kind: "already-requested", leadPhone };
   // A Salesforce checkbox is never empty, so null here is a read that went wrong rather
   // than a lead with nothing pending: a failed read, with Try again, never a second ask.
   if (v.lead.pending === null) {
@@ -183,7 +190,7 @@ export async function requestCallMeNow(input: CallMeNowInput, deps: CallMeNowDep
   } catch (error) {
     return { kind: "failed", stage: "write", error };
   }
-  return { kind: "requested" };
+  return { kind: "requested", leadPhone };
 }
 
 /** Try again is offered only where retrying could change the answer. */

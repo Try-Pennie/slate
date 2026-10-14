@@ -18,6 +18,9 @@ const rateLimit = vi.hoisted(() => ({
 const live = vi.hoisted(() => ({ deps: null as unknown as CallMeNowDeps, writes: [] as string[], forget: vi.fn() }));
 const notify = vi.hoisted(() => ({ sendThrottledAlert: vi.fn(async (_k: string, _ms: number, _t: string) => {}) }));
 const deferred = vi.hoisted(() => ({ jobs: [] as (() => Promise<unknown>)[] }));
+const texting = vi.hoisted(() => ({
+  readTextingLine: vi.fn(async (_lead: { phone: string | null; submissionId: string | null }, _deps: unknown): Promise<string | null> => "+12125550188"),
+}));
 
 vi.mock("@/lib/rate-limit", () => rateLimit);
 vi.mock("@/lib/salesforce/call-me-now-live", () => ({
@@ -25,6 +28,7 @@ vi.mock("@/lib/salesforce/call-me-now-live", () => ({
   forgetCallMeNowLogin: live.forget,
 }));
 vi.mock("@/lib/notify/dispatch", () => notify);
+vi.mock("@/lib/automations/texting-line", () => texting);
 vi.mock("@/lib/after-response", () => ({
   afterResponse: (_ctx: string, work: () => Promise<unknown>) => {
     deferred.jobs.push(work);
@@ -58,8 +62,9 @@ beforeEach(() => {
   deferred.jobs.length = 0;
   live.writes = [];
   live.forget.mockClear();
+  texting.readTextingLine.mockClear();
   live.deps = {
-    readLead: async () => ({ email: "maria@example.com", phones: [], adv: 3, pending: false }),
+    readLead: async () => ({ email: "maria@example.com", phones: ["+12125550111"], mobile: "+12125550111", adv: 3, pending: false }),
     readSwitch: async () => ON,
     writeRequested: async (id) => {
       live.writes.push(id);
@@ -68,12 +73,35 @@ beforeEach(() => {
 });
 
 describe("POST /api/call-me-now (#3718)", () => {
-  it("marks a matching, eligible lead for a call", async () => {
-    const res = await press();
+  it("marks a matching, eligible lead for a call, and hands back the line they can text", async () => {
+    const res = await press({ phone: "(219) 758-8170", submissionId: "a04Ui00000ABCDEFGH" });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ outcome: "requested" });
+    expect(await res.json()).toEqual({ outcome: "requested", textLine: "+12125550188" });
+    // The phone the LEAD has in Salesforce, never the one the page sent.
+    expect(texting.readTextingLine.mock.calls[0]![0]).toEqual({ phone: "+12125550111", submissionId: "a04Ui00000ABCDEFGH" });
     expect(live.writes).toEqual([LEAD]);
     expect(live.forget).not.toHaveBeenCalled();
+  });
+
+  it("forwards a submission id only when it is shaped like one", async () => {
+    await press({ submissionId: "'; drop table x" });
+    expect(texting.readTextingLine.mock.calls[0]![0]).toMatchObject({ submissionId: null });
+  });
+
+  it("answers no text line when none comes back, which is how an unset service address reads", async () => {
+    texting.readTextingLine.mockResolvedValueOnce(null);
+    expect(await (await press()).json()).toEqual({ outcome: "requested", textLine: null });
+  });
+
+  it("asks for no text line on a refusal or a failure", async () => {
+    live.deps.readLead = async () => null;
+    await press();
+    live.deps.readLead = async () => ({ email: "maria@example.com", phones: [], mobile: null, adv: 3, pending: false });
+    live.deps.writeRequested = async () => {
+      throw new Error("SF update failed: 503");
+    };
+    await press();
+    expect(texting.readTextingLine).not.toHaveBeenCalled();
   });
 
   it("refuses over the limit before Salesforce is asked", async () => {
@@ -121,11 +149,11 @@ describe("POST /api/call-me-now (#3718)", () => {
   // A refusal is only meaningful beside a success, so this test also presses for the
   // matching lead first: a route that refused everything would fail here, not pass.
   it("a missing lead and a mismatched contact get the same answer, with no retry and no write", async () => {
-    expect(await (await press()).json()).toEqual({ outcome: "requested" });
+    expect((await (await press()).json()).outcome).toBe("requested");
     live.writes = [];
     live.deps.readLead = async () => null;
     const noLead = await (await press()).json();
-    live.deps.readLead = async () => ({ email: "someone@else.com", phones: [], adv: 3, pending: false });
+    live.deps.readLead = async () => ({ email: "someone@else.com", phones: [], mobile: null, adv: 3, pending: false });
     const mismatch = await (await press()).json();
     expect(noLead).toEqual({ outcome: "refused", retry: false });
     expect(mismatch).toEqual(noLead);
@@ -133,8 +161,8 @@ describe("POST /api/call-me-now (#3718)", () => {
   });
 
   it("a lead with a call already pending is told so, with no second write", async () => {
-    live.deps.readLead = async () => ({ email: "maria@example.com", phones: [], adv: 3, pending: true });
-    expect(await (await press()).json()).toEqual({ outcome: "already-requested" });
+    live.deps.readLead = async () => ({ email: "maria@example.com", phones: [], mobile: null, adv: 3, pending: true });
+    expect(await (await press()).json()).toEqual({ outcome: "already-requested", textLine: "+12125550188" });
     expect(live.writes).toEqual([]);
   });
 
