@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { callMeNowAllowed, clientIp } from "@/lib/rate-limit";
 import { readJsonCapped, PUBLIC_JSON_MAX_BYTES } from "@/lib/http/read-json-capped";
-import { liveCallMeNowDeps } from "@/lib/salesforce/call-me-now-live";
+import { forgetCallMeNowLogin, liveCallMeNowDeps } from "@/lib/salesforce/call-me-now-live";
 import {
   checkCallMeNow,
   formatCallMeNowFailedAlert,
@@ -31,6 +31,8 @@ export const CALL_ME_NOW_ALERT_COOLDOWN_MS = 10 * 60_000;
 const FAILURE_KEY = { check: "call_me_now_hidden", press: "call_me_now_failed" } as const;
 
 function pageFailure(failure: { stage: CallMeNowFailedStage; error: unknown }, leadId: string, when: "check" | "press"): void {
+  // The kept login may be what failed (revoked), so the next ask logs in afresh.
+  forgetCallMeNowLogin();
   const page = formatCallMeNowFailedAlert({ stage: failure.stage, leadId, error: failure.error, when });
   // alert-key: call_me_now_hidden
   // alert-key: call_me_now_failed

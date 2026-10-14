@@ -92,6 +92,10 @@ export function createReadingCache<T>(read: () => Promise<T>, windows: { ttlMs: 
   }
   return {
     readTimed,
+    /** Drops the kept reading, so the next ask reads afresh even inside the window. */
+    forget(): void {
+      kept = null;
+    },
     async read(nowMs: number = Date.now()): Promise<T> {
       return (await readTimed(nowMs)).settings;
     },

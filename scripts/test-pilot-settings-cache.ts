@@ -91,6 +91,16 @@ function fake() {
   assert(threw, "and throws once past it");
 }
 {
+  // #3718: a kept reading can be dropped, so the next ask reads afresh inside the window
+  // (Call me now drops its kept Salesforce login after any failure, in case it was revoked).
+  let reads = 0;
+  const cache = createReadingCache(async () => ++reads, { ttlMs: 60_000, staleMs: 60_000 });
+  eq(await cache.read(0), 1, "the first ask reads");
+  eq(await cache.read(1), 1, "the second is kept");
+  cache.forget();
+  eq(await cache.read(2), 2, "after forget the next ask reads afresh, inside the window");
+}
+{
   // Nothing ever read: a failure throws, never a guessed split.
   const { state, cache } = fake();
   state.answer = "throws";

@@ -14,12 +14,15 @@ const rateLimit = vi.hoisted(() => ({
   callMeNowAllowed: vi.fn(async (_ip: string) => true),
   clientIp: (headers: Headers) => headers.get("cf-connecting-ip")?.trim() ?? "unknown",
 }));
-const live = vi.hoisted(() => ({ deps: null as unknown as CallMeNowDeps, writes: [] as string[] }));
+const live = vi.hoisted(() => ({ deps: null as unknown as CallMeNowDeps, writes: [] as string[], forget: vi.fn() }));
 const notify = vi.hoisted(() => ({ sendThrottledAlert: vi.fn(async (_k: string, _ms: number, _t: string) => {}) }));
 const deferred = vi.hoisted(() => ({ jobs: [] as (() => Promise<unknown>)[] }));
 
 vi.mock("@/lib/rate-limit", () => rateLimit);
-vi.mock("@/lib/salesforce/call-me-now-live", () => ({ liveCallMeNowDeps: () => live.deps }));
+vi.mock("@/lib/salesforce/call-me-now-live", () => ({
+  liveCallMeNowDeps: () => live.deps,
+  forgetCallMeNowLogin: live.forget,
+}));
 vi.mock("@/lib/notify/dispatch", () => notify);
 vi.mock("@/lib/after-response", () => ({
   afterResponse: (_ctx: string, work: () => Promise<unknown>) => {
@@ -53,6 +56,7 @@ beforeEach(() => {
   notify.sendThrottledAlert.mockClear();
   deferred.jobs.length = 0;
   live.writes = [];
+  live.forget.mockClear();
   live.deps = {
     readLead: async () => ({ email: "maria@example.com", phones: [], adv: 3, pending: false }),
     readSwitch: async () => ON,
@@ -68,6 +72,7 @@ describe("POST /api/call-me-now (#3718)", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ outcome: "requested" });
     expect(live.writes).toEqual([LEAD]);
+    expect(live.forget).not.toHaveBeenCalled();
   });
 
   it("refuses over the limit before Salesforce is asked", async () => {
@@ -102,6 +107,7 @@ describe("POST /api/call-me-now (#3718)", () => {
     // Its own key, so a hidden button never silences the page about a lead who pressed.
     expect(key).toBe("call_me_now_hidden");
     expect(page).toMatch(/button was hidden/i);
+    expect(live.forget).toHaveBeenCalledTimes(1);
   });
 
   it("a check that is simply refused pages nothing", async () => {
@@ -144,6 +150,9 @@ describe("POST /api/call-me-now (#3718)", () => {
     const [key, , text] = notify.sendThrottledAlert.mock.calls[0]!;
     expect(key).toBe("call_me_now_failed");
     expect(text).toContain(LEAD);
+    // The kept Salesforce login may be the thing that failed (revoked), so it is dropped
+    // and the lead's Try again logs in afresh.
+    expect(live.forget).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a request with no action or no lead id", async () => {
