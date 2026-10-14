@@ -120,6 +120,18 @@ function workingRules(r: () => number, odd: boolean, everyDayShare: number): Wor
   return rules;
 }
 
+/** The member's local days covering the window, with one spare day either side. */
+function localDaysAround(zone: string, fromMs: number, toMs: number): DateTime[] {
+  const days: DateTime[] = [];
+  let day = DateTime.fromMillis(fromMs, { zone }).startOf("day").minus({ days: 1 });
+  const last = DateTime.fromMillis(toMs, { zone }).startOf("day").plus({ days: 1 });
+  while (day <= last) {
+    days.push(day);
+    day = day.plus({ days: 1 });
+  }
+  return days;
+}
+
 function busyBlocks(
   r: () => number,
   zone: string,
@@ -128,9 +140,7 @@ function busyBlocks(
   perDay: number,
 ): { start: number; end: number }[] {
   const out: { start: number; end: number }[] = [];
-  let day = DateTime.fromMillis(fromMs, { zone }).startOf("day").minus({ days: 1 });
-  const last = DateTime.fromMillis(toMs, { zone }).startOf("day").plus({ days: 1 });
-  while (day <= last) {
+  for (const day of localDaysAround(zone, fromMs, toMs)) {
     const n = Math.max(0, Math.round(perDay + (r() - 0.5) * perDay));
     for (let i = 0; i < n; i++) {
       // A five minute grid, plus the odd off grid minute, as calendar events are.
@@ -144,7 +154,6 @@ function busyBlocks(
       const start = day.toMillis();
       out.push({ start, end: day.plus({ days: int(r, 1, 3) }).toMillis() });
     }
-    day = day.plus({ days: 1 });
   }
   // Unsorted, as the merged Slate plus Google read arrives.
   for (let i = out.length - 1; i > 0; i--) {
@@ -162,14 +171,11 @@ function dayCountsFor(
   cap: number | null,
 ): Map<string, number> {
   const counts = new Map<string, number>();
-  let day = DateTime.fromMillis(fromMs, { zone }).startOf("day").minus({ days: 1 });
-  const last = DateTime.fromMillis(toMs, { zone }).startOf("day").plus({ days: 1 });
   const ceiling = cap ?? 8;
-  while (day <= last) {
+  for (const day of localDaysAround(zone, fromMs, toMs)) {
     const roll = r();
     const n = roll < 0.5 ? 0 : roll < 0.85 ? int(r, 1, ceiling - 1) : roll < 0.95 ? ceiling : ceiling + 1;
     if (n > 0) counts.set(day.toISODate()!, n);
-    day = day.plus({ days: 1 });
   }
   return counts;
 }
