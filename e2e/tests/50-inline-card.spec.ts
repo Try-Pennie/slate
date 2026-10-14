@@ -40,8 +40,8 @@ const WIDTHS = [
   { name: "phone", viewport: { width: 390, height: 844 }, column: 358, across: 2 },
 ] as const;
 
-function hostPage(theme: "light" | "dark", column: number): string {
-  const call = JSON.stringify({ elementOrSelector: "#slot", calLink: `router?xbc=${seed.bucketCode}` });
+function hostPage(theme: "light" | "dark", column: number, link = `router?xbc=${seed.bucketCode}`): string {
+  const call = JSON.stringify({ elementOrSelector: "#slot", calLink: link });
   return `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>A landing page</title></head>
 <body style="margin:0;padding:16px;background:${theme === "dark" ? "#0c0b0e" : "#f9f6f0"}">
 <div id="slot" style="width:${column}px;max-width:100%"></div>
@@ -106,3 +106,57 @@ test("picking a time in the card goes on to the details step inside it", async (
   await expect(card.getByText("Choose a time for your call below:")).toBeVisible();
   await expect(times.first()).toBeVisible();
 });
+
+// #3718 step 3: the Call me now row. The local stack cannot reach Salesforce, so
+// `/api/call-me-now` is answered here (its decisions are pinned by its own tests);
+// what this proves is the card drawing every state in a real browser, axe included.
+const CMN_LINK = (position: "above" | "below") =>
+  `router?xbc=${seed.bucketCode}&external_id=00QUi000010889ZMAQ&name=Maria%20Lopez` +
+  `&email=maria%40example.com&phone=2197588170&callMeNow=${position}`;
+
+async function answerCallMeNow(page: import("@playwright/test").Page, press: { status: number; body: unknown }) {
+  await page.route(`${E2E_APP_ORIGIN}/api/call-me-now`, async (route) => {
+    const body = JSON.parse(route.request().postData() ?? "{}") as { action?: string };
+    const a = body.action === "check" ? { status: 200, body: { offered: true } } : press;
+    await route.fulfill({ status: a.status, contentType: "application/json", body: JSON.stringify(a.body) });
+  });
+}
+
+for (const theme of ["light", "dark"] as const) {
+  test(`Call me now: the row, then the confirmation with Text us, ${theme}`, async ({ page }) => {
+    await page.setViewportSize(WIDTHS[0].viewport);
+    await answerCallMeNow(page, { status: 200, body: { outcome: "requested", textLine: "+12125550188" } });
+    hostHtml = hostPage(theme, WIDTHS[0].column, CMN_LINK("above"));
+    await page.goto(`${HOST}/landing`);
+    const card = page.frameLocator("#slot iframe");
+    const call = card.getByRole("button", { name: "Call me now" });
+    await expect(call).toBeVisible({ timeout: 20_000 });
+    await expect(card.getByRole("button", { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first()).toBeVisible({ timeout: 20_000 });
+    await page.locator("#slot").screenshot({ path: `e2e/.artifacts/inline-card-cmn-row-${theme}.png` });
+    await expectAccessible(page, `the Call me now row, ${theme}`);
+
+    await call.click();
+    await expect(card.getByText("Thanks, Maria!")).toBeVisible();
+    await expect(card.getByRole("link", { name: "Text us" })).toHaveAttribute("href", /^sms:\+12125550188\?&body=/);
+    await page.locator("#slot").screenshot({ path: `e2e/.artifacts/inline-card-cmn-confirmed-${theme}.png` });
+    await expectAccessible(page, `the Call me now confirmation, ${theme}`);
+
+    await card.getByRole("button", { name: "Choose a time instead" }).click();
+    await expect(card.getByText("Choose a time for your call below:")).toBeVisible();
+  });
+}
+
+test("Call me now: a press that fails says so, offers Try again, and keeps the times", async ({ page }) => {
+  await page.setViewportSize(WIDTHS[1].viewport);
+  await answerCallMeNow(page, { status: 503, body: { outcome: "failed", retry: true } });
+  hostHtml = hostPage("light", WIDTHS[1].column, CMN_LINK("below"));
+  await page.goto(`${HOST}/landing`);
+  const card = page.frameLocator("#slot iframe");
+  await card.getByRole("button", { name: "Call me now" }).click({ timeout: 20_000 });
+  await expect(card.getByText("We couldn't request your call right now.")).toBeVisible();
+  await expect(card.getByRole("button", { name: "Try again" })).toBeVisible();
+  await expect(card.getByText("Choose a time for your call below:")).toBeVisible();
+  await page.locator("#slot").screenshot({ path: "e2e/.artifacts/inline-card-cmn-failed-phone.png" });
+  await expectAccessible(page, "the Call me now failure, phone");
+});
+
