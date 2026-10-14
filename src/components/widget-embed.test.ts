@@ -1260,6 +1260,17 @@ describe("widget.js inline embed (#3718)", () => {
     expect(inlineIframe(el)!.style.display).toBe("block");
   });
 
+  it("takes the notice down and shows the booker when it loads after the notice went up", () => {
+    vi.useFakeTimers();
+    const el = slot();
+    cal()("inline", { elementOrSelector: "#slot", calLink: "router?xbc=411" });
+    vi.advanceTimersByTime(12000);
+    expect(el.querySelector<HTMLElement>('[role="alert"]')!.style.display).toBe("block");
+    inlineIframe(el)!.dispatchEvent(new Event("load"));
+    expect(el.querySelector<HTMLElement>('[role="alert"]')!.style.display).toBe("none");
+    expect(inlineIframe(el)!.style.display).toBe("block");
+  });
+
   it("announces no failure for a booker that loaded", () => {
     vi.useFakeTimers();
     const el = slot();

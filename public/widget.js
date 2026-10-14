@@ -556,6 +556,10 @@
     iframe.addEventListener("load", function () {
       loaded = true;
       stop();
+      // A booker that arrives after the notice went up replaces it: the lead
+      // must never read "couldn't load" over a booker that did.
+      notice.style.display = "none";
+      iframe.style.display = "block";
     });
     retry.addEventListener("click", function () {
       notice.style.display = "none";

@@ -15,9 +15,9 @@ import { E2E_APP_ORIGIN } from "../env.ts";
 // Another origin on this machine, so the card is framed cross origin as it will be
 // on a landing page. A real server rather than a faked response: Chrome treats a
 // faked page as a public website, and its local network protection then refuses
-// to let it load widget.js from this machine.
-const HOST_PORT = 3998;
-const HOST = `http://localhost:${HOST_PORT}`;
+// to let it load widget.js from this machine. On whatever port is free, so two
+// runs never collide.
+let HOST = "";
 let host: Server;
 let hostHtml = "";
 
@@ -26,7 +26,10 @@ test.beforeAll(async () => {
     res.writeHead(200, { "content-type": "text/html" });
     res.end(hostHtml);
   });
-  await new Promise<void>((resolve) => host.listen(HOST_PORT, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => host.listen(0, "127.0.0.1", resolve));
+  const address = host.address();
+  if (!address || typeof address === "string") throw new Error("the host page server has no port");
+  HOST = `http://localhost:${address.port}`;
 });
 test.afterAll(async () => {
   await new Promise<void>((resolve) => host.close(() => resolve()));
