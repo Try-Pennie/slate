@@ -5920,7 +5920,13 @@ async function attemptReservation(
   // delete the reservation skipped every post-insert side effect (#613). Instead,
   // re-run the idempotent side effects (busyblock/recompute/notify) so the
   // previously-lost booking.created is delivered exactly once, THEN clean up.
-  if (key) {
+  //
+  // #3495: only the drain's resume asks. A fresh confirm (`known`) looked its key up
+  // moments before reserving, and the save below refuses a second booking on the key
+  // and hands back the winner, so asking again here was one more database wait on
+  // every booking (about 130ms at the median, 480ms at the p95, on load run 20) for a
+  // case the save already answers. That case's calendar event is handled there.
+  if (key && !known) {
     const already = await deps.findBookingByIdempotencyKey(key);
     if (already) {
       const bookedCode = already.routing_trace?.bucket_code ?? bucketCode;
@@ -6113,8 +6119,18 @@ async function attemptReservation(
     if (answer.winner) {
       // The lead's own key won (a concurrent duplicate): its booking is the answer
       // however this cleanup goes (#3263); a reservation left behind is the drain's.
+      //
+      // #3495: the event id is derived from the key AND the advisor, so a loser that
+      // picked another advisor than the winner wrote an event of its own, which would
+      // otherwise stay on that advisor's calendar as a second invite. A loser on the
+      // winner's own advisor shares the winner's event, which must stay.
       const winner = answer.winner;
-      const unfinished = await finishCommitted(() => deps.deleteReservation(reservation.id));
+      const unfinished = await finishCommitted(async () => {
+        if (winner.gcal_event_id !== gcalEventId) {
+          await compensateEvent(deps, reservation.pinned_agent_email, gcalEventId, null);
+        }
+        await deps.deleteReservation(reservation.id);
+      });
       return {
         kind: "completed",
         completed: { result: { booking: winner, manageUrl: manageUrl(deps, winner.manage_token) }, unfinished },
