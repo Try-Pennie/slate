@@ -280,7 +280,7 @@ exits, and the exit code says which (`EXIT` in `scripts/lib/gradual-deploy.ts`, 
 | 23 | promoted and healthy, and the log tail worker (`slate-log-tail`) could not be deployed after it; Slate is not rolled back | new |
 | 24 | the deploy script itself failed outside its own handling | unknown: the settle step reads what the run recorded |
 | 25 | the release changes a Durable Object class, which Cloudflare refuses to upload as a version (#3352); ship it by hand, and until then every later deploy ends here too | unchanged |
-| 26 | an object worker (`slate-confirm-line`, #3500, or `slate-burst-limiter`, #3555) could not be deployed; Slate's bindings name them, so nothing of Slate's was uploaded. The message names the config; deploy it with `npx wrangler deploy -c <config>` and re-run | unchanged |
+| 26 | an object worker (`slate-confirm-line`, #3500, `slate-burst-limiter`, #3555, or `slate-token-holder`, #3512) could not be deployed; Slate's bindings name them, so nothing of Slate's was uploaded. The message names the config; deploy it with `npx wrangler deploy -c <config>` and re-run | unchanged |
 
 Any non-zero exit fails the job, and a failed job on a push to `main` posts a Slack alert
 (`.github/workflows/deploy-alert.yml`). A job cancelled or timed out mid-run cannot end the
@@ -340,6 +340,14 @@ lead can meet both versions across page loads. Then it is one version at 100% ag
   the hand deploy. Merge it, then run the hand deploy straight away. It also refuses, with
   no label able to pass it, a pull request that edits or removes an existing `migrations`
   entry: Cloudflare never applies a tag twice, so the change belongs in a new tag.
+- **The token holder** (`TOKEN_HOLDER`, #3512) is a class of its own small Worker
+  (`slate-token-holder`), never Slate's, so it adds no `migrations` entry to
+  `wrangler.jsonc` and ships through this pipeline: its Worker is deployed whole before
+  the uploads, from `OBJECT_WORKER_CONFIGS`, and its own `v1` migration is applied by that
+  plain `wrangler deploy`. It holds tokens in memory only, so every such deploy empties
+  it; the next reads of each advisor mint as they did before the holder existed and put
+  the token back, which costs a few mints after a deploy and fails nothing. It holds no
+  secret: it never mints.
 - **Cost.** Two uploads, a split and a second probe add roughly a minute to each deploy,
   plus the cron window wait when a merge lands just before the hour (about one deploy in
   ten). At the 530 deploys of the 30 days to 2026-10-03, that is an estimated 500 to 600

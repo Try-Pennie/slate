@@ -423,11 +423,11 @@ export function maxCronWaitMs(crons: string[], budgetMs = SPLIT_BUDGET_MS, margi
 // --- the run itself ----------------------------------------------------------------
 
 /**
- * #3500, #3555: the small workers that host Slate's Durable Objects, each deployed whole
+ * #3500, #3555, #3512: the small workers that host Slate's Durable Objects, each deployed whole
  * before Slate on every path that deploys it (this gradual deploy, the hand deploy, the
  * load run), because Slate binds its objects to them by script name.
  */
-export const OBJECT_WORKER_CONFIGS = ["wrangler.confirm-line.jsonc", "wrangler.burst-limiter.jsonc"] as const;
+export const OBJECT_WORKER_CONFIGS = ["wrangler.confirm-line.jsonc", "wrangler.burst-limiter.jsonc", "wrangler.token-holder.jsonc"] as const;
 
 /** How a run ended, as a process exit code. Each one is its own message and its own
  *  remedy, so none of them may share a number (scripts/test-gradual-deploy.ts). */
