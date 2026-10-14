@@ -902,8 +902,29 @@ const windowOf = (samples: RateSample[]): RateWindowState => ({
     "an ended burst stores no marker in the window: its notice's own cooldown keeps it to once",
   );
   assert(
-    h.logs.some((l) => l.told === "past"),
-    "and the decision is still recorded, on the log line",
+    h.logs.some((l) => l.burst_ended === true && l.told === null),
+    "and the log line records that the burst has ended, with no page told",
+  );
+  assert(
+    h.logs.some((l) => l.msg === "burst ended notice" && l.outcome === "asked"),
+    "and that its notice was asked for",
+  );
+}
+{
+  // The same ended burst on the tick a page that WAS open is all-cleared: the all-clear
+  // is the end of that story, so the notice is held, and the log must say it was held
+  // rather than claim it was sent (the main line is written before the resolve answers).
+  const ended = windowOf([sample(T0 - 50 * MIN, 10, 6), sample(T0 - 45 * MIN, 5, 0), sample(T0 - 20 * MIN, 7, 0)]);
+  const h = harness({ state: ended, resolveAnswers: true });
+  await h.run();
+  eq(h.notified.length, 0, "a burst whose open page was just all-cleared sends no past notice");
+  assert(
+    h.logs.some((l) => l.msg === "burst ended notice" && l.outcome === "held_page_cleared"),
+    "and the log says the notice was held because the page was cleared, not that it went out",
+  );
+  assert(
+    !h.logs.some((l) => l.msg === "burst ended notice" && l.outcome === "asked"),
+    "and never that it was asked for",
   );
 }
 {

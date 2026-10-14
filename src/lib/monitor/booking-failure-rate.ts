@@ -759,7 +759,12 @@ export async function runBookingFailureRateCheck(deps: {
     recent_failures: recent.failures,
     recent_completing: recent.completing,
     newest_failure_min_ago: span === null ? null : Math.round((deps.nowMs - span.newestMs) / 60_000),
-    told: live ? "live" : past ? "past" : null,
+    // What this tick knows before any resolve answers: whether a page is open for
+    // these failures (`told`) and whether a burst has ended (`burst_ended`). Whether
+    // the ended burst's notice actually went out is decided after the all-clear and
+    // logged on its own line below, so this line never claims a notice it held.
+    told: told ?? null,
+    burst_ended: past,
   });
 
   // The people count refines a page and is never a condition of one: a failed read is
@@ -799,7 +804,11 @@ export async function runBookingFailureRateCheck(deps: {
   // the burst notice would say it twice. A resolve that THREW cannot say whether one
   // was open, and the notice still goes: a duplicate is better than a burst nobody
   // hears about.
+  if (past && settled) {
+    deps.log?.({ msg: "burst ended notice", outcome: "held_page_cleared" });
+  }
   if (past && !settled && verdict.status === "breach" && span !== null) {
+    deps.log?.({ msg: "burst ended notice", outcome: "asked" });
     const refused = await readRefused();
     // The cooldown is the window's length, and it is what holds this to once per
     // burst: a burst reads as ended only from 30 minutes after its newest failure
