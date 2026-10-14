@@ -53,6 +53,7 @@ So the policy is:
 - [GET /api/availability (public cached read)](#get-apiavailability)
 - [GET /api/availability/next (the next open days)](#get-apiavailabilitynext)
 - [POST /api/routing (public routing resolve)](#post-apirouting)
+- [POST /api/call-me-now (the inline booker's Call me now)](#post-apicall-me-now)
 - [POST /api/bookings/reassign (key-authed contact-owner reassign)](#post-apibookingsreassign)
 - [POST /api/bookings/cancel-duplicate (key-authed duplicate cancel)](#post-apibookingscancel-duplicate)
 - [Offboarding lifecycle (key-authed)](#offboarding-lifecycle-key-authed)
@@ -87,7 +88,7 @@ names which one it requires.
 | Supabase session (staff) | session cookie | Supabase Auth | every `/api/admin/*` route |
 | Manage token | in the URL path | per-booking `manage_token` | `POST /api/bookings/[token]/cancel`, `POST /api/bookings/[token]/reschedule`, `POST /api/bookings/[token]/phone`, `GET /api/bookings/[token]/ics` |
 | Smoke key | `Authorization: Bearer <key>` | `BOOKING_API_KEY_CANARY` only, which every canary lane and the load test send (#2822, #2854); a partner's key is refused | `GET /api/smoke/version`, `POST /api/smoke/heartbeat`, `POST /api/smoke/burst-counter`, `POST /api/smoke/confirm-line`, `POST /api/smoke/demotion-drill`, `POST /api/smoke/schedule-parity` |
-| None (public) | n/a | n/a | `GET /api/availability`, `GET /api/availability/next`, `POST /api/routing`, `POST /api/client-errors`, `POST /api/csp-report`, `GET /api/health`, `GET /api/health/availability`, `GET /api/auth/callback` |
+| None (public) | n/a | n/a | `GET /api/availability`, `GET /api/availability/next`, `POST /api/routing`, `POST /api/call-me-now`, `POST /api/client-errors`, `POST /api/csp-report`, `GET /api/health`, `GET /api/health/availability`, `GET /api/auth/callback` |
 
 Every Bearer credential is compared in constant time (`src/lib/bearer-auth.ts`).
 For the booking API, two keys are accepted at once (primary plus secondary) so
@@ -451,6 +452,47 @@ Missing or blank `xbc`: `400 { "error": "xbc is required" }`.
 Unknown bucket: `404 { "error": "unknown bucket" }`. The internal XBC routing
 descriptor (the bucket name) is intentionally withheld because this endpoint is
 unauthenticated (sibling of #259).
+
+---
+
+## POST /api/call-me-now
+
+Source: `src/app/api/call-me-now/route.ts`, decisions in
+`src/lib/salesforce/call-me-now.ts` (#3718). The inline booker's Call me now: it marks
+the Salesforce Lead for an immediate call, exactly as trypennie.com's button does
+(`CallMeNow__c` and `Call_Me_Now_Pending__c` set to true). Slate's only Salesforce write.
+
+**Auth:** public (no auth). What stops a stranger sending an advisor to call somebody
+is the contact check: the email or phone the page prefilled must match the Lead.
+Throttled per address (`CALL_ME_NOW_LIMITER`, then `CALL_ME_NOW_HOURLY_RATE_RULES`, 20
+an hour) before Salesforce is asked; over it, `429`.
+
+**Request:** `POST { "action": "check" | "request", "leadId": "00Q…", "email": "…", "phone": "…" }`.
+A missing or unknown `action`, or no `leadId`: `400`.
+
+**Responses:**
+
+```jsonc
+// action "check": writes nothing. A failed check hides the button (offered: false).
+{ "offered": true }
+
+// action "request"
+{ "outcome": "requested" }                     // 200, the Lead is marked for a call
+{ "outcome": "already-requested" }             // 200, a call was already pending; nothing written
+{ "outcome": "refused", "retry": false }       // 200, never says why (missing lead, contact mismatch, button off)
+{ "outcome": "failed", "retry": true }         // 503, Salesforce failed
+```
+
+**Pages** (after the response, so the lead never waits on Slack): a failed press pages
+`call_me_now_failed`, naming the first lead and where in the logs the rest are; a failed
+check pages `call_me_now_hidden`, because during an outage the button is hidden for every
+lead and nobody can press it. Separate keys, so neither silences the other.
+
+The button is offered exactly when trypennie's `calculateBookingPageVariant` would show
+it: the `WebsiteConfiguration__c` record has `IsActiveAlternate__c` on, `PageAlternate__c`
+is "Call Me Now Button", and the Lead's `ADV__c` is at or over `MinimumAdv__c`. Anything
+unreadable hides it. One Salesforce login is kept for fifteen minutes and dropped only
+when Salesforce refuses it.
 
 ---
 

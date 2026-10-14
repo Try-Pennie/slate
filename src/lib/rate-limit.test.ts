@@ -83,6 +83,7 @@ import {
   bookingApiReadWithinLimit,
   manageWithinLimit,
   landingIdentityAllowed,
+  callMeNowAllowed,
   bearerFailureWithinLimit,
   grantBookingRetryCredit,
   bookingRetryCredit,
@@ -1150,6 +1151,7 @@ describe("the burst ceiling reaches every edge limiter (#1556)", () => {
       "booking-api-read": bookingApiReadWithinLimit,
       manage: manageWithinLimit,
       landing: landingIdentityAllowed,
+      "call-me-now": callMeNowAllowed,
       "bearer-failure": bearerFailureWithinLimit,
     };
     expect(Object.keys(wrappers).sort()).toEqual(EDGE_LIMITERS.map((l) => l.area).sort());
@@ -1209,6 +1211,52 @@ describe("landingIdentityAllowed (#3106)", () => {
 
   it("refuses a caller with no address rather than counting them into a shared bucket", async () => {
     await expect(landingIdentityAllowed(UNIDENTIFIED_IP)).resolves.toBe(false);
+    expect(limit).not.toHaveBeenCalled();
+    expect(rpc).not.toHaveBeenCalled();
+  });
+});
+
+describe("callMeNowAllowed (#3718)", () => {
+  let clock = Date.UTC(2026, 9, 14);
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock += 60 * 60_000;
+    vi.setSystemTime(clock);
+    burstCount = 1;
+    burstFetches = 0;
+    cf.env = { MANAGE_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
+    limit.mockResolvedValue({ success: true });
+    getCloudflareContext.mockImplementation(() => ({ env: cf.env }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("allows a press under both ceilings, counted apart from the manage link and the landing lookup", async () => {
+    await expect(callMeNowAllowed("203.0.113.5")).resolves.toBe(true);
+    expect(limit).toHaveBeenCalledWith({ key: "cmn:203.0.113.5" });
+    expect(rpc).toHaveBeenCalledWith("rate_limit_hit", {
+      p_key: "cmn:h:203.0.113.5",
+      p_window_seconds: 3600,
+      p_max: 20,
+    });
+  });
+
+  it("refuses at the edge without a database round trip", async () => {
+    limit.mockResolvedValue({ success: false });
+    await expect(callMeNowAllowed("203.0.113.5")).resolves.toBe(false);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("refuses once the exact hourly cap is spent", async () => {
+    rpc.mockResolvedValueOnce({ data: false, error: null });
+    await expect(callMeNowAllowed("203.0.113.5")).resolves.toBe(false);
+  });
+
+  it("refuses a caller with no address, since every such caller would share one count", async () => {
+    await expect(callMeNowAllowed(UNIDENTIFIED_IP)).resolves.toBe(false);
     expect(limit).not.toHaveBeenCalled();
     expect(rpc).not.toHaveBeenCalled();
   });

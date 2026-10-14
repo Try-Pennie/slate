@@ -28,6 +28,7 @@ import { shortErrorReason } from "@/lib/notify/error-text";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { ALERT_CATALOG, type AlertKind } from "@/lib/notify/alert-catalog";
 import { formatRetiredKeyAlert } from "@/lib/booking/retired-keys";
+import { formatCallMeNowFailedAlert } from "@/lib/salesforce/call-me-now";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import {
@@ -1357,6 +1358,26 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the key is accepted again",
     channel: "recovery",
     text: refusalAllClear.credential,
+  },
+  // #3718: one state per step a press can fail at, plus the failed check that hides the
+  // button, which reads differently because nobody pressed anything.
+  {
+    key: "call_me_now_failed",
+    state: "Salesforce failed while marking the lead for a call",
+    channel: "alert",
+    text: formatCallMeNowFailedAlert({ stage: "write", leadId: "00QUi000010889ZMAQ", error: new Error("SF update failed: 503 Service Unavailable") }),
+  },
+  {
+    key: "call_me_now_failed",
+    state: "Salesforce failed while reading the lead",
+    channel: "alert",
+    text: formatCallMeNowFailedAlert({ stage: "lead-read", leadId: "00QUi000010889ZMAQ", error: new Error("SF query failed: 500 Internal Server Error") }),
+  },
+  {
+    key: "call_me_now_hidden",
+    state: "Salesforce failed while reading the switch, so the button was hidden",
+    channel: "alert",
+    text: formatCallMeNowFailedAlert({ stage: "switch-read", leadId: "00QUi000010889ZMAQ", error: new Error("SF query failed: 503 Service Unavailable"), when: "check" }),
   },
   // #2879: one state per kind of host, since each names the caller differently, plus a
   // second retired key from the same host kind, which pages on its own key.
