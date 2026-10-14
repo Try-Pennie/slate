@@ -12,6 +12,7 @@ import {
 } from "@/lib/salesforce/call-me-now";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { isSfAuthFailure } from "@/lib/salesforce/rest";
+import { isSubmissionId } from "@/lib/salesforce/lead-xbc";
 import { afterResponse } from "@/lib/after-response";
 import { log } from "@/lib/log";
 import { readTextingLine } from "@/lib/automations/texting-line";
@@ -44,6 +45,11 @@ function pageFailure(failure: { stage: CallMeNowFailedStage; error: unknown }, l
   // scripts/test-call-me-now.ts pins; the full text is in the caller's log line.
   afterResponse("call-me-now-alert", () => sendThrottledAlert(FAILURE_KEY[when], CALL_ME_NOW_ALERT_COOLDOWN_MS, page));
 }
+
+const submissionIdOf = (v: unknown): string | null => {
+  const id = text(v);
+  return id && isSubmissionId(id) ? id : null;
+};
 
 const text = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v.trim() : null);
 
@@ -106,7 +112,9 @@ export async function POST(req: NextRequest) {
   // The line the lead can text, for the confirmation's Text us. Null when the service
   // is not configured or does not answer usefully, and the card then shows no Text us.
   const textLine = await readTextingLine(
-    { phone: out.leadPhone, submissionId: text(body.submissionId) },
+    // The submission id only when it is shaped like one: the contact check proves
+    // nothing about it, so a malformed value is never handed to the service.
+    { phone: out.leadPhone, submissionId: submissionIdOf(body.submissionId) },
     {
       baseUrl: automationsApiUrl(),
       fetchImpl: fetch,

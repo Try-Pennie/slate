@@ -74,13 +74,18 @@ beforeEach(() => {
 
 describe("POST /api/call-me-now (#3718)", () => {
   it("marks a matching, eligible lead for a call, and hands back the line they can text", async () => {
-    const res = await press({ phone: "(219) 758-8170", submissionId: "a0XUi000001" });
+    const res = await press({ phone: "(219) 758-8170", submissionId: "a04Ui00000ABCDEFGH" });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ outcome: "requested", textLine: "+12125550188" });
     // The phone the LEAD has in Salesforce, never the one the page sent.
-    expect(texting.readTextingLine.mock.calls[0]![0]).toEqual({ phone: "+12125550111", submissionId: "a0XUi000001" });
+    expect(texting.readTextingLine.mock.calls[0]![0]).toEqual({ phone: "+12125550111", submissionId: "a04Ui00000ABCDEFGH" });
     expect(live.writes).toEqual([LEAD]);
     expect(live.forget).not.toHaveBeenCalled();
+  });
+
+  it("forwards a submission id only when it is shaped like one", async () => {
+    await press({ submissionId: "'; drop table x" });
+    expect(texting.readTextingLine.mock.calls[0]![0]).toMatchObject({ submissionId: null });
   });
 
   it("answers no text line when none comes back, which is how an unset service address reads", async () => {
