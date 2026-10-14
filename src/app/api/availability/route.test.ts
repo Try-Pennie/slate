@@ -753,6 +753,26 @@ describe("GET /api/availability names the layer that served it (#3366)", () => {
     await get("NOPE");
     expect(servedLine()).toBeUndefined();
   });
+
+  // #3381: on 2026-10-14 a stored row offered a time nobody was free for, two minutes
+  // after it was computed, and two writers had run that second. The line names which
+  // one wrote what was served, and whether a booking was spliced in since.
+  it("names the path that wrote what it served, and any splice since", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue({
+      ...slotsFor(false),
+      source: "row",
+      writtenBy: "lane",
+      spliced: "2026-10-14T08:45:10.000Z+reoffer",
+    });
+    await get("411");
+    expect(servedLine()?.[1]).toMatchObject({ written_by: "lane", spliced: "2026-10-14T08:45:10.000Z+reoffer" });
+  });
+
+  it("says not recorded, never a guess, when the entry carries no writer", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(false));
+    await get("411");
+    expect(servedLine()?.[1]).toMatchObject({ written_by: null, spliced: null });
+  });
 });
 
 // #3653 / #3652: the canary could time a read and could not say where the time went,

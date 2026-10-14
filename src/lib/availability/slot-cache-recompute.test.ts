@@ -44,7 +44,7 @@ describe("recomputeBucketSlotsForToday horizon window", () => {
   });
 
   /** The bookable-day count handed down as the trim target. */
-  const trimTarget = (call: unknown[]): number | undefined => call[4] as number | undefined;
+  const trimTarget = (call: unknown[]): number | undefined => call[5] as number | undefined;
 
   // #3119: a refused row is not a refresh. The throw reaches the caller (the
   // monitor's heal reports it through onHealError, the booking path logs it),
@@ -52,7 +52,7 @@ describe("recomputeBucketSlotsForToday horizon window", () => {
   it("passes a refused row write up to its caller", async () => {
     const refused = new Error("the bucket_slots row for 411 was refused");
     recomputeBucketSlots.mockRejectedValueOnce(refused);
-    await expect(recomputeBucketSlotsForToday("411", true)).rejects.toBe(refused);
+    await expect(recomputeBucketSlotsForToday("411", "monitor-heal", true)).rejects.toBe(refused);
   });
 
   // And the L1 entry is dropped on that path too, as the pooled path does: a stale
@@ -62,7 +62,7 @@ describe("recomputeBucketSlotsForToday horizon window", () => {
     vi.stubGlobal("caches", { default: { match: vi.fn(), put: vi.fn(), delete: del } });
     try {
       recomputeBucketSlots.mockRejectedValueOnce(new Error("refused"));
-      await expect(recomputeBucketSlotsForToday("411", true)).rejects.toThrow("refused");
+      await expect(recomputeBucketSlotsForToday("411", "monitor-heal", true)).rejects.toThrow("refused");
       expect(del).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
@@ -70,23 +70,29 @@ describe("recomputeBucketSlotsForToday horizon window", () => {
   });
 
   it("computes over the SEARCH window for the loaded org-wide horizon", async () => {
-    await recomputeBucketSlotsForToday("411", true);
+    await recomputeBucketSlotsForToday("411", "monitor-heal", true);
     expect(windowDays(recomputeBucketSlots.mock.calls[0])).toBe(searchWindowDays(7));
   });
 
   it("hands the horizon down as the trim target, not just as the window", async () => {
-    await recomputeBucketSlotsForToday("411", true);
+    await recomputeBucketSlotsForToday("411", "monitor-heal", true);
     expect(trimTarget(recomputeBucketSlots.mock.calls[0])).toBe(7);
   });
 
   it("computes WIDER than the days it will offer, so a closed day cannot eat one", async () => {
-    await recomputeBucketSlotsForToday("411", true);
+    await recomputeBucketSlotsForToday("411", "monitor-heal", true);
     const call = recomputeBucketSlots.mock.calls[0];
     expect(windowDays(call)).toBeGreaterThan(trimTarget(call)!);
   });
 
+  // #3381: the row names the path that refreshed it.
+  it("hands the caller's writer down to the row write", async () => {
+    await recomputeBucketSlotsForToday("411", "monitor-heal", true);
+    expect((recomputeBucketSlots.mock.calls[0] as unknown[])[3]).toBe("monitor-heal");
+  });
+
   it("uses an explicitly passed horizon without reading the setting", async () => {
-    await recomputeBucketSlotsForToday("411", true, undefined, 3);
+    await recomputeBucketSlotsForToday("411", "monitor-heal", true, undefined, 3);
     expect(windowDays(recomputeBucketSlots.mock.calls[0])).toBe(searchWindowDays(3));
     expect(trimTarget(recomputeBucketSlots.mock.calls[0])).toBe(3);
     expect(loadBookingHorizonDays).not.toHaveBeenCalled();

@@ -9,10 +9,14 @@
 // it were taken. On 2026-10-06 04:10Z bucket 112 was read under exactly that key.
 //
 // This drives the REAL read path's key choice (`resolveBucketSlots`, through the
-// deps the cache binding uses) for every `from` a booker can produce, and the REAL
+// deps the cache binding uses) at every instant a booker can read at, and the REAL
 // purge against a fake `caches.default`, and requires the purge to delete the very
 // key each reader wrote. A fixed key would also pass, so the positive control below
 // proves a key that differs is caught.
+//
+// #3381: the caller's `from` no longer reaches the read path at all (the cold compute
+// anchors on now), so the reads below vary the read path's CLOCK instead: the only
+// time input left that a key could wrongly depend on.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-slot-cache-purge-anchors.ts
 import { resolveBucketSlots, type ReadDeps } from "../src/lib/availability/precompute-core.ts";
@@ -34,20 +38,21 @@ const OPEN_ALL_WEEK = {
   exceptions: [],
 };
 
-/** The key the read path writes its entry under for this `from`. */
-async function keyWrittenFor(fromIso: string): Promise<string> {
+/** The key the read path writes its entry under when it reads at `nowIso`. */
+async function keyWrittenFor(nowIso: string): Promise<string> {
   let written: string | null = null;
   const deps: ReadDeps = {
     cacheGet: async () => null,
     cachePut: async (key) => { written = key; },
     readRow: async () => ({ payload: row, computed_at: "2026-10-06T04:00:00.000Z" }),
+    nowMs: () => Date.parse(nowIso),
     compute: async () => null,
     writeRow: async () => "2026-10-06T04:00:00.000Z",
     writeFailed: () => {},
     businessHours: async () => OPEN_ALL_WEEK,
   };
-  await resolveBucketSlots(CODE, fromIso, HORIZON_DAYS, deps);
-  if (written === null) throw new Error(`the read path cached nothing for from=${fromIso}`);
+  await resolveBucketSlots(CODE, HORIZON_DAYS, deps);
+  if (written === null) throw new Error(`the read path cached nothing at ${nowIso}`);
   return written;
 }
 
@@ -95,16 +100,17 @@ const froms = [
 ];
 for (const from of froms) {
   const key = await keyWrittenFor(from);
-  assert(purged.includes(key), `an entry written for from=${from} is the one the purge deletes (${key} vs ${purged.join(",")})`);
+  assert(purged.includes(key), `an entry written at ${from} is the one the purge deletes (${key} vs ${purged.join(",")})`);
 }
 
 // Positive control: the comparison can see a key the purge does not delete.
 {
   const otherBucket = await (async () => {
     let written = "";
-    await resolveBucketSlots("113", froms[0], HORIZON_DAYS, {
+    await resolveBucketSlots("113", HORIZON_DAYS, {
       cacheGet: async () => null,
       cachePut: async (key) => { written = key; },
+      nowMs: () => Date.parse(froms[0]!),
       readRow: async () => ({ payload: { ...row, bucket: { ...row.bucket, code: "113" } }, computed_at: "2026-10-06T04:00:00.000Z" }),
       compute: async () => null,
       writeRow: async () => "2026-10-06T04:00:00.000Z",

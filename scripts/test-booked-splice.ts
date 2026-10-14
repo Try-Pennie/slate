@@ -543,7 +543,7 @@ for (const [pools, sole] of [
   await spliceBookedTime(moved, h.deps);
   for (const code of ["201", "202"]) {
     const row = stale.find((r) => r.bucket_code === code)!;
-    eq(await writeSlotRow(h.table.db, code, row.payload, NOW - 1), "written", `${code}: the older compute lands`);
+    eq(await writeSlotRow(h.table.db, code, row.payload, NOW - 1, "lane"), "written", `${code}: the older compute lands`);
     assert(!slotsOf(h, code).includes(et("14:00")), `${code}: and the moved booking's new time stays gone`);
   }
 }

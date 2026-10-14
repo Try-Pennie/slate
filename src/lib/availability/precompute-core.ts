@@ -2,6 +2,7 @@ import { slotCacheKey } from "./cache-key.ts";
 import { mapSlotLists, shapePrecomputedRow } from "./precompute-shape.ts";
 import { slotsWithinBusinessHours, type BusinessHoursRules } from "./compute.ts";
 import { trimToBookableDays } from "./bookable-days.ts";
+import { rowProvenance } from "./slot-row-writer.ts";
 import type { BucketSlots } from "./service";
 
 /**
@@ -22,14 +23,27 @@ export const SUPERSEDED_BY_SAVE = "superseded-by-save" as const;
 export type SlotSource = "hit" | "row" | "compute";
 
 /** The cached blob: the slots payload plus the freshness stamp (#257), so an L1
- *  hit can still report when the underlying row was computed. */
-export type CachedBucketSlots = BucketSlots & { computedAt: string | null };
+ *  hit can still report when the underlying row was computed, and (#3381) which path
+ *  wrote it and whether a booking was spliced in since. Optional on the way IN: an
+ *  entry cached before #3381 has neither, and reads as not recorded. */
+export type CachedBucketSlots = BucketSlots & {
+  computedAt: string | null;
+  writtenBy?: string | null;
+  spliced?: string | null;
+};
 
-/** Resolved slots plus read metadata for the observability headers. */
+/** Resolved slots plus read metadata for the observability headers and the
+ *  `slots served` line. `writtenBy` and `spliced` are `rowProvenance`'s, null when not
+ *  recorded. */
 export type ResolvedBucketSlots = BucketSlots & {
   source: SlotSource;
   computedAt: string | null;
+  writtenBy: string | null;
+  spliced: string | null;
 };
+
+/** What a cold compute is stamped as (#3381): the read path's own self heal. */
+export const COLD_WRITER = "cold" as const;
 
 export interface ReadDeps {
   /** L1: per-colo Cache API lookup by key. */
@@ -38,6 +52,9 @@ export interface ReadDeps {
   cachePut(key: string, val: CachedBucketSlots): Promise<void>;
   /** L2: the precomputed bucket_slots row (payload + when it was computed). */
   readRow(code: string): Promise<{ payload: unknown; computed_at: string } | null>;
+  /** The clock (#3381): the cold compute's window and its stamp are both taken from
+   *  it, so neither depends on what the caller asked for or on the wall clock. */
+  nowMs(): number;
   /** Bounded fail-open: the live multi-agent compute (rare). */
   compute(code: string, fromIso: string, toIso: string): Promise<BucketSlots | null>;
   /** Self-heal: persist a freshly computed blob; returns its computed_at stamp. */
@@ -69,11 +86,15 @@ export interface ReadDeps {
  */
 export async function resolveBucketSlots(
   code: string,
-  fromIso: string,
   horizonDays: number,
   deps: ReadDeps,
 ): Promise<ResolvedBucketSlots | null> {
-  const { key, fromIso: nf, toIso: nt } = slotCacheKey(code, fromIso, horizonDays);
+  // #3381: anchored on NOW, never on the caller's `from`. The key never depended on it
+  // (#3366), and the window is only used by the cold compute below, whose row then
+  // stands as the bucket's row: anchored on an evening Eastern lead's local midnight it
+  // started a day early and ran a day short, and anchored on a day the booker had paged
+  // forward to it held none of today's times. Every recompute path anchors on now.
+  const { key, fromIso: nf, toIso: nt } = slotCacheKey(code, new Date(deps.nowMs()).toISOString(), horizonDays);
 
   /**
    * The single exit (#1296). Every tier leaves through here, so no tier can return
@@ -98,6 +119,8 @@ export async function resolveBucketSlots(
         slotsWithinBusinessHours(list, val.eventType.duration_min, hours),
       ),
       source,
+      writtenBy: val.writtenBy ?? null,
+      spliced: val.spliced ?? null,
     };
   };
 
@@ -107,7 +130,7 @@ export async function resolveBucketSlots(
   const raw = await deps.readRow(code);
   const row = shapePrecomputedRow(raw);
   if (row) {
-    const cached: CachedBucketSlots = { ...row, computedAt: raw!.computed_at };
+    const cached: CachedBucketSlots = { ...row, computedAt: raw!.computed_at, ...rowProvenance(raw!.payload) };
     await deps.cachePut(key, cached);
     return served(cached, "row");
   }
@@ -126,7 +149,7 @@ export async function resolveBucketSlots(
   for (let attempt = 0; ; attempt++) {
     // #1048: taken before the compute reads anything, so the stored stamp describes
     // the state these slots were computed from.
-    const computeStartedMs = Date.now();
+    const computeStartedMs = deps.nowMs();
     const computed = await deps.compute(code, nf, nt);
     if (!computed) return null;
     // Days are grouped in the ORG's zone, the same clock the hours are judged in: a
@@ -145,14 +168,14 @@ export async function resolveBucketSlots(
       const written = await deps.writeRow(code, fresh, computeStartedMs);
       if (written === SUPERSEDED_BY_SAVE) {
         if (attempt === 0) continue;
-        return served({ ...fresh, computedAt: new Date(computeStartedMs).toISOString() }, "compute");
+        return served({ ...fresh, computedAt: new Date(computeStartedMs).toISOString(), writtenBy: COLD_WRITER, spliced: null }, "compute");
       }
       computedAt = written;
     } catch (err) {
       deps.writeFailed(code, err);
       computedAt = new Date(computeStartedMs).toISOString();
     }
-    const cached: CachedBucketSlots = { ...fresh, computedAt };
+    const cached: CachedBucketSlots = { ...fresh, computedAt, writtenBy: COLD_WRITER, spliced: null };
     await deps.cachePut(key, cached);
     return served(cached, "compute");
   }

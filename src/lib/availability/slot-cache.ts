@@ -3,6 +3,7 @@ import { slotCacheEntryKey, slotCacheKey } from "./cache-key";
 import {
   resolveBucketSlots,
   SUPERSEDED_BY_SAVE,
+  COLD_WRITER,
   type ReadDeps,
   type CachedBucketSlots,
   type ResolvedBucketSlots,
@@ -23,6 +24,7 @@ import {
   type PooledBucket,
 } from "./pool-recompute";
 import { SlotRowRefused } from "./slot-row-write";
+import { joinWriters, type SlotRowWriter, type WrittenBy } from "./slot-row-writer";
 import { bookedSpliceIo } from "./booked-splice-io";
 import { spliceBookedTime, type BookedTime, type BookedSpliceOutcome } from "./booked-splice";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -108,13 +110,14 @@ export async function getCachedBucketSlots(
         } catch { /* ignore */ }
       }),
     readRow: (c) => timed(SERVER_TIMING_NAMES.row, () => readBucketSlotsRow(c)),
+    nowMs: () => Date.now(),
     compute: (c, from, to) => timed(SERVER_TIMING_NAMES.compute, () => getBucketSlots(c, from, to)),
     // #3118: a write a settings save superseded is answered as such, so the read
     // redoes the compute rather than serving and caching slots from the old settings.
     // A refused row still throws (#3119) and reaches writeFailed below.
     writeRow: (c, val, computedAtMs) =>
       timed(SERVER_TIMING_NAMES.compute, async () => {
-        const outcome = await storeBucketSlotsRow(c, val, computedAtMs);
+        const outcome = await storeBucketSlotsRow(c, val, computedAtMs, COLD_WRITER);
         if (outcome === "failed") throw new SlotRowRefused(c);
         if (outcome === "invalidated") return SUPERSEDED_BY_SAVE;
         return new Date(computedAtMs).toISOString();
@@ -128,7 +131,9 @@ export async function getCachedBucketSlots(
     // per SLOT_TTL_SECONDS; a failed refresh serves the last known week.
     businessHours: () => timed(SERVER_TIMING_NAMES.hours, loadBusinessHoursCached),
   };
-  return resolveBucketSlots(code, fromIso, horizonDays, deps);
+  // #3381: `fromIso` no longer reaches the read: the key never depended on it (#3366)
+  // and the cold compute now anchors on now, as every recompute does.
+  return resolveBucketSlots(code, horizonDays, deps);
 }
 
 /** Record `fn` under `name` when a timer was given, otherwise just run it. */
@@ -158,6 +163,8 @@ const lastRecomputeAt = new Map<string, number>();
  */
 export async function recomputeBucketSlotsForToday(
   code: string,
+  /** Which path is refreshing it (#3381), stamped on the row it writes. */
+  writtenBy: WrittenBy,
   force = false,
   resolveEligible?: EligibleResolver,
   horizonDays?: number,
@@ -178,7 +185,7 @@ export async function recomputeBucketSlotsForToday(
   // entry is still dropped first, as the pooled path does: a stale entry must never
   // outlive the attempt, and the read behind it falls through to the stored row.
   try {
-    await recomputeBucketSlots(code, fromIso, toIso, resolveEligible, horizon);
+    await recomputeBucketSlots(code, fromIso, toIso, writtenBy, resolveEligible, horizon);
   } finally {
     const cache = slotCache();
     if (cache) {
@@ -206,6 +213,8 @@ export async function recomputeBucketSlotsForToday(
  */
 export async function recomputePoolSlotsForToday(
   pool: PooledBucket[],
+  /** Which path is refreshing it (#3381), stamped on every row it writes. */
+  writtenBy: WrittenBy,
   resolveEligible?: EligibleResolver,
   horizonDays?: number,
 ): Promise<number> {
@@ -219,7 +228,7 @@ export async function recomputePoolSlotsForToday(
     nowMs: Date.now,
     compute: (code) =>
       computeBucketSlotsForWindow(code, fromIso, toIso, resolveEligible, horizon),
-    writeRow: (code, val, computedAtMs) => storeBucketSlotsRow(code, val, computedAtMs),
+    writeRow: (code, val, computedAtMs) => storeBucketSlotsRow(code, val, computedAtMs, writtenBy),
     // The L1 key is on the fixed HORIZON_DAYS namespace, the same one the read
     // path looks up, so read and invalidate always agree.
     invalidate: (code) => invalidateBucketSlots(code),
@@ -256,7 +265,7 @@ const lastPoolRecomputeAt = new Map<string, number>();
  * that measured why. It shares `lastPoolRecomputeAt` with the push path, so the two
  * never compute one pool back to back.
  */
-const poolRefreshes = makePoolRefreshCoalescer({
+const poolRefreshes = makePoolRefreshCoalescer<SlotRowWriter>({
   now: () => Date.now(),
   sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
   windowMs: POST_CONFIRM_REFRESH_WINDOW_MS,
@@ -271,7 +280,7 @@ const lastPoolReadAt = new Map<string, number>();
  * comparable (#3293 review), on its own start map: a read that recorded itself in
  * `lastPoolRecomputeAt` would debounce a real recompute on the push path.
  */
-const bookingReads = makePoolRefreshCoalescer({
+const bookingReads = makePoolRefreshCoalescer<SlotRowWriter>({
   now: () => Date.now(),
   sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
   windowMs: POST_CONFIRM_REFRESH_WINDOW_MS,
@@ -427,15 +436,16 @@ export function resetBookingRefreshesForTests(): void {
  * being offered (#2345, #2968); and a `candidate_read_empty` refusal whose stored row
  * was proven to still offer the refused instant (#3633, via `refusal-stored-offer.ts`).
  */
-export async function refreshPoolOf(code: string): Promise<void> {
+export async function refreshPoolOf(code: string, reason: "booking" | "refusal"): Promise<void> {
   const key = await poolKeyOfCode(code);
-  await poolRefreshes.request(key, code, recomputePoolsOf);
+  await poolRefreshes.request(key, code, reason, recomputePoolsOf);
 }
 
-/** The refresh both the booking and the push paths share: one compute per pool. */
-const recomputePoolsOf = (codes: string[]): Promise<void> =>
+/** The refresh both the booking and the push paths share: one compute per pool, its
+ *  rows naming every reason the coalesced refresh was asked for (#3381). */
+const recomputePoolsOf = (codes: string[], reasons: SlotRowWriter[]): Promise<void> =>
   forPoolsOf(codes, async (pool, horizon) => {
-    const stored = await recomputePoolSlotsForToday(pool, undefined, horizon);
+    const stored = await recomputePoolSlotsForToday(pool, joinWriters(reasons), undefined, horizon);
     if (stored === 0) {
       throw new Error(
         `pool refresh for ${pool.map((b) => b.code).join("+")} stored no rows; the recompute lane will retry`,
@@ -566,7 +576,7 @@ export async function refreshAgentPoolsAfterPush(userId: string): Promise<Touche
     // One request per POOL, with one code standing for it: the refresh resolves the
     // whole pool from that code, and a second code of the same pool would only join.
     const settled = await Promise.allSettled(
-      chosen.map((key) => poolRefreshes.request(key, byKey.get(key)!, recomputePoolsOf)),
+      chosen.map((key) => poolRefreshes.request(key, byKey.get(key)!, "push", recomputePoolsOf)),
     );
     const failures = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
     const outcome: TouchedPoolsOutcome = {
@@ -600,7 +610,7 @@ export async function refreshAgentPoolsAfterPush(userId: string): Promise<Touche
  */
 export async function readPoolInputsAfterBooking(code: string): Promise<void> {
   const key = await poolKeyOfCode(code);
-  await bookingReads.request(key, code, (codes) =>
+  await bookingReads.request(key, code, "booking", (codes) =>
     forPoolsOf(codes, async (pool, horizon) => {
       const representative = pool[0]!.code;
       const { fromIso, toIso } = slotCacheKey(representative, new Date().toISOString(), horizon);
@@ -629,7 +639,7 @@ export async function recomputeBucketsForAgent(
     const outcome = await recomputeTouchedPools(codes, buckets, {
       nowMs: Date.now,
       deadlineMs,
-      recomputePool: (pool) => recomputePoolSlotsForToday(pool, undefined, horizon),
+      recomputePool: (pool) => recomputePoolSlotsForToday(pool, "time-off", undefined, horizon),
       lastRunAt: lastPoolRecomputeAt,
       skipMs: RECOMPUTE_SKIP_MS,
       // The push path is bounded by its budget alone, as it was in #2922: it runs
@@ -698,7 +708,7 @@ export async function recomputePoolsForCodes(
     const outcome = await recomputeTouchedPools(codes, buckets, {
       nowMs: Date.now,
       deadlineMs,
-      recomputePool: (pool) => recomputePoolSlotsForToday(pool, undefined, horizon),
+      recomputePool: (pool) => recomputePoolSlotsForToday(pool, `sweep:${opts.label}`, undefined, horizon),
       lastRunAt: lastPoolRecomputeAt,
       skipMs: RECOMPUTE_SKIP_MS,
       maxPools: opts.maxPools,

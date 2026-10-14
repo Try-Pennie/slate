@@ -83,6 +83,24 @@ const row = (code: string, slots: string[], computedAt = "2026-10-06T04:08:00.00
   eq(missing.stored_offer, "112:no_row", "a bucket with no row is said, never read as not offered");
   eq(missing.stored_row_offers_start, null, "and the overall answer is unknown, not no");
 
+  // #3381: which path wrote the row, and whether a booking was spliced in since, per
+  // rung, so an `offered` on a fresh row names the writer the divergence came from.
+  eq(offered.stored_written_by, "112:-", "a row from before writers were recorded says so, never a guess");
+  eq(offered.stored_spliced, "112:-", "and a row nobody spliced says that too");
+  const named = storedOfferFields(
+    trace(),
+    [
+      row("112", ["2026-10-06T16:50:00.000Z"], "2026-10-06T04:08:00.000Z", {
+        writtenBy: "lane",
+        splice: { seq: 2, fenceAt: "2026-10-06T04:09:00.000Z", windows: [{ atMs: Date.parse("2026-10-06T04:09:00.000Z"), fromMs: 0, lastStartMs: 1, reoffer: true }] },
+      }),
+    ],
+    NOW,
+  );
+  eq(named.stored_written_by, "112:lane", "the full compute's writer, per rung");
+  eq(named.stored_spliced, "112:2026-10-06T04:09:00.000Z+reoffer", "and the splice since it, a re-offer marked");
+  eq(missing.stored_written_by, "112:-", "a missing row has no writer");
+
   const broken = storedOfferFields(trace(), [{ bucket_code: "112", payload: { nope: true }, computed_at: "x" }], NOW);
   eq(broken.stored_offer, "112:unreadable", "a malformed row is unreadable");
   eq(broken.stored_age_s, "112:-", "and an unreadable stamp has no age, never NaN");

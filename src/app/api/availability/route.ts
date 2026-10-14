@@ -173,6 +173,10 @@ async function handle(req: NextRequest) {
     from_anchor: utcDayOf(from),
     colo: requestColo(req),
     slots: slots.length,
+    // #3381: which path wrote what was served, and the newest booking splice since its
+    // compute. Null is not recorded (an entry from before it was), never a writer.
+    written_by: result.writtenBy ?? null,
+    spliced: result.spliced ?? null,
     // #3653: the Worker's own time up to this line (the limiter and the slot read),
     // so the Worker logs can answer #3652 as well as the canary. An empty result's
     // explanation and an alert send come after it and are in the header's total only.

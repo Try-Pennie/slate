@@ -1291,7 +1291,7 @@ export async function GET(req: NextRequest) {
             // compare and swap, so a heal after the window cannot overwrite fresher
             // slots.
             (await acquireLock(`anomaly_selfheal:${code}`, ANOMALY_SELFHEAL_WINDOW_MS)) !== null,
-          heal: (code) => recomputeBucketSlotsForToday(code, true, undefined, horizonDays!),
+          heal: (code) => recomputeBucketSlotsForToday(code, "monitor-heal", true, undefined, horizonDays!),
           onHealError: (code, err) =>
             log.error("monitor", { msg: "anomaly self-heal failed", bucket: code }, err),
           // alert-key: availability_data_anomaly

@@ -95,12 +95,12 @@ const PAYLOAD = { slots: [{ start: "2026-09-02T13:00:00.000Z" }] };
 // --- the stamp describes the COMPUTE, not the write ---------------------------
 {
   const { db, calls } = fakeDb([{ rows: [{ bucket_code: "101" }] }]);
-  eq(await writeSlotRow(db, "101", PAYLOAD, STARTED), "written", "the usual path writes");
+  eq(await writeSlotRow(db, "101", PAYLOAD, STARTED, "lane"), "written", "the usual path writes");
 
   const upd = calls[0]!;
   eq(upd.kind, "update", "an existing row is updated in place");
   eq(upd.values.computed_at, STAMP, "computed_at is the instant the compute STARTED");
-  eq(upd.values.payload, PAYLOAD, "and it carries the freshly computed payload");
+  eq(upd.values.payload, { ...PAYLOAD, writtenBy: "lane" }, "and it carries the freshly computed payload, naming its writer (#3381)");
   assert(
     upd.eq.some(([c, v]) => c === "bucket_code" && v === "101"),
     "scoped to the bucket",
@@ -139,7 +139,7 @@ const PAYLOAD = { slots: [{ start: "2026-09-02T13:00:00.000Z" }] };
     { rows: [{ computed_at: "2026-09-01T12:00:05.000Z", invalidated_at: null }] },
   ]);
   eq(
-    await writeSlotRow(db, "101", PAYLOAD, STARTED),
+    await writeSlotRow(db, "101", PAYLOAD, STARTED, "lane"),
     "kept-newer",
     "a slower compute leaves the fresher row alone",
   );
@@ -152,10 +152,15 @@ const PAYLOAD = { slots: [{ start: "2026-09-02T13:00:00.000Z" }] };
   // No row yet: the gated update matches nothing, and the insert is what creates it.
   // Without this branch the very first compute for a bucket would never be stored.
   const { db, calls } = fakeDb([{ rows: [] }, { rows: [{ bucket_code: "101" }] }]);
-  eq(await writeSlotRow(db, "101", PAYLOAD, STARTED), "written", "a bucket with no row is inserted");
+  eq(await writeSlotRow(db, "101", PAYLOAD, STARTED, "lane"), "written", "a bucket with no row is inserted");
   eq(calls[1]!.kind, "insert", "through an insert");
   eq(calls[1]!.values.computed_at, STAMP, "carrying the compute-start stamp");
   eq(calls[1]!.values.bucket_code, "101", "and the bucket code");
+  eq(
+    (calls[1]!.values.payload as Record<string, unknown>).writtenBy,
+    "lane",
+    "a first write names its writer too (#3381)",
+  );
 }
 
 // --- two writers racing to create the same row --------------------------------
@@ -169,7 +174,7 @@ const PAYLOAD = { slots: [{ start: "2026-09-02T13:00:00.000Z" }] };
     { rows: [{ bucket_code: "101" }] },
   ]);
   eq(
-    await writeSlotRow(db, "101", PAYLOAD, STARTED),
+    await writeSlotRow(db, "101", PAYLOAD, STARTED, "lane"),
     "written",
     "the loser of an insert race still writes when its data is newer",
   );
@@ -180,7 +185,7 @@ const PAYLOAD = { slots: [{ start: "2026-09-02T13:00:00.000Z" }] };
 {
   const { db } = fakeDb([{ error: { message: "connection reset" } }]);
   eq(
-    await writeSlotRow(db, "101", PAYLOAD, STARTED),
+    await writeSlotRow(db, "101", PAYLOAD, STARTED, "lane"),
     "failed",
     "an update error is a failure, never a kept-newer and never a write",
   );
@@ -189,7 +194,7 @@ const PAYLOAD = { slots: [{ start: "2026-09-02T13:00:00.000Z" }] };
   // An insert error that is NOT a duplicate says nothing about a fresher row.
   const { db } = fakeDb([{ rows: [] }, { error: { code: "42703", message: "no such column" } }]);
   eq(
-    await writeSlotRow(db, "101", PAYLOAD, STARTED),
+    await writeSlotRow(db, "101", PAYLOAD, STARTED, "lane"),
     "failed",
     "an insert error other than a duplicate is a failure, not a fresher row",
   );
@@ -232,15 +237,15 @@ function tableDb(rows: SlotRow[]) {
 
   // 3. the straddling compute finishes and tries to write
   eq(
-    await writeSlotRow(db, "101", OLD, computeStarted),
+    await writeSlotRow(db, "101", OLD, computeStarted, "lane"),
     "invalidated",
     "a compute that began before the save is refused, and says why",
   );
   eq(rows[0].computed_at, "1970-01-01T00:00:00.000Z", "so the row stays due and cannot look fresh");
 
   // 4. the next compute starts after the save and lands
-  eq(await writeSlotRow(db, "101", NEW, nextCompute), "written", "a compute that began after the save writes");
-  eq(rows[0].payload, NEW, "carrying the new settings");
+  eq(await writeSlotRow(db, "101", NEW, nextCompute, "lane"), "written", "a compute that began after the save writes");
+  eq(rows[0].payload, { ...NEW, writtenBy: "lane" }, "carrying the new settings");
   eq(rows[0].computed_at, new Date(nextCompute).toISOString(), "stamped from its own start");
 }
 
@@ -252,7 +257,7 @@ function tableDb(rows: SlotRow[]) {
     { bucket_code: "101", payload: {}, computed_at: "2026-10-03T09:00:00.000Z", invalidated_at: null },
   ]);
   await markSlotRowsInvalidated(db, savedAt);
-  eq(await writeSlotRow(db, "101", {}, savedAt), "invalidated", "a compute starting at the save instant is refused");
+  eq(await writeSlotRow(db, "101", {}, savedAt, "lane"), "invalidated", "a compute starting at the save instant is refused");
 }
 
 {
@@ -267,7 +272,7 @@ function tableDb(rows: SlotRow[]) {
   await markSlotRowsInvalidated(db, firstSave);
   eq(await markSlotRowsInvalidated(db, secondSave), 1, "a second save re-marks a row that is already stale");
   eq(rows[0].invalidated_at, new Date(secondSave).toISOString(), "moving its invalidation forward");
-  eq(await writeSlotRow(db, "101", {}, computeStarted), "invalidated", "so a compute between the two saves is refused");
+  eq(await writeSlotRow(db, "101", {}, computeStarted, "lane"), "invalidated", "so a compute between the two saves is refused");
 }
 
 {
@@ -276,7 +281,7 @@ function tableDb(rows: SlotRow[]) {
     { bucket_code: "101", payload: {}, computed_at: "2026-10-03T10:00:05.000Z", invalidated_at: null },
   ]);
   eq(
-    await writeSlotRow(db, "101", {}, Date.parse("2026-10-03T10:00:00.000Z")),
+    await writeSlotRow(db, "101", {}, Date.parse("2026-10-03T10:00:00.000Z"), "lane"),
     "kept-newer",
     "with no invalidation, a slower compute is still reported as keeping the fresher row",
   );

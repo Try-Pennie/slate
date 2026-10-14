@@ -9,6 +9,7 @@ import {
   type SlotLists,
   type SplicePart,
 } from "./slot-splice.ts";
+import { stampWriter, type WrittenBy } from "./slot-row-writer.ts";
 
 /**
  * The one write into `bucket_slots` (#1048).
@@ -75,10 +76,18 @@ const UNIQUE_VIOLATION = "23505";
 export async function writeSlotRow(
   db: SlotRowDb,
   code: string,
-  payload: unknown,
+  computed: unknown,
   computedAtMs: number,
+  /**
+   * The path storing this compute (#3381), stamped into the payload so a row that
+   * disagrees with the confirm's candidate read can be traced to who wrote it.
+   * Required, so `tsc` names every site that stores a full compute. A coalesced
+   * refresh passes every requester (`joinWriters`).
+   */
+  writtenBy: WrittenBy,
 ): Promise<SlotRowWriteOutcome> {
   const computedAt = new Date(computedAtMs).toISOString();
+  const payload = stampWriter(computed, writtenBy);
 
   const first = await gatedUpdate(db, code, payload, computedAt);
   if (first !== "no-row") return first;

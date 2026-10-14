@@ -71,39 +71,39 @@ afterEach(() => {
 
 describe("refreshPoolOf (#3258)", () => {
   it("computes the booked code's pool ONCE and writes every code in it", async () => {
-    await refreshPoolOf("212");
+    await refreshPoolOf("212", "booking");
     expect(precompute.computeBucketSlotsForWindow).toHaveBeenCalledTimes(1);
     const written = precompute.storeBucketSlotsRow.mock.calls.map((c) => c[0]).sort();
     expect(written).toEqual(["211", "212"]);
   });
 
   it("never touches another pool", async () => {
-    await refreshPoolOf("112");
+    await refreshPoolOf("112", "booking");
     const written = precompute.storeBucketSlotsRow.mock.calls.map((c) => c[0]).sort();
     expect(written).toEqual(["111", "112"]);
   });
 
   it("fails loud when the compute stored nothing, so the deferred job logs it", async () => {
     precompute.computeBucketSlotsForWindow.mockResolvedValueOnce(null);
-    await expect(refreshPoolOf("211")).rejects.toThrow(/stored no rows/);
+    await expect(refreshPoolOf("211", "booking")).rejects.toThrow(/stored no rows/);
   });
 
   // #3293 review: a refresh that refreshed NOTHING is a failure, so afterResponse
   // records it, never a quiet success.
   it("rejects when none of its codes is in any pool, after saying which", async () => {
-    await expect(refreshPoolOf("999")).rejects.toThrow(/999/);
+    await expect(refreshPoolOf("999", "booking")).rejects.toThrow(/999/);
     expect(precompute.computeBucketSlotsForWindow).not.toHaveBeenCalled();
     expect(log.warn).toHaveBeenCalled();
   });
 
   it("still succeeds when some of its codes were refreshed and one was in no pool", async () => {
-    const lead = refreshPoolOf("212");
+    const lead = refreshPoolOf("212", "booking");
     await vi.advanceTimersByTimeAsync(0);
     await lead;
     // 211 and 212 join one trailing refresh of the mid pool; before it runs, 211's
     // bucket is deleted, so only 212 can be refreshed.
-    const a = refreshPoolOf("211");
-    const b = refreshPoolOf("212");
+    const a = refreshPoolOf("211", "booking");
+    const b = refreshPoolOf("212", "booking");
     precompute.listPoolBuckets.mockResolvedValue([...LOW, MID[1]!]);
     precompute.storeBucketSlotsRow.mockClear();
     await vi.advanceTimersByTimeAsync(10_000);
@@ -113,14 +113,14 @@ describe("refreshPoolOf (#3258)", () => {
   });
 
   it("remembers a code in no pool for the cache's lifetime instead of re-reading every booking", async () => {
-    await refreshPoolOf("112"); // caches the grouping
+    await refreshPoolOf("112", "booking"); // caches the grouping
     const reads0 = precompute.listPoolBuckets.mock.calls.length;
-    await refreshPoolOf("999").catch(() => {});
+    await refreshPoolOf("999", "booking").catch(() => {});
     // The first miss re-reads the grouping once, and the refresh reads the live buckets.
     expect(precompute.listPoolBuckets.mock.calls.length - reads0).toBe(2);
     const reads1 = precompute.listPoolBuckets.mock.calls.length;
     await vi.advanceTimersByTimeAsync(20_000); // past the window, inside the cache's minute
-    await refreshPoolOf("999").catch(() => {});
+    await refreshPoolOf("999", "booking").catch(() => {});
     // Only the refresh's own live read: the key lookup remembered 999 was missing.
     expect(precompute.listPoolBuckets.mock.calls.length - reads1).toBe(1);
   });
@@ -131,14 +131,14 @@ describe("refreshPoolOf (#3258)", () => {
 describe("the coalesced refresh is never bound to one requester's code (#3293 review)", () => {
   it("a joiner whose code is still in the pool gets it refreshed after the first code moved away", async () => {
     // 211 leads and computes the mid pool at once.
-    const first = refreshPoolOf("211");
+    const first = refreshPoolOf("211", "booking");
     await vi.advanceTimersByTimeAsync(0);
     await first;
     precompute.storeBucketSlotsRow.mockClear();
     // Inside the window: 211 books again and 212 books. Before the trailing refresh
     // runs, 211 is moved into the low pool by an admin.
-    const a = refreshPoolOf("211");
-    const b = refreshPoolOf("212");
+    const a = refreshPoolOf("211", "booking");
+    const b = refreshPoolOf("212", "booking");
     const moved = [...LOW, pooled("211", "low"), MID[1]!];
     precompute.listPoolBuckets.mockResolvedValue(moved);
     await vi.advanceTimersByTimeAsync(10_000);
@@ -149,10 +149,10 @@ describe("the coalesced refresh is never bound to one requester's code (#3293 re
   });
 
   it("a code from a bucket created after the pool grouping was cached is still refreshed", async () => {
-    await refreshPoolOf("112"); // caches the grouping without 113
+    await refreshPoolOf("112", "booking"); // caches the grouping without 113
     precompute.storeBucketSlotsRow.mockClear();
     precompute.listPoolBuckets.mockResolvedValue([...LOW, pooled("113", "new"), ...MID]);
-    await refreshPoolOf("113");
+    await refreshPoolOf("113", "booking");
     const written = precompute.storeBucketSlotsRow.mock.calls.map((c) => c[0]);
     expect(written).toEqual(["113"]);
   });
@@ -205,7 +205,7 @@ describe("refreshAgentPoolsAfterPush (#3258)", () => {
 
   it("shares the booking refresh's window: a push right after a booking computes nothing of its own yet", async () => {
     precompute.bucketsForAgent.mockResolvedValue(["211"]);
-    const booking = refreshPoolOf("212");
+    const booking = refreshPoolOf("212", "booking");
     await vi.advanceTimersByTimeAsync(0);
     await booking;
     expect(precompute.computeBucketSlotsForWindow).toHaveBeenCalledTimes(1);
@@ -294,5 +294,42 @@ describe("refreshAgentPoolsAfterPush (#3258)", () => {
     precompute.bucketsForAgent.mockRejectedValueOnce(new Error("users read refused"));
     await expect(refreshAgentPoolsAfterPush("agent-1")).resolves.toBeNull();
     expect(log.error).toHaveBeenCalled();
+  });
+});
+
+// #3381: every row a refresh writes names the path that wrote it, and a refresh several
+// paths shared names all of them. On 2026-10-14 a row offered a time nobody was free
+// for and two writers had run that second; the row is the only place left to ask.
+describe("the rows a refresh writes name their writer (#3381)", () => {
+  const writers = () => [...new Set(precompute.storeBucketSlotsRow.mock.calls.map((c) => (c as unknown[])[3]))];
+
+  it("a booking's refresh is the booking's", async () => {
+    await refreshPoolOf("212", "booking");
+    expect(writers()).toEqual(["booking"]);
+  });
+
+  it("a refusal's refresh is the refusal's", async () => {
+    await refreshPoolOf("212", "refusal");
+    expect(writers()).toEqual(["refusal"]);
+  });
+
+  it("a push's refresh is the push's", async () => {
+    precompute.bucketsForAgent.mockResolvedValue(["211"]);
+    const push = refreshAgentPoolsAfterPush("agent-1");
+    await vi.advanceTimersByTimeAsync(0);
+    await push;
+    expect(writers()).toEqual(["push"]);
+  });
+
+  it("a refresh a booking, a refusal and a push shared names all three, once each", async () => {
+    const lead = refreshPoolOf("212", "booking");
+    await vi.advanceTimersByTimeAsync(0);
+    await lead;
+    precompute.storeBucketSlotsRow.mockClear();
+    precompute.bucketsForAgent.mockResolvedValue(["211"]);
+    const joined = [refreshPoolOf("211", "refusal"), refreshPoolOf("212", "booking"), refreshAgentPoolsAfterPush("agent-1")];
+    await vi.advanceTimersByTimeAsync(10_000);
+    await Promise.all(joined);
+    expect(writers()).toEqual(["booking+push+refusal"]);
   });
 });

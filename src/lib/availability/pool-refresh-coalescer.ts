@@ -42,13 +42,15 @@
  */
 export const POST_CONFIRM_REFRESH_WINDOW_MS = 10_000;
 
-interface PoolState {
+interface PoolState<R extends string> {
   /** The compute running now, or null. */
   inflight: Promise<void> | null;
   /** The trailing refresh not yet started, which later requests join, or null. */
   pending: Promise<void> | null;
   /** The codes the pending refresh covers, one per booking that joined it. */
   pendingCodes: Set<string>;
+  /** Why each request joined the pending refresh (#3381), once each. */
+  pendingReasons: Set<R>;
 }
 
 /**
@@ -57,31 +59,33 @@ interface PoolState {
  * a bucket can change pools inside the window, and a joiner whose code is still in
  * the pool must still get its pool refreshed.
  */
-export type PoolRefresh = (codes: string[]) => Promise<void>;
+export type PoolRefresh<R extends string = string> = (codes: string[], reasons: R[]) => Promise<void>;
 
-export interface PoolRefreshCoalescer {
+export interface PoolRefreshCoalescer<R extends string = string> {
   /** Ask for the pool `key` (which `code` is in) to be refreshed after this moment.
    *  Resolves when the refresh covering this request has finished, and rejects if
-   *  it failed. */
-  request(key: string, code: string, run: PoolRefresh): Promise<void>;
+   *  it failed. `reason` is why it was asked (#3381): the refresh is handed every
+   *  reason it covers, so the row it writes names everybody it was written for,
+   *  never only the first requester. */
+  request(key: string, code: string, reason: R, run: PoolRefresh<R>): Promise<void>;
   /** How many keys it holds state for, so a test can see idle ones are evicted. */
   trackedKeys(): number;
   /** Forget every key, for tests that must not inherit another case's state. */
   reset(): void;
 }
 
-export function makePoolRefreshCoalescer(deps: {
+export function makePoolRefreshCoalescer<R extends string = string>(deps: {
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   windowMs: number;
   /** When each pool's last refresh STARTED, shared with the push path's debounce. */
   lastStartedAt: Map<string, number>;
-}): PoolRefreshCoalescer {
-  const pools = new Map<string, PoolState>();
+}): PoolRefreshCoalescer<R> {
+  const pools = new Map<string, PoolState<R>>();
 
-  const start = (key: string, state: PoolState, run: PoolRefresh, codes: string[]): Promise<void> => {
+  const start = (key: string, state: PoolState<R>, run: PoolRefresh<R>, codes: string[], reasons: R[]): Promise<void> => {
     deps.lastStartedAt.set(key, deps.now());
-    const running = run(codes);
+    const running = run(codes, reasons);
     // Settled either way, so a waiter behind it never sees its rejection twice.
     const settled: Promise<void> = running.then(
       () => undefined,
@@ -115,25 +119,27 @@ export function makePoolRefreshCoalescer(deps: {
   return {
     trackedKeys: () => pools.size,
     reset: () => pools.clear(),
-    request(key, code, run) {
+    request(key, code, reason, run) {
       evictIdle(key);
       let state = pools.get(key);
       if (!state) {
-        state = { inflight: null, pending: null, pendingCodes: new Set() };
+        state = { inflight: null, pending: null, pendingCodes: new Set(), pendingReasons: new Set() };
         pools.set(key, state);
       }
       // A trailing refresh not yet started will begin after this request: join it,
       // adding this booking's code to the ones it covers.
       if (state.pending) {
         state.pendingCodes.add(code);
+        state.pendingReasons.add(reason);
         return state.pending;
       }
 
       const earliest = (deps.lastStartedAt.get(key) ?? -Infinity) + deps.windowMs;
-      if (state.inflight === null && deps.now() >= earliest) return start(key, state, run, [code]);
+      if (state.inflight === null && deps.now() >= earliest) return start(key, state, run, [code], [reason]);
 
       const s = state;
       s.pendingCodes = new Set([code]);
+      s.pendingReasons = new Set([reason]);
       s.pending = (async () => {
         const wait = earliest - deps.now();
         if (wait > 0) await deps.sleep(wait);
@@ -144,8 +150,10 @@ export function makePoolRefreshCoalescer(deps: {
         // refresh of its own rather than joining one that began before it.
         s.pending = null;
         const codes = [...s.pendingCodes];
+        const reasons = [...s.pendingReasons];
         s.pendingCodes = new Set();
-        await start(key, s, run, codes);
+        s.pendingReasons = new Set();
+        await start(key, s, run, codes, reasons);
       })();
       return s.pending;
     },

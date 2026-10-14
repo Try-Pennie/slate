@@ -214,3 +214,19 @@ describe("refreshPoolsForAgents is the sweeps' whole refresh (#2357)", () => {
     expect(precompute.listPoolBuckets).not.toHaveBeenCalled();
   });
 });
+
+// #3381: the rows these refreshes write name their writer.
+describe("the agent and sweep refreshes name their writer (#3381)", () => {
+  const writers = () => [...new Set(precompute.storeBucketSlotsRow.mock.calls.map((c) => (c as unknown[])[3]))];
+
+  it("a time off change's refresh is stamped time-off", async () => {
+    precompute.bucketsForAgent.mockResolvedValueOnce(["100"]);
+    await recomputeBucketsForAgent("agent-1");
+    expect(writers()).toEqual(["time-off"]);
+  });
+
+  it("a sweep's refresh is stamped with the sweep's own label", async () => {
+    await recomputePoolsForCodes(["200"], { label: "reconcile-missing", maxPools: 5 });
+    expect(writers()).toEqual(["sweep:reconcile-missing"]);
+  });
+});

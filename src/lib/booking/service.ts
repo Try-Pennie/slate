@@ -1405,14 +1405,14 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
         const target = booked ? { ...booked, fenceAtMs: Date.now() } : null;
         const refresh = postConfirmRefresh(postConfirmRecomputeMode(), bucketCode, {
           recompute: (code) =>
-            target ? spliceBookedTimeAfterBooking(code, target) : refreshPoolOf(code),
+            target ? spliceBookedTimeAfterBooking(code, target) : refreshPoolOf(code, "booking"),
           // The reads of the same work the on arm does, so the arms stay comparable.
           readsOnly: (code) =>
             target ? readSpliceInputsAfterBooking(code, target) : readPoolInputsAfterBooking(code),
         });
         if (refresh) afterResponse(refresh.context, refresh.work);
       } else {
-        void recomputeBucketSlotsForToday(bucketCode).catch((err) =>
+        void recomputeBucketSlotsForToday(bucketCode, "booking-code").catch((err) =>
           // Best-effort freshness nudge; the recompute lane reconverges this bucket
           // regardless. Logged so a lane that is failing EVERY time is findable.
           log.warn("booking", { msg: "post-confirm recompute failed", bucket: bucketCode }, err),

@@ -452,6 +452,8 @@ describe("one compute per pool", () => {
       .map((call) => (call[0] as { code: string }[]).map((b) => b.code).sort().join(" "))
       .sort();
     expect(dispatched).toEqual(["100 101 102 110 111 112", "120 121 122"]);
+    // #3381: every row the lane writes says the lane wrote it.
+    expect(slotCache.recomputePoolSlotsForToday.mock.calls.map((call) => call[1])).toEqual(["lane", "lane"]);
   });
 
   it("reports every pool's writes, not just the last one to finish", async () => {

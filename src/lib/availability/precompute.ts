@@ -16,6 +16,7 @@ import {
   SlotRowRefused,
   type SlotRowWriteOutcome,
 } from "@/lib/availability/slot-row-write";
+import type { WrittenBy } from "@/lib/availability/slot-row-writer";
 
 /**
  * IO for the precompute path (the `bucket_slots` table). The read orchestration
@@ -237,11 +238,12 @@ export async function writeBucketSlotsRow(
   code: string,
   val: BucketSlots,
   computedAtMs: number,
+  writtenBy: WrittenBy,
 ): Promise<string> {
   // #3119: a refusal comes back as an answer, not a throw, so returning the stamp
   // regardless told every caller the row was stored. It throws instead, so a writer
   // that only awaits this cannot count a refused write as a refresh.
-  if ((await storeBucketSlotsRow(code, val, computedAtMs)) === "failed") {
+  if ((await storeBucketSlotsRow(code, val, computedAtMs, writtenBy)) === "failed") {
     throw new SlotRowRefused(code);
   }
   return new Date(computedAtMs).toISOString();
@@ -257,8 +259,10 @@ export async function storeBucketSlotsRow(
   code: string,
   val: BucketSlots,
   computedAtMs: number,
+  /** Which path is storing it (#3381), stamped on the row. */
+  writtenBy: WrittenBy,
 ): Promise<SlotRowWriteOutcome> {
-  const outcome = await writeSlotRow(supabaseAdmin(), code, val as unknown, computedAtMs);
+  const outcome = await writeSlotRow(supabaseAdmin(), code, val as unknown, computedAtMs, writtenBy);
   if (outcome === "kept-newer") {
     // Worth a line: it means two computes for one bucket overlapped and the slower one
     // finished last. Harmless (the fresher row is the one serving) but it is the only
@@ -285,6 +289,7 @@ export async function recomputeBucketSlots(
   code: string,
   fromIso: string,
   toIso: string,
+  writtenBy: WrittenBy,
   resolveEligible?: EligibleResolver,
   bookableDays?: number,
 ): Promise<BucketSlots | null> {
@@ -299,7 +304,7 @@ export async function recomputeBucketSlots(
     resolveEligible,
     bookableDays,
   );
-  if (fresh) await writeBucketSlotsRow(code, fresh, startedMs);
+  if (fresh) await writeBucketSlotsRow(code, fresh, startedMs, writtenBy);
   return fresh;
 }
 

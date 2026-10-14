@@ -17,6 +17,8 @@ const sampleSlots = (): BucketSlots => ({
 });
 
 const WROTE_AT = "2026-06-19T12:00:00.000Z";
+/** The read path's clock: the fixtures' own instant, injected rather than read (#3381). */
+const NOW_MS = Date.parse("2026-06-19T12:00:07.000Z");
 
 // Gate 1 (#1296) held open all week, so the existing assertions below stay about
 // cache orchestration. The filter's own behaviour is the block at the end.
@@ -32,6 +34,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
     cacheGet: async () => { bump("cacheGet"); return null; },
     cachePut: async () => { bump("cachePut"); },
     readRow: async () => { bump("readRow"); return null; },
+    nowMs: () => NOW_MS,
     compute: async () => { bump("compute"); return null; },
     writeRow: async () => { bump("writeRow"); return WROTE_AT; },
     writeFailed: () => { bump("writeFailed"); },
@@ -46,7 +49,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
   const calls: Record<string, number> = {};
   const hit = { ...sampleSlots(), computedAt: WROTE_AT };
   const d = deps({ calls, cacheGet: async () => { calls.cacheGet = (calls.cacheGet ?? 0) + 1; return hit; } });
-  const r = await resolveBucketSlots("411", "2026-06-19T12:00:00.000Z", 4, d);
+  const r = await resolveBucketSlots("411", 4, d);
   assert(r !== null, "cache hit returns a value");
   eq(r!.source, "hit", "cache hit reports source=hit");
   eq(r!.computedAt, WROTE_AT, "cache hit carries the cached computedAt");
@@ -65,7 +68,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
     readRow: async () => { calls.readRow = (calls.readRow ?? 0) + 1; return { payload: row, computed_at: WROTE_AT }; },
     cachePut: async (_k, v) => { calls.cachePut = (calls.cachePut ?? 0) + 1; cached = v; },
   });
-  const r = await resolveBucketSlots("411", "2026-06-19T12:00:00.000Z", 4, d);
+  const r = await resolveBucketSlots("411", 4, d);
   eq(r!.source, "row", "row hit reports source=row");
   eq(r!.computedAt, WROTE_AT, "row hit reports the row's computed_at");
   eq(r!.slots, row.slots, "row hit returns the stored slots");
@@ -80,7 +83,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
   const calls: Record<string, number> = {};
   const fresh = sampleSlots();
   const d = deps({ calls, compute: async () => { calls.compute = (calls.compute ?? 0) + 1; return fresh; } });
-  const r = await resolveBucketSlots("411", "2026-06-19T12:00:00.000Z", 4, d);
+  const r = await resolveBucketSlots("411", 4, d);
   eq(r!.source, "compute", "never-computed bucket falls open to a live compute (source=compute)");
   eq(r!.computedAt, WROTE_AT, "compute path reports the timestamp it wrote");
   eq(r!.slots, fresh.slots, "compute path returns the freshly computed slots");
@@ -102,7 +105,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
     writeRow: async () => { throw refused; },
     writeFailed: (code, err) => { refusals.push({ code, err }); },
   });
-  const r = await resolveBucketSlots("411", "2026-06-19T12:00:00.000Z", 4, d);
+  const r = await resolveBucketSlots("411", 4, d);
   eq(r!.source, "compute", "a refused self-heal write still serves the computed times");
   eq(r!.slots, fresh.slots, "the same slots it would have stored");
   eq(refusals.length, 1, "the refusal is reported once");
@@ -130,7 +133,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
     },
     cachePut: async (_k, v) => { cached.push(v); },
   });
-  const r = await resolveBucketSlots("411", "2026-06-19T12:00:00.000Z", 4, d);
+  const r = await resolveBucketSlots("411", 4, d);
   eq(r!.slots, after.slots, "the request is served the compute that began after the save");
   eq(writes.length, 2, "the superseded compute is redone once and stored");
   eq(cached.length, 1, "only the second compute is cached");
@@ -152,7 +155,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
     writeRow: async () => SUPERSEDED_BY_SAVE,
     cachePut: async (_k, v) => { cached.push(v); },
   });
-  const r = await resolveBucketSlots("411", "2026-06-19T12:00:00.000Z", 4, d);
+  const r = await resolveBucketSlots("411", 4, d);
   eq(n, 2, "it redoes the compute once, and only once");
   assert(r !== null && r.source === "compute", "the request is still answered");
   eq(cached.length, 0, "a payload superseded twice is never cached");
@@ -162,7 +165,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
 {
   const calls: Record<string, number> = {};
   const d = deps({ calls });
-  const r = await resolveBucketSlots("nope", "2026-06-19T12:00:00.000Z", 4, d);
+  const r = await resolveBucketSlots("nope", 4, d);
   eq(r, null, "unknown bucket returns null");
   assert(!calls.writeRow && !calls.cachePut, "nothing is written or cached for an unknown bucket");
 }
@@ -199,7 +202,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
       cacheGet: async () => hit,
       businessHours: async () => narrowed,
     });
-    const r = await resolveBucketSlots("411", "2026-06-08T04:00:00.000Z", 4, d);
+    const r = await resolveBucketSlots("411", 4, d);
     eq(r!.source, "hit", "the narrowed read still comes off the cache, no recompute");
     eq(
       r!.slots,
@@ -217,7 +220,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
       readRow: async () => ({ payload: sample(), computed_at: WROTE_AT }),
       businessHours: async () => narrowed,
     });
-    const r = await resolveBucketSlots("411", "2026-06-08T04:00:00.000Z", 4, d);
+    const r = await resolveBucketSlots("411", 4, d);
     eq(r!.slots.length, 2, "the stored row is filtered too");
   }
 
@@ -226,7 +229,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
   {
     const calls: Record<string, number> = {};
     const d = deps({ calls, compute: async () => sample(), businessHours: async () => narrowed });
-    const r = await resolveBucketSlots("411", "2026-06-08T04:00:00.000Z", 4, d);
+    const r = await resolveBucketSlots("411", 4, d);
     eq(r!.slots.length, 2, "the cold compute path is filtered on the way out as well");
   }
 
@@ -241,7 +244,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
       cachePut: async (_k, v) => { cached = v as unknown as { slots: string[] }; },
       businessHours: async () => narrowed,
     });
-    await resolveBucketSlots("411", "2026-06-08T04:00:00.000Z", 4, d);
+    await resolveBucketSlots("411", 4, d);
     eq(
       cached!.slots.length,
       3,
@@ -254,7 +257,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
     const calls: Record<string, number> = {};
     const broken = { ...sample(), slots: ["not-a-date", "2026-06-08T13:00:00.000Z"], computedAt: WROTE_AT };
     const d = deps({ calls, cacheGet: async () => broken, businessHours: async () => narrowed });
-    const r = await resolveBucketSlots("411", "2026-06-08T04:00:00.000Z", 4, d);
+    const r = await resolveBucketSlots("411", 4, d);
     eq(r!.slots, ["2026-06-08T13:00:00.000Z"], "an unreadable instant is dropped from the offered list");
   }
 
@@ -268,7 +271,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
       computedAt: WROTE_AT,
     };
     const d = deps({ calls, cacheGet: async () => straddle, businessHours: async () => narrowed });
-    const r = await resolveBucketSlots("411", "2026-06-08T04:00:00.000Z", 4, d);
+    const r = await resolveBucketSlots("411", 4, d);
     eq(r!.slots, [], "a slot running past the close is dropped, matching the compute-time gate");
   }
 }
@@ -301,7 +304,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
     writeRow: async (_c, v) => { written = v; return WROTE_AT; },
     businessHours: async () => OPEN_ALL_WEEK,
   });
-  const r = await resolveBucketSlots("411", "2026-08-13T04:00:00.000Z", 4, d);
+  const r = await resolveBucketSlots("411", 4, d);
 
   eq(
     r!.slots.map((s) => s.slice(0, 10)).join(","),
@@ -319,6 +322,86 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
     4,
     "and the row it self-heals with holds the same four days, not the wider set",
   );
+}
+
+// 7) #3381 step 3: the cold compute anchors on NOW, never on the caller's `from`.
+//
+// The stored row never depended on `from` (#3366), and every recompute path anchors
+// on now. The cold compute anchored on the caller's: an evening Eastern lead sends
+// their local midnight, which is YESTERDAY's UTC date, so the window started a day
+// early and ran a day short at the far end; a booker that had paged forward anchored
+// on a FUTURE day and stored a row with none of today's times. Either row then stood
+// as the bucket's row until the next recompute.
+{
+  const now = Date.parse("2026-10-14T12:00:00.000Z");
+  const todayUtc = "2026-10-14T00:00:00.000Z";
+  const windows: { from: string; to: string }[] = [];
+  // The caller's `from` no longer reaches the core at all, so there is nothing for a
+  // booker's local midnight or a paged forward day to anchor.
+  await resolveBucketSlots("411", 4, deps({
+    calls: {},
+    nowMs: () => now,
+    compute: async (_c, from, to) => {
+      windows.push({ from, to });
+      return sampleSlots();
+    },
+  }));
+  eq(windows[0]!.from, todayUtc, "the cold compute's window starts on today's UTC day, the anchor every recompute uses");
+  assert(
+    Date.parse(windows[0]!.to) > now + 4 * 86_400_000,
+    "and reaches past the horizon from TODAY, so the row it stores is not a day short",
+  );
+}
+
+// 7b) And the stamp the cold write is labelled with is the injected clock's, not the
+// wall clock's (#1048's "when the compute began", now testable).
+{
+  const now = Date.parse("2026-10-14T12:00:00.000Z");
+  let stamped = -1;
+  await resolveBucketSlots("411", 4, deps({
+    calls: {},
+    nowMs: () => now,
+    compute: async () => sampleSlots(),
+    writeRow: async (_c, _v, atMs) => { stamped = atMs; return new Date(atMs).toISOString(); },
+  }));
+  eq(stamped, now, "the cold write is stamped from the injected clock");
+}
+
+// 8) #3381: every tier says which path wrote what it served, and whether a booking
+// was spliced in since, for the `slots served` line.
+{
+  const fenceAt = Date.parse("2026-06-19T12:01:00.000Z");
+  const spliced = {
+    ...sampleSlots(),
+    writtenBy: "push",
+    splice: { seq: 1, fenceAt: new Date(fenceAt).toISOString(), windows: [{ atMs: fenceAt, fromMs: 0, lastStartMs: 1, reoffer: true }] },
+  };
+  let cached: Record<string, unknown> | null = null;
+  const fromRow = await resolveBucketSlots("411", 4, deps({
+    calls: {},
+    readRow: async () => ({ payload: spliced, computed_at: WROTE_AT }),
+    cachePut: async (_k, v) => { cached = v as unknown as Record<string, unknown>; },
+  }));
+  eq(fromRow!.writtenBy, "push", "a row read names its writer");
+  eq(fromRow!.spliced, "2026-06-19T12:01:00.000Z+reoffer", "and the splice since its compute, re-offer marked");
+  assert(!("splice" in fromRow!) && fromRow!.slots.length === 1, "the fence itself is still never served");
+  eq(cached!.writtenBy, "push", "the edge cache entry carries the writer, so a hit can say it too");
+
+  const fromHit = await resolveBucketSlots("411", 4, deps({
+    calls: {},
+    cacheGet: async () => ({ ...sampleSlots(), computedAt: WROTE_AT, writtenBy: "lane", spliced: null }),
+  }));
+  eq(fromHit!.writtenBy, "lane", "a hit names the writer its entry was cached with");
+
+  const oldEntry = await resolveBucketSlots("411", 4, deps({
+    calls: {},
+    cacheGet: async () => ({ ...sampleSlots(), computedAt: WROTE_AT }),
+  }));
+  eq(oldEntry!.writtenBy, null, "an entry cached before this shipped says not recorded, never a writer");
+
+  const cold = await resolveBucketSlots("411", 4, deps({ calls: {}, compute: async () => sampleSlots() }));
+  eq(cold!.writtenBy, "cold", "a cold compute names itself");
+  eq(cold!.spliced, null, "with nothing spliced");
 }
 
 finish();
