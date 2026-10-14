@@ -2392,7 +2392,9 @@ export default function Booker({
             </>
           )}
           {timesPanel}
-          {!selectedSlot && (
+          {/* Only over times actually on screen: while loading, failed or closed
+              there are none for the zone to describe (L11). */}
+          {!selectedSlot && picker.view.kind === "times" && (
             <p className={`mt-3 text-center text-xs ${c.faint}`}>{INLINE_CARD_COPY.timesIn(zoneReadName(zone))}</p>
           )}
         </div>

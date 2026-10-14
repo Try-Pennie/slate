@@ -71,6 +71,14 @@ describe("the inline card (#3718)", () => {
     expect(screen.getByText(INLINE_CARD_COPY.timesIn(zoneLabel(resolveZone(deviceTimeZone()))))).toBeTruthy();
   });
 
+  it("says nothing about a zone when there are no times to describe", async () => {
+    global.fetch = vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) })) as unknown as typeof fetch;
+    render(<Booker {...baseProps} layout="inline" />);
+    await screen.findByText(INLINE_CARD_COPY.title);
+    await screen.findByRole("alert");
+    expect(screen.queryByText(/^Times in /)).toBeNull();
+  });
+
   it("leaves the ordinary booker as it was when no layout is asked for", async () => {
     render(<Booker {...baseProps} />);
     expect(await screen.findByRole("heading", { name: "Advisor Call" })).toBeTruthy();
