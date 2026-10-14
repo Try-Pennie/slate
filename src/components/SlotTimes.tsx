@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { BobbingDots } from "@/components/BobbingDots";
 import { PICKER_COPY, timesAvailableAnnouncement } from "@/lib/booking/booker-copy";
@@ -117,6 +117,7 @@ export function SlotTimes({
   noDaysNode,
   reader,
   failedMessage = null,
+  firstShown,
 }: {
   view: SlotPickerView;
   /** The viewer's zone: day headings and the announcement are read in it. */
@@ -139,10 +140,17 @@ export function SlotTimes({
    * one, so no retry is offered beside it; the sentence says what does.
    */
   failedMessage?: string | null;
+  /**
+   * Show only this many times, with a control for the rest (#3718, the inline
+   * card). Choosing another day folds them away again. Unset shows every time.
+   */
+  firstShown?: number;
 }) {
   // A day is a bare YYYY-MM-DD keyed in `timeZone`. Reading it back at noon UTC
   // keeps the label on that calendar day for every zone, east or west.
   const dayLabel = (day: string) => formatSlotDay(`${day}T12:00:00.000Z`, timeZone);
+  // Keyed by the day it was opened on, so another day starts folded again.
+  const [expandedDay, setExpandedDay] = useState<string | null>(null);
   const working = useStalledAfter(view.kind === "loading", WORKING_SIGNAL_AFTER_MS);
   const outsideHours = (day: string) =>
     reader.kind === "staff"
@@ -207,7 +215,21 @@ export function SlotTimes({
           {/* Extra room above the heading at desktop width only; mobile spacing
               is already right, so this is not a change to the base value. */}
           <p className={`${classes.heading} md:mt-1`}>Times on {dayLabel(view.day)}</p>
-          <div className={classes.grid}>{view.slots.map((iso) => renderSlot(iso))}</div>
+          {(() => {
+            const folded =
+              firstShown !== undefined && expandedDay !== view.day && view.slots.length > firstShown;
+            const shown = folded ? view.slots.slice(0, firstShown) : view.slots;
+            return (
+              <>
+                <div className={classes.grid}>{shown.map((iso) => renderSlot(iso))}</div>
+                {folded && (
+                  <button type="button" onClick={() => setExpandedDay(view.day)} className={classes.retry}>
+                    {COPY.viewMore}
+                  </button>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
     </>

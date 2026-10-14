@@ -1177,3 +1177,110 @@ describe("widget.js pre builds the modal frame on the trigger's first intent (#2
     expect(shownIframe()).toBeTruthy();
   });
 });
+
+// #3718: cal.com's inline embed, `Cal("inline", { elementOrSelector, calLink, config })`,
+// draws the booker INSIDE an element on the host page instead of in a modal. It shares
+// the modal's URL builder, so every parameter rule above holds for it too, and its
+// messages are taken only from frames this file built, exactly as the modal's are.
+describe("widget.js inline embed (#3718)", () => {
+  type CalFn = ((...args: unknown[]) => void) & { ns: Record<string, (...args: unknown[]) => void> };
+  const cal = () => (window as unknown as { Cal: CalFn }).Cal;
+  const slot = (id = "slot") => {
+    const el = document.createElement("div");
+    el.id = id;
+    document.body.appendChild(el);
+    return el;
+  };
+  const inlineIframe = (el: HTMLElement) => el.querySelector<HTMLIFrameElement>("iframe");
+  const srcParams = (f: HTMLIFrameElement) => new URL(f.getAttribute("src")!).searchParams;
+
+  it("draws the booker inside the element, with the compact layout and the host's origin", () => {
+    const el = slot();
+    cal()("inline", { elementOrSelector: "#slot", calLink: "router?xbc=411" });
+    const f = inlineIframe(el);
+    expect(f).toBeTruthy();
+    expect(new URL(f!.getAttribute("src")!).pathname).toBe("/book");
+    const p = srcParams(f!);
+    expect(p.get("xbc")).toBe("411");
+    expect(p.get("layout")).toBe("inline");
+    expect(p.get("embed")).toBe("1");
+    expect(p.get("parentOrigin")).toBe(window.location.origin);
+    // Nothing is opened over the page: inline is not a modal.
+    expect(document.querySelector(".slate-widget-overlay")).toBeNull();
+  });
+
+  it("takes an element as well as a selector, and maps the config's partner metadata", () => {
+    const el = slot("by-element");
+    cal()("inline", {
+      elementOrSelector: el,
+      calLink: "router?xbc=411",
+      config: { "metadata[sfdc_submission_id]": "a0XUi000001" },
+    });
+    expect(srcParams(inlineIframe(el)!).get("submissionId")).toBe("a0XUi000001");
+  });
+
+  it("uses the namespace's origin and theme when called through Cal.ns", () => {
+    const el = slot("ns-slot");
+    cal()("init", "inlinetest", { origin: "https://slate.example" });
+    cal().ns.inlinetest("ui", { theme: "dark" });
+    cal().ns.inlinetest("inline", { elementOrSelector: "#ns-slot", calLink: "router?xbc=411" });
+    const f = inlineIframe(el)!;
+    expect(new URL(f.getAttribute("src")!).origin).toBe("https://slate.example");
+    expect(srcParams(f).get("theme")).toBe("dark");
+  });
+
+  it("replaces its own frame when called again for the same element, rather than stacking", () => {
+    const el = slot();
+    cal()("inline", { elementOrSelector: "#slot", calLink: "router?xbc=411" });
+    cal()("inline", { elementOrSelector: "#slot", calLink: "router?xbc=512" });
+    const all = el.querySelectorAll("iframe");
+    expect(all.length).toBe(1);
+    expect(srcParams(all[0]!).get("xbc")).toBe("512");
+  });
+
+  it("leaves the modal's booking address exactly as it was: no layout, which is trypennie's pop up", () => {
+    const iframe = openModal();
+    expect(new URL(iframe.getAttribute("src")!).searchParams.has("layout")).toBe(false);
+  });
+
+  it("does nothing, and throws nothing, when the element is not on the page", () => {
+    expect(() => cal()("inline", { elementOrSelector: "#missing", calLink: "router?xbc=411" })).not.toThrow();
+    expect(document.querySelector("iframe")).toBeNull();
+  });
+
+  it("sizes its frame from the booker's resize, and only from that frame", () => {
+    const el = slot();
+    cal()("inline", { elementOrSelector: "#slot", calLink: "router?xbc=411" });
+    const f = inlineIframe(el)!;
+    window.dispatchEvent(new MessageEvent("message", { data: { type: "slate:resize", height: 999 }, source: window as Window }));
+    expect(f.style.height).not.toBe("999px");
+    window.dispatchEvent(new MessageEvent("message", { data: { type: "slate:resize", height: 512 }, source: f.contentWindow }));
+    expect(f.style.height).toBe("512px");
+  });
+
+  it("announces a booking from its frame under both success events, and ignores any other window", () => {
+    const el = slot();
+    const seen: string[] = [];
+    cal()("on", { action: "*", callback: (e: { detail: { type: string } }) => seen.push(e.detail.type) });
+    cal()("inline", { elementOrSelector: "#slot", calLink: "router?xbc=411" });
+    const f = inlineIframe(el)!;
+    const data = { outcome: "created", booking: { id: "b1", startsAt: "s", endsAt: "e" } };
+    window.dispatchEvent(new MessageEvent("message", { data: { type: "slate:bookingSuccessful", data }, source: window as Window }));
+    expect(seen).not.toContain("bookingSuccessful");
+    window.dispatchEvent(new MessageEvent("message", { data: { type: "slate:bookingSuccessful", data }, source: f.contentWindow }));
+    expect(seen).toContain("bookingSuccessful");
+    expect(seen).toContain("bookingSuccessfulV2");
+  });
+
+  it("announces the booker's stages at once, since an inline booker is on screen from the start", () => {
+    const el = slot();
+    const seen: string[] = [];
+    cal()("on", { action: "bookerViewed", callback: (e: { detail: { type: string } }) => seen.push(e.detail.type) });
+    cal()("inline", { elementOrSelector: "#slot", calLink: "router?xbc=411" });
+    const f = inlineIframe(el)!;
+    window.dispatchEvent(
+      new MessageEvent("message", { data: { type: EMBED_MESSAGE.bookerViewed, data: { slotsLoaded: false } }, source: f.contentWindow }),
+    );
+    expect(seen).toEqual(["bookerViewed"]);
+  });
+});
