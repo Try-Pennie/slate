@@ -33,6 +33,7 @@ import { eligibleFromRoster } from "../../src/lib/availability/pool.ts";
 import { withoutLowCarriers } from "../../src/lib/availability/low-exclusion.ts";
 import { rungExcludesLow, tierLadder } from "../../src/lib/routing/tiers.ts";
 import type { Attributes } from "../../src/lib/db/types.ts";
+import { retryTransient, type RetryResult } from "../lib/retry.ts";
 import { burstRequestsPerDriver, chooseBurstSlots, type BurstCapacity, type BurstKind, type BurstPlan, type PlannedBurst } from "./book-plan.ts";
 
 /** One bucket code and how many agents its pool resolves to. */
@@ -354,4 +355,42 @@ export function assembleBurstPlan(
     return { kind, codes: refusal.codes, shownTiers: refusal.shownTiers, slot, startAtMs, perDriver: burstRequestsPerDriver(kind), capacity };
   });
   return { bursts };
+}
+
+/**
+ * A planner read whose failure is only that the database did not answer in time,
+ * as opposed to an answer the planner must refuse on. The app's deadline error
+ * reaches the planner wrapped by `unwrap` as plain text, so it is recognised by its
+ * own wording (`DeadlineExceededError`, "did not answer within <n>ms").
+ */
+function isTimedOutRead(err: unknown): boolean {
+  const text = err instanceof Error ? err.message : String(err);
+  return /DeadlineExceededError|did not answer within \d+ms/.test(text);
+}
+
+/**
+ * Run a read-only planner read, retrying it when it TIMED OUT (#3737). Load run 19
+ * ended in setup on one read of the branch that took longer than 15s, before any
+ * traffic, at a cost of the whole run. A timed out read is asked again through the
+ * shared bounded retry (three attempts, every retry printed through `onRetry`), and
+ * running out of attempts is still a failure the caller refuses on. Any OTHER error
+ * is thrown at once: it is an answer, and asking again would only delay it.
+ */
+export async function readRetryingTimeouts<T>(
+  read: () => Promise<T>,
+  io: { sleep?: (ms: number) => Promise<void>; onRetry: (line: string) => void },
+): Promise<RetryResult<T>> {
+  return retryTransient<T>({
+    run: async () => {
+      try {
+        return { ok: true, value: await read() };
+      } catch (err) {
+        if (!isTimedOutRead(err)) throw err;
+        return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    sleep: io.sleep,
+    onRetry: ({ attempt, reason, waitMs }) =>
+      io.onRetry(`retrying a timed out read after attempt ${attempt}, in ${waitMs}ms: ${reason}`),
+  });
 }

@@ -31,6 +31,7 @@ import {
   ladderCandidates,
   ladderFreeFrom,
   ladderRosterIds,
+  readRetryingTimeouts,
   ladderSignature,
   poolKeysByCode,
   refusalLadders,
@@ -315,6 +316,46 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
 
   const second = await chooseRefusalSlots(["500", "520"], io(hardAt16, { "500": [at(14)], "520": times }), opts);
   assert(second.kind === "chosen" && second.ladder === "520", `refusal choice: a ladder with nothing fit gives way to the next (got ${JSON.stringify(second)})`);
+}
+
+// #3737: one read that timed out ended load run 19 in setup, before any traffic. A
+// TIMED OUT read is retried, visibly, a bounded number of times; anything else is an
+// answer the planner refuses on at once, and running out of attempts is still a failure.
+{
+  const timeout = new Error("read failed [bucket pool agents]: DeadlineExceededError: supabase did not answer within 15000ms");
+  const waits: number[] = [];
+  const retries: string[] = [];
+  const io = { sleep: async (ms: number) => void waits.push(ms), onRetry: (line: string) => void retries.push(line) };
+
+  let calls = 0;
+  const recovered = await readRetryingTimeouts(async () => {
+    calls++;
+    if (calls === 1) throw timeout;
+    return 7;
+  }, io);
+  assert(recovered.ok && recovered.value === 7 && recovered.attempts === 2, `read retry: a read that timed out once answers on the second attempt (got ${JSON.stringify(recovered)})`);
+  assert(retries.length === 1 && retries[0]!.includes("did not answer within 15000ms") && retries[0]!.includes("attempt 1"), `read retry: the retry is printed with the attempt and why (got ${JSON.stringify(retries)})`);
+  assert(waits.length === 1, `read retry: one wait between two attempts, on the injected sleep (got ${JSON.stringify(waits)})`);
+
+  let stuck = 0;
+  const exhausted = await readRetryingTimeouts(async () => {
+    stuck++;
+    throw timeout;
+  }, { sleep: async () => {}, onRetry: () => {} });
+  assert(!exhausted.ok && exhausted.attempts === 3 && stuck === 3, `read retry: a read that never answers fails after three attempts (got ${JSON.stringify(exhausted)}, ${stuck} calls)`);
+  assert(!exhausted.ok && exhausted.reason.includes("did not answer within 15000ms"), `read retry: exhaustion keeps the timeout as its reason (got ${JSON.stringify(exhausted)})`);
+
+  let refused = 0;
+  let thrown: unknown = null;
+  try {
+    await readRetryingTimeouts(async () => {
+      refused++;
+      throw new Error("read failed [bucket pool agents]: column users.attributes does not exist");
+    }, { sleep: async () => {}, onRetry: () => {} });
+  } catch (err) {
+    thrown = err;
+  }
+  assert(refused === 1 && thrown instanceof Error && thrown.message.includes("does not exist"), `read retry: a failure that is not a timeout is thrown at once, never retried (got ${refused} calls, ${String(thrown)})`);
 }
 
 finish();

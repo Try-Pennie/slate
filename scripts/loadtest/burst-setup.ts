@@ -84,6 +84,7 @@ import {
   HARD_REFUSAL_MIN_FREE,
   ladderCandidates,
   ladderFreeFrom,
+  readRetryingTimeouts,
   refusalLadders,
   type LadderCandidate,
 } from "./burst-target.ts";
@@ -203,18 +204,26 @@ async function ladderFreeAt(code: string, slot: string): Promise<{ rung0Free: nu
   return ladderFreeFrom(perRung);
 }
 
-/** `ladderFreeAt`, or the refusal its own exit code names when the read fails (L11). */
+/**
+ * `ladderFreeAt`, or the refusal its own exit code names when the read fails (L11).
+ * A read that only timed out is asked again, visibly, before that (#3737).
+ */
 async function measuredCapacity(c: LadderCandidate, slot: string): Promise<BurstCapacity> {
+  let reason: string;
   try {
-    const free = await ladderFreeAt(c.code, slot);
-    return { ladderRoster: c.ladderRoster, rung0Free: free.rung0Free, ladderFree: free.ladderFree };
+    const read = await readRetryingTimeouts(() => ladderFreeAt(c.code, slot), {
+      onRetry: (line) => console.log(`  ${c.code} at ${slot}: ${line}`),
+    });
+    if (read.ok) return { ladderRoster: c.ladderRoster, rung0Free: read.value.rung0Free, ladderFree: read.value.ladderFree };
+    reason = read.reason;
   } catch (err) {
-    console.error(
-      `FAILED: who is free at ${slot} on ${c.code}'s ladder could not be read (${String(err)}), so the burst's ` +
-        "capacity there is unknown and the crowd cannot be sized against it.",
-    );
-    process.exit(10);
+    reason = String(err);
   }
+  console.error(
+    `FAILED: who is free at ${slot} on ${c.code}'s ladder could not be read (${reason}), so the burst's ` +
+      "capacity there is unknown and the crowd cannot be sized against it.",
+  );
+  process.exit(10);
 }
 
 // --- the roster and its ladders, measured -----------------------------------------
