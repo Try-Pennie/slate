@@ -214,6 +214,24 @@ describe("the inline card's Call me now row (#3718)", () => {
     expect(screen.getByText(INLINE_CARD_COPY.chooseTime)).toBeTruthy();
   });
 
+  it("keeps a time the lead picked while the press was in flight, behind Choose a time instead", async () => {
+    let answer: (a: Answer) => void = () => {};
+    serve(OFFERED, () => new Promise<Answer>((r) => (answer = r)));
+    render(<Booker {...baseProps} layout="inline" callMeNow={CMN} />);
+    fireEvent.click(await callButton());
+    await screen.findByRole("button", { name: new RegExp(CALL_ME_NOW_COPY.pressing) });
+    // The lead picks a time while the call is being requested.
+    fireEvent.click(timeButtons()[0]!);
+    const chosen = await screen.findByRole("textbox", { name: /email/i });
+    expect(chosen).toBeTruthy();
+    answer({ status: 200, body: { outcome: "requested", textLine: null } });
+    // The call is coming, so that is what the card says...
+    expect(await screen.findByText(CALL_ME_NOW_COPY.momentarily)).toBeTruthy();
+    // ...and the time they picked is still there behind the way back.
+    fireEvent.click(screen.getByRole("button", { name: CALL_ME_NOW_COPY.insteadLink }));
+    expect(await screen.findByRole("textbox", { name: /email/i })).toBeTruthy();
+  });
+
   it("shows that it is working while the press is in flight", async () => {
     let answer: (a: Answer) => void = () => {};
     serve(OFFERED, () => new Promise<Answer>((r) => (answer = r)));
