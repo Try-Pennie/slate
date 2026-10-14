@@ -54,6 +54,31 @@ async function main() {
     assert(lookupsBeforeSave >= 1, `an ordinary booking looks the key up before its save (got ${lookupsBeforeSave})`);
   }
 
+  // --- #3495: a fresh confirm looks its key up ONCE before the save --------------------------
+  // The confirm's own idempotency lookup runs a few hundred milliseconds before the
+  // save, and the save itself refuses a second booking on the key and hands back the
+  // winner. The second lookup inside the attempt (kept for the drain's resume) was one
+  // more database wait on every booking, about 130ms at the median under load run 20.
+  {
+    const made = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    await createBooking(input, made.deps);
+    assert(made.calls.idempotencyLookups.length === 1, `a fresh confirm looks its key up once before the save (got ${made.calls.idempotencyLookups.length})`);
+  }
+
+  // --- #3495: a loser whose event is NOT the winner's takes its own event back ---------------
+  // The event id is derived from the key AND the advisor, so a same key loser that
+  // picked a different advisor than the winner wrote a different event. Answering the
+  // winner without removing it left a second invite on that advisor's calendar.
+  {
+    const winner = makeBooking({ id: "bk-winner", manage_token: "tok-winner", gcal_event_id: "gcal-elsewhere" });
+    const made = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]), insertBookingConflict: true, conflictWinner: winner });
+    const res = await createBooking(input, made.deps);
+    assert(res.booking.id === "bk-winner", `the lead is answered with the winner (got ${res.booking.id})`);
+    const removed = made.calls.deleteEvent.length + made.calls.enqueueEventDeletion.length;
+    assert(removed === 1, `the loser's own event is taken back (got ${made.calls.deleteEvent.length} deletes, ${made.calls.enqueueEventDeletion.length} queued)`);
+    assert(made.calls.deletedReservations.length === 1, "and its reservation is cleaned up");
+  }
+
   // --- an agent link booking routes nothing --------------------------------------------------
   // (The routing record is absent; covered with the link's own fixtures in
   // scripts/test-agent-link-booking.ts, which also runs through this one call.)

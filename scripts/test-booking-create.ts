@@ -464,7 +464,10 @@ async function run() {
 
   // --- idempotency: concurrent duplicate loses the insert race, gets the winner ---
   {
-    const winner = makeBooking({ id: "bk-winner", manage_token: "tok-winner" });
+    // The winner holds the SAME event the loser's create reused: the fake's first
+    // created event is gcal-1, and a real same key, same advisor pair shares one id
+    // (#3495: a winner on another event is the case that takes the loser's back).
+    const winner = makeBooking({ id: "bk-winner", manage_token: "tok-winner", gcal_event_id: "gcal-1" });
     const { deps, calls } = makeDeps({
       candidates: ["a"],
       freeEmails: new Set(["a@x.com"]),

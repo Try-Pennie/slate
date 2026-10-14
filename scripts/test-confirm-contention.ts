@@ -1144,18 +1144,23 @@ async function main() {
   // make the fixture prove only itself (L48). The shared line case below runs the
   // identical crowd and must answer none of them retryably.
   //
-  // #3495: the floor was 40 while a booking's save was six database calls after its
-  // calendar event. Folded into one, each leader's path is shorter and fewer run out
-  // of time (18 of the hundred in this model on 2026-10-07), so the floor is the
-  // failure itself, a material share told to retry, rather than the old count.
+  // What is asserted is the failure's CAUSE, one leader per isolate running the full
+  // path at once, and not its symptom. The symptom, confirms told to retry, is how many
+  // of those leaders this model's database runs out of time on, and it shrinks every
+  // time a booking's path does: 40 or more while the save was six calls, 18 once it
+  // was one (#3495 step 3, 2026-10-07), 1 once a fresh confirm stopped reading its key
+  // twice (#3495, 2026-10-14). A floor tuned down after each cut would end up proving
+  // nothing (L48); the leader count is the shape that failed on the load run, and the
+  // shared line case below runs the identical crowd and must have exactly one.
   {
-    const { tally, bySlot } = await burst({
+    const { runs, bySlot } = await burst({
       inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
       pool: ["a"],
       queue: "real",
       isolates: { count: 50, line: "isolate" },
     });
-    assert((tally["503"] ?? 0) >= 10, `per isolate lines: leaders are told to retry, the 2026-10-05 failure (got ${JSON.stringify(tally)})`);
+    const leaders = runs.filter((r) => r.calls.some((c) => c.name === "insertReservation")).length;
+    assert(leaders === 50, `per isolate lines: every isolate's leader runs the full path at once, the 2026-10-05 failure (got ${leaders} of 50 isolates)`);
     assert(bySlot.size <= 1, `per isolate lines: still never a double booking (got ${bySlot.size})`);
   }
 
@@ -1168,6 +1173,8 @@ async function main() {
       isolates: { count: 50, line: "shared" },
     });
     assert(bySlot.size === 1 && tally.created === 1, `shared line: exactly one confirm is booked (got ${JSON.stringify(tally)})`);
+    const leaders = runs.filter((r) => r.calls.some((c) => c.name === "insertReservation")).length;
+    assert(leaders === 1, `shared line: one leader runs the full path for the whole crowd (got ${leaders})`);
     assert(tally.SLOT_TAKEN === BURST - 1, `shared line: every other one is told SLOT_TAKEN (got ${JSON.stringify(tally)})`);
     assert(!tally["503"], `shared line: none is answered 503 (got ${tally["503"] ?? 0})`);
     const winner = runs.find((r) => r.outcome === "created")!;

@@ -43,6 +43,12 @@ memory, and never printed.
 - **cal.com event types** counted as a lead booking: review, connect, call, terms,
   income, apply and meet. The others (the second call type, Client Sync, tests and
   demos) are counted by id and left out.
+- **The inline card is outside the split** (#3718). A landing page with the inline
+  card always offers Slate, so an application with a Slate booking made through it
+  (its stored link carried `layout=inline`) leaves the cohort on BOTH hash sides,
+  with every booking it made, cal.com ones included. Dropping only the booking would
+  leave a cal.com side application reading as one that never booked. The readout
+  says how many applications it left out this way.
 - **Reschedules collapse** on both systems. cal.com marks the old half `cancelled`
   with `rescheduledToUid` set, so that is a reschedule; a chain is made when its
   first link was made and judged at its last link's start. Slate reschedules in

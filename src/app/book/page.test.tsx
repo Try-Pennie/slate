@@ -481,3 +481,42 @@ describe("/book layout (#3718)", () => {
     expect(bookerElement(odd).layout).toBeUndefined();
   });
 });
+
+// #3718: Call me now on the inline card is a per page setting, `callMeNow=above` or
+// `callMeNow=below`, and needs a lead to call.
+describe("/book Call me now (#3718)", () => {
+  const LEAD = "00QUi000010889ZMAQ";
+  const card = (extra: Record<string, string>) =>
+    BookEntry({ searchParams: Promise.resolve({ xbc: "111", embed: "1", layout: "inline", external_id: LEAD, ...extra }) });
+  beforeEach(() => {
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));
+  });
+
+  it("hands the card the row's position and the lead's details AS THE PAGE SENT THEM", async () => {
+    const el = await card({ callMeNow: "below", name: "Maria Lopez", email: "maria@example.com", phone: "2197588170", submissionId: "a0XUi000001" });
+    expect(bookerElement(el).callMeNow).toEqual({
+      position: "below",
+      leadId: LEAD,
+      email: "maria@example.com",
+      phone: "2197588170",
+      submissionId: "a0XUi000001",
+      firstName: "Maria",
+    });
+  });
+
+  it("never fills the contact check from what Slate looked up about the lead, which would always match", async () => {
+    const service = await import("@/lib/booking/service");
+    vi.mocked(service.landingAttendee).mockResolvedValueOnce({ name: "From Salesforce", firstName: "From", email: "sf@example.com", phone: "5550000000" });
+    const el = await card({ callMeNow: "above" });
+    expect(bookerElement(el).callMeNow).toMatchObject({ email: null, phone: null });
+  });
+
+  it("offers no row unless the page asks for one, on the inline card, for a lead", async () => {
+    expect(bookerElement(await card({})).callMeNow).toBeNull();
+    expect(bookerElement(await card({ callMeNow: "sideways" })).callMeNow).toBeNull();
+    const notInline = await BookEntry({ searchParams: Promise.resolve({ xbc: "111", external_id: LEAD, callMeNow: "above" }) });
+    expect(bookerElement(notInline).callMeNow).toBeNull();
+    const noLead = await BookEntry({ searchParams: Promise.resolve({ xbc: "111", layout: "inline", callMeNow: "above" }) });
+    expect(bookerElement(noLead).callMeNow).toBeNull();
+  });
+});
