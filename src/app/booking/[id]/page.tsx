@@ -6,6 +6,7 @@ import { resolveLandingCode } from "@/lib/routing/landing-code";
 import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
 import { existingCallForLanding, landingAttendee } from "@/lib/booking/service";
 import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
+import { prefillFromQuery } from "@/lib/booking/book-link";
 import { landingLookupId } from "@/lib/booking/landing-identity-gate";
 import { headers } from "next/headers";
 
@@ -72,10 +73,7 @@ export default async function BookingPage({
     first(sp, "attendeePhoneNumber") ||
     first(sp, "smsReminderNumber");
 
-  const prefill: Record<string, string> = {};
-  for (const [k, v] of Object.entries(sp)) {
-    prefill[k] = Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
-  }
+  const prefill = prefillFromQuery(sp);
 
   const embedded = first(sp, "embed") === "1";
   const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
