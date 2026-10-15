@@ -6,6 +6,7 @@
  * `token-holder-object.ts`; where the tiers meet is `dwd.ts`.
  */
 import type { ScheduleTimer } from "../read-within-deadline.ts";
+import { OBJECT_LOCATION_HINT } from "../object-placement.ts";
 import {
   TOKEN_HOLDER_INSTANCE,
   TOKEN_HOLDER_PROTOCOL,
@@ -86,7 +87,7 @@ export function makeTokenHolderClient(deps: {
   async function send(message: Record<string, unknown>, waitMs: number): Promise<HolderAnswer> {
     const ns = deps.namespace;
     if (!ns) throw new Error("no TOKEN_HOLDER binding");
-    const stub = ns.get(ns.idFromName(TOKEN_HOLDER_INSTANCE), { locationHint: "wnam" });
+    const stub = ns.get(ns.idFromName(TOKEN_HOLDER_INSTANCE), { locationHint: OBJECT_LOCATION_HINT });
     let cancel: () => void = () => {};
     const expired = new Promise<never>((_, reject) => {
       cancel = deps.timer(waitMs, () => reject(new HolderTimeout()));

@@ -308,6 +308,10 @@ A hit is charged to a confirm's profile as its own dependency, `edge-counter`, s
 run reads the counter's time apart from Supabase's. The objects are keyed by a
 caller or an address, which live long, so they are warm (about 11ms a call, below)
 rather than created per request.
+A NEW address's first call does create one, and in load runs 28 and 32 that first
+call (383ms to 1763ms) was the largest part of a cold confirm; every object is now
+created with `OBJECT_LOCATION_HINT` (`src/lib/object-placement.ts`, #3752), so it
+sits beside the Worker rather than wherever its first request landed.
 
 ## A Durable Object call: what it costs, and what a deploy does to it (#3325)
 

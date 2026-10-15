@@ -11,6 +11,7 @@ import {
 } from "@/lib/monitor/burst-counter-probe";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import { log } from "@/lib/log";
+import { OBJECT_LOCATION_HINT, type DurableObjectishNamespace } from "@/lib/object-placement";
 
 export const dynamic = "force-dynamic";
 
@@ -43,10 +44,6 @@ export const dynamic = "force-dynamic";
  * binding, an object that did not answer, and an answer with no count are four different things
  * to go and do, and the command exits on a different code for each.
  */
-interface DurableObjectishNamespace {
-  idFromName(name: string): unknown;
-  get(id: unknown): { fetch(url: string, init?: RequestInit): Promise<Response> };
-}
 
 export async function POST(req: NextRequest) {
   // #2645, #2854: the canary's own key only, never a partner's.
@@ -76,7 +73,8 @@ export async function POST(req: NextRequest) {
 
   let raw: unknown;
   try {
-    const stub = ns.get(ns.idFromName(BURST_VERIFY_KEY));
+    // Placed as the counters it proves are (#3752).
+    const stub = ns.get(ns.idFromName(BURST_VERIFY_KEY), { locationHint: OBJECT_LOCATION_HINT });
     const res = await stub.fetch("https://burst-limiter.slate/count", {
       method: "POST",
       headers: { "content-type": "application/json" },

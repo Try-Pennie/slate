@@ -48,6 +48,7 @@ import {
 import { DIRECTORY_GROUP_PREFIX } from "./pool-grouping.ts";
 import { readWithinDeadline, NoAnswerWithinError, type ScheduleTimer } from "../read-within-deadline.ts";
 import type { SwitchReading } from "../cached-switch.ts";
+import { OBJECT_LOCATION_HINT } from "../object-placement.ts";
 
 export type { SwitchReading };
 
@@ -498,11 +499,11 @@ export interface DurableLineNamespace {
  * back. Created near the database: the placement hint (`aws:us-west-2`, #3693) runs
  * the Worker beside Supabase (Oregon), and an object is created where its first
  * request comes from, so the `wnam` location hint keeps it there even when that first
- * request does not. An answer that is not the
+ * request does not (`OBJECT_LOCATION_HINT`, #3752). An answer that is not the
  * protocol's JSON is a failed call, never a guess.
  */
 function objectStub(ns: DurableLineNamespace, group: string, path: string): LineStub {
-  const stub = ns.get(ns.idFromName(confirmLineObjectName(group)), { locationHint: "wnam" });
+  const stub = ns.get(ns.idFromName(confirmLineObjectName(group)), { locationHint: OBJECT_LOCATION_HINT });
   return {
     async send(message) {
       const res = await stub.fetch(`https://confirm-line${path}`, {

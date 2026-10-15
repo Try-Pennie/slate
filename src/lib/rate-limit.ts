@@ -39,6 +39,7 @@ import {
 } from "@/lib/rate-limit-core";
 import { RetryCredits, type RetryCreditVerdict } from "@/lib/rate-limit-retry-credit";
 import { parseStampMs } from "@/lib/date/stamp";
+import { OBJECT_LOCATION_HINT, type DurableObjectishNamespace } from "@/lib/object-placement";
 
 export {
   clientIp,
@@ -80,12 +81,6 @@ export async function availabilityWithinLimit(ip: string): Promise<boolean> {
   return edgeWithinLimit(ip, AVAILABILITY_LIMITER);
 }
 
-/** The Durable Object namespace shape this uses, named locally because
- *  `@cloudflare/workers-types` is not a dependency here. */
-interface DurableObjectishNamespace {
-  idFromName(name: string): unknown;
-  get(id: unknown): { fetch(url: string, init?: RequestInit): Promise<Response> };
-}
 
 /** One tracker per isolate. The in-isolate counts ARE the cheap half of the ceiling, so they
  *  have to outlive a single request; a tracker built per call would count every request as the
@@ -104,7 +99,7 @@ function burstTracker(ns: DurableObjectishNamespace): BurstTracker {
     ask: async (key, bump) => {
       const namespace = currentBurstNamespace;
       if (!namespace) throw new Error("no burst limiter namespace bound");
-      const stub = namespace.get(namespace.idFromName(key));
+      const stub = namespace.get(namespace.idFromName(key), { locationHint: OBJECT_LOCATION_HINT });
       const res = await stub.fetch("https://burst-limiter.slate/count", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -728,7 +723,9 @@ async function countExactHit(rule: RateLimitRule, key: string): Promise<number |
   }
   const windowMs = rule.windowSeconds * 1000;
   try {
-    const stub = ns.get(ns.idFromName(exactCeilingKey(rule.prefix, key)));
+    // #3752: created beside the Worker, since a new address's first call is a cold
+    // confirm's largest wait.
+    const stub = ns.get(ns.idFromName(exactCeilingKey(rule.prefix, key)), { locationHint: OBJECT_LOCATION_HINT });
     // The signal the deadline adds is not handed to the stub: the race below ends the wait
     // whether or not the object honours it, and nothing here depends on the stub accepting one.
     const res = await fetchWithinBudget(

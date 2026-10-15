@@ -111,6 +111,7 @@ import {
   type CounterWindow,
 } from "@/lib/rate-limit-burst";
 import { insideCallBudget, withinCallBudget } from "@/lib/call-budget";
+import { OBJECT_LOCATION_HINT } from "@/lib/object-placement";
 import {
   UNIDENTIFIED_IP,
   AVAILABILITY_LIMITER,
@@ -1067,6 +1068,7 @@ describe("the burst ceiling reaches every edge limiter (#1556)", () => {
     // key were the address alone, these two would share a count and the same address loading
     // the booker would push its own confirm over the lower ceiling.
     const keysAsked: string[] = [];
+    const hintsAsked: (string | undefined)[] = [];
     cf.env = {
       BOOKING_RATE_LIMITER: { limit },
       AVAIL_RATE_LIMITER: { limit },
@@ -1075,11 +1077,13 @@ describe("the burst ceiling reaches every edge limiter (#1556)", () => {
           keysAsked.push(name);
           return { name };
         },
-        get: () => ({
-          fetch: async () =>
-            new Response(JSON.stringify({ count: 1 }), {
+        get: (_id: unknown, opts?: { locationHint?: string }) => ({
+          fetch: async () => {
+            hintsAsked.push(opts?.locationHint);
+            return new Response(JSON.stringify({ count: 1 }), {
               headers: { "content-type": "application/json" },
-            }),
+            });
+          },
         }),
       },
     };
@@ -1091,6 +1095,9 @@ describe("the burst ceiling reaches every edge limiter (#1556)", () => {
     const distinct = new Set(keysAsked);
     expect(distinct.size).toBe(2);
     for (const k of distinct) expect(k).toContain("1.2.3.4");
+    // #3752: the per minute counters are created beside the Worker too.
+    expect(hintsAsked.length).toBeGreaterThan(0);
+    expect(new Set(hintsAsked)).toEqual(new Set([OBJECT_LOCATION_HINT]));
   });
 
   it("still applies the ceiling when the NATIVE binding is missing (two controls, not one)", async () => {
@@ -1425,12 +1432,14 @@ describe("exactCeilingWithinLimit, the hourly ceilings at the edge (#3416)", () 
   // class around a fake storage).
   const objects = new Map<string, CounterWindow>();
   const asked: string[] = [];
+  const hints: (string | undefined)[] = [];
   const exactNamespace = () => ({
     idFromName: (name: string) => ({ name }),
-    get: (id: unknown) => ({
+    get: (id: unknown, opts?: { locationHint?: string }) => ({
       fetch: async (_url: string, init?: RequestInit) => {
         const name = (id as { name: string }).name;
         asked.push(name);
+        hints.push(opts?.locationHint);
         const request = readCounterRequest(JSON.parse(String(init?.body)));
         if (request.kind === "unreadable") return Response.json({ error: request.detail }, { status: 400 });
         const step = applyCounterRequest(objects.get(name) ?? null, request, Date.now());
@@ -1460,6 +1469,7 @@ describe("exactCeilingWithinLimit, the hourly ceilings at the edge (#3416)", () 
     vi.setSystemTime(clock);
     objects.clear();
     asked.length = 0;
+    hints.length = 0;
     cf.env = { BURST_LIMITER: exactNamespace() };
     getCloudflareContext.mockImplementation(() => ({ env: cf.env }));
   });
@@ -1474,6 +1484,15 @@ describe("exactCeilingWithinLimit, the hourly ceilings at the edge (#3416)", () 
     expect(rpc).not.toHaveBeenCalled();
     await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("creates each counter beside the Worker, with the one location hint every object shares (#3752)", async () => {
+    // A hint applies only when an object is first created, which is every run's new test
+    // addresses: their first call cost 383ms to 1763ms in load runs 28 and 32, the cold
+    // start's largest part.
+    await exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES);
+    await exactCeilingWithinLimit(IP_CALLER, DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES);
+    expect(hints).toEqual([OBJECT_LOCATION_HINT, OBJECT_LOCATION_HINT]);
   });
 
   it("still refuses at the per caller limit: hit 6000 is allowed, hit 6001 is not", async () => {
