@@ -57,6 +57,7 @@ import {
   type SlotView,
   afterResend,
   droppedAttempt,
+  sendBoundMs,
   transportOutcome,
 } from "./book-plan.ts";
 import { pauseBeforeResend, resendOnce } from "../../src/lib/resend-once.ts";
@@ -229,7 +230,11 @@ async function slotsFor(code: string, nowMs: number, deadlineAtMs: number): Prom
  * onto the first by its idempotency key. The record says when it was resent and why.
  */
 async function book(req: Parameters<typeof bookOnce>[0]): Promise<BookingAttempt> {
-  return afterResend(await resendOnce(() => bookOnce(req), droppedAttempt, pauseBeforeResend));
+  // One abort instant for both sends (`sendBoundMs`): the resend gets what is left of the
+  // first send's bound, so no request outlives the windows derived from that bound.
+  const abortAtMs =
+    Date.now() + effectiveDeadlineMs(requestAbortMs({ nowMs: Date.now(), deadlineAtMs: req.deadlineAtMs }), REQUEST_TIMEOUT_OVERRIDE);
+  return afterResend(await resendOnce(() => bookOnce(req, abortAtMs), droppedAttempt, pauseBeforeResend));
 }
 
 async function bookOnce(req: {
@@ -241,7 +246,7 @@ async function bookOnce(req: {
   deadlineAtMs: number;
   /** #3495: the tier the code had on show, handed back; null leaves the confirm to read it. */
   shownTier: string | null;
-}): Promise<BookingAttempt> {
+}, abortAtMs: number): Promise<BookingAttempt> {
   // Built before the try, as the ceiling control's is (#3447): a lead outside the
   // phone's digits stops the driver here, by name, rather than being recorded as a
   // request that failed in transit.
@@ -258,7 +263,7 @@ async function bookOnce(req: {
   let rungsDropped: number | null | undefined;
   try {
     const res = await fetch(`${SLATE_BASE}/api/bookings`, {
-      signal: requestSignal(req.deadlineAtMs, REQUEST_TIMEOUT_OVERRIDE),
+      signal: AbortSignal.timeout(sendBoundMs(abortAtMs, Date.now())),
       method: "POST",
       // #3354: the leg rides on every confirm, so the run can say where each cold one came from.
       headers: bookingRequestHeaders(API_KEY, MODE),

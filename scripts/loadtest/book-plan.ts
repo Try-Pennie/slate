@@ -390,6 +390,18 @@ export function requestAbortMs(opts: { nowMs: number; deadlineAtMs: number }): n
   return Math.max(1, Math.min(REQUEST_TIMEOUT_MS, opts.deadlineAtMs + REQUEST_OVERRUN_MS - opts.nowMs));
 }
 
+/**
+ * #3566: the abort bound for one send of a request whose bound was fixed when it was
+ * FIRST sent (`abortAtMs`): what is left of it, never below one millisecond. A resend
+ * after a dropped connection shares the first send's abort instant instead of starting
+ * a fresh bound, so a request is never in flight later than it could be before resends
+ * existed, and every window derived from one request's bound (the burst's settle and
+ * probe, its tail, its job) still holds.
+ */
+export function sendBoundMs(abortAtMs: number, nowMs: number): number {
+  return Math.max(1, abortAtMs - nowMs);
+}
+
 /** The fault pass's length when FAULT_MINUTES is unset, which is how the workflow runs it. */
 export const FAULT_MINUTES_DEFAULT = 2;
 

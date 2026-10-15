@@ -9,9 +9,18 @@
 // waited.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-loadtest-resend.ts
-import { afterResend, droppedAttempt, transportOutcome, type BookingAttempt } from "./loadtest/book-plan.ts";
+import {
+  afterResend,
+  burstSettleAtMs,
+  droppedAttempt,
+  sendBoundMs,
+  transportOutcome,
+  BURST_GRACE_DEFAULT_MS,
+  REQUEST_TIMEOUT_MS,
+  type BookingAttempt,
+} from "./loadtest/book-plan.ts";
 import { NO_SLOTS_OFFERED, TIMED_OUT, AVAILABILITY_UNREAD } from "./loadtest/outcomes.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 function attempt(over: Partial<BookingAttempt> = {}): BookingAttempt {
   return {
@@ -78,6 +87,28 @@ function attempt(over: Partial<BookingAttempt> = {}): BookingAttempt {
 
   const twice = afterResend({ result: attempt({ sentAtMs: 1_530, wallMs: 30 }), firstFailure: first });
   assert(twice.status === 0 && twice.resentAfter !== undefined, "a request that dropped twice is still unanswered, and resent");
+}
+
+
+// --- a resend lives inside the FIRST send's abort bound, never a fresh one -------------
+// Every burst window (when its slot is probed, when the tail stops, how long the job
+// runs) is derived from one request's bound past the latest a driver may fire. A resend
+// with a fresh bound could still be in flight after the probe asked whether the slot was
+// taken. So both sends of a request share one abort instant, and the windows hold by
+// construction rather than by being widened.
+{
+  const moment = 1_000_000;
+  const firedAt = moment + BURST_GRACE_DEFAULT_MS; // the latest a burst driver may fire
+  const abortAt = firedAt + REQUEST_TIMEOUT_MS;
+  eq(sendBoundMs(abortAt, firedAt), REQUEST_TIMEOUT_MS, "the first send gets the whole bound, as before");
+  for (const resentAt of [firedAt + 525, firedAt + 10_000, firedAt + 29_000]) {
+    const end = resentAt + sendBoundMs(abortAt, resentAt);
+    assert(
+      end <= burstSettleAtMs(moment, BURST_GRACE_DEFAULT_MS, REQUEST_TIMEOUT_MS),
+      `a resend at +${resentAt - firedAt}ms is over before the burst settles (ends ${end - moment}ms after the moment)`,
+    );
+  }
+  eq(sendBoundMs(abortAt, abortAt + 5), 1, "a resend with no time left gets the 1ms floor, never a zero or negative bound");
 }
 
 finish();
