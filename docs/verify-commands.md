@@ -64,12 +64,12 @@ the lane's, written only when they reach a MEASURED verdict
 "has never once reached a verdict" is the exact state this family exists to
 notice (#1394). Nothing else may stamp, and `checked` alone is not enough: a
 sample too small to judge also reports `checked`. Which detectors stamp, and each
-one's bound, are in `docs/verify-commands.md`.
+one's bound, are listed below.
 
 **The detail for every one of them, each exit code table, what it writes, which
 credentials it needs, what its last live run measured and the decisions behind
-it, is in `docs/verify-commands.md`.** Read that before running one, rather than
-reasoning the flags out per command. Most of the family retires at cutover (#65),
+it, is in the sections below.** Read a command's section before running it, rather
+than reasoning the flags out per command. Most of the family retires at cutover (#65),
 since it only means anything while both systems are live; `verify:twilio-parity`
 does not, because Twilio stays the place managers tag agents afterwards.
 
