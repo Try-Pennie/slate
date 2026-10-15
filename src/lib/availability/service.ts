@@ -353,6 +353,13 @@ export async function loadBucketSlotInputs(
   const resolved = await resolveBucketByCode(code);
   if (!resolved) return null;
   const { bucket } = resolved;
+  // Busy time is read over the window widened by the call's buffers, the window
+  // `bookableSlotReason` judges and the confirm reads (#3273). The search window ends at
+  // a UTC midnight, so the last slot can end exactly there with its gap after reaching
+  // past it: read over the bare window, a block starting at that midnight was never
+  // seen, and bucket 320 offered a time for a day that the confirm refused every lead
+  // who chose it. Widening only ever adds busy time, so it can only offer less.
+  const [busyFrom, busyTo] = bufferedWindow(resolved.eventType, from, to);
 
   // Neither the org name nor the business hours depend on member availability, so
   // overlap all three instead of running them as sequential hops. `loadBusinessHours`
@@ -367,7 +374,7 @@ export async function loadBucketSlotInputs(
       .select("name")
       .eq("id", bucket.org_id)
       .maybeSingle(),
-    loadMembersAvailability(bucket, from, to, resolveEligible),
+    loadMembersAvailability(bucket, busyFrom, busyTo, resolveEligible),
     loadBusinessHours(),
   ]);
   return { resolved, orgRes, membersResult, businessHours };
