@@ -6,8 +6,8 @@
 // agents, no booking for this lead, nothing to clean, nobody failing. Every
 // instance this has had was a screen or a decision reading that emptiness as a
 // fact. The class, and the question that decides whether a given read is safe,
-// are written up once in AGENTS.md ("Swallowed-error reads"); the incidents
-// behind each widening are in their issues (#277, #1134, #1152, #1629, #1641,
+// are written up in AGENTS.md ("Swallowed-error reads"), with the full text in
+// docs/repo-guards.md; the incidents behind each widening are in their issues (#277, #1134, #1152, #1629, #1641,
 // #2373, #2383, #2511, #2542), not here.
 //
 // THE SURFACE IS DERIVED: everything under `src/`, minus the named exclusions in

@@ -220,6 +220,44 @@ pnpm run cf:deploy   # build + deploy (NOT `pnpm deploy` — that's a pnpm built
 It goes to 100% of traffic at once with no probe. Prefer `pnpm cf:deploy:verified`
 (below), which at least confirms what went live.
 
+### `pnpm cf:build` refuses a bundle carrying your `.env` files (#2335)
+
+The Cloudflare adapter reads every `.env*` file in the build tree and writes their
+VALUES into `.open-next/cloudflare/next-env.mjs`, which ships inside the Worker
+bundle; at runtime the wrapper fills in every name the Worker's own bindings did
+not set. So a build run in a checkout holding `.env.local` deploys those
+credentials, to whatever environment it is deployed to. On 2026-09-14 that put
+production's Slack token on the load test Worker and paged the real alerts channel
+for six minutes about a roster that did not exist.
+
+`cf:build` now runs `scripts/check-bundle-env.ts` after the build and fails on any
+name in that file that is not `NEXT_PUBLIC_*`, naming the offenders and the `.env`
+file they came from, never their values. Wrangler has no predeploy hook, so it guards
+only a deploy that builds through `cf:build`; `cf:deploy` did not until #3078, and
+`scripts/test-bundle-env-guard.ts` now fails any package.json script that deploys
+without it. CI and the pre-push gate build from the committed tree, which holds no
+`.env*`; **a build in your own checkout is the case this fails**, so a hand deploy
+passes `NEXT_PUBLIC_*` in the shell environment (DEPLOY.md, 2a).
+`ALLOW_ENV_IN_BUNDLE=1` lets one local build through, never one to deploy.
+
+It asks a SECOND question in the same step: whether the CLIENT chunks NAME any
+deployment setting. That is not the same fault (a name is not a credential; what
+leaks is the inventory of what Slate integrates with) and only a real build can
+answer it, since the names are in the source either way and nothing but the build
+says which bundle a module landed in. It exists because the first version of the
+#2335 runtime refusal put the whole list into `publicSupabaseUrl()`, and all
+twenty three names shipped in a public chunk.
+
+The decisions are in `scripts/lib/scan-bundle-env.ts`, driven by fixtures in
+`scripts/test-bundle-env-guard.ts` (which deliberately does not read the real
+`.open-next`: the gate runs the suite alongside the build that writes it, L461).
+The load run's own three layers are in `scripts/loadtest/RUNBOOK.md`.
+
+Moved out of `AGENTS.md` on 2026-10-15, where every character was loaded into
+every session (#2393). `AGENTS.md` keeps the rule and points here; this is the
+full text as it stood, with the reasoning, the incidents and the measurements
+behind it.
+
 ### What CI does: a gradual deploy (#3095)
 The `deploy` job in `.github/workflows/ci.yml` does not deploy straight to 100%. Dan
 decided the shape on 2026-10-03: upload the new version, send 10% of real traffic to it,

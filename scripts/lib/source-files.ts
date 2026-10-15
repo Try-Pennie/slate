@@ -66,7 +66,7 @@ export type SelectOptions = {
  * anchored, so a nested one is not covered). Asking git for untracked files
  * across the repo would therefore enumerate every abandoned agent checkout: the
  * measured cost of the same mistake in eslint was 14 worktrees, 18 GB and a lint
- * leg that OOMed before finishing (AGENTS.md). They are other trees, not this
+ * leg that OOMed before finishing (docs/push-gate.md). They are other trees, not this
  * one's source, so no guard here has anything to say about them.
  */
 const FOREIGN_TREE_RE = /(?:^|\/)\.claude\/worktrees\//;

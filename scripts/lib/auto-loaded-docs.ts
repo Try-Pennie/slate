@@ -24,6 +24,13 @@
 //     character memory file and 103,544 with AGENTS.md as it stood that day
 //     (157,721 characters), so AGENTS.md alone cost 42,230 tokens, which is
 //     3.73 characters per token and 21 percent of the whole request limit.
+//   - Re-measured on 2026-10-15 across whole sessions rather than one file: the
+//     rules loaded at startup in Slate sessions came to about 86,000 tokens per
+//     request, at 2.78 characters per token, 20 percent of every token read (30
+//     percent for subagents). 2.78 is the figure used below. It is lower than the
+//     3.73 single file reading, so it overstates tokens rather than understating
+//     them, which is the safe direction for a budget. At 2.78 the old 125,000
+//     character budget was about 45,000 tokens, not the 33,500 it claimed.
 //
 // So the budget is a share of the window, not a guess at a cut off. See
 // BUDGET_CHARS below for the share chosen and why.
@@ -31,8 +38,12 @@
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-/** Measured 2026-09-17: 157,721 characters of AGENTS.md cost 42,230 tokens. */
-export const CHARS_PER_TOKEN = 3.73;
+/**
+ * Measured 2026-10-15 across whole Slate sessions: 2.78 characters per token for
+ * the rules loaded at startup. (The 2026-09-17 reading on AGENTS.md alone was
+ * 3.73: 157,721 characters cost 42,230 tokens.)
+ */
+export const CHARS_PER_TOKEN = 2.78;
 
 /** The request is refused above this, memory payload counted inside it. */
 export const REQUEST_TOKEN_LIMIT = 200_000;
@@ -40,22 +51,24 @@ export const REQUEST_TOKEN_LIMIT = 200_000;
 /**
  * The budget for everything this repo auto loads, in characters.
  *
- * 125,000 characters is about 33,500 tokens at the measured rate, which is one
- * sixth of the 200,000 token request limit. One sixth is the share the repo's
- * own rules may take because the same request also has to carry the machine's
- * global config (132,197 characters, about 35,400 tokens, measured the same
- * day), the tool definitions, every file read during the turn, and the
- * conversation itself.
+ * 30,000 characters is about 10,800 tokens at the measured rate, 5.4 percent of
+ * the 200,000 token request limit. It was set on 2026-10-15, when the files
+ * were cut from 124,740 characters to 24,539 by moving runbooks, incident
+ * histories and guard designs into `docs/` and leaving each rule with a pointer.
+ * The same request also has to carry the machine's global config, the memory
+ * index, the tool definitions, every file read during the turn, and the
+ * conversation itself, and the startup rules were measured that day at 20
+ * percent of every token a Slate session reads.
  *
- * At the growth this file's own history shows (51,740 characters on 2026-08-29
- * to 157,721 on 2026-09-17, about 5,600 a day) the headroom above today's
- * figure is days rather than weeks. That is deliberate. The point of the budget
+ * The history before the cut: 125,000 characters (2026-09-17, one sixth of the
+ * request at the old 3.73 rate), after growth from 51,740 characters on
+ * 2026-08-29 to 157,721 on 2026-09-17, about 5,600 a day. The point of the budget
  * is to make the next long section a decision somebody takes rather than an
  * accident nobody can see, and the remedy when it fires is to move a runbook
  * section into `docs/` and leave the rule with a pointer, never to raise the
  * number without saying what share of the window the new one takes.
  */
-export const BUDGET_CHARS = 125_000;
+export const BUDGET_CHARS = 30_000;
 
 export type LoadedDoc = { path: string; chars: number };
 

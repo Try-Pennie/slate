@@ -26,7 +26,7 @@ a procedure here, and no procedure exists for nothing.
    hour ago may already be over. Incidents never send one: they are finished events.
 
 Logs: `npx wrangler tail` for anything in the last few hours, because the query API can
-run hours behind (#1533). Filter on `tag=` (see `AGENTS.md`).
+run hours behind (#1533). Filter on `tag=` (see `docs/cloudflare-platform-notes.md`).
 
 ---
 
@@ -421,7 +421,8 @@ asked us to delete is still in the warehouse.
   single stranded row counts, deliberately, with no tolerance.
 - For a residual: the erasure audit names the booking. Remember the export watermark: a
   row written with an older timestamp than `export_cursor` is never fetched again, which
-  is the usual cause of a stranded row (`AGENTS.md`, the backfill convention).
+  is the usual cause of a stranded row (`docs/migrations-runbook.md`, "Backfilling a
+  mirrored table").
 
 **Fix or escalate.** A residual is a compliance matter with a clock on it (45 days from
 the request), so it escalates rather than waits: `docs/pii-erasure-runbook.md` has the
@@ -725,3 +726,92 @@ names the condition and the action. Adding a line to 87 copy builders (which is 
 would take, since `pnpm preview:alerts` must render exactly what ships) is a large
 change for a click. If a page ever arrives that a reader could not act on without this
 file, that is the evidence to revisit it.
+
+Moved out of `AGENTS.md` on 2026-10-15, where every character was loaded into
+every session (#2393). `AGENTS.md` keeps the rule and points here; this is the
+full text as it stood, with the reasoning, the incidents and the measurements
+behind it.
+
+### Condition vs incident: which alerts get an all-clear (#1151)
+
+Every alert key Slate can send is classified in **`src/lib/notify/alert-catalog.ts`**
+as one of three things, and the classification decides whether it may ever send a
+recovery notice:
+
+- **condition**: an ongoing state that is true until something changes it (a lane
+  is quiet, a mirror has drifted, retention is stopped, an endpoint is
+  dead-lettering). Someone reads the page and then needs to know when it is over,
+  so a condition **must** have a `resolveAlert` (or `resolveRecovered`) on the
+  same key.
+- **incident**: a finished event with no healthy state to observe (this booking's
+  event insert failed, this reassign was abandoned, this request 500'd). An
+  all-clear here would say "the thing that already happened has stopped
+  happening", which is noise. An incident carries **no** recovery and records why.
+- **info**: a `sendThrottledInfo` whisper that never needed action, so it must
+  never resolve either.
+
+The test that decides it: **if this cleared, what would the all-clear SAY?**
+
+`scripts/test-alert-recovery-coverage.ts` checks the catalog against the code both
+ways: every key the code sends is classified and on the right channel, every
+condition really resolves, no info or incident does, and no catalog entry names a
+key nothing sends (so a rename cannot leave a stale classification looking like
+coverage). A key the scanner cannot read is a hard failure; declare it with
+`// alert-key: <key or prefix:*>` on or above the call.
+
+One shape defeated that scanner for three releases and is worth knowing (#1400).
+A pure check sends through an injected seam (`deps.notify(SOME_KEY, ...)`) and the
+route wires the dispatcher in. If the wiring is an ARROW
+(`notify: (key, ms, text) => sendThrottledAlert(key, ms, text)`) that arrow is a
+call whose key cannot be read, and an unannotated opaque site is a hard failure,
+so it was always covered. If the wiring is a bare REFERENCE
+(`notify: sendThrottledAlert`) it is not a call at all, produced no site, and the
+key was invisible: **nine keys** lived in that gap, eight with no catalog entry
+and one (`sync_staleness`) paging with no way to say it had ended. Both forms are
+scanned now, and both require an `// alert-key:` declaration at the wiring.
+
+Two rules that fall out of this, both of which have already been violated once:
+
+- **Hang the all-clear off the MEASURED healthy result, never off "we did not
+  alert this run".** A run that skipped, threw, or could not read its signal
+  measured nothing and must clear nothing (#1134, #1152). Every module that
+  resolves must prove that silent path; `scripts/test-all-clear-failure-coverage.ts`
+  enforces it.
+- **Use `resolveRecovered` from an every-minute lane** when clearing several keys:
+  it settles them all with one `alert_state` read instead of one per key, on a
+  subrequest budget four cron lanes share.
+
+### Alert copy never carries a raw error (the `// alert-text-ok:` convention)
+
+An alert is read on a phone, mid-incident, by someone deciding whether to act.
+On 2026-07-28 a sync-failure page arrived as eight lines of Google's
+pretty-printed JSON, cut off mid-word at `"mess` by a fixed-width slice (#1133).
+The one fact worth having, a `503 backendError` that was already self-healing,
+was buried in it.
+
+**The alert carries a short human reason; the LOG carries the full text.**
+Cloudflare stores every console line with the `Error` serialized, so nothing is
+lost by keeping the body out of Slack, and `log.error(tag, fields, err)` is how
+you get it back.
+
+One formatter, `src/lib/notify/error-text.ts`:
+
+```ts
+shortFailureReason(row.last_sync_error)  // string | null, for a stored error
+shortErrorReason(err)                    // string, for a caught unknown
+```
+
+It returns the status plus the machine reason for an HTTP failure
+(`503 backendError`), and otherwise collapses the text to ONE line and truncates
+on a word boundary, so a reader never gets a half word.
+
+`scripts/test-alert-error-text.ts` (#1135) fails the build on a raw error
+interpolated into `sendThrottledAlert` / `sendThrottledInfo` / `resolveAlert`
+copy. It follows one hop through a local `const`, because the worst instance
+built the string a line earlier and passed the name; it does NOT follow more
+than that, and says so. The escape hatch, for a value that is already short and
+human (a reason string we built ourselves), is `// alert-text-ok: <why>` on or
+directly above the line.
+
+Prefer pointing at where the detail lives over pasting any of it:
+`Diagnose via booking_outbox.last_error; rows: ...` is the pattern to copy.
