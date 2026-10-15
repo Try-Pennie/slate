@@ -24,6 +24,7 @@ import {
   POOL_GROUPING_FUTURE_TOLERANCE_MS,
   POOL_GROUPING_RETRY_MS,
   POOL_GROUPING_OWN_READ_AFTER_MS,
+  POOL_GROUPING_REFRESH_AHEAD_MS,
   makeGroupingStore,
   makeGroupingReader,
   lineGroupSourceOf,
@@ -128,6 +129,7 @@ function readerWorld(opts: {
     boundMs: POOL_GROUPING_FETCH_MS,
     freshMs: POOL_GROUPING_FRESH_MS,
     retryMs: opts.retryMs ?? POOL_GROUPING_RETRY_MS,
+    refreshAheadMs: POOL_GROUPING_REFRESH_AHEAD_MS,
     onFetchStarted: (p) => started.push(p),
     ...(opts.ownRead
       ? {
@@ -363,6 +365,7 @@ async function sameKeyBothWays() {
     boundMs: POOL_GROUPING_FETCH_MS,
     freshMs: POOL_GROUPING_FRESH_MS,
     retryMs: POOL_GROUPING_RETRY_MS,
+    refreshAheadMs: POOL_GROUPING_REFRESH_AHEAD_MS,
   });
   eq((await reader.ensure()).source, "installed", "both ways: the snapshot route installs");
   let same = 0;
@@ -589,8 +592,87 @@ async function ownReadFallback() {
   }
 }
 
+// #3759: a grouping fresh at the prelude can expire before the confirm builds its key,
+// because freshness is judged twice and the ceilings run in between. Load runs 26 and 32
+// (38682217703, 38718473769) met it on every server at once: the previous burst, 60s
+// earlier, had every server read a grouping at the same moment, so the next burst arrived
+// 0.10s to 0.15s before all of them expired, decided `held`, fetched nothing, and keyed by
+// code 150ms later while the directory held the lane's snapshot from 13.6s before.
+async function refreshAhead() {
+  const ceilingsMs = 300;
+  const lanesSnapshot = () => groupingSnapshotOf(ENTRIES, T0 - 13_600);
+  {
+    const w = readerWorld({ heldAt: T0 - (POOL_GROUPING_FRESH_MS - 150), answer: answering(lanesSnapshot()) });
+    const started = w.reader.start();
+    await w.advance(ceilingsMs);
+    const r = await w.reader.wait(started);
+    assert(w.store.peek("121") !== undefined, "refresh ahead: a grouping 150ms from expiry at the prelude is still fresh at the key, 300ms later");
+    eq(r.source, "installed", "refresh ahead: because the prelude fetched the directory's newer snapshot rather than deciding held");
+    eq(w.store.held()?.readAtMs, T0 - 13_600, "refresh ahead: and installed it under its own read time");
+  }
+  {
+    // The margin is the measured span between the prelude and the key: max 1,902ms over
+    // 4,009 confirms in those two runs.
+    assert(POOL_GROUPING_REFRESH_AHEAD_MS >= 1_902, `refresh ahead: the margin covers the longest measured prelude to key span (${POOL_GROUPING_REFRESH_AHEAD_MS}ms)`);
+    assert(POOL_GROUPING_REFRESH_AHEAD_MS < POOL_GROUPING_FRESH_MS / 2, "refresh ahead: and is a small part of the window, so the extra fetching is confined to the end of each minute");
+  }
+  {
+    const w = readerWorld({ heldAt: T0 - (POOL_GROUPING_FRESH_MS - POOL_GROUPING_REFRESH_AHEAD_MS), answer: answering(lanesSnapshot()) });
+    eq((await w.reader.ensure()).source, "held", "refresh ahead: a grouping with exactly the margin left is held, no fetch");
+    eq(w.sent.length, 0, "refresh ahead: not one call");
+  }
+  {
+    const w = readerWorld({ heldAt: T0 - (POOL_GROUPING_FRESH_MS - POOL_GROUPING_REFRESH_AHEAD_MS) - 1, answer: answering(lanesSnapshot()) });
+    eq((await w.reader.ensure()).source, "installed", "refresh ahead: one millisecond less and it fetches");
+    eq(w.sent.length, 1, "refresh ahead: by one call");
+  }
+  {
+    // The directory has nothing newer (the lane has stopped publishing): the confirm keeps
+    // what it holds, said as held, exactly as before. Nothing here extends the minute.
+    const w = readerWorld({ heldAt: T0 - (POOL_GROUPING_FRESH_MS - 150), answer: answering(groupingSnapshotOf(ENTRIES, T0 - (POOL_GROUPING_FRESH_MS - 150))) });
+    eq((await w.reader.ensure()).source, "held", "refresh ahead: a directory with nothing newer leaves the held grouping, said as held");
+    w.setNow(T0 + 151);
+    eq(w.store.peek("121"), undefined, "refresh ahead: and it still expires on its own minute, never later");
+  }
+  {
+    // Review of #3760: a refresh that found nothing newer is a fetch that installed
+    // nothing, so the retry window applies, or every confirm in the margin asks the
+    // directory again and the cost is per request rather than per server.
+    const heldAt = T0 - (POOL_GROUPING_FRESH_MS - 1_500);
+    const w = readerWorld({ heldAt, answer: answering(groupingSnapshotOf(ENTRIES, heldAt)) });
+    eq((await w.reader.ensure()).source, "held", "refresh ahead backoff: the first confirm in the margin asks, and keeps what it holds");
+    await w.advance(50);
+    eq((await w.reader.ensure()).source, "backoff", "refresh ahead backoff: the next one, 50ms later, does not ask again");
+    eq(w.sent.length, 1, "refresh ahead backoff: one call, not one per confirm");
+    assert(w.store.peek("121") !== undefined, "refresh ahead backoff: and the grouping it holds still answers while fresh");
+    await w.advance(POOL_GROUPING_RETRY_MS);
+    await w.reader.ensure();
+    eq(w.sent.length, 2, "refresh ahead backoff: once the retry window has passed, it asks again");
+  }
+  {
+    // Review of #3760: a reader built without the margin would add undefined to the
+    // clock, judge nothing fresh, and fetch on every confirm in silence. It refuses.
+    let threw = false;
+    try {
+      makeGroupingReader({
+        store: makeGroupingStore({ now: () => T0, freshMs: POOL_GROUPING_FRESH_MS }),
+        directory: () => null,
+        now: () => T0,
+        timer: () => () => {},
+        boundMs: POOL_GROUPING_FETCH_MS,
+        freshMs: POOL_GROUPING_FRESH_MS,
+        retryMs: POOL_GROUPING_RETRY_MS,
+      } as unknown as Parameters<typeof makeGroupingReader>[0]);
+    } catch {
+      threw = true;
+    }
+    assert(threw, "refresh ahead: a reader built without the margin refuses to be built");
+  }
+}
+
 async function main() {
   await readerTests();
+  await refreshAhead();
   await ownReadFallback();
   await sameKeyBothWays();
   await timeoutTyping();

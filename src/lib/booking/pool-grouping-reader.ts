@@ -68,7 +68,8 @@ export { POOL_GROUPING_FUTURE_TOLERANCE_MS };
  * Without this, a directory with nothing usable to hand back (a new instance, a lane
  * that has stopped publishing) would cost one call per request for as long as the flood
  * lasted. With it, the cost is per SERVER: at most one fetch a second while the directory
- * has nothing, and none while the grouping is fresh. A second is short beside the
+ * has nothing, and none while the grouping is fresh for longer than
+ * `POOL_GROUPING_REFRESH_AHEAD_MS`. A second is short beside the
  * minute a grouping stands, so a snapshot published meanwhile is picked up a second
  * later at worst.
  */
@@ -82,6 +83,16 @@ export const POOL_GROUPING_RETRY_MS = 1_000;
  * confirms ran out of their wait and keyed by code.
  */
 export const POOL_GROUPING_OWN_READ_AFTER_MS = 150;
+/**
+ * #3759: how long before its expiry a server's grouping is fetched afresh, as though it
+ * had already expired. A confirm judges freshness at its prelude and looks again at its
+ * line key, with the ceilings in between, so a grouping with less than that span left
+ * expires in the middle and the confirm keys by code with a fresher snapshot sitting in
+ * the directory. Load runs 26 and 32 met it on every server at once, because the burst
+ * before had them all read at one instant. The span over 4,009 load run confirms there:
+ * p50 210ms, p99 809ms, max 1,902ms. The minute itself is unchanged.
+ */
+export const POOL_GROUPING_REFRESH_AHEAD_MS = 2_000;
 
 /** Where a server's grouping came from. */
 export type GroupingOrigin = "read" | "snapshot";
@@ -92,6 +103,8 @@ export interface GroupingStore {
   /** What is held, fresh or not, or null when nothing ever was. */
   held(): { readAtMs: number; origin: GroupingOrigin } | null;
   fresh(): boolean;
+  /** #3759: whether what is held will still be fresh `ms` from now. */
+  freshFor(ms: number): boolean;
   /** Install entries read at `readAtMs` only when newer than what is held. Answers whether it did. */
   install(entries: readonly GroupingEntry[], readAtMs: number, origin: GroupingOrigin): boolean;
   /** For tests: forget everything. */
@@ -101,7 +114,8 @@ export interface GroupingStore {
 /** One server's grouping: compare and set, newest wins, fresh for a minute from its read. */
 export function makeGroupingStore(deps: { now: () => number; freshMs: number }): GroupingStore {
   let held: { readAtMs: number; byCode: Map<string, string>; origin: GroupingOrigin } | null = null;
-  const fresh = () => held !== null && deps.now() - held.readAtMs <= deps.freshMs;
+  const freshFor = (ms: number) => held !== null && deps.now() + ms - held.readAtMs <= deps.freshMs;
+  const fresh = () => freshFor(0);
   return {
     peek(code) {
       if (!held || !fresh()) return undefined;
@@ -111,6 +125,7 @@ export function makeGroupingStore(deps: { now: () => number; freshMs: number }):
       return held ? { readAtMs: held.readAtMs, origin: held.origin } : null;
     },
     fresh,
+    freshFor,
     install(entries, readAtMs, origin) {
       // Never empty: an empty grouping would answer every code as a gap.
       if (entries.length === 0) return false;
@@ -126,7 +141,7 @@ export function makeGroupingStore(deps: { now: () => number; freshMs: number }):
 
 /** How a confirm's fetch of the snapshot ended. */
 export type GroupingFetch =
-  /** The server already held a fresh grouping, so nothing was fetched. */
+  /** The server already held a grouping fresh for at least `POOL_GROUPING_REFRESH_AHEAD_MS` more, so nothing was fetched. */
   | "held"
   /** A fresh snapshot was fetched and installed. */
   | "installed"
@@ -197,6 +212,8 @@ export function makeGroupingReader(deps: {
   freshMs: number;
   /** How long after a fetch that installed nothing before another is started. */
   retryMs: number;
+  /** #3759: a grouping with less than this left is fetched as though expired (`POOL_GROUPING_REFRESH_AHEAD_MS`). */
+  refreshAheadMs: number;
   /** Told of every fetch it starts, so the live wiring keeps its invocation alive until it settles. */
   onFetchStarted?: (fetching: Promise<unknown>) => void;
   /**
@@ -212,6 +229,11 @@ export function makeGroupingReader(deps: {
   /** #3558: the directory's head start before the own read begins beside it (`POOL_GROUPING_OWN_READ_AFTER_MS`). */
   ownReadAfterMs?: number;
 }): { start(): GroupingStart; wait(started: GroupingStart): Promise<GroupingReading>; ensure(): Promise<GroupingReading> } {
+  // Review of #3760: undefined here would make every grouping look stale and fetch on
+  // every confirm, in silence.
+  if (!Number.isFinite(deps.refreshAheadMs) || deps.refreshAheadMs < 0) {
+    throw new Error(`makeGroupingReader: refreshAheadMs must be a non negative number of ms, got ${String(deps.refreshAheadMs)}`);
+  }
   let inFlight: { startedAt: number; settled: Promise<Fetched> } | null = null;
   // When the last fetch that installed nothing settled, or null after one that did.
   let fruitlessAt: number | null = null;
@@ -289,7 +311,8 @@ export function makeGroupingReader(deps: {
 
   const start = (): GroupingStart => {
     const startedAt = deps.now();
-    if (deps.store.fresh()) return { decided: { source: "held", waitedMs: null, ageMs: null } };
+    // #3759: held only with the margin left, or it can expire before this confirm's key.
+    if (deps.store.freshFor(deps.refreshAheadMs)) return { decided: { source: "held", waitedMs: null, ageMs: null } };
     const stub = deps.directory();
     if (!stub) return { decided: { source: "unbound", waitedMs: null, ageMs: null } };
     let joined = inFlight;
@@ -302,7 +325,9 @@ export function makeGroupingReader(deps: {
       inFlight = joined = mine;
       void settled.then((got) => {
         if (inFlight === mine) inFlight = null;
-        fruitlessAt = got.source === "installed" || got.source === "held" || got.source === "read" ? null : deps.now();
+        // `held` from a fetch is a refresh ahead that found nothing newer: it installed
+        // nothing, so the retry window applies to it too (review of #3760).
+        fruitlessAt = got.source === "installed" || got.source === "read" ? null : deps.now();
       });
       deps.onFetchStarted?.(settled);
     }
