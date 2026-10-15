@@ -46,6 +46,7 @@ import {
   GROUPING_DIRECTORY_PATH,
 } from "./confirm-line-object.ts";
 import { DIRECTORY_GROUP_PREFIX } from "./pool-grouping.ts";
+import type { LineWakeTarget } from "./line-key.ts";
 import { readWithinDeadline, NoAnswerWithinError, type ScheduleTimer } from "../read-within-deadline.ts";
 import type { SwitchReading } from "../cached-switch.ts";
 
@@ -538,5 +539,90 @@ export function durableGroupingDirectory(ns: DurableLineNamespace): { directory(
       if (!name.startsWith(DIRECTORY_GROUP_PREFIX)) throw new Error(`${name.slice(0, 40)} is not a directory's name`);
       return objectStub(ns, name, GROUPING_DIRECTORY_PATH);
     },
+  };
+}
+
+/**
+ * #3775: how often one server wakes the line of one bucket code. A line object idle for
+ * 15 minutes answered its first call in 766ms in load run 34, while one re-woken after
+ * 30 to 180 seconds idle answers in about 17 to 55ms (`docs/cloudflare-platform-notes.md`,
+ * #3325). A wake a minute while leads read availability keeps a line in the cheap range,
+ * and costs one object call per code per server per minute, however many leads read.
+ */
+export const CONFIRM_LINE_WAKE_EVERY_MS = 60_000;
+
+/** How a wake ended. Every way of not waking is named; none of them is an error to the caller. */
+export type WakeOutcome =
+  /** The object answered the wake. */
+  | "woke"
+  /** This server tried this code less than `everyMs` ago, so nothing was done. */
+  | "recent"
+  /** The shared line is off, so no confirm will join an object and nothing was done. */
+  | "off"
+  /** No binding: off the Workers runtime, or a deployment without the object. */
+  | "unbound"
+  /** The pool grouping could not be read, so which line the confirm joins is unknown. */
+  | "unreadable"
+  /** The grouping was read and still does not settle the code's line. */
+  | "unknown"
+  /** The object answered something other than ok: one running a build from before the wake. */
+  | "refused"
+  /** The call threw or did not answer within `callMs`. */
+  | "failed";
+
+/**
+ * Wake the line a lead's confirm on a bucket code will join while they read
+ * availability (#3775), so an object idle for minutes is back before the confirm
+ * arrives. Cheapest checks first: at most once per code per `everyMs` on this server,
+ * claimed before anything is awaited so reads arriving together do the work once and
+ * claimed whatever the outcome; then the switch and the binding, so a production read
+ * with the line off never works out which line it would reach (review of #3775); only
+ * then the line (`target`) and the call. Never throws. The caller runs it after the
+ * response, so no lead waits on it.
+ */
+export function makeLineWaker(deps: {
+  namespace: () => LineNamespace | null;
+  enabled: () => Promise<SwitchReading>;
+  target: (code: string) => Promise<LineWakeTarget>;
+  now: () => number;
+  timer: ScheduleTimer;
+  everyMs: number;
+  callMs: number;
+}): (code: string) => Promise<{ outcome: WakeOutcome; group?: string; err?: unknown }> {
+  const lastTriedAt = new Map<string, number>();
+  return async (code) => {
+    const at = deps.now();
+    const last = lastTriedAt.get(code);
+    if (last !== undefined && at - last < deps.everyMs) return { outcome: "recent" };
+    lastTriedAt.set(code, at);
+    try {
+      if (!(await deps.enabled()).on) return { outcome: "off" };
+    } catch (err) {
+      return { outcome: "failed", err };
+    }
+    const ns = deps.namespace();
+    if (!ns) return { outcome: "unbound" };
+    let target: LineWakeTarget;
+    try {
+      target = await deps.target(code);
+    } catch (err) {
+      return { outcome: "unreadable", err };
+    }
+    if (target.kind === "unreadable") return { outcome: "unreadable", err: target.err };
+    if (target.kind === "unknown") return { outcome: "unknown" };
+    const group = target.group;
+    // Kept, so a timeout (`NoAnswerWithinError`) and a thrown call read apart in the log.
+    let failure: unknown = null;
+    const answer = await readWithinDeadline(
+      () => ns.stubFor(group).send({ v: CONFIRM_LINE_PROTOCOL, op: "wake" }),
+      deps.callMs,
+      (err) => (failure = err),
+      deps.timer,
+    ).catch((err: unknown) => {
+      failure = err;
+      return null;
+    });
+    if (answer === null) return { outcome: "failed", group, err: failure };
+    return { outcome: answer.ok === true ? "woke" : "refused", group };
   };
 }

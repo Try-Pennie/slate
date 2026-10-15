@@ -463,6 +463,11 @@ export function makeConfirmLineHost(deps: {
         }
         return json({ ok: true });
       }
+      // #3775: sent when a lead reads availability, so an object idle for minutes is
+      // back before the confirm arrives. It answers and changes nothing; an older
+      // object answers "unknown op", which the sender logs as a wake that did not land.
+      case "wake":
+        return json({ ok: true });
       default:
         return bad("unknown op");
     }

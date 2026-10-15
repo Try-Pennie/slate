@@ -327,6 +327,25 @@ confirm, 1.3s on an object fresh from a deploy (load run 37572839375). Nothing w
 on the ack at all, neither the confirm's start nor its report, and it is not counted
 in `line_ms`.
 
+## Waking a line before its confirm (#3775)
+
+An object left idle for minutes is brought back by the platform on its next call, and
+that call is slow: load run 34 measured 766ms wall and 7ms CPU on the first call after
+15 idle minutes, on an object that writes nothing to storage, so the wait is the wake
+and not the line's work. It landed on the first lead to confirm.
+
+So `/api/availability` wakes the line the lead's confirm will join, after its response
+(`wakeConfirmLineForCode`): a `wake` message the object answers with `{ ok: true }` and
+nothing else. `makeLineWaker` does the cheapest checks first: at most once per bucket
+code per server per `CONFIRM_LINE_WAKE_EVERY_MS` (a minute), then the switch and the
+binding, so with the line off (production today) a read never works out which line it
+would reach. Only then is the line chosen, by `lineGroupToWake` through the same
+`codeLineGroup` the confirm keys on; a fresh server reads the grouping first, and one
+that cannot be read or still does not settle the line wakes nothing, each said as
+itself. It never throws; an object on a build from before the wake answers
+`unknown op`, logged as a wake that did not land. A named link's line (`link:`) is not
+woken.
+
 ## Traced calls (load test only, #3354)
 
 Under SLATE_LOADTEST the route mints a trace for each confirm, and the client adds
@@ -341,7 +360,11 @@ an object that ignored both fields would answer every call the same.
 ## Tests
 
 `test-confirm-queue.ts` (the rules), `test-confirm-line-object.ts` (the protocol,
-every lost, late, repeated or outlived message), `test-shared-confirm-line.ts` (the
+every lost, late, repeated or outlived message, and the `wake` that changes nothing),
+`test-confirm-line-wake.ts` (#3775: the waker's window and every outcome, reads arriving
+together sending one wake, and `lineGroupToWake` reaching the line `confirmQueueKey`
+keys on, a fresh server's grouping read first, and an unreadable one said as such), the
+availability route test (a served code woken, a 404 not), `test-shared-confirm-line.ts` (the
 client against the real host through a transport that can fail each message, or
 swap the host for a deploy), `test-confirm-contention.ts` (fifty isolates: per
 isolate lines leave dozens told to retry, one shared line answers the whole crowd;

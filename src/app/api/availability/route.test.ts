@@ -87,6 +87,11 @@ vi.mock("@/lib/agent-link/service", () => agentLink);
 // to them, behind the same rate limit, and never touches the pooled cache.
 const rescheduleTimes = vi.hoisted(() => ({ bookingRescheduleTimesLive: vi.fn() }));
 vi.mock("@/lib/booking/reschedule-times-live", () => rescheduleTimes);
+// #3775: the line a lead's confirm will join is woken while they read availability.
+// The waker's decisions are pinned by scripts/test-confirm-line-wake.ts; this proves the
+// route asks for the right code, and only for a bucket it served.
+const lineWake = vi.hoisted(() => ({ wakeConfirmLineForCode: vi.fn() }));
+vi.mock("@/lib/booking/confirm-line-live", () => lineWake);
 
 import { NextRequest } from "next/server";
 import { GENERIC_ERROR_MESSAGE } from "@/lib/api/errors";
@@ -131,6 +136,25 @@ function get(bucket: string, authorization?: string, pass?: string) {
     new NextRequest(`http://localhost/api/availability?bucket=${bucket}`, { headers }),
   );
 }
+
+describe("GET /api/availability wakes the lead's confirm line (#3775)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("wakes the line for the code it served, so the object is back before the confirm", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(false));
+    const res = await get("411");
+    expect(res.status).toBe(200);
+    expect(lineWake.wakeConfirmLineForCode).toHaveBeenCalledTimes(1);
+    expect(lineWake.wakeConfirmLineForCode).toHaveBeenCalledWith("411");
+  });
+
+  it("wakes nothing for a code it did not serve", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(null);
+    const res = await get("999");
+    expect(res.status).toBe(404);
+    expect(lineWake.wakeConfirmLineForCode).not.toHaveBeenCalled();
+  });
+});
 
 describe("GET /api/availability test-bucket hiding (#396)", () => {
   beforeEach(() => vi.clearAllMocks());

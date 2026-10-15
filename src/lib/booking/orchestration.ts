@@ -113,6 +113,7 @@ import { isInvalidAttendeeEmailRefusal } from "../google/http-error.ts";
 import { AttendeeEmailRefusedError } from "./attendee-email-refused.ts";
 import { withinOwedCleanup } from "./cleanup-allowance.ts";
 import { confirmLineWaitMs, type ClaimOutcome, type ClaimPlace, type ConfirmLine, type LeaderVerdict, type LineKey, type SharedSeat, type StartFrom } from "./confirm-queue.ts";
+import { codeLineGroup } from "./line-key.ts";
 import { budgetCovers, expectedCommitMs, type CommitCostLog } from "./commit-cost.ts";
 import type { WaitPoint } from "./wait-marks.ts";
 import { budgetLeftMs } from "../call-budget.ts";
@@ -5043,8 +5044,7 @@ export function confirmQueueKey(
    */
   lineGroupOf?: (code: string) => string | null,
 ): LineKey {
-  const group =
-    agentLinkUserId !== undefined ? `link:${agentLinkUserId}` : (lineGroupOf?.(bucketCode) ?? `code:${bucketCode}`);
+  const group = agentLinkUserId !== undefined ? `link:${agentLinkUserId}` : codeLineGroup(bucketCode, lineGroupOf);
   return { group, instant: String(Date.parse(startIso)) };
 }
 

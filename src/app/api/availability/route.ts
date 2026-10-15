@@ -23,6 +23,7 @@ import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { log } from "@/lib/log";
 import { agentLinkAvailabilityLive } from "@/lib/agent-link/service";
 import { bookingRescheduleTimesLive } from "@/lib/booking/reschedule-times-live";
+import { wakeConfirmLineForCode } from "@/lib/booking/confirm-line-live";
 import { createServerTimer, SERVER_TIMING_NAMES } from "@/lib/api/server-timing";
 import { makeFreshnessReader } from "@/lib/api/isolate-runs";
 
@@ -142,6 +143,10 @@ async function handle(req: NextRequest) {
     // the identical response.
     return NextResponse.json({ error: "Unknown bucket" }, { status: 404 });
   }
+
+  // #3775: wake the line this lead's confirm will join, after the response, so an
+  // object idle for minutes is back by the time they pick a time.
+  wakeConfirmLineForCode(code);
 
   let slots = filterSlotsFromNow(result.slots, now, result.eventType.min_notice_min);
   if (toParam) {
