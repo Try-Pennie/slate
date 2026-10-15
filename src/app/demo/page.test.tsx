@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DEMO_BUCKET_CODE } from "@/lib/embed/public-test-bucket";
+import { DEMO_TEXT_LINE } from "@/lib/embed/demo-visit";
 
 // #3424: `/demo` is the link sent to somebody outside Pennie. It draws the booker
 // on the demo bucket, in test mode, prefilled with a made up person of its OWN for
@@ -127,5 +128,26 @@ describe("/demo (#3424)", () => {
       },
     });
     await expect(DemoPage({ searchParams: Promise.resolve({}) })).rejects.toThrow(/landing page bucket/);
+  });
+
+  it("draws the inline card with Call me now when asked, so Geoff can see it (#3718)", async () => {
+    admin.supabaseAdmin.mockReturnValue(bucketRows({ [DEMO_BUCKET_CODE]: { is_test: true } }, []));
+    const b = await render({ layout: "inline" });
+    expect(b.layout).toBe("inline");
+    expect(b.bucketCode).toBe(DEMO_BUCKET_CODE);
+    const cmn = b.callMeNow as { position: string; leadId: string; firstName: string; demo?: { textLine: string } };
+    expect(cmn.position).toBe("above");
+    expect(cmn.leadId).toBe(b.salesforceId);
+    expect(cmn.firstName).toBe("Demo");
+    // The demo flag is what keeps a press from reaching Salesforce or Regal.
+    expect(cmn.demo).toEqual({ textLine: DEMO_TEXT_LINE });
+    expect((await render({ layout: "inline", callMeNow: "below" })).callMeNow).toMatchObject({ position: "below" });
+  });
+
+  it("keeps the full booker, with no Call me now, unless the inline card is asked for", async () => {
+    admin.supabaseAdmin.mockReturnValue(bucketRows({ [DEMO_BUCKET_CODE]: { is_test: true } }, []));
+    const b = await render({ callMeNow: "above" });
+    expect(b.layout).toBeUndefined();
+    expect(b.callMeNow).toBeNull();
   });
 });
