@@ -106,6 +106,11 @@ export const PICKER_COPY = {
   pickADay: "Pick a day above to see the times available.",
   /** #3718: the inline card shows the first few times and offers the rest. */
   viewMore: "View more times",
+  /**
+   * #3718: the pop up a times piece opened for a time somebody else booked in the
+   * moment between. It opens on that time's day instead of the details step.
+   */
+  pickedTimeGone: "That time was just taken. Pick another below.",
   loading: "Finding the days you can book.",
   failed: "Could not load available times. Check your connection.",
   dayEmpty: (day: string) => `Nothing left on ${day}. Pick another day above.`,

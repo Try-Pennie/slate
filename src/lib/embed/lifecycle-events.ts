@@ -45,6 +45,23 @@ export const EMBED_MESSAGE = {
 export type EmbedMessageType = (typeof EMBED_MESSAGE)[keyof typeof EMBED_MESSAGE];
 
 /**
+ * #3718: a piece of the inline card (`piece=times` or `piece=callMeNow`, Geoff
+ * 2026-10-15) asking widget.js to open the pop up booker: on the details step for a
+ * picked time (`{ slot }`), on a day for View more times (`{ day }`), or to make and
+ * confirm a Call me now request (`{ callMeNow: "press" }`). widget.js takes it only
+ * from a piece frame it built, and its copy of the name is held to this one by
+ * `widget-embed.test.ts`.
+ */
+export const PIECE_MESSAGE = { openBooker: "slate:openBooker" } as const;
+
+/** The inline card's pieces a page can place on their own. */
+export const INLINE_PIECES = ["times", "callMeNow"] as const;
+export type InlinePiece = (typeof INLINE_PIECES)[number];
+
+/** What a piece asks the pop up booker to open on. */
+export type OpenBookerRequest = { slot: string } | { day: string } | { callMeNow: "press" };
+
+/**
  * Why the booker could not be used, as the host's `linkFailed` sees it. The
  * code is stable and machine readable; the msg is one short human sentence, no
  * stack and no raw error text, because it lands in a GA4 parameter.

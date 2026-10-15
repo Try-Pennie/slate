@@ -121,6 +121,7 @@ export function SlotTimes({
   failedMessage = null,
   firstShown,
   dayHeading = true,
+  onViewMore,
 }: {
   view: SlotPickerView;
   /** The viewer's zone: day headings and the announcement are read in it. */
@@ -153,6 +154,11 @@ export function SlotTimes({
    * (#3718), since its chosen day chip already names the day (L605).
    */
   dayHeading?: boolean;
+  /**
+   * #3718: View more times handed to the caller instead of unfolding here: the
+   * times piece asks the page for the pop up booker on that day.
+   */
+  onViewMore?: (day: string) => void;
 }) {
   // A day is a bare YYYY-MM-DD keyed in `timeZone`. Reading it back at noon UTC
   // keeps the label on that calendar day for every zone, east or west.
@@ -240,7 +246,11 @@ export function SlotTimes({
               <>
                 <div className={classes.grid}>{shown.map((iso) => renderSlot(iso))}</div>
                 {folded && (
-                  <button type="button" onClick={() => setExpandedDay(view.day)} className={classes.viewMore ?? classes.retry}>
+                  <button
+                    type="button"
+                    onClick={() => (onViewMore ? onViewMore(view.day) : setExpandedDay(view.day))}
+                    className={classes.viewMore ?? classes.retry}
+                  >
                     {COPY.viewMore}
                   </button>
                 )}

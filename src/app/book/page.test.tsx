@@ -521,6 +521,34 @@ describe("/book Call me now (#3718)", () => {
   });
 });
 
+// #3718 (Geoff, 2026-10-15): the card's two pieces, and the pop up each opens.
+describe("/book pieces and their pop ups (#3718)", () => {
+  const LEAD = "00QUi000010889ZMAQ";
+  const open = (q: Record<string, string>) =>
+    BookEntry({ searchParams: Promise.resolve({ xbc: "111", embed: "1", external_id: LEAD, ...q }) });
+  beforeEach(() => {
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));
+  });
+
+  it("hands the Booker the piece the page asked for", async () => {
+    expect(bookerElement(await open({ layout: "inline", piece: "times" }))).toMatchObject({ layout: "inline", piece: "times" });
+    const cmn = bookerElement(await open({ layout: "inline", piece: "callMeNow", callMeNow: "above" }));
+    expect(cmn).toMatchObject({ piece: "callMeNow" });
+    expect(cmn.callMeNow).toMatchObject({ position: "above", leadId: LEAD });
+  });
+
+  it("hands the pop up the time or day a times piece opened it for", async () => {
+    expect(bookerElement(await open({ slot: "2026-10-16T14:30:00.000Z" }))).toMatchObject({ initialSlot: "2026-10-16T14:30:00.000Z", layout: undefined });
+    expect(bookerElement(await open({ day: "2026-10-16" }))).toMatchObject({ initialDay: "2026-10-16" });
+  });
+
+  it("tells the Call me now pop up to press on arrival", async () => {
+    const el = bookerElement(await open({ layout: "inline", callMeNow: "above", cmnPress: "1" }));
+    expect(el).toMatchObject({ pressCallMeNow: true, piece: null });
+    expect(el.callMeNow).toMatchObject({ position: "above" });
+  });
+});
+
 // #3718: a host page sets the card's background and the button colour; one it
 // sends that text cannot be read on is refused, logged, and Slate's own is used.
 describe("/book host colours (#3718)", () => {

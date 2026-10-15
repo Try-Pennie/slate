@@ -66,6 +66,10 @@ function isFrameablePath(pathname: string): boolean {
 export async function middleware(request: NextRequest, event?: NextFetchEvent) {
   const staff = isStaffPath(request.nextUrl.pathname);
   const frameable = isFrameablePath(request.nextUrl.pathname);
+  // #3718 (Dan, 2026-10-15): the demo booker may be framed by Slate's own pages and
+  // nothing else, so the demo pieces page can draw it through the real widget.js.
+  // Every other non booker page keeps the refusal.
+  const sameOriginFrameable = request.nextUrl.pathname === "/demo";
   const nonce = cspNonce();
   // #3137: the frame lock, a stored admin switch that defaults off. Read only for the
   // frameable pages, through a short per isolate cache, so the booker pays one small
@@ -93,10 +97,10 @@ export async function middleware(request: NextRequest, event?: NextFetchEvent) {
   const scriptHashes = await themeScriptHashes();
   const policy = buildContentSecurityPolicy({
     nonce,
-    frameable,
+    frameable: frameable || sameOriginFrameable,
     // #3137: locked, every frameable page (the booker and each page it moves to inside
     // its frame) may be framed only by Slate and the allow list. Unlocked, as before.
-    frameAncestors: frameLocked ? frameAncestorSources() : undefined,
+    frameAncestors: sameOriginFrameable ? ["'self'"] : frameLocked ? frameAncestorSources() : undefined,
     scriptHashes,
     // The sign in page builds a Supabase browser client, which talks to the
     // project's own origin. Only the staff pages have one.
@@ -175,6 +179,7 @@ export async function middleware(request: NextRequest, event?: NextFetchEvent) {
     for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
       response.headers.set(name, value);
     }
+    if (sameOriginFrameable) response.headers.set("X-Frame-Options", "SAMEORIGIN");
   }
 
   // #3137 OBSERVE: count who frames the booker, as an origin and a page name, after the

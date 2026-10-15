@@ -46,6 +46,7 @@ import { getJson, postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { NEXT_DAYS_TIMEOUT_MS } from "@/lib/availability/next-available";
 import { testPassHeaders, testPassRefusalSentence } from "@/lib/embed/test-pass-header";
 import { TestModeBand } from "@/components/TestModeBand";
+import { PIECE_MESSAGE, type InlinePiece, type OpenBookerRequest } from "@/lib/embed/lifecycle-events";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { ConfirmationMark, preloadConfirmationMark } from "@/components/ConfirmationMark";
 import { messageLines } from "@/lib/booking/slot-picker";
@@ -54,6 +55,7 @@ import {
   CONFIRMED_COPY,
   DETAILS_COPY,
   INLINE_CARD_COPY,
+  PICKER_COPY,
   chosenWhen,
   longDayLabel,
   DUPLICATE_COPY,
@@ -250,6 +252,22 @@ interface BookerProps {
    * them against the Lead and Salesforce's own values would always match.
    */
   callMeNow?: CallMeNowConfig | null;
+  /**
+   * #3718 (Geoff, 2026-10-15): one piece of the inline card, placed by the page on
+   * its own: the times tile, or the Call me now row. A picked time, View more times
+   * and a press each ask the page for the pop up booker (`PIECE_MESSAGE`) rather
+   * than changing the piece. Null draws the whole card.
+   */
+  piece?: InlinePiece | null;
+  /**
+   * #3718: the pop up a times piece opened for a picked time: it lands on the
+   * details step for it, or on its day saying it has gone.
+   */
+  initialSlot?: string | null;
+  /** #3718: the pop up a times piece opened for View more times: it lands on this day. */
+  initialDay?: string | null;
+  /** #3718: the pop up a Call me now piece opened: it makes the request on arrival. */
+  pressCallMeNow?: boolean;
   /** Palette, from the embed `ui` config. Defaults to light. */
   theme?: "light" | "dark";
   /** Brand accent (hex) from the embed `ui` config; tints dots/ring/confirm. */
@@ -414,6 +432,10 @@ export default function Booker({
   embedded = false,
   layout,
   callMeNow = null,
+  piece = null,
+  initialSlot = null,
+  initialDay = null,
+  pressCallMeNow = false,
   theme = "light",
   brandColor,
   cardSurface,
@@ -709,7 +731,7 @@ export default function Booker({
   const loading = picker.view.kind === "loading";
   const inline = layout === "inline";
   // #3718: the Call me now row, only on the inline card and only when the page asked.
-  const cmn = useCallMeNow(inline ? callMeNow : null);
+  const cmn = useCallMeNow(inline ? callMeNow : null, { autoPress: pressCallMeNow });
   // #3718: the inline card opens on the first bookable day with its times showing,
   // as settled; the full booker still waits for the lead to choose (#1336). A day
   // is still chosen before any time is drawn, so that rule holds here too.
@@ -724,6 +746,25 @@ export default function Booker({
     const day = earliest ? DateTime.fromISO(earliest, { zone }).toISODate() : null;
     picker.selectDay(day && picker.days.includes(day) ? day : picker.days[0]!);
   }, [inline, activeDay, picker, zone]);
+
+  // #3718: the pop up a times piece opened lands where the lead was: on the details
+  // step for the time they picked, or on its day saying it has gone (somebody booked
+  // it in between), or on the day View more times was pressed for. Once per load.
+  // "Gone" is read from what loaded rather than stored: the picked time is not among
+  // the times offered, and the lead has not chosen another since.
+  const [leadChoseAfterLanding, setLeadChoseAfterLanding] = useState(false);
+  const timesKnown = picker.days.length > 0 && picker.view.kind !== "loading";
+  const pickedTimeGone =
+    !inline && !!initialSlot && timesKnown && !picker.slots.includes(initialSlot) && !leadChoseAfterLanding;
+  const landed = useRef(false);
+  useEffect(() => {
+    if (inline || landed.current || !timesKnown) return;
+    if (!initialSlot && !initialDay) return;
+    landed.current = true;
+    const day = initialSlot ? DateTime.fromISO(initialSlot, { zone }).toISODate() : initialDay;
+    if (day && picker.days.includes(day)) picker.selectDay(day);
+    if (initialSlot && picker.slots.includes(initialSlot)) chooseSlot(initialSlot);
+  }, [inline, initialSlot, initialDay, picker, zone, timesKnown]);
 
   // The single origin every outbound embed message targets. Never "*": the
   // success payload carries lead PII, so a wildcard could hand it to whatever
@@ -743,6 +784,11 @@ export default function Booker({
       window.parent.postMessage(message, parentTargetOrigin);
     },
     [parentTargetOrigin],
+  );
+  /** #3718: a piece asking the page for the pop up booker (widget.js opens it). */
+  const askPage = useCallback(
+    (req: OpenBookerRequest) => postToParent({ type: PIECE_MESSAGE.openBooker, data: req }),
+    [postToParent],
   );
 
   // #2641: the browser drops a post whose target is not the real parent, with no
@@ -1225,6 +1271,7 @@ export default function Booker({
   function chooseSlot(iso: string) {
     setSelectedSlot(iso);
     setPickingMoveTime(false);
+    setLeadChoseAfterLanding(true);
   }
 
   /**
@@ -2274,6 +2321,11 @@ export default function Booker({
               announcement lives in SlotTimes, mounted across every state swap so
               a settled count is heard rather than silence (#633). */}
           {errorAlert && <div className="mb-3">{errorAlert}</div>}
+          {pickedTimeGone && (
+            <p role="status" className={`mb-3 text-sm ${c.body}`}>
+              {PICKER_COPY.pickedTimeGone}
+            </p>
+          )}
           <div className="-mx-2 -my-1 flex-1 overflow-y-auto px-2 py-1">
             {/* The shared times panel (#1336) owns every state here, including
                 the rule that no time renders until a day is chosen. The booker
@@ -2293,12 +2345,13 @@ export default function Booker({
                 viewMore: `mx-auto mt-1 flex min-h-11 items-center px-3 text-sm font-semibold ${c.title}`,
               }}
               firstShown={inline ? 6 : undefined}
+              onViewMore={piece === "times" ? (day) => askPage({ day }) : undefined}
               dayHeading={!inline}
               noDaysNode={closurePanel}
               renderSlot={(iso) => (
                 <button
                   key={iso}
-                  onClick={() => chooseSlot(iso)}
+                  onClick={() => (piece === "times" ? askPage({ slot: iso }) : chooseSlot(iso))}
                   className={`flex min-h-11 w-full items-center rounded-md border px-3 py-2.5 text-sm tabular-nums ${inline ? "justify-center" : "text-left"} ${c.slot}`}
                 >
                   <MarkedLabel
@@ -2409,7 +2462,7 @@ export default function Booker({
         <CallMeNowRow
           phase={cmn.phase}
           position={callMeNow.position}
-          onPress={cmn.press}
+          onPress={piece === "callMeNow" ? () => askPage({ callMeNow: "press" }) : cmn.press}
           palette={c}
           titleClass={c.title}
           mutedClass={c.faint}
@@ -2417,6 +2470,41 @@ export default function Booker({
         />
       ) : null;
     const rowShown = cmnRow !== null && ["offered", "pressing", "failed", "refused"].includes(cmn.phase);
+    // #3718 (Geoff, 2026-10-15): one piece on its own, just its tile. The frame
+    // around it is rounded by widget.js, and the page behind the tile is the tile's
+    // own surface, so the root paints nothing of its own.
+    if (piece === "callMeNow") {
+      return (
+        <div ref={rootRef} data-theme={theme} className={c.body}>
+          {rowShown && cmnRow}
+        </div>
+      );
+    }
+    if (piece === "times") {
+      return (
+        <div ref={rootRef} data-theme={theme} className={`@container bg-surface p-[18px] ${c.body}`}>
+          {testBand}
+          <p className={`mb-3 text-sm ${c.body}`}>{INLINE_CARD_COPY.chooseTime}</p>
+          <div className="mb-3">
+            {loading ? (
+              <BookerStripSkeleton skeletonClass={c.skeleton} count={horizonDays} />
+            ) : (
+              <BookerStrip
+                today={today}
+                days={picker.days}
+                activeDay={activeDay}
+                zone={zone}
+                onSelect={(iso) => picker.selectDay(iso)}
+              />
+            )}
+          </div>
+          {timesPanel}
+          {picker.view.kind === "times" && (
+            <p className={`mt-3 text-center text-xs ${c.faint}`}>{INLINE_CARD_COPY.timesIn(zoneReadName(zone))}</p>
+          )}
+        </div>
+      );
+    }
     // One frame and one title for both bodies: the confirmation after a press that
     // went through, or the times with the row beside them.
     const inkStyle = cardSurface ? { color: cardSurface.ink } : undefined;

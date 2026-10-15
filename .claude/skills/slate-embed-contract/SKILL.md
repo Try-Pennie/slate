@@ -260,6 +260,35 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
 
 ---
 
+## The inline card and its two pieces (#3718)
+
+`Cal("inline", { elementOrSelector, calLink, config })` draws the booker INSIDE an
+element on the host page (`/book?layout=inline`), as the compact card: title, Call me
+now row (`callMeNow=above|below` on the link, for a lead), day strip and six times.
+
+**Pieces (Geoff, 2026-10-15).** `config.piece` of `"times"` or `"callMeNow"` draws one
+piece on its own (`&piece=`), just its tile with no title or card background, so the
+page places each where it fits. The tiles keep Slate's own white (light) or dark
+surface; `cal-bg` does not recolour them (Dan, 2026-10-15). Each piece frame starts at
+height 0 and is rounded by widget.js, so the Call me now piece takes no room for a lead
+it is not offered to. An unknown piece draws the whole card.
+
+**A piece never changes in place: it asks the host for the pop up.** It posts
+`slate:openBooker` (`PIECE_MESSAGE` in `src/lib/embed/lifecycle-events.ts`; widget.js
+holds its own copy, pinned by `widget-embed.test.ts`), taken only from a piece frame
+widget.js built:
+
+| `data` | widget.js opens |
+|---|---|
+| `{ slot: <instant> }` (a picked time) | the full booker with `&slot=`, landing on the details step for it, or on its day saying it was just taken |
+| `{ day: <yyyy-mm-dd> }` (View more times) | the full booker with `&day=`, on that day |
+| `{ callMeNow: "press" }` | a 520px pop up with the card (`layout=inline&cmnPress=1`), which makes the request on arrival and shows the confirmation or the failure |
+
+`readInlineEntry` (`src/lib/embed/inline-entry.ts`) reads all of these, for `/book`
+and `/demo` alike. A link starting `demo?` is drawn from `/demo` (the test calendar, a
+made up lead, a Call me now that calls nobody); `/demo/pieces` places both pieces that
+way, and `/demo` may be framed by Slate's own pages only (`frame-ancestors 'self'`).
+
 ## Testing the embed from an approved host page (#2660, #2666)
 
 Slate has no staging deployment, so a partner testing the embed from THEIR staging

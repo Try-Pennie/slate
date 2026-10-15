@@ -150,4 +150,22 @@ describe("/demo (#3424)", () => {
     expect(b.layout).toBeUndefined();
     expect(b.callMeNow).toBeNull();
   });
+
+  it("draws a piece inside the demo pieces page's frame, and hands the pop up its time or press (#3718)", async () => {
+    admin.supabaseAdmin.mockReturnValue(bucketRows({ [DEMO_BUCKET_CODE]: { is_test: true } }, []));
+    const times = await render({ embed: "1", layout: "inline", piece: "times", parentOrigin: "https://slate.trypennie.app" });
+    expect(times).toMatchObject({ embedded: true, layout: "inline", piece: "times", parentOrigin: "https://slate.trypennie.app" });
+    expect(await render({ embed: "1", slot: "2026-10-16T14:30:00.000Z" })).toMatchObject({ initialSlot: "2026-10-16T14:30:00.000Z", layout: undefined });
+    expect(await render({ embed: "1", day: "2026-10-16" })).toMatchObject({ initialDay: "2026-10-16" });
+    const press = await render({ embed: "1", layout: "inline", callMeNow: "above", cmnPress: "1" });
+    expect(press).toMatchObject({ pressCallMeNow: true });
+    // Still the demo's own row, so the press reaches nobody.
+    expect(press.callMeNow).toMatchObject({ demo: { textLine: DEMO_TEXT_LINE } });
+  });
+
+  it("is not framed unless asked, as before", async () => {
+    admin.supabaseAdmin.mockReturnValue(bucketRows({ [DEMO_BUCKET_CODE]: { is_test: true } }, []));
+    expect((await render()).embedded).toBe(false);
+  });
 });
+
