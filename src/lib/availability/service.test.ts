@@ -37,14 +37,25 @@ function fakeDb(
   tables: Rows,
   rpc: { result?: RpcResult; calls?: RpcCall[] } = {},
 ): ReturnType<typeof supabaseAdmin> {
-  const builder = (rows: unknown[]) => {
+  const builder = (tableRows: unknown[]) => {
+    let rows = tableRows;
     let range: [number, number] | null = null;
+    // A range filter is honoured on a row carrying that column, as PostgREST would, so
+    // a read window that stops short leaves the row out here too. A row without the
+    // column is kept, so tables no filter is aimed at pass through unchanged.
+    const keep = (col: string, ok: (v: string) => boolean) => {
+      rows = rows.filter((r) => {
+        const v = (r as Record<string, unknown>)[col];
+        return typeof v !== "string" || ok(v);
+      });
+      return b;
+    };
     const b: Record<string, unknown> = {
       select: () => b,
       eq: () => b,
       in: () => b,
-      lt: () => b,
-      gt: () => b,
+      lt: (col: string, v: string) => keep(col, (x) => Date.parse(x) < Date.parse(v)),
+      gt: (col: string, v: string) => keep(col, (x) => Date.parse(x) > Date.parse(v)),
       lte: () => b,
       gte: () => b,
       is: () => b,
@@ -233,6 +244,39 @@ describe("loadBucketSlotInputs (#3258)", () => {
     expect(inputs?.membersResult.members).toEqual([]);
     expect(inputs).not.toHaveProperty("slots");
     expect(resolver).toHaveBeenCalledTimes(1);
+  });
+
+  // The recompute's window ends at a UTC midnight, so its last slot can end exactly
+  // there, with the gap after the call reaching past it. On 2026-10-15 a Phoenix
+  // advisor's block starting at that midnight was never read, so bucket 320 offered
+  // 7:40pm ET on Tuesday 20 October for a day while the confirm, which reads busy time
+  // over the buffered window (#3273), refused every lead who chose it.
+  it("reads busy time past the window's end by the gap after a call, so the last slot sees a block in it", async () => {
+    // Friday 16 July 2027, an advisor on shift until 20:00 New York, which is 00:00 UTC:
+    // the end of this search window. The 19:30 call ends there, and its 10 minute gap
+    // after runs into a block starting at exactly that instant.
+    const from = "2027-07-13T00:00:00.000Z";
+    const to = "2027-07-17T00:00:00.000Z";
+    const allWeek = [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, is_open: true, start_minute: 0, end_minute: 1440 }));
+    dbHolder.db = fakeDb({
+      buckets: [{ ...BUCKET_ROW, event_types: { ...BUCKET_ROW.event_types, buffer_before_min: 10, buffer_after_min: 10 } }],
+      organizations: [{ name: "Org" }],
+      business_hours: allWeek,
+      ...POOL_TABLES(),
+      availability_schedules: [
+        {
+          id: "s1",
+          user_id: "u1",
+          timezone: "America/New_York",
+          availability_rules: [{ schedule_id: "s1", weekday: 5, start_minute: 18 * 60, end_minute: 20 * 60 }],
+        },
+      ],
+      busy_blocks: [{ user_id: "u1", starts_at: to, ends_at: "2027-07-17T01:00:00.000Z", source: "google" }],
+    });
+    const result = await getBucketSlots("311", from, to, () => Promise.resolve({ ids: ["u1"], fallbackApplied: false }));
+    // The 19:00 call's gap ends at 19:40, clear of the block; the 19:30 call's does not.
+    expect(result?.slots).toContain("2027-07-16T23:00:00.000Z");
+    expect(result?.slots).not.toContain("2027-07-16T23:30:00.000Z");
   });
 
   it("answers null for a code that names no bucket, exactly as getBucketSlots does", async () => {
