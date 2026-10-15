@@ -180,8 +180,8 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
      | widget event (`on` action) | raw message | when | `detail.data` |
      |---|---|---|---|
      | `navigatedToBooker` | widget only | a `data-cal-link` trigger is clicked, before the modal opens or reopens | `{}` |
-     | `bookerViewed` | `slate:bookerViewed` | first render of the Booker in this frame load, so once per page load for one link (#2678) | `{ slotsLoaded }` |
-     | `bookerReady` | `slate:bookerReady` | the availability answered with at least one time, once per frame load | `{ slotsLoaded: true }` |
+     | `bookerViewed` | `slate:bookerViewed` | first render of the Booker in this frame load, so once per page load for one link (#2678); of an inline card's pieces only the times piece sends it, never the Call me now piece or a pop up a piece opens (#3718) | `{ slotsLoaded }` |
+     | `bookerReady` | `slate:bookerReady` | the availability answered with at least one time, once per frame load, from the same frames as `bookerViewed` (#3718) | `{ slotsLoaded: true }` |
      | `bookerReopened` | widget only | the modal is opened again on the same page, after the open succeeded (#2677) | `{}` |
      | `bookerReloaded` | widget only | the modal iframe fires `load` a second or later time: a retry, or a reload inside the frame, never a close and reopen | `{}` |
      | `linkFailed` | `slate:linkFailed`, and widget only for the modal's own load failure | the availability read failed (`availability_failed`), the page boundary caught a crash (`booker_crashed`), or the modal's iframe never loaded (`load_timeout`, `load_error`) | `{ code, msg }` |

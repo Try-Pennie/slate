@@ -869,10 +869,11 @@ export default function Booker({
 
   // #2658: the lifecycle the host page's GA4 funnel is built on, announced as
   // cal.com's booker announces it so the host's one listener needs no Slate
-  // branch. Three messages, each once per frame load, each through postToParent
-  // (the known parent origin, never "*"), none carrying the lead's contact:
+  // branch. Three messages, each through postToParent (the known parent origin,
+  // never "*"), none carrying the lead's contact. Viewed and ready are sent at most
+  // once per frame load, and only by a frame that announces stages (below, #3718):
   //
-  // - bookerViewed on the first render, saying whether times were ALREADY loaded
+  // - bookerViewed on that frame's first render, saying whether times were ALREADY loaded
   //   at that moment. They almost never are (the availability is fetched), and
   //   that is the point: a viewed with slotsLoaded false and no ready after it is
   //   the "lead saw an empty calendar" failure the spec exists to catch.
