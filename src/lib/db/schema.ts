@@ -18,6 +18,7 @@ import type {
   FrameOriginDaily,
   PilotOfferSample,
   PilotSettingsSample,
+  LeadTextingLine,
   AuditEntry,
   AvailabilityRule,
   AvailabilitySchedule,
@@ -205,6 +206,7 @@ export interface Database {
       frame_origin_daily: Table<FrameOriginDaily>;
       pilot_offer_samples: Table<PilotOfferSample>;
       pilot_settings_samples: Table<PilotSettingsSample>;
+      lead_texting_lines: Table<LeadTextingLine>;
       selfheal_scan_cursor: Table<SelfhealScanCursor>;
       audit_log_chain_verify: Table<AuditLogChainVerify>;
       export_cursor: Table<ExportCursor>;

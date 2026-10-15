@@ -76,6 +76,10 @@ export const PRODUCTION_ONLY_SECRETS = [
   // #3718: Pennie's automations service, asked for a lead's texting line. A load run
   // never presses Call me now against a real lead, and must not hold its address.
   "AUTOMATIONS_API_URL",
+  // #3718: Sendblue's key, asked whether a lead's saved texting line is still alive.
+  // Production's account; a load run must not hold it.
+  "SENDBLUE_API_KEY_ID",
+  "SENDBLUE_API_SECRET_KEY",
   "REASSIGN_API_KEY",
   "DUPLICATE_CANCEL_API_KEY",
   "OFFBOARDING_API_KEY",

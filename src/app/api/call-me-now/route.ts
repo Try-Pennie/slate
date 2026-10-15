@@ -16,7 +16,11 @@ import { isSubmissionId } from "@/lib/salesforce/lead-xbc";
 import { afterResponse } from "@/lib/after-response";
 import { log } from "@/lib/log";
 import { readTextingLine } from "@/lib/automations/texting-line";
-import { automationsApiUrl } from "@/lib/env";
+import { textingLineForLead } from "@/lib/automations/lead-texting-line";
+import { liveTextingLineStore } from "@/lib/automations/lead-texting-line-live";
+import { sendblueLineState } from "@/lib/automations/sendblue-line-state";
+import { supabaseAdmin } from "@/lib/supabase/admin";
+import { automationsApiUrl, sendblueApiKeyId, sendblueApiSecretKey } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -112,17 +116,29 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ outcome: "refused", retry: retryCanHelp(out) });
   }
   log.info("call-me-now", { msg: "press answered", lead_id: leadId, outcome: out.kind });
-  // The line the lead can text, for the confirmation's Text us. Null when the service
-  // is not configured or does not answer usefully, and the card then shows no Text us.
-  const textLine = await readTextingLine(
-    // The submission id only when it is shaped like one: the contact check proves
-    // nothing about it, so a malformed value is never handed to the service.
-    { phone: out.leadPhone, submissionId: submissionIdOf(body.submissionId) },
-    {
-      baseUrl: automationsApiUrl(),
-      fetchImpl: fetch,
-      onUnread: (err) => log.warn("call-me-now", { msg: "texting line unread, no Text us", lead_id: leadId }, err),
-    },
-  );
+  // The line the lead can text, for the confirmation's Text us: the one this lead was
+  // given before, while Sendblue does not call it dead, else a fresh one from the
+  // service, saved for next time. Null when there is no usable line, and the card then
+  // shows no Text us.
+  const unread = (what: string) => (err: unknown) =>
+    log.warn("call-me-now", { msg: `texting line ${what}`, lead_id: leadId }, err);
+  const textLine = await textingLineForLead(leadId, {
+    store: liveTextingLineStore(supabaseAdmin),
+    lineState: (line) =>
+      sendblueLineState(line, {
+        keyId: sendblueApiKeyId(),
+        secret: sendblueApiSecretKey(),
+        fetchImpl: fetch,
+        onUnread: unread("not judged by Sendblue, saved line kept"),
+      }),
+    fetchLine: () =>
+      readTextingLine(
+        // The submission id only when it is shaped like one: the contact check proves
+        // nothing about it, so a malformed value is never handed to the service.
+        { phone: out.leadPhone, submissionId: submissionIdOf(body.submissionId) },
+        { baseUrl: automationsApiUrl(), fetchImpl: fetch, onUnread: unread("not given by the service") },
+      ),
+    onUnread: unread("unread, no Text us"),
+  });
   return NextResponse.json({ outcome: out.kind, textLine });
 }
