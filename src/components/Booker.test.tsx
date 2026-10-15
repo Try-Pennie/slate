@@ -43,6 +43,16 @@ vi.mock("@/components/ConfirmationMarkPlayer", () => ({
   ConfirmationMarkPlayer: () => null,
 }));
 
+// #3566: the confirm's one resend after a dropped connection pauses through this;
+// recorded rather than waited on, so no test here pays a real timer for it.
+const resendPauses = vi.hoisted(() => [] as number[]);
+vi.mock("@/lib/resend-once", async (original) => ({
+  ...(await original<typeof import("@/lib/resend-once")>()),
+  pauseBeforeResend: async (ms: number) => {
+    resendPauses.push(ms);
+  },
+}));
+
 // The early load of that player (#2636), watched rather than run: the mark itself
 // stays real, and what the early load fetches is covered beside the mark.
 const preload = vi.hoisted(() => ({ calls: 0 }));
@@ -132,11 +142,13 @@ describe("Booker confirm", () => {
   });
 
   it("surfaces an error and re-enables Confirm when the booking POST rejects at the network layer", async () => {
+    let posts = 0;
     global.fetch = vi.fn(async (url: RequestInfo | URL) => {
       if (String(url).includes("/api/availability")) {
         return { ok: true, json: async () => availability } as Response;
       }
       // POST /booking
+      posts += 1;
       throw new TypeError("Failed to fetch");
     }) as unknown as typeof fetch;
 
@@ -147,6 +159,29 @@ describe("Booker confirm", () => {
     const confirm = screen.getByRole("button", { name: /confirm booking/i }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(false);
     expect(screen.queryByText("You're all set")).toBeNull();
+    // #3566: a connection that drops on the resend too is the answer: sent twice, never a third time.
+    expect(posts).toBe(2);
+  });
+
+  it("books without an error when the confirm's connection drops once (#3566)", async () => {
+    const bodies: string[] = [];
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      bodies.push(String(init?.body));
+      if (bodies.length === 1) throw new TypeError("Failed to fetch");
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+
+    expect(await screen.findByText("You're all set")).toBeTruthy();
+    expect(screen.queryByText(/something went wrong/i)).toBeNull();
+    // The very same confirm, so the server collapses it onto the first if that one arrived.
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toBe(bodies[0]);
   });
 
   it("sends the honeypot field empty on a real submission, and never surfaces it to the user (#1033)", async () => {

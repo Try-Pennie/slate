@@ -42,6 +42,7 @@ import {
   startupOriginText,
   lineSplitText,
   coldAfterDeployText,
+  resentText,
   burstLegGroups,
 } from "./judge-booking-run.ts";
 import { BURST_TAIL_FILE, burstBreakdownLines, readBurstTailFile } from "./burst-breakdown.ts";
@@ -737,6 +738,8 @@ if (m) {
   lines.push(`- successful only: p50 ${m.ok?.p50 ?? "n/a"}ms, p95 ${m.ok?.p95 ?? "n/a"}ms, max ${m.ok?.max ?? "n/a"}ms`);
   if (m.latency) lines.push(latencyReportLine(m.latency, result.platformUnmeasured));
   lines.push(`- 5xx: ${m.fiveXx}, no reply at all: ${m.noReply}, timed out at the driver's bound: ${m.timedOut}, write refusals: ${m.writeRefusals}`);
+  // #3566: on every run, so a measured zero is seen rather than assumed.
+  lines.push(resentText(m));
   lines.push(`- refusals by the address Slate saw: ${JSON.stringify(m.refusalsByIp)}`);
   // The number the run exists to produce after #2274, on EVERY run rather than
   // only when it is not zero (#2323). A measured zero and a check that never ran
