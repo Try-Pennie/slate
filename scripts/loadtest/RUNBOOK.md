@@ -1787,7 +1787,7 @@ secrets:
    38800509328's listing still named all three secrets right after every delete
    answered, and none ten minutes later), so a listing that still names a secret is
    read again every 5 seconds for up to two minutes, and only a name still listed then
-   is exit 8.
+   is exit 8. A delete that failed skips the wait and is exit 7 at once.
 
 With no secrets and the branch deleted, the idle Worker can reach nothing. It costs
 nothing extra: about 2,000 cron invocations a day, mostly the every minute schedule,
@@ -1806,7 +1806,7 @@ Every outcome is pinned offline in `scripts/test-loadtest-idle-worker.ts`:
 | 5 | Cloudflare answered with another status |
 | 6 | a 200 this cannot read, which is never read as holding nothing |
 | 7 | a secret delete failed; it is named with its reason |
-| 8 | a secret is still listed after every delete answered |
+| 8 | a secret is still listed after every delete answered and the listing was read again for about two minutes |
 | 9 | holds nothing and has no cron schedules; redeploy it with `wrangler deploy --env loadtest` |
 
 A Worker that lives on keeps its Durable Object migration history the way production

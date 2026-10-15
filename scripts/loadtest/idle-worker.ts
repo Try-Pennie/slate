@@ -277,8 +277,11 @@ export type CallResult = { status: number; bodyText: string } | { failed: string
  * The first listing only widens what is deleted: a secret nobody expected is deleted
  * too. It never gates the deletes. A first listing that cannot be read must not leave
  * the Worker holding a run's live secrets while its crons keep arriving, so the three a
- * run puts are always attempted, and the SECOND listing, after the deletes, is what
- * decides. A delete that fails does not stop the others.
+ * run puts are always attempted, and the listing AFTER the deletes is what decides. That
+ * listing can lag the deletes, so while it still names a secret it is read again, every
+ * IDLE_RELIST_EVERY_MS up to IDLE_RELIST_ATTEMPTS times, and the last read decides (#3783).
+ * A delete that fails does not stop the others, and skips the wait, since no re-read
+ * will see a secret go that was never deleted.
  */
 export async function keepWorkerIdle(args: {
   settings: { token: string; account: string; configured: string };
@@ -327,7 +330,7 @@ export async function keepWorkerIdle(args: {
     const read = readSecretNames(after.status, after.bodyText);
     if ("exitCode" in read) return idleVerdict({ read });
     remaining = read;
-    if (remaining.names.length === 0 || attempt === IDLE_RELIST_ATTEMPTS) break;
+    if (remaining.names.length === 0 || failedDeletes.length > 0 || attempt === IDLE_RELIST_ATTEMPTS) break;
     await args.sleep(IDLE_RELIST_EVERY_MS);
     waitedMs += IDLE_RELIST_EVERY_MS;
   }

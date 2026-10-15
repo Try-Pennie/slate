@@ -255,6 +255,18 @@ for (const [why, firstList] of [
   assert(v.message.includes(`${(IDLE_RELIST_EVERY_MS * IDLE_RELIST_ATTEMPTS) / 1000}s`), `and the message says how long it waited (got ${v.message})`);
 }
 
+{
+  // Lessons review of #3783: a delete that FAILED leaves a secret no re-read will see go,
+  // so the wait is skipped and the failure reported at once.
+  const cf = fakeCloudflare({ firstList: { status: 200, bodyText: envelope([{ name: "CRON_SECRET" }]) }, held: ["CRON_SECRET"] });
+  const refusing = async (method: "GET" | "DELETE", url: string) =>
+    method === "DELETE" && url.endsWith("/CRON_SECRET") ? { status: 500, bodyText: "boom" } : cf.call(method, url);
+  const w = noWait();
+  const v = await keepWorkerIdle({ settings, wranglerJsonc: realConfig, call: refusing, sleep: w.sleep });
+  eq(v.exitCode, IDLE_EXIT.deleteFailed, "a failed delete is still exit 7");
+  eq(w.slept, [], "and nothing waits on a secret no re-read will see go");
+}
+
 // --- every declared ending is reachable (L151) --------------------------------------------
 {
   const misconfigured = seen(idleVerdict({ misconfigured: ["CLOUDFLARE_API_TOKEN"] }));
