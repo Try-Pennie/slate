@@ -43,10 +43,11 @@ export interface SrcCappedReadFinding {
 // the design target (100-200 agents, ~60 buckets) or by a fixed key space, so a
 // read of one can never exceed a single PostgREST page. Every OTHER table is
 // treated as a growth table (its rows scale with booking volume or time).
-// Exported so AGENTS.md's copy of this list is DERIVED from it rather than
-// maintained beside it (#2398): the doc's list had drifted two tables behind,
-// and the paragraph telling a reader to "add it to SAFE_TABLES" was pointing at
-// a list that already held the table they were reading about.
+// This constant is the list's ONE home. AGENTS.md used to carry a copy, which
+// drifted two tables behind (#2398): the paragraph telling a reader to "add it
+// to SAFE_TABLES" was pointing at a list that already held the table they were
+// reading about. Since 2026-10-15 the doc only names this constant, and
+// scripts/test-auto-loaded-doc-claims.ts refuses a copy coming back.
 export const SAFE_TABLES = new Set([
   "organizations",
   "users",

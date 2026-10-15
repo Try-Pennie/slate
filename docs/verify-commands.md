@@ -4,12 +4,13 @@ The hand run `pnpm verify:*` commands, in full: what each one proves, how to run
 it, what every exit code means, what it writes, and what its last live run
 measured.
 
-This is the detail behind the section "The `pnpm verify:*` commands: proving a
-fail safe detector is not blind" in `AGENTS.md`, which carries the four rules the
-whole family rests on. Read that first; this is the runbook, and it lives here
-rather than in `AGENTS.md` because `AGENTS.md` is loaded into every session and
-every character of it is paid on every request (#2393), while an exit code table
-is needed on the day somebody runs the command.
+The four rules the whole family rests on are in this file's own section, "The
+rules the whole family rests on, in full", below: read that first. `AGENTS.md`
+keeps a short form of them and the one line table of commands, under "The `pnpm
+verify:*` commands: proving a fail safe detector is not blind". The runbook lives
+here rather than in `AGENTS.md` because `AGENTS.md` is loaded into every session
+and every character of it is paid on every request (#2393), while an exit code
+table is needed on the day somebody runs the command.
 
 Nothing here has been rewritten. Each section is the text that stood in
 `AGENTS.md`, moved whole so the recorded decisions and the evidence behind them
@@ -20,6 +21,66 @@ A sibling hand run command that reports rather than verifies,
 per lead split, #2898), has its runbook in `docs/pilot-split-report.md`, and
 `pnpm report:pilot-compare` (the same question from Salesforce, Slate, cal.com and
 the Regal call store, with show rate, #2946) has its in `docs/pilot-compare-report.md`.
+
+## The rules the whole family rests on, in full
+
+Moved out of `AGENTS.md` on 2026-10-15, where every character was loaded into
+every session (#2393). `AGENTS.md` keeps the rules and the command table, and
+points here; this is the full text as it stood, with the reasoning, the
+incidents and the measurements behind it.
+
+The hand run `verify:` commands all exist because of one shape. A detector built
+to fail safe reports `unverified`, `skipped` or `insufficient` rather than
+guessing, and a detector that has NEVER ONCE CONCLUDED renders exactly like one
+finding nothing wrong: "nothing to report" and "could not check anything" are the
+same silence, in a dashboard and in a heartbeat alike. #1377 is the measured
+case. The availability truth probe skipped every tick from the day it deployed
+because the roster was dark before cutover, the lane heartbeat went on proving
+the lane RAN, and its live half had never executed once.
+
+Four rules hold across all of them, and they are the part worth carrying into a
+session:
+
+- **Ask the outside system, never Slate's own record.** What Slate stores about a
+  busy block, an approved time off or an agent's routing facts was written by the
+  very code under test, so a check built on it agrees with the defect (L58).
+  These read Google, cal.com, Twilio or the deployed Worker.
+- **Only agreement passes, and finding nothing to check is never a pass** (L98).
+  Every other outcome exits on its OWN code, because "no cal.com account", "no
+  schedule in cal.com", "the read failed" and "the payload changed shape" send
+  four different people to do four different things, and one message answering
+  for another is how somebody spends an afternoon on a rate limit (L11).
+- **A fake cannot stand in for the live system** (L52), which is why these are
+  commands and not suites. They are deliberately NOT named `test-*.ts`: that glob
+  is the offline unit suite, and these need live credentials from `.env.local`.
+- **Their decision logic is pinned offline anyway.** Each one's verdicts, exit
+  codes and ranking are driven through hand written fixtures by a
+  `scripts/test-*.ts` sibling, so the rules are tested where no network exists
+  and a live run is spent only on the thing a fixture cannot answer.
+
+The blindness is not confined to these commands. Any fail safe check can sit permanently
+blind while looking healthy, so several carry a SECOND heartbeat stamp on top of
+the lane's, written only when they reach a MEASURED verdict
+(`src/lib/monitor/verdict-freshness.ts`), judged with `neverIsStale` ON because
+"has never once reached a verdict" is the exact state this family exists to
+notice (#1394). Nothing else may stamp, and `checked` alone is not enough: a
+sample too small to judge also reports `checked`. Which detectors stamp, and each
+one's bound, are listed below.
+
+**The detail for every one of them, each exit code table, what it writes, which
+credentials it needs, what its last live run measured and the decisions behind
+it, is in the sections below.** Read a command's section before running it, rather
+than reasoning the flags out per command. Most of the family retires at cutover (#65),
+since it only means anything while both systems are live; `verify:twilio-parity`
+does not, because Twilio stays the place managers tag agents afterwards.
+
+Two hand run REPORTS follow the same rules: `report:pilot-split` (GA4, per
+visitor, `docs/pilot-split-report.md`) and `report:pilot-compare` (#2946, Slate
+against cal.com booking and show rate on every tier from each system's own
+records, intention to treat by hash side, `docs/pilot-compare-report.md`). The
+second prints on every run that the 50 split is ASSUMED, not checked (Salesforce
+keeps no history of the SlatePilot fields), and exits 0 only for the readout
+on a date fixed in `scripts/lib/pilot-compare.ts`.
 
 # A detector the roster cannot exercise (`pnpm verify:availability-truth`)
 
