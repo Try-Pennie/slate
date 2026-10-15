@@ -1,3 +1,5 @@
+import { pauseBeforeResend, resendOnce } from "@/lib/resend-once";
+
 export interface PostJsonResult<T> {
   /** True when the server responded 2xx. */
   ok: boolean;
@@ -50,6 +52,14 @@ export interface PostJsonOptions {
    * the request exactly as before, so a caller with nothing to add is unchanged.
    */
   headers?: Record<string, string>;
+  /**
+   * #3566: send a request whose connection dropped (no reply of any kind, and not
+   * this helper's own timeout) ONCE more after a short pause, through the one rule
+   * the load driver shares (`resendOnce`). Only for a request the server collapses
+   * onto the first when both arrive, as a booking confirm does by its idempotency
+   * key; anything else could act twice. Undefined sends it once, as before.
+   */
+  resendOnDrop?: true;
 }
 
 /**
@@ -67,7 +77,14 @@ export async function postJson<T = Record<string, unknown>>(
   body: unknown,
   options: PostJsonOptions = {},
 ): Promise<PostJsonResult<T>> {
-  return sendJson<T>("POST", url, body, options);
+  const send = () => sendJson<T>("POST", url, body, options);
+  if (!options.resendOnDrop) return send();
+  return (await resendOnce(send, droppedConnection, pauseBeforeResend)).result;
+}
+
+/** A request that got no reply and was not cut off by this helper's own timeout. */
+function droppedConnection(r: PostJsonResult<unknown>): boolean {
+  return r.status === 0 && !r.timedOut;
 }
 
 /**

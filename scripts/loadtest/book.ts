@@ -55,7 +55,12 @@ import {
   slotViewIsFresh,
   slotViewAfterRead,
   type SlotView,
+  afterResend,
+  droppedAttempt,
+  sendBoundMs,
+  transportOutcome,
 } from "./book-plan.ts";
+import { pauseBeforeResend, resendOnce } from "../../src/lib/resend-once.ts";
 import { readBurstProbe, readCrowdRule, type BurstProbe, type CrowdRuleReading } from "./burst-probe.ts";
 import { AVAILABILITY_UNREAD, NO_SLOTS_OFFERED, TIMED_OUT } from "./outcomes.ts";
 import {
@@ -218,7 +223,21 @@ async function slotsFor(code: string, nowMs: number, deadlineAtMs: number): Prom
   return view.slots;
 }
 
-async function book(req: {
+/**
+ * #3566: one booking, sent once more when its connection dropped, by the rule the
+ * booker's confirm uses (`resendOnce`), so a run measures what a lead meets. The same
+ * body both times, so the deployment collapses a resend of a request that did arrive
+ * onto the first by its idempotency key. The record says when it was resent and why.
+ */
+async function book(req: Parameters<typeof bookOnce>[0]): Promise<BookingAttempt> {
+  // One abort instant for both sends (`sendBoundMs`): the resend gets what is left of the
+  // first send's bound, so no request outlives the windows derived from that bound.
+  const abortAtMs =
+    Date.now() + effectiveDeadlineMs(requestAbortMs({ nowMs: Date.now(), deadlineAtMs: req.deadlineAtMs }), REQUEST_TIMEOUT_OVERRIDE);
+  return afterResend(await resendOnce(() => bookOnce(req, abortAtMs), droppedAttempt, pauseBeforeResend));
+}
+
+async function bookOnce(req: {
   code: string;
   startIso: string;
   /** The attempt, which its external id, address, number and `n` all come from (#3447). */
@@ -227,7 +246,7 @@ async function book(req: {
   deadlineAtMs: number;
   /** #3495: the tier the code had on show, handed back; null leaves the confirm to read it. */
   shownTier: string | null;
-}): Promise<BookingAttempt> {
+}, abortAtMs: number): Promise<BookingAttempt> {
   // Built before the try, as the ceiling control's is (#3447): a lead outside the
   // phone's digits stops the driver here, by name, rather than being recorded as a
   // request that failed in transit.
@@ -244,7 +263,7 @@ async function book(req: {
   let rungsDropped: number | null | undefined;
   try {
     const res = await fetch(`${SLATE_BASE}/api/bookings`, {
-      signal: requestSignal(req.deadlineAtMs, REQUEST_TIMEOUT_OVERRIDE),
+      signal: AbortSignal.timeout(sendBoundMs(abortAtMs, Date.now())),
       method: "POST",
       // #3354: the leg rides on every confirm, so the run can say where each cold one came from.
       headers: bookingRequestHeaders(API_KEY, MODE),
@@ -282,7 +301,8 @@ async function book(req: {
     // A request the driver gave up on at its own bound is `timed-out`, its own
     // outcome, so the judge reports it apart from a reply that never came for any
     // other reason (#3222).
-    outcome = timedOut(err) ? TIMED_OUT : `transport: ${(err as Error).name}`;
+    // #3566: with its cause, so a resent request says what actually failed.
+    outcome = timedOut(err) ? TIMED_OUT : transportOutcome(err);
     // A body that stalled after its headers leaves the header status behind; the
     // request was not answered, so it carries no status either, and no echo.
     status = 0;

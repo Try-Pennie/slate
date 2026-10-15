@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { deleteJson, getJson, postJson } from "@/lib/http";
+import { RESEND_PAUSE_MS } from "@/lib/resend-once";
+
+// #3566: the one resend's pause, recorded rather than waited on.
+const pauses = vi.hoisted(() => [] as number[]);
+vi.mock("@/lib/resend-once", async (original) => ({
+  ...(await original<typeof import("@/lib/resend-once")>()),
+  pauseBeforeResend: async (ms: number) => {
+    pauses.push(ms);
+  },
+}));
 
 // #625: the shared client POST helper must ALWAYS resolve with { ok, status,
 // data } — a network rejection or an unparseable body can never throw, so the
@@ -120,6 +130,69 @@ describe("postJson", () => {
     expect(init.method).toBe("POST");
     expect((init.headers as Record<string, string>)["content-type"]).toBe("application/json");
     expect(init.body).toBe(JSON.stringify({ hello: "world" }));
+  });
+});
+
+// #3566: a lead should not see an error because their connection dropped once. A
+// caller that asks for it gets ONE resend of a request that never got any reply,
+// after a short pause; an answer of any status and its own timeout are never resent.
+describe("postJson resendOnDrop", () => {
+  const dropThen = (...then: Array<"drop" | number>) => {
+    const fn = vi.fn(async () => {
+      const next = then.shift() ?? "drop";
+      if (next === "drop") throw new TypeError("Failed to fetch");
+      return { ok: next < 300, status: next, json: async () => ({ n: next }) } as unknown as Response;
+    });
+    global.fetch = fn as unknown as typeof fetch;
+    return fn;
+  };
+
+  it("sends a dropped request once more after the pause, and the resend's answer stands", async () => {
+    pauses.length = 0;
+    const fn = dropThen("drop", 200);
+    const r = await postJson("/booking", { a: 1 }, { resendOnDrop: true });
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(pauses).toEqual([RESEND_PAUSE_MS]);
+    expect(r).toEqual({ ok: true, status: 200, data: { n: 200 } });
+    // The same body both times, which is what lets the server collapse them.
+    const bodies = fn.mock.calls.map((c) => (c as unknown as [string, RequestInit])[1].body);
+    expect(bodies[0]).toBe(bodies[1]);
+  });
+
+  it("stops after one resend: a second drop is the answer", async () => {
+    const fn = dropThen("drop", "drop", 200);
+    const r = await postJson("/booking", {}, { resendOnDrop: true });
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(r).toEqual({ ok: false, status: 0, data: {} });
+  });
+
+  it("never resends an answer, a refusal included", async () => {
+    const fn = dropThen(409, 200);
+    const r = await postJson("/booking", {}, { resendOnDrop: true });
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(r.status).toBe(409);
+  });
+
+  it("never resends a request its own timeout cut off", async () => {
+    vi.useFakeTimers();
+    const fn = vi.fn((_url, init: RequestInit = {}) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      }),
+    );
+    global.fetch = fn as unknown as typeof fetch;
+    const p = postJson("/booking", {}, { timeoutMs: 20000, resendOnDrop: true });
+    await vi.advanceTimersByTimeAsync(20000);
+    await expect(p).resolves.toEqual({ ok: false, status: 0, data: {}, timedOut: true });
+    expect(fn).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("does nothing of the kind for a caller that did not ask", async () => {
+    const fn = dropThen("drop", 200);
+    const r = await postJson("/booking", {});
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(r.status).toBe(0);
   });
 });
 
