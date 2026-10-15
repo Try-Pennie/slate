@@ -29,9 +29,11 @@
 /** The messages the Booker posts to its parent. Every one goes through the
  *  Booker's `postToParent`, to the known parent origin only, never "*". */
 export const EMBED_MESSAGE = {
-  /** First render of the Booker in this frame load. */
+  /** First render of the Booker in this frame load. Not sent by the Call me now piece
+   *  or a pop up a piece opens (#3718), so a page with both pieces counts one view. */
   bookerViewed: "slate:bookerViewed",
-  /** The availability answered with at least one time, once per frame load. */
+  /** The availability answered with at least one time, once per frame load. Not sent
+   *  by the Call me now piece or a pop up a piece opens (#3718). */
   bookerReady: "slate:bookerReady",
   /** The booker could not be used: the availability read failed, or the page
    *  boundary caught a crash. */
