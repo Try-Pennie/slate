@@ -12,7 +12,7 @@ behind it.
 ## Git workflow: never reuse a merged PR branch
 
 PRs here are reviewed and **merged within seconds**, then auto-deploy. So a
-follow-up commit pushed to a branch whose PR already merged gets **stranded**:
+later commit pushed to a branch whose PR already merged gets **stranded**:
 it never reaches main. Always start new work on a **fresh branch off `origin/main`**
 (`git checkout -b <name> origin/main`); to continue work after a PR merges,
 branch fresh and cherry-pick. A `pre-push` hook (`.githooks/pre-push`, enabled by

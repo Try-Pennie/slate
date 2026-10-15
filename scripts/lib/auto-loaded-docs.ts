@@ -53,7 +53,7 @@ export const REQUEST_TOKEN_LIMIT = 200_000;
  *
  * 30,000 characters is about 10,800 tokens at the measured rate, 5.4 percent of
  * the 200,000 token request limit. It was set on 2026-10-15, when the files
- * were cut from 124,740 characters to 24,539 by moving runbooks, incident
+ * were cut from 124,740 characters to 24,577 by moving runbooks, incident
  * histories and guard designs into `docs/` and leaving each rule with a pointer.
  * The same request also has to carry the machine's global config, the memory
  * index, the tool definitions, every file read during the turn, and the
