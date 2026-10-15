@@ -67,6 +67,20 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
    Worker beside nothing and the run would measure a latency production never sees.
    The Management API's create branch call takes an optional `region`; confirm the
    branch's region afterwards (the connector's `get_project` on the branch ref).
+   Create it at **production's compute size**, and check both before dispatching
+   (#3751). A branch is created at whatever size it is asked for (`supabase branches
+   create --size`), independent of production, so a production resize leaves the test
+   behind with nothing saying so. Under load a confirm's time is mostly database time,
+   and on a smaller instance it is a different number: on 2026-10-14 the same code
+   failed at 3.0 times the baseline on a micro branch (run 38655870683) and passed at
+   1.7 times on a Large one matching production (run 38662741980). Read the size from
+   each database itself, since neither the CLI's branch listing nor its project listing
+   reports it: `select name, setting from pg_settings where name in ('max_connections',
+   'shared_buffers')` on production and on the branch (the connector's `execute_sql`
+   on each ref, or the SQL editor), and dispatch only when both pairs are equal.
+   Production read 160 and 262144 (2GB in 8kB pages, Large) on 2026-10-14, after
+   reading 60 and 256MB (micro) on 2026-10-07; take the size from the reading, never
+   from this paragraph.
 
 2. **Apply the schema to the branch**: run the repo migrations against it
    (`supabase db push` with the branch linked, or apply `supabase/migrations/*` in order).
