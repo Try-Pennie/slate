@@ -88,6 +88,9 @@ describe("the times piece (#3718)", () => {
     expect(screen.queryByText(INLINE_CARD_COPY.title)).toBeNull();
     expect(screen.queryByRole("button", { name: CALL_ME_NOW_COPY.button })).toBeNull();
     expect(timeButtons()).toHaveLength(6);
+    // The Call me now piece beside it asks Salesforce; this one never shows the row,
+    // so it asks nothing (one check per visitor, not two).
+    expect(sent).toHaveLength(0);
   });
 
   it("asks the page for the pop up on a picked time, and stays on the times", async () => {

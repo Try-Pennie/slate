@@ -731,7 +731,9 @@ export default function Booker({
   const loading = picker.view.kind === "loading";
   const inline = layout === "inline";
   // #3718: the Call me now row, only on the inline card and only when the page asked.
-  const cmn = useCallMeNow(inline ? callMeNow : null, { autoPress: pressCallMeNow });
+  // The times piece never shows the row, so it asks nothing: the Call me now piece
+  // beside it is the one that checks, once per visitor.
+  const cmn = useCallMeNow(inline && piece !== "times" ? callMeNow : null, { autoPress: pressCallMeNow });
   // #3718: the inline card opens on the first bookable day with its times showing,
   // as settled; the full booker still waits for the lead to choose (#1336). A day
   // is still chosen before any time is drawn, so that rule holds here too.

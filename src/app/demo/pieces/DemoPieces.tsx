@@ -5,6 +5,8 @@ import { useEffect } from "react";
 /** The demo booker's link: the test calendar, a made up lead, a Call me now that calls nobody. */
 const DEMO_LINK = "demo?callMeNow=above";
 
+const WIDGET_SCRIPT_ID = "slate-demo-widget";
+
 type CalFn = ((...args: unknown[]) => void) & { ns: Record<string, (...args: unknown[]) => void> };
 
 /**
@@ -27,11 +29,18 @@ export function DemoPieces({ theme }: { theme: "light" | "dark" }) {
       draw();
       return;
     }
-    const script = document.createElement("script");
-    script.src = "/widget.js";
+    // One script however often this draws: a second copy would answer every message
+    // from the pieces twice and open two pop ups.
+    let script = document.getElementById(WIDGET_SCRIPT_ID) as HTMLScriptElement | null;
+    if (!script) {
+      script = document.createElement("script");
+      script.id = WIDGET_SCRIPT_ID;
+      script.src = "/widget.js";
+      document.head.appendChild(script);
+    }
     script.addEventListener("load", draw);
-    document.head.appendChild(script);
-    return () => script.removeEventListener("load", draw);
+    const loading = script;
+    return () => loading.removeEventListener("load", draw);
   }, [theme]);
 
   return (

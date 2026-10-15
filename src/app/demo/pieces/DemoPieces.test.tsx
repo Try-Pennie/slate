@@ -48,4 +48,12 @@ describe("the demo pieces page (#3718)", () => {
     render(<DemoPieces theme="dark" />);
     expect(nsCalls.demo!.find((c) => c[0] === "ui")).toEqual(["ui", { theme: "dark" }]);
   });
+
+  it("loads widget.js once, however often the page draws", () => {
+    const first = render(<DemoPieces theme="light" />);
+    first.rerender(<DemoPieces theme="dark" />);
+    render(<DemoPieces theme="light" />);
+    expect(document.querySelectorAll('script[src="/widget.js"]')).toHaveLength(1);
+  });
 });
+
