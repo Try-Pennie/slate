@@ -14,8 +14,6 @@
 import { readFileSync } from "node:fs";
 import {
   IDLE_EXIT,
-  IDLE_RELIST_ATTEMPTS,
-  IDLE_RELIST_EVERY_MS,
   idleVerdict,
   keepWorkerIdle,
   loadtestWorkerName,
@@ -28,6 +26,7 @@ import {
   targetRefusal,
   type IdleVerdict,
 } from "./loadtest/idle-worker.ts";
+import { RELIST_ATTEMPTS, RELIST_EVERY_MS } from "./loadtest/relist.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const envelope = (result: unknown) => JSON.stringify({ success: true, errors: [], messages: [], result });
@@ -237,7 +236,7 @@ for (const [why, firstList] of [
   const w = noWait();
   const v = await keepWorkerIdle({ settings, wranglerJsonc: realConfig, call: cf.call, sleep: w.sleep });
   assert(v.idle && v.exitCode === IDLE_EXIT.idle, `a listing that catches up after two re-reads is idle, not still holding (got ${v.message})`);
-  eq(w.slept, [IDLE_RELIST_EVERY_MS, IDLE_RELIST_EVERY_MS], "it waited between the re-reads, and only as often as the listing lagged");
+  eq(w.slept, [RELIST_EVERY_MS, RELIST_EVERY_MS], "it waited between the re-reads, and only as often as the listing lagged");
 }
 {
   const cf = fakeCloudflare({ firstList: { status: 200, bodyText: envelope([{ name: "CRON_SECRET" }]) }, held: ["CRON_SECRET"] });
@@ -251,8 +250,8 @@ for (const [why, firstList] of [
   const w = noWait();
   const v = seen(await keepWorkerIdle({ settings, wranglerJsonc: realConfig, call: cf.call, sleep: w.sleep }));
   assert(!v.idle && v.exitCode === IDLE_EXIT.stillHoldsSecrets && v.message.includes("CRON_SECRET"), `a name still listed when the wait runs out is still a finding (got ${v.message})`);
-  eq(w.slept.length, IDLE_RELIST_ATTEMPTS, "after exactly the bounded number of re-reads");
-  assert(v.message.includes(`${(IDLE_RELIST_EVERY_MS * IDLE_RELIST_ATTEMPTS) / 1000}s`), `and the message says how long it waited (got ${v.message})`);
+  eq(w.slept.length, RELIST_ATTEMPTS, "after exactly the bounded number of re-reads");
+  assert(v.message.includes(`${(RELIST_EVERY_MS * RELIST_ATTEMPTS) / 1000}s`), `and the message says how long it waited (got ${v.message})`);
 }
 
 {

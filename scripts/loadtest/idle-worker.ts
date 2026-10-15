@@ -21,6 +21,7 @@
 // schedules is a finding, because keeping it bought nothing.
 import { stripJsonComments } from "../lib/gradual-deploy.ts";
 import { LOADTEST_ALLOWED_SECRETS } from "../../src/lib/loadtest-secrets.ts";
+import { relistUntil } from "./relist.ts";
 
 /**
  * Every way the teardown can end, and the exit code it ends on. One code per cause,
@@ -49,14 +50,6 @@ export const IDLE_EXIT = {
   noSchedules: 9,
 } as const;
 
-/**
- * #3783: Cloudflare's secret listing can lag the deletes. Run 38800509328's teardown had
- * every delete answer and the next listing still name all three secrets; ten minutes later
- * the Worker listed none. So a listing that still names a secret is read again, this often,
- * up to this many times (two minutes in all), and only a name listed at the end is a finding.
- */
-export const IDLE_RELIST_EVERY_MS = 5_000;
-export const IDLE_RELIST_ATTEMPTS = 24;
 
 export interface IdleVerdict {
   idle: boolean;
@@ -278,8 +271,10 @@ export type CallResult = { status: number; bodyText: string } | { failed: string
  * too. It never gates the deletes. A first listing that cannot be read must not leave
  * the Worker holding a run's live secrets while its crons keep arriving, so the three a
  * run puts are always attempted, and the listing AFTER the deletes is what decides. That
- * listing can lag the deletes, so while it still names a secret it is read again, every
- * IDLE_RELIST_EVERY_MS up to IDLE_RELIST_ATTEMPTS times, and the last read decides (#3783).
+ * listing can lag the deletes: run 38800509328's teardown had every delete answer and the
+ * next listing still name all three secrets, and ten minutes later the Worker listed none.
+ * So while it still names a secret it is read again through `relistUntil`, and the last
+ * read decides (#3783).
  * A delete that fails does not stop the others, and skips the wait, since no re-read
  * will see a secret go that was never deleted.
  */
@@ -322,18 +317,16 @@ export async function keepWorkerIdle(args: {
   // Idle is what the Worker LISTS afterwards, never what the deletes answered. A listing
   // that still names a secret is read again (#3783); any read that fails ends it there,
   // since a failed read is never evidence the names have gone.
-  let remaining: { names: string[] } = { names: [] };
-  let waitedMs = 0;
-  for (let attempt = 0; ; attempt++) {
-    const after = await args.call("GET", secretsUrl(account, workerName));
-    if ("failed" in after) return idleVerdict({ noAnswer: after.failed });
-    const read = readSecretNames(after.status, after.bodyText);
-    if ("exitCode" in read) return idleVerdict({ read });
-    remaining = read;
-    if (remaining.names.length === 0 || failedDeletes.length > 0 || attempt === IDLE_RELIST_ATTEMPTS) break;
-    await args.sleep(IDLE_RELIST_EVERY_MS);
-    waitedMs += IDLE_RELIST_EVERY_MS;
-  }
+  const { last: remaining, waitedMs } = await relistUntil({
+    read: async () => {
+      const after = await args.call("GET", secretsUrl(account, workerName));
+      return "failed" in after ? after : readSecretNames(after.status, after.bodyText);
+    },
+    settled: (r) => "failed" in r || "exitCode" in r || r.names.length === 0 || failedDeletes.length > 0,
+    sleep: args.sleep,
+  });
+  if ("failed" in remaining) return idleVerdict({ noAnswer: remaining.failed });
+  if ("exitCode" in remaining) return idleVerdict({ read: remaining });
 
   const sched = await args.call("GET", schedulesUrl(account, workerName));
   if ("failed" in sched) return idleVerdict({ noAnswer: sched.failed });
