@@ -180,6 +180,10 @@ export async function middleware(request: NextRequest, event?: NextFetchEvent) {
     for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
       response.headers.set(name, value);
     }
+    // Reviewed (Dan, 2026-10-15): the value is a fixed literal, not request input; the
+    // request only decides WHETHER it applies, and only for exactly /demo, which Slate's
+    // own pages may frame. Pinned by src/middleware.test.ts.
+    // nosemgrep: javascript.express.security.x-frame-options-misconfiguration.x-frame-options-misconfiguration
     if (sameOriginFrameable) response.headers.set("X-Frame-Options", "SAMEORIGIN");
   }
 
