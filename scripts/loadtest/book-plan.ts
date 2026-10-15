@@ -618,8 +618,9 @@ export function externalIdFor(runId: string, driver: number, n: number): string 
 /**
  * Which of the offered times to book.
  *
- * RANDOM, and this is the one place a load run is deliberately not deterministic.
- * Every other choice (the code, the fault, the order) is fixed so that a run that
+ * RANDOM for the steady and fault legs, and this is the one place a load run is
+ * deliberately not deterministic (the baseline takes the soonest time instead,
+ * `baselineSlot`, #3782). Every other choice (the code, the fault, the order) is fixed so that a run that
  * passed and a run that failed differ by the code rather than by the dice. The
  * slot cannot be: four drivers each taking the first offered time would contend on
  * one slot all run, which measures the unique index over and over and never

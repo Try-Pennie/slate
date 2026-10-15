@@ -4,7 +4,8 @@
 // The July soak (#440) drove the cron lanes and never confirmed a single booking,
 // so the path a lead actually takes has never been under load. This is the driver
 // that does it: four of these run together, each reading availability, picking a
-// time at random from what was offered, and posting a booking.
+// time at random from what was offered (the baseline driver takes the soonest, #3782),
+// and posting a booking.
 //
 // It refuses to touch production, and that is the first thing it checks.
 //

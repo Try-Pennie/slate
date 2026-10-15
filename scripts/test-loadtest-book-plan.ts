@@ -1004,7 +1004,7 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   eq(baselineSlot([]), null, "and nothing when nothing is offered, which the driver records as offering nothing");
   eq(baselineSlot(["not a time", "2026-10-16T16:40:00.000Z"]), "2026-10-16T16:40:00.000Z", "a time that does not parse is never the soonest");
   eq(baselineSlot(["not a time"]), null, "and a list of nothing readable offers nothing");
-  const book = readFileSync("scripts/loadtest/book.ts", "utf8");
+  const book = readFileSync(join(import.meta.dirname, "loadtest", "book.ts"), "utf8");
   assert(/mode === "baseline" \? baselineSlot\(slots\) : pickSlot\(slots\)/.test(book), "the driver books the baseline through it, and only the baseline");
 }
 
