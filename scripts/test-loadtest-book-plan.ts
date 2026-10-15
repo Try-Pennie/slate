@@ -1004,8 +1004,18 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   eq(baselineSlot([]), null, "and nothing when nothing is offered, which the driver records as offering nothing");
   eq(baselineSlot(["not a time", "2026-10-16T16:40:00.000Z"]), "2026-10-16T16:40:00.000Z", "a time that does not parse is never the soonest");
   eq(baselineSlot(["not a time"]), null, "and a list of nothing readable offers nothing");
+  // Review of #3782: the baseline books the same codes every run (112 four times, 212
+  // three), so the soonest time alone would send all four 112 bookings at one slot, and
+  // the later ones would walk the ladder or be refused, which is not a booking at rest.
+  eq(
+    baselineSlot(offered, new Set(["2026-10-15T20:10:00.000Z"])),
+    "2026-10-15T21:00:00.000Z",
+    "a time the baseline already booked is passed over for the next soonest",
+  );
+  eq(baselineSlot(["2026-10-15T20:10:00.000Z"], new Set(["2026-10-15T20:10:00.000Z"])), null, "and a code offering only booked times offers nothing");
   const book = readFileSync(join(import.meta.dirname, "loadtest", "book.ts"), "utf8");
-  assert(/mode === "baseline" \? baselineSlot\(slots\) : pickSlot\(slots\)/.test(book), "the driver books the baseline through it, and only the baseline");
+  assert(/mode === "baseline" \? baselineSlot\(slots, baselineBooked\) : pickSlot\(slots\)/.test(book), "the driver books the baseline through it, and only the baseline");
+  assert(/baselineBooked\.add\(startIso\)/.test(book), "and records each time it booked, so the next one passes it over");
 }
 
 finish();

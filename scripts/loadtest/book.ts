@@ -358,6 +358,7 @@ async function steady(
   const deadlineAtMs = startedAtMs + deadlineMs;
   let cutShort = false;
   const attempts: BookingAttempt[] = [];
+  const baselineBooked = new Set<string>();
   for (const req of plan) {
     if (deadlineReached({ nowMs: Date.now(), nextAtMs: req.atMs, deadlineAtMs })) {
       cutShort = true;
@@ -388,9 +389,11 @@ async function steady(
       });
       continue;
     }
-    // #3782: the baseline takes the soonest time, clear of the latest times the bursts
-    // are planned on; the steady and fault legs keep spreading across what is offered.
-    const startIso = mode === "baseline" ? baselineSlot(slots) : pickSlot(slots);
+    // #3782: the baseline takes the soonest time it has not already sent a booking at,
+    // clear of the latest times the bursts are planned on; the steady and fault legs
+    // keep spreading across what is offered.
+    const startIso = mode === "baseline" ? baselineSlot(slots, baselineBooked) : pickSlot(slots);
+    if (mode === "baseline" && startIso !== null) baselineBooked.add(startIso);
     if (startIso === null) {
       // A bucket offering nothing is RECORDED rather than skipped in silence, with a
       // status of its own. An offered-nothing run and a run nobody drove produce the

@@ -1276,7 +1276,8 @@ holds the steady p95 to a multiple of that baseline's median
 sixty bookings a minute slow one booking down. The environment cancels, because both
 halves ran on it within minutes.
 
-Each baseline booking takes the SOONEST time its code offers, never a random one
+Each baseline booking takes the SOONEST time its code offers that the baseline has not
+already booked, never a random one
 (#3782). The bursts are planned on the latest times, after the baseline, and the tier
 drop burst's ladders offer only four or five; a baseline booking that landed on one
 took an advisor the burst could not spare and its setup ended on exit 9 (runs
