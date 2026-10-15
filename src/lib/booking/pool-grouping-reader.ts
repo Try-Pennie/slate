@@ -229,6 +229,11 @@ export function makeGroupingReader(deps: {
   /** #3558: the directory's head start before the own read begins beside it (`POOL_GROUPING_OWN_READ_AFTER_MS`). */
   ownReadAfterMs?: number;
 }): { start(): GroupingStart; wait(started: GroupingStart): Promise<GroupingReading>; ensure(): Promise<GroupingReading> } {
+  // Review of #3760: undefined here would make every grouping look stale and fetch on
+  // every confirm, in silence.
+  if (!Number.isFinite(deps.refreshAheadMs) || deps.refreshAheadMs < 0) {
+    throw new Error(`makeGroupingReader: refreshAheadMs must be a non negative number of ms, got ${String(deps.refreshAheadMs)}`);
+  }
   let inFlight: { startedAt: number; settled: Promise<Fetched> } | null = null;
   // When the last fetch that installed nothing settled, or null after one that did.
   let fruitlessAt: number | null = null;
@@ -320,7 +325,9 @@ export function makeGroupingReader(deps: {
       inFlight = joined = mine;
       void settled.then((got) => {
         if (inFlight === mine) inFlight = null;
-        fruitlessAt = got.source === "installed" || got.source === "held" || got.source === "read" ? null : deps.now();
+        // `held` from a fetch is a refresh ahead that found nothing newer: it installed
+        // nothing, so the retry window applies to it too (review of #3760).
+        fruitlessAt = got.source === "installed" || got.source === "read" ? null : deps.now();
       });
       deps.onFetchStarted?.(settled);
     }

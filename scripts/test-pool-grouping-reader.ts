@@ -634,6 +634,40 @@ async function refreshAhead() {
     w.setNow(T0 + 151);
     eq(w.store.peek("121"), undefined, "refresh ahead: and it still expires on its own minute, never later");
   }
+  {
+    // Review of #3760: a refresh that found nothing newer is a fetch that installed
+    // nothing, so the retry window applies, or every confirm in the margin asks the
+    // directory again and the cost is per request rather than per server.
+    const heldAt = T0 - (POOL_GROUPING_FRESH_MS - 1_500);
+    const w = readerWorld({ heldAt, answer: answering(groupingSnapshotOf(ENTRIES, heldAt)) });
+    eq((await w.reader.ensure()).source, "held", "refresh ahead backoff: the first confirm in the margin asks, and keeps what it holds");
+    await w.advance(50);
+    eq((await w.reader.ensure()).source, "backoff", "refresh ahead backoff: the next one, 50ms later, does not ask again");
+    eq(w.sent.length, 1, "refresh ahead backoff: one call, not one per confirm");
+    assert(w.store.peek("121") !== undefined, "refresh ahead backoff: and the grouping it holds still answers while fresh");
+    await w.advance(POOL_GROUPING_RETRY_MS);
+    await w.reader.ensure();
+    eq(w.sent.length, 2, "refresh ahead backoff: once the retry window has passed, it asks again");
+  }
+  {
+    // Review of #3760: a reader built without the margin would add undefined to the
+    // clock, judge nothing fresh, and fetch on every confirm in silence. It refuses.
+    let threw = false;
+    try {
+      makeGroupingReader({
+        store: makeGroupingStore({ now: () => T0, freshMs: POOL_GROUPING_FRESH_MS }),
+        directory: () => null,
+        now: () => T0,
+        timer: () => () => {},
+        boundMs: POOL_GROUPING_FETCH_MS,
+        freshMs: POOL_GROUPING_FRESH_MS,
+        retryMs: POOL_GROUPING_RETRY_MS,
+      } as unknown as Parameters<typeof makeGroupingReader>[0]);
+    } catch {
+      threw = true;
+    }
+    assert(threw, "refresh ahead: a reader built without the margin refuses to be built");
+  }
 }
 
 async function main() {
