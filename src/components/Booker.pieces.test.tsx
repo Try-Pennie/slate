@@ -11,6 +11,7 @@
 //    saying the time has gone, and View more times lands on its day.
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { DateTime } from "luxon";
 import Booker from "@/components/Booker";
 import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
 import { bookerSlotIso } from "@/components/booker-test-slot";
@@ -145,6 +146,16 @@ describe("the pop up a time opens (#3718)", () => {
   it("lands on the details step for the picked time", async () => {
     render(<Booker {...baseProps} initialSlot={firstDay[4]!} />);
     expect(await screen.findByRole("textbox", { name: /email/i })).toBeTruthy();
+  });
+
+  it("matches the picked time by instant, so the same time written with an offset still lands on its details", async () => {
+    // The address may carry an offset (readInlineEntry accepts one); the times are
+    // offered in UTC. Same instant, different spelling: still offered, not gone.
+    const zoned = DateTime.fromISO(firstDay[4]!, { zone: "utc" }).setZone("America/New_York").toISO()!;
+    expect(zoned).not.toBe(firstDay[4]);
+    render(<Booker {...baseProps} initialSlot={zoned} />);
+    expect(await screen.findByRole("textbox", { name: /email/i })).toBeTruthy();
+    expect(screen.queryByText(PICKER_COPY.pickedTimeGone)).toBeNull();
   });
 
   it("lands on that time's day, and says the time has gone, when it is no longer offered", async () => {

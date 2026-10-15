@@ -754,10 +754,17 @@ export default function Booker({
   // it in between), or on the day View more times was pressed for. Once per load.
   // "Gone" is read from what loaded rather than stored: the picked time is not among
   // the times offered, and the lead has not chosen another since.
+  // The address may spell the time with an offset while the times are offered in
+  // UTC, so it is matched by instant and the offered spelling is what gets chosen.
+  // An unreadable one gives NaN, which matches nothing and so reads as gone.
   const [leadChoseAfterLanding, setLeadChoseAfterLanding] = useState(false);
   const timesKnown = picker.days.length > 0 && picker.view.kind !== "loading";
+  const initialMs = initialSlot ? DateTime.fromISO(initialSlot, { setZone: true }).toMillis() : NaN;
+  const offeredInitialSlot = initialSlot
+    ? (picker.slots.find((s) => DateTime.fromISO(s, { setZone: true }).toMillis() === initialMs) ?? null)
+    : null;
   const pickedTimeGone =
-    !inline && !!initialSlot && timesKnown && !picker.slots.includes(initialSlot) && !leadChoseAfterLanding;
+    !inline && !!initialSlot && timesKnown && !offeredInitialSlot && !leadChoseAfterLanding;
   const landed = useRef(false);
   useEffect(() => {
     if (inline || landed.current || !timesKnown) return;
@@ -765,8 +772,8 @@ export default function Booker({
     landed.current = true;
     const day = initialSlot ? DateTime.fromISO(initialSlot, { zone }).toISODate() : initialDay;
     if (day && picker.days.includes(day)) picker.selectDay(day);
-    if (initialSlot && picker.slots.includes(initialSlot)) chooseSlot(initialSlot);
-  }, [inline, initialSlot, initialDay, picker, zone, timesKnown]);
+    if (offeredInitialSlot) chooseSlot(offeredInitialSlot);
+  }, [inline, initialSlot, initialDay, offeredInitialSlot, picker, zone, timesKnown]);
 
   // The single origin every outbound embed message targets. Never "*": the
   // success payload carries lead PII, so a wildcard could hand it to whatever
