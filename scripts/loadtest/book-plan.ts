@@ -635,6 +635,25 @@ export function pickSlot<T>(slots: readonly T[], rand: () => number = Math.rando
   return slots[Math.min(slots.length - 1, Math.max(0, i))] ?? null;
 }
 
+/**
+ * The time a BASELINE booking takes: the soonest on offer (#3782). The bursts are planned
+ * on the latest times, and the tier drop burst's ladders offer only a handful, so a
+ * baseline booking taken at random could land on one and take an advisor the burst could
+ * not spare (runs 38761057057 and 38800509328). A time that does not parse is skipped.
+ */
+export function baselineSlot(slots: readonly string[]): string | null {
+  let soonest: string | null = null;
+  let soonestMs = Infinity;
+  for (const t of slots) {
+    const ms = Date.parse(t);
+    if (Number.isFinite(ms) && ms < soonestMs) {
+      soonest = t;
+      soonestMs = ms;
+    }
+  }
+  return soonest;
+}
+
 /** One recorded response. The judge (#2244) reads these and nothing else. */
 export interface BookingAttempt {
   driver: number;
