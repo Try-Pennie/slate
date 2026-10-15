@@ -53,7 +53,7 @@ describe("useCallMeNow (#3718)", () => {
   });
 
   it("the demo's texting number is one set aside for fiction, never a real line", () => {
-    expect(DEMO_TEXT_LINE).toMatch(/^\+1555010\d{4}$/);
-    expect(Number(DEMO_TEXT_LINE.slice(-4))).toBeLessThanOrEqual(199);
+    // 555-0100 to 555-0199 in a real (2 to 9 led) area code.
+    expect(DEMO_TEXT_LINE).toMatch(/^\+1[2-9]\d{2}55501\d{2}$/);
   });
 });

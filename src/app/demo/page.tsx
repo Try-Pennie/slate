@@ -87,23 +87,23 @@ export default async function DemoPage({ searchParams }: { searchParams: Promise
       {/* The inline card at the width a landing page column gives it, and the
           full width of a phone. */}
       <div className={layout ? "mx-auto w-full max-w-[460px]" : undefined}>
-      <Booker
-        bucketCode={bucketCode}
-        requestedCode={entry.requestedCode}
-        salesforceId={visit.salesforceId}
-        attendee={attendeeForLanding(entry.link, null)}
-        prefill={entry.prefill}
-        embedded={false}
-        theme={theme}
-        isTest={isTest}
-        testPass={currentTestPassFor(bucketCode)}
-        horizonDays={horizonDays}
-        rescheduleReasons={reasonOptions.reschedule.active}
-        cancelReasons={reasonOptions.cancel.active}
-        landingCall={null}
-        layout={layout}
-        callMeNow={callMeNow}
-      />
+        <Booker
+          bucketCode={bucketCode}
+          requestedCode={entry.requestedCode}
+          salesforceId={visit.salesforceId}
+          attendee={attendeeForLanding(entry.link, null)}
+          prefill={entry.prefill}
+          embedded={false}
+          theme={theme}
+          isTest={isTest}
+          testPass={currentTestPassFor(bucketCode)}
+          horizonDays={horizonDays}
+          rescheduleReasons={reasonOptions.reschedule.active}
+          cancelReasons={reasonOptions.cancel.active}
+          landingCall={null}
+          layout={layout}
+          callMeNow={callMeNow}
+        />
       </div>
     </StandaloneBookerShell>
   );
