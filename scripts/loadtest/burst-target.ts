@@ -234,6 +234,49 @@ export function dropSlotFit(
   return null;
 }
 
+/** One slot the drop burst measured, with who was free there, or null when that could not be read. */
+export interface DropMeasure {
+  code: string;
+  slot: string;
+  free: { rung0Free: number; ladderFree: number } | null;
+}
+
+/**
+ * Why no slot fitted the drop burst, one line per ladder asked (#3771): how many times
+ * it measured, and its closest slot, the most free across the ladder among slots with
+ * somebody, but fewer than the crowd, on the top rung, against the `headroom` times
+ * `crowd` it needs. Run 34 refused with six of 32 slots and "and 26 more", so how far
+ * from fitting each ladder came was not in the log.
+ */
+export function dropRefusalByLadder(
+  asked: readonly string[],
+  measured: readonly DropMeasure[],
+  crowd: number,
+  headroom: number,
+  gapMs: number,
+): string[] {
+  return asked.map((code) => {
+    const mine = measured.filter((m) => m.code === code);
+    if (mine.length === 0) return `${code}: offered no time at least ${gapMs / 60_000} minutes from both refusal slots`;
+    const read = mine.filter((m): m is DropMeasure & { free: NonNullable<DropMeasure["free"]> } => m.free !== null);
+    const unread = mine.length - read.length;
+    const topOk = read.filter((m) => m.free.rung0Free >= 1 && m.free.rung0Free < crowd);
+    const noneOnTop = read.filter((m) => m.free.rung0Free < 1).length;
+    const allOnTop = read.filter((m) => m.free.rung0Free >= crowd).length;
+    const best = topOk.slice().sort((a, b) => b.free.ladderFree - a.free.ladderFree || Date.parse(b.slot) - Date.parse(a.slot))[0];
+    const parts = [`${code}: ${mine.length} times measured`];
+    parts.push(
+      best
+        ? `the closest had ${best.free.ladderFree} free across the ladder at ${best.slot} (${best.free.rung0Free} on the top rung), and the burst needs ${headroom * crowd}`
+        : "no slot had somebody, but fewer than the crowd, free on the top rung",
+    );
+    if (noneOnTop > 0) parts.push(`${noneOnTop} with nobody free on the top rung`);
+    if (allOnTop > 0) parts.push(`${allOnTop} with the whole crowd free on the top rung`);
+    if (unread > 0) parts.push(`${unread} not measured`);
+    return parts.join("; ");
+  });
+}
+
 /**
  * #3565: the fewest advisors one refusal crowd of each run may meet free across its ladder.
  * The case the whole ladder release (#3529) exists for is many free over several rungs, and
