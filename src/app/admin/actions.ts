@@ -155,8 +155,8 @@ import {
  * eleven different ways of telling somebody the same thing (L41), and so the
  * detail reaches the LOG in every case: Cloudflare stores the serialized error,
  * and the reader on screen gets the short reason without having to be handed a
- * stack (see "Alert copy never carries a raw error" in AGENTS.md, the same
- * division applied to a screen).
+ * stack (see "Alert copy never carries a raw error" in docs/alerts-runbook.md,
+ * the same division applied to a screen).
  *
  * `what` names the thing that did not change, in the vocabulary of the form the
  * person is looking at, never the table (L399).

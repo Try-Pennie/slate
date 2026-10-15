@@ -4,10 +4,11 @@
 //
 //   1. no hand written count of the repo's own tree survives in the docs a
 //      session loads or a reviewer is pointed at (scan-doc-claims.ts says why);
-//   2. AGENTS.md's copy of SAFE_TABLES is checked against the constant in BOTH
-//      directions, because the harm reported was a table the doc left out (a
-//      reader adding a read on `business_hours` was told every unlisted table is
-//      flagged, and told to add it to a list that already held it);
+//   2. AGENTS.md points at SAFE_TABLES and holds NO copy of it. The copy drifted
+//      once (a reader adding a read on `business_hours` was told every unlisted
+//      table is flagged, and told to add it to a list that already held it), and
+//      the constant already carries a reason per table, so since 2026-10-15 the
+//      constant is the list's one home and the doc only names it;
 //   3. every `verify:` command in package.json is named in AGENTS.md AND carries
 //      its detail in docs/verify-commands.md, so moving a section out of the
 //      auto loaded file cannot quietly lose one.
@@ -30,6 +31,15 @@ const SCANNED = [
   "CLAUDE.md",
   "docs/review-process.md",
   "docs/verify-commands.md",
+  // Where the 2026-10-15 cut moved runbook sections out of AGENTS.md; each is
+  // named by a pointer that the auto loaded file still carries.
+  "docs/auto-loaded-rules.md",
+  "docs/push-gate.md",
+  "docs/workflows.md",
+  "docs/monitor-lane.md",
+  "docs/testing.md",
+  "docs/repo-guards.md",
+  "docs/copy-previews.md",
 ];
 
 // --- 1. No hand written count of the repo's own tree --------------------------
@@ -86,23 +96,51 @@ const SCANNED = [
   assert(caught.length === 0, `a measurement of the world is not refused (${caught.length} false positives)`);
 }
 
-// --- 2. SAFE_TABLES, both directions ------------------------------------------
+// --- 2. SAFE_TABLES: named, never copied --------------------------------------
+
+// The doc may NAME a roster bounded table where a rule is about it (today
+// `bucket_slots` in the pool compute rule and `export_cursor` in the backfill
+// row), but three or more is the start of a list, and a partial list is the
+// copy that drifted: it tells a reader an unlisted table is flagged.
+const MAX_SAFE_TABLES_NAMED = 2;
+
+const safeTablesNamed = (doc: string) => [...SAFE_TABLES].filter((t) => doc.includes(`\`${t}\``));
+
+/** True when one paragraph names the constant AND the file it lives in. */
+const pointsAtSafeTables = (doc: string) =>
+  doc
+    .split(/\n\s*\n/)
+    .some((p) => p.includes("`SAFE_TABLES`") && p.includes("scripts/lib/scan-src-capped-reads.ts"));
 
 {
   const agents = read("AGENTS.md");
-  const block = /The allowlist \(`SAFE_TABLES`[\s\S]*?\*\*Every other table defaults/.exec(agents)?.[0] ?? "";
-  assert(block.length > 0, "AGENTS.md carries the SAFE_TABLES paragraph the check is about");
-  const named = new Set([...block.matchAll(/`([a-z_]+)`/g)].map((m) => m[1]).filter((t) => t !== "SAFE_TABLES"));
-  for (const table of SAFE_TABLES) {
-    assert(named.has(table), `AGENTS.md names SAFE_TABLES entry \`${table}\``);
-  }
-  for (const table of named) {
-    assert(
-      SAFE_TABLES.has(table),
-      `AGENTS.md names \`${table}\` as roster bounded and the scanner does not, so the doc would send a reader to add a cap-safe opt-out the guard never asked for`,
-    );
-  }
   assert(SAFE_TABLES.size > 10, `the constant was really read (${SAFE_TABLES.size} tables)`);
+  assert(
+    pointsAtSafeTables(agents),
+    "AGENTS.md points at the list: one paragraph names `SAFE_TABLES` and scripts/lib/scan-src-capped-reads.ts",
+  );
+  const named = safeTablesNamed(agents);
+  assert(
+    named.length <= MAX_SAFE_TABLES_NAMED,
+    `AGENTS.md holds no copy of SAFE_TABLES (it names ${named.length}, at most ${MAX_SAFE_TABLES_NAMED}: ${named.join(", ")}); point at the constant instead`,
+  );
+}
+
+// Controls, both directions, run against the real doc so they track it.
+{
+  const agents = read("AGENTS.md");
+  const partial = [...SAFE_TABLES].filter((t) => !agents.includes(`\`${t}\``)).slice(0, 3);
+  const planted = `${agents}\n\nRoster bounded: ${partial.map((t) => `\`${t}\``).join(", ")}.\n`;
+  assert(
+    safeTablesNamed(planted).length > MAX_SAFE_TABLES_NAMED,
+    `a planted partial copy of three tables is refused (${safeTablesNamed(planted).length} named)`,
+  );
+  const stripped = agents.replaceAll("scripts/lib/scan-src-capped-reads.ts", "the scanner");
+  assert(!pointsAtSafeTables(stripped), "a doc that names the constant but not its file is refused");
+  assert(
+    pointsAtSafeTables("See `SAFE_TABLES` in scripts/lib/scan-src-capped-reads.ts."),
+    "a one line pointer is accepted",
+  );
 }
 
 // --- 3. Every verify command is named where a reader will look ----------------

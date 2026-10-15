@@ -2,7 +2,8 @@
 // the org's timezone.
 //
 // Slate judges the ORG's business window and the AGENT's working hours in their OWN
-// zones and never intersects them. CLAUDE.md records why, and records the exposure
+// zones and never intersects them. docs/architecture.md ("The availability rules
+// in full") records why, and records the exposure
 // with it: clipping would be correct only for an agent in the business zone, and
 // every live agent is Eastern, so **no production data can tell a correct
 // implementation from a broken one**. That is a blind spot, not a known defect.

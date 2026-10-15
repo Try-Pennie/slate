@@ -509,8 +509,9 @@ export function digestUnroutedUnreachableRecovery(): string {
  * `reason` is already SHORT: the sender classifies the reply
  * (`summarizeWebhookReply`) and runs it through `shortFailureReason`, so no body
  * reaches this sentence. The full reply is in the logs under `tag=webhooks`, which
- * is the division of labour AGENTS.md sets out: the alert carries a short human
- * reason, the log carries the text.
+ * is the division of labour docs/alerts-runbook.md sets out ("Alert copy never
+ * carries a raw error"): the alert carries a short human reason, the log
+ * carries the text.
  *
  * `reply.intermediary` is a MEASURED fact, not a guess made from the wording, and
  * it changes who the reader has to go and talk to (#2418). A block page from a WAF

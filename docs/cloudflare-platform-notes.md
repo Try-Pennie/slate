@@ -519,6 +519,54 @@ The load run's cron CPU bar now fails past **half** the kill limit
 share of the limit on every run, so a pass at 99 percent no longer reads like a pass
 at 3.
 
+## Writing log lines: `src/lib/log.ts`, and joining one booking's lines
+
+Moved out of `AGENTS.md` on 2026-10-15, where every character was loaded into
+every session (#2393). `AGENTS.md` keeps the rule and points here; this is the
+full text as it stood, with the reasoning, the incidents and the measurements
+behind it.
+
+Cloudflare captures **every** console method from the deployed Worker, with the
+`Error` object serialized. Nothing is dropped: a 250-line canary (#801) came back
+100% at every level. So the "detail is kept server-side in the logs" guarantee in
+`internalErrorResponse` (`src/lib/api/errors.ts`) is real.
+
+**Never call `console` directly in `src/`** (ESLint `no-console`, error severity).
+Every server line goes through **`src/lib/log.ts`** (#808):
+
+```ts
+log.info("recompute", { msg: "cycle", refreshed: 3, util_pct: 42 });
+log.warn("lane-watchdog", { msg: "stale lane", lane: "outbox" });
+log.error("booking", { msg: "insert failed", booking_id: id }, err);  // Error passed THROUGH
+```
+
+which emits `slate tag=recompute msg="cycle" refreshed=3 util_pct=42`. Two things
+that kept being decided wrongly per call site now live in one place:
+
+- **The level.** `console.log` is unreachable from the helper. It is the one method
+  Cloudflare stores with **no `level` field**, so the line is kept but is invisible
+  to every level-filtered query, which reads as a total drop. That "console.log
+  doesn't come back" belief (and, before it, "console.error doesn't come back") were
+  both the same false negative: a query that verified nothing, read as absence.
+- **A searchable `tag=`.** Filter on `tag=booking-api` instead of guessing at a
+  message substring. Pass the `Error` itself as the third argument so Cloudflare
+  serializes its stack rather than it being flattened into text.
+
+**Stitching one request's lines together needs nothing from us.** Workers Logs has an
+Invocations view that groups every line from one invocation, so a request's confirm-path
+lines are already a unit. What that CANNOT do is join across invocations, and a booking's
+side effects live in a later cron invocation: the join key there is `booking_id`, which
+works because the outbox row carries it. That is the whole correlation story (#1047); a
+generated request id would be worse for the cross-invocation case, since the drain has no
+memory of the originating request unless it is persisted on the row, which is a schema
+cost for no gain over the id already there. Some lines deliberately carry no identity at
+all: contact data does not go in logs, so a pre-booking failure names the slot and the
+agent rather than the lead.
+
+Retention is 7 days and there is no alerting on top of it, so logs are for
+forensics after the fact. Anything that must page someone still needs a real
+sink (a Slack alert or an `alert_state` row); see the fail-loud rule.
+
 ## Reading the logs: the key trap that fakes a total outage
 
 **Cloudflare captures every console method. Nothing is dropped.** Measured in

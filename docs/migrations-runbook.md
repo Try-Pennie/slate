@@ -263,7 +263,8 @@ the `create function` line, and it must carry a reason: the bare marker is
 refused, so the syntax alone cannot read as a decision somebody made. It matches
 a revoke to a definition by function NAME rather than by resolving argument
 types, and covers the one thing that misses (two overloads of one name in one
-file) by requiring one revoke statement per definition.
+file) by requiring one revoke statement per definition. The scan is
+`scanDefinerExecuteGrants` in `scripts/lib/scan-migration-grants.ts`.
 
 ## Backfilling a mirrored table: rewind the export cursor (#1231)
 
@@ -313,7 +314,9 @@ Two things enforce this rather than trusting memory:
 - `scripts/test-mirror-backfill-cursor.ts` (pre-push and CI) fails a migration or
   script that writes a mirrored table's watermark column without a rewind in the
   same file. Its escape hatch is `-- export-cursor-ok: <why>` (or `//` in TS) on or
-  above the write, for a write whose watermark is genuinely current.
+  above the write, for a write whose watermark is genuinely current. DML inside
+  a `$tag$ ... $tag$` function body is out of scope (it runs with a current
+  watermark), as is `src/` runtime code.
 - The 6-hourly reconcile lane counts, per table, the exportable rows strictly
   **behind** the cursor and compares that to the warehouse count. Every row behind
   the cursor should already be there, and every legitimate difference makes the

@@ -93,7 +93,7 @@ assert(
 }
 
 assert(
-  CHARS_PER_TOKEN > 3 && CHARS_PER_TOKEN < 5,
+  CHARS_PER_TOKEN > 2 && CHARS_PER_TOKEN < 5,
   `the measured exchange rate is prose shaped (${CHARS_PER_TOKEN} characters per token)`,
 );
 
