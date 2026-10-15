@@ -38,12 +38,13 @@ vi.mock("@/lib/automations/texting-line", async (orig) => ({
   readTextingLine: texting.readTextingLine,
 }));
 vi.mock("@/lib/automations/sendblue-line-state", () => sendblue);
-vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({}) }));
+const admin = vi.hoisted(() => ({ supabaseAdmin: vi.fn(() => ({})) }));
+vi.mock("@/lib/supabase/admin", () => admin);
 // The saved lines as the table would hold them; the table's own semantics are pinned
 // by lead-texting-line-live.test.ts.
 vi.mock("@/lib/automations/lead-texting-line-live", () => ({
-  liveTextingLineStore: () => ({
-    read: async (key: string) => lines.saved.get(key) ?? null,
+  liveTextingLineStore: (db: () => unknown) => ({
+    read: async (key: string) => (db(), lines.saved.get(key) ?? null),
     claim: async (key: string, line: string) => {
       if (!lines.saved.has(key)) lines.saved.set(key, line);
       return lines.saved.get(key)!;
@@ -90,6 +91,7 @@ beforeEach(() => {
   texting.readTextingLine.mockReset().mockResolvedValue("+12125550188");
   lines.saved.clear();
   sendblue.sendblueLineState.mockReset().mockResolvedValue("alive");
+  admin.supabaseAdmin.mockReset().mockReturnValue({});
   vi.unstubAllEnvs();
   live.deps = {
     readLead: async () => ({ email: "maria@example.com", phones: ["+12125550111"], mobile: "+12125550111", adv: 3, pending: false }),
@@ -128,6 +130,18 @@ describe("POST /api/call-me-now (#3718)", () => {
     expect(await (await press()).json()).toMatchObject({ textLine: "+13135550102" });
     expect(sendblue.sendblueLineState.mock.calls[0]![1]).toMatchObject({ keyId: "id-123", secret: "secret-456" });
     expect(lines.saved.get(LEAD.slice(0, 15))).toBe("+13135550102");
+  });
+
+  it("still answers requested, with no text line, when the database client cannot be made", async () => {
+    // The call is already requested by then, so a 500 here would tell the lead it
+    // failed while Regal rings them.
+    admin.supabaseAdmin.mockImplementation(() => {
+      throw new Error("SUPABASE_SECRET_KEY is unset");
+    });
+    const res = await press();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ outcome: "requested", textLine: null });
+    expect(live.writes).toEqual([LEAD]);
   });
 
   it("forwards a submission id only when it is shaped like one", async () => {

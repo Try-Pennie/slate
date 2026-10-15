@@ -54,7 +54,7 @@ function fakeTable(initial: Record<string, string> = {}, refuse?: "select" | "up
       };
     },
   };
-  return { db: db as never, rows };
+  return { db: (() => db) as never, rows };
 }
 
 const KEY = "00QUl00000JtyVG";
@@ -89,6 +89,13 @@ describe("liveTextingLineStore", () => {
     const { db, rows } = fakeTable({ [KEY]: "+13135550102" });
     expect(await liveTextingLineStore(db).swap(KEY, "+12125550101", "+14145550103")).toBe("+13135550102");
     expect(rows.get(KEY)).toBe("+13135550102");
+  });
+
+  it("a client that cannot be made fails the call, not the construction", async () => {
+    const store = liveTextingLineStore(() => {
+      throw new Error("SUPABASE_SECRET_KEY is unset");
+    });
+    await expect(store.read(KEY)).rejects.toThrow(/unset/);
   });
 
   it.each(["select", "upsert", "update"] as const)("a refused %s throws rather than reading as no line", async (which) => {

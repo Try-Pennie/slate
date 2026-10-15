@@ -123,7 +123,7 @@ export async function POST(req: NextRequest) {
   const unread = (what: string) => (err: unknown) =>
     log.warn("call-me-now", { msg: `texting line ${what}`, lead_id: leadId }, err);
   const textLine = await textingLineForLead(leadId, {
-    store: liveTextingLineStore(supabaseAdmin()),
+    store: liveTextingLineStore(supabaseAdmin),
     lineState: (line) =>
       sendblueLineState(line, {
         keyId: sendblueApiKeyId(),
