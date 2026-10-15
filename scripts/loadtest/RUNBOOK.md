@@ -79,7 +79,7 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
    'shared_buffers')` on production and on the branch (the connector's `execute_sql`
    on each ref, or the SQL editor), and dispatch only when both pairs are equal.
    Production read 160 and 262144 (2GB in 8kB pages, Large) on 2026-10-14, after
-   reading 60 and 256MB (micro) on 2026-10-07; take the size from the reading, never
+   reading 60 and 32768 (256MB, micro) on 2026-10-07; take the size from the reading, never
    from this paragraph.
 
 2. **Apply the schema to the branch**: run the repo migrations against it
