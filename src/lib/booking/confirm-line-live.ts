@@ -12,14 +12,17 @@ import {
   CONFIRM_LINE_ALERT_KEY,
 } from "@/lib/booking/confirm-line-alert";
 import {
+  CONFIRM_LINE_CALL_MS,
+  CONFIRM_LINE_WAKE_EVERY_MS,
   durableLineNamespace,
+  makeLineWaker,
   makeSharedConfirmLine,
   type DurableLineNamespace,
   type LineNamespace,
   type LineServed,
 } from "@/lib/booking/shared-confirm-line";
 import { readSharedConfirmLine } from "@/lib/booking/shared-line-switch";
-import { ladderGroupRead } from "@/lib/booking/line-key";
+import { ladderGroupRead, lineGroupToWake } from "@/lib/booking/line-key";
 import { lineGroupingStore, peekPoolKey, warmPoolKeys } from "@/lib/availability/slot-cache";
 import {
   makeGroupingReader,
@@ -181,4 +184,36 @@ export function lineGroupOfLive(code: string, facts?: ConfirmLineFacts): string 
     );
   }
   return read.group;
+}
+
+const wakeLine = makeLineWaker({
+  namespace: lineNamespace,
+  enabled: readSharedConfirmLine,
+  target: (code) => lineGroupToWake(code, peekPoolKey, warmPoolKeys),
+  now: () => Date.now(),
+  timer: realTimer,
+  everyMs: CONFIRM_LINE_WAKE_EVERY_MS,
+  callMs: CONFIRM_LINE_CALL_MS,
+});
+
+/**
+ * #3775: wake the line a lead's confirm on `code` will join, after the availability
+ * response has gone, so an object idle for minutes is back before the confirm arrives.
+ * Load run 34's first call after 15 idle minutes took 766ms, all of it on the first
+ * lead to confirm. The waker checks its window and the switch before anything else, so
+ * with the line off a read does no grouping work; the line comes from the grouping this
+ * server holds, through the same `codeLineGroup` the confirm keys on
+ * (`lineGroupToWake`), and a fresh server reads the grouping first. Never throws;
+ * nothing waits on it, and each outcome worth reading is logged at most once per code
+ * per server per minute.
+ */
+export function wakeConfirmLineForCode(code: string): void {
+  afterResponse("confirm-line-wake", async () => {
+    const { outcome, group, err } = await wakeLine(code);
+    if (outcome === "woke") log.info("confirm-line", { msg: "line woken", bucket: code, key: group });
+    else if (outcome === "unknown") log.info("confirm-line", { msg: "line wake skipped: the pool grouping does not settle this code's line", bucket: code });
+    else if (outcome === "refused" || outcome === "failed" || outcome === "unreadable") {
+      log.warn("confirm-line", { msg: "line wake did not land", outcome, bucket: code, key: group ?? null }, err);
+    }
+  });
 }

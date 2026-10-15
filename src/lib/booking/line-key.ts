@@ -80,3 +80,48 @@ export function ladderGroupRead(code: string, peek: (code: string) => string | n
 export function ladderGroupOf(code: string, peek: (code: string) => string | null | undefined): string | null {
   return ladderGroupRead(code, peek).group;
 }
+
+/**
+ * The group a bucket code's confirms line up in (#3325): the code's ladder group when
+ * `lineGroupOf` knows it, else the code's own line. The ONE place the rule lives, so a
+ * wake sent while a lead reads availability (#3775) reaches the line their confirm will
+ * join (`confirmQueueKey`). A named link's line is the advisor's, decided there.
+ */
+export function codeLineGroup(code: string, lineGroupOf?: (code: string) => string | null): string {
+  return lineGroupOf?.(code) ?? `code:${code}`;
+}
+
+/** Which line a wake reaches, or why none: each reason its own (L11). */
+export type LineWakeTarget =
+  | { kind: "wake"; group: string }
+  /** The grouping could not be read, so which line the confirm joins is unknown. */
+  | { kind: "unreadable"; err: unknown }
+  /** The grouping was read and still does not settle this code's line. */
+  | { kind: "unknown" };
+
+/**
+ * The line to wake for a lead reading availability on `code` (#3775): the line their
+ * confirm will join. With no fresh grouping held (`unknown-rung`), which is every fresh
+ * server and exactly where an idle object's slow first call lands, it reads the grouping
+ * first (`warm`, the confirm path's own background read) and asks again. No line when
+ * the grouping still cannot be told, because waking the code's own line would wake one
+ * the confirm, after settling the grouping, may not join.
+ */
+export async function lineGroupToWake(
+  code: string,
+  peek: (code: string) => string | null | undefined,
+  warm: () => Promise<void>,
+): Promise<LineWakeTarget> {
+  let read = ladderGroupRead(code, peek);
+  if (read.group === null && read.why === "unknown-rung") {
+    try {
+      await warm();
+    } catch (err) {
+      return { kind: "unreadable", err };
+    }
+    read = ladderGroupRead(code, peek);
+    if (read.group === null && read.why === "unknown-rung") return { kind: "unknown" };
+  }
+  const group = read.group;
+  return { kind: "wake", group: codeLineGroup(code, () => group) };
+}

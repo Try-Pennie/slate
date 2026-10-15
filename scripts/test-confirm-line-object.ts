@@ -82,6 +82,23 @@ async function main() {
     assert(other.kind === "lead", "enter: another instant in the same object is its own line");
   }
 
+  // --- #3775: a wake answers and changes nothing ----------------------------------
+  //
+  // A lead reading availability wakes the line its confirm will join, so an object idle
+  // for minutes is back before the confirm arrives (load run 34: 766ms on the first call
+  // after 15 idle minutes). The wake must leave the line exactly as it found it: the
+  // first confirm after it still leads, and one queued before it still waits.
+  {
+    const { send } = host();
+    const woke = await send({ op: "wake" });
+    assert(woke.ok === true, `wake: answers ok (got ${JSON.stringify(woke)})`);
+    const a = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    assert(a.kind === "lead", `wake: the first confirm after a wake still leads (got ${JSON.stringify(a)})`);
+    await send({ op: "wake" });
+    const b = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    assert(b.kind === "wait", `wake: a wake while a turn is held takes no place in the line (got ${JSON.stringify(b)})`);
+  }
+
   // --- a full verdict answers every waiter, from ONE serialised settlement --------
   {
     const { send } = host();
