@@ -112,6 +112,7 @@ const NON_SINGLETON_TABLES: { table: string; category: string; why: string }[] =
   { table: "booking_failure_rate_state", category: "lock/counter", why: "#1313: one rolling-window state row keyed by a fixed text PK; the window lives in a jsonb column, not in extra rows" },
   { table: "export_cursor", category: "lock/counter", why: "one Snowflake-export watermark row per (lane, table) keyed by text PK; ~a dozen rows, #1098" },
   { table: "pilot_offer_samples", category: "growth/append-only", why: "#2927: an append only log of availability samples, two rows every quarter hour keyed by (sampled_at, system); never read as one row" },
+  { table: "lead_texting_lines", category: "lock/counter", why: "#3718: one texting line per lead keyed by the 15 character Lead id as the PK, so a second row for a lead is structurally impossible" },
   { table: "pilot_settings_samples", category: "growth/append-only", why: "#3641: an append only log of pilot split readings, one row every quarter hour keyed by sampled_at; never read as one row" },
   { table: "frame_origin_daily", category: "growth", why: "#3137: one row per (day, framing origin, booker page); capped at 200 hosts a day outside the allow list by record_frame_origins and pruned past 90 days by it" },
   { table: "api_caller_seen", category: "lock/counter", why: "#2717: one sighting row per (caller, host kind) keyed by that PK; four callers plus the canary lanes sighting (#2822), by four kinds, twenty rows at most" },

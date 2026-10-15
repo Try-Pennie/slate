@@ -325,3 +325,11 @@ export const twilioWorkspaceSid = (): string => process.env.TWILIO_WORKSPACE_SID
  * card shows no Text us (Dan, 2026-10-14).
  */
 export const automationsApiUrl = (): string => process.env.AUTOMATIONS_API_URL ?? "";
+
+/**
+ * Sendblue's API key, used only to ask whether a lead's saved texting line is still
+ * alive (#3718). OPTIONAL: unset, a saved line is always kept, because Sendblue is the
+ * only thing that may call a line dead (Dan, 2026-10-15).
+ */
+export const sendblueApiKeyId = (): string => process.env.SENDBLUE_API_KEY_ID ?? "";
+export const sendblueApiSecretKey = (): string => process.env.SENDBLUE_API_SECRET_KEY ?? "";
