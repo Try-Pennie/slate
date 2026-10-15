@@ -514,7 +514,8 @@ whole fallback ladder with another, so a burst cannot be split across two codes 
 one line (the bucket rows), `7` no ladder holds fewer advisors than the refusal crowd
 of a hundred, `8` no ladder can host the drop burst (a sibling, somebody on the top
 rung, a rung below, twice the crowd across the ladder, and not the refusal control's
-own), `9` no offered time fits the drop burst, naming what each measured slot lacked,
+own), `9` no offered time fits the drop burst, saying for each ladder asked how many times it
+measured and how close its closest slot came (#3771),
 `10` who is free at a slot could not be read, and `11` no offered time on the refusal
 control's ladders has `HARD_REFUSAL_MIN_FREE` (5) advisors free across the ladder with some
 below the requested rung. The first refusal crowd takes the measured time with the MOST

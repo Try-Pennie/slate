@@ -79,6 +79,7 @@ import {
   assembleBurstPlan,
   dropLadders,
   dropSlotFit,
+  dropRefusalByLadder,
   chooseRefusalSlots,
   measuredFree,
   HARD_REFUSAL_MIN_FREE,
@@ -88,6 +89,7 @@ import {
   refusalLadders,
   rosterUnreadable,
   type LadderCandidate,
+  type DropMeasure,
 } from "./burst-target.ts";
 import { poolDepthsFrom } from "./pool-depth.ts";
 import { PRODUCTION_SUPABASE_REF, PRODUCTION_HOST } from "../../src/lib/loadtest-guard.ts";
@@ -369,7 +371,8 @@ if (dropAsk.length === 0) {
 }
 const farEnough = (t: string) => refusalSlots.every((s) => Math.abs(Date.parse(s) - Date.parse(t)) >= BURST_SLOT_GAP_MS);
 const dropReads: string[] = [];
-const dropMisses: string[] = [];
+const dropMeasured: DropMeasure[] = [];
+const dropAnswered: string[] = [];
 let drop: { ladder: LadderCandidate; slot: string; capacity: BurstCapacity; shownTiers: [string | null, string | null] } | null = null;
 for (const c of dropAsk) {
   const shared = await sharedOffered(c);
@@ -377,6 +380,7 @@ for (const c of dropAsk) {
     dropReads.push(shared.why);
     continue;
   }
+  dropAnswered.push(c.code);
   // The furthest first, as every burst slot is chosen, and never within the gap of a
   // refusal slot, so no burst's bookings sit on another's slot.
   const times = shared.times
@@ -386,15 +390,13 @@ for (const c of dropAsk) {
   for (const t of times) {
     const capacity = await measuredCapacity(c, t);
     const free = measuredFree(capacity);
-    const why = free ? dropSlotFit(free, DROP_CROWD, DROP_CAPACITY_HEADROOM) : "who is free there was not measured";
-    if (why === null) {
+    if (free && dropSlotFit(free, DROP_CROWD, DROP_CAPACITY_HEADROOM) === null) {
       drop = { ladder: c, slot: t, capacity, shownTiers: shared.shownTiers };
       break;
     }
-    dropMisses.push(`${c.code} at ${t}: ${why}`);
+    dropMeasured.push({ code: c.code, slot: t, free });
   }
   if (drop !== null) break;
-  if (times.length === 0) dropMisses.push(`${c.code}/${c.sibling}: offered no time an hour from both refusal slots`);
 }
 if (drop === null) {
   if (dropReads.length === dropAsk.length) {
@@ -404,11 +406,14 @@ if (drop === null) {
     );
     process.exit(2);
   }
+  // #3771: one line per ladder, so how close each came is in the log rather than six slots
+  // and "and N more". A ladder whose read failed is named among the reads, not as unmeasured.
   console.error(
     `FAILED: no offered time fits the tier drop burst (somebody free on the top rung, fewer than the crowd of ` +
-      `${DROP_CROWD} there, room for ${DROP_CAPACITY_HEADROOM} times the crowd across the ladder). Measured: ` +
-      `${dropMisses.slice(0, 6).join("; ")}${dropMisses.length > 6 ? `; and ${dropMisses.length - 6} more` : ""}.` +
-      (dropReads.length > 0 ? ` Reads that did not answer: ${dropReads.join("; ")}.` : ""),
+      `${DROP_CROWD} there, room for ${DROP_CAPACITY_HEADROOM} times the crowd across the ladder). By ladder, ` +
+      `times at least ${BURST_SLOT_GAP_MS / 60_000} minutes from both refusal slots, furthest first:\n  ` +
+      dropRefusalByLadder(dropAnswered, dropMeasured, DROP_CROWD, DROP_CAPACITY_HEADROOM, BURST_SLOT_GAP_MS).join("\n  ") +
+      (dropReads.length > 0 ? `\nReads that did not answer: ${dropReads.join("; ")}.` : ""),
   );
   process.exit(9);
 }

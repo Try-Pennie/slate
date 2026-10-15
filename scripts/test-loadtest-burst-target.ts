@@ -26,6 +26,7 @@ import {
   assembleBurstPlan,
   dropLadders,
   dropSlotFit,
+  dropRefusalByLadder,
   hardRefusalFit,
   measuredFree,
   chooseRefusalSlots,
@@ -211,6 +212,38 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
   const tight = dropSlotFit({ rung0Free: 1, ladderFree: 23 }, 12, 2);
   assert(tight !== null && tight.includes("23"), `a ladder under twice the crowd is refused, saying how many were free (got ${tight})`);
   eq(dropSlotFit({ rung0Free: 1, ladderFree: 24 }, 12, 2), null, "and exactly twice the crowd is enough");
+}
+
+// #3771: run 34 refused with six of 32 measured slots and "and 26 more", so how close each
+// ladder came was not in the log. The refusal is one line per ladder asked instead.
+{
+  const at = (h: number) => `2026-10-16T${String(h).padStart(2, "0")}:00:00.000Z`;
+  const lines = dropRefusalByLadder(
+    ["120", "220", "320"],
+    [
+      { code: "120", slot: at(21), free: { rung0Free: 1, ladderFree: 11 } },
+      { code: "120", slot: at(17), free: { rung0Free: 1, ladderFree: 16 } },
+      { code: "120", slot: at(14), free: { rung0Free: 0, ladderFree: 30 } },
+      { code: "220", slot: at(18), free: { rung0Free: 1, ladderFree: 22 } },
+      { code: "220", slot: at(16), free: null },
+      { code: "220", slot: at(15), free: { rung0Free: 2, ladderFree: 19 } },
+    ],
+    12,
+    2,
+    45 * 60_000,
+  );
+  eq(lines.length, 3, "drop refusal: one line per ladder asked, the unmeasured one included");
+  assert(lines[0]!.startsWith("120: 3 times measured"), `drop refusal: says how many times each ladder measured (got ${lines[0]})`);
+  assert(
+    lines[0]!.includes(`16 free across the ladder at ${at(17)}`) && lines[0]!.includes("needs 24"),
+    `drop refusal: the closest slot is the most free among slots with somebody, but not the whole crowd, on the top rung, against what it needs (got ${lines[0]})`,
+  );
+  assert(lines[0]!.includes("1 with nobody free on the top rung"), `drop refusal: and says how many slots failed on the top rung instead (got ${lines[0]})`);
+  assert(lines[1]!.startsWith("220: 3 times measured") && lines[1]!.includes(`22 free across the ladder at ${at(18)}`), `drop refusal: each ladder judged on its own slots (got ${lines[1]})`);
+  assert(lines[1]!.includes("1 not measured"), `drop refusal: a slot whose free count could not be read is counted as unmeasured, never as a number (got ${lines[1]})`);
+  // The gap is the one the slots were filtered by, never written out: 45 here, so a hard
+  // coded hour cannot pass (review of #3771).
+  eq(lines[2], "320: offered no time at least 45 minutes from both refusal slots", "drop refusal: a ladder that offered nothing far enough from the refusal slots says so, in the gap actually used");
 }
 
 // --- #3429: the plan, one burst per kind in the run's own sequence -------------------
