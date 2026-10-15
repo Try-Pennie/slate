@@ -237,7 +237,7 @@ only a deploy that builds through `cf:build`; `cf:deploy` did not until #3078, a
 `scripts/test-bundle-env-guard.ts` now fails any package.json script that deploys
 without it. CI and the pre-push gate build from the committed tree, which holds no
 `.env*`; **a build in your own checkout is the case this fails**, so a hand deploy
-passes `NEXT_PUBLIC_*` in the shell environment (DEPLOY.md, 2a).
+passes `NEXT_PUBLIC_*` in the shell environment (section 2a above).
 `ALLOW_ENV_IN_BUNDLE=1` lets one local build through, never one to deploy.
 
 It asks a SECOND question in the same step: whether the CLIENT chunks NAME any

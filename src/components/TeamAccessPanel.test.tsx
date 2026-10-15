@@ -8,7 +8,8 @@ import { render, screen } from "@testing-library/react";
 // This was written when CI had no browser layer. The browser leg added on
 // 2026-10-03 (ADR 0011) runs axe over the admin pages but does not walk these
 // states, so this is still what proves the panel's states are actually distinct
-// on screen rather than distinct in a pure function nobody rendered. Three things it exists to hold:
+// on screen rather than distinct in a pure function nobody rendered. Three
+// things it exists to hold:
 //
 //  * COULD NOT READ vs NOBODY WAITING. This is the panel somebody opens because
 //    access is not working. An unreadable roster rendered as "everyone has signed

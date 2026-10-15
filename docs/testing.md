@@ -59,7 +59,7 @@ regression into mass-inserting busy blocks (#1504, #1505).
 The tree carries hundreds of errors, almost all nullable and shape mismatches in
 test fakes, so it is **not** demanded to be clean, and the count is whatever
 `npx tsc -p tsconfig.scripts.json --noEmit` reports on the day you ask rather
-than a figure kept here (#2398). `tsconfig.scripts.json` plus
+than a figure kept in a doc (#2398). `tsconfig.scripts.json` plus
 `scripts/test-scripts-typecheck.ts` (in `pnpm test`, so in the pre-push gate and
 CI) run tsc over `scripts/` and fail on the two classes that ship broken:
 

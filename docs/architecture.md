@@ -5,7 +5,8 @@ code alone: a booking touches a cache, Google, Postgres, an outbox and a webhook
 subscriber, and the freshness of what a lead sees comes from three different writers.
 
 Deeper detail lives in "The availability rules in full" below (moved from
-`CLAUDE.md`), `AGENTS.md` (the rules that bite), `docs/crash-safe-booking-mutations.md` (the durable-intent pattern) and
+`CLAUDE.md`), `AGENTS.md` (the rules that bite),
+`docs/crash-safe-booking-mutations.md` (the durable-intent pattern) and
 `docs/adr/` (the decisions).
 
 ## System context: everything Slate talks to
@@ -168,7 +169,8 @@ of each rule; this is the text as it stood, with the history behind it.
   reads the cache via `/api/availability`, never live Google. The recompute lane
   computes once per POOL rather than once per bucket code (#2245: 60 codes, 15
   pools) and writes every code in the pool its own row, each keeping its own
-  bucket identity; see AGENTS.md before changing what feeds the compute. The only
+  bucket identity; see "One availability compute per POOL" below before changing
+  what feeds the compute. The only
   live Google call on the hot path is verify-on-book at confirm time
   (`src/lib/booking/service.ts`): it checks the round-robin candidates in batched
   waves (one Google call per wave, #167) and takes the first actually-free agent.

@@ -4,12 +4,13 @@ The hand run `pnpm verify:*` commands, in full: what each one proves, how to run
 it, what every exit code means, what it writes, and what its last live run
 measured.
 
-This is the detail behind the section "The `pnpm verify:*` commands: proving a
-fail safe detector is not blind" in `AGENTS.md`, which carries the four rules the
-whole family rests on. Read that first; this is the runbook, and it lives here
-rather than in `AGENTS.md` because `AGENTS.md` is loaded into every session and
-every character of it is paid on every request (#2393), while an exit code table
-is needed on the day somebody runs the command.
+The four rules the whole family rests on are in this file's own section, "The
+rules the whole family rests on, in full", below: read that first. `AGENTS.md`
+keeps a short form of them and the one line table of commands, under "The `pnpm
+verify:*` commands: proving a fail safe detector is not blind". The runbook lives
+here rather than in `AGENTS.md` because `AGENTS.md` is loaded into every session
+and every character of it is paid on every request (#2393), while an exit code
+table is needed on the day somebody runs the command.
 
 Nothing here has been rewritten. Each section is the text that stood in
 `AGENTS.md`, moved whole so the recorded decisions and the evidence behind them
@@ -24,9 +25,9 @@ the Regal call store, with show rate, #2946) has its in `docs/pilot-compare-repo
 ## The rules the whole family rests on, in full
 
 Moved out of `AGENTS.md` on 2026-10-15, where every character was loaded into
-every session (#2393). `AGENTS.md` keeps the rules and the command table, and points here; this is the
-full text as it stood, with the reasoning, the incidents and the measurements
-behind it.
+every session (#2393). `AGENTS.md` keeps the rules and the command table, and
+points here; this is the full text as it stood, with the reasoning, the
+incidents and the measurements behind it.
 
 The hand run `verify:` commands all exist because of one shape. A detector built
 to fail safe reports `unverified`, `skipped` or `insufficient` rather than

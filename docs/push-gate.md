@@ -44,7 +44,7 @@ move it conflict on that line: rebase and let the gate print the right number.
 `check-bundle-budget.sh` still prints "stale, nothing judged" here and is not the
 budget. `scripts/test-prepush-bundle-budget.ts` pins the rule and the step.
 
-**It takes about 40s, not the ~20s this file used to claim** (#1594). Measured end
+**It takes about 40s, not the ~20s `AGENTS.md` used to claim** (#1594). Measured end
 to end on 2026-08-29: 60s before the overlap below, 40s after. There is no "warm
 cache" number to quote, because the isolated worktree (#490) deliberately pays a
 fresh install, a cold typecheck and a cold build on every push: that isolation is
@@ -83,7 +83,8 @@ This repo is often worked in fan-out mode: dispatch several subagents at once,
 each in its own git worktree (`isolation: "worktree"`, created under
 `.claude/worktrees/`), one small issue per agent. The rules below get
 re-derived by hand every time and one was missed once (a branch-contamination
-scare in the first wave), so they live here now.
+scare in the first wave), so they were written into `AGENTS.md` (which keeps a
+short form of them since 2026-10-15; this is the full text).
 
 - **Pick disjoint issues.** Give each agent an issue whose files do **not**
   overlap another agent's. Overlapping edits collide at merge and undo the point
@@ -107,7 +108,8 @@ scare in the first wave), so they live here now.
   (`git diff $(git merge-base origin/main <branch>)..<branch>`) to see only what
   this agent actually changed.
 - **A branch built on a stale `origin/main` is refused at push time** (#1612).
-  The rule above was stated here for months and enforced by nothing, and on
+  The rule above was stated in `AGENTS.md` for months and enforced by nothing,
+  and on
   2026-08-29 it broke twice in one day: two branches were cut from a stale ref,
   carried another change's already-merged commits, and had to be thrown away and
   rebuilt (#1603 as #1606, #1605 as #1607); in the second case the branch tip

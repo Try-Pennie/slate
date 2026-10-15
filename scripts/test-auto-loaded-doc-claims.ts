@@ -98,24 +98,48 @@ const SCANNED = [
 
 // --- 2. SAFE_TABLES: named, never copied --------------------------------------
 
+// The doc may NAME a roster bounded table where a rule is about it (today
+// `bucket_slots` in the pool compute rule and `export_cursor` in the backfill
+// row), but three or more is the start of a list, and a partial list is the
+// copy that drifted: it tells a reader an unlisted table is flagged.
+const MAX_SAFE_TABLES_NAMED = 2;
+
+const safeTablesNamed = (doc: string) => [...SAFE_TABLES].filter((t) => doc.includes(`\`${t}\``));
+
+/** True when one paragraph names the constant AND the file it lives in. */
+const pointsAtSafeTables = (doc: string) =>
+  doc
+    .split(/\n\s*\n/)
+    .some((p) => p.includes("`SAFE_TABLES`") && p.includes("scripts/lib/scan-src-capped-reads.ts"));
+
 {
   const agents = read("AGENTS.md");
   assert(SAFE_TABLES.size > 10, `the constant was really read (${SAFE_TABLES.size} tables)`);
-  assert(/`SAFE_TABLES`/.test(agents), "AGENTS.md names the `SAFE_TABLES` constant");
   assert(
-    agents.includes("scripts/lib/scan-src-capped-reads.ts"),
-    "AGENTS.md names the file the constant lives in, so a reader can find the list",
+    pointsAtSafeTables(agents),
+    "AGENTS.md points at the list: one paragraph names `SAFE_TABLES` and scripts/lib/scan-src-capped-reads.ts",
   );
+  const named = safeTablesNamed(agents);
   assert(
-    /every other table is a growth table/i.test(agents),
-    "AGENTS.md states the default a reader needs: every table not on the list is a growth table",
+    named.length <= MAX_SAFE_TABLES_NAMED,
+    `AGENTS.md holds no copy of SAFE_TABLES (it names ${named.length}, at most ${MAX_SAFE_TABLES_NAMED}: ${named.join(", ")}); point at the constant instead`,
   );
-  // A copy is what drifted. A sentence naming one or two tables as an example is
-  // not a copy; naming most of the list is.
-  const copied = [...SAFE_TABLES].filter((t) => agents.includes(`\`${t}\``));
+}
+
+// Controls, both directions, run against the real doc so they track it.
+{
+  const agents = read("AGENTS.md");
+  const partial = [...SAFE_TABLES].filter((t) => !agents.includes(`\`${t}\``)).slice(0, 3);
+  const planted = `${agents}\n\nRoster bounded: ${partial.map((t) => `\`${t}\``).join(", ")}.\n`;
   assert(
-    copied.length < SAFE_TABLES.size / 2,
-    `AGENTS.md holds no copy of SAFE_TABLES (it names ${copied.length} of ${SAFE_TABLES.size}: ${copied.join(", ")}); point at the constant instead`,
+    safeTablesNamed(planted).length > MAX_SAFE_TABLES_NAMED,
+    `a planted partial copy of three tables is refused (${safeTablesNamed(planted).length} named)`,
+  );
+  const stripped = agents.replaceAll("scripts/lib/scan-src-capped-reads.ts", "the scanner");
+  assert(!pointsAtSafeTables(stripped), "a doc that names the constant but not its file is refused");
+  assert(
+    pointsAtSafeTables("See `SAFE_TABLES` in scripts/lib/scan-src-capped-reads.ts."),
+    "a one line pointer is accepted",
   );
 }
 

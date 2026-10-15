@@ -86,10 +86,11 @@ Both halves of the wiring are guarded, and each is blind where the other looks:
 
 **It runs in the pre-push hook, not in CI, and that is a token limitation rather
 than a preference.** Listing repo variables or secret names needs a token with
-Actions variables/secrets read access; the default `GITHUB_TOKEN` does not have
-it and it cannot be granted through the `permissions:` key, so a CI job would
-need a PAT secret. The hook fails OPEN without `gh`, like the merge-gap guard
-above it, and SAYS so rather than skipping in silence, and it only runs when the
+Actions variables/secrets read access; the default `GITHUB_TOKEN` does not have it
+and it cannot be granted through the `permissions:` key, so a CI job would need a
+PAT secret. The hook fails OPEN without `gh`, like the merged branch guard in the
+same `pre-push` hook (`docs/push-gate.md`, "Git workflow: never reuse a merged PR
+branch"), and SAYS so rather than skipping in silence, and it only runs when the
 push touches a workflow. Skip a false positive with
 `SKIP_WORKFLOW_SETTINGS_CHECK=1`. The decision lives in
 `.githooks/lib/workflow-settings-guard.sh` so it can be driven by

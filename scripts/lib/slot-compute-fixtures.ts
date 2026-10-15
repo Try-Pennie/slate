@@ -7,9 +7,9 @@
 // production. The shape is deliberately production LIKE rather than uniform:
 //
 //   * a pool of 74 to 80 agents spread over the seven zones the roster spans
-//     (docs/architecture.md, #1739), weighted toward Eastern with a Phoenix and a Los Angeles
-//     contingent, because a fixture with every agent in the org's zone cannot tell
-//     a zone fault from a correct walk;
+//     (docs/architecture.md, #1739), weighted toward Eastern with a Phoenix and
+//     a Los Angeles contingent, because a fixture with every agent in the org's
+//     zone cannot tell a zone fault from a correct walk;
 //   * working hours with split shifts, Saturdays, a 24:00 close and the odd rule a
 //     form would never write (a :05 start, an empty window);
 //   * busy time at roughly a working day's density, with overlaps, all day blocks

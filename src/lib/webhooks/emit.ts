@@ -245,8 +245,9 @@ async function send(
   if (!ok && attempt >= WEBHOOK_MAX_ATTEMPTS) {
     // The log carries the reply in full and the alert carries a short reason
     // (docs/alerts-runbook.md, "Alert copy never carries a raw error"). Cloudflare
-    // keeps every console line for 7 days, so a block page's markup and the Ray ID buried in
-    // it are recoverable from `tag=webhooks` without ever reaching a phone.
+    // keeps every console line for 7 days, so a block page's markup and the Ray
+    // ID buried in it are recoverable from `tag=webhooks` without ever reaching a
+    // phone.
     log.error("webhooks", {
       msg: "delivery dead-lettered",
       endpoint_id: endpoint.id,
