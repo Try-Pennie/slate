@@ -1783,7 +1783,11 @@ secrets:
 3. It reads the secrets listing again and the cron schedules. Idle is what those reads
    say, never what the deletes answered: only a positively readable empty listing
    counts as holding nothing, and a kept Worker with no schedules is a finding,
-   because keeping it bought nothing.
+   because keeping it bought nothing. The listing can lag the deletes (#3783: run
+   38800509328's listing still named all three secrets right after every delete
+   answered, and none ten minutes later), so a listing that still names a secret is
+   read again every 5 seconds for up to two minutes, and only a name still listed then
+   is exit 8.
 
 With no secrets and the branch deleted, the idle Worker can reach nothing. It costs
 nothing extra: about 2,000 cron invocations a day, mostly the every minute schedule,

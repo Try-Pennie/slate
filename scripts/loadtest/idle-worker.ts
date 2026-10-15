@@ -49,6 +49,15 @@ export const IDLE_EXIT = {
   noSchedules: 9,
 } as const;
 
+/**
+ * #3783: Cloudflare's secret listing can lag the deletes. Run 38800509328's teardown had
+ * every delete answer and the next listing still name all three secrets; ten minutes later
+ * the Worker listed none. So a listing that still names a secret is read again, this often,
+ * up to this many times (two minutes in all), and only a name listed at the end is a finding.
+ */
+export const IDLE_RELIST_EVERY_MS = 5_000;
+export const IDLE_RELIST_ATTEMPTS = 24;
+
 export interface IdleVerdict {
   idle: boolean;
   exitCode: number;
@@ -186,6 +195,8 @@ type VerdictInput =
       crons: string[];
       deleted: string[];
       failedDeletes: { name: string; why: string }[];
+      /** How long the listing was waited on for the remaining names to go, in ms. */
+      waitedMs?: number;
     };
 
 const NOTHING = "Nothing was deleted.";
@@ -216,7 +227,7 @@ export function idleVerdict(input: VerdictInput): IdleVerdict {
       message: `The load test Worker's secrets or schedules ${input.read.why}, so whether it is idle is UNKNOWN.`,
     };
   }
-  const { workerName, remaining, crons, deleted, failedDeletes } = input;
+  const { workerName, remaining, crons, deleted, failedDeletes, waitedMs = 0 } = input;
   if (failedDeletes.length > 0) {
     return {
       idle: false,
@@ -232,7 +243,9 @@ export function idleVerdict(input: VerdictInput): IdleVerdict {
       idle: false,
       exitCode: IDLE_EXIT.stillHoldsSecrets,
       message:
-        `${workerName} still holds ${remaining.join(", ")} after every delete answered, so it is NOT idle. ` +
+        `${workerName} still holds ${remaining.join(", ")} after every delete answered` +
+        (waitedMs > 0 ? ` and the listing was read again for ${waitedMs / 1000}s` : "") +
+        ", so it is NOT idle. " +
         "Delete them by hand with `wrangler secret delete <NAME> --env loadtest` and run this again.",
     };
   }
@@ -271,6 +284,8 @@ export async function keepWorkerIdle(args: {
   settings: { token: string; account: string; configured: string };
   wranglerJsonc: string | null;
   call: (method: "GET" | "DELETE", url: string) => Promise<CallResult>;
+  /** The wait between re-reads of a lagging listing, injected so no test waits for real (L524). */
+  sleep: (ms: number) => Promise<void>;
 }): Promise<IdleVerdict> {
   const { token, account, configured } = args.settings;
   const missing: string[] = [];
@@ -301,16 +316,26 @@ export async function keepWorkerIdle(args: {
     else if (outcome !== "absent") failedDeletes.push({ name, why: outcome.why });
   }
 
-  // Idle is what the Worker LISTS afterwards, never what the deletes answered.
-  const after = await args.call("GET", secretsUrl(account, workerName));
-  if ("failed" in after) return idleVerdict({ noAnswer: after.failed });
-  const remaining = readSecretNames(after.status, after.bodyText);
-  if ("exitCode" in remaining) return idleVerdict({ read: remaining });
+  // Idle is what the Worker LISTS afterwards, never what the deletes answered. A listing
+  // that still names a secret is read again (#3783); any read that fails ends it there,
+  // since a failed read is never evidence the names have gone.
+  let remaining: { names: string[] } = { names: [] };
+  let waitedMs = 0;
+  for (let attempt = 0; ; attempt++) {
+    const after = await args.call("GET", secretsUrl(account, workerName));
+    if ("failed" in after) return idleVerdict({ noAnswer: after.failed });
+    const read = readSecretNames(after.status, after.bodyText);
+    if ("exitCode" in read) return idleVerdict({ read });
+    remaining = read;
+    if (remaining.names.length === 0 || attempt === IDLE_RELIST_ATTEMPTS) break;
+    await args.sleep(IDLE_RELIST_EVERY_MS);
+    waitedMs += IDLE_RELIST_EVERY_MS;
+  }
 
   const sched = await args.call("GET", schedulesUrl(account, workerName));
   if ("failed" in sched) return idleVerdict({ noAnswer: sched.failed });
   const schedules = readSchedules(sched.status, sched.bodyText);
   if ("exitCode" in schedules) return idleVerdict({ read: schedules });
 
-  return idleVerdict({ workerName, remaining: remaining.names, crons: schedules.crons, deleted, failedDeletes });
+  return idleVerdict({ workerName, remaining: remaining.names, crons: schedules.crons, deleted, failedDeletes, waitedMs });
 }
