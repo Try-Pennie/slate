@@ -48,11 +48,12 @@ function isStaffPath(pathname: string): boolean {
 }
 
 /**
- * The lead surfaces, which partner pages embed, so the only paths that may be framed.
+ * The lead surfaces, which partner pages embed, so the only paths other SITES may frame.
  *
  * Since #3136 the matcher reaches every page, and a path is frameable only by being named
  * here: a page added anywhere else is refused framing by default rather than shipping with
- * no policy at all.
+ * no policy at all. The one other exception is `/demo`, which Slate's OWN pages may frame
+ * and nobody else (`sameOriginFrameable` in `middleware`, #3718, Dan 2026-10-15).
  */
 function isFrameablePath(pathname: string): boolean {
   return (
