@@ -27,6 +27,7 @@ import {
   POOL_GROUPING_FETCH_MS,
   POOL_GROUPING_FRESH_MS,
   POOL_GROUPING_RETRY_MS,
+  POOL_GROUPING_REFRESH_AHEAD_MS,
 } from "@/lib/booking/pool-grouping-reader";
 import { groupingDirectoryLive } from "@/lib/booking/pool-grouping-live";
 import type { ConfirmLineFacts } from "@/lib/booking/confirm-latency";
@@ -108,6 +109,7 @@ const groupingReader = () =>
     boundMs: POOL_GROUPING_FETCH_MS,
     freshMs: POOL_GROUPING_FRESH_MS,
     retryMs: POOL_GROUPING_RETRY_MS,
+    refreshAheadMs: POOL_GROUPING_REFRESH_AHEAD_MS,
     onFetchStarted: (fetching) => afterResponse("pool-grouping-fetch", () => fetching),
     // #3529: the server's own read, the moment the directory has nothing fresh.
     readOwn: () => warmPoolKeys(),
@@ -129,7 +131,9 @@ const groupingReader = () =>
  * - the switch: the cached reader the line already uses, so at most one read per server
  *   per `SHARED_LINE_SWITCH_TTL_MS` (15s), or per `SHARED_LINE_SWITCH_RETRY_MS` (5s)
  *   while the read is failing, coalesced however many ask;
- * - the grouping: no fetch while the server holds a fresh grouping; one in flight
+ * - the grouping: no fetch while the server holds a grouping fresh for more than
+ *   `POOL_GROUPING_REFRESH_AHEAD_MS` (#3759), so it also fetches in the last two seconds
+ *   of each grouping's life; one in flight
  *   however many ask, a new one only once that is older than `POOL_GROUPING_FETCH_MS`;
  *   and none for `POOL_GROUPING_RETRY_MS` after a fetch that installed nothing.
  *

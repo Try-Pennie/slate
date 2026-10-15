@@ -83,6 +83,7 @@ import {
   POOL_GROUPING_FETCH_MS,
   POOL_GROUPING_FRESH_MS,
   POOL_GROUPING_RETRY_MS,
+  POOL_GROUPING_REFRESH_AHEAD_MS,
   makeGroupingReader,
   makeGroupingStore,
 } from "../src/lib/booking/pool-grouping-reader.ts";
@@ -387,6 +388,7 @@ async function burst(opts: {
           boundMs: POOL_GROUPING_FETCH_MS,
           freshMs: POOL_GROUPING_FRESH_MS,
           retryMs: POOL_GROUPING_RETRY_MS,
+          refreshAheadMs: POOL_GROUPING_REFRESH_AHEAD_MS,
         });
         groupings.push({ lineGroupOf: (code) => ladderGroupOf(code, store.peek), ensure: opts.grouping.fetch ? () => reader.ensure() : null });
       }
