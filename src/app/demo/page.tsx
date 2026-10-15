@@ -1,4 +1,4 @@
-import Booker from "@/components/Booker";
+import Booker, { type CallMeNowConfig } from "@/components/Booker";
 import StandaloneBookerShell from "@/components/StandaloneBookerShell";
 import { ClientErrorBeacon } from "@/components/ClientErrorBeacon";
 import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
@@ -7,7 +7,7 @@ import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { readBookEntryQuery } from "@/lib/booking/book-link";
 import { attendeeForLanding } from "@/lib/booking/known-lead";
 import { resolveLandingCode } from "@/lib/routing/landing-code";
-import { demoVisit, newDemoSuffix } from "@/lib/embed/demo-visit";
+import { DEMO_TEXT_LINE, demoVisit, newDemoSuffix } from "@/lib/embed/demo-visit";
 import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
 
 export const dynamic = "force-dynamic";
@@ -49,6 +49,12 @@ export default async function DemoPage({ searchParams }: { searchParams: Promise
   const sp = await searchParams;
   const themeParam = Array.isArray(sp.theme) ? sp.theme[0] : sp.theme;
   const theme = themeParam === "dark" ? ("dark" as const) : ("light" as const);
+  // #3718: `layout=inline` draws the inline card the new landing pages carry, with
+  // its Call me now row (`callMeNow=below` moves it under the times), so somebody
+  // outside Pennie can see the card before a page carries it. The row is the demo's
+  // own: a press shows the confirmation and reaches no Salesforce lead and no advisor.
+  const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
+  const layout = one(sp.layout) === "inline" ? ("inline" as const) : undefined;
 
   const visit = demoVisit(newDemoSuffix(secureRandom));
   // Through the reader `/book` uses, so the prefill and the attendee are shaped
@@ -63,25 +69,42 @@ export default async function DemoPage({ searchParams }: { searchParams: Promise
   const isTest = await loadLandingBucketIsTest(bucketCode);
   const horizonDays = await loadBookingHorizonDays();
   const reasonOptions = await loadReasonOptions();
+  const callMeNow: CallMeNowConfig | null = layout
+    ? {
+        position: one(sp.callMeNow) === "below" ? "below" : "above",
+        leadId: visit.salesforceId,
+        email: visit.query.email,
+        phone: visit.query.phone,
+        submissionId: null,
+        firstName: visit.query.name.split(/\s+/)[0] || null,
+        demo: { textLine: DEMO_TEXT_LINE },
+      }
+    : null;
 
   return (
     <StandaloneBookerShell embedded={false} theme={theme}>
       <ClientErrorBeacon page="/demo" bucketCode={bucketCode} />
-      <Booker
-        bucketCode={bucketCode}
-        requestedCode={entry.requestedCode}
-        salesforceId={visit.salesforceId}
-        attendee={attendeeForLanding(entry.link, null)}
-        prefill={entry.prefill}
-        embedded={false}
-        theme={theme}
-        isTest={isTest}
-        testPass={currentTestPassFor(bucketCode)}
-        horizonDays={horizonDays}
-        rescheduleReasons={reasonOptions.reschedule.active}
-        cancelReasons={reasonOptions.cancel.active}
-        landingCall={null}
-      />
+      {/* The inline card at the width a landing page column gives it, and the
+          full width of a phone. */}
+      <div className={layout ? "mx-auto w-full max-w-[460px]" : undefined}>
+        <Booker
+          bucketCode={bucketCode}
+          requestedCode={entry.requestedCode}
+          salesforceId={visit.salesforceId}
+          attendee={attendeeForLanding(entry.link, null)}
+          prefill={entry.prefill}
+          embedded={false}
+          theme={theme}
+          isTest={isTest}
+          testPass={currentTestPassFor(bucketCode)}
+          horizonDays={horizonDays}
+          rescheduleReasons={reasonOptions.reschedule.active}
+          cancelReasons={reasonOptions.cancel.active}
+          landingCall={null}
+          layout={layout}
+          callMeNow={callMeNow}
+        />
+      </div>
     </StandaloneBookerShell>
   );
 }

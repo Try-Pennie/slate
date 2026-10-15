@@ -28,6 +28,12 @@ export interface CallMeNowConfig {
   phone: string | null;
   submissionId: string | null;
   firstName: string | null;
+  /**
+   * The demo link's row (`/demo?layout=inline`): offered at once, and a press goes
+   * straight to the confirmation with this texting number. Nothing is fetched, so a
+   * press on the demo reaches no Salesforce lead and no advisor.
+   */
+  demo?: { textLine: string };
 }
 
 export type CallMeNowPhase =
@@ -63,11 +69,11 @@ function post(config: CallMeNowConfig, action: "check" | "request", signal?: Abo
 
 /** The row's state: whether it shows, and what a press came to. */
 export function useCallMeNow(config: CallMeNowConfig | null) {
-  const [phase, setPhase] = useState<CallMeNowPhase>(config ? "checking" : "hidden");
+  const [phase, setPhase] = useState<CallMeNowPhase>(config ? (config.demo ? "offered" : "checking") : "hidden");
   const [textLine, setTextLine] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!config) return;
+    if (!config || config.demo) return;
     let live = true;
     const abort = new AbortController();
     const giveUp = setTimeout(() => abort.abort(), GIVE_UP_MS);
@@ -90,6 +96,11 @@ export function useCallMeNow(config: CallMeNowConfig | null) {
 
   const press = useCallback(async () => {
     if (!config) return;
+    if (config.demo) {
+      setTextLine(config.demo.textLine);
+      setPhase("confirmed");
+      return;
+    }
     setPhase("pressing");
     const abort = new AbortController();
     const giveUp = setTimeout(() => abort.abort(), GIVE_UP_MS);

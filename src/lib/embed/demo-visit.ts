@@ -24,6 +24,14 @@ import { DEMO_BUCKET_CODE } from "./public-test-bucket.ts";
  * generator rather than asserted.
  */
 
+/**
+ * The texting number the demo's Call me now confirmation offers (#3718), so somebody
+ * shown the demo sees the whole screen (Dan, 2026-10-15). 555-0123 in a real area
+ * code, inside the 555-0100 to 555-0199 range set aside for fiction (the same range
+ * the made up person's phone is drawn from below), so a text to it reaches nobody.
+ */
+export const DEMO_TEXT_LINE = "+12125550123";
+
 /** Characters in a visit code. 36^6 is about two billion, far past any demo. */
 export const DEMO_SUFFIX_LENGTH = 6;
 
