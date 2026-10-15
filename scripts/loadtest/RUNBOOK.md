@@ -77,7 +77,10 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
    each database itself, since neither the CLI's branch listing nor its project listing
    reports it: `select name, setting from pg_settings where name in ('max_connections',
    'shared_buffers')` on production and on the branch (the connector's `execute_sql`
-   on each ref, or the SQL editor), and dispatch only when both pairs are equal.
+   on each ref, or the SQL editor), and dispatch only when both pairs are equal. Both
+   settings follow the compute size by default and either can be overridden on a
+   project, so a mismatch is certain evidence and a match is strong but not proof; the
+   dashboard's Compute and Disk page names the size itself when the two disagree.
    Production read 160 and 262144 (2GB in 8kB pages, Large) on 2026-10-14, after
    reading 60 and 32768 (256MB, micro) on 2026-10-07; take the size from the reading, never
    from this paragraph.
