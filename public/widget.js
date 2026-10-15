@@ -325,7 +325,7 @@
     return out;
   }
 
-  function bookingUrl(link, ns, config, layout) {
+  function bookingUrl(link, ns, config, layout, extra) {
     var params = new URLSearchParams();
     var q = link.indexOf("?");
     if (q >= 0) {
@@ -359,11 +359,57 @@
     // The inline embed asks for the compact card (#3718); the modal sends no
     // layout, so its URL is exactly what it always was.
     if (layout) params.set("layout", layout);
+    // #3718: what a piece adds or removes (a null value removes the parameter).
+    if (extra) {
+      Object.keys(extra).forEach(function (k) {
+        if (extra[k] === null) params.delete(k);
+        else params.set(k, extra[k]);
+      });
+    }
     // Tell the Booker which origin to target its outbound postMessages at, so the
     // slate:bookingSuccessful lead PII is never broadcast to "*" (#593). This is
     // the host page's own origin — the frame the modal lives in.
     params.set("parentOrigin", window.location.origin);
-    return originFor(ns) + "/book?" + params.toString();
+    // #3718: a `demo?` link is Slate's demo booker (the test calendar, a made up lead,
+    // a Call me now that calls nobody), which the demo pieces page draws; every other
+    // link is the real booker.
+    var path = /^demo(\?|$)/.test(link) ? "/demo" : "/book";
+    return originFor(ns) + path + "?" + params.toString();
+  }
+
+  // --- inline pieces (#3718) ----------------------------------------------------
+
+  // The pieces a page can place on their own; `PIECE_MESSAGE` / `INLINE_PIECES` in
+  // src/lib/embed/lifecycle-events.ts, held equal by widget-embed.test.ts.
+  var PIECES = ["times", "callMeNow"];
+  var OPEN_BOOKER = "slate:openBooker";
+
+  // A piece asked for the pop up booker. Only a request this file can read opens
+  // anything: a picked time, a day, or a Call me now press.
+  function openFromPiece(f, req) {
+    if (!req || typeof req !== "object") return;
+    var url;
+    var compact = false;
+    if (typeof req.slot === "string" && /^\d{4}-\d{2}-\d{2}T/.test(req.slot)) {
+      url = bookingUrl(f.link, f.ns, f.config, null, { slot: req.slot, callMeNow: null });
+    } else if (typeof req.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.day)) {
+      url = bookingUrl(f.link, f.ns, f.config, null, { day: req.day, callMeNow: null });
+    } else if (req.callMeNow === "press") {
+      url = bookingUrl(f.link, f.ns, f.config, "inline", { cmnPress: "1" });
+      compact = true;
+    } else {
+      return;
+    }
+    var frame = frames[f.ns];
+    if (frame && (frame.url !== url || !document.body.contains(frame.overlay))) {
+      frame.destroy();
+      frame = null;
+    }
+    if (!frame) {
+      frame = buildFrame(url, compact);
+      frames[f.ns] = frame;
+    }
+    frame.show(f.iframe);
   }
 
   // --- modal ----------------------------------------------------------------
@@ -505,6 +551,9 @@
       return;
     }
     var config = opts.config && typeof opts.config === "object" ? opts.config : {};
+    // #3718 (Geoff, 2026-10-15): one piece of the card, placed on its own, or the
+    // whole card. An unknown piece draws the whole card rather than nothing.
+    var piece = PIECES.indexOf(config.piece) >= 0 ? config.piece : null;
     // Drop this element's earlier frame, and any frame whose element has left the
     // page, so a page that redraws neither stacks bookers nor keeps trusting a
     // window that is gone.
@@ -517,8 +566,11 @@
     });
     var reduceMotion = prefersReducedMotion();
     var iframe = bookerIframe(
-      bookingUrl(opts.calLink, ns, config, "inline"),
-      "min-height:360px" + (reduceMotion ? "" : ";transition:height .15s ease"),
+      bookingUrl(opts.calLink, ns, config, "inline", piece ? { piece: piece } : null),
+      // A piece takes no room until it says how tall it is: the Call me now piece
+      // is nothing at all for a lead it is not offered to.
+      (piece ? "min-height:0px;height:0px;border-radius:16px" : "min-height:360px") +
+        (reduceMotion ? "" : ";transition:height .15s ease"),
     );
     el.appendChild(iframe);
 
@@ -578,10 +630,19 @@
       arm();
     });
     arm();
-    inlineFrames.push({ iframe: iframe, el: el, notice: notice, stop: stop });
+    inlineFrames.push({
+      iframe: iframe,
+      el: el,
+      notice: notice,
+      stop: stop,
+      piece: piece,
+      link: opts.calLink,
+      ns: ns,
+      config: config,
+    });
   }
 
-  function buildFrame(bookUrl) {
+  function buildFrame(bookUrl, compact) {
     ensureChromeStyle();
     var reduceMotion = prefersReducedMotion();
 
@@ -609,7 +670,8 @@
       // #2729: 896px is the standalone booker's content width (its max-w-4xl),
       // the width its two column layout was designed at. 720px sat under the
       // booker's switch, so the modal only ever showed the phone layout.
-      "background:#fff;border-radius:16px;width:min(896px,92vw);" +
+      // #3718: the Call me now pop up holds the card, which is drawn narrow.
+      "background:#fff;border-radius:16px;width:min(" + (compact ? "520px" : "896px") + ",92vw);" +
       "max-height:90vh;max-height:90dvh;overflow:auto;position:relative;" +
       "box-shadow:0 12px 32px rgba(29,33,47,0.18);" +
       "box-sizing:border-box;font-family:'PP Mori',-apple-system," +
@@ -1222,6 +1284,9 @@
       emit("bookingSuccessful", d.data);
       var v2 = V2_BY_OUTCOME[d.data && d.data.outcome];
       if (v2) emit(v2, v2Payload(d.data));
+    } else if (d.type === OPEN_BOOKER && inline && inline.piece) {
+      // #3718: only a piece asks; the whole card handles its own steps.
+      openFromPiece(inline, d.data);
     } else if (LIFECYCLE[d.type] && frame) {
       frame.announce(LIFECYCLE[d.type], d.data);
     } else if (LIFECYCLE[d.type] && inline) {

@@ -180,8 +180,8 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
      | widget event (`on` action) | raw message | when | `detail.data` |
      |---|---|---|---|
      | `navigatedToBooker` | widget only | a `data-cal-link` trigger is clicked, before the modal opens or reopens | `{}` |
-     | `bookerViewed` | `slate:bookerViewed` | first render of the Booker in this frame load, so once per page load for one link (#2678) | `{ slotsLoaded }` |
-     | `bookerReady` | `slate:bookerReady` | the availability answered with at least one time, once per frame load | `{ slotsLoaded: true }` |
+     | `bookerViewed` | `slate:bookerViewed` | first render of the Booker in this frame load, so once per page load for one link (#2678); of an inline card's pieces only the times piece sends it, never the Call me now piece or a pop up a piece opens (#3718) | `{ slotsLoaded }` |
+     | `bookerReady` | `slate:bookerReady` | the availability answered with at least one time, once per frame load, from the same frames as `bookerViewed` (#3718) | `{ slotsLoaded: true }` |
      | `bookerReopened` | widget only | the modal is opened again on the same page, after the open succeeded (#2677) | `{}` |
      | `bookerReloaded` | widget only | the modal iframe fires `load` a second or later time: a retry, or a reload inside the frame, never a close and reopen | `{}` |
      | `linkFailed` | `slate:linkFailed`, and widget only for the modal's own load failure | the availability read failed (`availability_failed`), the page boundary caught a crash (`booker_crashed`), or the modal's iframe never loaded (`load_timeout`, `load_error`) | `{ code, msg }` |
@@ -259,6 +259,41 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
    payload + FOUC.
 
 ---
+
+## The inline card and its two pieces (#3718)
+
+`Cal("inline", { elementOrSelector, calLink, config })` draws the booker INSIDE an
+element on the host page (`/book?layout=inline`), as the compact card: title, Call me
+now row (`callMeNow=above|below` on the link, for a lead), day strip and six times.
+
+**Pieces (Geoff, 2026-10-15).** `config.piece` of `"times"` or `"callMeNow"` draws one
+piece on its own (`&piece=`), just its tile with no title or card background, so the
+page places each where it fits. The tiles keep Slate's own white (light) or dark
+surface; `cal-bg` does not recolour them (Dan, 2026-10-15). Each piece frame starts at
+height 0 and is rounded by widget.js, so the Call me now piece takes no room for a lead
+it is not offered to. An unknown piece draws the whole card.
+
+**A piece never changes in place: it asks the host for the pop up.** It posts
+`slate:openBooker` (`PIECE_MESSAGE` in `src/lib/embed/lifecycle-events.ts`; widget.js
+holds its own copy, pinned by `widget-embed.test.ts`), taken only from a piece frame
+widget.js built:
+
+| `data` | widget.js opens |
+|---|---|
+| `{ slot: <instant> }` (a picked time) | the full booker with `&slot=`, landing on the details step for it, or on its day saying it was just taken |
+| `{ day: <yyyy-mm-dd> }` (View more times) | the full booker with `&day=`, on that day |
+| `{ callMeNow: "press" }` | a 520px pop up with the card (`layout=inline&cmnPress=1`), which makes the request on arrival and shows the confirmation or the failure |
+
+**Only the times piece (or the whole card) announces `bookerViewed` and
+`bookerReady`** (Dan, 2026-10-15), since GA4 counts a booker view once per visit and a
+page with both pieces holds two frames, plus a third when a pop up opens. The Call me
+now piece and the pop ups a piece opens announce neither; `linkFailed` and the booking
+events are announced from wherever they happen.
+
+`readInlineEntry` (`src/lib/embed/inline-entry.ts`) reads all of these, for `/book`
+and `/demo` alike. A link starting `demo?` is drawn from `/demo` (the test calendar, a
+made up lead, a Call me now that calls nobody); `/demo/pieces` places both pieces that
+way, and `/demo` may be framed by Slate's own pages only (`frame-ancestors 'self'`).
 
 ## Testing the embed from an approved host page (#2660, #2666)
 

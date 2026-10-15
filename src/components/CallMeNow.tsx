@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 
 import { BookerButton } from "@/components/BookerButton";
 import type { BookerButtonPalette } from "@/components/booker-button";
@@ -68,12 +68,17 @@ function post(config: CallMeNowConfig, action: "check" | "request", signal?: Abo
 }
 
 /** The row's state: whether it shows, and what a press came to. */
-export function useCallMeNow(config: CallMeNowConfig | null) {
-  const [phase, setPhase] = useState<CallMeNowPhase>(config ? (config.demo ? "offered" : "checking") : "hidden");
+export function useCallMeNow(config: CallMeNowConfig | null, opts: { autoPress?: boolean } = {}) {
+  // #3718: the pop up a Call me now piece opens presses on arrival: the piece already
+  // asked whether the row is offered, and the route asks again on the press.
+  const autoPress = !!(config && opts.autoPress);
+  const [phase, setPhase] = useState<CallMeNowPhase>(
+    config ? (autoPress ? "pressing" : config.demo ? "offered" : "checking") : "hidden",
+  );
   const [textLine, setTextLine] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!config || config.demo) return;
+    if (!config || config.demo || autoPress) return;
     let live = true;
     const abort = new AbortController();
     const giveUp = setTimeout(() => abort.abort(), GIVE_UP_MS);
@@ -123,6 +128,14 @@ export function useCallMeNow(config: CallMeNowConfig | null) {
       clearTimeout(giveUp);
     }
   }, [config]);
+
+  // Once per mount: a press that failed offers Try again rather than pressing again.
+  const pressed = useRef(false);
+  useEffect(() => {
+    if (!autoPress || pressed.current) return;
+    pressed.current = true;
+    void press();
+  }, [autoPress, press]);
 
   const backToTimes = useCallback(() => setPhase("dismissed"), []);
 
