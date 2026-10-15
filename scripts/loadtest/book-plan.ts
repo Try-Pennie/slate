@@ -618,8 +618,9 @@ export function externalIdFor(runId: string, driver: number, n: number): string 
 /**
  * Which of the offered times to book.
  *
- * RANDOM, and this is the one place a load run is deliberately not deterministic.
- * Every other choice (the code, the fault, the order) is fixed so that a run that
+ * RANDOM for the steady and fault legs, and this is the one place a load run is
+ * deliberately not deterministic (the baseline takes the soonest time instead,
+ * `baselineSlot`, #3782). Every other choice (the code, the fault, the order) is fixed so that a run that
  * passed and a run that failed differ by the code rather than by the dice. The
  * slot cannot be: four drivers each taking the first offered time would contend on
  * one slot all run, which measures the unique index over and over and never
@@ -633,6 +634,28 @@ export function pickSlot<T>(slots: readonly T[], rand: () => number = Math.rando
   // the end and yield undefined, which every caller would then send as a missing
   // start and every response would refuse as a validation error.
   return slots[Math.min(slots.length - 1, Math.max(0, i))] ?? null;
+}
+
+/**
+ * The time a BASELINE booking takes: the soonest on offer (#3782). The bursts are planned
+ * on the latest times, and the tier drop burst's ladders offer only a handful, so a
+ * baseline booking taken at random could land on one and take an advisor the burst could
+ * not spare (runs 38761057057 and 38800509328). A time that does not parse is skipped,
+ * and so is one the baseline already sent a booking at: it books the same codes every
+ * run, and four bookings at one slot would walk the ladder or be refused rather than
+ * book at rest.
+ */
+export function baselineSlot(slots: readonly string[], booked: ReadonlySet<string> = new Set()): string | null {
+  let soonest: string | null = null;
+  let soonestMs = Infinity;
+  for (const t of slots) {
+    const ms = Date.parse(t);
+    if (Number.isFinite(ms) && ms < soonestMs && !booked.has(t)) {
+      soonest = t;
+      soonestMs = ms;
+    }
+  }
+  return soonest;
 }
 
 /** One recorded response. The judge (#2244) reads these and nothing else. */

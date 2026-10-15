@@ -329,10 +329,12 @@ node --experimental-strip-types scripts/loadtest/book.ts
   and the lopsidedness IS the load: the hot codes have the largest pools and the
   most contended slot cache, the cold ones have one agent pools where every second
   booking is a conflict. The sequence is interleaved so any prefix is representative.
-- **The slot is picked at RANDOM** from what the bucket offered, and it is the only
-  deliberately non-deterministic choice in the run. Four drivers each taking the
-  first offered time would contend on one slot all run, which measures the unique
-  index over and over and never measures the path at a rate.
+- **The slot is picked at RANDOM** from what the bucket offered on the steady and fault
+  legs, and it is the only deliberately non-deterministic choice in the run. Four
+  drivers each taking the first offered time would contend on one slot all run, which
+  measures the unique index over and over and never measures the path at a rate. The
+  baseline is the exception: it books one at a time, at rest, and takes the SOONEST
+  time so it stays clear of the times the bursts are planned on (#3782, below).
 - **Availability reads are cached** and refreshed on a pace derived from the 30 a
   minute per address ceiling divided by the number of drivers sharing that address.
   A read before every booking would spend four times the budget and the run would be
@@ -1273,6 +1275,13 @@ holds the steady p95 to a multiple of that baseline's median
 (`scripts/loadtest/latency-bar.ts`). The multiple is what the code controls: how much
 sixty bookings a minute slow one booking down. The environment cancels, because both
 halves ran on it within minutes.
+
+Each baseline booking takes the SOONEST time its code offers that the baseline has not
+already booked, never a random one
+(#3782). The bursts are planned on the latest times, after the baseline, and the tier
+drop burst's ladders offer only four or five; a baseline booking that landed on one
+took an advisor the burst could not spare and its setup ended on exit 9 (runs
+38761057057 and 38800509328, both with a baseline booking on 312 at the drop slot).
 
 **What it cannot see:** a change that makes every booking slower at rest raises the
 baseline and the bar with it. That is why the absolute 5s bar and the baseline median

@@ -21,6 +21,7 @@ import {
   waitForBurstMoment,
   externalIdFor,
   pickSlot,
+  baselineSlot,
   AVAILABILITY_PER_MINUTE,
   BOOKING_WRITES_PER_MINUTE,
   DRIVERS,
@@ -986,6 +987,35 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   eq(kept.fetchedAtMs, 23_000, "stamped now, so the failure is not re-asked at once either");
   eq(slotViewAfterRead(read, [], 34_000).slots, [], "an answer with no times is a bucket offering nothing");
   assert(!slotViewIsFresh(undefined, 0, REFRESH), "and with no view at all, the first request reads");
+}
+
+// --- the baseline books the SOONEST time on offer (#3782) ----------------------------
+//
+// The baseline's dozen bookings run before the burst setup, and used to take a RANDOM
+// offered time. The bursts are planned on the LATEST times, and the tier drop burst's
+// ladders offer only four or five, so a baseline booking landing on one took an advisor
+// the burst could not spare: runs 38761057057 and 38800509328 both booked 312 at
+// 2026-10-16T16:40Z in the baseline, and both burst setups then found 23 free where the
+// burst needs 24. The run between them booked nothing near it and passed. Soonest first
+// keeps the baseline clear of the times the bursts are planned on.
+{
+  const offered = ["2026-10-16T16:40:00.000Z", "2026-10-15T21:00:00.000Z", "2026-10-16T23:40:00.000Z", "2026-10-15T20:10:00.000Z"];
+  eq(baselineSlot(offered), "2026-10-15T20:10:00.000Z", "the baseline takes the soonest time, whatever order the times arrive in");
+  eq(baselineSlot([]), null, "and nothing when nothing is offered, which the driver records as offering nothing");
+  eq(baselineSlot(["not a time", "2026-10-16T16:40:00.000Z"]), "2026-10-16T16:40:00.000Z", "a time that does not parse is never the soonest");
+  eq(baselineSlot(["not a time"]), null, "and a list of nothing readable offers nothing");
+  // Review of #3782: the baseline books the same codes every run (112 four times, 212
+  // three), so the soonest time alone would send all four 112 bookings at one slot, and
+  // the later ones would walk the ladder or be refused, which is not a booking at rest.
+  eq(
+    baselineSlot(offered, new Set(["2026-10-15T20:10:00.000Z"])),
+    "2026-10-15T21:00:00.000Z",
+    "a time the baseline already booked is passed over for the next soonest",
+  );
+  eq(baselineSlot(["2026-10-15T20:10:00.000Z"], new Set(["2026-10-15T20:10:00.000Z"])), null, "and a code offering only booked times offers nothing");
+  const book = readFileSync(join(import.meta.dirname, "loadtest", "book.ts"), "utf8");
+  assert(/mode === "baseline" \? baselineSlot\(slots, baselineBooked\) : pickSlot\(slots\)/.test(book), "the driver books the baseline through it, and only the baseline");
+  assert(/baselineBooked\.add\(startIso\)/.test(book), "and records each time it booked, so the next one passes it over");
 }
 
 finish();
