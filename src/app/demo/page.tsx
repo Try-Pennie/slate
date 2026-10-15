@@ -8,6 +8,7 @@ import { readBookEntryQuery } from "@/lib/booking/book-link";
 import { attendeeForLanding } from "@/lib/booking/known-lead";
 import { resolveLandingCode } from "@/lib/routing/landing-code";
 import { DEMO_TEXT_LINE, demoVisit, newDemoSuffix } from "@/lib/embed/demo-visit";
+import { readInlineEntry } from "@/lib/embed/inline-entry";
 import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
 
 export const dynamic = "force-dynamic";
@@ -54,7 +55,13 @@ export default async function DemoPage({ searchParams }: { searchParams: Promise
   // outside Pennie can see the card before a page carries it. The row is the demo's
   // own: a press shows the confirmation and reaches no Salesforce lead and no advisor.
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
-  const layout = one(sp.layout) === "inline" ? ("inline" as const) : undefined;
+  // Through the reader /book uses, so the demo pieces page (/demo/pieces) asks for a
+  // piece, and for the pop up a piece opens, exactly as a landing page asks /book.
+  const inlineEntry = readInlineEntry(sp);
+  const layout = inlineEntry.layout;
+  // Framed by the demo pieces page through the real widget.js (#3718); /demo allows
+  // framing by Slate's own pages only (middleware).
+  const embedded = one(sp.embed) === "1";
 
   const visit = demoVisit(newDemoSuffix(secureRandom));
   // Through the reader `/book` uses, so the prefill and the attendee are shaped
@@ -82,18 +89,19 @@ export default async function DemoPage({ searchParams }: { searchParams: Promise
     : null;
 
   return (
-    <StandaloneBookerShell embedded={false} theme={theme}>
+    <StandaloneBookerShell embedded={embedded} theme={theme}>
       <ClientErrorBeacon page="/demo" bucketCode={bucketCode} />
       {/* The inline card at the width a landing page column gives it, and the
           full width of a phone. */}
-      <div className={layout ? "mx-auto w-full max-w-[460px]" : undefined}>
+      <div className={layout && !embedded ? "mx-auto w-full max-w-[460px]" : undefined}>
         <Booker
           bucketCode={bucketCode}
           requestedCode={entry.requestedCode}
           salesforceId={visit.salesforceId}
           attendee={attendeeForLanding(entry.link, null)}
           prefill={entry.prefill}
-          embedded={false}
+          embedded={embedded}
+          parentOrigin={embedded ? one(sp.parentOrigin) || undefined : undefined}
           theme={theme}
           isTest={isTest}
           testPass={currentTestPassFor(bucketCode)}
@@ -103,6 +111,10 @@ export default async function DemoPage({ searchParams }: { searchParams: Promise
           landingCall={null}
           layout={layout}
           callMeNow={callMeNow}
+          piece={inlineEntry.piece}
+          initialSlot={inlineEntry.initialSlot}
+          initialDay={inlineEntry.initialDay}
+          pressCallMeNow={inlineEntry.pressCallMeNow}
         />
       </div>
     </StandaloneBookerShell>

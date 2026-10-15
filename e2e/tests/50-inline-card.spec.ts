@@ -186,3 +186,69 @@ test("Call me now: a press that fails says so, offers Try again, and keeps the t
   await expectAccessible(page, "the Call me now failure, phone");
 });
 
+
+// #3718 (Geoff, 2026-10-15): the card's two pieces, placed separately by the page,
+// each opening the real pop up through widget.js.
+function piecesPage(theme: "light" | "dark", column: number): string {
+  const link = CMN_LINK("above");
+  const call = (el: string, piece: string) => JSON.stringify({ elementOrSelector: el, calLink: link, config: { piece } });
+  return `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>A landing page</title></head>
+<body style="margin:0;padding:16px;background:${theme === "dark" ? "#0c0b0e" : "#f9f6f0"}">
+<div style="width:${column}px;max-width:100%;display:flex;flex-direction:column;gap:16px">
+<div id="cmn"></div><div id="times"></div></div>
+<script src="${E2E_APP_ORIGIN}/widget.js"></script>
+<script>
+  Cal("init", "landing", { origin: ${JSON.stringify(E2E_APP_ORIGIN)} });
+  Cal.ns.landing("ui", ${JSON.stringify({ theme })});
+  Cal.ns.landing("inline", ${call("#cmn", "callMeNow")});
+  Cal.ns.landing("inline", ${call("#times", "times")});
+</script></body></html>`;
+}
+
+for (const w of WIDTHS) {
+  for (const theme of ["light", "dark"] as const) {
+    test(`the two pieces draw on their own, ${theme}, ${w.name}`, async ({ page }) => {
+      await page.setViewportSize(w.viewport);
+      await answerCallMeNow(page, { status: 200, body: { outcome: "requested", textLine: "+12125550188" } });
+      hostHtml = piecesPage(theme, w.column);
+      await page.goto(`${HOST}/landing`);
+      const cmn = page.frameLocator("#cmn iframe");
+      const times = page.frameLocator("#times iframe");
+      await expect(cmn.getByRole("button", { name: "Call me now" })).toBeVisible({ timeout: 20_000 });
+      await expect(times.getByRole("button", { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first()).toBeVisible({ timeout: 20_000 });
+      // Neither piece carries the card's title: the page owns everything around them.
+      await expect(times.getByText("Connect with your loan advisor:")).toHaveCount(0);
+      await expect(cmn.getByText("Choose a time for your call below:")).toHaveCount(0);
+      await page.screenshot({ path: `e2e/.artifacts/inline-pieces-${theme}-${w.name}.png`, fullPage: true });
+      await expectAccessible(page, `the two pieces, ${theme}, ${w.name}`);
+    });
+  }
+}
+
+test("a time picked in the times piece opens the pop up on its details step", async ({ page }) => {
+  await page.setViewportSize(WIDTHS[0].viewport);
+  hostHtml = piecesPage("light", WIDTHS[0].column);
+  await page.goto(`${HOST}/landing`);
+  const times = page.frameLocator("#times iframe");
+  await times.getByRole("button", { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first().click({ timeout: 20_000 });
+  const popup = page.frameLocator(".slate-widget-modal iframe");
+  await expect(popup.getByRole("textbox", { name: /email/i })).toBeVisible({ timeout: 20_000 });
+  await expect(popup.getByRole("button", { name: /confirm/i })).toBeVisible();
+  // The piece itself never changed.
+  await expect(times.getByRole("button", { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first()).toBeVisible();
+  await page.screenshot({ path: "e2e/.artifacts/inline-pieces-time-popup.png" });
+  await expectAccessible(page, "the pop up a picked time opens");
+});
+
+test("a Call me now press in its piece opens the pop up with the confirmation", async ({ page }) => {
+  await page.setViewportSize(WIDTHS[1].viewport);
+  await answerCallMeNow(page, { status: 200, body: { outcome: "requested", textLine: "+12125550188" } });
+  hostHtml = piecesPage("dark", WIDTHS[1].column);
+  await page.goto(`${HOST}/landing`);
+  await page.frameLocator("#cmn iframe").getByRole("button", { name: "Call me now" }).click({ timeout: 20_000 });
+  const popup = page.frameLocator(".slate-widget-modal iframe");
+  await expect(popup.getByText("Thanks, Maria!")).toBeVisible({ timeout: 20_000 });
+  await expect(popup.getByRole("link", { name: "Text us" })).toBeVisible();
+  await page.screenshot({ path: "e2e/.artifacts/inline-pieces-cmn-popup-dark-phone.png" });
+  await expectAccessible(page, "the Call me now pop up, dark, phone");
+});

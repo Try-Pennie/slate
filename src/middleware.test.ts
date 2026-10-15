@@ -97,6 +97,17 @@ describe("the enforced script policy (#2575)", () => {
     expect(res.headers.get("x-frame-options")).toBeNull();
   });
 
+  it("lets only Slate's own pages frame the demo booker (#3718, Dan 2026-10-15)", async () => {
+    // The demo pieces page frames /demo through the real widget.js; no other site may.
+    const res = await middleware(new NextRequest("https://slate.test/demo"));
+    expect(directive(res.headers.get("content-security-policy"), "frame-ancestors")).toBe("frame-ancestors 'self'");
+    // The legacy header says the same, for a browser that reads only that one.
+    expect(res.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+    // Only the demo booker itself: any other page under /demo keeps the default refusal.
+    const other = await middleware(new NextRequest("https://slate.test/demo-anything"));
+    expect(directive(other.headers.get("content-security-policy"), "frame-ancestors")).toBe("frame-ancestors 'none'");
+  });
+
   it.each(STAFF_PAGES)("keeps %s unframeable, inside the one enforcing header", async (path) => {
     const res = await middleware(new NextRequest(`https://slate.test${path}`));
     expect(directive(res.headers.get("content-security-policy"), "frame-ancestors")).toBe("frame-ancestors 'none'");

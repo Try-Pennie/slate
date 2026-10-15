@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { EMBED_MESSAGE, LINK_FAILED } from "@/lib/embed/lifecycle-events";
+import { EMBED_MESSAGE, INLINE_PIECES, LINK_FAILED, PIECE_MESSAGE } from "@/lib/embed/lifecycle-events";
 import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
 
 // Drives the real widget.js IIFE in jsdom.
@@ -1360,3 +1360,116 @@ describe("widget.js inline embed (#3718)", () => {
     expect(seen).toEqual(["bookerViewed"]);
   });
 });
+
+// #3718, Geoff 2026-10-15: the card split into two pieces a page places separately,
+// the times and the Call me now row, each just its tile. Picking a time, View more
+// times and a Call me now press each open the pop up booker, which the piece asks
+// for with `slate:openBooker`, taken only from a piece frame this file built.
+describe("widget.js inline pieces (#3718)", () => {
+  type CalFn = ((...args: unknown[]) => void) & { ns: Record<string, (...args: unknown[]) => void> };
+  const cal = () => (window as unknown as { Cal: CalFn }).Cal;
+  const slot = (id: string) => {
+    const el = document.createElement("div");
+    el.id = id;
+    document.body.appendChild(el);
+    return el;
+  };
+  const frameIn = (el: HTMLElement) => el.querySelector<HTMLIFrameElement>("iframe")!;
+  const srcParams = (f: HTMLIFrameElement) => new URL(f.getAttribute("src")!).searchParams;
+  const LINK = "router?xbc=411&external_id=00QUi000010889ZMAQ&email=maria%40example.com&callMeNow=above";
+  const piece = (id: string, which: string) => {
+    const el = slot(id);
+    cal()("inline", { elementOrSelector: `#${id}`, calLink: LINK, config: { piece: which } });
+    return frameIn(el);
+  };
+  const ask = (source: Window | null, data: unknown) =>
+    window.dispatchEvent(new MessageEvent("message", { data: { type: PIECE_MESSAGE.openBooker, data }, source }));
+
+  it("asks for the named piece, and takes no room until the piece says how tall it is", () => {
+    const f = piece("times", "times");
+    const p = srcParams(f);
+    expect(p.get("layout")).toBe("inline");
+    expect(p.get("piece")).toBe("times");
+    expect(f.style.minHeight).toBe("0px");
+    // The tile fills its frame, so the frame carries the tile's rounded corners.
+    expect(f.style.borderRadius).toBe("16px");
+    expect(srcParams(piece("cmn", "callMeNow")).get("piece")).toBe("callMeNow");
+  });
+
+  it("ignores a piece it does not know, and draws the whole card", () => {
+    const f = piece("odd", "everything");
+    expect(srcParams(f).get("piece")).toBeNull();
+    expect(f.style.minHeight).toBe("360px");
+  });
+
+  it("opens the pop up booker on the details step for the time the lead picked", () => {
+    const f = piece("times", "times");
+    ask(f.contentWindow, { slot: "2026-10-16T14:30:00.000Z" });
+    const m = shownIframe();
+    expect(m).toBeTruthy();
+    const p = srcParams(m!);
+    expect(p.get("slot")).toBe("2026-10-16T14:30:00.000Z");
+    expect(p.get("xbc")).toBe("411");
+    expect(p.get("external_id")).toBe("00QUi000010889ZMAQ");
+    // The full booker, not another card.
+    expect(p.get("layout")).toBeNull();
+    expect(p.get("piece")).toBeNull();
+    expect(p.get("callMeNow")).toBeNull();
+  });
+
+  it("opens the pop up booker on a day for View more times", () => {
+    const f = piece("times", "times");
+    ask(f.contentWindow, { day: "2026-10-16" });
+    const p = srcParams(shownIframe()!);
+    expect(p.get("day")).toBe("2026-10-16");
+    expect(p.get("slot")).toBeNull();
+  });
+
+  it("opens a narrow pop up that makes the Call me now request and shows its confirmation", () => {
+    const f = piece("cmn", "callMeNow");
+    ask(f.contentWindow, { callMeNow: "press" });
+    const m = shownIframe()!;
+    const p = srcParams(m);
+    expect(p.get("layout")).toBe("inline");
+    expect(p.get("callMeNow")).toBe("above");
+    expect(p.get("cmnPress")).toBe("1");
+    expect(p.get("piece")).toBeNull();
+    expect(shownOverlay()!.querySelector<HTMLElement>(".slate-widget-modal")!.style.width).toContain("520px");
+  });
+
+  it("opens nothing for a request from any window it did not build, or one it cannot read", () => {
+    const f = piece("times", "times");
+    ask(window as Window, { slot: "2026-10-16T14:30:00.000Z" });
+    expect(shownIframe()).toBeNull();
+    ask(f.contentWindow, { slot: 42 });
+    expect(shownIframe()).toBeNull();
+    ask(f.contentWindow, { callMeNow: "please" });
+    expect(shownIframe()).toBeNull();
+  });
+
+  it("draws a demo link from Slate's demo booker, and opens its pop up there too", () => {
+    const el = slot("demo");
+    cal()("inline", { elementOrSelector: "#demo", calLink: "demo?callMeNow=above", config: { piece: "times" } });
+    const f = frameIn(el);
+    expect(new URL(f.getAttribute("src")!).pathname).toBe("/demo");
+    ask(f.contentWindow, { slot: "2026-10-16T14:30:00.000Z" });
+    expect(new URL(shownIframe()!.getAttribute("src")!).pathname).toBe("/demo");
+    // Any other link is the real booker, as before.
+    expect(new URL(piece("real", "times").getAttribute("src")!).pathname).toBe("/book");
+  });
+
+  it("holds its own copy of the message and the piece names to the app's", () => {
+    // widget.js imports nothing, so it carries its own copy; a drift would leave a
+    // piece asking for a pop up nobody opens.
+    expect(widgetSrc).toContain(`var OPEN_BOOKER = "${PIECE_MESSAGE.openBooker}";`);
+    expect(widgetSrc).toContain(`var PIECES = ${JSON.stringify([...INLINE_PIECES]).replace(/,/g, ", ")};`);
+  });
+
+  it("opens nothing for a request from the whole card, which handles its own steps", () => {
+    const el = slot("card");
+    cal()("inline", { elementOrSelector: "#card", calLink: LINK });
+    ask(frameIn(el).contentWindow, { slot: "2026-10-16T14:30:00.000Z" });
+    expect(shownIframe()).toBeNull();
+  });
+});
+

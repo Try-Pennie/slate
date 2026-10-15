@@ -1,4 +1,5 @@
 import Booker, { type CallMeNowConfig } from "@/components/Booker";
+import { readInlineEntry } from "@/lib/embed/inline-entry";
 import StandaloneBookerShell from "@/components/StandaloneBookerShell";
 import { ClientErrorBeacon } from "@/components/ClientErrorBeacon";
 import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
@@ -85,9 +86,11 @@ export default async function BookEntry({
   const bucketCode = resolved.code;
   const embedded = first(sp, "embed") === "1";
   const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
-  // #3718: widget.js's inline embed asks for the compact card. Any other value is
-  // ignored, since cal.com hosts send layouts of their own (`month_view`).
-  const layout = first(sp, "layout") === "inline" ? ("inline" as const) : undefined;
+  // #3718: widget.js's inline embed asks for the compact card, one of its pieces, or
+  // the pop up a piece opens (`readInlineEntry`, shared with /demo). Any other layout
+  // is ignored, since cal.com hosts send layouts of their own (`month_view`).
+  const inlineEntry = readInlineEntry(sp);
+  const layout = inlineEntry.layout;
   // #3718: the host's button colour, and on the inline card its background, kept only
   // when text on them reads; a refused one is logged and Slate's own is used.
   const colours = readHostColours(
@@ -194,6 +197,10 @@ export default async function BookEntry({
         embedded={embedded}
         layout={layout}
         callMeNow={callMeNow}
+        piece={inlineEntry.piece}
+        initialSlot={inlineEntry.initialSlot}
+        initialDay={inlineEntry.initialDay}
+        pressCallMeNow={inlineEntry.pressCallMeNow}
         theme={theme}
         brandColor={colours.brandColor}
         cardSurface={colours.cardSurface}

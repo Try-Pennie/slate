@@ -29,9 +29,11 @@
 /** The messages the Booker posts to its parent. Every one goes through the
  *  Booker's `postToParent`, to the known parent origin only, never "*". */
 export const EMBED_MESSAGE = {
-  /** First render of the Booker in this frame load. */
+  /** First render of the Booker in this frame load. Not sent by the Call me now piece
+   *  or a pop up a piece opens (#3718), so a page with both pieces counts one view. */
   bookerViewed: "slate:bookerViewed",
-  /** The availability answered with at least one time, once per frame load. */
+  /** The availability answered with at least one time, once per frame load. Not sent
+   *  by the Call me now piece or a pop up a piece opens (#3718). */
   bookerReady: "slate:bookerReady",
   /** The booker could not be used: the availability read failed, or the page
    *  boundary caught a crash. */
@@ -43,6 +45,23 @@ export const EMBED_MESSAGE = {
 } as const;
 
 export type EmbedMessageType = (typeof EMBED_MESSAGE)[keyof typeof EMBED_MESSAGE];
+
+/**
+ * #3718: a piece of the inline card (`piece=times` or `piece=callMeNow`, Geoff
+ * 2026-10-15) asking widget.js to open the pop up booker: on the details step for a
+ * picked time (`{ slot }`), on a day for View more times (`{ day }`), or to make and
+ * confirm a Call me now request (`{ callMeNow: "press" }`). widget.js takes it only
+ * from a piece frame it built, and its copy of the name is held to this one by
+ * `widget-embed.test.ts`.
+ */
+export const PIECE_MESSAGE = { openBooker: "slate:openBooker" } as const;
+
+/** The inline card's pieces a page can place on their own. */
+export const INLINE_PIECES = ["times", "callMeNow"] as const;
+export type InlinePiece = (typeof INLINE_PIECES)[number];
+
+/** What a piece asks the pop up booker to open on. */
+export type OpenBookerRequest = { slot: string } | { day: string } | { callMeNow: "press" };
 
 /**
  * Why the booker could not be used, as the host's `linkFailed` sees it. The
