@@ -27,6 +27,8 @@ import {
   lineSplitText,
   startupOriginText,
   coldAfterDeployText,
+  resentText,
+  RESENT_FAIL_AT,
   type JudgeInput,
   type JudgedBooking,
 } from "./loadtest/judge-booking-run.ts";
@@ -3465,6 +3467,59 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
   const refusal = burstLegText(r.measurements!.bursts[0]!);
   assert(refusal.includes("refusal control") && refusal.includes("answered slot_taken"), `a refusal control's line says the slot was spent (got: ${refusal})`);
   assert(refusal.includes("capacity was not recorded"), `and, from a file written before #3429, that its capacity was not recorded (got: ${refusal})`);
+}
+
+
+// --- #3566: a request resent after a dropped connection, and the cap on them -----------
+// The driver sends a request whose connection dropped once more, as the booker does for a
+// lead. One answered on its resend is not unanswered; but a cluster of them means
+// something is turning connections away, so 3 or more in a run fail it (Dan, 2026-10-14),
+// counted over every request the judge reads, the bursts' included.
+{
+  const resend = (a: BookingAttempt) => {
+    a.resentAfter = "transport: TypeError (UND_ERR_SOCKET)";
+  };
+  eq(RESENT_FAIL_AT, 3, "the cap Dan chose: a run fails at 3 resent requests");
+
+  const clean = judgeBookingRun(passing());
+  eq(clean.measurements!.resent, 0, "a run with no resend measures zero");
+  assert(resentText(clean.measurements!).includes("0 requests"), `and says so on its own line (got: ${resentText(clean.measurements!)})`);
+
+  const two = broken((i) => {
+    resend(i.driverResults[0]!.attempts[0]!);
+    resend(i.driverResults[1]!.attempts[0]!);
+  });
+  eq(two.measurements!.resent, 2, "two resent requests are counted");
+  assert(!bars(two).includes("resent requests"), `two is under the cap, so it passes (got ${JSON.stringify(bars(two))})`);
+  assert(!bars(two).includes("unanswered requests"), "and a request answered on its resend is not unanswered");
+  const line = resentText(two.measurements!);
+  assert(line.includes("2 requests") && line.includes("UND_ERR_SOCKET"), `the line counts them and names why (got: ${line})`);
+
+  const three = broken((i) => {
+    for (const d of [0, 1, 2]) resend(i.driverResults[d]!.attempts[0]!);
+  });
+  assert(bars(three).includes("resent requests"), `three resent requests fail the run (got ${JSON.stringify(bars(three))})`);
+
+  // Still unanswered after its resend: both the unanswered bar AND counted as resent.
+  const silent = broken((i) => {
+    const a = i.driverResults[0]!.attempts[0]!;
+    a.status = 0;
+    a.outcome = "transport: TypeError";
+    resend(a);
+    i.bookings = i.bookings.filter((b) => b.external_id !== `${RUN}-0-0`);
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  assert(bars(silent).includes("unanswered requests"), "a request still unanswered after its resend fails as unanswered");
+  eq(silent.measurements!.resent, 1, "and is counted as resent");
+
+  // The bursts' requests count toward the same cap.
+  const withBurst = brokenThree((i) => {
+    resend(i.driverResults[0]!.attempts[0]!);
+    resend(i.driverResults[1]!.attempts[0]!);
+    resend(legAttempts(i, 0)[0]!);
+  });
+  eq(withBurst.measurements!.resent, 3, "a burst request's resend is counted with the steady ones");
+  assert(bars(withBurst).includes("resent requests"), "so two steady and one burst resend fail the run");
 }
 
 finish();

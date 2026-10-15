@@ -390,6 +390,18 @@ export function requestAbortMs(opts: { nowMs: number; deadlineAtMs: number }): n
   return Math.max(1, Math.min(REQUEST_TIMEOUT_MS, opts.deadlineAtMs + REQUEST_OVERRUN_MS - opts.nowMs));
 }
 
+/**
+ * #3566: the abort bound for one send of a request whose bound was fixed when it was
+ * FIRST sent (`abortAtMs`): what is left of it, never below one millisecond. A resend
+ * after a dropped connection shares the first send's abort instant instead of starting
+ * a fresh bound, so a request is never in flight later than it could be before resends
+ * existed, and every window derived from one request's bound (the burst's settle and
+ * probe, its tail, its job) still holds.
+ */
+export function sendBoundMs(abortAtMs: number, nowMs: number): number {
+  return Math.max(1, abortAtMs - nowMs);
+}
+
 /** The fault pass's length when FAULT_MINUTES is unset, which is how the workflow runs it. */
 export const FAULT_MINUTES_DEFAULT = 2;
 
@@ -664,6 +676,56 @@ export interface BookingAttempt {
    * all; a missing figure reads as not dropped, never as dropped.
    */
   rungsDropped?: number | null;
+  /**
+   * #3566: present when the first send's connection dropped and the driver sent it once
+   * more, as the booker does for a lead: what that first send failed with. The record is
+   * otherwise the resend's, timed from the first send. Absent on a request answered first
+   * time, so a run with no resend reads exactly as before.
+   */
+  resentAfter?: string;
+}
+
+/** The prefix every connection failure's outcome starts with, so the judge and the driver read one spelling. */
+export const TRANSPORT_OUTCOME_PREFIX = "transport: ";
+
+/** How long a recorded cause may be: enough to name it, never enough to bloat a report. */
+const TRANSPORT_CAUSE_MAX = 100;
+
+/**
+ * #3566: a connection failure, named with its cause. Node's fetch throws a bare
+ * `TypeError: fetch failed` and puts what actually happened (a reset socket, a DNS
+ * miss) on `cause`, so recording only the name, as the driver did, threw away the one
+ * fact anybody would ask for. The code when there is one, else the message, cut short.
+ */
+export function transportOutcome(err: unknown): string {
+  const name = (err as { name?: string } | null)?.name ?? "Error";
+  const cause = (err as { cause?: unknown } | null)?.cause as { code?: unknown; message?: unknown } | undefined;
+  const why =
+    typeof cause?.code === "string" ? cause.code : typeof cause?.message === "string" ? cause.message : null;
+  if (!why) return `${TRANSPORT_OUTCOME_PREFIX}${name}`;
+  const short = why.length > TRANSPORT_CAUSE_MAX ? `${why.slice(0, TRANSPORT_CAUSE_MAX)}...` : why;
+  return `${TRANSPORT_OUTCOME_PREFIX}${name} (${short})`;
+}
+
+/** #3566: a request that got no reply of any kind, which is the only kind the driver resends. */
+export function droppedAttempt(a: BookingAttempt): boolean {
+  return a.status === 0 && (a.outcome ?? "").startsWith(TRANSPORT_OUTCOME_PREFIX);
+}
+
+/**
+ * #3566: the record for a request that may have been resent (`resendOnce`). The
+ * resend's answer, timed from the first send, since the lead waited through both and
+ * the pause, and carrying what the first send failed with.
+ */
+export function afterResend(o: { result: BookingAttempt; firstFailure: BookingAttempt | null }): BookingAttempt {
+  if (!o.firstFailure) return o.result;
+  const first = o.firstFailure;
+  return {
+    ...o.result,
+    sentAtMs: first.sentAtMs,
+    wallMs: o.result.sentAtMs + o.result.wallMs - first.sentAtMs,
+    resentAfter: first.outcome ?? `${TRANSPORT_OUTCOME_PREFIX}unknown`,
+  };
 }
 
 /**

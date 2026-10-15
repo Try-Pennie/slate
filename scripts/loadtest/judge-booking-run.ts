@@ -1385,6 +1385,15 @@ export interface RunMeasurements {
    * offering nothing (the bucket never answered).
    */
   availabilityUnread: number;
+  /**
+   * #3566: requests the driver sent once more because their connection dropped, as the
+   * booker does for a lead, over every request the judge reads (steady, bursts, and the
+   * fault pass when its files are here). Counted whether or not the resend was answered;
+   * one still unanswered fails on `noReply` as well.
+   */
+  resent: number;
+  /** What each resent request's first send failed with, by count, for the report. */
+  resentCauses: Record<string, number>;
   writeRefusals: number;
   /** Write refusals grouped by the address Slate said it saw. */
   refusalsByIp: Record<string, number>;
@@ -1527,6 +1536,7 @@ export function measure(input: JudgeInput): RunMeasurements {
     ).length,
     availabilityUnread: attempts.filter((a) => a.outcome === AVAILABILITY_UNREAD).length,
     timedOut: attempts.filter((a) => a.status === 0 && a.outcome === TIMED_OUT).length,
+    ...resentReading([...attempts, ...attemptsOf(input.burstResults), ...attemptsOf(input.faultPass?.drivers ?? [])]),
     writeRefusals: attempts.filter((a) => a.status === 429).length,
     refusalsByIp,
     freshnessMaxSec: Math.max(0, ...input.freshnessSamples.map((s) => s.maxAgeSec)),
@@ -1548,6 +1558,38 @@ export function measure(input: JudgeInput): RunMeasurements {
 
 /** The bars, in the order a reader should meet them. */
 export const CONFIRMED_RATE_FLOOR = 0.8;
+/**
+ * #3566: a run fails when this many of its requests or more had to be resent after a
+ * dropped connection, even if every resend was answered (Dan, 2026-10-14). One is a
+ * network blip a lead's booker now hides; a cluster means something is turning
+ * connections away. Measured before choosing: about two resends in twenty four runs of
+ * about 830 requests each, never more than one in a run.
+ */
+export const RESENT_FAIL_AT = 3;
+
+function resentReading(all: readonly BookingAttempt[]): { resent: number; resentCauses: Record<string, number> } {
+  const resentCauses: Record<string, number> = {};
+  let resent = 0;
+  for (const a of all) {
+    if (a.resentAfter === undefined) continue;
+    resent += 1;
+    resentCauses[a.resentAfter] = (resentCauses[a.resentAfter] ?? 0) + 1;
+  }
+  return { resent, resentCauses };
+}
+
+/** #3566: the report's line on resent requests, on every run, so a measured zero is visible. */
+export function resentText(m: Pick<RunMeasurements, "resent" | "resentCauses">): string {
+  const causes = Object.entries(m.resentCauses)
+    .sort((a, b) => b[1] - a[1])
+    .map(([why, n]) => `${why} x${n}`)
+    .join(", ");
+  return (
+    `- resent after a dropped connection: ${m.resent} request${m.resent === 1 ? "" : "s"}` +
+    `${causes ? ` (${causes})` : ""}; the run fails at ${RESENT_FAIL_AT}`
+  );
+}
+
 export const OK_P95_MS = 5000;
 /**
  * The share of the latency bar the REQUEST path may spend on CPU alone (#2321).
@@ -2101,6 +2143,13 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   // to two different places (L11).
   if (m.fiveXx > 0) fail("server errors", `${m.fiveXx} responses were 5xx`);
   if (m.noReply > 0) fail("unanswered requests", `${m.noReply} requests got no reply at all`);
+  if (m.resent >= RESENT_FAIL_AT) {
+    fail(
+      "resent requests",
+      `${m.resent} requests had their connection drop and were sent again, against a cap of fewer than ` +
+        `${RESENT_FAIL_AT}: one is a blip, this many means something is turning connections away`,
+    );
+  }
   if (m.availabilityUnread > 0) {
     fail(
       "requests never sent",

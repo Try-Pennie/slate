@@ -920,7 +920,10 @@ export default function Booker({
         // #2666: the test pass rides along on the public test bucket only. A pass
         // that ran out while the page sat open comes back as a 403 carrying its own
         // sentence, which the `data.error` branch below shows as it is.
-        { timeoutMs: REQUEST_TIMEOUT_MS, headers: testPassHeaders(testPass) },
+        // #3566: a confirm whose connection dropped is sent once more by itself, so a
+        // lead never sees an error for a one-off blip. Safe because the server answers
+        // a resend of a confirm that DID arrive with the booking it made (#2638).
+        { timeoutMs: REQUEST_TIMEOUT_MS, headers: testPassHeaders(testPass), resendOnDrop: true },
       );
 
       if (ok) {
