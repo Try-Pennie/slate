@@ -878,16 +878,22 @@ export default function Booker({
   const viewedPosted = useRef(false);
   const readyPosted = useRef(false);
   const failedPosted = useRef(false);
+  // #3718 (Dan, 2026-10-15): GA4 counts a booker view once per visit, so of the
+  // frames a page with the card's pieces holds, only the times piece (or the whole
+  // card) announces viewed and ready. The Call me now piece and the pop ups a piece
+  // opens stay quiet; a failure and a booking are still announced from anywhere.
+  const announceStages =
+    embedded && piece !== "callMeNow" && !pressCallMeNow && !initialSlot && !initialDay;
   useEffect(() => {
-    if (!embedded || viewedPosted.current) return;
+    if (!announceStages || viewedPosted.current) return;
     viewedPosted.current = true;
     postToParent({ type: EMBED_MESSAGE.bookerViewed, data: { slotsLoaded: timesLoaded } });
-  }, [embedded, postToParent, timesLoaded]);
+  }, [announceStages, postToParent, timesLoaded]);
   useEffect(() => {
-    if (!embedded || !timesLoaded || readyPosted.current) return;
+    if (!announceStages || !timesLoaded || readyPosted.current) return;
     readyPosted.current = true;
     postToParent({ type: EMBED_MESSAGE.bookerReady, data: { slotsLoaded: true } });
-  }, [embedded, postToParent, timesLoaded]);
+  }, [announceStages, postToParent, timesLoaded]);
   useEffect(() => {
     if (!embedded) return;
     if (!availabilityFailed) {

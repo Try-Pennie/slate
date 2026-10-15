@@ -15,7 +15,7 @@ import Booker from "@/components/Booker";
 import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
 import { bookerSlotIso } from "@/components/booker-test-slot";
 import { CALL_ME_NOW_COPY, INLINE_CARD_COPY, PICKER_COPY } from "@/lib/booking/booker-copy";
-import { PIECE_MESSAGE } from "@/lib/embed/lifecycle-events";
+import { EMBED_MESSAGE, PIECE_MESSAGE } from "@/lib/embed/lifecycle-events";
 
 const firstDay = Array.from({ length: 9 }, (_, i) => bookerSlotIso(3, 9 + i));
 const secondDay = [bookerSlotIso(4, 10), bookerSlotIso(4, 11)];
@@ -83,7 +83,9 @@ const timeButtons = () =>
 describe("the times piece (#3718)", () => {
   it("is the times tile only: no card title and no Call me now row", async () => {
     render(<Booker {...baseProps} layout="inline" piece="times" callMeNow={CMN} />);
-    await screen.findByRole("button", { name: PICKER_COPY.viewMore });
+    // The file's first render also pays the cold module load, so it gets more than
+    // the default second to settle; it still ends the moment the button is there.
+    await screen.findByRole("button", { name: PICKER_COPY.viewMore }, { timeout: 5000 });
     expect(screen.getByText(INLINE_CARD_COPY.chooseTime)).toBeTruthy();
     expect(screen.queryByText(INLINE_CARD_COPY.title)).toBeNull();
     expect(screen.queryByRole("button", { name: CALL_ME_NOW_COPY.button })).toBeNull();
@@ -159,3 +161,30 @@ describe("the pop up a time opens (#3718)", () => {
     await waitFor(() => expect(timeButtons()).toHaveLength(2));
   });
 });
+
+// Dan, 2026-10-15: GA4 counts a booker view once per visit, so of a page's frames
+// only the times piece announces the booker's stages. The Call me now piece and the
+// pop ups stay quiet; a booking is still announced from wherever it is made.
+describe("which frame announces the booker's stages (#3718)", () => {
+  const stages = () =>
+    posted
+      .map((m) => (m as { type?: string })?.type)
+      .filter((t) => t === EMBED_MESSAGE.bookerViewed || t === EMBED_MESSAGE.bookerReady);
+
+  it("the times piece announces viewed and ready", async () => {
+    render(<Booker {...baseProps} layout="inline" piece="times" />);
+    await screen.findByRole("button", { name: PICKER_COPY.viewMore });
+    await waitFor(() => expect(stages()).toEqual([EMBED_MESSAGE.bookerViewed, EMBED_MESSAGE.bookerReady]));
+  });
+
+  it("the Call me now piece, and each pop up, announce nothing", async () => {
+    render(<Booker {...baseProps} layout="inline" piece="callMeNow" callMeNow={CMN} />);
+    await screen.findByRole("button", { name: CALL_ME_NOW_COPY.button });
+    render(<Booker {...baseProps} initialSlot={firstDay[4]!} />);
+    await screen.findByRole("textbox", { name: /email/i });
+    render(<Booker {...baseProps} layout="inline" callMeNow={CMN} pressCallMeNow />);
+    await screen.findByText(CALL_ME_NOW_COPY.momentarily);
+    expect(stages()).toEqual([]);
+  });
+});
+
