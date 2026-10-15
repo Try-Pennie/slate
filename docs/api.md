@@ -500,6 +500,15 @@ and `already-requested` only, with the phone Salesforce holds for the lead (neve
 one the page sent, which a press matched on email alone never verified). It is `null` whenever there is no usable number, including while the service
 address is unset, which is deliberate: the card then shows no Text us and no error.
 
+The service hands out a different line on every ask, so Slate keeps the line it gave
+each lead (`lead_texting_lines`, keyed on the 15 character Lead id) and shows it again
+on every later press. A saved line is replaced only when Sendblue
+(`SENDBLUE_API_KEY_ID`, `SENDBLUE_API_SECRET_KEY`) says it is offline, does not support
+iMessage, or is not found, the rule Pennie's Number Management workflows use; any other
+Sendblue answer, or no Sendblue key, keeps it. Two presses at once end on one line. A
+store that cannot be read or written gives `null` rather than a line the lead may not
+see again (`src/lib/automations/lead-texting-line.ts`).
+
 ---
 
 ## POST /api/bookings/reassign

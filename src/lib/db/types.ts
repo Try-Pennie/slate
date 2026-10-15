@@ -1223,6 +1223,15 @@ export type { CallerSeenRow as ApiCallerSeen } from "@/lib/booking/caller-seen";
 export type { PilotOfferRow as PilotOfferSample } from "@/lib/monitor/pilot-offers";
 export type { PilotSettingsRow as PilotSettingsSample } from "@/lib/monitor/pilot-settings-samples";
 
+/** The texting line each lead was given after Call me now (#3718, migration 0183):
+ *  one row per lead, keyed on the 15 character Lead id. */
+export interface LeadTextingLine {
+  lead_key: string;
+  line: string;
+  given_at: string;
+  replaced_at: string | null;
+}
+
 /** Dead-man's switch heartbeat (#420): one row per cron lane, stamped each tick. */
 export interface LaneHeartbeat {
   lane: string;

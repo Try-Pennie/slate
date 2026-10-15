@@ -78,6 +78,8 @@ wrangler secret put TWILIO_API_KEY_SID      # required; TaskRouter-scoped API ke
 wrangler secret put TWILIO_API_KEY_SECRET   # required; the matching API key secret.
 wrangler secret put TWILIO_WORKSPACE_SID    # required; the TaskRouter workspace holding the workers. Not really a secret, but set here so all three live in one place rather than split with wrangler.jsonc.
 wrangler secret put AUTOMATIONS_API_URL     # optional; Pennie's automations service, the same address trypennie.com uses, asked for the texting line the inline card's Call me now confirmation offers (#3718). Unset, the card shows no Text us and no error.
+wrangler secret put SENDBLUE_API_KEY_ID     # optional; Sendblue's API key id, used only to ask whether a lead's saved texting line is still alive (#3718). Unset, a saved line is always kept.
+wrangler secret put SENDBLUE_API_SECRET_KEY # optional; the secret paired with SENDBLUE_API_KEY_ID. Both or neither.
 wrangler secret put REASSIGN_API_KEY        # optional; bearer for the reassign API. Empty = POST /api/bookings/reassign returns 503.
 # wrangler secret put REASSIGN_API_KEY_2 # optional; the rotation slot (#3110), set only when rotating. See "Rotating a credential".
 wrangler secret put DUPLICATE_CANCEL_API_KEY # optional; bearer for the duplicate-cancel API (#2369). Empty = POST /api/bookings/cancel-duplicate returns 503.
