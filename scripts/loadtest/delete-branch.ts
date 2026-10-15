@@ -15,6 +15,7 @@
 //   SUPABASE_ACCESS_TOKEN=... SUPABASE_PROJECT_REF=... LOADTEST_BRANCH=loadtest-2284 \
 //   node --experimental-strip-types scripts/loadtest/delete-branch.ts
 import { branchTeardownPlan, type SupabaseBranch } from "./branch-teardown.ts";
+import { relistUntil } from "./relist.ts";
 
 const API = "https://api.supabase.com";
 
@@ -84,12 +85,18 @@ export interface TeardownOutcome {
  * accepted delete whose listing cannot be re-read exits UNCONFIRMED rather than
  * clean: a 200 from a delete and a branch that is really gone are two different
  * facts (L98).
+ *
+ * The listing lags an accepted delete (#3787), so while it still names the branch it
+ * is read again through `relistUntil`, and the last read decides. A re-read that fails
+ * ends the wait there, as unconfirmed.
  */
 export async function runBranchTeardown(input: {
   fetchLike: FetchLike;
   token: string;
   projectRef: string;
   requestedName: string;
+  /** The wait between re-reads of a lagging listing. */
+  sleep: (ms: number) => Promise<void>;
 }): Promise<TeardownOutcome> {
   const lines: string[] = [];
   const log = (line: string) => lines.push(line);
@@ -125,7 +132,11 @@ export async function runBranchTeardown(input: {
     return { exit: DELETE_EXIT.refused, lines, deleteSent: true };
   }
 
-  const after = await listBranches(input.fetchLike, input.token, input.projectRef, log);
+  const { last: after, waitedMs } = await relistUntil({
+    read: () => listBranches(input.fetchLike, input.token, input.projectRef, log),
+    settled: (listed) => listed === null || !listed.some((b) => b.id === plan.branchId),
+    sleep: input.sleep,
+  });
   if (after === null) {
     log(
       `FAILED (${DELETE_EXIT.unconfirmed}): the delete was accepted and the branch listing could ` +
@@ -136,7 +147,8 @@ export async function runBranchTeardown(input: {
   if (after.some((b) => b.id === plan.branchId)) {
     log(
       `FAILED (${DELETE_EXIT.stillThere}): the delete was accepted and branch ${plan.name} is ` +
-        "STILL in the listing.",
+        `STILL in the listing, which was read again for ${waitedMs / 1000}s. Check it by hand: ` +
+        "it bills while it exists.",
     );
     return { exit: DELETE_EXIT.stillThere, lines, deleteSent: true };
   }
@@ -163,6 +175,7 @@ if (process.argv[1]?.endsWith("delete-branch.ts")) {
     // the run was dispatched without one, which is reported as a branch still
     // standing rather than as a clean teardown)
     requestedName: process.env.LOADTEST_BRANCH ?? "",
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   });
   for (const line of outcome.lines) {
     if (line.startsWith("FAILED") || line.startsWith("note:")) console.error(line);

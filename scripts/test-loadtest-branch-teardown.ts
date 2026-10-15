@@ -21,6 +21,7 @@
 // Run: node --experimental-strip-types scripts/test-loadtest-branch-teardown.ts
 import { branchTeardownPlan, BRANCH_TEARDOWN_EXIT } from "./loadtest/branch-teardown.ts";
 import { runBranchTeardown, DELETE_EXIT, type FetchLike } from "./loadtest/delete-branch.ts";
+import { RELIST_ATTEMPTS, RELIST_EVERY_MS } from "./loadtest/relist.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const PROJECT = "drukfvgaynzrralbzkzj";
@@ -294,12 +295,87 @@ function api(opts: {
 
 type SupabaseBranchRow = typeof MAIN;
 
+/** A sleep that returns at once and records what it was asked for, so no case waits for real (L524). */
+function noWait() {
+  const slept: number[] = [];
+  return { slept, sleep: async (ms: number) => void slept.push(ms) };
+}
+
+// --- #3787: the listing lags an accepted delete ------------------------------------
+{
+  // Run 38812653636 exited 11 on a delete that landed: the one read right after the
+  // DELETE still listed the branch, and a read minutes later did not. So a listing
+  // that still names it is read again, and the last read decides.
+  const w = noWait();
+  const { fetchLike, calls } = api({
+    listings: [[MAIN, THROWAWAY], [MAIN, THROWAWAY], [MAIN, THROWAWAY], [MAIN]],
+  });
+  const out = await runBranchTeardown({
+    fetchLike,
+    token: "t",
+    sleep: w.sleep,
+    projectRef: PROJECT,
+    requestedName: "loadtest-2284",
+  });
+  eq(out.exit, 0, "a branch still listed by two reads after the delete and gone from the third is a clean teardown");
+  eq(w.slept, [RELIST_EVERY_MS, RELIST_EVERY_MS], "it waited between re-reads, only as often as the listing lagged");
+  eq(calls.filter((c) => c.method === "DELETE").length, 1, "and the DELETE was sent once, never repeated");
+}
+{
+  const w = noWait();
+  const { fetchLike } = api({ listings: [[MAIN, THROWAWAY], [MAIN]] });
+  const out = await runBranchTeardown({
+    fetchLike,
+    token: "t",
+    sleep: w.sleep,
+    projectRef: PROJECT,
+    requestedName: "loadtest-2284",
+  });
+  eq(out.exit, 0, "gone on the first read after the delete");
+  eq(w.slept, [], "so nothing waited");
+}
+{
+  const w = noWait();
+  const stuck: SupabaseBranchRow[][] = Array.from({ length: RELIST_ATTEMPTS + 2 }, () => [MAIN, THROWAWAY]);
+  const { fetchLike, calls } = api({ listings: stuck });
+  const out = await runBranchTeardown({
+    fetchLike,
+    token: "t",
+    sleep: w.sleep,
+    projectRef: PROJECT,
+    requestedName: "loadtest-2284",
+  });
+  eq(out.exit, DELETE_EXIT.stillThere, "a branch still listed after every re-read is still a failure");
+  eq(w.slept.length, RELIST_ATTEMPTS, "after exactly the bounded number of waits");
+  eq(calls.filter((c) => c.method === "GET").length, RELIST_ATTEMPTS + 2, "the first read, the read after the delete, and one per wait");
+  const waited = (RELIST_EVERY_MS * RELIST_ATTEMPTS) / 1000;
+  assert(
+    out.lines.some((l) => l.includes(`${waited}s`)),
+    `and the failure says how long the listing was read for (got ${out.lines.join(" | ")})`,
+  );
+}
+{
+  // A re-read that fails mid wait is never evidence the branch went (L215).
+  const w = noWait();
+  const { fetchLike } = api({ listings: [[MAIN, THROWAWAY], [MAIN, THROWAWAY], "unreadable"] });
+  const out = await runBranchTeardown({
+    fetchLike,
+    token: "t",
+    sleep: w.sleep,
+    projectRef: PROJECT,
+    requestedName: "loadtest-2284",
+  });
+  eq(out.exit, DELETE_EXIT.unconfirmed, "a listing that stops answering mid wait is unconfirmed, not gone");
+  eq(w.slept.length, 1, "and it stopped waiting at the failed read");
+}
+
 // --- the ordinary case: deleted, and CONFIRMED gone -------------------------------
 {
   const { fetchLike, calls } = api({ listings: [[MAIN, THROWAWAY], [MAIN]] });
   const out = await runBranchTeardown({
     fetchLike,
     token: "t",
+    sleep: noWait().sleep,
     projectRef: PROJECT,
     requestedName: "loadtest-2284",
   });
@@ -317,10 +393,13 @@ type SupabaseBranchRow = typeof MAIN;
 {
   // The API said yes and the branch is in the listing. Reporting this as clean is
   // the failure this whole issue is about, one layer down.
-  const { fetchLike } = api({ listings: [[MAIN, THROWAWAY], [MAIN, THROWAWAY]] });
+  const { fetchLike } = api({
+    listings: Array.from({ length: RELIST_ATTEMPTS + 2 }, () => [MAIN, THROWAWAY]),
+  });
   const out = await runBranchTeardown({
     fetchLike,
     token: "t",
+    sleep: noWait().sleep,
     projectRef: PROJECT,
     requestedName: "loadtest-2284",
   });
@@ -333,6 +412,7 @@ type SupabaseBranchRow = typeof MAIN;
   const out = await runBranchTeardown({
     fetchLike,
     token: "t",
+    sleep: noWait().sleep,
     projectRef: PROJECT,
     requestedName: "loadtest-2284",
   });
@@ -349,6 +429,7 @@ type SupabaseBranchRow = typeof MAIN;
   const out = await runBranchTeardown({
     fetchLike,
     token: "t",
+    sleep: noWait().sleep,
     projectRef: PROJECT,
     requestedName: "loadtest-2284",
   });
@@ -368,6 +449,7 @@ type SupabaseBranchRow = typeof MAIN;
     const out = await runBranchTeardown({
       fetchLike,
       token: "t",
+      sleep: noWait().sleep,
       projectRef: PROJECT,
       requestedName: "loadtest-2284",
     });
@@ -396,6 +478,7 @@ type SupabaseBranchRow = typeof MAIN;
     const out = await runBranchTeardown({
       fetchLike,
       token: "t",
+      sleep: noWait().sleep,
       projectRef: PROJECT,
       requestedName: r.name,
     });
@@ -411,6 +494,7 @@ type SupabaseBranchRow = typeof MAIN;
   const out = await runBranchTeardown({
     fetchLike,
     token: "t",
+    sleep: noWait().sleep,
     projectRef: PROJECT,
     requestedName: "",
   });

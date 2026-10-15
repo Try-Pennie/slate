@@ -1769,11 +1769,15 @@ with no token. Two hazards it holds off, both measured rather than imagined:
 | 8 | the id is not a branch id, so no request was built |
 | 9 | the delete was refused |
 | 10 | the delete was accepted and the listing could not be re-read, so it is unconfirmed |
-| 11 | the delete was accepted and the branch is still in the listing |
+| 11 | the delete was accepted and the branch is still in the listing after it was read again for about two minutes |
 
 Exits 10 and 11 exist for the same reason the Worker half re-reads the Worker's
 secrets: the teardown is done when the reads say so, never when the delete command
-exited.
+exited. The branch listing lags an accepted delete the way the secrets listing does
+(#3787: run 38812653636 exited 11 on a branch a read minutes later showed gone), so
+while it still names the branch it is read again every 5 seconds for up to two
+minutes, through the same `relistUntil` (`scripts/loadtest/relist.ts`) the Worker half
+uses. A re-read that fails ends the wait as exit 10.
 
 ### The Worker is kept, idle (#3310)
 
