@@ -284,6 +284,12 @@ widget.js built:
 | `{ day: <yyyy-mm-dd> }` (View more times) | the full booker with `&day=`, on that day |
 | `{ callMeNow: "press" }` | a 520px pop up with the card (`layout=inline&cmnPress=1`), which makes the request on arrival and shows the confirmation or the failure |
 
+**Only the times piece (or the whole card) announces `bookerViewed` and
+`bookerReady`** (Dan, 2026-10-15), since GA4 counts a booker view once per visit and a
+page with both pieces holds two frames, plus a third when a pop up opens. The Call me
+now piece and the pop ups a piece opens announce neither; `linkFailed` and the booking
+events are announced from wherever they happen.
+
 `readInlineEntry` (`src/lib/embed/inline-entry.ts`) reads all of these, for `/book`
 and `/demo` alike. A link starting `demo?` is drawn from `/demo` (the test calendar, a
 made up lead, a Call me now that calls nobody); `/demo/pieces` places both pieces that

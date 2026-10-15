@@ -21,6 +21,8 @@ eq(readInlineEntry({ layout: ["inline", "x"], piece: ["times"] }).piece, "times"
 eq(readInlineEntry({ slot: "2026-10-16T14:30:00.000Z" }).initialSlot, "2026-10-16T14:30:00.000Z", "a picked time opens the full booker on it");
 eq(readInlineEntry({ slot: "tomorrow" }).initialSlot, null, "a time that is not an instant is absent");
 eq(readInlineEntry({ slot: "2026-10-16T25:99:00.000Z" }).initialSlot, null, "an impossible instant is absent");
+eq(readInlineEntry({ slot: "2026-10-16T14:30" }).initialSlot, null, "a time with no zone is absent, never read in the server's zone");
+eq(readInlineEntry({ slot: "2026-10-16T10:30:00.000-04:00" }).initialSlot, "2026-10-16T10:30:00.000-04:00", "an offset is a zone");
 eq(readInlineEntry({ day: "2026-10-16" }).initialDay, "2026-10-16", "View more times opens on a day");
 eq(readInlineEntry({ day: "2026-13-40" }).initialDay, null, "an impossible day is absent");
 eq(readInlineEntry({ layout: "inline", slot: "2026-10-16T14:30:00.000Z" }).initialSlot, null, "the card never opens on a time: only the pop up does");

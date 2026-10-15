@@ -38,7 +38,10 @@ export function readInlineEntry(sp: SP): InlineEntry {
   const piece =
     layout && (INLINE_PIECES as readonly string[]).includes(pieceParam ?? "") ? (pieceParam as InlinePiece) : null;
   const slot = first(sp, "slot") ?? "";
-  const initialSlot = !layout && slot.includes("T") && DateTime.fromISO(slot).isValid ? slot : null;
+  // An instant carries its zone (Z or an offset), as every slot the booker offers
+  // does; one without would be read in the server's zone and never match.
+  const initialSlot =
+    !layout && /T.*(Z|[+-]\d{2}:\d{2})$/.test(slot) && DateTime.fromISO(slot, { setZone: true }).isValid ? slot : null;
   const day = first(sp, "day") ?? "";
   const initialDay =
     !layout && /^\d{4}-\d{2}-\d{2}$/.test(day) && DateTime.fromISO(day).isValid ? day : null;
