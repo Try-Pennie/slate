@@ -36,7 +36,8 @@ async function call(method: "GET" | "DELETE", url: string): Promise<CallResult> 
   }
 }
 
-const result = await keepWorkerIdle({ settings: { token, account, configured }, wranglerJsonc, call });
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const result = await keepWorkerIdle({ settings: { token, account, configured }, wranglerJsonc, call, sleep });
 if (result.idle) console.log(result.message);
 else console.error(`FAILED: ${result.message}`);
 process.exit(result.exitCode);
