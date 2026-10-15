@@ -14,6 +14,8 @@
 import { readFileSync } from "node:fs";
 import {
   IDLE_EXIT,
+  IDLE_RELIST_ATTEMPTS,
+  IDLE_RELIST_EVERY_MS,
   idleVerdict,
   keepWorkerIdle,
   loadtestWorkerName,
@@ -159,8 +161,15 @@ const seen = (v: IdleVerdict) => {
 // Worker holding the run's live secrets while its crons go on arriving.
 
 type Req = { method: "GET" | "DELETE"; url: string };
-function fakeCloudflare(opts: { firstList: { status: number; bodyText: string } | { failed: string }; held: string[]; crons?: string[] }) {
+function fakeCloudflare(opts: {
+  firstList: { status: number; bodyText: string } | { failed: string };
+  held: string[];
+  crons?: string[];
+  /** #3783: how many listings after the deletes still show every name held before them, as Cloudflare's did on run 38800509328. */
+  laggingLists?: number;
+}) {
   const held = new Set(opts.held);
+  const stale = new Set(opts.held);
   const calls: Req[] = [];
   let lists = 0;
   const call = async (method: "GET" | "DELETE", url: string) => {
@@ -174,16 +183,22 @@ function fakeCloudflare(opts: { firstList: { status: number; bodyText: string } 
     if (url.endsWith("/schedules")) return { status: 200, bodyText: envelope({ schedules: (opts.crons ?? ["* * * * *"]).map((cron) => ({ cron })) }) };
     lists += 1;
     if (lists === 1) return opts.firstList;
-    return { status: 200, bodyText: envelope([...held].map((name) => ({ name, type: "secret_text" }))) };
+    const shown = lists - 1 <= (opts.laggingLists ?? 0) ? stale : held;
+    return { status: 200, bodyText: envelope([...shown].map((name) => ({ name, type: "secret_text" }))) };
   };
-  return { call, calls, held };
+  return { call, calls, held, lists: () => lists };
 }
 const settings = { token: "t", account: "acc", configured: "slate-loadtest" };
+/** A sleep that returns at once and records what it was asked for, so no case waits for real (L524). */
+function noWait() {
+  const slept: number[] = [];
+  return { slept, sleep: async (ms: number) => void slept.push(ms) };
+}
 const realConfig = readFileSync("wrangler.jsonc", "utf8");
 
 {
   const cf = fakeCloudflare({ firstList: { status: 200, bodyText: envelope([{ name: "CRON_SECRET" }, { name: "EXTRA" }]) }, held: ["CRON_SECRET", "EXTRA"] });
-  const v = await keepWorkerIdle({ settings, wranglerJsonc: realConfig, call: cf.call });
+  const v = await keepWorkerIdle({ settings, wranglerJsonc: realConfig, call: cf.call, sleep: noWait().sleep });
   assert(v.idle && v.exitCode === IDLE_EXIT.idle, `a listed secret, known or not, is deleted and the Worker confirmed idle (got ${v.message})`);
   eq(cf.held.size, 0, "nothing is left held");
   assert(cf.calls.every((c) => c.url.includes("/scripts/slate-loadtest/")), "and every request was to the load test Worker");
@@ -194,20 +209,62 @@ for (const [why, firstList] of [
   ["is unreadable", { status: 200, bodyText: "<html>" }],
 ] as const) {
   const cf = fakeCloudflare({ firstList, held: ["SUPABASE_SECRET_KEY", "CRON_SECRET", "BOOKING_API_KEY_CANARY"] });
-  const v = await keepWorkerIdle({ settings, wranglerJsonc: realConfig, call: cf.call });
+  const v = await keepWorkerIdle({ settings, wranglerJsonc: realConfig, call: cf.call, sleep: noWait().sleep });
   eq(cf.held.size, 0, `a first listing that ${why} still has the run's three secrets deleted`);
   assert(v.idle, `and the second listing, which reads, decides it is idle (got ${v.message})`);
 }
 {
   // The target guard comes before ANY request.
   const cf = fakeCloudflare({ firstList: { status: 200, bodyText: envelope([]) }, held: [] });
-  const v = await keepWorkerIdle({ settings: { ...settings, configured: "slate" }, wranglerJsonc: realConfig, call: cf.call });
+  const v = await keepWorkerIdle({ settings: { ...settings, configured: "slate" }, wranglerJsonc: realConfig, call: cf.call, sleep: noWait().sleep });
   assert(v.exitCode === IDLE_EXIT.wrongTarget && cf.calls.length === 0, "production's name is refused before a single request is made");
 }
 {
   const cf = fakeCloudflare({ firstList: { status: 200, bodyText: envelope([]) }, held: [] });
-  const v = await keepWorkerIdle({ settings: { ...settings, token: "" }, wranglerJsonc: realConfig, call: cf.call });
+  const v = await keepWorkerIdle({ settings: { ...settings, token: "" }, wranglerJsonc: realConfig, call: cf.call, sleep: noWait().sleep });
   assert(v.exitCode === IDLE_EXIT.misconfigured && v.message.includes("CLOUDFLARE_API_TOKEN") && cf.calls.length === 0, "a missing setting is named before any request");
+}
+
+// --- a listing that lags the deletes (#3783) ------------------------------------------------
+//
+// Run 38800509328's teardown deleted all three secrets, every delete answered, and the one
+// listing after them still named all three; ten minutes later the Worker listed none. So the
+// listing is re-read until it is empty, and only a name still listed at the end of a bounded
+// wait is a finding. The wait is injected, so this costs nothing in real time.
+{
+  const three = ["SUPABASE_SECRET_KEY", "CRON_SECRET", "BOOKING_API_KEY_CANARY"];
+  const cf = fakeCloudflare({ firstList: { status: 200, bodyText: envelope(three.map((name) => ({ name }))) }, held: three, laggingLists: 2 });
+  const w = noWait();
+  const v = await keepWorkerIdle({ settings, wranglerJsonc: realConfig, call: cf.call, sleep: w.sleep });
+  assert(v.idle && v.exitCode === IDLE_EXIT.idle, `a listing that catches up after two re-reads is idle, not still holding (got ${v.message})`);
+  eq(w.slept, [IDLE_RELIST_EVERY_MS, IDLE_RELIST_EVERY_MS], "it waited between the re-reads, and only as often as the listing lagged");
+}
+{
+  const cf = fakeCloudflare({ firstList: { status: 200, bodyText: envelope([{ name: "CRON_SECRET" }]) }, held: ["CRON_SECRET"] });
+  const w = noWait();
+  const v = await keepWorkerIdle({ settings, wranglerJsonc: realConfig, call: cf.call, sleep: w.sleep });
+  assert(v.idle, `an empty listing on the first read after the deletes is idle (got ${v.message})`);
+  eq(w.slept, [], "with no wait at all");
+}
+{
+  const cf = fakeCloudflare({ firstList: { status: 200, bodyText: envelope([{ name: "CRON_SECRET" }]) }, held: ["CRON_SECRET"], laggingLists: 10_000 });
+  const w = noWait();
+  const v = seen(await keepWorkerIdle({ settings, wranglerJsonc: realConfig, call: cf.call, sleep: w.sleep }));
+  assert(!v.idle && v.exitCode === IDLE_EXIT.stillHoldsSecrets && v.message.includes("CRON_SECRET"), `a name still listed when the wait runs out is still a finding (got ${v.message})`);
+  eq(w.slept.length, IDLE_RELIST_ATTEMPTS, "after exactly the bounded number of re-reads");
+  assert(v.message.includes(`${(IDLE_RELIST_EVERY_MS * IDLE_RELIST_ATTEMPTS) / 1000}s`), `and the message says how long it waited (got ${v.message})`);
+}
+
+{
+  // Lessons review of #3783: a delete that FAILED leaves a secret no re-read will see go,
+  // so the wait is skipped and the failure reported at once.
+  const cf = fakeCloudflare({ firstList: { status: 200, bodyText: envelope([{ name: "CRON_SECRET" }]) }, held: ["CRON_SECRET"] });
+  const refusing = async (method: "GET" | "DELETE", url: string) =>
+    method === "DELETE" && url.endsWith("/CRON_SECRET") ? { status: 500, bodyText: "boom" } : cf.call(method, url);
+  const w = noWait();
+  const v = await keepWorkerIdle({ settings, wranglerJsonc: realConfig, call: refusing, sleep: w.sleep });
+  eq(v.exitCode, IDLE_EXIT.deleteFailed, "a failed delete is still exit 7");
+  eq(w.slept, [], "and nothing waits on a secret no re-read will see go");
 }
 
 // --- every declared ending is reachable (L151) --------------------------------------------
