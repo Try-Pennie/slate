@@ -580,6 +580,9 @@ export interface GradualOps {
    * log: printed as a `::warning` annotation and as a line in the job summary.
    */
   warn(line: string): void;
+  /** Where this run deploys, as its messages name it (`deployTargetLabel`): production, or
+   *  the load test rehearsal's environment, so a warning never says production for it. */
+  readonly target: string;
 }
 
 function probeLines(o: ProbeOutcome): string {
@@ -760,7 +763,7 @@ async function runUntilSplit(ops: GradualOps): Promise<GradualResult> {
   // #3854: the line went out without the older line refusal having run. The deploy goes
   // on (the check fails open by design), but a check skipped on every deploy must be
   // visible where the job is read, or it reads as checked for ever.
-  if (objects.unchecked.length > 0) ops.warn(uncheckedLineWarning(objects.unchecked, "production"));
+  if (objects.unchecked.length > 0) ops.warn(uncheckedLineWarning(objects.unchecked, ops.target));
 
   // Both versions are uploaded BEFORE the split opens, so the split lasts only as long as
   // the probe, and a failed upload has changed nothing anybody is served.

@@ -50,6 +50,7 @@ import {
 import { DEFAULT_POLL_INTERVAL_MS, DEFAULT_VERSION_TIMEOUT_MS, runProbe } from "./lib/post-deploy-probe.ts";
 import { httpProbeDeps } from "./lib/post-deploy-probe-http.ts";
 import { objectWorkerOps } from "./lib/object-worker-io.ts";
+import { deployTargetLabel } from "./lib/object-worker-skip.ts";
 import { envArgs, establishTarget, jsonPart, ROOT, runCapture, runLoud } from "./lib/wrangler-cli.ts";
 import { retarget } from "./lib/wrangler-target.ts";
 import { normalizeCommit } from "./stamp-build-info.ts";
@@ -229,6 +230,8 @@ const ops: GradualOps = {
     console.warn(`::warning title=confirm line protocol not checked::${line}`);
     summary(`**Warning:** ${line}`);
   },
+  // env-ok: WRANGLER_ENV (the load test rehearsal only; production is the top level)
+  target: deployTargetLabel(process.env.WRANGLER_ENV),
 };
 
 let result;

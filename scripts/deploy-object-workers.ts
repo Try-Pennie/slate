@@ -19,7 +19,7 @@
 import { appendFileSync } from "node:fs";
 import { OBJECT_WORKER_CONFIGS } from "./lib/gradual-deploy.ts";
 import { objectWorkerOps } from "./lib/object-worker-io.ts";
-import { deployObjectWorkers, uncheckedLineWarning } from "./lib/object-worker-skip.ts";
+import { deployObjectWorkers, deployTargetLabel, uncheckedLineWarning } from "./lib/object-worker-skip.ts";
 
 const args = process.argv.slice(2);
 let env = "";
@@ -31,7 +31,7 @@ if (args.length === 2 && args[0] === "--env" && /^[a-z][a-z0-9-]*$/.test(args[1]
 }
 
 const result = await deployObjectWorkers(objectWorkerOps(env, (line) => console.log(`  ${line}`)), OBJECT_WORKER_CONFIGS);
-const where = env ? `the ${env} environment` : "production";
+const where = deployTargetLabel(env);
 if (!result.ok && result.kind === "refused") {
   console.error(
     `::error title=confirm line older than the app::Nothing was deployed to ${where}: ${result.reason}. A newer app beside an older line object puts every confirm on its isolate's own line, where a crowd books one advisor or none. Deploy the line from a build at least as new as the app; for a revert that lowers the protocol on purpose, deploy the app first, then the line.`,

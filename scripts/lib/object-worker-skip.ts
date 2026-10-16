@@ -180,6 +180,14 @@ export function readAtCommit(git: GitRun, commit: string, path: string): { sourc
   };
 }
 
+/** Where a deploy to wrangler environment `env` goes, as its messages name it: the top
+ *  level is production, any named environment (the load test rehearsal) is not. One
+ *  place, so the gradual deploy and the hand deploy can never name it differently. */
+export function deployTargetLabel(env: string | undefined): string {
+  const e = (env ?? "").trim();
+  return e ? `the ${e} environment` : "production";
+}
+
 /**
  * #3854: the warning a deploy prints, as an annotation and in the job summary, when the
  * line went out without its protocol being compared with the live app's. A check that

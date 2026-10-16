@@ -43,7 +43,7 @@ import {
 } from "./lib/gradual-deploy.ts";
 import type { ProbeFault, ProbeOutcome } from "./lib/post-deploy-probe.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
-import { objectBundleStamp } from "./lib/object-worker-skip.ts";
+import { deployTargetLabel, objectBundleStamp } from "./lib/object-worker-skip.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 
@@ -64,6 +64,8 @@ function outcome(fault: ProbeFault): ProbeOutcome {
 }
 
 interface Scenario {
+  /** Where the run deploys, as its messages name it; production unless a test says otherwise. */
+  target?: string;
   start: VersionShare[] | null;
   /** "class-change" is the refusal Cloudflare gives a release with a pending Durable Object migration (#3352). */
   canaryUpload: boolean | "class-change";
@@ -238,6 +240,7 @@ async function drive(s: Scenario): Promise<Run> {
     warn: (line) => {
       warnings.push(line);
     },
+    target: s.target ?? "production",
   };
   let result: GradualResult;
   try {
@@ -375,6 +378,14 @@ for (const failing of [...OBJECT_WORKER_CONFIGS, "throw"] as const) {
   // #3854: and says it where the job is read, not only in the middle of the log.
   eq(r.warnings.length, 1, "a line deployed unchecked is warned about once");
   assert(/WITHOUT the check/.test(r.warnings[0] ?? "") && (r.warnings[0] ?? "").includes("no commit tag"), `naming the check and why it did not run (${r.warnings[0]})`);
+  assert((r.warnings[0] ?? "").includes("deployed to production"), `naming production as where it went (${r.warnings[0]})`);
+}
+{
+  // The load test rehearsal runs this same deploy (WRANGLER_ENV); its warning must name
+  // where the line actually went, never production.
+  const r = await drive({ ...HAPPY, target: deployTargetLabel("loadtest"), lineBuiltProtocol: 1, liveProtocol: { unreadable: "the serving app version carries no commit tag" } });
+  eq(r.warnings.length, 1, "a rehearsal line deployed unchecked is warned about once");
+  assert((r.warnings[0] ?? "").includes("deployed to the loadtest environment") && !(r.warnings[0] ?? "").includes("production"), `naming the load test environment, never production (${r.warnings[0]})`);
 }
 {
   const r = await drive({ ...HAPPY, lineBuiltProtocol: 2, liveProtocol: { protocol: 2 } });
@@ -459,6 +470,7 @@ for (const bad of [
     waitForCronWindow: async () => {},
     log: () => {},
     warn: () => {},
+    target: "production",
   });
   eq(r.exit, EXIT.canaryFailed, "a restore whose read throws still restores (the read could not tell, so it acts)");
   eq(calls[calls.length - 1], `${OLD}@100%`, "and the old version was put back");
