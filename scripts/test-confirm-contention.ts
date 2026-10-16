@@ -72,7 +72,7 @@ import {
   type BurstShape,
   type LoadProfile,
 } from "./lib/confirm-load-model.ts";
-import { makeConfirmLineHost, makeConfirmLineObject } from "../src/lib/booking/confirm-line-object.ts";
+import { makeConfirmLineHost, makeConfirmLineObject, CONFIRM_LINE_PROTOCOL, CONFIRM_LINE_OLDEST_PROTOCOL } from "../src/lib/booking/confirm-line-object.ts";
 import { BURST_LOSER_LAG_MS } from "./loadtest/judge-booking-run.ts";
 import { makeSharedConfirmLine } from "../src/lib/booking/shared-confirm-line.ts";
 import { CONFIRM_CROWD_RULE, type ConfirmCrowdRule } from "../src/lib/confirm-crowd-rule.ts";
@@ -168,6 +168,10 @@ function lead(i: number, over: Partial<CreateBookingInput> = {}): CreateBookingI
  * candidate read leaves out anybody already booked at the time, as the real one
  * does through the busy block the confirm writes before it answers.
  */
+/** The line object as a burst reaches it: one JSON message in, one JSON answer out (#3560). */
+type ObjectHost = { handle(message: unknown): Promise<string> };
+type ObjectHostFactory = (deps: Parameters<typeof makeConfirmLineHost>[0]) => ObjectHost;
+
 async function burst(opts: {
   inputs: CreateBookingInput[];
   pool: string[];
@@ -257,6 +261,11 @@ async function burst(opts: {
    */
   olderClient?: boolean;
   /**
+   * #3560: the object every line group is hosted by, in place of the current one: an
+   * object from an older build, as a line Worker rolled back alone would serve.
+   */
+  objectHost?: ObjectHostFactory;
+  /**
    * #3489: the confirms read their whole ladder's candidate inputs in one request
    * (`BookingDeps.readLadderInputs`), as the stack does; the run's code never did, so
    * the calibration leaves it off.
@@ -323,11 +332,11 @@ async function burst(opts: {
       // One object per line GROUP, as production names them (#3460): a crowd split across
       // `ladder:` and `code:` groups meets several objects, each electing its own leader,
       // which one object shared by every group would hide.
-      const hosts = new Map<string, ReturnType<typeof makeConfirmLineHost>>();
+      const hosts = new Map<string, ObjectHost>();
       const hostFor = (group: string) => {
         let host = hosts.get(group);
         if (!host) {
-          host = makeConfirmLineHost({ now: () => clock.now, timer: timerOnClock, leaseTimer: timerOnClock, newId: () => `o${++ids}` });
+          host = (opts.objectHost ?? makeConfirmLineHost)({ now: () => clock.now, timer: timerOnClock, leaseTimer: timerOnClock, newId: () => `o${++ids}` });
           hosts.set(group, host);
         }
         return host;
@@ -355,7 +364,9 @@ async function burst(opts: {
                 // network latency is the load run's to measure (#3325); with it
                 // (#3489) the object is reached through `objectOnClock`, a round trip
                 // on every message and a first answer once the object is up.
-                namespace: { stubFor: (group) => ({ send: sendTo(group) }) },
+                // #3560: an older client asks for the protocol it was built with, as well as
+                // leaving out the fields it never knew.
+                namespace: { stubFor: (group) => ({ send: opts.olderClient ? (m) => sendTo(group)({ ...m, v: CONFIRM_LINE_OLDEST_PROTOCOL }) : sendTo(group) }) },
                 fallback: own,
                 enabled: async () => ({ on: true, source: "read" }),
                 record: () => {},
@@ -728,7 +739,7 @@ async function replay(
   shape: BurstShape,
   profile: LoadProfile,
   line: "shared" | "isolate",
-  over: { slots?: number; statementMs?: number; latencyScale?: number; olderClient?: boolean } = {},
+  over: { slots?: number; statementMs?: number; latencyScale?: number; olderClient?: boolean; objectHost?: ObjectHostFactory } = {},
 ): Promise<Replayed> {
   const poolByCode = Object.fromEntries(Object.entries(shape.rungs).map(([code, r]) => [code, [...r.free, ...r.busy]]));
   // An advisor the cache shows busy holds the instant with a lead of their own.
@@ -768,6 +779,7 @@ async function replay(
     queue: "real",
     isolates: { count: shape.isolates, line },
     ...(over.olderClient ? { olderClient: true } : {}),
+    ...(over.objectHost ? { objectHost: over.objectHost } : {}),
     ...(profile.name.startsWith("stack") ? { ladderRead: true } : {}),
     slowGoogleMs: profile.googleCheckMs || undefined,
     slowEventMs: profile.googleWriteMs || undefined,
@@ -1033,6 +1045,48 @@ async function main() {
       const taken = got.others.SLOT_TAKEN;
       assert(taken !== undefined && taken.count === shape.arrivals.length - 3, `${tag}: everybody else is told the time is taken (got ${describe(got)})`);
       assert(taken!.maxMs - lastBooked <= BURST_LOSER_LAG_MS, `${tag}: the late one too, within ${BURST_LOSER_LAG_MS}ms of the last booking (got ${Math.round(taken!.maxMs - lastBooked)}ms)`);
+    }
+    // #3560: load run 37869019791 ran a newer app against a line object one release older,
+    // and each refusal burst's crowd waited about 11 seconds to be told to retry. Driven
+    // offline against the object at c51bcfae (the build that run's line Worker was on, not
+    // kept in the tree), the stack's crowd of 100 on the thirteen free shape booked thirteen
+    // and answered 75 of the rest 503 at 10.1 to 10.9s: the newer client decides the full
+    // verdict from `StartFrom.last` and `deepest`, which only a newer object hands out, so
+    // nobody reported the ladder spent and the crowd waited out its whole wait.
+    //
+    // The client now asks for protocol 2, every object ever deployed refuses a protocol it
+    // does not serve before acting on it, and the client takes that refusal as what it is
+    // and uses its isolate's own line, and pages. So a line Worker rolled back alone is the
+    // shared line switched OFF, the state production runs today, never an untested mix of
+    // two builds. That is what this holds, and it is NOT that the crowd books: in this
+    // model a crowd on per isolate lines books one or none, as load run 37333201026 did for
+    // real, which is why the shared line exists. Only the deploy refusing the order keeps a
+    // crowd served (#3560's other half, reported on the issue). The older object here is the
+    // current one behind the refusal an older build makes, which is all of an older object
+    // the client can now meet.
+    {
+      const olderObject = (d: Parameters<typeof makeConfirmLineHost>[0]): ObjectHost => {
+        const h = makeConfirmLineHost(d);
+        return {
+          handle: async (m) =>
+            (m as Record<string, unknown>).v === CONFIRM_LINE_PROTOCOL - 1 ? h.handle(m) : JSON.stringify({ kind: "gone", why: "version" }),
+        };
+      };
+      for (const free of [["r0", "r1", "r2", "r3", "r6", "r7", "r8"], ["r0", "r1", "r2", "r3", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "r13", "r14"]]) {
+        for (const crowd of [25, 100]) {
+          const base = { ...RUN_37640583621[2]!, rungs: ladder500(free) };
+          const shape = { ...base, label: `refusal control, ${free.length} free across the ladder, a crowd of ${crowd}`, arrivals: base.arrivals.slice(0, crowd) };
+          const tag = `#3560 a line object older than the app, ${shape.label}`;
+          const got = await replay(shape, STACK_LOAD_RUN_PROFILE, "shared", { objectHost: olderObject });
+          const off = await replay(shape, STACK_LOAD_RUN_PROFILE, "isolate");
+          console.log(`${tag}: ${describe(got)}. The same crowd with the shared line off: ${describe(off)}`);
+          assert(!got.doubleBooked, `${tag}: no advisor is booked twice`);
+          assert(
+            got.booked.length === off.booked.length && JSON.stringify(Object.keys(got.others).sort()) === JSON.stringify(Object.keys(off.others).sort()),
+            `${tag}: answered as the same crowd is with the shared line switched off (got ${describe(got)}; off ${describe(off)})`,
+          );
+        }
+      }
     }
     // Control (L1): the bar can fail. Priced at the run's own database cost, with none of
     // the stack's cuts (every rung read with requests of its own, the save as the seven

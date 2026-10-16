@@ -5599,6 +5599,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: confirmLineUnreachableAlert("unbound") },
   { key: "confirm_line_unreachable", state: "answers the client cannot read", channel: "alert",
     text: confirmLineUnreachableAlert("bad-answer") },
+  { key: "confirm_line_unreachable", state: "a line object older than the app (#3560)", channel: "alert",
+    text: confirmLineUnreachableAlert("version") },
   { key: "confirm_line_unreachable", state: "a mix of failures in one window", channel: "alert",
     text: confirmLineAlertFor(["reach-timeout", "reach-timeout", "bad-answer"]) },
   { key: "rate_limit_refund_broken:*", state: "a sustained run of failed refunds", channel: "alert",

@@ -284,8 +284,15 @@ const SEVERED = "the probe's abandoned leader sends nothing after its enter";
 
 type Turn = LineTurn<unknown>;
 
+/**
+ * The deps one run of the probe hands its checks: the caller's, and where a participant's
+ * give backs go (#3355 item 4), which the run waits for after each check so the next one
+ * starts with them landed, as before they were sent without waiting.
+ */
+type ProbeRunDeps = ConfirmLineProbeDeps & { keepAlive: (work: Promise<unknown>) => void };
+
 /** A client of the shared line as one isolate would hold it, with its calls recorded. */
-function participant(deps: ConfirmLineProbeDeps, opts: { severAfterEnter?: boolean } = {}) {
+function participant(deps: ProbeRunDeps, opts: { severAfterEnter?: boolean } = {}) {
   const seen: Seen[] = [];
   /** When each call left, in order, recorded before it is answered or given up on. */
   const sends: { op: string; at: number }[] = [];
@@ -340,6 +347,7 @@ function participant(deps: ConfirmLineProbeDeps, opts: { severAfterEnter?: boole
     timer: deps.timer,
     newId: deps.newId,
     trace: null,
+    keepAlive: deps.keepAlive,
   });
   return {
     line,
@@ -437,7 +445,7 @@ function keyFor(run: string, check: ConfirmLineCheck): LineKey {
  * verdict is reported (A could not lead, B fell back, or B led beside A).
  */
 async function queuedBehindLeader(
-  deps: ConfirmLineProbeDeps,
+  deps: ProbeRunDeps,
   key: LineKey,
   held: ReturnType<typeof holdings>,
 ): Promise<CheckResult | { lead: Turn; follower: Promise<Turn>; a: Participant; b: Participant }> {
@@ -459,7 +467,7 @@ async function queuedBehindLeader(
 /** What `full`'s leader reports as its settlement, which `nothingHeld` may meet again (#3570). */
 const fullSettlement = (run: string) => ({ probe: "confirm-line", run });
 
-async function checkFull(deps: ConfirmLineProbeDeps, key: LineKey, run: string): Promise<CheckResult> {
+async function checkFull(deps: ProbeRunDeps, key: LineKey, run: string): Promise<CheckResult> {
   const held = holdings();
   try {
     const queued = await queuedBehindLeader(deps, key, held);
@@ -481,7 +489,7 @@ async function checkFull(deps: ConfirmLineProbeDeps, key: LineKey, run: string):
   }
 }
 
-async function checkNotFull(deps: ConfirmLineProbeDeps, key: LineKey): Promise<CheckResult> {
+async function checkNotFull(deps: ProbeRunDeps, key: LineKey): Promise<CheckResult> {
   const held = holdings();
   try {
     const queued = await queuedBehindLeader(deps, key, held);
@@ -506,7 +514,7 @@ async function checkNotFull(deps: ConfirmLineProbeDeps, key: LineKey): Promise<C
   }
 }
 
-async function checkAbandoned(deps: ConfirmLineProbeDeps, key: LineKey): Promise<CheckResult> {
+async function checkAbandoned(deps: ProbeRunDeps, key: LineKey): Promise<CheckResult> {
   const a = participant(deps, { severAfterEnter: true });
   const b = participant(deps);
   const held = holdings();
@@ -555,7 +563,7 @@ async function checkAbandoned(deps: ConfirmLineProbeDeps, key: LineKey): Promise
 }
 
 async function checkNothingHeld(
-  deps: ConfirmLineProbeDeps,
+  deps: ProbeRunDeps,
   keys: readonly LineKey[],
   /** The instant `full` settled and the settlement it reported, which the line may remember (#3570). */
   settledFull: { key: LineKey; settlement: unknown },
@@ -676,7 +684,7 @@ const directoryUnreachable = (what: string, why: string): CheckResult => ({
  * and its first call meets a cold start the live directory never does. Every call after it
  * is held to one call, as a directory already awake, which is what the live one is.
  */
-async function checkDirectory(deps: ConfirmLineProbeDeps, run: string): Promise<CheckResult> {
+async function checkDirectory(deps: ProbeRunDeps, run: string): Promise<CheckResult> {
   const verify = deps.directory(POOL_GROUPING_VERIFY_DIRECTORY);
   const live = deps.directory(POOL_GROUPING_DIRECTORY);
   const ask = (stub: DirectoryStub, message: Record<string, unknown>) => askDirectory(deps, stub, message);
@@ -756,7 +764,7 @@ function answeredFrom(answer: Record<string, unknown>): GroupingAnsweredFrom | n
  * directory says, so it is stored whatever the check before it (or yesterday's run) left
  * there, and two of the probe's own puts never tie on one clock reading.
  */
-async function checkDirectoryWake(deps: ConfirmLineProbeDeps, run: string): Promise<CheckResult> {
+async function checkDirectoryWake(deps: ProbeRunDeps, run: string): Promise<CheckResult> {
   const verify = deps.directory(POOL_GROUPING_VERIFY_DIRECTORY);
   const ask = (message: Record<string, unknown>) => askDirectory(deps, verify, message);
   const spellS = PROBE_WAKE_IDLE_MS / 1000;
@@ -827,7 +835,15 @@ async function guarded(work: () => Promise<CheckResult>): Promise<CheckResult> {
 }
 
 /** Run every check, in order, each on its own fresh instant of the verification group. */
-export async function runConfirmLineProbe(deps: ConfirmLineProbeDeps): Promise<ProbeReport> {
+export async function runConfirmLineProbe(callerDeps: ConfirmLineProbeDeps): Promise<ProbeReport> {
+  const givingBack: Promise<unknown>[] = [];
+  const deps: ProbeRunDeps = { ...callerDeps, keepAlive: (work) => void givingBack.push(work) };
+  // Each give back is bounded by its own call deadline and never rejects, so this cannot hang.
+  const guardedCheck = async (check: () => Promise<CheckResult>): Promise<CheckResult> => {
+    const result = await guarded(check);
+    await Promise.all(givingBack.splice(0));
+    return result;
+  };
   const run = deps.newId();
   const used: LineKey[] = [];
   const claim = (check: ConfirmLineCheck) => {
@@ -836,13 +852,13 @@ export async function runConfirmLineProbe(deps: ConfirmLineProbeDeps): Promise<P
     return key;
   };
   const fullKey = claim("full");
-  const full = await guarded(() => checkFull(deps, fullKey, run));
-  const notFull = await guarded(() => checkNotFull(deps, claim("notFull")));
-  const abandoned = await guarded(() => checkAbandoned(deps, claim("abandoned")));
-  const nothingHeld = await guarded(() => checkNothingHeld(deps, used, { key: fullKey, settlement: fullSettlement(run) }));
-  const directory = await guarded(() => checkDirectory(deps, run));
+  const full = await guardedCheck(() => checkFull(deps, fullKey, run));
+  const notFull = await guardedCheck(() => checkNotFull(deps, claim("notFull")));
+  const abandoned = await guardedCheck(() => checkAbandoned(deps, claim("abandoned")));
+  const nothingHeld = await guardedCheck(() => checkNothingHeld(deps, used, { key: fullKey, settlement: fullSettlement(run) }));
+  const directory = await guardedCheck(() => checkDirectory(deps, run));
   // Last, because it is the one that waits: the line checks and the live read are never
   // held behind its idle spells.
-  const directoryWake = await guarded(() => checkDirectoryWake(deps, run));
+  const directoryWake = await guardedCheck(() => checkDirectoryWake(deps, run));
   return { full, notFull, abandoned, nothingHeld, directory, directoryWake };
 }

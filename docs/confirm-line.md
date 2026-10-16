@@ -68,8 +68,10 @@ speed: 1 booked, 99 told to retry, 0 told taken, 0 reservations or events left.
 
 Load run 37640583621 showed #3338's walk working and the line serving it one confirm
 every two to three seconds, so a crowd's tier drop booked four of twelve. Three rules
-were added, all in `makeConfirmQueue`, all optional on protocol 1 (an older client or
-object leaves each field out, and the line keeps its rules from before):
+were added, all in `makeConfirmQueue`, all optional on protocol 1 (an older client
+leaves each field out, and the line keeps its rules from before). #3529's ladder release
+was NOT safe the other way round, an older object beside a newer client, and is why the
+client speaks protocol 2 (see "Versions" below):
 
 - **The frontier and the release.** A confirm reading a rung names it on `claimFirst`
   (`ClaimPlace`), so its read becomes the line's frontier. Handing the line on releases
@@ -302,13 +304,17 @@ load test Worker, off in production until activation).
 
 Every confirm records how it was served, on its `confirm answered` log line:
 `line` (`shared`, `isolate`, `fallback`), `line_reason`, `line_key` and `line_ms`
-(the time the line added, waiting excluded).
+(the time the line added, waiting excluded). A lookahead that failed counts its own
+time in `line_ms` (#3355 item 4): it is the first call on the booking path, and a
+confirm that spent 1.5s on one that timed out used to report `line_ms` 0.
 
 | what happened | what the confirm does | `line` / `line_reason` | pages? |
 |---|---|---|---|
 | switch off | its isolate's line, as before | `isolate` / `off` (`unread-default` when it fell back to the default) | no |
 | switch on, no binding | its isolate's line | `fallback` / `unbound` | after 3 in a minute on one isolate |
 | `enter` refused or not answered in 1.5s | its isolate's line, and abandons the attempt | `fallback` / `reach-timeout`, `enter-error` | same |
+| the object answered with something the client cannot read | its isolate's line, and abandons the attempt | `fallback` / `bad-answer` | same |
+| the object is OLDER than the app (#3560) | its isolate's line at once, no re-entry, nothing to give back | `fallback` / `version` | same, and the page says to redeploy the line Worker |
 | a deploy replaced the object | re-enters the new instance | `shared` / `gone` | never |
 | a leader's call fails mid turn | carries on; the insert decides | unchanged | no |
 
@@ -326,6 +332,54 @@ later call checks. Waiting on it put a line object's round trip in front of ever
 confirm, 1.3s on an object fresh from a deploy (load run 37572839375). Nothing waits
 on the ack at all, neither the confirm's start nor its report, and it is not counted
 in `line_ms`.
+
+A give back (`abandon`) is SENT the same way and never waited on (#3355 item 4). Every
+one follows a call that failed or an answer nobody will collect, so it goes to the object
+least likely to answer, and waiting on it put up to another second in front of the
+isolate's line, or in front of the confirm's own answer when `release` sent it. It is
+handed to `keepAlive`, which on the platform is `afterResponse`, so it is not cancelled
+when the response goes out, and it is not counted in `line_ms`.
+
+## Versions: an app and a line object from different builds (#3560)
+
+Every message carries `v`, the protocol the CLIENT speaks, which says what it needs the
+object to do. An object serves every client from `CONFIRM_LINE_OLDEST_PROTOCOL` to its
+own `CONFIRM_LINE_PROTOCOL` and answers anything else `gone`, `why: "version"`, before
+acting on it. Every object ever deployed has answered that way, so the client takes that
+answer as "this object is older than me".
+
+The two orders are not alike:
+
+- **An older app beside a newer object** is what every deploy makes (the object Workers
+  deploy first, then the app gradually) and what the app only rollback
+  (`scripts/rollback-production.ts`) makes. The object keeps serving it: an older client
+  leaves out fields it never knew, and the line keeps its rules from before for each.
+- **A newer app beside an older object** happens only when the line Worker is rolled back
+  on its own. Load run 37869019791 met it (app on 357e8cf9, line Worker on c51bcfae):
+  every confirm in each refusal burst's first crowd waited about 11 seconds and was
+  answered 503. The cause, reproduced offline by driving the current client against the
+  object at c51bcfae: #3529's client decides the full verdict from marks only the newer
+  object hands out (`StartFrom.last`, `deepest`). The older object accepted every message,
+  ignored `lower` and `lowerComplete`, and handed out neither mark, so no confirm ever
+  reported the ladder spent and the crowd waited out its whole wait. Nothing about it was
+  refused, so nothing said anything was wrong.
+
+Since #3560 the client speaks protocol 2, so an older object refuses it, and the client
+uses its isolate's own line at once (`fallback` / `version`) and pages with the remedy:
+redeploy the ConfirmLine Worker at the app's commit. That makes a line Worker rolled back
+alone the same as the shared line switched OFF, the state production runs today, rather
+than an untested mix of two builds. It does not make a crowd book: on per isolate lines a
+crowd for one slot books one advisor or none (load run 37333201026, and the load model in
+`test-confirm-contention.ts`, which holds the older object order to exactly what the
+switched off line gives). Only refusing to deploy the line older than the app keeps a
+crowd served in that order.
+
+**When to raise which.** Raise `CONFIRM_LINE_PROTOCOL` whenever the client starts relying
+on something only the newer object does, even when an older object would accept every
+field and ignore it. Raise `CONFIRM_LINE_OLDEST_PROTOCOL` only when the object can no
+longer serve an older client, since a refused client uses its isolate's line for the whole
+of a gradual deploy (run 37333201026). Optional fields whose absence only the CLIENT reads
+(#3489's rung, outcome, `canWalk`, settlement and `park`) need neither.
 
 ## Waking a line before its confirm (#3775)
 
@@ -379,7 +433,12 @@ the same key both ways for sixty codes), `test-unawaited-line-calls.ts` (no unaw
 is the one deliberate exception, see Timings),
 `test-confirm-line-binding.ts` (bound, created and exported in production and the load
 test, the deployed class logging a traced call, and serving the directory only on its
-own path and, when the runtime names it, its own instance). #3489's rules are in the
+own path and, when the runtime names it, its own instance). #3560: the object suite
+holds which client versions an object serves, the client suite an older object's
+refusal (one enter, no re-entry, `version`, reported, from an enter, a lookahead or a
+poll), and the contention suite a crowd against an older object answered exactly as the
+same crowd is with the shared line off. #3355 item 4: the client suite holds every give
+back sent without waiting and kept alive, and a failed lookahead counted in `line_ms`. #3489's rules are in the
 queue suite (release, walk, park, held verdict, a walk that stands), the object suite
 and the client suite (each field on the wire, an older peer's absence of it), and the
 contention suite end to end (the burst bar under the load model, a walk read once). The
