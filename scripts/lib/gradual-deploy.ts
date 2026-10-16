@@ -42,7 +42,7 @@
  */
 
 import type { ProbeOutcome } from "./post-deploy-probe.ts";
-import { deployObjectWorkers, type ObjectWorkerFacts } from "./object-worker-skip.ts";
+import { deployObjectWorkers, type LiveAppProtocol, type ObjectWorkerFacts } from "./object-worker-skip.ts";
 
 /** The Worker's name in wrangler.jsonc, and the key in the version override header. */
 export const WORKER_NAME = "slate";
@@ -485,6 +485,10 @@ export const EXIT = {
    *  unchanged) failed to deploy or threw, so nothing of Slate's was uploaded: Slate's
    *  bindings name them. Nothing of Slate's changed. */
   objectWorkerFailed: 26,
+  /** #3560: the confirm line build speaks an older protocol than the live app, so
+   *  deploying it would put a line object older than the app in front of it, where a
+   *  crowd books one advisor or none. Nothing was deployed. */
+  lineOlderThanApp: 27,
 } as const;
 
 export type EndState = "new" | "old" | "unchanged" | "unknown";
@@ -513,6 +517,7 @@ export const EXIT_END: Record<keyof typeof EXIT, EndState> = {
   scriptFailed: "unknown",
   classChange: "unchanged",
   objectWorkerFailed: "unchanged",
+  lineOlderThanApp: "unchanged",
 };
 
 export interface GradualResult {
@@ -554,6 +559,9 @@ export interface GradualOps {
   /** #3561: after a stamped deploy, the hash the serving version reads back as carrying,
    *  so a stamp that never lands is said. Null when none or unreadable. */
   objectWorkerStamp(config: string): Promise<string | null>;
+  /** #3560: the confirm line protocol the app serving now speaks, read from its commit.
+   *  Asked only before the line Worker is deployed. May throw. */
+  liveAppProtocol(): Promise<LiveAppProtocol>;
   /** Whether a version was uploaded in cron standby (a canary): read from its
    *  annotation. Null when it could not be read. */
   isCronStandby(versionId: string): Promise<boolean | null>;
@@ -724,10 +732,18 @@ async function runUntilSplit(ops: GradualOps): Promise<GradualResult> {
       facts: (config) => ops.objectWorkerFacts(config),
       deploy: (config, message) => ops.objectWorker(config, message),
       servingStamp: (config) => ops.objectWorkerStamp(config),
+      liveAppProtocol: () => ops.liveAppProtocol(),
       log: (line) => ops.log(line),
     },
     OBJECT_WORKER_CONFIGS,
   );
+  if (!objects.ok && objects.kind === "refused") {
+    return {
+      exit: EXIT.lineOlderThanApp,
+      end: "unchanged",
+      message: `Not deployed: ${objects.reason}. Nothing was deployed and the previous version is still serving 100%. A newer app beside an older line object puts every confirm on its isolate's own line, where a crowd for one slot books one advisor or none. If this release lowers the protocol on purpose (a revert), deploy the app alone at this commit first (\`pnpm cf:deploy\`, then confirm it on /api/smoke/version), then re-run so the line follows it; otherwise deploy the line from a build at least as new as the app.`,
+    };
+  }
   if (!objects.ok) {
     return {
       exit: EXIT.objectWorkerFailed,

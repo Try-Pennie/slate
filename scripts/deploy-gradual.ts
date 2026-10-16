@@ -209,6 +209,8 @@ const ops: GradualOps = {
   objectWorkerFacts: (config) => objectOps.facts(config),
   objectWorker: (config, message) => objectOps.deploy(config, message),
   objectWorkerStamp: (config) => objectOps.servingStamp(config),
+  // #3560: never a confirm line build older than the app serving now.
+  liveAppProtocol: () => objectOps.liveAppProtocol(),
   isCronStandby: async (id) => isCronStandby(id),
   record: (event) => {
     if (stateFile) appendFileSync(stateFile, `${event}\n`, "utf8");

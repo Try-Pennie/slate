@@ -322,6 +322,7 @@ exits, and the exit code says which (`EXIT` in `scripts/lib/gradual-deploy.ts`, 
 | 24 | the deploy script itself failed outside its own handling | unknown: the settle step reads what the run recorded |
 | 25 | the release changes a Durable Object class, which Cloudflare refuses to upload as a version (#3352); ship it by hand, and until then every later deploy ends here too | unchanged |
 | 26 | an object worker (`slate-confirm-line`, #3500, `slate-burst-limiter`, #3555, or `slate-token-holder`, #3512) could not be deployed; Slate's bindings name them, so nothing of Slate's was uploaded. Only a Worker that changed is deployed (#3561), so this fires only on a deploy that needed one. The message names the config and why; deploy them with `node --experimental-strip-types scripts/deploy-object-workers.ts` and re-run | unchanged |
+| 27 | the confirm line build speaks an older `CONFIRM_LINE_PROTOCOL` than the app serving now (#3560), so deploying it would put a line object older than the app in front of it, where a crowd books one advisor or none. Nothing was deployed. Read from the built bundle and from the source at the serving app's commit tag. For a revert that lowers the protocol on purpose, deploy the app alone first (`pnpm cf:deploy`), then re-run | unchanged |
 
 Any non-zero exit fails the job, and a failed job on a push to `main` posts a Slack alert
 (`.github/workflows/deploy-alert.yml`). A job cancelled or timed out mid-run cannot end the
@@ -408,6 +409,21 @@ lead can meet both versions across page loads. Then it is one version at 100% ag
   any Worker it did not change. A hand deploy of an object Worker should go through that script too, or the next
   pipeline deploy redeploys it once to stamp it. The decision is driven offline by
   `scripts/test-object-worker-skip.ts`.
+- **A confirm line build older than the live app is refused** (#3560, exit 27, and exit 3
+  from `scripts/deploy-object-workers.ts`). A line object refuses a client newer than
+  itself, and the app then uses its isolate's own line, where a crowd for one slot books
+  one advisor or none. Every pipeline deploy makes the safe order (the line first, at the
+  same commit as the app that follows), so this only fires on a line only rollback or a
+  revert that lowers `CONFIRM_LINE_PROTOCOL`. It compares the protocol declared in the
+  built bundle (`var CONFIRM_LINE_PROTOCOL = N;`) with the one in
+  `src/lib/booking/confirm-line-object.ts` at the serving app's commit tag, fetched if
+  the checkout lacks it. It is asked only when the line Worker is about to be deployed. If
+  either side cannot be read, the line is deployed anyway and the log (and a warning from
+  the script) says the check could not be made and why: an untagged app version is
+  ordinary (every secret change makes one), so refusing on it would stop normal deploys,
+  and #3560's client already falls back and pages `confirm_line_unreachable` in that
+  order. For a deliberate protocol lowering, deploy the app alone first
+  (`pnpm cf:deploy`), then re-run.
 - **Cost.** Two uploads, a split and a second probe add roughly a minute to each deploy,
   plus the cron window wait when a merge lands just before the hour (about one deploy in
   ten). At the 530 deploys of the 30 days to 2026-10-03, that is an estimated 500 to 600

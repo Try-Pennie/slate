@@ -102,10 +102,69 @@ export function stampFromMessage(message: string | null): string | null {
   return /^[0-9a-f]{64}$/.test(hash) ? hash : null;
 }
 
+// --- #3560: the confirm line's protocol -------------------------------------------------
+//
+// A line object serves clients up to its own `CONFIRM_LINE_PROTOCOL` and refuses a newer
+// one (#3839), so an app newer than its line object puts every confirm on its isolate's
+// own line, where a crowd for one slot books one advisor or none. Every deploy makes the
+// other order (the line first, then the app at the same commit), which the object serves.
+// The newer app order only arises when the line Worker is deployed from a build older
+// than the app that is live: a line only rollback, or a revert that lowers the protocol.
+// That is refused here, from the protocol the BUILT bundle carries against the one the
+// live app's commit speaks.
+
+/** The object worker whose protocol is checked. */
+export const CONFIRM_LINE_CONFIG = "wrangler.confirm-line.jsonc";
+
+/**
+ * The confirm line protocol declared in a source file or a bundle, or null when it is
+ * not declared exactly once as a number. Matches `export const CONFIRM_LINE_PROTOCOL = 2;`
+ * in source and `var CONFIRM_LINE_PROTOCOL = 2;` in the bundle wrangler builds (measured
+ * 2026-10-16, wrangler 4.147.0, which keeps the name).
+ */
+export function protocolFromSource(text: string | null): number | null {
+  if (text === null) return null;
+  const found = [...text.matchAll(/\bCONFIRM_LINE_PROTOCOL\s*=\s*([^;\n]*);/g)];
+  if (found.length !== 1) return null;
+  const value = found[0][1].trim();
+  return /^[1-9][0-9]*$/.test(value) ? Number(value) : null;
+}
+
+/** The protocol the live app speaks, or why it could not be read. */
+export type LiveAppProtocol = { protocol: number } | { unreadable: string };
+
+/**
+ * Refuse a line build older than the live app; deploy otherwise.
+ *
+ * An unreadable value on EITHER side deploys, with a reason saying the check could not be
+ * made. Refusing would stop ordinary deploys: a secret change leaves the app serving an
+ * untagged version (no commit to read the protocol from), and the commit may not be
+ * fetchable. What the unchecked order costs is bounded by #3839: the app falls back to its
+ * isolate's own line, which is what production runs with the shared line off, and pages
+ * `confirm_line_unreachable` naming the remedy.
+ */
+export function decideLineProtocol(built: number | null, live: LiveAppProtocol): { action: "deploy" | "refuse"; reason: string } {
+  if (built === null) {
+    return { action: "deploy", reason: "the line's protocol could not be checked: the built bundle does not declare CONFIRM_LINE_PROTOCOL once as a number" };
+  }
+  if ("unreadable" in live) {
+    return { action: "deploy", reason: `the line's protocol could not be checked against the live app's (${live.unreadable}); the build speaks protocol ${built}` };
+  }
+  if (built < live.protocol) {
+    return {
+      action: "refuse",
+      reason: `this line build speaks protocol ${built} and the live app speaks protocol ${live.protocol}, so deploying it would put a line object older than the app in front of it (#3560)`,
+    };
+  }
+  return { action: "deploy", reason: `the line build speaks protocol ${built}, the live app protocol ${live.protocol}` };
+}
+
 /** What a run knows about one object Worker before deciding. */
 export interface ObjectWorkerFacts {
   /** `objectBundleHash` of the local build; null when it could not be built or hashed. */
   localHash: string | null;
+  /** #3560: `protocolFromSource` of the built bundle, for the confirm line; absent or null when not measured. */
+  builtProtocol?: number | null;
   /** `wrangler deployments status --json` for the Worker; null when it could not be read. */
   deployed: VersionShare[] | null;
   /** `wrangler versions view --json` of the one version serving; null when not read. */
@@ -146,14 +205,24 @@ export interface ObjectWorkerOps {
   deploy(config: string, message: string | null): Promise<boolean>;
   /** The bundle hash the serving version's message carries, after a deploy; null when it carries none or could not be read. */
   servingStamp(config: string): Promise<string | null>;
+  /** #3560: the confirm line protocol the live app speaks. Asked only before deploying the line. May throw. */
+  liveAppProtocol(): Promise<LiveAppProtocol>;
   log(line: string): void;
 }
 
 /** `unstamped`: deployed, and the serving version is not confirmed to carry the stamp
- *  (none was written, or it did not read back), so the next run deploys it again. */
+ *  (none was written, or it did not read back), so the next run deploys it again.
+ *  `unchecked`: the line was deployed without its protocol being compared (#3560). */
+interface Lists {
+  deployed: string[];
+  skipped: string[];
+  unstamped: string[];
+  unchecked: string[];
+}
 export type ObjectWorkersResult =
-  | { ok: true; deployed: string[]; skipped: string[]; unstamped: string[] }
-  | { ok: false; config: string; reason: string; deployed: string[]; skipped: string[]; unstamped: string[] };
+  | ({ ok: true } & Lists)
+  /** `failed`: a needed deploy failed or threw. `refused`: the line build is older than the live app. */
+  | ({ ok: false; kind: "failed" | "refused"; config: string; reason: string } & Lists);
 
 /**
  * Each config in order, deployed or skipped. Stops at the first needed deploy that fails,
@@ -161,9 +230,8 @@ export type ObjectWorkersResult =
  * either way. Never throws.
  */
 export async function deployObjectWorkers(ops: ObjectWorkerOps, configs: readonly string[]): Promise<ObjectWorkersResult> {
-  const deployed: string[] = [];
-  const skipped: string[] = [];
-  const unstamped: string[] = [];
+  const lists: Lists = { deployed: [], skipped: [], unstamped: [], unchecked: [] };
+  const { deployed, skipped, unstamped, unchecked } = lists;
   for (const config of configs) {
     let facts: ObjectWorkerFacts | null = null;
     let decision: ObjectWorkerDecision;
@@ -178,6 +246,21 @@ export async function deployObjectWorkers(ops: ObjectWorkerOps, configs: readonl
       skipped.push(config);
       continue;
     }
+    if (config === CONFIRM_LINE_CONFIG) {
+      let live: LiveAppProtocol;
+      try {
+        live = await ops.liveAppProtocol();
+      } catch (err) {
+        live = { unreadable: `reading it threw: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      const check = decideLineProtocol(facts?.builtProtocol ?? null, live);
+      if (check.action === "refuse") {
+        ops.log(`object worker ${config}: REFUSED, ${check.reason}`);
+        return { ok: false, kind: "refused", config, reason: check.reason, ...lists };
+      }
+      if (/could not be checked/.test(check.reason)) unchecked.push(config);
+      ops.log(`object worker ${config}: ${check.reason}`);
+    }
     ops.log(`object worker ${config}: deploying, ${decision.reason}`);
     const message = facts?.localHash ? objectBundleStamp(facts.localHash) : null;
     let ok = false;
@@ -187,7 +270,7 @@ export async function deployObjectWorkers(ops: ObjectWorkerOps, configs: readonl
     } catch (err) {
       why = `the deploy threw (${err instanceof Error ? err.message : String(err)})`;
     }
-    if (!ok) return { ok: false, config, reason: why, deployed, skipped, unstamped };
+    if (!ok) return { ok: false, kind: "failed", config, reason: why, ...lists };
     deployed.push(config);
     if (message === null || facts?.localHash == null) {
       unstamped.push(config);
@@ -211,5 +294,5 @@ export async function deployObjectWorkers(ops: ObjectWorkerOps, configs: readonl
       );
     }
   }
-  return { ok: true, deployed, skipped, unstamped };
+  return { ok: true, ...lists };
 }

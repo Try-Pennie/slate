@@ -95,6 +95,9 @@ interface Scenario {
   objectFacts?: "unstamped" | "same" | "throw";
   /** Every status read after the first THROWS. */
   statusThrowsLater?: boolean;
+  /** #3560: the confirm line protocol the built bundle carries (default 2) and the live app speaks (default 2). */
+  lineBuiltProtocol?: number | null;
+  liveProtocol?: { protocol: number } | { unreadable: string };
 }
 
 const HAPPY: Scenario = {
@@ -161,7 +164,11 @@ async function drive(s: Scenario): Promise<Run> {
       if (s.objectFacts === "throw") throw new Error(`planted object facts throw for ${config}`);
       const hash = config.length.toString(16).padStart(2, "0").repeat(32);
       const message = s.objectFacts === "same" ? objectBundleStamp(hash) : null;
-      return { localHash: hash, deployed: [{ versionId: OBJ, percentage: 100 }], view: { id: OBJ, tag: null, message } };
+      return { localHash: hash, deployed: [{ versionId: OBJ, percentage: 100 }], view: { id: OBJ, tag: null, message }, builtProtocol: "lineBuiltProtocol" in s ? s.lineBuiltProtocol : 2 };
+    },
+    liveAppProtocol: async () => {
+      calls.push("live-protocol");
+      return s.liveProtocol ?? { protocol: 2 };
     },
     objectWorker: async (config, message) => {
       calls.push(`object-worker:${config}`);
@@ -247,7 +254,13 @@ async function drive(s: Scenario): Promise<Run> {
       "status",
       // #3561: each deployed (the default fake's serving versions carry no stamp), then
       // its stamp read back.
-      ...OBJECT_WORKER_CONFIGS.flatMap((c) => [`object-worker:${c}`, `object-stamp:${c}`]),
+      // its stamp read back; the confirm line's protocol is compared with the live app's
+      // first (#3560).
+      ...OBJECT_WORKER_CONFIGS.flatMap((c) => [
+        ...(c === "wrangler.confirm-line.jsonc" ? ["live-protocol"] : []),
+        `object-worker:${c}`,
+        `object-stamp:${c}`,
+      ]),
       "upload:canary",
       "upload:release",
       "wait",
@@ -342,6 +355,30 @@ for (const failing of [...OBJECT_WORKER_CONFIGS, "throw"] as const) {
   }
 }
 
+// --- #3560: a confirm line build older than the live app is refused before anything ---
+{
+  const r = await drive({ ...HAPPY, lineBuiltProtocol: 1, liveProtocol: { protocol: 2 } });
+  eq(r.result.exit, EXIT.lineOlderThanApp, "a line build older than the live app ends the run with its own exit");
+  eq(r.result.end, "unchanged", "with nothing changed");
+  assert(!r.calls.some((c) => c.startsWith("object-worker:") || c.startsWith("upload:") || c.startsWith("deploy:")), `no object worker and nothing of Slate's was deployed (calls ${r.calls.join(" > ")})`);
+  assert(/protocol 1/.test(r.result.message) && /protocol 2/.test(r.result.message), `the message names both protocols (${r.result.message})`);
+}
+{
+  const r = await drive({ ...HAPPY, lineBuiltProtocol: 1, liveProtocol: { unreadable: "the serving app version carries no commit tag" } });
+  eq(r.result.exit, EXIT.promoted, "a live protocol that cannot be read does not stop an ordinary deploy");
+  assert(r.logs.some((l) => /could not be checked/.test(l) && l.includes("no commit tag")), "and the run log says the check could not be made, and why");
+}
+{
+  const r = await drive({ ...HAPPY, lineBuiltProtocol: null });
+  eq(r.result.exit, EXIT.promoted, "a built protocol that cannot be read does not stop it either");
+  assert(r.logs.some((l) => /could not be checked/.test(l)), "and says so");
+}
+{
+  const r = await drive({ ...HAPPY, objectFacts: "same", lineBuiltProtocol: 1, liveProtocol: { protocol: 2 } });
+  eq(r.result.exit, EXIT.promoted, "a line Worker that is unchanged is not deployed, so there is nothing to refuse");
+  assert(!r.calls.includes("live-protocol"), "and the live app is not asked");
+}
+
 // --- the log tail worker goes LAST, after Slate is promoted and healthy (#3191) ------
 //
 // It binds to an entrypoint of Slate's, so it may only deploy once that version serves
@@ -402,6 +439,7 @@ for (const bad of [
     tailWorker: async () => true,
     objectWorkerFacts: async () => ({ localHash: null, deployed: null, view: null }),
     objectWorkerStamp: async () => null,
+    liveAppProtocol: async () => ({ unreadable: "not asked in this test" }),
     objectWorker: async () => true,
     isCronStandby: async () => false,
     record: () => {},
