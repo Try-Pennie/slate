@@ -3,7 +3,7 @@ import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/
 import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 import { timeStage } from "@/lib/booking/confirm-profile";
 import { refusedLeadId } from "@/lib/booking/refusal-trace";
-import { scheduleStoredOfferCheck } from "@/lib/booking/refusal-stored-offer-live";
+import { answerAfterRefusalRefresh } from "@/lib/booking/refusal-stored-offer-live";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { z } from "zod";
 import {
@@ -566,11 +566,12 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
     // budget, which a timeout has already spent; its outcome and report would
     // otherwise fail at once and the failure would go unrecorded.
     noteRefusal(progress.facts, err);
-    // #3366: after the response, read the stored row for a candidate_read_empty
-    // refusal and log whether it still offers the refused time. Nothing changes here.
-    scheduleStoredOfferCheck(err);
     // #3300: the refunds, the tally and any page, charged to the profile as one stage.
-    return timeStage(progress.facts.profile, "failure-path", () => withinBookingCleanupBudget(async () => {
+    // #3366, #3796: answered through the stored row check, which reads the row for a
+    // candidate_read_empty refusal alongside the failure path and holds the 409, at
+    // most for what the allowance has left, for the refresh of a pool still offering
+    // the refused time, so the booker's reload right after it reads the refreshed row.
+    return timeStage(progress.facts.profile, "failure-path", () => withinBookingCleanupBudget(() => answerAfterRefusalRefresh(err, async () => {
       // The lead already has an active call, so nothing was created (#1337). Refund
       // the rate-limit hit: being declined is not an attempt they should pay for,
       // and the Move they are about to make is a separate request.
@@ -694,6 +695,6 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
       recordRoutedOutcome("error", code, "internal", { by: "bucket", code, host });
       // refusal: internal
       return internalErrorResponse(err, "booking");
-    }));
+    })));
   }
 }

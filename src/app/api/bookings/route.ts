@@ -6,7 +6,7 @@ import { authorizeBookingApi } from "@/lib/booking/route-auth";
 import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 import { timeStage } from "@/lib/booking/confirm-profile";
 import { refusedLeadId } from "@/lib/booking/refusal-trace";
-import { scheduleStoredOfferCheck } from "@/lib/booking/refusal-stored-offer-live";
+import { answerAfterRefusalRefresh } from "@/lib/booking/refusal-stored-offer-live";
 import { makeWaitMarks, readEntryMarks, readLoadtestLeg } from "@/lib/booking/wait-marks";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
@@ -379,14 +379,15 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts, progress: A
     return NextResponse.json(body, { status });
   } catch (err) {
     noteRefusal(facts, err);
-    // #3366: after the response, read the stored row for a candidate_read_empty
-    // refusal and log whether it still offers the refused time. Nothing changes here.
-    scheduleStoredOfferCheck(err);
     // #3102: the failure path runs under the cleanup allowance, not the confirm
     // budget, which a timeout has already spent; its outcome and report would
     // otherwise fail at once and the failure would go unrecorded.
     // #3300: charged to the profile as one stage.
-    return timeStage(facts.profile, "failure-path", () => withinBookingCleanupBudget(async () => {
+    // #3366, #3796: answered through the stored row check, which reads the row for a
+    // candidate_read_empty refusal alongside the failure path and holds the 409, at
+    // most for what the allowance has left, for the refresh of a pool still offering
+    // the refused time.
+    return timeStage(facts.profile, "failure-path", () => withinBookingCleanupBudget(() => answerAfterRefusalRefresh(err, async () => {
       const { status, code } = mapBookingError(err);
       log.info("booking-api", {
         msg: "outcome",
@@ -415,7 +416,7 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts, progress: A
         },
         { status },
       );
-    }));
+    })));
   }
 }
 
