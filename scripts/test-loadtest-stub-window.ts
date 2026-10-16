@@ -90,6 +90,22 @@ const endMs = (e: { end?: { dateTime?: string } }) => Date.parse(e.end?.dateTime
 }
 
 {
+  // #3239: the meetings exist at fixed times, whatever time of day the calendar is hydrated.
+  // They used to sit on a grid counted from the hydration moment, so a run dispatched at noon
+  // and one at 2:40 PM saw different busy times, and run 38933668981 (12:39 PM ET) drew 20
+  // steady SLOT_TAKEN where the evening runs before it drew 0 to 2.
+  const grid = (at: number) =>
+    stubSyncEvents("agent@x.com", null, at, WINDOW)
+      .events.filter((e) => e.id.startsWith("lt-evt-boot-") && !/straddle|before|beyond/.test(e.id))
+      .map((e) => `${e.id}@${e.start?.dateTime}`)
+      .join(",");
+  const noon = grid(NOW);
+  const later = grid(NOW + (2 * 60 + 40) * 60_000);
+  assert(noon.length > 0, "control: the grid is read at all");
+  eq(later, noon, "hydrating at a different time of day returns the same meetings, with the same ids");
+}
+
+{
   // Deterministic, so a soak run is reproducible and a difference between two runs means the
   // code changed rather than the fixture rolling differently.
   const a = stubSyncEvents("agent@x.com", null, NOW, WINDOW).events.map((e) => e.id).join(",");
