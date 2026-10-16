@@ -79,8 +79,8 @@ async function main() {
   // The bound is derived, not picked: shorter than one live check's own deadline, so a
   // rung that waited on a slow Google check always re-reads, and well inside the
   // confirm's budget, so a walk that re-reads still has the budget to book.
-  assert(LADDER_READ_MAX_AGE_MS < GOOGLE_CONFIRM_TIMEOUT_MS, `the bound (${LADDER_READ_MAX_AGE_MS}ms) is shorter than one live check's deadline (${GOOGLE_CONFIRM_TIMEOUT_MS}ms)`);
-  assert(LADDER_READ_MAX_AGE_MS * 4 <= BOOKING_CONFIRM_BUDGET_MS, `the bound (${LADDER_READ_MAX_AGE_MS}ms) is at most a quarter of the confirm budget (${BOOKING_CONFIRM_BUDGET_MS}ms)`);
+  assert(LADDER_READ_MAX_AGE_MS * 4 <= GOOGLE_CONFIRM_TIMEOUT_MS, `the bound (${LADDER_READ_MAX_AGE_MS}ms) is at most a quarter of one live check's deadline (${GOOGLE_CONFIRM_TIMEOUT_MS}ms)`);
+  assert(LADDER_READ_MAX_AGE_MS * 6 <= BOOKING_CONFIRM_BUDGET_MS, `the bound (${LADDER_READ_MAX_AGE_MS}ms) is at most a sixth of the confirm budget (${BOOKING_CONFIRM_BUDGET_MS}ms)`);
 
   // Control (L1): a quick walk is judged entirely from its one read, and that read still
   // holds `b`, so the stale read WOULD offer the advisor who has since become unbookable.

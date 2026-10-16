@@ -102,11 +102,11 @@ export const LADDER_WINDOW_SLACK_MIN = 60;
  * judged after this long is judged from a fresh read instead
  * (`assignAgentWithTierFallback`).
  *
- * Two seconds, derived from the two clocks a walk runs under. It is a quarter of a live
+ * Two seconds, derived from the two clocks a walk runs under. It is at most a quarter of a live
  * check's own deadline (`GOOGLE_CONFIRM_TIMEOUT_MS`, 8 seconds), so a rung that waited
  * on a slow Google check always re-reads, while a walk that only touched the database
  * (the read itself is priced at 200ms, each line call less) never pays for one. And it
- * is a sixth of the confirm budget (`BOOKING_CONFIRM_BUDGET_MS`, 12 seconds), so a walk
+ * is at most a sixth of the confirm budget (`BOOKING_CONFIRM_BUDGET_MS`, 12 seconds), so a walk
  * that re-reads still has the budget to judge its rung and write the booking. A re-read
  * is one request, never the seven to nine a rung read cost before #3489. Both relations
  * are pinned by `scripts/test-ladder-read-staleness.ts`; the constants live where they
