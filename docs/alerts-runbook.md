@@ -368,7 +368,7 @@ Keys: `agent_sync_failures`, `agents_without_routing`, `agents_without_schedule`
 `salesforce_manager_ambiguous`,
 `misroute:*`, `rr_ordering_degraded`, `reassign-unknown-reason-code`,
 `booker_empty_reason`, `schedule_parity_drift`, `agents_on_unset_hours`,
-`booking_offsite_origin:*`.
+`booking_offsite_origin:*`, `ladder_advisor_unreadable`.
 
 **What fired it.** Slate's picture of who works here, who they report to, or what they
 are eligible for disagrees with Salesforce, or with itself.
@@ -411,6 +411,22 @@ the advisor and the lead's reminder texts are live. Open the link and cancel it 
 the lead is real. Tests belong on the public test bucket (#2660), which never pages.
 The origin is what the host declares, so a real lead on a misconfigured page reads the
 same way; that is why it pages rather than refuses.
+
+**`ladder_advisor_unreadable`** (#3530) names bookable advisors every confirm is
+leaving out, because a row the confirm reads to judge them could not be read: their
+profile (an empty email, no teams), a bucket membership, their hours or a time zone
+nobody recognises, or a busy time, hold or count on their calendar. The confirm drops
+the WHOLE advisor rather than the bad row, because a missing busy time or hold would
+make them look free and get them booked over a call they already have, so the leads
+are safe and the advisor gets no calls. The page names what to correct; the read is
+`ladder_candidate_inputs` (migration 0176) and the rules are `ladderInputsFrom`
+(`src/lib/availability/ladder-inputs.ts`), whose `ladder-inputs` log line on each
+confirm names the exact section and field. Correct the record (under the agent's page,
+or in Salesforce for a roster field) and the next five minute pass clears it. A zone
+Postgres itself rejects is the one case this cannot name: once that advisor has a call
+in the days the read counts, the count inside the read fails for everybody, which
+pages as confirms failing rather than as this. The schedule writer refuses such a zone
+(`IANAZone.isValidZone`), so only a row written around it can do that.
 
 **Fix or escalate.** Data problems go to whoever owns the Salesforce record.
 `misroute` and `rr_ordering_degraded` are Slate's own routing reporting something it

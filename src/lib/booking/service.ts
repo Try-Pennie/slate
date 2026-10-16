@@ -1907,20 +1907,25 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       // Drainable = pending, lease free/expired, retry time reached (#445:
       // next_attempt_at null/past), and under the give-up cap (a row past the cap
       // stays pending + diagnosable but is no longer retried).
-      const { data, error } = await supabaseAdmin()
-        .from("booking_outbox")
-        .select("*")
-        .eq("status", "pending")
-        .lt("attempts", DRAIN_GIVE_UP_AT)
-        .or(`lease_until.is.null,lease_until.lt.${nowIso}`)
-        .or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
-        .order("created_at", { ascending: true })
-        .limit(limit);
-      if (error) {
-        log.error("outbox", { msg: "loadDrainableOutbox failed" }, error);
-        return [];
-      }
-      return (data ?? []) as BookingOutbox[];
+      //
+      // THROWS on a failed read (#3846), like `loadDrainableReservations` (#3844).
+      // It used to log and return [], which is what an empty outbox returns, so a
+      // read failing on every tick drained nothing and paged nothing while booking
+      // side effects waited. The outbox lane catches the throw and counts it toward
+      // `outbox_drain_failing`.
+      const rows = unwrap(
+        await supabaseAdmin()
+          .from("booking_outbox")
+          .select("*")
+          .eq("status", "pending")
+          .lt("attempts", DRAIN_GIVE_UP_AT)
+          .or(`lease_until.is.null,lease_until.lt.${nowIso}`)
+          .or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
+          .order("created_at", { ascending: true })
+          .limit(limit),
+        "drainable outbox",
+      );
+      return (rows ?? []) as BookingOutbox[];
     },
 
     // #1048: the lease and the three writes it guards live in one db-injected

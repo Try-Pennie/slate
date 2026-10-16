@@ -48,6 +48,15 @@ export const RESCHEDULE_PIN_SWEEP_FAILING_KEY = "reschedule_pin_sweep_failing";
 export const REASSIGN_INTENT_SWEEP_FAILING_KEY = "reassign_intent_sweep_failing";
 
 /**
+ * The outbox drain itself, the lane's primary job (#3846). Its read used to log a
+ * failure and return [], so a read failing on every tick read as an empty outbox:
+ * nothing drained, nothing paged, and `outbox_drain_stuck` can only fire from a
+ * drain that read its rows. The read throws now and the lane catches it here.
+ */
+/** alert-key: outbox_drain_failing */
+export const OUTBOX_DRAIN_FAILING_KEY = "outbox_drain_failing";
+
+/**
  * The hourly coverage-reassignment RETRY lane (#3485 part C). Unlike the lanes above it runs
  * once an hour, not every few minutes, so it needs its own threshold and streak window (set
  * on its `SWEEP_SUBJECT` entry below). It is the one hourly lane given a failure signal:
@@ -130,6 +139,15 @@ const SWEEP_SUBJECT: Record<
       "Calls booked through the /demo link are not being cancelled after their 30 minutes, so " +
       "they stay on the test agent's calendar and the demo offers fewer times to the next visitor.",
     back: "Demo bookings are being cancelled after their 30 minutes again",
+  },
+  [OUTBOX_DRAIN_FAILING_KEY]: {
+    tag: "outbox",
+    afterRuns: OUTBOX_SWEEP_FAILURE_ALERT_AFTER_RUNS,
+    what: "The booking outbox drain on the outbox cron lane",
+    cost:
+      "A booking whose follow up work did not finish (its calendar invite, its webhook to " +
+      "Regal) is not being retried, so that work waits with nobody told.",
+    back: "The booking outbox is being drained again, so unfinished booking follow up is being retried",
   },
   [RESERVATION_DRAIN_FAILING_KEY]: {
     tag: "outbox",
@@ -233,6 +251,7 @@ export async function reportSweepFailures(outcomes: SweepRunOutcome[]): Promise<
     // alert-key: completion_sweep_failing
     // alert-key: webhook_retry_sweep_failing
     // alert-key: demo_auto_cancel_failing
+    // alert-key: outbox_drain_failing
     // alert-key: reservation_drain_failing
     // alert-key: reschedule_pin_sweep_failing
     // alert-key: reassign_intent_sweep_failing
@@ -252,6 +271,7 @@ export async function reportSweepFailures(outcomes: SweepRunOutcome[]): Promise<
     // alert-key: completion_sweep_failing
     // alert-key: webhook_retry_sweep_failing
     // alert-key: demo_auto_cancel_failing
+    // alert-key: outbox_drain_failing
     // alert-key: reservation_drain_failing
     // alert-key: reschedule_pin_sweep_failing
     // alert-key: reassign_intent_sweep_failing
