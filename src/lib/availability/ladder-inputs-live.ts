@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { ladderInputsFrom, ladderWindows, type LadderInputs } from "@/lib/availability/ladder-inputs";
 import type { EventType } from "@/lib/db/types";
+import { log } from "@/lib/log";
 
 /**
  * The whole ladder's candidate inputs in one request (#3489, migration 0176), read
@@ -30,5 +31,16 @@ export async function readLadderInputsLive(
     }),
     "ladder candidate inputs",
   );
-  return ladderInputsFrom(data, windows);
+  const inputs = ladderInputsFrom(data, windows);
+  // #3530: an advisor left out of every rung because a row of theirs could not be read.
+  // Said on every read that drops them, by id and reason (never a value), so a confirm
+  // that could not offer them says why; the monitor lane pages it.
+  if (inputs.dropped.length > 0) {
+    log.error("ladder-inputs", {
+      msg: "advisors left out of every rung: a row of theirs could not be read",
+      dropped: inputs.dropped.length,
+      advisors: inputs.dropped.map((d) => `${d.id} (${d.why.join("; ")})`).join(", "),
+    });
+  }
+  return inputs;
 }

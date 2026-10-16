@@ -143,6 +143,7 @@ import {
   formatAwaitingActivationRecovery,
 } from "@/lib/monitor/awaiting-activation";
 import { formatStrandedHiresAlert, formatStrandedHiresRecovery } from "@/lib/monitor/stranded-hires";
+import { formatLadderDroppedAlert, formatLadderDroppedRecovery } from "@/lib/monitor/ladder-dropped-advisors";
 import {
   formatSessionConvergenceAlert,
   formatSessionConvergenceRecovery,
@@ -497,6 +498,7 @@ import {
   WEBHOOK_RETRY_SWEEP_FAILING_KEY,
   DEMO_AUTO_CANCEL_FAILING_KEY,
   SWEEP_FAILURE_ALERT_AFTER_RUNS,
+  OUTBOX_DRAIN_FAILING_KEY,
   RESERVATION_DRAIN_FAILING_KEY,
   RESCHEDULE_PIN_SWEEP_FAILING_KEY,
   REASSIGN_INTENT_SWEEP_FAILING_KEY,
@@ -2810,8 +2812,9 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: formatSweepFailureRecovery(DEMO_AUTO_CANCEL_FAILING_KEY),
   },
-  // --- the same on the outbox lane's three secondary jobs (#3077) ---
+  // --- the same on the outbox lane: its drain (#3846) and its three secondary jobs (#3077) ---
   ...[
+    OUTBOX_DRAIN_FAILING_KEY,
     RESERVATION_DRAIN_FAILING_KEY,
     RESCHEDULE_PIN_SWEEP_FAILING_KEY,
     REASSIGN_INTENT_SWEEP_FAILING_KEY,
@@ -3255,6 +3258,35 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "nobody stranded",
     channel: "recovery",
     text: formatStrandedHiresRecovery(),
+  },
+  // #3530. Invented people (L155). One and several read differently, an advisor with
+  // no roster row is named by id, and past eight the names are capped.
+  {
+    key: "ladder_advisor_unreadable",
+    state: "one advisor left out",
+    channel: "alert",
+    text: formatLadderDroppedAlert([{ id: "u1", name: "Robin Example", why: ["agents: no readable org, attributes or email"] }]),
+  },
+  {
+    key: "ladder_advisor_unreadable",
+    state: "several, one with no roster row",
+    channel: "alert",
+    text: formatLadderDroppedAlert([
+      { id: "u1", name: "Robin Example", why: ["schedules: no readable id, zone or rules"] },
+      { id: "0f9c2b1e-4d1a-4c3e-9a55-2b6f1e0c7d10", name: null, why: ["busy: no readable bounds or source", "holds: no readable booking or window"] },
+    ]),
+  },
+  {
+    key: "ladder_advisor_unreadable",
+    state: "more left out than the message names",
+    channel: "alert",
+    text: formatLadderDroppedAlert(Array.from({ length: 10 }, (_, i) => ({ id: `u${i}`, name: `Person ${i}`, why: ["day_counts: no readable day or count"] }))),
+  },
+  {
+    key: "ladder_advisor_unreadable",
+    state: "nobody left out",
+    channel: "recovery",
+    text: formatLadderDroppedRecovery(),
   },
   // #2090. Invented people, never real agents (L155). The two axes read differently
   // because the remedies do: a switch somebody turned off, or somebody who left.

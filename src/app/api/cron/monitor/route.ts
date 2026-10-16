@@ -425,6 +425,8 @@ import {
   type AwaitingActivationRow,
 } from "@/lib/monitor/awaiting-activation";
 import { runStrandedHiresCheck, type StrandedHireRow } from "@/lib/monitor/stranded-hires";
+import { runLadderDroppedCheck } from "@/lib/monitor/ladder-dropped-advisors";
+import { readLadderDroppedLive } from "@/lib/monitor/ladder-dropped-advisors-live";
 import { runBelowLeadTierCheck, BELOW_LEAD_TIER_KEY, type BelowLeadTierResult } from "@/lib/monitor/below-lead-tier";
 import {
   loadUpcomingBookingsInBuckets,
@@ -2394,6 +2396,33 @@ export async function GET(req: NextRequest) {
         ...(strandedHires.status === "unreadable" ? { error: strandedHires.error } : {}),
         ...(strandedHires.status === "stranded" ? { stranded: strandedHires.agents.length } : {}),
         ...(strandedHires.status === "clear" ? { measured: strandedHires.measured } : {}),
+      });
+    }
+
+    // --- A bookable advisor the confirm's ladder read leaves out (#3530): a row of
+    // theirs it cannot read drops them from every confirm (never just the row, which
+    // could make them look free), and nothing else on any screen says so. It asks the
+    // confirm's own reader, through the same request, one request a pass. Its own reads,
+    // in its own boundary, and not gated: it consumes no shared setup state. A read that
+    // fails fails the step, so a check that has stopped pages as one. ---
+    const ladderDropped = await steps.run("ladder_dropped_advisors", null, () =>
+      runLadderDroppedCheck({
+        read: () => readLadderDroppedLive(now),
+        // alert-key: ladder_advisor_unreadable
+        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        // alert-key: ladder_advisor_unreadable
+        // all-clear-proof: scripts/test-ladder-dropped-advisors.ts - pins that a read that
+        // fails sends no all clear and that only a read that answered and left nobody out
+        // ends it.
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: cooldownMs.ladder_advisor_unreadable,
+      }),
+    );
+    if (ladderDropped) {
+      log.info("monitor", {
+        msg: "ladder dropped advisors",
+        status: ladderDropped.status,
+        ...(ladderDropped.status === "dropped" ? { dropped: ladderDropped.advisors.length } : {}),
       });
     }
 

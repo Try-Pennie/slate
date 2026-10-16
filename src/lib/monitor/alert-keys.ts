@@ -55,6 +55,7 @@ export const ALERT_KEYS = [
   "agents_on_unset_hours",
   "agents_awaiting_activation",
   "agents_stranded_outside_pool",
+  "ladder_advisor_unreadable",
   "departed_sessions_unconverged",
   "booking_below_lead_tier",
   "cross_system_booking",

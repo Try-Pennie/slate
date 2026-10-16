@@ -3,7 +3,7 @@
 // tsconfig path aliases, and type-only "@/" imports below are erased anyway.
 import { RerouteRefusedError, type RerouteSwapArgs } from "./reroute.ts";
 import type { RerouteSwapRefusal } from "../db/reroute-hold-refusals.ts";
-import type { LadderInputs } from "../availability/ladder-inputs.ts";
+import { LADDER_READ_MAX_AGE_MS, type LadderInputs } from "../availability/ladder-inputs.ts";
 import { toE164 } from "../phone.ts";
 import { mapWithConcurrency } from "../concurrency.ts";
 import { DateTime } from "luxon";
@@ -3193,17 +3193,34 @@ async function assignAgentWithTierFallback(
   // #3489: the whole ladder's candidate inputs in ONE request, so a walk costs one read
   // however many rungs it crosses, and a lower rung's bucket is taken from it too. A
   // read that fails throws here, before any rung, as a failed rung read did.
-  const ladder = deps.readLadderInputs
-    ? await timeStage(deps.profile, "ladder-read", () => deps.readLadderInputs!(ladderCodes, startInstantIso, requested.eventType))
-    : null;
-  const inputs = ladder ? { inputs: ladder } : {};
+  const readLadder = (stage: string) => timeStage(deps.profile, stage, () => deps.readLadderInputs!(ladderCodes, startInstantIso, requested.eventType));
+  // #3530: when the read ANSWERED. The bound is about time the walk spends after it has
+  // the read in hand (live checks, line waits), so a read that was itself slow to arrive
+  // is used rather than thrown away at once: a slow database is exactly when a second
+  // read is least wanted.
+  let ladder = deps.readLadderInputs ? await readLadder("ladder-read") : null;
+  let ladderReadAtMs = Date.now();
+  // #3530: the read, re-made once it is older than `LADDER_READ_MAX_AGE_MS`. A walk that
+  // spent real time on the live checks above a rung judges that rung from a fresh read,
+  // never from busy time, counts, holds and a roster read before those checks. A re-read
+  // that fails throws, exactly as the first read does: falling back to the stale read is
+  // the exposure itself.
+  const freshLadder = async (): Promise<LadderInputs | null> => {
+    if (!ladder || Date.now() - ladderReadAtMs <= LADDER_READ_MAX_AGE_MS) return ladder;
+    const ageMs = Date.now() - ladderReadAtMs;
+    ladder = await readLadder("ladder-reread");
+    ladderReadAtMs = Date.now();
+    log.info("booking", { msg: "ladder read re-made: the walk outlived it", bucket_code: requested.bucket.code, age_ms: ageMs });
+    return ladder;
+  };
   const winner = await walkTierLadder<Omit<TierAssignResult, "rungsDropped">>(
     requested.bucket.code,
     // #3489: a confirm handed a rung starts there; the rungs above it were read spent by
     // the leader whose read it was handed.
     (rungCode, i) => (resume && i < resume.rung) || (handed && i < handed.rung) ? Promise.resolve(skipped) : timeRung(rungCode, async (): Promise<RungOutcome<Omit<TierAssignResult, "rungsDropped">>> => {
       const rungStartedAtMs = Date.now();
-      const resolved = i === 0 ? requested : ladder ? ladder.bucket(rungCode) : await deps.resolveBucketByCode(rungCode);
+      const rungLadder = await freshLadder();
+      const resolved = i === 0 ? requested : rungLadder ? rungLadder.bucket(rungCode) : await deps.resolveBucketByCode(rungCode);
       if (!resolved) return { hit: false }; // a lower tier with no bucket row: skip
       if (resolved.bucket.is_test && !allowTestBuckets) return { hit: false };
       const { startIso, endIso } = bookingWindow(startInstantIso, resolved.eventType.duration_min);
@@ -3219,7 +3236,7 @@ async function assignAgentWithTierFallback(
       if (handed && i === handed.rung && !exclude.includes(handed.advisor)) {
         try {
           const { userId, email, candidates, read } = await assignAgent(
-            deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat, undefined, exclude, { handed, ...inputs },
+            deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat, undefined, exclude, { handed, ...(rungLadder ? { inputs: rungLadder } : {}) },
           );
           return {
             hit: true,
@@ -3248,10 +3265,12 @@ async function assignAgentWithTierFallback(
           handedRefused = handed.advisor;
         }
       }
+      // #3530: the handed advisor's live check above may have spent the read's age.
+      const fullLadder = handedRefused ? await freshLadder() : rungLadder;
       try {
         // #3529: the rungs below, read from the same ladder read, so the line can hand the
         // whole ladder out at once rather than a rung a walker at a time.
-        const lowerRead = seat && canWalk && ladder ? await lowerRungReads(deps, ladder, ladderCodes, i, requested.bucket.code, startInstantIso, preview, allowTestBuckets, exclude) : null;
+        const lowerRead = seat && canWalk && fullLadder ? await lowerRungReads(deps, fullLadder, ladderCodes, i, requested.bucket.code, startInstantIso, preview, allowTestBuckets, exclude) : null;
         const lower = lowerRead?.rungs ?? [];
         const { userId, email, candidates, read } = await assignAgent(
           deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat, undefined, exclude, {
@@ -3262,7 +3281,7 @@ async function assignAgentWithTierFallback(
               ...(lower.length > 0 ? { lower } : {}),
               ...(lowerRead?.complete ? { lowerComplete: true as const } : {}),
             },
-            ...inputs,
+            ...(fullLadder ? { inputs: fullLadder } : {}),
           },
         );
         return {

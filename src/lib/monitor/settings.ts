@@ -208,6 +208,12 @@ export const ALERT_FIELDS: {
     help: "Somebody on the Sales profile has signed in and their calendar syncs, and they are not bookable with no activation pending and nobody on record holding them back. Nothing retries them, so they stay out of every pool until a person acts. It is checked every 5 minutes, and ends when they are made bookable or tagged Redistribute in Twilio.",
   },
   {
+    key: "ladder_advisor_unreadable",
+    urgency: "alert",
+    label: "Bookable advisors left out of every booking",
+    help: "Something Slate reads to judge whether a bookable advisor is free (their profile, hours, time zone or a calendar entry) could not be read, so every booking leaves them out rather than risk booking them over a call they already have. Their buckets carry on with everybody else, so nothing else looks wrong. It is checked every 5 minutes, and ends when what it names is corrected.",
+  },
+  {
     key: "departed_sessions_unconverged",
     urgency: "alert",
     label: "Sign in access not following the roster",
@@ -507,6 +513,10 @@ export const MONITOR_DEFAULTS = {
     // Stranded outside the pool (#2481): the repair is a person pressing one button on
     // an agent page. Once a day while unchanged (#3801); a new name is a change.
     agents_stranded_outside_pool: CONDITION_REPEAT_MS,
+    // An advisor the confirm's ladder read leaves out (#3530): the repair is somebody
+    // correcting one record, which takes a working morning. Once a day while unchanged;
+    // a new name is a change.
+    ladder_advisor_unreadable: CONDITION_REPEAT_MS,
     // Sign in access not following the roster (#2459): judged hourly and only after two
     // unhealthy runs. Once a day while unchanged (#3801).
     departed_sessions_unconverged: CONDITION_REPEAT_MS,

@@ -6,8 +6,10 @@
 //
 //   - the READER (`ladderInputsFrom`). Each section read as empty when it could not be
 //     read is the permissive answer: nobody busy, nobody held, no hours narrowed, every
-//     advisor offered (#277, L50). So every way a section can be unreadable throws, by
-//     name, and a well formed answer is read whole.
+//     advisor offered (#277, L50). So a section it cannot read, an org wide row it
+//     cannot read and a row naming nobody each throw, by name; a row that names its
+//     advisor and is otherwise unreadable drops that WHOLE advisor and nobody else
+//     (#3530), never just the row; and a well formed answer is read whole.
 //   - the WINDOWS (`ladderWindows`). Busy time and holds are read over a superset of the
 //     requested rung's buffered window; the cap count a day either side of that, the
 //     rule the count already had; the share over the slot's two pay periods, as
@@ -23,6 +25,7 @@ import {
 } from "../src/lib/availability/ladder-inputs.ts";
 import { capCountWindow } from "../src/lib/availability/compute.ts";
 import { payPeriod } from "../src/lib/availability/roundrobin.ts";
+import { eligibleFromRoster } from "../src/lib/availability/pool.ts";
 
 const EVENT = { duration_min: 20, buffer_before_min: 10, buffer_after_min: 10 };
 const START = "2031-03-04T16:00:00.000Z";
@@ -91,7 +94,10 @@ const good = () => ({
   assert(!r.covers(minutes(START, -10), minutes(windows.busyTo, 1)), "covers: not one ending after it");
 }
 
-// --- the reader: every unreadable answer throws, by name -----------------------------
+// --- the reader: an answer it cannot read at all throws, by name ---------------------
+// A section missing, a row that is not a row, an org wide row (a bucket, the week, an
+// exception) it cannot read, or a row naming NOBODY: busy time, a hold or a count it
+// cannot attribute to an advisor could belong to anybody, so nobody can be judged.
 type Breaker = [string, (d: ReturnType<typeof good>) => unknown, RegExp];
 const breakers: Breaker[] = [
   ["no answer at all", () => null, /not an object/],
@@ -100,16 +106,14 @@ const breakers: Breaker[] = [
   ["a section that is not a list", (d) => ({ ...d, holds: {} }), /holds is not a list/],
   ["a row that is not a row", (d) => ({ ...d, agents: ["a"] }), /agents\[0\] is not a row/],
   ["a bucket with no code", (d) => ({ ...d, buckets: [{ ...d.buckets[0], code: "" }] }), /buckets\[0\]/],
-  ["an advisor with no attributes", (d) => ({ ...d, agents: [{ ...d.agents[0]!, attributes: null }] }), /agents\[0\]/],
-  ["an advisor with no email", (d) => ({ ...d, agents: [{ ...d.agents[0]!, email: null }] }), /agents\[0\]/],
+  ["an advisor row with no id", (d) => ({ ...d, agents: [{ ...d.agents[0]!, id: null }] }), /agents\[0\]/],
   ["a member with no advisor", (d) => ({ ...d, members: [{ bucket_id: "b500" }] }), /members\[0\]/],
-  ["a schedule with no zone", (d) => ({ ...d, schedules: [{ ...d.schedules[0], timezone: null }] }), /schedules\[0\]/],
-  ["a rule with a minute that is not a number", (d) => ({ ...d, schedules: [{ ...d.schedules[0], availability_rules: [{ schedule_id: "s-a", weekday: 2, start_minute: "nine", end_minute: 1020 }] }] }), /schedules\[0\]/],
-  ["busy time whose end does not parse", (d) => ({ ...d, busy: [{ ...d.busy[0], ends_at: "soon" }] }), /busy\[0\]/],
-  ["busy time with no source", (d) => ({ ...d, busy: [{ ...d.busy[0], source: undefined }] }), /busy\[0\]/],
+  ["a schedule with no advisor", (d) => ({ ...d, schedules: [{ ...d.schedules[0], user_id: null }] }), /schedules\[0\]/],
+  ["busy time naming no advisor", (d) => ({ ...d, busy: [{ ...d.busy[0], user_id: "" }] }), /busy\[0\]/],
   ["counts that are not an object", (d) => ({ ...d, day_counts: null }), /day_counts/],
-  ["a hold whose window does not parse", (d) => ({ ...d, holds: [{ ...d.holds[0], buffered_ends_at: "x" }] }), /holds\[0\]/],
-  ["a share whose start does not parse", (d) => ({ ...d, shares: [{ ...d.shares[0], starts_at: "x" }] }), /shares\[0\]/],
+  ["a count naming no advisor", (d) => ({ ...d, day_counts: { "2031-03-04": 2 } }), /day_counts/],
+  ["a hold naming no advisor", (d) => ({ ...d, holds: [{ ...d.holds[0], agent_user_id: undefined }] }), /holds\[0\]/],
+  ["a share with no advisor whose start does not parse", (d) => ({ ...d, shares: [d.shares[0], { ...d.shares[1], starts_at: "x" }] }), /shares\[1\]/],
   ["a business day with no open flag", (d) => ({ ...d, business_hours: [{ weekday: 2, start_minute: 480, end_minute: 1200 }] }), /business_hours\[0\]/],
   ["an exception with no date", (d) => ({ ...d, exceptions: [{ is_open: false }] }), /exceptions\[0\]/],
 ];
@@ -124,6 +128,96 @@ for (const [what, breaks, says] of breakers) {
     thrown instanceof LadderInputsUnreadableError && says.test((thrown as Error).message),
     `reader: ${what} throws, naming it (got ${thrown instanceof Error ? thrown.message : String(thrown)})`,
   );
+}
+
+// --- the reader: one advisor's bad row drops THAT advisor, and only them (#3530) -----
+// It used to throw for the whole org, so one malformed row failed every confirm on every
+// ladder. Skipping just the row would be worse: a busy block, a hold or a count left out
+// makes the advisor look FREE (#277, L50), and the next lead is booked over a call they
+// already have. So the whole advisor goes: off the roster, so out of every pool (as a
+// manual member and as a bucket's fallback too), with every other row of theirs, and
+// named in `dropped` so the confirm logs it and the monitor lane pages it.
+//
+// `b` shares the org and the bucket with `a`, so each case also proves everybody else
+// still answers from the same read.
+const withB = () => {
+  const d = good();
+  return {
+    ...d,
+    agents: [...d.agents, { id: "b", org_id: "org1", attributes: { debt_team: ["high"] }, email: "b@example.com", name: "Agent B", bookable: true }],
+    members: [...d.members, { bucket_id: "b500", user_id: "b" }],
+    schedules: [...d.schedules, { id: "s-b", user_id: "b", timezone: "America/Chicago", availability_rules: [{ schedule_id: "s-b", weekday: 2, start_minute: 540, end_minute: 1020 }] }],
+    busy: [...d.busy, { user_id: "b", starts_at: minutes(START, 60), ends_at: minutes(START, 80), source: "gcal" }],
+    day_counts: { ...d.day_counts, "b|2031-03-04": 1 },
+    holds: [...d.holds, { ...d.holds[0]!, agent_user_id: "b", booking_id: "kb" }],
+    shares: [...d.shares, { bucket_id: "b500", assigned_user_id: "b", starts_at: START, created_at: minutes(START, -300) }],
+  };
+};
+type Dropper = [string, (d: ReturnType<typeof withB>) => unknown, RegExp];
+const droppers: Dropper[] = [
+  ["an advisor with no attributes", (d) => ({ ...d, agents: [{ ...d.agents[0]!, attributes: null }, ...d.agents.slice(1)] }), /agents: no readable org, attributes or email/],
+  ["an advisor with no email", (d) => ({ ...d, agents: [{ ...d.agents[0]!, email: "" }, ...d.agents.slice(1)] }), /agents: no readable org, attributes or email/],
+  ["a member row with no bucket", (d) => ({ ...d, members: [{ user_id: "a" }, ...d.members.slice(1)] }), /members: no readable bucket/],
+  ["a schedule with no zone", (d) => ({ ...d, schedules: [{ ...d.schedules[0]!, timezone: null }, d.schedules[1]!] }), /schedules: no readable id, zone or rules/],
+  ["a schedule in a zone nobody can read", (d) => ({ ...d, schedules: [{ ...d.schedules[0]!, timezone: "Mars/Olympus_Mons" }, d.schedules[1]!] }), /schedules: no readable id, zone or rules/],
+  ["a rule with a minute that is not a number", (d) => ({ ...d, schedules: [{ ...d.schedules[0]!, availability_rules: [{ schedule_id: "s-a", weekday: 2, start_minute: "nine", end_minute: 1020 }] }, d.schedules[1]!] }), /schedules: no readable rule/],
+  ["busy time whose end does not parse", (d) => ({ ...d, busy: [{ ...d.busy[0]!, ends_at: "soon" }, d.busy[1]!] }), /busy: no readable bounds or source/],
+  ["busy time with no source", (d) => ({ ...d, busy: [{ ...d.busy[0]!, source: undefined }, d.busy[1]!] }), /busy: no readable bounds or source/],
+  ["a count that is not a whole number", (d) => ({ ...d, day_counts: { ...d.day_counts, "a|2031-03-04": "2" } }), /day_counts: no readable day or count/],
+  ["a count on a day that does not read", (d) => ({ ...d, day_counts: { "a|someday": 2, "b|2031-03-04": 1 } }), /day_counts: no readable day or count/],
+  ["a hold whose window does not parse", (d) => ({ ...d, holds: [{ ...d.holds[0]!, buffered_ends_at: "x" }, d.holds[1]!] }), /holds: no readable booking or window/],
+  ["a share whose start does not parse", (d) => ({ ...d, shares: [{ ...d.shares[0]!, starts_at: "x" }, ...d.shares.slice(1)] }), /shares: no readable bucket or instants/],
+];
+// Control (L1): the same answer with nothing broken drops nobody and holds both.
+{
+  const r = ladderInputsFrom(withB(), windows);
+  eq(r.dropped.length, 0, "drop control: a well formed answer drops nobody");
+  eq(r.orgAgents("org1").map((a) => a.id).join(","), "a,b", "drop control: both advisors are on the roster");
+  eq(eligibleFromRoster({ criteria: {}, fallback_user_id: null }, r.orgAgents("org1"), r.membersOf("b500")).ids.join(","), "a,b", "drop control: both are in the bucket's pool");
+}
+for (const [what, breaks, says] of droppers) {
+  let r: ReturnType<typeof ladderInputsFrom> | null = null;
+  let thrown: unknown = null;
+  try {
+    r = ladderInputsFrom(breaks(withB()), windows);
+  } catch (err) {
+    thrown = err;
+  }
+  if (!r) {
+    assert(false, `drop: ${what} must drop the advisor, not fail the read for everybody (threw ${thrown instanceof Error ? thrown.message : String(thrown)})`);
+    continue;
+  }
+  const dropped = r.dropped.find((x) => x.id === "a");
+  assert(r.dropped.length === 1 && dropped !== undefined && dropped.why.some((w) => says.test(w)), `drop: ${what} drops that advisor, saying why (got ${JSON.stringify(r.dropped)})`);
+  assert(dropped?.name === "Agent A", `drop: ${what} names them, so a page can say who (got ${dropped?.name})`);
+  // Out of every pool: as a criteria match, as a manual member, and as the fallback.
+  assert(!r.orgAgents("org1").some((x) => x.id === "a"), `drop: ${what} takes them off the roster`);
+  eq(eligibleFromRoster({ criteria: { debt_team: ["high"] }, fallback_user_id: null }, r.orgAgents("org1"), r.membersOf("b500")).ids.join(","), "b", `drop: ${what} leaves them out of the bucket's pool, by criteria and as a member`);
+  eq(eligibleFromRoster({ criteria: { debt_team: ["nobody"] }, fallback_user_id: "a" }, r.orgAgents("org1"), new Set()).ids.length, 0, `drop: ${what} never books them as a bucket's fallback`);
+  eq(r.user("a"), null, `drop: ${what} holds no row for them`);
+  eq(r.emails(["a", "b"]).has("a"), false, `drop: ${what} has no email for them`);
+  // Every other row of theirs goes too, so nothing judges them from half a picture.
+  assert(!r.schedules.some((x) => x.user_id === "a") && !r.rules.some((x) => x.schedule_id === "s-a"), `drop: ${what} drops their schedule and rules`);
+  assert(!r.busy.some((x) => x.user_id === "a") && !r.holds.some((x) => x.agent_user_id === "a") && !r.shares.some((x) => x.assigned_user_id === "a"), `drop: ${what} drops their busy time, holds and shares`);
+  assert(!Object.keys(r.dayCounts as object).some((k) => k.startsWith("a|")), `drop: ${what} drops their counts`);
+  // Everybody else answers from the same read, rows and all.
+  assert(r.orgAgents("org1").some((x) => x.id === "b") && r.orgAgents("org2").some((x) => x.id === "z"), `drop: ${what} keeps every other advisor, in every org`);
+  assert(r.user("b")?.email === "b@example.com" && r.emails(["b"]).get("b") === "b@example.com", `drop: ${what} keeps the others' rows`);
+  assert(
+    r.schedules.some((x) => x.user_id === "b") && r.busy.some((x) => x.user_id === "b") && r.holds.some((x) => x.agent_user_id === "b") &&
+      r.shares.some((x) => x.assigned_user_id === "b") && (r.dayCounts as Record<string, number>)["b|2031-03-04"] === 1,
+    `drop: ${what} keeps the others' schedule, busy time, holds, shares and counts`,
+  );
+  assert(r.bucket("500") !== null && r.businessHours.length === 1, `drop: ${what} keeps the buckets and the week`);
+}
+{
+  // Two bad rows of one advisor are one drop, with both reasons.
+  const d = withB();
+  const r = ladderInputsFrom({ ...d, busy: [{ ...d.busy[0]!, ends_at: "x" }, d.busy[1]!], holds: [{ ...d.holds[0]!, buffered_ends_at: "x" }, d.holds[1]!] }, windows);
+  assert(r.dropped.length === 1 && r.dropped[0]!.why.length === 2, `drop: two bad rows of one advisor are one drop with two reasons (got ${JSON.stringify(r.dropped)})`);
+  // A bad row of somebody with no roster row is still named, by id, with no name.
+  const s = ladderInputsFrom({ ...d, busy: [...d.busy, { user_id: "ghost", starts_at: "x", ends_at: "y", source: "gcal" }] }, windows);
+  assert(s.dropped.length === 1 && s.dropped[0]!.id === "ghost" && s.dropped[0]!.name === null, `drop: a bad row of somebody off the roster names them by id (got ${JSON.stringify(s.dropped)})`);
 }
 
 finish();
