@@ -143,20 +143,21 @@ export type LiveAppProtocol = { protocol: number } | { unreadable: string };
  * isolate's own line, which is what production runs with the shared line off, and pages
  * `confirm_line_unreachable` naming the remedy.
  */
-export function decideLineProtocol(built: number | null, live: LiveAppProtocol): { action: "deploy" | "refuse"; reason: string } {
+export function decideLineProtocol(built: number | null, live: LiveAppProtocol): { action: "deploy" | "refuse"; checked: boolean; reason: string } {
   if (built === null) {
-    return { action: "deploy", reason: "the line's protocol could not be checked: the built bundle does not declare CONFIRM_LINE_PROTOCOL once as a number" };
+    return { action: "deploy", checked: false, reason: "the line's protocol could not be checked: the built bundle does not declare CONFIRM_LINE_PROTOCOL once as a number" };
   }
   if ("unreadable" in live) {
-    return { action: "deploy", reason: `the line's protocol could not be checked against the live app's (${live.unreadable}); the build speaks protocol ${built}` };
+    return { action: "deploy", checked: false, reason: `the line's protocol could not be checked against the live app's (${live.unreadable}); the build speaks protocol ${built}` };
   }
   if (built < live.protocol) {
     return {
       action: "refuse",
+      checked: true,
       reason: `this line build speaks protocol ${built} and the live app speaks protocol ${live.protocol}, so deploying it would put a line object older than the app in front of it (#3560)`,
     };
   }
-  return { action: "deploy", reason: `the line build speaks protocol ${built}, the live app protocol ${live.protocol}` };
+  return { action: "deploy", checked: true, reason: `the line build speaks protocol ${built}, the live app protocol ${live.protocol}` };
 }
 
 /** What a run knows about one object Worker before deciding. */
@@ -258,7 +259,7 @@ export async function deployObjectWorkers(ops: ObjectWorkerOps, configs: readonl
         ops.log(`object worker ${config}: REFUSED, ${check.reason}`);
         return { ok: false, kind: "refused", config, reason: check.reason, ...lists };
       }
-      if (/could not be checked/.test(check.reason)) unchecked.push(config);
+      if (!check.checked) unchecked.push(config);
       ops.log(`object worker ${config}: ${check.reason}`);
     }
     ops.log(`object worker ${config}: deploying, ${decision.reason}`);

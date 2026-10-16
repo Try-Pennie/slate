@@ -253,7 +253,6 @@ async function drive(s: Scenario): Promise<Run> {
     [
       "status",
       // #3561: each deployed (the default fake's serving versions carry no stamp), then
-      // its stamp read back.
       // its stamp read back; the confirm line's protocol is compared with the live app's
       // first (#3560).
       ...OBJECT_WORKER_CONFIGS.flatMap((c) => [

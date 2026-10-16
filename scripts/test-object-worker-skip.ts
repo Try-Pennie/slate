@@ -279,7 +279,11 @@ for (const mode of ["lost", "throw"] as const) {
   const refuse = decideLineProtocol(1, { protocol: 2 });
   eq(refuse.action, "refuse", "a line build speaking 1 in front of a live app speaking 2 is refused");
   assert(refuse.reason.includes("1") && refuse.reason.includes("2"), `naming both protocols (${refuse.reason})`);
+  eq(refuse.checked, true, "a refusal was a measured comparison");
   eq(decideLineProtocol(2, { protocol: 2 }).action, "deploy", "the same protocol deploys");
+  eq(decideLineProtocol(2, { protocol: 2 }).checked, true, "as a checked comparison");
+  eq(decideLineProtocol(2, { unreadable: "x" }).checked, false, "an unreadable live side is unchecked, as a field rather than a wording");
+  eq(decideLineProtocol(null, { protocol: 2 }).checked, false, "and so is an unreadable built side");
   eq(decideLineProtocol(3, { protocol: 2 }).action, "deploy", "a newer line deploys (the order every deploy makes)");
   const unreadableLive = decideLineProtocol(1, { unreadable: "the serving app version carries no commit tag" });
   eq(unreadableLive.action, "deploy", "an unreadable live protocol does NOT refuse: a secret change leaves an untagged app version on ordinary days");
