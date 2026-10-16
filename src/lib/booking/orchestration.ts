@@ -5995,8 +5995,11 @@ async function finishCommitted(work: () => Promise<void>): Promise<unknown> {
  *
  * Throws only for a failure BEFORE the booking committed. Anything after the
  * commit comes back as `unfinished` (#3263). A slot taken by another booking is
- * rolled back here and thrown as `SlotUnavailableError`, as it always was; only
- * the fresh create asks first (`attemptReservation`, #3462).
+ * rolled back here and thrown as `SlotUnavailableError`, which the drain treats
+ * as terminal. The fresh create and the re-submit resume call
+ * `attemptReservation` instead (#3462, #3837), because each acts on a lost attempt
+ * itself: the fresh create decides its next advisor before the rollback, and the
+ * resume rolls back and then walks the ladder.
  */
 async function completeReservation(
   deps: BookingDeps,
