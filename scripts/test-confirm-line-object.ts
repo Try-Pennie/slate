@@ -9,6 +9,7 @@
 import {
   makeConfirmLineHost,
   CONFIRM_LINE_PROTOCOL,
+  CONFIRM_LINE_OLDEST_PROTOCOL,
   CONFIRM_LINE_POLL_MS,
   CONFIRM_LINE_POLL_GRACE_MS,
   CONFIRM_LINE_ACK_MS,
@@ -301,8 +302,29 @@ async function main() {
     const g3 = await send({ op: "done", turn: "from-the-old-instance", verdict: { full: false } });
     assert(g1.kind === "gone" && g2.kind === "gone", "deploy: a ticket or turn the instance never issued is gone");
     assert(g3.ok === true && g3.gone === true, "deploy: a report for an unknown turn is accepted as already over");
-    const old = JSON.parse(await host().h.handle({ v: v + 1, op: "enter", attempt: "A", line: "1", waitMs: 1 })) as Record<string, unknown>;
-    assert(old.kind === "gone" && old.why === "version", "deploy: a message from another protocol version is gone, never guessed at");
+    const newer = JSON.parse(await host().h.handle({ v: v + 1, op: "enter", attempt: "A", line: "1", waitMs: 1 })) as Record<string, unknown>;
+    assert(newer.kind === "gone" && newer.why === "version", "deploy: a message from a NEWER protocol version is gone, never guessed at");
+  }
+
+  // --- #3560: which client versions this object serves ------------------------------
+  // A client says in `v` what it needs the object to do. The object serves every client
+  // from the oldest protocol it still keeps to its own, so an older app beside a newer
+  // object (the order every deploy and the app only rollback make) keeps the shared line,
+  // and refuses anything newer than itself, so a newer app beside an older object (a line
+  // Worker rolled back alone) is told at once rather than served rules it lacks.
+  {
+    assert(CONFIRM_LINE_PROTOCOL === 2, `version: the client speaks protocol 2 since #3529's ladder release, which an older object cannot serve (got ${CONFIRM_LINE_PROTOCOL})`);
+    assert(CONFIRM_LINE_OLDEST_PROTOCOL === 1 && CONFIRM_LINE_OLDEST_PROTOCOL <= CONFIRM_LINE_PROTOCOL, `version: the object still serves a protocol 1 client (got ${CONFIRM_LINE_OLDEST_PROTOCOL})`);
+    for (const served of [CONFIRM_LINE_OLDEST_PROTOCOL, CONFIRM_LINE_PROTOCOL]) {
+      const { h } = host();
+      const a = JSON.parse(await h.handle({ v: served, op: "enter", attempt: "A", line: "1", waitMs: 0 })) as Record<string, unknown>;
+      assert(a.kind === "lead", `version: a protocol ${served} client is served (got ${JSON.stringify(a)})`);
+    }
+    for (const refused of [CONFIRM_LINE_OLDEST_PROTOCOL - 1, CONFIRM_LINE_PROTOCOL + 1, "2", null, undefined, 1.5]) {
+      const { h } = host();
+      const a = JSON.parse(await h.handle({ v: refused, op: "enter", attempt: "A", line: "1", waitMs: 0 })) as Record<string, unknown>;
+      assert(a.kind === "gone" && a.why === "version", `version: ${JSON.stringify(refused)} is refused as a version (got ${JSON.stringify(a)})`);
+    }
   }
 
   // --- lookahead: a busy line hands out a leased place instead of a ticket --------

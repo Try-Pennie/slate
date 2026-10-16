@@ -58,16 +58,39 @@ export const CONFIRM_LINE_BINDING = "CONFIRM_LINE";
 export const CONFIRM_LINE_CLASS = "ConfirmLine";
 
 /**
- * Raised only for a change an older peer cannot ignore; a mismatch answers `gone`, which
- * sends every confirm to its isolate's own line for the whole of a gradual deploy (run
- * 37333201026). So a change an older peer CAN ignore keeps it: #3489 added optional fields
- * (a rung on `claimFirst`, an outcome on `done`, a start on a lead) and the `trying`
- * message, and step 3 `canWalk` on `claimFirst` (answered `spent` and `waiting`), a
- * settlement on `done` and the `park` message; each side reads their absence as the
- * behaviour before them, and an older object answers `park` as an unknown op, which the
- * client reads as told to retry.
+ * The protocol a client SENDS (`v`) says what it needs the object to do, and an object
+ * serves every client from `CONFIRM_LINE_OLDEST_PROTOCOL` to this, its own (#3560). A
+ * message outside that range is answered `gone`, `why: "version"`, before anything is
+ * done with it, which every object ever deployed has done, so the client can take that
+ * answer as "this object is older than me" and use its isolate's own line at once.
+ *
+ * The two directions are not alike, and the rule for raising this follows from that:
+ *
+ * - An OLDER client beside a newer object is what every deploy makes (the object Workers
+ *   deploy first, then the app gradually, `scripts/deploy-gradual.ts`) and what the app
+ *   only rollback makes. The object keeps serving it: an older client leaves out fields it
+ *   never knew, and the line keeps its rules from before for each absence. Raise
+ *   `CONFIRM_LINE_OLDEST_PROTOCOL` only when the object can no longer serve one, because a
+ *   refused client uses its isolate's line for the whole of a gradual deploy (run
+ *   37333201026).
+ * - A NEWER client beside an older object happens only when the line Worker is rolled back
+ *   on its own. Raise THIS whenever the client starts relying on something only the newer
+ *   object does, even when the older object would accept every field and ignore it.
+ *   Protocol 1 stayed at 1 through #3529, whose client decides the full verdict from marks
+ *   only the newer object hands out (`StartFrom.last`, `deepest`). An older object took
+ *   every message and handed out neither, so no confirm ever reported the ladder spent,
+ *   and in load run 37869019791 each refusal burst's crowd waited about 11 seconds to be
+ *   told to retry. Optional fields that only the CLIENT reads the absence of (#3489's
+ *   rung, outcome, `canWalk`, settlement and `park`) did not need it, since the client
+ *   reads their absence as the behaviour before them.
  */
-export const CONFIRM_LINE_PROTOCOL = 1;
+export const CONFIRM_LINE_PROTOCOL = 2;
+/** The oldest client protocol this object still serves (#3560): protocol 1, every client before #3529's ladder release. */
+export const CONFIRM_LINE_OLDEST_PROTOCOL = 1;
+/** Whether a message's `v` is one this object serves. Anything not a whole number in the range is not. */
+export function servesProtocol(v: unknown): boolean {
+  return typeof v === "number" && Number.isInteger(v) && v >= CONFIRM_LINE_OLDEST_PROTOCOL && v <= CONFIRM_LINE_PROTOCOL;
+}
 /** The longest one poll is held. A deploy strands a follower for at most this. */
 export const CONFIRM_LINE_POLL_MS = 1_500;
 /** How late a follower's next poll may be before it is taken to have gone. */
@@ -318,7 +341,7 @@ export function makeConfirmLineHost(deps: {
       const stage = (TRACED_STAGES as readonly unknown[]).includes(m.stage) ? (m.stage as TracedCall["stage"]) : "unknown";
       deps.onTrace({ op: m.op, trace: m.trace, stage });
     }
-    if (m.v !== CONFIRM_LINE_PROTOCOL) return gone("version");
+    if (!servesProtocol(m.v)) return gone("version");
     sweep();
     switch (m.op) {
       case "enter":

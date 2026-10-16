@@ -19,7 +19,7 @@ import {
   type LineNamespace,
   type SwitchReading,
 } from "../src/lib/booking/shared-confirm-line.ts";
-import { makeConfirmLineHost, CONFIRM_LINE_POLL_MS, CONFIRM_LINE_HEARTBEAT_MS, CONFIRM_LINE_ACK_MS } from "../src/lib/booking/confirm-line-object.ts";
+import { makeConfirmLineHost, CONFIRM_LINE_POLL_MS, CONFIRM_LINE_HEARTBEAT_MS, CONFIRM_LINE_ACK_MS, CONFIRM_LINE_PROTOCOL } from "../src/lib/booking/confirm-line-object.ts";
 import { makeConfirmQueue, isolateLine, type LineTurn } from "../src/lib/booking/confirm-queue.ts";
 import { createAsserter } from "./lib/booking-fakes.ts";
 
@@ -54,7 +54,7 @@ function world() {
   const makeHost = () => makeConfirmLineHost({ now: () => now, timer, leaseTimer: timer, newId });
   let host = makeHost();
   /** What the transport does to the next messages, by op, and how many times (once unless set). */
-  const faults = new Map<string, "throw" | "throw-like-timeout" | "late" | "hang" | "bad" | "gone">();
+  const faults = new Map<string, "throw" | "throw-like-timeout" | "late" | "hang" | "bad" | "gone" | "version">();
   const faultTimes = new Map<string, number>();
   const sent: string[] = [];
   /** Every message as sent, for what a call carries beside its op (#3354). */
@@ -82,6 +82,9 @@ function world() {
         if (fault === "bad") return { kind: "bad", why: "injected" };
         // What a replaced instance answers.
         if (fault === "gone") return { kind: "gone" };
+        // #3560: what every line object ever deployed answers a message whose `v` it does
+        // not serve, before acting on it (c51bcfae's object, line 305, and 05dbe336's).
+        if (fault === "version") return { kind: "gone", why: "version" };
         const answer = JSON.parse(await host.handle(message)) as Record<string, unknown>;
         // The object acted, but the answer reaches the caller after its deadline.
         if (fault === "late") return new Promise((r) => timer(CONFIRM_LINE_REACH_MS * 2, () => r(answer)));
@@ -95,6 +98,8 @@ function world() {
     const own = isolateLine(makeConfirmQueue<string>({ timer, now: () => now }));
     /** The wait each enter on the isolate's line was handed, so time spent first is seen. */
     const fallbackWaits: (number | undefined)[] = [];
+    /** #3355 item 4: the give backs the client sent without waiting, handed on to outlive the response. */
+    const kept: Promise<unknown>[] = [];
     const fallback = {
       ...own,
       enter: (key: typeof KEY, waitMs?: number) => {
@@ -112,8 +117,9 @@ function world() {
       timer,
       newId,
       trace: opts.trace ?? null,
+      keepAlive: (work) => void kept.push(work),
     });
-    return { line, served, reach, fallbackWaits };
+    return { line, served, reach, fallbackWaits, kept };
   };
   /** Runs `work` while moving the clock, until it settles or `limitMs` passes. */
   const settle = async <R>(work: Promise<R>, limitMs = 30_000, step = 100): Promise<R | "unsettled"> => {
@@ -337,15 +343,39 @@ async function main() {
   }
 
   {
-    // The give back after an unanswered enter is a call too, and its time comes out of
-    // the wait the isolate's line is handed, as the enter's own time already did.
+    // #3355 item 4: the give back after an unanswered enter is SENT, not waited on. An
+    // object that did not answer the enter in 1.5s is unlikely to answer the give back
+    // either, and waiting on it put up to another second in front of every fallback. Only
+    // the enter's own time comes out of the wait the isolate's line is handed, and the give
+    // back is handed on (`keepAlive`) so it outlives the response.
     const w = world();
     const c = w.client();
     w.faults.set("enter", "hang");
     w.faults.set("abandon", "hang");
     const t = (await w.settle(c.line.enter(KEY, 10_000))) as LineTurn<string>;
-    const handed = c.fallbackWaits[c.fallbackWaits.length - 1] ?? Infinity;
-    assert(handed <= 10_000 - CONFIRM_LINE_REACH_MS - CONFIRM_LINE_CALL_MS, `unanswered enter: both calls come out of the wait (handed ${handed}ms of 10000)`);
+    const handed = c.fallbackWaits[c.fallbackWaits.length - 1] ?? -1;
+    assert(handed >= 10_000 - CONFIRM_LINE_REACH_MS - 100, `unanswered enter: only the enter comes out of the wait, never the give back (handed ${handed}ms of 10000)`);
+    assert(w.sent.includes("abandon") && c.kept.length === 1, `unanswered enter: the give back is sent and kept alive (sent ${JSON.stringify(w.sent)}, kept ${c.kept.length})`);
+    const served = lastServed(c.served);
+    assert(served !== undefined && served.lineMs >= CONFIRM_LINE_REACH_MS && served.lineMs < CONFIRM_LINE_REACH_MS + CONFIRM_LINE_CALL_MS, `unanswered enter: line_ms counts the enter it waited on and not the give back (got ${served?.lineMs})`);
+    if (t.kind === "lead") await w.settle(t.done({ full: false }));
+  }
+
+  // --- #3355 item 4: a lookahead that failed counts its own time --------------------
+  // The lookahead is the first call on the booking path. One that timed out kept only a
+  // reason for the enter that followed, so the confirm reported line_ms 0 after waiting
+  // 1.5s on it (four reach timeouts waited 2136 to 2896ms with line_ms 0, #3355).
+  {
+    const w = world();
+    const c = w.client();
+    w.faults.set("enter", "hang");
+    w.faults.set("abandon", "hang");
+    assert((await w.settle(c.line.lookahead(KEY, 10_000))) === null, "failed lookahead: answers nothing, so the confirm enters");
+    const t = (await w.settle(c.line.enter(KEY, 10_000))) as LineTurn<string>;
+    const served = lastServed(c.served);
+    assert(served?.line === "fallback" && served.reason === "reach-timeout", `failed lookahead: the enter falls back as a reach timeout (got ${JSON.stringify(served)})`);
+    assert(served!.lineMs >= CONFIRM_LINE_REACH_MS, `failed lookahead: line_ms counts the lookahead it waited on (got ${served!.lineMs})`);
+    assert(c.kept.length === 1, `failed lookahead: its give back is sent without waiting, and kept alive (kept ${c.kept.length})`);
     if (t.kind === "lead") await w.settle(t.done({ full: false }));
   }
 
@@ -364,6 +394,70 @@ async function main() {
     assert(r.kind === "lead", `deploy: the follower leads on the new instance rather than waiting out its bound (got ${r.kind})`);
     assert(lastServed(b.served)?.line === "shared" && lastServed(b.served)?.reason === "gone", `deploy: recorded as shared after re-entering (got ${JSON.stringify(lastServed(b.served))})`);
     if (lead.kind === "lead") await w.settle(lead.done({ full: false })); // the old leader's report lands on the new instance
+  }
+
+  // --- #3560: an object older than the client says so, and the confirm falls back ----
+  // Load run 37869019791 ran a newer app against a line object one release older: the
+  // newer client's full verdict relies on marks only the newer object hands out
+  // (`StartFrom.last`, `deepest`, #3529), so no confirm ever reported the ladder spent and
+  // each refusal burst's crowd waited out its whole wait, about 11s, to be told to retry.
+  // Every object ever deployed refuses a message whose `v` it does not serve with `gone`,
+  // `why: "version"`, before acting on it. The client now asks for the protocol it needs
+  // and treats that answer as what it is: no re-entries (an older object never becomes
+  // newer by being asked again), the isolate's own line at once, and a reason of its own
+  // that pages, since a line Worker older than the app is a deploy fault somebody fixes.
+  {
+    const w = world();
+    const c = w.client();
+    w.faults.set("enter", "version");
+    w.faultTimes.set("enter", 10);
+    const t = (await w.settle(c.line.enter(KEY, 10_000))) as LineTurn<string>;
+    assert(t.kind === "lead", `older object: the confirm leads on its isolate's line (got ${t.kind})`);
+    assert(lastServed(c.served)?.line === "fallback" && lastServed(c.served)?.reason === "version", `older object: recorded as a version mismatch, not gone (got ${JSON.stringify(lastServed(c.served))})`);
+    assert(c.reach.length === 1 && c.reach[0] === "version", `older object: reported once, as a version mismatch (got ${JSON.stringify(c.reach)})`);
+    assert(JSON.stringify(w.sent) === JSON.stringify(["enter"]), `older object: one enter and nothing else, no re-entry and nothing to give back (sent ${JSON.stringify(w.sent)})`);
+    if (t.kind === "lead") await w.settle(t.done({ full: false }));
+  }
+  {
+    // The lookahead is the first call on the booking path: its answer decides for the enter.
+    const w = world();
+    const c = w.client();
+    w.faults.set("enter", "version");
+    w.faultTimes.set("enter", 10);
+    assert((await w.settle(c.line.lookahead(KEY, 10_000))) === null, "older object, lookahead: answers nothing, so the confirm enters");
+    const t = (await w.settle(c.line.enter(KEY, 10_000))) as LineTurn<string>;
+    assert(lastServed(c.served)?.reason === "version" && c.reach.join(",") === "version", `older object, lookahead: the enter falls back as a version mismatch (got ${JSON.stringify(lastServed(c.served))}, ${JSON.stringify(c.reach)})`);
+    assert(JSON.stringify(w.sent) === JSON.stringify(["enter"]), `older object, lookahead: the enter asks nothing more (sent ${JSON.stringify(w.sent)})`);
+    if (t.kind === "lead") await w.settle(t.done({ full: false }));
+  }
+  {
+    // The line rolled back while a follower waits: its next poll meets the older object.
+    const w = world();
+    const a = w.client();
+    const b = w.client();
+    const lead = (await w.settle(a.line.enter(KEY, 10_000))) as LineTurn<string>;
+    if (lead.kind !== "lead") throw new Error("older object, poll: A did not lead");
+    const follower = b.line.enter(KEY, 10_000);
+    await w.advance(300);
+    assert(w.sent.includes("poll"), `older object, poll: the follower is waiting on a ticket (sent ${JSON.stringify(w.sent)})`);
+    w.faults.set("poll", "version");
+    w.faultTimes.set("poll", 10);
+    w.faults.set("enter", "version");
+    w.faultTimes.set("enter", 10);
+    const t = (await w.settle(follower)) as LineTurn<string>;
+    assert(t.kind === "lead" && lastServed(b.served)?.reason === "version", `older object, poll: the follower falls back as a version mismatch (got ${JSON.stringify(lastServed(b.served))})`);
+    assert(w.sent.filter((op) => op === "enter").length === 2, `older object, poll: and does not re-enter an object that cannot serve it (sent ${JSON.stringify(w.sent)})`);
+    await w.settle(lead.done({ full: false }));
+    if (t.kind === "lead") await w.settle(t.done({ full: false }));
+  }
+  {
+    // Control (L1): the version is what the client SENDS, so an object of this build
+    // serves it, and one serving only the protocol before it refuses it.
+    const w = world();
+    const c = w.client();
+    await w.settle(c.line.lookahead(KEY, 10_000));
+    assert(w.messages.every((m) => m.v === CONFIRM_LINE_PROTOCOL), `version: every call carries the client's protocol (got ${JSON.stringify(w.messages.map((m) => m.v))})`);
+    await w.settle(c.line.release());
   }
 
   // --- #3351: an answer with no meaning is a protocol fault, never a deploy ---------
@@ -474,8 +568,8 @@ async function main() {
     if (next.kind === "lead") await w.settle(next.done({ full: false }));
   }
   {
-    // The give back is a call with its own deadline, and the time it takes comes out of
-    // the wait the isolate's line is handed, as everywhere else a call precedes a fallback.
+    // #3355 item 4: the give back is sent and not waited on, so a slow one costs the
+    // isolate's line none of its wait.
     const w = world();
     const reading: SwitchReading = { on: true, source: "read" };
     const a = w.client({ on: reading });
@@ -483,9 +577,25 @@ async function main() {
     reading.on = false;
     w.faults.set("abandon", "hang");
     const t = (await w.settle(a.line.enter(KEY, 10_000))) as LineTurn<string>;
-    const handed = a.fallbackWaits[a.fallbackWaits.length - 1] ?? Infinity;
-    assert(handed <= 10_000 - CONFIRM_LINE_CALL_MS, `switched off: a slow give back is taken out of the wait (handed ${handed}ms of 10000)`);
+    const handed = a.fallbackWaits[a.fallbackWaits.length - 1] ?? -1;
+    assert(handed === 10_000, `switched off: a slow give back takes nothing from the wait (handed ${handed}ms of 10000)`);
+    assert(a.kept.length === 1, `switched off: and is kept alive past the response (kept ${a.kept.length})`);
     if (t.kind === "lead") await w.settle(t.done({ full: false }));
+  }
+  {
+    // #3355 item 4: `release` runs in the confirm path's finally, so a give back it waited
+    // on held up the confirm's own answer. It sends and hands the call on.
+    const w = world();
+    const a = w.client();
+    await w.settle(a.line.lookahead(KEY, 10_000));
+    w.faults.set("abandon", "hang");
+    const before = w.now();
+    let released = false;
+    void a.line.release().then(() => (released = true));
+    await tick();
+    await tick();
+    assert(released && w.now() === before, `release: answers without waiting on the give back (released ${released}, ${w.now() - before}ms)`);
+    assert(w.sent.includes("abandon") && a.kept.length === 1, `release: the give back is sent and kept alive (kept ${a.kept.length})`);
   }
 
   {
