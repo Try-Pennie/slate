@@ -43,6 +43,7 @@ import {
 } from "./lib/gradual-deploy.ts";
 import type { ProbeFault, ProbeOutcome } from "./lib/post-deploy-probe.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { objectBundleStamp } from "./lib/object-worker-skip.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 
@@ -50,6 +51,8 @@ const OLD = "11111111-1111-4111-8111-111111111111";
 const CANARY = "22222222-2222-4222-8222-222222222222";
 const RELEASE = "33333333-3333-4333-8333-333333333333";
 const THEIRS = "44444444-4444-4444-8444-444444444444";
+/** The version an object worker is serving (#3561). */
+const OBJ = "55555555-5555-4555-8555-555555555555";
 
 function outcome(fault: ProbeFault): ProbeOutcome {
   return {
@@ -86,8 +89,15 @@ interface Scenario {
   tailWorker?: boolean | "throw";
   /** #3500, #3555: the object workers' deploy: which config fails (default none); "throw" makes it throw. */
   objectWorkers?: string | "throw";
+  /** #3561: what the run learns about each object worker before deciding. Default: the
+   *  serving version carries no stamp, so every one deploys, as every run did before.
+   *  "same" is a serving version stamped with this exact bundle; "throw" makes the read throw. */
+  objectFacts?: "unstamped" | "same" | "throw";
   /** Every status read after the first THROWS. */
   statusThrowsLater?: boolean;
+  /** #3560: the confirm line protocol the built bundle carries (default 2) and the live app speaks (default 2). */
+  lineBuiltProtocol?: number | null;
+  liveProtocol?: { protocol: number } | { unreadable: string };
 }
 
 const HAPPY: Scenario = {
@@ -111,6 +121,9 @@ interface Run {
   restoreCalls: number;
   /** What the run recorded about the split, in order. */
   records: string[];
+  /** #3561: the message each object worker deploy carried, in order. */
+  objectMessages: (string | null)[];
+  logs: string[];
 }
 
 function parseSpecs(specs: string[]): VersionShare[] {
@@ -126,6 +139,8 @@ async function drive(s: Scenario): Promise<Run> {
   let deployment: VersionShare[] = s.start ?? [{ versionId: OLD, percentage: 100 }];
   let restoreCalls = 0;
   const records: string[] = [];
+  const objectMessages: (string | null)[] = [];
+  const logs: string[] = [];
   const boom = (at: Scenario["throwAt"]) => {
     if (s.throwAt === at) throw new Error(`planted throw at ${at}`);
   };
@@ -145,10 +160,25 @@ async function drive(s: Scenario): Promise<Run> {
       if (s.tailWorker === "throw") throw new Error("planted tail worker throw");
       return s.tailWorker ?? true;
     },
-    objectWorker: async (config) => {
+    objectWorkerFacts: async (config) => {
+      if (s.objectFacts === "throw") throw new Error(`planted object facts throw for ${config}`);
+      const hash = config.length.toString(16).padStart(2, "0").repeat(32);
+      const message = s.objectFacts === "same" ? objectBundleStamp(hash) : null;
+      return { localHash: hash, deployed: [{ versionId: OBJ, percentage: 100 }], view: { id: OBJ, tag: null, message }, builtProtocol: "lineBuiltProtocol" in s ? s.lineBuiltProtocol : 2 };
+    },
+    liveAppProtocol: async () => {
+      calls.push("live-protocol");
+      return s.liveProtocol ?? { protocol: 2 };
+    },
+    objectWorker: async (config, message) => {
       calls.push(`object-worker:${config}`);
+      objectMessages.push(message);
       if (s.objectWorkers === "throw") throw new Error("planted object worker throw");
       return s.objectWorkers !== config;
+    },
+    objectWorkerStamp: async (config) => {
+      calls.push(`object-stamp:${config}`);
+      return config.length.toString(16).padStart(2, "0").repeat(32);
     },
     upload: async (kind) => {
       calls.push(`upload:${kind}`);
@@ -199,7 +229,9 @@ async function drive(s: Scenario): Promise<Run> {
     record: (event) => {
       records.push(event);
     },
-    log: () => {},
+    log: (line) => {
+      logs.push(line);
+    },
   };
   let result: GradualResult;
   try {
@@ -208,7 +240,7 @@ async function drive(s: Scenario): Promise<Run> {
     // A throw before the split opens propagates (nothing changed); record it as such.
     result = { exit: -1, end: "unchanged", message: String(err) };
   }
-  return { result, calls, deployment, probes, restoreCalls, records };
+  return { result, calls, deployment, probes, restoreCalls, records, objectMessages, logs };
 }
 
 // --- the happy path, in order -------------------------------------------------
@@ -220,7 +252,14 @@ async function drive(s: Scenario): Promise<Run> {
     r.calls.join(" | "),
     [
       "status",
-      ...OBJECT_WORKER_CONFIGS.map((c) => `object-worker:${c}`),
+      // #3561: each deployed (the default fake's serving versions carry no stamp), then
+      // its stamp read back; the confirm line's protocol is compared with the live app's
+      // first (#3560).
+      ...OBJECT_WORKER_CONFIGS.flatMap((c) => [
+        ...(c === "wrangler.confirm-line.jsonc" ? ["live-protocol"] : []),
+        `object-worker:${c}`,
+        `object-stamp:${c}`,
+      ]),
       "upload:canary",
       "upload:release",
       "wait",
@@ -263,18 +302,80 @@ async function drive(s: Scenario): Promise<Run> {
   eq(r.result.exit, EXIT.promoted, "a run whose object workers deployed promotes as before");
 }
 {
-  // The load run's arm job deploys the same list; a hand kept copy is checked against it.
+  // The load run's arm job takes the same rule through the same code (#3561): the shared
+  // script, under the Cloudflare API retry wrapper (#3567), against the load test
+  // environment. No hand kept list of configs, and no plain `wrangler deploy -c` of an
+  // object worker anywhere in the workflow, which would restart its objects every run.
   const workflow = readFileSync(join(ROOT, ".github/workflows/loadtest.yml"), "utf8");
-  // #3567: through the Cloudflare API retry wrapper, which the loop's deploy now runs under.
-  const listed = workflow.match(/for config in ([^;]+); do\s+bash scripts\/loadtest\/retry-cloudflare-api\.sh npx wrangler deploy -c "\$config" --env loadtest/)?.[1]?.trim().split(/\s+/) ?? null;
-  eq(JSON.stringify(listed), JSON.stringify([...OBJECT_WORKER_CONFIGS]), "the load run's arm job deploys exactly OBJECT_WORKER_CONFIGS, in order");
+  assert(
+    /bash scripts\/loadtest\/retry-cloudflare-api\.sh node --experimental-strip-types scripts\/deploy-object-workers\.ts --env loadtest/.test(workflow),
+    "the load run's arm job deploys the object workers through scripts/deploy-object-workers.ts --env loadtest, under the retry wrapper",
+  );
+  assert(!/wrangler deploy -c/.test(workflow), "and nothing in it deploys an object worker with a plain wrangler deploy -c");
 }
 for (const failing of [...OBJECT_WORKER_CONFIGS, "throw"] as const) {
   const r = await drive({ ...HAPPY, objectWorkers: failing });
-  eq(r.result.exit, failing === "throw" ? EXIT.threwBeforeSplit : EXIT.objectWorkerFailed, `an object worker deploy that ${failing === "throw" ? "throws" : `fails (${failing})`} ends the run before Slate`);
+  // #3561: a deploy that throws is a failed object worker deploy, carrying what was
+  // thrown, rather than a generic throw: either way nothing of Slate's was touched.
+  eq(r.result.exit, EXIT.objectWorkerFailed, `an object worker deploy that ${failing === "throw" ? "throws" : `fails (${failing})`} ends the run before Slate`);
   eq(r.result.end, "unchanged", "with Slate unchanged");
   assert(!r.calls.some((c) => c.startsWith("upload:") || c.startsWith("deploy:")), `nothing of Slate's was uploaded or deployed (calls ${r.calls.join(" > ")})`);
   if (failing !== "throw") assert(r.result.message.includes(failing), `and the message names ${failing}`);
+  else assert(r.result.message.includes("planted object worker throw"), "and the message carries what was thrown");
+}
+
+// --- #3561: an object worker whose bundle is unchanged is not redeployed ------------
+//
+// A Worker deploy restarts its Durable Objects, so redeploying an unchanged one drops
+// whatever a line object holds in memory. The decision itself is driven in
+// scripts/test-object-worker-skip.ts; these pin that the gradual deploy uses it.
+{
+  const r = await drive({ ...HAPPY, objectFacts: "same" });
+  eq(r.result.exit, EXIT.promoted, "every object worker unchanged: Slate deploys as before");
+  eq(r.calls.filter((c) => c.startsWith("object-worker:")).join(", "), "", "and no object worker was deployed");
+  for (const c of OBJECT_WORKER_CONFIGS) {
+    assert(r.logs.some((l) => l.includes(c) && l.includes("skipped")), `the run log says ${c} was skipped, and why`);
+  }
+}
+{
+  const r = await drive({ ...HAPPY, objectFacts: "throw" });
+  eq(r.result.exit, EXIT.promoted, "reading whether an object worker changed throws: the run goes on");
+  eq(r.calls.filter((c) => c.startsWith("object-worker:")).length, OBJECT_WORKER_CONFIGS.length, "and every object worker is deployed, since nothing proved it unchanged");
+  assert(r.objectMessages.every((m) => m === null), "unstamped, since no hash was measured");
+}
+{
+  const r = await drive(HAPPY);
+  eq(r.calls.filter((c) => c.startsWith("object-worker:")).length, OBJECT_WORKER_CONFIGS.length, "a serving version with no stamp is deployed");
+  assert(r.objectMessages.every((m) => m !== null && m.startsWith("object-bundle sha256:")), "carrying the stamp the next run compares against");
+  for (const c of OBJECT_WORKER_CONFIGS) {
+    const at = r.calls.indexOf(`object-stamp:${c}`);
+    assert(at > r.calls.indexOf(`object-worker:${c}`) && at < r.calls.indexOf("upload:canary"), `and ${c}'s stamp is read back after its deploy, before Slate's upload`);
+    assert(r.logs.some((l) => l.includes(c) && l.includes("stamp confirmed")), `which the log reports for ${c}`);
+  }
+}
+
+// --- #3560: a confirm line build older than the live app is refused before anything ---
+{
+  const r = await drive({ ...HAPPY, lineBuiltProtocol: 1, liveProtocol: { protocol: 2 } });
+  eq(r.result.exit, EXIT.lineOlderThanApp, "a line build older than the live app ends the run with its own exit");
+  eq(r.result.end, "unchanged", "with nothing changed");
+  assert(!r.calls.some((c) => c.startsWith("object-worker:") || c.startsWith("upload:") || c.startsWith("deploy:")), `no object worker and nothing of Slate's was deployed (calls ${r.calls.join(" > ")})`);
+  assert(/protocol 1/.test(r.result.message) && /protocol 2/.test(r.result.message), `the message names both protocols (${r.result.message})`);
+}
+{
+  const r = await drive({ ...HAPPY, lineBuiltProtocol: 1, liveProtocol: { unreadable: "the serving app version carries no commit tag" } });
+  eq(r.result.exit, EXIT.promoted, "a live protocol that cannot be read does not stop an ordinary deploy");
+  assert(r.logs.some((l) => /could not be checked/.test(l) && l.includes("no commit tag")), "and the run log says the check could not be made, and why");
+}
+{
+  const r = await drive({ ...HAPPY, lineBuiltProtocol: null });
+  eq(r.result.exit, EXIT.promoted, "a built protocol that cannot be read does not stop it either");
+  assert(r.logs.some((l) => /could not be checked/.test(l)), "and says so");
+}
+{
+  const r = await drive({ ...HAPPY, objectFacts: "same", lineBuiltProtocol: 1, liveProtocol: { protocol: 2 } });
+  eq(r.result.exit, EXIT.promoted, "a line Worker that is unchanged is not deployed, so there is nothing to refuse");
+  assert(!r.calls.includes("live-protocol"), "and the live app is not asked");
 }
 
 // --- the log tail worker goes LAST, after Slate is promoted and healthy (#3191) ------
@@ -335,6 +436,9 @@ for (const bad of [
     probe: async () => outcome("release"),
     triggers: async () => true,
     tailWorker: async () => true,
+    objectWorkerFacts: async () => ({ localHash: null, deployed: null, view: null }),
+    objectWorkerStamp: async () => null,
+    liveAppProtocol: async () => ({ unreadable: "not asked in this test" }),
     objectWorker: async () => true,
     isCronStandby: async () => false,
     record: () => {},
