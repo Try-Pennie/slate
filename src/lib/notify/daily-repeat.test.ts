@@ -462,6 +462,17 @@ describe("the repeat rule's edges (#3801)", () => {
     expect(await drive(25, FIVE_MIN, () => sendThrottledAlert(KEY, 30 * MIN, "a@x is failing"))).toEqual([0, 24]);
   });
 
+  it("a condition open before 0184 counts its age from its first known post, so the reminder's age grows", async () => {
+    // The row holds no opening moment, so the earliest fact known is the old post.
+    // Recording that once means the second day's reminder reads two days, rather than
+    // every reminder measuring from the post before it and saying a day for ever.
+    const iso = new Date(T0 - 20 * MIN).toISOString();
+    alertStateRows.set(KEY, { last_sent_at: iso });
+    alertStateRows.set(firingKey(KEY), { last_sent_at: iso });
+    expect(await drive(49, FIVE_MIN, () => sendThrottledAlert(KEY, 30 * MIN, "a@x is failing"))).toEqual([0, 24, 48]);
+    expect(posted[2]).toMatch(/^Reminder: still true after 2 days,/);
+  });
+
   it("code ahead of migration 0184 runs the old cooldown rule rather than posting every tick", async () => {
     alertStateSchema.withoutRepeatColumns = true;
     const at = await drive(2, FIVE_MIN, () => sendThrottledAlert(KEY, 30 * MIN, "a@x is failing"));

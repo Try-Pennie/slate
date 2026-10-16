@@ -491,7 +491,10 @@ async function sendThrottledAlertUnrecorded(
     // When the condition opened: kept from the row while the episode is the same one,
     // now when nobody was told before. An unreadable row leaves the column alone (the
     // upsert below merges), rather than restarting the age of a condition it cannot see.
-    const openedMs = seen.kind !== "present" || episode?.fresh ? nowMs : seen.openedMs;
+    // A row from before 0184 has no opening moment, so its last post is recorded as one:
+    // the earliest fact known, written once, so later reminders' ages grow from it
+    // instead of each measuring from the post before and saying a day for ever.
+    const openedMs = seen.kind !== "present" || episode?.fresh ? nowMs : (seen.openedMs ?? seen.ms);
     fields = {
       subjects,
       band,
