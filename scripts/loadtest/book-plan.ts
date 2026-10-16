@@ -67,6 +67,15 @@ export const DRIVE_JOB_SETUP_MINUTES = 3;
  * flight when the deadline passes (12s was the slowest seen) and writing the file.
  */
 export const DRIVE_DEADLINE_GRACE_MINUTES = 2;
+/**
+ * The longest a burst driver's runner has been seen to START after the burst plan was
+ * made, in seconds: 395 on run 38912230442 (2026-10-16), when GitHub's queue was
+ * backed up after a billing block, against 3 to 86 on the four runs before it. That
+ * run's last driver started after all three burst moments, fired nothing, and failed
+ * the run for nothing Slate did. The default lead must cover this plus the driver's
+ * own checkout and install (`DRIVE_JOB_SETUP_MINUTES`).
+ */
+export const BURST_RUNNER_START_WORST_SECONDS = 395;
 
 /**
  * When a driver stops on its own, measured from its first request (#3222).
