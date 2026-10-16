@@ -50,6 +50,7 @@ import {
   type FailingCalendarRow,
 } from "@/lib/notify/alerts";
 import { reachabilityFromError } from "@/lib/google/reachability-classify";
+import { shortErrorReason } from "@/lib/notify/error-text";
 import { appUrl, googlePushUrl } from "@/lib/env";
 import { parseStampMs } from "@/lib/date/stamp";
 import type { AgentCalendar } from "@/lib/db/types";
@@ -1063,14 +1064,20 @@ export async function hydrateCalendar(cal: AgentCalendar): Promise<HydrateResult
       await recordCalHealth(cal.id, "sync", prev, { ok: true });
       return { ok: true, events: result.events.length };
     } catch (err) {
+      const kind = reachabilityFromError(err);
       await recordCalHealth(cal.id, "sync", prev, {
         ok: false,
         error: err instanceof Error ? err.message : String(err),
-        kind: reachabilityFromError(err),
+        kind,
       });
+      // #3805: the reason and the kind ride on the line itself, because the all failing
+      // alert sends its reader here "for the reason" and a stack alone does not hold it
+      // (the 403 notACalendarUser of 2026-10-16 was only in last_sync_error).
       log.warn("hydrate-calendars", {
         msg: "calendar hydration failed",
         calendar_id: cal.calendar_id,
+        reason: shortErrorReason(err),
+        kind,
       }, err);
       return { ok: false, events: 0 };
     }

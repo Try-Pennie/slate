@@ -8,12 +8,11 @@ import { withinBudget } from "@/lib/google/sync-pace";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { hydrateCalendar } from "@/lib/google/sync";
 import {
-  calendarsDueForHydration,
-  hydrationBatchSize,
+  departedFromEmbed,
+  planHydrationTick,
   runHydrationTickCheck,
   hydrationMeasuredTick,
   HYDRATION_FAILING_KEY,
-  type HydrationCandidate,
 } from "@/lib/google/hydration";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
@@ -72,38 +71,34 @@ export async function GET(req: NextRequest) {
     // quietly expired on every calendar. That is the exact shape the prune it authorizes
     // must never be built on.
     //
-    // cap-safe: agent_calendars is roster-bounded config (121 rows today, ~250 at the
-    // design target), so it cannot fill a PostgREST page.
-    const calendars = (unwrap(
+    // cap-safe: agent_calendars is roster-bounded config (153 rows on 2026-10-16, ~250 at
+    // the design target), so it cannot fill a PostgREST page.
+    const rows = (unwrap(
       await db
         .from("agent_calendars")
         .select(
           // #2411: sync_claimed_at is read so a calendar another pass is holding is
           // not taken into this batch at all. Without it the pass would claim, lose,
           // and spend one of the batch's places on a calendar it never refreshed.
-          "id, user_id, calendar_id, sync_token, sync_claimed_at, last_failure_kind, consecutive_failures, last_bootstrap_attempt_at, last_success_at, last_sync_error",
+          //
+          // #3805: the agent's deactivated_at comes in the SAME read, embedded through
+          // the one foreign key to users, so whether somebody has left can never be
+          // missing on its own: a failed read throws above, and a row without its embed
+          // throws in departedFromEmbed, rather than either reading as "still here".
+          "id, user_id, calendar_id, sync_token, sync_claimed_at, last_failure_kind, consecutive_failures, last_bootstrap_attempt_at, last_success_at, last_sync_error, users(deactivated_at)",
         ),
       "hydrate-calendars calendar list",
-    ) ?? []) as AgentCalendar[];
+    ) ?? []) as (AgentCalendar & { users: unknown })[];
+    const calendars = rows.map(({ users, ...cal }) => ({
+      ...(cal as AgentCalendar),
+      departed: departedFromEmbed(users),
+    }));
 
-    // Derived from the LIVE count, never hardcoded: a fixed batch is right at today's
-    // roster and silently halves the refresh rate as the roster grows, with nothing
-    // reporting it.
-    const batchSize = hydrationBatchSize(calendars.length);
-    const due = calendarsDueForHydration(
-      calendars as unknown as HydrationCandidate[],
-      Date.now(),
-      batchSize,
-    );
-    // #2301: a never covered calendar is onboarding, not maintenance, so the allowance can
-    // be spent and still leave some waiting. Counted here rather than left implicit,
-    // because a wave larger than one tick can absorb and a quiet tick are otherwise the
-    // same silence, and the count is what says how many cadences the backlog will take.
-    const neverCovered = calendars.filter((c) => c.last_bootstrap_attempt_at === null).length;
-    const onboardingDeferred = Math.max(
-      0,
-      neverCovered - due.filter((c) => c.last_bootstrap_attempt_at === null).length,
-    );
+    // #3805: departed agents' calendars are left out, and the batch is sized over what is
+    // left. Still derived from the LIVE count, never hardcoded: a fixed batch is right at
+    // today's roster and silently halves the refresh rate as the roster grows.
+    const plan = planHydrationTick(calendars, Date.now());
+    const { batchSize, due, neverCovered, onboardingDeferred, departedSkipped } = plan;
 
     let refreshed = 0;
     let failed = 0;
@@ -115,9 +110,7 @@ export async function GET(req: NextRequest) {
         budgetHit = true;
         break;
       }
-      const cal = calendars.find((c) => c.id === candidate.id);
-      if (!cal) continue;
-      const res = await hydrateCalendar(cal);
+      const res = await hydrateCalendar(candidate);
       // #2411: three outcomes, not two. A pass that DECLINED to run (another writer
       // holds the calendar, or advanced its token mid-fetch) attempted nothing against
       // Google, so calling it a failure would page about a healthy rotation and calling
@@ -173,6 +166,7 @@ export async function GET(req: NextRequest) {
     log.info("hydrate-calendars", {
       msg: "cycle",
       calendars: calendars.length,
+      departed_skipped: departedSkipped,
       batch: batchSize,
       due: due.length,
       never_covered: neverCovered,
@@ -186,6 +180,7 @@ export async function GET(req: NextRequest) {
     });
     return NextResponse.json({
       calendars: calendars.length,
+      departedSkipped,
       batch: batchSize,
       neverCovered,
       onboardingDeferred,
