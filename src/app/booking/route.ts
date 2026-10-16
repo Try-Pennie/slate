@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
 import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
-import { timeStage } from "@/lib/booking/confirm-profile";
+import { ROUTE_CHECK_STAGES, timeStage } from "@/lib/booking/confirm-profile";
 import { refusedLeadId } from "@/lib/booking/refusal-trace";
 import { answerAfterRefusalRefresh } from "@/lib/booking/refusal-stored-offer-live";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
@@ -231,6 +231,19 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
   // limits, the pause flag, reading the body, an advisor link. Ended where the
   // booking starts; a refusal on the way is charged up to its answer.
   const endChecks = progress.facts.profile?.begin("route-checks");
+  // #3493: and each check inside it as its own stage, so a slow stretch says which
+  // check it was. `timeStage` charges a check that throws too.
+  //
+  // They still run ONE AFTER ANOTHER, deliberately, because each order below is a
+  // decision and running two at once would undo one of them: the edge limit before
+  // any database read (a flood must not buy reads, L498); the pause flag before the
+  // hourly cap (a refusal the lead did not cause never spends their budget); the
+  // hourly cap before the body read, and each contact key in turn (a refused key
+  // spends no later one); an advisor link only after every cap (probing for links
+  // pays what a booking pays). Overlapping any pair would either spend a cap a
+  // refusal must not spend, or add a read a refused request must not make. Whether
+  // any of that is worth reworking waits on what these stages measure.
+  const check = <T>(stage: string, fn: () => Promise<T>) => timeStage(progress.facts.profile, stage, fn);
   const ip = clientIp(req.headers);
   // #1557: the address ceilings on this endpoint SERVE a caller they cannot identify rather
   // than counting them into one shared bucket. Refusing one refuses a customer at the last
@@ -270,9 +283,11 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
   // refused, and gates itself per isolate before reading anything, so a flood still
   // costs no more than a handful of reads; the bound and why refusals cannot be used
   // to get around the limit are on `@/lib/rate-limit-retry-credit`.
-  if (!(await bookingWithinLimit(ip))) {
-    const retry = await bookingRetryCredit(ip);
-    if (retry !== "allowed") return tooMany("edge-minute", retry);
+  const edge = await check(ROUTE_CHECK_STAGES.edgeLimit, async () =>
+    (await bookingWithinLimit(ip)) ? null : await bookingRetryCredit(ip),
+  );
+  if (edge !== null) {
+    if (edge !== "allowed") return tooMany("edge-minute", edge);
     log.info("booking-rate-limit", { msg: "retry after a taken time", scope: "edge-minute", ip });
   }
 
@@ -293,7 +308,7 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
   // It runs before the body is read, so neither refusal can name a bucket. That is
   // recorded as `unidentifiable` rather than as an empty code, because both states
   // this gate refuses in are org-wide: no bucket would explain either one.
-  const publicBooking = judgePublicBooking(await readPublicBookingPaused());
+  const publicBooking = judgePublicBooking(await check(ROUTE_CHECK_STAGES.pauseFlag, readPublicBookingPaused));
   if (!publicBooking.allow) {
     if (publicBooking.refusal === "booking_paused") {
       log.info("booking-paused", { msg: "refused, bookings are paused", ip });
@@ -316,11 +331,12 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
   }
   // Strict hourly anti-spam cap stays in the DB (a 1-hour window the native
   // binding can't express).
-  if (!(await allowRequest(bookingCaller, BOOKING_HOURLY_RATE_RULES))) return tooMany("hourly");
+  if (!(await check(ROUTE_CHECK_STAGES.hourlyCap, () => allowRequest(bookingCaller, BOOKING_HOURLY_RATE_RULES))))
+    return tooMany("hourly");
   progress.spent.push({ caller: bookingCaller, rules: BOOKING_HOURLY_RATE_RULES });
 
   // #3135: read under a byte cap rather than buffering whatever arrives.
-  const read = await readJsonCapped(req, PUBLIC_JSON_MAX_BYTES);
+  const read = await check(ROUTE_CHECK_STAGES.bodyRead, () => readJsonCapped(req, PUBLIC_JSON_MAX_BYTES));
   if (read.tooLarge) {
     // refusal: body_too_large
     // Deliberately uncounted: no booker sends one, the reasoning is in refusal-catalog.ts.
@@ -409,7 +425,7 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
     phone: parsed.data.attendee.phone,
   });
   for (const key of contactKeys) {
-    if (!(await allowRequest({ kind: "opaque", key }, BOOKING_CONTACT_HOURLY_RATE_RULES)))
+    if (!(await check(ROUTE_CHECK_STAGES.contactCap, () => allowRequest({ kind: "opaque", key }, BOOKING_CONTACT_HOURLY_RATE_RULES))))
       return tooMany("contact");
     progress.spent.push({ caller: { kind: "opaque", key }, rules: BOOKING_CONTACT_HOURLY_RATE_RULES });
   }
@@ -444,7 +460,7 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
   if (agentLinkKey !== undefined) {
     let judged: Awaited<ReturnType<typeof resolveAgentLink>>;
     try {
-      judged = await resolveAgentLink(agentLinkKey);
+      judged = await check(ROUTE_CHECK_STAGES.agentLink, () => resolveAgentLink(agentLinkKey));
     } catch (err) {
       // #3102: the failure path runs under the cleanup allowance, not the confirm
       // budget, which a timeout has already spent; its outcome and report would
