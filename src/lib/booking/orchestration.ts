@@ -1687,7 +1687,10 @@ export interface BookingDeps {
    * THROWS when the write fails or matches no row, which stops the insert.
    */
   repinReservationEvent(id: string, fromClientId: string, toClientId: string): Promise<void>;
-  /** Pending reservations whose lease is free/expired, for the drain. */
+  /** Pending reservations whose lease is free/expired, for the drain, and old
+   *  enough that no live confirm can still be completing one (#3466). THROWS on a
+   *  failed read: an empty list is what a quiet table returns, so it may never
+   *  stand in for one that could not be read. */
   loadDrainableReservations(limit: number): Promise<BookingReservation[]>;
   /** Gated lease claim: the token if THIS call took it, null when another holder
    *  has it (drain vs inline guard). */
@@ -5854,15 +5857,15 @@ interface CommitKnown {
  * booking.created dedupes on the booking id (`webhookDedupeKey`) so a re-run
  * emits nothing new), so running it inline once, or again from the reservation
  * drain after a crash, reaches the same end state without a duplicate block or a
- * double webhook. Returns the resolved bucket/eventType (or null) so the fresh
- * path can attach its best-effort routing log without a second resolve.
+ * double webhook. Returns the resolved bucket/eventType. THROWS when the bucket
+ * no longer resolves (#3516), since the webhook it owes cannot be built.
  */
 async function deliverCreatedSideEffects(
   deps: BookingDeps,
   booking: Booking,
   bookedCode: string,
   known?: CommitKnown,
-): Promise<{ bucket: Bucket; eventType: EventType } | null> {
+): Promise<{ bucket: Bucket; eventType: EventType }> {
   if (booking.assigned_user_id) {
     await deps.moveBusyBlock(
       booking.assigned_user_id,
@@ -5886,9 +5889,19 @@ async function deliverCreatedSideEffects(
     known && known.bucket.code === bookedCode
       ? { bucket: known.bucket, eventType: known.eventType }
       : await deps.resolveBucketByCode(bookedCode);
-  if (resolved) {
-    await fire(deps, "booking.created", booking, resolved.bucket, resolved.eventType);
+  if (!resolved) {
+    // #3516: booking.created cannot be built without the bucket, and it used to be
+    // skipped here in silence while the caller went on to delete the reservation,
+    // the only record that Regal was still owed it. Throwing keeps the reservation
+    // pending: the drain backs off with this as its last_error, and past
+    // DRAIN_ALERT_AFTER attempts it pages as `reservation_drain_stuck`. Since #3514
+    // the one call save leaves a reservation pending for exactly this reason
+    // (`unbuilt`), so this is the step that decides whether anybody hears of it.
+    throw new Error(
+      `booking ${booking.id} committed, but booking.created cannot be sent: the booked bucket ${bookedCode} no longer resolves. Regal has not been told about this booking`,
+    );
   }
+  await fire(deps, "booking.created", booking, resolved.bucket, resolved.eventType);
   return resolved;
 }
 

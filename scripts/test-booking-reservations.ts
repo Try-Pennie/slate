@@ -18,6 +18,67 @@ import {
 
 const { assert, finish } = createAsserter();
 
+// The crashed create the #3516 cases resume: the first case's reservation, as a
+// fresh copy each call so one case's mutation never reaches another.
+function crashedReservation(): BookingReservation {
+  return {
+    id: "resv-crash",
+    idempotency_key: "411|2026-06-08T13:00:00.000Z|k@x.com||sf1",
+    pinned_user_id: "a",
+    pinned_agent_email: "a@x.com",
+    gcal_client_id: "slatedeadbeef",
+    payload: {
+      booking: {
+        org_id: "org1",
+        bucket_id: "bkt1",
+        event_type_id: "et1",
+        assigned_user_id: "a",
+        agent_name: "Agent A",
+        agent_email: "a@x.com",
+        starts_at: "2026-06-08T13:00:00.000Z",
+        ends_at: "2026-06-08T13:30:00.000Z",
+        original_starts_at: "2026-06-08T13:00:00.000Z",
+        original_ends_at: "2026-06-08T13:30:00.000Z",
+        timezone: "America/New_York",
+        status: "confirmed",
+        salesforce_id: "sf1",
+        attendee_name: "Kris",
+        attendee_email: "k@x.com",
+        attendee_phone: "+12035615295",
+        prefill: {},
+        gcal_event_id: "slatedeadbeef",
+        manage_token: "tok-resv",
+        idempotency_key: "411|2026-06-08T13:00:00.000Z|k@x.com||sf1",
+        external_id: null,
+        routing_trace: {
+          bucket_code: "411",
+          bucket_id: "bkt1",
+          considered: ["a"],
+          chosen_user_id: "a",
+          fallback_applied: false,
+        },
+      },
+      event: {
+        summary: "Senior Loan Advisor Call with Kris",
+        description: "desc",
+        start: "2026-06-08T13:00:00.000Z",
+        end: "2026-06-08T13:30:00.000Z",
+        timezone: "America/New_York",
+        attendeeEmail: "k@x.com",
+        attendeeName: "Kris",
+      },
+      bucketCode: "411",
+    },
+    status: "pending",
+    lease_until: null,
+    attempts: 0,
+    last_error: null,
+    next_attempt_at: null,
+    created_at: "",
+    updated_at: "",
+  };
+}
+
 async function run() {
   // --- create reservation drain resume after a crash (#429 P4 Phase C) ---
   {
@@ -347,6 +408,91 @@ async function run() {
     assert(oCalls.reservationBumps.length === 1 && oRes.stuck.length === 1, "drain: another Google 400 is bumped and reported");
   }
 
+
+  // --- #3516: the resume cannot send booking.created because the bucket is gone ---
+  // The booking committed (by an earlier confirm, or by the one call save leaving
+  // the reservation pending with its webhook `unbuilt`), and the bucket it was
+  // booked into no longer resolves, so booking.created cannot be built. It used to
+  // be skipped with no log and the reservation deleted, the only record that Regal
+  // was still owed it. It is a failure now: the reservation stays pending, backs
+  // off, and past the threshold reaches the drain's stuck alert, naming the bucket.
+  {
+    const already = makeBooking({
+      id: "bk-3516",
+      idempotency_key: "411|2026-06-08T13:00:00.000Z|k@x.com||sf1",
+      routing_trace: {
+        bucket_code: "411",
+        bucket_id: "bkt1",
+        considered: ["a"],
+        chosen_user_id: "a",
+        fallback_applied: false,
+      },
+    });
+    const reservation = (id: string, attempts: number): BookingReservation => ({
+      ...crashedReservation(),
+      id,
+      attempts,
+    });
+
+    const { deps, calls } = makeDeps({
+      drainableReservations: [reservation("resv-3516", 0)],
+      existingByKey: already,
+      unknownBucket: true,
+    });
+    const res = await processBookingReservations(deps, 15);
+    assert(res.completed === 0 && res.failed === 1, "#3516 drain: an unbuildable booking.created is a failure, never completed");
+    assert(calls.webhooks.length === 0, "#3516 drain: nothing is sent without a bucket to build it from");
+    assert(
+      calls.deletedReservations.length === 0,
+      "#3516 drain: the reservation is NOT deleted, since it is the only record the webhook is owed",
+    );
+    assert(
+      calls.reservationBumps.length === 1 &&
+        /booking\.created/.test(calls.reservationBumps[0].lastError) &&
+        /411/.test(calls.reservationBumps[0].lastError) &&
+        /bk-3516/.test(calls.reservationBumps[0].lastError),
+      "#3516 drain: it backs off with a last_error naming the webhook, the bucket and the booking",
+    );
+
+    // Past the threshold it is reported stuck, which is what pages.
+    const { deps: sDeps } = makeDeps({
+      drainableReservations: [reservation("resv-3516-stuck", 4)],
+      existingByKey: already,
+      unknownBucket: true,
+    });
+    const sRes = await processBookingReservations(sDeps, 15);
+    assert(
+      sRes.stuck.length === 1 && sRes.stuck[0].id === "resv-3516-stuck",
+      "#3516 drain: past the alert threshold the reservation is reported stuck, so it pages",
+    );
+
+    // CONTROL: the same resume with the bucket resolving sends the webhook once and
+    // deletes the reservation, so the failure above is the bucket and nothing else.
+    const { deps: cDeps, calls: cCalls } = makeDeps({
+      drainableReservations: [reservation("resv-3516-control", 0)],
+      existingByKey: already,
+    });
+    const cRes = await processBookingReservations(cDeps, 15);
+    assert(cRes.completed === 1 && cCalls.webhooks.length === 1, "#3516 control: a resolving bucket sends booking.created");
+    assert(cCalls.deletedReservations.includes("resv-3516-control"), "#3516 control: and deletes the reservation");
+  }
+
+  // --- the drain's read failing is the drain failing ---
+  // A read that throws must reach the lane (which counts it toward
+  // reservation_drain_failing), never resolve as an empty tick.
+  {
+    const { deps } = makeDeps({});
+    deps.loadDrainableReservations = async () => {
+      throw new Error("booking_reservations drain read failed: statement timeout");
+    };
+    let threw: unknown = null;
+    try {
+      await processBookingReservations(deps, 15);
+    } catch (err) {
+      threw = err;
+    }
+    assert(threw instanceof Error && /statement timeout/.test(threw.message), "drain: a failed read throws out of the drain rather than reading as empty");
+  }
 }
 
 await run();
