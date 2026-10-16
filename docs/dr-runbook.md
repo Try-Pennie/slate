@@ -534,7 +534,9 @@ back. It is counted as `verify_unavailable` and pages under
 
 **What can still happen after that 503.** If the timeout came after the booking's
 reservation was written (the Google insert is the usual one), the reservation
-stays pending and the reservation drain retries it on later ticks. The event
+stays pending and the reservation drain retries it on later ticks, never before
+it is `RESERVATION_DRAIN_MIN_AGE_MS` old (twice the 14 second worst case, #3466), so
+the drain never takes a reservation a live confirm is still completing. The event
 insert carries a fixed client id, so a retry reuses an event that landed rather
 than writing a second. So the lead can receive an invite even though the page
 asked them to try again; the page does not say whether that happened, because
