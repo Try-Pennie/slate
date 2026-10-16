@@ -108,6 +108,7 @@ import {
   BURST_MEMO_MS,
   burstEscalateAt,
   applyCounterRequest,
+  exactCeilingKey,
   readCounterRequest,
   type CounterWindow,
 } from "@/lib/rate-limit-burst";
@@ -1507,6 +1508,33 @@ describe("exactCeilingWithinLimit, the hourly ceilings at the edge (#3416)", () 
     await expect(
       exactCeilingWithinLimit({ kind: "opaque", key: "key:canary" }, DIRECT_BOOKING_API_HOURLY_RATE_RULES),
     ).resolves.toBe(true);
+  });
+
+  // #3456: two load run arms inside one hour, each scoped to its own run. The kept load
+  // test Worker keeps its counter between runs, so before this the second arm inherited the
+  // first arm's count and met the 6000 ceiling partway through.
+  it("starts a second load run arm at zero, while the first arm's count stands", async () => {
+    const ARM_A = "run-1001-1";
+    const ARM_B = "run-1002-1";
+    const objectA = exactCeilingKey(KEY_RULE.prefix, "key:regal", ARM_A);
+    const objectB = exactCeilingKey(KEY_RULE.prefix, "key:regal", ARM_B);
+    // Arm A drives the caller to its ceiling.
+    objects.set(objectA, { windowStartMs: Date.now(), count: KEY_RULE.max });
+    await expect(exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES, ARM_A)).resolves.toBe(false);
+    // Arm B, the same caller in the same hour, starts at one.
+    await expect(exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES, ARM_B)).resolves.toBe(true);
+    expect(objects.get(objectB)?.count).toBe(1);
+    expect(objects.get(objectA)?.count).toBe(KEY_RULE.max + 1);
+    // And neither arm wrote production's own key for the caller.
+    expect(asked).toEqual([objectA, objectB]);
+    expect(objects.has(KEY_OBJECT)).toBe(false);
+  });
+
+  it("counts under production's own key when no run scope is given, so production is unchanged", async () => {
+    expect(exactCeilingKey(KEY_RULE.prefix, "key:regal", null)).toBe(KEY_OBJECT);
+    expect(exactCeilingKey(KEY_RULE.prefix, "key:regal")).toBe(KEY_OBJECT);
+    await expect(exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES, null)).resolves.toBe(true);
+    expect(asked).toEqual([KEY_OBJECT]);
   });
 
   it("opens a new window once the old one is strictly older than an hour", async () => {

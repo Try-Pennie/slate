@@ -160,7 +160,9 @@ Change one by editing `wrangler.jsonc` and redeploying.
   isolate that has not yet managed to read the stored switch
   (`booking_settings.shared_confirm_line`, flipped on the admin Hours page with no
   deploy). It only matters on a cold isolate whose read failed: a failed read is never
-  cached, the isolate answers this default and reads again five seconds later. Exactly
+  cached, the isolate answers this default and reads again five seconds later, and a
+  run of three failed reads inside a minute on one isolate pages
+  `shared_line_switch_unreadable` naming this default's value (#3339). Exactly
   `"on"` or `"off"`; anything else, or unset, is read as off and logged once per
   isolate. Production commits `"off"` until the line is activated there, and the
   activation change flips it to `"on"`. `env.loadtest` commits `"on"`, the one var it

@@ -21,13 +21,14 @@ export { CONFIRM_LINE_EXIT };
 /**
  * The longest the command waits for the probe's answer. A healthy probe takes the line
  * checks' few seconds plus one idle spell of the directory's wake check (#3481), about
- * 25 seconds. The slowest honest one, every follower waiting out its whole wait and the
- * directory never answering from storage, is under two minutes:
+ * 30 seconds. The slowest honest one, every follower waiting out its whole wait and the
+ * directory never answering from storage, is a little over two minutes since #3823 added
+ * three ladder checks (measured 124s, a report that never reaches the object):
  * `scripts/test-confirm-line-live-control.ts` measures every planted run on its virtual
  * clock and holds the slowest well inside this. Past it the reply is not coming, and
- * waiting on it would only hold the job until its own timeout (L110).
+ * waiting on it would only hold the job until its own timeout (L110), which is 20 minutes.
  */
-export const REPLY_DEADLINE_MS = 150_000;
+export const REPLY_DEADLINE_MS = 180_000;
 
 /** What one call to the endpoint produced. */
 export type ProbeOutcome =
@@ -48,6 +49,9 @@ const ASKS: Record<ConfirmLineCheck, string> = {
   full: "refused after a full verdict",
   notFull: "handed the lead after a not full verdict",
   abandoned: "freed behind an unacknowledged lead",
+  handedStart: "released holding the advisor nobody had claimed",
+  heldVerdict: "a full verdict held while a claim is in flight, then applied",
+  claimOutcome: "an advisor found busy kept out and an untried one handed back",
   nothingHeld: "nothing left held",
   directory: "the pool grouping directory stores, keeps the newest, and holds a live grouping",
   directoryWake: "the pool grouping directory hands its grouping back from storage after an idle sleep",
@@ -117,6 +121,14 @@ export const OUTCOME_ORDER: readonly Failed[] = [
   "not-handed-on",
   "not-freed",
   "freed-late",
+  // #3823: the ladder line's own behaviour. Two confirms on one advisor is the worst of
+  // them, then a line answering the old way, then each rule a crowd leans on for speed.
+  "start-wrong",
+  "start-not-handed",
+  "busy-handed-again",
+  "verdict-not-held",
+  "held-not-applied",
+  "untried-not-returned",
   // #3460: a directory that serves nothing costs the line capacity rather than being a
   // line that misbehaves, so it ranks below every line fault and above a slot merely
   // left held.
@@ -200,6 +212,31 @@ export const FAILED_CHECK: Record<Failed, { exit: number; says: string }> = {
     exit: CONFIRM_LINE_EXIT.directoryLostAfterIdle,
     says:
       "The pool grouping directory did not hand back the grouping it stored once it was left idle past the platform's hibernation window, so between the recompute lane's publishes every server reads nothing and confirms key by code again.",
+  },
+  "start-not-handed": {
+    exit: CONFIRM_LINE_EXIT.startNotHanded,
+    says:
+      "A confirm the line should have released holding the advisor nobody had claimed got no lead, or a lead holding nothing, so the line Worker is answering as it did before the ladder line (#3489) and a crowd reads every rung again confirm by confirm.",
+  },
+  "start-wrong": {
+    exit: CONFIRM_LINE_EXIT.startWrong,
+    says: "A confirm the line released was handed something other than the advisor nobody had claimed, so a crowd can put two confirms on one advisor while somebody free goes unasked.",
+  },
+  "verdict-not-held": {
+    exit: CONFIRM_LINE_EXIT.verdictNotHeld,
+    says: "With another confirm's claim still in flight, a full verdict answered the confirm waiting behind it at once instead of being held until that claim ended, so a crowd is refused or re-read on a verdict the claim could still overturn.",
+  },
+  "held-not-applied": {
+    exit: CONFIRM_LINE_EXIT.heldNotApplied,
+    says: "A full verdict the line held was not applied, with the settlement the last booking read, when the last claim in flight ended booked, so a crowd behind a spent ladder reads it again for itself or is told who sat there before that booking.",
+  },
+  "busy-handed-again": {
+    exit: CONFIRM_LINE_EXIT.busyHandedAgain,
+    says: "An advisor whose claim was reported found busy was handed to the next confirm, so the line ignores how a claim ended and sends leads to somebody already known to be unable to take the time.",
+  },
+  "untried-not-returned": {
+    exit: CONFIRM_LINE_EXIT.untriedNotReturned,
+    says: "An advisor whose claim was reported untried was not handed to the next confirm, so somebody nobody asked about is lost to the line and a crowd can be turned away with an advisor free.",
   },
   "wake-unobserved": {
     exit: CONFIRM_LINE_EXIT.directoryWakeUnobserved,

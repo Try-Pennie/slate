@@ -18,6 +18,7 @@ import { OK_P95_MS } from "./judge-booking-run.ts";
 // deployment sent, read through the one parser both sides share (#3325, L41).
 import type { LoadtestEcho } from "../../src/lib/loadtest-echo.ts";
 import { LOADTEST_LEG_HEADER, LOADTEST_LEGS, type LoadtestLeg } from "../../src/lib/booking/wait-marks.ts";
+import { LOADTEST_RUN_HEADER } from "../../src/lib/loadtest-run-scope.ts";
 // Type only: what a burst driver records from the deployment for the judge (#3429).
 import type { BurstProbe, CrowdRuleReading } from "./burst-probe.ts";
 
@@ -1308,9 +1309,26 @@ export function settleLater(work: Promise<unknown>, onFailure: (err: unknown) =>
   );
 }
 
-/** The headers every confirm a driver sends carries, its leg among them (#3354). */
-export function bookingRequestHeaders(apiKey: string, leg: LoadtestLeg): Record<string, string> {
-  return { Authorization: `Bearer ${apiKey}`, "content-type": "application/json", [LOADTEST_LEG_HEADER]: leg };
+/**
+ * The header naming the run a booking API request belongs to (#3456), so the exact hourly
+ * ceilings count this run alone. The load test Worker and the counter it binds are kept
+ * between runs (#3310), and every driver books under one caller, so without it two runs or
+ * arms inside an hour shared one count and a third could meet the 6,000 ceiling partway
+ * through. `RUN_ID` is unique per dispatch and per attempt; a hand run that reuses one
+ * shares that run's counts.
+ */
+export function loadtestRunHeaders(runId: string): Record<string, string> {
+  return { [LOADTEST_RUN_HEADER]: runId };
+}
+
+/** The headers every confirm a driver sends carries: its leg (#3354) and its run (#3456). */
+export function bookingRequestHeaders(apiKey: string, leg: LoadtestLeg, runId: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    "content-type": "application/json",
+    [LOADTEST_LEG_HEADER]: leg,
+    ...loadtestRunHeaders(runId),
+  };
 }
 
 /**

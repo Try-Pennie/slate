@@ -1793,7 +1793,29 @@ It deletes, in order, `bookings`, `booking_outbox`, `booking_reservations`,
 many rows each lost. Why each matters to the next arm: the previous arm's bookings
 make agents busier (their busy blocks, the daily cap count) and widen every candidate
 read; outbox rows and reservations would be drained by the lanes during the next
-arm's window; rate limit rows can refuse drivers that run at the per address ceiling.
+arm's window; any rate limit rows left behind could refuse the next arm.
+
+**The booking API's hourly ceilings are not in that table any more, and the reset does
+not need to reach them** (#3456). Since #3416 the per caller (6,000 an hour) and per
+address (1,200 an hour) ceilings are counts in the `BURST_LIMITER` Durable Object, and
+since #3310 the object Worker the load test binds is kept between runs, so emptying
+`rate_limits` stopped resetting them. Every driver books under one caller, and a run
+sends about 2,000 hits, so a third run or arm inside one hour met the per caller ceiling
+partway through, and its refusals read as the booking path throttling.
+
+They are scoped per RUN instead. Every booking API request a driver sends names its
+`RUN_ID` in the `x-loadtest-run` header (`loadtestRunHeaders` in `book-plan.ts`), and under
+`SLATE_LOADTEST` the authorizer counts that run's hits in objects of its own
+(`src/lib/loadtest-run-scope.ts`). `RUN_ID` is unique per dispatch and per attempt, so
+every arm starts at zero with nothing to delete, and the earlier run's counts age out on
+the object's own alarm. Re-keying was chosen over clearing because clearing would need an
+endpoint able to delete a security control's state over HTTP; re-keying adds nothing that
+can write, clear or lower a count. It cannot reach production's limiter: production never
+reads the header (`readLoadtestRunScope` returns before looking), the load test binds its
+own object Worker (`slate-burst-limiter-loadtest`), and a scope only ever adds a prefix.
+`src/lib/rate-limit.test.ts` drives two arms and requires the second to start at one;
+`src/lib/booking/route-auth.test.ts` requires production to ignore the header. A hand run
+that reuses a `RUN_ID` shares that run's counts, by design.
 
 - **DELETE, never TRUNCATE.** Deleting bookings cascades only to the busy blocks a
   booking wrote. `TRUNCATE bookings CASCADE` would empty `busy_blocks` entirely,
@@ -1807,9 +1829,11 @@ arm's window; rate limit rows can refuse drivers that run at the per address cei
   here, so such a row is unexpected and worth looking at first.
 
 What it leaves alone, deliberately: `bucket_slots` and the slot cache (the preflight
-recomputes by hand and waits for fresh rows), the burst counter (a 60 second window
-that clears itself), alert cooldowns (Slack is off under load test), lane heartbeats,
-and `audit_log` (append only, and its insert cost does not grow with its size).
+recomputes by hand and waits for fresh rows), the `BURST_LIMITER` object (its per minute
+burst windows clear themselves within two minutes, and its hourly ceilings are scoped to
+the run as above, so the next arm never sees the last one's), alert cooldowns (Slack is
+off under load test), lane heartbeats, and `audit_log` (append only, and its insert cost
+does not grow with its size).
 
 The sequence, every dispatch from the same commit the deployment was built from:
 
@@ -1822,6 +1846,51 @@ The sequence, every dispatch from the same commit the deployment was built from:
 5. Run `reset.ts` again, and check the sync lanes again.
 6. Dispatch with `post_confirm_recompute` = `reads-only`, `teardown` on and
    `branch_name` set, so the environment goes when the last arm is judged.
+
+## The Google delay (#3490)
+
+The Google stand in (`src/lib/google/loadtest-stub.ts`) answers every call at once. A
+production confirm spends seconds on its live free/busy check and its calendar write
+(about 3s and 5s in #3221; production's confirm read p50 4.8s and p95 8.0s on
+2026-10-05), so a load run's confirm latency and burst timings left out production's
+largest cost. Inside the confirm a load run now reads about 200ms at the median, so the
+stand in's zero is most of the gap between a load run and a production confirm, and the
+burst bars (a crowd walking the tier ladder inside the confirm line's wait) had never had
+Google time in them.
+
+`SLATE_LOADTEST_GOOGLE_DELAY` makes the stand in take that time. It names a median and a
+95th percentile in milliseconds for the live checks, the calendar writes, or both:
+
+```
+read=3000/5000,write=5000/8000
+```
+
+| | |
+|---|---|
+| **which calls** | the ones a lead waits on, which are the ones production cuts off at `GOOGLE_CONFIRM_TIMEOUT_MS`: `freeBusy` and each `freeBusyMany` wave chunk (read), `createEvent`, `updateEventTime`, `deleteEvent` and `updateEventContact` (write). Cron lanes keep answering at once. `scripts/test-loadtest-google-delay.ts` derives the list from `calendar.ts`, so the next such call is covered or fails the build |
+| **the shape** | a lognormal fitted through exactly the two figures given, drawn at random per call. Random rather than keyed on the call, because a crowd of confirms for one slot reads the same calendars, and a keyed draw would hand every one of them the identical wait |
+| **the caps** | never longer than the call's own deadline (8s) or what the confirm's budget has left, which is where production cuts a real call off; then it ANSWERS. A timeout is the fault switch's job (`google-read`), so a delayed steady pass's "no 5xx" bar still measures the code |
+| **off** | unset or blank, which is every run before this. A value that does not parse delays nothing, is logged at error once per isolate, reported by `/api/smoke/version` as `googleDelayUnknown`, and refused by the preflight |
+
+**Production cannot reach it.** The calls above reach the stand in only under
+`SLATE_LOADTEST`, and the delay asks `isLoadtest()` again before it even reads the
+setting. It is committed nowhere: `scripts/test-wrangler-loadtest-env.ts` fails the build if
+production or `env.loadtest` carries it, and `/api/smoke/version` reports it only under
+load test.
+
+**Setting it.** Dispatch the workflow with the `google_delay` input. Empty (the default)
+changes nothing. Anything else makes the `arm` job redeploy the Worker with
+`--var "SLATE_LOADTEST_GOOGLE_DELAY:<value>"`, beside the recompute arm; the preflight then
+asks `/api/smoke/version` which delay the deployment takes and refuses on any mismatch,
+including an undelayed run against a deployment an earlier run left delayed. The fault leg
+and the cold leg carry the same value on their redeploys, the fault leg's restore deploys
+with no `--var`, which puts the deployment back to no delay, and the report's header names
+the rig.
+
+**Choosing the values.** Take them from production's CURRENT Google timings for those
+calls, not from #3221's October figures: production has moved since. Two runs are
+comparable only on the same setting, so every latency figure, and the steady pass bar's
+same day baseline ratio (#3517), is read against runs that used the same delay.
 
 ## Tearing down (#2322)
 

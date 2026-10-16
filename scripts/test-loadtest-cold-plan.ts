@@ -311,6 +311,7 @@ function coldWiringProblems(yml: string): string[] {
   const answer = (r: { status: number | null; stdout?: string; stderr?: string; error?: { code?: string; message: string } }) => {
     const deploy = makeColdDeploy({
       arm: "reads-only",
+      googleDelay: "",
       wranglerBin: "/repo/node_modules/.bin/wrangler",
       spawn: (cmd, args, opts) => {
         calls.push({ cmd, args, timeout: opts.timeout });
@@ -335,6 +336,33 @@ function coldWiringProblems(yml: string): string[] {
   // only cause there is, and an empty output would hide it.
   const missing = await answer({ status: null, error: { code: "ENOENT", message: "spawnSync /repo/node_modules/.bin/wrangler ENOENT" } });
   assert(!missing.ok && missing.output.includes("ENOENT") && !missing.output.includes("did not finish"), `a deploy that could not start says why (got ${JSON.stringify(missing)})`);
+}
+
+// --- #3490: every version the cold leg deploys keeps the run's Google delay too ---------
+{
+  const argsFor = async (googleDelay: string) => {
+    let args: string[] = [];
+    await makeColdDeploy({
+      arm: "on",
+      googleDelay,
+      wranglerBin: "/repo/node_modules/.bin/wrangler",
+      spawn: (_cmd, a) => {
+        args = a;
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    })();
+    return args.join(" ");
+  };
+  eq(
+    await argsFor("read=3000/5000,write=5000/8000"),
+    "deploy --env loadtest --var SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:on --var SLATE_LOADTEST_GOOGLE_DELAY:read=3000/5000,write=5000/8000",
+    "a delayed run's cold samples are taken on a deployment taking the same delay",
+  );
+  eq(
+    await argsFor(""),
+    "deploy --env loadtest --var SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:on",
+    "an undelayed run adds no delay setting at all, rather than an empty one",
+  );
 }
 
 (async () => {

@@ -45,6 +45,7 @@ import {
   readBurstGraceMs,
   settleLater,
   bookingRequestHeaders,
+  loadtestRunHeaders,
   bookingBody,
   DRIVER_MODES,
   BURST_LEGS,
@@ -69,6 +70,7 @@ import {
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { LOADTEST_LEGS, LOADTEST_LEG_HEADER } from "../src/lib/booking/wait-marks.ts";
+import { LOADTEST_RUN_HEADER, readLoadtestRunScope } from "../src/lib/loadtest-run-scope.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- the ceilings come from the app, not from a copy --------------------------
@@ -849,10 +851,17 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
     assert((LOADTEST_LEGS as readonly string[]).includes(mode), `the ${mode} mode is a leg the route reads`);
   }
   for (const leg of LOADTEST_LEGS) {
-    const h = bookingRequestHeaders("k", leg);
+    const h = bookingRequestHeaders("k", leg, "run-1001-1");
     assert(h[LOADTEST_LEG_HEADER] === leg, `a ${leg} sender names its leg on the request (got ${JSON.stringify(h)})`);
     assert(h.Authorization === "Bearer k" && h["content-type"] === "application/json", "and still sends its key and its body's type");
+    // #3456: and its run, so the exact hourly ceilings count this run alone on the kept
+    // load test Worker, in the vocabulary the authorizer reads (L41).
+    assert(h[LOADTEST_RUN_HEADER] === "run-1001-1", `a ${leg} sender names its run on the request (got ${JSON.stringify(h)})`);
+    eq(readLoadtestRunScope({ get: (n) => h[n] ?? null }, true).scope, "run-1001-1", `and the authorizer reads the ${leg} sender's run as its scope`);
   }
+  // The probes the burst driver sends are booking API requests too, counted under the
+  // per address ceiling a confirm shares, so they carry the run as well.
+  eq(loadtestRunHeaders("run-1001-1"), { [LOADTEST_RUN_HEADER]: "run-1001-1" }, "a probe names its run");
   const unset = readDriverMode(undefined);
   assert(unset.ok && unset.mode === "steady", "no mode is the steady pass, as before");
   const typo = readDriverMode("Burst");

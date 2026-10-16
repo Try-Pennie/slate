@@ -373,7 +373,12 @@ async function main() {
       w.groups.every((g) => g === CONFIRM_LINE_VERIFY_GROUP),
       `and every object it addressed is the verification group's (got ${[...new Set(w.groups)].join(", ")})`,
     );
-    eq(w.instants.size, 3, "it used one instant per check, each its own");
+    eq(w.instants.size, 6, "it used one instant per line check, each its own");
+    // #3823: the ladder line's behaviour (#3489, #3522) is driven against the object too,
+    // not only the line's original rules.
+    for (const check of ["handedStart", "heldVerdict", "claimOutcome"]) {
+      assert((CONFIRM_LINE_CHECKS as readonly string[]).includes(check), `the probe checks ${check} against the deployed object`);
+    }
     // #3460: it WRITES only to its own directory, and only READS the live one, so the
     // proof can never put a grouping in front of a real confirm.
     const puts = w.directoryCalls.filter((c) => c.op === "grouping-put");
@@ -449,7 +454,7 @@ async function main() {
   await plant(
     "a full verdict read as not full",
     (w) => (m) => w.handle(w.host, m.op === "done" ? { ...m, verdict: { full: false } } : m),
-    { full: "not-settled", notFull: "passed", abandoned: "passed", nothingHeld: "passed" },
+    { full: "not-settled", notFull: "passed", abandoned: "passed", nothingHeld: "passed", heldVerdict: "verdict-not-held" },
   );
 
   // A not full verdict that settles them anyway.
@@ -531,6 +536,74 @@ async function main() {
       };
     },
     { full: "idle-not-led", notFull: "idle-not-led", abandoned: "idle-not-led" },
+  );
+
+  // --- #3823: the ladder line's own behaviour, a planted defect for each outcome -------
+  // An object older than the ladder line (#3489) takes every message and hands a
+  // released confirm nothing, so every confirm reads the whole rung again for itself.
+  await plant(
+    "a line that hands a released confirm nothing",
+    (w) => async (m) => {
+      const a = await w.handle(w.host, m);
+      if (a.kind !== "lead") return a;
+      const rest = { ...a };
+      delete rest.start;
+      return rest;
+    },
+    { handedStart: "start-not-handed", claimOutcome: "start-not-handed", full: "passed", notFull: "passed" },
+  );
+  // A line that hands a released confirm the advisor somebody in flight already claimed,
+  // which puts two confirms on one advisor.
+  await plant(
+    "a line that hands out an advisor already claimed",
+    (w) => async (m) => {
+      const a = await w.handle(w.host, m);
+      const start = a.start as { read?: unknown[] } | undefined;
+      if (a.kind !== "lead" || !start || !Array.isArray(start.read)) return a;
+      return { ...a, start: { ...start, advisor: start.read[0] } };
+    },
+    { handedStart: "start-wrong", claimOutcome: "start-wrong", full: "passed" },
+  );
+  // A line whose claims never hand it on: it only ever sees one candidate, so a leader
+  // claiming one of several still holds it, and nobody behind is released at all.
+  await plant(
+    "a claim that never hands the line on",
+    (w) => (m) =>
+      w.handle(w.host, m.op === "claimFirst" && Array.isArray(m.candidates) ? { ...m, candidates: m.candidates.slice(0, 1) } : m),
+    { handedStart: "start-not-handed", heldVerdict: "start-not-handed", claimOutcome: "start-not-handed", full: "passed" },
+  );
+  // The settlement a booked end reads never reaches the line, as from a client older
+  // than #3489 step 3: a held full verdict is then never applied, and one confirm reads
+  // again instead of the crowd being answered.
+  await plant(
+    "a report whose settlement is lost",
+    (w) => (m) => {
+      if (m.op !== "done") return w.handle(w.host, m);
+      const rest = { ...m };
+      delete rest.settlement;
+      return w.handle(w.host, rest);
+    },
+    { heldVerdict: "held-not-applied", claimOutcome: "passed", handedStart: "passed", full: "passed" },
+  );
+  // How a claim ended never reaches the line, as from a client older than #3489: an
+  // advisor the confirm found busy is handed straight out again, and a held verdict is
+  // given up the moment the full report lands.
+  await plant(
+    "a report whose claim outcome is lost",
+    (w) => (m) => {
+      if (m.op !== "done") return w.handle(w.host, m);
+      const rest = { ...m };
+      delete rest.outcome;
+      return w.handle(w.host, rest);
+    },
+    { claimOutcome: "busy-handed-again", heldVerdict: "verdict-not-held", handedStart: "passed" },
+  );
+  // A line that takes an untried advisor as found busy, so somebody nobody asked about
+  // is never handed out again and a crowd is turned away with an advisor free.
+  await plant(
+    "a line that reads untried as found busy",
+    (w) => (m) => w.handle(w.host, m.op === "done" && m.outcome === "untried" ? { ...m, outcome: "advisor-busy" } : m),
+    { claimOutcome: "untried-not-returned", heldVerdict: "passed", handedStart: "passed" },
   );
 
   // The probe's own code throwing, which is never a finding about the object.

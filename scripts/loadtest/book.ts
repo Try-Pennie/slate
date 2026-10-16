@@ -44,6 +44,7 @@ import {
   readBurstGraceMs,
   settleLater,
   bookingRequestHeaders,
+  loadtestRunHeaders,
   bookingBody,
   BURST_PROBE_TIMEOUT_MS,
   DRIVERS,
@@ -268,7 +269,7 @@ async function bookOnce(req: {
       signal: AbortSignal.timeout(sendBoundMs(abortAtMs, Date.now())),
       method: "POST",
       // #3354: the leg rides on every confirm, so the run can say where each cold one came from.
-      headers: bookingRequestHeaders(API_KEY, MODE),
+      headers: bookingRequestHeaders(API_KEY, MODE, RUN_ID),
       body: requestBody,
     });
     status = res.status;
@@ -716,7 +717,8 @@ async function probeOnceSettled(leg: PlannedBurst): Promise<BurstProbe> {
   try {
     const q = new URLSearchParams({ bucketCode: code, startIso: leg.slot });
     const res = await fetch(`${SLATE_BASE}/api/bookings/bookable?${q.toString()}`, {
-      headers: { Authorization: `Bearer ${API_KEY}` },
+      // #3456: counted under the run's own ceilings, like every confirm it follows.
+      headers: { Authorization: `Bearer ${API_KEY}`, ...loadtestRunHeaders(RUN_ID) },
       signal: AbortSignal.timeout(effectiveDeadlineMs(BURST_PROBE_TIMEOUT_MS, REQUEST_TIMEOUT_OVERRIDE)),
     });
     return readBurstProbe({ code, sentAtMs, status: res.status, body: await res.json().catch(() => null) });

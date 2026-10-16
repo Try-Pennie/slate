@@ -32,6 +32,8 @@ import {
 } from "@/lib/rate-limit-core";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 import type { AuthStep } from "@/lib/booking/wait-marks";
+import { isLoadtest } from "@/lib/loadtest-guard";
+import { readLoadtestRunScope, LOADTEST_RUN_HEADER } from "@/lib/loadtest-run-scope";
 
 export type AuthOutcome<C extends BookingApiCaller = FullApiCaller> =
   /** #2645: `caller` is who the key belongs to, `keyId` which of its slots. */
@@ -215,6 +217,17 @@ export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCa
     );
   }
   onAuthenticated?.(auth.caller);
+  // #3456: under SLATE_LOADTEST only, the exact ceilings count per load run, so a run or
+  // arm on the kept load test Worker never inherits the last one's counts. Production
+  // never reads the header (`readLoadtestRunScope` returns null before looking), so no
+  // caller can pick its own key.
+  const run = readLoadtestRunScope(req.headers, isLoadtest());
+  if (run.unreadable !== null) {
+    log.warn("booking-api-auth", {
+      msg: `${LOADTEST_RUN_HEADER} is not a run id, so this request's ceilings are counted unscoped`,
+      value: run.unreadable,
+    });
+  }
   const keyBudget = "Rate limit exceeded for this API key.";
   // Per CALLER (#2645): edge per-minute burst window first (no DB round-trip), then
   // the hourly cap. Keyed on who the key belongs to, not which slot matched, so a
@@ -224,7 +237,7 @@ export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCa
     ? await bookingApiReadWithinLimit(auth.caller)
     : await bookingApiWriteWithinLimit(auth.caller);
   onStep?.("key_edge");
-  if (!keyEdgeOk || !(await exactCeilingWithinLimit({ kind: "opaque", key: `key:${auth.caller}` }, hourlyKeyRules))) {
+  if (!keyEdgeOk || !(await exactCeilingWithinLimit({ kind: "opaque", key: `key:${auth.caller}` }, hourlyKeyRules, run.scope))) {
     return refuse("throttled_key", keyBudget, 429, readPath, req.headers, auth.keyId);
   }
   onStep?.("key_ceiling");
@@ -241,6 +254,7 @@ export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCa
         // above (an id that came from authentication) still bounds the caller.
         { kind: "address", ip, keyPrefix: "ip:", policy: BOOKING_API_IP_LIMITER },
         hourlyIpRules,
+        run.scope,
       ))) {
       return refuse(
         "throttled_ip",

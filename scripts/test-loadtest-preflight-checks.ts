@@ -735,6 +735,7 @@ function bookingDeps(w: ReturnType<typeof fakeWorld>, log: string[] = []) {
     fetch: w.fetch,
     baseUrl: "https://loadtest.example",
     apiKey: "k",
+    runId: "run-1-1",
     bucketCode: "112",
     bodyFor: (start: string) => ({ bucketCode: "112", start }),
     sleep: w.sleep,
