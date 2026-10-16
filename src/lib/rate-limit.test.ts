@@ -1626,10 +1626,11 @@ describe("exactCeilingWithinLimit, the hourly ceilings at the edge (#3416)", () 
     consoleErr.mockRestore();
   });
 
-  it("gives up on a stalled counter after about a second, not the old fifteen (#3828)", async () => {
+  it("gives up on a stalled counter after about two seconds, not the old fifteen (#3828)", async () => {
     // Load run 38933668981: two counters stalled 4 to 5 seconds at once, and a lead's confirm
-    // waited out the stall because the deadline was the 15 second Supabase one. Healthy, the
-    // counter answers in about 50ms (220ms at the 95th percentile). Real time, on a counter that
+    // waited out the stall because the deadline was the 15 second Supabase one. Production's
+    // counter answers in about 75ms (261ms at the 95th percentile) and took over 2 seconds on
+    // 4 of 7,151 calls in a week. Real time, on a counter that
     // never answers: the body path does not run under fake timers, and the bounds are loose on
     // purpose, so this asserts the deadline in force and not the machine's speed (L290).
     cf.env = { BURST_LIMITER: answering(() => new Promise<Response>(() => {})) };
@@ -1639,7 +1640,7 @@ describe("exactCeilingWithinLimit, the hourly ceilings at the edge (#3416)", () 
     const waited = performance.now() - started;
     expect(waited).toBeGreaterThanOrEqual(EXACT_CEILING_DEADLINE_MS - 50);
     expect(waited).toBeLessThan(5_000);
-    expect(EXACT_CEILING_DEADLINE_MS).toBe(1_000);
+    expect(EXACT_CEILING_DEADLINE_MS).toBe(2_000);
     consoleErr.mockRestore();
   });
 
