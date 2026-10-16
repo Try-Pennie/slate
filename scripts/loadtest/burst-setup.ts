@@ -55,7 +55,7 @@
 // leg that produced an empty file and a judge that reads it as a run with no burst.
 //
 // Run:
-//   SLATE_BASE=https://<loadtest>.workers.dev BURST_LEAD_SECONDS=300 \
+//   SLATE_BASE=https://<loadtest>.workers.dev BURST_LEAD_SECONDS=600 \
 //   NEXT_PUBLIC_SUPABASE_URL=<branch> SUPABASE_SECRET_KEY=<branch key> \
 //   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/burst-setup.ts
 import { appendFileSync } from "node:fs";
@@ -122,9 +122,9 @@ const SLATE_BASE = need("SLATE_BASE").replace(/\/$/, "");
  * kind is at most twelve, inside the ceiling; in practice the first of each answers.
  */
 const LADDERS_TO_ASK = 3;
-// env-ok: BURST_LEAD_SECONDS (optional; defaults to 300, which has to cover a
-// runner being queued, checked out and installed)
-const LEAD = Number((process.env.BURST_LEAD_SECONDS ?? "300").trim());
+// env-ok: BURST_LEAD_SECONDS (optional; defaults to 600, the workflow's own default,
+// which has to cover a runner being queued, checked out and installed)
+const LEAD = Number((process.env.BURST_LEAD_SECONDS ?? "600").trim());
 
 const REFUSAL_CROWD = burstCrowd("refusal");
 const DROP_CROWD = burstCrowd("drop");
