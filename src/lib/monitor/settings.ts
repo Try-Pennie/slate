@@ -376,6 +376,12 @@ export const ALERT_FIELDS: {
     help: "The kill switch that stops Slate taking public bookings has been on for longer than the incident lever is meant to be held for. Nothing is broken: somebody turned it off deliberately and it asks whether that is still intended. It ends by itself when booking is started again.",
   },
   {
+    key: "shared_confirm_line_left_off",
+    urgency: "alert",
+    label: "Shared confirm line left off",
+    help: "The shared confirm line was switched on and has been switched off again for more than a day, so each server keeps its own line for confirms and a crowd for one time can swamp the database. Nothing is broken: somebody turned it off deliberately and it asks whether that is still intended. Says nothing while the line has never been switched on, and ends by itself when it is switched back on.",
+  },
+  {
     key: "advisor_photos_unread",
     urgency: "alert",
     label: "Advisor photos not refreshed",
@@ -608,6 +614,10 @@ export const MONITOR_DEFAULTS = {
     // It used to be four hours, so a state somebody holds on purpose through a long
     // incident was not asked about every hour; the settings screen can still set that.
     public_booking_stopped: URGENT_CONDITION_REPEAT_MS,
+    // The shared confirm line left off after activation (#3339): a question about a
+    // lever somebody pulled on purpose, and leads still book while it stands, so once a
+    // day while unchanged like any condition.
+    shared_confirm_line_left_off: CONDITION_REPEAT_MS,
     // A retired booking key presented (#2879): somebody still holds a key Slate no
     // longer accepts, and every call they make is refused, so a lead may be on a
     // broken page right now. Hourly per retired key and kind of host, like the other pages whose

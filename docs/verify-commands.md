@@ -357,7 +357,7 @@ asked the object anything (L557), and a fake cannot stand in for it (L52).
 **`pnpm verify:confirm-line` is the proof.** It calls `POST /api/smoke/confirm-line`,
 which runs the probe (`src/lib/monitor/confirm-line-probe.ts`) inside the deployment
 with the confirm path's OWN client (`makeSharedConfirmLine`) and its own transport
-(`durableLineNamespace`), against the real object. Six checks, each in both
+(`durableLineNamespace`), against the real object. Nine checks, each in both
 directions and each on its own named outcome:
 
 - **full**: B, queued behind A, is REFUSED as taken once A reports a full verdict,
@@ -369,8 +369,24 @@ directions and each on its own named outcome:
 - **abandoned**: A takes the lead and never acknowledges it (every call its client
   makes after the enter is lost), and B leads within the acknowledgement window
   rather than after the whole lease.
+- **handedStart** (#3823): the ladder line of #3489. B, queued behind A, is RELEASED
+  the moment A claims one of two advisors on a rung (naming its place), holding the
+  other advisor and A's whole read of the rung. An object older than the ladder line
+  hands it nothing (exit 26); one that hands it A's advisor puts two confirms on one
+  person (exit 27).
+- **heldVerdict** (#3823, #3489 step 3): B reports the ladder full while A's claim is
+  still in flight, so the line must HOLD that verdict for C, waiting behind, for the
+  report's own two calls (exit 28 when C is answered either way meanwhile), and apply it
+  the moment A's claim ends booked, refusing C with the settlement A's end read rather
+  than B's (exit 29).
+- **claimOutcome** (#3823, #3489): A reports its claim found busy and B reports its own
+  untried, and the next confirm must be handed B's advisor back and never A's (exits 30
+  and 31). A reports busy without first saying `trying`, so the reported outcome is the
+  only thing that can take its advisor off the line.
 - **nothingHeld**: afterwards a newcomer on each instant the probe used leads at
-  once, so leaving nothing held is measured rather than assumed.
+  once, so leaving nothing held is measured rather than assumed. On an instant a full
+  verdict settled (full's and heldVerdict's) the line may still remember it (#3570) and
+  refuse the newcomer with that verdict's own settlement, which also shows nothing held.
 - **directory** (#3460): the pool grouping DIRECTORY, the reserved instance of the
   same class the recompute lane publishes the pool grouping to (`src/lib/booking/pool-grouping.ts`),
   through the production directory transport (`durableGroupingDirectory`). On the
@@ -439,7 +455,7 @@ lists every check's outcome.
 |---|---|---|
 | 0 | every check answered as the line's rules say | nothing |
 | 1 | no base URL or no `BOOKING_API_KEY_CANARY` here | set them; nothing was attempted |
-| 2 | no reply at all, or none within two and a half minutes | check the base URL and that the deployment serves |
+| 2 | no reply at all, or none within three minutes | check the base URL and that the deployment serves |
 | 3 | a reply this command cannot read | something other than the endpoint answered |
 | 4 | the key was refused | the deployment does not hold this key |
 | 5 | the endpoint is disabled | the deployment has no booking API key configured |
@@ -463,6 +479,12 @@ lists every check's outcome.
 | 23 | the live grouping is one a server would refuse | another format, malformed, or older than three minutes |
 | 24 | left idle past the hibernation window, the directory lost the grouping it stored | **the #3479 failure is back**: servers between publishes read nothing and key by code; the detail says whether it woke or stayed awake |
 | 25 | every read after the idle wait answered from memory, or named no source | not a pass and not a finding: the platform kept the object awake, or the directory predates the field (deploy); the wake half was not measured |
+| 26 | a confirm the ladder line should have released with an advisor got no lead, or a lead holding nothing | the line Worker answers as it did before #3489; redeploy it at the app's commit |
+| 27 | a released confirm was handed something other than the advisor nobody had claimed | **two confirms can land on one advisor** in a crowd |
+| 28 | with a claim in flight, a full verdict answered the waiting confirm at once | a crowd is refused or re-read on a verdict the claim could still overturn |
+| 29 | a held full verdict was not applied, with the last booking's settlement, when that claim ended booked | a crowd behind a spent ladder reads it again for itself |
+| 30 | an advisor reported found busy was handed out again | the line ignores how a claim ended |
+| 31 | an advisor reported untried was not handed out again | a crowd can be turned away with an advisor free |
 
 Its decision logic is pinned offline by `scripts/test-confirm-line-live-control.ts`,
 which drives the probe against the real object host (`makeConfirmLineHost`) on a
@@ -480,8 +502,8 @@ can stand in for the other's (L53).
 **It stamps `verdict:confirm-line`**, in `VERDICT_STALE_BOUNDS_MS` with
 `neverIsStale` ON, at the burst counter's 52 hours for the same derived reasons
 (`scripts/test-confirm-line-schedule.ts` re-derives it from the workflow file).
-**Only a run that measured how the object answers may stamp it**: exits 0, 9 and 12
-to 24 conclude, and every bad one of those is also posted to Slack. Exit 8 (nothing
+**Only a run that measured how the object answers may stamp it**: exits 0, 9, 12
+to 24 and 26 to 31 conclude, and every bad one of those is also posted to Slack. Exit 8 (nothing
 bound) deliberately does not, because nothing exercised the answering half; the
 daily message still says so and the lapsing stamp pages as a blind detector, so
 nothing about it is quieter. Exit 25 (no wake seen) does not either, for the same

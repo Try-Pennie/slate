@@ -66,6 +66,7 @@ export const ALERT_KEYS = [
   "main_not_deployed",
   "ci_runs_refused",
   "public_booking_stopped",
+  "shared_confirm_line_left_off",
   "retired_booking_key",
   "advisor_photos_unread",
   "advisor_photos_held",

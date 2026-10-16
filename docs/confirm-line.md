@@ -333,6 +333,27 @@ isolate per 15 seconds. A failed read is never cached as the answer: an isolate 
 no good read uses the deployment default `SHARED_CONFIRM_LINE_DEFAULT` (on in the
 load test Worker, off in production until activation).
 
+**A failed read is counted, not only logged (#3339).** Every failed or late read is a
+`tag=shared-line` log line carrying the error, and is counted on its isolate
+(`src/lib/booking/shared-line-switch-alert.ts`); three inside a minute on one isolate
+page `shared_line_switch_unreadable`, once per half hour, naming the deployment default
+those confirms fell back to. It is an incident, like `confirm_line_unreachable`: one
+failed read is never a page, and nothing on the confirm path could clear it. The
+monitor lane's own read of the switch every tick is the ongoing measure: a lane that
+cannot read it pages `monitor_step_failing:shared_line_left_off`, with an all clear.
+
+**Left off after activation (#3339).** Once the line has been switched on, the monitor
+lane pages `shared_confirm_line_left_off` when it has been switched off again for more
+than a day (`src/lib/monitor/shared-line-left-off.ts`, the kill switch's pattern from
+#2366), during the org's open hours, once a day while it stands, and clears when it is
+switched back on. When it was activated, and when it was turned off, come from the
+audit trail the admin action writes on every flip (`booking.settings`, immutable),
+never a new column: the newest switch on, then the FIRST switch off after it, so
+pressing off twice cannot restart the clock. Until the line has ever been switched on,
+off is the expected state and says nothing, which is production today. Turning it on
+is a person's decision, on the admin Hours page (`/admin/business-hours`); the
+production default stays off until then.
+
 Every confirm records how it was served, on its `confirm answered` log line:
 `line` (`shared`, `isolate`, `fallback`), `line_reason`, `line_key` and `line_ms`
 (the time the line added, waiting excluded). A lookahead that failed counts its own
@@ -412,6 +433,14 @@ longer serve an older client, since a refused client uses its isolate's line for
 of a gradual deploy (run 37333201026). Optional fields whose absence only the CLIENT reads
 (#3489's rung, outcome, `canWalk`, settlement and `park`) need neither.
 
+**The deploy refuses that order (#3561).** Once #3838 is merged, a deploy refuses to put
+a ConfirmLine Worker build in front of the live app when its `CONFIRM_LINE_PROTOCOL` is
+lower than the app's (gradual deploy exit 27, `scripts/deploy-object-workers.ts` exit 3),
+so a line older than the app is no longer something a deploy can make by accident. It
+fails open, with a warning, when either side's protocol cannot be read, for example a
+live version with no commit tag after `wrangler secret put`. A deliberate downgrade means
+deploying the app alone first, then the older line. The exit codes are in `DEPLOY.md`.
+
 ## Waking a line before its confirm (#3775)
 
 An object left idle for minutes is brought back by the platform on its next call, and
@@ -481,7 +510,12 @@ order, with no reads, as the live reads), and `verify-ladder-candidate-inputs-sq
 Against production, `pnpm verify:confirm-line` (#3340) runs daily in
 `burst-counter.yml` and stamps `verdict:confirm-line`: the confirm path's own client
 against the live object, a follower refused after a full verdict, handed the lead
-after a not full one, freed behind an unacknowledged lead, and nothing left held; and
+after a not full one, freed behind an unacknowledged lead, and nothing left held; the
+ladder line's own behaviour (#3823): a waiting confirm released holding the advisor
+nobody claimed, a full verdict HELD while another claim is in flight and then applied
+with the last booking's settlement, and a claim reported found busy kept out while one
+reported untried is handed back, so a line Worker deployed answering the old way fails
+the proof before a crowd meets it; and
 (#3460) the pool grouping directory storing a put, keeping the newest over an older
 one, and holding a live grouping a cold server would install. It writes only its own
 verification directory and only reads the live one. It cannot prove two isolates
