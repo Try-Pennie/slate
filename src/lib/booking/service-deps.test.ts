@@ -31,6 +31,8 @@ const readTables: string[] = [];
 let singleResult: { data: unknown; error: { message: string } | null } = { data: null, error: null };
 /** #3495: what a read by idempotency key answers. */
 let keyResult: { data: unknown; error: { message: string; code?: string } | null } = { data: null, error: null };
+/** #3847: what the resume's any status read by key answers. */
+let latestResult: { data: unknown; error: { message: string } | null } = { data: [], error: null };
 /** #3495: what the next `rpc(...)` answers, and every rpc asked. */
 let rpcResult: { data: unknown; error: { message: string; code?: string } | null } = { data: null, error: null };
 const rpcCalls: { fn: string; args: Record<string, unknown> }[] = [];
@@ -59,6 +61,9 @@ vi.mock("@/lib/supabase/admin", () => ({
           single: async () => singleResult,
           // #3495: the read by idempotency key, `.eq(key).in(status).maybeSingle()`.
           in: () => ({ maybeSingle: async () => keyResult }),
+          // #3847: the resume's read by key in ANY status, newest first: no status
+          // filter in the chain at all, which is the point of it.
+          order: () => ({ order: () => ({ limit: async () => latestResult }) }),
         }),
         in: async () => {
           readTables.push(table);
@@ -302,6 +307,15 @@ describe("a fresh booking's one call save (#3495)", () => {
     expect((await realDeps().readBookingByIdempotencyKey("k1"))?.id).toBe("bk-1");
     keyResult = { data: null, error: null };
     expect(await realDeps().readBookingByIdempotencyKey("k1")).toBeNull();
+  });
+
+  it("#3847: the resume's lookup by key answers a cancelled booking, and THROWS on a failed read rather than reading as never booked", async () => {
+    latestResult = { data: null, error: { message: "statement timeout" } };
+    await expect(realDeps().findLatestBookingByIdempotencyKey("k1")).rejects.toThrow(/statement timeout/);
+    latestResult = { data: [{ id: "bk-c", status: "cancelled" }], error: null };
+    expect(await realDeps().findLatestBookingByIdempotencyKey("k1")).toMatchObject({ id: "bk-c", status: "cancelled" });
+    latestResult = { data: [], error: null };
+    expect(await realDeps().findLatestBookingByIdempotencyKey("k1")).toBeNull();
   });
 
   it("control: the pre-save idempotency probe still fails open to null, which the unique index backs", async () => {

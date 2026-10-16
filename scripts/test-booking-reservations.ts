@@ -715,6 +715,77 @@ async function run() {
     }
     assert(threw instanceof Error && /statement timeout/.test(threw.message), "drain: a failed read throws out of the drain rather than reading as empty");
   }
+
+  // --- #3847: the booking committed and was then cancelled or completed ---------
+  // The resume used to look for an already committed booking through the ACTIVE
+  // only replay read, so a reservation whose booking was cancelled (or completed)
+  // after it committed read as never committed, and the drain made the booking
+  // AGAIN: a calendar event for a call the lead called off, a new booking row and a
+  // booking.created to Regal. The resume now reads the newest booking on the key
+  // whatever its status, and one made by this reservation (created after it) that
+  // is no longer active settles the reservation: deleted, nothing recreated.
+  const RESV_AT = "2026-06-01T10:00:00.000Z";
+  const ownBooking = (status: "cancelled" | "completed") =>
+    makeBooking({
+      id: `bk-3847-${status}`,
+      status,
+      idempotency_key: crashedReservation().idempotency_key,
+      created_at: "2026-06-01T10:00:04.000Z",
+    });
+  for (const status of ["cancelled", "completed"] as const) {
+    const reservation = { ...crashedReservation(), id: `resv-3847-${status}`, created_at: RESV_AT, attempts: 6 };
+    const { deps, calls } = makeDeps({ drainableReservations: [reservation], existingByKey: ownBooking(status) });
+    const res = await processBookingReservations(deps, 15);
+    assert(calls.createEvent.length === 0, `#3847 ${status}: no calendar event is made for it again (got ${calls.createEvent.length})`);
+    assert(calls.insertBooking.length === 0, `#3847 ${status}: no booking is made again (got ${calls.insertBooking.length})`);
+    assert(calls.webhooks.length === 0, `#3847 ${status}: and no booking.created is sent (got ${calls.webhooks.length})`);
+    assert(calls.deletedReservations.includes(reservation.id), `#3847 ${status}: the reservation is settled by deleting it`);
+    assert(res.failed === 0 && res.stuck.length === 0, `#3847 ${status}: settling is not a failure, so it neither backs off nor pages`);
+    assert(calls.reservationBumps.length === 0, `#3847 ${status}: and charges no attempt`);
+  }
+
+  // Control: a cancelled booking OLDER than the reservation belongs to an earlier
+  // booking on the same key (a lead who cancelled and then booked the same time
+  // again), so this reservation is a new create and is completed as one.
+  {
+    const reservation = { ...crashedReservation(), id: "resv-3847-rebook", created_at: RESV_AT };
+    const earlier = makeBooking({
+      id: "bk-3847-earlier",
+      status: "cancelled",
+      idempotency_key: reservation.idempotency_key,
+      created_at: "2026-05-28T09:00:00.000Z",
+    });
+    const { deps, calls } = makeDeps({ drainableReservations: [reservation], existingByKey: earlier });
+    const res = await processBookingReservations(deps, 15);
+    assert(res.completed === 1 && calls.createEvent.length === 1, "#3847 control: a rebook after an earlier cancel is still completed");
+    assert(
+      calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.created",
+      "#3847 control: and its booking.created is sent",
+    );
+  }
+
+  // The failure path: the lookup cannot be read. Nothing is created and nothing is
+  // deleted; the reservation backs off like any other failed attempt.
+  {
+    const reservation = { ...crashedReservation(), id: "resv-3847-unread", created_at: RESV_AT };
+    const { deps, calls } = makeDeps({ drainableReservations: [reservation], latestByKeyFails: true });
+    const res = await processBookingReservations(deps, 15);
+    assert(calls.createEvent.length === 0, "#3847 unreadable: no event is made off a lookup that failed");
+    assert(!calls.deletedReservations.includes(reservation.id), "#3847 unreadable: and the reservation is not deleted");
+    assert(res.failed === 1 && calls.reservationBumps.length === 1, "#3847 unreadable: it is a failed attempt that backs off");
+  }
+
+  // A lead's own re-submit that finds such a reservation pending: the old
+  // reservation is settled and the confirm books afresh, as the lead asked, rather
+  // than resurrecting the cancelled booking from the old pin.
+  {
+    const reservation = { ...crashedReservation(), id: "resv-3847-resubmit", created_at: RESV_AT };
+    const { deps, calls } = makeDeps({ reservation, existingByKey: ownBooking("cancelled") });
+    const made = await createBooking(input, deps);
+    assert(calls.deletedReservations.includes(reservation.id), "#3847 re-submit: the settled reservation is deleted");
+    assert(calls.reservations.length === 1, `#3847 re-submit: the confirm writes a fresh reservation (got ${calls.reservations.length})`);
+    assert(made.booking.id !== "bk-3847-cancelled", "#3847 re-submit: and answers a new booking, never the cancelled one");
+  }
 }
 
 await run();

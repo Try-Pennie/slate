@@ -135,6 +135,8 @@ export interface FakeOpts {
    *  the event type and the call's length it carries. Needs `candidatesByCode`. */
   rungBuckets?: Record<string, { id: string; eventType?: EventType }>;
   existingByKey?: Booking | null; // idempotency hit on the pre-check
+  /** #3847: the drain's any status lookup by key throws. */
+  latestByKeyFails?: boolean;
   conflictWinner?: Booking | null; // booking found by key AFTER an insert conflict
   reservation?: BookingReservation | null; // loadReservationByKey (re-submit resume)
   reservationWinner?: BookingReservation; // insertReservation returns this (race adopt)
@@ -383,6 +385,7 @@ export function makeDeps(opts: FakeOpts) {
     completeBookingsIfDue: [] as string[][],
     reservations: [] as { idempotency_key: string; pinned_user_id: string; gcal_client_id: string }[],
     deletedReservations: [] as string[],
+    latestByKeyLookups: [] as string[],
     reservationBumps: [] as { id: string; attempts: number; lastError: string }[],
     reassignSwaps: [] as {
       bookingId: string;
@@ -839,8 +842,22 @@ export function makeDeps(opts: FakeOpts) {
     // Before any insert: idempotency pre-check (existingByKey). After an insert
     // conflict: the key-winner lookup (conflictWinner). Lets one fake model the
     // "nobody yet → race → winner found" sequence.
-    findBookingByIdempotencyKey: async (key) =>
-      (calls.idempotencyLookups.push(key), insertAttempted ? opts.conflictWinner : opts.existingByKey) ?? null,
+    //
+    // ACTIVE bookings only, as the real read is (`activeBookingByIdempotencyKey`):
+    // a cancelled or completed booking on the key is not a replay (#3847).
+    findBookingByIdempotencyKey: async (key) => {
+      calls.idempotencyLookups.push(key);
+      const found = (insertAttempted ? opts.conflictWinner : opts.existingByKey) ?? null;
+      return found && (found.status === "confirmed" || found.status === "rescheduled") ? found : null;
+    },
+    // #3847: the drain's resume asks for the newest booking on the key in ANY status,
+    // so a booking cancelled or completed since it committed settles the reservation
+    // rather than being made again. Throws when `latestByKeyFails` is set.
+    findLatestBookingByIdempotencyKey: async (key) => {
+      calls.latestByKeyLookups.push(key);
+      if (opts.latestByKeyFails) throw new Error("latest booking by idempotency key read failed: statement timeout");
+      return (insertAttempted ? opts.conflictWinner : opts.existingByKey) ?? null;
+    },
     // The read back's throwing read: the same answer here, through the probe, so a
     // suite that makes the probe fail or answer differently drives both (#3495).
     readBookingByIdempotencyKey(key) {

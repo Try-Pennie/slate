@@ -234,7 +234,6 @@ async function run() {
     const reservation = first.reservation();
 
     const retryClock = confirmClock();
-    let lookups = 0;
     const { deps, calls } = makeDeps({
       candidates: ["a"],
       freeEmails: new Set(["a@x.com"]),
@@ -243,8 +242,10 @@ async function run() {
     const d: BookingDeps = {
       ...deps,
       // The replay fast path misses (the booking was read a moment before it
-      // committed), and the resume's own lookup finds it.
-      findBookingByIdempotencyKey: async () => (lookups++ === 0 ? null : made.booking),
+      // committed), and the resume's own lookup (#3847: by key in any status)
+      // finds it.
+      findBookingByIdempotencyKey: async () => null,
+      findLatestBookingByIdempotencyKey: async () => made.booking,
       moveBusyBlock: async () => {
         retryClock.spend();
         retryClock.call("supabase");

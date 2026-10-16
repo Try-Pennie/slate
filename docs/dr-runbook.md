@@ -562,6 +562,21 @@ itself, or tell Regal about the booking by hand and then delete the reservation.
 page clears on the first sweep that reads every candidate and finds none owed; a
 sweep that fails to read pages and clears nothing.
 
+**A reservation whose booking was cancelled or completed is settled, never made
+again** (#3847). When the drain resumes a reservation it looks for the newest
+booking on its idempotency key in ANY status. It used to ask only about active
+bookings, so a booking cancelled (or completed) after it committed read as never
+made, and the drain made it again: a new calendar event for a call the lead had
+called off, a new booking row and a `booking.created` to Regal. Now a cancelled or
+completed booking made by that reservation (created after it) settles it: the
+reservation is deleted, with no event, no booking and no webhook, and a
+`reservation settled` line is logged under `tag=reservations`. A cancelled booking
+OLDER than the reservation belongs to an earlier booking on the same key (a lead who
+cancelled and then booked the same time again), so that reservation is a new create
+and completes as one. A lead's own retry that finds such a reservation pending books
+afresh. If the lookup cannot be read, the drain makes nothing and backs off like any
+failed attempt.
+
 **A budget miss.** When the budget runs out, the page names the call that was in
 flight AND the budget that cut it short ("supabase was still running when the
 booking confirm ran out of its 12 seconds"), so it says which dependency to look

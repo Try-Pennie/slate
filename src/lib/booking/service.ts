@@ -1548,6 +1548,25 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       return (unwrap(await activeBookingByIdempotencyKey(key), "booking read back by idempotency key") as Booking | null) ?? null;
     },
 
+    // #3847: a reservation resume's lookup, in ANY status, newest first, so a booking
+    // cancelled or completed since it committed settles its reservation instead of
+    // being made again. THROWS on a failed read. At most one row per key is active
+    // and an active one is always the newest, since the active key index refuses a
+    // second insert while it stands.
+    findLatestBookingByIdempotencyKey: async (key) => {
+      const rows = unwrap(
+        await supabaseAdmin()
+          .from("bookings")
+          .select("*")
+          .eq("idempotency_key", key)
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
+          .limit(1),
+        "latest booking by idempotency key",
+      );
+      return ((rows ?? []) as Booking[])[0] ?? null;
+    },
+
     // #3495: a fresh booking's save after its calendar event, in ONE call. The booking,
     // its busy block, its webhook deliveries, its routing record and the reservation's
     // delete are one transaction (`commit_fresh_booking`, migration 0174); a clash on

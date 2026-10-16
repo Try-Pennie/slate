@@ -13,10 +13,13 @@
  * after a day like any other, so a missed `reservation_drain_stuck` page ended with
  * the record gone and nothing to show the send was owed.
  *
- * "Committed" is judged from stored state, the way the drain judges it when it
- * resumes a reservation: an ACTIVE booking holds the reservation's idempotency key
- * (`findBookingByIdempotencyKey`). The reservation itself is deleted only once that
- * work lands, so a committed reservation still pending is a send still owed. Those
+ * "Committed" is judged from stored state: an ACTIVE booking holds the
+ * reservation's idempotency key, which is the one booking the drain's resume will
+ * still deliver booking.created for. A booking on the key that has since been
+ * cancelled or completed owes nothing; the resume settles that reservation itself
+ * (`attemptReservation`), and this sweep deletes it like a stale one. The
+ * reservation is deleted only once its work lands, so a committed reservation
+ * still pending is a send still owed. Those
  * are kept, reported as `owed`, and paged daily as `reservation_created_owed` until
  * somebody sends it or removes the reservation by hand.
  *
