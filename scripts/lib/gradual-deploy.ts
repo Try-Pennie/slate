@@ -42,7 +42,7 @@
  */
 
 import type { ProbeOutcome } from "./post-deploy-probe.ts";
-import { deployObjectWorkers, type LiveAppProtocol, type ObjectWorkerFacts } from "./object-worker-skip.ts";
+import { deployObjectWorkers, uncheckedLineWarning, type LiveAppProtocol, type ObjectWorkerFacts } from "./object-worker-skip.ts";
 
 /** The Worker's name in wrangler.jsonc, and the key in the version override header. */
 export const WORKER_NAME = "slate";
@@ -575,6 +575,11 @@ export interface GradualOps {
   /** Wait before opening the split until the cron window is clear. */
   waitForCronWindow(): Promise<void>;
   log(line: string): void;
+  /**
+   * #3854: something the run did that does not fail it but must not stay buried in the
+   * log: printed as a `::warning` annotation and as a line in the job summary.
+   */
+  warn(line: string): void;
 }
 
 function probeLines(o: ProbeOutcome): string {
@@ -751,6 +756,11 @@ async function runUntilSplit(ops: GradualOps): Promise<GradualResult> {
       message: `Not deployed: the object worker in ${objects.config} could not be deployed (${objects.reason}), and Slate's bindings name it, so nothing of Slate's was uploaded and the previous version is still serving 100%. Deploy it by hand with \`node --experimental-strip-types scripts/deploy-object-workers.ts\`, then re-run the deploy.`,
     };
   }
+
+  // #3854: the line went out without the older line refusal having run. The deploy goes
+  // on (the check fails open by design), but a check skipped on every deploy must be
+  // visible where the job is read, or it reads as checked for ever.
+  if (objects.unchecked.length > 0) ops.warn(uncheckedLineWarning(objects.unchecked, "production"));
 
   // Both versions are uploaded BEFORE the split opens, so the split lasts only as long as
   // the probe, and a failed upload has changed nothing anybody is served.

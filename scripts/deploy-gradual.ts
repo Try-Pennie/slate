@@ -223,6 +223,12 @@ const ops: GradualOps = {
     }
   },
   log: (line) => console.log(`  ${line}`),
+  // #3854: an annotation AND a summary line, so a check that did not run is seen by
+  // whoever reads the run, not only by whoever reads the middle of its log.
+  warn: (line) => {
+    console.warn(`::warning title=confirm line protocol not checked::${line}`);
+    summary(`**Warning:** ${line}`);
+  },
 };
 
 let result;

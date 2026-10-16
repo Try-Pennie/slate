@@ -133,6 +133,64 @@ export function protocolFromSource(text: string | null): number | null {
 /** The protocol the live app speaks, or why it could not be read. */
 export type LiveAppProtocol = { protocol: number } | { unreadable: string };
 
+/** One git command run in the checkout: its stdout, or null when it exited non zero. */
+export type GitRun = (args: string[]) => string | null;
+
+/**
+ * #3854: a file's text at the serving app's commit, fetching what the checkout lacks.
+ *
+ * The commit is the serving version's tag, which is `normalizeCommit`'s 12 character
+ * abbreviation, and a git server answers a fetch only for a FULL object id: `git fetch
+ * origin f911f9ef0076` fails with "couldn't find remote ref". That is why the check never
+ * ran on its first production deploy (CI run 38974803936), where the job checks out one
+ * commit. So:
+ *
+ * - a full id is fetched by itself, one commit deep in a shallow checkout (a depth
+ *   limited fetch into a full clone would make it shallow);
+ * - an abbreviation is resolved locally, against origin's branches fetched for it: a
+ *   shallow checkout is unshallowed (the serving commit is behind the one checked out,
+ *   so no depth short of the history can be known to reach it), a full clone just
+ *   fetches what it is missing. A commit on no branch origin still has (a hand deploy of
+ *   a branch since deleted) stays unreadable, and says so.
+ *
+ * Every way it cannot answer says which (L11), since each sends somebody somewhere else.
+ */
+export function readAtCommit(git: GitRun, commit: string, path: string): { source: string } | { unreadable: string } {
+  const show = () => git(["show", `${commit}:${path}`]);
+  const first = show();
+  if (first !== null) return { source: first };
+  const depth = git(["rev-parse", "--is-shallow-repository"]);
+  if (depth === null) {
+    return { unreadable: `the serving app's commit ${commit} is not in this checkout, and whether the checkout is shallow could not be read` };
+  }
+  const shallow = depth.trim() === "true";
+  const full = /^[0-9a-f]{40}$/.test(commit);
+  const fetch = full
+    ? ["fetch", "--no-tags", ...(shallow ? ["--depth=1"] : []), "origin", commit]
+    : ["fetch", "--no-tags", ...(shallow ? ["--unshallow"] : []), "origin"];
+  if (git(fetch) === null) {
+    return { unreadable: `the serving app's commit ${commit} is not in this checkout, and \`git ${fetch.join(" ")}\` failed` };
+  }
+  const after = show();
+  if (after !== null) return { source: after };
+  return {
+    unreadable: full
+      ? `the serving app's commit ${commit} was fetched, and ${path} could not be read at it`
+      : `the serving app's commit ${commit} is on no branch origin has (after \`git ${fetch.join(" ")}\`), or ${path} could not be read at it`,
+  };
+}
+
+/**
+ * #3854: the warning a deploy prints, as an annotation and in the job summary, when the
+ * line went out without its protocol being compared with the live app's. A check that
+ * fails open is otherwise visible only in the middle of the run log, and one that never
+ * runs reads as checked everywhere else (L98).
+ */
+export function uncheckedLineWarning(unchecked: { config: string; reason: string }[], where: string): string {
+  const which = unchecked.map((u) => `${u.config} (${u.reason})`).join("; ");
+  return `The confirm line was deployed to ${where} WITHOUT the check that refuses a line older than the live app: ${which}. The deploy went ahead, which is the design; if the app is newer than the line, confirms fall back to their isolate's own line and page confirm_line_unreachable.`;
+}
+
 /**
  * Refuse a line build older than the live app; deploy otherwise.
  *
@@ -218,7 +276,7 @@ interface Lists {
   deployed: string[];
   skipped: string[];
   unstamped: string[];
-  unchecked: string[];
+  unchecked: { config: string; reason: string }[];
 }
 export type ObjectWorkersResult =
   | ({ ok: true } & Lists)
@@ -259,7 +317,7 @@ export async function deployObjectWorkers(ops: ObjectWorkerOps, configs: readonl
         ops.log(`object worker ${config}: REFUSED, ${check.reason}`);
         return { ok: false, kind: "refused", config, reason: check.reason, ...lists };
       }
-      if (!check.checked) unchecked.push(config);
+      if (!check.checked) unchecked.push({ config, reason: check.reason });
       ops.log(`object worker ${config}: ${check.reason}`);
     }
     ops.log(`object worker ${config}: deploying, ${decision.reason}`);
