@@ -42,32 +42,36 @@ import { CONFIRM_LINE_TRACE_TAG, TRACED_CALL_MSG } from "../../src/lib/booking/c
 
 /**
  * #3354: a confirm's wait in the shared line, split by the object's own log of each
- * call the confirm sent while it waited. `wait_line_ms` is the client's view; the
+ * call the confirm waited for (never an unawaited one, #3813). `wait_line_ms` is the client's view; the
  * object logs each traced call and the runtime records its `wallTime`, so the wait
  * splits into three:
  *
  *   held      polls, which the object holds until the confirm's turn or a timeout:
  *             time spent behind a leader
- *   object    the object's own work on every other call sent while waiting (the
- *             lookahead, the enter, the ack)
+ *   object    the object's own work on every other call the confirm waited for (the
+ *             lookahead, the enter)
  *   outside   the rest: network both ways, the object starting, and the client's own
  *             work between calls, the switch read among it
  *
  * Calls sent during the turn (claims, the report, the heartbeat) are not part of the
- * wait and are left out. A wait the object over accounts for is `impossible` rather
+ * wait and are left out, and so are calls the client does not wait for though they
+ * are stamped during it (`UNAWAITED_LINE_OPS`, the lead's ack, #3813). A wait the object over accounts for is `impossible` rather
  * than a negative outside, and a traced confirm whose calls never reached the archive
  * is `missing` rather than a split of zeroes (L98).
  */
 export interface LineSplit {
   /** Confirms on the shared line whose answer line carried a trace and a line span. */
   traced: number;
-  /** Of those, the ones with at least one call found, which give a reading. */
+  /** Of those, the ones with at least one call they waited for found, which give a reading. */
   joined: number;
-  /** Traced confirms none of whose calls are in the archive. */
+  /**
+   * Traced confirms none of whose waited for calls are in the archive: no call at all,
+   * or only unawaited (the ack) or turn calls, since every one waits on its enter (#3813).
+   */
   missing: number;
   /** Traced confirms whose calls took longer in the object than the whole wait. */
   impossible: number;
-  /** Traced confirms with a call sent while waiting whose event carried no `wallTime`. */
+  /** Traced confirms with a call they waited for (never an unawaited one) whose event carried no `wallTime`. */
   unreadable: number;
   heldMs: number[];
   objectMs: number[];
@@ -619,6 +623,14 @@ export function readConfirmStartup(
 export const LINE_TAIL_FILE = "line-tail.jsonl";
 
 /**
+ * The line calls the client sends without waiting for (`void call(stub, ...)` in
+ * `src/lib/booking/shared-confirm-line.ts`): the lead's ack, "not counted in lineMs".
+ * Stamped while the confirm waits, so the split must leave them out of the wait. Held
+ * equal to the client's own unawaited calls by `scripts/test-confirm-startup.ts`.
+ */
+export const UNAWAITED_LINE_OPS: readonly string[] = ["ack"];
+
+/**
  * #3781: the line Worker's tail as the judge hands it to `readConfirmStartup`: its text,
  * undefined when the file never arrived, and null when it is there and could not be
  * read, whose cause goes to `note` so it is not lost (L11).
@@ -688,11 +700,15 @@ function joinLineCalls(
     const split = reading.lineSplit[c.side];
     split.traced += 1;
     const mine = calls.get(c.trace) ?? [];
-    if (mine.length === 0) {
+    // Calls the client sends without waiting for are not part of its wait, though they
+    // are stamped during it: counted, their time exceeded the wait itself.
+    const waiting = mine.filter((m) => m.stage === "wait" && !UNAWAITED_LINE_OPS.includes(m.op));
+    // Every confirm on the shared line waits on at least its enter, so none of those
+    // archived is calls lost, whatever unawaited or turn calls did arrive (#3813).
+    if (waiting.length === 0) {
       split.missing += 1;
       continue;
     }
-    const waiting = mine.filter((m) => m.stage === "wait");
     // A call with no readable wall time cannot be apportioned, so the split is not
     // made rather than made short (L98), and counted apart from a missing one (L11).
     if (waiting.some((m) => m.wallMs === null)) {
