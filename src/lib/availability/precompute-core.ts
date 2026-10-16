@@ -96,19 +96,6 @@ export async function resolveBucketSlots(
   // forward to it held none of today's times. Every recompute path anchors on now.
   const { key, fromIso: nf, toIso: nt } = slotCacheKey(code, new Date(deps.nowMs()).toISOString(), horizonDays);
 
-  /**
-   * The single exit (#1296). Every tier leaves through here, so no tier can return
-   * a list the org's CURRENT hours would not allow.
-   *
-   * Note what is NOT filtered: whatever goes into `cachePut` and `writeRow` stays
-   * the full computed payload. Caching the filtered list would bake one moment's
-   * hours into the cache, and re-opening a day would then take a whole recompute
-   * cycle to show up while closing one took effect at once. Filtering per read
-   * makes both directions equally immediate.
-   *
-   * The cost of the extra hours read is one PostgREST round trip per isolate per
-   * `SLOT_TTL_SECONDS`, not one per request; see `business-hours-cache.ts`.
-   */
   // #3713: started HERE, beside the edge cache and stored row reads rather than after
   // them, and awaited on the way out. A lead read reaches an isolate a minute or more
   // after its last one, so the 5 second cache has nearly always expired: measured
@@ -121,6 +108,22 @@ export async function resolveBucketSlots(
   // swallow-ok: every tier that serves awaits hoursRead and rethrows its failure; only
   // the unknown bucket exit never awaits it, and that answer does not use the hours.
   hoursRead.catch(() => {});
+
+  /**
+   * The single exit (#1296). Every tier leaves through here, so no tier can return
+   * a list the org's CURRENT hours would not allow.
+   *
+   * Note what is NOT filtered: whatever goes into `cachePut` and `writeRow` stays
+   * the full computed payload. Caching the filtered list would bake one moment's
+   * hours into the cache, and re-opening a day would then take a whole recompute
+   * cycle to show up while closing one took effect at once. Filtering per read
+   * makes both directions equally immediate.
+   *
+   * The hours read costs at most one PostgREST round trip per isolate per
+   * `SLOT_TTL_SECONDS` (see `business-hours-cache.ts`), and at lead traffic that is
+   * close to one per request, since reads reach an isolate further apart than that.
+   * Which is why it runs beside the cache and row reads (`hoursRead` above).
+   */
   const served = async (
     val: CachedBucketSlots,
     source: SlotSource,
