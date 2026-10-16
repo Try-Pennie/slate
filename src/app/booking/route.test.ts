@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // The pure half, deliberately NOT mocked: the route's key shape is what these assert on.
 import { rateLimitKey, type CallerKey } from "@/lib/rate-limit-core";
 
@@ -1709,11 +1709,14 @@ describe("POST /booking through an agent's own link (#2073, #3026)", () => {
 // it. Each now carries its own stage inside that span, named by ROUTE_CHECK_STAGES,
 // and the outer span stays, so every reader of `route-checks` reads what it did.
 describe("POST /booking times each of its checks (#3493)", () => {
+  // The clock is SET, never waited on (L290): only `Date` is faked, so the profile's
+  // reads see a check take exactly SLOW_MS while every timer runs as it always does.
   const SLOW_MS = 40;
-  const slowly = <T,>(value: T | Error) =>
-    new Promise<T>((resolve, reject) =>
-      setTimeout(() => (value instanceof Error ? reject(value) : resolve(value)), SLOW_MS),
-    );
+  const slowly = async <T,>(value: T | Error): Promise<T> => {
+    vi.setSystemTime(Date.now() + SLOW_MS);
+    if (value instanceof Error) throw value;
+    return value;
+  };
   const deadline = () => new DeadlineExceededError("supabase", 4000, { label: "the booking confirm", totalMs: 12_000 });
   /** The `confirm answered` line's stages, as name to [ms, runs]. */
   function stagesOf(line: string): Map<string, [number, number]> {
@@ -1741,7 +1744,9 @@ describe("POST /booking times each of its checks (#3493)", () => {
     }
   }
 
+  afterEach(() => vi.useRealTimers());
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
     rateLimit.allowRequest.mockReset();
     rateLimit.allowRequest.mockResolvedValue(true);
     rateLimit.bookingWithinLimit.mockResolvedValue(true);
@@ -1771,8 +1776,8 @@ describe("POST /booking times each of its checks (#3493)", () => {
     expect(stages.has(ROUTE_CHECK_STAGES.agentLink)).toBe(false);
     // The slow read is charged to the pause flag, and not to the check after it.
     const [pauseMs] = stages.get(ROUTE_CHECK_STAGES.pauseFlag)!;
-    expect(pauseMs).toBeGreaterThanOrEqual(SLOW_MS - 5);
-    expect(stages.get(ROUTE_CHECK_STAGES.hourlyCap)![0]).toBeLessThan(SLOW_MS - 5);
+    expect(pauseMs).toBe(SLOW_MS);
+    expect(stages.get(ROUTE_CHECK_STAGES.hourlyCap)![0]).toBe(0);
     // Inside the outer span, never past it.
     expect(stages.get("route-checks")![0]).toBeGreaterThanOrEqual(pauseMs);
   });
@@ -1784,7 +1789,7 @@ describe("POST /booking times each of its checks (#3493)", () => {
     expect(line).toContain("timed_out=true");
     const stages = stagesOf(line);
     expect(stages.get(ROUTE_CHECK_STAGES.hourlyCap)?.[1]).toBe(1);
-    expect(stages.get(ROUTE_CHECK_STAGES.hourlyCap)![0]).toBeGreaterThanOrEqual(SLOW_MS - 5);
+    expect(stages.get(ROUTE_CHECK_STAGES.hourlyCap)![0]).toBe(SLOW_MS);
     expect(stages.has(ROUTE_CHECK_STAGES.bodyRead)).toBe(false);
     expect(stages.has(ROUTE_CHECK_STAGES.contactCap)).toBe(false);
   });
@@ -1796,6 +1801,6 @@ describe("POST /booking times each of its checks (#3493)", () => {
     expect(status).toBe(503);
     const stages = stagesOf(line);
     expect(stages.get(ROUTE_CHECK_STAGES.agentLink)?.[1]).toBe(1);
-    expect(stages.get(ROUTE_CHECK_STAGES.agentLink)![0]).toBeGreaterThanOrEqual(SLOW_MS - 5);
+    expect(stages.get(ROUTE_CHECK_STAGES.agentLink)![0]).toBe(SLOW_MS);
   });
 });
