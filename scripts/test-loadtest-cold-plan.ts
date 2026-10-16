@@ -1,7 +1,7 @@
 // #3354 item 4: the diagnostic leg that redeploys N times with one confirm after
 // each, for a cold sample large enough to say what a fresh server's first confirm
-// costs. A load run yields about ten cold confirms, so its cold p95 is its slowest
-// one, and one slow confirm decides a run. Thirty or more cold samples, all taken the
+// costs. A load run's startup bar holds the slowest of its cold confirms (#3824), so
+// one slow confirm decides a run. Thirty or more cold samples, all taken the
 // same way, give a distribution to judge a change against. Not a bar.
 //
 // These pin the plan's pure parts: how many samples, how long the job may run, which

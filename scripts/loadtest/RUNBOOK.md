@@ -1572,8 +1572,8 @@ documents (#1533). That is the judge's control working as designed, not a pass.
 
 ## The diagnostic cold leg (#3354)
 
-A run yields a handful of confirms that are their isolate's first request (4 of 522 on run 37520312761, by the Worker's own count, #3418), so the startup
-bar's cold p95 is its slowest one, and under the three run rule chosen on 2026-10-06
+A run yields a handful of confirms that are their isolate's first request (4 of 522 on run 37520312761, by the Worker's own count, #3418), and the startup
+bar holds the slowest of them (#3824), so under the three run rule chosen on 2026-10-06
 one slow cold confirm in any of the three fails the set. Re-read on 2026-10-06, four
 runs' cold maxima were 2219, 2365, 2232 and 2782ms over 7, 24, 7 and 10 cold confirms (counted by the module stamp then in use, which also counted the first confirm on an isolate already running).
 That is too few to tell a startup change from noise.
