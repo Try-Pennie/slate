@@ -362,6 +362,26 @@ export class VerifyUnavailableError extends Error {
 }
 
 /**
+ * #3837: a lead's retry found the reservation its earlier confirm left, and another
+ * holder (the reservation drain, or another retry of the same lead) holds that
+ * reservation's lease, so this retry leaves it alone. Nothing was written.
+ *
+ * A subclass of `VerifyUnavailableError` so every booking route answers it as the
+ * retryable 503 it is, with the sentence the booker already shows and the lead's rate
+ * limit hit refunded: by the next try the holder has finished, and the retry finds
+ * the booking by its key or a reservation free to resume. It is NOT the verify
+ * outage and pages nobody (`bookingFailureAlert`): a lease held by another holder is
+ * the coordination working, not anything being down. It is counted with the verify
+ * outage refusals on the route, which it is rare enough not to move.
+ */
+export class ReservationHeldError extends VerifyUnavailableError {
+  constructor() {
+    super();
+    this.name = "ReservationHeldError";
+  }
+}
+
+/**
  * A dependency on the booking path did not answer inside its deadline (#3102):
  * Google or Supabase accepted the request and never replied.
  *
@@ -5099,8 +5119,9 @@ export function confirmQueueKey(
  * says nothing about them, so the next one runs, from the top of the ladder like
  * any confirm: an outage, a person already holding a call, the lead's own calling
  * window, a lost race that could not ask the rest of the ladder, and a taken time
- * that never walked the ladder at all, which is a resumed reservation (#3440) or a
- * reschedule's own bucket. Being a `SlotUnavailableError` is not the test: a
+ * that never walked the ladder at all, which is a reschedule's own bucket. (A
+ * resumed reservation whose pin was taken walks the ladder since #3837, so its
+ * refusal is an ordinary walk's.) Being a `SlotUnavailableError` is not the test: a
  * refusal is full only where it was MARKED as proving the ladder spent.
  */
 function verdictForRefusal(err: unknown): LeaderVerdict<ConfirmTaker> {
@@ -5182,12 +5203,18 @@ async function createHeld(
     // The time still left to wait on a read started with the replay (#3491).
     const started = ctx.inFlightRead;
     const inFlight = await profile.time("inflight-lookup", () => started ?? deps.loadReservationByKey(stableKey));
-    // A resumed reservation was pinned by an earlier request, so it says nothing
-    // about who else the slot has room for: the next confirm in line runs. Booked or
-    // refused (#3440): a taken pin is a plain `SlotUnavailableError` from
-    // `completeReservation`, about that one advisor, never marked as a spent ladder,
-    // so `verdictForRefusal` settles nobody on it and the next confirm walks.
-    if (inFlight) return { result: answerCommitted(await profile.time("complete-reservation", () => completeReservation(deps, inFlight))), verdict: { full: false } };
+    // A resumed reservation was pinned by an earlier request, so a booking it makes
+    // says nothing about who else the slot has room for: the next confirm in line runs.
+    if (inFlight) {
+      const resumed = await profile.time("complete-reservation", () => resumeReservation(deps, inFlight, stableKey));
+      if (resumed !== null) return { result: answerCommitted(resumed), verdict: { full: false } };
+      // #3837 (Dan, 2026-10-16): the advisor it pinned has been taken since, and the
+      // stale reservation is rolled back. The lead walks the ladder from the top for
+      // the same time, exactly as a fresh confirm does below, with the same verdicts
+      // for the line: only a walk that spends the ladder settles the confirms behind
+      // it (#3440). The walk reserves under the same key, so a third retry is still
+      // guarded by it.
+    }
   }
 
   // The tier on show for the requested bucket, so we can measure runtime divergence
@@ -5960,9 +5987,9 @@ async function finishCommitted(work: () => Promise<void>): Promise<unknown> {
 }
 
 /**
- * Complete a booking from its reservation (#429 P4). Shared by the fresh create,
- * the re-submit resume, and the drain — so a crash anywhere resumes to the same
- * end state. Idempotent: createEvent reuses the event (deterministic id → 409),
+ * Complete a booking from its reservation (#429 P4), for the drain. The fresh
+ * create and the re-submit resume (`resumeReservation`, #3837) run the same
+ * `attemptReservation`, so a crash anywhere resumes to the same end state. Idempotent: createEvent reuses the event (deterministic id → 409),
  * a booking already inserted short-circuits, and insertBooking keeps the
  * active-slot 23505 handling. Deletes the reservation on success.
  *
@@ -5979,6 +6006,64 @@ async function completeReservation(
   if (attempt.kind === "completed") return attempt.completed;
   await attempt.rollBack();
   throw new SlotUnavailableError();
+}
+
+/**
+ * A lead's retry resuming the reservation its earlier confirm left (#3837). Returns the
+ * booking it completed, or null when the advisor the reservation pinned has been taken
+ * since: the reservation and its event are rolled back by then, so the caller walks
+ * the ladder as a fresh confirm.
+ *
+ * It holds the reservation's lease, the one the drain takes
+ * (`processBookingReservations`), for the whole attempt, so the drain and a lead's
+ * retry can never both work one reservation. Before #3837 the resume took none, and on
+ * a reservation old enough for the drain (#3466) the two could complete it, or roll it
+ * back, at once.
+ *
+ *   - Another holder has the lease: the retry leaves the reservation alone. The
+ *     booking that holder made, if it has finished, is the answer; otherwise the lead
+ *     is told to try again (`ReservationHeldError`). It never walks: the reservation
+ *     still stands under this key, and a walk would reserve under the same key and
+ *     adopt it.
+ *   - The claim itself fails: a claim nobody could confirm is not a claim, so nothing
+ *     is written and it is the retryable outage.
+ *   - The rollback of a taken pin fails: its error is thrown and nothing is walked, for
+ *     the same reason. The lease is given back, so the drain retries the row.
+ */
+async function resumeReservation(
+  deps: BookingDeps,
+  reservation: BookingReservation,
+  stableKey: string,
+): Promise<CompletedReservation | null> {
+  let lease: string | null;
+  try {
+    lease = await deps.leaseReservation(reservation.id);
+  } catch (err) {
+    // A deadline is answered as the deadline it is; anything else as the outage.
+    const mapped = timeoutAsRetryable(err);
+    if (mapped instanceof VerifyUnavailableError) throw mapped;
+    const refused = new VerifyUnavailableError();
+    refused.cause = err;
+    throw refused;
+  }
+  if (lease === null) {
+    // The holder may have just finished: the booking it made is this lead's answer.
+    const made = await replayOf(deps, stableKey);
+    if (made) return { result: made, unfinished: null };
+    throw new ReservationHeldError();
+  }
+  try {
+    const attempt = await attemptReservation(deps, reservation);
+    if (attempt.kind === "completed") return attempt.completed;
+    await attempt.rollBack();
+    return null;
+  } finally {
+    // A release that cannot land must never change the answer: a booking may have
+    // committed above. The lease ends on its own at its TTL.
+    await deps.releaseReservationLease(reservation.id, lease).catch((err: unknown) => {
+      log.warn("reservations", { msg: "a resumed reservation's lease could not be given back; it ends on its own", reservation_id: reservation.id }, err);
+    });
+  }
 }
 
 /**
@@ -6343,10 +6428,15 @@ async function afterFreshCommit(
 
 /**
  * Drain pending create reservations (#429 P4 / Phase C): a booking whose create
- * crashed after the reservation was written resumes here. Each row is leased
- * (so the drain and an inline re-submit can't both run it), then completed
- * idempotently — completeReservation reuses the pinned event + deletes the row
- * on success. A failure releases the lease so the next tick retries.
+ * crashed after the reservation was written resumes here. Each row is leased, then
+ * completed idempotently: completeReservation reuses the pinned event and deletes
+ * the row on success. A failure releases the lease so the next tick retries.
+ *
+ * The lease is what keeps two drains, and the drain and a lead's re-submit, from
+ * both working one row. The re-submit takes the same lease (`resumeReservation`,
+ * #3837) and a row it holds is skipped here; until #3837 it took none, so this
+ * held only between drains. A live confirm's own reservation is kept off the drain
+ * by its age instead (`RESERVATION_DRAIN_MIN_AGE_MS`, #3466).
  */
 export async function processBookingReservations(
   deps: BookingDeps,
