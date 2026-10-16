@@ -12,6 +12,7 @@ import {
   requestLabel,
   withinCallBudget,
   withinCleanupBudget,
+  withinOwnCleanupBudget,
 } from "../src/lib/call-budget.ts";
 import { DeadlineExceededError, NO_DEADLINE } from "../src/lib/fetch-within-deadline.ts";
 import type { ScheduleTimer } from "../src/lib/read-within-deadline.ts";
@@ -245,6 +246,104 @@ await withinCallBudget(
   now,
 );
 t = 0;
+
+// #3439: a cleanup the request owes WHILE its own budget still has the whole
+// allowance to spare (a lost race's rollback in the middle of a confirm) gets an
+// allowance of its own. It ends inside the request's budget, so it adds nothing to
+// the request's worst case, and it leaves the one shared allowance unopened for the
+// failure path. Two such cleanups 3 seconds apart each get their whole 2 seconds,
+// where the shared allowance gave the second nothing.
+await withinCallBudget(
+  12_000,
+  "the booking confirm",
+  async () => {
+    t = 1_000;
+    await withinOwnCleanupBudget(
+      2_000,
+      "the lost race cleanup",
+      async () => {
+        eq(deadlineWithinBudget(15_000, "supabase", now).waitMs, 2_000, "own allowance: the first cleanup gets 2s");
+        t = 1_500;
+        await withinCleanupBudget(
+          2_000,
+          "the booking cleanup",
+          async () => {
+            eq(deadlineWithinBudget(15_000, "supabase", now).waitMs, 1_500, "own allowance: a cleanup nested inside it shares it");
+          },
+          now,
+        );
+      },
+      now,
+    );
+    t = 4_000;
+    await withinOwnCleanupBudget(
+      2_000,
+      "the lost race cleanup",
+      async () => {
+        eq(deadlineWithinBudget(15_000, "supabase", now).waitMs, 2_000, "own allowance: a second cleanup 3s later gets its own 2s, not a spent one");
+      },
+      now,
+    );
+    // Back in the confirm, a call is held to the confirm's budget again, never to an
+    // allowance that has ended.
+    eq(deadlineWithinBudget(15_000, "supabase", now).waitMs, 8_000, "own allowance: the confirm's own calls keep the confirm's budget");
+    // The request's failure path opens the shared allowance afresh: the lost race
+    // cleanups above never opened it.
+    t = 12_500;
+    await withinCleanupBudget(
+      2_000,
+      "the booking cleanup",
+      async () => {
+        eq(deadlineWithinBudget(15_000, "supabase", now).waitMs, 2_000, "own allowance: the failure path still gets the whole shared 2s");
+      },
+      now,
+    );
+  },
+  now,
+);
+t = 0;
+
+// #3439: with less than the allowance left in the request's budget, an allowance of
+// its own would run past the budget, and the request's worst case is sized as the
+// budget plus ONE allowance. So it is the shared allowance, exactly as before, and
+// the failure path after it reuses that one rather than getting another 2 seconds.
+await withinCallBudget(
+  12_000,
+  "the booking confirm",
+  async () => {
+    t = 11_000;
+    await withinOwnCleanupBudget(
+      2_000,
+      "the lost race cleanup",
+      async () => {
+        eq(deadlineWithinBudget(15_000, "supabase", now).waitMs, 2_000, "late cleanup: the shared allowance, opened now");
+      },
+      now,
+    );
+    t = 12_500;
+    await withinCleanupBudget(
+      2_000,
+      "the booking cleanup",
+      async () => {
+        eq(deadlineWithinBudget(15_000, "supabase", now).waitMs, 500, "late cleanup: the failure path shares it, 12 plus 2 holds");
+      },
+      now,
+    );
+  },
+  now,
+);
+t = 0;
+
+// #3439: outside any request there is nothing to share and no budget to stay inside,
+// so it is its own allowance, as `withinCleanupBudget` gives there.
+await withinOwnCleanupBudget(
+  2_000,
+  "the lost race cleanup",
+  async () => {
+    eq(deadlineWithinBudget(15_000, "supabase", now).waitMs, 2_000, "no request: its own allowance");
+  },
+  now,
+);
 
 // The fetch is actually held to what is left. NO_DEADLINE opts out of the per
 // call default only: inside a budget it still waits no longer than the budget

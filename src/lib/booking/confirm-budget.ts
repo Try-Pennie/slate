@@ -16,7 +16,10 @@
  *    error. Without it each of those would fail at once, the lead would pay for
  *    our outage, and the outage itself would go unrecorded. One allowance per
  *    request: every failure path opened inside it shares it rather than each
- *    adding 2 seconds. The outage PAGE is not among them since #3416: it is sent
+ *    adding 2 seconds. A lost race's rollback in the MIDDLE of the confirm is the
+ *    one exception (#3439): while the confirm budget can hold a whole 2 seconds it
+ *    gets its own, ending inside the 12, so the sum is unchanged and a second race
+ *    a few seconds later is never left with a spent allowance. The outage PAGE is not among them since #3416: it is sent
  *    after the response, outside every budget (`pageBookingFailure`), so a burst
  *    of timed out confirms does not each read alert_state before its own answer.
  *

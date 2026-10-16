@@ -37,6 +37,7 @@ const service = vi.hoisted(() => {
   class SlotUnavailableError extends Error {}
   class RaceLostRefusalError extends SlotUnavailableError {}
   class VerifyUnavailableError extends Error {}
+  class LostRaceOutOfTimeError extends VerifyUnavailableError {}
   class NoEligibleAgentsError extends Error {}
   class UnknownBucketError extends Error {}
   class OutsideCallingWindowError extends Error {}
@@ -52,6 +53,7 @@ const service = vi.hoisted(() => {
     SlotUnavailableError,
     RaceLostRefusalError,
     VerifyUnavailableError,
+    LostRaceOutOfTimeError,
     NoEligibleAgentsError,
     UnknownBucketError,
     OutsideCallingWindowError,

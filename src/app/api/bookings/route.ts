@@ -26,8 +26,9 @@ import {
   OutsideCallingWindowError,
   AttendeeEmailRefusedError,
   RaceLostRefusalError,
+  LostRaceOutOfTimeError,
 } from "@/lib/booking/service";
-import { raceOutcomeForRefusal } from "@/lib/monitor/race-contention";
+import { RACE_RETRY_BUDGET_OUTCOME, raceOutcomeForRefusal } from "@/lib/monitor/race-contention";
 import {
   DIRECT_BOOKING_API_HOURLY_RATE_RULES,
   DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
@@ -405,6 +406,10 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts, progress: A
           code: v.bucketCode,
           host: apiHost,
         });
+      }
+      // #3442: a lost race told to retry for want of budget to walk down the ladder.
+      if (err instanceof LostRaceOutOfTimeError) {
+        recordApiOutcome(RACE_RETRY_BUDGET_OUTCOME, v.bucketCode, null, { by: "bucket", code: v.bucketCode, host: apiHost });
       }
       // #3575: only an INTERNAL fault pages, and only a real one should.
       const isTest = await isTestTrafficForPaging(code, v.bucketCode);
