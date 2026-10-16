@@ -419,9 +419,15 @@ lead can meet both versions across page loads. Then it is one version at 100% ag
   revert that lowers `CONFIRM_LINE_PROTOCOL`. It compares the protocol declared in the
   built bundle (`var CONFIRM_LINE_PROTOCOL = N;`) with the one in
   `src/lib/booking/confirm-line-object.ts` at the serving app's commit tag, fetched if
-  the checkout lacks it. It is asked only when the line Worker is about to be deployed. If
-  either side cannot be read, the line is deployed anyway and the log (and a warning from
-  the script) says the check could not be made and why: an untagged app version is
+  the checkout lacks it. The tag is a 12 character abbreviation and a git server only
+  fetches a full commit id, so in CI's one commit checkout an abbreviated tag unshallows
+  the checkout and resolves it locally (#3854: until then the fetch failed on every
+  deploy and the check never ran). A run that compared says `the line build speaks
+  protocol N, the live app protocol M` in the deploy step's log. It is asked only when
+  the line Worker is about to be deployed. If either side cannot be read, the line is
+  deployed anyway, the log says the check could not be made and why, and the job carries
+  a `confirm line protocol not checked` warning annotation and a **Warning** line in its
+  summary saying the same, so a check skipped on every deploy is seen: an untagged app version is
   ordinary (every secret change makes one), so refusing on it would stop normal deploys,
   and #3560's client already falls back and pages `confirm_line_unreachable` in that
   order. For a deliberate protocol lowering, deploy the app alone first

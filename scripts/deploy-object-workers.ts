@@ -16,9 +16,10 @@
 // Exit 0 when every Worker is deployed or proved unchanged, 1 when a needed deploy failed
 // (nothing after it is attempted), 2 for an argument it does not know, 3 when the line
 // was refused for being older than the app (nothing deployed).
+import { appendFileSync } from "node:fs";
 import { OBJECT_WORKER_CONFIGS } from "./lib/gradual-deploy.ts";
 import { objectWorkerOps } from "./lib/object-worker-io.ts";
-import { deployObjectWorkers } from "./lib/object-worker-skip.ts";
+import { deployObjectWorkers, deployTargetLabel, uncheckedLineWarning } from "./lib/object-worker-skip.ts";
 
 const args = process.argv.slice(2);
 let env = "";
@@ -30,7 +31,7 @@ if (args.length === 2 && args[0] === "--env" && /^[a-z][a-z0-9-]*$/.test(args[1]
 }
 
 const result = await deployObjectWorkers(objectWorkerOps(env, (line) => console.log(`  ${line}`)), OBJECT_WORKER_CONFIGS);
-const where = env ? `the ${env} environment` : "production";
+const where = deployTargetLabel(env);
 if (!result.ok && result.kind === "refused") {
   console.error(
     `::error title=confirm line older than the app::Nothing was deployed to ${where}: ${result.reason}. A newer app beside an older line object puts every confirm on its isolate's own line, where a crowd books one advisor or none. Deploy the line from a build at least as new as the app; for a revert that lowers the protocol on purpose, deploy the app first, then the line.`,
@@ -38,9 +39,12 @@ if (!result.ok && result.kind === "refused") {
   process.exit(3);
 }
 if (result.unchecked.length > 0) {
-  console.warn(
-    `::warning title=confirm line protocol not checked::${result.unchecked.join(", ")} was deployed to ${where} without its protocol being compared with the live app's (the run log says why). If the app is newer, confirms fall back to their isolate's own line and page confirm_line_unreachable.`,
-  );
+  // #3854: the same words as the gradual deploy, as an annotation and in the job summary
+  // (the load run's arm job runs this), so a skipped check is never only in the log.
+  const warning = uncheckedLineWarning(result.unchecked, where);
+  console.warn(`::warning title=confirm line protocol not checked::${warning}`);
+  const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+  if (summaryFile) appendFileSync(summaryFile, `**Warning:** ${warning}\n`, "utf8");
 }
 if (!result.ok) {
   console.error(

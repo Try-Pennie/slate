@@ -7,7 +7,8 @@
 import type { GoogleEvent, Interval } from "@/lib/google/calendar";
 import { parseStampMs } from "@/lib/date/stamp";
 import { GoogleHttpError } from "@/lib/google/http-error";
-import { keyHash, shouldInject, type FaultTarget } from "@/lib/loadtest-fault";
+import { keyHash, shouldInject, type FaultSwitch, type FaultTarget } from "@/lib/loadtest-fault";
+import type { CalendarBusy } from "@/lib/booking/core";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { budgetLeftMs } from "@/lib/call-budget";
 import { log } from "@/lib/log";
@@ -113,8 +114,13 @@ export async function loadtestGoogleDelay(
  * nobody should fix. So writes fail only on a pass that names them, and the judge
  * reads `FAULT_TARGET_CONTRACT`: with a `fails-loud` target faulted it reports the
  * 5xx count rather than barring it, and judges the cron lanes instead. The ordinary
- * pass still reaches the confirm path hard, through `freeBusyMany`: verify-on-book is
- * the branch that re-routes and answers a retriable 503, and it is a read.
+ * pass reaches the confirm path through its reads instead: the verify wave's bulk
+ * `freeBusyMany` (`stubFreeBusyMany`, keyed `freeBusyMany:<calendar>`), the per agent
+ * `freeBusy` it falls back to (`freeBusy:<email>`) and the calendar list
+ * (`calendarList:<email>`). An agent neither read can confirm is unverified: the booker
+ * re-routes to the next free advisor, and answers a retriable 503 only when nobody
+ * could be confirmed. Until #3845 the bulk read was never faulted, so a fault pass
+ * reached that branch only through a failed calendar list.
  *
  * DETERMINISTIC, not random, and that is the point. A random failure rate makes a soak
  * irreproducible: a run that passed and a run that failed differ by the dice, so
@@ -357,6 +363,31 @@ export function stubWatch(channelId: string, nowMs: number): {
 export function stubFreeBusy(email = "unknown"): Interval[] {
   faultIfDue(`freeBusy:${email}`);
   return [];
+}
+
+/**
+ * The confirm's bulk calendar check (`freeBusyMany`, the verify wave) under load (#3845).
+ *
+ * It used to answer every calendar free with no fault check, so a fault pass never
+ * reached the wave's own failure branch: an unreadable calendar sends its agent to the
+ * direct per agent read, and an agent neither read can confirm is unverified, which the
+ * booker re-routes around (or answers a retriable 503 when nobody could be confirmed).
+ *
+ * A faulted calendar comes back `error: true`, the shape Google gives a calendar it
+ * would not report on inside its 200 and the one `busyByCalendarFromResponse` produces.
+ * Keyed on the bulk call and the calendar (`freeBusyMany:<id>`), deliberately NOT the per
+ * agent read's `freeBusy:<email>`: they are two different Google calls (one identity
+ * reading the domain, or the agent's own), they fail independently, and that is why the
+ * fallback exists. So a pass reaches all three outcomes: read in bulk; missed in bulk and
+ * rescued by the direct read; read by neither, the unverified re-route.
+ *
+ * It cannot fault in production: `freeBusyMany` calls it only under `LOADTEST`, and
+ * `shouldInject` asks `isLoadtest()` again at call time. `sw` is for the tests only.
+ */
+export function stubFreeBusyMany(calendarIds: string[], sw?: FaultSwitch): Map<string, CalendarBusy> {
+  return new Map(
+    calendarIds.map((id) => [id, { busy: [], error: shouldInject("google-read", `freeBusyMany:${id}`, sw) }]),
+  );
 }
 
 /**

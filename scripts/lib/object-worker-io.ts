@@ -15,6 +15,7 @@ import { readVersionView, type VersionView } from "./rollback-plan.ts";
 import {
   objectBundleHash,
   protocolFromSource,
+  readAtCommit,
   stampFromMessage,
   type BundleFile,
   type LiveAppProtocol,
@@ -67,15 +68,11 @@ export function localBundle(config: string, env: string): { hash: string | null;
 /** Where the confirm line protocol is declared, read at the serving app's commit. */
 const PROTOCOL_SOURCE = "src/lib/booking/confirm-line-object.ts";
 
-function gitShow(commit: string): string | null {
-  return runCapture("git", ["show", `${commit}:${PROTOCOL_SOURCE}`]);
-}
-
 /**
  * #3560: the confirm line protocol the app serving now speaks: its version's commit tag
  * (every gradual and verified deploy tags one), then the constant at that commit, fetched
- * when the checkout does not hold it (CI checks out one commit). Every step that cannot
- * answer says which, so an unchecked deploy names its cause (L11).
+ * when the checkout does not hold it (CI checks out one commit; `readAtCommit`, #3854).
+ * Every step that cannot answer says which, so an unchecked deploy names its cause (L11).
  */
 export function liveAppProtocol(env: string): LiveAppProtocol {
   const wrangler = (args: string[]) => jsonPart(runCapture("pnpm", ["exec", "wrangler", ...args, ...envArgs(env)]));
@@ -91,16 +88,11 @@ export function liveAppProtocol(env: string): LiveAppProtocol {
   if (!/^[0-9a-f]{7,40}$/.test(commit)) {
     return { unreadable: `the serving app version ${id} carries no commit tag (a secret change or an untagged hand deploy makes one)` };
   }
-  let source = gitShow(commit);
-  if (source === null) {
-    // A shallow clone fetches just that commit; a full one fetches normally, since a
-    // depth limited fetch into a full clone would make it shallow.
-    const shallow = (runCapture("git", ["rev-parse", "--is-shallow-repository"]) ?? "").trim() === "true";
-    runCapture("git", ["fetch", "--no-tags", ...(shallow ? ["--depth=1"] : []), "origin", commit]);
-    source = gitShow(commit);
-  }
-  if (source === null) return { unreadable: `the serving app's commit ${commit} could not be read from git` };
-  const protocol = protocolFromSource(source);
+  // #3854: the tag is an abbreviation and CI checks out one commit; `readAtCommit` owns
+  // getting from there to the file, and says which step failed when it cannot.
+  const read = readAtCommit((args) => runCapture("git", args), commit, PROTOCOL_SOURCE);
+  if ("unreadable" in read) return read;
+  const protocol = protocolFromSource(read.source);
   return protocol === null
     ? { unreadable: `${PROTOCOL_SOURCE} at the serving app's commit ${commit} does not declare CONFIRM_LINE_PROTOCOL once as a number` }
     : { protocol };

@@ -17,6 +17,8 @@ import {
   OBJECT_BUNDLE_MESSAGE_PREFIX,
   decideLineProtocol,
   protocolFromSource,
+  readAtCommit,
+  uncheckedLineWarning,
   type LiveAppProtocol,
   decideObjectWorker,
   deployObjectWorkers,
@@ -309,12 +311,130 @@ for (const live of [{ unreadable: "the serving app version carries no commit tag
   const r = await drive({ facts: { [A]: lineAt(1) }, live }, [A]);
   eq(r.deployed.map((d) => d.config), [A], `a live protocol that ${live === "throw" ? "throws" : "is unreadable"} deploys the line anyway`);
   assert(r.logs.some((l) => l.includes(A) && /could not be checked/.test(l)), "saying the check could not be made");
-  eq(r.result.ok && r.result.unchecked, [A], "and the result names it as unchecked");
+  eq(r.result.ok && r.result.unchecked.map((u) => u.config), [A], "and the result names it as unchecked");
+  assert(r.result.ok && /could not be checked/.test(r.result.unchecked[0]?.reason ?? ""), "with the reason, for the warning");
 }
 {
   const r = await drive({ facts: { [A]: same, [B]: changedB }, live: { protocol: 9 } }, [A, B]);
   eq(r.liveReads(), 0, "a line Worker that is skipped changes nothing, so the live app is not even asked");
   eq(r.deployed.map((d) => d.config), [B], "and a changed Worker that is not the line deploys without the check");
+}
+
+// --- #3854: reading the serving app's commit from a checkout that lacks it ---------
+// The version's tag is `normalizeCommit`'s 12 character abbreviation, and the deploy job
+// checks out ONE commit (actions/checkout, depth 1). The fake below answers the way git
+// and GitHub did on the first production run (CI run 38974803936, 2026-10-16):
+// `git show f911f9ef0076:...` is "invalid object name" while the checkout lacks it, and
+// `git fetch origin f911f9ef0076` is "couldn't find remote ref", because a server answers
+// a fetch only for a FULL object id (reproduced by hand against GitHub the same day: the
+// abbreviation is refused, the full id fetches).
+const HEAD_SHA = "7da0d5589d26acc422610e10679eff5474610c23";
+const SERVING_SHA = "f911f9ef007618625e1441aa1a1e9e741542c3a3";
+const SOURCE_PATH = "src/lib/booking/confirm-line-object.ts";
+const SERVING_SOURCE = "export const CONFIRM_LINE_PROTOCOL = 2;\n";
+
+interface FakeRepo {
+  /** Commits this checkout holds. */
+  local: Set<string>;
+  shallow: boolean | "unreadable";
+  /** Commits origin holds, every one reachable from a branch. */
+  remote: Set<string>;
+  /** Fetches fail outright (no network, no credentials). */
+  fetchFails?: boolean;
+}
+
+function fakeGit(repo: FakeRepo) {
+  const calls: string[] = [];
+  const resolve = (ref: string): string | null => {
+    const hits = [...repo.local].filter((c) => c.startsWith(ref));
+    return hits.length === 1 ? hits[0] : null;
+  };
+  const git = (args: string[]): string | null => {
+    calls.push(args.join(" "));
+    if (args[0] === "show") {
+      const [ref, path] = args[1].split(":");
+      const commit = resolve(ref);
+      return commit === SERVING_SHA && path === SOURCE_PATH ? SERVING_SOURCE : null;
+    }
+    if (args[0] === "rev-parse" && args[1] === "--is-shallow-repository") {
+      return repo.shallow === "unreadable" ? null : `${repo.shallow}\n`;
+    }
+    if (args[0] === "fetch") {
+      if (repo.fetchFails) return null;
+      const rest = args.slice(1).filter((a) => !a.startsWith("--"));
+      const want = rest[1];
+      if (want !== undefined) {
+        // A want line carries a full object id only: an abbreviation is a ref name to
+        // the server, and there is no ref by that name.
+        if (!/^[0-9a-f]{40}$/.test(want) || !repo.remote.has(want)) return null;
+        repo.local.add(want);
+        return "";
+      }
+      // No refspec: origin's branches. A shallow checkout gains their history only when
+      // it is unshallowed; otherwise it gains only the tips it lacked, which here are
+      // already the commit it checked out.
+      if (repo.shallow === true && !args.includes("--unshallow")) return "";
+      for (const c of repo.remote) repo.local.add(c);
+      if (args.includes("--unshallow")) repo.shallow = false;
+      return "";
+    }
+    return null;
+  };
+  return { git, calls };
+}
+
+{
+  // The production case exactly: a depth 1 checkout of main, the serving commit one
+  // deploy behind it, tagged by its abbreviation.
+  const repo: FakeRepo = { local: new Set([HEAD_SHA]), shallow: true, remote: new Set([HEAD_SHA, SERVING_SHA]) };
+  const { git, calls } = fakeGit(repo);
+  const r = readAtCommit(git, SERVING_SHA.slice(0, 12), SOURCE_PATH);
+  eq(r, { source: SERVING_SOURCE }, `an abbreviated serving commit is read from a depth 1 checkout (git ran: ${calls.join(" | ")})`);
+  assert(!calls.some((c) => c.startsWith("fetch") && c.endsWith(` ${SERVING_SHA.slice(0, 12)}`)), "and it never asks the server for an abbreviation, which no server answers");
+  eq(protocolFromSource("source" in r ? r.source : null), 2, "and the protocol is read from what it fetched");
+}
+{
+  const repo: FakeRepo = { local: new Set([HEAD_SHA]), shallow: true, remote: new Set([HEAD_SHA, SERVING_SHA]) };
+  const { git, calls } = fakeGit(repo);
+  eq(readAtCommit(git, SERVING_SHA, SOURCE_PATH), { source: SERVING_SOURCE }, "a full serving commit is read from a depth 1 checkout");
+  assert(calls.some((c) => c === `fetch --no-tags --depth=1 origin ${SERVING_SHA}`), `fetching just that commit, one deep (git ran: ${calls.join(" | ")})`);
+  assert(!calls.some((c) => c.includes("--unshallow")), "without fetching the whole history");
+}
+{
+  // A hand deploy runs from a full clone, which may simply be behind origin.
+  const repo: FakeRepo = { local: new Set([HEAD_SHA]), shallow: false, remote: new Set([HEAD_SHA, SERVING_SHA]) };
+  const { git, calls } = fakeGit(repo);
+  eq(readAtCommit(git, SERVING_SHA.slice(0, 12), SOURCE_PATH), { source: SERVING_SOURCE }, "an abbreviated commit a full clone lacks is fetched from origin");
+  assert(!calls.some((c) => c.includes("--unshallow") || c.includes("--depth")), `and a full clone is never made shallow, nor told to unshallow (git ran: ${calls.join(" | ")})`);
+}
+{
+  const repo: FakeRepo = { local: new Set([HEAD_SHA, SERVING_SHA]), shallow: false, remote: new Set() };
+  const { git, calls } = fakeGit(repo);
+  eq(readAtCommit(git, SERVING_SHA.slice(0, 12), SOURCE_PATH), { source: SERVING_SOURCE }, "a commit the checkout holds is read");
+  assert(!calls.some((c) => c.startsWith("fetch")), "with no fetch at all");
+}
+// Every way it still cannot be read names its own cause (L11).
+{
+  const repo: FakeRepo = { local: new Set([HEAD_SHA]), shallow: true, remote: new Set([HEAD_SHA, SERVING_SHA]), fetchFails: true };
+  const r = readAtCommit(fakeGit(repo).git, SERVING_SHA.slice(0, 12), SOURCE_PATH);
+  assert("unreadable" in r && /fetch/.test(r.unreadable) && /failed/.test(r.unreadable), `a fetch that fails says the fetch failed (${JSON.stringify(r)})`);
+}
+{
+  // A hand deploy of a branch commit that was never pushed, or whose branch is gone.
+  const repo: FakeRepo = { local: new Set([HEAD_SHA]), shallow: true, remote: new Set([HEAD_SHA]) };
+  const r = readAtCommit(fakeGit(repo).git, SERVING_SHA.slice(0, 12), SOURCE_PATH);
+  assert("unreadable" in r && /no branch/.test(r.unreadable), `a commit origin does not hold says so, not that the fetch failed (${JSON.stringify(r)})`);
+}
+{
+  const repo: FakeRepo = { local: new Set([HEAD_SHA]), shallow: "unreadable", remote: new Set([HEAD_SHA, SERVING_SHA]) };
+  const r = readAtCommit(fakeGit(repo).git, SERVING_SHA.slice(0, 12), SOURCE_PATH);
+  assert("unreadable" in r && /shallow/.test(r.unreadable), `a checkout whose depth cannot be read says so (${JSON.stringify(r)})`);
+}
+
+// --- #3854: a check that did not run is said where the deploy job is read ----------
+{
+  const w = uncheckedLineWarning([{ config: A, reason: "the line's protocol could not be checked against the live app's (the serving app version carries no commit tag)" }], "production");
+  assert(w.includes(A) && w.includes("production") && w.includes("no commit tag"), `the warning names the Worker, the environment and why (${w})`);
 }
 
 finish();
