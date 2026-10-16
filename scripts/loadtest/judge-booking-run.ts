@@ -1000,7 +1000,7 @@ export function subrequestText(
 
 /**
  * #3354: the shared line's wait, split by the object's own log of the calls each
- * confirm sent while it waited (`confirm-startup.ts`, `LineSplit`), as one report line.
+ * confirm waited for (`confirm-startup.ts`, `LineSplit`), as one report line.
  * A report line, never a bar: it says whether a line wait is time behind a leader,
  * the object's own work, or everything outside the object, so a fix is aimed at the
  * part that moved. Every count that is not a reading is named, never folded in (L98).
