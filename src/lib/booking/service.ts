@@ -178,6 +178,7 @@ import { afterEnqueue, emitWebhook, suppressionByFormat, type WebhookSendSchedul
 import { WEBHOOK_FORMATS } from "@/lib/webhooks/formats";
 import { readCommitAnswer } from "@/lib/booking/commit-answer";
 import { afterResponse, deferWebhookSend } from "@/lib/after-response";
+import { pageAfterAnswer, type PageScheduler } from "@/lib/notify/post-commit-page";
 import { DeadlineExceededError, findDeadlineExceeded, isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { sendThrottledAlert, sendThrottledInfo, resolveRecovered } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
@@ -580,8 +581,12 @@ export type { BookingActor } from "@/lib/booking/core";
  * failure must not fail the request, but it cannot stay silent either (#34): a
  * missed insert lets the embed keep offering a booked slot until sync mirrors the
  * Google event (~1 min). Retry once, then log + throttled Slack alert.
+ *
+ * `deferPage` (#3266) is set on a lead's request only: the page is then sent after
+ * the response, so the lead's answer never waits on it. Today only the reconcile
+ * sweep, a cron drain, inserts blocks, and there it is sent inline.
  */
-export async function insertBusyBlocksWithRetry(blocks: BusyBlockInsert[]): Promise<void> {
+export async function insertBusyBlocksWithRetry(blocks: BusyBlockInsert[], deferPage?: PageScheduler): Promise<void> {
   if (blocks.length === 0) return;
 
   // #770: the sweep re-creates blocks for bookings that looked block-less a moment
@@ -603,11 +608,14 @@ export async function insertBusyBlocksWithRetry(blocks: BusyBlockInsert[]): Prom
   const ids = blocks.map((b) => b.booking_id).join(", ");
   const what = blocks.length === 1 ? `booking ${ids}` : `${blocks.length} bookings (${ids})`;
   log.error("booking", { msg: "busy_blocks insert failed", what }, error);
-  await sendThrottledAlert(
-    "busy_block_write_through",
-    CACHE_ALERT_COOLDOWN_MS,
-    busyBlockWriteThroughAlert("insert", what, shortFailureReason(error.message) ?? "no detail"),
-  ).catch(logAlertSendFailure("busy_block_write_through"));
+  const reason = shortFailureReason(error.message) ?? "no detail";
+  await pageAfterAnswer(deferPage, "busy-block-page", () =>
+    sendThrottledAlert(
+      "busy_block_write_through",
+      CACHE_ALERT_COOLDOWN_MS,
+      busyBlockWriteThroughAlert("insert", what, reason),
+    ).catch(logAlertSendFailure("busy_block_write_through")),
+  );
 }
 
 /**
@@ -1061,14 +1069,25 @@ function postgresAnswered(error: { code?: string; message: string }): boolean {
  * A booking's busy block that did not move: logged and paged, never failing the
  * booking, which has already happened. One copy (#3495), for the separate move and
  * for the one inside a fresh booking's save.
+ *
+ * The log line is written at once; the page goes after the lead's answer when
+ * `deferPage` is set (#3266), since the booking is made and nothing in the answer
+ * reads it. On a cron drain it is sent inline.
  */
-async function reportBusyBlockMoveFailure(bookingId: string, reason: string, err?: unknown): Promise<void> {
+async function reportBusyBlockMoveFailure(
+  bookingId: string,
+  reason: string,
+  deferPage: PageScheduler | undefined,
+  err?: unknown,
+): Promise<void> {
   log.error("booking", { msg: "busy_blocks move failed", booking_id: bookingId }, err ?? new Error(reason));
-  await sendThrottledAlert(
-    "busy_block_write_through",
-    CACHE_ALERT_COOLDOWN_MS,
-    busyBlockWriteThroughAlert("move", bookingId, shortFailureReason(reason) ?? "no detail"),
-  ).catch(logAlertSendFailure("busy_block_write_through"));
+  await pageAfterAnswer(deferPage, "busy-block-page", () =>
+    sendThrottledAlert(
+      "busy_block_write_through",
+      CACHE_ALERT_COOLDOWN_MS,
+      busyBlockWriteThroughAlert("move", bookingId, shortFailureReason(reason) ?? "no detail"),
+    ).catch(logAlertSendFailure("busy_block_write_through")),
+  );
 }
 
 /**
@@ -1076,8 +1095,13 @@ async function reportBusyBlockMoveFailure(bookingId: string, reason: string, err
  * (#3325), for the route's `confirm answered` line.
  */
 export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLineFacts): BookingDeps {
+  // #3266: the pages a booking raises after it committed go after the response on
+  // the same requests that defer their webhook send, the ones a lead is waiting on.
+  // The cron drains pass no scheduler and send them inline (`pageAfterAnswer`).
+  const deferPage: PageScheduler | undefined = deferSend ? afterResponse : undefined;
   return {
     deferSend,
+    deferPage,
     resolveBucketByCode,
     // #2638: the lead's XBC for a booker confirm whose link carried none. Throws
     // on a failed read, which the confirm answers with a retriable 503.
@@ -1550,13 +1574,15 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
         return { kind: "conflict", winner: answer.winner as unknown as Booking | null };
       }
       const failed = answer.failed;
-      if (failed.busy !== undefined) await reportBusyBlockMoveFailure(booking.id, failed.busy);
+      if (failed.busy !== undefined) await reportBusyBlockMoveFailure(booking.id, failed.busy, deferPage);
       if (failed.routing !== undefined) {
         log.error("routing", { msg: "routing_decisions insert failed", booking_id: booking.id }, new Error(failed.routing));
       }
       // Whether or not its record stored, as recordRoutingDecision always did: a lost
       // record must never also silence a misroute page.
-      if (routing) await alertIfMisroute(routing);
+      // #3266: after the lead's answer on their request; alertIfMisroute records its
+      // own failed send.
+      if (routing) await pageAfterAnswer(deferPage, "misroute-page", () => alertIfMisroute(routing));
       // An unbuilt webhook failed its step, so the reader has already refused any
       // deliveries beside it (`readCommitAnswer`); the check here is the type's.
       if (answer.enqueue && !("unbuilt" in webhook)) {
@@ -1586,7 +1612,7 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     // busy_blocks is (user_id, gcal_event_id), so no row in the batch can collide
     // and abort the others.
     insertBusyBlocks: async (blocks) => {
-      await insertBusyBlocksWithRetry(blocks);
+      await insertBusyBlocksWithRetry(blocks, deferPage);
     },
 
     moveBusyBlock: async (userId, startIso, endIso, bookingId) => {
@@ -1599,7 +1625,7 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
         p_starts_at: startIso,
         p_ends_at: endIso,
       });
-      if (error) await reportBusyBlockMoveFailure(bookingId, error.message, error);
+      if (error) await reportBusyBlockMoveFailure(bookingId, error.message, deferPage, error);
     },
 
     reassignSwap: async ({

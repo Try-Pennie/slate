@@ -133,6 +133,7 @@ import {
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { sendThrottledAlert } from "../notify/dispatch.ts";
 import { logAlertSendFailure } from "../notify/send-failure.ts";
+import { pageAfterAnswer, type PageScheduler } from "../notify/post-commit-page.ts";
 import {
   raceBoundHitPage,
   raceOutcomeForConfirm,
@@ -1872,6 +1873,11 @@ export interface BookingDeps {
    *  Regal/Cadence round-trip. The cron drains leave it unset and send inline,
    *  so their bounded fan-out still caps simultaneous connections. */
   deferSend?: WebhookSendScheduler;
+  /** #3266: when set (a lead's request only), a page raised after the booking
+   *  committed is sent after the response, outside the confirm's budget, so the
+   *  lead's answer never waits on Slack (`pageAfterAnswer`). The cron drains leave
+   *  it unset and send the page inline, as they always did. */
+  deferPage?: PageScheduler;
   newManageToken(): string;
   /** #3495: a fresh booking's id, minted before its save because the webhook built
    *  for it names the booking and its dedupe key IS the id. */
@@ -6327,15 +6333,20 @@ async function afterFreshCommit(
   // Everything smaller SENDS NOTHING HERE: a sideways overflow (#2228), a top
   // tier cascade (#2843), and a single tier drop (2026-10-02), each the ladder
   // working as designed. The reasons are in tier-alert.ts.
+  //
+  // #3266: after the lead's answer on their own request, outside the confirm's
+  // budget, since the booking is made and nothing in the answer reads the page.
   if (routed) {
     const tierAlert = tierFallbackAlert({
       requestedCode: requestedBucketCode,
       effectiveCode: booking.routing_trace?.bucket_code ?? requestedBucketCode,
     });
     if (tierAlert) {
-      // alert-key: tier_fallback_deep:*
-      await sendThrottledAlert(tierAlert.key, tierAlert.cooldownMs, tierAlert.text).catch(
-        logAlertSendFailure(tierAlert.key),
+      await pageAfterAnswer(deps.deferPage, "tier-fallback-page", () =>
+        // alert-key: tier_fallback_deep:*
+        sendThrottledAlert(tierAlert.key, tierAlert.cooldownMs, tierAlert.text).catch(
+          logAlertSendFailure(tierAlert.key),
+        ),
       );
     }
   }
