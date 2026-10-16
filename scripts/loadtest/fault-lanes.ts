@@ -84,6 +84,9 @@ export interface LaneFinding {
   detail: string;
 }
 
+/** #3746: one cron tick, the grace after a silence ends for the other lanes of that tick to stamp. */
+const CRON_TICK_MS = 60_000;
+
 /** Most samples may be this far apart before the series has a hole in it. */
 const GAP_FACTOR = 2;
 
@@ -237,7 +240,9 @@ export function judgeFaultLanes(e: FaultLaneEvidence, x: FaultLaneExpectations):
       worstAgeMs = Math.max(worstAgeMs, age);
       if (age > boundMs) {
         stale++;
-        const explained = silence !== null && sample.atMs <= silence.toMs && ms >= silence.fromMs - boundMs;
+        // Up to one cron tick past the silence's end: the lanes of a tick stamp one after
+        // another, so the others are still stale for a moment after the first resumes.
+        const explained = silence !== null && sample.atMs <= silence.toMs + CRON_TICK_MS && ms >= silence.fromMs - boundMs;
         if (!explained) staleOwn++;
       }
     }

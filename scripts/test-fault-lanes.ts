@@ -173,6 +173,17 @@ function series(frozen: readonly string[], from: number, to: number): FaultLaneE
   assert(line !== undefined && line.includes("for 19.0 min") && line.includes("from 5.0 min before the fault window began to 14.0 min into it"), `a stretch from before the window says so, and its range adds up to its length (got ${JSON.stringify(f)})`);
 }
 {
+  // The lanes of one tick stamp one after another, so a lane resuming within a tick of the
+  // first is still stale at the readings in between, and is the silence's, not a
+  // dependency's. A lane still stopped minutes later is not (the case above).
+  const e = series(["sync", "outbox", "complete"], 2, 16);
+  const outboxLate = series(["outbox"], 2, 16.75);
+  for (let i = 0; i < e.samples.length; i++) e.samples[i]!.heartbeats.outbox = outboxLate.samples[i]!.heartbeats.outbox!;
+  const f = findingsOf(e);
+  assert(f.some((d) => d.includes("outbox lane was stale") && d.includes("crons not firing")), `a lane resuming within a tick of the first is the silence's (got ${JSON.stringify(f)})`);
+  assert(!f.some((d) => d.includes("A failing dependency") && d.includes("outbox")), `and is not blamed on a dependency (got ${JSON.stringify(f)})`);
+}
+{
   // Control: every lane pausing for less than the shortest bound is no finding at all.
   eq(findingsOf(series(["sync", "outbox", "complete"], 2, 6)), [], "a four minute pause of every lane, inside every bound, is not a finding");
 }
