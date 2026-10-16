@@ -538,6 +538,7 @@ export async function agentBusyIntervals(
 export {
   SlotUnavailableError,
   RaceLostRefusalError,
+  LostRaceOutOfTimeError,
   ExistingCallError,
   ExistingCallCheckUnavailableError,
   RescheduleConflictError,

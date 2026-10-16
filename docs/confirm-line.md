@@ -62,7 +62,16 @@ runs, and on the shared line.
 
 A confirm whose insert loses the race walks on down the same way, from the rung it
 lost on, but only when what its budget has left covers what the attempt that lost
-cost it. With less left it is told to retry (the dependency timeout, 503).
+cost it. With less left it is told to retry (the dependency timeout, 503), and the
+race tally counts it on its own row, `race_retry_budget` (#3442), so the daily race
+whisper does not undercount losers on exactly the days budgets run tight.
+
+Each lost race's rollback (its calendar event and its reservation) runs under a
+cleanup allowance of its own while the confirm budget can still hold one (#3439).
+The request's one shared allowance is sized for the end of a request, so a rollback
+that opened it left a second race a few seconds later with nothing, and the lead was
+told to retry while the next advisor was free. Nearer the end of the budget the
+rollback shares that allowance as before, so the worst case stays 12 plus 2 seconds.
 
 The honest limit, as #3338 left it: each step down cost the next confirm its reads
 before the line, and the confirm booking a rung's last advisor held the line for its

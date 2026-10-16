@@ -45,6 +45,8 @@ const service = vi.hoisted(() => {
     }
   }
   class VerifyUnavailableError extends Error {}
+  // #3442: the retryable timeout after a lost race with too little budget to walk down.
+  class LostRaceOutOfTimeError extends VerifyUnavailableError {}
   class NoEligibleAgentsError extends Error {}
   class UnknownBucketError extends Error {}
   class OutsideCallingWindowError extends Error {}
@@ -72,6 +74,7 @@ const service = vi.hoisted(() => {
     SlotUnavailableError,
     RaceLostRefusalError,
     VerifyUnavailableError,
+    LostRaceOutOfTimeError,
     NoEligibleAgentsError,
     UnknownBucketError,
     BookingNotFoundError,
@@ -1026,6 +1029,19 @@ describe("POST /api/bookings: lost overlap races are counted (#2838)", () => {
       ["race_refused", null],
       ["error", "SLOT_TAKEN"],
       ["race_refused_bound", null],
+    ]);
+  });
+
+  // #3442: a lost race with too little budget left to walk down the ladder.
+  it("counts a lost race told to retry for budget, and no race for an ordinary timeout", async () => {
+    service.bookViaApi.mockRejectedValueOnce(new service.LostRaceOutOfTimeError());
+    expect((await post("Bearer secret", VALID_BODY)).status).toBe(503);
+    service.bookViaApi.mockRejectedValueOnce(new service.VerifyUnavailableError());
+    expect((await post("Bearer secret", VALID_BODY)).status).toBe(503);
+    expect(outcomes()).toEqual([
+      ["error", "VERIFY_UNAVAILABLE"],
+      ["race_retry_budget", null],
+      ["error", "VERIFY_UNAVAILABLE"],
     ]);
   });
 });

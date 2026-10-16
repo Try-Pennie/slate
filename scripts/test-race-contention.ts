@@ -25,6 +25,7 @@ import {
   RACE_RATE_MIN_ACTIVE_HOURS,
   RACE_SATURATION_SHARE,
   RACE_TALLY_OUTCOMES,
+  RACE_RETRY_BUDGET_OUTCOME,
   fallbackRaceThreshold,
   createRaceThresholdCache,
   judgeRaceContention,
@@ -124,7 +125,7 @@ assert(
   }
   // Positive control: the real normalizer leaves the total untouched by them.
   const mix = normalizeMix({
-    by_outcome: { created: 10, error: 2, race_reassigned: 3, race_reassigned_move: 2, race_refused: 1, race_refused_bound: 1 },
+    by_outcome: { created: 10, error: 2, race_reassigned: 3, race_reassigned_move: 2, race_refused: 1, race_refused_bound: 1, race_retry_budget: 2 },
   });
   eq(mix.total, 12, "a race tally row never enters the denominator of the failure share");
 }
@@ -136,6 +137,10 @@ eq(raceOutcomeForBooking({ race_lost: [] }), null, "an empty loss list is not a 
 eq(raceOutcomeForBooking({ race_lost: ["a"] }), "race_reassigned", "a booking that lost first and was handed on");
 eq(raceOutcomeForRefusal({ boundHit: false }), "race_refused", "refused with nobody left free after the loser");
 eq(raceOutcomeForRefusal({ boundHit: true }), "race_refused_bound", "refused at the reassign bound");
+// #3442: a lost race with too little budget left to walk down is answered retryably,
+// and counted on its own row, beside rescued and refused.
+eq(RACE_RETRY_BUDGET_OUTCOME, "race_retry_budget", "#3442: a lost race told to retry for budget has its own row");
+assert((RACE_TALLY_OUTCOMES as readonly string[]).includes(RACE_RETRY_BUDGET_OUTCOME), "#3442: and it is a race tally row");
 {
   const raced = { booking: { routing_trace: { race_lost: ["a"] } }, newlyInserted: true as const };
   eq(raceOutcomeForConfirm(raced), "race_reassigned", "a create arm rescue counts against its own created row");
@@ -149,12 +154,12 @@ eq(raceWindowFromMix(null, "2026-09-28"), null, "no mix is not a quiet day");
 eq(raceWindowFromMix({ by_outcome: null }, "2026-09-28"), null, "a mix with no outcome map could not be read");
 eq(
   raceWindowFromMix({ by_outcome: { created: 40, race_reassigned: 2, race_refused: 1 } }, "2026-09-28"),
-  { day: "2026-09-28", created: 40, reassigned: 2, reassignedMoves: 0, refused: 1, refusedAtBound: 0 },
+  { day: "2026-09-28", created: 40, reassigned: 2, reassignedMoves: 0, refused: 1, refusedAtBound: 0, retriedForBudget: 0 },
   "absent keys are zero rows, present ones are read",
 );
 eq(
   raceWindowFromMix({ by_outcome: { created: 40, race_reassigned_move: 3 } }, "2026-09-28"),
-  { day: "2026-09-28", created: 40, reassigned: 0, reassignedMoves: 3, refused: 0, refusedAtBound: 0 },
+  { day: "2026-09-28", created: 40, reassigned: 0, reassignedMoves: 3, refused: 0, refusedAtBound: 0, retriedForBudget: 0 },
   "#2867: a rescued move is read from its own key",
 );
 eq(
@@ -167,10 +172,22 @@ eq(
   null,
   "a rescued move count that is not a number is a broken read too",
 );
+// #3442: a lost race answered retryably because too little budget was left to walk
+// down the ladder is read from its own key, and a broken count is a broken read.
+eq(
+  raceWindowFromMix({ by_outcome: { created: 40, race_retry_budget: 2 } }, "2026-09-28"),
+  { day: "2026-09-28", created: 40, reassigned: 0, reassignedMoves: 0, refused: 0, refusedAtBound: 0, retriedForBudget: 2 },
+  "#3442: a lost race told to retry for budget is read from its own key",
+);
+eq(
+  raceWindowFromMix({ by_outcome: { created: 4, race_retry_budget: -1 } }, "2026-09-28"),
+  null,
+  "#3442: a budget retry count that is not a count is a broken read, not a zero",
+);
 
 // --- the verdict, against the fallback threshold ------------------------------------
 const w = (o: Partial<RaceContentionWindow>): RaceContentionWindow => ({
-  day: "2026-09-28", created: 0, reassigned: 0, reassignedMoves: 0, refused: 0, refusedAtBound: 0, ...o,
+  day: "2026-09-28", created: 0, reassigned: 0, reassignedMoves: 0, refused: 0, refusedAtBound: 0, retriedForBudget: 0, ...o,
 });
 const FB: RaceThreshold = fallbackRaceThreshold("a fixture");
 const verdict = (win: RaceContentionWindow | null) => raceContentionVerdict(win, FB);
@@ -233,6 +250,38 @@ eq(
   "unmeasured",
   "saturation still needs the loser floor, so one unlucky pair is not a report",
 );
+
+// --- #3442: lost races told to retry for budget ---------------------------------------
+{
+  // 200 booked (2 rescued), and 4 confirms that lost a race with too little budget
+  // left to walk down the ladder and were told to retry. They made no booking, so
+  // each is a confirm with no created row behind it AND a loser: 6 of 204 is 2.9%,
+  // over the share, where leaving them out read 2 of 200 and stayed quiet.
+  const v = verdict(w({ created: 200, reassigned: 2, retriedForBudget: 4 }));
+  eq(v.kind, "report", "#3442: budget retries count as losers, so a tight budget day is not read as quiet");
+  if (v.kind === "report") {
+    eq(v.confirms, 204, "#3442: a budget retry is a confirm, though it made no booking");
+    eq(v.losers, 6, "#3442: and a loser");
+    const text = raceContentionNoticeText(v);
+    assert(text.includes("4 were told to try again"), `#3442: the whisper says how many were told to retry (got ${text})`);
+    assert(/too little of their time left/.test(text), "#3442: and why, so it is not read as an outage");
+    assert(text.includes("None were refused"), "#3442: a retry is not a refusal");
+    assert(text.includes("The ones told to try again made no booking"), "#3442: and points at where they are, since they made no booking");
+    assert(!/[\u2014\u2013]/.test(text), "no dashes");
+    assert(!/undefined|NaN|null/.test(text), "no leaked values");
+  }
+  eq(raceThresholdNeeded(w({ created: 400, reassigned: 1, retriedForBudget: 2 })), true, "#3442: budget retries reach the loser floor too");
+}
+{
+  const v = verdict(w({ created: 200, reassigned: 5 }));
+  if (v.kind !== "report") throw new Error("fixture");
+  assert(!/try again/.test(raceContentionNoticeText(v)), "#3442: a day with no budget retries says nothing about them");
+}
+{
+  const v = verdict(w({ created: 200, reassigned: 4, retriedForBudget: 1 }));
+  if (v.kind !== "report") throw new Error(`fixture (${v.kind})`);
+  assert(raceContentionNoticeText(v).includes("1 was told to try again"), "#3442: one budget retry reads in the singular");
+}
 
 // --- #2867: a day mixing rescued moves with creates ----------------------------------
 {
