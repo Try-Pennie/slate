@@ -454,7 +454,7 @@ longer serve an older client, since a refused client uses its isolate's line for
 of a gradual deploy (run 37333201026). Optional fields whose absence only the CLIENT reads
 (#3489's rung, outcome, `canWalk`, settlement and `park`) need neither.
 
-**The deploy refuses that order (#3561).** Once #3838 is merged, a deploy refuses to put
+**The deploy refuses that order (#3561).** Since #3838 shipped, a deploy refuses to put
 a ConfirmLine Worker build in front of the live app when its `CONFIRM_LINE_PROTOCOL` is
 lower than the app's (gradual deploy exit 27, `scripts/deploy-object-workers.ts` exit 3),
 so a line older than the app is no longer something a deploy can make by accident. It
