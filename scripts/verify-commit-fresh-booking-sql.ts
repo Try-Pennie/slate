@@ -27,6 +27,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
+import { bucketsInsertSql, rerouteHoldInsertSql } from "./lib/seed-sql.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { readCommitAnswer } from "../src/lib/booking/commit-answer.ts";
 
@@ -152,7 +153,7 @@ try {
       ('${A}', '${ORG}', 'a@example.com', 'agent'), ('${B}', '${ORG}', 'b@example.com', 'agent'),
       ('${C}', '${ORG}', 'c@example.com', 'agent');
     insert into event_types (id, org_id, name, duration_min, buffer_before_min, buffer_after_min) values ('${ET}', '${ORG}', 'Call', 20, 10, 10);
-    insert into buckets (id, org_id, code, name, event_type_id) values ('${B100}', '${ORG}', '100', 'Low', '${ET}');
+    ${bucketsInsertSql([{ id: B100, orgId: ORG, code: "100", name: "Low", eventTypeId: ET }])}
     insert into webhook_endpoints (id, org_id, url, format, active, events, created_at) values
       ('${GENERIC}', '${ORG}', 'https://generic.example/hook', 'generic', true, array['booking.created'], '2031-03-01 00:00:00+00'),
       ('${REGAL}', '${ORG}', 'https://regal.example/hook', 'regal', true, array['booking.created'], '2031-03-01 00:00:01+00');
@@ -217,10 +218,10 @@ try {
   // The reroute hold (0166's trigger raises exclusion_violation): C is held near 17:00.
   const HELD = bookingRow({ agent: A, start: "17:00", end: "17:20" });
   assert(read(commit(HELD, { reservation: reservation(HELD.idempotency_key) })).status === "committed", "the held call itself commits");
-  sql(`insert into reroute_holds (org_id, booking_id, agent_user_id, buffered_starts_at, buffered_ends_at, booking_starts_at,
-         booking_ends_at, reschedule_seq, requested_bucket_id, target_bucket_id, expires_at)
-       values ('${ORG}', '${HELD.id}', '${C}', '${DAY} 16:50:00+00', '${DAY} 17:30:00+00', '${DAY} 17:00:00+00',
-         '${DAY} 17:20:00+00', 0, '${B100}', '${B100}', now() + interval '5 minutes');`);
+  sql(rerouteHoldInsertSql({
+    orgId: ORG, bookingId: HELD.id, agentUserId: C, bufferedStartsAt: `${DAY} 16:50:00+00`, bufferedEndsAt: `${DAY} 17:30:00+00`,
+    bookingStartsAt: `${DAY} 17:00:00+00`, bookingEndsAt: `${DAY} 17:20:00+00`, bucketId: B100,
+  }));
   const onHeld = bookingRow({ agent: C, start: "17:00", end: "17:20" });
   const held = read(commit(onHeld, { reservation: reservation(onHeld.idempotency_key) }));
   assert(held.status === "conflict" && held.winner === null, `a booking on an advisor held for a reroute is a conflict (got ${JSON.stringify(held)})`);

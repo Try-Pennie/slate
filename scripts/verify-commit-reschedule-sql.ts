@@ -34,7 +34,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
-import { bookingInsertSql, eventTypesInsertSql, sqlLiteral } from "./lib/seed-sql.ts";
+import { bookingInsertSql, bucketsInsertSql, eventTypesInsertSql, rerouteHoldInsertSql, sqlLiteral } from "./lib/seed-sql.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -141,7 +141,7 @@ try {
       ('${A}', '${ORG}', 'a@example.com', 'agent'), ('${B}', '${ORG}', 'b@example.com', 'agent'),
       ('${H}', '${ORG}', 'h@example.com', 'agent');
     ${eventTypesInsertSql([{ id: ET, orgId: ORG, name: "Call", durationMin: 20, bufferBeforeMin: 10, bufferAfterMin: 10 }])}
-    insert into buckets (id, org_id, code, name, event_type_id) values ('${B100}', '${ORG}', '100', 'Low', '${ET}');
+    ${bucketsInsertSql([{ id: B100, orgId: ORG, code: "100", name: "Low", eventTypeId: ET }])}
   `);
 
   // --- the function the server calls is the one the caller names ---------------------------
@@ -294,10 +294,10 @@ try {
   // a move onto an advisor held for a bucket correction is refused whole.
   {
     const heldCall = seed(advisor(), "08:00", "08:20");
-    sql(`insert into reroute_holds (org_id, booking_id, agent_user_id, buffered_starts_at, buffered_ends_at, booking_starts_at,
-           booking_ends_at, reschedule_seq, requested_bucket_id, target_bucket_id, expires_at)
-         values ('${ORG}', '${heldCall}', '${H}', '${DAY} 07:50:00+00', '${DAY} 08:30:00+00', '${DAY} 08:00:00+00',
-           '${DAY} 08:20:00+00', 0, '${B100}', '${B100}', now() + interval '5 minutes');`);
+    sql(rerouteHoldInsertSql({
+      orgId: ORG, bookingId: heldCall, agentUserId: H, bufferedStartsAt: `${DAY} 07:50:00+00`, bufferedEndsAt: `${DAY} 08:30:00+00`,
+      bookingStartsAt: `${DAY} 08:00:00+00`, bookingEndsAt: `${DAY} 08:20:00+00`, bucketId: B100,
+    }));
     const x = advisor();
     const id = seed(x, "05:00", "05:20");
     const before = state(id);
