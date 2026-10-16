@@ -68,12 +68,17 @@ describe("readRaceContentionWindow", () => {
       p_include_test: false,
       p_include_offsite: false,
     });
-    expect(w).toEqual({ day: "2026-09-28", created: 60, reassigned: 2, reassignedMoves: 0, refused: 1, refusedAtBound: 1 });
+    expect(w).toEqual({ day: "2026-09-28", created: 60, reassigned: 2, reassignedMoves: 0, refused: 1, refusedAtBound: 1, retriedForBudget: 0 });
   });
 
   it("#2867: reads rescued moves from their own row, the one the booking API records", async () => {
     rpc.mockResolvedValue({ data: { by_outcome: { created: 10, race_reassigned_move: 4 } }, error: null });
     expect((await readRaceContentionWindow(NOW)).reassignedMoves).toBe(4);
+  });
+
+  it("#3442: reads lost races told to retry for budget from their own row, the one both routes record", async () => {
+    rpc.mockResolvedValue({ data: { by_outcome: { created: 10, race_retry_budget: 3 } }, error: null });
+    expect((await readRaceContentionWindow(NOW)).retriedForBudget).toBe(3);
   });
 
   it("keys the day on Eastern time, not UTC", async () => {
@@ -107,6 +112,7 @@ describe("readRaceContentionWindow", () => {
       reassignedMoves: 0,
       refused: 0,
       refusedAtBound: 0,
+      retriedForBudget: 0,
     });
   });
 });

@@ -111,7 +111,7 @@ import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadli
 import { GoogleBreakerOpenError } from "../google/breaker.ts";
 import { isInvalidAttendeeEmailRefusal } from "../google/http-error.ts";
 import { AttendeeEmailRefusedError } from "./attendee-email-refused.ts";
-import { withinOwedCleanup } from "./cleanup-allowance.ts";
+import { withinLostRaceCleanup, withinOwedCleanup } from "./cleanup-allowance.ts";
 import { confirmLineWaitMs, type ClaimOutcome, type ClaimPlace, type ConfirmLine, type LeaderVerdict, type LineKey, type SharedSeat, type StartFrom } from "./confirm-queue.ts";
 import { codeLineGroup } from "./line-key.ts";
 import { budgetCovers, expectedCommitMs, type CommitCostLog } from "./commit-cost.ts";
@@ -389,6 +389,21 @@ export class DependencyTimeoutError extends VerifyUnavailableError {
     this.budget = found.budget;
     this.neededMs = found.neededMs;
     this.cause = cause;
+  }
+}
+
+/**
+ * #3442: the retryable timeout a confirm answers after LOSING the overlap race with
+ * nobody after it free on its rung and too little of its budget left to walk down
+ * the ladder (#3338). Every route answers it exactly as the timeout it is (a 503,
+ * the lead told to try again); it is named apart only so the routes can count it in
+ * the race tally (`RACE_RETRY_BUDGET_OUTCOME`), where it was missing, so the daily
+ * race whisper undercounted losers on exactly the days budgets ran tight.
+ */
+export class LostRaceOutOfTimeError extends DependencyTimeoutError {
+  constructor(found: DeadlineFound) {
+    super(found, null);
+    this.name = "LostRaceOutOfTimeError";
   }
 }
 
@@ -5592,7 +5607,7 @@ async function createHeld(
           needed_ms: neededMs,
           left_ms: leftMs,
         });
-        throw new DependencyTimeoutError({ label: "the tier below a lost race", timeoutMs: leftMs, budget: null, neededMs }, null);
+        throw new LostRaceOutOfTimeError({ label: "the tier below a lost race", timeoutMs: leftMs, budget: null, neededMs });
       }
       // #3462: the lost attempt is rolled back WHILE the walk asks the rungs below.
       // The two touch nothing in common (the walk never asks the advisor that lost),
@@ -6204,10 +6219,13 @@ async function attemptReservation(
     // Genuinely unavailable: the event + reservation are owed a rollback, under
     // the cleanup allowance, since this failure can arrive with the confirm budget
     // spent (#3215). Handed back rather than run (#3462, `ReservationAttempt`).
+    // #3439: an allowance of its own while the confirm has one to spare, because
+    // the confirm goes on to the next advisor and may lose another race seconds
+    // later, when the request's one shared allowance would already have ended.
     return {
       kind: "lost",
       rollBack: () =>
-        withinOwedCleanup(async () => {
+        withinLostRaceCleanup(async () => {
           await compensateEvent(deps, reservation.pinned_agent_email, gcalEventId, null);
           await deps.deleteReservation(reservation.id);
         }),
@@ -7446,7 +7464,10 @@ export async function rescheduleBooking(
     // because the confirm budget ran out would otherwise have its release refused
     // at 0ms too, and the lead's retry would meet its own lock until the lease
     // expired. Only then: the allowance is opened once per request and shared, so
-    // a release after a success must not spend it before the route needs it.
+    // a release after a success must not spend it before the route needs it. The
+    // one cleanup that does not share it is a lost race's rollback in the middle of
+    // a confirm (#3439, `withinLostRaceCleanup`), which gets its own while the
+    // confirm budget can hold it, and so never opens the shared one early either.
     if (applied) await deps.releaseReschedule(booking.id);
     else await withinOwedCleanup(() => deps.releaseReschedule(booking.id));
   }

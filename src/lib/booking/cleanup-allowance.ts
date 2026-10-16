@@ -6,7 +6,7 @@
  *
  * `confirm-budget.ts` re-exports both names and explains the 12 plus 2 split.
  */
-import { insideCallBudget, withinCleanupBudget } from "../call-budget.ts";
+import { insideCallBudget, withinCleanupBudget, withinOwnCleanupBudget } from "../call-budget.ts";
 
 export const BOOKING_CLEANUP_BUDGET_MS = 2_000;
 
@@ -26,4 +26,19 @@ export function withinBookingCleanupBudget<T>(work: () => Promise<T>): Promise<T
  */
 export function withinOwedCleanup<T>(work: () => Promise<T>): Promise<T> {
   return insideCallBudget() ? withinBookingCleanupBudget(work) : work();
+}
+
+/**
+ * `withinOwedCleanup` for a lost race's rollback (#3439), the one cleanup owed in
+ * the MIDDLE of a confirm: the confirm goes on to the next advisor afterwards, and
+ * may lose another race seconds later. While the confirm budget has the whole
+ * allowance to spare, each rollback gets an allowance of its own that ends inside
+ * that budget (`withinOwnCleanupBudget`), so a second race's rollback is never
+ * refused because the first spent the request's one shared allowance. Nearer the
+ * end of the budget it is the shared allowance, as every other cleanup gets, so the
+ * request's worst case stays the budget plus one allowance. On the cron drains,
+ * which carry no budget, it runs as it always has.
+ */
+export function withinLostRaceCleanup<T>(work: () => Promise<T>): Promise<T> {
+  return insideCallBudget() ? withinOwnCleanupBudget(BOOKING_CLEANUP_BUDGET_MS, "the lost race cleanup", work) : work();
 }
