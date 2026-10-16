@@ -26,6 +26,28 @@ Dan settled on 2026-10-06 that a confirm in a crowd walks the ladder "Same as a
 normal confirm". Before this a leader that booked the last advisor of ANY rung
 told everybody waiting "taken" while the tier below had people free.
 
+A refusal settles the line only where it is MARKED as proving the ladder spent
+(`markLadderSpent` / `provesLadderSpent` in `orchestration.ts`, read by
+`verdictForRefusal` and nowhere else), never because it is a `SlotUnavailableError`
+(#3440, #3441). Two places mark one:
+
+- **The end of an ordinary ladder walk**, when some rung it read had people on it
+  and refused the time as taken (or was passed only for claims). Whichever rung came
+  last names the error, so a ladder whose LAST rung is an empty bucket ends in
+  `NoEligibleAgentsError`: it is marked all the same, so the crowd behind is told
+  "taken" from one walk rather than each walking the whole ladder in turn, and the
+  walker itself keeps the empty bucket answer, its routing record and its page
+  (#3441). A ladder with nobody on ANY rung is not marked: no rung refused the time
+  as taken, so "taken" would be a claim nothing measured (L11), and each confirm walks
+  its empty rungs, which asks nobody at Google, to its own empty bucket answer.
+- **A named link**, whose one advisor is its whole ladder.
+
+Everything else that refuses a time never walked the ladder, so it settles nobody and
+the next confirm walks: a RESUMED reservation whose pinned advisor turned out taken
+(`completeReservation`, #3440; the resumed lead is still told its time is taken), and
+a booking API reschedule, which asks only the lead's own bucket. The scenarios are
+the `#3440` and `#3441` cases in `scripts/test-confirm-contention.ts`.
+
 So a leader that books the last advisor of a rung above the last reports "not
 full", and the line's existing hand on makes the next confirm the leader. It walks
 from the top like any confirm: the advisor just booked reads as busy in the write

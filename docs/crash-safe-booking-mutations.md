@@ -194,7 +194,15 @@ while the booking is still the one we started moving (status still active, and t
 assignee + event id unchanged since we read them). A concurrent cancel (status
 flip) or reassign (assignee + event swap) makes it touch 0 rows, so the reschedule
 rolls back instead of resurrecting a cancelled booking or clobbering the reassign.
-It advances `reschedule_seq` only on success.
+It advances `reschedule_seq` only on success. Since #3265 it is one database call,
+`commit_reschedule` (migration 0171), which writes the reschedule's outbox row in the
+same transaction, so a moved call always has its record and a refused record never
+leaves a moved call behind. The real database half (the guard both ways, a refusal
+rolling back the move and its row together, the guard under two concurrent sessions,
+and no EXECUTE for `anon` or `authenticated`) is proved by
+`scripts/verify-commit-reschedule-sql.ts` (#3505). The function does not dedupe a
+repeated in place move with an unchanged guard; `claimReschedule` answering
+`idempotent` is what stops that retry.
 
 `reschedule_seq` is a monotonic ordinal on `bookings`, mixed into the
 deterministic id, so an oscillation (A to T1 to T2 back to T1) never reuses a
