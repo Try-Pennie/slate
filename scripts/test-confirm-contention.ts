@@ -2649,10 +2649,11 @@ async function main() {
 
   // #3440: a crowd behind a RESUMED reservation. Lead 0 crashed mid create earlier, and
   // its re-submit resumes the reservation that create wrote, pinned to a, the top rung's
-  // only advisor. Somebody else has booked a since, so the resume is refused as taken.
-  // That refusal is about the one advisor an earlier request pinned: it never asked the
-  // rungs below, where c and d are free. Before the fix it reported a full verdict and
-  // the four behind it were told the time was taken.
+  // only advisor. Somebody else has booked a since. Since #3837 the resume rolls that
+  // stale reservation back and walks the ladder like any confirm, so the resumed lead is
+  // booked on the rung below, where c and d are free, and nobody behind it is told the
+  // time is taken. Before #3440 a taken pin reported a full verdict and the four behind
+  // it were turned away; before #3837 the resumed lead itself was.
   {
     const resumed = lead(0, { bucketCode: LADDER_311 });
     const key = stableKeyFor(resumed);
