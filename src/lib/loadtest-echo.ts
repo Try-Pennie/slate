@@ -108,6 +108,7 @@ export const CONFIRM_LINE_REASONS = [
   "enter-error",
   "gone",
   "bad-answer",
+  "version",
   "abandoned",
 ] as const;
 export type ConfirmLineReason = (typeof CONFIRM_LINE_REASONS)[number];

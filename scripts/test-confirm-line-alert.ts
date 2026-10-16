@@ -128,6 +128,24 @@ function reporter(onWorkers = true) {
   // #3351: the line answered, so the page must not claim it could not be reached (L11).
   const unreadable = confirmLineUnreachableAlert("bad-answer");
   assert(!/cannot reach/i.test(unreadable) && /cannot read/i.test(unreadable), `copy: a bad answer says the replies could not be read, not that the line was unreachable (got ${unreadable})`);
+  // #3560: the line answered, and said it is older than the app: the page says so and
+  // names the remedy, a redeploy of the line Worker, which neither other wording does.
+  const older = confirmLineUnreachableAlert("version");
+  assert(!DASHES.test(older), "copy: no dashes in the version wording");
+  assert(!/cannot reach/i.test(older) && /older/i.test(older) && /redeploy/i.test(older), `copy: a version mismatch says the line is older than the app and to redeploy it (got ${older})`);
+}
+
+// --- #3560: an object older than the app pages, and is counted as itself in a mix -----
+{
+  const r = reporter();
+  for (let i = 0; i < CONFIRM_LINE_PAGE_AFTER; i++) r.report("version", null);
+  assert(r.pages.length === 1 && r.pages[0] === confirmLineUnreachableAlert("version"), `version: repeated version mismatches page in their own words (got ${JSON.stringify(r.pages)})`);
+  const mixed = reporter();
+  mixed.report("reach-timeout", null);
+  mixed.report("version", null);
+  mixed.report("version", null);
+  const text = mixed.pages[0] ?? "";
+  assert(/1 could not reach it/.test(text) && /2 found it running an older build than this app/.test(text), `version: a mix counts the mismatches as themselves, never as unreachable (got ${text})`);
 }
 
 finish();
