@@ -302,6 +302,16 @@ import {
   PAUSE_NOTICE_AFTER_MS,
 } from "@/lib/monitor/booking-pause";
 import {
+  formatSharedLineLeftOffAlert,
+  formatSharedLineBackOnRecovery,
+  SHARED_LINE_OFF_NOTICE_AFTER_MS,
+} from "@/lib/monitor/shared-line-left-off";
+import {
+  sharedLineSwitchUnreadableAlert,
+  SWITCH_READ_PAGE_AFTER,
+  SWITCH_READ_PAGE_WINDOW_MS,
+} from "@/lib/booking/shared-line-switch-alert";
+import {
   formatCiRefusedAlert,
   formatCiStartedRecovery,
   formatDeployLiveRecovery,
@@ -3033,6 +3043,27 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: formatPublicBookingRunningRecovery(),
   },
+  // #3339: the shared confirm line switched on and then left off. A switch never turned
+  // on says nothing, so it has no state here.
+  {
+    key: "shared_confirm_line_left_off",
+    state: "off for just over a day after it had been switched on",
+    channel: "alert",
+    text: formatSharedLineLeftOffAlert(SHARED_LINE_OFF_NOTICE_AFTER_MS + 3 * 60 * 60_000),
+  },
+  {
+    // Switched off by hand SQL, or an audit write that failed: no span to quote.
+    key: "shared_confirm_line_left_off",
+    state: "off with nothing recording when",
+    channel: "alert",
+    text: formatSharedLineLeftOffAlert(null),
+  },
+  {
+    key: "shared_confirm_line_left_off",
+    state: "somebody switched the line back on",
+    channel: "recovery",
+    text: formatSharedLineBackOnRecovery(),
+  },
   {
     key: "sync_staleness",
     state: "agents have dropped out of the sync rotation",
@@ -5609,6 +5640,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: confirmLineUnreachableAlert("version") },
   { key: "confirm_line_unreachable", state: "a mix of failures in one window", channel: "alert",
     text: confirmLineAlertFor(["reach-timeout", "reach-timeout", "bad-answer"]) },
+  // #3339: a run of failed reads of the shared line switch on one server, by what the
+  // deployment default says, since that is what those confirms were answered with.
+  { key: "shared_line_switch_unreadable", state: "a run of failed reads, default off", channel: "alert",
+    text: sharedLineSwitchUnreadableAlert({ count: SWITCH_READ_PAGE_AFTER, windowMs: SWITCH_READ_PAGE_WINDOW_MS, atLeast: false }, "off") },
+  { key: "shared_line_switch_unreadable", state: "a run of failed reads, default unset", channel: "alert",
+    text: sharedLineSwitchUnreadableAlert({ count: SWITCH_READ_PAGE_AFTER, windowMs: SWITCH_READ_PAGE_WINDOW_MS, atLeast: false }, undefined) },
   { key: "rate_limit_refund_broken:*", state: "a sustained run of failed refunds", channel: "alert",
     text: refundFailedAlert(friendlyRateArea("book"), {
       count: LIMITER_FAIL_OPEN_PAGE_AFTER, windowMs: LIMITER_FAIL_OPEN_WINDOW_MS, atLeast: false }) },

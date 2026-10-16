@@ -375,6 +375,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The kill switch is on, which stays true until a person turns public booking back on; the monitor lane reads the stored flag every tick, so a tick that reads it false is the measured healthy result that ends it (#2366).",
   },
   {
+    key: "shared_confirm_line_left_off",
+    kind: "condition",
+    why: "The shared confirm line was switched on and has been switched off for more than a day, which stays true until a person switches it back on; the monitor lane reads the stored switch every tick, so a tick that reads it on is the measured healthy result that ends it (#3339). A switch nobody has ever turned on is the expected state and says nothing.",
+  },
+  {
     key: "main_not_deployed",
     kind: "condition",
     why: "Main is merged and not live, which stays true until a deploy carries it; the monitor lane compares the served commit against main's tip every tick, so it ends when they agree again (#2476).",
@@ -1016,6 +1021,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
     // confirm reaching the shared line again calls nothing that could clear it, and
     // making it do so would put a database write on every confirm during the outage.
     why: "Confirms already served fell back to their own server's line, which is always safe; the next confirm tries the shared line again by itself, so there is no healthy state for an all clear to observe.",
+  },
+  {
+    key: "shared_line_switch_unreadable",
+    kind: "incident",
+    // #3339. An incident for confirm_line_unreachable's reason: it names reads already
+    // answered (with the last value read, or the deployment default), and a later read
+    // that works calls nothing that could clear it without a database write on the
+    // confirm path. The ongoing state, a switch nobody can read, is the monitor lane's own
+    // read of it every tick, whose failure pages monitor_step_failing with an all clear.
+    why: "A run of reads of the shared confirm line switch failed on one server inside a window, each already answered with the last value read or the deployment default; the next read simply tries again, so there is no healthy state for an all clear to observe.",
   },
   {
     key: "rate_limit_refund_broken:*",

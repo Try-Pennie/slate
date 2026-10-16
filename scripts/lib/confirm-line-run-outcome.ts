@@ -78,6 +78,18 @@ export const CONFIRM_LINE_EXIT = {
   directoryLostAfterIdle: 24,
   /** Every read after the idle wait answered from memory, so no wake was seen and storage went unmeasured. */
   directoryWakeUnobserved: 25,
+  /** #3823: a confirm the ladder line should have released with an advisor got no lead, or a lead holding nothing. */
+  startNotHanded: 26,
+  /** #3823: a released confirm was handed something other than the advisor nobody had claimed. */
+  startWrong: 27,
+  /** #3823: with a claim still in flight, a full verdict answered the waiting confirm at once. */
+  verdictNotHeld: 28,
+  /** #3823: a held full verdict was not applied, with the last booking's settlement, when that claim ended booked. */
+  heldNotApplied: 29,
+  /** #3823: an advisor reported found busy was handed out again. */
+  busyHandedAgain: 30,
+  /** #3823: an advisor reported untried was not handed out again. */
+  untriedNotReturned: 31,
 } as const;
 
 export type ConfirmLineExit = (typeof CONFIRM_LINE_EXIT)[keyof typeof CONFIRM_LINE_EXIT];
@@ -234,6 +246,34 @@ export const RUN_JUDGEMENT: Record<ConfirmLineExit, RunJudgement> = {
     concluded: false,
     headline:
       "Today's shared confirm line proof never saw the pool grouping directory wake from an idle sleep, so whether a woken directory reads its grouping back from storage was not measured.",
+  },
+  // #3823: the ladder line's own behaviour (#3489). Each is the object asked and answering
+  // wrongly, so each concludes, and each is what a line Worker deployed answering the old
+  // way would show before a crowd met it with the shared line switched on (#3339).
+  [CONFIRM_LINE_EXIT.startNotHanded]: {
+    concluded: true,
+    headline:
+      "The shared confirm line did not release a waiting confirm holding the advisor nobody had claimed, so it is answering as it did before the ladder line and every confirm in a crowd reads the whole rung again for itself.",
+  },
+  [CONFIRM_LINE_EXIT.startWrong]: {
+    concluded: true,
+    headline: "The shared confirm line released a waiting confirm holding the wrong advisor, so a crowd can put two confirms on one person while somebody free goes unasked.",
+  },
+  [CONFIRM_LINE_EXIT.verdictNotHeld]: {
+    concluded: true,
+    headline: "The shared confirm line answered a waiting confirm off a full verdict while another claim was still in flight, rather than holding that verdict until the claim ended.",
+  },
+  [CONFIRM_LINE_EXIT.heldNotApplied]: {
+    concluded: true,
+    headline: "The shared confirm line held a full verdict and did not apply it, with the last booking's settlement, when the last claim in flight ended booked, so a crowd behind a spent ladder reads it again for itself.",
+  },
+  [CONFIRM_LINE_EXIT.busyHandedAgain]: {
+    concluded: true,
+    headline: "The shared confirm line handed out again an advisor a confirm had reported found busy, so the next lead in a crowd is sent to somebody already known to be unable to take the time.",
+  },
+  [CONFIRM_LINE_EXIT.untriedNotReturned]: {
+    concluded: true,
+    headline: "The shared confirm line did not hand back an advisor a confirm reported it never tried, so a crowd can be turned away while that person is free.",
   },
 };
 

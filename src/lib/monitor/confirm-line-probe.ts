@@ -27,12 +27,24 @@
  *  - `abandoned`: A takes the lead and never acknowledges it (its client's every call
  *    after the enter is lost, as when an answer never reaches its caller), and B leads
  *    within the acknowledgement window rather than after the whole lease.
+ *  - `handedStart` (#3823, the ladder line of #3489): B, queued behind A, is RELEASED the
+ *    moment A claims one of two advisors on a rung, and released holding the other one,
+ *    with A's whole read of the rung. An object older than the ladder line hands it
+ *    nothing, and one that hands it A's advisor puts two confirms on one person.
+ *  - `heldVerdict` (#3823, #3489 step 3): B reports the ladder full while A's claim is
+ *    still in flight, so the line HOLDS that verdict for C, waiting behind, rather than
+ *    answering C at once either way; when A's claim then ends booked, C is refused with
+ *    the settlement A's end read, not B's.
+ *  - `claimOutcome` (#3823, #3489): how a claim ended decides whether its advisor is
+ *    handed out again. One reported found busy never is; one reported untried is, to the
+ *    next confirm that arrives. Both directions in one reading.
  *  - `nothingHeld`: afterwards, a newcomer on each instant the probe used leads at
- *    once, so the probe is MEASURED to have left nothing held, not assumed to. On the
- *    instant `full` settled, the line may still remember that verdict (#3570) and refuse
- *    the newcomer with `full`'s own settlement; a line remembers only a verdict that left
- *    no claim in flight, so that answer shows nothing held too. Refused anywhere else, or
- *    with any other settlement, it was settled by something the probe never reported.
+ *    once, so the probe is MEASURED to have left nothing held, not assumed to. On an
+ *    instant a full verdict settled (`full`'s and `heldVerdict`'s), the line may still
+ *    remember that verdict (#3570) and refuse the newcomer with that verdict's own
+ *    settlement; a line remembers only a verdict that left no claim in flight, so that
+ *    answer shows nothing held too. Refused anywhere else, or with any other settlement,
+ *    it was settled by something the probe never reported.
  *  - `directory` (#3460): the pool grouping DIRECTORY, a reserved instance of the same
  *    class, stores a put and hands it back, keeps the newest over an older put (both
  *    directions, on the probe's OWN directory), and the LIVE directory holds a grouping
@@ -64,7 +76,7 @@
  * it against the real object host on a virtual clock.
  */
 import { makeSharedConfirmLine, CONFIRM_LINE_CALL_MS, type LineNamespace, type LineServed, type SwitchReading } from "../booking/shared-confirm-line.ts";
-import { makeConfirmQueue, isolateLine, type LineKey, type LineTurn, type LeaderVerdict } from "../booking/confirm-queue.ts";
+import { makeConfirmQueue, isolateLine, type ClaimOutcome, type LineKey, type LineTurn, type LeaderVerdict, type StartFrom } from "../booking/confirm-queue.ts";
 import { CONFIRM_LINE_ACK_MS, CONFIRM_LINE_LEASE_MS } from "../booking/confirm-line-object.ts";
 import {
   POOL_GROUPING_DIRECTORY,
@@ -100,7 +112,17 @@ export const CONFIRM_LINE_PROBE_REASON = {
   bindingMissing: "binding-missing",
 } as const;
 
-export const CONFIRM_LINE_CHECKS = ["full", "notFull", "abandoned", "nothingHeld", "directory", "directoryWake"] as const;
+export const CONFIRM_LINE_CHECKS = [
+  "full",
+  "notFull",
+  "abandoned",
+  "handedStart",
+  "heldVerdict",
+  "claimOutcome",
+  "nothingHeld",
+  "directory",
+  "directoryWake",
+] as const;
 export type ConfirmLineCheck = (typeof CONFIRM_LINE_CHECKS)[number];
 
 export const CHECK_OUTCOMES = [
@@ -123,6 +145,18 @@ export const CHECK_OUTCOMES = [
   "not-freed",
   /** An instant the probe used was still held after it finished. */
   "held",
+  /** #3823: a confirm the line should have released with an advisor got no lead, or a lead holding nothing. */
+  "start-not-handed",
+  /** #3823: it was handed a start, and not the one nobody had claimed: another advisor, another rung, or another read. */
+  "start-wrong",
+  /** #3823: with a claim still in flight, a full verdict answered the waiting confirm at once instead of being held. */
+  "verdict-not-held",
+  /** #3823: a held full verdict was not applied, with the settlement it ended on, once the last claim in flight ended booked. */
+  "held-not-applied",
+  /** #3823: an advisor whose claim was reported found busy was handed out again. */
+  "busy-handed-again",
+  /** #3823: an advisor whose claim was reported untried was not handed out again. */
+  "untried-not-returned",
   /** #3460: the pool grouping directory did not answer within a call. */
   "directory-unreachable",
   /** The directory did not store a fresh put, or handed back something else. */
@@ -145,6 +179,9 @@ export const CHECK_CAN_END_ON: Record<ConfirmLineCheck, readonly CheckOutcome[]>
   full: ["passed", "unreachable", "errored", "idle-not-led", "led-beside", "not-settled"],
   notFull: ["passed", "unreachable", "errored", "idle-not-led", "led-beside", "not-handed-on"],
   abandoned: ["passed", "unreachable", "errored", "idle-not-led", "led-beside", "freed-late", "not-freed"],
+  handedStart: ["passed", "unreachable", "errored", "idle-not-led", "led-beside", "start-not-handed", "start-wrong"],
+  heldVerdict: ["passed", "unreachable", "errored", "idle-not-led", "led-beside", "start-not-handed", "verdict-not-held", "held-not-applied"],
+  claimOutcome: ["passed", "unreachable", "errored", "idle-not-led", "start-not-handed", "start-wrong", "busy-handed-again", "untried-not-returned"],
   nothingHeld: ["passed", "unreachable", "errored", "held"],
   directory: ["passed", "errored", "directory-unreachable", "not-stored", "older-won", "no-grouping", "grouping-unusable"],
   directoryWake: ["passed", "errored", "directory-unreachable", "not-stored", "lost-after-idle", "wake-unobserved"],
@@ -385,10 +422,11 @@ function holdings() {
       pending.push(turn);
       return turn;
     },
-    async report(turn: Turn, verdict: LeaderVerdict<unknown>): Promise<void> {
+    /** Reports a lead's verdict, and since #3489 how its claim ended and the settlement that end read. */
+    async report(turn: Turn, verdict: LeaderVerdict<unknown>, outcome?: ClaimOutcome, settlement?: unknown): Promise<void> {
       if (turn.kind !== "lead" || reported.has(turn)) return;
       reported.add(turn);
-      await turn.done(verdict);
+      await turn.done(verdict, outcome, settlement);
     },
     async releaseAll(): Promise<void> {
       for (const p of pending) {
@@ -562,17 +600,236 @@ async function checkAbandoned(deps: ProbeRunDeps, key: LineKey): Promise<CheckRe
   }
 }
 
+/**
+ * #3823: what a check says when a turn it already judged to be a lead is not one, which
+ * `leaderBlocked` makes unreachable; said as the probe's own fault, never the object's.
+ */
+const LOST_LEAD: CheckResult = { outcome: "errored", detail: "The probe lost track of the first confirm's lead" };
+
+/** #3823: A's lead on a fresh instant, or the result that ends the check. */
+async function firstLead(a: Participant, held: ReturnType<typeof holdings>, key: LineKey): Promise<CheckResult | Extract<Turn, { kind: "lead" }>> {
+  const turn = await held.track(a.line.enter(key, 0));
+  const blocked = leaderBlocked(a, turn);
+  if (blocked) return blocked;
+  return turn.kind === "lead" ? turn : LOST_LEAD;
+}
+
+/**
+ * #3823: the advisors a ladder check claims. Opaque strings to the object, which never
+ * looks anybody up, minted per run and per check so no two checks, and no two runs, ever
+ * name the same one. They never leave the verification group, so no real advisor can be
+ * claimed, handed or reported by the proof.
+ */
+function probeAdvisors(run: string, check: ConfirmLineCheck, count: number): string[] {
+  return Array.from({ length: count }, (_, i) => `probe-advisor:${run}:${check}:${i + 1}`);
+}
+
+const sameStart = (got: StartFrom, want: StartFrom): boolean =>
+  got.rung === want.rung && got.advisor === want.advisor && JSON.stringify(got.read) === JSON.stringify(want.read);
+
+/**
+ * Was `turn` a lead handed exactly `want` (#3823)? Null when it was, or the finding.
+ * `claimed` is every advisor another confirm in flight holds, because being handed one of
+ * those puts two confirms on one person, which is worse than being handed nothing.
+ */
+function judgeStart(who: string, turn: Turn, want: StartFrom, claimed: readonly string[]): CheckResult | null {
+  if (turn.kind !== "lead") {
+    return { outcome: "start-not-handed", detail: `${who} was given ${describe(turn)} rather than the lead with the advisor nobody had claimed` };
+  }
+  if (!turn.start) {
+    return {
+      outcome: "start-not-handed",
+      detail: `${who} was given the lead and handed no advisor, so it would read the whole rung again for itself, as confirms did before the ladder line`,
+    };
+  }
+  if (sameStart(turn.start, want)) return null;
+  const what = claimed.includes(turn.start.advisor)
+    ? "an advisor another confirm in flight had already claimed, which puts two confirms on one person"
+    : turn.start.advisor === want.advisor
+      ? "the advisor nobody had claimed, but with another rung or another read of the rung than the leader's"
+      : "an advisor other than the one nobody had claimed";
+  return { outcome: "start-wrong", detail: `${who} was handed ${what}` };
+}
+
+/**
+ * #3823: B is queued behind A, and A claims the first of two advisors on a rung naming
+ * its place. That hands the line on (another advisor is unclaimed), so the line must
+ * RELEASE B at once, holding the advisor A left, with A's whole read of the rung.
+ */
+async function checkHandedStart(deps: ProbeRunDeps, key: LineKey, run: string): Promise<CheckResult> {
+  const held = holdings();
+  try {
+    const queued = await queuedBehindLeader(deps, key, held);
+    if ("outcome" in queued) return queued;
+    if (queued.lead.kind !== "lead") return LOST_LEAD;
+    const read = probeAdvisors(run, "handedStart", 2);
+    await queued.lead.seat.claimFirst(read, { rung: 0 });
+    const turn = await queued.follower;
+    const late = queued.b.fellBack();
+    if (late) return unreachable("The second confirm", late);
+    const wrong = judgeStart("The confirm waiting behind the first, released when the first claimed one of two advisors,", turn, { rung: 0, advisor: read[1]!, read }, [read[0]!]);
+    if (wrong) return wrong;
+    return passed("The confirm waiting behind the first was released the moment the first claimed one of two advisors, holding the other one and the first's whole read of the rung");
+  } finally {
+    await held.releaseAll();
+  }
+}
+
+/** #3823: what `heldVerdict`'s two reports carry, which `nothingHeld` may meet again (#3570). */
+const verdictSettlement = (run: string) => ({ probe: "confirm-line", run, by: "verdict" });
+const heldSettlement = (run: string) => ({ probe: "confirm-line", run, by: "last-booking" });
+
+/**
+ * #3823 (#3489 step 3): A claims one of two advisors and hands on, B is handed the other,
+ * and C waits behind B. B reports the ladder full with A's claim still in flight, which
+ * A could yet end without booking, so the line must HOLD that verdict: C is answered
+ * neither way while A is out. When A then ends booked, the verdict applies and C is
+ * refused with the settlement A's end read, which is who sits at the instant NOW, rather
+ * than the one B reported before A booked.
+ */
+async function checkHeldVerdict(deps: ProbeRunDeps, key: LineKey, run: string): Promise<CheckResult> {
+  const a = participant(deps);
+  const b = participant(deps);
+  const c = participant(deps);
+  const held = holdings();
+  try {
+    const first = await firstLead(a, held, key);
+    if ("outcome" in first) return first;
+    const read = probeAdvisors(run, "heldVerdict", 2);
+    await first.seat.claimFirst(read, { rung: 0 });
+    const second = await held.track(b.line.enter(key, PROBE_NEWCOMER_WAIT_MS));
+    const fellB = b.fellBack();
+    if (fellB) return unreachable("The second confirm", fellB);
+    if (second.kind !== "lead") {
+      return {
+        outcome: "start-not-handed",
+        detail: `The second confirm, arriving after the first claimed one of two advisors, was given ${describe(second)} rather than the lead, so there was no second claim to hold a verdict over`,
+      };
+    }
+    const follower = held.track(c.line.enter(key, PROBE_FOLLOWER_WAIT_MS));
+    const entered = await followerEntered(c, follower);
+    const fellC = c.fellBack();
+    if (fellC) return unreachable("The third confirm", fellC);
+    if (entered?.kind === "lead") {
+      return { outcome: "led-beside", detail: "The third confirm was given the lead while the second still held the line, so the line excluded nobody" };
+    }
+    const answered: { turn: Turn | null } = { turn: null };
+    void follower.then((t) => {
+      answered.turn = t;
+    });
+    await held.report(second, { full: true, refusal: "race", settled: verdictSettlement(run) }, "booked");
+    // The report's own two calls, the same allowance a verdict is given to reach a
+    // follower, so an object that answers C off the verdict has had every chance to.
+    await deps.sleep(VERDICT_REACHES_FOLLOWER_WITHIN_MS);
+    const fellEarly = c.fellBack();
+    if (fellEarly) return unreachable("The third confirm", fellEarly);
+    if (answered.turn !== null) {
+      return {
+        outcome: "verdict-not-held",
+        detail: `With the first confirm's claim still in flight, the second's full verdict answered the confirm waiting behind it at once (${describe(answered.turn)}) instead of holding it until that claim ended`,
+      };
+    }
+    const settlement = heldSettlement(run);
+    await held.report(first, { full: false }, "booked", settlement);
+    const turn = await follower;
+    const late = c.fellBack();
+    if (late) return unreachable("The third confirm", late);
+    if (turn.kind !== "refused" || turn.refusal !== "race") {
+      return {
+        outcome: "held-not-applied",
+        detail: `When the last claim in flight ended booked, the confirm the held full verdict was waiting for was given ${describe(turn)} rather than refused, so a crowd behind a spent ladder reads it again for itself`,
+      };
+    }
+    if (JSON.stringify(turn.settled) !== JSON.stringify(settlement)) {
+      const stale = JSON.stringify(turn.settled) === JSON.stringify(verdictSettlement(run));
+      return {
+        outcome: "held-not-applied",
+        detail: stale
+          ? "The held verdict was applied with the settlement the verdict was reported with, not the one the last booking read as it ended, so a lead is told who sat at the time before the last booking"
+          : "The held verdict refused the waiting confirm, but the settlement the last booking read did not arrive intact",
+      };
+    }
+    return passed(
+      `With a claim still in flight, a full verdict was held: the confirm waiting behind it was answered neither way for ${VERDICT_REACHES_FOLLOWER_WITHIN_MS}ms, and was refused with the last booking's own settlement the moment that claim ended booked`,
+    );
+  } finally {
+    await held.releaseAll();
+  }
+}
+
+/**
+ * #3823 (#3489): A claims the first of four advisors and hands on, and B and K are each
+ * handed the next. A then reports its claim ended found busy and B reports its own
+ * untried, and a fourth confirm arrives: it must be handed B's advisor back, never A's.
+ *
+ * A reports busy WITHOUT first saying `trying`, deliberately: the line also takes an
+ * advisor off when a confirm that said `trying` ends without saying how, so with it an
+ * object that ignored the reported outcome would answer exactly like one that read it.
+ * Without it, the reported outcome is the only thing that can take A's advisor off.
+ * K stays in flight throughout so the line is never idle, which would drop its read.
+ */
+async function checkClaimOutcome(deps: ProbeRunDeps, key: LineKey, run: string): Promise<CheckResult> {
+  const a = participant(deps);
+  const held = holdings();
+  try {
+    const first = await firstLead(a, held, key);
+    if ("outcome" in first) return first;
+    const read = probeAdvisors(run, "claimOutcome", 4);
+    const [busy, untried, kept, last] = read as [string, string, string, string];
+    await first.seat.claimFirst(read, { rung: 0 });
+    /** A newcomer on the instant: its lead, or the result that ends the check. */
+    const arrive = async (who: string, want: StartFrom, claimed: readonly string[]): Promise<CheckResult | Turn> => {
+      const p = participant(deps);
+      const turn = await held.track(p.line.enter(key, PROBE_NEWCOMER_WAIT_MS));
+      const fell = p.fellBack();
+      if (fell) return unreachable(who, fell);
+      return judgeStart(who, turn, want, claimed) ?? turn;
+    };
+    const second = await arrive("The second confirm", { rung: 0, advisor: untried, read }, [busy]);
+    if ("outcome" in second) return second;
+    const third = await arrive("The third confirm", { rung: 0, advisor: kept, read }, [busy, untried]);
+    if ("outcome" in third) return third;
+    await held.report(first, { full: false }, "advisor-busy");
+    await held.report(second, { full: false }, "untried");
+    const p = participant(deps);
+    const fourth = await held.track(p.line.enter(key, PROBE_NEWCOMER_WAIT_MS));
+    const fell = p.fellBack();
+    if (fell) return unreachable("The confirm arriving after the two reports", fell);
+    if (fourth.kind === "lead" && fourth.start?.advisor === busy) {
+      return {
+        outcome: "busy-handed-again",
+        detail: "A confirm arriving after one claim was reported found busy was handed that same advisor, so the line would send the next lead to somebody already known to be unable to take the time",
+      };
+    }
+    if (fourth.kind === "lead" && fourth.start && fourth.start.advisor !== untried && !fourth.start.read.includes(untried)) {
+      return {
+        outcome: "untried-not-returned",
+        detail: "A confirm arriving after one claim was reported untried was not handed that advisor back, so somebody nobody asked about is lost to the line and a crowd can be turned away with an advisor free",
+      };
+    }
+    const wrong = judgeStart("The confirm arriving after the two reports", fourth, { rung: 0, advisor: untried, read: [untried, kept, last] }, [kept]);
+    if (wrong) return wrong;
+    return passed("After one claim was reported found busy and another untried, the next confirm was handed the untried advisor back, and the one found busy was never handed out again");
+  } finally {
+    await held.releaseAll();
+  }
+}
+
 async function checkNothingHeld(
   deps: ProbeRunDeps,
   keys: readonly LineKey[],
-  /** The instant `full` settled and the settlement it reported, which the line may remember (#3570). */
-  settledFull: { key: LineKey; settlement: unknown },
+  /**
+   * Each instant a full verdict settled and the settlement it was answered with, which the
+   * line may remember (#3570): `full`'s, and `heldVerdict`'s once its held verdict applied.
+   */
+  settledFull: readonly { key: LineKey; settlement: unknown }[],
 ): Promise<CheckResult> {
   // Never a pass over nothing (L98). Each check claims its instant before it starts, so
   // this would mean the probe changed shape, which is a fault in this file.
   if (keys.length === 0) return { outcome: "errored", detail: "No instant was used, so there was nothing to find held" };
+  const checkOf = (key: LineKey) => key.instant.slice(key.instant.lastIndexOf(":") + 1);
   const stillHeld: string[] = [];
-  let rememberedFull = false;
+  const rememberedOn: string[] = [];
   for (const key of keys) {
     const c = participant(deps);
     const held = holdings();
@@ -582,10 +839,9 @@ async function checkNothingHeld(
       if (fell) return unreachable("A newcomer after the checks", fell);
       const remembered =
         turn.kind === "refused" &&
-        key.instant === settledFull.key.instant &&
-        JSON.stringify(turn.settled) === JSON.stringify(settledFull.settlement);
-      if (remembered) rememberedFull = true;
-      if (turn.kind !== "lead" && !remembered) stillHeld.push(key.instant.slice(key.instant.lastIndexOf(":") + 1));
+        settledFull.some((s) => s.key.instant === key.instant && JSON.stringify(turn.settled) === JSON.stringify(s.settlement));
+      if (remembered) rememberedOn.push(checkOf(key));
+      if (turn.kind !== "lead" && !remembered) stillHeld.push(checkOf(key));
     } finally {
       await held.releaseAll();
     }
@@ -593,9 +849,9 @@ async function checkNothingHeld(
   if (stillHeld.length > 0) {
     return { outcome: "held", detail: `After the checks, the instant used by ${stillHeld.join(" and ")} was still held, so a newcomer there could not lead at once` };
   }
-  if (rememberedFull) {
+  if (rememberedOn.length > 0) {
     return passed(
-      `After the checks, nothing was held on any of the ${keys.length} instants they used: a newcomer led at once on each, except on full's, where the line still remembered full's verdict and refused it with full's own settlement`,
+      `After the checks, nothing was held on any of the ${keys.length} instants they used: a newcomer led at once on each, except on ${rememberedOn.join(" and ")}, where the line still remembered the full verdict that settled it and refused the newcomer with that verdict's own settlement`,
     );
   }
   return passed(`After the checks, a newcomer led at once on each of the ${keys.length} instants they used`);
@@ -855,10 +1111,20 @@ export async function runConfirmLineProbe(callerDeps: ConfirmLineProbeDeps): Pro
   const full = await guardedCheck(() => checkFull(deps, fullKey, run));
   const notFull = await guardedCheck(() => checkNotFull(deps, claim("notFull")));
   const abandoned = await guardedCheck(() => checkAbandoned(deps, claim("abandoned")));
-  const nothingHeld = await guardedCheck(() => checkNothingHeld(deps, used, { key: fullKey, settlement: fullSettlement(run) }));
+  // #3823: the ladder line's own behaviour, each on its own fresh instant like the rest.
+  const handedStart = await guardedCheck(() => checkHandedStart(deps, claim("handedStart"), run));
+  const heldKey = claim("heldVerdict");
+  const heldVerdict = await guardedCheck(() => checkHeldVerdict(deps, heldKey, run));
+  const claimOutcome = await guardedCheck(() => checkClaimOutcome(deps, claim("claimOutcome"), run));
+  const nothingHeld = await guardedCheck(() =>
+    checkNothingHeld(deps, used, [
+      { key: fullKey, settlement: fullSettlement(run) },
+      { key: heldKey, settlement: heldSettlement(run) },
+    ]),
+  );
   const directory = await guardedCheck(() => checkDirectory(deps, run));
   // Last, because it is the one that waits: the line checks and the live read are never
   // held behind its idle spells.
   const directoryWake = await guardedCheck(() => checkDirectoryWake(deps, run));
-  return { full, notFull, abandoned, nothingHeld, directory, directoryWake };
+  return { full, notFull, abandoned, handedStart, heldVerdict, claimOutcome, nothingHeld, directory, directoryWake };
 }
