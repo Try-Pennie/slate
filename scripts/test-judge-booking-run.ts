@@ -60,7 +60,7 @@ import {
   verdictText,
   expectBaselineFrom,
 } from "./loadtest/latency-bar.ts";
-import { REQUEST_CPU_P99_MS, REQUEST_STARTUP_P95_MS, faultPassCounts, faultPassReportLine } from "./loadtest/judge-booking-run.ts";
+import { REQUEST_CPU_P99_MS, REQUEST_STARTUP_MS, faultPassCounts, faultPassReportLine } from "./loadtest/judge-booking-run.ts";
 import {
   ceilingVerdict,
   exactAddressBound,
@@ -876,8 +876,29 @@ function slowRun(made = 100): JudgeInput {
   });
   assert(
     bars(slow).includes("confirm startup"),
-    `a cold start over the ${REQUEST_STARTUP_P95_MS}ms left of the latency bar is a finding`,
+    `a cold start over the ${REQUEST_STARTUP_MS}ms left of the latency bar is a finding`,
   );
+  // Dan, 2026-10-16: the bar holds EVERY cold confirm, as #3353 planned it. Read as a p95
+  // it meant the slowest at ten cold confirms and the second slowest at twenty two, so run
+  // 38933668981 passed with one cold confirm waiting 4562ms on a p95 of 1699ms.
+  const oneSlowOfMany = broken((i) => {
+    i.confirmStartup = startupReading([
+      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false })),
+      ...Array.from({ length: 21 }, () => ({ handlerMs: 900, beforeMs: 1_200, cold: true })),
+      { handlerMs: 900, beforeMs: 4_562, cold: true },
+    ]);
+  });
+  assert(oneSlowOfMany.measurements!.confirmColdStartup!.p95 < REQUEST_STARTUP_MS, "control: the cold p95 is under the bar");
+  assert(bars(oneSlowOfMany).includes("confirm startup"), "and one cold confirm over the bar still fails it, however many are under");
+  const oneDetail = oneSlowOfMany.findings.find((f) => f.bar === "confirm startup")!.detail;
+  assert(/slowest/.test(oneDetail) && /4562ms/.test(oneDetail), `and the finding names the slowest wait (got: ${oneDetail})`);
+  const allUnder = broken((i) => {
+    i.confirmStartup = startupReading([
+      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false })),
+      ...Array.from({ length: 22 }, () => ({ handlerMs: 900, beforeMs: 2_400, cold: true })),
+    ]);
+  });
+  assert(!bars(allUnder).includes("confirm startup"), "every cold confirm under the bar passes it");
   const slowDetail = slow.findings.find((f) => f.bar === "confirm startup")!.detail;
   assert(/cold isolate/.test(slowDetail), "and the detail says what a lead actually met");
   assert(

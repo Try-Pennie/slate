@@ -1063,7 +1063,7 @@ function lineSplitBody(cs: ConfirmStartupReading | null): string {
  * and by the load run leg that sent it, as one report line. A run's cold confirms come
  * from different places (a fresh deploy's first requests, the burst's crowd, the fault
  * leg's redeploy), and the startup bar's one figure cannot say which. The slowest cold
- * confirm is given because, at the handful of cold confirms a run has, it IS the p95.
+ * confirm is given because it is what the startup bar judges (#3824).
  */
 export function startupOriginText(cs: ConfirmStartupReading | null): string {
   const head = "- the wait before the profile, by origin";
@@ -1695,8 +1695,13 @@ export const REQUEST_CPU_P99_MS = Math.round(OK_P95_MS * REQUEST_CPU_LATENCY_SHA
  * max on the 32 confirms that cost over two seconds of CPU, against about 500ms on
  * the 409 that cost under half a second. The expensive ones were not doing more
  * confirm work; their stage profiles are the same shape.
+ *
+ * It holds EVERY cold confirm, the slowest included (Dan, 2026-10-16), as #3353 planned
+ * it. It used to be read as a p95, which is `s[floor(0.95 n)]`: the slowest at ten cold
+ * confirms, the second slowest at twenty two. Run 38933668981 passed on a cold p95 of
+ * 1699ms with one cold confirm waiting 4562ms.
  */
-export const REQUEST_STARTUP_P95_MS = OK_P95_MS - REQUEST_CPU_P99_MS;
+export const REQUEST_STARTUP_MS = OK_P95_MS - REQUEST_CPU_P99_MS;
 /**
  * The share of the scheduled CPU kill limit a cron tick may reach before the cron
  * half of the CPU bar fails (#2357).
@@ -2380,12 +2385,12 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
           : "A ten minute run spins up dozens of isolates, so zero is the shape of a reading that " +
             "broke rather than of a lucky run"),
     );
-  } else if (m.confirmColdStartup !== null && m.confirmColdStartup.p95 > REQUEST_STARTUP_P95_MS) {
+  } else if (m.confirmColdStartup !== null && m.confirmColdStartup.max > REQUEST_STARTUP_MS) {
     fail(
       "confirm startup",
-      `a lead landing on a cold isolate waited p95 ${m.confirmColdStartup.p95}ms (max ` +
-        `${m.confirmColdStartup.max}ms) before the confirm began, over the ` +
-        `${REQUEST_STARTUP_P95_MS}ms left of the ${OK_P95_MS}ms latency bar once the confirm's ` +
+      `the slowest lead landing on a cold isolate waited ${m.confirmColdStartup.max}ms (p95 ` +
+        `${m.confirmColdStartup.p95}ms) before the confirm began, over the ` +
+        `${REQUEST_STARTUP_MS}ms left of the ${OK_P95_MS}ms latency bar once the confirm's ` +
         `own share is taken out: ${cs.cold} of ${cs.samples} confirms here were their isolate's ` +
         `first request, by the Worker's own count, against ` +
         `${m.confirmWarmStartup === null ? "no" : `p95 ${m.confirmWarmStartup.p95}ms`} ` +
