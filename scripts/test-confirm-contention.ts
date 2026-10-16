@@ -374,6 +374,9 @@ async function burst(opts: {
                 now: () => clock.now,
                 timer: timerOnClock,
                 newId: () => `c${++ids}`,
+                // #3355 item 4: a give back runs on the simulation's clock with nothing to
+                // outlive; it never rejects, so it is left to finish.
+                keepAlive: () => {},
               }),
         ));
       }
