@@ -98,6 +98,13 @@ assert(Number.isFinite(timeoutMin), "the job declares an explicit timeout (L313)
     CONFIRM_LINE_EXIT.groupingUnusable,
     // #3481: asked after its sleep and answered without the grouping, a definite reading.
     CONFIRM_LINE_EXIT.directoryLostAfterIdle,
+    // #3823: the ladder line asked and answering wrongly, each a definite reading.
+    CONFIRM_LINE_EXIT.startNotHanded,
+    CONFIRM_LINE_EXIT.startWrong,
+    CONFIRM_LINE_EXIT.verdictNotHeld,
+    CONFIRM_LINE_EXIT.heldNotApplied,
+    CONFIRM_LINE_EXIT.busyHandedAgain,
+    CONFIRM_LINE_EXIT.untriedNotReturned,
   ];
   eq(
     [...CONCLUDING_EXITS].sort((a, b) => a - b).join(","),
