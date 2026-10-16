@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // The pure half, deliberately NOT mocked: the route's key shape is what these assert on.
 import { rateLimitKey, type CallerKey } from "@/lib/rate-limit-core";
 
@@ -145,6 +145,7 @@ vi.mock("@/lib/booking/confirm-line-live", () => prelude);
 
 import { POST } from "./route";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
+import { ROUTE_CHECK_STAGES } from "@/lib/booking/confirm-profile";
 import { deadlineWithinBudget } from "@/lib/call-budget";
 import { BOOKING_CONFIRM_BUDGET_MS } from "@/lib/booking/confirm-budget";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
@@ -1699,5 +1700,107 @@ describe("POST /booking through an agent's own link (#2073, #3026)", () => {
     const res = await post(LINK_BODY);
     expect(res.status).toBe(500);
     expect(service.createBooking).not.toHaveBeenCalled();
+  });
+});
+
+// #3493: the route's checks before the confirm (the edge limit, the pause flag, the
+// hourly cap, the body read, the contact caps, an advisor link) ran inside ONE span,
+// `route-checks`, so a confirm that spent 1.5s there could not say which check cost
+// it. Each now carries its own stage inside that span, named by ROUTE_CHECK_STAGES,
+// and the outer span stays, so every reader of `route-checks` reads what it did.
+describe("POST /booking times each of its checks (#3493)", () => {
+  // The clock is SET, never waited on (L290): only `Date` is faked, so the profile's
+  // reads see a check take exactly SLOW_MS while every timer runs as it always does.
+  const SLOW_MS = 40;
+  const slowly = async <T,>(value: T | Error): Promise<T> => {
+    vi.setSystemTime(Date.now() + SLOW_MS);
+    if (value instanceof Error) throw value;
+    return value;
+  };
+  const deadline = () => new DeadlineExceededError("supabase", 4000, { label: "the booking confirm", totalMs: 12_000 });
+  /** The `confirm answered` line's stages, as name to [ms, runs]. */
+  function stagesOf(line: string): Map<string, [number, number]> {
+    const raw = /stages="([^"]*)"/.exec(line)?.[1];
+    expect(raw, `the line carries a profile: ${line}`).toBeTypeOf("string");
+    const out = new Map<string, [number, number]>();
+    for (const token of raw!.split(",")) {
+      const m = /^(.+):(\d+)\/(\d+)$/.exec(token);
+      expect(m, `a readable stage token: ${token}`).not.toBeNull();
+      out.set(m![1]!, [Number(m![2]), Number(m![3])]);
+    }
+    return out;
+  }
+  async function answeredLine(body: unknown): Promise<{ status: number; line: string }> {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await post(body);
+      const lines = info.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes('msg="confirm answered"'));
+      expect(lines).toHaveLength(1);
+      return { status: res.status, line: lines[0]! };
+    } finally {
+      info.mockRestore();
+      error.mockRestore();
+    }
+  }
+
+  afterEach(() => vi.useRealTimers());
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    rateLimit.allowRequest.mockReset();
+    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.bookingWithinLimit.mockResolvedValue(true);
+    rateLimit.refundRequest.mockClear();
+    bookingSettings.readPublicBookingPaused.mockResolvedValue(false);
+    service.createBooking.mockReset();
+    service.pageBookingFailure.mockClear();
+    // The confirm runs out of time, so its line carries the profile (#3300).
+    service.createBooking.mockRejectedValue(
+      Object.assign(new service.VerifyUnavailableError("try again"), { cause: deadline() }),
+    );
+  });
+
+  it("charges each check its own stage inside route-checks, the slow one included", async () => {
+    bookingSettings.readPublicBookingPaused.mockImplementationOnce(() => slowly<boolean | null>(false));
+    const { status, line } = await answeredLine(VALID_BODY);
+    expect(status).toBe(503);
+    const stages = stagesOf(line);
+    expect(stages.get("route-checks")?.[1]).toBe(1);
+    expect(stages.get(ROUTE_CHECK_STAGES.edgeLimit)?.[1]).toBe(1);
+    expect(stages.get(ROUTE_CHECK_STAGES.pauseFlag)?.[1]).toBe(1);
+    expect(stages.get(ROUTE_CHECK_STAGES.hourlyCap)?.[1]).toBe(1);
+    expect(stages.get(ROUTE_CHECK_STAGES.bodyRead)?.[1]).toBe(1);
+    // One cap per contact key, the email and the phone, each its own run.
+    expect(stages.get(ROUTE_CHECK_STAGES.contactCap)?.[1]).toBe(2);
+    // No advisor link was posted, so none was read and none is claimed.
+    expect(stages.has(ROUTE_CHECK_STAGES.agentLink)).toBe(false);
+    // The slow read is charged to the pause flag, and not to the check after it.
+    const [pauseMs] = stages.get(ROUTE_CHECK_STAGES.pauseFlag)!;
+    expect(pauseMs).toBe(SLOW_MS);
+    expect(stages.get(ROUTE_CHECK_STAGES.hourlyCap)![0]).toBe(0);
+    // Inside the outer span, never past it.
+    expect(stages.get("route-checks")![0]).toBeGreaterThanOrEqual(pauseMs);
+  });
+
+  it("still charges a check that THREW for the time it spent, and times nothing after it", async () => {
+    rateLimit.allowRequest.mockImplementationOnce(() => slowly<boolean>(deadline()));
+    const { status, line } = await answeredLine(VALID_BODY);
+    expect(status).toBe(503);
+    expect(line).toContain("timed_out=true");
+    const stages = stagesOf(line);
+    expect(stages.get(ROUTE_CHECK_STAGES.hourlyCap)?.[1]).toBe(1);
+    expect(stages.get(ROUTE_CHECK_STAGES.hourlyCap)![0]).toBe(SLOW_MS);
+    expect(stages.has(ROUTE_CHECK_STAGES.bodyRead)).toBe(false);
+    expect(stages.has(ROUTE_CHECK_STAGES.contactCap)).toBe(false);
+  });
+
+  it("times an advisor link read, and charges it when the read fails", async () => {
+    agentLinkStore.resolveAgentLink.mockImplementationOnce(() => slowly(deadline()));
+    const { bucketCode: _code, ...noBucket } = VALID_BODY;
+    const { status, line } = await answeredLine({ ...noBucket, agentLink: "rdaboub", prefill: {} });
+    expect(status).toBe(503);
+    const stages = stagesOf(line);
+    expect(stages.get(ROUTE_CHECK_STAGES.agentLink)?.[1]).toBe(1);
+    expect(stages.get(ROUTE_CHECK_STAGES.agentLink)![0]).toBe(SLOW_MS);
   });
 });
