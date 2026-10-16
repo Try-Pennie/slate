@@ -2856,6 +2856,10 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   assert(/1 missing/.test(text), `a traced confirm whose calls never arrived is named, not dropped (got: ${text})`);
   assert(/warm 4 of 4 traced/.test(text), `and the warm side on its own (got: ${text})`);
   assert(/2 object calls matched no confirm/.test(text), `and calls whose confirm is not in the archive are counted (got: ${text})`);
+  // #3815: where the line calls came from, and how many, is said on the line itself.
+  const sourced = lineSplitText(base, "line calls read from the stored logs: 1812, where the live tail caught 470");
+  assert(sourced.endsWith("; line calls read from the stored logs: 1812, where the live tail caught 470"), `the source and coverage close the line (got: ${sourced})`);
+  assert(!/stored logs/.test(lineSplitText(base)), "and nothing is claimed when no source was given");
 
   // #3781: the object logs to its own Worker, so a run whose line Worker log was not
   // archived says that is why its confirms are missing, rather than a bare count.
