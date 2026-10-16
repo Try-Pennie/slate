@@ -1580,9 +1580,15 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       }
       // Whether or not its record stored, as recordRoutingDecision always did: a lost
       // record must never also silence a misroute page.
-      // #3266: after the lead's answer on their request; alertIfMisroute records its
-      // own failed send.
-      if (routing) await pageAfterAnswer(deferPage, "misroute-page", () => alertIfMisroute(routing));
+      // #3266: after the lead's answer on their request. alertIfMisroute catches its
+      // own failed send; the catch here also covers anything thrown before it sends,
+      // so a failure is an error line by its key rather than afterResponse's warning.
+      if (routing) {
+        const misrouteKey = `misroute:${routing.bucketCode}`;
+        await pageAfterAnswer(deferPage, "misroute-page", () =>
+          alertIfMisroute(routing).catch(logAlertSendFailure(misrouteKey)),
+        );
+      }
       // An unbuilt webhook failed its step, so the reader has already refused any
       // deliveries beside it (`readCommitAnswer`); the check here is the type's.
       if (answer.enqueue && !("unbuilt" in webhook)) {

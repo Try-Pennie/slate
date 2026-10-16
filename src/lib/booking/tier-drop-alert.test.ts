@@ -26,6 +26,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   },
 }));
 
+import { log } from "@/lib/log";
 import {
   createBooking,
   RaceLostRefusalError,
@@ -286,7 +287,12 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps & Commi
 
 // ---- tests -------------------------------------------------------------------
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // An implementation set by one test (a Slack that never answers, one that throws)
+  // must not leak into the next, which clearAllMocks alone does not undo.
+  dispatch.sendThrottledAlert.mockImplementation(async () => {});
+});
 
 describe("tier-drop alert dispatch", () => {
   it("dispatches 'tier_fallback_deep:<requestedCode>' when a High lead drops two debt tiers", async () => {
@@ -318,11 +324,9 @@ describe("tier-drop alert dispatch", () => {
     // A Slack that never answers: awaited in front of the answer, it would hang.
     dispatch.sendThrottledAlert.mockImplementation(() => new Promise(() => {}));
 
-    const answered = await Promise.race([
-      createBooking({ ...tierDropInput, bucketCode: "311" }, deps).then(() => true),
-      new Promise<boolean>((r) => setTimeout(() => r(false), 200)),
-    ]);
-    expect(answered).toBe(true);
+    // Awaited directly: had the answer waited on that page it would never settle
+    // and the test would fail on its timeout, with no timer guess about load (L290).
+    await createBooking({ ...tierDropInput, bucketCode: "311" }, deps);
     expect(dispatch.sendThrottledAlert.mock.calls.filter(([key]) => String(key).startsWith("tier_fallback"))).toHaveLength(0);
 
     const page = deferred.filter((d) => d.context === "tier-fallback-page");
@@ -340,10 +344,16 @@ describe("tier-drop alert dispatch", () => {
     dispatch.sendThrottledAlert.mockImplementation(async () => {
       throw new Error("slack did not answer");
     });
+    const logged = vi.spyOn(log, "error");
     await createBooking({ ...tierDropInput, bucketCode: "311" }, deps);
     expect(deferred).toHaveLength(1);
     await expect(deferred[0]()).resolves.toBeUndefined();
-    dispatch.sendThrottledAlert.mockImplementation(async () => {});
+    expect(logged).toHaveBeenCalledWith(
+      "alert-dispatch",
+      { msg: "alert send failed", key: "tier_fallback_deep:311" },
+      expect.any(Error),
+    );
+    logged.mockRestore();
   });
 
   // 2026-10-02: a single tier drop is the ladder working as designed (sales ops:

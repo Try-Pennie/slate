@@ -64,9 +64,14 @@ import type { BusyBlockInsert } from "@/lib/booking/core";
  *  marks them as answering somebody who is waiting. */
 const leadFacing = () => realDeps(() => {});
 
-/** Whether `p` settles before a page that never answers could. */
+/**
+ * Await the answer itself. Every page here is a promise that never settles, so an
+ * answer that still waited on one never settles either and the test fails on its
+ * timeout: a wait on the condition, never a fixed timer guess about load (L290).
+ */
 async function answersWithoutWaiting(p: Promise<unknown>): Promise<boolean> {
-  return Promise.race([p.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 50))]);
+  await p;
+  return true;
 }
 
 const booking = {
@@ -124,6 +129,17 @@ describe("a fresh booking's save on a lead's request (#3266)", () => {
     rpcResult = committed({ busy: "planted move refusal" });
     await answersWithoutWaiting(leadFacing().commitFreshBooking(req));
     expect(logged.some((l) => l.level === "error" && l.fields.msg === "busy_blocks move failed")).toBe(true);
+  });
+
+  it("a misroute check that throws after the response is logged as an error by its key, never dropped", async () => {
+    rpcResult = committed({});
+    alertIfMisroute.mockImplementation(async () => {
+      throw new Error("alert_state read refused");
+    });
+    await leadFacing().commitFreshBooking(req);
+    const page = deferred.find((d) => d.context === "misroute-page");
+    await expect(page?.work()).resolves.toBeUndefined();
+    expect(logged).toContainEqual({ level: "error", fields: { msg: "alert send failed", key: "misroute:100" } });
   });
 
   it("a page that fails to send after the response is logged as an error by its key, never dropped", async () => {
