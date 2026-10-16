@@ -156,6 +156,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "back with a result, which the lane measures every five minutes (#3424).",
   },
   {
+    key: "outbox_drain_failing",
+    kind: "condition",
+    why:
+      "The booking outbox drain on the outbox lane is throwing, so a booking's unfinished " +
+      "follow up (calendar invite, Regal webhook) is not retried. It ends when a run " +
+      "comes back with a result, which the lane measures every minute (#3846).",
+  },
+  {
     key: "reservation_drain_failing",
     kind: "condition",
     why:
@@ -470,6 +478,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "A signed in Sales hire with a syncing calendar sits outside the pool with no " +
       "pending activation and no recorded hold; it ends when they are made bookable " +
       "or a hold is recorded, and the monitor lane re-reads the roster every pass (#2481).",
+  },
+  {
+    key: "ladder_advisor_unreadable",
+    kind: "condition",
+    why:
+      "A bookable advisor has a row the confirm's ladder read cannot read, so every confirm " +
+      "leaves them out; it ends when the row is corrected, and the monitor lane asks the same " +
+      "reader every pass and clears only off a read that answered and left nobody out (#3530).",
   },
   {
     key: "schedule_parity_drift",

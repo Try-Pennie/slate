@@ -196,6 +196,17 @@ rung's, the share rows and the business hours. Each rung is still judged by
 is read on its own and logged. The verdicts the load model gives for the stack, burst
 by burst, are asserted in `test-confirm-contention.ts` against the judge's bar.
 
+Two limits on that one read (#3530). It is never trusted past `LADDER_READ_MAX_AGE_MS`
+(two seconds, a quarter of a live check's deadline): a rung judged after the walk has
+spent that long on the live checks above it is judged from a fresh read (stage
+`ladder-reread`), so a lower rung never offers somebody who was booked to their cap, held
+or made unbookable while the rungs above were being asked; a re-read that fails fails the
+confirm, never falls back to the stale one. And one advisor's unreadable row no longer
+fails every ladder: the reader drops that advisor WHOLE (never just the row, which could
+make them look free), logs it on every read (`tag=ladder-inputs`) and the monitor lane
+pages it (`ladder_advisor_unreadable`). A row naming nobody, or an org wide row, still
+fails the read.
+
 ## Where the code is
 
 | piece | file |
@@ -523,8 +534,11 @@ back sent without waiting and kept alive, and a failed lookahead counted in `lin
 queue suite (release, walk, park, held verdict, a walk that stands), the object suite
 and the client suite (each field on the wire, an older peer's absence of it), and the
 contention suite end to end (the burst bar under the load model, a walk read once). The
-ladder read: `test-ladder-inputs.ts` (the reader refuses every unreadable section, the
-windows), `src/lib/availability/ladder-reads.test.ts` (the same candidates, in the same
+ladder read: `test-ladder-inputs.ts` (the reader refuses every unreadable section, drops
+one advisor's unreadable row as that whole advisor and nobody else, the windows),
+`test-ladder-read-staleness.ts` (a walk that outlived its read re-reads before the next
+rung, a quick one does not, a failed re-read books nobody),
+`test-ladder-dropped-advisors.ts` (the page, and its all clear only off a clean read), `src/lib/availability/ladder-reads.test.ts` (the same candidates, in the same
 order, with no reads, as the live reads), and `verify-ladder-candidate-inputs-sql.ts`
 (each section against the read it replaces, in a real Postgres).
 

@@ -82,6 +82,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   demo_auto_cancel_failing: "a-lane-or-schedule-has-gone-quiet",
   // #3077. The same family on the outbox lane.
   reservation_drain_failing: "a-lane-or-schedule-has-gone-quiet",
+  // #3846. The outbox drain itself, the lane's primary job.
+  outbox_drain_failing: "a-lane-or-schedule-has-gone-quiet",
   reschedule_pin_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
   reassign_intent_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
   // #3485. The same family for the hourly coverage-reassignment retry.
@@ -307,6 +309,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #2481. The waiting page's twin for the rows that lost their mark, so the same
   // family and the same first question.
   agents_stranded_outside_pool: "the-roster-or-routing-data-is-wrong",
+  // #3530. A bookable advisor every confirm leaves out because a row of theirs cannot
+  // be read: a roster record to correct, so the same family and the same first question.
+  ladder_advisor_unreadable: "the-roster-or-routing-data-is-wrong",
   // #2090. The finding is about a roster row (somebody working who is not in the
   // pool), and the first question is the same one: is this person meant to be
   // taking calls, and what does the roster say about them.
