@@ -29,7 +29,7 @@
 //     NEITHER side, and counted as such.
 //
 // Run: node --experimental-strip-types scripts/test-confirm-startup.ts
-import { readConfirmStartup, readDeferredSpans } from "./loadtest/confirm-startup.ts";
+import { readConfirmStartup, readLineTailFile, readDeferredSpans } from "./loadtest/confirm-startup.ts";
 import { formatLine } from "../src/lib/log.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -878,6 +878,56 @@ function entryStampOf(c: (typeof RUN_37520312761_STAMP_COLD)[number]): number {
   ].join("\n");
   const c = readConfirmStartup(archive)!.lineSplit.cold;
   eq(`${c.traced} ${c.unreadable} ${c.missing} ${c.joined}`, "1 1 0 0", "a call with no wall time makes the confirm unreadable, never missing and never a reading");
+}
+
+// --- #3781: the object's calls arrive in the LINE Worker's own log ---------------------
+// Since #3500 the object runs in its own Worker (`slate-confirm-line-loadtest`), so its
+// traced calls are written to THAT Worker's tail and never to the app Worker's. The
+// fixtures above put both in one archive, which is the shape the reader assumed and
+// the run never produced (L52): run 41 joined 0 of 537 traced confirms.
+{
+  const appArchive = [
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, index: 0, answer: { line: "shared", line_trace: "la", wait_line_ms: 600 } }),
+  ].join("\n");
+  const lineArchive = [
+    objectLine({ eventTimestamp: 100, wallTime: 40, op: "enter", trace: "la", stage: "wait" }),
+    objectLine({ eventTimestamp: 200, wallTime: 300, op: "poll", trace: "la", stage: "wait" }),
+    "{ not json",
+  ].join("\n");
+  const without = readConfirmStartup(appArchive)!;
+  eq(`${without.lineSplit.cold.missing} ${without.lineSplit.lineLog}`, "1 absent", "control: the app Worker's log alone holds none of the object's calls, and says the line log was absent");
+  const r = readConfirmStartup(appArchive, { lineArchive })!;
+  const c = r.lineSplit.cold;
+  eq(`${c.traced} ${c.joined} ${c.missing}`, "1 1 0", "read beside the line Worker's log, the confirm joins its calls");
+  eq(`${c.heldMs.join(",")} ${c.objectMs.join(",")} ${c.outsideMs.join(",")}`, "300 40 260", "and its wait splits from them");
+  eq(r.lineSplit.lineLog, "read", "the line log is named as read");
+  eq(r.lineSplit.lineUnparsable, 1, "an unreadable line in the line Worker's log is counted there");
+  eq(r.unparsable, 0, "and never charged to the app Worker's archive, whose own count it would misstate (L11)");
+  eq(r.samples, 1, "the line Worker's log adds no confirm samples");
+}
+
+{
+  // #3781: the archive step creates `line-tail.jsonl` before the tail connects, so an
+  // EMPTY file is a tail that caught nothing, which is not a log that was read (L98).
+  const appArchive = tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, index: 0, answer: { line: "shared", line_trace: "le", wait_line_ms: 600 } });
+  eq(readConfirmStartup(appArchive, { lineArchive: "" })!.lineSplit.lineLog, "empty", "an empty line log is named as empty, never as read");
+  eq(readConfirmStartup(appArchive, { lineArchive: "{ half" })!.lineSplit.lineLog, "empty", "and so is one holding only unreadable lines");
+  eq(readConfirmStartup(appArchive, { lineArchive: null })!.lineSplit.lineLog, "unreadable", "a file that was there and could not be read is unreadable, never absent (L11)");
+}
+
+{
+  // #3781: how the judge reads `line-tail.jsonl`. A file that never arrived is
+  // undefined, one that is there and could not be read is null, and they are told
+  // apart so the report never says "not archived" about a file that was (L11).
+  const notes: string[] = [];
+  const refusedWith = (code: string) => () => {
+    throw Object.assign(new Error(`${code}: boom`), { code });
+  };
+  eq(readLineTailFile(() => "{}\n", (n) => notes.push(n)), "{}\n", "a readable file is its text");
+  eq(readLineTailFile(refusedWith("ENOENT"), (n) => notes.push(n)), undefined, "a file that never arrived is undefined");
+  eq(notes.length, 0, "and says nothing, since absent is a state the report names");
+  eq(readLineTailFile(refusedWith("EISDIR"), (n) => notes.push(n)), null, "a file that could not be read is null, never undefined");
+  assert(notes.length === 1 && notes[0]!.includes("EISDIR"), `and its cause is printed (got ${JSON.stringify(notes)})`);
 }
 
 // --- #3354: the wait before the profile, by script version and by leg -----------------

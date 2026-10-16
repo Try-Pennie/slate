@@ -964,6 +964,41 @@ export function confirmWallText(m: RunMeasurements, cs: ConfirmStartupReading | 
 }
 
 /**
+ * #3410: the report's closing note on subrequests, stating the mean it refers to from
+ * the same platform reading the judged bars use, or that it was not measured and why.
+ * The mean is printed only where the judge itself read the window as this run's: its
+ * invocation control calls a lagging window "about a different window", and a mean
+ * over that would be confident about the wrong thing.
+ * It used to say "this run's mean per invocation is above" on every run while no mean
+ * was printed anywhere, so it pointed a reader at a number that did not exist (L11).
+ */
+export function subrequestText(
+  p: PlatformReading,
+  /** The judge's own verdict on this reading, so a window it did not judge as this run's claims no mean. */
+  judged: { incomplete: boolean; platformUnmeasured: string | null },
+): string {
+  const why =
+    "Cloudflare exposes no PER INVOCATION maximum, which is what the 1000 subrequest ceiling is " +
+    "about, so the mean is reported and never made a bar; a breach arrives as an invocation " +
+    "status other than success, which IS judged (#2279).";
+  if (judged.incomplete) {
+    return `Subrequests: not reported, because the run was incomplete and the platform window was never judged against it. ${why}`;
+  }
+  if (judged.platformUnmeasured !== null) return `Subrequests: not measured (${judged.platformUnmeasured}). ${why}`;
+  if (p.subrequests === null || p.invocations === null) {
+    return `Subrequests: not measured (${p.unreadableWhy ?? "the platform window was not read"}). ${why}`;
+  }
+  if (p.invocations === 0) {
+    return `Subrequests: no invocation was counted in this run's window, so there is no mean. ${why}`;
+  }
+  const mean = (p.subrequests / p.invocations).toFixed(1);
+  return (
+    `Subrequests: ${mean} subrequests per invocation on average over this run's window ` +
+    `(${p.subrequests} over ${p.invocations} invocations). ${why}`
+  );
+}
+
+/**
  * #3354: the shared line's wait, split by the object's own log of the calls each
  * confirm sent while it waited (`confirm-startup.ts`, `LineSplit`), as one report line.
  * A report line, never a bar: it says whether a line wait is time behind a leader,
@@ -973,7 +1008,7 @@ export function confirmWallText(m: RunMeasurements, cs: ConfirmStartupReading | 
 export function lineSplitText(cs: ConfirmStartupReading | null): string {
   const head = "- the shared line's wait, by where it went";
   if (cs === null) return `${head}: the archived log was not read, so the line's wait was not split`;
-  const { cold, warm, orphanCalls } = cs.lineSplit;
+  const { cold, warm, orphanCalls, lineLog, lineUnparsable } = cs.lineSplit;
   if (cold.traced + warm.traced === 0) {
     return (
       `${head}: no confirm on the shared line carried a trace, so the line's wait was not split ` +
@@ -998,7 +1033,19 @@ export function lineSplitText(cs: ConfirmStartupReading | null): string {
   };
   return (
     `${head}: ${side("cold", cold)}; ${side("warm", warm)}` +
-    (orphanCalls > 0 ? `; ${orphanCalls} object calls matched no confirm in the archive` : "")
+    (orphanCalls > 0 ? `; ${orphanCalls} object calls matched no confirm in the archive` : "") +
+    // #3781: since #3500 the object logs to its own Worker, so without that Worker's
+    // log every confirm's calls are missing for one reason, which is named.
+    (lineLog === "absent" && cold.missing + warm.missing > 0
+      ? "; the line Worker's own log (line-tail.jsonl) was not archived, and the object logs its calls there"
+      : "") +
+    (lineLog === "empty" && cold.missing + warm.missing > 0
+      ? "; the line Worker's own log (line-tail.jsonl) was archived and held no invocation, so its tail caught nothing"
+      : "") +
+    (lineLog === "unreadable" && cold.missing + warm.missing > 0
+      ? "; the line Worker's own log (line-tail.jsonl) was archived and could not be read, so its calls were not looked for"
+      : "") +
+    (lineUnparsable > 0 ? `; ${lineUnparsable} lines of the line Worker's log not readable JSON` : "")
   );
 }
 

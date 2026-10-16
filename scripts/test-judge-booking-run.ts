@@ -25,6 +25,7 @@ import {
   waitSpanText,
   confirmWallText,
   lineSplitText,
+  subrequestText,
   startupOriginText,
   coldAfterDeployText,
   resentText,
@@ -2800,6 +2801,31 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   assert(leg.includes(`by span isolate start p50 ${p.p50}ms, `), `the cold leg's spans lead with the isolate start (got: ${leg})`);
 }
 
+// --- #3410: the subrequest line states the mean it refers to ---------------------------
+// It used to say "this run's mean per invocation is above" on every run, and no mean
+// was printed anywhere above it, judged run or not (run 38833395446 among them). The
+// mean is printed only where the judge itself read the window as this run's.
+{
+  const judged = { incomplete: false, platformUnmeasured: null };
+  const reading = { invocations: 610, cpuMsP99: 40, subrequests: 52_000, statuses: { success: 610 }, cron: null };
+  const measured = subrequestText(reading, judged);
+  assert(measured.includes("85.2 subrequests per invocation"), `a judged window names its mean (got: ${measured})`);
+  assert(measured.includes("52000 over 610 invocations"), `and the two figures it came from (got: ${measured})`);
+  assert(!/is above/.test(measured), `and never points at a figure printed elsewhere (got: ${measured})`);
+  // The judge's control: a count far under what the run made is a window that had not
+  // caught up, so its numbers describe another window and no mean is claimed.
+  const lagging = subrequestText({ ...reading, invocations: 12, subrequests: 900 }, { incomplete: false, platformUnmeasured: "the analytics API counted 12 invocations against the 610 this run made, so its CPU and subrequest numbers are about a different window" });
+  assert(/not measured \(the analytics API counted 12 invocations/.test(lagging), `a window the judge called unmeasured claims no mean (got: ${lagging})`);
+  assert(!/per invocation on average/.test(lagging), `even though both figures were read (got: ${lagging})`);
+  const incomplete = subrequestText(reading, { incomplete: true, platformUnmeasured: null });
+  assert(/the run was incomplete/.test(incomplete) && !/per invocation on average/.test(incomplete), `an incomplete run claims no mean either (got: ${incomplete})`);
+  const unread = subrequestText({ invocations: null, cpuMsP99: null, subrequests: null, statuses: null, cron: null, unreadableWhy: "no Cloudflare credentials on this runner" }, judged);
+  assert(/not measured \(no Cloudflare credentials on this runner\)/.test(unread), `an unread window says the mean was not measured, and why (got: ${unread})`);
+  const none = subrequestText({ invocations: 0, cpuMsP99: null, subrequests: 0, statuses: {}, cron: null }, judged);
+  assert(/no invocation was counted/.test(none), `a window with no invocation has no mean, said as such rather than 0 or NaN (got: ${none})`);
+  for (const t of [measured, lagging, incomplete, unread, none]) assert(/1000 subrequest ceiling/.test(t), `every branch says why the mean is never a bar (got: ${t})`);
+}
+
 // --- #3354: the shared line's wait, split by the object's own log of its calls --------
 {
   const base = startupReading([{ handlerMs: 900, beforeMs: 1_500, cold: true }])!;
@@ -2814,6 +2840,8 @@ const legAttempts = (i: JudgeInput, leg: number) =>
       cold: split({ traced: 3, joined: 2, missing: 1, heldMs: [700, 100], objectMs: [50, 30], outsideMs: [150, 400] }),
       warm: split({ traced: 4, joined: 4, impossible: 0, unreadable: 0, heldMs: [0, 0, 0, 10], objectMs: [15, 15, 15, 15], outsideMs: [85, 85, 90, 95] }),
       orphanCalls: 2,
+      lineLog: "read",
+      lineUnparsable: 0,
     },
   });
   assert(/cold 2 of 3 traced/.test(text), `the cold confirms joined, of those traced (got: ${text})`);
@@ -2828,6 +2856,20 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   assert(/1 missing/.test(text), `a traced confirm whose calls never arrived is named, not dropped (got: ${text})`);
   assert(/warm 4 of 4 traced/.test(text), `and the warm side on its own (got: ${text})`);
   assert(/2 object calls matched no confirm/.test(text), `and calls whose confirm is not in the archive are counted (got: ${text})`);
+
+  // #3781: the object logs to its own Worker, so a run whose line Worker log was not
+  // archived says that is why its confirms are missing, rather than a bare count.
+  const absent = lineSplitText({ ...base, lineSplit: { cold: split({ traced: 2, missing: 2 }), warm: split({}), orphanCalls: 0, lineLog: "absent", lineUnparsable: 0 } });
+  assert(/line Worker's own log \(line-tail\.jsonl\) was not archived/.test(absent), `a missing line log is named as the reason (got: ${absent})`);
+  const read = lineSplitText({ ...base, lineSplit: { cold: split({ traced: 2, joined: 2, heldMs: [1, 2], objectMs: [1, 2], outsideMs: [1, 2] }), warm: split({}), orphanCalls: 0, lineLog: "read", lineUnparsable: 3 } });
+  assert(!/not archived/.test(read), `a read line log is not called missing (got: ${read})`);
+  assert(/3 lines of the line Worker's log not readable JSON/.test(read), `and its unreadable lines are counted (got: ${read})`);
+  const empty = lineSplitText({ ...base, lineSplit: { cold: split({ traced: 2, missing: 2 }), warm: split({}), orphanCalls: 0, lineLog: "empty", lineUnparsable: 0 } });
+  assert(/line Worker's own log \(line-tail\.jsonl\) was archived and held no invocation/.test(empty), `an empty line log is named as the reason (got: ${empty})`);
+  // An archived file the judge could not read is not one that was never archived (L11).
+  const unreadable = lineSplitText({ ...base, lineSplit: { cold: split({ traced: 2, missing: 2 }), warm: split({}), orphanCalls: 0, lineLog: "unreadable", lineUnparsable: 0 } });
+  assert(/line Worker's own log \(line-tail\.jsonl\) was archived and could not be read/.test(unreadable), `an unreadable line log is named apart from an absent one (got: ${unreadable})`);
+  assert(!/not archived/.test(unreadable), `and never called not archived (got: ${unreadable})`);
 }
 
 // --- #3354: the wait before the profile, by the version that served it and by leg -----

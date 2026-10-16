@@ -22,6 +22,8 @@ import {
 import { ceilingVerdict, exactAddressBound, type CeilingVerdict } from "./preflight-checks.ts";
 import {
   readConfirmStartup,
+  LINE_TAIL_FILE,
+  readLineTailFile,
   readDeferredSpans,
   type ConfirmStartupReading,
   type DeferredSpanReading,
@@ -41,6 +43,7 @@ import {
   waitSpanText,
   startupOriginText,
   lineSplitText,
+  subrequestText,
   coldAfterDeployText,
   resentText,
   burstLegGroups,
@@ -430,7 +433,10 @@ let archiveScheduled: ScheduledReading | null = null;
 let deferred: Record<string, DeferredSpanReading> | null = null;
 try {
   const archive = readFileSync(join(RESULTS, "tail.jsonl"), "utf8");
-  confirmStartup = readConfirmStartup(archive);
+  // #3781: the line object's calls are in its own Worker's tail, archived beside the
+  // app's. Absent, the line split names that as why its confirms are missing.
+  const lineArchive = readLineTailFile(() => readFileSync(join(RESULTS, LINE_TAIL_FILE), "utf8"), (text) => console.error(text));
+  confirmStartup = readConfirmStartup(archive, { lineArchive });
   archiveScheduled = readScheduledFromArchive(archive);
   deferred = readDeferredSpans(archive);
 } catch {
@@ -848,13 +854,7 @@ if (result.burstsUnconcluded.length > 0) {
   for (const f of result.burstsUnconcluded) lines.push(`- **${f.bar}**: ${f.detail}`);
 }
 lines.push("");
-lines.push(
-  "Subrequests ARE counted: `sum { subrequests }` is a field, and this run's mean per invocation " +
-    "is above. What Cloudflare does not expose is a PER INVOCATION maximum, which is what the 1000 " +
-    "subrequest ceiling is about, so the mean is reported and never made a bar. A breach arrives as " +
-    "an invocation status other than success, which IS judged. The previous wording here said no " +
-    "counter existed at all, which was wrong (#2279).",
-);
+lines.push(subrequestText(platform, { incomplete: result.verdict === "incomplete", platformUnmeasured: result.platformUnmeasured }));
 
 mkdirSync(dirname(REPORT), { recursive: true });
 writeFileSync(REPORT, lines.join("\n") + "\n", "utf8");
