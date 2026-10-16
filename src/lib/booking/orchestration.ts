@@ -1031,6 +1031,14 @@ export interface BookingResult {
    * lost race only when this is set, so one race is never counted twice.
    */
   newlyInserted?: true;
+  /**
+   * #3267: the booking committed and the work after its save did not finish, so the
+   * answer is the booking and the reservation drain finishes the rest
+   * (`answerCommitted`). The route counts it in the tally beside `created`, and the
+   * monitor lane pages on the share (`follow-up-drain-rate.ts`). Absent when all of
+   * the work landed.
+   */
+  followUpLeftToDrain?: true;
 }
 
 /**
@@ -5933,8 +5941,11 @@ interface CompletedReservation {
 
 /**
  * A lead's confirm answering a booking that committed (#3263), whatever became
- * of the work after it. The cut off work is logged, never paged: the drain
- * finishes it, and pages through its own stuck alert if it cannot.
+ * of the work after it. The cut off work is logged and never paged one by one: the
+ * drain finishes it, and pages through its own stuck alert if it cannot. Since
+ * #3267 the answer also SAYS so, and the route counts it, because one such confirm
+ * is the drain doing its job and a wave of them is an outage in the confirm path
+ * that answered every lead in it (L77): the monitor lane pages on the share.
  */
 function answerCommitted(completed: CompletedReservation): BookingResult {
   if (completed.unfinished !== null) {
@@ -5946,6 +5957,7 @@ function answerCommitted(completed: CompletedReservation): BookingResult {
       },
       completed.unfinished,
     );
+    return { ...completed.result, followUpLeftToDrain: true };
   }
   return completed.result;
 }
@@ -6582,6 +6594,9 @@ export interface ApiBookingResult {
    * the route counts the `RaceLostRefusalError` itself, so it is counted once.
    */
   raceOutcome?: RaceTallyOutcome;
+  /** #3267: on the create arm, the confirm answered the booking and left the work
+   *  after its save to the reservation drain (`BookingResult.followUpLeftToDrain`). */
+  followUpLeftToDrain?: true;
 }
 
 // Machine-to-machine rebooking reason; recorded on the reschedule history row.
@@ -6976,6 +6991,7 @@ async function bookViaApiDecided(
         booking: res.booking,
         manageUrl: res.manageUrl,
         ...raceField(raceOutcomeForConfirm(res)),
+        ...(res.followUpLeftToDrain ? { followUpLeftToDrain: true as const } : {}),
       },
       verdict,
     };

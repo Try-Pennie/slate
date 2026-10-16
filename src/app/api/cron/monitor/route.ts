@@ -182,9 +182,17 @@ import {
 import {
   loadRateState,
   saveRateState,
-  readTodayOutcomes,
+  readTodayMix,
+  outcomeReadingOf,
   readRefusedPeople,
+  type TodayMix,
 } from "@/lib/monitor/booking-failure-rate-store";
+import {
+  runFollowUpDrainCheck,
+  FOLLOW_UP_DRAIN_THRESHOLDS,
+  type FollowUpDrainResult,
+} from "@/lib/monitor/follow-up-drain-rate";
+import { loadFollowUpState, saveFollowUpState, followUpReadingOf } from "@/lib/monitor/follow-up-drain-rate-store";
 import {
   runAvailabilityTruthCheck,
   type TruthResult,
@@ -1625,6 +1633,13 @@ export async function GET(req: NextRequest) {
     // as a split; only a refused insert throws, and the step streak pages on that.
     await steps.run("pilot_settings", null, () => runPilotSettingsSampleLive(db, now));
 
+    // Today's counted tally, read at most ONCE a tick and shared by the failure share
+    // below and the follow up drain share (#3267), on a subrequest budget four cron
+    // lanes share. Not awaited here: each step awaits it inside its own boundary, so a
+    // failed read fails both steps and neither reads it as an empty day.
+    let todayMixRead: Promise<TodayMix> | null = null;
+    const todayMix = () => (todayMixRead ??= readTodayMix(now));
+
     // --- Customers failing to complete a booking (#1313) ---
     // The lagging half of the pair with #1315: this one sees customers already
     // being turned away. On 2026-08-06 cal.com refused 50+ confirms in about two
@@ -1656,7 +1671,7 @@ export async function GET(req: NextRequest) {
           nowMs: now,
           loadState: loadRateState,
           saveState: saveRateState,
-          readToday: () => readTodayOutcomes(now),
+          readToday: async () => outcomeReadingOf(await todayMix()),
           readRefusedPeople: (sinceMs) => readRefusedPeople(sinceMs, now),
           thresholds: FAILURE_RATE_THRESHOLDS,
           recent: SHIPPED_FAILURE_RATE_RECENT,
@@ -1675,6 +1690,50 @@ export async function GET(req: NextRequest) {
           onError: (context, err) =>
             log.error("monitor", { msg: "booking failure rate step failed", step: context }, err),
         }),
+    );
+
+    // --- Confirms leaving the work after their save to the drain (#3267) ---
+    //
+    // A confirm whose work after the booking committed is cut off still answers the
+    // booking (#3263), and the reservation drain finishes the rest. One is the drain
+    // doing its job; a wave is the confirm path failing every lead it answers, which
+    // nothing else reports (L77). The routes count each beside its created row, and
+    // this judges the share over the last hour, off the tally read the failure share
+    // above already made.
+    //
+    // Its own failure boundary (L73). A read or a write that fails throws, so the
+    // tick pages nothing and clears nothing.
+    // all-clear-proof: scripts/test-follow-up-drain-rate.ts - pins that a failed tally
+    // read, a failed state read and a failed state write each send NOTHING in either
+    // direction, that a first reading or a day rollover sends nothing, and that the
+    // all clear hangs only off a measured clean half hour, never off the hour's share
+    // dipping, so a quiet half hour clears nothing.
+    await steps.run<FollowUpDrainResult | null>("follow_up_drain_rate", null, () =>
+      runFollowUpDrainCheck({
+        nowMs: now,
+        readToday: async () => followUpReadingOf(await todayMix()),
+        loadState: loadFollowUpState,
+        saveState: saveFollowUpState,
+        thresholds: FOLLOW_UP_DRAIN_THRESHOLDS,
+        cooldownMs: cooldownMs.booking_follow_up_left_to_drain,
+        notify: (key, ms, text) => {
+          // alert-key: booking_follow_up_left_to_drain
+          // alert-text-ok: our own copy from follow-up-drain-rate.ts, built from
+          // measured counts; no error text can reach it.
+          return sendThrottledAlert(key, ms, text);
+        },
+        // alert-key: booking_follow_up_left_to_drain
+        resolve: (key, text) => resolveAlert(key, text),
+      }).then((result) => {
+        log.info("monitor", {
+          msg: "follow up drain rate",
+          status: result.status,
+          ...("verdict" in result
+            ? { verdict: result.verdict.status, confirms: result.verdict.confirms, left: result.verdict.left }
+            : { rebased: result.rebased }),
+        });
+        return result;
+      }),
     );
 
     // --- Is half a month's booking error budget spent (#3179)? ---

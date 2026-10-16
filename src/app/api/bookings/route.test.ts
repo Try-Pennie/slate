@@ -971,6 +971,14 @@ describe("POST /api/bookings: lost overlap races are counted (#2838)", () => {
     expect(outcomes()).toEqual([["created", null], ["race_reassigned", null]]);
   });
 
+  // #3267: the create arm's confirm that left the work after its save to the drain.
+  it("counts a created booking whose follow up work was left to the drain", async () => {
+    service.bookViaApi.mockResolvedValue({ ...result("created"), followUpLeftToDrain: true });
+    const res = await post("Bearer secret", VALID_BODY);
+    expect((await res.json()).outcome).toBe("created");
+    expect(outcomes()).toEqual([["created", null], ["follow_up_left_to_drain", null]]);
+  });
+
   it("counts only the race the service names, never one read off the booking's trace", async () => {
     // A same key replay still answers `created` and carries the earlier confirm's
     // trace. The service decides whether THIS call's insert made the booking

@@ -13,6 +13,7 @@
 
 import { DateTime } from "luxon";
 import type { HostClass } from "./offsite-origin.ts";
+import { FOLLOW_UP_LEFT_TO_DRAIN_OUTCOME } from "./follow-up-drain-rate.ts";
 
 /**
  * The zone whose calendar day the tally is KEYED by: a call is counted on its
@@ -189,6 +190,13 @@ export interface OutcomeMix {
    * Deliberately NOT folded into `total` or `outcomes`: see SELF_INFLICTED_REFUSALS.
    */
   refusals: RefusalCounts;
+  /**
+   * #3267: confirms that answered the booking and left the work after the save to
+   * the reservation drain (`follow_up_left_to_drain`), each also counted as `created`.
+   * Outside `total` for the same reason as the refusals: it is a second row about a
+   * confirm already counted, never an attempt of its own.
+   */
+  followUpLeftToDrain: number;
 }
 
 /** The jsonb shape the booking_api_outcome_mix RPC returns for a window. */
@@ -222,7 +230,8 @@ export function normalizeMix(raw: RawMix | null | undefined): OutcomeMix {
   const offsiteTotal = typeof raw?.offsite_total === "number" ? raw.offsite_total : null;
   const refusals = emptyRefusalCounts();
   for (const name of SELF_INFLICTED_REFUSALS) refusals[name] = byOutcome[name] ?? 0;
-  return { total, outcomes, errors, testTotal, offsiteTotal, refusals };
+  const followUpLeftToDrain = byOutcome[FOLLOW_UP_LEFT_TO_DRAIN_OUTCOME] ?? 0;
+  return { total, outcomes, errors, testTotal, offsiteTotal, refusals, followUpLeftToDrain };
 }
 
 /**

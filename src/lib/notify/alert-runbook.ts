@@ -150,6 +150,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   booking_failure_burst_ended: "the-booker-is-offering-nothing-or-too-little",
   // #3179. The same population as the hourly page, judged over the month.
   booking_budget: "the-booker-is-offering-nothing-or-too-little",
+  // #3267. A booking exists and the work after its save is waiting on the drain.
+  booking_follow_up_left_to_drain: "a-booking-side-effect-did-not-complete",
 
   // Slate is turning its own integration away (#1442, #1450, #1709). Its own
   // family rather than folded into the limiter one next door, because that

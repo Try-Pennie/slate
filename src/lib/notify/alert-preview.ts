@@ -202,6 +202,7 @@ import {
   formatMigrationDriftRecovery,
 } from "@/lib/monitor/migration-drift";
 import { catchallPageText, catchallClearText } from "@/lib/monitor/catchall-rate";
+import { formatFollowUpDrainPage, formatFollowUpDrainAllClear } from "@/lib/monitor/follow-up-drain-rate";
 import {
   formatFailureBurstEnded,
   formatFailureRateAlert,
@@ -1434,6 +1435,34 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the list is readable again",
     channel: "recovery",
     text: refusalAllClear.list,
+  },
+  {
+    // #3267. A slow save cutting several confirms off in one hour: measured healthy
+    // is zero of the 2,933 bookings in the week before this shipped.
+    key: "booking_follow_up_left_to_drain",
+    state: "a cluster of confirms left their work to the drain, over the share",
+    channel: "alert",
+    text: formatFollowUpDrainPage({ confirms: 22, left: 5, pct: 23 }, 60),
+  },
+  {
+    // The saturation trigger: under the confirm floor, most of a quiet hour's
+    // confirms leaving their work behind still reaches somebody (L139).
+    key: "booking_follow_up_left_to_drain",
+    state: "most of a quiet hour's confirms left their work to the drain",
+    channel: "alert",
+    text: formatFollowUpDrainPage({ confirms: 4, left: 3, pct: 75 }, 60),
+  },
+  {
+    key: "booking_follow_up_left_to_drain",
+    state: "a measured clean half hour, none left behind",
+    channel: "recovery",
+    text: formatFollowUpDrainAllClear({ attempts: 9, failures: 0 }, 30),
+  },
+  {
+    key: "booking_follow_up_left_to_drain",
+    state: "a measured clean half hour with one straggler",
+    channel: "recovery",
+    text: formatFollowUpDrainAllClear({ attempts: 24, failures: 1 }, 30),
   },
   {
     // #1908. Calibrated against the incumbent: cal.com's own catch-all runs at

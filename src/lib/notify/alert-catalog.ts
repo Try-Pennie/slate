@@ -597,6 +597,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Half of a month's booking error budget is spent, which stays true for the rest of the month unless traffic outgrows it; the monitor re-reads the month every 5 minutes, so a measured month back under half (in practice the first tick of the next one) ends it.",
   },
   {
+    // #3267. A CONDITION: confirms are answering the lead and leaving the work after
+    // their save to the reservation drain, which stays true while the confirm path
+    // is slow and ends when it is not. The monitor re-measures every 5 minutes, so it
+    // can say when it is over.
+    key: "booking_follow_up_left_to_drain",
+    kind: "condition",
+    why: "Confirms are leaving the work after their save to the reservation drain at a rate past what one slow save explains; it ends when the last 30 minutes hold a measured clean run of confirms, never when the hour's share merely dips under the line.",
+  },
+  {
     // #1908. A CONDITION: an upstream page has started building booking links
     // without a routing code, and it stays true until somebody fixes that page.
     // Whoever reads the page needs to know when it is over, and the monitor
