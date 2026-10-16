@@ -725,13 +725,14 @@ pnpm cf:build && npx wrangler deploy --env loadtest
 ```
 
 Before the FIRST deploy of a fresh setup, deploy the object workers the load test binds
-(#3500, #3555, #3512): `npx wrangler deploy -c wrangler.confirm-line.jsonc --env loadtest`,
-`npx wrangler deploy -c wrangler.burst-limiter.jsonc --env loadtest` and
-`npx wrangler deploy -c wrangler.token-holder.jsonc --env loadtest`. The load test
-Worker's `CONFIRM_LINE`, `BURST_LIMITER` and `TOKEN_HOLDER` name
+(#3500, #3555, #3512): `node --experimental-strip-types scripts/deploy-object-workers.ts --env loadtest`.
+The load test Worker's `CONFIRM_LINE`, `BURST_LIMITER` and `TOKEN_HOLDER` name
 `slate-confirm-line-loadtest`, `slate-burst-limiter-loadtest` and
 `slate-token-holder-loadtest` by script, so a Slate deployed without them has no object
-to reach. The run's arm job deploys them again when it redeploys; it is idempotent.
+to reach. The run's arm job runs the same script when it redeploys, and like the
+production deploy it deploys a Worker only when its bundle or config differs from the
+version serving (#3561), printing which it skipped and why, so an unchanged line object is
+not restarted between runs.
 
 ### Three refusals, and no one of them answers for the others
 

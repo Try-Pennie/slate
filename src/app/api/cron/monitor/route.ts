@@ -1823,6 +1823,7 @@ export async function GET(req: NextRequest) {
         reassigned_moves: window.reassignedMoves,
         refused: window.refused,
         refused_at_bound: window.refusedAtBound,
+        retried_for_budget: window.retriedForBudget,
         verdict: verdict.kind,
         threshold_source: threshold.basis.source,
         threshold_per_hour: threshold.perHour,

@@ -111,7 +111,7 @@ import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadli
 import { GoogleBreakerOpenError } from "../google/breaker.ts";
 import { isInvalidAttendeeEmailRefusal } from "../google/http-error.ts";
 import { AttendeeEmailRefusedError } from "./attendee-email-refused.ts";
-import { withinOwedCleanup } from "./cleanup-allowance.ts";
+import { withinLostRaceCleanup, withinOwedCleanup } from "./cleanup-allowance.ts";
 import { confirmLineWaitMs, type ClaimOutcome, type ClaimPlace, type ConfirmLine, type LeaderVerdict, type LineKey, type SharedSeat, type StartFrom } from "./confirm-queue.ts";
 import { codeLineGroup } from "./line-key.ts";
 import { budgetCovers, expectedCommitMs, type CommitCostLog } from "./commit-cost.ts";
@@ -389,6 +389,21 @@ export class DependencyTimeoutError extends VerifyUnavailableError {
     this.budget = found.budget;
     this.neededMs = found.neededMs;
     this.cause = cause;
+  }
+}
+
+/**
+ * #3442: the retryable timeout a confirm answers after LOSING the overlap race with
+ * nobody after it free on its rung and too little of its budget left to walk down
+ * the ladder (#3338). Every route answers it exactly as the timeout it is (a 503,
+ * the lead told to try again); it is named apart only so the routes can count it in
+ * the race tally (`RACE_RETRY_BUDGET_OUTCOME`), where it was missing, so the daily
+ * race whisper undercounted losers on exactly the days budgets ran tight.
+ */
+export class LostRaceOutOfTimeError extends DependencyTimeoutError {
+  constructor(found: DeadlineFound) {
+    super(found, null);
+    this.name = "LostRaceOutOfTimeError";
   }
 }
 
@@ -1672,7 +1687,10 @@ export interface BookingDeps {
    * THROWS when the write fails or matches no row, which stops the insert.
    */
   repinReservationEvent(id: string, fromClientId: string, toClientId: string): Promise<void>;
-  /** Pending reservations whose lease is free/expired, for the drain. */
+  /** Pending reservations whose lease is free/expired, for the drain, and old
+   *  enough that no live confirm can still be completing one (#3466). THROWS on a
+   *  failed read: an empty list is what a quiet table returns, so it may never
+   *  stand in for one that could not be read. */
   loadDrainableReservations(limit: number): Promise<BookingReservation[]>;
   /** Gated lease claim: the token if THIS call took it, null when another holder
    *  has it (drain vs inline guard). */
@@ -5592,7 +5610,7 @@ async function createHeld(
           needed_ms: neededMs,
           left_ms: leftMs,
         });
-        throw new DependencyTimeoutError({ label: "the tier below a lost race", timeoutMs: leftMs, budget: null, neededMs }, null);
+        throw new LostRaceOutOfTimeError({ label: "the tier below a lost race", timeoutMs: leftMs, budget: null, neededMs });
       }
       // #3462: the lost attempt is rolled back WHILE the walk asks the rungs below.
       // The two touch nothing in common (the walk never asks the advisor that lost),
@@ -5839,15 +5857,15 @@ interface CommitKnown {
  * booking.created dedupes on the booking id (`webhookDedupeKey`) so a re-run
  * emits nothing new), so running it inline once, or again from the reservation
  * drain after a crash, reaches the same end state without a duplicate block or a
- * double webhook. Returns the resolved bucket/eventType (or null) so the fresh
- * path can attach its best-effort routing log without a second resolve.
+ * double webhook. Returns the resolved bucket/eventType. THROWS when the bucket
+ * no longer resolves (#3516), since the webhook it owes cannot be built.
  */
 async function deliverCreatedSideEffects(
   deps: BookingDeps,
   booking: Booking,
   bookedCode: string,
   known?: CommitKnown,
-): Promise<{ bucket: Bucket; eventType: EventType } | null> {
+): Promise<{ bucket: Bucket; eventType: EventType }> {
   if (booking.assigned_user_id) {
     await deps.moveBusyBlock(
       booking.assigned_user_id,
@@ -5871,9 +5889,19 @@ async function deliverCreatedSideEffects(
     known && known.bucket.code === bookedCode
       ? { bucket: known.bucket, eventType: known.eventType }
       : await deps.resolveBucketByCode(bookedCode);
-  if (resolved) {
-    await fire(deps, "booking.created", booking, resolved.bucket, resolved.eventType);
+  if (!resolved) {
+    // #3516: booking.created cannot be built without the bucket, and it used to be
+    // skipped here in silence while the caller went on to delete the reservation,
+    // the only record that Regal was still owed it. Throwing keeps the reservation
+    // pending: the drain backs off with this as its last_error, and past
+    // DRAIN_ALERT_AFTER attempts it pages as `reservation_drain_stuck`. Since #3514
+    // the one call save leaves a reservation pending for exactly this reason
+    // (`unbuilt`), so this is the step that decides whether anybody hears of it.
+    throw new Error(
+      `booking ${booking.id} committed, but booking.created cannot be sent: the booked bucket ${bookedCode} no longer resolves. Regal has not been told about this booking`,
+    );
   }
+  await fire(deps, "booking.created", booking, resolved.bucket, resolved.eventType);
   return resolved;
 }
 
@@ -6204,10 +6232,13 @@ async function attemptReservation(
     // Genuinely unavailable: the event + reservation are owed a rollback, under
     // the cleanup allowance, since this failure can arrive with the confirm budget
     // spent (#3215). Handed back rather than run (#3462, `ReservationAttempt`).
+    // #3439: an allowance of its own while the confirm has one to spare, because
+    // the confirm goes on to the next advisor and may lose another race seconds
+    // later, when the request's one shared allowance would already have ended.
     return {
       kind: "lost",
       rollBack: () =>
-        withinOwedCleanup(async () => {
+        withinLostRaceCleanup(async () => {
           await compensateEvent(deps, reservation.pinned_agent_email, gcalEventId, null);
           await deps.deleteReservation(reservation.id);
         }),
@@ -7446,7 +7477,10 @@ export async function rescheduleBooking(
     // because the confirm budget ran out would otherwise have its release refused
     // at 0ms too, and the lead's retry would meet its own lock until the lease
     // expired. Only then: the allowance is opened once per request and shared, so
-    // a release after a success must not spend it before the route needs it.
+    // a release after a success must not spend it before the route needs it. The
+    // one cleanup that does not share it is a lost race's rollback in the middle of
+    // a confirm (#3439, `withinLostRaceCleanup`), which gets its own while the
+    // confirm budget can hold it, and so never opens the shared one early either.
     if (applied) await deps.releaseReschedule(booking.id);
     else await withinOwedCleanup(() => deps.releaseReschedule(booking.id));
   }

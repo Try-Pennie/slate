@@ -14,6 +14,7 @@ import type { ClaimRerouteHoldRefusal, RerouteSwapRefusal } from "@/lib/db/rerou
 import { loadCurrentAgentPicture } from "@/lib/availability/service";
 import { readLadderInputsLive } from "@/lib/availability/ladder-inputs-live";
 import { reportWriteFailure } from "@/lib/db/result";
+import { BOOKING_CONFIRM_WORST_CASE_MS } from "@/lib/booking/confirm-budget";
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { DEMO_BUCKET_CODE } from "@/lib/embed/public-test-bucket";
@@ -242,6 +243,26 @@ const OUTBOX_DRAIN_LIMIT = 50;
 // (RESERVATION_LEASE_TTL_MS in outbox-lease.ts), which derives the release from it.
 const RESERVATION_DRAIN_LIMIT = 15;
 const RESERVATION_RETENTION_MS = 24 * 60 * 60 * 1000;
+/**
+ * How old a pending reservation must be before the drain takes it (#3466).
+ *
+ * A lead's confirm writes its reservation and then goes on completing it, and the
+ * row used to be drainable the moment it existed, so the every minute drain could
+ * lease and complete, or roll back, a reservation the confirm that wrote it was
+ * still working on. The two writers are each idempotent, but nothing coordinated
+ * them, least of all on a lost race, where the confirm rolls its reservation back
+ * and reserves again for the next advisor.
+ *
+ * Every reservation is written inside a booking request's budget
+ * (`withinBookingRequest`), so a confirm is done with it within
+ * `BOOKING_CONFIRM_WORST_CASE_MS` of starting. That worst case counts only time
+ * spent WAITING on calls, though: the design leaves the rest of the booker's 20
+ * seconds for computation no budget can see, and the drain compares a Worker's
+ * clock against Postgres's `created_at`. Twice the worst case clears both, and still
+ * sits under one tick of the drain, so a reservation a crash really left behind is
+ * resumed on the next tick but one. Pinned by service-reservation-drain-read.test.ts.
+ */
+export const RESERVATION_DRAIN_MIN_AGE_MS = 2 * BOOKING_CONFIRM_WORST_CASE_MS;
 // Throttle the "drain rows are stuck" Slack alert (#445) so a persistently-
 // failing row alerts at most twice an hour, not every tick.
 const DRAIN_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -517,6 +538,7 @@ export async function agentBusyIntervals(
 export {
   SlotUnavailableError,
   RaceLostRefusalError,
+  LostRaceOutOfTimeError,
   ExistingCallError,
   ExistingCallCheckUnavailableError,
   RescheduleConflictError,
@@ -1959,23 +1981,30 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     },
 
     loadDrainableReservations: async (limit) => {
-      const nowIso = new Date().toISOString();
+      const now = Date.now();
+      const nowIso = new Date(now).toISOString();
       // Same drainability gate as the outbox (#445): pending, lease free, retry
-      // time reached, under the give-up cap.
-      const { data, error } = await supabaseAdmin()
-        .from("booking_reservations")
-        .select("*")
-        .eq("status", "pending")
-        .lt("attempts", DRAIN_GIVE_UP_AT)
-        .or(`lease_until.is.null,lease_until.lt.${nowIso}`)
-        .or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
-        .order("created_at", { ascending: true })
-        .limit(limit);
-      if (error) {
-        log.error("reservations", { msg: "loadDrainable failed" }, error);
-        return [];
-      }
-      return (data ?? []) as BookingReservation[];
+      // time reached, under the give-up cap. And old enough that no live confirm
+      // can still be completing it (#3466, `RESERVATION_DRAIN_MIN_AGE_MS`).
+      //
+      // THROWS on a failed read. It used to log and return [], which is what an
+      // empty drain returns, so a read failing on every tick reached neither the
+      // stuck alert nor the lane's failing streak. The outbox lane catches the throw
+      // and counts it toward `reservation_drain_failing`.
+      const rows = unwrap(
+        await supabaseAdmin()
+          .from("booking_reservations")
+          .select("*")
+          .eq("status", "pending")
+          .lt("attempts", DRAIN_GIVE_UP_AT)
+          .lt("created_at", new Date(now - RESERVATION_DRAIN_MIN_AGE_MS).toISOString())
+          .or(`lease_until.is.null,lease_until.lt.${nowIso}`)
+          .or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
+          .order("created_at", { ascending: true })
+          .limit(limit),
+        "drainable reservations",
+      );
+      return (rows ?? []) as BookingReservation[];
     },
 
     // #3169: the claim and the release share the outbox lease's compare and swap

@@ -108,19 +108,27 @@ export const RACE_BOUND_HIT_COOLDOWN_MS = 60 * 60 * 1000;
  *    link, an adopted pin). Before #3338 it also counted leads refused while a
  *    rung below still had somebody free, so a day either side of the change is not
  *    the same measure;
- *  - `race_refused_bound`: refused at `MAX_RACE_REASSIGNS`, the bound hit.
- *
- * A confirm that lost a race and had too little of its budget left to walk down
- * (#3338) is answered with the retryable dependency timeout, and counted there,
- * not here: it was not refused, and no row above describes it.
+ *  - `race_refused_bound`: refused at `MAX_RACE_REASSIGNS`, the bound hit;
+ *  - `race_retry_budget` (#3442): lost a race with nobody after it free on its
+ *    rung, and too little of its budget left to walk down the ladder (#3338), so
+ *    it was answered with the retryable dependency timeout rather than refused.
+ *    Its ordinary outcome row is that timeout's error row, never `created`, so it
+ *    counts as a confirm AND a loser itself. Before #3442 it was counted only
+ *    there, so the whisper undercounted losers exactly on the days budgets ran
+ *    tight, and a day either side of the change is not the same measure.
  */
 export const RACE_TALLY_OUTCOMES = [
   "race_reassigned",
   "race_reassigned_move",
   "race_refused",
   "race_refused_bound",
+  "race_retry_budget",
 ] as const;
 export type RaceTallyOutcome = (typeof RACE_TALLY_OUTCOMES)[number];
+
+/** #3442: the row a lost race answered retryably for budget adds. One constant for
+ *  both routes, the reader and the tests. */
+export const RACE_RETRY_BUDGET_OUTCOME = "race_retry_budget" satisfies RaceTallyOutcome;
 
 /** #2484: median Low leads an hour across the whole tier. The FALLBACK rate, used
  *  only while Slate holds too few bookings to measure its own (#2877). */
@@ -351,6 +359,9 @@ export interface RaceContentionWindow {
   refused: number;
   /** Confirms refused at the bound. */
   refusedAtBound: number;
+  /** #3442: confirms that lost a race and were told to retry, with too little
+   *  budget left to walk down the ladder. */
+  retriedForBudget: number;
 }
 
 /** Read the window out of the outcome mix, or null when it cannot be read. An
@@ -369,16 +380,18 @@ export function raceWindowFromMix(raw: RawMix | null | undefined, day: string): 
   const reassignedMoves = read("race_reassigned_move");
   const refused = read("race_refused");
   const refusedAtBound = read("race_refused_bound");
+  const retriedForBudget = read(RACE_RETRY_BUDGET_OUTCOME);
   if (
     created === null ||
     reassigned === null ||
     reassignedMoves === null ||
     refused === null ||
-    refusedAtBound === null
+    refusedAtBound === null ||
+    retriedForBudget === null
   ) {
     return null;
   }
-  return { day, created, reassigned, reassignedMoves, refused, refusedAtBound };
+  return { day, created, reassigned, reassignedMoves, refused, refusedAtBound, retriedForBudget };
 }
 
 export type RaceContentionVerdict =
@@ -399,9 +412,10 @@ export type RaceContentionVerdict =
     };
 
 /** Every confirm in the window, and every one that lost at least one race. A
- *  rescued move is both, with no `created` row behind it (#2867). */
+ *  rescued move is both, with no `created` row behind it (#2867), and so is a lost
+ *  race told to retry for budget (#3442). */
 function raceCounts(w: RaceContentionWindow): { confirms: number; losers: number } {
-  const refusedTotal = w.refused + w.refusedAtBound;
+  const refusedTotal = w.refused + w.refusedAtBound + w.retriedForBudget;
   return {
     confirms: w.created + w.reassignedMoves + refusedTotal,
     losers: w.reassigned + w.reassignedMoves + refusedTotal,
@@ -557,6 +571,19 @@ export function raceContentionNoticeText(v: Extract<RaceContentionVerdict, { kin
         `produce. That is the fallback threshold, because ${t.basis.reason}.`;
   const rescued = w.reassigned + w.reassignedMoves;
   const refusedTotal = w.refused + w.refusedAtBound;
+  const retriedLine =
+    w.retriedForBudget === 0
+      ? ""
+      : ` ${w.retriedForBudget} ${wasWere(w.retriedForBudget)} told to try again, with too little of their time left ` +
+        `to look for an advisor in a tier below.`;
+  const unbooked =
+    refusedTotal > 0 && w.retriedForBudget > 0
+      ? "The refused ones and the ones told to try again"
+      : refusedTotal > 0
+        ? "The refused ones"
+        : w.retriedForBudget > 0
+          ? "The ones told to try again"
+          : null;
   const refusedLine =
     refusedTotal === 0
       ? "None were refused."
@@ -567,12 +594,12 @@ export function raceContentionNoticeText(v: Extract<RaceContentionVerdict, { kin
   return (
     `Confirms losing the overlap race on ${w.day} (Eastern): ${v.losers} of ${v.confirms} (${pct(v.share)}) ` +
     `lost their advisor to another lead confirming the same time, above the ${pct(t.share)} ${basis} ` +
-    `${rescued} ${wasWere(rescued)} booked with the next free advisor, in the bucket they were confirming into or a tier below it. ${refusedLine} ` +
+    `${rescued} ${wasWere(rescued)} booked with the next free advisor, in the bucket they were confirming into or a tier below it. ${refusedLine}${retriedLine} ` +
     `What to do: look at today's bookings whose routing_trace carries race_lost, by start time and bucket. ` +
     `Many leads confirming one time points at a booking link being replayed or a burst from one source; ` +
     `races spread across many times points at slow confirms widening the race, so check verify on book ` +
     `latency.` +
-    (refusedTotal > 0 ? ` The refused ones made no booking and are in the logs under tag=booking.` : "")
+    (unbooked ? ` ${unbooked} made no booking and are in the logs under tag=booking.` : "")
   );
 }
 

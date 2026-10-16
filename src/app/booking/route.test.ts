@@ -21,6 +21,8 @@ const service = vi.hoisted(() => {
     }
   }
   class VerifyUnavailableError extends Error {}
+  // #3442: the retryable timeout after a lost race with too little budget to walk down.
+  class LostRaceOutOfTimeError extends VerifyUnavailableError {}
   class NoEligibleAgentsError extends Error {}
   // #1337: the route declines rather than creating when the person already has
   // an active call. The class must exist on the mock for the instanceof branch.
@@ -75,6 +77,7 @@ const service = vi.hoisted(() => {
     SlotUnavailableError,
     RaceLostRefusalError,
     VerifyUnavailableError,
+    LostRaceOutOfTimeError,
     NoEligibleAgentsError,
     ExistingCallError,
     ExistingCallCheckUnavailableError,
@@ -1230,6 +1233,21 @@ describe("POST /booking outcome tally (#1313)", () => {
     const res = await post(VALID_BODY);
     expect(res.status).toBe(409);
     expect(outcomes()).toEqual([["error", "slot_unavailable"], ["race_refused_bound", null]]);
+  });
+
+  // #3442: a lost race with too little budget left to walk down the ladder is told to
+  // retry (503), and counted in the race tally beside the timeout it is answered as.
+  it("counts a lost race told to retry for budget in the race tally", async () => {
+    service.createBooking.mockRejectedValue(new service.LostRaceOutOfTimeError());
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(503);
+    expect(outcomes()).toEqual([["error", "verify_unavailable"], ["race_retry_budget", null]]);
+  });
+
+  it("counts no race for an ordinary timeout", async () => {
+    service.createBooking.mockRejectedValue(new service.VerifyUnavailableError());
+    expect((await post(VALID_BODY)).status).toBe(503);
+    expect(outcomes()).toEqual([["error", "verify_unavailable"]]);
   });
 
   it("counts an empty pool apart from a lost slot race", async () => {

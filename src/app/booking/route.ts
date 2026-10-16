@@ -20,8 +20,9 @@ import {
   OutsideCallingWindowError,
   AttendeeEmailRefusedError,
   RaceLostRefusalError,
+  LostRaceOutOfTimeError,
 } from "@/lib/booking/service";
-import { raceOutcomeForConfirm, raceOutcomeForRefusal } from "@/lib/monitor/race-contention";
+import { RACE_RETRY_BUDGET_OUTCOME, raceOutcomeForConfirm, raceOutcomeForRefusal } from "@/lib/monitor/race-contention";
 import { LeadCodeUnavailableError } from "@/lib/routing/lead-code";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
@@ -614,6 +615,12 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
         // Couldn't verify any candidate (a Google/DB outage), not the lead's fault.
         await refundAll();
         recordRoutedOutcome("error", code, "verify_unavailable", { by: "bucket", code, host });
+        // #3442: a lost race told to retry because too little of its budget was left
+        // to walk down the ladder, counted in the race tally on a row outside the
+        // failure share, beside rescued and refused.
+        if (err instanceof LostRaceOutOfTimeError) {
+          recordRoutedOutcome(RACE_RETRY_BUDGET_OUTCOME, code, null, { by: "bucket", code, host });
+        }
         // refusal: verify_unavailable
         return NextResponse.json({ error: err.message }, { status: 503 });
       }

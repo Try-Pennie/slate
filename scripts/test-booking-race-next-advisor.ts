@@ -18,11 +18,12 @@ import {
   RaceLostRefusalError,
   MAX_RACE_REASSIGNS,
   DependencyTimeoutError,
+  LostRaceOutOfTimeError,
   timeoutAsRetryable,
   type CreateBookingInput,
 } from "../src/lib/booking/orchestration.ts";
 import { DeadlineExceededError } from "../src/lib/fetch-within-deadline.ts";
-import { withinCallBudget } from "../src/lib/call-budget.ts";
+import { deadlineWithinBudget, withinCallBudget } from "../src/lib/call-budget.ts";
 import { dependencyTimeoutAlert } from "../src/lib/booking/alert-copy.ts";
 import { refusalTraceOf } from "../src/lib/booking/refusal-trace.ts";
 import { tierKeyOf, tierLadder } from "../src/lib/routing/tiers.ts";
@@ -442,6 +443,8 @@ async function main() {
             `budget, ${label} attempt: the lead is told to retry, the retryable timeout (got ${String(err)})`,
           );
           assert(!(err instanceof SlotUnavailableError), `budget, ${label} attempt: never told the time is taken`);
+          // #3442: named apart from every other timeout, so the routes count it in the race tally.
+          assert(err instanceof LostRaceOutOfTimeError, `budget, ${label} attempt: the timeout says it followed a lost race (got ${String(err)})`);
           assert(
             !calls.verifyFree.flat().includes("c@x.com") && calls.createEvent.length === 1,
             `budget, ${label} attempt: nothing on the lower rung is started (checks ${JSON.stringify(calls.verifyFree)}, events ${calls.createEvent.length})`,
@@ -530,6 +533,62 @@ async function main() {
       const page = dependencyTimeoutAlert(t);
       assert(/had no time left for the tier below a lost race/.test(page), `spent after a lost race: the page says so (got ${page})`);
       assert(!/-\s?\d|\b0ms\b/.test(page), `spent after a lost race: never a negative or a zero (got ${page})`);
+    } finally {
+      Date.now = realNow;
+    }
+  }
+
+  // --- #3439: a confirm that loses two races 3 seconds apart -------------------------
+  //
+  // Each attempt costs 3 seconds (its calendar event), so the first race is lost at
+  // 3s and the second at 6s, with 6 seconds of the confirm's 12 still to spare. Each
+  // rollback deletes a reservation, which here is held to the budget in force exactly
+  // as the real Supabase call is. The cleanup allowance opened ONCE per request ended
+  // at 5s, so the second rollback was refused at 0ms and the lead was told to retry
+  // while the third advisor was free. Each lost race now cleans up under an allowance
+  // of its own, and the confirm books the third advisor.
+  {
+    const realNow = Date.now;
+    let clock = Date.parse("2026-06-01T12:00:00.000Z");
+    Date.now = () => clock;
+    try {
+      const { deps, calls } = makeDeps({
+        candidates: ["a", "b", "c"],
+        freeEmails: new Set(["a@x.com", "b@x.com", "c@x.com"]),
+        insertBookingConflictFor: new Set(["a", "b"]),
+      });
+      const write = deps.createEvent;
+      deps.createEvent = async (...args) => {
+        clock += 3_000;
+        return write(...args);
+      };
+      const refusedAtZero: string[] = [];
+      const deleteReservation = deps.deleteReservation;
+      deps.deleteReservation = async (id) => {
+        try {
+          deadlineWithinBudget(4_000, "supabase");
+        } catch (e) {
+          refusedAtZero.push(id);
+          throw e;
+        }
+        return deleteReservation(id);
+      };
+      let booked: Awaited<ReturnType<typeof createBooking>> | null = null;
+      const err = await refusal(async () => {
+        booked = await withinCallBudget(12_000, "the booking confirm", () => createBooking(input, deps), () => Date.now());
+      });
+      const res = booked as Awaited<ReturnType<typeof createBooking>> | null;
+      assert(
+        err === null && res?.booking.assigned_user_id === "c",
+        `two races 3s apart: the confirm books the third advisor (got ${String(err)}, ${res?.booking.assigned_user_id})`,
+      );
+      assert(refusedAtZero.length === 0, `two races 3s apart: no rollback is refused for want of time (refused ${JSON.stringify(refusedAtZero)})`);
+      assert(
+        JSON.stringify((res?.booking.routing_trace as RoutingTrace | undefined)?.race_lost) === JSON.stringify(["a", "b"]),
+        "two races 3s apart: the trace records both lost races",
+      );
+      assert(calls.deleteEvent.length === 2, `two races 3s apart: both lost attempts' events are removed (got ${calls.deleteEvent.length})`);
+      assert(calls.deletedReservations.length === 3, `two races 3s apart: every reservation is cleaned up (got ${calls.deletedReservations.length})`);
     } finally {
       Date.now = realNow;
     }

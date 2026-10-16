@@ -2,16 +2,18 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	// The small Worker hosting the burst limiter object (#3555), the exact rate limit
 	// ceilings and the per minute burst windows, so waking an idle counter loads only the
-	// counter's rules. (Every Slate deploy still redeploys it, which restarts the counters;
-	// #3561 is deploying it only when its code changed.) Slate binds
+	// counter's rules. A deploy restarts the counters, so it is redeployed only when its
+	// bundle or this file changed (#3561). Slate binds
 	// BURST_LIMITER to it by script name (wrangler.jsonc). It must be deployed BEFORE
 	// Slate, because Slate's binding names it:
 	//
-	//   npx wrangler deploy -c wrangler.burst-limiter.jsonc                 (production)
-	//   npx wrangler deploy -c wrangler.burst-limiter.jsonc --env loadtest  (load test)
+	//   node --experimental-strip-types scripts/deploy-object-workers.ts                 (production)
+	//   node --experimental-strip-types scripts/deploy-object-workers.ts --env loadtest  (load test)
 	//
 	// Both run from the same list as the confirm line worker's (OBJECT_WORKER_CONFIGS in
-	// scripts/lib/gradual-deploy.ts). scripts/test-burst-limiter-worker.ts pins it.
+	// scripts/lib/gradual-deploy.ts), and stamp the version so the next run can tell it is
+	// unchanged; a plain `wrangler deploy -c` works but leaves no stamp, so the next run
+	// redeploys it once. scripts/test-burst-limiter-worker.ts pins it.
 	"name": "slate-burst-limiter",
 	"main": "worker/burst-limiter/index.ts",
 	"account_id": "3e7f907a9c19e51417873e2cce4fbc5c",

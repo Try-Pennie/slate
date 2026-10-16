@@ -867,10 +867,10 @@ function raceThresholdPreview(code: string, perHour: number, hours: number): Rac
  * rather than rendering a sentence nobody will see.
  */
 function raceContentionReportPreview(
-  w: Omit<RaceContentionWindow, "day" | "reassignedMoves"> & { reassignedMoves?: number },
+  w: Omit<RaceContentionWindow, "day" | "reassignedMoves" | "retriedForBudget"> & { reassignedMoves?: number; retriedForBudget?: number },
   threshold: RaceThreshold = raceThresholdPreview("111", 9, 9),
 ): string {
-  const verdict = raceContentionVerdict({ reassignedMoves: 0, ...w, day: "2026-07-28" }, threshold);
+  const verdict = raceContentionVerdict({ reassignedMoves: 0, retriedForBudget: 0, ...w, day: "2026-07-28" }, threshold);
   if (verdict.kind !== "report") {
     throw new Error(`race contention preview fixture is not a reportable window (${verdict.kind})`);
   }
@@ -5139,6 +5139,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "over the share, some refused, one at the bound",
     channel: "info",
     text: raceContentionReportPreview({ created: 200, reassigned: 4, refused: 1, refusedAtBound: 1 }),
+  },
+  {
+    key: "booking_race_contention",
+    state: "over the share, some told to try again with too little time to walk down the tiers (#3442)",
+    channel: "info",
+    text: raceContentionReportPreview({ created: 200, reassigned: 3, refused: 1, refusedAtBound: 0, retriedForBudget: 2 }),
   },
   {
     key: "booking_race_contention",

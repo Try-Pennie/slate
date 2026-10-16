@@ -78,7 +78,11 @@ const run = (cmd: string, extraEnv: Record<string, string> = {}) =>
   // Every wrangler deploy the load test makes goes through the wrapper, so the next one
   // added cannot quietly be the one a 504 takes the run down with (L613).
   const workflow = readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "loadtest.yml"), "utf8");
-  const deploys = workflow.split("\n").filter((l) => /\bwrangler deploy\b/.test(l) && !l.trim().startsWith("#"));
+  // #3561: the object workers deploy through scripts/deploy-object-workers.ts, which runs
+  // `wrangler deploy` itself, so its line is a deploy too.
+  const deploys = workflow
+    .split("\n")
+    .filter((l) => /\bwrangler deploy\b|scripts\/deploy-object-workers\.ts/.test(l) && !l.trim().startsWith("#"));
   assert(deploys.length >= 4, `the guard found the workflow's deploys (positive control: ${deploys.length})`);
   const bare = deploys.filter((l) => !l.includes("retry-cloudflare-api.sh"));
   eq(bare.length, 0, `every wrangler deploy in loadtest.yml goes through retry-cloudflare-api.sh (bare: ${JSON.stringify(bare.map((l) => l.trim()))})`);

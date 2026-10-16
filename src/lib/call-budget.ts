@@ -184,7 +184,8 @@ export function withinCallBudget<T>(
  * and the route's failure path that follows must not get a second 2 seconds, or
  * the worst case would be 12 + 2 + 2 rather than the 14 it is sized for.
  * Outside any request budget there is nothing to share, and each cleanup gets
- * its own.
+ * its own. A cleanup owed in the MIDDLE of a request, while its budget can still
+ * hold a whole allowance, uses `withinOwnCleanupBudget` instead (#3439).
  */
 export function withinCleanupBudget<T>(
   ms: number,
@@ -200,6 +201,38 @@ export function withinCleanupBudget<T>(
   const cleanup: Budget = { expiresAt: now() + ms, label, totalMs: ms, cleanup: true, request };
   request.cleanup = cleanup;
   return store().run(cleanup, work);
+}
+
+/**
+ * `withinCleanupBudget` for a cleanup owed in the MIDDLE of a request rather than
+ * at its end (#3439): a lost race's rollback, after which the confirm goes on to
+ * the next advisor. The shared allowance is sized for the end of a request, and a
+ * rollback that opened it spent it for the rest of the request, so a confirm that
+ * lost a second race more than the allowance after its first found it spent, the
+ * rollback was refused at 0ms, and the lead was told to retry while the next
+ * advisor was free.
+ *
+ * So while the request's own budget still has the whole allowance to spare, this
+ * cleanup gets an allowance of its OWN, opened now and never recorded as the
+ * request's. It ends inside the request's budget, so it adds nothing to the worst
+ * case the shared allowance exists to bound (the budget plus ONE allowance), and the
+ * failure path at the end still finds the shared one unopened. With less than the
+ * allowance left, an allowance of its own would run past the budget, so it is the
+ * shared one, exactly as `withinCleanupBudget` gives. Inside a cleanup already it
+ * shares that one, and outside any request it is its own, as there.
+ */
+export function withinOwnCleanupBudget<T>(
+  ms: number,
+  label: string,
+  work: () => Promise<T>,
+  now: () => number = () => Date.now(),
+): Promise<T> {
+  const outer = current();
+  if (!outer || outer.cleanup) return withinCleanupBudget(ms, label, work, now);
+  const at = now();
+  if (outer.expiresAt - at < ms) return withinCleanupBudget(ms, label, work, now);
+  const own: Budget = { expiresAt: at + ms, label, totalMs: ms, cleanup: true, request: outer.request };
+  return store().run(own, work);
 }
 
 /**

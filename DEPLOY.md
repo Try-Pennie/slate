@@ -323,7 +323,8 @@ exits, and the exit code says which (`EXIT` in `scripts/lib/gradual-deploy.ts`, 
 | 23 | promoted and healthy, and the log tail worker (`slate-log-tail`) could not be deployed after it; Slate is not rolled back | new |
 | 24 | the deploy script itself failed outside its own handling | unknown: the settle step reads what the run recorded |
 | 25 | the release changes a Durable Object class, which Cloudflare refuses to upload as a version (#3352); ship it by hand, and until then every later deploy ends here too | unchanged |
-| 26 | an object worker (`slate-confirm-line`, #3500, `slate-burst-limiter`, #3555, or `slate-token-holder`, #3512) could not be deployed; Slate's bindings name them, so nothing of Slate's was uploaded. The message names the config; deploy it with `npx wrangler deploy -c <config>` and re-run | unchanged |
+| 26 | an object worker (`slate-confirm-line`, #3500, `slate-burst-limiter`, #3555, or `slate-token-holder`, #3512) could not be deployed; Slate's bindings name them, so nothing of Slate's was uploaded. Only a Worker that changed is deployed (#3561), so this fires only on a deploy that needed one. The message names the config and why; deploy them with `node --experimental-strip-types scripts/deploy-object-workers.ts` and re-run | unchanged |
+| 27 | the confirm line build speaks an older `CONFIRM_LINE_PROTOCOL` than the app serving now (#3560), so deploying it would put a line object older than the app in front of it, where a crowd books one advisor or none. Nothing was deployed. Read from the built bundle and from the source at the serving app's commit tag. For a revert that lowers the protocol on purpose, deploy the app alone first (`pnpm cf:deploy`), then re-run | unchanged |
 
 Any non-zero exit fails the job, and a failed job on a push to `main` posts a Slack alert
 (`.github/workflows/deploy-alert.yml`). A job cancelled or timed out mid-run cannot end the
@@ -386,11 +387,45 @@ lead can meet both versions across page loads. Then it is one version at 100% ag
 - **The token holder** (`TOKEN_HOLDER`, #3512) is a class of its own small Worker
   (`slate-token-holder`), never Slate's, so it adds no `migrations` entry to
   `wrangler.jsonc` and ships through this pipeline: its Worker is deployed whole before
-  the uploads, from `OBJECT_WORKER_CONFIGS`, and its own `v1` migration is applied by that
-  plain `wrangler deploy`. It holds tokens in memory only, so every such deploy empties
-  it; the next reads of each advisor mint as they did before the holder existed and put
-  the token back, which costs a few mints after a deploy and fails nothing. It holds no
-  secret: it never mints.
+  the uploads, from `OBJECT_WORKER_CONFIGS`, whenever its bundle or config changed (next
+  bullet), and its own `v1` migration is applied by that plain `wrangler deploy`. It holds tokens in memory only, so every deploy of its Worker
+  empties it; the next reads of each advisor mint as they did before the holder existed
+  and put the token back, which costs a few mints after a deploy and fails nothing. It
+  holds no secret: it never mints.
+- **An object Worker is deployed only when it changed** (#3561). A Worker deploy restarts
+  its Durable Objects, which drops whatever a line object holds in memory (a crowd's
+  waiting turns) and empties the token holder, so redeploying all three on every Slate
+  deploy undid most of what moving them out of Slate's Worker bought.
+  `scripts/deploy-object-workers.ts` (and the gradual deploy, in process, through the same
+  code) builds each bundle with `wrangler deploy --dry-run`, hashes it with the wrangler
+  config text, the environment and the wrangler version, and skips the Worker only when
+  the version serving carries that exact hash as its message (`object-bundle sha256:...`),
+  which every deploy it makes writes. Anything else deploys: a bundle that would not
+  build, a deployment it could not read, a split, a version with no stamp (one deployed by
+  hand with plain `wrangler deploy -c`, one made by a secret change, anything from before
+  #3561), a different hash. The run log says, per Worker, `skipped` or `deploying` and
+  why, and after each stamped deploy whether the stamp read back from the serving version
+  (`stamp confirmed`, or `the next deploy will redeploy it`): the skip depends on
+  Cloudflare keeping the message, which nothing offline can prove, so the first deploy
+  after #3561 should say `stamp confirmed` three times and the one after it `skipped` for
+  any Worker it did not change. A hand deploy of an object Worker should go through that script too, or the next
+  pipeline deploy redeploys it once to stamp it. The decision is driven offline by
+  `scripts/test-object-worker-skip.ts`.
+- **A confirm line build older than the live app is refused** (#3560, exit 27, and exit 3
+  from `scripts/deploy-object-workers.ts`). A line object refuses a client newer than
+  itself, and the app then uses its isolate's own line, where a crowd for one slot books
+  one advisor or none. Every pipeline deploy makes the safe order (the line first, at the
+  same commit as the app that follows), so this only fires on a line only rollback or a
+  revert that lowers `CONFIRM_LINE_PROTOCOL`. It compares the protocol declared in the
+  built bundle (`var CONFIRM_LINE_PROTOCOL = N;`) with the one in
+  `src/lib/booking/confirm-line-object.ts` at the serving app's commit tag, fetched if
+  the checkout lacks it. It is asked only when the line Worker is about to be deployed. If
+  either side cannot be read, the line is deployed anyway and the log (and a warning from
+  the script) says the check could not be made and why: an untagged app version is
+  ordinary (every secret change makes one), so refusing on it would stop normal deploys,
+  and #3560's client already falls back and pages `confirm_line_unreachable` in that
+  order. For a deliberate protocol lowering, deploy the app alone first
+  (`pnpm cf:deploy`), then re-run.
 - **Cost.** Two uploads, a split and a second probe add roughly a minute to each deploy,
   plus the cron window wait when a merge lands just before the hour (about one deploy in
   ten). At the 530 deploys of the 30 days to 2026-10-03, that is an estimated 500 to 600
