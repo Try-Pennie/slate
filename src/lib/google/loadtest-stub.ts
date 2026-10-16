@@ -131,14 +131,23 @@ export function loadtestSyncFault(): GoogleHttpError {
 const HORIZON_MS = 4 * 86_400_000;
 
 /**
- * The synthetic calendar's fixed grid of meetings (#1542): every 18 hours from 30 days behind
- * to 60 days ahead. Fixed, and independent of whatever window a fetch asks for, so a narrower
+ * The synthetic calendar's fixed grid of meetings (#1542): every 18 hours from a fixed epoch
+ * (#3239), of which the span from 30 days behind the hydration to 60 days ahead is returned. Fixed, and independent of whatever window a fetch asks for, so a narrower
  * fetch genuinely returns fewer events. At the real 22 day bootstrap window this yields about
  * 30, which is the realistic per-calendar batch the soak was built around.
  */
 const CALENDAR_GRID_STEP_MS = 18 * 60 * 60_000;
 const CALENDAR_GRID_PAST_MS = 30 * 86_400_000;
 const CALENDAR_GRID_SLOTS = Math.floor((30 + 60) * 86_400_000 / CALENDAR_GRID_STEP_MS);
+/**
+ * #3239: where the grid is anchored. Meetings sit at this instant plus whole steps, so they
+ * are at the same times whenever a calendar is hydrated. Counted from the hydration moment
+ * instead, a run dispatched at noon and one at 2:40 PM saw different busy times, and the
+ * steady pass's contention moved with the clock (run 38933668981: 20 SLOT_TAKEN at 12:39 PM
+ * ET against 0 to 2 on the evening runs before it). With an 18 hour step a given calendar
+ * DATE always looks the same; the pattern still repeats every three days, not daily.
+ */
+const CALENDAR_GRID_EPOCH_MS = Date.UTC(2026, 0, 1);
 
 /**
  * One owned primary calendar (what listCalendars would surface).
@@ -222,15 +231,19 @@ export function stubSyncEvents(
     };
   }
 
-  // The bootstrap. The events sit on a fixed grid around NOW, deliberately NOT derived from
+  // The bootstrap. The events sit on a fixed grid anchored to an epoch (only the span returned
+  // follows NOW, #3239), deliberately NOT derived from
   // the requested window: a calendar's meetings exist at the times they exist, so a narrower
   // fetch must return FEWER of them. Generating the spread across the window instead would
   // return the same count whatever was asked for, which is indistinguishable from ignoring
   // the bound and is the state this replaces.
   const candidates: GoogleEvent[] = [];
+  // The first grid point at or after the start of the span, counted in whole steps from the
+  // fixed epoch, so a meeting keeps its time AND its id across hydrations (#3239).
+  const firstK = Math.ceil((nowMs - CALENDAR_GRID_PAST_MS - CALENDAR_GRID_EPOCH_MS) / CALENDAR_GRID_STEP_MS);
   for (let i = 0; i < CALENDAR_GRID_SLOTS; i++) {
-    const slotMs = nowMs - CALENDAR_GRID_PAST_MS + i * CALENDAR_GRID_STEP_MS;
-    candidates.push(make(`lt-evt-boot-${i}`, slotMs));
+    const k = firstK + i;
+    candidates.push(make(`lt-evt-boot-${k}`, CALENDAR_GRID_EPOCH_MS + k * CALENDAR_GRID_STEP_MS));
   }
   // Straddling each bound: returned by a real fetch, and the cases a reconcile scoped on the
   // wrong field gets wrong.
