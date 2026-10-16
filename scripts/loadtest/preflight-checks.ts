@@ -4,6 +4,11 @@ import {
   POST_CONFIRM_RECOMPUTE_VAR,
   parsePostConfirmRecompute,
 } from "../../src/lib/booking/post-confirm-recompute-modes.ts";
+import {
+  formatGoogleDelay,
+  parseGoogleDelay,
+  GOOGLE_DELAY_VAR,
+} from "../../src/lib/google/loadtest-google-delay.ts";
 import { hydrationBatchSize, HYDRATION_ONBOARDING_MAX } from "../../src/lib/google/hydration.ts";
 
 /**
@@ -1294,17 +1299,33 @@ export function recomputeModeVerdict(body: unknown, wanted: string | undefined):
  * its status (#3269 review): a wrong key or a missing route never resolves, and its
  * error body would otherwise read as a deployment that predates the switch (L11).
  */
-export async function awaitRecomputeArm(opts: {
+export async function awaitRecomputeArm(opts: AwaitSettingOpts): Promise<RecomputeModeVerdict> {
+  return awaitDeploymentSetting({ ...opts, asks: "which arm it runs", judge: recomputeModeVerdict });
+}
+
+/** What every wait on a per run deployment setting takes (#3258, #3490). */
+export interface AwaitSettingOpts {
   wanted: string | undefined;
   fetchVersion: () => Promise<{ status: number; body: unknown }>;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   waitMs: number;
   pauseMs: number;
-}): Promise<RecomputeModeVerdict> {
+}
+
+/**
+ * Ask `/api/smoke/version` until `judge` accepts the deployment's report, refuses in a
+ * way waiting cannot change, or the deadline passes. ONE loop for every per run setting
+ * the workflow redeploys (the recompute arm, the Google delay), so the classification of
+ * a 4xx, a 5xx and a thrown fetch is decided once rather than once per setting (L41).
+ * `asks` names what could not be asked, for the refusals that never reached the judge.
+ */
+export async function awaitDeploymentSetting(
+  opts: AwaitSettingOpts & { asks: string; judge: (body: unknown, wanted: string | undefined) => RecomputeModeVerdict },
+): Promise<RecomputeModeVerdict> {
   const deadline = opts.now() + opts.waitMs;
   for (;;) {
-    const verdict = await askRecomputeArm(opts);
+    const verdict = await askDeploymentSetting(opts);
     if (verdict.ok || !verdict.retriable) return verdict;
     if (opts.now() >= deadline) {
       // One sentence whatever `why` ended with: its own full stop is dropped and
@@ -1321,9 +1342,11 @@ export async function awaitRecomputeArm(opts: {
 }
 
 /** One ask, classified: thrown and 5xx are retriable, 4xx refuses by status. */
-async function askRecomputeArm(opts: {
+async function askDeploymentSetting(opts: {
   wanted: string | undefined;
   fetchVersion: () => Promise<{ status: number; body: unknown }>;
+  asks: string;
+  judge: (body: unknown, wanted: string | undefined) => RecomputeModeVerdict;
 }): Promise<RecomputeModeVerdict> {
   let answer: { status: number; body: unknown };
   try {
@@ -1340,7 +1363,7 @@ async function askRecomputeArm(opts: {
       ok: false,
       why:
         "/api/smoke/version answered 503 because this deployment holds no booking API key, so " +
-        "which arm it runs could not be asked. Put the canary's key on the deployment and re-run.",
+        `${opts.asks} could not be asked. Put the canary's key on the deployment and re-run.`,
       retriable: false,
     };
   }
@@ -1352,10 +1375,78 @@ async function askRecomputeArm(opts: {
     return {
       ok: false,
       why:
-        `/api/smoke/version answered ${status}, so which arm this deployment runs could not be ` +
+        `/api/smoke/version answered ${status}, so ${opts.asks} could not be ` +
         `asked. ${status === 401 || status === 403 ? "The booking key was refused; check LOADTEST_BOOKING_API_KEY." : "Check LOADTEST_BASE_URL and that the deployment serves the route."}`,
       retriable: false,
     };
   }
-  return recomputeModeVerdict(body, opts.wanted);
+  return opts.judge(body, opts.wanted);
+}
+
+/**
+ * Whether the deployment's Google stand in takes the delay this run was dispatched for
+ * (#3490), the recompute arm's question asked of the other per run setting.
+ *
+ * A run dispatched with a delay and driven against a deployment answering at once would
+ * publish undelayed numbers under the delayed rig's name, and the comparison the delay
+ * exists for would read as an answer with no Google time ever added (L98). Compared in the
+ * canonical spelling, so the order and spacing somebody typed never refuse a real match.
+ *
+ * Retriable only where waiting can change the answer: a delayed dispatch meeting the
+ * version the arm job is replacing. An undelayed run against a deployment an earlier run
+ * left delayed is a state waiting never fixes, and so is a value that does not parse.
+ */
+export function googleDelayVerdict(body: unknown, wanted: string | undefined): RecomputeModeVerdict {
+  const parsedWanted = parseGoogleDelay(wanted);
+  if (parsedWanted.unknown !== null) {
+    return {
+      ok: false,
+      why:
+        `the google_delay input is "${parsedWanted.unknown}", which is not read=<p50>/<p95>,` +
+        `write=<p50>/<p95> in milliseconds. Nothing was driven.`,
+      retriable: false,
+    };
+  }
+  const want = formatGoogleDelay(parsedWanted);
+  const b = (typeof body === "object" && body !== null ? body : {}) as {
+    googleDelay?: unknown;
+    googleDelayUnknown?: unknown;
+  };
+  if (typeof b.googleDelayUnknown === "string" && b.googleDelayUnknown !== "") {
+    return {
+      ok: false,
+      why:
+        `this deployment's ${GOOGLE_DELAY_VAR} is "${b.googleDelayUnknown}", which does not parse, so ` +
+        `the stand in delays nothing whatever this run was dispatched for. Redeploy with a valid value and re-run.`,
+      retriable: false,
+    };
+  }
+  if (typeof b.googleDelay !== "string") {
+    return {
+      ok: false,
+      why:
+        "/api/smoke/version reports no googleDelay field, so this deployment predates the Google " +
+        "delay and which rig it runs could not be established. Deploy the current commit with " +
+        "--env loadtest and re-run.",
+      retriable: false,
+    };
+  }
+  const got = b.googleDelay;
+  if (got === want) return { ok: true };
+  const name = (v: string) => (v === "" ? "off" : v);
+  return {
+    ok: false,
+    why:
+      `this deployment's Google delay is ${name(got)} and the run was dispatched for ${name(want)}, ` +
+      `so its report would describe a rig nobody drove.` +
+      (want === "" ? ` It was left ${got} by an earlier run; redeploy with --env loadtest and no --var, then re-run.` : ""),
+    // A redeploy to a delayed rig lands a little after wrangler exits, and the version
+    // being replaced answers with whatever it ran. An undelayed run meeting a leftover never resolves.
+    retriable: want !== "",
+  };
+}
+
+/** The preflight's wait for the Google delay a run was dispatched with (#3490). */
+export async function awaitGoogleDelay(opts: AwaitSettingOpts): Promise<RecomputeModeVerdict> {
+  return awaitDeploymentSetting({ ...opts, asks: "which Google delay it runs", judge: googleDelayVerdict });
 }

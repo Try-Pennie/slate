@@ -689,7 +689,12 @@ const EXACT_CEILING_CALL_LABEL = "edge-counter";
  *    sustained run pages (#3670), an outage costs one alert read per half hour rather than one
  *    per request, and off the Workers runtime it is logged, never paged (#1525).
  */
-export async function exactCeilingWithinLimit(caller: CallerKey, rules: RateLimitRule[]): Promise<boolean> {
+export async function exactCeilingWithinLimit(
+  caller: CallerKey,
+  rules: RateLimitRule[],
+  /** The load run this request belongs to (#3456), null for every production request. */
+  runScope: string | null = null,
+): Promise<boolean> {
   const verdict = judgeCaller(callerPolicy(caller), rateLimitKey(caller));
   if (verdict !== "identified") {
     const policy = callerPolicy(caller);
@@ -698,7 +703,7 @@ export async function exactCeilingWithinLimit(caller: CallerKey, rules: RateLimi
   }
   const key = rateLimitKey(caller);
   for (const rule of rules) {
-    const count = await countExactHit(rule, key);
+    const count = await countExactHit(rule, key, runScope);
     // Fail open, as `allowRequest` does on an unreadable row; the failure was reported inside.
     if (count === null) continue;
     if (!exactCeilingAllows(count, rule.max)) {
@@ -720,7 +725,7 @@ export async function exactCeilingWithinLimit(caller: CallerKey, rules: RateLimi
  * could not be made, which the caller reads as fail open. Never throws: every failure is reported
  * here under the rule's own area, once per isolate per cooldown.
  */
-async function countExactHit(rule: RateLimitRule, key: string): Promise<number | null> {
+async function countExactHit(rule: RateLimitRule, key: string, runScope: string | null): Promise<number | null> {
   const cfg = { area: rule.prefix, friendly: friendlyRateArea(rule.prefix) };
   let env: Record<string, unknown>;
   try {
@@ -736,7 +741,7 @@ async function countExactHit(rule: RateLimitRule, key: string): Promise<number |
   }
   const windowMs = rule.windowSeconds * 1000;
   try {
-    const stub = ns.get(ns.idFromName(exactCeilingKey(rule.prefix, key)));
+    const stub = ns.get(ns.idFromName(exactCeilingKey(rule.prefix, key, runScope)));
     // The signal the deadline adds is not handed to the stub: the race below ends the wait
     // whether or not the object honours it, and nothing here depends on the stub accepting one.
     const res = await fetchWithinBudget(

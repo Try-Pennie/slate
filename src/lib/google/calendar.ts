@@ -35,6 +35,7 @@ import {
   stubCreateEvent,
   stubEventOnPrimary,
   stubEventWrite,
+  loadtestGoogleDelay,
 } from "@/lib/google/loadtest-stub";
 
 const BASE = "https://www.googleapis.com/calendar/v3";
@@ -302,7 +303,10 @@ export async function freeBusy(
   timeMax: string,
   calendarIds: string[],
 ): Promise<Interval[] | null> {
-  if (LOADTEST) return stubFreeBusy(email);
+  if (LOADTEST) {
+    await loadtestGoogleDelay("read", GOOGLE_CONFIRM_TIMEOUT_MS);
+    return stubFreeBusy(email);
+  }
   if (calendarIds.length === 0) return [];
   const out: Interval[] = [];
   for (const chunk of chunkCalendarIds(calendarIds)) {
@@ -385,6 +389,8 @@ export async function freeBusyMany(
 ): Promise<Map<string, CalendarBusy>> {
   if (calendarIds.length === 0) return new Map();
   if (LOADTEST) {
+    // #3490: one wave chunk is one Google call in production, so each takes its own delay.
+    await loadtestGoogleDelay("read", GOOGLE_CONFIRM_TIMEOUT_MS);
     return new Map(calendarIds.map((id) => [id, { busy: [], error: false }]));
   }
   const res = await ok(
@@ -488,8 +494,11 @@ export async function createEvent(
   opts?: CreateEventOptions,
 ): Promise<string> {
   // #2241: the confirm path's first Google call. Ungated, a booking path load run
-  // could not complete one booking.
-  if (LOADTEST) return stubCreateEvent(input, clientId);
+  // could not complete one booking. #3490: it takes the run's write delay first.
+  if (LOADTEST) {
+    await loadtestGoogleDelay("write", GOOGLE_CONFIRM_TIMEOUT_MS);
+    return stubCreateEvent(input, clientId);
+  }
   const insert = async (id: string | undefined): Promise<string> => {
     const res = await gfetch(
       email,
@@ -733,7 +742,10 @@ export async function updateEventTime(
   // #2241: the in-place reschedule's move. Nothing was written, so nothing is gone:
   // the typed `EventGone` below is unreachable under the flag, which is why the
   // reschedule's recreate branch is not exercised by a load run.
-  if (LOADTEST) return stubEventWrite("patch", eventId);
+  if (LOADTEST) {
+    await loadtestGoogleDelay("write", GOOGLE_CONFIRM_TIMEOUT_MS);
+    return stubEventWrite("patch", eventId);
+  }
   const res = await gfetch(
     email,
     `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
@@ -807,7 +819,10 @@ export async function deleteEvent(
   // delete (a real cancellation) keeps sendUpdates=all so the customer is told.
   // #2241: the rollback `completeReservation` takes when the insert loses, and the
   // cancel. A no-op, since nothing was created to remove.
-  if (LOADTEST) return stubEventWrite("delete", eventId);
+  if (LOADTEST) {
+    await loadtestGoogleDelay("write", GOOGLE_CONFIRM_TIMEOUT_MS);
+    return stubEventWrite("delete", eventId);
+  }
   const sendUpdates = opts?.notifyAttendee === false ? "none" : "all";
   const res = await gfetch(
     email,
@@ -1027,7 +1042,10 @@ export async function updateEventContact(
   // #2241: the lead's own corrections on the way to a reschedule, which `realDeps`
   // reaches and so a booking path run can drive. `updateEventDescription` delegates
   // here, so it is gated with it.
-  if (LOADTEST) return stubEventWrite("patch", eventId);
+  if (LOADTEST) {
+    await loadtestGoogleDelay("write", GOOGLE_CONFIRM_TIMEOUT_MS);
+    return stubEventWrite("patch", eventId);
+  }
   const body: Record<string, unknown> = {};
   if (patch.summary !== undefined) body.summary = patch.summary;
   if (patch.description !== undefined) body.description = patch.description;

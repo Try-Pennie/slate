@@ -330,15 +330,25 @@ export function bumpSharedWindow(
  */
 export const EXACT_CEILING_AREA = "exact";
 
+/** What a run scoped exact ceiling's key carries after `exact:` (#3456), so one is never
+ *  mistaken for a rule's: no rule prefix begins with it (`scripts/test-exact-ceiling.ts`). */
+export const LOADTEST_RUN_KEY_MARK = "loadtest-run";
+
 /**
  * The object an exact ceiling counts in: `exact:` then the Postgres row's own key, which was
  * `${rule.prefix}:${callerKey}`. So two routes sharing one rule and one caller share one count
  * exactly as they shared one row (the per address backstop is one count across the create, the
  * cancel and the bookable check), and no burst limiter, whose keys begin with its own area, and
  * no verification key can ever land in one.
+ *
+ * `runScope` is the load run's own scope (#3456, `@/lib/loadtest-run-scope`), and only ever
+ * non-null under `SLATE_LOADTEST`: it puts one run's counts in objects of their own, so two
+ * runs or arms inside an hour on the kept load test Worker never share a count. Null, which
+ * is every production request, is the key exactly as it was.
  */
-export function exactCeilingKey(rulePrefix: string, callerKey: string): string {
-  return burstKey(EXACT_CEILING_AREA, `${rulePrefix}:${callerKey}`);
+export function exactCeilingKey(rulePrefix: string, callerKey: string, runScope: string | null = null): string {
+  const row = `${rulePrefix}:${callerKey}`;
+  return burstKey(EXACT_CEILING_AREA, runScope === null ? row : `${LOADTEST_RUN_KEY_MARK}:${runScope}:${row}`);
 }
 
 /** One counted window, as the object stores it. */

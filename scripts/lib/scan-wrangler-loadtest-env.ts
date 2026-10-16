@@ -39,6 +39,17 @@ const PER_RUN_SWITCH_REASONS: Record<string, { topLevel: string; committed: stri
       "that post confirm recompute arm whatever it was dispatched for, and a run dispatched for " +
       "another arm would be refused at preflight. The arm job sets it with --var.",
   },
+  // #3490: the Google stand in's delay, which is a rig choice and not fault injection.
+  SLATE_LOADTEST_GOOGLE_DELAY: {
+    topLevel:
+      "the top level sets SLATE_LOADTEST_GOOGLE_DELAY, the load run's Google delay. Production " +
+      "never reads it (it acts only inside the Google stand in), and it has no business existing " +
+      "there: it belongs to the load workflow's arm job alone.",
+    committed:
+      "env.loadtest commits SLATE_LOADTEST_GOOGLE_DELAY, so every run would put that Google delay " +
+      "into its confirms whatever it was dispatched for, and a run dispatched without it would be " +
+      "refused at preflight. The arm job sets it with --var.",
+  },
 };
 
 /** The switches whose refusals `loadtestEnvFaults` words one by one. */

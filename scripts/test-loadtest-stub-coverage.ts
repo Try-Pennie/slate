@@ -88,7 +88,10 @@ for (const name of ["createEvent", "deleteEvent", "updateEventTime", "eventExist
 //    delegates to it, so this also proves the delegation propagates FAILURE and
 //    not just success: a fixpoint that only ever grows would report isFree clean.
 {
-  const broken = calendar.replace("  if (LOADTEST) return stubFreeBusy(email);\n", "");
+  const broken = calendar.replace(
+    '  if (LOADTEST) {\n    await loadtestGoogleDelay("read", GOOGLE_CONFIRM_TIMEOUT_MS);\n    return stubFreeBusy(email);\n  }\n',
+    "",
+  );
   assert(broken !== calendar, "the freeBusy gate is where this control expects it");
   const res = stubCoverage(service, broken);
   const by = new Map(res.all.map((r) => [r.name, r.reason]));

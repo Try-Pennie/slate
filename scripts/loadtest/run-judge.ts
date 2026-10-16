@@ -32,6 +32,7 @@ import { lineArchiveForRun } from "./stored-line-calls.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limit-core.ts";
 import { baselineReading, expectBaselineFrom, latencyReportLine, verdictText } from "./latency-bar.ts";
 import { recomputeArmLine } from "../../src/lib/booking/post-confirm-recompute-modes.ts";
+import { googleDelayLine } from "../../src/lib/google/loadtest-google-delay.ts";
 import {
   REQUEST_CPU_P99_MS,
   cronCpuShareText,
@@ -721,6 +722,12 @@ lines.push("");
 // env-ok: EXPECT_POST_CONFIRM_RECOMPUTE (optional; the workflow's input, unset on a
 // hand run, which is the on arm)
 lines.push(recomputeArmLine(process.env.EXPECT_POST_CONFIRM_RECOMPUTE));
+lines.push("");
+// #3490: which Google rig the stand in ran, so a run with Google time in its confirms is
+// never read against one without. The preflight refuses a deployment running any other.
+// env-ok: EXPECT_GOOGLE_DELAY (optional; the workflow's google_delay input, unset on a hand
+// run, which is off)
+lines.push(googleDelayLine(process.env.EXPECT_GOOGLE_DELAY));
 lines.push("");
 if (result.incomplete.length > 0) {
   lines.push("## This run was not judged");
