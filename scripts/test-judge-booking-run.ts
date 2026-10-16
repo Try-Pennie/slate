@@ -25,6 +25,7 @@ import {
   waitSpanText,
   confirmWallText,
   lineSplitText,
+  subrequestText,
   startupOriginText,
   coldAfterDeployText,
   resentText,
@@ -2798,6 +2799,31 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   const legReading = startupReading(cold.map((c) => ({ handlerMs: 2_000, beforeMs: c.before, cold: true, answer: { wait_total_ms: c.whole, wait_entry_at_ms: c.before - c.whole, loadtest_leg: "cold" } })), { leg: "cold" });
   const leg = coldAfterDeployText({ expected: 4, result, reading: legReading });
   assert(leg.includes(`by span isolate start p50 ${p.p50}ms, `), `the cold leg's spans lead with the isolate start (got: ${leg})`);
+}
+
+// --- #3410: the subrequest line states the mean it refers to ---------------------------
+// It used to say "this run's mean per invocation is above" on every run, and no mean
+// was printed anywhere above it, judged run or not (run 38833395446 among them). The
+// mean is printed only where the judge itself read the window as this run's.
+{
+  const judged = { incomplete: false, platformUnmeasured: null };
+  const reading = { invocations: 610, cpuMsP99: 40, subrequests: 52_000, statuses: { success: 610 }, cron: null };
+  const measured = subrequestText(reading, judged);
+  assert(measured.includes("85.2 subrequests per invocation"), `a judged window names its mean (got: ${measured})`);
+  assert(measured.includes("52000 over 610 invocations"), `and the two figures it came from (got: ${measured})`);
+  assert(!/is above/.test(measured), `and never points at a figure printed elsewhere (got: ${measured})`);
+  // The judge's control: a count far under what the run made is a window that had not
+  // caught up, so its numbers describe another window and no mean is claimed.
+  const lagging = subrequestText({ ...reading, invocations: 12, subrequests: 900 }, { incomplete: false, platformUnmeasured: "the analytics API counted 12 invocations against the 610 this run made, so its CPU and subrequest numbers are about a different window" });
+  assert(/not measured \(the analytics API counted 12 invocations/.test(lagging), `a window the judge called unmeasured claims no mean (got: ${lagging})`);
+  assert(!/per invocation on average/.test(lagging), `even though both figures were read (got: ${lagging})`);
+  const incomplete = subrequestText(reading, { incomplete: true, platformUnmeasured: null });
+  assert(/the run was incomplete/.test(incomplete) && !/per invocation on average/.test(incomplete), `an incomplete run claims no mean either (got: ${incomplete})`);
+  const unread = subrequestText({ invocations: null, cpuMsP99: null, subrequests: null, statuses: null, cron: null, unreadableWhy: "no Cloudflare credentials on this runner" }, judged);
+  assert(/not measured \(no Cloudflare credentials on this runner\)/.test(unread), `an unread window says the mean was not measured, and why (got: ${unread})`);
+  const none = subrequestText({ invocations: 0, cpuMsP99: null, subrequests: 0, statuses: {}, cron: null }, judged);
+  assert(/no invocation was counted/.test(none), `a window with no invocation has no mean, said as such rather than 0 or NaN (got: ${none})`);
+  for (const t of [measured, lagging, incomplete, unread, none]) assert(/1000 subrequest ceiling/.test(t), `every branch says why the mean is never a bar (got: ${t})`);
 }
 
 // --- #3354: the shared line's wait, split by the object's own log of its calls --------

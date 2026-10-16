@@ -964,6 +964,41 @@ export function confirmWallText(m: RunMeasurements, cs: ConfirmStartupReading | 
 }
 
 /**
+ * #3410: the report's closing note on subrequests, stating the mean it refers to from
+ * the same platform reading the judged bars use, or that it was not measured and why.
+ * The mean is printed only where the judge itself read the window as this run's: its
+ * invocation control calls a lagging window "about a different window", and a mean
+ * over that would be confident about the wrong thing.
+ * It used to say "this run's mean per invocation is above" on every run while no mean
+ * was printed anywhere, so it pointed a reader at a number that did not exist (L11).
+ */
+export function subrequestText(
+  p: PlatformReading,
+  /** The judge's own verdict on this reading, so a window it did not judge as this run's claims no mean. */
+  judged: { incomplete: boolean; platformUnmeasured: string | null },
+): string {
+  const why =
+    "Cloudflare exposes no PER INVOCATION maximum, which is what the 1000 subrequest ceiling is " +
+    "about, so the mean is reported and never made a bar; a breach arrives as an invocation " +
+    "status other than success, which IS judged (#2279).";
+  if (judged.incomplete) {
+    return `Subrequests: not reported, because the run was incomplete and the platform window was never judged against it. ${why}`;
+  }
+  if (judged.platformUnmeasured !== null) return `Subrequests: not measured (${judged.platformUnmeasured}). ${why}`;
+  if (p.subrequests === null || p.invocations === null) {
+    return `Subrequests: not measured (${p.unreadableWhy ?? "the platform window was not read"}). ${why}`;
+  }
+  if (p.invocations === 0) {
+    return `Subrequests: no invocation was counted in this run's window, so there is no mean. ${why}`;
+  }
+  const mean = (p.subrequests / p.invocations).toFixed(1);
+  return (
+    `Subrequests: ${mean} subrequests per invocation on average over this run's window ` +
+    `(${p.subrequests} over ${p.invocations} invocations). ${why}`
+  );
+}
+
+/**
  * #3354: the shared line's wait, split by the object's own log of the calls each
  * confirm sent while it waited (`confirm-startup.ts`, `LineSplit`), as one report line.
  * A report line, never a bar: it says whether a line wait is time behind a leader,
