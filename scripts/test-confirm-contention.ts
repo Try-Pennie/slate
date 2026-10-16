@@ -41,6 +41,7 @@ import {
   SlotUnavailableError,
   RaceLostRefusalError,
   ExistingCallError,
+  NoEligibleAgentsError,
   confirmQueueKey,
   queueKeyBeforeRouting,
   stableKeyFor,
@@ -50,7 +51,7 @@ import {
 } from "../src/lib/booking/orchestration.ts";
 import { withinBookingConfirmBudget, BOOKING_CONFIRM_BUDGET_MS } from "../src/lib/booking/confirm-budget.ts";
 import { makeConfirmQueue, isolateLine, CONFIRM_QUEUE_WAIT_MS, CONFIRM_LINE_LOOKAHEAD, CONFIRM_LINE_SETTLED_MEMORY_MS, type ConfirmLine, type LineTurn } from "../src/lib/booking/confirm-queue.ts";
-import type { Booking, User } from "../src/lib/db/types.ts";
+import type { Booking, BookingReservation, User } from "../src/lib/db/types.ts";
 import type { BookingContext } from "../src/lib/booking/orchestration.ts";
 import type { LadderInputs } from "../src/lib/availability/ladder-inputs.ts";
 import { createAsserter, makeDeps, makeBooking, input, users, bucket as fakeBucket, eventType as fakeEventType } from "./lib/booking-fakes.ts";
@@ -224,6 +225,12 @@ async function burst(opts: {
   slowRescheduleMs?: number;
   /** The FIRST idempotency read for this key fails (a lookahead meeting an outage). */
   failFirstIdempotencyReadOf?: string;
+  /**
+   * #3440: reservations an earlier request wrote and never finished (a crash mid
+   * create), each found only by its OWN idempotency key, so the confirm re-submitted
+   * with that key resumes it and nobody else does.
+   */
+  inFlight?: BookingReservation[];
   /** #3462: how long a reservation's delete takes, the last step of a lost
    *  attempt's rollback. Kept inside the 2s cleanup allowance it runs under. */
   slowCleanupMs?: number;
@@ -486,6 +493,7 @@ async function burst(opts: {
         const pool = poolFor(b.code);
         return { candidates: pool.filter((id) => !taken(id)), memberCount: pool.length };
       },
+      loadReservationByKey: async (key) => (opts.inFlight ?? []).find((r) => r.idempotency_key === key) ?? null,
       findBookingByIdempotencyKey: async (key) => {
         if (opts.failFirstIdempotencyReadOf === key && !idempotencyFailed) {
           idempotencyFailed = true;
@@ -614,7 +622,9 @@ async function burst(opts: {
                 ? "SLOT_TAKEN"
                 : err instanceof ExistingCallError
                   ? "EXISTING_CALL"
-                  : `unexpected ${(err as Error)?.name}: ${(err as Error)?.message}`;
+                  : err instanceof NoEligibleAgentsError
+                    ? "NO_ELIGIBLE_AGENTS"
+                    : `unexpected ${(err as Error)?.name}: ${(err as Error)?.message}`;
           run.answeredMs = clock.now - startedAt;
           afterAnswer(i, run.outcome);
         },
@@ -2555,6 +2565,243 @@ async function main() {
       !(loser?.calls ?? []).some((c, i, all) => c.name === "verifyFree" && all.slice(0, i).filter((x) => x.name === "verifyFree").length > 0),
       "#3338 slow lost race: the loser never asks Google about the rung below",
     );
+  }
+
+  // --- #3440 and #3441: a leader's refusal settles the line only when its ladder is spent ---
+  //
+  // Both are the one question `verdictForRefusal` answers: what the confirms waiting
+  // behind a refused leader are told. The rule (#3338, Dan 2026-10-06, "Same as a
+  // normal confirm") is that they are told the time is taken only when the leader's
+  // refusal proves its whole LADDER spent. 311's ladder is 311, 211, 111, and no rung
+  // of it is filtered to advisors without Low, so an empty rung is a real empty bucket.
+  const LADDER_311 = "311";
+  assert(JSON.stringify(tierLadder(LADDER_311)) === JSON.stringify(["311", "211", "111"]), `fixture: ${LADDER_311} walks 311, 211, 111`);
+  const someoneHolds = (id: string) =>
+    makeBooking({
+      id: `held-${id}`,
+      assigned_user_id: id,
+      agent_name: `Agent ${id}`,
+      agent_email: `${id}@x.com`,
+      starts_at: input.startIso,
+      external_id: `someone-else-${id}`,
+      salesforce_id: `sf-someone-else-${id}`,
+      attendee_email: `someone-${id}@example.com`,
+      attendee_phone: "+12035569999",
+      manage_token: `tok-held-${id}`,
+    } as Partial<Booking>);
+
+  // #3440: a crowd behind a RESUMED reservation. Lead 0 crashed mid create earlier, and
+  // its re-submit resumes the reservation that create wrote, pinned to a, the top rung's
+  // only advisor. Somebody else has booked a since, so the resume is refused as taken.
+  // That refusal is about the one advisor an earlier request pinned: it never asked the
+  // rungs below, where c and d are free. Before the fix it reported a full verdict and
+  // the four behind it were told the time was taken.
+  {
+    const resumed = lead(0, { bucketCode: LADDER_311 });
+    const key = stableKeyFor(resumed);
+    assert(key !== null, "#3440 fixture: the resumed lead has a stable key, the only kind a reservation is found by");
+    const reservation = {
+      id: "resv-crashed",
+      idempotency_key: key!,
+      pinned_user_id: "a",
+      pinned_agent_email: "a@x.com",
+      gcal_client_id: "slatecrashed",
+      payload: {
+        booking: {
+          org_id: "org1",
+          bucket_id: `bkt-${LADDER_311}`,
+          event_type_id: "et1",
+          assigned_user_id: "a",
+          agent_name: "Agent a",
+          agent_email: "a@x.com",
+          starts_at: input.startIso,
+          ends_at: "2026-06-08T13:30:00.000Z",
+          original_starts_at: input.startIso,
+          original_ends_at: "2026-06-08T13:30:00.000Z",
+          timezone: "America/New_York",
+          status: "confirmed",
+          salesforce_id: resumed.salesforceId ?? null,
+          attendee_name: resumed.attendee.name,
+          attendee_email: resumed.attendee.email,
+          attendee_phone: resumed.attendee.phone,
+          prefill: {},
+          gcal_event_id: "slatecrashed",
+          manage_token: "tok-crashed",
+          idempotency_key: key!,
+          external_id: resumed.externalId ?? null,
+          routing_trace: { bucket_code: LADDER_311, bucket_id: `bkt-${LADDER_311}`, considered: ["a"], chosen_user_id: "a", fallback_applied: false },
+        },
+        event: {
+          summary: "Call",
+          description: "desc",
+          start: input.startIso,
+          end: "2026-06-08T13:30:00.000Z",
+          timezone: "America/New_York",
+          attendeeEmail: resumed.attendee.email,
+          attendeeName: resumed.attendee.name,
+        },
+        bucketCode: LADDER_311,
+      },
+      status: "pending",
+      lease_until: null,
+      attempts: 0,
+      last_error: null,
+      next_attempt_at: null,
+      created_at: "",
+      updated_at: "",
+    } as unknown as BookingReservation;
+    const below = ["c", "d"];
+    for (const viaApi of [true, false]) {
+      const tag = `#3440 resumed reservation, ${viaApi ? "booking API" : "booker confirm"}`;
+      const { runs, tally, bySlot } = await burst({
+        inputs: [resumed, ...Array.from({ length: 4 }, (_, i) => lead(1 + i, { bucketCode: LADDER_311 }))],
+        pool: [],
+        poolByCode: { [LADDER_311]: ["a"], "211": below },
+        held: [someoneHolds("a")],
+        inFlight: [reservation],
+        queue: "real",
+        viaApi,
+        // The resume's calendar write is slow, so the four arrive while it leads.
+        slowEventMs: 2_000,
+        arriveAtMs: [0, 100, 100, 100, 100],
+      });
+      assert(runs[0].outcome === "SLOT_TAKEN", `${tag}: the resumed lead is told its time is taken, as before (got ${runs[0].outcome})`);
+      assert(
+        runs[0].calls.some((c) => c.name === "createEvent") && !runs[0].calls.some((c) => c.name === "insertReservation"),
+        `${tag}: the fixture really resumed the reservation rather than starting a fresh confirm`,
+      );
+      const bookedBelow = below.filter((id) => bySlot.has(`${id}|${input.startIso}`));
+      assert(
+        bookedBelow.length === below.length,
+        `${tag}: the confirms behind it book the free advisors on the rung below (got ${bookedBelow.join(",") || "none"}, ${JSON.stringify(tally)})`,
+      );
+      assert(tally.created === below.length, `${tag}: one booking per free advisor (got ${JSON.stringify(tally)})`);
+      assert(
+        runs.slice(1).every((r) => r.outcome === "created" || r.outcome === "SLOT_TAKEN"),
+        `${tag}: everyone behind is booked or told the time is taken once the ladder is spent (got ${JSON.stringify(tally)})`,
+      );
+    }
+  }
+
+  // #3441: a crowd on a ladder whose LAST rung is an empty bucket. 311's only advisor a
+  // is free and 211's only advisor c already holds the time; 111 exists with nobody in
+  // it. The first in books a, which is not the ladder's last rung, so it settles
+  // nothing. A crowd arriving once it has booked meets no claim in flight (a crowd
+  // arriving with it is answered by the #3489 parking instead), so the first of them
+  // leads and walks: 311 spent, 211 spent, 111 empty, which ends the walk in
+  // `NoEligibleAgentsError` rather than a taken slot. Before the fix that refusal did
+  // not settle the line, so every confirm behind it led in turn and walked the whole
+  // ladder itself. Now the one walk answers them all, and the walker keeps its own
+  // answer, the empty bucket refusal that pages as a misconfigured bucket.
+  for (const viaApi of [true, false]) {
+    const tag = `#3441 empty last rung, ${viaApi ? "booking API" : "booker confirm"}`;
+    const { runs, tally, bySlot, calls } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i, { bucketCode: LADDER_311 })),
+      pool: [],
+      poolByCode: { [LADDER_311]: ["a"], "211": ["c"], "111": [] },
+      held: [someoneHolds("c")],
+      queue: "real",
+      viaApi,
+      slowGoogleMs: 3_000,
+      slowEventMs: 5_000,
+      arriveAtMs: Array.from({ length: BURST }, (_, i) => (i === 0 ? 0 : 9_000)),
+    });
+    assert(runs[0].outcome === "created" && tally.created === 1 && bySlot.size === 2, `${tag}: exactly one winner, the first in (got ${JSON.stringify(tally)})`);
+    const walkers = runs.filter((r) => r.outcome !== "created" && r.calls.some((c) => !LOOKAHEAD_READS.has(c.name)));
+    assert(walkers.length === 1, `${tag}: one confirm walks the spent ladder, the rest are answered from it (got ${walkers.length}, ${JSON.stringify(tally)})`);
+    assert(
+      walkers[0]?.outcome === "NO_ELIGIBLE_AGENTS",
+      `${tag}: the walker keeps its own answer, the empty bucket, so the page is unchanged (got ${walkers[0]?.outcome})`,
+    );
+    assert(
+      calls.recordRoutingDecision.some((d) => d.outcome === "no_eligible_agents"),
+      `${tag}: and its refusal is still recorded as an empty bucket`,
+    );
+    assert(tally.SLOT_TAKEN === BURST - 2, `${tag}: everybody else is told the time is taken (got ${JSON.stringify(tally)})`);
+    assert(quiet(runs.filter((r) => r.outcome === "SLOT_TAKEN")), `${tag}: the rest stay inside the lookahead bound`);
+  }
+
+  // #3441 control: a ladder with NOBODY in it at all. Every rung is an empty bucket, so
+  // no rung refused anybody as taken and there is no taken time to tell anyone about:
+  // "taken" would be a claim nothing measured (L11). Each confirm keeps its own empty
+  // bucket answer, as before, and a walk of empty rungs asks nobody at Google.
+  for (const viaApi of [true, false]) {
+    const tag = `#3441 control, nobody on the ladder, ${viaApi ? "booking API" : "booker confirm"}`;
+    const { runs, tally, bySlot } = await burst({
+      inputs: Array.from({ length: 5 }, (_, i) => lead(i, { bucketCode: LADDER_311 })),
+      pool: [],
+      poolByCode: { [LADDER_311]: [], "211": [], "111": [] },
+      queue: "real",
+      viaApi,
+    });
+    assert(bySlot.size === 0, `${tag}: nobody is booked (got ${bySlot.size})`);
+    assert(
+      runs.every((r) => r.outcome === "NO_ELIGIBLE_AGENTS"),
+      `${tag}: every confirm is answered as an empty bucket, never told the time is taken (got ${JSON.stringify(tally)})`,
+    );
+  }
+
+  // #3440's rule reaches one more refusal that never walked a ladder: a lead who holds a
+  // call and asks the booking API for another time in the same bucket is RESCHEDULED,
+  // and that asks only their own bucket (in place, then anybody else in it). Lead 9
+  // holds 14:00 with a and asks for 13:00, where Google has a busy and nobody else in
+  // 411 is free; c and d on 311 are. Their refusal says nothing about 311, so the four
+  // new leads behind them walk down and book there, rather than being told it is taken.
+  {
+    const tag = "#3440 refused reschedule";
+    const theirs = makeBooking({
+      id: "booked-9",
+      bucket_id: "bkt-411",
+      assigned_user_id: "a",
+      agent_email: "a@x.com",
+      starts_at: "2026-06-08T14:00:00.000Z",
+      ends_at: "2026-06-08T14:30:00.000Z",
+      external_id: "burst-9",
+      salesforce_id: "sf-9",
+      attendee_email: "lead9@example.com",
+      attendee_phone: `+1203555${1009}`,
+      manage_token: "tok-9",
+      gcal_event_id: "gcal-9",
+    } as Partial<Booking>);
+    const below = ["c", "d"];
+    const { runs, tally, bySlot } = await burst({
+      inputs: [lead(9, { bucketCode: "411" }), ...Array.from({ length: 4 }, (_, i) => lead(i, { bucketCode: "411" }))],
+      pool: [],
+      poolByCode: { "411": ["a"], "311": below },
+      busyAtGoogle: ["a"],
+      held: [theirs],
+      existingContext: { booking: theirs, bucket: { ...fakeBucket, code: "411", id: "bkt-411" }, eventType: fakeEventType } as BookingContext,
+      queue: "real",
+      viaApi: true,
+      slowRescheduleMs: 2_000,
+      arriveAtMs: [0, 100, 100, 100, 100],
+    });
+    assert(runs[0].outcome === "SLOT_TAKEN", `${tag}: the lead moving their call is refused (got ${runs[0].outcome})`);
+    assert(bySlot.get(`a|2026-06-08T14:00:00.000Z`)?.id === "booked-9", `${tag}: and keeps the call they hold`);
+    const bookedBelow = below.filter((id) => bySlot.has(`${id}|${input.startIso}`));
+    assert(
+      bookedBelow.length === below.length && tally.created === below.length,
+      `${tag}: the new leads behind it book the free advisors below (got ${bookedBelow.join(",") || "none"}, ${JSON.stringify(tally)})`,
+    );
+  }
+
+  // #3440 control, the other way: a NAMED LINK's one advisor is its whole ladder, so a
+  // leader refused on it still settles everybody behind it. Since #3440 a refusal
+  // settles the line only where it is marked as a spent ladder, so this pins that the
+  // named link is marked: unmarked, each confirm behind would lead and ask in turn.
+  {
+    const tag = "#3440 named link, its advisor taken";
+    const { runs, tally } = await burst({
+      inputs: Array.from({ length: 20 }, (_, i) => lead(i, { bucketCode: LADDER_311, agentLinkUserId: "a" })),
+      pool: [],
+      poolByCode: { [LADDER_311]: ["a"] },
+      held: [someoneHolds("a")],
+      queue: "real",
+      viaApi: false,
+    });
+    assert(tally.SLOT_TAKEN === 20, `${tag}: every confirm is told the time is taken (got ${JSON.stringify(tally)})`);
+    const askers = runs.filter((r) => r.calls.some((c) => !LOOKAHEAD_READS.has(c.name)));
+    assert(askers.length === 1, `${tag}: one confirm asks, the rest are answered from its refusal (got ${askers.length})`);
   }
 
   // --- #3429: the crowd rule this build DECLARES is the one its confirm path RUNS ---
