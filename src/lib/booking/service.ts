@@ -2532,6 +2532,9 @@ export function bookingFailureAlert(
   /** #3663: how far the request had got, which the booking API's timeout path knows. */
   reach: TimeoutReach = "booking",
 ): { key: string; cooldownMs: number; message: string } | null {
+  // #3837: a retry that found its reservation's lease held by the drain or another
+  // retry. Answered retryable like the outage, but nothing is down, so no page.
+  if (err instanceof orchestration.ReservationHeldError) return null;
   // #3102: the same incident as the verify outage from the lead's side, so the
   // same key and cooldown, with words that name what did not answer.
   if (err instanceof orchestration.DependencyTimeoutError) {

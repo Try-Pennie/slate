@@ -43,10 +43,31 @@ A refusal settles the line only where it is MARKED as proving the ladder spent
 - **A named link**, whose one advisor is its whole ladder.
 
 Everything else that refuses a time never walked the ladder, so it settles nobody and
-the next confirm walks: a RESUMED reservation whose pinned advisor turned out taken
-(`completeReservation`, #3440; the resumed lead is still told its time is taken), and
-a booking API reschedule, which asks only the lead's own bucket. The scenarios are
-the `#3440` and `#3441` cases in `scripts/test-confirm-contention.ts`.
+the next confirm walks: a booking API reschedule, which asks only the lead's own
+bucket. The scenarios are the `#3440`, `#3441` and `#3837` cases in
+`scripts/test-confirm-contention.ts`.
+
+**A resumed reservation walks the ladder too** (#3837, Dan 2026-10-16). A lead's
+retry after a cut off confirm resumes the reservation that confirm left
+(`resumeReservation`), pinned to one advisor. When that advisor has been taken
+since, the stale reservation and its calendar event are rolled back first, and the
+lead then walks the ladder from the top for the same time exactly as a fresh
+confirm does, with the same verdicts: booked below like anybody else, or, when the
+whole ladder is spent, told the time is taken with a verdict that answers the crowd
+behind it. Until #3837 the resumed lead was told "taken" outright (#3440 kept that
+refusal from settling anybody else). The walk reserves under the same idempotency
+key, so a third retry finds its booking or resumes its reservation.
+
+The resume holds the reservation's **lease**, the one the reservation drain takes
+(`processBookingReservations`), for its whole attempt, so the drain and a lead's
+retry never both work one reservation. A retry that finds the lease held answers the
+holder's booking if it has just finished, and otherwise refuses retryably
+(`ReservationHeldError`, a 503 that pages nobody) without touching the reservation or
+walking, since a walk would reserve under the same key and adopt the reservation
+still standing. A claim that fails is the retryable outage, and a rollback that fails
+throws its own error without walking, for the same reason; the lease is given back,
+so the drain retries the row. Those cases are driven in
+`scripts/test-booking-reservations.ts`.
 
 So a leader that books the last advisor of a rung above the last reports "not
 full", and the line's existing hand on makes the next confirm the leader. It walks
@@ -444,7 +465,7 @@ longer serve an older client, since a refused client uses its isolate's line for
 of a gradual deploy (run 37333201026). Optional fields whose absence only the CLIENT reads
 (#3489's rung, outcome, `canWalk`, settlement and `park`) need neither.
 
-**The deploy refuses that order (#3561).** Once #3838 is merged, a deploy refuses to put
+**The deploy refuses that order (#3561).** Since #3838 shipped, a deploy refuses to put
 a ConfirmLine Worker build in front of the live app when its `CONFIRM_LINE_PROTOCOL` is
 lower than the app's (gradual deploy exit 27, `scripts/deploy-object-workers.ts` exit 3),
 so a line older than the app is no longer something a deploy can make by accident. It

@@ -4,16 +4,23 @@
 // the shared BookingDeps fake lives in scripts/lib/booking-fakes.ts.
 // Run: node --experimental-strip-types scripts/test-booking-reservations.ts
 import {
+  createBooking,
   processBookingReservations,
+  SlotUnavailableError,
+  stableKeyFor,
+  VerifyUnavailableError,
+  type BookingDeps,
 } from "../src/lib/booking/orchestration.ts";
 import type {
   BookingReservation,
 } from "../src/lib/db/types.ts";
 import { GoogleHttpError } from "../src/lib/google/http-error.ts";
+import { tierLadder } from "../src/lib/routing/tiers.ts";
 import {
   createAsserter,
   makeDeps,
   makeBooking,
+  input,
 } from "./lib/booking-fakes.ts";
 
 const { assert, finish } = createAsserter();
@@ -475,6 +482,221 @@ async function run() {
     const cRes = await processBookingReservations(cDeps, 15);
     assert(cRes.completed === 1 && cCalls.webhooks.length === 1, "#3516 control: a resolving bucket sends booking.created");
     assert(cCalls.deletedReservations.includes("resv-3516-control"), "#3516 control: and deletes the reservation");
+  }
+
+  const crashedReservationFixture = crashedReservation;
+  // --- #3837: a lead's retry resumes its reservation under the drain's lease, and
+  // walks the ladder when the advisor it pinned has been taken ---
+  //
+  // A confirm cut off after writing its reservation leaves it pending, pinned to one
+  // advisor. The lead's retry finds it by the same idempotency key and resumes it. Two
+  // things were wrong. The resume took no lease, so on a reservation old enough for the
+  // drain the lead's retry and the drain could both complete it at once. And when the
+  // pinned advisor had been taken in the meantime the lead was told the time was gone,
+  // while any other confirm in that position walks the tier ladder and books a free
+  // advisor at the same time (Dan, 2026-10-16: the resumed lead walks the tiers too).
+  {
+    // The crashed confirm's reservation, under the key the lead's retry carries.
+    const retryKey = stableKeyFor(input);
+    assert(retryKey !== null, "#3837 fixture: the retry has a stable key, the only kind a reservation is found by");
+    const crashedReservation = (): BookingReservation => {
+      const r = crashedReservationFixture();
+      return { ...r, idempotency_key: retryKey!, payload: { ...r.payload, booking: { ...r.payload.booking, idempotency_key: retryKey! } } };
+    };
+    const [top, second] = tierLadder(input.bucketCode);
+    // One lease table the resume and the drain share, as the real column is shared.
+    const leaseTable = () => {
+      const held = new Map<string, string>();
+      const log: string[] = [];
+      let n = 0;
+      return {
+        held,
+        log,
+        lease: async (id: string): Promise<string | null> => {
+          log.push(`lease ${id}`);
+          if (held.has(id)) return null;
+          const token = `tok-${++n}`;
+          held.set(id, token);
+          return token;
+        },
+        release: async (id: string, token: string): Promise<void> => {
+          log.push(`release ${id}`);
+          if (held.get(id) === token) held.delete(id);
+        },
+      };
+    };
+    const settle = async <T>(run: () => Promise<T>): Promise<{ value: T | null; err: unknown }> => {
+      try {
+        return { value: await run(), err: null };
+      } catch (err) {
+        return { value: null, err };
+      }
+    };
+    // The pinned advisor a holds the time now (another lead booked it); the top rung
+    // shows nobody free, and the rung below has c.
+    const takenFixture = {
+      reservation: crashedReservation(),
+      candidatesByCode: { [top]: [] as string[], [second]: ["c"] },
+      memberCount: 1,
+      freeEmails: new Set(["a@x.com", "c@x.com"]),
+      insertBookingConflictFor: new Set(["a"]),
+    };
+
+    // 1. The pinned advisor was taken: the stale reservation is rolled back, then the
+    //    lead walks the ladder from the top for the same time and is booked below.
+    {
+      const leases = leaseTable();
+      const { deps, calls } = makeDeps({ ...takenFixture, reservation: crashedReservation() });
+      deps.leaseReservation = leases.lease;
+      deps.releaseReservationLease = leases.release;
+      const { value: res, err } = await settle(() => createBooking(input, deps));
+      assert(err === null, `#3837 taken pin: the resumed lead is booked rather than told the time is taken (got ${String(err)})`);
+      assert(res?.booking.assigned_user_id === "c", `#3837 taken pin: booked with the free advisor on the rung below (got ${res?.booking.assigned_user_id})`);
+      assert(
+        calls.resolveBucketByCode.includes(top) && calls.resolveBucketByCode.includes(second),
+        `#3837 taken pin: the walk starts at the top of the ladder (got ${calls.resolveBucketByCode.join(",")})`,
+      );
+      assert(calls.createEvent[0]?.email === "a@x.com", "#3837 taken pin: the reservation really was resumed on the advisor it pinned first");
+      assert(
+        calls.deleteEvent.some((e) => e.id === "gcal-1"),
+        `#3837 taken pin: the resumed event on the taken advisor's calendar is removed (got ${JSON.stringify(calls.deleteEvent)})`,
+      );
+      assert(
+        calls.deletedReservations[0] === "resv-crash",
+        `#3837 taken pin: the stale reservation is deleted first, so the drain has nothing left to resume (got ${calls.deletedReservations.join(",")})`,
+      );
+      assert(
+        calls.reservations.length === 1 &&
+          calls.reservations[0].pinned_user_id === "c" &&
+          calls.reservations[0].idempotency_key === crashedReservation().idempotency_key,
+        `#3837 taken pin: the walk reserves under the SAME key, so a third retry is still guarded by it (got ${JSON.stringify(calls.reservations)})`,
+      );
+      assert(
+        leases.log.join(";") === "lease resv-crash;release resv-crash",
+        `#3837 taken pin: the resume holds the drain's lease while it works the reservation, and gives it back (got ${leases.log.join(";")})`,
+      );
+      assert(leases.held.size === 0, "#3837 taken pin: no lease is left held");
+    }
+
+    // 2. A ladder that is genuinely full still answers taken, after the walk asked it.
+    {
+      const { deps, calls } = makeDeps({ ...takenFixture, reservation: crashedReservation(), candidatesByCode: { [top]: [], [second]: [] } });
+      const { err } = await settle(() => createBooking(input, deps));
+      assert(err instanceof SlotUnavailableError, `#3837 full ladder: the lead is told the time is taken (got ${String(err)})`);
+      assert(calls.resolveBucketByCode.includes(second), "#3837 full ladder: only after walking the rungs below");
+      assert(calls.deletedReservations.includes("resv-crash"), "#3837 full ladder: the stale reservation is gone, nothing orphaned for the drain");
+      assert(calls.reservations.length === 0, "#3837 full ladder: nothing new is reserved when nobody is free");
+    }
+
+    // 3. The drain holds the lease: the lead's retry does not touch the reservation,
+    //    is not walked (the reservation still names this key), and is told to try again.
+    {
+      const { deps, calls } = makeDeps({ ...takenFixture, reservation: crashedReservation() });
+      deps.leaseReservation = async () => null;
+      const { err } = await settle(() => createBooking(input, deps));
+      assert(
+        err instanceof VerifyUnavailableError && err.name === "ReservationHeldError",
+        `#3837 lease held: a retryable refusal of its own kind (got ${String(err)})`,
+      );
+      assert(calls.createEvent.length === 0, "#3837 lease held: no calendar write from the retry");
+      assert(calls.insertBooking.length === 0 && calls.reservations.length === 0, "#3837 lease held: no booking and no second reservation");
+      assert(calls.deletedReservations.length === 0, "#3837 lease held: the holder's reservation is left to the holder");
+    }
+
+    // 4. The lease is held because the holder has just finished: the booking it made
+    //    is the answer, read by the key, rather than a refusal.
+    {
+      const made = makeBooking({ id: "bk-by-drain", idempotency_key: crashedReservation().idempotency_key });
+      const { deps, calls } = makeDeps({ ...takenFixture, reservation: crashedReservation() });
+      let lookups = 0;
+      deps.findBookingByIdempotencyKey = async () => (lookups++ === 0 ? null : made);
+      deps.leaseReservation = async () => null;
+      const { value: res, err } = await settle(() => createBooking(input, deps));
+      assert(
+        err === null && res?.booking.id === "bk-by-drain",
+        `#3837 lease held, booking made: the holder's booking is the answer (got ${String(err)}, ${res?.booking.id})`,
+      );
+      assert(calls.createEvent.length === 0, "#3837 lease held, booking made: the retry writes nothing");
+    }
+
+    // 5. The lease claim itself fails: nothing is completed or walked, and it is the
+    //    retryable outage (a claim nobody could confirm is not a claim).
+    {
+      const { deps, calls } = makeDeps({ ...takenFixture, reservation: crashedReservation() });
+      deps.leaseReservation = async () => {
+        throw new Error("reservation_lease: statement refused");
+      };
+      const { err } = await settle(() => createBooking(input, deps));
+      assert(
+        err instanceof VerifyUnavailableError &&
+          err.name !== "ReservationHeldError" &&
+          /statement refused/.test(String((err as Error).cause)),
+        `#3837 failed claim: the retryable outage, carrying the database's refusal (got ${String(err)})`,
+      );
+      assert(calls.createEvent.length === 0 && calls.reservations.length === 0, "#3837 failed claim: nothing written and nothing walked");
+    }
+
+    // 6. The rollback of the stale reservation fails: no walk, since a walk would
+    //    reserve under the same key and adopt the very reservation still standing.
+    {
+      const leases = leaseTable();
+      const { deps, calls } = makeDeps({ ...takenFixture, reservation: crashedReservation() });
+      deps.leaseReservation = leases.lease;
+      deps.releaseReservationLease = leases.release;
+      deps.deleteReservation = async () => {
+        throw new Error("supabase 503");
+      };
+      const { err } = await settle(() => createBooking(input, deps));
+      assert(err instanceof Error && /503/.test(err.message), `#3837 failed rollback: its own error reaches the lead (got ${String(err)})`);
+      assert(calls.reservations.length === 0, "#3837 failed rollback: the ladder is not walked over a reservation still standing");
+      assert(
+        leases.held.size === 0 && leases.log.includes("release resv-crash"),
+        `#3837 failed rollback: the lease is given back, so the drain retries the row (got ${leases.log.join(";")})`,
+      );
+    }
+
+    // 7. An untaken pin completes as before, under the lease, and gives it back.
+    {
+      const leases = leaseTable();
+      const { deps } = makeDeps({ ...takenFixture, reservation: crashedReservation(), insertBookingConflictFor: new Set<string>() });
+      deps.leaseReservation = leases.lease;
+      deps.releaseReservationLease = leases.release;
+      const res = await createBooking(input, deps);
+      assert(res.booking.assigned_user_id === "a", "#3837 free pin: the resume books the advisor it pinned, as before");
+      assert(
+        leases.log.join(";") === "lease resv-crash;release resv-crash",
+        `#3837 free pin: under the lease (got ${leases.log.join(";")})`,
+      );
+    }
+
+    // 8. A lead's resume and the drain on ONE reservation: only one of them works it.
+    //    The drain runs in the middle of the resume's calendar write.
+    {
+      const leases = leaseTable();
+      const { deps, calls } = makeDeps({
+        ...takenFixture,
+        reservation: crashedReservation(),
+        insertBookingConflictFor: new Set<string>(),
+        drainableReservations: [crashedReservation()],
+      });
+      deps.leaseReservation = leases.lease;
+      deps.releaseReservationLease = leases.release;
+      const drainDeps: BookingDeps = { ...deps };
+      const createEvent = deps.createEvent;
+      let drained: { processed: number; completed: number; failed: number } | null = null;
+      deps.createEvent = async (...args) => {
+        if (drained === null) drained = await processBookingReservations(drainDeps, 15);
+        return createEvent(...args);
+      };
+      await createBooking(input, deps);
+      const seen = drained as { processed: number; completed: number; failed: number } | null;
+      assert(seen !== null, "#3837 resume and drain: the fixture really ran the drain mid resume");
+      assert(
+        seen?.processed === 1 && seen.completed === 0 && seen.failed === 0,
+        `#3837 resume and drain: the drain finds the lease taken and leaves the row alone (got ${JSON.stringify(seen)})`,
+      );
+      assert(calls.createEvent.length === 1, `#3837 resume and drain: one calendar write, never two (got ${calls.createEvent.length})`);
+    }
   }
 
   // --- the drain's read failing is the drain failing ---
