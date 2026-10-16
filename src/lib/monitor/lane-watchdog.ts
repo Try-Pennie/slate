@@ -89,10 +89,7 @@ const BLIND_DETECTOR_COOLDOWN_MS = 24 * 60 * 60_000;
  * cadence, to reach a morning and an evening reader, until #3801 made a day the
  * repeat for every unchanged condition.
  */
-const DAILY_CADENCE_MS = 24 * 60 * 60_000;
-// #3801 made a day the floor for every condition whose interval is coded, so half
-// the cadence now reads as the day it is applied as (`reminderIntervalMs`).
-const DAILY_LANE_COOLDOWN_MS = Math.max(DAILY_CADENCE_MS / 2, CONDITION_REPEAT_MS);
+const DAILY_LANE_COOLDOWN_MS = CONDITION_REPEAT_MS;
 
 /**
  * How often the parked detectors say they are parked (#1561).

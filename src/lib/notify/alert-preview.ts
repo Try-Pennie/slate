@@ -213,11 +213,11 @@ import {
  * clock. 2026-10-14 is EDT, four hours behind UTC, so these read as the times the
  * 6:00am page carried: failures recorded from 3:05am to 5:05am ET.
  */
-/** When a previewed condition was first posted, for the #3801 reminder states. */
-const PREVIEW_REMINDER_OPENED_MS = Date.UTC(2026, 9, 15, 4, 15);
 const PREVIEW_BURST = { firstMs: Date.UTC(2026, 9, 14, 7, 5), newestMs: Date.UTC(2026, 9, 14, 9, 5) };
 /** A wave still under way: failures from 4:10pm to 5:55pm ET. */
 const PREVIEW_WAVE = { firstMs: Date.UTC(2026, 9, 14, 20, 10), newestMs: Date.UTC(2026, 9, 14, 21, 55) };
+/** When a previewed condition was first posted, for the #3801 reminder states. */
+const PREVIEW_REMINDER_OPENED_MS = Date.UTC(2026, 9, 15, 4, 15);
 import { refusalAllClear, refusalSignalCopy } from "@/lib/monitor/api-refusal-signals";
 import {
   BOOKING_API_IP_LIMITER,

@@ -415,9 +415,8 @@ export const MONITOR_DEFAULTS = {
   // `URGENT_CONDITION_REPEAT_MS` for the conditions meaning leads are being lost
   // right now (`URGENT_CONDITION_KEYS` in the catalog). A stored cooldown still wins.
   // Kept longer than a day where an entry says why (the photo refresh's 23 hours, the
-  // upcoming gap's three days). The comments on each entry say why its condition
-  // persists; an interval they name other than these was the interval before #3801.
-  // Incident and info keys keep their own throttles. `settings.test.ts` pins this.
+  // upcoming gap's three days). Incident and info keys keep their own throttles.
+  // `scripts/test-urgent-conditions.ts` holds these to the urgent set.
   cooldownMs: {
     availability_data_anomaly: CONDITION_REPEAT_MS,
     availability_booked_solid: URGENT_CONDITION_REPEAT_MS,
@@ -438,51 +437,46 @@ export const MONITOR_DEFAULTS = {
     // human sets attributes or adds a manual member. Once-a-day whisper, like the
     // schedule-coverage and thin-tier nudges; the settings screen can tighten it.
     agents_without_routing: 24 * 60 * 60_000,
-    // Leads arriving with no usable routing code (#1908). Repeats hourly while it
-    // persists: the cause is an upstream page building links without an xbc, which
-    // stays broken until somebody fixes that page, and every hour it runs is more
-    // leads booked with the wrong team.
+    // Leads arriving with no usable routing code (#1908): the cause is an upstream
+    // page building links without an xbc, which stays broken until somebody fixes it.
+    // Once a day while unchanged (#3801).
     catchall_rate: CONDITION_REPEAT_MS,
-    // Schema behind the deployed code (#516). Repeats hourly while it persists:
-    // it stays broken until a human runs db push, and a dormant schema gap has
-    // twice gone unnoticed for a whole session, so it should keep asking.
+    // Schema behind the deployed code (#516): it stays broken until a human runs db
+    // push, so it keeps asking, once a day while unchanged (#3801).
     migration_version_lag: CONDITION_REPEAT_MS,
     // Sync-staleness (#241): the rotation being behind persists until the roster
-    // shrinks or a stuck agent is fixed, so repeat while it lasts. Hourly, like the
-    // migration-lag page; the settings screen can tighten it.
+    // shrinks or a stuck agent is fixed. Once a day while unchanged (#3801).
     sync_staleness: CONDITION_REPEAT_MS,
     // Orphaned appointments (#1215): a customer booked with an agent who has left
-    // stays wrong until a human reassigns, and it only pages after an hour of the
-    // gap standing open, so repeat while it lasts. Hourly, like the two above.
+    // stays wrong until a human reassigns, and it only pages after an hour of the gap
+    // standing open. Once a day while unchanged; a new agent, or a count that doubles,
+    // posts at once (#3801).
     inactive_agent_bookings: CONDITION_REPEAT_MS,
-    // Demoted-agent appointments (#3582): a held booking the reroute did not move stays wrong
-    // until a human places it, so repeat while it lasts, hourly, like the page it sits beside.
+    // Demoted-agent appointments (#3582): a held booking the reroute did not move stays
+    // wrong until a human places it. Once a day while unchanged (#3801).
     demoted_agent_bookings: CONDITION_REPEAT_MS,
-    // Stranded appointments (#1242): the sweep has already given up, so the state
-    // is terminal and stays wrong until a human places it. Repeat while it lasts,
-    // hourly, like the orphaned-appointment page it sits beside.
+    // Stranded appointments (#1242): the sweep has already given up, so the state is
+    // terminal and stays wrong until a human places it. Once a day while unchanged; a new
+    // agent, or a newly countable call (#3303), posts at once (#3801).
     coverage_needs_human: CONDITION_REPEAT_MS,
-    // An approved absence nobody has covered (#1238): the appointment is inside two
-    // days, no sweep is on it, and nothing repairs it on its own, so it stays wrong
-    // until a person places it. Hourly, like the two coverage pages it sits beside.
+    // An approved absence nobody has covered (#1238): nothing repairs it on its own, so
+    // it stays wrong until a person places it. Once a day while unchanged (#3801).
     ooo_coverage_gap: CONDITION_REPEAT_MS,
     // Time off not blocked in cal.com (#1253): the agent is away NOW and cal.com can
-    // still book them, and the sweep is already retrying every 5 minutes, so a
-    // shorter repeat than its neighbours. Half an hour keeps it present without
-    // becoming the thing people mute.
+    // still book them while the sweep retries every 5 minutes. Once a day while
+    // unchanged (#3801); another agent in the same state is a change.
     ooo_calcom_unprotected: CONDITION_REPEAT_MS,
-    // A bookable agent's calendar no longer hydrated past the booking horizon
-    // (#1262): stays wrong until the rotation reaches it or someone fixes the
-    // account, so it repeats hourly like the coverage pages it sits beside.
+    // A bookable agent's calendar no longer hydrated past the booking horizon (#1262):
+    // stays wrong until the rotation reaches it or someone fixes the account. Once a day
+    // while unchanged (#3801).
     calendar_window_uncovered: CONDITION_REPEAT_MS,
     // Database memory pressure (#3588): the page stays true until someone scales the
-    // instance or load eases, so it repeats hourly, and the warn whisper matches so a
-    // slow climb is not re-whispered every 5 minutes.
+    // instance or load eases. Once a day while unchanged (#3801). The warn whisper is
+    // info, so it keeps its own hourly throttle.
     db_saturation: CONDITION_REPEAT_MS,
     db_saturation_warn: 60 * 60_000,
-    // Busy time missing from the cache (#1591): it stays wrong until the sync
-    // reaches the calendar or someone fixes the account, so hourly, like the
-    // calendar window page it sits beside.
+    // Busy time missing from the cache (#1591): it stays wrong until the sync reaches
+    // the calendar or someone fixes the account. Once a day while unchanged (#3801).
     busy_cache_drift: CONDITION_REPEAT_MS,
     // Slate against cal.com drift (#2031). The sweep runs once a day, so anything
     // under a day cannot make it repeat and anything over it silences a day's
@@ -494,20 +488,15 @@ export const MONITOR_DEFAULTS = {
     // Hours nobody set (#1753): a slow condition that ends when a person or the
     // import writes the week, so once a day, like the other staffing nudges.
     agents_on_unset_hours: 24 * 60 * 60_000,
-    // Waiting to become bookable (#2318). Six hours, which is longer than the four
-    // hour window it reports on: the repair is somebody granting Calendar in Google
-    // Workspace or looking at a sync error, which takes a working morning rather
-    // than minutes, and a cooldown shorter than the grace would repeat the same
-    // names before anything could have changed.
+    // Waiting to become bookable (#2318): the repair is somebody granting Calendar in
+    // Google Workspace or looking at a sync error, which takes a working morning. Once a
+    // day while unchanged (#3801); a new name is a change.
     agents_awaiting_activation: CONDITION_REPEAT_MS,
-    // Stranded outside the pool (#2481). Six hours, like the waiting page beside it:
-    // the repair is a person pressing one button on an agent page, which happens
-    // inside a working morning, and the state costs leads every hour it stands.
+    // Stranded outside the pool (#2481): the repair is a person pressing one button on
+    // an agent page. Once a day while unchanged (#3801); a new name is a change.
     agents_stranded_outside_pool: CONDITION_REPEAT_MS,
-    // Sign in access not following the roster (#2459). Six hours, matching the
-    // roster sync's own failure pages: it is judged hourly and only after two
-    // unhealthy runs, so a shorter cooldown could not repeat any sooner, and a
-    // longer one would leave somebody locked out without a reminder all day.
+    // Sign in access not following the roster (#2459): judged hourly and only after two
+    // unhealthy runs. Once a day while unchanged (#3801).
     departed_sessions_unconverged: CONDITION_REPEAT_MS,
     // Below the lead's tier (#2593), per booking. Six hours: the repair is a person
     // reassigning one call, and calls are usually booked a day or more ahead, so a
@@ -515,10 +504,9 @@ export const MONITOR_DEFAULTS = {
     // tick would not be. Each booking has its own key, so a second booking pages at
     // once however recently the first did.
     booking_below_lead_tier: 6 * 60 * 60_000,
-    // A lead booked in both Slate and cal.com (#2933), per Slate booking. Six hours,
-    // like the below tier page beside it: the repair is a person cancelling one call,
-    // usually booked a day ahead, so a reminder inside the working day earns its
-    // noise. The check runs hourly, so nothing shorter than an hour could repeat.
+    // A lead booked in both Slate and cal.com (#2933), per Slate booking: the repair is
+    // a person cancelling one call. Each booking has its own key, so a second one pages
+    // at once; the same one is said again once a day (#3801).
     cross_system_booking: CONDITION_REPEAT_MS,
     // Calling in Regal while not bookable (#2090): one page per agent per day,
     // decided by Dan on 2026-09-08. The repair is a person deciding about a
@@ -530,45 +518,36 @@ export const MONITOR_DEFAULTS = {
     // day has closed, so it can only change once a day: anything shorter repeats
     // a sentence about a day that has not changed.
     regal_calls_quiet: 24 * 60 * 60_000,
-    // Unreadable Regal events (#2090). Six hours: a changed payload blinds the
-    // detector for every call until somebody updates the edge, which is worth
-    // repeating within a working day, and it clears on a day of readable traffic.
+    // Unreadable Regal events (#2090): a changed payload blinds the detector for every
+    // call until somebody updates the edge, and it clears on a day of readable traffic.
+    // Once a day while unchanged (#3801).
     regal_calls_unreadable: CONDITION_REPEAT_MS,
-    // Calls missing from the show rate (#2944). Two hours, the window it is judged
-    // over: a repeat inside one window restates the same calls, and every window
-    // that passes unfixed loses calls the split can only get back by a backfill.
+    // Calls missing from the show rate (#2944): every window that passes unfixed loses
+    // calls the split can only get back by a backfill. Once a day while unchanged (#3801).
     regal_call_outcomes_short: CONDITION_REPEAT_MS,
-    // Routing dead zone (#327): unchanged from the constant this replaced. A bucket
-    // with nobody stays wrong until someone is staffed onto it, so it repeats while
-    // it lasts, six-hourly. Tunable since a deliberately dark roster (#1272) turned
-    // it into sixty messages a wave with no way to quiet it.
-    // Debt tier offering no times (#2505). Six hours, inherited from the per
-    // bucket page it replaces: the repair is a staffing or calendar change that
-    // takes hours rather than minutes, and a tighter cooldown would repeat the
-    // same finding through one working morning.
+    // Debt tier offering no times (#2505): every lead on that tier is offered nothing,
+    // so it is one of the URGENT conditions and repeats hourly while it lasts (Dan,
+    // 2026-10-16, #3801). Tunable since a deliberately dark roster (#1272) turned it into
+    // sixty messages a wave with no way to quiet it.
     empty_tier: URGENT_CONDITION_REPEAT_MS,
-    // Customers being turned away (#1313): an active outage costing bookings by
-    // the minute, so it repeats faster than the staffing nudges. Half an hour is
-    // long enough not to spam a live incident, short enough that a page missed at
-    // the start of a wave comes back while it is still happening.
+    // Customers being turned away (#1313): an active outage costing bookings by the
+    // minute, so it is URGENT and repeats hourly while unchanged (#3801); a rate crossing
+    // into a worse band still posts at once.
     booking_failure_rate: URGENT_CONDITION_REPEAT_MS,
     // Half a month's error budget spent (#3179): a fact about the month rather
     // than the minute, which stays true until the month turns over. Once a day
     // keeps it present, with the share it has reached, without becoming noise.
     booking_budget: 24 * 60 * 60_000,
-    // A drifted cache (#1315) keeps mis-selling times until the sync lane
-    // reconverges, and the probe re-measures that bucket only once per rotation
-    // (a few hours), so a fast repeat would say nothing new. Hourly, matching the
-    // other conditions that persist until something is fixed.
+    // A drifted cache (#1315) keeps mis-selling times until the sync lane reconverges,
+    // and the probe re-measures that bucket only once per rotation. Once a day while
+    // unchanged (#3801).
     availability_drift: CONDITION_REPEAT_MS,
     // A served time the confirm refuses (#3381) stays true until a recompute drops it or
-    // somebody fixes the writer that put it back, and the check re-judges it every five
-    // minutes, so a faster repeat would say nothing new. Hourly, as the drift page above.
+    // somebody fixes the writer that put it back. Once a day while the same buckets do
+    // it; a new bucket posts at once (#3801).
     offered_nobody_free: CONDITION_REPEAT_MS,
-    // The booker unable to explain an empty week (#1420) is a config read that
-    // stays broken until somebody fixes it, and the lane re-measures it every
-    // minute, so a fast repeat would say nothing new. Hourly, matching the other
-    // conditions that persist until something is fixed.
+    // The booker unable to explain an empty week (#1420) is a config read that stays
+    // broken until somebody fixes it. Once a day while unchanged (#3801).
     booker_empty_reason: CONDITION_REPEAT_MS,
     // An advertised hour nobody covers (#1454) is not a fault that clears itself:
     // it ends when somebody edits a roster or the org's week, which is a staffing
@@ -582,11 +561,9 @@ export const MONITOR_DEFAULTS = {
     // pace; daily here would restate an unchanged, not yet urgent fact seven times,
     // which is the repetition that gets a channel muted (L36).
     roster_coverage_upcoming_gap: 3 * 24 * 60 * 60_000,
-    // Approved time off blocking nothing (#1467): the agent is away and a lead can
-    // be booked into those hours right now, and nothing repairs it on its own (the
-    // request still records the block as written, so no retry acts on it). It stays
-    // wrong until a person opens the request, so repeat while it lasts. Hourly,
-    // like the orphaned and stranded appointment pages it sits beside.
+    // Approved time off blocking nothing (#1467): a lead can be booked into those hours
+    // right now, and nothing repairs it on its own, so it stays wrong until a person opens
+    // the request. Once a day while unchanged (#3801); another request is a change.
     ooo_protection_lost: CONDITION_REPEAT_MS,
     // An event reaching nobody (#1459) persists until a person updates the
     // endpoint's events array, which is a database edit no deploy will do. Repeat
@@ -594,50 +571,42 @@ export const MONITOR_DEFAULTS = {
     // can legitimately last as long as the person who has to make that edit is away.
     webhook_event_no_subscriber: 24 * 60 * 60_000,
     // The request ceilings being off (#1529) persists until a deploy puts them back, and
-    // nothing self-heals it, so repeat while it lasts. Hourly rather than daily: unlike an
-    // unsubscribed webhook event, the state leaves a public endpoint unprotected, and
-    // unlike the fail-open incident it replaces, this one can say when it is over.
+    // nothing self-heals it. Once a day while unchanged (#3801), and it says when it ends.
     edge_limiter_unusable: CONDITION_REPEAT_MS,
     // A privileged function open to the web (#2447) persists until somebody revokes the
-    // grant, and nothing self-heals it, so repeat while it lasts. Hourly, for the same
-    // reason as the ceilings above: it leaves something reachable from outside that should
-    // not be, so it is not a maintenance item to pick up whenever.
+    // grant. Once a day while unchanged (#3801); another function is a change.
     definer_grants_to_web_roles: CONDITION_REPEAT_MS,
-    // Sign in open beyond Google (#3082) persists until somebody turns the provider off in
-    // the Supabase dashboard, and nothing self-heals it. Hourly, like the function grants
-    // above: it is a way in from outside that should not exist.
+    // Sign in open beyond Google (#3082) persists until somebody turns the provider off
+    // in the Supabase dashboard. Once a day while unchanged (#3801).
     auth_sign_in_beyond_google: CONDITION_REPEAT_MS,
-    // The audit log changed after it was written (#3090). Nothing heals it on its own
-    // and it means a privileged role has been used against the trail, so hourly, like
-    // the privileged function page above: it is a security incident, not a chore.
+    // The audit log changed after it was written (#3090). Nothing heals it on its own and
+    // it means a privileged role has been used against the trail. Once a day while
+    // unchanged (#3801); a further broken entry is a change.
     audit_log_chain_broken: CONDITION_REPEAT_MS,
-    // The refresh failing everywhere (#1544) persists until somebody fixes the cause, and
-    // nothing self-heals it, so repeat while it lasts. Every 6 hours rather than hourly:
-    // cached cover has weeks of margin before it stops reaching the booking horizon, so this
-    // is a maintenance problem to pick up in the working day, not an outage to page on.
+    // The refresh failing everywhere (#1544) persists until somebody fixes the cause.
+    // Named by Dan as one of the URGENT conditions (2026-10-16, #3801), so it repeats
+    // hourly while it lasts, although cached cover has weeks of margin before it stops
+    // reaching the booking horizon.
     hydration_all_failing: URGENT_CONDITION_REPEAT_MS,
-    // Booking handoffs with no channel to go to (#2367). Somebody in sales is waiting
-    // to be told about a booking and nothing will tell them until the setting is
-    // saved, which is a minute's work for whoever reads this. Hourly, like the other
-    // pages that stay true until a person acts.
+    // Booking handoffs with no channel to go to (#2367): somebody in sales is waiting to
+    // be told about a booking until the setting is saved. Once a day while unchanged
+    // (#3801).
     handoff_channel_unset: CONDITION_REPEAT_MS,
-    // Handoffs not reaching the channel (#2367): the lane retries every tick, so a
-    // repeat only says something when the retries are still failing. Hourly.
+    // Handoffs not reaching the channel (#2367): the lane retries every tick. Once a day
+    // while unchanged (#3801).
     handoff_undelivered: CONDITION_REPEAT_MS,
-    // Merged work that is not live (#2476). It stays true until somebody re-runs a
-    // deploy or merges again, and every hour it stands is an hour the fix somebody
-    // believes shipped is not running. Hourly, like the other pages whose remedy is
-    // a person doing something.
+    // Merged work that is not live (#2476): it stays true until somebody re-runs a deploy
+    // or merges again. Once a day while unchanged (#3801); a newer unshipped commit is a
+    // change.
     main_not_deployed: CONDITION_REPEAT_MS,
-    // CI refused before it starts (#2229). The remedy is a billing or account change
-    // somebody has to make, and while it lasts main is unguarded, so it should keep
-    // asking. Hourly.
+    // CI refused before it starts (#2229): the remedy is a billing or account change, and
+    // while it lasts main is unguarded. Once a day while unchanged (#3801); the run link
+    // changes on every post and is deliberately not a change.
     ci_runs_refused: CONDITION_REPEAT_MS,
-    // Online booking left stopped (#2366). It repeats while it stands, because the
-    // whole point is that the person who stopped it has forgotten, and one message
-    // is exactly what a forgetful reader misses. Four hours rather than hourly: it
-    // is a question about a deliberate state, and a state somebody is deliberately
-    // holding through a long incident must not be asked about every hour (L36).
+    // Online booking left stopped (#2366): every public lead is refused while it stands,
+    // so it is one of the URGENT conditions and repeats hourly (Dan, 2026-10-16, #3801).
+    // It used to be four hours, so a state somebody holds on purpose through a long
+    // incident was not asked about every hour; the settings screen can still set that.
     public_booking_stopped: URGENT_CONDITION_REPEAT_MS,
     // A retired booking key presented (#2879): somebody still holds a key Slate no
     // longer accepts, and every call they make is refused, so a lead may be on a
