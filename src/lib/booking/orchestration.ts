@@ -1035,7 +1035,7 @@ export interface BookingResult {
    * #3267: the booking committed and the work after its save did not finish, so the
    * answer is the booking and the reservation drain finishes the rest
    * (`answerCommitted`). The route counts it in the tally beside `created`, and the
-   * monitor lane pages on the share (`follow-up-drain-rate.ts`). Absent when all of
+   * monitor lane pages on the share (`follow-up-drain-rate.ts`, #3267). Absent when all of
    * the work landed.
    */
   followUpLeftToDrain?: true;

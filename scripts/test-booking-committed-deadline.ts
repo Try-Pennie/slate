@@ -121,7 +121,7 @@ function committedThenSpent(clock: ReturnType<typeof confirmClock>, opts: { lost
 }
 
 /** Booking fakes whose webhook step fails inside the save, so the reservation is left
- *  for the drain and the confirm answers with its follow up work unfinished. */
+ *  for the drain and the confirm answers with the work after its save unfinished (#3267). */
 function makeDepsLeftToDrain(): BookingDeps {
   const { deps } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
   return {

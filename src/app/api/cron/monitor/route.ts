@@ -1702,7 +1702,7 @@ export async function GET(req: NextRequest) {
     // above already made.
     //
     // Its own failure boundary (L73). A read or a write that fails throws, so the
-    // tick pages nothing and clears nothing.
+    // tick pages nothing and clears nothing (#3267).
     // all-clear-proof: scripts/test-follow-up-drain-rate.ts - pins that a failed tally
     // read, a failed state read and a failed state write each send NOTHING in either
     // direction, that a first reading or a day rollover sends nothing, and that the
@@ -1719,7 +1719,7 @@ export async function GET(req: NextRequest) {
         notify: (key, ms, text) => {
           // alert-key: booking_follow_up_left_to_drain
           // alert-text-ok: our own copy from follow-up-drain-rate.ts, built from
-          // measured counts; no error text can reach it.
+          // measured counts (#3267); no error text can reach it.
           return sendThrottledAlert(key, ms, text);
         },
         // alert-key: booking_follow_up_left_to_drain
