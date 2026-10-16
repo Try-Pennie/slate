@@ -23,8 +23,9 @@ export const FAULT_SWITCH_VARS = ["SLATE_LOADTEST_FAULT_PCT", "SLATE_LOADTEST_FA
 
 /**
  * Every per run switch a leg adds with --var and nothing commits, each with its OWN
- * refusal (#3269 review): the two fault settings, and the post confirm recompute arm
- * (#3258), which is not fault injection and must not be described as it (L11).
+ * refusal (#3269 review): the two fault settings, the post confirm recompute arm
+ * (#3258) and the Google delay (#3490), neither of which is fault injection and so
+ * must not be described as it (L11).
  */
 const PER_RUN_SWITCH_REASONS: Record<string, { topLevel: string; committed: string }> = {
   SLATE_LOADTEST_FAULT_PCT: faultReasons("SLATE_LOADTEST_FAULT_PCT"),
@@ -38,6 +39,17 @@ const PER_RUN_SWITCH_REASONS: Record<string, { topLevel: string; committed: stri
       "env.loadtest commits SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE, so every run would measure " +
       "that post confirm recompute arm whatever it was dispatched for, and a run dispatched for " +
       "another arm would be refused at preflight. The arm job sets it with --var.",
+  },
+  // #3490: the Google stand in's delay, which is a rig choice and not fault injection.
+  SLATE_LOADTEST_GOOGLE_DELAY: {
+    topLevel:
+      "the top level sets SLATE_LOADTEST_GOOGLE_DELAY, the load run's Google delay. Production " +
+      "never reads it (it acts only inside the Google stand in), and it has no business existing " +
+      "there: it belongs to the load workflow's arm job alone.",
+    committed:
+      "env.loadtest commits SLATE_LOADTEST_GOOGLE_DELAY, so every run would put that Google delay " +
+      "into its confirms whatever it was dispatched for, and a run dispatched without it would be " +
+      "refused at preflight. The arm job sets it with --var.",
   },
 };
 
@@ -303,8 +315,8 @@ export function loadtestEnvFaults(top: WranglerLike, env: WranglerLike): string[
   // makes inert but which has no business existing; in the committed env.loadtest
   // block it would fault EVERY leg of every run, so the steady pass's "no 5xx" bar
   // would be measuring faults the run injected on purpose.
-  // The post confirm recompute arm (#3258) is held to the same rule for its own
-  // reason, worded beside it above.
+  // The post confirm recompute arm (#3258) and the Google delay (#3490) are held to
+  // the same rule, each for its own reason, worded beside it above.
   for (const [key, reason] of Object.entries(PER_RUN_SWITCH_REASONS)) {
     if (key in topVars) faults.push(reason.topLevel);
     if (key in envVars) faults.push(reason.committed);

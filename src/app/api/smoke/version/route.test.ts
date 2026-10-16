@@ -104,6 +104,9 @@ describe("GET /api/smoke/version", () => {
         // #3258: the post confirm recompute arm, on when nothing set it.
         postConfirmRecompute: "on",
         postConfirmRecomputeUnknown: null,
+        // #3490: the Google stand in's delay, off when nothing set it.
+        googleDelay: "",
+        googleDelayUnknown: null,
         // #3429: what a confirm waiting behind a leader that booked its rung's last
         // advisor does, which the load run's drop burst is held to.
         confirmCrowdRule: "stops",
@@ -250,6 +253,35 @@ describe("GET /api/smoke/version", () => {
         const body = await (await get("Bearer real-key")).json();
         expect(body).not.toHaveProperty("postConfirmRecompute");
         expect(body).not.toHaveProperty("postConfirmRecomputeUnknown");
+      });
+    });
+
+    // #3490: which Google delay the stand in takes, from the same parser the stand in
+    // acts on, so the preflight can refuse a deployment whose rig nobody dispatched.
+    it("reports the Google delay the stand in takes, in its canonical spelling", async () => {
+      await withEnv({ SLATE_LOADTEST: "true", SLATE_LOADTEST_GOOGLE_DELAY: " write=5000/8000 , read=3000/5000" }, async () => {
+        canaryKey.primary.mockReturnValue("real-key");
+        const body = await (await get("Bearer real-key")).json();
+        expect(body.googleDelay).toBe("read=3000/5000,write=5000/8000");
+        expect(body.googleDelayUnknown).toBeNull();
+      });
+    });
+
+    it("reports a Google delay that did not parse, and the nothing it delays instead", async () => {
+      await withEnv({ SLATE_LOADTEST: "true", SLATE_LOADTEST_GOOGLE_DELAY: "read=3s/5s" }, async () => {
+        canaryKey.primary.mockReturnValue("real-key");
+        const body = await (await get("Bearer real-key")).json();
+        expect(body.googleDelay).toBe("");
+        expect(body.googleDelayUnknown).toBe("read=3s/5s");
+      });
+    });
+
+    it("says nothing about the Google delay when it is not a load test, even with it set", async () => {
+      await withEnv({ SLATE_LOADTEST: undefined, SLATE_LOADTEST_GOOGLE_DELAY: "read=3000/5000" }, async () => {
+        canaryKey.primary.mockReturnValue("real-key");
+        const body = await (await get("Bearer real-key")).json();
+        expect(body).not.toHaveProperty("googleDelay");
+        expect(body).not.toHaveProperty("googleDelayUnknown");
       });
     });
   });

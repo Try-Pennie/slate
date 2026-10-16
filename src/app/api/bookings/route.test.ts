@@ -291,6 +291,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(rateLimit.exactCeilingWithinLimit).toHaveBeenCalledWith(
       { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+      null,
     );
     // The per-minute burst window runs at the edge (#961), keyed on the caller.
     expect(rateLimit.bookingApiWriteWithinLimit).toHaveBeenCalledWith("regal");
@@ -307,6 +308,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(rateLimit.exactCeilingWithinLimit).not.toHaveBeenCalledWith(
       { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+      null,
     );
     expect(service.bookViaApi).not.toHaveBeenCalled();
   });
@@ -321,6 +323,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
       // cannot identify, not a bare key string.
       { kind: "address", ip: "203.0.113.9", keyPrefix: "ip:", policy: BOOKING_API_IP_LIMITER },
       DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+      null,
     );
     // The per-minute backstop runs at the edge (#961), keyed on the client IP.
     expect(rateLimit.bookingApiIpWithinLimit).toHaveBeenCalledWith("203.0.113.9");
@@ -847,10 +850,12 @@ describe("GET /api/bookings (list mode + lookup mode)", () => {
     expect(rateLimit.exactCeilingWithinLimit).toHaveBeenCalledWith(
       { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
+      null,
     );
     expect(rateLimit.exactCeilingWithinLimit).not.toHaveBeenCalledWith(
       { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+      null,
     );
     // And its edge per-minute window is the READ binding, not the write one (#961).
     expect(rateLimit.bookingApiReadWithinLimit).toHaveBeenCalledWith("regal");
@@ -890,6 +895,7 @@ describe("GET rate limiting (#597)", () => {
     expect(rateLimit.exactCeilingWithinLimit).toHaveBeenCalledWith(
       { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
+      null,
     );
     const keys = rateLimit.exactCeilingWithinLimit.mock.calls.map(([c]) => rateLimitKey(c as CallerKey));
     expect(keys.every((k) => !String(k).startsWith("ip:"))).toBe(true);

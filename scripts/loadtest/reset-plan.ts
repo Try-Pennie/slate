@@ -7,9 +7,18 @@
  * wait for the first cron delivery per arm. That is only a fair comparison if each
  * arm starts where the first did. The previous arm's bookings make agents busier
  * (busy blocks, daily caps) and widen every candidate read; its leftover outbox
- * rows and reservations are drained by the lanes during the next arm; and its rate
- * limit rows can refuse the next arm's drivers, which run at the per address
- * ceiling.
+ * rows and reservations are drained by the lanes during the next arm; and any rate
+ * limit rows it left can refuse the next arm.
+ *
+ * What it does NOT reach, and no longer needs to: the booking API's exact hourly
+ * ceilings (6,000 an hour per caller, 1,200 per address). Since #3416 they are counts
+ * in the `BURST_LIMITER` Durable Object rather than `rate_limits` rows, and the object
+ * Worker is kept between runs. They are scoped per RUN instead (#3456): every driver
+ * names its `RUN_ID` on each request (`loadtestRunHeaders` in `book-plan.ts`), and
+ * under SLATE_LOADTEST the authorizer counts that run's hits in objects of its own
+ * (`src/lib/loadtest-run-scope.ts`). Each dispatch has its own RUN_ID, so the next arm
+ * starts at zero with nothing to delete, and nothing here needs a way to clear a
+ * security control's state.
  *
  * DELETE, never TRUNCATE. `busy_blocks.booking_id` cascades on delete, so deleting
  * bookings removes only the busy time a booking wrote; a TRUNCATE ... CASCADE would

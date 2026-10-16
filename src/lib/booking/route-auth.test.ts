@@ -409,3 +409,56 @@ describe("authorizeBookingApi asks whether a refused key is a retired one (#2879
     expect(retired.watchRetiredKey).not.toHaveBeenCalled();
   });
 });
+
+// #3456: the booking API's exact hourly ceilings live in a Durable Object the kept load
+// test Worker keeps between runs, so a load run's counts leaked into the next run or arm
+// inside the hour. Under SLATE_LOADTEST the counts are scoped to the run that names itself
+// on the request; in production the header is never read, so no caller can choose its key.
+describe("authorizeBookingApi scopes the exact ceilings to a load run (#3456)", () => {
+  const scopesAsked = () => rateLimit.exactCeilingWithinLimit.mock.calls.map((c) => (c as unknown[])[2] ?? null);
+  const withRun = (value: string) => {
+    const r = req("Bearer goodsecret");
+    (r.headers as Headers).set("x-loadtest-run", value);
+    return r;
+  };
+  const withLoadtest = async (value: string | undefined, run: () => Promise<void>) => {
+    const saved = process.env.SLATE_LOADTEST;
+    if (value === undefined) delete process.env.SLATE_LOADTEST;
+    else process.env.SLATE_LOADTEST = value;
+    try {
+      await run();
+    } finally {
+      if (saved === undefined) delete process.env.SLATE_LOADTEST;
+      else process.env.SLATE_LOADTEST = saved;
+    }
+  };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    env.bookingApiKeyFor.mockImplementation(regalKeyFor);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
+  });
+
+  it("ignores the header in production, so both ceilings are counted under production's keys", async () => {
+    await withLoadtest(undefined, async () => {
+      expect((await authorizeBookingApi(withRun("run-1-1"))).ok).toBe(true);
+    });
+    expect(scopesAsked()).toEqual([null, null]);
+  });
+
+  it("scopes both ceilings to the run a load test request names", async () => {
+    await withLoadtest("true", async () => {
+      expect((await authorizeBookingApi(withRun("run-38933668981-1"))).ok).toBe(true);
+    });
+    expect(scopesAsked()).toEqual(["run-38933668981-1", "run-38933668981-1"]);
+  });
+
+  it("counts a load test request that names no run, or an unreadable one, unscoped", async () => {
+    await withLoadtest("true", async () => {
+      await authorizeBookingApi(req("Bearer goodsecret"));
+      await authorizeBookingApi(withRun("run 1; drop"));
+    });
+    expect(scopesAsked()).toEqual([null, null, null, null]);
+  });
+});

@@ -61,6 +61,10 @@ function need(name: string): string {
 const SLATE_BASE = need("SLATE_BASE").replace(/\/$/, "");
 const API_KEY = need("BOOKING_API_KEY");
 const OUT = need("OUT");
+// #3456: the run its dry runs are counted under, so the per address hourly cap this
+// control aims at starts this run at zero rather than wherever the last run left it on
+// the kept load test Worker. The workflow sets it for every job.
+const RUN_ID = need("RUN_ID");
 if (SLATE_BASE.includes(PROD_HOST)) {
   console.error("FAILED: SLATE_BASE points at production.");
   process.exit(1);
@@ -107,7 +111,7 @@ async function attempt(n: number, code: string, startIso: string): Promise<Ceili
     const res = await fetch(`${SLATE_BASE}/api/bookings`, {
       method: "POST",
       // #3354: named, so its dry runs are never counted as another leg's confirms.
-      headers: bookingRequestHeaders(API_KEY, "ceiling"),
+      headers: bookingRequestHeaders(API_KEY, "ceiling", RUN_ID),
       body,
     });
     // The two things the deployment says about its own decision (#2243, #2339):

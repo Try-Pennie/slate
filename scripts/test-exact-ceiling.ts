@@ -26,6 +26,7 @@ import {
   exactCeilingAllows,
   exactCeilingKey,
   hitAnchoredWindow,
+  LOADTEST_RUN_KEY_MARK,
   MAX_EXACT_WINDOW_MS,
   readCounterRequest,
   readExactCeilingReply,
@@ -41,6 +42,7 @@ import {
   BOOKING_API_IP_LIMITER,
 } from "@/lib/rate-limit-core";
 import { BURST_VERIFY_AREA, BURST_VERIFY_KEY } from "@/lib/monitor/burst-counter-probe";
+import { LOADTEST_RUN_HEADER, readLoadtestRunScope } from "@/lib/loadtest-run-scope";
 import { BurstLimiter } from "../worker/burst-limiter.ts";
 
 const T0 = 1_760_000_000_000;
@@ -122,6 +124,40 @@ const BOOKING_API_HOURLY_RULES = [
     !exactCeilingKey("bookapi:h", keyCaller).startsWith(burstKey("booking-api", "")),
     "and an exact key is never a burst key for the same caller",
   );
+}
+
+// --- #3456: a load run's counts live in objects of its own, and production's never move ----
+{
+  const keyCaller = rateLimitKey({ kind: "opaque", key: "key:regal" });
+  eq(exactCeilingKey("bookapi:h", keyCaller, null), "exact:bookapi:h:key:regal", "no run scope is production's key, unchanged");
+  eq(
+    exactCeilingKey("bookapi:h", keyCaller, "run-1001-1"),
+    "exact:loadtest-run:run-1001-1:bookapi:h:key:regal",
+    "a run scope puts the count in an object of the run's own",
+  );
+  assert(
+    exactCeilingKey("bookapi:h", keyCaller, "run-1001-1") !== exactCeilingKey("bookapi:h", keyCaller, "run-1002-1"),
+    "two runs never share a count",
+  );
+  // A scoped key can never collide with a rule's own key, so no run scope can land on a
+  // production count, whatever a rule is called.
+  for (const rule of BOOKING_API_HOURLY_RULES) {
+    assert(!rule.prefix.startsWith(LOADTEST_RUN_KEY_MARK), `the ${rule.prefix} rule's keys cannot be mistaken for a run scoped one`);
+  }
+
+  // The header is never read off a load test, whatever it carries.
+  const headers = (value: string | null) => ({ get: (name: string) => (name === LOADTEST_RUN_HEADER ? value : null) });
+  let read = 0;
+  const counting = { get: () => (read++, "run-1-1") };
+  eq(readLoadtestRunScope(counting, false), { scope: null, unreadable: null }, "production gets no scope");
+  eq(read, 0, "and production never even reads the header");
+  eq(readLoadtestRunScope(headers("run-38933668981-1"), true), { scope: "run-38933668981-1", unreadable: null }, "a workflow run id is a scope");
+  eq(readLoadtestRunScope(headers(null), true), { scope: null, unreadable: null }, "a load test request naming no run is unscoped");
+  eq(readLoadtestRunScope(headers(""), true), { scope: null, unreadable: null }, "and so is an empty one");
+  for (const bad of ["run 1", "run:1", "a/b", "x".repeat(101)]) {
+    const r = readLoadtestRunScope(headers(bad), true);
+    assert(r.scope === null && r.unreadable !== null, `"${bad.slice(0, 20)}" is unreadable, so it is counted unscoped and said, never in some other run's object`);
+  }
 }
 
 // --- what the object is asked -------------------------------------------------

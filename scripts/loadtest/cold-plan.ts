@@ -298,13 +298,15 @@ export type DeploySpawn = (
 ) => { status: number | null; stdout?: string | null; stderr?: string | null; error?: { code?: string; message: string } };
 
 /**
- * One deploy of the load test Worker, keeping the run's recompute arm (`--var` MERGES
+ * One deploy of the load test Worker, keeping the run's recompute arm and Google delay (`--var` MERGES
  * with env.loadtest's vars block, as the fault leg's deploy does), under its own
  * deadline (L110). A deploy that hits the deadline is a failed sample that SAYS it
  * timed out, apart from one that failed with its own error (L11).
  */
 export function makeColdDeploy(deps: {
   arm: string;
+  /** The run's Google delay (#3490), "" when off, so every version samples the same rig. */
+  googleDelay: string;
   /** wrangler's own binary, as an absolute path, so the leg works from any directory. */
   wranglerBin: string;
   spawn: DeploySpawn;
@@ -312,7 +314,11 @@ export function makeColdDeploy(deps: {
   return async () => {
     // wrangler's own binary rather than `npx wrangler`: the deadline kills the process
     // it started, and through npx that is only the wrapper (L321).
-    const r = deps.spawn(deps.wranglerBin, ["deploy", "--env", "loadtest", "--var", `SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:${deps.arm}`], {
+    // An undelayed run passes no delay setting at all: an empty --var is a value wrangler
+    // would ship, and the Worker would then hold a setting nobody chose.
+    const delay = deps.googleDelay.trim() === "" ? [] : ["--var", `SLATE_LOADTEST_GOOGLE_DELAY:${deps.googleDelay.trim()}`];
+    const args = ["deploy", "--env", "loadtest", "--var", `SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:${deps.arm}`, ...delay];
+    const r = deps.spawn(deps.wranglerBin, args, {
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
       timeout: COLD_DEPLOY_TIMEOUT_MS,
