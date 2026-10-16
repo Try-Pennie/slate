@@ -87,7 +87,11 @@ vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/monitor/record-api-outcome", () => monitor);
 // #3366: the stored row check after a refusal, as a seam (its logic is pinned by
 // scripts/test-refusal-stored-offer.ts), so no test reaches the real table.
-const storedOffer = vi.hoisted(() => ({ scheduleStoredOfferCheck: vi.fn() }));
+// #3796: it is handed the failure path as `answer`, and holds the answer for the
+// refresh a stale row asks for; by default the seam answers at once.
+const storedOffer = vi.hoisted(() => ({
+  answerAfterRefusalRefresh: vi.fn(async (_err: unknown, answer: () => Promise<unknown>) => answer()),
+}));
 vi.mock("@/lib/booking/refusal-stored-offer-live", () => storedOffer);
 // #3460: the confirm's early reads, as a seam: this pins WHEN the route starts them.
 const prelude = vi.hoisted(() => ({ startConfirmPrelude: vi.fn() }));
@@ -711,17 +715,30 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(dry[0]).toContain("dry_run=true");
   });
 
-  // #3366: a refused API confirm hands its error to the stored row check too, and
-  // its 409 is unchanged.
-  it("hands a refusal to the stored row check and still answers 409 (#3366)", async () => {
+  // #3366, #3796: a refused API confirm is answered through the stored row check
+  // too, which holds the 409 for the refresh a stale row asks for; the 409 is
+  // unchanged.
+  it("answers a refusal only once the stored row check lets it go, still 409 (#3366, #3796)", async () => {
     vi.spyOn(console, "info").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     regalKey.primary.mockReturnValue("real-secret");
     const err = new service.SlotUnavailableError("taken");
     service.bookViaApi.mockRejectedValueOnce(err);
-    const res = await post("Bearer real-secret", VALID_BODY);
+    let release: (() => void) | undefined;
+    storedOffer.answerAfterRefusalRefresh.mockImplementationOnce(async (_err, answer) => {
+      const res = await answer();
+      await new Promise<void>((r) => { release = r; });
+      return res;
+    });
+    let answered = false;
+    const pending = post("Bearer real-secret", VALID_BODY).then((r) => { answered = true; return r; });
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(answered).toBe(false);
+    release!();
+    const res = await pending;
     expect(res.status).toBe(409);
-    expect(storedOffer.scheduleStoredOfferCheck).toHaveBeenCalledWith(err);
+    expect(storedOffer.answerAfterRefusalRefresh).toHaveBeenCalledWith(err, expect.any(Function));
   });
 
   it("carries the machine error code on the outcome line when the call fails", async () => {

@@ -10,7 +10,7 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-refusal-stored-offer.ts
 import {
-  checkStoredOffer,
+  startStoredOfferCheck,
   offeredCodes,
   storedOfferCodes,
   storedOfferFields,
@@ -176,10 +176,28 @@ const row = (code: string, slots: string[], computedAt = "2026-10-06T04:08:00.00
 }
 
 // The IO: one read, a log line, a refresh of the proven-stale pool, and it never throws.
+// #3796: the refresh is held for before the response, at most for the allowance the
+// route hands in, and the line says which way it went.
 {
-  const lines: { level: string; fields: Record<string, unknown> }[] = [];
+  type Line = { level: string; fields: Record<string, unknown> };
+  const deferred = () => {
+    let resolve!: () => void;
+    let reject!: (err: unknown) => void;
+    const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  };
+  // A timer the test fires by hand, so "the allowance ran out" is an act of the test
+  // and never a real wait (L524).
+  const timers: { ms: number; fire: () => void; cancelled: boolean }[] = [];
+  const timer: StoredOfferDeps["timer"] = (ms, fire) => {
+    const t = { ms, fire, cancelled: false };
+    timers.push(t);
+    return () => { t.cancelled = true; };
+  };
+  const lines: Line[] = [];
   const reads: string[][] = [];
   const refreshed: string[] = [];
+  const kept: Promise<void>[] = [];
   const deps = (
     readRows: StoredOfferDeps["readRows"],
     refreshImpl?: (code: string) => Promise<void>,
@@ -187,80 +205,181 @@ const row = (code: string, slots: string[], computedAt = "2026-10-06T04:08:00.00
     readRows: async (codes) => { reads.push(codes); return readRows(codes); },
     nowMs: () => NOW,
     refreshPool: async (code) => { refreshed.push(code); if (refreshImpl) await refreshImpl(code); },
+    keepAlive: (work) => { kept.push(work); },
+    timer,
     log: {
       info: (_tag, fields) => { lines.push({ level: "info", fields }); },
       warn: (_tag, fields) => { lines.push({ level: "warn", fields }); },
     },
   });
-  const reset = () => { lines.length = 0; reads.length = 0; refreshed.length = 0; };
+  const reset = () => { lines.length = 0; reads.length = 0; refreshed.length = 0; kept.length = 0; timers.length = 0; };
+  const offeredLines = () => lines.filter((l) => l.fields.msg === "refused time read against the stored row");
+  const ALLOWANCE = 1_800;
 
-  await checkStoredOffer(trace(), deps(async () => [row("112", [START])]));
-  eq(reads, [["112"]], "one read for the rung codes");
-  eq(lines.length, 1, "one line");
-  eq(lines[0].level, "info", "at info");
-  eq(lines[0].fields.stored_row_offers_start, true, "carrying the verdict");
-  eq(refreshed, ["112"], "the pool the confirm proved stale is refreshed");
-
-  reset();
-  await checkStoredOffer(trace(), deps(async () => [row("112", ["2026-10-06T16:50:00.000Z"])]));
-  eq(lines.length, 1, "a correct row still logs its one line");
-  eq(refreshed, [], "a row that was right is never refreshed");
-
-  reset();
-  await checkStoredOffer(trace({ stage: "verify_busy" }), deps(async () => [row("112", [START])]));
-  eq(reads.length, 0, "a refusal that is not checked reads nothing");
-  eq(lines.length, 0, "and logs nothing");
-  eq(refreshed, [], "and refreshes nothing");
-
-  reset();
-  let threw = false;
-  try {
-    await checkStoredOffer(trace(), deps(async () => { throw new Error("db down"); }));
-  } catch {
-    threw = true;
+  // Done when, first half: the refresh has RESOLVED before the response is let go.
+  {
+    const refresh = deferred();
+    const order: string[] = [];
+    const check = startStoredOfferCheck(trace(), deps(async () => [row("112", [START])], async () => {
+      await refresh.promise;
+      order.push("refresh resolved");
+    }));
+    const held = check.beforeResponse(ALLOWANCE).then(() => { order.push("response"); });
+    // Let the read land and the refresh start before resolving it.
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    eq(refreshed, ["112"], "the proven-stale pool's refresh is requested before the response");
+    eq(order, [], "and the response is held while it runs");
+    refresh.resolve();
+    await held;
+    eq(order, ["refresh resolved", "response"], "the refresh resolved BEFORE the response was let go");
+    eq(timers.length, 1, "one wait, sized by the allowance");
+    eq(timers[0].ms, ALLOWANCE, "the allowance the route handed in, no more");
+    assert(timers[0].cancelled, "and the wait is cancelled once the refresh wins, so no timer is left behind");
+    await check.settled;
+    eq(offeredLines().length, 1, "one stored offer line");
+    eq(offeredLines()[0].fields.stored_row_offers_start, true, "carrying the verdict of the read BEFORE the refresh");
+    eq(offeredLines()[0].fields.refreshed_before_response, true, "and saying the refresh finished before the response");
+    eq(kept.length, 1, "the whole check is kept alive past the response");
   }
-  assert(!threw, "a failed read never throws out of the check");
-  eq(lines.length, 1, "it says so instead");
-  eq(lines[0].level, "warn", "at warn");
-  eq(lines[0].fields.stored_offer, "112:unreadable", "naming every code as unreadable, never as not offered");
-  eq(lines[0].fields.stored_row_offers_start, null, "the overall answer is unknown");
-  eq(refreshed, [], "an unreadable row refreshes nothing: stale was never proven");
 
-  // A refresh that rejects is logged, never thrown: the lead already has their 409.
-  reset();
-  threw = false;
-  try {
-    await checkStoredOffer(
+  // Done when, second half: a refresh slower than the allowance still lets the
+  // response go, and the refresh is still requested and carries on after it.
+  {
+    reset();
+    const refresh = deferred();
+    let refreshDone = false;
+    const check = startStoredOfferCheck(trace(), deps(async () => [row("112", [START])], async () => {
+      await refresh.promise;
+      refreshDone = true;
+    }));
+    let responded = false;
+    const held = check.beforeResponse(ALLOWANCE).then(() => { responded = true; });
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    eq(refreshed, ["112"], "the refresh is requested");
+    assert(!responded, "the response waits while the allowance lasts");
+    timers[0].fire();
+    await held;
+    assert(responded, "the allowance running out lets the response go");
+    assert(!refreshDone, "with the refresh still running");
+    eq(offeredLines().length, 1, "the line is written at the response, not after the refresh");
+    eq(offeredLines()[0].fields.refreshed_before_response, false, "and says the refresh did NOT finish before it");
+    eq(kept.length, 1, "the check is kept alive past the response");
+    refresh.resolve();
+    await kept[0];
+    assert(refreshDone, "the refresh carries on and finishes after the response");
+    eq(offeredLines().length, 1, "and the line is never written twice");
+  }
+
+  // An allowance already spent holds the response for nothing.
+  {
+    reset();
+    const refresh = deferred();
+    const check = startStoredOfferCheck(trace(), deps(async () => [row("112", [START])], () => refresh.promise));
+    await check.beforeResponse(0);
+    eq(timers.length, 0, "no wait is even scheduled with nothing left");
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    eq(refreshed, ["112"], "the refresh is still requested, after the response as before #3796");
+    eq(offeredLines()[0]?.fields.refreshed_before_response, false, "and the line says it raced");
+    refresh.resolve();
+    await check.settled;
+    eq(offeredLines().length, 1, "one line");
+  }
+
+  // A refresh that FAILS inside the allowance lets the response go at once, and is not
+  // reported as refreshed.
+  {
+    reset();
+    const check = startStoredOfferCheck(
       trace(),
       deps(async () => [row("112", [START])], async () => { throw new Error("bucket_slots write refused"); }),
     );
-  } catch {
-    threw = true;
+    await check.beforeResponse(ALLOWANCE);
+    eq(timers.length > 0 && !timers[0].cancelled, false, "the response is not held after the refresh failed");
+    await check.settled;
+    eq(offeredLines()[0].fields.refreshed_before_response, false, "a failed refresh is never reported as refreshed");
+    assert(lines.some((l) => l.level === "warn"), "and its failure is said at warn");
   }
-  assert(!threw, "a failed refresh never throws out of the check");
-  eq(refreshed, ["112"], "the refresh was attempted");
-  assert(lines.some((l) => l.level === "warn"), "and its failure is said at warn");
+
+  // A row that was right asks for no refresh and holds nothing.
+  {
+    reset();
+    const check = startStoredOfferCheck(trace(), deps(async () => [row("112", ["2026-10-06T16:50:00.000Z"])]));
+    await check.beforeResponse(ALLOWANCE);
+    await check.settled;
+    eq(lines.length, 1, "a correct row still logs its one line");
+    eq(refreshed, [], "a row that was right is never refreshed");
+    eq(lines[0].fields.refreshed_before_response, null, "and no refresh was asked for, so the answer is not applicable, never false");
+    assert(timers.every((t) => t.cancelled), "nothing is left waiting");
+  }
+
+  {
+    reset();
+    const check = startStoredOfferCheck(trace({ stage: "verify_busy" }), deps(async () => [row("112", [START])]));
+    await check.beforeResponse(ALLOWANCE);
+    await check.settled;
+    eq(reads.length, 0, "a refusal that is not checked reads nothing");
+    eq(lines.length, 0, "and logs nothing");
+    eq(refreshed, [], "and refreshes nothing");
+    eq(timers.length, 0, "and holds nothing");
+    eq(kept.length, 0, "and keeps nothing alive");
+  }
+
+  {
+    reset();
+    let threw = false;
+    const check = startStoredOfferCheck(trace(), deps(async () => { throw new Error("db down"); }));
+    try {
+      await check.beforeResponse(ALLOWANCE);
+      await check.settled;
+    } catch {
+      threw = true;
+    }
+    assert(!threw, "a failed read never throws out of the check");
+    eq(lines.length, 1, "it says so instead");
+    eq(lines[0].level, "warn", "at warn");
+    eq(lines[0].fields.stored_offer, "112:unreadable", "naming every code as unreadable, never as not offered");
+    eq(lines[0].fields.stored_row_offers_start, null, "the overall answer is unknown");
+    eq(refreshed, [], "an unreadable row refreshes nothing: stale was never proven");
+  }
 
   // A SYNCHRONOUS throw from refreshPool (before it returns a promise) must be caught
   // too, not just a rejected promise, or it escapes the "never throws" contract.
-  reset();
-  threw = false;
-  const syncThrowDeps: StoredOfferDeps = {
-    readRows: async () => [row("112", [START])],
-    nowMs: () => NOW,
-    refreshPool: (code) => { refreshed.push(code); throw new Error("sync boom"); },
-    log: {
-      info: (_tag, fields) => { lines.push({ level: "info", fields }); },
-      warn: (_tag, fields) => { lines.push({ level: "warn", fields }); },
-    },
-  };
-  try {
-    await checkStoredOffer(trace(), syncThrowDeps);
-  } catch {
-    threw = true;
+  {
+    reset();
+    let threw = false;
+    const syncThrowDeps: StoredOfferDeps = {
+      ...deps(async () => [row("112", [START])]),
+      refreshPool: (code) => { refreshed.push(code); throw new Error("sync boom"); },
+    };
+    const check = startStoredOfferCheck(trace(), syncThrowDeps);
+    try {
+      await check.beforeResponse(ALLOWANCE);
+      await check.settled;
+    } catch {
+      threw = true;
+    }
+    assert(!threw, "a synchronous throw from the refresh never escapes the check");
+    assert(lines.some((l) => l.level === "warn"), "and is said at warn like a rejection");
   }
-  assert(!threw, "a synchronous throw from the refresh never escapes the check");
-  assert(lines.some((l) => l.level === "warn"), "and is said at warn like a rejection");
+
+  // The route awaits the check before its 409, so a fault nobody predicted inside it
+  // (here the clock) must never reject and turn the refusal into a 500.
+  {
+    reset();
+    let threw = false;
+    const check = startStoredOfferCheck(trace(), {
+      ...deps(async () => [row("112", [START])]),
+      nowMs: () => { throw new Error("clock gone"); },
+    });
+    try {
+      await check.beforeResponse(ALLOWANCE);
+      await check.settled;
+    } catch {
+      threw = true;
+    }
+    assert(!threw, "an unexpected fault inside the check never rejects what the route awaits");
+    eq(lines.map((l) => `${l.level}:${l.fields.msg}`), ["warn:stored offer check failed"], "it is said at warn instead");
+  }
 }
 
 finish();

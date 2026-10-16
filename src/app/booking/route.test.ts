@@ -127,7 +127,11 @@ vi.mock("@/lib/agent-link/store", () => agentLinkStore);
 // #3366: the stored row check after a refusal. Its decision and read are pinned by
 // scripts/test-refusal-stored-offer.ts; here it is a seam, so the route is proven to
 // hand it every refusal without a test ever reaching the real table.
-const storedOffer = vi.hoisted(() => ({ scheduleStoredOfferCheck: vi.fn() }));
+// #3796: it is handed the failure path as `answer`, and holds the answer for the
+// refresh a stale row asks for; by default the seam answers at once.
+const storedOffer = vi.hoisted(() => ({
+  answerAfterRefusalRefresh: vi.fn(async (_err: unknown, answer: () => Promise<unknown>) => answer()),
+}));
 vi.mock("@/lib/booking/refusal-stored-offer-live", () => storedOffer);
 
 // #3460: the confirm's early reads. A seam here: what they do is driven by
@@ -601,14 +605,27 @@ describe("POST /booking (embed) error mapping", () => {
     expect(lines[0]).not.toContain("timed_out");
   });
 
-  // #3366: a refused confirm hands its error to the stored row check, which runs
-  // after the response, and the lead's 409 is exactly what it was.
-  it("hands a refusal to the stored row check and still answers 409 (#3366)", async () => {
+  // #3366, #3796: a refused confirm is answered THROUGH the stored row check, which
+  // holds the 409 for the refresh a stale row asks for, so the booker's reload that
+  // follows reads the refreshed row. The 409 itself is exactly what it was.
+  it("answers a refusal only once the stored row check lets it go, still 409 (#3366, #3796)", async () => {
     const err = new service.SlotUnavailableError("taken");
     service.createBooking.mockRejectedValueOnce(err);
-    const res = await post(VALID_BODY);
+    let release: (() => void) | undefined;
+    storedOffer.answerAfterRefusalRefresh.mockImplementationOnce(async (_err, answer) => {
+      const res = await answer();
+      await new Promise<void>((r) => { release = r; });
+      return res;
+    });
+    let answered = false;
+    const pending = post(VALID_BODY).then((r) => { answered = true; return r; });
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(answered).toBe(false);
+    release!();
+    const res = await pending;
     expect(res.status).toBe(409);
-    expect(storedOffer.scheduleStoredOfferCheck).toHaveBeenCalledWith(err);
+    expect(storedOffer.answerAfterRefusalRefresh).toHaveBeenCalledWith(err, expect.any(Function));
   });
 
   it("refunds the IP cap AND both contact keys on a taken-slot 409, which isn't the lead's fault (#1089)", async () => {
