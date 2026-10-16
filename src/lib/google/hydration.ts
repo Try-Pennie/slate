@@ -148,6 +148,94 @@ export function calendarsDueForHydration<T extends HydrationCandidate>(
   return [...onboarding, ...maintenance];
 }
 
+/**
+ * Whether a calendar's agent has DEPARTED, read off the `users(deactivated_at)` row the
+ * rotation embeds in its calendar read (#3805).
+ *
+ * An embed that did not come back, or came back without a readable column, THROWS rather
+ * than reading as "still here". That reading is the dangerous one: it would put every
+ * departed calendar back at the front of the batch, which is the false page this exists to
+ * stop, and it would do it silently. The foreign key is `not null ... on delete cascade`,
+ * so a missing user row should be impossible; if it ever happens the lane fails loud, its
+ * heartbeat lapses and the watchdog pages, the same as the unwrapped read it rides on.
+ *
+ * PostgREST renders a many to one embed as an object; a one row array is accepted too, so
+ * a change in how the relationship is inferred cannot turn into a wrong answer.
+ */
+export function departedFromEmbed(embed: unknown): boolean {
+  const row = Array.isArray(embed) ? (embed.length === 1 ? embed[0] : undefined) : embed;
+  if (row === null || typeof row !== "object") {
+    throw new Error("hydrate-calendars: a calendar came back without its agent's user row");
+  }
+  const stamp = (row as { deactivated_at?: unknown }).deactivated_at;
+  if (stamp === null) return false;
+  if (typeof stamp === "string") return true;
+  throw new Error("hydrate-calendars: an agent's deactivated_at could not be read");
+}
+
+/** What one tick of the rotation will do, decided before any IO (#3805). */
+export interface HydrationTickPlan<T> {
+  /** The calendars the rotation considers: everyone's but a departed agent's. */
+  considered: T[];
+  /** How many calendars were left out because their agent has left. Reported on the
+   *  cycle line, so the narrowing is visible rather than silent. */
+  departedSkipped: number;
+  /** Derived from `considered`, never from every row (see below). */
+  batchSize: number;
+  due: T[];
+  /** Considered calendars never attempted at all, and how many of them this tick could
+   *  not take (#2301). */
+  neverCovered: number;
+  onboardingDeferred: number;
+}
+
+/**
+ * Plan a tick: leave out departed agents' calendars, size the batch over what is left, and
+ * pick the batch (#3805).
+ *
+ * WHY DEPARTED CALENDARS ARE LEFT OUT. Google answers every one of them 403
+ * notACalendarUser, so the shared eligibility gate holds each back to its periodic retry
+ * slot. That keeps its attempt stamp old, and least recently attempted first then puts it
+ * at the FRONT of the batch whenever its slot opens. With a batch of 2, two departed
+ * calendars in one tick is an all failed tick, and four of those paged
+ * `hydration_all_failing` on 2026-10-16 about a lane with nothing wrong with it. Keeping
+ * them warm buys nothing either: since #2302 a returning agent's calendar is hydrated on
+ * pool re-entry by `onboardIntoPool`.
+ *
+ * WHY "DEPARTED" AND NOT `hasLeftPool`. That predicate also counts a not bookable agent
+ * with no activation pending as gone, which is the right question for pruning busy time and
+ * the wrong one here: an active agent whose calendar stops reading is exactly what the
+ * alert exists for, so their failures must still count (L342).
+ *
+ * WHY THE BATCH IS SIZED OVER `considered`. The size is derived so the whole rotation is
+ * refreshed within a day; counting rows the rotation will never take would inflate
+ * everyone else's refresh rate by an amount nobody chose.
+ */
+export function planHydrationTick<T extends HydrationCandidate & { departed: boolean }>(
+  rows: T[],
+  nowMs: number,
+): HydrationTickPlan<T> {
+  const considered = rows.filter((r) => !r.departed);
+  const batchSize = hydrationBatchSize(considered.length);
+  const due = calendarsDueForHydration(considered, nowMs, batchSize);
+  // #2301: a never covered calendar is onboarding, not maintenance, so the allowance can
+  // be spent and still leave some waiting. Counted rather than left implicit, because a
+  // wave larger than one tick can absorb and a quiet tick are otherwise the same silence.
+  const neverCovered = considered.filter((c) => c.last_bootstrap_attempt_at === null).length;
+  const onboardingDeferred = Math.max(
+    0,
+    neverCovered - due.filter((c) => c.last_bootstrap_attempt_at === null).length,
+  );
+  return {
+    considered,
+    departedSkipped: rows.length - considered.length,
+    batchSize,
+    due,
+    neverCovered,
+    onboardingDeferred,
+  };
+}
+
 /** alert_state key for the rotation's own failure signal (#1544). */
 export const HYDRATION_FAILING_KEY = "hydration_all_failing";
 

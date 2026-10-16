@@ -383,6 +383,7 @@ vi.mock("@/lib/google/calendar", async () => {
 import { hydrateCalendar, syncByChannel, runIncrementalSync } from "@/lib/google/sync";
 import { calendarsDueForHydration, type HydrationCandidate } from "@/lib/google/hydration";
 import { refreshAgentPoolsAfterPush } from "@/lib/availability/slot-cache";
+import { GoogleHttpError } from "@/lib/google/http-error";
 import type { AgentCalendar } from "@/lib/db/types";
 
 // ---------------------------------------------------------------------------
@@ -774,6 +775,39 @@ describe("a hydration pass that loses the token race keeps its rotation place (#
     expect(res.ok).toBe(false);
     expect(res.skipped).toBeUndefined();
     expect(nextTick(3)).toEqual(["cal-older", "cal-newer", CAL_ID]);
+  });
+});
+
+describe("the hydration failure log line names Google's reason (#3805)", () => {
+  // The all failing alert sends its reader to tag=hydrate-calendars "for the reason". On
+  // 2026-10-16 those lines carried a calendar id and a stack, and the 403 was found only in
+  // agent_calendars.last_sync_error. The line itself must carry it.
+  it("carries reason= and the failure kind", async () => {
+    const g = google.current as FakeGoogle;
+    (db.current as FakeDb).seed("agent_calendars", [calendarRow({ sync_token: "t-own" })]);
+    const body = JSON.stringify({
+      error: {
+        errors: [{ domain: "calendar", reason: "notACalendarUser", message: "notACalendarUser" }],
+        code: 403,
+      },
+    });
+    g.midFetch = async () => {
+      throw new GoogleHttpError(`events.list failed: 403 ${body}`, 403, "notACalendarUser");
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const res = await hydrateCalendar(cal());
+      expect(res.ok).toBe(false);
+      const lines = warn.mock.calls
+        .map((args) => String(args[0]))
+        .filter((line) => line.includes('msg="calendar hydration failed"'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('reason="403 notACalendarUser"');
+      expect(lines[0]).toContain('kind="not-provisioned"');
+      expect(lines[0]).toContain(`calendar_id="${CALENDAR}"`);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
