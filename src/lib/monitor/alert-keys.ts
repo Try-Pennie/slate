@@ -33,6 +33,7 @@ export const ALERT_KEYS = [
   "empty_tier",
   "booking_failure_rate",
   "booking_budget",
+  "booking_follow_up_left_to_drain",
   "catchall_rate",
   "availability_drift",
   "offered_nobody_free",

@@ -29,6 +29,7 @@ import {
   LostRaceOutOfTimeError,
 } from "@/lib/booking/service";
 import { RACE_RETRY_BUDGET_OUTCOME, raceOutcomeForRefusal } from "@/lib/monitor/race-contention";
+import { FOLLOW_UP_LEFT_TO_DRAIN_OUTCOME } from "@/lib/monitor/follow-up-drain-rate";
 import {
   DIRECT_BOOKING_API_HOURLY_RATE_RULES,
   DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
@@ -376,6 +377,11 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts, progress: A
     // earlier confirm, so one race is never counted twice.
     if (result.raceOutcome) {
       recordApiOutcome(result.raceOutcome, v.bucketCode, null, { by: "bucket", code: v.bucketCode, host: apiHost });
+    }
+    // #3267: the create arm answered the booking and left the work after its save to
+    // the reservation drain; counted beside its created row, outside the failure share.
+    if (result.followUpLeftToDrain) {
+      recordApiOutcome(FOLLOW_UP_LEFT_TO_DRAIN_OUTCOME, v.bucketCode, null, { by: "bucket", code: v.bucketCode, host: apiHost });
     }
     return NextResponse.json(body, { status });
   } catch (err) {
