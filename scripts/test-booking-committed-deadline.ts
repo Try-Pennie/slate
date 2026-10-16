@@ -20,6 +20,7 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-booking-committed-deadline.ts
 import {
+  bookViaApi,
   createBooking,
   processBookingReservations,
   timeoutAsRetryable,
@@ -116,6 +117,18 @@ function committedThenSpent(clock: ReturnType<typeof confirmClock>, opts: { lost
     d,
     reservation: () => reservation,
     committed: () => committed,
+  };
+}
+
+/** Booking fakes whose webhook step fails inside the save, so the reservation is left
+ *  for the drain and the confirm answers with the work after its save unfinished (#3267). */
+function makeDepsLeftToDrain(): BookingDeps {
+  const { deps } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+  return {
+    ...deps,
+    emitWebhook: async () => {
+      throw new Error("webhook_deliveries insert refused");
+    },
   };
 }
 
@@ -318,6 +331,44 @@ async function run() {
     assert(
       calls.deleteGcalMirror.length === 1 && calls.deleteGcalMirror[0].gcalEventId === "gcal-1",
       "mirror cleanup: runs for the event this create wrote, even when the returned row omits it",
+    );
+  }
+
+  // --- 8. a confirm that left its follow up work to the drain SAYS so (#3267) --
+  // It answers the booking, which is right, and the route counts it against the
+  // confirms that committed so a wave of them pages on a rate (L77). A log line
+  // alone was all there was.
+  {
+    const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    const d: BookingDeps = {
+      ...deps,
+      emitWebhook: async () => {
+        throw new Error("webhook_deliveries insert refused");
+      },
+    };
+    const res = await createBooking(input, d);
+    assert(res.booking !== undefined, "left to the drain: the lead still gets the booking");
+    assert(calls.deletedReservations.length === 0, "left to the drain: the reservation stays for the drain");
+    assert(res.followUpLeftToDrain === true, "left to the drain: the answer says the work was left to the drain");
+    const viaApi = await bookViaApi({ ...input, externalId: "ext-left", confirmReschedule: false }, makeDepsLeftToDrain());
+    assert(
+      viaApi.outcome === "created" && viaApi.followUpLeftToDrain === true,
+      "left to the drain: the booking API's create arm carries it to its route too",
+    );
+  }
+  {
+    // Control: a confirm whose work all landed says nothing, so the count is only
+    // the ones that really left work behind.
+    const { deps } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    const res = await createBooking(input, deps);
+    assert(res.followUpLeftToDrain === undefined, "control: a confirm that finished its work is not counted");
+    const viaApi = await bookViaApi({ ...input, externalId: "ext-clean", confirmReschedule: false }, makeDeps({
+      candidates: ["a"],
+      freeEmails: new Set(["a@x.com"]),
+    }).deps);
+    assert(
+      viaApi.outcome === "created" && viaApi.followUpLeftToDrain === undefined,
+      "control: nor is the booking API's",
     );
   }
 

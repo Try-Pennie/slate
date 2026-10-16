@@ -23,6 +23,7 @@ import {
   LostRaceOutOfTimeError,
 } from "@/lib/booking/service";
 import { RACE_RETRY_BUDGET_OUTCOME, raceOutcomeForConfirm, raceOutcomeForRefusal } from "@/lib/monitor/race-contention";
+import { FOLLOW_UP_LEFT_TO_DRAIN_OUTCOME } from "@/lib/monitor/follow-up-drain-rate";
 import { LeadCodeUnavailableError } from "@/lib/routing/lead-code";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
@@ -490,7 +491,7 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
 
   endChecks?.();
   try {
-    const { booking, manageUrl, newlyInserted } = await createBooking({
+    const { booking, manageUrl, newlyInserted, followUpLeftToDrain } = await createBooking({
       // One call per person, enforced here and only here (#1337): the direct
       // booking API owns its own richer decision and must keep creating on a
       // cross-bucket rebook (#364).
@@ -550,6 +551,10 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
     // booking, whose race was counted when that confirm made it.
     const raced = raceOutcomeForConfirm({ booking, newlyInserted });
     if (raced) recordRoutedOutcome(raced, code, null, { by: "bucket", code, host });
+    // #3267: answered the booking and left the work after its save to the
+    // reservation drain. Counted beside the created row, outside the failure share,
+    // so the monitor lane can page on the share of confirms doing it.
+    if (followUpLeftToDrain) recordRoutedOutcome(FOLLOW_UP_LEFT_TO_DRAIN_OUTCOME, code, null, { by: "bucket", code, host });
     return NextResponse.json({
       id: booking.id,
       // #2750: the lead ids the booking is STORED under, which the host looks it up

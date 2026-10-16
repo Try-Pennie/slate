@@ -26,6 +26,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   },
 }));
 
+import { log } from "@/lib/log";
 import {
   createBooking,
   RaceLostRefusalError,
@@ -286,7 +287,12 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps & Commi
 
 // ---- tests -------------------------------------------------------------------
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // An implementation set by one test (a Slack that never answers, one that throws)
+  // must not leak into the next, which clearAllMocks alone does not undo.
+  dispatch.sendThrottledAlert.mockImplementation(async () => {});
+});
 
 describe("tier-drop alert dispatch", () => {
   it("dispatches 'tier_fallback_deep:<requestedCode>' when a High lead drops two debt tiers", async () => {
@@ -303,6 +309,51 @@ describe("tier-drop alert dispatch", () => {
     expect(key).toBe("tier_fallback_deep:311");
     expect(typeof cooldownMs).toBe("number");
     expect(text).toMatch(/dropped 2 debt tiers/);
+  });
+
+  // #3266: on a lead's request the page goes after their answer, outside the
+  // confirm's budget, so a slow Slack can neither hold the answer of a booking that
+  // exists nor be refused because the budget was spent. The test above, with no
+  // scheduler, is the cron drain's inline send.
+  it("on a lead's request, answers without waiting on the page and still sends it after", async () => {
+    const deps = makeTierDropDeps("311", "111");
+    const deferred: { context: string; send: () => Promise<unknown> }[] = [];
+    deps.deferPage = (context, send) => {
+      deferred.push({ context, send });
+    };
+    // A Slack that never answers: awaited in front of the answer, it would hang.
+    dispatch.sendThrottledAlert.mockImplementation(() => new Promise(() => {}));
+
+    // Awaited directly: had the answer waited on that page it would never settle
+    // and the test would fail on its timeout, with no timer guess about load (L290).
+    await createBooking({ ...tierDropInput, bucketCode: "311" }, deps);
+    expect(dispatch.sendThrottledAlert.mock.calls.filter(([key]) => String(key).startsWith("tier_fallback"))).toHaveLength(0);
+
+    const page = deferred.filter((d) => d.context === "tier-fallback-page");
+    expect(page).toHaveLength(1);
+    void page[0].send();
+    expect(dispatch.sendThrottledAlert.mock.calls.filter(([key]) => key === "tier_fallback_deep:311")).toHaveLength(1);
+  });
+
+  it("a tier page that fails to send after the answer settles, so it is logged rather than escaping", async () => {
+    const deps = makeTierDropDeps("311", "111");
+    const deferred: (() => Promise<unknown>)[] = [];
+    deps.deferPage = (_context, send) => {
+      deferred.push(send);
+    };
+    dispatch.sendThrottledAlert.mockImplementation(async () => {
+      throw new Error("slack did not answer");
+    });
+    const logged = vi.spyOn(log, "error");
+    await createBooking({ ...tierDropInput, bucketCode: "311" }, deps);
+    expect(deferred).toHaveLength(1);
+    await expect(deferred[0]()).resolves.toBeUndefined();
+    expect(logged).toHaveBeenCalledWith(
+      "alert-dispatch",
+      { msg: "alert send failed", key: "tier_fallback_deep:311" },
+      expect.any(Error),
+    );
+    logged.mockRestore();
   });
 
   // 2026-10-02: a single tier drop is the ladder working as designed (sales ops:

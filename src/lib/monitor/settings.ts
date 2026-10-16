@@ -286,6 +286,12 @@ export const ALERT_FIELDS: {
     help: "Errors or server faults have used half of what this month's booking success (98.5%) or availability (99.5%) target allows. Nothing is down because of it alone: it says the month is running worse than the pilot, while there is still time to find out why. It ends when the month is back under half, which in practice is the first day of the next month.",
   },
   {
+    key: "booking_follow_up_left_to_drain",
+    urgency: "alert",
+    label: "Bookings leaving their work to the drain",
+    help: "Too many of the last hour's confirms answered the lead before the work after their save had finished, so the reservation drain is finishing it. The leads are booked, but their booking.created webhook to Regal waits on the drain. It ends once half an hour of confirms finishes its own work.",
+  },
+  {
     key: "catchall_rate",
     urgency: "page",
     label: "Leads booked with no routing code",
@@ -554,6 +560,10 @@ export const MONITOR_DEFAULTS = {
     // than the minute, which stays true until the month turns over. Once a day
     // keeps it present, with the share it has reached, without becoming noise.
     booking_budget: 24 * 60 * 60_000,
+    // Confirms leaving the work after their save to the reservation drain (#3267):
+    // a wave of them stays true while the confirm path is slow, and ends on a
+    // measured clean half hour. Once a day while unchanged (#3801).
+    booking_follow_up_left_to_drain: CONDITION_REPEAT_MS,
     // A drifted cache (#1315) keeps mis-selling times until the sync lane reconverges,
     // and the probe re-measures that bucket only once per rotation. Once a day while
     // unchanged (#3801).
