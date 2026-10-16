@@ -21,6 +21,7 @@ import {
   faultModeVerdict,
   sharedLineSwitchVerdict,
   awaitRecomputeArm,
+  awaitGoogleDelay,
   overlappingProbeWindow,
   warmupStep,
   WARMUP_HYDRATE_PAUSE_MS,
@@ -151,6 +152,35 @@ function fail(why: string): never {
   });
   if (!verdict.ok) fail(verdict.why);
   console.log(`ok: the deployment runs the post confirm recompute arm "${wanted?.trim() || "on"}"`);
+}
+
+// --- the Google delay (#3490) ----------------------------------------------------
+//
+// The same question of the other per run setting: a run dispatched with the stand in
+// taking production's Google time, and driven against a deployment answering at once,
+// would report undelayed confirms under the delayed rig's name. The arm job redeploys
+// with the delay just before this, so the version being replaced is waited out; an
+// undelayed run against a deployment an earlier run left delayed refuses at once.
+//
+// env-ok: EXPECT_GOOGLE_DELAY (optional; the workflow's google_delay input. Unset, as on
+// a hand run, means off, the only rig a deployment without the --var runs.)
+{
+  const wanted = process.env.EXPECT_GOOGLE_DELAY;
+  const verdict = await awaitGoogleDelay({
+    wanted,
+    fetchVersion: async () => {
+      const res = await fetch(`${SLATE_BASE}/api/smoke/version`, {
+        headers: { Authorization: `Bearer ${API_KEY}` },
+      });
+      return { status: res.status, body: await res.json().catch(() => ({})) };
+    },
+    sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+    now: () => Date.now(),
+    waitMs: 120_000,
+    pauseMs: 5_000,
+  });
+  if (!verdict.ok) fail(verdict.why);
+  console.log(`ok: the deployment's Google stand in delay is ${wanted?.trim() || "off"}`);
 }
 
 // --- half half: the deployment is WARM before anything is measured (#2347) -----
@@ -363,6 +393,7 @@ try {
     fetch,
     baseUrl: SLATE_BASE,
     apiKey: API_KEY,
+    runId: RUN_ID,
     bodyFor: (start) => ({
       bucketCode: CODE,
       start,

@@ -145,6 +145,16 @@ on:
           30 is what a startup change is judged against, and the most it takes.
         type: string
         default: "0"
+      google_delay:
+        description: >-
+          How long the Google stand in takes on the calls a lead waits on (#3490), as
+          read=<p50>/<p95>,write=<p50>/<p95> in milliseconds, for example
+          read=3000/5000,write=5000/8000. Empty (the default) is off: the stand in
+          answers at once, as every run before this did. Anything else redeploys the
+          Worker with it before the preflight, which refuses a deployment running
+          another rig, and the report's header names it.
+        type: string
+        default: ""
       burst_lead_seconds:
         description: >-
           How long the burst drivers have to be queued, checked out and installed
@@ -169,11 +179,11 @@ env:
   RUN_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
-  # The post confirm recompute arm (#3258). The steady pass runs against the
-  # deployment the dispatcher made, which carries no arm and so runs on; any other
-  # arm is a deployment wide setting, so it is added here with `--var` exactly the
-  # way the fault leg adds its own, before the preflight asks the deployment which
-  # arm it really runs. Its own job rather than steps in the preflight, because the
+  # The post confirm recompute arm (#3258) and the Google delay (#3490). The steady
+  # pass runs against the deployment the dispatcher made, which carries neither and
+  # so runs on with no delay; anything else is a deployment wide setting, so it is
+  # added here with `--var` exactly the way the fault leg adds its own, before the
+  # preflight asks the deployment which arm and which delay it really runs. Its own job rather than steps in the preflight, because the
   # preflight's timeout is already spent on its warm up deadline
   # (test-loadtest-warmup.ts). The job always runs and skips its steps for on, so
   # the preflight's `needs` is never a skipped job.
@@ -182,23 +192,23 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: inputs.post_confirm_recompute != 'on'
+        if: inputs.post_confirm_recompute != 'on' || inputs.google_delay != ''
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        if: inputs.post_confirm_recompute != 'on'
+        if: inputs.post_confirm_recompute != 'on' || inputs.google_delay != ''
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: inputs.post_confirm_recompute != 'on'
+        if: inputs.post_confirm_recompute != 'on' || inputs.google_delay != ''
         with:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-        if: inputs.post_confirm_recompute != 'on'
+        if: inputs.post_confirm_recompute != 'on' || inputs.google_delay != ''
       - name: Stamp the commit this arm is deploying
-        if: inputs.post_confirm_recompute != 'on'
+        if: inputs.post_confirm_recompute != 'on' || inputs.google_delay != ''
         run: node --experimental-strip-types scripts/stamp-build-info.ts "$GITHUB_SHA"
       # The same build inputs the fault leg uses, for the same reason: they are
       # inlined at build time.
       - name: Build against the branch
-        if: inputs.post_confirm_recompute != 'on'
+        if: inputs.post_confirm_recompute != 'on' || inputs.google_delay != ''
         env:
           NEXT_PUBLIC_APP_URL: ${{ vars.LOADTEST_BASE_URL }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.LOADTEST_SUPABASE_URL }}
@@ -213,23 +223,27 @@ jobs:
       # The fault and cold legs redeploy only Slate, so the objects are not restarted
       # under them.
       - name: Deploy the object workers the load test binds
-        if: inputs.post_confirm_recompute != 'on'
+        if: inputs.post_confirm_recompute != 'on' || inputs.google_delay != ''
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: bash scripts/loadtest/retry-cloudflare-api.sh node --experimental-strip-types scripts/deploy-object-workers.ts --env loadtest
       # `--var` MERGES with the vars block, so everything in env.loadtest survives
-      # and only the arm is added. Nothing commits it
-      # (scripts/test-wrangler-loadtest-env.ts refuses that).
-      - name: Deploy with the post confirm recompute arm
-        if: inputs.post_confirm_recompute != 'on'
+      # and only the arm and the Google delay are added. Nothing commits either
+      # (scripts/test-wrangler-loadtest-env.ts refuses that). An empty delay adds no
+      # setting at all rather than an empty one (#3490).
+      - name: Deploy with the post confirm recompute arm and the Google delay
+        if: inputs.post_confirm_recompute != 'on' || inputs.google_delay != ''
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           RECOMPUTE_ARM: ${{ inputs.post_confirm_recompute }}
-        run: >-
-          bash scripts/loadtest/retry-cloudflare-api.sh npx wrangler deploy --env loadtest
-          --var "SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:$RECOMPUTE_ARM"
+          GOOGLE_DELAY: ${{ inputs.google_delay }}
+        run: |
+          args=(--var "SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:$RECOMPUTE_ARM")
+          delay="$(echo "$GOOGLE_DELAY" | tr -d '[:space:]')"
+          if [ -n "$delay" ]; then args+=(--var "SLATE_LOADTEST_GOOGLE_DELAY:$delay"); fi
+          bash scripts/loadtest/retry-cloudflare-api.sh npx wrangler deploy --env loadtest "${args[@]}"
 
   preflight:
     needs: arm
@@ -269,6 +283,9 @@ jobs:
           # The arm this run was dispatched for (#3258); the preflight refuses a
           # deployment running any other.
           EXPECT_POST_CONFIRM_RECOMPUTE: ${{ inputs.post_confirm_recompute }}
+          # The Google delay this run was dispatched with (#3490); the preflight
+          # refuses a deployment running any other.
+          EXPECT_GOOGLE_DELAY: ${{ inputs.google_delay }}
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/preflight.ts
       # The judge reads this to learn whether the unique index really enforces, so
       # it has to reach the judge like every other driver file.
@@ -734,13 +751,17 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           FAULT_PCT: ${{ inputs.fault_pct }}
           FAULT_TARGETS: ${{ inputs.fault_targets }}
-          # The run's own arm (#3258), carried so the fault pass runs the same one.
+          # The run's own arm (#3258) and Google delay (#3490), carried so the fault
+          # pass runs the same rig. An empty delay adds no setting.
           RECOMPUTE_ARM: ${{ inputs.post_confirm_recompute }}
-        run: >-
-          bash scripts/loadtest/retry-cloudflare-api.sh npx wrangler deploy --env loadtest
-          --var "SLATE_LOADTEST_FAULT_PCT:$FAULT_PCT"
-          --var "SLATE_LOADTEST_FAULT_TARGETS:$FAULT_TARGETS"
-          --var "SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:$RECOMPUTE_ARM"
+          GOOGLE_DELAY: ${{ inputs.google_delay }}
+        run: |
+          args=(--var "SLATE_LOADTEST_FAULT_PCT:$FAULT_PCT"
+            --var "SLATE_LOADTEST_FAULT_TARGETS:$FAULT_TARGETS"
+            --var "SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:$RECOMPUTE_ARM")
+          delay="$(echo "$GOOGLE_DELAY" | tr -d '[:space:]')"
+          if [ -n "$delay" ]; then args+=(--var "SLATE_LOADTEST_GOOGLE_DELAY:$delay"); fi
+          bash scripts/loadtest/retry-cloudflare-api.sh npx wrangler deploy --env loadtest "${args[@]}"
       # The lane sampler runs BESIDE the driver, from before the driver's first
       # request to a tail of minutes after its last (#3104). The deployment stays
       # faulted until the restore below, so the tail is still faulted time, and it
@@ -843,8 +864,10 @@ jobs:
           SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
           BOOKING_API_KEY: ${{ secrets.LOADTEST_BOOKING_API_KEY }}
           COLD_SAMPLES: ${{ inputs.cold_samples }}
-          # The run's own arm (#3258), kept on every version this leg deploys.
+          # The run's own arm (#3258) and Google delay (#3490), kept on every version
+          # this leg deploys.
           RECOMPUTE_ARM: ${{ inputs.post_confirm_recompute }}
+          GOOGLE_DELAY: ${{ inputs.google_delay }}
           OUT: results/cold-0.json
         run: |
           mkdir -p results
@@ -933,6 +956,9 @@ jobs:
           EXPECT_BASELINE: "1"
           # The post confirm recompute arm, named in the report's header (#3258).
           EXPECT_POST_CONFIRM_RECOMPUTE: ${{ inputs.post_confirm_recompute }}
+          # And the Google delay, so a run with Google time is never read against one
+          # without (#3490).
+          EXPECT_GOOGLE_DELAY: ${{ inputs.google_delay }}
           # How many cold samples the diagnostic leg was asked for (#3354), so the
           # report can tell "not asked for" from "asked for and never arrived".
           EXPECT_COLD_SAMPLES: ${{ inputs.cold_samples }}

@@ -296,6 +296,15 @@ control("the shared line default missing from the load test", "cold isolates wou
 {
   const recompute = "SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE";
   assert((PER_RUN_SWITCH_VARS as readonly string[]).includes(recompute), "the recompute arm is a per run switch");
+  // #3490: the Google delay is one too. Committed in env.loadtest it would put Google time
+  // into every run whatever was dispatched; on the top level it has no business existing.
+  const googleDelay = "SLATE_LOADTEST_GOOGLE_DELAY";
+  assert((PER_RUN_SWITCH_VARS as readonly string[]).includes(googleDelay), "the Google delay is a per run switch");
+  /** What each switch that is not fault injection must name in its own refusal. */
+  const ownWords: Record<string, RegExp> = {
+    [recompute]: /post confirm recompute/,
+    [googleDelay]: /Google delay/,
+  };
   for (const key of PER_RUN_SWITCH_VARS) {
     const brokenTop = clone(top);
     brokenTop.vars![key] = "off";
@@ -311,7 +320,8 @@ control("the shared line default missing from the load test", "cold isolates wou
       if (isFault) assert(/fault/.test(f), `${key}'s refusal speaks of faults: ${f}`);
       else {
         assert(!/fault/i.test(f), `${key}'s refusal does not call it fault injection: ${f}`);
-        assert(/post confirm recompute/.test(f), `${key}'s refusal names the post confirm recompute: ${f}`);
+        const words = ownWords[key];
+        assert(words !== undefined && words.test(f), `${key}'s refusal names its own switch (${String(words)}): ${f}`);
       }
     }
   }

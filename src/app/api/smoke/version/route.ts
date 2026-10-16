@@ -12,6 +12,7 @@ import {
 } from "@/lib/loadtest-fault";
 import { postConfirmRecomputeSetting } from "@/lib/booking/post-confirm-recompute";
 import { CONFIRM_CROWD_RULE } from "@/lib/confirm-crowd-rule";
+import { formatGoogleDelay, parseGoogleDelay, GOOGLE_DELAY_VAR } from "@/lib/google/loadtest-google-delay";
 
 export const dynamic = "force-dynamic";
 
@@ -68,6 +69,8 @@ export async function GET(req: NextRequest) {
   // rest of the deployment has started refusing itself.
   const loadtest = isLoadtest();
   const recompute = postConfirmRecomputeSetting();
+  // Read only under load test, so production never even parses the delay setting (#3490).
+  const googleDelay = loadtest ? parseGoogleDelay(process.env[GOOGLE_DELAY_VAR]) : null;
   return NextResponse.json({
     commit: BUILD_COMMIT,
     loadtest,
@@ -87,6 +90,12 @@ export async function GET(req: NextRequest) {
           // describe an arm nobody drove.
           postConfirmRecompute: recompute.mode,
           postConfirmRecomputeUnknown: recompute.unknown,
+          // #3490: the delay the Google stand in takes on the calls a lead waits on, in its
+          // canonical spelling ("" is off), and the raw value when it did not parse, from
+          // the SAME parser the stand in acts on (L70), so the preflight can refuse a run
+          // whose report would name a rig nobody drove.
+          googleDelay: googleDelay ? formatGoogleDelay(googleDelay) : "",
+          googleDelayUnknown: googleDelay?.unknown ?? null,
           // #3429: whether a confirm in a crowd behind a leader that booked its
           // rung's last advisor walks the tier ladder (#3338). The load run's drop
           // burst is held to the rule the deployment says it runs.
