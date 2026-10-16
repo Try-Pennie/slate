@@ -14,9 +14,11 @@
 // Things this accounting has to get right, every one of which is how a profile
 // misleads rather than fails:
 //
-//   - the named stages plus an explicit RESIDUAL must equal the whole, or a reader
-//     takes the named ones for the entire cost and optimises a path that is a
-//     fraction of it (L466);
+//   - the time the named stages COVER, counted once however they nest or overlap,
+//     plus an explicit RESIDUAL must equal the whole, or a reader takes the named ones
+//     for the entire cost and optimises a path that is a fraction of it (L466). The
+//     stages' own figures are never summed: a stage's figure includes anything nested
+//     in it (`route-checks` holds every `route-checks.*`);
 //   - a stage that ran N times must report N, because a cheap thing done forty
 //     times and an expensive thing done once are the same total and different fixes;
 //   - spans that OVERLAP (parallel calls, a rung inside the stage that walks the
