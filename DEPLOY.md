@@ -384,8 +384,8 @@ lead can meet both versions across page loads. Then it is one version at 100% ag
 - **The token holder** (`TOKEN_HOLDER`, #3512) is a class of its own small Worker
   (`slate-token-holder`), never Slate's, so it adds no `migrations` entry to
   `wrangler.jsonc` and ships through this pipeline: its Worker is deployed whole before
-  the uploads, from `OBJECT_WORKER_CONFIGS`, and its own `v1` migration is applied by that
-  plain `wrangler deploy`. It holds tokens in memory only, so every deploy of its Worker
+  the uploads, from `OBJECT_WORKER_CONFIGS`, whenever its bundle or config changed (next
+  bullet), and its own `v1` migration is applied by that plain `wrangler deploy`. It holds tokens in memory only, so every deploy of its Worker
   empties it; the next reads of each advisor mint as they did before the holder existed
   and put the token back, which costs a few mints after a deploy and fails nothing. It
   holds no secret: it never mints.
