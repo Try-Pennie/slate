@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseWorkflowJobs, transitiveNeeds, type WorkflowJob } from "./lib/scan-workflow-jobs.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { LINE_TAIL_FILE } from "./loadtest/confirm-startup.ts";
 
 const WORKFLOW = join(import.meta.dirname, "..", ".github", "workflows", "loadtest.yml");
 
@@ -150,6 +151,41 @@ function stopProblems(source: string): string[] {
   eq(touched, ["archive"], "control: replaying the old archive changes the archive job and nothing else");
   const ran = stopProblems(asRun).filter((p) => p.startsWith("archive "));
   eq(ran.length, 3, `control: the archive as run 37566700055 had it is refused three ways (got ${JSON.stringify(ran)})`);
+}
+
+// --- the archive also tails the confirm line Worker (#3781) ------------------------
+//
+// Since #3500 the line object runs in its own Worker, so its traced calls are logged
+// to that Worker's tail and never to the app's. Run 41 joined 0 of 537 traced confirms
+// because only the app was tailed. The archive tails both for the same window, each in
+// its own process group with its own stop: one shared stop line would leave the other
+// tail running past the window (#3472).
+
+/** Every way the archive could leave the line Worker's log unrecorded or unstopped. */
+function lineTailProblems(source: string): string[] {
+  const archive = parseWorkflowJobs(source).find((j) => j.name === "archive");
+  if (!archive) return ["there is no archive job"];
+  const out: string[] = [];
+  const script = archive.runs.join("\n");
+  const lineTail = new RegExp(`setsid [^\\n]*\\bwrangler tail -c wrangler\\.confirm-line\\.jsonc --env loadtest --format json > results/${LINE_TAIL_FILE.replace(".", "\\.")}[^\\n]*&\\n\\s*(\\w+)=\\$!`).exec(script);
+  if (!lineTail) out.push(`the archive does not tail the confirm line Worker into results/${LINE_TAIL_FILE} in its own process group`);
+  const started = [...script.matchAll(/\bwrangler tail\b[^\n]*&\n\s*(\w+)=\$!/g)].map((m) => m[1]!);
+  for (const pid of started) {
+    if (!new RegExp(`kill -TERM -- -"\\$${pid}"`).test(script)) out.push(`the archive starts a tail as ${pid} and never stops its process group`);
+  }
+  if (new Set(started).size !== started.length) out.push("the archive keeps two tails under one pid name, so only the last can be stopped");
+  return out;
+}
+
+{
+  eq(lineTailProblems(yml), [], "the archive tails the line Worker beside the app, and stops each tail on its own");
+  // Control: the archive as run 41 ran it, tailing the app alone, is refused.
+  const appOnly = yml.replace(/\n[^\n]*wrangler tail -c wrangler\.confirm-line\.jsonc[^\n]*\n[^\n]*\n/, "\n");
+  assert(lineTailProblems(appOnly).some((p) => p.includes("does not tail the confirm line Worker")), "control: an archive that tails only the app is refused");
+  // Control: a line tail with no stop of its own is refused, though the app's stop is there.
+  const unstopped = yml.replace(/\n[^\n]*kill -TERM -- -"\$line_tail_pid"[^\n]*/, "");
+  assert(unstopped !== yml, "control: the line tail's stop is where the plant expects it");
+  assert(lineTailProblems(unstopped).some((p) => p.includes("line_tail_pid and never stops")), "control: a line tail with no stop of its own is refused");
 }
 
 finish();
