@@ -1905,6 +1905,13 @@ fine; and no lane's heartbeat goes stale, because a Google failure must not stop
 running. On the booking run the page and the heartbeats are now SCORED by the judge
 (the fault leg section below), not read by a person.
 
+When EVERY lane stops stamping in the same minutes, for longer than the shortest lane
+bound, the judge says the crons did not fire rather than blaming a dependency (#3746):
+no fault reaches `lane_heartbeats`, and a fault failing a share of calls cannot hold
+every lane still at once. Run 38635866855 was that case, during Cloudflare's cron
+trigger incident. It still fails the bar, because nothing about the lanes under fault
+was measured; rerun once the platform fires the crons again.
+
 ### Which systems fail (#3104)
 
 `SLATE_LOADTEST_FAULT_TARGETS` names the systems, comma separated. Unset is

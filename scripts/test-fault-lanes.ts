@@ -104,6 +104,67 @@ function findingsOf(e: FaultLaneEvidence, x: FaultLaneExpectations = EXPECT): st
   eq(findingsOf(h), [], "nor a stale page from before the window");
 }
 
+// --- the platform stopped firing the crons (#3746) --------------------------------
+// Run 38635866855: every one minute lane went stale together for about fourteen
+// minutes, and Workers Logs held no scheduled invocation of the Worker at all while
+// it served thousands of requests. Cloudflare had an open cron trigger incident. The
+// lanes did not fail; the crons never fired, and the judge blamed a dependency (L11).
+// Told apart by the stamps of EVERY lane together: a dependency failing one call in
+// ten cannot stop every lane in the same minutes, a platform that fires no cron can.
+/** A twenty minute window where `frozen` lanes stop stamping from `from` to `to` minutes in. */
+function series(frozen: readonly string[], from: number, to: number): FaultLaneEvidence {
+  const samples: FaultLaneEvidence["samples"] = [];
+  const lastBefore: Record<string, number> = {};
+  for (let at = T0 - 30_000; at <= T0 + 20 * MIN; at += 15_000) {
+    const lastMinute = at - (at % MIN);
+    const lastFive = at - (at % (5 * MIN));
+    // A frozen lane records no run inside the stretch, so a stamp it would have
+    // written there is the last one it wrote before it.
+    const stamp = (lane: string, ms: number) => {
+      const inStretch = frozen.includes(lane) && ms >= T0 + from * MIN && ms < T0 + to * MIN;
+      if (inStretch) return iso(lastBefore[lane] ?? ms);
+      if (ms < T0 + from * MIN) lastBefore[lane] = ms;
+      return iso(ms);
+    };
+    samples.push({
+      atMs: at,
+      heartbeats: { sync: stamp("sync", lastMinute), outbox: stamp("outbox", lastMinute), complete: stamp("complete", lastFive - 5 * MIN) },
+      alerts: at >= T0 + MIN ? { [SYNC_FAILURE_ALERT_KEY]: iso(T0 + MIN) } : {},
+    });
+  }
+  return { kind: "fault-lanes", runId: "run-1", startedAtMs: T0 - 30_000, finishedAtMs: T0 + 20 * MIN, intervalMs: 15_000, samples, failedReads: 0 };
+}
+{
+  eq(findingsOf(series([], 0, 0)), [], "control: the twenty minute series passes with nothing frozen");
+  const f = findingsOf(series(["sync", "outbox", "complete"], 2, 16));
+  // The last run before the freeze is the minute stamp at 1 min in, the next at 16 min.
+  assert(f.some((d) => d.startsWith("no lane stamped a heartbeat for 15.0 min, every lane at once, from 1.0 min to 16.0 min")), `every lane stopping at once is named as no lane running, with its stretch (got ${JSON.stringify(f)})`);
+  assert(f.some((d) => d.includes("the crons did not fire")), `and as the crons not firing (got ${JSON.stringify(f)})`);
+  assert(!f.some((d) => d.includes("A failing dependency")), `and no lane is blamed on a dependency (got ${JSON.stringify(f)})`);
+  assert(judgeFaultLanes(series(["sync", "outbox", "complete"], 2, 16), EXPECT).length > 0, "it still fails the run, since nothing about the lanes under fault was measured");
+}
+{
+  // Control: one lane stopping while the others stamp is still that lane, blamed as before.
+  const f = findingsOf(series(["outbox"], 2, 16));
+  assert(f.some((d) => d.includes("outbox lane was stale") && d.includes("A failing dependency")), `a lane stopping alone is still blamed on a dependency (got ${JSON.stringify(f)})`);
+  assert(!f.some((d) => d.includes("crons did not fire")), `and never on the platform (got ${JSON.stringify(f)})`);
+}
+{
+  // A lane that stays stopped after the others come back stopped for its own reason
+  // too, so the silence does not excuse it (and does still excuse the others).
+  const e = series(["sync", "outbox", "complete"], 2, 16);
+  const outboxFrozen = series(["outbox"], 2, 20);
+  for (let i = 0; i < e.samples.length; i++) e.samples[i]!.heartbeats.outbox = outboxFrozen.samples[i]!.heartbeats.outbox!;
+  const f = findingsOf(e);
+  assert(f.some((d) => d.includes("crons did not fire")), `the shared stretch is still named (got ${JSON.stringify(f)})`);
+  assert(f.some((d) => d.includes("outbox lane was stale") && d.includes("A failing dependency")), `the lane still stopped after it is blamed on its own cause (got ${JSON.stringify(f)})`);
+  assert(f.some((d) => d.includes("sync lane was stale") && d.includes("crons not firing")), `while the lane that came back with the others is not (got ${JSON.stringify(f)})`);
+}
+{
+  // Control: every lane pausing for less than the shortest bound is no finding at all.
+  eq(findingsOf(series(["sync", "outbox", "complete"], 2, 6)), [], "a four minute pause of every lane, inside every bound, is not a finding");
+}
+
 // --- the page -----------------------------------------------------------------------
 {
   const e = healthy();
