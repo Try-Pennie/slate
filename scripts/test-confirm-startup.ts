@@ -29,7 +29,9 @@
 //     NEITHER side, and counted as such.
 //
 // Run: node --experimental-strip-types scripts/test-confirm-startup.ts
-import { readConfirmStartup, readLineTailFile, readDeferredSpans } from "./loadtest/confirm-startup.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { readConfirmStartup, readLineTailFile, readDeferredSpans, UNAWAITED_LINE_OPS } from "./loadtest/confirm-startup.ts";
 import { formatLine } from "../src/lib/log.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -799,9 +801,10 @@ function entryStampOf(c: (typeof RUN_37520312761_STAMP_COLD)[number]): number {
 // --- #3354: the line's wait, split by the object's own log of each call ------------
 // A confirm's `wait_line_ms` is its client's view. The object logs every traced call
 // with the runtime's `wallTime`, so the wait splits into the time held behind a
-// leader (polls), the object's own work on the other calls sent while waiting, and
-// what is left: everything outside the object. Calls sent during the turn are not
-// part of the wait and are left out.
+// leader (polls), the object's own work on the other calls the confirm waited for,
+// and what is left: everything outside the object. Calls sent during the turn are not
+// part of the wait and are left out, and so is the lead's ack, which the client sends
+// without waiting for it though it is stamped during the wait (#3813).
 {
   const archive = [
     objectLine({ eventTimestamp: 100, wallTime: 30, op: "enter", trace: "tc", stage: "wait" }),
@@ -819,10 +822,11 @@ function entryStampOf(c: (typeof RUN_37520312761_STAMP_COLD)[number]): number {
   eq(c.traced, 1, "one cold confirm was traced on the shared line");
   eq(c.joined, 1, "and its object calls were found");
   eq(c.heldMs.join(","), "700", "held behind a leader is its polls' time in the object");
-  eq(c.objectMs.join(","), "50", "the object's own work is the rest of what it spent on calls sent while waiting");
-  eq(c.outsideMs.join(","), "150", "and outside the object is whatever of the wait the object did not account for");
+  // The ack (20) is left out: since #3355 the client sends it without waiting for it.
+  eq(c.objectMs.join(","), "30", "the object's own work is the rest of what it spent on calls the confirm waited for");
+  eq(c.outsideMs.join(","), "170", "and outside the object is whatever of the wait the object did not account for");
   const w = r.lineSplit.warm;
-  eq(`${w.joined} ${w.heldMs.join(",")} ${w.objectMs.join(",")} ${w.outsideMs.join(",")}`, "1 0 15 85", "a confirm that never polled held for zero, measured, since its calls were found");
+  eq(`${w.joined} ${w.heldMs.join(",")} ${w.objectMs.join(",")} ${w.outsideMs.join(",")}`, "1 0 10 90", "a confirm that never polled held for zero, measured, since its calls were found (its unawaited ack left out)");
   eq(r.lineSplit.orphanCalls, 0, "every object call belonged to a confirm in the archive");
 }
 
@@ -878,6 +882,40 @@ function entryStampOf(c: (typeof RUN_37520312761_STAMP_COLD)[number]): number {
   ].join("\n");
   const c = readConfirmStartup(archive)!.lineSplit.cold;
   eq(`${c.traced} ${c.unreadable} ${c.missing} ${c.joined}`, "1 1 0 0", "a call with no wall time makes the confirm unreadable, never missing and never a reading");
+}
+
+// --- the lead's ack is not part of the wait ------------------------------------------
+// The client sends the ack without waiting for it (`shared-confirm-line.ts`, "not counted
+// in lineMs"), stamped while the confirm was still in its wait. Counted as part of the
+// wait, its time came out larger than the wait itself: 123 of run 38912230442's 137
+// impossible splits were the ack alone.
+{
+  const archive = [
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 60_000, index: 4, answer: { line: "shared", line_trace: "ak", wait_line_ms: 11 } }),
+    objectLine({ eventTimestamp: 100, wallTime: 6, op: "enter", trace: "ak", stage: "wait" }),
+    objectLine({ eventTimestamp: 106, wallTime: 206, op: "ack", trace: "ak", stage: "wait" }),
+  ].join("\n");
+  const w = readConfirmStartup(archive)!.lineSplit.warm;
+  eq(`${w.joined} ${w.impossible}`, "1 0", "an unawaited ack never makes a split impossible");
+  eq(`${w.heldMs.join(",")} ${w.objectMs.join(",")} ${w.outsideMs.join(",")}`, "0 6 5", "and its time is left out of the wait");
+}
+{
+  // A confirm whose only archived call is its ack lost the calls it waited for, so it
+  // is missing, never a split with nothing held and nothing in the object.
+  const archive = [
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 60_000, index: 4, answer: { line: "shared", line_trace: "ao", wait_line_ms: 40 } }),
+    objectLine({ eventTimestamp: 106, wallTime: 206, op: "ack", trace: "ao", stage: "wait" }),
+  ].join("\n");
+  const w = readConfirmStartup(archive)!.lineSplit.warm;
+  eq(`${w.joined} ${w.missing}`, "0 1", "only the ack archived is missing, not a split");
+}
+{
+  // The judge's list of calls the client does not wait for is the client's own: every
+  // `void call(stub, { op: ... })` in the shared line, read from its source (L41, L96).
+  const src = readFileSync(join(import.meta.dirname, "..", "src", "lib", "booking", "shared-confirm-line.ts"), "utf8");
+  const sent = [...src.matchAll(/void call\(stub, \{ op: "(\w+)"/g)].map((m) => m[1]!).sort();
+  assert(sent.length > 0, "control: the scan finds the client's unawaited calls");
+  eq([...UNAWAITED_LINE_OPS].sort(), sent, "the judge leaves out exactly the calls the client does not wait for");
 }
 
 // --- #3781: the object's calls arrive in the LINE Worker's own log ---------------------
