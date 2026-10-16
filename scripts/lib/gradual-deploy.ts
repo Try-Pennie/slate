@@ -480,9 +480,10 @@ export const EXIT = {
    *  version (#3352). Nothing changed; it ships by hand, and until it does every later
    *  deploy ends here too. */
   classChange: 25,
-  /** #3500, #3555: an object worker (the confirm line's or the burst limiter's) could not
-   *  be deployed, so nothing of Slate's was uploaded: Slate's bindings name them. Nothing
-   *  changed. */
+  /** #3500, #3555, #3512: an object worker (the confirm line's, the burst limiter's or the
+   *  token holder's) that needed deploying (#3561: it changed, or could not be proved
+   *  unchanged) failed to deploy or threw, so nothing of Slate's was uploaded: Slate's
+   *  bindings name them. Nothing of Slate's changed. */
   objectWorkerFailed: 26,
 } as const;
 
