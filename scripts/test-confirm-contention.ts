@@ -162,16 +162,16 @@ function lead(i: number, over: Partial<CreateBookingInput> = {}): CreateBookingI
   };
 }
 
+/** The line object as a burst reaches it: one JSON message in, one JSON answer out (#3560). */
+type ObjectHost = { handle(message: unknown): Promise<string> };
+type ObjectHostFactory = (deps: Parameters<typeof makeConfirmLineHost>[0]) => ObjectHost;
+
 /**
  * Runs `inputs` at the same instant against one shared database and one shared
  * capacity, and returns how each was answered. The pool is `pool`, and the
  * candidate read leaves out anybody already booked at the time, as the real one
  * does through the busy block the confirm writes before it answers.
  */
-/** The line object as a burst reaches it: one JSON message in, one JSON answer out (#3560). */
-type ObjectHost = { handle(message: unknown): Promise<string> };
-type ObjectHostFactory = (deps: Parameters<typeof makeConfirmLineHost>[0]) => ObjectHost;
-
 async function burst(opts: {
   inputs: CreateBookingInput[];
   pool: string[];
