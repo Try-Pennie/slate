@@ -81,6 +81,13 @@ import {
 } from "@/lib/monitor/booking-pause";
 import { readPublicBookingPauseState } from "@/lib/booking/settings";
 import {
+  runSharedLineLeftOffCheck,
+  SHARED_LINE_LEFT_OFF_UNREADABLE,
+  SHARED_LINE_OFF_NOTICE_AFTER_MS,
+  type SharedLineLeftOffVerdict,
+} from "@/lib/monitor/shared-line-left-off";
+import { readSharedLineSwitchHistory } from "@/lib/booking/shared-line-switch";
+import {
   planTierAlerts,
   settleTierRecovery,
   tierStaffingKey,
@@ -1102,6 +1109,50 @@ export async function GET(req: NextRequest) {
           resolve: (key, text) => resolveAlert(key, text),
           cooldownMs: cooldownMs.public_booking_stopped,
           log: (m) => log.warn("booking-pause", { msg: m }),
+        }),
+    );
+
+    // --- Was the shared confirm line switched on, and then left OFF (#3339)? ---
+    //
+    // The same shape as the kill switch above, on the other switch the admin Hours page
+    // holds. Once the shared line is on, turning it off is the lever for containing a line
+    // problem, and the failure is forgetting to turn it back: every server keeps its own
+    // line again and the next crowd for one time swamps the database, with everything
+    // else reading healthy. Until the line has EVER been switched on, off is the expected
+    // state and says nothing; when it was activated comes from the audit trail the admin
+    // action writes, read inside the loader.
+    //
+    // The read THROWS rather than answering "never switched on", so the step boundary
+    // reports it under `monitor_step_failing` (which is also the lane's measure of a
+    // switch nobody can read) and the fallback renders `unreadable`. ---
+    const sharedLineLeftOff = await steps.run<SharedLineLeftOffVerdict>(
+      "shared_line_left_off",
+      SHARED_LINE_LEFT_OFF_UNREADABLE,
+      async () =>
+        runSharedLineLeftOffCheck({
+          reading: await readSharedLineSwitchHistory(),
+          nowMs: now,
+          // Judged through the same predicate as the kill switch above, so the two never
+          // disagree about whether the org is open (L41); null errs toward speaking.
+          open: businessHours
+            ? isBusinessHours(now, {
+                zone: businessHours.zone,
+                rules: businessHours.rules,
+                exceptions: businessHours.exceptions,
+              })
+            : null,
+          thresholdMs: SHARED_LINE_OFF_NOTICE_AFTER_MS,
+          // alert-key: shared_confirm_line_left_off
+          // alert-text-ok: our own copy from shared-line-left-off.ts, built from a measured
+          // span; no error text can reach it.
+          notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
+          // alert-key: shared_confirm_line_left_off
+          // all-clear-proof: scripts/test-monitor-shared-line-left-off.ts - a tick reporting
+          // the switch off, one holding under the threshold, and one that has never seen it
+          // switched on each clear NOTHING; only a tick that READ it on does.
+          resolve: (key, text) => resolveAlert(key, text),
+          cooldownMs: cooldownMs.shared_confirm_line_left_off,
+          log: (m) => log.warn("shared-line-left-off", { msg: m }),
         }),
     );
 
@@ -4550,6 +4601,9 @@ export async function GET(req: NextRequest) {
       // shape: "could not read the switch" and "bookings are being taken" are the two
       // this check exists to keep apart (#2366).
       bookingPause,
+      // status "unreadable" when the read threw, and "never-activated" while nobody has
+      // switched the line on: neither is "on", and neither may render as it (#3339).
+      sharedLineLeftOff,
       overrideSweep,
       // null when the step failed, and "not-measured" inside when GitHub could not
       // be read: "main's tip is live" and "nothing could say" must not render the

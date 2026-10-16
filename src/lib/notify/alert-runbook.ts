@@ -356,6 +356,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   rate_limit_unidentified: "a-limit-or-a-guard-is-not-working",
   // #3325: the shared confirm line fails open to each server's own line, like a limiter.
   confirm_line_unreachable: "a-limit-or-a-guard-is-not-working",
+  // #3339: the same guard, turned off by hand and left off, and the same guard's switch
+  // unreadable on the confirm path.
+  shared_confirm_line_left_off: "a-limit-or-a-guard-is-not-working",
+  shared_line_switch_unreadable: "a-limit-or-a-guard-is-not-working",
   rate_limit_blocked: "something-was-measured-and-is-only-worth-knowing",
 
   // The database instance itself is out of memory, not a query or a lane (#3588). Its own
