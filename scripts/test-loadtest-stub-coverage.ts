@@ -89,7 +89,7 @@ for (const name of ["createEvent", "deleteEvent", "updateEventTime", "eventExist
 //    not just success: a fixpoint that only ever grows would report isFree clean.
 {
   const broken = calendar.replace(
-    '  if (LOADTEST) {\n    await loadtestGoogleDelay("read", GOOGLE_CONFIRM_TIMEOUT_MS);\n    return stubFreeBusy(email);\n  }\n',
+    '  if (LOADTEST) {\n    // #3490: a read of no calendars asks Google nothing in production, so it waits nothing here.\n    if (calendarIds.length > 0) await loadtestGoogleDelay("read", GOOGLE_CONFIRM_TIMEOUT_MS);\n    return stubFreeBusy(email);\n  }\n',
     "",
   );
   assert(broken !== calendar, "the freeBusy gate is where this control expects it");

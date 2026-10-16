@@ -165,6 +165,19 @@ describe("the Google delay under SLATE_LOADTEST (#3490)", () => {
     }
   });
 
+  it("asks nothing and so waits nothing for a read of no calendars, as production answers at once", async () => {
+    const { freeBusy } = await import("@/lib/google/calendar");
+    process.env.SLATE_LOADTEST_GOOGLE_DELAY = "read=3000/5000";
+    vi.useFakeTimers();
+    try {
+      // No timer is advanced: a stand in that waited here would never resolve.
+      await expect(freeBusy(EMAIL, EVENT.start, EVENT.end, [])).resolves.toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      delete process.env.SLATE_LOADTEST_GOOGLE_DELAY;
+    }
+  });
+
   it("answers at once with the setting unset, as every run before it did", async () => {
     const { freeBusy } = await import("@/lib/google/calendar");
     vi.useFakeTimers();

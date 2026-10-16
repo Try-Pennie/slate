@@ -304,7 +304,8 @@ export async function freeBusy(
   calendarIds: string[],
 ): Promise<Interval[] | null> {
   if (LOADTEST) {
-    await loadtestGoogleDelay("read", GOOGLE_CONFIRM_TIMEOUT_MS);
+    // #3490: a read of no calendars asks Google nothing in production, so it waits nothing here.
+    if (calendarIds.length > 0) await loadtestGoogleDelay("read", GOOGLE_CONFIRM_TIMEOUT_MS);
     return stubFreeBusy(email);
   }
   if (calendarIds.length === 0) return [];
