@@ -352,6 +352,21 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
 
   const second = await chooseRefusalSlots(["500", "520"], io(hardAt16, { "500": [at(14)], "520": times }), opts);
   assert(second.kind === "chosen" && second.ladder === "520", `refusal choice: a ladder with nothing fit gives way to the next (got ${JSON.stringify(second)})`);
+
+  // #3571: the most free hard time cannot be spaced (with a two hour gap, 15:00 leaves
+  // only 17:00 and 18:00, an hour apart), and a less free one on the SAME ladder can
+  // (14:00 leaves 16:00 and 18:00). The planner tried only the first and gave up the
+  // ladder, so setup stopped at exit 3 with a workable plan in hand.
+  const spaced = { bursts: 3, gapMs: 2 * HOUR, toMeasure: 72, minFree: HARD_REFUSAL_MIN_FREE };
+  const twoFit = { [at(15)]: { rung0Free: 4, ladderFree: 14 }, [at(14)]: { rung0Free: 2, ladderFree: 8 } };
+  const fallback = await chooseRefusalSlots(["500"], io(twoFit, { "500": times }), spaced);
+  assert(fallback.kind === "chosen" && fallback.slots[0] === at(14) && fallback.slots.length === 3, `refusal choice: a hard time that cannot be spaced gives way to the next most free on the same ladder (got ${JSON.stringify(fallback)})`);
+  // Control: with only the unspaceable time fit, the outcome is still spacing.
+  const onlyFifteen = await chooseRefusalSlots(["500"], io({ [at(15)]: { rung0Free: 4, ladderFree: 14 } }, { "500": times }), spaced);
+  assert(onlyFifteen.kind === "no-spacing", `refusal choice: with no other fit time, it is still a spacing outcome (got ${JSON.stringify(onlyFifteen)})`);
+  // And when both space, the most free still wins.
+  const bothSpace = await chooseRefusalSlots(["500"], io({ [at(16)]: { rung0Free: 4, ladderFree: 14 }, [at(14)]: { rung0Free: 2, ladderFree: 8 } }, { "500": times }), spaced);
+  assert(bothSpace.kind === "chosen" && bothSpace.slots[0] === at(16), `refusal choice: the most free fit time is still preferred when it spaces (got ${JSON.stringify(bothSpace)})`);
 }
 
 // #3737: one read that timed out ended load run 19 in setup, before any traffic. A
