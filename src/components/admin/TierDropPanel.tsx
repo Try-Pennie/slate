@@ -45,11 +45,19 @@ const BEHIND_LABEL: Record<keyof DropBehindTally, string> = {
 };
 
 /**
+ * The rows, in the label map's order, read off the label map itself (#3531). A
+ * second hand written list of kinds stopped at two of the three and drew nothing
+ * for `claimed`; the map's `Record` type already makes `tsc` refuse a kind with no
+ * label, so taking the rows from it means a kind with a label always has a row.
+ */
+const BEHIND_KINDS = Object.keys(BEHIND_LABEL) as (keyof DropBehindTally)[];
+
+/**
  * #3338: leads booked further down their routing because other leads confirmed
  * the same time first. Its own table, apart from the tier drops above it, because
  * it counts a different population: every move down the routing, a sideways one
- * inside a tier included (the Low pilot's whole routing sits in one tier). Both
- * rows are drawn at zero, since a zero is how a branch that never fires is seen.
+ * inside a tier included (the Low pilot's whole routing sits in one tier). Every
+ * row is drawn at zero, since a zero is how a branch that never fires is seen.
  */
 function DropsBehind({ behind }: { behind: TierDropCounts["behind"] }) {
   return (
@@ -63,7 +71,7 @@ function DropsBehind({ behind }: { behind: TierDropCounts["behind"] }) {
           </tr>
         </thead>
         <tbody>
-          {(["race", "line"] as const).map((how) => (
+          {BEHIND_KINDS.map((how) => (
             <tr key={how} className="border-t border-border">
               <th scope="row" className="py-1.5 pr-3 font-normal">
                 {BEHIND_LABEL[how]}
