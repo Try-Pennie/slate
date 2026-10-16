@@ -149,3 +149,51 @@ describe("the reschedule guard reads an unreadable calendar the same way (#2412)
     ]);
   });
 });
+
+// #3845: Google failing the per agent read OUTRIGHT (a 503 for the whole call, rather
+// than an `errors[]` entry inside a 200). That read is the fallback the bulk wave hands
+// an agent to, so once the load run's fault pass reached the bulk wave it reached this
+// too: the throw escaped `verifyAgentsDirectly`, took every other candidate in the wave
+// with it, and the lead got a 500 rather than the re-route or the retriable 503. A read
+// that could not answer is unverified, exactly as one that answered with an error is.
+// A deadline is not: `verify-on-book-deadline.test.ts` holds that it still propagates.
+describe("the per agent read failing outright is unverified, never a 500 (#3845)", () => {
+  beforeEach(() => dwd.getDelegatedToken.mockResolvedValue("tok"));
+  afterEach(() => vi.unstubAllGlobals());
+
+  function googleFailsWith(status: number) {
+    vi.stubGlobal(
+      "fetch",
+      async () => new Response(JSON.stringify({ error: { errors: [{ reason: "backendError" }] } }), { status }),
+    );
+  }
+
+  it("scores the agent unverified when Google answers the read with a 503", async () => {
+    googleFailsWith(503);
+
+    const res = await verifyAgentsDirectly([AGENT], START, END);
+
+    expect([...res.unverified]).toEqual([AGENT]);
+    expect([...res.free]).toEqual([]);
+  });
+
+  it("and the reschedule guard could not tell, so it re-routes", async () => {
+    googleFailsWith(503);
+    expect(await agentBusyIntervals(AGENT, START, END)).toBeNull();
+  });
+
+  // The control: a deadline on the Google call itself is the dependency timeout (#3313),
+  // never an unverified agent, so it still propagates through both reads.
+  it("still lets a deadline on the read itself propagate", async () => {
+    const { DeadlineExceededError, findDeadlineExceeded } = await import("@/lib/fetch-within-deadline");
+    vi.stubGlobal("fetch", async () => {
+      throw new DeadlineExceededError("google freeBusy", 5000);
+    });
+
+    const booker = await verifyAgentsDirectly([AGENT], START, END).catch((e: unknown) => e);
+    const guard = await agentBusyIntervals(AGENT, START, END).catch((e: unknown) => e);
+
+    expect(findDeadlineExceeded(booker)?.timeoutMs).toBe(5000);
+    expect(findDeadlineExceeded(guard)?.timeoutMs).toBe(5000);
+  });
+});

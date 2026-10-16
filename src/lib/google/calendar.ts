@@ -32,6 +32,7 @@ import {
   stubSyncEvents,
   stubWatch,
   stubFreeBusy,
+  stubFreeBusyMany,
   stubCreateEvent,
   stubEventOnPrimary,
   stubEventWrite,
@@ -392,7 +393,8 @@ export async function freeBusyMany(
   if (LOADTEST) {
     // #3490: one wave chunk is one Google call in production, so each takes its own delay.
     await loadtestGoogleDelay("read", GOOGLE_CONFIRM_TIMEOUT_MS);
-    return new Map(calendarIds.map((id) => [id, { busy: [], error: false }]));
+    // #3845: under the fault switch, like every other stubbed read.
+    return stubFreeBusyMany(calendarIds);
   }
   const res = await ok(
     await gfetch(
