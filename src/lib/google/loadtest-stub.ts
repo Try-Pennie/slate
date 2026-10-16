@@ -8,8 +8,86 @@ import type { GoogleEvent, Interval } from "@/lib/google/calendar";
 import { parseStampMs } from "@/lib/date/stamp";
 import { GoogleHttpError } from "@/lib/google/http-error";
 import { keyHash, shouldInject, type FaultTarget } from "@/lib/loadtest-fault";
+import { isLoadtest } from "@/lib/loadtest-guard";
+import { budgetLeftMs } from "@/lib/call-budget";
+import { log } from "@/lib/log";
+import {
+  delayAtQuantile,
+  parseGoogleDelay,
+  GOOGLE_DELAY_VAR,
+  type GoogleDelayKind,
+} from "@/lib/google/loadtest-google-delay";
 
 export const LOADTEST = process.env.SLATE_LOADTEST === "true";
+
+/** What `loadtestGoogleDelay` reads and does, injectable so a test drives each one (L524). */
+export interface GoogleDelayDeps {
+  loadtest?: boolean;
+  raw?: string | undefined;
+  random?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  budgetLeftMs?: () => number | null;
+  reportUnknown?: (msg: string) => void;
+}
+
+/** Said once per isolate, so an unreadable setting costs one error line rather than one per call. */
+let unknownGoogleDelayReported = false;
+
+/**
+ * Hold a stubbed Google call for a time drawn from the run's production shaped
+ * distribution, before it answers (#3490). Returns how long it waited.
+ *
+ * Called ONLY from the stand in branches of the calls a lead waits on (the ones cut off at
+ * `GOOGLE_CONFIRM_TIMEOUT_MS`), so the confirm path's live check and calendar write take
+ * production's time and the cron lanes keep theirs. `scripts/test-loadtest-google-delay.ts`
+ * derives that list from `calendar.ts` and fails a lead waited call without it.
+ *
+ * **It cannot run in production**, by two independent facts. Those branches are reached
+ * only under `LOADTEST`, and this asks `isLoadtest()` again at call time before it reads the
+ * setting at all, so a value that somehow reached production is never even parsed. The
+ * setting itself is committed nowhere: `scripts/test-wrangler-loadtest-env.ts` fails the
+ * build if production or the committed `env.loadtest` block carries it, and the workflow
+ * adds it with `--var` for the run that asked.
+ *
+ * The draw is RANDOM per call, unlike the fault switch's hash of the call's key. A key
+ * keyed delay would hand every confirm in a crowd for one slot the identical wait, since
+ * they read the same pool's calendars, and a crowd is exactly what this exists to put
+ * Google time into. Over a run's hundreds of calls the distribution is what is
+ * reproducible, and it is what is reported.
+ *
+ * Capped at the call's own deadline and at what the enclosing budget has left, which is
+ * where a real call is cut off, and then it ANSWERS rather than throwing: a timeout is the
+ * fault switch's job (`google-read`'s timeout shape), and a delay that also failed calls
+ * would make the steady pass's "no 5xx" bar a measurement of this setting. A confirm whose
+ * budget the wait used up still fails as production's would, on its next budgeted call.
+ */
+export async function loadtestGoogleDelay(
+  kind: GoogleDelayKind,
+  callDeadlineMs: number,
+  deps: GoogleDelayDeps = {},
+): Promise<number> {
+  if (!(deps.loadtest ?? isLoadtest())) return 0;
+  const raw = "raw" in deps ? deps.raw : process.env[GOOGLE_DELAY_VAR];
+  const setting = parseGoogleDelay(raw);
+  if (setting.unknown !== null) {
+    const report = deps.reportUnknown ?? ((msg: string) => log.error("loadtest-google-delay", { msg }));
+    if (deps.reportUnknown || !unknownGoogleDelayReported) {
+      unknownGoogleDelayReported = true;
+      report(
+        `${GOOGLE_DELAY_VAR} is "${setting.unknown}", which is not read=<p50>/<p95>,write=<p50>/<p95> ` +
+          `in milliseconds, so no Google call is delayed`,
+      );
+    }
+    return 0;
+  }
+  const dist = setting[kind];
+  if (!dist) return 0;
+  const drawn = delayAtQuantile(dist, (deps.random ?? Math.random)());
+  const left = (deps.budgetLeftMs ?? (() => budgetLeftMs()))();
+  const ms = Math.max(0, Math.min(drawn, callDeadlineMs, left ?? Infinity));
+  if (ms > 0) await (deps.sleep ?? ((t: number) => new Promise<void>((r) => setTimeout(r, t))))(ms);
+  return ms;
+}
 
 /**
  * Deterministic Google fault injection for the soak (#1050).

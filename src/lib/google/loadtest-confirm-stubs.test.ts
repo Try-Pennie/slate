@@ -140,3 +140,52 @@ describe("the same calls with the flag OFF", () => {
     }
   });
 });
+
+// #3490: the stand in can take production's time. Proved through the real calendar module
+// rather than only the helper, so a branch that stopped waiting is caught here as well as by
+// scripts/test-loadtest-google-delay.ts's scan. Fake timers, so nothing waits for real (L524).
+describe("the Google delay under SLATE_LOADTEST (#3490)", () => {
+  it("holds a calendar write for the drawn delay, then answers", async () => {
+    const { createEvent } = await import("@/lib/google/calendar");
+    process.env.SLATE_LOADTEST_GOOGLE_DELAY = "write=5000/8000";
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      let answered: string | null = null;
+      const pending = createEvent(EMAIL, EVENT, "slate-delay").then((id) => (answered = id));
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(answered).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(answered).toBe("slate-delay");
+    } finally {
+      random.mockRestore();
+      vi.useRealTimers();
+      delete process.env.SLATE_LOADTEST_GOOGLE_DELAY;
+    }
+  });
+
+  it("asks nothing and so waits nothing for a read of no calendars, as production answers at once", async () => {
+    const { freeBusy } = await import("@/lib/google/calendar");
+    process.env.SLATE_LOADTEST_GOOGLE_DELAY = "read=3000/5000";
+    vi.useFakeTimers();
+    try {
+      // No timer is advanced: a stand in that waited here would never resolve.
+      await expect(freeBusy(EMAIL, EVENT.start, EVENT.end, [])).resolves.toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      delete process.env.SLATE_LOADTEST_GOOGLE_DELAY;
+    }
+  });
+
+  it("answers at once with the setting unset, as every run before it did", async () => {
+    const { freeBusy } = await import("@/lib/google/calendar");
+    vi.useFakeTimers();
+    try {
+      // No timer is advanced: a stand in that waited would never resolve here.
+      await expect(freeBusy(EMAIL, EVENT.start, EVENT.end, [EMAIL])).resolves.toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

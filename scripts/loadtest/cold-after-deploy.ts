@@ -13,7 +13,10 @@
 // Run (from the workflow's cold job, which also streams the tail it is judged from):
 //   SLATE_BASE=https://<loadtest>.workers.dev BOOKING_API_KEY=<key> RUN_ID=<run> \
 //   COLD_SAMPLES=30 RECOMPUTE_ARM=on OUT=results/cold-0.json \
+//   GOOGLE_DELAY=<read=median/p95,write=median/p95> \
 //   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/cold-after-deploy.ts
+// GOOGLE_DELAY is optional (#3490): the run's google_delay input, kept on every version
+// this deploys. Empty or unset is off, and adds no setting to the deploy.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -61,6 +64,9 @@ const CODES = MEASURED_CODE_MIX.slice(0, 5).map((c) => c.code);
 // The load test Worker only, keeping the run's arm, under the deploy's own deadline.
 const deploy = makeColdDeploy({
   arm: ARM,
+  // env-ok: GOOGLE_DELAY (optional; the run's google_delay input, #3490. Unset or blank is
+  // off, which adds no setting to the deploy.)
+  googleDelay: process.env.GOOGLE_DELAY ?? "",
   // Resolved from this file, not from wherever the leg was started.
   wranglerBin: join(import.meta.dirname, "..", "..", "node_modules", ".bin", "wrangler"),
   spawn: (cmd, args, opts) => spawnSync(cmd, args, opts),
@@ -88,7 +94,7 @@ const leg = await runColdLeg({
       const res = await fetch(`${SLATE_BASE}/api/bookings`, {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         method: "POST",
-        headers: bookingRequestHeaders(API_KEY, "cold"),
+        headers: bookingRequestHeaders(API_KEY, "cold", RUN_ID),
         body: JSON.stringify(bookingBody({ code: slot.code, startIso: slot.start, lead: { runId: RUN_ID, leg: "cold", driver: COLD_DRIVER, n: i }, timezone: TIMEZONE })),
       });
       const body = (await res.json().catch(() => null)) as { outcome?: string; code?: string } | null;

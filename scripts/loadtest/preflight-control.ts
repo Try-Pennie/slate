@@ -189,6 +189,8 @@ export interface ControlBookingDeps extends FreshRowDeps {
   fetch: FetchLike;
   baseUrl: string;
   apiKey: string;
+  /** The run, named on the request so the exact ceilings count this run alone (#3456). */
+  runId: string;
   /** The booking body for a given start; the caller owns the attendee and ids. */
   bodyFor: (start: string) => Record<string, unknown>;
 }
@@ -225,7 +227,7 @@ export async function bookControlSlot(
     const res = await deps.fetch(`${deps.baseUrl}/api/bookings`, {
       method: "POST",
       // #3354: often the first confirm a fresh deploy serves, so it names its leg.
-      headers: bookingRequestHeaders(deps.apiKey, "preflight"),
+      headers: bookingRequestHeaders(deps.apiKey, "preflight", deps.runId),
       body: JSON.stringify(deps.bodyFor(start)),
     });
     return { status: res.status, text: await res.text() };
