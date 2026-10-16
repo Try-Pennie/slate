@@ -56,6 +56,7 @@ import {
   BURST_PROBE_TIMEOUT_MS,
   BURST_SPACING_MS,
   type DriverResult,
+  BURST_RUNNER_START_WORST_SECONDS,
 } from "./loadtest/book-plan.ts";
 import { OK_P95_MS } from "./loadtest/judge-booking-run.ts";
 import { AVAILABILITY_UNREAD, NO_SLOTS_OFFERED, TIMED_OUT } from "./loadtest/outcomes.ts";
@@ -128,6 +129,10 @@ const PLAN = { total: TOTAL, perMinute: PER_DRIVER_PER_MINUTE };
   const yml = readFileSync(join(ROOT, ".github/workflows/loadtest.yml"), "utf8");
   const lead = Number(/burst_lead_seconds:[\s\S]*?default:\s*"(\d+)"/.exec(yml)?.[1] ?? NaN);
   assert(Number.isFinite(lead) && lead > 0, `the workflow declares a default burst lead (got ${lead})`);
+  // The lead covers the slowest runner start seen plus a driver's own setup, or a backed
+  // up queue fails the run with a driver that fired nothing (run 38912230442).
+  const leadNeeded = BURST_RUNNER_START_WORST_SECONDS + DRIVE_JOB_SETUP_MINUTES * 60;
+  assert(lead >= leadNeeded, `the default burst lead (${lead}s) covers the slowest runner start seen plus a driver's setup (${leadNeeded}s)`);
   const burst = /^ {2}burst:\n([\s\S]*?)(?=^ {2}\S)/m.exec(yml)?.[1] ?? "";
   const declared = Number(/^ {4}timeout-minutes:\s*(\d+)/m.exec(burst)?.[1] ?? NaN);
   const needed = burstJobMinutesNeeded(lead);

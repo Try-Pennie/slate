@@ -530,10 +530,17 @@ COUNT, from `BURST_LEGS`, and both the matrix and the judge's expectations read 
 from there. Two places holding one number is how a matrix grows to five while the
 judge goes on expecting four and calls every run incomplete.
 
-`burst_lead_seconds` (default 300) is how long the burst drivers have to be queued,
+`burst_lead_seconds` (default 600) is how long the burst drivers have to be queued,
 checked out and installed before the FIRST burst's moment. A driver that wakes late
 fires nothing for that burst, and the judge fails that burst: raise the lead rather
-than re-running and hoping.
+than re-running and hoping. It was 300 until run 38912230442, whose last burst runner
+started 395s after the plan was made (GitHub's queue was backed up after a billing
+block; 3 to 86s on the runs before it), so that driver missed all three bursts.
+`BURST_RUNNER_START_WORST_SECONDS` records that measurement and
+`scripts/test-loadtest-driver-deadline.ts` holds the default above it plus a driver's
+setup. The deeper fix, deciding the moments only once every driver is running, is
+not built: the burst tail, the driver files and the judge all read the moments the
+setup chose.
 
 The control on each burst is **one winner per agent**, which is
 `bookings_active_slot_uniq` doing its job, every confirm on the shared line, and **no
