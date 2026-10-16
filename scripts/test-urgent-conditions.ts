@@ -64,6 +64,10 @@ for (const key of ALERT_KEYS) {
       `condition ${key} defaults to a day or longer (got ${coded / 3_600_000}h)`,
     );
   }
+  // The dispatcher's interval for a key with its OWN setting is that setting's value
+  // unchanged, so the coded default above is the one place the urgent or daily choice
+  // lives for a tunable key; no second helper restates it.
+  eq(reminderIntervalMs(sent, coded), coded, `condition ${key} repeats on its own coded default`);
 }
 
 // 4: the floor for conditions nobody can tune.
