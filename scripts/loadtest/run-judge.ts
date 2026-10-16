@@ -41,6 +41,7 @@ import {
   waitSpanText,
   startupOriginText,
   lineSplitText,
+  subrequestText,
   coldAfterDeployText,
   resentText,
   burstLegGroups,
@@ -848,13 +849,7 @@ if (result.burstsUnconcluded.length > 0) {
   for (const f of result.burstsUnconcluded) lines.push(`- **${f.bar}**: ${f.detail}`);
 }
 lines.push("");
-lines.push(
-  "Subrequests ARE counted: `sum { subrequests }` is a field, and this run's mean per invocation " +
-    "is above. What Cloudflare does not expose is a PER INVOCATION maximum, which is what the 1000 " +
-    "subrequest ceiling is about, so the mean is reported and never made a bar. A breach arrives as " +
-    "an invocation status other than success, which IS judged. The previous wording here said no " +
-    "counter existed at all, which was wrong (#2279).",
-);
+lines.push(subrequestText(platform, { incomplete: result.verdict === "incomplete", platformUnmeasured: result.platformUnmeasured }));
 
 mkdirSync(dirname(REPORT), { recursive: true });
 writeFileSync(REPORT, lines.join("\n") + "\n", "utf8");
