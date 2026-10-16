@@ -5074,7 +5074,8 @@ export function confirmQueueKey(
  * What a confirm that FAILED shows the confirms waiting behind it. Only a refusal
  * that spent the whole LADDER settles the slot for them (#3338), because they
  * asked the same question of the same slot and walk the same pools at every rung:
- * a walk that found nobody on any rung (`provesLadderSpent`), and a lost race only
+ * a walk on which every rung was refused or empty and at least one rung had people
+ * who could not take the time (`provesLadderSpent`), and a lost race only
  * when nothing was left below it either (`ladderExhausted`), never at the bound,
  * which stopped while the rung was still handing out advisors (L11). Anything else
  * says nothing about them, so the next one runs, from the top of the ladder like
