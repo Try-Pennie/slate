@@ -209,7 +209,7 @@ isolation uses, and agent link bookings excluded by `kind = 'routed'`, since the
 not route, migration 0144) and reports the busiest minute, when it was, the busiest day, and how many
 times over that minute the bar sits:
 
-<!-- runbook-unverified: read only; not run against production from the change that added it, because that change runs no SQL against the live database. Its shape is pinned offline by scripts/test-capacity-peak-sql.ts: it holds no write, names only columns the bookings and buckets row types declare, excludes test buckets, keeps to routed bookings, and reads a 30 day window. -->
+<!-- runbook-verified: 2026-10-16 (d830b9eb) run verbatim against production (drukfvgaynzrralbzkzj) through the Supabase connector at 20:23 UTC; returned bookings_30d 6886, busiest_day 512, busiest_minute 5 at 2026-10-10 15:30 UTC, bar_over_peak 12.0. Its shape is also pinned offline by scripts/test-capacity-peak-sql.ts. -->
 ```sql
 -- Busiest minute and day of real bookings, last 30 days. Read only.
 with real_bookings as (
@@ -254,6 +254,35 @@ Two things to know before reading the answer:
 be raised before the next one is dispatched. The run itself was measured at 90
 seeded agents (run 34658545203, 2026-09-11) against a design target of 100 to 200;
 running the booking leg at 200 is tracked on #3124 and has not been done.
+
+**First reading against production, 2026-10-16 (#3124).** Run at 20:23 UTC (16:23
+ET), the query above returned:
+
+| bookings in 30 days | busiest day | busiest minute | when | bar over peak |
+|---|---|---|---|---|
+| 6,886 | 512 | 5 | 2026-10-10 15:30 UTC (11:30 ET) | 12.0 |
+
+A second read only query in the same session, over the same rows, is the control
+that the window reached the present rather than older data alone (L171): the newest
+routed booking was 2026-10-16 20:22 UTC, a minute before the read, with 445 in the
+last 24 hours and an average of 409 a day over the last seven. It also showed what
+the 30 days really hold: the earliest real routed booking is 2026-09-22 15:56 UTC,
+so the window holds 25 calendar days of Slate traffic (counting both ends), 23 of
+them with a routed booking (UTC days), not 30, and the busiest day was
+2026-10-08 (UTC).
+
+What that reading says, and what it does not:
+
+- **On Slate's own traffic the premise holds**: 60 a minute is 12 times the busiest
+  minute Slate has carried.
+- **That traffic is the pilot's share, not the whole.** Since 2026-10-02 the
+  Salesforce pilot sends Slate half of the leads on tiers 1 to 5 (ADR 0009).
+  If the whole of the traffic peaks in proportion, the busiest minute at cutover is
+  at least twice this one, about 10, and 60 is then about six times it, under the
+  ten the premise asks for. Peaks do not have to scale in proportion, so that is an
+  estimate, not a measurement: the measurement is cal.com's routing form responses
+  over the same 30 days, read the way the 2026-09-11 figure (6) was, and it has to
+  be read before cutover (#65) to settle whether 60 stays the bar.
 
 ## The booking path run (#2243)
 
@@ -1326,6 +1355,60 @@ environment exist. Nothing can be dispatched into a misconfigured state in the
 meantime: **every script the workflow runs refuses an empty value by name** rather
 than reading it with a `??` fallback that an empty string would slip past (#1498).
 
+## The run record (#3103)
+
+**When a run is due.** A push to main that changes the confirm path or a cron lane
+opens one "Load run due" issue, or comments the push onto the one already open
+(`.github/workflows/loadtest-due.yml`, the paths in
+`scripts/lib/loadtest-due-paths.ts`). That issue closes from the pull request that
+adds a passing run below, and only once the run covers every push listed on it.
+
+**What a row records.** The run id, the commit it ran, and the figures the judge
+printed, read from the judge job's own report (`gh api
+repos/Try-Pennie/slate/actions/jobs/<judge job id>/logs`, or the run's
+`loadtest-report` artifact), never copied from a summary. Steady p95 is judged
+against the same day baseline median (#3258, bar 2.5 times); cold is the wait
+before the confirm on confirms that were their isolate's first request; the worst
+cron tick is CPU against the 120,000ms kill. Every run below is on a Large branch
+matching production (#3751), with the post confirm recompute arm on.
+
+| run | commit | judged (UTC) | confirmed | baseline median | steady p95 (ratio) | cold n | cold p95 (slowest) | worst cron tick | 5xx | overlaps | fault pass | bursts |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 38822483471 | c434960a | 2026-10-16 00:04 | 598 of 600 | 801ms | 1077ms (1.3x) | 24 | 1845ms (1909ms) | 1989ms | 0 | 0 of 676 | 0 5xx of 30 | 3 of 3 |
+| 38828051296 | c434960a | 2026-10-16 01:00 | 598 of 600 | 729ms | 932ms (1.3x) | 12 | 1530ms (1530ms) | 2236ms | 0 | 0 of 676 | 0 5xx of 30 | 3 of 3 |
+| 38833395446 | c434960a | 2026-10-16 02:01 | 600 of 600 | 1007ms | 1045ms (1.0x) | 14 | 1832ms (1832ms) | 2195ms | 0 | 0 of 678 | 0 5xx of 30 | 3 of 3 |
+| 38933668981 | f61d18b0 | 2026-10-16 17:42 | 580 of 600 | 912ms | 1334ms (1.5x) | 22 | 1699ms (**4562ms**) | 1858ms | 0 | 0 of 644 | 0 5xx of 30 | 3 of 3 |
+
+Common to all four: no request went unanswered, timed out at the driver or was
+resent, the fault pass failed 10 percent of Google reads with no 5xx, the cron
+lanes under fault failed none of 21 or 22 readings, and every burst passed. The
+refusal controls (bursts 1 and 3) had 16 and 7 winners out of 100 on each of the
+three c434960a runs, and 7 and 3 on 38933668981; every loser answered SLOT_TAKEN within the 2000ms bound; the tier
+drop burst booked 12 of 12, 11 of them a rung below the one asked for, on a
+deployment that declares a crowd walks the ladder. The other 20 of 600 on
+38933668981 and 2 on two of the c434960a runs were SLOT_TAKEN, which is the run's
+own leads meeting each other, not a failure.
+
+What the record says, and what it does not:
+
+- **The three c434960a runs are consecutive passes on the same code**, the first
+  streak since the branch was made Large, and each holds every cold confirm under
+  `REQUEST_STARTUP_MS` (2500ms), the bar as it reads since #3824.
+- **38933668981 passed under the bar as it read that morning, and would not pass
+  under the bar as it reads now.** It was judged on the cold p95 (1699ms), and its
+  slowest cold confirm waited 4562ms. That is exactly the case that made #3824 hold
+  every cold confirm, so the row stands as a pass of its day and as the evidence for
+  the stricter bar, not as proof a first confirm on f61d18b0 is fast.
+- **The cron CPU worry #3103 named is gone on these runs.** Run 34991614423 passed a
+  minute tick at 119,137ms of the 120,000ms kill (#2357, below); the worst tick on
+  these four is 1858 to 2236ms, 1.5 to 1.9 percent (the judge prints it rounded
+  down, as 1%), with the placed lanes judged under
+  their own names from the run's archived log (#3693).
+- **Main has moved past every run here.** 38933668981 covers each push the due
+  issue (#3213) had listed when it ran, the last a943f6c9; three confirm path or
+  cron pushes landed after it the same day (d7616956, 062855d4, e19e2455), so a
+  run on main after e19e2455 is still due and #3213 stays open for it.
+
 ## The first run, and the six things it found (#2261)
 
 Dispatched 2026-09-11 against a throwaway Supabase branch and the `loadtest`
@@ -1434,7 +1517,9 @@ tick's share of the limit on every run. The cause of that tick was the sync lane
 post sync refresh and both self heal reconciles each looping a whole pool compute per
 bucket CODE (20 and 25 of them, no time bound); they now share one pooled, counted
 refresh (`refreshPoolsForAgents`, at most five pools a sweep). See
-`docs/cloudflare-platform-notes.md`, watch item #762.
+`docs/cloudflare-platform-notes.md`, watch item #762. Re-measured on the passing
+runs of 2026-10-16 ("The run record" above): the worst tick was 1858 to 2236ms,
+1.5 to 1.9 percent of the limit.
 
 The platform's own percentile cannot separate them: it is one number per
 invocation with nothing in it saying whether that invocation also paid for the
