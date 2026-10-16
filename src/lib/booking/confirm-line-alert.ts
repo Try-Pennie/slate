@@ -39,7 +39,11 @@ export function confirmLineUnreachableAlert(reason: LineReason): string {
       ? "The shared confirm line is switched on, but this deployment has no ConfirmLine binding to reach it through"
       : reason === "bad-answer"
         ? "The shared confirm line is answering confirms with replies they cannot read"
-        : "Confirms cannot reach the shared confirm line right now";
+        : reason === "version"
+          ? // #3560: it answered, and said it runs an older build than this app, so the
+            // remedy is a redeploy of the line Worker, never a look at whether it is up.
+            "The shared confirm line is running an older build than this app and cannot serve its confirms until the ConfirmLine Worker is redeployed at the app's commit"
+          : "Confirms cannot reach the shared confirm line right now";
   return pageAround(what);
 }
 
@@ -54,10 +58,12 @@ export function confirmLineAlertFor(reasons: readonly LineReason[]): string {
   const count = (pick: (r: LineReason) => boolean) => reasons.filter(pick).length;
   const unbound = count((r) => r === "unbound");
   const unreadable = count((r) => r === "bad-answer");
-  const unreachable = reasons.length - unbound - unreadable;
+  const older = count((r) => r === "version");
+  const unreachable = reasons.length - unbound - unreadable - older;
   const parts = [
     unreachable > 0 ? `${unreachable} could not reach it` : null,
     unreadable > 0 ? `${unreadable} got a reply ${unreadable === 1 ? "it" : "they"} could not read` : null,
+    older > 0 ? `${older} found it running an older build than this app` : null,
     unbound > 0 ? `${unbound} found no ConfirmLine binding to reach it through` : null,
   ].filter((p): p is string => p !== null);
   return pageAround(`Confirms cannot use the shared confirm line right now (of the last ${reasons.length} that failed, ${parts.join(" and ")})`);

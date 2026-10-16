@@ -90,6 +90,10 @@ export function confirmLineFor<T>(fallback: ConfirmLine<T>, record: (served: Lin
     now: () => Date.now(),
     timer: realTimer,
     newId: () => crypto.randomUUID(),
+    // #3355 item 4: a give back is sent without waiting, and kept running past the
+    // response, since on the platform a request's own I/O can be cancelled when its
+    // response goes out. Each call carries its own deadline and never rejects.
+    keepAlive: (work) => afterResponse("confirm-line-give-back", () => work),
   });
 }
 
