@@ -65,7 +65,7 @@ name: Booking path load run
 #   cold        a diagnostic, off unless cold_samples is above 0 (#3354): it deploys a
 #               new version, waits for it to settle and sends ONE confirm, N times, so
 #               each confirm is a fresh version's first request. A run's own cold
-#               confirms number about ten, so its cold p95 is its slowest; this gives a
+#               confirms number a handful to about twenty and the startup bar holds the slowest (#3824); this gives a
 #               distribution to judge a startup change against. It runs after the
 #               archive's tail has stopped and streams its own, so none of its confirms
 #               join the startup bar's population. Reported, never a bar.
