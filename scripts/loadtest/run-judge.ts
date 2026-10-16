@@ -28,6 +28,7 @@ import {
   type ConfirmStartupReading,
   type DeferredSpanReading,
 } from "./confirm-startup.ts";
+import { lineArchiveForRun } from "./stored-line-calls.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limit-core.ts";
 import { baselineReading, expectBaselineFrom, latencyReportLine, verdictText } from "./latency-bar.ts";
 import { recomputeArmLine } from "../../src/lib/booking/post-confirm-recompute-modes.ts";
@@ -431,12 +432,24 @@ let archiveScheduled: ScheduledReading | null = null;
  * separate silences.
  */
 let deferred: Record<string, DeferredSpanReading> | null = null;
+/** #3815: where the line split's calls were read from, and how many, for its report line. */
+let lineSource: string | undefined;
 try {
   const archive = readFileSync(join(RESULTS, "tail.jsonl"), "utf8");
   // #3781: the line object's calls are in its own Worker's tail, archived beside the
   // app's. Absent, the line split names that as why its confirms are missing.
-  const lineArchive = readLineTailFile(() => readFileSync(join(RESULTS, LINE_TAIL_FILE), "utf8"), (text) => console.error(text));
-  confirmStartup = readConfirmStartup(archive, { lineArchive });
+  const tailLine = readLineTailFile(() => readFileSync(join(RESULTS, LINE_TAIL_FILE), "utf8"), (text) => console.error(text));
+  // #3815: the live tail samples the line Worker at load test volume (run 38912230442
+  // caught about one call in five), so the calls are read from the stored logs when
+  // those hold at least what the tail caught, and the tail otherwise, saying which.
+  const chosen = await lineArchiveForRun({
+    archive,
+    tail: tailLine,
+    token: process.env.CLOUDFLARE_API_TOKEN ?? "",
+    accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+  });
+  lineSource = chosen.note;
+  confirmStartup = readConfirmStartup(archive, { lineArchive: chosen.archive });
   archiveScheduled = readScheduledFromArchive(archive);
   deferred = readDeferredSpans(archive);
 } catch {
@@ -775,7 +788,7 @@ if (m) {
   lines.push(waitSpanText(confirmStartup));
   // #3354: where each cold confirm came from, and where the shared line's wait went.
   lines.push(startupOriginText(confirmStartup));
-  lines.push(lineSplitText(confirmStartup));
+  lines.push(lineSplitText(confirmStartup, lineSource));
   lines.push(coldAfterDeployText({ expected: expectedColdRead.ok ? expectedColdRead.n : 0, expectedUnreadable: expectedColdRead.ok ? null : expectedColdRead.why, result: coldResult, unreadable: coldUnreadable, reading: coldReading }));
   // The deferred span, APPORTIONED by job (#2353). The line above reports the
   // whole span; this says which job it was, which is the question somebody
