@@ -61,6 +61,37 @@
  */
 export const ISOLATE_READY_AT_MS = Date.now();
 
+/**
+ * The booker route's own checks before the confirm, each timed as its own stage
+ * INSIDE the `route-checks` span (#3493).
+ *
+ * `route-checks` cost 344 to 1574ms in the fourteen 8s or slower confirms profiled
+ * on 2026-10-06 and 07, as much as the whole opening database read chain, and as
+ * one span it could not say which check that was. The outer span stays, so every
+ * reader of `route-checks` (the failure page's dearest stage, the load report) reads
+ * what it always did, and these sit inside it. Nested spans are never counted twice:
+ * the request reading merges overlapping stages for `staged_ms`, and an inner stage
+ * can never outlast the span around it, so the dearest stage is never one of these.
+ *
+ * The names carry the `route-checks.` prefix so a line reads them as parts of that
+ * span. They hold no comma and no colon, which would break the `name:ms/runs`
+ * token the line and the load report's reader (`burst-breakdown.ts`) parse.
+ */
+export const ROUTE_CHECK_STAGES = {
+  /** The per minute window at the edge, and the retry credit it may consult (#3364). */
+  edgeLimit: "route-checks.edge-limit",
+  /** The kill switch, read per request and deliberately never cached (#2297). */
+  pauseFlag: "route-checks.pause-flag",
+  /** The per address hourly cap, a database read and write. */
+  hourlyCap: "route-checks.hourly-cap",
+  /** Reading the request body under its byte cap (#3135). */
+  bodyRead: "route-checks.body-read",
+  /** The per contact hourly cap, one run per contact key (an email, a phone). */
+  contactCap: "route-checks.contact-cap",
+  /** Resolving an advisor's own link (#2073), only on a confirm that carries one. */
+  agentLink: "route-checks.agent-link",
+} as const;
+
 /** One named stage of a confirm, and what it cost. */
 export interface ConfirmStage {
   stage: string;
