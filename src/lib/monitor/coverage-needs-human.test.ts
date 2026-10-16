@@ -318,7 +318,7 @@ describe("runCoverageNeedsHumanCheck (#1242)", () => {
     const newestCountableMs = Date.parse("2026-10-05T14:52:40Z");
     await run(strandedRead([holder()], { newestCountableMs, asOfMs: AS_OF }));
     expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
-    expect(sendThrottledAlert.mock.calls[0][4]).toEqual({ newestMs: newestCountableMs, asOfMs: AS_OF });
+    expect(sendThrottledAlert.mock.calls[0][3]).toMatchObject({ news: { newestMs: newestCountableMs, asOfMs: AS_OF } });
   });
 
   // Give ups held back because their sweep is still running are not a measured

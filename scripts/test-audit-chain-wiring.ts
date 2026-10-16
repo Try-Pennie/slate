@@ -26,8 +26,8 @@ const ROOT = join(import.meta.dirname, "..");
 assert((ALERT_KEYS as readonly string[]).includes(AUDIT_CHAIN_KEY), "the key is one of the monitor alert keys");
 eq(
   (MONITOR_DEFAULTS.cooldownMs as Record<string, number>)[AUDIT_CHAIN_KEY],
-  60 * 60_000,
-  "it repeats hourly by default, like the other security pages",
+  24 * 60 * 60_000,
+  "it repeats once a day while unchanged, like every condition that is not costing leads right now (#3801)",
 );
 const field = ALERT_FIELDS.find((f) => f.key === AUDIT_CHAIN_KEY);
 eq(field?.urgency, "page", "the settings screen lists it as a page");

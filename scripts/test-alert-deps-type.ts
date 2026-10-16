@@ -22,7 +22,9 @@ const HOME = "src/lib/monitor/alert-deps.ts";
 /** The two shapes the copies took, as they were written. A test file may hold its
  *  own alias (a fake's type), so tests are out of scope. */
 const HAND_WRITTEN = [
-  /\(key: string, cooldownMs: number, text: string\) => Promise</,
+  // #3801 added an optional fourth argument (what a condition names); a copy that
+  // spells it out is still a copy.
+  /\(key: string, cooldownMs: number, text: string(?:, repeat\?: AlertRepeat)?\) => Promise</,
   /\(key: string, text: string\) => Promise</,
 ];
 

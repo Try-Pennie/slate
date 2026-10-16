@@ -840,16 +840,17 @@ describe("alertOnStaleLanes (#803)", () => {
       expect(text).toMatch(/advisors|working hours|time off/i);
       expect(text).toMatch(/db-backup/);
       expect(text).not.toMatch(/Infinity|NaN|undefined/);
-      // Slack only: a missing backup is not the site being down.
-      expect(pageFor("db-backup")?.[3]).toBeUndefined();
+      // Slack only: a missing backup is not the site being down. No channel is named,
+      // only the lane as the page's one subject (#3801).
+      expect(pageFor("db-backup")?.[3]).toEqual({ subjects: ["db-backup"] });
     });
 
-    it("re-pages twice a day, not hourly, since only the next daily run can clear it", async () => {
+    it("re-pages once a day, not hourly, since only the next daily run can clear it (#3801)", async () => {
       heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "db-backup": ago(27 * 60 * MIN) });
       await alertOnStaleLanes();
-      // Half the daily cadence: a morning and an evening reader see it, and nothing
-      // a reader does inside an hour could clear it before tomorrow's dump (L36).
-      expect(pageFor("db-backup")?.[1]).toBe(12 * 60 * MIN);
+      // Nothing a reader does inside an hour could clear it before tomorrow's dump
+      // (L36), and #3801 made a day the repeat for every unchanged condition.
+      expect(pageFor("db-backup")?.[1]).toBe(24 * 60 * MIN);
     });
 
     it("gives a dump that has never run its grace window, then pages that no backup exists", async () => {
@@ -897,9 +898,10 @@ describe("alertOnStaleLanes (#803)", () => {
       const page = pageFor("log-shipping");
       expect(String(page?.[2])).toMatch(/Better Stack/);
       expect(String(page?.[2])).toMatch(/wrangler tail slate-log-tail/);
-      expect(page?.[1]).toBe(60 * MIN);
+      // #3801: once a day while unchanged.
+      expect(page?.[1]).toBe(24 * 60 * MIN);
       // Slack only: log history stopping is not the site being down.
-      expect(page?.[3]).toBeUndefined();
+      expect(page?.[3]).toEqual({ subjects: ["log-shipping"] });
     });
 
     it("gives a tail worker that has never sent a receipt its grace window, then pages never", async () => {
@@ -957,8 +959,9 @@ describe("alertOnStaleLanes (#803)", () => {
       expect(String(page?.[2])).toMatch(/pool grouping has not been published/);
       expect(String(page?.[2])).toMatch(/tag=pool-grouping/);
       expect(String(page?.[2])).toMatch(/Bookings still go through/);
-      expect(page?.[1]).toBe(60 * MIN);
-      expect(page?.[3]).toBeUndefined();
+      // #3801: once a day while unchanged, and the lane as its one subject.
+      expect(page?.[1]).toBe(24 * 60 * MIN);
+      expect(page?.[3]).toEqual({ subjects: ["pool-grouping"] });
     });
 
     it("gives a publish that has never landed its grace window, then pages never", async () => {

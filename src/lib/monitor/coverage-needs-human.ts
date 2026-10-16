@@ -138,6 +138,15 @@ function sameCause(a: SweepCause, b: SweepCause): boolean {
  *  and the settings screen refer to the one constant. */
 export const COVERAGE_NEEDS_HUMAN_KEY = "coverage_needs_human";
 
+/**
+ * What the stranded page names, for the repeat rule (#3801): one subject per agent
+ * still holding a call nobody could move. An agent the last page did not name is a
+ * change and posts at once; the same agents are said again once a day.
+ */
+export function coverageNeedsHumanSubjects(holders: readonly { userId: string }[]): string[] {
+  return holders.map((h) => `agent:${h.userId}`);
+}
+
 /** The two terminal outcomes that mean a person has to act. Mirrors
  *  `ACTIONABLE_ITEM_STATUSES` in the engine, which is what the admin panel lists,
  *  so the page and the panel can never disagree about what counts (L16). */
@@ -695,8 +704,13 @@ export async function runCoverageNeedsHumanCheck(deps: {
     COVERAGE_NEEDS_HUMAN_KEY,
     deps.cooldownMs,
     formatCoverageNeedsHumanAlert(holders, read.appBaseUrl),
-    undefined,
-    { newestMs: read.newestCountableMs, asOfMs: read.asOfMs },
+    {
+      // #3801: the agents the page names are its subjects, so a new one posts at once
+      // and the same ones are said again once a day. A new APPOINTMENT for an agent
+      // already named posts at once too, through the page news below (#3303).
+      subjects: coverageNeedsHumanSubjects(holders),
+      news: { newestMs: read.newestCountableMs, asOfMs: read.asOfMs },
+    },
   ).catch(logAlertSendFailure(COVERAGE_NEEDS_HUMAN_KEY));
   deps.log?.({ status: "stranded", agents: holders.length, appointments, waiting });
   return { status: "stranded", agents: holders.length, appointments, waiting };

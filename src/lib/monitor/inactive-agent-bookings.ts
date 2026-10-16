@@ -1,6 +1,7 @@
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { doublingBand, type AlertRepeat } from "@/lib/notify/repeat-policy";
 import { logAlertSendFailure, logAllClearFailure } from "@/lib/notify/send-failure";
 import { log } from "@/lib/log";
 import type { Attributes, BulkReassignItemStatus, Criteria } from "@/lib/db/types";
@@ -367,6 +368,19 @@ export function formatInactiveAgentBookingsRecovery(): string {
   );
 }
 
+/**
+ * What the page names, for the repeat rule (#3801): one subject per agent still
+ * holding calls, and the appointment count as a band that moves only when it at
+ * least doubles. A new agent, or a count that has doubled, posts at once; the same
+ * agents holding roughly the same calls are said again once a day.
+ */
+export function inactiveAgentBookingsRepeat(holders: readonly InactiveHolder[]): AlertRepeat {
+  return {
+    subjects: holders.map((h) => `agent:${h.userId}`),
+    band: doublingBand(holders.reduce((n, h) => n + h.bookingCount, 0)),
+  };
+}
+
 /** What one tick measured. `unreadable` is NOT zero: see the check below. */
 export interface InactiveAgentBookingsResult {
   status: "clear" | "holding" | "unreadable";
@@ -440,7 +454,9 @@ export async function runInactiveAgentBookingsCheck(deps: {
   if (sustained) {
     // alert-key: inactive_agent_bookings
     // alert-key: demoted_agent_bookings
-    await sendThrottledAlert(key, deps.cooldownMs, formatAlert(holders)).catch(logAlertSendFailure(key));
+    await sendThrottledAlert(key, deps.cooldownMs, formatAlert(holders), inactiveAgentBookingsRepeat(holders)).catch(
+      logAlertSendFailure(key),
+    );
   }
   deps.log?.({ status: "holding", agents: holders.length, bookings, sustained, key });
   return { status: "holding", agents: holders.length, bookings };

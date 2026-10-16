@@ -216,6 +216,8 @@ import {
 const PREVIEW_BURST = { firstMs: Date.UTC(2026, 9, 14, 7, 5), newestMs: Date.UTC(2026, 9, 14, 9, 5) };
 /** A wave still under way: failures from 4:10pm to 5:55pm ET. */
 const PREVIEW_WAVE = { firstMs: Date.UTC(2026, 9, 14, 20, 10), newestMs: Date.UTC(2026, 9, 14, 21, 55) };
+/** When a previewed condition was first posted, for the #3801 reminder states. */
+const PREVIEW_REMINDER_OPENED_MS = Date.UTC(2026, 9, 15, 4, 15);
 import { refusalAllClear, refusalSignalCopy } from "@/lib/monitor/api-refusal-signals";
 import {
   BOOKING_API_IP_LIMITER,
@@ -566,6 +568,12 @@ import {
   formatReminderFailureRateAllClear,
 } from "@/lib/booking/reminder-rate";
 import type { HandoffKind } from "@/lib/handoffs/kinds";
+import { formatReminder } from "@/lib/notify/repeat-policy";
+import { formatSmokeCanaryRecovery } from "@/lib/monitor/smoke-canary-failure";
+// The canary's failure message is built by its bare node alerter, which may import
+// nothing outside scripts/ (#1598), so the preview reaches into scripts/ for it rather
+// than holding a copy of the wording (L41).
+import { buildSmokeFailureMessage } from "../../../scripts/lib/smoke-failure-message";
 
 /** One rendered state of one alert. */
 export interface AlertPreview {
@@ -3526,6 +3534,70 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "jobs are starting again",
     channel: "recovery",
     text: formatCiStartedRecovery(),
+  },
+  // #3801: an unchanged condition is said again once a day (hourly when urgent) under
+  // a first line saying it is a reminder and how long it has lasted, so it can be told
+  // from a new problem. Shown on the alert the issue measured repeating ten times in
+  // one night, and once with an unknown start, which says "at least".
+  {
+    key: "ci_runs_refused",
+    state: "the 24 hour reminder, nothing changed",
+    channel: "alert",
+    text: formatReminder(
+      formatCiRefusedAlert({ runName: "CI", runUrl: "https://github.com/Try-Pennie/slate/actions/runs/35200000071" }),
+      { sinceMs: PREVIEW_REMINDER_OPENED_MS, atLeast: false },
+      PREVIEW_REMINDER_OPENED_MS + 24 * 60 * 60_000,
+    ),
+  },
+  {
+    key: "coverage_needs_human",
+    state: "the reminder for a condition open before #3801 (its start unknown)",
+    channel: "alert",
+    text: formatReminder(
+      formatCoverageNeedsHumanAlert([
+        { userId: "u1", name: "Dana Ruiz", email: "dana.ruiz@example.com", unplaceable: 1, failed: 0 },
+      ]),
+      { sinceMs: PREVIEW_REMINDER_OPENED_MS, atLeast: true },
+      PREVIEW_REMINDER_OPENED_MS + 3 * 24 * 60 * 60_000,
+    ),
+  },
+  // #3801: the smoke canary's failure, now posted by the Worker on the workflow's
+  // behalf through the alert throttle. Built by the alerter's own builder, so this is
+  // exactly what either the Worker or the workflow's direct fallback posts.
+  {
+    key: "smoke_canary_failed:*",
+    state: "the health check failed one check",
+    channel: "alert",
+    text: buildSmokeFailureMessage({
+      mode: "dry",
+      runUrl: "https://github.com/Try-Pennie/slate/actions/runs/35200000090",
+      failures: {
+        kind: "failures",
+        lines: ["FAIL: availability read median 4210ms, over the 2000ms budget"],
+      },
+    }),
+  },
+  {
+    key: "smoke_canary_failed:*",
+    state: "the full pass stopped before any check reported",
+    channel: "alert",
+    text: buildSmokeFailureMessage({
+      mode: "full",
+      runUrl: "https://github.com/Try-Pennie/slate/actions/runs/35200000091",
+      failures: { kind: "none" },
+    }),
+  },
+  {
+    key: "smoke_canary_failed:*",
+    state: "the health check is passing again",
+    channel: "recovery",
+    text: formatSmokeCanaryRecovery("dry"),
+  },
+  {
+    key: "smoke_canary_failed:*",
+    state: "the full pass is passing again",
+    channel: "recovery",
+    text: formatSmokeCanaryRecovery("full"),
   },
   // #2367: the two ways booking handoffs fail to reach the sales side.
   {

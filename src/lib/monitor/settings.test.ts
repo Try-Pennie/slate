@@ -32,30 +32,31 @@ describe("alert keys", () => {
       expect(resolved[key as keyof typeof resolved], key).toBe(ms);
       expect(Number.isFinite(ms) && ms > 0, key).toBe(true);
     }
-    expect(resolved.catchall_rate).toBe(60 * 60_000);
+    // #3801: a condition repeats once a day while unchanged.
+    expect(resolved.catchall_rate).toBe(24 * 60 * 60_000);
   });
 
   it("offers every alert key on the settings screen", () => {
     expect(ALERT_FIELDS.map((f) => f.key)).toContain("catchall_rate");
   });
 
-  it("includes the migration-lag page and defaults it to an hourly repeat (#516)", () => {
+  it("includes the migration-lag page and defaults it to the daily condition repeat (#516, #3801)", () => {
     expect(ALERT_KEYS).toContain("migration_version_lag");
-    // It stays broken until a human applies the migration, and a dormant schema
-    // gap has twice gone unnoticed for a whole session, so it keeps asking hourly
-    // rather than whispering once.
-    expect(MONITOR_DEFAULTS.cooldownMs.migration_version_lag).toBe(60 * 60_000);
-    expect(resolveCooldownMs([]).migration_version_lag).toBe(60 * 60_000);
+    // It stays broken until a human applies the migration, so it keeps asking while
+    // it lasts: once a day while unchanged since #3801 (it was hourly), and at once
+    // when it changes. A stored cooldown can make it hourly again.
+    expect(MONITOR_DEFAULTS.cooldownMs.migration_version_lag).toBe(24 * 60 * 60_000);
+    expect(resolveCooldownMs([]).migration_version_lag).toBe(24 * 60 * 60_000);
   });
 
-  it("makes the empty-bucket page tunable, at the six-hourly default it already had", () => {
+  it("makes the empty-bucket page tunable, at the urgent hourly repeat (#3801)", () => {
     // Its cooldown used to be a constant inside the availability service, so when a
     // deliberately dark roster (#1272) turned it into sixty messages a wave there
-    // was no way to quiet it short of a deploy. Moving it here must not change what
-    // it does by default.
+    // was no way to quiet it short of a deploy. A tier offering leads no time is one
+    // of the urgent conditions (Dan, 2026-10-16), so it repeats hourly while it lasts.
     expect(ALERT_KEYS).toContain("empty_tier");
-    expect(MONITOR_DEFAULTS.cooldownMs.empty_tier).toBe(6 * 60 * 60_000);
-    expect(resolveCooldownMs([]).empty_tier).toBe(6 * 60 * 60_000);
+    expect(MONITOR_DEFAULTS.cooldownMs.empty_tier).toBe(60 * 60_000);
+    expect(resolveCooldownMs([]).empty_tier).toBe(60 * 60_000);
     // And a stored value wins, which is the point of moving it.
     expect(resolveCooldownMs([{ key: "empty_tier", cooldown_min: 10080 }]).empty_tier).toBe(
       10080 * 60_000,

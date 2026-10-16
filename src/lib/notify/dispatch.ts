@@ -11,6 +11,15 @@ import { noteAlertKey } from "@/lib/notify/alert-recording";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import type { AlertResolve, ThrottledNotify } from "@/lib/monitor/alert-deps";
+import {
+  formatReminder,
+  isRepeatRuled,
+  reminderIntervalMs,
+  repeatChange,
+  subjectsFor,
+  type AlertRepeat,
+  type RepeatChange,
+} from "@/lib/notify/repeat-policy";
 
 /**
  * Post a Slack message at most once per cooldown for a given key, using the
@@ -110,19 +119,71 @@ export function mayWriteAlerts(key: string, what: string): boolean {
  */
 type StampRead =
   | { kind: "absent" }
-  | { kind: "present"; raw: string; ms: number | null }
+  | {
+      kind: "present";
+      raw: string;
+      ms: number | null;
+      /**
+       * What the last post of a condition named and how bad it was (#3801), or null
+       * when the row predates that rule or belongs to an alert without it.
+       */
+      subjects: string[] | null;
+      band: number | null;
+      /** When the condition was first posted (#3801), or null when not recorded. */
+      openedMs: number | null;
+    }
   | { kind: "unreadable" };
 
+/** The `alert_state` row as read, columns from 0184 included (#3801). */
+interface AlertStateRow {
+  last_sent_at: string;
+  subjects?: string[] | null;
+  band?: number | null;
+  opened_at?: string | null;
+}
+
+/**
+ * Whether 0184's columns are missing from `alert_state` (#3801): a read naming them
+ * answered Postgres's undefined column (42703). Remembered for the isolate, so the
+ * fallback costs one wasted read rather than one per send.
+ */
+let repeatColumnsMissing = false;
+
+/** Whether this isolate has found `alert_state` without 0184's columns. */
+export function repeatColumnsAbsent(): boolean {
+  return repeatColumnsMissing;
+}
+
+/** For tests: forget a previous finding. */
+export function resetRepeatColumnsProbe(): void {
+  repeatColumnsMissing = false;
+}
+
 async function readStamp(rowKey: string): Promise<StampRead> {
-  const { data, error } = await supabaseAdmin()
-    .from("alert_state")
-    .select("last_sent_at")
-    .eq("key", rowKey)
-    .maybeSingle();
+  const db = supabaseAdmin();
+  const read = (columns: string) => db.from("alert_state").select(columns).eq("key", rowKey).maybeSingle();
+  let { data, error } = repeatColumnsMissing
+    ? await read("last_sent_at")
+    : await read("last_sent_at, subjects, band, opened_at");
+  // Code deployed ahead of migration 0184 (the deploy gate refuses that, so this is a
+  // second line): read the stamp alone and run the old rule, rather than reading every
+  // row as unreadable and posting every condition on every tick.
+  if (error && (error as { code?: string }).code === "42703" && !repeatColumnsMissing) {
+    repeatColumnsMissing = true;
+    log.warn("slack-alert", { msg: "alert_state has no repeat columns (0184 not applied); repeats follow the cooldown alone" });
+    ({ data, error } = await read("last_sent_at"));
+  }
   if (error) return { kind: "unreadable" };
   if (!data) return { kind: "absent" };
-  const raw = (data as { last_sent_at: string }).last_sent_at;
-  return { kind: "present", raw, ms: parseStampMs(raw) };
+  const row = data as unknown as AlertStateRow;
+  return {
+    kind: "present",
+    raw: row.last_sent_at,
+    ms: parseStampMs(row.last_sent_at),
+    subjects: Array.isArray(row.subjects) ? row.subjects : null,
+    band: typeof row.band === "number" && Number.isFinite(row.band) ? row.band : null,
+    openedMs: parseStampMs(row.opened_at ?? null),
+  };
 }
 
 /**
@@ -133,9 +194,16 @@ async function readStamp(rowKey: string): Promise<StampRead> {
  *
  * Fails toward DUE on a read error or an unreadable stamp, the side the send has
  * always taken: a lost cooldown costs a duplicate message, a swallowed one mutes it.
+ *
+ * For a condition it answers on the same reminder interval the send uses (#3801),
+ * and it cannot see a CHANGE, which needs the message's subjects. So a caller that
+ * skips building a message on "not due" forgoes the post a change would have made
+ * inside the interval; use it only where the key itself is the whole subject (one
+ * key per pool, per lane), so no other change can arrive on it.
  */
 export async function isAlertDue(key: string, cooldownMs: number, nowMs: number): Promise<boolean> {
-  return stampIsDue(await readStamp(key), cooldownMs, nowMs);
+  const seen = await readStamp(key);
+  return stampIsDue(seen, repeatColumnsMissing ? cooldownMs : reminderIntervalMs(key, cooldownMs), nowMs);
 }
 
 // #1169: fail closed. A corrupt last_sent_at used to parse to NaN, which
@@ -204,12 +272,18 @@ async function claimRow(
   rowKey: string,
   seen: StampRead,
   stampIso: string,
-  opts: { reclaimIfDeleted: boolean },
+  opts: { reclaimIfDeleted: boolean; fields?: RepeatFields },
 ): Promise<Claim> {
   if (seen.kind === "unreadable") return "unclaimed";
   const db = supabaseAdmin();
+  // #3801: a condition's claim also records what this post will say, so a second
+  // sender that reads the row while this one is mid post sees these subjects as
+  // already told and does not treat them as a change of its own. If the post then
+  // fails, the claim's short retry stamp makes the page due again within minutes
+  // whatever the subjects say, so recording them early can never mute it.
+  const extra = opts.fields ?? {};
   if (seen.kind === "absent") {
-    const { error } = await db.from("alert_state").insert({ key: rowKey, last_sent_at: stampIso });
+    const { error } = await db.from("alert_state").insert({ key: rowKey, last_sent_at: stampIso, ...extra });
     if (!error) return "won";
     // 23505 is the primary key refusing: somebody wrote this row after the read.
     if ((error as { code?: string }).code === "23505") return "lost";
@@ -217,7 +291,7 @@ async function claimRow(
   }
   const { data, error } = await db
     .from("alert_state")
-    .update({ last_sent_at: stampIso })
+    .update({ last_sent_at: stampIso, ...extra })
     .eq("key", rowKey)
     .eq("last_sent_at", seen.raw)
     .select("key");
@@ -266,23 +340,103 @@ export async function sendThrottledAlert(
   key: string,
   cooldownMs: number,
   text: string,
-  channel?: string,
-  news?: PageNews,
+  opts: SendOptions = {},
 ): Promise<void> {
-  await sendThrottledAlertUnrecorded(key, cooldownMs, text, channel, news);
+  const outcome = await sendThrottledAlertUnrecorded(key, cooldownMs, text, opts);
   // Noted only once the send RETURNED (#3133 follow-up, see alert-recording.ts): a
   // page sent, held back by its cooldown or dropped by an unconfigured Slack is the
   // owner's word on the matter; a send that threw is nobody's.
   noteAlertKey(key);
+  opts.onOutcome?.(outcome);
+}
+
+/**
+ * Everything a send may say beyond its key, interval and text.
+ *
+ * `subjects` and `band` (#3801) are what makes a CONDITION repeat once a day rather
+ * than every cooldown while posting a change at once; see `AlertRepeat`. `channel`
+ * picks a quieter channel for info signals. `news` is #3303's page news.
+ */
+export interface SendOptions extends AlertRepeat {
+  channel?: string;
+  news?: PageNews;
+  /**
+   * Told what the send did (#3801), for the one kind of caller that must act on it:
+   * the canary's workflow hands its failure to the Worker and posts directly itself
+   * unless the Worker sent or held it. A callback rather than a return value, so the
+   * function keeps resolving to nothing and every injected seam stays as it is.
+   */
+  onOutcome?: (outcome: SendOutcome) => void;
+}
+
+/**
+ * What one send did, for the rare caller that has to act on it (#3801: the canary's
+ * workflow posts directly when the Worker could not), through `onOutcome`. `held` covers every throttled
+ * outcome, including another sender having just posted the same page.
+ */
+export type SendOutcome = "sent" | "held" | "failed" | "skipped";
+
+/** The columns a condition's post records about itself (#3801, migration 0184). */
+interface RepeatFields {
+  subjects?: string[];
+  band?: number | null;
+  opened_at?: string | null;
+}
+
+/**
+ * Why a send went out, which decides what it SAYS. Only `reminder` changes the
+ * text: an unchanged condition whose interval ran out, while the reader is known to
+ * have been told (#3801). Everything else posts the message as it stands.
+ */
+type SendReason = "first" | "reminder" | "due" | RepeatChange | "news";
+
+/**
+ * The episode a due condition belongs to (#3801): whether this post is a reminder of
+ * one the reader was told about, and when that condition was first posted.
+ *
+ * A reminder needs the cooldown row to have been written by a DELIVERED post, the
+ * same shared stamp test as #3303's news: the firing marker and the cooldown row
+ * carry one value only after a delivery, so a row holding a failed send's retry hold
+ * or a claim is a retry, not a reminder. One extra read, and only on a tick that is
+ * about to post, so the held tick (almost every tick) pays nothing for it.
+ *
+ * A marker that cannot be read gives a plain post rather than a reminder: a reader
+ * told twice is the safe direction, and the post still goes out (fail loud).
+ */
+interface Episode {
+  /** Nobody was told about this condition before (no firing marker), so it opens now. */
+  fresh: boolean;
+  /** The reader was told, and this post repeats that, so it carries the reminder line. */
+  reminder: { sinceMs: number; atLeast: boolean } | null;
+}
+
+async function episodeOf(key: string, seen: StampRead & { kind: "present" }): Promise<Episode> {
+  const marker = await readStamp(firingKey(key));
+  if (marker.kind === "unreadable") {
+    log.warn("slack-alert", { msg: "firing marker unreadable, so this repeat posts without the reminder line", key });
+    return { fresh: false, reminder: null };
+  }
+  // No marker: nobody was told about this condition (a new episode, or every earlier
+  // post failed), so it opens now.
+  if (marker.kind === "absent") return { fresh: true, reminder: null };
+  const delivered = marker.ms !== null && seen.ms !== null && marker.ms === seen.ms;
+  if (!delivered || seen.ms === null) return { fresh: false, reminder: null };
+  // A row from before 0184 has no opening moment, so the age is a floor measured from
+  // the last delivered post, and the reminder says "at least".
+  return {
+    fresh: false,
+    reminder:
+      seen.openedMs !== null ? { sinceMs: seen.openedMs, atLeast: false } : { sinceMs: seen.ms, atLeast: true },
+  };
 }
 
 async function sendThrottledAlertUnrecorded(
   key: string,
   cooldownMs: number,
   text: string,
-  channel?: string,
-  news?: PageNews,
-): Promise<void> {
+  opts: SendOptions,
+): Promise<SendOutcome> {
+  const { channel, news } = opts;
   // Refused BEFORE anything is posted (2026-09-24). A missing cooldown compares
   // as "due", so the page went out and only then did the stamp throw on
   // `new Date(NaN)`, leaving no record and re-sending on every tick. Throwing
@@ -291,7 +445,7 @@ async function sendThrottledAlertUnrecorded(
   if (!Number.isFinite(cooldownMs) || cooldownMs <= 0) {
     throw new Error(`${key} has no usable cooldown (${String(cooldownMs)}), so it was not sent`);
   }
-  if (!mayWriteAlerts(key, "page")) return;
+  if (!mayWriteAlerts(key, "page")) return "skipped";
   // #3104: a load run never posts (Slack refuses it, #2335), but its fault pass is
   // judged on whether the page WOULD have gone out, once, on its cooldown. So under
   // SLATE_LOADTEST the throttle runs exactly as it does in production and the page
@@ -299,11 +453,55 @@ async function sendThrottledAlertUnrecorded(
   // run's judge can read. Production never reaches the branch: the flag is set on
   // `env.loadtest` alone.
   const loadtest = isLoadtest();
-  if (!slackConfigured() && !loadtest) return;
+  if (!slackConfigured() && !loadtest) return "skipped";
   const db = supabaseAdmin();
   const nowMs = Date.now();
+  // #3801: for a CONDITION the interval is when an unchanged fact may be said again
+  // (a day, an hour when urgent, or a stored setting), and a change posts at once. For
+  // anything else both of these are exactly what they were before.
   const seen = await readStamp(key);
-  if (!stampIsDue(seen, cooldownMs, nowMs) && !(news && (await carriesNews(key, seen, news)))) return;
+  // Without 0184's columns there is nowhere to remember what was said, so the old rule
+  // (the cooldown as handed over) runs and nothing is written to columns that are not there.
+  const ruled = isRepeatRuled(key) && !repeatColumnsMissing;
+  const intervalMs = ruled ? reminderIntervalMs(key, cooldownMs) : cooldownMs;
+  const subjects = ruled ? subjectsFor(opts, text) : [];
+  const band = ruled && typeof opts.band === "number" && Number.isFinite(opts.band) ? opts.band : null;
+  const due = stampIsDue(seen, intervalMs, nowMs);
+  // A change is judged whether or not the interval has run out, so a due post that
+  // ALSO names something new is said as a new problem rather than as a reminder.
+  const change: RepeatChange | null =
+    ruled && seen.kind === "present" ? repeatChange({ subjects: seen.subjects, band: seen.band }, subjects, band) : null;
+  let reason: SendReason;
+  if (seen.kind !== "present") reason = "first";
+  else if (change !== null) reason = change;
+  else if (due) reason = "due";
+  else if (news && (await carriesNews(key, seen, news))) reason = "news";
+  else return "held";
+
+  let posted = text;
+  let fields: RepeatFields | undefined;
+  if (ruled) {
+    // Asked only once the interval has run out: inside it the last post was recent, so
+    // the episode is the same one, and a held tick never pays for the read.
+    const episode = due && seen.kind === "present" ? await episodeOf(key, seen) : null;
+    if (reason === "due" && episode?.reminder) {
+      reason = "reminder";
+      posted = formatReminder(text, episode.reminder, nowMs);
+    }
+    // When the condition opened: kept from the row while the episode is the same one,
+    // now when nobody was told before. An unreadable row leaves the column alone (the
+    // upsert below merges), rather than restarting the age of a condition it cannot see.
+    // A row from before 0184 has no opening moment, so its last post is recorded as one:
+    // the earliest fact known, written once, so later reminders' ages grow from it
+    // instead of each measuring from the post before and saying a day for ever.
+    const openedMs = seen.kind !== "present" || episode?.fresh ? nowMs : (seen.openedMs ?? seen.ms);
+    fields = {
+      subjects,
+      band,
+      ...(seen.kind === "unreadable" ? {} : { opened_at: openedMs === null ? null : new Date(openedMs).toISOString() }),
+    };
+    log.info("slack-alert", { msg: "condition posting", key, reason, subjects: subjects.length, band });
+  }
 
   // #3170: claim the send BEFORE posting, so two overlapping runs of one lane post
   // one page between them rather than one each. The claim is written as the SHORT
@@ -311,10 +509,11 @@ async function sendThrottledAlertUnrecorded(
   // Slack confirms delivery below. So whatever goes wrong after the claim (the post
   // fails, throws, or the invocation dies mid post) the page is held off for
   // minutes, never for the whole cooldown (L368).
-  const claim = await claimRow(key, seen, claimStampIso(alertStampMs(false, nowMs, cooldownMs), seen), {
+  const claim = await claimRow(key, seen, claimStampIso(alertStampMs(false, nowMs, intervalMs), seen), {
     reclaimIfDeleted: true,
+    fields,
   });
-  if (claim === "lost") return;
+  if (claim === "lost") return "held";
 
   if (loadtest) {
     log.warn("slack-alert", { msg: "load test page recorded, not sent", key });
@@ -325,13 +524,13 @@ async function sendThrottledAlertUnrecorded(
     await db
       .from("alert_state")
       .upsert(
-        { key, last_sent_at: new Date(alertStampMs(true, nowMs, cooldownMs)).toISOString() },
+        { key, last_sent_at: new Date(alertStampMs(true, nowMs, intervalMs)).toISOString(), ...fields },
         { onConflict: "key" },
       );
-    return;
+    return "sent";
   }
 
-  const result = await postSlack({ text, ...(channel ? { channel } : {}) });
+  const result = await postSlack({ text: posted, ...(channel ? { channel } : {}) });
   // Fail loud (#1035): a not-ok send used to be invisible AND burned the full
   // cooldown, silently muting this alert for 15-60+ min. Surface it in the logs
   // (the paging channel can't page about itself) and stamp only a short retry
@@ -344,6 +543,7 @@ async function sendThrottledAlertUnrecorded(
   // is now, and a page carrying news is stamped with when it was measured instead.
   // That shared stamp is how `carriesNews` tells a delivered page's cooldown, which
   // news may cut short, from the retry hold a failed send leaves here, which it may not.
+  // It is also how a later post knows it is a REMINDER (#3801, `episodeOf`).
   const deliveredMs = deliveredStampMs(news, nowMs);
   // write-ok: a refused stamp leaves the claim's short retry window (or no cooldown at all, unclaimed), so the alert re-sends within minutes. Repeating a page is the safe direction; a stamp that landed wrongly would mute one.
   await db
@@ -351,7 +551,10 @@ async function sendThrottledAlertUnrecorded(
     .upsert(
       {
         key,
-        last_sent_at: new Date(result.ok ? deliveredMs : alertStampMs(false, nowMs, cooldownMs)).toISOString(),
+        last_sent_at: new Date(result.ok ? deliveredMs : alertStampMs(false, nowMs, intervalMs)).toISOString(),
+        // #3801: written again here because an UNCLAIMED send (the claim could not be
+        // made) recorded nothing yet, and the next tick has to know what was said.
+        ...fields,
       },
       { onConflict: "key" },
     );
@@ -374,6 +577,7 @@ async function sendThrottledAlertUnrecorded(
       "alert firing marker",
     );
   }
+  return result.ok ? "sent" : "failed";
 }
 
 /**
@@ -669,12 +873,15 @@ export async function sendThrottledInfo(
   key: string,
   cooldownMs: number,
   text: string,
+  repeat?: AlertRepeat,
 ): Promise<void> {
   const channel = await defaultInfoChannel();
   // Noted on return by the same rule as a page (see alert-recording.ts), including
   // the return with no info channel set, which drops the message exactly as an
   // unconfigured Slack does. A throw (the channel read, or the send) notes nothing.
-  if (channel) await sendThrottledAlert(key, cooldownMs, text, channel);
+  // `repeat` (#3801) only matters for a CONDITION that whispers on the info channel;
+  // an info key keeps its own throttle whatever it is given.
+  if (channel) await sendThrottledAlert(key, cooldownMs, text, { ...repeat, channel });
   noteAlertKey(key);
 }
 

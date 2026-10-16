@@ -21,7 +21,11 @@ a procedure here, and no procedure exists for nothing.
 3. **Check the site is up**, once, before diagnosing anything specific:
    `GET /api/health` (200 or a 503 naming the stale lane) and
    `GET /api/health/availability` (200, or 503 when the booker is offering nothing).
-4. **Look for an all-clear.** Conditions send one when they clear
+4. **Ask whether it is a reminder** (#3801). A condition that has not changed is said
+   again once a day (hourly for one costing leads right now), and the repeat opens with
+   "Reminder: still true after ...". Anything without that line is new: a new subject
+   (an appointment, an agent, a pool, a lane) or a measured value that got worse.
+5. **Look for an all-clear.** Conditions send one when they clear
    (`docs/../src/lib/notify/alert-catalog.ts` classifies each key), so a page from an
    hour ago may already be over. Incidents never send one: they are finished events.
 
@@ -85,12 +89,21 @@ Keys: `empty_tier:*`, `bucket_slots_stale`, `availability_booked_solid`,
 `low_booking_volume`, `booking_failure_rate`, `booking_failure_burst_ended`,
 `booking_budget:*`, `calendar_window_uncovered`,
 `booker_unstaffed:*`, `public_booking_stopped`, `booking_race_contention`,
-`booking_race_bound_hit`, `pool_nearly_full`, `busy_cache_drift`, `offered_nobody_free`.
+`booking_race_bound_hit`, `pool_nearly_full`, `busy_cache_drift`, `offered_nobody_free`,
+`smoke_canary_failed:*`.
 
 **What fired it.** Something between the roster and the cache means a lead sees fewer
 times than they should, or none. The alerts are deliberately split by CAUSE, because
 "booked solid" is a staffing fact and "data anomaly" is a bug, and they call for
 opposite responses (#570).
+
+**`smoke_canary_failed:*` is the booking canary failing against production** (#3801). The
+key is the pass, `dry` (every 30 minutes) or `full` (every 6 hours), and the message names
+the checks that failed and links the run. The workflow hands the failure to the Worker,
+which posts it at once when a check is newly failing and otherwise once a day; a clean run
+of that pass posts the all-clear (a clean full pass clears both). If the Worker could not
+be reached the workflow posts the same message itself, so a post with no all-clear to
+follow can mean the Worker is down: check `GET /api/health` first.
 
 **`empty_tier:*` is about a whole DEBT TIER, not a bucket** (#2505). It fires when
 Low, Medium, High, Very High or Ultra High is offering no booking time on any of the

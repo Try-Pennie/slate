@@ -262,16 +262,43 @@ jobs:
           curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=smoke-canary-full" \
             -H "authorization: Bearer $BOOKING_API_KEY_CANARY"
 
+      # #3801: a run with nothing failing tells the Worker, so a failure it posted for
+      # this pass clears with an all-clear (a clean full pass clears the dry tick's
+      # too). The exact negation of the alert step's condition below, so every run
+      # reports exactly one of the two. `continue-on-error` because a Worker that
+      # cannot be reached must not turn a clean run red and fire the alert step about
+      # a canary that passed; the all-clear is retried by the next clean run.
+      - name: Report a clean canary run
+        if: success() && steps.pre.outputs.configured == '1' && steps.latency.outcome != 'failure' && steps.embed.outcome != 'failure'
+        continue-on-error: true
+        env:
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+          SMOKE_MODE: ${{ steps.mode.outputs.full == '1' && 'full' || 'dry' }}
+        run: |
+          base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
+          curl -fsS -X POST "${base%/}/api/smoke/failure" \
+            -H "authorization: Bearer $BOOKING_API_KEY_CANARY" \
+            -H "content-type: application/json" \
+            -d "{\"outcome\":\"passed\",\"mode\":\"$SMOKE_MODE\"}"
+
       # The latency and embed steps are `continue-on-error`, so a failure in either
       # does NOT make the job fail, and `failure()` alone would leave it recorded in
       # the failure log and reported to nobody. Each outcome is consulted explicitly
       # (#1047, #1006). A step added here without being named on this line is a
       # check whose failures are written down and read by no one.
+      #
+      # #3801: the alerter hands the failure to the Worker first, which posts it through
+      # the alert throttle (at once for a newly failing check, else once a day), and
+      # posts directly only when that handoff fails, so the alert still works when the
+      # Worker is what is down. Hence the canary key and base URL here.
       - name: Slack alert on failure
         if: (failure() || steps.latency.outcome == 'failure' || steps.embed.outcome == 'failure') && steps.pre.outputs.configured == '1'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
           SMOKE_MODE: ${{ steps.mode.outputs.full == '1' && 'full' || 'dry' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           # Same path the smoke steps wrote to. An ABSENT file is a real outcome, not

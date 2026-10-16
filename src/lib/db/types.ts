@@ -273,6 +273,12 @@ export interface AvailabilityRule {
 export interface AlertState {
   key: string;
   last_sent_at: string;
+  /** #3801 (0184): what a condition's last post named; null before 0184 or on a marker row. */
+  subjects?: string[] | null;
+  /** #3801 (0184): the last post's band, higher is worse; null when it had none. */
+  band?: number | null;
+  /** #3801 (0184): when the condition was first posted, for the reminder line. */
+  opened_at?: string | null;
 }
 
 /** A configurable reschedule/cancel/reassign reason option (#346). Codes are the

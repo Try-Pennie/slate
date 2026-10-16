@@ -46,6 +46,9 @@ export type AlertFamily = (typeof ALERT_FAMILIES)[number];
 const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // A lane, a schedule, or a detector has stopped producing.
   cron_lane_stale: "a-lane-or-schedule-has-gone-quiet",
+  // #3801. The booking canary failing against production: a lead may be seeing a
+  // broken or slow booker, which is that family's first question.
+  smoke_canary_failed: "the-booker-is-offering-nothing-or-too-little",
   // #3133. The lane ran and FAILED, which is the case the stale watchdog cannot see
   // when the lane stamped its heartbeat first. Same question: which scheduled work
   // is not happening.

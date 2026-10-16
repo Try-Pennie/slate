@@ -554,6 +554,11 @@ export async function runCiHealthCheck(deps: CiHealthDeps): Promise<CiHealthResu
       REFUSAL_ALERT_KEY,
       deps.cooldownMs.refusal,
       formatCiRefusedAlert({ runName: ciStart.run.name, runUrl: ciStart.run.htmlUrl }),
+      // #3801: no subjects. The condition is the account refusing jobs, whichever
+      // run happened to be newest; the run name and link differ on every post, so
+      // as subjects they would make each refused run a new problem (10 posts in a
+      // night of one billing stop). It is said again once a day while it lasts.
+      { subjects: [] },
     );
   } else if (ciStart.state === "starting") {
     await deps.resolve(REFUSAL_ALERT_KEY, formatCiStartedRecovery());
