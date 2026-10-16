@@ -973,7 +973,7 @@ export function confirmWallText(m: RunMeasurements, cs: ConfirmStartupReading | 
 export function lineSplitText(cs: ConfirmStartupReading | null): string {
   const head = "- the shared line's wait, by where it went";
   if (cs === null) return `${head}: the archived log was not read, so the line's wait was not split`;
-  const { cold, warm, orphanCalls } = cs.lineSplit;
+  const { cold, warm, orphanCalls, lineLog, lineUnparsable } = cs.lineSplit;
   if (cold.traced + warm.traced === 0) {
     return (
       `${head}: no confirm on the shared line carried a trace, so the line's wait was not split ` +
@@ -998,7 +998,19 @@ export function lineSplitText(cs: ConfirmStartupReading | null): string {
   };
   return (
     `${head}: ${side("cold", cold)}; ${side("warm", warm)}` +
-    (orphanCalls > 0 ? `; ${orphanCalls} object calls matched no confirm in the archive` : "")
+    (orphanCalls > 0 ? `; ${orphanCalls} object calls matched no confirm in the archive` : "") +
+    // #3781: since #3500 the object logs to its own Worker, so without that Worker's
+    // log every confirm's calls are missing for one reason, which is named.
+    (lineLog === "absent" && cold.missing + warm.missing > 0
+      ? "; the line Worker's own log (line-tail.jsonl) was not archived, and the object logs its calls there"
+      : "") +
+    (lineLog === "empty" && cold.missing + warm.missing > 0
+      ? "; the line Worker's own log (line-tail.jsonl) was archived and held no invocation, so its tail caught nothing"
+      : "") +
+    (lineLog === "unreadable" && cold.missing + warm.missing > 0
+      ? "; the line Worker's own log (line-tail.jsonl) was archived and could not be read, so its calls were not looked for"
+      : "") +
+    (lineUnparsable > 0 ? `; ${lineUnparsable} lines of the line Worker's log not readable JSON` : "")
   );
 }
 
