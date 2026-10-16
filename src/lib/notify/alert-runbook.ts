@@ -309,6 +309,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #2481. The waiting page's twin for the rows that lost their mark, so the same
   // family and the same first question.
   agents_stranded_outside_pool: "the-roster-or-routing-data-is-wrong",
+  // #3530. A bookable advisor every confirm leaves out because a row of theirs cannot
+  // be read: a roster record to correct, so the same family and the same first question.
+  ladder_advisor_unreadable: "the-roster-or-routing-data-is-wrong",
   // #2090. The finding is about a roster row (somebody working who is not in the
   // pool), and the first question is the same one: is this person meant to be
   // taking calls, and what does the roster say about them.
