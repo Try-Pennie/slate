@@ -121,8 +121,24 @@ export async function readCountedOutcomeMix(sinceDay: string): Promise<OutcomeMi
  * with no host recorded (the booking API, the standalone page, admin) still count.
  */
 export async function readTodayOutcomes(nowMs: number): Promise<OutcomeReading> {
+  return outcomeReadingOf(await readTodayMix(nowMs));
+}
+
+/** Today's counted mix and the ET day it belongs to: ONE tally read the monitor lane
+ *  shares between the failure share and the follow up drain share (#3267), so the
+ *  second check costs no subrequest on a tick where both run. Throws on a failed read. */
+export interface TodayMix {
+  day: string;
+  mix: OutcomeMix;
+}
+
+export async function readTodayMix(nowMs: number): Promise<TodayMix> {
   const day = outcomeDay(nowMs);
-  const mix = await readCountedOutcomeMix(day);
+  return { day, mix: await readCountedOutcomeMix(day) };
+}
+
+/** The failure share's reading of today's mix (see `readTodayOutcomes`). */
+export function outcomeReadingOf({ day, mix }: TodayMix): OutcomeReading {
   const failures = mix.outcomes.find((o) => o.outcome === "error")?.count ?? 0;
   const byCode: Record<string, number> = {};
   for (const e of mix.errors) byCode[e.code] = e.count;

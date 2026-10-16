@@ -1192,6 +1192,25 @@ describe("POST /booking outcome tally (#1313)", () => {
     expect(outcomes()).toEqual([["created", null], ["race_reassigned", null]]);
   });
 
+  // #3267: a confirm that answered the booking and left the work after its save to
+  // the reservation drain is counted beside its created row, outside the failure
+  // share, so the monitor lane can page on the share of them.
+  it("counts a booking whose follow up work was left to the drain beside the created row", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: {
+        id: "bk-1",
+        starts_at: "2026-07-01T15:00:00.000Z",
+        ends_at: "2026-07-01T15:30:00.000Z",
+      },
+      manageUrl: "https://slate.test/booking/manage/tok",
+      newlyInserted: true,
+      followUpLeftToDrain: true,
+    });
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(200);
+    expect(outcomes()).toEqual([["created", null], ["follow_up_left_to_drain", null]]);
+  });
+
   it("does not count a race again on a replay that returns an earlier confirm's booking", async () => {
     // A double click or retry with the same key returns the booking already made,
     // whose trace describes the earlier confirm's race. That race was counted then.

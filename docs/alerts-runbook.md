@@ -287,7 +287,8 @@ Keys: `outbox_drain_stuck`, `outbox_all_handed_off`, `reservation_drain_stuck`,
 `reconcile_missing_busy_blocks`, `creation_orphan_events`,
 `reassign_intent_dropped`, `reschedule_pin_dropped`, `reschedule_lock_outage`,
 `stale_phone_invite:*`, `webhook_dead:*`, `webhook_event_no_subscriber`,
-`handoff_channel_unset`, `handoff_undelivered`, `bookable_trait_unrecorded:*`.
+`handoff_channel_unset`, `handoff_undelivered`, `bookable_trait_unrecorded:*`,
+`booking_follow_up_left_to_drain`.
 
 **What fired it.** A booking exists and something that should have followed it did not:
 a calendar invite, a busy block, a webhook to Regal. **A real customer is affected**,
@@ -316,6 +317,17 @@ which is what makes this family different from the ones above.
   cause is almost always the same as `handoff_undelivered`, since it posts to the same
   channel: the Slate app is not in it. A BLANK handoff channel does not reach here at
   all, because the step records that in the log and completes rather than retrying.
+
+- For `booking_follow_up_left_to_drain` (#3267): over the last hour, more than a tenth
+  of the confirms that made a booking answered the lead before the work after their
+  save had finished (at least 3 of at least 10, or half of a quieter hour), so the
+  reservation drain is finishing it. **The leads are booked**; what waits is usually
+  their `booking.created` webhook to Regal, or the reservation's own delete. First
+  check `reservation_drain_stuck` is not also firing: if the drain is finishing them,
+  the cause is the confirm path being slow, and the Worker log line "the booking
+  committed and the work after it did not finish" names each booking and the error
+  that cut it off. It clears on a measured clean half hour of confirms. The healthy
+  rate is zero: none in the 2,933 bookings of the week before it shipped.
 
 - For `bookable_trait_unrecorded:*` (#2085): an agent's bookable state changed and the
   delivery telling Regal was never recorded, so nothing retries it and **no customer is
