@@ -122,7 +122,11 @@ function series(frozen: readonly string[], from: number, to: number): FaultLaneE
     // written there is the last one it wrote before it.
     const stamp = (lane: string, ms: number) => {
       const inStretch = frozen.includes(lane) && ms >= T0 + from * MIN && ms < T0 + to * MIN;
-      if (inStretch) return iso(lastBefore[lane] ?? ms);
+      // The lane's last run before the stretch, on its own cadence, even when that run
+      // came before the first reading (a stretch that began before the window).
+      const cadence = lane === "complete" ? 5 * MIN : MIN;
+      const priorRun = Math.floor((T0 + from * MIN - 1) / cadence) * cadence;
+      if (inStretch) return iso(lastBefore[lane] ?? priorRun);
       if (ms < T0 + from * MIN) lastBefore[lane] = ms;
       return iso(ms);
     };
@@ -159,6 +163,14 @@ function series(frozen: readonly string[], from: number, to: number): FaultLaneE
   assert(f.some((d) => d.includes("crons did not fire")), `the shared stretch is still named (got ${JSON.stringify(f)})`);
   assert(f.some((d) => d.includes("outbox lane was stale") && d.includes("A failing dependency")), `the lane still stopped after it is blamed on its own cause (got ${JSON.stringify(f)})`);
   assert(f.some((d) => d.includes("sync lane was stale") && d.includes("crons not firing")), `while the lane that came back with the others is not (got ${JSON.stringify(f)})`);
+}
+{
+  // A stretch that began BEFORE the faults did is said to have, so its length and its
+  // range agree: lanes silent from four minutes before the window, for eighteen in all.
+  const early = series(["sync", "outbox", "complete"], -4, 14);
+  const f = findingsOf(early);
+  const line = f.find((d) => d.startsWith("no lane stamped"));
+  assert(line !== undefined && line.includes("for 19.0 min") && line.includes("from 5.0 min before the fault window began to 14.0 min into it"), `a stretch from before the window says so, and its range adds up to its length (got ${JSON.stringify(f)})`);
 }
 {
   // Control: every lane pausing for less than the shortest bound is no finding at all.

@@ -199,7 +199,11 @@ export function judgeFaultLanes(e: FaultLaneEvidence, x: FaultLaneExpectations):
       bar: "lane heartbeats under fault",
       detail:
         `no lane stamped a heartbeat for ${minutes(silence.toMs - silence.fromMs)}, every lane at once, ` +
-        `from ${minutes(Math.max(0, silence.fromMs - x.windowStartMs))} to ${minutes(silence.toMs - x.windowStartMs)} into the fault window: ` +
+        // The stretch is measured from the last stamp, which can precede the window, so
+        // its range is said the same way and adds up to its length.
+        (silence.fromMs < x.windowStartMs
+          ? `from ${minutes(x.windowStartMs - silence.fromMs)} before the fault window began to ${minutes(silence.toMs - x.windowStartMs)} into it: `
+          : `from ${minutes(silence.fromMs - x.windowStartMs)} to ${minutes(silence.toMs - x.windowStartMs)} into the fault window: `) +
         "the crons did not fire on this deployment, which no failing dependency explains, so whether a " +
         "dependency stops a lane was not measured on this run",
     });
