@@ -16,6 +16,8 @@ import {
   run,
 } from "./notify-smoke-failure.ts";
 import type { FailureLog, FailureLogIo } from "./lib/smoke-failure-log.ts";
+import { parseSmokeReport, SMOKE_REPORT_LIMITS } from "../src/lib/monitor/smoke-canary-failure.ts";
+import { boundedReport, HANDOFF_LIMITS } from "./lib/smoke-failure-handoff.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import {
   assertAlerterFailsLoud,
@@ -234,6 +236,32 @@ const noIo = ioWith({});
     await run(post, { ...baseEnv, SLACK_ALERTS_CHANNEL: "C123" }, noIo, w.fetchFn);
     eq(w.calls.length, 0, "with no canary key the Worker is not asked");
     eq(posts.length, 1, "and the step posts directly, as before #3801");
+  }
+  {
+    // A broken deploy fails many checks, and one slow read's detail can run long. The
+    // Worker refuses a report past its limits, which would send EVERY such run around
+    // the throttle as a direct post, so the handoff bounds what it sends to exactly what
+    // the Worker's own parser accepts.
+    posts.length = 0;
+    const longLine = `availability read took 4210ms ${"and kept waiting ".repeat(40)}`;
+    const manyIo = ioWith({
+      "f.txt": Array.from({ length: 60 }, (_, i) => `FAIL: check ${i} ${longLine}`).join("\n") + "\n",
+    });
+    const w = answering(200, { ok: true, outcome: "sent" });
+    await run(post, envWithLog, manyIo, w.fetchFn);
+    eq(w.calls.length, 1, "a long many check failure is still handed to the Worker");
+    const sent = JSON.parse(w.calls[0].body) as unknown;
+    const parsed = parseSmokeReport(sent);
+    eq(parsed.ok, true, `and the Worker's own parser accepts what was sent (${parsed.ok ? "ok" : parsed.error})`);
+    eq(posts.length, 0, "so the step does not post around the throttle");
+  }
+  {
+    // The bounds are restated on the bare node side, so they are held equal here.
+    eq({ ...HANDOFF_LIMITS }, { ...SMOKE_REPORT_LIMITS }, "the handoff bounds what the Worker's parser accepts, no more and no less");
+    const long = `${"x".repeat(5000)}\n${runUrl}`;
+    const b = boundedReport({ text: long, checks: [] });
+    assert(b.text.length <= HANDOFF_LIMITS.textChars, "an over long message is cut to the limit");
+    assert(b.text.endsWith(`\n${runUrl}`), "keeping the link to the run");
   }
 }
 

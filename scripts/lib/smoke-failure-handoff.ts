@@ -29,6 +29,39 @@ export const DEFAULT_SLATE_BASE_URL = "https://slate.trypennie.app";
 /** Long enough for a cold Worker, short enough that the direct post is not late. */
 export const HANDOFF_TIMEOUT_MS = 15_000;
 
+/**
+ * What the Worker's parser accepts (`SMOKE_REPORT_LIMITS` in
+ * `src/lib/monitor/smoke-canary-failure.ts`, which this file cannot import because it
+ * runs on bare node; `scripts/test-notify-smoke-failure.ts` holds the two equal). A
+ * report past any of them is refused with a 400, and a refusal sends the run around
+ * the throttle as a direct post, so a long or many check failure would post on every
+ * run: the noise #3801 exists to stop. So the report is bounded here, before sending.
+ */
+export const HANDOFF_LIMITS = { textChars: 4000, checks: 50, checkChars: 400 } as const;
+
+const ELLIPSIS = "...";
+
+function clip(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max - ELLIPSIS.length)}${ELLIPSIS}`;
+}
+
+/** The text within the limit, keeping its last line, which is the link to the run. */
+function clipKeepingLastLine(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const lastBreak = text.lastIndexOf("\n");
+  const tail = lastBreak >= 0 ? text.slice(lastBreak) : "";
+  if (tail.length >= max / 2) return clip(text, max);
+  return `${clip(text.slice(0, lastBreak), max - tail.length)}${tail}`;
+}
+
+/** The report as the Worker will accept it: every bound applied, nothing else changed. */
+export function boundedReport(input: { text: string; checks: string[] }): { text: string; checks: string[] } {
+  return {
+    text: clipKeepingLastLine(input.text, HANDOFF_LIMITS.textChars),
+    checks: input.checks.slice(0, HANDOFF_LIMITS.checks).map((c) => clip(c, HANDOFF_LIMITS.checkChars)),
+  };
+}
+
 export async function handOffSmokeFailure(
   input: { mode: string; text: string; checks: string[] },
   env: Record<string, string | undefined>,
@@ -45,7 +78,7 @@ export async function handOffSmokeFailure(
     const res = await doFetch(`${base}/api/smoke/failure`, {
       method: "POST",
       headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify({ outcome: "failed", mode: input.mode, text: input.text, checks: input.checks }),
+      body: JSON.stringify({ outcome: "failed", mode: input.mode, ...boundedReport(input) }),
       signal: controller.signal,
     });
     if (!res.ok) return { handled: false, reason: `the Worker answered ${res.status}` };
