@@ -601,6 +601,20 @@ async function checkAbandoned(deps: ProbeRunDeps, key: LineKey): Promise<CheckRe
 }
 
 /**
+ * #3823: what a check says when a turn it already judged to be a lead is not one, which
+ * `leaderBlocked` makes unreachable; said as the probe's own fault, never the object's.
+ */
+const LOST_LEAD: CheckResult = { outcome: "errored", detail: "The probe lost track of the first confirm's lead" };
+
+/** #3823: A's lead on a fresh instant, or the result that ends the check. */
+async function firstLead(a: Participant, held: ReturnType<typeof holdings>, key: LineKey): Promise<CheckResult | Extract<Turn, { kind: "lead" }>> {
+  const turn = await held.track(a.line.enter(key, 0));
+  const blocked = leaderBlocked(a, turn);
+  if (blocked) return blocked;
+  return turn.kind === "lead" ? turn : LOST_LEAD;
+}
+
+/**
  * #3823: the advisors a ladder check claims. Opaque strings to the object, which never
  * looks anybody up, minted per run and per check so no two checks, and no two runs, ever
  * name the same one. They never leave the verification group, so no real advisor can be
@@ -647,7 +661,7 @@ async function checkHandedStart(deps: ProbeRunDeps, key: LineKey, run: string): 
   try {
     const queued = await queuedBehindLeader(deps, key, held);
     if ("outcome" in queued) return queued;
-    if (queued.lead.kind !== "lead") return { outcome: "errored", detail: "The probe lost track of the first confirm's lead" };
+    if (queued.lead.kind !== "lead") return LOST_LEAD;
     const read = probeAdvisors(run, "handedStart", 2);
     await queued.lead.seat.claimFirst(read, { rung: 0 });
     const turn = await queued.follower;
@@ -679,10 +693,8 @@ async function checkHeldVerdict(deps: ProbeRunDeps, key: LineKey, run: string): 
   const c = participant(deps);
   const held = holdings();
   try {
-    const first = await held.track(a.line.enter(key, 0));
-    const blocked = leaderBlocked(a, first);
-    if (blocked) return blocked;
-    if (first.kind !== "lead") return { outcome: "errored", detail: "The probe lost track of the first confirm's lead" };
+    const first = await firstLead(a, held, key);
+    if ("outcome" in first) return first;
     const read = probeAdvisors(run, "heldVerdict", 2);
     await first.seat.claimFirst(read, { rung: 0 });
     const second = await held.track(b.line.enter(key, PROBE_NEWCOMER_WAIT_MS));
@@ -760,10 +772,8 @@ async function checkClaimOutcome(deps: ProbeRunDeps, key: LineKey, run: string):
   const a = participant(deps);
   const held = holdings();
   try {
-    const first = await held.track(a.line.enter(key, 0));
-    const blocked = leaderBlocked(a, first);
-    if (blocked) return blocked;
-    if (first.kind !== "lead") return { outcome: "errored", detail: "The probe lost track of the first confirm's lead" };
+    const first = await firstLead(a, held, key);
+    if ("outcome" in first) return first;
     const read = probeAdvisors(run, "claimOutcome", 4);
     const [busy, untried, kept, last] = read as [string, string, string, string];
     await first.seat.claimFirst(read, { rung: 0 });
