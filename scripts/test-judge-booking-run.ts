@@ -2840,6 +2840,8 @@ const legAttempts = (i: JudgeInput, leg: number) =>
       cold: split({ traced: 3, joined: 2, missing: 1, heldMs: [700, 100], objectMs: [50, 30], outsideMs: [150, 400] }),
       warm: split({ traced: 4, joined: 4, impossible: 0, unreadable: 0, heldMs: [0, 0, 0, 10], objectMs: [15, 15, 15, 15], outsideMs: [85, 85, 90, 95] }),
       orphanCalls: 2,
+      lineLog: "read",
+      lineUnparsable: 0,
     },
   });
   assert(/cold 2 of 3 traced/.test(text), `the cold confirms joined, of those traced (got: ${text})`);
@@ -2854,6 +2856,20 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   assert(/1 missing/.test(text), `a traced confirm whose calls never arrived is named, not dropped (got: ${text})`);
   assert(/warm 4 of 4 traced/.test(text), `and the warm side on its own (got: ${text})`);
   assert(/2 object calls matched no confirm/.test(text), `and calls whose confirm is not in the archive are counted (got: ${text})`);
+
+  // #3781: the object logs to its own Worker, so a run whose line Worker log was not
+  // archived says that is why its confirms are missing, rather than a bare count.
+  const absent = lineSplitText({ ...base, lineSplit: { cold: split({ traced: 2, missing: 2 }), warm: split({}), orphanCalls: 0, lineLog: "absent", lineUnparsable: 0 } });
+  assert(/line Worker's own log \(line-tail\.jsonl\) was not archived/.test(absent), `a missing line log is named as the reason (got: ${absent})`);
+  const read = lineSplitText({ ...base, lineSplit: { cold: split({ traced: 2, joined: 2, heldMs: [1, 2], objectMs: [1, 2], outsideMs: [1, 2] }), warm: split({}), orphanCalls: 0, lineLog: "read", lineUnparsable: 3 } });
+  assert(!/not archived/.test(read), `a read line log is not called missing (got: ${read})`);
+  assert(/3 lines of the line Worker's log not readable JSON/.test(read), `and its unreadable lines are counted (got: ${read})`);
+  const empty = lineSplitText({ ...base, lineSplit: { cold: split({ traced: 2, missing: 2 }), warm: split({}), orphanCalls: 0, lineLog: "empty", lineUnparsable: 0 } });
+  assert(/line Worker's own log \(line-tail\.jsonl\) was archived and held no invocation/.test(empty), `an empty line log is named as the reason (got: ${empty})`);
+  // An archived file the judge could not read is not one that was never archived (L11).
+  const unreadable = lineSplitText({ ...base, lineSplit: { cold: split({ traced: 2, missing: 2 }), warm: split({}), orphanCalls: 0, lineLog: "unreadable", lineUnparsable: 0 } });
+  assert(/line Worker's own log \(line-tail\.jsonl\) was archived and could not be read/.test(unreadable), `an unreadable line log is named apart from an absent one (got: ${unreadable})`);
+  assert(!/not archived/.test(unreadable), `and never called not archived (got: ${unreadable})`);
 }
 
 // --- #3354: the wait before the profile, by the version that served it and by leg -----

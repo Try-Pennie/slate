@@ -642,6 +642,13 @@ jobs:
       # group (`setsid`), the step waits out the window itself and then stops the
       # whole group, and the `timeout` one minute later is only the backstop. stderr
       # goes to its own file so the stream holds only events.
+      #
+      # #3781: the confirm line Worker is tailed too, into `line-tail.jsonl`. Since
+      # #3500 the line object runs in that Worker, so its traced calls are logged
+      # there and never in the app's tail, and the judge could join none of them
+      # (run 38833395446: 0 of 537). Its own process group and its own stop, so
+      # neither tail outlives the window. No other job tails that Worker, so stopping
+      # it silences nothing else (#3450).
       - name: Archive the Worker's logs for the window
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -651,10 +658,14 @@ jobs:
           mkdir -p results
           setsid timeout "$((ARCHIVE_TAIL_MINUTES + 1))m" npx wrangler tail --env loadtest --format json > results/tail.jsonl 2> results/tail.err &
           tail_pid=$!
+          setsid timeout "$((ARCHIVE_TAIL_MINUTES + 1))m" npx wrangler tail -c wrangler.confirm-line.jsonc --env loadtest --format json > results/line-tail.jsonl 2> results/line-tail.err &
+          line_tail_pid=$!
           sleep "$((ARCHIVE_TAIL_MINUTES * 60))"
           kill -TERM -- -"$tail_pid" 2>/dev/null || true
+          kill -TERM -- -"$line_tail_pid" 2>/dev/null || true
           wait "$tail_pid" 2>/dev/null || true
-          wc -l results/tail.jsonl
+          wait "$line_tail_pid" 2>/dev/null || true
+          wc -l results/tail.jsonl results/line-tail.jsonl
       # ALWAYS: a step that hangs or fails still holds what it caught, and the judge
       # says what the archive could and could not cover.
       - if: always()

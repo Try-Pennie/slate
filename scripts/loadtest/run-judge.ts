@@ -22,6 +22,8 @@ import {
 import { ceilingVerdict, exactAddressBound, type CeilingVerdict } from "./preflight-checks.ts";
 import {
   readConfirmStartup,
+  LINE_TAIL_FILE,
+  readLineTailFile,
   readDeferredSpans,
   type ConfirmStartupReading,
   type DeferredSpanReading,
@@ -431,7 +433,10 @@ let archiveScheduled: ScheduledReading | null = null;
 let deferred: Record<string, DeferredSpanReading> | null = null;
 try {
   const archive = readFileSync(join(RESULTS, "tail.jsonl"), "utf8");
-  confirmStartup = readConfirmStartup(archive);
+  // #3781: the line object's calls are in its own Worker's tail, archived beside the
+  // app's. Absent, the line split names that as why its confirms are missing.
+  const lineArchive = readLineTailFile(() => readFileSync(join(RESULTS, LINE_TAIL_FILE), "utf8"), (text) => console.error(text));
+  confirmStartup = readConfirmStartup(archive, { lineArchive });
   archiveScheduled = readScheduledFromArchive(archive);
   deferred = readDeferredSpans(archive);
 } catch {

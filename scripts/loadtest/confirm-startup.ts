@@ -238,8 +238,17 @@ export interface ConfirmStartupReading {
    */
   stampColdNotFirst: number;
   stampWarmFirst: number;
-  /** #3354: the shared line's wait, split by the object's own log, cold and warm. */
-  lineSplit: { cold: LineSplit; warm: LineSplit; orphanCalls: number };
+  /**
+   * #3354: the shared line's wait, split by the object's own log, cold and warm.
+   *
+   * #3781: since #3500 the object runs in its own Worker, so its calls are logged to
+   * THAT Worker's tail. `lineLog` says whether that log was read beside the app's (`empty`
+   * when the file held no readable invocation: the step creates it before the tail
+   * connects, so an empty file is a tail that caught nothing, never a log that was read), and
+   * `lineUnparsable` counts its lines that were not readable JSON, apart from the app
+   * archive's own count (L11).
+   */
+  lineSplit: { cold: LineSplit; warm: LineSplit; orphanCalls: number; lineLog: "read" | "empty" | "unreadable" | "absent"; lineUnparsable: number };
   /** #3354: the wait before the profile by the Worker version that served it (`unknown` when the event named none). */
   byVersion: Record<string, SideWaits>;
   /** #3354: and by the load run leg that sent it (`none` when it named none). */
@@ -422,7 +431,18 @@ function messageText(message: unknown): string {
  * run whose archive never arrived and a run whose confirms cost nothing would
  * otherwise render the same (L98).
  */
-export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }): ConfirmStartupReading | null {
+export function readConfirmStartup(
+  archive: string,
+  opts?: {
+    leg?: LoadtestLeg;
+    /**
+     * #3781: the line Worker's own tail (`line-tail.jsonl`), where the object logs its
+     * calls. Null when the file was there and could not be read, which is not a file
+     * that never arrived (L11); undefined when it never arrived.
+     */
+    lineArchive?: string | null;
+  },
+): ConfirmStartupReading | null {
   const reading: ConfirmStartupReading = {
     samples: 0,
     cold: 0,
@@ -444,7 +464,7 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
     markedBySide: { cold: 0, warm: 0 },
     stampColdNotFirst: 0,
     stampWarmFirst: 0,
-    lineSplit: { cold: emptySplit(), warm: emptySplit(), orphanCalls: 0 },
+    lineSplit: { cold: emptySplit(), warm: emptySplit(), orphanCalls: 0, lineLog: opts?.lineArchive === undefined ? "absent" : opts.lineArchive === null ? "unreadable" : "read", lineUnparsable: 0 },
     byVersion: {},
     byLeg: {},
     otherLegs: 0,
@@ -472,15 +492,8 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
     // Worker's invocation index; read once per invocation and paired with its profile.
     const answerText = answerLineOf(inv)?.text ?? null;
     // #3354: one of the shared line object's traced calls, logged by the object itself.
-    for (const entry of inv.logs) {
-      const text = entry.text;
-      if (!text.includes(OBJECT_TAG) || !text.includes(OBJECT_MSG)) continue;
-      const trace = textField(text, "trace");
-      if (!trace) continue;
-      const calls = objectCalls.get(trace) ?? [];
-      calls.push({ stage: textField(text, "stage") ?? "unknown", op: textField(text, "op") ?? "unknown", wallMs: inv.wallTime });
-      objectCalls.set(trace, calls);
-    }
+    // Still read here, for an archive from before #3500, when the object ran in the app.
+    collectObjectCalls(inv, objectCalls);
     for (const entry of inv.logs) {
       const text = entry.text;
       if (!text.includes(TAG)) continue;
@@ -580,9 +593,44 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
       }
     }
   }
+  // #3781: the object's calls as its own Worker logged them. Only those are read from
+  // it: the line Worker serves no confirm, so it adds no sample to anything above.
+  if (typeof opts?.lineArchive === "string") {
+    let invocations = 0;
+    for (const item of tailInvocations(opts.lineArchive)) {
+      if (item.kind === "unparsable") reading.lineSplit.lineUnparsable += 1;
+      else {
+        invocations += 1;
+        collectObjectCalls(item.invocation, objectCalls);
+      }
+    }
+    if (invocations === 0) reading.lineSplit.lineLog = "empty";
+  }
   for (const trace of otherLegTraces) objectCalls.delete(trace);
   joinLineCalls(reading, tracedConfirms, objectCalls);
   return sawAny ? reading : null;
+}
+
+/**
+ * #3781: the file the archive job writes the confirm line Worker's own tail to, beside
+ * the app Worker's `tail.jsonl`. The workflow's name for it is held to this one by
+ * `scripts/test-loadtest-tail-overlap.ts`.
+ */
+export const LINE_TAIL_FILE = "line-tail.jsonl";
+
+/**
+ * #3781: the line Worker's tail as the judge hands it to `readConfirmStartup`: its text,
+ * undefined when the file never arrived, and null when it is there and could not be
+ * read, whose cause goes to `note` so it is not lost (L11).
+ */
+export function readLineTailFile(read: () => string, note: (text: string) => void): string | null | undefined {
+  try {
+    return read();
+  } catch (err) {
+    if ((err as { code?: unknown }).code === "ENOENT") return undefined;
+    note(`note: the line Worker's log could not be read: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
 }
 
 const OBJECT_TAG = `tag=${CONFIRM_LINE_TRACE_TAG}`;
@@ -601,6 +649,22 @@ function sideIndex(answerText: string | null): number | null {
   if (answerText === null) return null;
   const n = field(answerText, "isolate_invocation_index");
   return n !== null && Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+/** #3354: file each traced call the object logged in this invocation under its confirm's trace. */
+function collectObjectCalls(
+  inv: { logs: { text: string }[]; wallTime: number | null },
+  objectCalls: Map<string, { stage: string; op: string; wallMs: number | null }[]>,
+): void {
+  for (const entry of inv.logs) {
+    const text = entry.text;
+    if (!text.includes(OBJECT_TAG) || !text.includes(OBJECT_MSG)) continue;
+    const trace = textField(text, "trace");
+    if (!trace) continue;
+    const calls = objectCalls.get(trace) ?? [];
+    calls.push({ stage: textField(text, "stage") ?? "unknown", op: textField(text, "op") ?? "unknown", wallMs: inv.wallTime });
+    objectCalls.set(trace, calls);
+  }
 }
 
 function emptySplit(): LineSplit {
