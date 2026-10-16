@@ -8,8 +8,10 @@
 // and healthy, it deploys the log tail worker (slate-log-tail, #3160) whole: that
 // worker binds to an entrypoint of Slate's (#3191), so it can only follow Slate, never
 // lead it. First of all, before anything of Slate's is uploaded, it deploys the object
-// workers (the confirm line's, #3500, and the burst limiter's, #3555), which Slate's
-// bindings name, so they must lead. Every decision is in scripts/lib/gradual-deploy.ts and pinned offline by
+// workers (the confirm line's, #3500, the burst limiter's, #3555, the token holder's,
+// #3512), which Slate's bindings name, so they must lead; each only when its bundle or
+// config differs from the version serving (#3561), since a deploy restarts its objects,
+// and the log says which were skipped and why. Every decision is in scripts/lib/gradual-deploy.ts and pinned offline by
 // scripts/test-gradual-deploy.ts; this file is only I/O.
 //
 //   node --experimental-strip-types scripts/deploy-gradual.ts            # deploy
@@ -47,6 +49,7 @@ import {
 } from "./lib/gradual-deploy.ts";
 import { DEFAULT_POLL_INTERVAL_MS, DEFAULT_VERSION_TIMEOUT_MS, runProbe } from "./lib/post-deploy-probe.ts";
 import { httpProbeDeps } from "./lib/post-deploy-probe-http.ts";
+import { objectWorkerOps } from "./lib/object-worker-io.ts";
 import { envArgs, establishTarget, jsonPart, ROOT, runCapture, runLoud } from "./lib/wrangler-cli.ts";
 import { retarget } from "./lib/wrangler-target.ts";
 import { normalizeCommit } from "./stamp-build-info.ts";
@@ -154,6 +157,8 @@ if (crons === null) {
 }
 
 const scratch = mkdtempSync(join(tmpdir(), "slate-deploy-"));
+// env-ok: WRANGLER_ENV (the load test rehearsal only; production is the top level)
+const objectOps = objectWorkerOps(process.env.WRANGLER_ENV, (line) => console.log(`  ${line}`));
 
 const ops: GradualOps = {
   status: async () => status(),
@@ -199,8 +204,11 @@ const ops: GradualOps = {
     }
     return runLoud("pnpm", ["exec", "wrangler", "deploy", "-c", "wrangler.log-tail.jsonc"]);
   },
-  // #3500, #3555: an object worker, in the same environment as the Slate it serves.
-  objectWorker: async (config) => runLoud("pnpm", ["exec", "wrangler", "deploy", "-c", config, ...wranglerEnv]),
+  // #3500, #3555: an object worker, in the same environment as the Slate it serves, and
+  // #3561 only when it changed: the same I/O the hand deploy and the load run use.
+  objectWorkerFacts: (config) => objectOps.facts(config),
+  objectWorker: (config, message) => objectOps.deploy(config, message),
+  objectWorkerStamp: (config) => objectOps.servingStamp(config),
   isCronStandby: async (id) => isCronStandby(id),
   record: (event) => {
     if (stateFile) appendFileSync(stateFile, `${event}\n`, "utf8");

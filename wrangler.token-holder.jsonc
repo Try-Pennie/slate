@@ -5,12 +5,13 @@
 	// one on the lead's path. Slate binds TOKEN_HOLDER to it by script name (wrangler.jsonc).
 	// It must be deployed BEFORE Slate, because Slate's binding names it:
 	//
-	//   npx wrangler deploy -c wrangler.token-holder.jsonc                 (production)
-	//   npx wrangler deploy -c wrangler.token-holder.jsonc --env loadtest  (load test)
+	//   node --experimental-strip-types scripts/deploy-object-workers.ts                 (production)
+	//   node --experimental-strip-types scripts/deploy-object-workers.ts --env loadtest  (load test)
 	//
 	// Both run from the same list as the other object workers (OBJECT_WORKER_CONFIGS in
 	// scripts/lib/gradual-deploy.ts), which scripts/deploy-gradual.ts, scripts/deploy-verified.ts
-	// and loadtest.yml read. scripts/test-token-holder-worker.ts pins it.
+	// and loadtest.yml read, and deploy it only when its bundle or this file changed (#3561),
+	// since a deploy empties the holder. scripts/test-token-holder-worker.ts pins it.
 	//
 	// It holds NO secret and needs none: it never mints. Slate mints and puts the token here.
 	// Tokens live in the object's memory only, never its storage. The migration below is

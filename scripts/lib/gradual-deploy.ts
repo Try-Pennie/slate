@@ -42,6 +42,7 @@
  */
 
 import type { ProbeOutcome } from "./post-deploy-probe.ts";
+import { deployObjectWorkers, type ObjectWorkerFacts } from "./object-worker-skip.ts";
 
 /** The Worker's name in wrangler.jsonc, and the key in the version override header. */
 export const WORKER_NAME = "slate";
@@ -429,7 +430,9 @@ export function maxCronWaitMs(crons: string[], budgetMs = SPLIT_BUDGET_MS, margi
 /**
  * #3500, #3555, #3512: the small workers that host Slate's Durable Objects, each deployed whole
  * before Slate on every path that deploys it (this gradual deploy, the hand deploy, the
- * load run), because Slate binds its objects to them by script name.
+ * load run), because Slate binds its objects to them by script name. #3561: each only
+ * when its bundle or config differs from the version serving, since a Worker deploy
+ * restarts its objects (scripts/lib/object-worker-skip.ts).
  */
 export const OBJECT_WORKER_CONFIGS = ["wrangler.confirm-line.jsonc", "wrangler.burst-limiter.jsonc", "wrangler.token-holder.jsonc"] as const;
 
@@ -539,9 +542,17 @@ export interface GradualOps {
   /**
    * #3500, #3555: deploy one object worker (`wrangler deploy -c <config>`) whole, BEFORE
    * anything of Slate's is uploaded: Slate binds its objects to them by script name. True
-   * when it succeeded. Idempotent, so every run deploys each of `OBJECT_WORKER_CONFIGS`.
+   * when it succeeded. #3561: called only for one whose bundle differs from the version
+   * serving (or could not be proved the same), with the stamp to write as the version's
+   * message, null when the bundle's hash is not known.
    */
-  objectWorker(config: string): Promise<boolean>;
+  objectWorker(config: string, message: string | null): Promise<boolean>;
+  /** #3561: what decides whether an object worker needs deploying: its local bundle's
+   *  hash and the version serving. May throw; a throw deploys. */
+  objectWorkerFacts(config: string): Promise<ObjectWorkerFacts>;
+  /** #3561: after a stamped deploy, the hash the serving version reads back as carrying,
+   *  so a stamp that never lands is said. Null when none or unreadable. */
+  objectWorkerStamp(config: string): Promise<string | null>;
   /** Whether a version was uploaded in cron standby (a canary): read from its
    *  annotation. Null when it could not be read. */
   isCronStandby(versionId: string): Promise<boolean | null>;
@@ -705,13 +716,22 @@ async function runUntilSplit(ops: GradualOps): Promise<GradualResult> {
   }
   ops.log(`production is serving ${stable} at 100%`);
 
-  // #3500, #3555: the object workers Slate's bindings name, before any version of Slate exists.
-  for (const config of OBJECT_WORKER_CONFIGS) {
-    if (await ops.objectWorker(config)) continue;
+  // #3500, #3555: the object workers Slate's bindings name, before any version of Slate
+  // exists. #3561: each only when it changed, since a deploy restarts its objects.
+  const objects = await deployObjectWorkers(
+    {
+      facts: (config) => ops.objectWorkerFacts(config),
+      deploy: (config, message) => ops.objectWorker(config, message),
+      servingStamp: (config) => ops.objectWorkerStamp(config),
+      log: (line) => ops.log(line),
+    },
+    OBJECT_WORKER_CONFIGS,
+  );
+  if (!objects.ok) {
     return {
       exit: EXIT.objectWorkerFailed,
       end: "unchanged",
-      message: `Not deployed: the object worker in ${config} could not be deployed, and Slate's bindings name it, so nothing of Slate's was uploaded and the previous version is still serving 100%. Deploy it by hand with \`npx wrangler deploy -c ${config}\`, then re-run the deploy.`,
+      message: `Not deployed: the object worker in ${objects.config} could not be deployed (${objects.reason}), and Slate's bindings name it, so nothing of Slate's was uploaded and the previous version is still serving 100%. Deploy it by hand with \`node --experimental-strip-types scripts/deploy-object-workers.ts\`, then re-run the deploy.`,
     };
   }
 
