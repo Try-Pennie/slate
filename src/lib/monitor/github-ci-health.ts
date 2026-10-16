@@ -67,6 +67,7 @@
  */
 import { parseStampMs } from "@/lib/date/stamp";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
+import { explainedLabels } from "@/lib/notify/alert-folds";
 
 /** The repo whose runs are read. Same repo the canary gap filler dispatches into. */
 export const CI_REPO = "Try-Pennie/slate";
@@ -397,17 +398,41 @@ export function formatDeployLiveRecovery(sha: string): string {
   return `Main's tip is live again: the site is serving ${sha.slice(0, 12)}.`;
 }
 
+/** "a, b and c", for the alerts a refusal explains. */
+function joinedLabels(labels: string[]): string {
+  if (labels.length <= 1) return labels.join("");
+  return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+}
+
+function capitalised(text: string): string {
+  return text === "" ? text : `${text[0].toUpperCase()}${text.slice(1)}`;
+}
+
+/**
+ * The page names the alerts it speaks for while it is open (#3802), from the one fold
+ * table the throttle reads (`src/lib/notify/alert-folds.ts`), so an entry added there
+ * is named here without anybody remembering to. Its all-clear does the same.
+ */
 export function formatCiRefusedAlert(v: { runName: string; runUrl: string }): string {
+  const explains = explainedLabels(REFUSAL_ALERT_KEY);
   return [
     `GitHub refused to start the jobs on the newest CI run, so the red checks are not about the change: nothing ran, and there is no log to read.`,
     `Open the run and read the annotation on any job. A failed payment or an exhausted spending limit is the usual cause, and neither shows up in the checks list.`,
     `While this lasts nothing server side is watching main: the push guard is itself a workflow, so it cannot run either.`,
+    ...(explains.length > 0
+      ? [
+          `${capitalised(joinedLabels(explains))} run on GitHub Actions too, so they have stopped as well and nothing is checking a booking end to end. Any of them that goes quiet while this is open is not paged separately.`,
+        ]
+      : []),
     `Run: ${v.runName} at ${v.runUrl}`,
   ].join("\n");
 }
 
 export function formatCiStartedRecovery(): string {
-  return "CI jobs are starting again: the newest run executed its steps rather than being refused.";
+  const explains = explainedLabels(REFUSAL_ALERT_KEY);
+  const first = "CI jobs are starting again: the newest run executed its steps rather than being refused.";
+  if (explains.length === 0) return first;
+  return `${first} Of ${joinedLabels(explains)}, any that went quiet during the refusal gets one full cycle of its own to report in, and alerts on its own only if it is still quiet after that.`;
 }
 
 /* --------------------------------------------------------------------------

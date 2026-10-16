@@ -621,6 +621,15 @@ watching main at all: `main-push-guard.yml` and `merge-gap.yml` are themselves
 workflows, so treat a direct push or a red merge during that window as unguarded and
 check it by hand afterwards.
 
+**What it speaks for (#3802).** The smoke canary is an Actions workflow too, so a
+refusal stops it. While `ci_runs_refused` is firing, the canary's stale lane pages
+(`smoke-canary`, `smoke-canary-full`, `verdict:availability-latency`) do not post: the
+refusal page names them instead, and their staleness is still judged and recorded
+(`alert_folded:<key>` in `alert_state`). Once CI runs again each one gets its own
+bound to report in; a lane still quiet after that pages as its own problem, because
+the refusal no longer explains it. A lane that was already paging before the refusal
+keeps paging as usual. The table is `ALERT_FOLDS` in `src/lib/notify/alert-folds.ts`.
+
 ---
 
 ## A dependency advisory was found
