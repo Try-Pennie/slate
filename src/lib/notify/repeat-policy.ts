@@ -110,11 +110,6 @@ export function reminderIntervalMs(key: string, cooldownMs: number): number {
   return Math.max(cooldownMs, CONDITION_REPEAT_MS);
 }
 
-/** The coded default a tunable condition's cooldown should carry (#3801). */
-export function conditionRepeatFor(key: string): number {
-  return isUrgentCondition(key) ? URGENT_CONDITION_REPEAT_MS : CONDITION_REPEAT_MS;
-}
-
 /**
  * One line of a message, reduced to what would change if the CONDITION changed.
  *
