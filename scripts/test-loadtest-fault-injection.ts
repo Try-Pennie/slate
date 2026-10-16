@@ -18,9 +18,11 @@ import {
   shouldFault,
   loadtestFault,
   stubFreeBusy,
+  stubFreeBusyMany,
   stubCalendarList,
   LOADTEST_FAULT_PCT,
 } from "../src/lib/google/loadtest-stub.ts";
+import { shouldInject, type FaultSwitch } from "../src/lib/loadtest-fault.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { fileURLToPath } from "node:url";
 
@@ -170,6 +172,51 @@ import { fileURLToPath } from "node:url";
       `${call} throws an injected fault when configured (got: ${String(parsed[call])})`,
     );
   }
+}
+
+// --- #3845: the confirm's bulk calendar check honours the same switch ---------
+// `freeBusyMany` is the first live read a confirm makes (the verify wave), and its stub
+// answered every calendar free with no fault check, so a fault pass never reached the
+// wave's "could not read, ask the agent directly" branch, nor the unverified re-route
+// behind it.
+{
+  const cals = Array.from({ length: 400 }, (_, i) => `agent-${i}@trypennie.com`);
+  const ON: FaultSwitch = { loadtest: true, pct: 30, targets: ["google-read"] };
+
+  // The production shape: the percentage at 100 and every target named, and no flag.
+  // Nothing is faulted, so the gate is the flag, not the call site's good behaviour.
+  const prod = stubFreeBusyMany(cals, { ...ON, loadtest: false, pct: 100 });
+  eq([...prod.values()].filter((v) => v.error).length, 0, "without SLATE_LOADTEST no calendar in the bulk read is ever faulted, at 100 percent");
+  eq(prod.size, cals.length, "and every calendar asked about is answered");
+  eq(
+    [...stubFreeBusyMany(cals, { ...ON, targets: ["google-write", "supabase"] }).values()].filter((v) => v.error).length,
+    0,
+    "nor when google-read is not one of the systems named",
+  );
+  eq([...stubFreeBusyMany(cals, { ...ON, pct: 0 }).values()].filter((v) => v.error).length, 0, "nor at zero percent");
+
+  const all = stubFreeBusyMany(cals, { ...ON, pct: 100 });
+  eq([...all.values()].every((v) => v.error && v.busy.length === 0), true, "at 100 percent every calendar comes back unreadable");
+
+  // At a real percentage, exactly the calendars whose own key says so, and the same
+  // ones on every call (deterministic, like every other injector).
+  const run1 = stubFreeBusyMany(cals, ON);
+  const run2 = stubFreeBusyMany(cals, ON);
+  const faulted = cals.filter((c) => run1.get(c)?.error);
+  eq(faulted, cals.filter((c) => shouldInject("google-read", `freeBusyMany:${c}`, ON)), "a calendar is unreadable exactly when its bulk read key faults");
+  eq(cals.filter((c) => run2.get(c)?.error), faulted, "and the same calendars on every call");
+  const share = faulted.length / cals.length;
+  assert(share > 0.2 && share < 0.4, `about the configured share is faulted (${(share * 100).toFixed(1)}% at 30%)`);
+  eq([...run1.values()].filter((v) => !v.error && v.busy.length > 0).length, 0, "and the rest read as free, as before");
+
+  // INDEPENDENT of the per agent read, because they are two different Google calls (one
+  // identity reading the domain, or the agent's own), and that independence is what the
+  // fallback exists for. So a fault pass reaches all three outcomes: read in bulk; not
+  // read in bulk and rescued by the direct read; read by neither, which is the
+  // unverified re-route.
+  const direct = (c: string) => shouldInject("google-read", `freeBusy:${c}`, ON);
+  assert(faulted.some((c) => !direct(c)), "some calendars the bulk read misses are read directly (the rescue)");
+  assert(faulted.some((c) => direct(c)), "and some are read by neither (the unverified re-route)");
 }
 
 finish();

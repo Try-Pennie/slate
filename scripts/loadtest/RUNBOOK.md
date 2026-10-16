@@ -2068,6 +2068,18 @@ fine; and no lane's heartbeat goes stale, because a Google failure must not stop
 running. On the booking run the page and the heartbeats are now SCORED by the judge
 (the fault leg section below), not read by a person.
 
+The confirm's verify wave is faulted too (#3845). Its bulk read and the per agent read
+it falls back to are keyed apart, as they are two different Google calls, so a pass
+reaches all three outcomes: read in bulk; missed in bulk and rescued by the direct read;
+read by neither, which scores the agent unverified and re-routes the lead to the next
+free advisor. In the fault leg's Worker logs the bulk miss carries nothing of its own;
+the direct read failing logs `tag=booking msg="agent calendar read failed, reporting it
+could not tell rather than free"` naming the advisor with the `(loadtest fault)` error,
+once for each advisor whose direct read failed. (An advisor whose calendar LIST read
+fails is unverified too, as before, and pages `verify_on_book_calendars_read` instead.)
+A confirm answers a retriable 503 (`VERIFY_UNAVAILABLE`) only when nobody it read could
+be confirmed free.
+
 When EVERY lane stops stamping in the same minutes, for longer than the shortest lane
 bound, the judge says the crons did not fire rather than blaming a dependency (#3746):
 no fault reaches `lane_heartbeats`, and a fault failing a share of calls cannot hold
@@ -2082,7 +2094,7 @@ was measured; rerun once the platform fires the crons again.
 
 | target | what fails | key a verdict is hashed on | what it exercises |
 |---|---|---|---|
-| `google-read` | every stubbed calendar read, in the three shapes above | the call (`freeBusy:<email>`, `calendarList:<email>`, the sync window) | the coalescer, the classifier, the streak page, verify-on-book's re-route |
+| `google-read` | every stubbed calendar read, in the three shapes above; the confirm's bulk verify wave as a calendar Google would not report on (#3845) | the call (`freeBusy:<email>`, `freeBusyMany:<calendar>`, `calendarList:<email>`, the sync window) | the coalescer, the classifier, the streak page, verify-on-book's fallback and re-route |
 | `google-write` | the stubbed create, patch and delete, in the same three shapes | the operation and the event id, so a retry meets the same answer | the confirm path's failed create, `pending_event_deletions`, the outbox's resume |
 | `supabase` | every call through the secret key client EXCEPT `lane_heartbeats` and `alert_state`: half are held 1.5 seconds and let through, half answer a PostgREST shaped **500** | the method, address and body, inside the minute, so a fixed read is not failed on every tick for the whole run | the fail loud reads (`unwrap`), the lanes' failure boundaries, and every read behind the decision to page |
 | `salesforce` | a call is held 3 seconds, past the booking path's 2.5 second calling number deadline, then fails as a timeout | the request address, so one lead is slow on every run | the deadline branch, which the instant load test refusal (#2335) could never reach |
