@@ -41,11 +41,15 @@ type Outcome = { booking: Booking | null; error: unknown; reads: number; judgedB
  * Book 411 at the fixture's time, the live check on the requested rung taking
  * `checkMs` of (fake) clock. `reread` is what every read after the first answers.
  */
-async function walk(checkMs: number, reread: () => Promise<LadderInputs> = async () => ladderHolding("second", ["a", "c"])): Promise<Outcome> {
+async function walk(checkMs: number, reread: () => Promise<LadderInputs> = async () => ladderHolding("second", ["a", "c"]), firstReadMs = 0): Promise<Outcome> {
   offsetMs = 0;
   const made = makeDeps({ candidatesByCode: { "411": ["a"], "311": ["b", "c"] }, freeEmails: new Set(["b@x.com", "c@x.com"]) });
   let reads = 0;
-  made.deps.readLadderInputs = async () => (++reads === 1 ? ladderHolding("first", ["a", "b", "c"]) : reread());
+  made.deps.readLadderInputs = async () => {
+    if (++reads > 1) return reread();
+    offsetMs += firstReadMs; // the first read itself took this long to answer
+    return ladderHolding("first", ["a", "b", "c"]);
+  };
   // Which read each rung was judged from AFTER the live check moved the clock (a rung
   // below may also be read early, for the line, while the first read is still fresh),
   // and only the advisors that read holds are offered.
@@ -100,6 +104,13 @@ async function main() {
     `every rung judged after the live check is judged from the fresh read, never the stale one (got ${JSON.stringify(slow.judgedBy)})`,
   );
   assert(slow.booking?.assigned_user_id === "c", `the advisor who became unbookable during the walk is never offered: booked with c (got ${slow.booking?.assigned_user_id}, ${slow.error instanceof Error ? slow.error.message : ""})`);
+
+  // A slow FIRST read is not a stale one: the bound is about time the walk spends after
+  // the read answered, so a read that itself took longer than the bound (a slow
+  // database, when another read is least wanted) is used, never thrown away at once.
+  const slowRead = await walk(0, undefined, LADDER_READ_MAX_AGE_MS + 500);
+  assert(slowRead.reads === 1, `a first read that was slow to answer is not re-made before the walk spends any time (reads: ${slowRead.reads})`);
+  assert(slowRead.booking !== null, `the walk books from that read (got ${slowRead.error instanceof Error ? slowRead.error.message : "nothing"})`);
 
   // Failure path: the fresh read fails. The walk must not fall back to the stale read
   // (that is the exposure itself), so the confirm fails as a failed first read does,

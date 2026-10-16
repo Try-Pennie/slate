@@ -3180,10 +3180,12 @@ async function assignAgentWithTierFallback(
   // however many rungs it crosses, and a lower rung's bucket is taken from it too. A
   // read that fails throws here, before any rung, as a failed rung read did.
   const readLadder = (stage: string) => timeStage(deps.profile, stage, () => deps.readLadderInputs!(ladderCodes, startInstantIso, requested.eventType));
-  // #3530: when the read was made, stamped BEFORE it is sent, so its age is never
-  // understated by the time the answer took to arrive.
-  let ladderReadAtMs = Date.now();
+  // #3530: when the read ANSWERED. The bound is about time the walk spends after it has
+  // the read in hand (live checks, line waits), so a read that was itself slow to arrive
+  // is used rather than thrown away at once: a slow database is exactly when a second
+  // read is least wanted.
   let ladder = deps.readLadderInputs ? await readLadder("ladder-read") : null;
+  let ladderReadAtMs = Date.now();
   // #3530: the read, re-made once it is older than `LADDER_READ_MAX_AGE_MS`. A walk that
   // spent real time on the live checks above a rung judges that rung from a fresh read,
   // never from busy time, counts, holds and a roster read before those checks. A re-read
@@ -3192,8 +3194,8 @@ async function assignAgentWithTierFallback(
   const freshLadder = async (): Promise<LadderInputs | null> => {
     if (!ladder || Date.now() - ladderReadAtMs <= LADDER_READ_MAX_AGE_MS) return ladder;
     const ageMs = Date.now() - ladderReadAtMs;
-    ladderReadAtMs = Date.now();
     ladder = await readLadder("ladder-reread");
+    ladderReadAtMs = Date.now();
     log.info("booking", { msg: "ladder read re-made: the walk outlived it", bucket_code: requested.bucket.code, age_ms: ageMs });
     return ladder;
   };
