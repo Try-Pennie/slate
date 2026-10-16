@@ -20,6 +20,7 @@ import {
   type AlertRepeat,
   type RepeatChange,
 } from "@/lib/notify/repeat-policy";
+import { foldFor, foldMarkKey, judgeFold, type FoldRead } from "@/lib/notify/alert-folds";
 
 /**
  * Post a Slack message at most once per cooldown for a given key, using the
@@ -430,6 +431,95 @@ async function episodeOf(key: string, seen: StampRead & { kind: "present" }): Pr
   };
 }
 
+/**
+ * The stamps of a few named `alert_state` rows in ONE read, or null when the read
+ * failed (#3802). A row that is not there is absent from the map; one whose stamp
+ * cannot be parsed is present with a null stamp. A throw is a failed read too, never
+ * a reason for the send to throw: the caller's safe side is to post.
+ */
+async function readStampsOf(keys: string[]): Promise<Map<string, number | null> | null> {
+  try {
+    // Bounded by `keys`: a membership read on alert_state's primary key returns at most
+    // one row per key asked about, and the caller asks about three.
+    const { data, error } = await supabaseAdmin().from("alert_state").select("key, last_sent_at").in("key", keys);
+    if (error) return null;
+    const out = new Map<string, number | null>();
+    for (const row of (data ?? []) as { key: string; last_sent_at: string | null }[]) {
+      out.set(row.key, parseStampMs(row.last_sent_at ?? null));
+    }
+    return out;
+  } catch (err) {
+    log.warn("slack-alert", { msg: "alert_state stamp read threw", keys: keys.length }, err);
+    return null;
+  }
+}
+
+/**
+ * Whether `key` waits because the alert that explains it is firing (#3802). The rule
+ * is `judgeFold` (`src/lib/notify/alert-folds.ts`); this is its one read and its two
+ * writes. Every key the fold table does not name answers false without a read.
+ *
+ * The three rows it needs (the explainer's firing marker, this key's own, and the
+ * record of this key's hold) come back from one read, because a stale canary lane
+ * reaches here on every minute tick of a CI stop, on a budget four cron lanes share.
+ *
+ * Fails toward POSTING: a read that fails or throws holds nothing, and a hold record
+ * that cannot be written is logged and costs only the grace after the explainer
+ * clears, which then posts at once.
+ */
+async function heldByFold(key: string, nowMs: number): Promise<boolean> {
+  const fold = foldFor(key);
+  if (!fold) return false;
+  const explainerMark = firingKey(fold.explainer);
+  const ownMark = firingKey(key);
+  const holdMark = foldMarkKey(key);
+  const stamps = await readStampsOf([explainerMark, ownMark, holdMark]);
+  const read: FoldRead | null =
+    stamps === null
+      ? null
+      : {
+          explainerFiringMs: stamps.get(explainerMark) ?? null,
+          ownFiring: stamps.has(ownMark),
+          markMs: stamps.get(holdMark) ?? null,
+        };
+  const decision = judgeFold(read, nowMs, fold.folded.graceMs);
+  const db = supabaseAdmin();
+  if (decision.act === "hold") {
+    log.info("slack-alert", {
+      msg:
+        decision.why === "explained"
+          ? "held: the alert that explains it is firing"
+          : "held: waiting out its own bound after the alert that explained it cleared",
+      key,
+      explainer: fold.explainer,
+      ...(decision.why === "grace" ? { until: new Date(decision.untilMs).toISOString() } : {}),
+    });
+    if (decision.why === "explained" && decision.refreshMark) {
+      // REPORTED, not raised: without this record the grace after the explainer clears
+      // is lost and the key posts at once, which is the loud direction.
+      reportWriteFailure(
+        await db
+          .from("alert_state")
+          .upsert({ key: holdMark, last_sent_at: new Date(nowMs).toISOString() }, { onConflict: "key" }),
+        "alert fold mark",
+      );
+    }
+    return true;
+  }
+  if (decision.why === "unreadable") {
+    log.warn("slack-alert", { msg: "fold state unreadable, so this posts as usual", key, explainer: fold.explainer });
+  }
+  // The hold is over, so its record goes. One is also left behind when a held lane
+  // comes back on its own (the all-clear path never reaches here), and that is inert:
+  // the lane was stale at the record's moment, so it can only be stale again a full
+  // bound after a LATER stamp, by when at most FOLD_MARK_REFRESH_MS of the record's
+  // grace can remain. So a refused delete is only logged.
+  if (stamps?.has(holdMark)) {
+    reportWriteFailure(await db.from("alert_state").delete().eq("key", holdMark), "alert fold mark clear");
+  }
+  return false;
+}
+
 async function sendThrottledAlertUnrecorded(
   key: string,
   cooldownMs: number,
@@ -477,6 +567,11 @@ async function sendThrottledAlertUnrecorded(
   else if (due) reason = "due";
   else if (news && (await carriesNews(key, seen, news))) reason = "news";
   else return "held";
+
+  // #3802: a key another alert explains waits while that one fires, and for its own
+  // grace after. Asked only once this send would otherwise post, so a tick the throttle
+  // already holds pays nothing for it, and only for a key the fold table names.
+  if (await heldByFold(key, nowMs)) return "held";
 
   let posted = text;
   let fields: RepeatFields | undefined;

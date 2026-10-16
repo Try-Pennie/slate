@@ -81,10 +81,20 @@ export function fakeSupabaseAdminModule() {
             const row = alertStateRows.get(key);
             return { data: row ? selected(row, key) : null, error: null };
           }),
-          in: async (_col: string, keys: string[]) => ({
-            data: keys.filter((k) => alertStateRows.has(k)).map((key) => ({ key })),
-            error: null,
-          }),
+          // A membership read answers every row it finds with its stamp (#3802 reads
+          // the stamps of several keys at once), and is refused whole when any key it
+          // names is one a test has made unreadable, as one failed statement would be.
+          in: async (_col: string, keys: string[]) => {
+            if (keys.some((k) => refusedAlertStateReads.has(k))) {
+              return { data: null, error: { message: "statement timeout" } };
+            }
+            return {
+              data: keys
+                .filter((k) => alertStateRows.has(k))
+                .map((key) => ({ key, last_sent_at: (alertStateRows.get(key) as AlertStateRow).last_sent_at })),
+              error: null,
+            };
+          },
         }),
         insert: async (row: AlertStateRow & { key: string }) => {
           if (alertStateSchema.withoutRepeatColumns && namesRepeatColumn(row)) return { error: NO_COLUMN };

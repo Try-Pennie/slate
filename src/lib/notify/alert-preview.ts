@@ -3519,7 +3519,9 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   // #2229: a run GitHub refused to start. One state, because the reader's next move
   // is the same whatever refused it, and the message says so rather than naming a
-  // cause the check never measured.
+  // cause the check never measured. Since #3802 it also names the smoke canary lanes it
+  // explains (from `ALERT_FOLDS`), whose own pages wait while it is open, and the
+  // all-clear says each gets its own bound before it may page.
   {
     key: "ci_runs_refused",
     state: "the newest run's jobs executed nothing",
