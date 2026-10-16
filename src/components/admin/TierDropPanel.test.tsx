@@ -73,9 +73,10 @@ describe("the tier drop list, by who is reading", () => {
 });
 
 // #3338: a confirm that loses the insert race, or waits in line while the ones ahead
-// of it book, now walks on down its routing instead of being told the time is taken.
-// Both branches are counted here apart from the tier drops, and drawn even at zero,
-// so a branch that never fires is seen (L551).
+// of it book, now walks on down its routing instead of being told the time is taken,
+// and since #3489 one may walk past advisors other leads are still booking. Every
+// branch is counted here apart from the tier drops, and drawn even at zero, so a
+// branch that never fires is seen (L551).
 describe("drops made behind leads confirming the same time", () => {
   const withBehind = (behind: TierDropReport["counts"]["behind"], quiet = false): TierDropReport => {
     const r = report("532");
@@ -88,18 +89,38 @@ describe("drops made behind leads confirming the same time", () => {
     return r;
   };
 
+  // The body rows of the table counting these drops, each as its two window counts.
+  const behindRows = () => {
+    const table = screen.getByRole("columnheader", { name: /Booked further down their routing/ }).closest("table")!;
+    return [...table.querySelectorAll("tbody tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent));
+  };
+
   it("counts each branch in both windows", () => {
-    render(<TierDropPanel report={withBehind({ week: { race: 1, line: 2, claimed: 0 }, month: { race: 3, line: 4, claimed: 0 } })} showCodes={false} />);
+    render(<TierDropPanel report={withBehind({ week: { race: 1, line: 2, claimed: 5 }, month: { race: 3, line: 4, claimed: 6 } })} showCodes={false} />);
     const race = screen.getByText(/Lost their advisor to a lead confirming at the same moment/).closest("tr")!;
     expect([...race.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["1", "3"]);
     const line = screen.getByText(/Waited behind leads confirming the same time/).closest("tr")!;
     expect([...line.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["2", "4"]);
+    // #3531: the claimed branch was counted and never drawn.
+    const claimed = screen.getByText(/Walked past advisors other leads were still booking/).closest("tr")!;
+    expect([...claimed.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["5", "6"]);
   });
 
-  it("draws both branches at zero rather than leaving them out", () => {
+  // #3531: the rows came from a hand written list that stopped at two of three kinds.
+  // Every kind the tally carries is given its own count here, so a kind added to the
+  // tally and left off the page fails this rather than reading as a quiet zero.
+  it("draws one row for every kind the tally carries", () => {
+    const week = { race: 11, line: 12, claimed: 13 };
+    const month = { race: 21, line: 22, claimed: 23 };
+    render(<TierDropPanel report={withBehind({ week, month })} showCodes={false} />);
+    const kinds = Object.keys(week) as (keyof typeof week)[];
+    expect(behindRows()).toHaveLength(kinds.length);
+    for (const k of kinds) expect(behindRows()).toContainEqual([String(week[k]), String(month[k])]);
+  });
+
+  it("draws every branch at zero rather than leaving it out", () => {
     render(<TierDropPanel report={withBehind({ week: { race: 0, line: 0, claimed: 0 }, month: { race: 0, line: 0, claimed: 0 } })} showCodes={false} />);
-    const race = screen.getByText(/Lost their advisor to a lead confirming at the same moment/).closest("tr")!;
-    expect([...race.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["0", "0"]);
+    expect(behindRows()).toEqual([["0", "0"], ["0", "0"], ["0", "0"]]);
   });
 
   it("is drawn in a month with no tier drop, since a sideways move is not one", () => {
