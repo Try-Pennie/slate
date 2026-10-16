@@ -2649,10 +2649,11 @@ async function main() {
 
   // #3440: a crowd behind a RESUMED reservation. Lead 0 crashed mid create earlier, and
   // its re-submit resumes the reservation that create wrote, pinned to a, the top rung's
-  // only advisor. Somebody else has booked a since, so the resume is refused as taken.
-  // That refusal is about the one advisor an earlier request pinned: it never asked the
-  // rungs below, where c and d are free. Before the fix it reported a full verdict and
-  // the four behind it were told the time was taken.
+  // only advisor. Somebody else has booked a since. Since #3837 the resume rolls that
+  // stale reservation back and walks the ladder like any confirm, so the resumed lead is
+  // booked on the rung below, where c and d are free, and nobody behind it is told the
+  // time is taken. Before #3440 a taken pin reported a full verdict and the four behind
+  // it were turned away; before #3837 the resumed lead itself was.
   {
     const resumed = lead(0, { bucketCode: LADDER_311 });
     const key = stableKeyFor(resumed);
@@ -2722,21 +2723,50 @@ async function main() {
         slowEventMs: 2_000,
         arriveAtMs: [0, 100, 100, 100, 100],
       });
-      assert(runs[0].outcome === "SLOT_TAKEN", `${tag}: the resumed lead is told its time is taken, as before (got ${runs[0].outcome})`);
+      // #3837 (Dan, 2026-10-16): the resumed lead walks the tiers too, like any confirm.
+      // It used to be told its time was taken here while the confirms behind it booked
+      // the rung below.
+      assert(runs[0].outcome === "created", `${tag}: the resumed lead walks the ladder and is booked (got ${runs[0].outcome})`);
       assert(
-        runs[0].calls.some((c) => c.name === "createEvent") && !runs[0].calls.some((c) => c.name === "insertReservation"),
-        `${tag}: the fixture really resumed the reservation rather than starting a fresh confirm`,
+        below.includes(String(runs[0].result?.booking.assigned_user_id)),
+        `${tag}: with a free advisor on the rung below (got ${runs[0].result?.booking.assigned_user_id})`,
+      );
+      const names = runs[0].calls.map((c) => c.name);
+      assert(
+        names.includes("leaseReservation") && names.indexOf("createEvent") >= 0 && names.indexOf("createEvent") < names.indexOf("insertReservation"),
+        `${tag}: the fixture really resumed the reservation, under its lease, before walking (got ${names.join(",")})`,
       );
       const bookedBelow = below.filter((id) => bySlot.has(`${id}|${input.startIso}`));
       assert(
         bookedBelow.length === below.length,
-        `${tag}: the confirms behind it book the free advisors on the rung below (got ${bookedBelow.join(",") || "none"}, ${JSON.stringify(tally)})`,
+        `${tag}: the resumed lead and the confirms behind it book the free advisors on the rung below (got ${bookedBelow.join(",") || "none"}, ${JSON.stringify(tally)})`,
       );
       assert(tally.created === below.length, `${tag}: one booking per free advisor (got ${JSON.stringify(tally)})`);
       assert(
         runs.slice(1).every((r) => r.outcome === "created" || r.outcome === "SLOT_TAKEN"),
         `${tag}: everyone behind is booked or told the time is taken once the ladder is spent (got ${JSON.stringify(tally)})`,
       );
+    }
+
+    // #3837: the same resume on a ladder that is genuinely full. The walk is an ordinary
+    // walk, so its refusal proves the ladder spent and answers the crowd behind it, as
+    // any leader's does (#3440's rule): nobody behind walks the ladder again.
+    for (const viaApi of [true, false]) {
+      const tag = `#3837 resumed reservation, full ladder, ${viaApi ? "booking API" : "booker confirm"}`;
+      const { runs, tally, bySlot } = await burst({
+        inputs: [resumed, ...Array.from({ length: 4 }, (_, i) => lead(1 + i, { bucketCode: LADDER_311 }))],
+        pool: [],
+        poolByCode: { [LADDER_311]: ["a"], "211": ["c"] },
+        held: [someoneHolds("a"), someoneHolds("c")],
+        inFlight: [reservation],
+        queue: "real",
+        viaApi,
+        slowEventMs: 2_000,
+        arriveAtMs: [0, 100, 100, 100, 100],
+      });
+      assert(bySlot.size === 2 && (tally.created ?? 0) === 0, `${tag}: nobody is booked (got ${JSON.stringify(tally)})`);
+      assert(runs.every((r) => r.outcome === "SLOT_TAKEN"), `${tag}: everybody is told the time is taken (got ${JSON.stringify(tally)})`);
+      assert(quiet(runs.slice(1)), `${tag}: the crowd is answered from the resumed lead's walk, not by walking again`);
     }
   }
 

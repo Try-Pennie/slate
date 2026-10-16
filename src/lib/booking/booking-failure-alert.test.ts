@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { bookingFailureAlert } from "./service";
 import {
   NoEligibleAgentsError,
+  ReservationHeldError,
   VerifyUnavailableError,
   RescheduleLockUnavailableError,
   SlotUnavailableError,
@@ -45,6 +46,14 @@ describe("bookingFailureAlert", () => {
     const spec = bookingFailureAlert(new RescheduleLockUnavailableError());
     expect(spec?.key).toBe("reschedule_lock_outage");
     expect(spec?.message).toMatch(/reschedule/i);
+  });
+
+  it("does NOT page when a lead's retry finds its reservation's lease held by another holder (#3837)", () => {
+    // Retryable like the outage (it IS one to the route), but nothing is down: the
+    // drain or another retry is working the reservation.
+    const err = new ReservationHeldError();
+    expect(err).toBeInstanceOf(VerifyUnavailableError);
+    expect(bookingFailureAlert(err)).toBeNull();
   });
 
   it("does NOT alert on an ordinary taken slot", () => {
