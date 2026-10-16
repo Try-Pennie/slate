@@ -28,9 +28,12 @@ export const DRAIN_ALERT_AFTER = 5;
 /** Stop re-attempting a row after this many failures. It stays in its table
  *  (status still pending, diagnosable via last_error) and was already alerted at
  *  DRAIN_ALERT_AFTER, so it surfaces for a human rather than retrying forever.
- *  Note: a stuck reservation is typically culled first by the 24h retention sweep
- *  (deleteExpiredReservations) - well before the exponential schedule reaches 50
- *  attempts (~44h) - so for reservations this cap is a backstop; the alert at
- *  DRAIN_ALERT_AFTER is the real signal. The outbox has no retention sweep, so
- *  there the row genuinely persists for diagnosis. */
+ *  Note: a stuck reservation whose booking never committed is typically culled first
+ *  by the 24h retention sweep (deleteExpiredReservations), well before the
+ *  exponential schedule reaches 50 attempts (~44h), so for those this cap is a
+ *  backstop; the alert at DRAIN_ALERT_AFTER is the real signal. One whose booking
+ *  COMMITTED with booking.created still owed is kept by that sweep (#3847) and does
+ *  reach this cap; past it the sweep's daily `reservation_created_owed` page is what
+ *  still names it. The outbox has no retention sweep, so there the row genuinely
+ *  persists for diagnosis. */
 export const DRAIN_GIVE_UP_AT = 50;

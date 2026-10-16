@@ -416,8 +416,34 @@ export function reservationDrainStuckAlert(stuckCount: number, after: number, id
     `are backing off (a crash-recovered create is not completing). Diagnose via ` +
     `booking_reservations.last_error; rows: ${ids}. A last_error saying the booked bucket ` +
     `no longer resolves means the booking exists and Regal was never sent booking.created: ` +
-    `restore the bucket within a day, before retention removes the reservation, so the drain ` +
-    `sends it, or tell Regal about the booking by hand.`
+    `restore the bucket so the drain sends it, or tell Regal about the booking by hand and ` +
+    `then delete the reservation. Retention keeps that reservation until one of those happens.`
+  );
+}
+
+/**
+ * Bookings that committed more than a day ago and whose booking.created is still
+ * owed (#3847). The retention sweep keeps their reservations, the only record that
+ * Regal was never told, and pages this once a day until somebody acts. Past the
+ * drain's give up cap (`DRAIN_GIVE_UP_AT`) the drain no longer retries the row and
+ * `reservation_drain_stuck` stops paging, so this is what still speaks, and why the
+ * remedy includes setting the attempts back.
+ */
+export function reservationCreatedOwedAlert(owedCount: number, ids: string): string {
+  return (
+    `${owedCount} booking(s) committed more than a day ago and Regal has still not been sent ` +
+    `booking.created. Retention is keeping their reservations, the only record that the send ` +
+    `is owed, instead of deleting them. Rows: ${ids}. Read booking_reservations.last_error for ` +
+    `why. If the booked bucket no longer resolves, restore it and set the reservation's attempts ` +
+    `to 0 so the drain sends it, or tell Regal about the booking by hand and then delete the reservation.`
+  );
+}
+
+/** The all-clear for `reservation_created_owed`, sent only off a sweep that read every candidate. */
+export function reservationCreatedOwedRecovery(): string {
+  return (
+    "No committed booking is waiting on its booking.created any more: every reservation " +
+    "retention was keeping for one has been sent or removed. No action is needed."
   );
 }
 
@@ -426,8 +452,9 @@ export function reservationDrainStuckAlert(stuckCount: number, after: number, id
  *
  * #3359: sent when the table holds no pending reservation at the threshold, which
  * is all that was measured. A reservation leaves that state by completing OR by
- * being removed (a refused email, a slot taken, the 24 hour retention), so the
- * sentence says both rather than claiming every one completed.
+ * being removed (a refused email, a slot taken, the 24 hour retention of a create
+ * that never committed, or by hand), so the sentence says both rather than claiming
+ * every one completed.
  */
 export function reservationDrainRecovery(): string {
   return (

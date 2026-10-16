@@ -524,6 +524,8 @@ import {
   reconcileFreedAlert,
   reconcileRecreatedAlert,
   reschedulePinDroppedAlert,
+  reservationCreatedOwedAlert,
+  reservationCreatedOwedRecovery,
   reservationDrainRecovery,
   reservationDrainStuckAlert,
   unfairOrderingAlert,
@@ -5051,6 +5053,18 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the backlog completed",
     channel: "recovery",
     text: reservationDrainRecovery(),
+  },
+  {
+    key: "reservation_created_owed",
+    state: "committed bookings still owed booking.created past a day",
+    channel: "alert",
+    text: reservationCreatedOwedAlert(2, "rs_7, rs_8"),
+  },
+  {
+    key: "reservation_created_owed",
+    state: "every kept reservation was sent or removed",
+    channel: "recovery",
+    text: reservationCreatedOwedRecovery(),
   },
   {
     key: "reschedule_pin_dropped",

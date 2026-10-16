@@ -74,6 +74,7 @@ import { isDefinitiveFailure, reachabilityFromError } from "../google/reachabili
 import type { FailureKind } from "../google/sync-health.ts";
 import { normalizeEmail } from "../auth/email.ts";
 import type { CalendarOwnerForAlert, RefusedDeletionForAlert } from "./alert-copy.ts";
+import type { RetentionSweep } from "./reservation-retention.ts";
 import { encodeCursor, type ListQuery } from "./api-request.ts";
 import { webhookDedupeKey } from "../webhooks/dedupe.ts";
 import { runOutboxSteps, type OutboxHandlers } from "./outbox.ts";
@@ -1731,8 +1732,10 @@ export interface BookingDeps {
    *  last_error, set next_attempt_at to now + exponential backoff. */
   bumpReservationAttempt(id: string, attempts: number, lastError: string): Promise<void>;
   /** Retention: delete up to `limit` pending reservations older than the cutoff
-   *  (abandoned rows whose booking never completed). */
-  deleteExpiredReservations(olderThanIso: string, limit: number): Promise<void>;
+   *  whose booking never committed, and KEEP those whose booking committed with
+   *  booking.created still owed, answering their ids as `owed` (#3847). THROWS on
+   *  any failed read or refused delete, deleting nothing it could not judge. */
+  deleteExpiredReservations(olderThanIso: string, limit: number): Promise<RetentionSweep>;
   /**
    * Gated reschedule commit (#615). Applies the move ONLY while the booking is
    * still the one we started moving: status still active AND assignee + gcal

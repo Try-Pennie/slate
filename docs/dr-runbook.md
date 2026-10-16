@@ -545,6 +545,23 @@ resumes that reservation rather than making a second booking; an anonymous retry
 has no key to resume by, which is the existing posture for any confirm that
 failed after its reservation was written.
 
+**How long a reservation is kept.** The drain retries a failing reservation on a
+backoff (1, 2, 4 minutes and so on, capped at an hour), pages
+`reservation_drain_stuck` from its fifth failed attempt, and stops retrying at
+`DRAIN_GIVE_UP_AT` (50 attempts, about 44 hours). A retention sweep on the same lane
+deletes pending reservations older than a day, because each one holds the whole
+attendee record. It deletes only those whose booking never committed. A reservation
+whose booking DID commit (an active booking holds its idempotency key, the same test
+the drain resumes by) while its `booking.created` could not be sent, most often
+because the booked bucket no longer resolves (#3516), is the only record that Regal
+was never told about that booking, so the sweep keeps it (#3847) and pages
+`reservation_created_owed` once a day for as long as it stays. To resolve one: read
+`booking_reservations.last_error`; restore the bucket and set the reservation's
+`attempts` to 0 so the drain sends `booking.created` and deletes the reservation
+itself, or tell Regal about the booking by hand and then delete the reservation. The
+page clears on the first sweep that reads every candidate and finds none owed; a
+sweep that fails to read pages and clears nothing.
+
 **A budget miss.** When the budget runs out, the page names the call that was in
 flight AND the budget that cut it short ("supabase was still running when the
 booking confirm ran out of its 12 seconds"), so it says which dependency to look

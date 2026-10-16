@@ -209,7 +209,7 @@ function makeDeps(): BookingDeps & CommitFreshParts {
     leaseReservation: async () => "lease-1",
     releaseReservationLease: noop,
     bumpReservationAttempt: noop,
-    deleteExpiredReservations: noop,
+    deleteExpiredReservations: async () => ({ deleted: 0, owed: [] }),
     commitReschedule: async () => "ob-1",
     claimCancellation: async () => true,
     completeBookingsIfDue: async () => [] as string[],

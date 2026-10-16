@@ -29,6 +29,13 @@ import {
 } from "@/lib/booking/outbox-lease";
 import { unwrap, unwrapCount } from "@/lib/db/result";
 import { settleDrainStuckAlert } from "@/lib/booking/drain-stuck-alert";
+import {
+  settleOwedReservationAlert,
+  sweepExpiredReservations,
+  type ExpiredReservation,
+} from "@/lib/booking/reservation-retention";
+import { selectAllPages } from "@/lib/supabase/paginate";
+import { inIdChunks } from "@/lib/db/id-batch";
 import { whereStillInPool } from "@/lib/bookable/left-pool";
 import { gatedWriteApplied, gatedWriteRows } from "@/lib/booking/gated-write";
 import { commitRescheduleArgs, readCommitReschedule } from "@/lib/booking/reschedule-commit";
@@ -135,6 +142,7 @@ import {
   markBulkReassignJobDoneIfDrained,
   reArmUnplaceableItems,
   type CoverageBookingRow,
+  ACTIVE_BOOKING_STATUSES,
 } from "@/lib/booking/bulk-reassign-store";
 import { userIdsOnApprovedTimeOff } from "@/lib/ooo/approved-overlap";
 import {
@@ -201,6 +209,8 @@ import {
   rescheduleLockOutageAlert,
   verifyOutageAlert,
   dependencyTimeoutAlert,
+  reservationCreatedOwedAlert,
+  reservationCreatedOwedRecovery,
   reservationDrainRecovery,
   reservationDrainStuckAlert,
   verifyReadFailedAlert,
@@ -240,10 +250,18 @@ const REASSIGN_INTENT_LEASE_MS = 2 * 60 * 1000;
 const OUTBOX_DRAIN_LIMIT = 50;
 // Reservation drain bounds (#429 P4). Crash-during-create is rare, so a small cap
 // with a multi-tick backlog is fine; bounds Worker CPU. Retention deletes abandoned
-// pending reservations older than the TTL. The lease length lives with the lease
-// (RESERVATION_LEASE_TTL_MS in outbox-lease.ts), which derives the release from it.
+// pending reservations older than the TTL, except one whose booking committed with
+// booking.created still owed (#3847), which it keeps and pages about. The lease
+// length lives with the lease (RESERVATION_LEASE_TTL_MS in outbox-lease.ts), which
+// derives the release from it.
 const RESERVATION_DRAIN_LIMIT = 15;
 const RESERVATION_RETENTION_MS = 24 * 60 * 60 * 1000;
+// #3847: a kept owed reservation pages once a day. The drain's own stuck page
+// already speaks hourly while it is still retrying the row; this is the one that
+// still speaks after the drain gives up on it (DRAIN_GIVE_UP_AT), without becoming
+// a second hourly page about the same booking.
+const RESERVATION_OWED_ALERT_KEY = "reservation_created_owed";
+const RESERVATION_OWED_ALERT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 /**
  * How old a pending reservation must be before the drain takes it (#3466).
  *
@@ -2071,24 +2089,61 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
 
     deleteExpiredReservations: async (olderThanIso, limit) => {
       const db = supabaseAdmin();
-      // #3126: both halves THROW on failure. This sweep is the only retention a
+      // #3126: every part THROWS on failure. This sweep is the only retention a
       // pending reservation (the whole attendee record) has, and the drain's catch
       // logs a failed cleanup only if something reaches it; discarding the result
       // here made a refused delete read as a clean pass for ever.
-      const rows = unwrap(
-        await db
-          .from("booking_reservations")
-          .select("id")
-          .eq("status", "pending")
-          .lt("created_at", olderThanIso)
-          .limit(limit),
-        "expired reservations",
+      //
+      // #3847: and it never deletes a reservation whose booking committed while its
+      // booking.created is still owed. The decision, and why every candidate is read
+      // rather than a batch, is in `reservation-retention.ts`.
+      return sweepExpiredReservations(
+        {
+          // The candidates are leftovers (a crash, an unrun rollback, an owed send),
+          // so the set is small; paged anyway so a backlog is judged whole.
+          listExpired: (cutoff) =>
+            selectAllPages<ExpiredReservation>("expired reservations", "id", () =>
+              db
+                .from("booking_reservations")
+                .select("id, idempotency_key")
+                .eq("status", "pending")
+                .lt("created_at", cutoff),
+            ),
+          // Committed means what the drain's resume reads it as
+          // (`activeBookingByIdempotencyKey`): an ACTIVE booking on the key. The
+          // active unique index allows one per key, so a chunk returns at most one
+          // row per key and the limit never truncates it.
+          committedKeys: async (keys) => {
+            const found = await inIdChunks("committed reservation keys", keys, async (chunk) =>
+              unwrap(
+                await db
+                  .from("bookings")
+                  .select("idempotency_key")
+                  .in("idempotency_key", chunk)
+                  .in("status", ACTIVE_BOOKING_STATUSES)
+                  .limit(chunk.length),
+                "committed reservation keys",
+              ) as { idempotency_key: string }[] | null,
+            );
+            return new Set(found.flatMap((rows) => (rows ?? []).map((r) => r.idempotency_key)));
+          },
+          // Spares a reservation a drain has leased since the sweep read it: that
+          // drain may be committing it right now.
+          deleteIds: async (ids) => {
+            const nowIso = new Date().toISOString();
+            const { error, count } = await db
+              .from("booking_reservations")
+              .delete({ count: "exact" })
+              // in-chunk-ok: at most RESERVATION_DRAIN_LIMIT (15) ids, sliced to the sweep's limit before this call, about 560 bytes against the 10,000 budget.
+              .in("id", ids)
+              .or(`lease_until.is.null,lease_until.lt.${nowIso}`);
+            if (error) throw new Error(`expired reservation delete failed: ${error.message}`);
+            return count ?? 0;
+          },
+        },
+        olderThanIso,
+        limit,
       );
-      const ids = ((rows ?? []) as { id: string }[]).map((r) => r.id);
-      if (ids.length) {
-        const { error } = await db.from("booking_reservations").delete().in("id", ids);
-        if (error) throw new Error(`expired reservation delete failed: ${error.message}`);
-      }
     },
 
     commitReschedule: async (bookingId, patch, guard, outbox) => {
@@ -4179,18 +4234,38 @@ export async function drainBookingReservations() {
       resolve: (entries) => resolveRecovered(entries).then(() => undefined),
     },
   );
-  // Retention: delete up to a batch of pending reservations older than the TTL.
+  // Retention: delete up to a batch of pending reservations older than the TTL
+  // whose booking never committed, and KEEP every one whose booking committed with
+  // booking.created still owed (#3847): it is the only record Regal was never told.
   const cutoff = new Date(Date.now() - RESERVATION_RETENTION_MS).toISOString();
-  await deps
+  const sweep = await deps
     .deleteExpiredReservations(cutoff, RESERVATION_DRAIN_LIMIT)
     // Best-effort retention trim; the next tick retries the same cutoff. Logged
-    // so a cleanup that never succeeds does not grow the table in silence.
-    .catch((err) =>
+    // so a cleanup that never succeeds does not grow the table in silence. A failed
+    // sweep measured nothing, so it neither pages nor clears the owed alert below.
+    .catch((err): null => {
       log.warn("booking", {
         msg: "expired-reservation cleanup failed",
         reason: shortErrorReason(err),
-      }),
-    );
+      });
+      return null;
+    });
+  // #3847: a kept reservation pages once a day until somebody sends booking.created
+  // or removes it by hand, and clears only off a sweep that read every candidate.
+  await settleOwedReservationAlert(sweep, {
+    page: (count, ids) =>
+      sendThrottledAlert(
+        RESERVATION_OWED_ALERT_KEY,
+        RESERVATION_OWED_ALERT_COOLDOWN_MS,
+        reservationCreatedOwedAlert(count, ids),
+      ).catch(logAlertSendFailure(RESERVATION_OWED_ALERT_KEY)),
+    // alert-key: reservation_created_owed
+    // all-clear-proof: scripts/test-reservation-retention.ts - a failed sweep never announces recovery.
+    resolve: () =>
+      resolveRecovered([{ key: RESERVATION_OWED_ALERT_KEY, text: reservationCreatedOwedRecovery() }]).then(
+        () => undefined,
+      ),
+  });
   // PII-free summary (stuck rows carry attendee payload -> cron response body).
   const { stuck, ...summary } = result;
   return { ...summary, stuck: stuck.length };

@@ -1113,7 +1113,7 @@ export function makeDeps(opts: FakeOpts) {
     bumpReservationAttempt: async (id: string, attempts: number, lastError: string) => {
       calls.reservationBumps.push({ id, attempts, lastError });
     },
-    deleteExpiredReservations: async () => {},
+    deleteExpiredReservations: async () => ({ deleted: 0, owed: [] }),
     findActiveBookingsForPerson: async (identity, world) => {
       calls.findActiveBookingsForPerson.push(identity);
       calls.personWorlds.push(world);

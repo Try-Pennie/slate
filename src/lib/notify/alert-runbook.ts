@@ -212,6 +212,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   outbox_drain_stuck: "a-booking-side-effect-did-not-complete",
   outbox_all_handed_off: "a-booking-side-effect-did-not-complete",
   reservation_drain_stuck: "a-booking-side-effect-did-not-complete",
+  reservation_created_owed: "a-booking-side-effect-did-not-complete",
   booking_event_insert: "a-booking-side-effect-did-not-complete",
   busy_block_write_through: "a-booking-side-effect-did-not-complete",
   reconcile_busy_blocks: "a-booking-side-effect-did-not-complete",
