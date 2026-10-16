@@ -404,4 +404,67 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
   eq(cold!.spliced, null, "with nothing spliced");
 }
 
+// 9) #3713: the business hours read runs BESIDE the edge cache and stored row reads,
+// not after them. Measured 2026-10-14 to 16 on lead reads: hours about 65ms, row about
+// 50ms and cache about 15ms, one after another, on nearly every read, because both
+// caches live 5 seconds and a lead read reaches an isolate a minute or more apart.
+{
+  const calls: Record<string, number> = {};
+  let answerCache!: (v: null) => void;
+  const pending = resolveBucketSlots("411", 4, deps({
+    calls,
+    cacheGet: () => { calls.cacheGet = (calls.cacheGet ?? 0) + 1; return new Promise((r) => { answerCache = r; }); },
+    readRow: async () => ({ payload: sampleSlots(), computed_at: WROTE_AT }),
+  }));
+  await Promise.resolve();
+  eq(calls.businessHours ?? 0, 1, "the hours read has started while the edge cache lookup is still waiting");
+  answerCache(null);
+  const r = await pending;
+  eq(r!.source, "row", "and the read still serves the stored row once the cache misses");
+  eq(calls.businessHours, 1, "with one hours read for the whole request");
+}
+
+// 9b) The cold compute groups days in the org's zone AND filters on the way out, and
+// both use the one hours read the request started.
+{
+  const calls: Record<string, number> = {};
+  await resolveBucketSlots("411", 4, deps({ calls, compute: async () => sampleSlots() }));
+  eq(calls.businessHours, 1, "a cold compute reads the hours once, not once per use");
+}
+
+// 9c) Starting it early must not change what a failed read does. A cold isolate whose
+// first hours read fails still fails the request (#1296: inventing a week could
+// re-open hours an admin narrowed), on every tier.
+{
+  const failing = async () => { throw new Error("hours unreadable"); };
+  for (const [tier, over] of [
+    ["hit", { cacheGet: async () => ({ ...sampleSlots(), computedAt: WROTE_AT }) }],
+    ["row", { readRow: async () => ({ payload: sampleSlots(), computed_at: WROTE_AT }) }],
+    ["compute", { compute: async () => sampleSlots() }],
+  ] as const) {
+    let threw: unknown = null;
+    try {
+      await resolveBucketSlots("411", 4, deps({ calls: {}, ...over, businessHours: failing }));
+    } catch (err) { threw = err; }
+    assert(threw instanceof Error && /hours unreadable/.test(threw.message), `a failed hours read still fails a ${tier} read`);
+  }
+}
+
+// 9d) An unknown bucket never reaches the served filter, so the early read's failure is
+// never awaited. It must answer null, and leave no unhandled rejection behind, which
+// on node kills the process and on Workers is logged as an uncaught error.
+{
+  const unhandled: unknown[] = [];
+  const onUnhandled = (err: unknown) => { unhandled.push(err); };
+  process.on("unhandledRejection", onUnhandled);
+  const r = await resolveBucketSlots("999", 4, deps({
+    calls: {},
+    businessHours: async () => { throw new Error("hours unreadable"); },
+  }));
+  await new Promise((resolve) => setImmediate(resolve));
+  process.off("unhandledRejection", onUnhandled);
+  eq(r, null, "an unknown bucket answers null even when the hours read failed");
+  eq(unhandled.length, 0, "and the unawaited hours failure is not an unhandled rejection");
+}
+
 finish();

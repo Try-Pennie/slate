@@ -96,6 +96,19 @@ export async function resolveBucketSlots(
   // forward to it held none of today's times. Every recompute path anchors on now.
   const { key, fromIso: nf, toIso: nt } = slotCacheKey(code, new Date(deps.nowMs()).toISOString(), horizonDays);
 
+  // #3713: started HERE, beside the edge cache and stored row reads rather than after
+  // them, and awaited on the way out. A lead read reaches an isolate a minute or more
+  // after its last one, so the 5 second cache has nearly always expired: measured
+  // 2026-10-14 to 16, the hours cost about 65ms on almost every lead read, waited
+  // after a 15ms cache lookup and a 50ms row read. Overlapped, the row read hides it.
+  // What a failure does is unchanged, because every tier still awaits this one
+  // promise. The catch only marks the rejection handled for the one exit that never
+  // awaits it (an unknown bucket), which would otherwise be an unhandled rejection.
+  const hoursRead = deps.businessHours();
+  // swallow-ok: every tier that serves awaits hoursRead and rethrows its failure; only
+  // the unknown bucket exit never awaits it, and that answer does not use the hours.
+  hoursRead.catch(() => {});
+
   /**
    * The single exit (#1296). Every tier leaves through here, so no tier can return
    * a list the org's CURRENT hours would not allow.
@@ -106,14 +119,16 @@ export async function resolveBucketSlots(
    * cycle to show up while closing one took effect at once. Filtering per read
    * makes both directions equally immediate.
    *
-   * The cost of the extra hours read is one PostgREST round trip per isolate per
-   * `SLOT_TTL_SECONDS`, not one per request; see `business-hours-cache.ts`.
+   * The hours read costs at most one PostgREST round trip per isolate per
+   * `SLOT_TTL_SECONDS` (see `business-hours-cache.ts`), and at lead traffic that is
+   * close to one per request, since reads reach an isolate further apart than that.
+   * Which is why it runs beside the cache and row reads (`hoursRead` above).
    */
   const served = async (
     val: CachedBucketSlots,
     source: SlotSource,
   ): Promise<ResolvedBucketSlots> => {
-    const hours = await deps.businessHours();
+    const hours = await hoursRead;
     return {
       ...mapSlotLists(val, (list) =>
         slotsWithinBusinessHours(list, val.eventType.duration_min, hours),
@@ -155,7 +170,7 @@ export async function resolveBucketSlots(
     // Days are grouped in the ORG's zone, the same clock the hours are judged in: a
     // 21:00 slot is stored as the next day in UTC, and grouping in UTC would spend
     // one of the days on a day the customer does not have.
-    const { zone } = await deps.businessHours();
+    const { zone } = await hoursRead;
     const fresh: BucketSlots = mapSlotLists(computed, (list) =>
       trimToBookableDays(list, zone, horizonDays),
     );
