@@ -43,7 +43,9 @@ export const SERVER_TIMING_NAMES = {
   /**
    * #3713: the parts INSIDE `slots`, so a slow cached read can be told apart by which
    * read it waited on. Each is summed over every time the part ran on the request's
-   * own bucket; a part that never ran is absent rather than 0.
+   * own bucket; a part that never ran is absent rather than 0. They are not a
+   * partition of `slots`: `hours` runs BESIDE `cache` and `row` (#3713), so it
+   * overlaps them, and summing the parts overstates the wait.
    */
   /** The edge cache (Cache API): the lookup, and the write back after a stored row read. */
   cache: "cache",

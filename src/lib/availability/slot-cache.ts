@@ -782,7 +782,9 @@ export interface AvailabilityRoutingMeta {
  * `timing` (#3713) records where the read waited: the requested bucket's edge cache,
  * stored row, live compute and business hours each under their own Server-Timing
  * name, and every lower tier the walk reads under ONE `fallback` span, whole. Its
- * parts are not split, so no wait is counted under two names.
+ * parts are not split, so no wait is counted under two names. The business hours
+ * read runs beside the cache and row reads (#3713), so the `hours` span overlaps
+ * theirs: the parts are waits, not a partition of `slots`.
  */
 export async function getBucketSlotsWithFallback(
   code: string,
