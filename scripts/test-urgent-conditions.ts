@@ -72,6 +72,21 @@ eq(reminderIntervalMs("cron_lane_stale:smoke-canary", 60 * 60_000), CONDITION_RE
 eq(reminderIntervalMs("cron_lane_stale:smoke-canary", 7 * 24 * 3_600_000), 7 * 24 * 3_600_000, "a longer coded interval is kept");
 eq(settingKeyFor("booking_api_credential"), "booking_failure_rate", "the booking API pages borrow the failure rate setting");
 eq(reminderIntervalMs("booking_api_credential", 2 * 3_600_000), 2 * 3_600_000, "so a stored value there still decides");
+// A condition that is NOT urgent and borrows an urgent setting must not inherit its
+// hourly default: it gets the day, and only a longer stored value moves it.
+for (const borrower of ["booking_api_list_read", "page_volume_share_unknown", "tier_volume_check_failed:low"]) {
+  eq(
+    reminderIntervalMs(borrower, MONITOR_DEFAULTS.cooldownMs.booking_failure_rate),
+    CONDITION_REPEAT_MS,
+    `${borrower} borrows an hourly setting and still repeats daily`,
+  );
+  eq(reminderIntervalMs(borrower, 7 * 24 * 3_600_000), 7 * 24 * 3_600_000, `${borrower} keeps a longer stored value`);
+}
+eq(
+  reminderIntervalMs("low_tier_volume:low", MONITOR_DEFAULTS.cooldownMs.low_booking_volume),
+  URGENT_CONDITION_REPEAT_MS,
+  "an urgent borrower keeps the hourly setting it borrows",
+);
 eq(reminderIntervalMs("verify_on_book_outage", 15 * 60_000), 15 * 60_000, "an incident keeps its own throttle");
 eq(reminderIntervalMs("not_a_catalog_key", 5 * 60_000), 5 * 60_000, "an unclassified key keeps what it is handed");
 

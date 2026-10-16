@@ -97,7 +97,15 @@ export function isRepeatRuled(key: string): boolean {
  */
 export function reminderIntervalMs(key: string, cooldownMs: number): number {
   if (!isRepeatRuled(key)) return cooldownMs;
-  if (settingKeyFor(key) !== null) return cooldownMs;
+  const setting = settingKeyFor(key);
+  const base = key.split(":")[0] ?? key;
+  // Its own setting: whatever is stored, or the coded default, decides.
+  if (setting !== null && (setting === key || setting === base)) return cooldownMs;
+  // A BORROWED setting decides only for an urgent condition. The settings it borrows
+  // are urgent ones (the low volume and failure rate pages), whose default is hourly,
+  // so a condition that is not urgent riding on one would repeat hourly by accident;
+  // it gets the day instead, and a longer stored value still wins.
+  if (setting !== null) return isUrgentCondition(key) ? cooldownMs : Math.max(cooldownMs, CONDITION_REPEAT_MS);
   if (isUrgentCondition(key)) return URGENT_CONDITION_REPEAT_MS;
   return Math.max(cooldownMs, CONDITION_REPEAT_MS);
 }
