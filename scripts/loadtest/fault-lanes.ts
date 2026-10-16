@@ -84,6 +84,9 @@ export interface LaneFinding {
   detail: string;
 }
 
+/** #3746: one cron tick, the grace after a silence ends for the other lanes of that tick to stamp. */
+const CRON_TICK_MS = 60_000;
+
 /** Most samples may be this far apart before the series has a hole in it. */
 const GAP_FACTOR = 2;
 
@@ -148,6 +151,40 @@ function minutes(ms: number): string {
 }
 
 /**
+ * #3746: the longest stretch of the window in which NO lane stamped, when it is longer
+ * than the shortest lane bound, or null.
+ *
+ * Every lane stopping in the same minutes is what a platform that fired no cron looks
+ * like (run 38635866855, during Cloudflare's cron trigger incident), and it is not what
+ * a failing dependency looks like: a fault fails a share of calls, so it cannot hold
+ * every lane, including those it never touches, still at once. Measured from the
+ * stamps themselves, every lane's together, from the last stamp before the window to
+ * the last reading, so a stretch still running at the end is counted.
+ */
+export function cronSilence(e: FaultLaneEvidence, x: FaultLaneExpectations): { fromMs: number; toMs: number } | null {
+  const s = inWindow(e, x);
+  const bounds = Object.values(x.lanes);
+  if (s.length === 0 || bounds.length === 0) return null;
+  const stamps = new Set<number>();
+  for (const sample of s) {
+    for (const lane of Object.keys(x.lanes)) {
+      const ms = Date.parse(sample.heartbeats[lane] ?? "");
+      if (Number.isFinite(ms)) stamps.add(ms);
+    }
+  }
+  const sorted = [...stamps].sort((a, b) => a - b);
+  const before = sorted.filter((ms) => ms <= x.windowStartMs);
+  let prev = before.length > 0 ? before[before.length - 1]! : x.windowStartMs;
+  let worst: { fromMs: number; toMs: number } | null = null;
+  const lastAt = s[s.length - 1]!.atMs;
+  for (const ms of [...sorted.filter((v) => v > x.windowStartMs && v <= lastAt), lastAt]) {
+    if (worst === null || ms - prev > worst.toMs - worst.fromMs) worst = { fromMs: prev, toMs: ms };
+    prev = Math.max(prev, ms);
+  }
+  return worst !== null && worst.toMs - worst.fromMs > Math.min(...bounds) ? worst : null;
+}
+
+/**
  * The findings, or empty when the lanes behaved. Call only on evidence
  * `faultLaneIncompleteness` accepted.
  */
@@ -156,11 +193,33 @@ export function judgeFaultLanes(e: FaultLaneEvidence, x: FaultLaneExpectations):
   const s = inWindow(e, x);
   const windowMs = e.finishedAtMs - x.windowStartMs;
 
+  // --- the crons did not fire (#3746) -----------------------------------------------
+  // Still a failure, since nothing about the lanes under fault was measured, but named
+  // as what it is rather than blamed on a dependency (L11).
+  const silence = cronSilence(e, x);
+  if (silence !== null) {
+    findings.push({
+      bar: "lane heartbeats under fault",
+      detail:
+        `no lane stamped a heartbeat for ${minutes(silence.toMs - silence.fromMs)}, every lane at once, ` +
+        // The stretch is measured from the last stamp, which can precede the window, so
+        // its range is said the same way and adds up to its length.
+        (silence.fromMs < x.windowStartMs
+          ? `from ${minutes(x.windowStartMs - silence.fromMs)} before the fault window began to ${minutes(silence.toMs - x.windowStartMs)} into it: `
+          : `from ${minutes(silence.fromMs - x.windowStartMs)} to ${minutes(silence.toMs - x.windowStartMs)} into the fault window: `) +
+        "the crons did not fire on this deployment, which no failing dependency explains, so whether a " +
+        "dependency stops a lane was not measured on this run",
+    });
+  }
+
   // --- no lane goes stale --------------------------------------------------------
   for (const [lane, boundMs] of Object.entries(x.lanes).sort(([a], [b]) => a.localeCompare(b))) {
     let never = 0;
     let unreadable = 0;
     let stale = 0;
+    // #3746: stale readings the silence does NOT explain, so a lane stopped for its own
+    // reason, before the silence or after the others came back, is still blamed on it.
+    let staleOwn = 0;
     let worstAgeMs = 0;
     let newestMs: number | null = null;
     for (const sample of s) {
@@ -179,7 +238,13 @@ export function judgeFaultLanes(e: FaultLaneEvidence, x: FaultLaneExpectations):
       newestMs = newestMs === null ? ms : Math.max(newestMs, ms);
       const age = sample.atMs - ms;
       worstAgeMs = Math.max(worstAgeMs, age);
-      if (age > boundMs) stale++;
+      if (age > boundMs) {
+        stale++;
+        // Up to one cron tick past the silence's end: the lanes of a tick stamp one after
+        // another, so the others are still stale for a moment after the first resumes.
+        const explained = silence !== null && sample.atMs <= silence.toMs + CRON_TICK_MS && ms >= silence.fromMs - boundMs;
+        if (!explained) staleOwn++;
+      }
     }
     // A lane with no stamp is judged stricter than the watchdog judges it, on
     // purpose. The watchdog stays quiet about a lane that has never stamped, because
@@ -204,7 +269,8 @@ export function judgeFaultLanes(e: FaultLaneEvidence, x: FaultLaneExpectations):
         bar: "lane heartbeats under fault",
         detail:
           `the ${lane} lane was stale at ${stale} of ${s.length} readings, worst ${minutes(worstAgeMs)} ` +
-          `against its ${minutes(boundMs)} bound. A failing dependency stopped the lane running`,
+          `against its ${minutes(boundMs)} bound. ` +
+          (staleOwn === 0 ? "Every lane stopped with it, so the crons not firing stopped it (above)" : "A failing dependency stopped the lane running"),
       });
     }
     if (x.mustRunInWindow.includes(lane) && (newestMs === null || newestMs < x.windowStartMs)) {
