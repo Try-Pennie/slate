@@ -54,3 +54,44 @@ export function eventTypesInsertSql(rows: readonly SeedEventType[]): string {
     .join(", ");
   return `insert into event_types (id, org_id, name, duration_min, buffer_before_min, buffer_after_min) values ${values};`;
 }
+
+/** One bucket, routed to an event type. */
+export interface SeedBucket {
+  id: string;
+  orgId: string;
+  code: string;
+  name: string;
+  eventTypeId: string;
+}
+
+/** The insert for buckets. */
+export function bucketsInsertSql(rows: readonly SeedBucket[]): string {
+  const values = rows.map((b) => `('${b.id}', '${b.orgId}', ${sqlLiteral(b.code)}, ${sqlLiteral(b.name)}, '${b.eventTypeId}')`).join(", ");
+  return `insert into buckets (id, org_id, code, name, event_type_id) values ${values};`;
+}
+
+/**
+ * One unconsumed reroute hold (migration 0166) on an advisor, for a booking already
+ * written. Times are SQL timestamptz literals; it expires `expiresIn` (an SQL interval)
+ * from now, so a suite never sleeps to reach either side of it.
+ */
+export interface SeedRerouteHold {
+  orgId: string;
+  bookingId: string;
+  agentUserId: string;
+  bufferedStartsAt: string;
+  bufferedEndsAt: string;
+  bookingStartsAt: string;
+  bookingEndsAt: string;
+  /** Both the requested and the target bucket. */
+  bucketId: string;
+  expiresIn?: string;
+}
+
+/** The insert for one reroute hold. */
+export function rerouteHoldInsertSql(h: SeedRerouteHold): string {
+  return `insert into reroute_holds (org_id, booking_id, agent_user_id, buffered_starts_at, buffered_ends_at, booking_starts_at,
+      booking_ends_at, reschedule_seq, requested_bucket_id, target_bucket_id, expires_at)
+    values ('${h.orgId}', '${h.bookingId}', '${h.agentUserId}', '${h.bufferedStartsAt}', '${h.bufferedEndsAt}', '${h.bookingStartsAt}',
+      '${h.bookingEndsAt}', 0, '${h.bucketId}', '${h.bucketId}', now() + interval '${h.expiresIn ?? "5 minutes"}');`;
+}
