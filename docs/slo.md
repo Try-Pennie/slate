@@ -138,7 +138,9 @@ business hours, stored row, live compute, lower tiers), on the header and on the
 Worker's `slots served` line, which also says how fresh the isolate was (its runs of the
 app, its age, and the route's own request count). A part is I/O waits plus the CPU since
 the I/O before it, so the parts never add up to a CPU figure; Cloudflare's invocation
-CPU time is the number for that.
+CPU time is the number for that. Nor do they add up to the slot read: the business
+hours read runs beside the edge cache and stored row reads (#3713), so its part
+overlaps theirs, and `slots` is the wait the request actually had.
 
 **A slow run served entirely outside North America does not page** (#3712). Each sample
 records the Cloudflare colo that served it, from `cf-ray`. On 2026-10-13 two of four

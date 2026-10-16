@@ -111,17 +111,26 @@ function exceptionsFromRows(rows: BusinessHoursException[]): BusinessHoursExcept
 }
 
 export async function loadBusinessHours(): Promise<BusinessHours> {
+  const today = DateTime.now().setZone(BUSINESS_ZONE).toISODate() ?? "1970-01-01";
+  // #3713: the two reads go out together, since neither needs the other. One after
+  // the other they cost two round trips, about 65ms, on almost every lead read: the
+  // cache in front of this lives 5 seconds and a lead read reaches an isolate far
+  // less often than that. Either one failing still throws, as each always has.
+  const [rows, exceptions] = await Promise.all([
+    loadWeekRows(),
+    loadBusinessHoursExceptions(today),
+  ]);
+  return { zone: BUSINESS_ZONE, ...weekFromRows(rows), exceptions };
+}
+
+async function loadWeekRows(): Promise<BusinessHoursRow[]> {
   const db = supabaseAdmin();
   // cap-safe: business_hours holds exactly one row per weekday, a fixed 1..7 key
   // space, so it can never exceed a page.
-  const rows = (unwrap(
+  return (unwrap(
     await db.from("business_hours").select("weekday, is_open, start_minute, end_minute"),
     "business_hours",
   ) ?? []) as BusinessHoursRow[];
-  const week = weekFromRows(rows);
-  const today = DateTime.now().setZone(BUSINESS_ZONE).toISODate() ?? "1970-01-01";
-  const exceptions = await loadBusinessHoursExceptions(today);
-  return { zone: BUSINESS_ZONE, ...week, exceptions };
 }
 
 /**

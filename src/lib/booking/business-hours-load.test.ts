@@ -18,6 +18,9 @@ const rows = vi.hoisted(() => ({
   // direction has its own cases below.
   exceptions: [] as unknown[],
   exceptionsError: null as { message: string } | null,
+  // #3713: the order the two reads start and finish in, so the test can tell
+  // sequential reads from concurrent ones.
+  order: [] as string[],
 }));
 const warn = vi.hoisted(() => vi.fn());
 
@@ -29,12 +32,23 @@ vi.mock("@/lib/supabase/admin", () => ({
             select: () => ({
               gte: () => ({
                 order: () => ({
-                  limit: async () => ({ data: rows.exceptions, error: rows.exceptionsError }),
+                  limit: async () => {
+                    rows.order.push("exceptions:start");
+                    return { data: rows.exceptions, error: rows.exceptionsError };
+                  },
                 }),
               }),
             }),
           }
-        : { select: async () => ({ data: rows.data, error: rows.error }) },
+        : {
+            select: async () => {
+              rows.order.push("week:start");
+              // One macrotask, standing in for the round trip.
+              await new Promise((resolve) => setTimeout(resolve, 0));
+              rows.order.push("week:end");
+              return { data: rows.data, error: rows.error };
+            },
+          },
   }),
 }));
 vi.mock("@/lib/log", () => ({ log: { warn, info: vi.fn(), error: vi.fn() } }));
@@ -56,6 +70,7 @@ beforeEach(() => {
   rows.exceptions = [];
   rows.exceptionsError = null;
   rows.error = null;
+  rows.order = [];
 });
 
 describe("loadBusinessHours", () => {
@@ -65,6 +80,13 @@ describe("loadBusinessHours", () => {
     expect(hours.zone).toBe(BUSINESS_ZONE);
     expect(hours.rules.map((r) => r.weekday)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(hours.rules[0]).toEqual({ weekday: 1, start_minute: 480, end_minute: 1200 });
+  });
+
+  it("sends the exceptions read before the week read has answered (#3713)", async () => {
+    // Two round trips one after the other cost about 65ms on almost every lead read,
+    // because the cache in front of this lives 5 seconds. Neither read needs the other.
+    await loadBusinessHours();
+    expect(rows.order).toEqual(["week:start", "exceptions:start", "week:end"]);
   });
 
   it("throws on a read error rather than quietly serving the default week", async () => {
