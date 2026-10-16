@@ -5,11 +5,14 @@
 	// script name (wrangler.jsonc). It must be deployed BEFORE Slate, because Slate's
 	// binding names it:
 	//
-	//   npx wrangler deploy -c wrangler.confirm-line.jsonc                 (production)
-	//   npx wrangler deploy -c wrangler.confirm-line.jsonc --env loadtest  (load test)
+	//   node --experimental-strip-types scripts/deploy-object-workers.ts                 (production)
+	//   node --experimental-strip-types scripts/deploy-object-workers.ts --env loadtest  (load test)
 	//
 	// Both run from the same list as the burst limiter worker's (OBJECT_WORKER_CONFIGS in
-	// scripts/lib/gradual-deploy.ts), which scripts/deploy-gradual.ts and loadtest.yml read.
+	// scripts/lib/gradual-deploy.ts), which scripts/deploy-gradual.ts and
+	// scripts/deploy-object-workers.ts read (the hand deploy and loadtest.yml run the
+	// latter), and deploy it only when its bundle or this file changed (#3561): a deploy restarts the
+	// line objects, dropping a crowd's waiting turns.
 	// scripts/test-confirm-line-binding.ts pins the names, the entry and its imports.
 	"name": "slate-confirm-line",
 	"main": "worker/confirm-line/index.ts",

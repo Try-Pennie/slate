@@ -26,7 +26,6 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeStep, planVerifiedDeploy } from "./lib/deploy-verified.ts";
-import { OBJECT_WORKER_CONFIGS } from "./lib/gradual-deploy.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const BUILD_INFO = join(ROOT, "src", "lib", "build-info.ts");
@@ -91,10 +90,10 @@ try {
     "scripts/stamp-build-info.ts",
     plan.commit,
   ]);
-  // #3500, #3555: Slate's bindings name these workers, so they go first.
-  for (const config of OBJECT_WORKER_CONFIGS) {
-    step(`deploy the object worker ${config}`, "pnpm", ["exec", "wrangler", "deploy", "-c", config]);
-  }
+  // #3500, #3555: Slate's bindings name these workers, so they go first. #3561: each only
+  // when it changed (OBJECT_WORKER_CONFIGS, by the code the gradual deploy runs), since a
+  // deploy restarts its objects; the script says which it skipped and why.
+  step("deploy the object workers that changed", "node", ["--experimental-strip-types", "scripts/deploy-object-workers.ts"]);
   // pnpm appends these to the script's last command, `opennextjs-cloudflare deploy`,
   // which hands unrecognised flags through to `wrangler deploy`.
   step("build and deploy", "pnpm", ["run", "cf:deploy", ...plan.deployArgs]);
