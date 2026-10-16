@@ -299,6 +299,8 @@ const probe = `
   ]);
   const out = {
     read: await run(() => stub.stubFreeBusy("agent@trypennie.com")),
+    // #3845: the confirm's bulk calendar check, through the live switch.
+    bulkRead: stub.stubFreeBusyMany(["agent@trypennie.com"]).get("agent@trypennie.com")?.error ? "unreadable" : "ok",
     create: await run(() => stub.stubCreateEvent({ summary: "s", start: "a", end: "b" }, "client-1")),
     patch: await run(() => stub.stubEventWrite("patch", "evt-1")),
     salesforce: await run(() => sf.fetchSfWithRetry("https://sf.example/q", {}, {
@@ -371,6 +373,7 @@ const [prodShape, defaults, everything, typo] = await Promise.all([
   const p = prodShape!;
   assert(p.unreadable === undefined, `the production shaped probe ran (${String(p.unreadable)})`);
   eq(p.read, "ok", "without SLATE_LOADTEST a calendar read never faults, at 100 percent");
+  eq(p.bulkRead, "ok", "nor the confirm's bulk calendar check (#3845)");
   eq(p.create, "ok", "nor a calendar create");
   eq(p.patch, "ok", "nor a calendar patch");
   assert(!injected(p.salesforce), "nor a Salesforce call (it goes on to the real client)");
@@ -383,6 +386,7 @@ const [prodShape, defaults, everything, typo] = await Promise.all([
   // The default targets: exactly the old switch. Reads fail; nothing else does.
   const p = defaults!;
   assert(injected(p.read), `the default faults calendar reads (got ${String(p.read)})`);
+  eq(p.bulkRead, "unreadable", "the confirm's bulk calendar check included (#3845)");
   eq(p.create, "ok", "and leaves calendar writes alone, as #2241 decided for the ordinary pass");
   eq(p.patch, "ok", "patches included");
   assert(!injected(p.salesforce), "Salesforce is refused instantly as before, not slowed");
@@ -414,6 +418,7 @@ const [prodShape, defaults, everything, typo] = await Promise.all([
   // A typo faults nothing at all, which the fault leg's driver refuses on.
   const p = typo!;
   eq(p.read, "ok", "an unknown target name turns every target off, reads included");
+  eq(p.bulkRead, "ok", "the bulk calendar check too");
   eq(p.dbInjected, 0, "and the database too");
 }
 

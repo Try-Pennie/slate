@@ -180,6 +180,7 @@ import { readCommitAnswer } from "@/lib/booking/commit-answer";
 import { afterResponse, deferWebhookSend } from "@/lib/after-response";
 import { pageAfterAnswer, type PageScheduler } from "@/lib/notify/post-commit-page";
 import { DeadlineExceededError, findDeadlineExceeded, isDeadlineExceeded } from "@/lib/fetch-within-deadline";
+import { GoogleBreakerOpenError } from "@/lib/google/breaker";
 import { sendThrottledAlert, sendThrottledInfo, resolveRecovered } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import {
@@ -433,6 +434,31 @@ export async function calendarsForEmails(
   return { byEmail, readFailed };
 }
 
+/**
+ * #3845: one agent's own calendar read, where a read that FAILED OUTRIGHT (Google
+ * answering the call with a 5xx, a refused token, a network error) is `null`, "could
+ * not tell", exactly like a calendar Google answered with an error inside its 200.
+ *
+ * Both callers already handle `null` (the booker scores the agent unverified and
+ * re-routes; the reschedule guard re-routes), but a throw escaped them: on the booker
+ * it took every other candidate in the wave with it and the lead got a 500, where the
+ * design is a re-route or a retriable 503. The load run's fault pass was the first
+ * thing to reach it, once it faulted the bulk wave that hands agents to this read.
+ *
+ * Two failures still propagate, because each has its own classification further up
+ * and an unverified agent would hide it: a deadline (#3313, the dependency timeout)
+ * and the open breaker (#3134, already the retriable outage for the whole confirm).
+ */
+async function unlessReadFailed<T>(email: string, read: () => Promise<T | null>): Promise<T | null> {
+  try {
+    return await read();
+  } catch (err) {
+    if (findDeadlineExceeded(err) || err instanceof GoogleBreakerOpenError) throw err;
+    log.error("booking", { msg: "agent calendar read failed, reporting it could not tell rather than free", email }, err);
+    return null;
+  }
+}
+
 /** Outcome of a single-agent verify: confirmed free, confirmed busy, or — when a
  *  calendar couldn't be read — unverifiable (#319). `unverified` is never treated
  *  as free (no double-book) and lets the caller flag a likely outage. */
@@ -466,7 +492,7 @@ async function checkAgentFree(
   // NOT a yes. This is the fallback the bulk wave hands an agent to precisely
   // because it could not read one of their calendars, so answering "free" here
   // would book the lead over whatever that calendar held.
-  const free = await isFree(email, startIso, endIso, ids.length ? ids : ["primary"], ignore);
+  const free = await unlessReadFailed(email, () => isFree(email, startIso, endIso, ids.length ? ids : ["primary"], ignore));
   if (free === null) return "unverified";
   return free ? "free" : "busy";
 }
@@ -525,7 +551,7 @@ export async function agentBusyIntervals(
     ).catch(logAlertSendFailure(VERIFY_READ_ALERT_KEY));
     return null;
   }
-  const busy = await freeBusy(email, fromIso, toIso, ids.length ? ids : ["primary"]);
+  const busy = await unlessReadFailed(email, () => freeBusy(email, fromIso, toIso, ids.length ? ids : ["primary"]));
   // #2412: null here is a calendar Google would not report on (an `errors[]`
   // entry inside its 200, or a calendar missing from the reply). The guard
   // re-routes on it, which is the whole point: an unread calendar must not keep
