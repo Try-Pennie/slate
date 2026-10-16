@@ -401,12 +401,23 @@ export function outboxHandoffRecovery(): string {
   );
 }
 
-/** Crash-recovered creates that are not completing. */
+/**
+ * Crash-recovered creates that are not completing.
+ *
+ * #3516: one cause is not a crash at all. A booking that committed while its
+ * bucket stopped resolving (deleted, or its event type gone) cannot have its
+ * booking.created built, so the reservation is kept and pages here. Its booking
+ * EXISTS and Regal has not heard of it, which sends the reader somewhere other
+ * than a stalled create, so the page says how to tell the two apart.
+ */
 export function reservationDrainStuckAlert(stuckCount: number, after: number, ids: string): string {
   return (
     `${stuckCount} booking reservation(s) have failed >= ${after} completion attempts and ` +
     `are backing off (a crash-recovered create is not completing). Diagnose via ` +
-    `booking_reservations.last_error; rows: ${ids}.`
+    `booking_reservations.last_error; rows: ${ids}. A last_error saying the booked bucket ` +
+    `no longer resolves means the booking exists and Regal was never sent booking.created: ` +
+    `restore the bucket within a day, before retention removes the reservation, so the drain ` +
+    `sends it, or tell Regal about the booking by hand.`
   );
 }
 
