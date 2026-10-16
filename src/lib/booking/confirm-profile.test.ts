@@ -29,6 +29,7 @@ import {
   confirmProfileFields,
   confirmProfileLine,
   makeConfirmProfile,
+  ROUTE_CHECK_STAGES,
   timeStage,
 } from "./confirm-profile";
 
@@ -140,6 +141,31 @@ describe("the load test's window (#2321), unchanged by #3300", () => {
     const line = confirmProfileLine(w.read());
     expect(line).not.toMatch(/NaN|Infinity/);
     expect(line).toContain("n/a");
+  });
+
+  // #3493: the booker's checks are stages NESTED inside `route-checks`, and stages can
+  // run side by side. Summing every stage's ms counts the overlap twice, which on the
+  // window shrank the residual, clamped to zero, and made the named stages look like
+  // the whole confirm. The residual is the window minus the time ANY stage covered.
+  it("counts time covered by nested or overlapping stages once in the residual", async () => {
+    const clock = fakeClock();
+    const p = makeConfirmProfile({ now: clock.now });
+    const w = p.window();
+    const endOuter = p.begin("route-checks");
+    await p.time(ROUTE_CHECK_STAGES.pauseFlag, async () => { clock.advance(200); });
+    clock.advance(100);
+    endOuter();
+    clock.advance(100);
+
+    const reading = w.read();
+    expect(reading.totalMs).toBe(400);
+    expect(reading.stages).toEqual([
+      { stage: "route-checks", ms: 300, calls: 1 },
+      { stage: ROUTE_CHECK_STAGES.pauseFlag, ms: 200, calls: 1 },
+    ]);
+    // 400 of wall, 300 of it inside some stage: 100 unattributed, not 400 - 500.
+    expect(reading.residualMs).toBe(100);
+    expect(confirmProfileLine(reading)).toContain("unattributed 100ms (25%)");
   });
 
   it("reports a residual of zero rather than a negative one on a clock that went backwards", async () => {
