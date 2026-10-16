@@ -467,6 +467,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "or a hold is recorded, and the monitor lane re-reads the roster every pass (#2481).",
   },
   {
+    key: "ladder_advisor_unreadable",
+    kind: "condition",
+    why:
+      "A bookable advisor has a row the confirm's ladder read cannot read, so every confirm " +
+      "leaves them out; it ends when the row is corrected, and the monitor lane asks the same " +
+      "reader every pass and clears only off a read that answered and left nobody out (#3530).",
+  },
+  {
     key: "schedule_parity_drift",
     kind: "condition",
     why:
