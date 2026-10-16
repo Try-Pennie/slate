@@ -283,8 +283,9 @@ export function dropRefusalByLadder(
  * it is the one that failed (14 free on run 37871606406: all booked, 85 told to retry); a
  * slot with 3 free passes without reaching it. Ten was the first floor, and run 37960351698's
  * seed offered no slot with ten on the sixteen advisor ladder (twelve meetings a day each,
- * five zones), so the hard crowd takes the slot with the MOST free over this floor
- * (`chooseRefusalSlots`): the hardest crowd the seed offers, every run. Thirteen free is held
+ * five zones), so the hard crowd takes the slot with the MOST free over this floor that the
+ * other refusal crowds can be spaced from (`chooseRefusalSlots`, #3571): the hardest crowd
+ * the seed offers, every run. Thirteen free is held
  * offline on every run of the suite (`scripts/test-confirm-contention.ts`).
  */
 export const HARD_REFUSAL_MIN_FREE = 5;
@@ -312,14 +313,15 @@ export type RefusalChoice<L> =
   | { kind: "unanswered"; reads: string[] }
   /** The ladders answered and no time fits the hard crowd (exit 11, the seed or roster). */
   | { kind: "no-hard-slot"; misses: string[]; reads: string[] }
-  /** A hard time was found, and the other refusal crowds could not be spaced from it (exit 3). */
+  /** Hard times were found, and the other refusal crowds could not be spaced from any of them, on any ladder (exit 3). */
   | { kind: "no-spacing"; reads: string[] };
 
 /**
  * The refusal control's ladder and slots (#3565): the FIRST refusal crowd takes the offered
  * time with the most advisors free across the ladder among those fit for the hard crowd
- * (`hardRefusalFit`), so every run meets the hardest crowd the seed offers; the others take
- * the furthest times at least the gap from it and from each other. Ladders are asked in order and the first that yields a full set wins.
+ * (`hardRefusalFit`) that the others can be spaced from, so every run meets the hardest
+ * crowd the seed offers (#3571: a less free fit time is tried when the most free one cannot
+ * be spaced); the others take the furthest times at least the gap from it and from each other. Ladders are asked in order and the first that yields a full set wins.
  * The reads are injected, so every outcome is driven offline.
  */
 export async function chooseRefusalSlots<L>(
@@ -344,25 +346,27 @@ export async function chooseRefusalSlots<L>(
       .filter((t) => Number.isFinite(Date.parse(t)))
       .sort((a, b) => Date.parse(b) - Date.parse(a))
       .slice(0, opts.toMeasure);
-    // Every time measured, and the one with the most free across the ladder kept (the
-    // furthest of equals, as the times run furthest first).
-    let hard: string | null = null;
-    let most = -1;
+    // Every time measured, and every one fit for the hard crowd kept, most free across the
+    // ladder first (the furthest of equals, as the times run furthest first and the sort
+    // is stable).
+    const fit: { t: string; ladderFree: number }[] = [];
     for (const t of times) {
       const free = measuredFree(await io.free(ladder, t));
       const why = free ? hardRefusalFit(free, opts.minFree) : "who is free there was not measured";
-      if (why === null && free!.ladderFree > most) {
-        hard = t;
-        most = free!.ladderFree;
-      } else if (why !== null) {
-        misses.push(`${io.label(ladder)} at ${t}: ${why}`);
-      }
+      if (why === null) fit.push({ t, ladderFree: free!.ladderFree });
+      else misses.push(`${io.label(ladder)} at ${t}: ${why}`);
     }
-    if (hard === null) continue;
+    if (fit.length === 0) continue;
     hardFound = true;
-    const apart = shared.times.filter((t) => Number.isFinite(Date.parse(t)) && Math.abs(Date.parse(t) - Date.parse(hard!)) >= opts.gapMs);
-    const rest = opts.bursts > 1 ? chooseBurstSlots(apart, opts.bursts - 1, opts.gapMs) : [];
-    if (rest !== null) return { kind: "chosen", ladder, slots: [hard, ...rest], shownTiers: shared.shownTiers };
+    fit.sort((a, b) => b.ladderFree - a.ladderFree);
+    // #3571: the first fit time the other crowds can be spaced from, rather than the most
+    // free alone: giving up the ladder when that one could not be spaced stopped setup at
+    // exit 3 with a workable plan on the same ladder.
+    for (const { t: hard } of fit) {
+      const apart = shared.times.filter((t) => Number.isFinite(Date.parse(t)) && Math.abs(Date.parse(t) - Date.parse(hard)) >= opts.gapMs);
+      const rest = opts.bursts > 1 ? chooseBurstSlots(apart, opts.bursts - 1, opts.gapMs) : [];
+      if (rest !== null) return { kind: "chosen", ladder, slots: [hard, ...rest], shownTiers: shared.shownTiers };
+    }
   }
   if (reads.length === ladders.length) return { kind: "unanswered", reads };
   if (!hardFound) return { kind: "no-hard-slot", misses, reads };
