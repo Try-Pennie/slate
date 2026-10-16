@@ -22,6 +22,15 @@ export const alertStateRows = new Map<string, AlertStateRow>();
 /** Keys whose single row read is refused, so a test can make a read fail. */
 export const refusedAlertStateReads = new Set<string>();
 
+/**
+ * Stand in for a database 0184 has not reached: a read naming its columns answers
+ * Postgres's undefined column (42703), and a write carrying them is refused.
+ */
+export const alertStateSchema = { withoutRepeatColumns: false };
+const REPEAT_COLUMNS = ["subjects", "band", "opened_at"];
+const namesRepeatColumn = (row: object) => REPEAT_COLUMNS.some((c) => c in row);
+const NO_COLUMN = { code: "42703", message: 'column alert_state.subjects does not exist' };
+
 type Filters = Map<string, string>;
 type Result = { data?: unknown; error: unknown };
 
@@ -62,10 +71,13 @@ export function fakeSupabaseAdminModule() {
   return {
     supabaseAdmin: () => ({
       from: () => ({
-        select: () => ({
+        select: (columns = "*") => ({
           ...chain((f) => {
             const key = f.get("key") ?? "";
             if (refusedAlertStateReads.has(key)) return { data: null, error: { message: "statement timeout" } };
+            if (alertStateSchema.withoutRepeatColumns && REPEAT_COLUMNS.some((c) => columns.includes(c))) {
+              return { data: null, error: NO_COLUMN };
+            }
             const row = alertStateRows.get(key);
             return { data: row ? selected(row, key) : null, error: null };
           }),
@@ -75,6 +87,7 @@ export function fakeSupabaseAdminModule() {
           }),
         }),
         insert: async (row: AlertStateRow & { key: string }) => {
+          if (alertStateSchema.withoutRepeatColumns && namesRepeatColumn(row)) return { error: NO_COLUMN };
           if (alertStateRows.has(row.key)) return { error: { code: "23505", message: "duplicate key" } };
           const { key, ...rest } = row;
           alertStateRows.set(key, rest);
@@ -82,12 +95,14 @@ export function fakeSupabaseAdminModule() {
         },
         update: (values: Partial<AlertStateRow>) =>
           chain((f) => {
+            if (alertStateSchema.withoutRepeatColumns && namesRepeatColumn(values)) return { data: null, error: NO_COLUMN };
             const key = matching(f);
             if (key === null) return { data: [], error: null };
             alertStateRows.set(key, { ...(alertStateRows.get(key) as AlertStateRow), ...values });
             return { data: [{ key }], error: null };
           }),
         upsert: async (row: AlertStateRow & { key: string }) => {
+          if (alertStateSchema.withoutRepeatColumns && namesRepeatColumn(row)) return { error: NO_COLUMN };
           const { key, ...rest } = row;
           alertStateRows.set(key, { ...(alertStateRows.get(key) ?? { last_sent_at: rest.last_sent_at }), ...rest });
           return { error: null };

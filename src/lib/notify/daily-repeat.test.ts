@@ -54,9 +54,16 @@ vi.mock("@/lib/monitor/heartbeat", async (orig) => ({
 
 import {
   alertStateRows,
+  alertStateSchema,
   refusedAlertStateReads,
 } from "@/lib/notify/alert-state-fake.test-support";
-import { resolveAlert, sendThrottledAlert, firingKey } from "@/lib/notify/dispatch";
+import {
+  resolveAlert,
+  sendThrottledAlert,
+  firingKey,
+  repeatColumnsAbsent,
+  resetRepeatColumnsProbe,
+} from "@/lib/notify/dispatch";
 import { MONITOR_DEFAULTS } from "@/lib/monitor/settings";
 import {
   COVERAGE_NEEDS_HUMAN_KEY,
@@ -85,6 +92,8 @@ const T0 = Date.UTC(2026, 9, 16, 4, 0);
 beforeEach(() => {
   alertStateRows.clear();
   refusedAlertStateReads.clear();
+  alertStateSchema.withoutRepeatColumns = false;
+  resetRepeatColumnsProbe();
   posted.length = 0;
   slackOk.value = true;
   process.env.SLACK_ALERTS_CHANNEL = "C-alerts";
@@ -451,6 +460,19 @@ describe("the repeat rule's edges (#3801)", () => {
     alertStateRows.set(KEY, { last_sent_at: iso });
     alertStateRows.set(firingKey(KEY), { last_sent_at: iso });
     expect(await drive(25, FIVE_MIN, () => sendThrottledAlert(KEY, 30 * MIN, "a@x is failing"))).toEqual([0, 24]);
+  });
+
+  it("code ahead of migration 0184 runs the old cooldown rule rather than posting every tick", async () => {
+    alertStateSchema.withoutRepeatColumns = true;
+    const at = await drive(2, FIVE_MIN, () => sendThrottledAlert(KEY, 30 * MIN, "a@x is failing"));
+    // The coded half hour, exactly as before #3801: not every tick, and not muted.
+    expect(at).toEqual([0, 0.5, 1, 1.5, 2]);
+    expect(repeatColumnsAbsent()).toBe(true);
+  });
+
+  it("CONTROL: with the columns present the same sends are held for the day", async () => {
+    expect(await drive(2, FIVE_MIN, () => sendThrottledAlert(KEY, 30 * MIN, "a@x is failing"))).toEqual([0]);
+    expect(repeatColumnsAbsent()).toBe(false);
   });
 
   it("the reminder interval is a day", () => {

@@ -6,10 +6,13 @@
 // (`Promise<unknown>`), which the type parameter carries, so that difference stays a
 // decision a reader can see rather than a drift nobody chose.
 //
-// The seam is NARROWER than the real functions on purpose. `sendThrottledAlert` and
-// `resolveAlert` also take an optional channel, and a check that could name one would
-// be choosing where its page lands, which belongs to the alert settings. A fake needs
-// only the arguments a check actually passes. `scripts/test-alert-deps-type.ts` fails
+// The seam is NARROWER than the real functions on purpose. `sendThrottledAlert` takes
+// a `SendOptions` object whose fields beyond `AlertRepeat` (a channel, #3303's page
+// news, an outcome callback) a check is not given, and `resolveAlert` an optional
+// channel: a check that could name a channel would be choosing where its page lands,
+// which belongs to the alert settings. The one thing a check may say is what its
+// condition names (`AlertRepeat`, #3801). A fake needs only the arguments a check
+// actually passes. `scripts/test-alert-deps-type.ts` fails
 // on the next hand written copy.
 //
 // That the real dispatcher FITS these seams is asserted in `src/lib/notify/dispatch.ts`

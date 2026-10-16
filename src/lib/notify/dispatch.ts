@@ -142,15 +142,40 @@ interface AlertStateRow {
   opened_at?: string | null;
 }
 
+/**
+ * Whether 0184's columns are missing from `alert_state` (#3801): a read naming them
+ * answered Postgres's undefined column (42703). Remembered for the isolate, so the
+ * fallback costs one wasted read rather than one per send.
+ */
+let repeatColumnsMissing = false;
+
+/** Whether this isolate has found `alert_state` without 0184's columns. */
+export function repeatColumnsAbsent(): boolean {
+  return repeatColumnsMissing;
+}
+
+/** For tests: forget a previous finding. */
+export function resetRepeatColumnsProbe(): void {
+  repeatColumnsMissing = false;
+}
+
 async function readStamp(rowKey: string): Promise<StampRead> {
-  const { data, error } = await supabaseAdmin()
-    .from("alert_state")
-    .select("last_sent_at, subjects, band, opened_at")
-    .eq("key", rowKey)
-    .maybeSingle();
+  const db = supabaseAdmin();
+  const read = (columns: string) => db.from("alert_state").select(columns).eq("key", rowKey).maybeSingle();
+  let { data, error } = repeatColumnsMissing
+    ? await read("last_sent_at")
+    : await read("last_sent_at, subjects, band, opened_at");
+  // Code deployed ahead of migration 0184 (the deploy gate refuses that, so this is a
+  // second line): read the stamp alone and run the old rule, rather than reading every
+  // row as unreadable and posting every condition on every tick.
+  if (error && (error as { code?: string }).code === "42703" && !repeatColumnsMissing) {
+    repeatColumnsMissing = true;
+    log.warn("slack-alert", { msg: "alert_state has no repeat columns (0184 not applied); repeats follow the cooldown alone" });
+    ({ data, error } = await read("last_sent_at"));
+  }
   if (error) return { kind: "unreadable" };
   if (!data) return { kind: "absent" };
-  const row = data as AlertStateRow;
+  const row = data as unknown as AlertStateRow;
   return {
     kind: "present",
     raw: row.last_sent_at,
@@ -177,7 +202,8 @@ async function readStamp(rowKey: string): Promise<StampRead> {
  * key per pool, per lane), so no other change can arrive on it.
  */
 export async function isAlertDue(key: string, cooldownMs: number, nowMs: number): Promise<boolean> {
-  return stampIsDue(await readStamp(key), reminderIntervalMs(key, cooldownMs), nowMs);
+  const seen = await readStamp(key);
+  return stampIsDue(seen, repeatColumnsMissing ? cooldownMs : reminderIntervalMs(key, cooldownMs), nowMs);
 }
 
 // #1169: fail closed. A corrupt last_sent_at used to parse to NaN, which
@@ -433,11 +459,13 @@ async function sendThrottledAlertUnrecorded(
   // #3801: for a CONDITION the interval is when an unchanged fact may be said again
   // (a day, an hour when urgent, or a stored setting), and a change posts at once. For
   // anything else both of these are exactly what they were before.
-  const ruled = isRepeatRuled(key);
-  const intervalMs = reminderIntervalMs(key, cooldownMs);
+  const seen = await readStamp(key);
+  // Without 0184's columns there is nowhere to remember what was said, so the old rule
+  // (the cooldown as handed over) runs and nothing is written to columns that are not there.
+  const ruled = isRepeatRuled(key) && !repeatColumnsMissing;
+  const intervalMs = ruled ? reminderIntervalMs(key, cooldownMs) : cooldownMs;
   const subjects = ruled ? subjectsFor(opts, text) : [];
   const band = ruled && typeof opts.band === "number" && Number.isFinite(opts.band) ? opts.band : null;
-  const seen = await readStamp(key);
   const due = stampIsDue(seen, intervalMs, nowMs);
   // A change is judged whether or not the interval has run out, so a due post that
   // ALSO names something new is said as a new problem rather than as a reminder.
