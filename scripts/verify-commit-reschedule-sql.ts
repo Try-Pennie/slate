@@ -313,21 +313,51 @@ try {
   // The loser of a row lock re-checks the guard against the COMMITTED row (READ
   // COMMITTED re-evaluates the WHERE on the new version), so a move waiting on a
   // concurrent cancel, or on another move, answers null rather than winning.
+  //
+  // No fixed waits (L290): the holder commits only once Postgres reports the mover
+  // WAITING on a lock, and the mover starts only once the holder has its row. So the
+  // race is exercised on every run, however slow the machine, and a run in which the
+  // two never overlapped fails rather than passing over a sequential case.
   sql("create table race_answers (label text primary key, answer text); grant all on race_answers to service_role;");
-  const asServer = (label: string, m: Move, holdFor = 0) =>
-    `begin; set local role service_role;
-     insert into race_answers ${moveSql(m).replace(/^select /, `select '${label}', `).replace(/;$/, "")};
-     ${holdFor ? `select pg_sleep(${holdFor});` : ""} commit;`;
-  const answerOf = (label: string) => sql(`select answer from race_answers where label = '${label}';`);
+  /** A session that writes, holds its row lock until `tag`'s mover is blocked on a lock, then commits. */
+  const holder = (tag: string, write: string) => `set application_name = '${tag}';
+    begin;
+    ${write}
+    reset role;
+    do $race$ declare t0 timestamptz := clock_timestamp(); begin
+      loop
+        -- pg_stat_activity is read once per transaction unless cleared, so without
+        -- this the holder would never see the mover arrive (measured: it did not).
+        perform pg_stat_clear_snapshot();
+        exit when exists (select 1 from pg_stat_activity where application_name = '${tag}-mover' and wait_event_type = 'Lock');
+        if clock_timestamp() - t0 > interval '20 seconds' then raise exception 'the mover never waited on the row lock'; end if;
+        perform pg_sleep(0.05);
+      end loop;
+    end $race$;
+    commit;`;
+  /** The mover, as the server's role, recording its answer under `tag`. */
+  const mover = (tag: string, m: Move) => `set application_name = '${tag}-mover';
+    begin; set local role service_role;
+    insert into race_answers ${moveSql(m).replace(/^select /, `select '${tag}', `).replace(/;$/, "")};
+    commit;`;
+  /** Resolves once the holder is inside its wait, so it holds the row; refuses after 20s rather than hanging. */
+  const holderHoldsRow = async (tag: string) => {
+    const t0 = Date.now();
+    while (sql(`select count(*) from pg_stat_activity where application_name = '${tag}' and query like '%do $race$%';`) !== "1") {
+      if (Date.now() - t0 > 20_000) throw new Error(`the ${tag} holder never reached its wait`);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  };
+  const answerOf = (tag: string) => sql(`select coalesce((select answer from race_answers where label = '${tag}'), 'no answer');`);
   {
     const x = advisor();
     const id = seed(x, "04:00", "04:20");
-    const cancel = pg.session(`begin; update bookings set status = 'cancelled' where id = '${id}'; select pg_sleep(2); commit;`);
-    await new Promise((r) => setTimeout(r, 700));
-    const mover = pg.session(asServer("after-cancel", { booking: id, from: x, to: x, start: "04:30", end: "04:50", trace: { moved: true } }));
-    const [c, mv] = await Promise.all([cancel, mover]);
-    eq(`${c.code}:${mv.code}`, "0:0", `both sessions ran (${c.stderr}${mv.stderr})`);
-    eq(answerOf("after-cancel"), "null", "a move that waited on a concurrent cancel answers null once the cancel commits");
+    const cancel = pg.session(holder("cancel", `update bookings set status = 'cancelled' where id = '${id}';`));
+    await holderHoldsRow("cancel");
+    const moved = pg.session(mover("cancel", { booking: id, from: x, to: x, start: "04:30", end: "04:50", trace: { moved: true } }));
+    const [c, mv] = await Promise.all([cancel, moved]);
+    eq(`${c.code}:${mv.code}`, "0:0", `both sessions ran, the mover blocked behind the cancel (${c.stderr}${mv.stderr})`);
+    eq(answerOf("cancel"), "null", "a move that waited on a concurrent cancel answers null once the cancel commits");
     eq(sql(`select status from bookings where id = '${id}';`), "cancelled", "the call stays cancelled, never resurrected by the move");
     eq(outboxRows(id), "0", "and no outbox row was written");
   }
@@ -337,13 +367,14 @@ try {
     const id = seed(x, "03:00", "03:20");
     const first: Move = { booking: id, from: x, to: y, start: "03:30", end: "03:50", trace: { moved: "first" } };
     const second: Move = { booking: id, from: x, to: x, start: "02:00", end: "02:20", seq: 9, trace: { moved: "second" } };
-    const winner = pg.session(asServer("first", first, 2));
-    await new Promise((r) => setTimeout(r, 700));
-    const loser = pg.session(asServer("second", second));
+    const firstWrite = `insert into race_answers ${moveSql(first).replace(/^select /, "select 'first', ").replace(/;$/, "")};`;
+    const winner = pg.session(holder("move", `set local role service_role; ${firstWrite}`));
+    await holderHoldsRow("move");
+    const loser = pg.session(mover("move", second));
     const [w, l] = await Promise.all([winner, loser]);
-    eq(`${w.code}:${l.code}`, "0:0", `both sessions ran (${w.stderr}${l.stderr})`);
+    eq(`${w.code}:${l.code}`, "0:0", `both sessions ran, the second blocked behind the first (${w.stderr}${l.stderr})`);
     assert(UUID.test(answerOf("first")), `the first move applies (got ${answerOf("first")})`);
-    eq(answerOf("second"), "null", "a second move read from the same row, waiting on the first, answers null: the event id it guarded on is gone");
+    eq(answerOf("move"), "null", "a second move read from the same row, waiting on the first, answers null: the assignee and event id it guarded on are gone");
     eq(sql(`select assigned_user_id || '|' || gcal_event_id from bookings where id = '${id}';`), `${y}|${newEvent(first)}`, "the first move stands");
     eq(outboxRows(id), "1", "with exactly one outbox row");
   }
