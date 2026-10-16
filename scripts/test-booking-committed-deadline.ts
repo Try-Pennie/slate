@@ -208,11 +208,18 @@ async function run() {
       ...deps,
       loadDrainableReservations: async () => (reservation ? [reservation] : []),
       findBookingByIdempotencyKey: async () => res.booking,
+      // #3847: the drain's resume finds the committed booking through its any status
+      // lookup, so that is the read this case must answer for the committed path to run.
+      findLatestBookingByIdempotencyKey: async () => res.booking,
       resolveBucketByCode: async () => {
         throw new Error("buckets read down");
       },
     };
     const out = await processBookingReservations(d, 10);
+    assert(
+      calls.createEvent.length === 0 && calls.insertBooking.length === 0,
+      "drain: the committed booking is found, so the failure is in its finish and nothing is made again",
+    );
     assert(
       out.failed === 1 && out.completed === 0,
       "drain: a finish that fails is a failure, not a completion",
