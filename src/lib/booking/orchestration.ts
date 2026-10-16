@@ -383,6 +383,31 @@ export class ReservationHeldError extends VerifyUnavailableError {
 }
 
 /**
+ * #3859: a lost attempt's reservation could not be deleted, because the database
+ * refused the delete (`dropLostReservation`). The confirm stops there: its next
+ * attempt would reserve under the same key and adopt this very row, still pinned to
+ * the advisor who was just taken. The row stays pending for the reservation drain.
+ *
+ * A subclass of `VerifyUnavailableError` so every booking route answers it as the
+ * retryable 503 it is and refunds the lead's rate limit hit, rather than the generic
+ * 500 the bare error used to reach. Unlike `ReservationHeldError` something IS down,
+ * so it pages, under the verify outage's key with words of its own
+ * (`reservationRollbackAlert`). Its message is the sentence the lead is shown, so
+ * what the database said is in `cause` and, for the drain's record, `detail`.
+ */
+export class ReservationRollbackError extends VerifyUnavailableError {
+  readonly reservationId: string;
+  readonly detail: string;
+  constructor(reservationId: string, cause: unknown) {
+    super();
+    this.name = "ReservationRollbackError";
+    this.reservationId = reservationId;
+    this.cause = cause;
+    this.detail = `the reservation's rollback delete was refused: ${cause instanceof Error ? cause.message : String(cause)}`;
+  }
+}
+
+/**
  * A dependency on the booking path did not answer inside its deadline (#3102):
  * Google or Supabase accepted the request and never replied.
  *
@@ -1189,6 +1214,10 @@ export interface BookingContext {
 /** A booked call as the slot refresh needs it: who holds it, and when (#3324). */
 export type BookedWindow = { userId: string; startsAt: string; endsAt: string };
 
+/** What deleting a reservation by its id came to (#3859): the row was removed, or no
+ *  row had that id. A refused delete is neither; it throws. */
+export type ReservationDeleteOutcome = "deleted" | "gone";
+
 /** Every side effect the orchestration needs. `service.ts` wires the real ones. */
 export interface BookingDeps {
   // availability / routing
@@ -1706,8 +1735,11 @@ export interface BookingDeps {
   insertReservation(row: BookingReservationInsert): Promise<BookingReservation>;
   /** The reservation for an idempotency_key, or null (re-submit resume lookup). */
   loadReservationByKey(idempotencyKey: string): Promise<BookingReservation | null>;
-  /** Delete a reservation (delete-on-deliver, once the booking is persisted). */
-  deleteReservation(id: string): Promise<void>;
+  /** Delete a reservation (delete-on-deliver, once the booking is persisted, and the
+   *  rollback of a lost attempt). THROWS when the database refuses the delete
+   *  (#3859); answers `gone` when no row had that id, which a holder of the same
+   *  reservation can have caused by removing it first. */
+  deleteReservation(id: string): Promise<ReservationDeleteOutcome>;
   /**
    * #3217: point a PENDING reservation at the fresh event id its create is about
    * to write past a cancelled tombstone, BEFORE the write, so the deletion drain
@@ -6067,8 +6099,10 @@ async function completeReservation(
  *     adopt it.
  *   - The claim itself fails: a claim nobody could confirm is not a claim, so nothing
  *     is written and it is the retryable outage.
- *   - The rollback of a taken pin fails: its error is thrown and nothing is walked, for
- *     the same reason. The lease is given back, so the drain retries the row.
+ *   - The rollback of a taken pin fails: the retryable outage is thrown
+ *     (`ReservationRollbackError`, #3859) and nothing is walked, for the same reason.
+ *     The lease is given back, so the drain retries the row. A rollback that finds the
+ *     row already gone is not a failure, and the walk goes on (`dropLostReservation`).
  */
 async function resumeReservation(
   deps: BookingDeps,
@@ -6121,6 +6155,43 @@ async function resumeReservation(
 type ReservationAttempt =
   | { kind: "completed"; completed: CompletedReservation }
   | { kind: "lost"; rollBack: () => Promise<void> };
+
+/**
+ * The reservation half of a lost attempt's rollback (#3859). Every caller that runs
+ * one goes on to reserve again under the SAME idempotency key, or leaves the row to
+ * the drain: the fresh confirm's next advisor or walk down the ladder (#3338), the
+ * resumed reservation's walk (#3837), and the drain's own terminal rollback. The
+ * reservation's insert adopts whatever row already holds the key, so this delete is
+ * all that keeps the next attempt off the lost reservation, still pinned to the
+ * advisor who was just taken.
+ *
+ * So a refused delete stops the confirm. It is answered as the retryable outage
+ * (`ReservationRollbackError`, or the deadline it was), carrying the database's own
+ * error, and the row is left pending for the drain, whose completion meets the same
+ * conflict and rolls it back on a later tick.
+ *
+ * A delete that found no row is not a failure: no row by that id is exactly what the
+ * next reservation needs. Only a holder of the same reservation can have removed it,
+ * a concurrent confirm of the same lead (which adopted it by key, and rolled back or
+ * booked) or the drain after a lapsed lease, and a booking either of them made is
+ * found by the key when the next attempt saves. It is logged, so the overlap is seen.
+ */
+async function dropLostReservation(deps: BookingDeps, reservationId: string): Promise<void> {
+  let outcome: ReservationDeleteOutcome;
+  try {
+    outcome = await deps.deleteReservation(reservationId);
+  } catch (err) {
+    const mapped = timeoutAsRetryable(err);
+    if (mapped instanceof VerifyUnavailableError) throw mapped;
+    throw new ReservationRollbackError(reservationId, err);
+  }
+  if (outcome === "gone") {
+    log.info("reservations", {
+      msg: "a lost attempt's reservation was already gone when it was rolled back; a holder of the same key removed it",
+      reservation_id: reservationId,
+    });
+  }
+}
 
 /** `completeReservation`, with a lost race handed back unrolled (see `ReservationAttempt`). */
 async function attemptReservation(
@@ -6365,7 +6436,7 @@ async function attemptReservation(
       rollBack: () =>
         withinLostRaceCleanup(async () => {
           await compensateEvent(deps, reservation.pinned_agent_email, gcalEventId, null);
-          await deps.deleteReservation(reservation.id);
+          await dropLostReservation(deps, reservation.id);
         }),
     };
   }
@@ -6528,7 +6599,10 @@ export async function processBookingReservations(
         });
       } else if (!(err instanceof SlotUnavailableError)) {
         const attempts = reservation.attempts + 1;
-        const lastError = err instanceof Error ? err.message : String(err);
+        // #3859: a refused rollback's message is the sentence a lead is shown, so the
+        // row records what the database said instead.
+        const lastError =
+          err instanceof ReservationRollbackError ? err.detail : err instanceof Error ? err.message : String(err);
         await deps.bumpReservationAttempt(reservation.id, attempts, lastError);
         if (attempts >= DRAIN_ALERT_AFTER) {
           stuck.push({ ...reservation, attempts, last_error: lastError });
