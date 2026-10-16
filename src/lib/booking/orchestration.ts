@@ -3148,6 +3148,10 @@ async function assignAgentWithTierFallback(
   // #3489 step 3: a rung skipped only because every advisor on it is claimed by a
   // confirm still in flight. A ladder spent with one of those parks, never refuses.
   let spentByClaims = false;
+  // #3441: whether any rung this walk read had people on it and refused the time as
+  // taken, which is what lets a walk ending on an EMPTY bucket still say the time is
+  // taken for everybody waiting behind it (`markLadderSpent`).
+  let refusedAsTaken = false;
   // #3529: a rung above the one this walk starts on was never read by it (`unreadAbove`).
   const unreadAbove = (resume !== null && resume.rung > 0 && resume.unreadAbove) || (handed !== null && handed.rung > 0);
   // Whether a rung has one below it, which decides whether claiming its last advisor
@@ -3263,6 +3267,8 @@ async function assignAgentWithTierFallback(
         if (rung) rungs.push(rung);
         if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) {
           lastErr = err; // this tier can't serve the slot; drop a rung
+          // #3441: a rung with people on it, none able to take the time.
+          if (err instanceof SlotUnavailableError) refusedAsTaken = true;
           return { hit: false };
         }
         // VerifyUnavailableError and anything unexpected: do not mask. An outage the
@@ -3283,7 +3289,20 @@ async function assignAgentWithTierFallback(
   // #3489 step 3: a claim in flight may yet free an advisor the walk skipped, so the
   // line, which sees every claim end, answers this confirm rather than a refusal.
   // #3529: so may one on a rung above that this walk never read.
-  const refusal = traced(lastErr ?? new SlotUnavailableError(), trace(ladderStage(rungs)));
+  //
+  // #3440, #3441: every rung was refused or empty, so the ladder is spent, and the
+  // refusal is marked to settle the confirms waiting behind it (`verdictForRefusal`).
+  // Whichever rung came LAST names the error, so a ladder whose last rung is an empty
+  // bucket ends in `NoEligibleAgentsError` while a rung above it refused the time as
+  // taken: marked all the same, and still that error, so this confirm is answered and
+  // recorded as an empty bucket and the page is unchanged. A ladder with nobody on ANY
+  // rung is not marked: no rung ever refused the time as taken, so telling a crowd
+  // "taken" would be a claim nothing measured (L11), and each walks its empty rungs,
+  // which asks nobody at Google, to its own empty bucket answer. A rung passed only for
+  // claims had people on it too.
+  const last = (lastErr ?? new SlotUnavailableError()) as SlotUnavailableError | NoEligibleAgentsError;
+  const spent = !(last instanceof NoEligibleAgentsError) || refusedAsTaken || spentByClaims;
+  const refusal = traced(spent ? markLadderSpent(last) : last, trace(ladderStage(rungs)));
   if (spentByClaims || unreadAbove) throw new LadderSpentByClaimsError(refusal);
   throw refusal;
 }
@@ -3394,7 +3413,10 @@ async function assignNamedAgent(
     assigned = await assignAgent(deps, resolved.bucket, resolved.eventType, startIso, endIso, false, agentUserId);
   } catch (err) {
     const rung = rungOf(err);
-    const refused = err instanceof NoEligibleAgentsError ? new SlotUnavailableError() : err;
+    const asTaken = err instanceof NoEligibleAgentsError ? new SlotUnavailableError() : err;
+    // #3440: the one advisor a named link names is its whole ladder, so a taken time
+    // settles the confirms waiting behind it, as it always did.
+    const refused = asTaken instanceof SlotUnavailableError ? markLadderSpent(asTaken) : asTaken;
     throw rung
       ? traced(refused, { requestedStart: startInstantIso, bucketCode: resolved.bucket.code, stage: rung.stage, rungs: [rung] })
       : refused;
@@ -5052,18 +5074,41 @@ export function confirmQueueKey(
  * What a confirm that FAILED shows the confirms waiting behind it. Only a refusal
  * that spent the whole LADDER settles the slot for them (#3338), because they
  * asked the same question of the same slot and walk the same pools at every rung:
- * a plain refusal means nobody on any rung was free, and a lost race settles them
- * only when nothing was left below it either (`ladderExhausted`), never at the
- * bound, which stopped while the rung was still handing out advisors (L11).
- * Anything else (an outage, a person already holding a call, the lead's own
- * calling window, a lost race that could not ask the rest of the ladder) says
- * nothing about them, so the next one runs, from the top of the ladder like any
- * confirm.
+ * a walk on which every rung was refused or empty and at least one rung had people
+ * who could not take the time (`provesLadderSpent`), and a lost race only
+ * when nothing was left below it either (`ladderExhausted`), never at the bound,
+ * which stopped while the rung was still handing out advisors (L11). Anything else
+ * says nothing about them, so the next one runs, from the top of the ladder like
+ * any confirm: an outage, a person already holding a call, the lead's own calling
+ * window, a lost race that could not ask the rest of the ladder, and a taken time
+ * that never walked the ladder at all, which is a resumed reservation (#3440) or a
+ * reschedule's own bucket. Being a `SlotUnavailableError` is not the test: a
+ * refusal is full only where it was MARKED as proving the ladder spent.
  */
 function verdictForRefusal(err: unknown): LeaderVerdict<ConfirmTaker> {
   if (err instanceof RaceLostRefusalError) return lostRaceVerdict({ ladderExhausted: err.ladderExhausted, boundHit: err.boundHit });
-  if (err instanceof SlotUnavailableError) return { full: true, refusal: "taken", settled: null };
+  if (provesLadderSpent(err)) return { full: true, refusal: "taken", settled: null };
   return { full: false };
+}
+
+/**
+ * #3440, #3441: the mark a refusal carries when it PROVES its confirm's whole ladder
+ * spent, set only where that is known: the end of an ordinary ladder walk that some
+ * rung of refused as taken (`assignAgentWithTierFallback`), and a named link, whose one
+ * advisor is its whole ladder (`assignNamedAgent`). `verdictForRefusal` reads nothing
+ * else, so a refusal from anywhere that never walked the ladder settles nobody, however
+ * it is typed. A symbol, like the refusal's trace, so it never reaches a stored record.
+ */
+const LADDER_SPENT = Symbol("ladderSpent");
+
+function markLadderSpent<E extends SlotUnavailableError | NoEligibleAgentsError>(err: E): E {
+  (err as unknown as Record<symbol, unknown>)[LADDER_SPENT] = true;
+  return err;
+}
+
+function provesLadderSpent(err: unknown): boolean {
+  if (err === null || typeof err !== "object") return false;
+  return (err as Record<symbol, unknown>)[LADDER_SPENT] === true;
 }
 
 /**
@@ -5120,7 +5165,10 @@ async function createHeld(
     const started = ctx.inFlightRead;
     const inFlight = await profile.time("inflight-lookup", () => started ?? deps.loadReservationByKey(stableKey));
     // A resumed reservation was pinned by an earlier request, so it says nothing
-    // about who else the slot has room for: the next confirm in line runs.
+    // about who else the slot has room for: the next confirm in line runs. Booked or
+    // refused (#3440): a taken pin is a plain `SlotUnavailableError` from
+    // `completeReservation`, about that one advisor, never marked as a spent ladder,
+    // so `verdictForRefusal` settles nobody on it and the next confirm walks.
     if (inFlight) return { result: answerCommitted(await profile.time("complete-reservation", () => completeReservation(deps, inFlight))), verdict: { full: false } };
   }
 
