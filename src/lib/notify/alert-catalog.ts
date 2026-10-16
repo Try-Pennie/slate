@@ -156,6 +156,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "back with a result, which the lane measures every five minutes (#3424).",
   },
   {
+    key: "outbox_drain_failing",
+    kind: "condition",
+    why:
+      "The booking outbox drain on the outbox lane is throwing, so a booking's unfinished " +
+      "follow up (calendar invite, Regal webhook) is not retried. It ends when a run " +
+      "comes back with a result, which the lane measures every minute (#3846).",
+  },
+  {
     key: "reservation_drain_failing",
     kind: "condition",
     why:

@@ -12,6 +12,7 @@ import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import {
   reportSweepFailures,
+  OUTBOX_DRAIN_FAILING_KEY,
   RESERVATION_DRAIN_FAILING_KEY,
   RESCHEDULE_PIN_SWEEP_FAILING_KEY,
   REASSIGN_INTENT_SWEEP_FAILING_KEY,
@@ -43,7 +44,15 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const outbox = await drainBookingOutbox();
+    // #3846: caught like the jobs below it. Its read throws on a failure now rather
+    // than reading as an empty outbox, and an uncaught throw here would end the
+    // tick before the reservation drain, both sweeps and the heartbeat. null, never
+    // a zero count, because a drain that threw measured nothing; the failing streak
+    // below is what speaks for it.
+    const outbox = await drainBookingOutbox().catch((err) => {
+      log.error("outbox", { msg: "outbox drain failed" }, err);
+      return null;
+    });
     // Same lane resumes crashed create reservations (#429 P4) + sweeps abandoned
     // ones. Best-effort: a failure here must not break the outbox drain. Logged and
     // fed to the failing streak below (#3077), because a bare catch here was the
@@ -71,6 +80,7 @@ export async function GET(req: NextRequest) {
     // the complete lane (#2544). After the heartbeat and guarded, so a monitoring
     // hiccup can neither skip the health stamp nor fail the lane it watches.
     const sweepOutcomes = [
+      { key: OUTBOX_DRAIN_FAILING_KEY, ok: outbox !== null },
       { key: RESERVATION_DRAIN_FAILING_KEY, ok: reservations !== null },
       { key: RESCHEDULE_PIN_SWEEP_FAILING_KEY, ok: reschedulePins !== null },
       { key: REASSIGN_INTENT_SWEEP_FAILING_KEY, ok: reassignIntents !== null },

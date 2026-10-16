@@ -486,6 +486,7 @@ import {
   WEBHOOK_RETRY_SWEEP_FAILING_KEY,
   DEMO_AUTO_CANCEL_FAILING_KEY,
   SWEEP_FAILURE_ALERT_AFTER_RUNS,
+  OUTBOX_DRAIN_FAILING_KEY,
   RESERVATION_DRAIN_FAILING_KEY,
   RESCHEDULE_PIN_SWEEP_FAILING_KEY,
   REASSIGN_INTENT_SWEEP_FAILING_KEY,
@@ -2771,8 +2772,9 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: formatSweepFailureRecovery(DEMO_AUTO_CANCEL_FAILING_KEY),
   },
-  // --- the same on the outbox lane's three secondary jobs (#3077) ---
+  // --- the same on the outbox lane: its drain (#3846) and its three secondary jobs (#3077) ---
   ...[
+    OUTBOX_DRAIN_FAILING_KEY,
     RESERVATION_DRAIN_FAILING_KEY,
     RESCHEDULE_PIN_SWEEP_FAILING_KEY,
     REASSIGN_INTENT_SWEEP_FAILING_KEY,

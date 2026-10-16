@@ -115,11 +115,50 @@ describe("GET /api/cron/outbox", () => {
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
   });
 
+  // #3846. The outbox drain itself was the one job on this lane with no catch at
+  // all: its read logged and returned [], so a failure read as an empty outbox,
+  // and once the read throws, a bare throw would end the whole tick before the
+  // reservation drain, both sweeps and the heartbeat stamp.
+  describe("an outbox drain that throws (#3846)", () => {
+    it("still runs the reservation drain and both sweeps, and stamps the heartbeat", async () => {
+      const boom = new Error("outbox read failed");
+      service.drainBookingOutbox.mockRejectedValueOnce(boom);
+      const res = await GET(req());
+      expect(res.status).toBe(200);
+      expect(service.drainBookingReservations).toHaveBeenCalledTimes(1);
+      expect(service.sweepAbandonedReschedulePins).toHaveBeenCalledTimes(1);
+      expect(service.sweepAbandonedReassignIntents).toHaveBeenCalledTimes(1);
+      expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("outbox");
+      expect(locks.releaseLock).toHaveBeenCalledWith("cron_outbox", "lease");
+      const body = await res.json();
+      // null, never a zero count: the drain measured nothing this tick.
+      expect(body.outbox).toBeNull();
+      expect(body.reservations).toEqual({ processed: 0 });
+      const call = logged.log.error.mock.calls.find((c) => c[0] === "outbox");
+      expect(call).toBeDefined();
+      expect(call![2]).toBe(boom);
+    });
+
+    it("all-clears outbox_drain_failing only from a tick where the drain returned a result", async () => {
+      service.drainBookingOutbox.mockRejectedValueOnce(new Error("outbox read failed"));
+      await GET(req());
+      const firstKeys = dispatch.resolveRecovered.mock.calls.flatMap((c) => c[0].map((r) => r.key));
+      expect(firstKeys).not.toContain("outbox_drain_failing");
+      expect(streak.counts.get("outbox_drain_failing")).toBe(1);
+      await GET(req());
+      const keys = dispatch.resolveRecovered.mock.calls.flatMap((c) => c[0].map((r) => r.key));
+      expect(keys).toContain("outbox_drain_failing");
+      expect(streak.counts.get("outbox_drain_failing")).toBeUndefined();
+    });
+  });
+
   // #3077. Each sweep used to be `.catch(() => null)`: nothing logged, nothing
   // paged, and the heartbeat still stamped, so a reservation drain throwing on every
-  // tick left crashed lead bookings unresumed behind a lane answering 200.
+  // tick left crashed lead bookings unresumed behind a lane answering 200. The
+  // outbox drain joined this table with #3846.
   describe("a sweep that throws (#3077)", () => {
     const sweeps = [
+      ["drainBookingOutbox", "outbox_drain_failing"],
       ["drainBookingReservations", "reservation_drain_failing"],
       ["sweepAbandonedReschedulePins", "reschedule_pin_sweep_failing"],
       ["sweepAbandonedReassignIntents", "reassign_intent_sweep_failing"],
@@ -162,6 +201,14 @@ describe("GET /api/cron/outbox", () => {
       const keys = dispatch.resolveRecovered.mock.calls.flatMap((c) => c[0].map((r) => r.key));
       expect(keys).toContain("reservation_drain_failing");
       expect(streak.counts.get("reservation_drain_failing")).toBeUndefined();
+    });
+
+    it("still answers 200 and stamps the heartbeat when the failure report throws (outbox drain)", async () => {
+      service.drainBookingOutbox.mockRejectedValueOnce(new Error("read failed"));
+      streak.recordConsecutiveStreak.mockRejectedValueOnce(new Error("rpc down"));
+      const res = await GET(req());
+      expect(res.status).toBe(200);
+      expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("outbox");
     });
 
     it("still answers 200 and stamps the heartbeat when the failure report throws", async () => {

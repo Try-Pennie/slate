@@ -82,6 +82,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   demo_auto_cancel_failing: "a-lane-or-schedule-has-gone-quiet",
   // #3077. The same family on the outbox lane.
   reservation_drain_failing: "a-lane-or-schedule-has-gone-quiet",
+  // #3846. The outbox drain itself, the lane's primary job.
+  outbox_drain_failing: "a-lane-or-schedule-has-gone-quiet",
   reschedule_pin_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
   reassign_intent_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
   // #3485. The same family for the hourly coverage-reassignment retry.
