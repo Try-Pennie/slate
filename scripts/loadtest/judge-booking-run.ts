@@ -1005,7 +1005,16 @@ export function subrequestText(
  * the object's own work, or everything outside the object, so a fix is aimed at the
  * part that moved. Every count that is not a reading is named, never folded in (L98).
  */
-export function lineSplitText(cs: ConfirmStartupReading | null): string {
+export function lineSplitText(
+  cs: ConfirmStartupReading | null,
+  /** #3815: where the line calls were read from and how many, said on the line. */
+  source?: string,
+): string {
+  const tail = source ? `; ${source}` : "";
+  return lineSplitBody(cs) + tail;
+}
+
+function lineSplitBody(cs: ConfirmStartupReading | null): string {
   const head = "- the shared line's wait, by where it went";
   if (cs === null) return `${head}: the archived log was not read, so the line's wait was not split`;
   const { cold, warm, orphanCalls, lineLog, lineUnparsable } = cs.lineSplit;
