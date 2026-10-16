@@ -15,7 +15,6 @@ import {
   readExactCeilingReply,
 } from "@/lib/rate-limit-burst";
 import { fetchWithinBudget } from "@/lib/call-budget";
-import { SUPABASE_FETCH_TIMEOUT_MS } from "@/lib/supabase/fetch-deadline";
 import {
   judgeCaller,
   rateLimitKey,
@@ -645,11 +644,20 @@ export async function allowRequest(
 }
 
 /**
- * How long one hit may wait for the edge counter (#3416): the same deadline the Supabase request
- * it replaced had, inside the same call budget, so the moment an unanswering counter fails open
- * is the moment the Postgres one did.
+ * How long one hit may wait for the edge counter before the ceiling fails open (#3828).
+ *
+ * Two seconds, measured on production's counter over the 7 days to 2026-10-16: of 7,151
+ * calls, 19 took over 1 second, 4 over 2 and 1 over 3 (the slowest 5.9s), in short platform
+ * episodes rather than on idle wake; the median was about 75ms and the 95th percentile 261ms.
+ * It used to be the 15 second Supabase deadline it inherited from the Postgres count it
+ * replaced (#3416), so a stall held a lead's confirm for its whole length (load run
+ * 38933668981: 1 to 5 seconds). Now a stall costs a lead at most two seconds, and the few
+ * bookings that outlast it (about four a week) go through uncounted, which at 6,000 an hour per
+ * caller and 1,200 per address cannot carry anybody past a ceiling. Dan chose two seconds on
+ * 2026-10-16 over one, which would give up about three times a day. A sustained stall still
+ * pages through the existing fail open alerting.
  */
-export const EXACT_CEILING_DEADLINE_MS = SUPABASE_FETCH_TIMEOUT_MS;
+export const EXACT_CEILING_DEADLINE_MS = 2_000;
 
 /**
  * The label a hit is charged under in a confirm's profile (#3300). Its own dependency, so a run

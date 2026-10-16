@@ -88,6 +88,7 @@ import {
   grantBookingRetryCredit,
   bookingRetryCredit,
   exactCeilingWithinLimit,
+  EXACT_CEILING_DEADLINE_MS,
   resetLimiterAlertGatesForTests,
 } from "./rate-limit";
 import {
@@ -1622,6 +1623,24 @@ describe("exactCeilingWithinLimit, the hourly ceilings at the edge (#3416)", () 
     await flushAfter();
     expect(sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual([`rate_limit_broken:${KEY_RULE.prefix}`]);
     expect(JSON.stringify(consoleErr.mock.calls)).toMatch(/did not answer/);
+    consoleErr.mockRestore();
+  });
+
+  it("gives up on a stalled counter after about two seconds, not the old fifteen (#3828)", async () => {
+    // Load run 38933668981: two counters stalled 4 to 5 seconds at once, and a lead's confirm
+    // waited out the stall because the deadline was the 15 second Supabase one. Production's
+    // counter answers in about 75ms (261ms at the 95th percentile) and took over 2 seconds on
+    // 4 of 7,151 calls in a week. Real time, on a counter that
+    // never answers: the body path does not run under fake timers, and the bounds are loose on
+    // purpose, so this asserts the deadline in force and not the machine's speed (L290).
+    cf.env = { BURST_LIMITER: answering(() => new Promise<Response>(() => {})) };
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const started = performance.now();
+    await expect(exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES)).resolves.toBe(true);
+    const waited = performance.now() - started;
+    expect(waited).toBeGreaterThanOrEqual(EXACT_CEILING_DEADLINE_MS - 50);
+    expect(waited).toBeLessThan(5_000);
+    expect(EXACT_CEILING_DEADLINE_MS).toBe(2_000);
     consoleErr.mockRestore();
   });
 
