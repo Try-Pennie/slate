@@ -17,12 +17,18 @@
 // reads to the alert recovery coverage guard as a wiring site with no key, and the
 // dispatcher's own file is the one place that guard deliberately does not scan.
 
+import type { AlertRepeat } from "@/lib/notify/repeat-policy";
+
 /**
  * Sends a throttled page or whisper: the shape of `sendThrottledAlert` and
  * `sendThrottledInfo`, which resolve to nothing. A check whose fake returns
  * something else declares what, as `ThrottledNotify<unknown>`.
+ *
+ * `repeat` (#3801) is what a CONDITION names, so the dispatcher can post a change at
+ * once and an unchanged fact once a day. Optional: a check that omits it is judged on
+ * its message's own lines, and a fake may ignore it.
  */
-export type ThrottledNotify<Result = void> = (key: string, cooldownMs: number, text: string) => Promise<Result>;
+export type ThrottledNotify<Result = void> = (key: string, cooldownMs: number, text: string, repeat?: AlertRepeat) => Promise<Result>;
 
 /**
  * Settles an outstanding alert: the shape of `resolveAlert`, which answers whether it

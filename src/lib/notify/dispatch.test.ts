@@ -30,6 +30,13 @@ vi.mock("@/lib/platform/runtime", () => ({ isWorkersRuntime, workersRuntimeMarke
 // and being cleared instead of asserting against their own mock. Empty by default,
 // which is "no prior send", so the cooldown never blocks the older tests.
 const rows = vi.hoisted(() => new Map<string, string>());
+// #3801: the repeat rule's columns (subjects, band, opened_at) beside each stamp, so
+// a condition reads back what its last post said, as it does against Postgres.
+const extras = vi.hoisted(() => new Map<string, Record<string, unknown>>());
+const keepExtras = vi.hoisted(() => (key: string, row: Record<string, unknown>) => {
+  const { key: _k, last_sent_at: _s, ...rest } = row;
+  extras.set(key, { ...(extras.get(key) ?? {}), ...rest });
+});
 const upsert = vi.hoisted(() => vi.fn());
 const del = vi.hoisted(() => vi.fn());
 // #1134: lets a test make every read error, to prove the bulk firing read fails
@@ -105,7 +112,7 @@ vi.mock("@/lib/supabase/admin", () => {
           maybeSingle: async () => {
             const result = failCooldownRead.value || failKeyReads.has(key)
               ? { data: null, error: { message: "statement timeout" } }
-              : { data: rows.has(key) ? { last_sent_at: rows.get(key) } : null, error: null };
+              : { data: rows.has(key) ? { ...(extras.get(key) ?? {}), last_sent_at: rows.get(key) } : null, error: null };
             if (readBarrier.size > 0) {
               await new Promise<void>((release) => {
                 readBarrier.waiting.push(release);
@@ -153,24 +160,28 @@ vi.mock("@/lib/supabase/admin", () => {
             : { data: keys.filter((k) => rows.has(k)).map((key) => ({ key })), error: null };
         },
       }),
-      upsert: async (row: { key: string; last_sent_at: string }) => {
+      upsert: async (row: { key: string; last_sent_at: string } & Record<string, unknown>) => {
         upsert(row);
         rows.set(row.key, row.last_sent_at);
+        keepExtras(row.key, row);
         return {};
       },
-      insert: async (row: { key: string; last_sent_at: string }) => {
+      insert: async (row: { key: string; last_sent_at: string } & Record<string, unknown>) => {
         inserted(row);
         if (claims.enforce && rows.has(row.key)) {
           return { error: { code: "23505", message: "duplicate key value violates unique constraint" } };
         }
         rows.set(row.key, row.last_sent_at);
+        extras.delete(row.key);
+        keepExtras(row.key, row);
         return { error: null };
       },
-      update: (values: { last_sent_at: string }) =>
+      update: (values: { last_sent_at: string } & Record<string, unknown>) =>
         filtered((filters) => {
           const key = matches(filters);
           if (key === null) return { data: [], error: null };
           rows.set(key, values.last_sent_at);
+          keepExtras(key, values);
           return { data: [{ key }], error: null };
         }),
       delete: () => ({
@@ -181,12 +192,16 @@ vi.mock("@/lib/supabase/admin", () => {
             if (key === null) return { data: [], error: null };
             del(key);
             rows.delete(key);
+            extras.delete(key);
             return { data: [{ key }], error: null };
           }),
         in: async (_col: string, keys: string[]) => {
           delIn(keys);
           if (failDeletes.value) return { error: { message: "delete timeout" } };
-          for (const k of keys) rows.delete(k);
+          for (const k of keys) {
+            rows.delete(k);
+            extras.delete(k);
+          }
           return { error: null };
         },
       }),
@@ -197,7 +212,7 @@ vi.mock("@/lib/supabase/admin", () => {
 
 // #1035: a failed send logs a warning (the paging channel can't page about itself).
 const warn = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/log", () => ({ log: { warn: (...a: unknown[]) => warn(...a) } }));
+vi.mock("@/lib/log", () => ({ log: { warn: (...a: unknown[]) => warn(...a), info: () => {} } }));
 
 import {
   sendThrottledInfo,
@@ -213,12 +228,14 @@ import {
   isAlertDue,
 } from "./dispatch";
 import { slackInfoChannel } from "@/lib/env";
+import { signatureSubjects } from "@/lib/notify/repeat-policy";
 import { clearChannelCache } from "@/lib/notify/channels";
 
 const ENV = process.env;
 beforeEach(() => {
   vi.clearAllMocks();
   rows.clear();
+  extras.clear();
   failReads.value = false;
   failKeyReads.clear();
   failReadInCall.value = 0;
@@ -366,7 +383,9 @@ describe("sendThrottledAlert under a load test (#3104)", () => {
     slack.slackConfigured.mockReturnValue(false);
     await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
     const first = rows.get("sync_failures");
-    await sendThrottledAlert("sync_failures", COOLDOWN, "broken again");
+    // The same message: under #3801 a message naming something new is a CHANGE for a
+    // condition, and posts at once, so throttling is asserted on an unchanged one.
+    await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
     expect(upsert).toHaveBeenCalledTimes(1);
     expect(rows.get("sync_failures")).toBe(first);
   });
@@ -414,29 +433,31 @@ describe("a page that carries news (#3303)", () => {
     const iso = new Date(at).toISOString();
     rows.set(KEY, iso);
     rows.set(firingKey(KEY), iso);
+    // #3801: what that page said, so a page naming the same thing is not a change.
+    extras.set(KEY, { subjects: signatureSubjects("2 appointments"), band: null, opened_at: iso });
     return at;
   };
 
   it("re-pages inside the cooldown when something became true after the last delivered page", async () => {
     const paged = deliveredAgo(5 * 60_000);
-    await sendThrottledAlert(KEY, COOLDOWN, "4 appointments", undefined, {
+    await sendThrottledAlert(KEY, COOLDOWN, "4 appointments", { news: {
       newestMs: paged + 60_000,
       asOfMs: Date.now() - 1_000,
-    });
+    } });
     expect(slack.postSlack).toHaveBeenCalledTimes(1);
     expect(slack.postSlack.mock.calls[0][0]).toMatchObject({ text: "4 appointments" });
   });
 
   it("stays throttled when nothing is newer than the last delivered page", async () => {
     const paged = deliveredAgo(5 * 60_000);
-    await sendThrottledAlert(KEY, COOLDOWN, "2 appointments", undefined, {
+    await sendThrottledAlert(KEY, COOLDOWN, "2 appointments", { news: {
       newestMs: paged,
       asOfMs: Date.now() - 1_000,
-    });
-    await sendThrottledAlert(KEY, COOLDOWN, "2 appointments", undefined, {
+    } });
+    await sendThrottledAlert(KEY, COOLDOWN, "2 appointments", { news: {
       newestMs: paged - 10 * 60_000,
       asOfMs: Date.now() - 1_000,
-    });
+    } });
     expect(slack.postSlack).not.toHaveBeenCalled();
   });
 
@@ -445,30 +466,30 @@ describe("a page that carries news (#3303)", () => {
   // and the post is not in this page, so it has to count as news next time.
   it("stamps both rows with when the content was measured, so a later fact can be told apart", async () => {
     const asOfMs = Date.now() - 2_000;
-    await sendThrottledAlert(KEY, COOLDOWN, "2 appointments", undefined, { newestMs: asOfMs - 60_000, asOfMs });
+    await sendThrottledAlert(KEY, COOLDOWN, "2 appointments", { news: { newestMs: asOfMs - 60_000, asOfMs } });
     expect(rows.get(KEY)).toBe(new Date(asOfMs).toISOString());
     expect(rows.get(firingKey(KEY))).toBe(new Date(asOfMs).toISOString());
 
     // A fact that became true after the measurement and before the post is news.
-    await sendThrottledAlert(KEY, COOLDOWN, "3 appointments", undefined, {
+    await sendThrottledAlert(KEY, COOLDOWN, "3 appointments", { news: {
       newestMs: asOfMs + 500,
       asOfMs: Date.now(),
-    });
+    } });
     expect(slack.postSlack).toHaveBeenCalledTimes(2);
     // And once told, the same fact is not news again.
-    await sendThrottledAlert(KEY, COOLDOWN, "3 appointments", undefined, {
+    await sendThrottledAlert(KEY, COOLDOWN, "3 appointments", { news: {
       newestMs: asOfMs + 500,
       asOfMs: Date.now(),
-    });
+    } });
     expect(slack.postSlack).toHaveBeenCalledTimes(2);
   });
 
   it("never stamps a measurement time later than now", async () => {
     const before = Date.now();
-    await sendThrottledAlert(KEY, COOLDOWN, "2 appointments", undefined, {
+    await sendThrottledAlert(KEY, COOLDOWN, "2 appointments", { news: {
       newestMs: before - 60_000,
       asOfMs: before + 10 * 60_000,
-    });
+    } });
     expect(Date.parse(rows.get(KEY)!)).toBeLessThanOrEqual(Date.now());
     expect(Date.parse(rows.get(firingKey(KEY))!)).toBeLessThanOrEqual(Date.now());
   });
@@ -482,18 +503,18 @@ describe("a page that carries news (#3303)", () => {
     // would leak into whichever test posts next and fail it for no reason of its own.
     slack.postSlack.mockImplementation(async () => ({ ok: false, error: "channel_not_found" }));
     try {
-      await sendThrottledAlert(KEY, COOLDOWN, "3 appointments", undefined, {
+      await sendThrottledAlert(KEY, COOLDOWN, "3 appointments", { news: {
         newestMs: paged + 60_000,
         asOfMs: Date.now() - 1_000,
-      });
+      } });
     } finally {
       slack.postSlack.mockImplementation(async () => ({ ok: true }));
     }
     expect(slack.postSlack).toHaveBeenCalledTimes(1);
-    await sendThrottledAlert(KEY, COOLDOWN, "3 appointments", undefined, {
+    await sendThrottledAlert(KEY, COOLDOWN, "3 appointments", { news: {
       newestMs: paged + 60_000,
       asOfMs: Date.now(),
-    });
+    } });
     expect(slack.postSlack).toHaveBeenCalledTimes(1);
   });
 
@@ -502,8 +523,8 @@ describe("a page that carries news (#3303)", () => {
     readBarrier.size = 2;
     const news = { newestMs: paged + 60_000, asOfMs: Date.now() - 1_000 };
     await Promise.all([
-      sendThrottledAlert(KEY, COOLDOWN, "4 appointments", undefined, news),
-      sendThrottledAlert(KEY, COOLDOWN, "4 appointments", undefined, news),
+      sendThrottledAlert(KEY, COOLDOWN, "4 appointments", { news }),
+      sendThrottledAlert(KEY, COOLDOWN, "4 appointments", { news }),
     ]);
     expect(slack.postSlack).toHaveBeenCalledTimes(1);
   });
@@ -514,10 +535,10 @@ describe("a page that carries news (#3303)", () => {
   it("falls back to the cooldown, and says so, when the delivered marker cannot be read", async () => {
     const paged = deliveredAgo(5 * 60_000);
     failKeyReads.add(firingKey(KEY));
-    await sendThrottledAlert(KEY, COOLDOWN, "4 appointments", undefined, {
+    await sendThrottledAlert(KEY, COOLDOWN, "4 appointments", { news: {
       newestMs: paged + 60_000,
       asOfMs: Date.now() - 1_000,
-    });
+    } });
     expect(slack.postSlack).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
       "slack-alert",

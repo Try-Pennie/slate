@@ -43,11 +43,13 @@ const row = (key: string, cooldown_min: number | null, updated_at = "2026-08-05T
   ];
   const quiet = quietedAlarms(rows);
   eq(quiet.length, 2, "both stretched alarms are reported");
-  // Most-quieted first, so the worst offender leads however long the list gets.
-  eq(quiet[0].key, "availability_data_anomaly", "the one furthest above its default leads");
+  // Most-quieted first, so the worst offender leads however long the list gets. Since
+  // #3801 the empty tier page is urgent (an hourly default) and the anomaly page daily,
+  // so the same week stored on both puts the empty tier furthest above its default.
+  eq(quiet[0].key, "empty_tier", "the one furthest above its default leads");
   eq(quiet[0].storedMinutes, 10080, "carries the stored value");
-  eq(quiet[0].defaultMinutes, defMin("availability_data_anomaly"), "and the coded default");
-  eq(quiet[0].updatedAt, "2026-08-04T09:00:00.000Z", "and when it changed");
+  eq(quiet[0].defaultMinutes, defMin("empty_tier"), "and the coded default");
+  eq(quiet[0].updatedAt, "2026-08-05T10:00:00.000Z", "and when it changed");
   assert(quiet[0].label.length > 0, "and the label the settings screen shows");
 }
 

@@ -55,12 +55,18 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
 import { CALCOM_HEARTBEAT_LANES, loadCalcomRetiredCached, withoutRetiredCalcomLanes } from "@/lib/calcom/retirement";
 import { parseStampMs } from "@/lib/date/stamp";
+import { CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
 
 /** Per lane, so one dead lane can't throttle away the first alert for another. */
 const staleLaneAlertKey = (lane: string) => `cron_lane_stale:${lane}`;
 
-/** A dead lane stays dead, so re-page hourly rather than every minute. */
-const STALE_LANE_COOLDOWN_MS = 60 * 60_000;
+/**
+ * A dead lane stays dead, so it is said again once a day while unchanged (#3801),
+ * not hourly. Every stale lane page names its lane as its only subject, so the
+ * "has not run for N minutes" in the copy, which grows on every tick, can never read
+ * as a change; a SECOND lane going quiet is its own key and posts at once.
+ */
+const STALE_LANE_COOLDOWN_MS = CONDITION_REPEAT_MS;
 
 /**
  * A blind detector (#1394) re-pages DAILY, not hourly.
@@ -74,17 +80,19 @@ const STALE_LANE_COOLDOWN_MS = 60 * 60_000;
 const BLIND_DETECTOR_COOLDOWN_MS = 24 * 60 * 60_000;
 
 /**
- * A quiet DAILY lane re-pages every 12 hours, not hourly (#2543, #3076).
+ * A quiet DAILY lane re-pages once a day, not hourly (#2543, #3076, #3801).
  *
  * The time off lanes and the database dump run once a day, so the proof that a fix
  * worked is the next day's run: there is nothing a reader can do that would clear
  * this inside an hour, and repeating the same page twenty four times before anything
- * could change is how an alert trains people to ignore it (L36). Half the daily
- * cadence still puts it in front of both a morning and an evening reader. Derived
- * from the cadence rather than written as 12 hours, so the two cannot drift apart.
+ * could change is how an alert trains people to ignore it (L36). It was half the
+ * cadence, to reach a morning and an evening reader, until #3801 made a day the
+ * repeat for every unchanged condition.
  */
 const DAILY_CADENCE_MS = 24 * 60 * 60_000;
-const DAILY_LANE_COOLDOWN_MS = DAILY_CADENCE_MS / 2;
+// #3801 made a day the floor for every condition whose interval is coded, so half
+// the cadence now reads as the day it is applied as (`reminderIntervalMs`).
+const DAILY_LANE_COOLDOWN_MS = Math.max(DAILY_CADENCE_MS / 2, CONDITION_REPEAT_MS);
 
 /**
  * How often the parked detectors say they are parked (#1561).
@@ -260,6 +268,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
         staleLaneAlertKey(lane.lane),
         STALE_LANE_COOLDOWN_MS,
         coreLaneAlertText(lane),
+        { subjects: [lane.lane] },
       ).catch((err) => {
         // One lane's failed Slack post must not skip the remaining lanes.
         log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
@@ -277,6 +286,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       staleLaneAlertKey(lane.lane),
       STALE_LANE_COOLDOWN_MS,
       canaryAlertText(lane, minutes(lane.maxStaleMs)),
+      { subjects: [lane.lane] },
     ).catch((err) => {
       log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
     });
@@ -288,6 +298,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       staleLaneAlertKey(lane.lane),
       STALE_LANE_COOLDOWN_MS,
       mirrorAlertText(lane, minutes(lane.maxStaleMs)),
+      { subjects: [lane.lane] },
     ).catch((err) => {
       log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
     });
@@ -298,6 +309,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       staleLaneAlertKey(lane.lane),
       STALE_LANE_COOLDOWN_MS,
       retentionAlertText(lane.lane, lane.ageMs, minutes(lane.maxStaleMs), lane.unreadable),
+      { subjects: [lane.lane] },
     ),
   );
 
@@ -306,6 +318,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       staleLaneAlertKey(lane.lane),
       DAILY_LANE_COOLDOWN_MS,
       timeOffLaneAlertText(lane),
+      { subjects: [lane.lane] },
     ),
   );
 
@@ -314,6 +327,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       staleLaneAlertKey(lane.lane),
       STALE_LANE_COOLDOWN_MS,
       uptimeAlertText(lane),
+      { subjects: [lane.lane] },
     ),
   );
 
@@ -322,6 +336,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       staleLaneAlertKey(lane.lane),
       DAILY_LANE_COOLDOWN_MS,
       backupAlertText(lane),
+      { subjects: [lane.lane] },
     ),
   );
 
@@ -330,6 +345,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       staleLaneAlertKey(lane.lane),
       STALE_LANE_COOLDOWN_MS,
       logShippingAlertText(lane),
+      { subjects: [lane.lane] },
     ),
   );
 
@@ -338,6 +354,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       staleLaneAlertKey(lane.lane),
       STALE_LANE_COOLDOWN_MS,
       poolGroupingAlertText(lane),
+      { subjects: [lane.lane] },
     ),
   );
 
@@ -346,6 +363,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       staleLaneAlertKey(lane.lane),
       BLIND_DETECTOR_COOLDOWN_MS,
       verdictBlindAlertText(lane),
+      { subjects: [lane.lane] },
     ),
   );
 

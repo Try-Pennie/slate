@@ -48,6 +48,7 @@
  * scripts/test-offered-nobody-free.ts drives every branch with no database and no clock.
  */
 import type { AlertResolve, ThrottledNotify } from "./alert-deps.ts";
+import type { AlertRepeat } from "../notify/repeat-policy.ts";
 import { shapePrecomputedRow } from "../availability/precompute-shape.ts";
 import { slotsWithinBusinessHours, type BusinessHoursRules } from "../availability/compute.ts";
 import { rowProvenance } from "../availability/slot-row-writer.ts";
@@ -127,6 +128,16 @@ export interface OfferedFinding {
   /** When the stored row was computed, and by which path (#3381), for the reader. */
   rowComputedAt: string;
   writtenBy: string | null;
+}
+
+/**
+ * What the page names, for the repeat rule (#3801): the bucket codes serving a time
+ * nobody is free for. Not the times themselves, which walk forward with the clock as
+ * the window moves, so a bucket already named is the same finding hour after hour
+ * and a bucket newly doing it is a change that posts at once.
+ */
+export function offeredNobodyFreeRepeat(persisting: readonly { code: string }[]): AlertRepeat {
+  return { subjects: [...new Set(persisting.map((f) => `bucket:${f.code}`))] };
 }
 
 export interface OfferedNobodyFreeDeps {
@@ -376,7 +387,12 @@ export async function runOfferedNobodyFreeCheck(deps: OfferedNobodyFreeDeps): Pr
   let cleared = false;
   if (persisting.length > 0) {
     // alert-key: offered_nobody_free
-    await deps.notify(OFFERED_NOBODY_FREE_ALERT_KEY, deps.cooldownMs, formatOfferedNobodyFreeAlert(persisting, nowMs));
+    await deps.notify(
+      OFFERED_NOBODY_FREE_ALERT_KEY,
+      deps.cooldownMs,
+      formatOfferedNobodyFreeAlert(persisting, nowMs),
+      offeredNobodyFreeRepeat(persisting),
+    );
     paged = true;
   } else if (judged > 0 && nobodyFree === 0 && suspectsLeft === 0) {
     // Over only on a MEASURED healthy result (L345, #1134): something was judged this

@@ -1,0 +1,110 @@
+// An in-memory `alert_state` for vitest suites that drive the REAL alert dispatcher
+// (#3801). Imported only by tests; the name keeps it out of vitest's suite glob.
+//
+// It behaves the way PostgREST and Postgres do on the calls the dispatcher makes,
+// because the repeat rule lives in what the dispatcher reads back: a row carries
+// `last_sent_at` plus the 0184 columns (`subjects`, `band`, `opened_at`), an upsert
+// MERGES the columns it names into an existing row (PostgREST's merge-duplicates),
+// an insert the primary key refuses answers 23505, and an update or delete filtered
+// on `last_sent_at` matches only while the row still holds that stamp. A fake that
+// dropped the extra columns would read every post as the first under the rule.
+
+export interface AlertStateRow {
+  last_sent_at: string;
+  subjects?: string[] | null;
+  band?: number | null;
+  opened_at?: string | null;
+}
+
+/** The store, one per test file (vitest isolates each file's module registry). */
+export const alertStateRows = new Map<string, AlertStateRow>();
+
+/** Keys whose single row read is refused, so a test can make a read fail. */
+export const refusedAlertStateReads = new Set<string>();
+
+type Filters = Map<string, string>;
+type Result = { data?: unknown; error: unknown };
+
+function chain(apply: (f: Filters) => Result) {
+  const filters: Filters = new Map();
+  const b = {
+    eq: (col: string, val: string) => {
+      filters.set(col, val);
+      return b;
+    },
+    select: async () => apply(filters),
+    maybeSingle: async () => apply(filters),
+    then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
+      Promise.resolve(apply(filters)).then(res, rej),
+  };
+  return b;
+}
+
+function matching(f: Filters): string | null {
+  const key = f.get("key");
+  if (key === undefined || !alertStateRows.has(key)) return null;
+  const stamp = f.get("last_sent_at");
+  return stamp === undefined || alertStateRows.get(key)?.last_sent_at === stamp ? key : null;
+}
+
+function selected(row: AlertStateRow, key: string): Record<string, unknown> {
+  return {
+    key,
+    last_sent_at: row.last_sent_at,
+    subjects: row.subjects ?? null,
+    band: row.band ?? null,
+    opened_at: row.opened_at ?? null,
+  };
+}
+
+/** What `vi.mock("@/lib/supabase/admin", ...)` should return. */
+export function fakeSupabaseAdminModule() {
+  return {
+    supabaseAdmin: () => ({
+      from: () => ({
+        select: () => ({
+          ...chain((f) => {
+            const key = f.get("key") ?? "";
+            if (refusedAlertStateReads.has(key)) return { data: null, error: { message: "statement timeout" } };
+            const row = alertStateRows.get(key);
+            return { data: row ? selected(row, key) : null, error: null };
+          }),
+          in: async (_col: string, keys: string[]) => ({
+            data: keys.filter((k) => alertStateRows.has(k)).map((key) => ({ key })),
+            error: null,
+          }),
+        }),
+        insert: async (row: AlertStateRow & { key: string }) => {
+          if (alertStateRows.has(row.key)) return { error: { code: "23505", message: "duplicate key" } };
+          const { key, ...rest } = row;
+          alertStateRows.set(key, rest);
+          return { error: null };
+        },
+        update: (values: Partial<AlertStateRow>) =>
+          chain((f) => {
+            const key = matching(f);
+            if (key === null) return { data: [], error: null };
+            alertStateRows.set(key, { ...(alertStateRows.get(key) as AlertStateRow), ...values });
+            return { data: [{ key }], error: null };
+          }),
+        upsert: async (row: AlertStateRow & { key: string }) => {
+          const { key, ...rest } = row;
+          alertStateRows.set(key, { ...(alertStateRows.get(key) ?? { last_sent_at: rest.last_sent_at }), ...rest });
+          return { error: null };
+        },
+        delete: () => ({
+          ...chain((f) => {
+            const key = matching(f);
+            if (key === null) return { data: [], error: null };
+            alertStateRows.delete(key);
+            return { data: [{ key }], error: null };
+          }),
+          in: async (_col: string, keys: string[]) => {
+            for (const k of keys) alertStateRows.delete(k);
+            return { error: null };
+          },
+        }),
+      }),
+    }),
+  };
+}

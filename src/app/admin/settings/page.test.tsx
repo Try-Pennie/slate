@@ -251,14 +251,15 @@ describe("AlertSettings quieted-alarm notice (#1289)", () => {
     const anomaly = document.querySelector('[data-quieted-alarm="availability_data_anomaly"]');
     expect(anomaly?.textContent).toContain("Data-anomaly page cooldown");
     expect(anomaly?.textContent).toContain("7 days");
-    expect(anomaly?.textContent).toContain("30 minutes");
+    expect(anomaly?.textContent).toContain("1 day");
     expect(anomaly?.textContent).toMatch(/changed Aug 4/);
     // Worst offender first: both are a week here, so the one with the shortest
-    // default is the most quieted.
+    // default is the most quieted. Since #3801 that is the empty tier page, an urgent
+    // condition repeating hourly, against the anomaly page's daily default.
     const listed = [...document.querySelectorAll("[data-quieted-alarm]")].map((n) =>
       n.getAttribute("data-quieted-alarm"),
     );
-    expect(listed).toEqual(["availability_data_anomaly", "empty_tier"]);
+    expect(listed).toEqual(["empty_tier", "availability_data_anomaly"]);
   });
 
   it("says nothing when every cooldown is at or below its default", async () => {
@@ -266,7 +267,7 @@ describe("AlertSettings quieted-alarm notice (#1289)", () => {
     db.results.monitor_settings = {
       // At its default, and one deliberately shorter (noisier, not quieter).
       data: [
-        { key: "empty_tier", cooldown_min: 360, updated_at: "2026-08-05T10:00:00.000Z", updated_by: null },
+        { key: "empty_tier", cooldown_min: 60, updated_at: "2026-08-05T10:00:00.000Z", updated_by: null },
         { key: "low_booking_volume", cooldown_min: 5, updated_at: "2026-08-05T10:00:00.000Z", updated_by: null },
       ],
       error: null,
@@ -301,7 +302,7 @@ describe("AlertSettings quieted-alarm notice (#1289)", () => {
     const field = screen.getByLabelText(/Data-anomaly page cooldown/);
     const describedBy = field.getAttribute("aria-describedby");
     expect(describedBy).toBeTruthy();
-    expect(document.getElementById(describedBy!)?.textContent).toMatch(/default 30/i);
+    expect(document.getElementById(describedBy!)?.textContent).toMatch(/default 1440/i);
     // And every field has one, not just the overridden one.
     const defaults = [...document.querySelectorAll('[id$="_default"]')];
     // Plus the two that decide when a debt tier page ends (#3227), and the nearly
@@ -368,7 +369,7 @@ describe("AlertSettings quieted-alarm notice (#1289)", () => {
       ?.closest("li");
     // The stored value and the default are both on the row.
     expect((row?.querySelector("input") as HTMLInputElement | null)?.value).toBe("10080");
-    expect(row?.textContent).toMatch(/default 30/);
+    expect(row?.textContent).toMatch(/default 1440/);
     // And the row does NOT restate the consequence, which the notice above the
     // section already carries.
     expect(row?.textContent).not.toMatch(/repeats less often/i);

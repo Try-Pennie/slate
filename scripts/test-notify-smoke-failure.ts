@@ -172,4 +172,69 @@ const noIo = ioWith({});
   assert(ran === FAIL_LOUD_CHECKS, "the shared fail-loud contract ran every one of its assertions");
 }
 
+// --- #3801: hand the failure to the Worker first, post directly only if that fails ---
+{
+  const keyed = { ...baseEnv, SLACK_ALERTS_CHANNEL: "C123", BOOKING_API_KEY_CANARY: "k", SLATE_BASE_URL: "" };
+  const logIo = ioWith({ "f.txt": "FAIL: availability read took 4210ms\n" });
+  const envWithLog = { ...keyed, SMOKE_FAILURE_FILE: "f.txt" };
+  const answering = (status: number, body: unknown) => {
+    const calls: { url: string; body: string; auth: string }[] = [];
+    const fetchFn = async (url: string, init: { headers: Record<string, string>; body: string }) => {
+      calls.push({ url, body: init.body, auth: init.headers.authorization ?? "" });
+      return { ok: status >= 200 && status < 300, status, json: async () => body };
+    };
+    return { calls, fetchFn };
+  };
+  const posts: string[] = [];
+  const post = async (msg: { text: string }) => {
+    posts.push(msg.text);
+    return { ok: true };
+  };
+
+  for (const outcome of ["sent", "held"] as const) {
+    posts.length = 0;
+    const w = answering(200, { ok: true, outcome });
+    const res = await run(post, envWithLog, logIo, w.fetchFn);
+    eq(res.ok, true, `a Worker answer of ${outcome} is a handled alert`);
+    eq(posts.length, 0, `and the step posts nothing itself when the Worker ${outcome} it`);
+    eq(w.calls.length, 1, "the Worker was asked once");
+    eq(w.calls[0].url, "https://slate.trypennie.app/api/smoke/failure", "at the default base when the variable is empty");
+    eq(w.calls[0].auth, "Bearer k", "with the canary's own key");
+    const sent = JSON.parse(w.calls[0].body) as { outcome: string; mode: string; text: string; checks: string[] };
+    eq(sent.outcome, "failed", "as a failure");
+    eq(sent.mode, "full", "of the pass that ran");
+    eq(sent.checks, ["availability read took 4210ms"], "naming the failed checks without their log prefix");
+    assert(sent.text.includes("availability read took 4210ms"), "carrying the message the step would have posted");
+  }
+
+  for (const [why, w] of [
+    ["the Worker answering 503", answering(503, { error: "down" })],
+    ["the Worker saying its own post failed", answering(200, { ok: true, outcome: "failed" })],
+    ["the Worker saying it cannot post", answering(200, { ok: true, outcome: "skipped" })],
+    ["an answer that is not JSON", answering(200, "not json")],
+  ] as const) {
+    posts.length = 0;
+    const res = await run(post, envWithLog, logIo, w.fetchFn);
+    eq(posts.length, 1, `${why} makes the step post directly`);
+    assert(/posted directly/.test(res.reason), `and says so (${res.reason})`);
+  }
+
+  {
+    posts.length = 0;
+    const throwing = async () => {
+      throw new Error("getaddrinfo ENOTFOUND");
+    };
+    const res = await run(post, envWithLog, logIo, throwing);
+    eq(posts.length, 1, "a Worker that cannot be reached at all is posted around");
+    assert(res.reason.includes("ENOTFOUND"), "naming why");
+  }
+  {
+    posts.length = 0;
+    const w = answering(200, { ok: true, outcome: "sent" });
+    await run(post, { ...baseEnv, SLACK_ALERTS_CHANNEL: "C123" }, noIo, w.fetchFn);
+    eq(w.calls.length, 0, "with no canary key the Worker is not asked");
+    eq(posts.length, 1, "and the step posts directly, as before #3801");
+  }
+}
+
 finish();

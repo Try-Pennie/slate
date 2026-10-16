@@ -400,6 +400,12 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "An audit log entry no longer matches the hash chain written with it, which stays true until the trail is put back or re-anchored; the next complete walk from the first entry to the last that finds nothing wrong is the measured healthy reading that ends it (#3090).",
   },
   {
+    key: "smoke_canary_failed:*",
+    kind: "condition",
+    suffix: "bounded",
+    why: "A smoke canary pass (dry or full) is failing against production; the workflow hands each failure to the Worker, and a clean run of that pass reports in and ends it, a clean full pass ending both (#3801). Before #3801 the workflow posted it on every failing run.",
+  },
+  {
     key: "cron_budget_headroom",
     kind: "condition",
     why: "A cron schedule's worst tick in the last day used more than half the CPU ceiling, read from Cloudflare's own cpuTimeUs, which stays true for a day after the last such tick; the hourly check re-reads the trailing day, so a measured day with every schedule under the line is the healthy result that ends it, and an unread day ends nothing (#3141).",
@@ -1242,4 +1248,74 @@ export function alertEntry(key: string): AlertEntry | undefined {
 /** Keys of a given kind, for the guard and for tests. */
 export function alertKeysOfKind(kind: AlertKind): string[] {
   return ALERT_CATALOG.filter((e) => e.kind === kind).map((e) => e.key);
+}
+
+/** The catalog entry a SENT key belongs to: its own, or its `prefix:*` family's (#3801). */
+export function catalogEntryForSentKey(key: string): AlertEntry | undefined {
+  const exact = BY_KEY.get(key);
+  if (exact) return exact;
+  for (let at = key.lastIndexOf(":"); at > 0; at = key.lastIndexOf(":", at - 1)) {
+    const family = BY_KEY.get(`${key.slice(0, at)}:*`);
+    if (family) return family;
+  }
+  return undefined;
+}
+
+/**
+ * The kind of a key as SENT (#3801). `alertEntry` answers only an exact catalog key,
+ * so a send key such as `empty_tier:low` needs this to find `empty_tier:*`. Undefined
+ * for a key the catalog does not classify, which the dispatcher treats as having no
+ * repeat rule at all, exactly as before #3801.
+ */
+export function alertKindOf(key: string): AlertKind | undefined {
+  return catalogEntryForSentKey(key)?.kind;
+}
+
+/**
+ * The URGENT conditions: the ones whose meaning is that leads are being lost or
+ * turned away right now (#3801, Dan 2026-10-16). Every other condition posts again
+ * once a day while unchanged; these keep an hourly repeat, because an hour of a live
+ * outage is an hour of leads, and a reader who missed the first message should hear
+ * it again inside the same hour. A change still posts at once for these too, exactly
+ * as for every other condition.
+ *
+ * One named set rather than a flag at each send site, so the decision is visible in
+ * one place and a send site cannot quietly opt itself in or out (L621).
+ * `scripts/test-urgent-conditions.ts` holds every entry to existing in the catalog
+ * above and being a condition.
+ *
+ * Derived from each entry's own `why` by that one criterion:
+ *   - booking_failure_rate: bookings are failing right now.
+ *   - public_booking_stopped: the kill switch is on, so every public lead is refused.
+ *   - hydration_all_failing: named by Dan; the calendar refresh failing everywhere.
+ *   - empty_tier:*: a debt tier is offering leads no time at all.
+ *   - availability_booked_solid: every lead landing on that tier is turned away.
+ *   - low_booking_volume, low_tier_volume:*, low_page_volume:*: customers have stopped
+ *     getting through, overall, on one tier, or on one landing page.
+ *   - booking_api_credential: every lead the booking API's caller sends is refused.
+ *   - booking_api_ceiling: our own ceiling is turning that caller's leads away.
+ *
+ * `verify_on_book_outage` was named in the same decision and is NOT here: it is an
+ * INCIDENT (one refused attempt), so it keeps its own fifteen minute throttle, which
+ * is already faster than hourly, and the repeat rule never applies to it.
+ */
+export const URGENT_CONDITION_KEYS: readonly string[] = [
+  "booking_failure_rate",
+  "public_booking_stopped",
+  "hydration_all_failing",
+  "empty_tier:*",
+  "availability_booked_solid",
+  "low_booking_volume",
+  "low_tier_volume:*",
+  "low_page_volume:*",
+  "booking_api_credential",
+  "booking_api_ceiling",
+];
+
+const URGENT = new Set(URGENT_CONDITION_KEYS);
+
+/** Whether a SENT key is an urgent condition, family members included. */
+export function isUrgentCondition(key: string): boolean {
+  const entry = catalogEntryForSentKey(key);
+  return entry !== undefined && entry.kind === "condition" && URGENT.has(entry.key);
 }

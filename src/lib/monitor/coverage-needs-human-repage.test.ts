@@ -8,7 +8,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // Slack are faked; `alert_state` is a real in-memory key to stamp map with the
 // conditional writes Postgres would refuse, so a duplicate can be seen.
 
-const rows = vi.hoisted(() => new Map<string, string>());
 const posted = vi.hoisted(() => [] as string[]);
 
 vi.mock("@/lib/notify/slack", () => ({
@@ -23,64 +22,12 @@ vi.mock("@/lib/platform/runtime", () => ({
   workersRuntimeMarker: () => "Cloudflare-Workers",
 }));
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
-vi.mock("@/lib/supabase/admin", () => {
-  /** A filter chain applied when it is awaited, bare or through `.select()`. */
-  const chain = (apply: (f: Map<string, string>) => { data?: unknown; error: unknown }) => {
-    const filters = new Map<string, string>();
-    const b = {
-      eq: (col: string, val: string) => {
-        filters.set(col, val);
-        return b;
-      },
-      select: async () => apply(filters),
-      maybeSingle: async () => apply(filters),
-      then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
-        Promise.resolve(apply(filters)).then(res, rej),
-    };
-    return b;
-  };
-  /** The row a filter set names, if it still holds the stamp the filter expects. */
-  const match = (f: Map<string, string>): string | null => {
-    const key = f.get("key");
-    if (key === undefined || !rows.has(key)) return null;
-    const stamp = f.get("last_sent_at");
-    return stamp === undefined || rows.get(key) === stamp ? key : null;
-  };
-  return {
-    supabaseAdmin: () => ({
-      from: () => ({
-        select: () =>
-          chain((f) => {
-            const key = f.get("key") ?? "";
-            return { data: rows.has(key) ? { last_sent_at: rows.get(key) } : null, error: null };
-          }),
-        insert: async (row: { key: string; last_sent_at: string }) => {
-          if (rows.has(row.key)) return { error: { code: "23505", message: "duplicate key" } };
-          rows.set(row.key, row.last_sent_at);
-          return { error: null };
-        },
-        update: (values: { last_sent_at: string }) =>
-          chain((f) => {
-            const key = match(f);
-            if (key === null) return { data: [], error: null };
-            rows.set(key, values.last_sent_at);
-            return { data: [{ key }], error: null };
-          }),
-        upsert: async (row: { key: string; last_sent_at: string }) => {
-          rows.set(row.key, row.last_sent_at);
-          return { error: null };
-        },
-        delete: () =>
-          chain((f) => {
-            const key = match(f);
-            if (key === null) return { data: [], error: null };
-            rows.delete(key);
-            return { data: [{ key }], error: null };
-          }),
-      }),
-    }),
-  };
-});
+// #3801: the shared in-memory alert_state, which keeps the repeat rule's columns, so
+// a page reads back what the last one said exactly as it would in production.
+vi.mock("@/lib/supabase/admin", async () =>
+  (await import("@/lib/notify/alert-state-fake.test-support")).fakeSupabaseAdminModule(),
+);
+import { alertStateRows as rows } from "@/lib/notify/alert-state-fake.test-support";
 
 import {
   countStranded,
