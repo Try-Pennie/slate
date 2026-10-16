@@ -1041,14 +1041,17 @@ observability notes carry the real headroom numbers to compare against.
 
 The Worker's own ceilings (CPU, subrequests, the shared every minute invocation) are
 measured and live in `docs/cloudflare-platform-notes.md`. The two shared resources
-OUTSIDE Cloudflare are not measured anywhere yet, and this section says what is known
+OUTSIDE Cloudflare are only partly measured, and this section says what is known
 about each, what is not, and how to read the missing half, so the next capacity
 question starts from a recorded state rather than a guess.
 
 **The load premise.** How busy Slate really gets is the peak query in
 `scripts/loadtest/RUNBOOK.md` ("The peak the 60 a minute bar rests on"), re-runnable
 against production. Re-run it before any capacity decision and after cutover (#65),
-when Slate stops carrying only the pilot's share.
+when Slate stops carrying only the pilot's share. Its first production reading,
+2026-10-16: a busiest minute of 5 and a busiest day of 512 routed bookings, so the 60
+a minute bar is 12 times Slate's own peak. That is the pilot's half of tiers 1 to 5,
+and the RUNBOOK says why the whole of the traffic may put the bar under ten times.
 
 **Supabase.** What is known:
 
@@ -1063,10 +1066,18 @@ when Slate stops carrying only the pilot's share.
   project, not anything a Worker isolate opens, and a burst of isolates does not
   multiply connections.
 
-What is not known, and where to read it: the project's **compute size** and the
-**database size against its disk** (Dashboard > Project Settings > Compute and Disk),
-and the **PostgREST pool size and its saturation** (Dashboard > Reports > Database).
-None has been recorded, and none can be read from this repo. Growth is driven by the
+- **The compute size is Large.** Read from the database itself (#3751):
+  `select name, setting from pg_settings where name in ('max_connections',
+  'shared_buffers')` returned 160 and 262144 (2GB in 8kB pages) on 2026-10-14 and
+  again on 2026-10-16, after 60 and 32768 (256MB, micro) on 2026-10-07. Both
+  settings follow the compute size by default and either can be overridden, so the
+  dashboard's Compute and Disk page is the tie breaker if they ever disagree. The
+  load run's branch must match it; the RUNBOOK's step 1 says how to check both.
+
+What is not known, and where to read it: the **database size against its disk**
+(Dashboard > Project Settings > Compute and Disk), and the **PostgREST pool size and
+its saturation** (Dashboard > Reports > Database). Neither has been recorded, and
+neither can be read from this repo. Growth is driven by the
 append only tables (`booking_events`, `audit_log`, `webhook_deliveries`) and by
 bookings, and retention is the only thing that bounds them (`docs/pii-retention.md`).
 
