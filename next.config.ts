@@ -61,6 +61,11 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: import.meta.dirname,
   },
+  // #3883: one copy of a package every route uses, not one per route chunk. Zod was
+  // in eight, about 4.4MB of a 26.4MB Worker script, and a cold isolate waits for
+  // the whole script to load before the request reaches Slate.
+  // scripts/test-server-external-packages.ts holds it.
+  serverExternalPackages: ["zod"],
   // Baseline hardening on EVERY response. None of these restrict framing, so
   // serving them site-wide is safe for the embeddable booker (unlike the framing
   // headers, which stay middleware-only on /admin, /me, /login):
