@@ -66,6 +66,7 @@ import {
   type OwnerAlertEventBody,
 } from "./owner-alert.ts";
 import { formatOwnerReassignNotice } from "./owner-notice-copy.ts";
+import { OWNER_NOTICE_STEP, OWNER_NOTICE_WITHHELD } from "./owner-notice-withheld.ts";
 import { bookingDetailHref } from "./detail.ts";
 import { partnerKeysFrom, type PartnerKeys } from "./partner-keys.ts";
 import { bookingIdentityFrom } from "./booking-identity.ts";
@@ -3752,7 +3753,7 @@ const REASSIGN_STEPS = {
   NOTIFY: "reassign:notify",
   OWNER_ALERT_REMOVE: "reassign:owner_alert_remove",
   OWNER_ALERT: "reassign:owner_alert",
-  OWNER_NOTICE: "reassign:owner_notice",
+  OWNER_NOTICE: OWNER_NOTICE_STEP,
 } as const;
 
 /** Post-commit steps for a contact-owner reassign (#9). Like reschedule, the
@@ -4234,8 +4235,9 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
    *
    * Three outcomes, and they are deliberately not three shades of one:
    *
-   *  - NO channel set: the notice is dropped, recorded in the log, and the step
-   *    completes. It must not page: the monitor lane already owns "handoffs are
+   *  - NO channel set: the notice is dropped, recorded in the log AND on the step
+   *    as a `withheld` reason (#2440, counted weekly by the monitor lane), and the
+   *    step completes. It must not page: the monitor lane already owns "handoffs are
    *    waiting and no channel is set" (#2367), and a reassign notice is not a
    *    handoff, so raising one here would invent a row nobody can resolve.
    *  - Slack REFUSED this post (`not_in_channel`, a rate limit, a timeout): the step
@@ -4271,7 +4273,9 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
         booking_id: booking.id,
         outbox_id: row.id,
       });
-      return;
+      // #2440: recorded on the step itself, so the monitor lane can count a blank
+      // channel stretch once a week rather than leaving only this log line.
+      return { withheld: OWNER_NOTICE_WITHHELD.noChannel };
     }
 
     const text = formatOwnerReassignNotice({
@@ -4293,7 +4297,7 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
         booking_id: booking.id,
         outbox_id: row.id,
       });
-      return;
+      return { withheld: OWNER_NOTICE_WITHHELD.noSlack };
     }
     // Short and ours: this lands in `booking_outbox.last_error`, which the drain's
     // stuck-row page quotes.

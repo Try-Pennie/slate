@@ -341,6 +341,56 @@ one is a rare fault somebody fixes the day they read it, so the message says wha
 silence means instead: it repeats once a day until a run passes, and a run that
 passes says nothing.
 
+# Proving the booking refusal alerts can build and send (`pnpm verify:refusal-alerts`)
+
+`booking_api_ceiling`, `booking_api_credential` and `booking_api_list_read` (#1442,
+#1450, #1709) ship ARMED, and so do the embed booker's `booking_embed_ip_cap`,
+`booking_embed_contact_cap` and `booking_embed_honeypot` (#1727). Their floors are what
+make arming safe, and the cost is that nothing has refused often enough to reach one:
+the path from a recorded refusal to a built page has never run against the real store,
+so the first firing would be during a real incident (L535, #1726).
+
+**What it does.** It writes refusals into the daily tally (`bump_booking_api_outcome`,
+through the same `outcomeTallyArgs` the routes use) under a MONITOR ONLY bucket,
+`PROBE_BUCKET` in `scripts/lib/refusal-alert-live-control.ts`. That code is longer than
+any bucket code a request may carry (`INPUT_LIMITS.code`) and than the raw body code the
+booker records (cut to sixteen), so no request can produce it, and every row is marked
+as test traffic, which every monitor's read leaves out. It reads the probe's row back
+after a zero interval and after each of three intervals of writes, checks that
+`booking_api_outcome_mix` carries every name through, reads the limiter's locked out
+counts (a head count of `rate_limits`, no key read), and folds the readings through the
+real failure rate window (`advanceWindow`) and the real judges with the SHIPPED
+thresholds. Each API alert and the honeypot must move from a measured clear to paging
+and build a sendable message; the two embed caps, which page on the limiter's own rows,
+must be judged against the live count (driving them to paging would mean writing the
+rows real leads are judged by). It deletes the probe's rows when it ends, on every
+ending after the first write.
+
+**What it does not do.** It posts nothing to Slack: the message is built and checked,
+because sending would page the alerts channel about a verification and the transport is
+the one every other alert uses daily. The interval clock is labelled, not waited for:
+the window measures the delta between two readings, and the labels only count
+intervals. It does not exercise the Worker's own cron tick, which runs the same judges
+on the same rows.
+
+**Run it** from the main checkout (it needs `NEXT_PUBLIC_SUPABASE_URL` and
+`SUPABASE_SECRET_KEY` from `.env.local`). It has not yet been run live: its first run
+waits for Dan. Its decisions are pinned offline by
+`scripts/test-refusal-alert-live-control.ts`.
+
+| exit | what it met | what to do |
+|---|---|---|
+| 0 | every alert moved from clear to paging (or was judged against the live limiter) and built its message | nothing |
+| 2 | no Supabase URL or secret here | run from the main checkout; nothing was attempted |
+| 3 | the tally write was refused | read the error; the routes' recording would be refused the same way |
+| 4 | the probe's row or the mix could not be read | read the error; the monitor's read would fail too |
+| 5 | the row did not rise by exactly what was written | the write and the read disagree, or another run is writing beside this one |
+| 6 | the mix RPC dropped a refusal name | **the window can never see that refusal**: compare the RPC with migration 0143 |
+| 7 | a verdict did not move from a measured clear to paging | the judge or a threshold changed; read `api-refusal-signals.ts` |
+| 8 | a paging verdict built no sendable message | a copy builder leaks a value; run `pnpm preview:alerts` |
+| 9 | the limiter's locked out count could not be read | the embed caps would go unmeasured on every tick |
+| 10 | everything passed and the probe's rows were left behind | harmless test rows; they move only the outcome panel's excluded test count |
+
 # Proving the shared confirm line answers (`pnpm verify:confirm-line`)
 
 The burst counter's shape, on the shared confirm line (#3325, #3340).
@@ -2038,7 +2088,10 @@ of the schema 0160 reads plus the 0089 triggers, applies 0160 VERBATIM, and prov
 - a second run of the migration changes nothing;
 - each break the walk names (an edited row, a deleted row, a chain recomputed after an
   edit, rows cut off the end) is caught by the walk itself over the real rows, with a
-  control showing the recomputed chain verifies when nothing is anchored.
+  control showing the recomputed chain verifies when nothing is anchored;
+- a machine write's audit row (#3542, Marcia's `details.channel`, null actor, 00Q id
+  and test mark) is chained, and editing only its `details.channel`, with the append
+  only trigger off for that one transaction, is caught as an altered row.
 
 It also measures the vector in `scripts/lib/audit-chain-vector.ts`, which
 `scripts/test-audit-chain.ts` pins offline, so an encoding change on either side fails

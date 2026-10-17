@@ -64,6 +64,7 @@ import { AGENT_LINK_UNAVAILABLE_CODE } from "@/lib/agent-link/refusal-sentence";
 import { internalErrorResponse } from "@/lib/api/errors";
 import { noStore } from "@/lib/api/no-store";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
+import { EMBED_REFUSAL_OUTCOME } from "@/lib/monitor/booking-api-outcome";
 import { log } from "@/lib/log";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 import { bookingIdentityFrom } from "@/lib/booking/booking-identity";
@@ -258,14 +259,38 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
   // limiter and has no refund path, so a transient server outage (503) still
   // consumes one of the lead's 3/min (the hourly DB cap is refunded on an outage;
   // see the catch below). A taken time is the exception, through the retry credit
-  // below (#3364). A block is normally a spammy visitor, so it is deliberately NOT
-  // alerted (that would be noise). But every booking 429 is logged with its scope +
-  // IP at a queryable tag/level, so a too-tight limit surfaces: a cluster of
-  // edge-minute 429s from many distinct IPs (rather than one flooding host) is the
-  // signal to revisit 3/min. The hourly 10/hr cap already bounds sustained abuse,
-  // so the per-minute window only shapes bursts.
-  const tooMany = (scope: "edge-minute" | "hourly" | "contact", retry?: string) => {
+  // below (#3364). One block is normally a spammy visitor, so a single trip never
+  // alerts. The per-minute window records nothing and only shapes bursts; every
+  // booking 429 is logged with its scope + IP at a queryable tag/level, so a cluster
+  // of edge-minute 429s from many distinct IPs is the signal to revisit 3/min. The
+  // hourly address and contact caps are recorded (#1727) and page only when several
+  // distinct addresses or contacts are locked out at once (`booking_embed_ip_cap`,
+  // `booking_embed_contact_cap`), which means the ceiling is turning real leads away.
+  const tooMany = (
+    scope: "edge-minute" | "hourly" | "contact",
+    retry?: string,
+    // #1727: where a contact cap trip is recorded. Only that cap knows the bucket;
+    // the hourly address cap is judged before the body is read.
+    contactSource?: { code: string; host: ReturnType<typeof confirmHost> },
+  ) => {
     log.info("booking-rate-limit", { msg: "throttled", scope, ip, ...(retry ? { retry } : {}) });
+    // #1727: the two hourly caps are recorded under names OUTSIDE OUTCOME_ORDER, so
+    // they never enter the failure share's denominator, and a sustained run is judged
+    // on its own by `api-refusal-signals.ts`. The edge minute window stays unrecorded:
+    // it sheds a flood before Postgres is touched, and a write per shed request would
+    // hand a flood the database writes that window exists to spare.
+    if (scope === "hourly") {
+      recordApiOutcome(EMBED_REFUSAL_OUTCOME.ipHour, "", null, {
+        by: "unidentifiable",
+        why: "refused at the hourly address cap, before the body named a bucket",
+      });
+    } else if (scope === "contact" && contactSource) {
+      recordApiOutcome(EMBED_REFUSAL_OUTCOME.contactHour, contactSource.code, null, {
+        by: "bucket",
+        code: contactSource.code,
+        host: contactSource.host,
+      });
+    }
     // #3364: the minute window clears inside a minute, and it is what a lead refused for
     // taken times meets when they pick again, so it says so rather than sending them away
     // for "a few minutes". The longer caps keep the longer wait.
@@ -274,9 +299,11 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
     // refusal: rate_limit_ip_minute
     // refusal: rate_limit_ip_hour
     // refusal: rate_limit_contact_hour
-    // Deliberately UNCOUNTED (#1318). Counting a throttle would put bot volume in the
-    // denominator the booking failure share is measured against, so a flood would make
-    // a real outage look proportionally smaller. The reasoning is in refusal-catalog.ts.
+    // Kept OUT of the failure share (#1318). Counting a throttle there would put bot
+    // volume in the denominator the booking failure share is measured against, so a
+    // flood would make a real outage look proportionally smaller. The two hourly caps
+    // are recorded on their own counter above instead (#1727); the reasoning for each
+    // is in refusal-catalog.ts.
     return NextResponse.json({ error }, { status: 429 });
   };
   // Per-minute burst window at the edge (#237): in-datacenter, no DB round-trip,
@@ -354,13 +381,18 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
   // value here means a scripted bot filling every field. Reject with the SAME
   // generic 400 a schema failure returns (revealing nothing bot-specific), before
   // touching the booking path. Logged at a queryable tag so trips are observable;
-  // a honeypot hit is expected background noise, so it does NOT alert.
+  // one honeypot hit is expected background noise, so it does NOT alert; a sustained
+  // run does (#1727).
   if (raw && typeof raw === "object" && honeypotTripped((raw as Record<string, unknown>)[HONEYPOT_FIELD])) {
     log.info("booking-honeypot", { msg: "tripped", ip });
-    // refusal: honeypot
-    // Deliberately uncounted (#1318): a real user cannot fill a field they never see,
+    // Out of the failure share (#1318): a real user cannot fill a field they never see,
     // so every trip is a script, and volume here measures bot traffic rather than
-    // customers being refused.
+    // customers being refused. Recorded under its own name outside OUTCOME_ORDER
+    // (#1727), so a sustained run of trips, which is either a campaign against the
+    // booker or the field having become reachable by real leads, is judged on its own.
+    const trapCode = rawBucketCode(raw);
+    recordApiOutcome(EMBED_REFUSAL_OUTCOME.honeypot, trapCode, null, { by: "bucket", code: trapCode, host });
+    // refusal: honeypot
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
 
@@ -431,7 +463,7 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
   });
   for (const key of contactKeys) {
     if (!(await check(ROUTE_CHECK_STAGES.contactCap, () => allowRequest({ kind: "opaque", key }, BOOKING_CONTACT_HOURLY_RATE_RULES))))
-      return tooMany("contact");
+      return tooMany("contact", undefined, { code, host });
     progress.spent.push({ caller: { kind: "opaque", key }, rules: BOOKING_CONTACT_HOURLY_RATE_RULES });
   }
 

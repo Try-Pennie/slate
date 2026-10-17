@@ -370,6 +370,24 @@ export const ALERT_FIELDS: {
     help: "A booking handoff has waited more than 30 minutes without being posted to the handoff channel, so the sales team has not been told. Ends once every open handoff has been posted.",
   },
   {
+    key: "owner_alert_skips",
+    urgency: "alert",
+    label: "Owner alerts not reaching advisors' calendars",
+    help: "More than a fifth of the last week's \"previously pitched\" alerts could not be put on the owning advisor's calendar, across at least three advisors, because their Google account was never given Calendar or their calendar has gone. One advisor without Calendar is normal and stays quiet. The calls are booked; the advisors just do not see the alert. It ends once a week of alerts is back under the line.",
+  },
+  {
+    key: "duplicate_cancel_unavailable",
+    urgency: "alert",
+    label: "Duplicate cancels not completing",
+    help: "More than a fifth of the last day's requests to cancel a lead's duplicate call could not be completed and were told to retry, so nothing was cancelled for those leads. Judged only once a day holds at least 40 requests. It ends once six hours of requests complete again.",
+  },
+  {
+    key: "duplicate_cancel_refused",
+    urgency: "alert",
+    label: "Duplicate cancels refused in volume",
+    help: "More than three tenths of the last day's requests to cancel a lead's duplicate call were refused for a reason a person has to look at, such as no other call or a different Salesforce id. Each one also goes to sales as a handoff; this says the share is too high to be ordinary. Judged only once a day holds at least 40 requests. It ends once six hours of requests are back to an ordinary share.",
+  },
+  {
     key: "empty_tier",
     urgency: "alert",
     label: "Debt tier offering no times",
@@ -621,6 +639,15 @@ export const MONITOR_DEFAULTS = {
     // Handoffs not reaching the channel (#2367): the lane retries every tick. Once a day
     // while unchanged (#3801).
     handoff_undelivered: CONDITION_REPEAT_MS,
+    // Owner alerts skipped for unreachable calendars (#2436): it stays true until a
+    // Workspace admin or the advisors fix their accounts, which is days, not minutes.
+    // Once a day while unchanged (#3801).
+    owner_alert_skips: CONDITION_REPEAT_MS,
+    // Duplicate cancels failing or refused in volume (#2377): each stays true until the
+    // cause (Slate's check, or what the journey names) is fixed. Once a day while
+    // unchanged (#3801).
+    duplicate_cancel_unavailable: CONDITION_REPEAT_MS,
+    duplicate_cancel_refused: CONDITION_REPEAT_MS,
     // Merged work that is not live (#2476): it stays true until somebody re-runs a deploy
     // or merges again. Once a day while unchanged (#3801); a newer unshipped commit is a
     // change.

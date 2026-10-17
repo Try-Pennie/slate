@@ -34,6 +34,10 @@ vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+// #2377: every answer is counted in the daily tally. Mocked so a test never reaches
+// the database, and so each answer's row can be asserted.
+const tally = vi.hoisted(() => ({ recordApiOutcome: vi.fn() }));
+vi.mock("@/lib/monitor/record-api-outcome", () => tally);
 
 const { POST } = await import("./route");
 const { DuplicateCancelUnavailableError } = await import("@/lib/booking/duplicate-cancel");
@@ -218,5 +222,55 @@ describe("failing closed", () => {
     expect(body.code).toBe("DUPLICATE_CHECK_UNAVAILABLE");
     // And it never leaks the underlying text.
     expect(JSON.stringify(body)).not.toContain("something else entirely");
+  });
+});
+
+describe("counting every answer (#2377)", () => {
+  it.each([
+    ["cancelled", "duplicate_cancel_cancelled"],
+    ["already-cancelled", "duplicate_cancel_already_cancelled"],
+    ["not-found", "duplicate_cancel_not_found"],
+    ["not-active", "duplicate_cancel_not_active"],
+    ["started", "duplicate_cancel_started"],
+    ["identity-conflict", "duplicate_cancel_identity_conflict"],
+    ["named-is-newest", "duplicate_cancel_named_is_newest"],
+    ["no-other-call", "duplicate_cancel_no_other_call"],
+  ])("records %s once under its own tally row", async (outcome, row) => {
+    service.cancelDuplicateBooking.mockResolvedValue(answered(outcome));
+    await POST(request({ bookingId: "bk-1" }));
+    expect(tally.recordApiOutcome).toHaveBeenCalledTimes(1);
+    expect(tally.recordApiOutcome.mock.calls[0]?.[0]).toBe(row);
+    // Never a bucket, never an error code: these rows sit outside the booking failure
+    // share and are counted as real traffic, since no canary calls this route.
+    expect(tally.recordApiOutcome.mock.calls[0]?.[1]).toBe("");
+    expect(tally.recordApiOutcome.mock.calls[0]?.[2]).toBeNull();
+    expect(tally.recordApiOutcome.mock.calls[0]?.[3]).toMatchObject({ by: "unidentifiable" });
+  });
+
+  it.each([
+    ["rpc", "duplicate_cancel_unavailable_rpc"],
+    ["result", "duplicate_cancel_unavailable_result"],
+    ["handoff", "duplicate_cancel_unavailable_handoff"],
+  ] as const)("records a 503 at the %s stage under its own tally row", async (stage, row) => {
+    service.cancelDuplicateBooking.mockRejectedValue(new DuplicateCancelUnavailableError(stage));
+    await POST(request({ bookingId: "bk-1" }));
+    expect(tally.recordApiOutcome).toHaveBeenCalledTimes(1);
+    expect(tally.recordApiOutcome.mock.calls[0]?.[0]).toBe(row);
+  });
+
+  it("records an unexpected failure at the stage it answers with, rpc", async () => {
+    service.cancelDuplicateBooking.mockRejectedValue(new Error("something else entirely"));
+    await POST(request({ bookingId: "bk-1" }));
+    expect(tally.recordApiOutcome).toHaveBeenCalledTimes(1);
+    expect(tally.recordApiOutcome.mock.calls[0]?.[0]).toBe("duplicate_cancel_unavailable_rpc");
+  });
+
+  it("records nothing for a refusal before the decision (no key, wrong key, no booking id)", async () => {
+    env.duplicateCancelApiKey.mockReturnValue("");
+    await POST(request({ bookingId: "bk-1" }));
+    env.duplicateCancelApiKey.mockReturnValue("dup-k3y");
+    await POST(request({ bookingId: "bk-1" }, "Bearer nope"));
+    await POST(request({}));
+    expect(tally.recordApiOutcome).not.toHaveBeenCalled();
   });
 });

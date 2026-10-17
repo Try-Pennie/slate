@@ -157,6 +157,7 @@ import { TEST_PASS_TTL_MS, mintTestPass } from "@/lib/embed/test-pass";
 import { HIDDEN_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { REFERRER_ORIGIN_MAX_CHARS } from "@/lib/embed/referrer-origin";
 import { INVALID_EMAIL } from "@/lib/attendee";
+import { OUTCOME_ORDER } from "@/lib/monitor/booking-api-outcome";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 // #2666: the public test bucket is booked only with the pass `/book` handed an
@@ -800,6 +801,61 @@ describe("POST /booking (embed) error mapping", () => {
     info.mockRestore();
   });
 
+  // #1727: the booker's own refusals are recorded under names OUTSIDE OUTCOME_ORDER,
+  // so a sustained run can be judged against its own total without ever entering the
+  // denominator the booking failure share is measured against.
+  describe("records its own refusals outside the failure share (#1727)", () => {
+    beforeEach(() => recordApiOutcome.mockClear());
+
+    it("records an hourly address cap trip as refused_embed_ip_hour, before any bucket is known", async () => {
+      rateLimit.allowRequest.mockResolvedValueOnce(false);
+      const res = await post(VALID_BODY);
+      expect(res.status).toBe(429);
+      expect(recordApiOutcome).toHaveBeenCalledTimes(1);
+      expect(recordApiOutcome).toHaveBeenCalledWith(
+        "refused_embed_ip_hour",
+        "",
+        null,
+        expect.objectContaining({ by: "unidentifiable" }),
+      );
+    });
+
+    it("records a per contact cap trip as refused_embed_contact_hour against the bucket the body named", async () => {
+      rateLimit.allowRequest.mockImplementation(
+        async (caller: unknown) => !rateLimitKey(caller as CallerKey).startsWith("email:"),
+      );
+      const res = await post(VALID_BODY);
+      expect(res.status).toBe(429);
+      expect(recordApiOutcome).toHaveBeenCalledTimes(1);
+      expect(recordApiOutcome).toHaveBeenCalledWith(
+        "refused_embed_contact_hour",
+        "411",
+        null,
+        expect.objectContaining({ by: "bucket", code: "411" }),
+      );
+    });
+
+    it("records a honeypot trip as refused_embed_honeypot and nothing as an error", async () => {
+      vi.spyOn(console, "info").mockImplementation(() => {});
+      const res = await post({ ...VALID_BODY, website: "https://spam.example" });
+      expect(res.status).toBe(400);
+      expect(recordApiOutcome).toHaveBeenCalledTimes(1);
+      expect(recordApiOutcome).toHaveBeenCalledWith(
+        "refused_embed_honeypot",
+        "411",
+        null,
+        expect.objectContaining({ by: "bucket", code: "411" }),
+      );
+    });
+
+    it("records nothing for the edge minute window, which stays deliberately uncounted", async () => {
+      rateLimit.bookingWithinLimit.mockResolvedValueOnce(false);
+      const res = await post(VALID_BODY);
+      expect(res.status).toBe(429);
+      expect(recordApiOutcome).not.toHaveBeenCalled();
+    });
+  });
+
   it("checks BOTH the IP cap and the per-contact caps on a normal booking (#1033)", async () => {
     service.createBooking.mockResolvedValue({
       booking: { id: "bk-c", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
@@ -1158,13 +1214,15 @@ describe("POST /booking outcome tally (#1313)", () => {
     expect(outcomes()).toEqual([["error", "invalid_contact"]]);
   });
 
-  it("counts NOTHING for a bot tripping the honeypot", async () => {
+  it("counts NOTHING the failure share divides by for a bot tripping the honeypot", async () => {
     const res = await post({ ...VALID_BODY, website: "http://spam.example" });
     expect(res.status).toBe(400);
-    // Deliberate (#1318). `attempts` is every recorded outcome summed, so counting a
-    // bot would put its volume in the denominator the failure share is measured
-    // against and make a real outage look proportionally smaller while it floods.
-    expect(outcomes()).toEqual([]);
+    // Deliberate (#1318). The share's denominator is every OUTCOME_ORDER outcome
+    // summed, so counting a bot there would make a real outage look proportionally
+    // smaller while it floods. #1727 records the trip on its own counter instead, a
+    // name outside OUTCOME_ORDER, so a sustained run can be judged on its own.
+    expect(outcomes()).toEqual([["refused_embed_honeypot", null]]);
+    expect((OUTCOME_ORDER as readonly string[]).includes("refused_embed_honeypot")).toBe(false);
   });
 
   it("counts a slot refused at confirm under its own code", async () => {
