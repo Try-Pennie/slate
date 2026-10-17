@@ -1,0 +1,47 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	// Marcia's booking MCP server (#3541, #3543). NOT DEPLOYED: written ahead of the
+	// spike. When it is, it deploys on its own, AFTER Slate exports McpBookingGateway
+	// and holds MCP_BOOKING_GATEWAY_SECRET and MARCIA_TOKEN_KEY_A (DEPLOY.md):
+	//
+	//   npx wrangler deploy -c wrangler.mcp-booking.jsonc
+	//
+	// and its hostname slate-booking-mcp.trypennie.dev is attached by hand as a Worker
+	// custom domain (CI's Cloudflare token cannot manage zone routes). Wiring it into
+	// the gradual deploy as step 10b is #3539.
+	"name": "slate-booking-mcp",
+	"main": "worker/mcp-booking/index.ts",
+	"account_id": "3e7f907a9c19e51417873e2cce4fbc5c",
+	"compatibility_date": "2025-08-01",
+	// No workers.dev address and no preview URLs (Slate #1052, plan locked decision
+	// 9): the only way in is the custom domain, once somebody attaches it.
+	"workers_dev": false,
+	"preview_urls": false,
+	// Console lines on; INVOCATION logs off, because Cloudflare records an invocation's
+	// request headers verbatim and the Authorization header here IS Marcia's lead token
+	// (locked decision 1). scripts/test-mcp-booking-worker.ts holds this off.
+	"observability": {
+		"enabled": true,
+		"logs": { "enabled": true, "invocation_logs": false }
+	},
+	// The ONE binding into Slate: the McpBookingGateway entrypoint, whose only method
+	// is booking() (locked decision 9). Never Slate's fetch handler, and never another
+	// entrypoint: a binding to a named entrypoint exposes every public method of its
+	// class, so this Worker binds the one class built for it.
+	"services": [{ "binding": "SLATE", "service": "slate", "entrypoint": "McpBookingGateway" }],
+	// Marcia's overall limit (plan decision 12), on top of the per lead daily cap Slate
+	// applies. 1008 is the next free id after Slate's 1001 to 1007 (and 2001 to 2007 on
+	// env.loadtest); Bidspoke's and PET's wrangler files bind no rate limiter (read
+	// 2026-10-16). The claims registry (pennie-mcp-kit#1) must record it once it exists.
+	// The number is a starting value: #3541's spike measures what the free binding
+	// really lets through from more than one location.
+	"ratelimits": [
+		{
+			"name": "MARCIA_LIMITER",
+			"namespace_id": "1008",
+			"simple": { "limit": 60, "period": 60 }
+		}
+	]
+	// Deliberately NO vars and NO secrets: this Worker holds no key (locked decision
+	// 15), and no tail consumer, routes or env blocks (no staging Slate exists yet, #2984).
+}

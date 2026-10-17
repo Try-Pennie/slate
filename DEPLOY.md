@@ -877,6 +877,23 @@ usage page) and multiply by 30. The request count behind it is on the Cloudflare
 dashboard, Workers, `slate`, Metrics. Quote that daily figure, not this table, when
 choosing a paid plan.
 
+## Marcia's booking MCP server (#3541): NOT DEPLOYED
+
+`worker/mcp-booking`, configured by `wrangler.mcp-booking.jsonc`, is written and
+tested and has never been deployed; no secret for it exists. When the spike in #3541
+runs, the order matters, because the server binds an entrypoint of Slate's:
+
+1. Slate, carrying `McpBookingGateway`, deployed as usual, with
+   `MCP_BOOKING_GATEWAY_SECRET` and `MARCIA_TOKEN_KEY_A` put (section 2b). Marcia's
+   signer gets the same token key.
+2. `npx wrangler deploy -c wrangler.mcp-booking.jsonc`, which holds no secret.
+3. The custom domain `slate-booking-mcp.trypennie.dev` attached by hand in the
+   dashboard (CI's token cannot manage zone routes).
+
+Until step 2 nothing can reach the gateway, and until step 1's secrets exist the
+gateway and its internal routes refuse every call. Wiring it into the gradual deploy
+is #3539.
+
 ## Verify after deploy
 1. Hit `https://slate.trypennie.app/api/health` → expect HTTP `200` with
    `{"status":"ok",...}`. A `503` `{"status":"degraded",...}` means the DB is
