@@ -1,0 +1,26 @@
+{
+  "note": "#3536: the Slate routes no MCP tool covers and no exemption classifies yet, as of 2026-10-16. scripts/test-mcp-route-coverage.ts fails on any route not here, and on any entry here once it is classified or gone, so this list only shrinks. The admin and user routes wait on the ops server (#3535, #3537); the public booker routes wait on a decision about whether ops reads them or they are exempt as public pages.",
+  "routes": [
+    "/api/admin/agents",
+    "/api/admin/agents/[id]/bulk-reassign",
+    "/api/admin/bookings/[id]/availability",
+    "/api/admin/bookings/[id]/cancel",
+    "/api/admin/bookings/[id]/move-back",
+    "/api/admin/bookings/[id]/reassign",
+    "/api/admin/bookings/[id]/reroute",
+    "/api/admin/bookings/[id]/reroute/confirm",
+    "/api/admin/bookings/[id]/reroute/hold",
+    "/api/admin/bookings/[id]/reschedule",
+    "/api/admin/bookings/search",
+    "/api/admin/erasure-purge",
+    "/api/admin/snowflake-check",
+    "/api/availability",
+    "/api/availability/next",
+    "/api/call-me-now",
+    "/api/routing",
+    "/api/users/bookable",
+    "/api/users/deactivate",
+    "/api/users/lifecycle",
+    "/api/users/reactivate"
+  ]
+}
