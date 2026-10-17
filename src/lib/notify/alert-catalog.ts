@@ -736,6 +736,29 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Requests with no assigned approver are going unnudged until the channel post lands; the daily run re-measures.",
   },
   {
+    // #3543: one failed Marcia write, or one Marcia read that went wrong. Every failed
+    // write pages, expected refusals included (plan decision 11, decision 39); the key
+    // is the operation and the code, a bounded vocabulary, so one outage pages once per
+    // kind per cooldown.
+    key: "marcia_booking_failed:*",
+    kind: "incident",
+    suffix: "bounded",
+    why: "One of Marcia's booking calls already ended without doing what she asked; there is no healthy state to observe, because the next call is a new attempt, so it carries no all-clear.",
+  },
+  {
+    // #3543: a lead token refused by Slate's verifier, keyed by the refusal code.
+    key: "marcia_token_refused:*",
+    kind: "incident",
+    suffix: "bounded",
+    why: "One lead token was refused and nothing was booked; the next token is judged afresh, so a signer that keeps failing pages again after the cooldown rather than resolving.",
+  },
+  {
+    // #3543: the internal booking route met a missing or wrong gateway secret.
+    key: "marcia_gateway_refused",
+    kind: "incident",
+    why: "One call reached Marcia's internal route without the gateway's secret and was refused; it is a finished event, and a deployment still missing the secret pages again on the next call after the cooldown.",
+  },
+  {
     key: "stale_phone_invite:*",
     kind: "incident",
     suffix: "booking",

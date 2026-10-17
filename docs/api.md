@@ -1047,6 +1047,11 @@ accounted for.
 | `GET /api/health/availability` | none (public) | Availability canary (#749), safe to expose to an external uptime monitor. `200` when the booker is genuinely offering times, `503` when a well-staffed tier or the whole fleet is silently empty, which `/api/health` cannot see (the database is up and the crons tick while the booker offers nothing). An unreadable tier depth answers `503` with `staffedBuckets: null`, never `0` (#1629). |
 | `POST /api/slack/interactions` | Slack request signature (`X-Slack-Signature` + timestamp) | Interactive Slack actions (OOO approvals, decline notes). Every request is signature-verified; `401 invalid signature` otherwise. |
 | `GET /api/auth/callback` | none (OAuth code exchange) | Supabase Auth OAuth callback for staff login. |
+| `POST /api/internal/mcp-booking/find-times` | gateway secret header plus Marcia's signed lead token, set only by `McpBookingGateway` | Marcia's booking MCP endpoint (#3543), not deployed yet. NOT reachable from the internet: the Worker's public handler answers `404` for every internal MCP path and strips the carrier headers from every public request. Up to five times for the token's lead, preformatted in the lead's zone, each with an opaque slot id. |
+| `POST /api/internal/mcp-booking/book` | as above | Books the slot id for the token's lead, through the same `bookViaApi` as `POST /api/bookings`, under the attempt's own idempotency key. Records `booking.created` in the audit trail with channel `marcia`. |
+| `POST /api/internal/mcp-booking/lookup` | as above | The token's lead's active bookings: Slate's booking id, the time and the advisor's name, never contact data. |
+| `POST /api/internal/mcp-booking/move` | as above | Moves the lead's booking to the slot id (`bookViaApi` with `confirmReschedule`), within the per lead daily cap. |
+| `POST /api/internal/mcp-booking/cancel` | as above | Cancels with a reason from Slate's list: a schedule conflict only after offered times were declined, no opt out or system reason, within the per lead daily cap. |
 
 ---
 

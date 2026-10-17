@@ -97,6 +97,11 @@ export const PRODUCTION_ONLY_SECRETS = [
   // #2940: Marcia's cancel only key. The load run never cancels as Marcia.
   "BOOKING_API_KEY_MARCIA",
   "BOOKING_API_KEY_MARCIA_2",
+  // #3543: Marcia's lead token keys and her booking gateway's secret. The load run
+  // never books as Marcia, and a deployment holding them would verify real tokens.
+  "MARCIA_TOKEN_KEY_A",
+  "MARCIA_TOKEN_KEY_B",
+  "MCP_BOOKING_GATEWAY_SECRET",
   // #2879: production's record of which keys it retired. Not a credential, still
   // production's own configuration, so a load test deployment never carries it.
   "BOOKING_API_RETIRED_KEY_HASHES",

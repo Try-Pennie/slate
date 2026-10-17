@@ -20,6 +20,7 @@
     "cf:deploy:gradual": "node --experimental-strip-types scripts/deploy-gradual.ts",
     "cf:rollback": "node --experimental-strip-types scripts/rollback-production.ts",
     "prepare": "git config core.hooksPath .githooks || true",
+    "build:machine-token-fixtures": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/build-machine-token-fixtures.ts",
     "build:confirmation-mark": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/build-confirmation-mark-assets.ts",
     "preview:booker": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/preview-booker.ts",
     "bundle:record": "NODE_NO_WARNINGS=1 node --experimental-strip-types scripts/bundle-budget.ts record",

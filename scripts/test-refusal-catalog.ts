@@ -46,6 +46,9 @@ const FILES = [
   // answers (api_query_invalid) left the route file above. Listed so the annotation is
   // still checked where the refusal now lives, rather than exempt by having moved.
   "src/lib/booking/direct-cancel-http.ts",
+  // #3543. The direct booking API's error to code mapping moved here so Marcia's
+  // booking MCP endpoint shares it; its branches carry the annotations.
+  "src/lib/booking/api-error-map.ts",
 ];
 
 /** Source with comments kept (the annotations live in them) and with them

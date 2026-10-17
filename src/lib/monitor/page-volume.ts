@@ -39,12 +39,12 @@
  * No `@/` imports, so node scripts can run it directly.
  */
 import {
-  API_SOURCES,
+  MACHINE_SOURCES,
   PROSPECT_ID,
   SOURCE_DETAILS,
   SOURCE_NOT_GIVEN,
   SUBMISSION_ID,
-  isApiSource,
+  isMachineSource,
   type PageLink,
   type PageSource,
 } from "../booking/booking-source.ts";
@@ -306,8 +306,9 @@ export interface PageSourceMeasure {
   lookbackDays: number;
   /**
    * Real (non test bucket) bookings in the lookback that are page traffic
-   * (`isPageTraffic`): a booking API call is not counted (#2876), or a lookback
-   * holding only those would read as every booking having carried a source.
+   * (`isPageTraffic`): a machine caller's booking, through the booking API (#2876)
+   * or an MCP channel (#3543), is not counted, or a lookback holding only those
+   * would read as every booking having carried a source.
    */
   realBookings: number;
   /** Of those, how many recorded no page (`isUnsourced`). */
@@ -404,8 +405,9 @@ function recordsNoPage(source: string | null): boolean {
  * Whether a booking recorded NO page (#2765): `not-given` (the link carried no
  * `?source=`), or null (a booking from before #2072). Such a booking might be ANY
  * page's, so it can hide a page's shortfall. `unrecognised` is not one of them: that
- * link named a page, it was just a name Slate does not know. Nor is an API source
- * (#2876): that booking named its caller and came from no page at all.
+ * link named a page, it was just a name Slate does not know. Nor is a machine
+ * source, API (#2876) or MCP (#3543): that booking named its caller and came from no
+ * page at all.
  *
  * One predicate, used by the per page alarm on every tick and by the readiness
  * measurement (`measurePageSources`), so the two never count differently (L16).
@@ -460,9 +462,10 @@ export function bookingSourcesRecorded(m: PageSourceMeasure): boolean {
 export const UNSOURCED_VALUES = [SOURCE_NOT_GIVEN] as const;
 
 /**
- * Whether a booking is, or might be, a landing page's (#2876). A booking made
- * through the key authed booking API records its caller (`api-regal`, and so on)
- * and came from no page, so it is not page traffic: it can neither excuse a page's
+ * Whether a booking is, or might be, a landing page's (#2876). A booking made by a
+ * machine caller records it: the key authed booking API its caller (`api-regal`, and
+ * so on), an MCP channel its channel (`mcp-marcia`, #3543). Either came from no page,
+ * so it is not page traffic: it can neither excuse a page's
  * shortfall nor stand in the count the unsourced share is quoted against. Every
  * other value is, including `not-given` and null, which might be any page's.
  *
@@ -470,11 +473,12 @@ export const UNSOURCED_VALUES = [SOURCE_NOT_GIVEN] as const;
  * so the two never disagree about what the pages could have sent (L16).
  */
 export function isPageTraffic(source: string | null): boolean {
-  return !isApiSource(source);
+  return !isMachineSource(source);
 }
 
-/** The `bookings.source` values `isPageTraffic` leaves out, for a database filter. */
-export const NON_PAGE_VALUES = API_SOURCES;
+/** The `bookings.source` values `isPageTraffic` leaves out, for a database filter.
+ *  Every machine source, API and MCP (#3543), from the one list. */
+export const NON_PAGE_VALUES = MACHINE_SOURCES;
 
 /**
  * `isPageTraffic` as a PostgREST `or()` filter, for the reads that count or learn
@@ -630,8 +634,9 @@ export async function runPageVolumeCheck(deps: {
 
   const inWindow = (r: SourceRow, ms: number) => r.createdMs >= deps.nowMs - ms && r.createdMs < deps.nowMs;
   const unsourcedIn = (ms: number) => rows.filter((r) => isUnsourced(r) && inWindow(r, ms)).length;
-  // #2876: the share is quoted against what the pages could have sent, so a booking
-  // API call (which names its caller, never a page) is not in the total, and #2960:
+  // #2876: the share is quoted against what the pages could have sent, so a machine
+  // caller's booking, API or MCP (#3543), which names its caller and never a page, is
+  // not in the total, and #2960:
   // nor is a booking made by hand with no host page and no source.
   const sources = {
     unsourced: unsourcedIn(longMs),

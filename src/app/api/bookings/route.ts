@@ -20,15 +20,11 @@ import {
   getPersonBookingById,
   listBookings,
   bookingDetailExtras,
-  SlotUnavailableError,
-  VerifyUnavailableError,
-  NoEligibleAgentsError,
-  UnknownBucketError,
-  OutsideCallingWindowError,
   AttendeeEmailRefusedError,
   RaceLostRefusalError,
   LostRaceOutOfTimeError,
 } from "@/lib/booking/service";
+import { mapBookingError } from "@/lib/booking/api-error-map";
 import { RACE_RETRY_BUDGET_OUTCOME, raceOutcomeForRefusal } from "@/lib/monitor/race-contention";
 import { FOLLOW_UP_LEFT_TO_DRAIN_OUTCOME } from "@/lib/monitor/follow-up-drain-rate";
 import {
@@ -556,44 +552,4 @@ export async function DELETE(req: NextRequest) {
   return respondToDirectCancel(req, (allowedCancel) =>
     parseCancelQuery(req.nextUrl.searchParams, allowedCancel),
   );
-}
-
-/**
- * Stable, machine-readable error contract (#358) so the bot can act on the
- * outcome without parsing prose: a config error (UNKNOWN_BUCKET /
- * NO_ELIGIBLE_AGENTS) means stop retrying and escalate; SLOT_TAKEN means pick
- * another slot; VERIFY_UNAVAILABLE is transient (retry); INTERNAL is unexpected.
- * OUTSIDE_CALLING_WINDOW (#2310) means the start is before 08:00 or at or after
- * 20:00 in the request's `timezone`: retrying the same time can never succeed,
- * another time can.
- */
-function mapBookingError(err: unknown): {
-  status: number;
-  code:
-    | "UNKNOWN_BUCKET"
-    | "NO_ELIGIBLE_AGENTS"
-    | "SLOT_TAKEN"
-    | "VERIFY_UNAVAILABLE"
-    | "OUTSIDE_CALLING_WINDOW"
-    | "ATTENDEE_EMAIL_REFUSED"
-    | "INTERNAL";
-} {
-  // Each branch names its decision (#1318). The caller records every one of these as an
-  // error outcome under the same code, so the failure-rate window sees all five.
-  // refusal: api_unknown_bucket
-  if (err instanceof UnknownBucketError) return { status: 422, code: "UNKNOWN_BUCKET" };
-  // refusal: api_no_eligible_agents
-  if (err instanceof NoEligibleAgentsError) return { status: 409, code: "NO_ELIGIBLE_AGENTS" };
-  // refusal: api_slot_taken
-  if (err instanceof SlotUnavailableError) return { status: 409, code: "SLOT_TAKEN" };
-  // refusal: api_verify_unavailable
-  if (err instanceof VerifyUnavailableError) return { status: 503, code: "VERIFY_UNAVAILABLE" };
-  // refusal: api_outside_calling_window
-  if (err instanceof OutsideCallingWindowError) return { status: 422, code: "OUTSIDE_CALLING_WINDOW" };
-  // #3359: Google refused to invite the attendee's address. The caller asks the lead
-  // for another one; retrying the same body can never succeed.
-  // refusal: api_attendee_email_refused
-  if (err instanceof AttendeeEmailRefusedError) return { status: 400, code: "ATTENDEE_EMAIL_REFUSED" };
-  // refusal: api_internal
-  return { status: 500, code: "INTERNAL" };
 }
