@@ -34,6 +34,14 @@ export interface BookingTool {
 const timeZone = { type: "string", description: "The lead's IANA time zone, only if it differs from the one Marcia signed, e.g. America/Denver." };
 const slotId = { type: "string", description: "A slot_id exactly as find_times returned it. Never a time you wrote yourself." };
 
+/** Book and move take the same arguments: a slot id find_times gave, and optionally a zone. */
+const slotSchema: BookingTool["inputSchema"] = {
+  type: "object",
+  properties: { slot_id: slotId, time_zone: timeZone },
+  required: ["slot_id"],
+  additionalProperties: false,
+};
+
 /** Per operation, so `tsc` refuses an operation added without its tool. */
 const TOOLS: Record<MarciaOperation, Omit<BookingTool, "name" | "gatewayMethod" | "route">> = {
   find_times: {
@@ -46,7 +54,7 @@ const TOOLS: Record<MarciaOperation, Omit<BookingTool, "name" | "gatewayMethod" 
   },
   book: {
     description: "Book the lead's call at one of the times find_times offered, by its slot_id. If the time was just taken, offer the alternatives in the answer.",
-    inputSchema: { type: "object", properties: { slot_id: slotId, time_zone: timeZone }, required: ["slot_id"], additionalProperties: false },
+    inputSchema: slotSchema,
   },
   lookup: {
     description: "Look up the lead's booked call: when it is and with which advisor.",
@@ -54,7 +62,7 @@ const TOOLS: Record<MarciaOperation, Omit<BookingTool, "name" | "gatewayMethod" 
   },
   move: {
     description: "Move the lead's booked call to another time find_times offered, by its slot_id.",
-    inputSchema: { type: "object", properties: { slot_id: slotId, time_zone: timeZone }, required: ["slot_id"], additionalProperties: false },
+    inputSchema: slotSchema,
   },
   cancel: {
     description:

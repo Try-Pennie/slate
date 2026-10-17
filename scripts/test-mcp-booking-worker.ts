@@ -124,6 +124,11 @@ for (const [label, token] of [
   };
   assert(res.result.isError && res.result.content[0]!.text.includes(`try again within ${MARCIA_LIMIT_PERIOD_SEC} seconds`), "over the limit, the refusal names the period");
   eq(calls.length, 0, "and Slate is not called");
+  const broken = deps({ withinLimit: async () => { throw new Error("limiter outage"); } });
+  const b = await handleMcp(rpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "book", arguments: {} } }), broken.d);
+  const bb = (await b.json()) as { result: { isError: boolean; content: { text: string }[] } };
+  assert(b.status === 200 && bb.result.isError && bb.result.content[0]!.text.includes("could not check"), "a limiter that throws refuses with an answer, never a bare 500");
+  eq([broken.calls.length, broken.logs.length], [0, 1], "and Slate is not called, and it is logged");
   const entry = readFileSync("worker/mcp-booking/index.ts", "utf8");
   assert(/if \(!env\.MARCIA_LIMITER\) \{[\s\S]*?return false;/.test(entry), "a deployment without its limiter refuses every call (fail closed)");
 }

@@ -116,7 +116,21 @@ export async function handleMcp(request: Request, deps: ProtocolDeps): Promise<R
     case "tools/call": {
       const tool = bookingTool(message.params?.name);
       if (!tool) return json(rpcError(id, -32602, "No such tool."));
-      if (!(await deps.withinLimit())) {
+      let within: boolean;
+      try {
+        within = await deps.withinLimit();
+      } catch {
+        // A limiter that cannot answer refuses, the same as one that says no: Marcia is
+        // never run unmetered, and the caller gets an answer rather than a bare 500.
+        deps.logError("Marcia's overall limit could not be checked, so the call was refused", { tool: tool.name });
+        return json(
+          rpcResult(id, {
+            content: [{ type: "text", text: "Slate could not check Marcia's call limit just now. Try again in a minute." }],
+            isError: true,
+          }),
+        );
+      }
+      if (!within) {
         return json(
           rpcResult(id, {
             content: [{ type: "text", text: `Marcia has made too many booking calls just now; try again within ${MARCIA_LIMIT_PERIOD_SEC} seconds.` }],
