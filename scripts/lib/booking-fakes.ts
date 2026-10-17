@@ -1122,6 +1122,7 @@ export function makeDeps(opts: FakeOpts) {
     loadReservationByKey: async () => opts.reservation ?? null,
     deleteReservation: async (id) => {
       calls.deletedReservations.push(id);
+      return "deleted" as const;
     },
     repinReservationEvent: async () => {},
     loadDrainableReservations: async () => opts.drainableReservations ?? [],

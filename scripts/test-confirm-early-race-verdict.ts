@@ -231,7 +231,12 @@ async function main() {
           `${label}: and recorded after the line was told (log ${log.join(" ")})`,
         );
       } else {
-        assert(errOf(leader) === boom, `${label}: the cleanup's failure is still the leader's answer (got ${String(errOf(leader))})`);
+        // #3859: answered as the retryable outage, carrying the delete's own failure.
+        const failed = errOf(leader);
+        assert(
+          failed instanceof Error && failed.name === "ReservationRollbackError" && failed.cause === boom,
+          `${label}: the cleanup's failure is still the leader's answer (got ${String(failed)})`,
+        );
       }
     }
   }

@@ -662,6 +662,7 @@ async function run() {
       loadReservationByKey: async () => (reservation?.status === "pending" ? reservation : null),
       deleteReservation: async () => {
         if (reservation) reservation.status = "delivered";
+        return "deleted" as const;
       },
       repinReservationEvent: async (id, from, to) => {
         if (!reservation || reservation.id !== id || reservation.gcal_client_id !== from) {

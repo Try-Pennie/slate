@@ -493,6 +493,17 @@ export function unfairOrderingAlert(context: string): string {
   );
 }
 
+/**
+ * #3859: a confirm lost the overlap race and the database refused the delete that
+ * rolls its reservation back, so it stopped rather than reserving again under the
+ * same key (which would have adopted the lost row). Sent under the verify outage's
+ * key, because the lead saw the same retryable answer. It claims only what was
+ * measured: the delete was refused. The row is still pending, which the drain retries.
+ */
+export function reservationRollbackAlert(): string {
+  return "A booking failed because Supabase refused to delete a reservation the confirm had to roll back after losing the overlap race, not because the slot was full. The lead saw a retryable error. The row is still pending in booking_reservations and the reservation drain retries it; check Supabase health and the booking log line for the database's error.";
+}
+
 /** Verify-on-book could not confirm ANY candidate, so the booking was refused. */
 export function verifyOutageAlert(): string {
   return "A booking failed because verify-on-book could not confirm ANY candidate's free/busy (likely a Google/DB outage), not because the slot was full. The lead saw a retryable error. Check Google Calendar API + DB health.";

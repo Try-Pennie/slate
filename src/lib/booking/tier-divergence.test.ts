@@ -204,7 +204,7 @@ function makeDeps(): BookingDeps & CommitFreshParts {
       updated_at: "",
     }),
     loadReservationByKey: async () => null,
-    deleteReservation: noop,
+    deleteReservation: async () => "deleted" as const,
     repinReservationEvent: noop,
     loadDrainableReservations: async () => [] as BookingReservation[],
     leaseReservation: async () => "lease-1",
