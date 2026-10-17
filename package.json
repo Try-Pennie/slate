@@ -48,6 +48,7 @@
     "restore:from-snowflake": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/restore-from-snowflake.ts",
     "verify:kill-switch": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-kill-switch-live.ts",
     "verify:burst-counter": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-burst-counter-live.ts",
+    "verify:refusal-alerts": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-refusal-alerts-live.ts",
     "verify:confirm-line": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-confirm-line-live.ts",
     "verify:reroute-on-ineligibility": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-reroute-on-ineligibility-live.ts",
     "verify:ooo-protection": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-ooo-protection-live.ts",

@@ -311,12 +311,19 @@ import {
   samplesFromWindow,
   type CeilingLimits,
   type RefusalThresholds,
+  embedTripsInWindow,
+  judgeEmbedRefusalSignals,
+  lockoutReadsNeeded,
+  planEmbedRefusalAlerts,
+  SHIPPED_REFUSAL_THRESHOLDS,
+  type EmbedCapLimits,
 } from "@/lib/monitor/api-refusal-signals";
+import { SHIPPED_CEILING_LIMITS, SHIPPED_EMBED_CAP_LIMITS } from "@/lib/monitor/refusal-limits";
+import { SHIPPED_EMBED_REFUSAL_THRESHOLDS } from "@/lib/monitor/embed-refusal-thresholds";
+import { countLockedOutKeys } from "@/lib/monitor/embed-lockouts-store";
 import {
-  BOOKING_API_IP_LIMITER,
-  BOOKING_API_WRITE_LIMITER,
-  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
-  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+  BOOKING_CONTACT_HOURLY_RATE_RULES,
+  BOOKING_HOURLY_RATE_RULES,
 } from "@/lib/rate-limit-core";
 import { SHIPPED_MIGRATION_VERSION } from "@/lib/db/migration-version";
 import { runWebhookSubscriberCheck } from "@/lib/monitor/webhook-subscriber-coverage";
@@ -512,25 +519,21 @@ const FAILURE_RATE_THRESHOLDS: RateThresholds = SHIPPED_FAILURE_RATE_THRESHOLDS;
 // where nothing else does. The smoke canary exercises the endpoint with a valid
 // key every 30 minutes, so the measured-clear path gets real exercise either way.
 //
-// The limits the ceiling page names, DERIVED from the rules that actually refuse
-// rather than copied into the copy builder (L41). A figure written by hand beside
-// the rule it describes goes stale the first time somebody changes one, and a
-// message carrying a wrong number is worse than one carrying none: a reader who
-// checks it once and finds it right stops checking.
-const CEILING_LIMITS: CeilingLimits = {
-  keyPerHour: DIRECT_BOOKING_API_HOURLY_RATE_RULES[0].max,
-  keyPerMinute: BOOKING_API_WRITE_LIMITER.perMinute,
-  ipPerHour: DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES[0].max,
-  ipPerMinute: BOOKING_API_IP_LIMITER.perMinute,
-};
+// The limits the ceiling page names are DERIVED from the rules that actually refuse
+// (`refusal-limits.ts`, L41), and the thresholds live beside the judge
+// (`SHIPPED_REFUSAL_THRESHOLDS`) so the live verification (#1726) judges with the
+// same numbers rather than a copy of them.
+const CEILING_LIMITS: CeilingLimits = SHIPPED_CEILING_LIMITS;
 
-const REFUSAL_THRESHOLDS: RefusalThresholds = {
-  windowMs: 60 * 60_000,
-  ceilingMinRefusals: 20,
-  ceilingPct: 10,
-  credentialMinSamples: 3,
-  listMinSamples: 3,
-};
+// --- The embed booker turning real leads away by its own limits (#1727) ---
+//
+// The same window and the same rules as the three above, on the surface real leads
+// arrive on. The floors are DERIVED from a recorded production measurement
+// (`embed-refusal-thresholds.ts`, none of these tripped once in the 167 hours read),
+// and the limits each page names are read off the rules that actually refuse (L41).
+const EMBED_CAP_LIMITS: EmbedCapLimits = SHIPPED_EMBED_CAP_LIMITS;
+
+const REFUSAL_THRESHOLDS: RefusalThresholds = SHIPPED_REFUSAL_THRESHOLDS;
 
 // --- Are the times we offer actually free (#1315) ---
 // One bucket per tick on a rotating cursor, so the whole ladder is covered a few
@@ -2048,6 +2051,69 @@ export async function GET(req: NextRequest) {
         // alert-key: booking_api_list_read
         await resolveAlert(LIST_ALERT_KEY, refusalAllClear.list);
       }
+      return null;
+    });
+
+    // --- Is the embed booker turning leads away by its own limits (#1727)? ---
+    //
+    // The same window again, so no second read of the state row (L53). Its OWN
+    // boundary rather than a branch of the step above, because it can make up to
+    // two reads of the limiter's rows that the API signals do not need, and a throw
+    // in one must not take the other's judgement with it (L73). A read that fails
+    // throws inside this step, which the step failure streak reports (#2382); it
+    // never reaches the judge as zero, which would clear a page about people still
+    // locked out.
+    //
+    // The reads happen only when the window recorded a trip on that cap, so the
+    // quiet tick, which is nearly every tick, costs no subrequest at all.
+    await steps.run("embed_refusals", null, async () => {
+      if (failureRate.status !== "checked") {
+        log.warn("monitor", {
+          msg: "embed refusal signals skipped",
+          why:
+            failureRate.status === "unverified" || failureRate.status === "skipped"
+              ? failureRate.why
+              : "failure rate step errored",
+        });
+        return null;
+      }
+      const t = SHIPPED_EMBED_REFUSAL_THRESHOLDS;
+      const samples = samplesFromWindow(failureRate.state.samples);
+      const needed = lockoutReadsNeeded(embedTripsInWindow(samples, now, t.windowMs));
+      const lockouts = {
+        addresses: needed.addresses ? await countLockedOutKeys(BOOKING_HOURLY_RATE_RULES[0], now) : null,
+        contactKeys: needed.contactKeys ? await countLockedOutKeys(BOOKING_CONTACT_HOURLY_RATE_RULES[0], now) : null,
+      };
+      const verdicts = judgeEmbedRefusalSignals(samples, now, t, lockouts);
+      log.info("monitor", {
+        msg: "embed refusals",
+        ip_cap: verdicts.ipCap.status,
+        ip_locked_out: lockouts.addresses,
+        contact_cap: verdicts.contactCap.status,
+        contact_locked_out: lockouts.contactKeys,
+        honeypot: verdicts.honeypot.status,
+        honeypot_trips: verdicts.honeypot.status === "unmeasured" ? null : verdicts.honeypot.trips,
+      });
+
+      // Each signal pages and clears on its OWN key. The all-clears are settled in one
+      // batch, which reads alert_state once for all three rather than once each, on
+      // the subrequest budget four cron lanes share.
+      const plan = planEmbedRefusalAlerts(verdicts, t.windowMs, EMBED_CAP_LIMITS);
+      for (const page of plan.pages) {
+        // alert-key: booking_embed_ip_cap
+        // alert-key: booking_embed_contact_cap
+        // alert-key: booking_embed_honeypot
+        // alert-text-ok: our own copy from api-refusal-signals.ts, built from measured
+        // counts; no error text can reach it.
+        await sendThrottledAlert(page.key, cooldownMs.booking_failure_rate, page.text);
+      }
+      // alert-key: booking_embed_ip_cap
+      // alert-key: booking_embed_contact_cap
+      // alert-key: booking_embed_honeypot
+      // all-clear-proof: scripts/test-embed-refusal-signals.ts (an empty window, a
+      // needed lockout read that is missing, and one that came back unreadable each
+      // plan no all-clear at all)
+      await resolveRecovered(plan.recovered);
       return null;
     });
 

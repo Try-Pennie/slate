@@ -681,6 +681,25 @@ export const ALERT_CATALOG: AlertEntry[] = [
     kind: "condition",
     why: "The bookings list cannot be read, so the caller's sync has stalled; it ends when the table is readable again.",
   },
+  // #1727. The embed booker's own three refusals, the same shape on the surface real
+  // leads arrive on. CONDITIONS for the same reason: each stays true until a limit
+  // is raised, a bot stops, or a field is fixed, and each clears only off a measured
+  // clear verdict.
+  {
+    key: "booking_embed_ip_cap",
+    kind: "condition",
+    why: "The booker's hourly address limit is refusing several addresses at once, which is a spread bot or the limit wrong for real traffic; it ends when fewer than the floor are locked out.",
+  },
+  {
+    key: "booking_embed_contact_cap",
+    kind: "condition",
+    why: "The booker's per contact limit is locking out several people at once, so real leads may be turned away by us; it ends when fewer than the floor are locked out.",
+  },
+  {
+    key: "booking_embed_honeypot",
+    kind: "condition",
+    why: "The booker's hidden bot trap is being filled across many intervals, a campaign or the field reachable by real leads; it ends when the window holds fewer trips than the floor.",
+  },
   {
     key: "recompute_headroom",
     kind: "condition",
