@@ -20,6 +20,7 @@ import {
   stubFreeBusy,
   stubFreeBusyMany,
   stubCalendarList,
+  verifyReadFaultKey,
   LOADTEST_FAULT_PCT,
 } from "../src/lib/google/loadtest-stub.ts";
 import { shouldInject, type FaultSwitch } from "../src/lib/loadtest-fault.ts";
@@ -200,11 +201,13 @@ import { fileURLToPath } from "node:url";
 
   // At a real percentage, exactly the calendars whose own key says so, and the same
   // ones on every call (deterministic, like every other injector).
-  const run1 = stubFreeBusyMany(cals, ON);
-  const run2 = stubFreeBusyMany(cals, ON);
+  // #3881: inside one MINUTE, so a retry in the same moment meets the same answer.
+  const AT = Date.UTC(2026, 9, 17, 17, 25, 10);
+  const run1 = stubFreeBusyMany(cals, ON, AT);
+  const run2 = stubFreeBusyMany(cals, ON, AT + 40_000);
   const faulted = cals.filter((c) => run1.get(c)?.error);
-  eq(faulted, cals.filter((c) => shouldInject("google-read", `freeBusyMany:${c}`, ON)), "a calendar is unreadable exactly when its bulk read key faults");
-  eq(cals.filter((c) => run2.get(c)?.error), faulted, "and the same calendars on every call");
+  eq(faulted, cals.filter((c) => shouldInject("google-read", verifyReadFaultKey("freeBusyMany", c, AT), ON)), "a calendar is unreadable exactly when its bulk read key faults");
+  eq(cals.filter((c) => run2.get(c)?.error), faulted, "and the same calendars on every call within the minute");
   const share = faulted.length / cals.length;
   assert(share > 0.2 && share < 0.4, `about the configured share is faulted (${(share * 100).toFixed(1)}% at 30%)`);
   eq([...run1.values()].filter((v) => !v.error && v.busy.length > 0).length, 0, "and the rest read as free, as before");
@@ -214,9 +217,41 @@ import { fileURLToPath } from "node:url";
   // fallback exists for. So a fault pass reaches all three outcomes: read in bulk; not
   // read in bulk and rescued by the direct read; read by neither, which is the
   // unverified re-route.
-  const direct = (c: string) => shouldInject("google-read", `freeBusy:${c}`, ON);
+  const direct = (c: string) => shouldInject("google-read", verifyReadFaultKey("freeBusy", c, AT), ON);
   assert(faulted.some((c) => !direct(c)), "some calendars the bulk read misses are read directly (the rescue)");
   assert(faulted.some((c) => direct(c)), "and some are read by neither (the unverified re-route)");
+}
+
+// --- the confirm's reads fail like an unreliable Google, not a broken calendar (#3881) ---
+//
+// Keyed on the calendar alone, an advisor whose bulk AND direct keys both landed in the
+// failing share could never be read for the whole run, while nothing else booked their
+// times, so those times stayed on offer and every confirm sent to them was refused
+// (run 39049243987: 3 of 30, all on one advisor at one slot). The minute in the key is
+// the same trade the database injector makes (`supabaseFaultKey`).
+{
+  const ON: FaultSwitch = { loadtest: true, pct: 10, targets: ["google-read"] };
+  const cals = Array.from({ length: 200 }, (_, i) => `loadtest-agent-${i}@loadtest.local`);
+  const T0 = Date.UTC(2026, 9, 17, 17, 0, 0);
+  const minutes = Array.from({ length: 60 }, (_, m) => T0 + m * 60_000);
+  const neither = (c: string, at: number) =>
+    shouldInject("google-read", verifyReadFaultKey("freeBusyMany", c, at), ON) &&
+    shouldInject("google-read", verifyReadFaultKey("freeBusy", c, at), ON);
+
+  const everUnreadable = cals.filter((c) => minutes.some((at) => neither(c, at)));
+  assert(everUnreadable.length > 0, "over an hour some advisor is read by neither in some minute, so the unverified path still runs");
+  const alwaysUnreadable = cals.filter((c) => minutes.every((at) => neither(c, at)));
+  eq(alwaysUnreadable, [], "and no advisor is unreadable in every minute of the hour");
+  for (const c of everUnreadable.slice(0, 5)) {
+    assert(minutes.some((at) => !neither(c, at)), `${c} is readable again in a later minute`);
+  }
+  // The stubs themselves take the clock: the same calendar answers differently across
+  // minutes somewhere in the hour, and identically inside one.
+  const moved = cals.some((c) => new Set(minutes.map((at) => stubFreeBusyMany([c], ON, at).get(c)?.error)).size > 1);
+  assert(moved, "the bulk read's verdict for a calendar moves between minutes");
+  eq(verifyReadFaultKey("freeBusy", "a@x.com", T0), verifyReadFaultKey("freeBusy", "a@x.com", T0 + 59_999), "one minute is one key");
+  assert(verifyReadFaultKey("freeBusy", "a@x.com", T0) !== verifyReadFaultKey("freeBusy", "a@x.com", T0 + 60_000), "the next minute is another");
+  assert(verifyReadFaultKey("freeBusy", "a@x.com", T0) !== verifyReadFaultKey("freeBusyMany", "a@x.com", T0), "and the two reads never share a key");
 }
 
 finish();
