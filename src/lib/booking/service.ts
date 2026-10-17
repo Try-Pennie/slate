@@ -4297,6 +4297,9 @@ export async function drainBookingReservations() {
     });
   // #3847: a kept reservation pages once a day until somebody sends booking.created
   // or removes it by hand, and clears only off a sweep that read every candidate.
+  // Both seams log a failed notice and go on: the drain and the sweep have already
+  // run, so a notice that could not be sent must not turn the tick into a failure.
+  // The alert's state is unchanged, so the next tick tries the notice again.
   await settleOwedReservationAlert(sweep, {
     page: (count, ids) =>
       sendThrottledAlert(
@@ -4309,6 +4312,7 @@ export async function drainBookingReservations() {
     resolve: () =>
       resolveRecovered([{ key: RESERVATION_OWED_ALERT_KEY, text: reservationCreatedOwedRecovery() }]).then(
         () => undefined,
+        logAlertSendFailure(RESERVATION_OWED_ALERT_KEY),
       ),
   });
   // PII-free summary (stuck rows carry attendee payload -> cron response body).

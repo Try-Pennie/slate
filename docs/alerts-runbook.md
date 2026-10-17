@@ -336,8 +336,10 @@ which is what makes this family different from the ones above.
   until it goes. `booking_reservations.last_error` says why. Either restore the bucket
   and set the reservation's `attempts` to 0 (past 50 the drain no longer retries it),
   so the drain sends the webhook and deletes the reservation itself, or tell Regal about
-  the booking by hand and then delete the reservation. The full sequence is in
-  `docs/dr-runbook.md`, "How long a reservation is kept".
+  the booking by hand and then delete the reservation. It clears only on a sweep that
+  read every candidate and found none owed; a sweep whose read fails neither pages nor
+  clears, and its error is in the Worker log under `tag=booking`. The full sequence is
+  in `docs/dr-runbook.md`, "How long a reservation is kept".
 
 - For `bookable_trait_unrecorded:*` (#2085): an agent's bookable state changed and the
   delivery telling Regal was never recorded, so nothing retries it and **no customer is
