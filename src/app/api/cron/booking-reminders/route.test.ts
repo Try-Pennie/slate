@@ -211,7 +211,7 @@ describe("GET /api/cron/booking-reminders", () => {
   });
 
   // #396 / #2660: test bookings are kept out through the BUCKET, which is where
-  // the flag lives. The canary books a real row every six hours against a real
+  // the flag lives. The canary books a real row every hour against a real
   // inbox, and a partner's test booking on the public test bucket carries the
   // tester's own address, so a reminder to either would be a live email nobody
   // asked for. Pinned by name here, since a filter on a select string is exactly

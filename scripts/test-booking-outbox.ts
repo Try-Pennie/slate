@@ -117,6 +117,35 @@ async function run() {
     assert(calls.delivered.length === 0, "never marks delivered while a step is unfinished");
   }
   {
+    // #2440: a step that completes WITHOUT doing its side effect says why, and the
+    // reason is persisted on the step, so the withheld work is countable afterwards
+    // rather than living only in a log line kept for seven days.
+    const handlers: OutboxHandlers = {
+      a: async () => ({ withheld: "no_handoff_channel" }),
+      b: async () => {},
+    };
+    const r = row([
+      { name: "a", state: "pending" },
+      { name: "b", state: "pending" },
+    ]);
+    const { deps, calls } = execDeps();
+    const res = await runOutboxSteps(deps, r, handlers, LEASE);
+    assert(res.delivered === true, "withheld: a withheld step still completes, so nothing retries for ever");
+    const lastSave = calls.saves[calls.saves.length - 1];
+    assert(lastSave.steps[0].state === "done", "withheld: the step is done");
+    assert(lastSave.steps[0].withheld === "no_handoff_channel", "withheld: the reason is in what was PERSISTED");
+    assert(lastSave.steps[1].withheld === undefined, "withheld: a step that did its work carries no reason");
+  }
+  {
+    // A withheld answer from a handler that then throws is impossible, but a handler
+    // that throws must never be credited with a withheld reason from anywhere.
+    const handlers: OutboxHandlers = { a: async () => { throw new Error("slack down"); } };
+    const r = row([{ name: "a", state: "pending" }]);
+    const { deps } = execDeps();
+    await runOutboxSteps(deps, r, handlers, LEASE);
+    assert(r.steps[0].state === "failed" && r.steps[0].withheld === undefined, "withheld: a failed step records no reason");
+  }
+  {
     // No handler for a step -> failed (never silently skipped as success).
     const r = row([{ name: "ghost", state: "pending" }]);
     const { deps } = execDeps();

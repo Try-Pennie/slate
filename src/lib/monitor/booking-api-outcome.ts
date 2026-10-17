@@ -14,6 +14,7 @@
 import { DateTime } from "luxon";
 import type { HostClass } from "./offsite-origin.ts";
 import { FOLLOW_UP_LEFT_TO_DRAIN_OUTCOME } from "./follow-up-drain-rate.ts";
+import { DUPLICATE_CANCEL_TALLY_NAMES } from "./duplicate-cancel-rate.ts";
 
 /**
  * The zone whose calendar day the tally is KEYED by: a call is counted on its
@@ -223,6 +224,13 @@ export interface OutcomeMix {
    * confirm already counted, never an attempt of its own.
    */
   followUpLeftToDrain: number;
+  /**
+   * #2377: every answer POST /api/bookings/cancel-duplicate gave, by its tally name
+   * (`DUPLICATE_CANCEL_TALLY_NAMES`), zero filled. Outside `total` for the same reason
+   * as the refusals: a duplicate cancel is not a booking attempt, and counting it there
+   * would move the denominator the failure share is taken against.
+   */
+  duplicateCancel: Record<string, number>;
 }
 
 /** The jsonb shape the booking_api_outcome_mix RPC returns for a window. */
@@ -257,7 +265,9 @@ export function normalizeMix(raw: RawMix | null | undefined): OutcomeMix {
   const refusals = emptyRefusalCounts();
   for (const name of SELF_INFLICTED_REFUSALS) refusals[name] = byOutcome[name] ?? 0;
   const followUpLeftToDrain = byOutcome[FOLLOW_UP_LEFT_TO_DRAIN_OUTCOME] ?? 0;
-  return { total, outcomes, errors, testTotal, offsiteTotal, refusals, followUpLeftToDrain };
+  const duplicateCancel: Record<string, number> = {};
+  for (const name of DUPLICATE_CANCEL_TALLY_NAMES) duplicateCancel[name] = byOutcome[name] ?? 0;
+  return { total, outcomes, errors, testTotal, offsiteTotal, refusals, followUpLeftToDrain, duplicateCancel };
 }
 
 /**

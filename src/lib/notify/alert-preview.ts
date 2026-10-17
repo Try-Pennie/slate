@@ -204,6 +204,14 @@ import {
 } from "@/lib/monitor/migration-drift";
 import { catchallPageText, catchallClearText } from "@/lib/monitor/catchall-rate";
 import { formatFollowUpDrainPage, formatFollowUpDrainAllClear } from "@/lib/monitor/follow-up-drain-rate";
+import { formatOwnerNoticeWithheldReport } from "@/lib/monitor/owner-notice-withheld-report";
+import { formatOwnerAlertSkipsPage, formatOwnerAlertSkipsAllClear } from "@/lib/monitor/owner-alert-skips";
+import {
+  formatDuplicateCancelRefusedAllClear,
+  formatDuplicateCancelRefusedPage,
+  formatDuplicateCancelUnavailableAllClear,
+  formatDuplicateCancelUnavailablePage,
+} from "@/lib/monitor/duplicate-cancel-rate";
 import {
   formatFailureBurstEnded,
   formatFailureRateAlert,
@@ -4234,8 +4242,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the booking canary's full pass went quiet",
     channel: "alert",
     text: canaryAlertText(
-      { lane: "smoke-canary-full", ageMs: 9 * 60 * 60_000, maxStaleMs: 8 * 60 * 60_000, unreadable: false },
-      480,
+      { lane: "smoke-canary-full", ageMs: 4 * 60 * 60_000, maxStaleMs: 3 * 60 * 60_000, unreadable: false },
+      180,
     ),
   },
   {
@@ -5229,6 +5237,114 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the lock claim hit a DB error",
     channel: "alert",
     text: rescheduleLockOutageAlert(),
+  },
+  // #2377. Each signal's page and its all clear with and without a straggler. The
+  // page states use the stage and refusal mixes a broken journey would produce.
+  {
+    key: "duplicate_cancel_unavailable",
+    state: "a share of duplicate cancels answered 503, mostly at the check",
+    channel: "alert",
+    text: formatDuplicateCancelUnavailablePage(
+      {
+        calls: 64,
+        count: 22,
+        pct: 34,
+        byName: { duplicate_cancel_unavailable_rpc: 19, duplicate_cancel_unavailable_handoff: 3 },
+      },
+      24,
+    ),
+  },
+  {
+    key: "duplicate_cancel_unavailable",
+    state: "six measured hours with none failing",
+    channel: "recovery",
+    text: formatDuplicateCancelUnavailableAllClear({ calls: 18, count: 0 }, 6),
+  },
+  {
+    key: "duplicate_cancel_unavailable",
+    state: "six measured hours with one failing",
+    channel: "recovery",
+    text: formatDuplicateCancelUnavailableAllClear({ calls: 40, count: 1 }, 6),
+  },
+  {
+    key: "duplicate_cancel_refused",
+    state: "a share of duplicate cancels refused for a person",
+    channel: "alert",
+    text: formatDuplicateCancelRefusedPage(
+      {
+        calls: 52,
+        count: 21,
+        pct: 40,
+        byName: {
+          duplicate_cancel_no_other_call: 14,
+          duplicate_cancel_identity_conflict: 5,
+          duplicate_cancel_named_is_newest: 2,
+        },
+      },
+      24,
+    ),
+  },
+  {
+    key: "duplicate_cancel_refused",
+    state: "six measured hours at an ordinary share",
+    channel: "recovery",
+    text: formatDuplicateCancelRefusedAllClear({ calls: 30, count: 2 }, 6),
+  },
+  {
+    key: "duplicate_cancel_refused",
+    state: "six measured hours with none refused",
+    channel: "recovery",
+    text: formatDuplicateCancelRefusedAllClear({ calls: 12, count: 0 }, 6),
+  },
+  // #2436. The rate trigger, the saturation trigger under the alert floor, and the
+  // all clear with and without a straggler. Measured healthy is zero skips in 205.
+  {
+    key: "owner_alert_skips",
+    state: "several advisors' owner alerts skipped, over the share",
+    channel: "alert",
+    text: formatOwnerAlertSkipsPage(
+      { skipped: 14, alerts: 58, advisors: 5, pct: 24, byReason: { "not-provisioned": 9, gone: 5 } },
+      7,
+    ),
+  },
+  {
+    key: "owner_alert_skips",
+    state: "most of a quiet week's owner alerts skipped",
+    channel: "alert",
+    text: formatOwnerAlertSkipsPage({ skipped: 5, alerts: 7, advisors: 3, pct: 71, byReason: { gone: 5 } }, 7),
+  },
+  {
+    key: "owner_alert_skips",
+    state: "a measured week with none skipped",
+    channel: "recovery",
+    text: formatOwnerAlertSkipsAllClear({ skipped: 0, alerts: 54 }, 7),
+  },
+  {
+    key: "owner_alert_skips",
+    state: "a measured week with one skipped",
+    channel: "recovery",
+    text: formatOwnerAlertSkipsAllClear({ skipped: 1, alerts: 54 }, 7),
+  },
+  // #2440. Two states because the sentence's verb agrees with the count.
+  {
+    key: "owner_notice_withheld",
+    state: "several owner reassign notices withheld this week",
+    channel: "info",
+    text: formatOwnerNoticeWithheldReport({
+      count: 6,
+      windowDays: 7,
+      settingsUrl: "https://slate.trypennie.app/admin/alerts",
+    }),
+  },
+  {
+    key: "owner_notice_withheld",
+    state: "one owner reassign notice withheld this week",
+    channel: "info",
+    text: formatOwnerNoticeWithheldReport({
+      count: 1,
+      windowDays: 7,
+      settingsUrl: "https://slate.trypennie.app/admin/alerts",
+    }),
   },
   {
     key: "top_tier_cascade_rate",

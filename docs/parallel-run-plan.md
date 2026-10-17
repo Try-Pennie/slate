@@ -31,7 +31,7 @@ design rather than of any configuration that could drift:
 
 ## The phases
 
-- **Phase 0, continuous.** The six hourly canary books, reschedules, and
+- **Phase 0, continuous.** The canary (hourly since #1493) books, reschedules, and
   cancels on live prod against the isolated test agents; the truth probe and
   the OOO sweep verify against real calendars. This proves Slate works
   mechanically. It cannot prove the real roster at scale, real traffic, or the

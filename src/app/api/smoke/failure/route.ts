@@ -4,8 +4,12 @@ import { authenticateBearer, CANARY_CALLERS } from "@/lib/booking/api-auth";
 import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 import { resolveRecovered, sendThrottledAlert, type SendOutcome } from "@/lib/notify/dispatch";
 import { CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
+import { clearFailureStreak, trackConsecutiveStreak } from "@/lib/notify/streak";
 import {
+  FULL_FAILURE_STREAK_KEY,
+  FULL_FAILURE_STREAK_WINDOW_S,
   formatSmokeCanaryRecovery,
+  fullFailureWaits,
   keysClearedBy,
   parseSmokeReport,
   smokeCanaryFailedKey,
@@ -24,14 +28,19 @@ export const dynamic = "force-dynamic";
  *
  * - `failed`: post the message the workflow built, on `smoke_canary_failed:<mode>`,
  *   at once when a check is newly failing and otherwise once a day. Answers what the
- *   send did, and the workflow posts directly itself unless that is `sent` or `held`.
+ *   send did, and the workflow posts directly itself unless that is `sent`, `held` or `waiting`.
  * - `passed`: a clean run, so the matching failure (both, for a full pass) clears with
  *   an all-clear, but only if one was posted.
+ * - #1493: a FULL pass failure is counted, and between 9pm and 8am ET the first of a
+ *   run is held and answered `waiting`, so the workflow does not post it either; the
+ *   second in a row posts. A count that cannot be read posts. A clean full pass
+ *   clears the count.
  *
  * Who may call: the canary's own key only (`CANARY_CALLERS`), as on the heartbeat
  * route beside it, so a partner's key is refused. Fails CLOSED with no key
  * configured. Whose data: it reads and writes only the two `smoke_canary_failed`
- * rows of `alert_state` and posts to the alerts channel; nothing else is reachable.
+ * rows of `alert_state` and the one `smoke_canary_full_failures` row of
+ * `rate_limits`, and posts to the alerts channel; nothing else is reachable.
  * The text is bounded and cannot mention a whole channel.
  */
 export async function POST(req: NextRequest) {
@@ -46,6 +55,7 @@ export async function POST(req: NextRequest) {
   const report = parsed.report;
 
   if (report.outcome === "passed") {
+    if (report.mode === "full") await clearFailureStreak(FULL_FAILURE_STREAK_KEY);
     // alert-key: smoke_canary_failed:*
     const cleared = await resolveRecovered(
       keysClearedBy(report.mode).map((key) => ({
@@ -54,6 +64,14 @@ export async function POST(req: NextRequest) {
       })),
     );
     return NextResponse.json({ ok: true, cleared });
+  }
+
+  if (report.mode === "full") {
+    const streak = await trackConsecutiveStreak(FULL_FAILURE_STREAK_KEY, FULL_FAILURE_STREAK_WINDOW_S, 2);
+    if (fullFailureWaits(Date.now(), streak)) {
+      log.info("smoke-failure", { msg: "first overnight full pass failure held", mode: report.mode });
+      return NextResponse.json({ ok: true, outcome: "waiting" });
+    }
   }
 
   try {
@@ -71,7 +89,7 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json({ ok: true, outcome });
   } catch (err) {
-    // The workflow posts directly on anything but sent or held, so a throw here costs
+    // The workflow posts directly on anything but sent, held or waiting, so a throw here costs
     // one direct post, never silence.
     log.error("smoke-failure", { msg: "canary failure handoff could not be posted", mode: report.mode }, err);
     return NextResponse.json({ ok: false, outcome: "failed" }, { status: 500 });

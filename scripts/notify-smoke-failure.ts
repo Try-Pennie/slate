@@ -63,7 +63,13 @@ export async function run(
     doFetch,
   );
   if (handoff.handled) {
-    return { ok: true, reason: handoff.outcome === "sent" ? "posted by the Worker" : "held by the Worker: already posted" };
+    const reason =
+      handoff.outcome === "sent"
+        ? "posted by the Worker"
+        : handoff.outcome === "held"
+          ? "held by the Worker: already posted"
+          : "held by the Worker: the first overnight full pass failure, waiting for a second failure in a row";
+    return { ok: true, reason };
   }
   const direct = await postToAlertsChannel(post, text, env);
   return direct.ok ? { ok: true, reason: `posted directly (the Worker handoff failed: ${handoff.reason})` } : direct;

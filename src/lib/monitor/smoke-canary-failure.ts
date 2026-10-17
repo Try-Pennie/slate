@@ -13,11 +13,12 @@
  * so there is one builder whether the Worker or the workflow posts it.
  *
  * One key per pass (`smoke_canary_failed:dry`, `:full`), because they are cleared by
- * different runs: the 30 minute dry tick cannot speak for the six hourly full pass's
+ * different runs: the half hourly dry tick cannot speak for the hourly full pass's
  * reschedule or embed checks, so a clean dry run clearing a full pass failure would
- * post an all-clear and the same failure again every six hours. A clean FULL run
+ * post an all-clear and the same failure again on every full pass. A clean FULL run
  * clears both, since it runs everything the dry tick does and more.
  */
+import { DateTime } from "luxon";
 import { normalizeSignatureLine } from "@/lib/notify/repeat-policy";
 
 export const SMOKE_CANARY_FAILED_PREFIX = "smoke_canary_failed";
@@ -77,6 +78,46 @@ export function formatSmokeCanaryRecovery(mode: SmokeMode): string {
         "failure is cleared. No action is needed."
     : "The booking canary's health check is passing again against production, so the earlier " +
         "failure is cleared. No action is needed.";
+}
+
+/**
+ * The overnight rule for the full pass (#1493, Dan 2026-10-16). The full pass runs
+ * hourly now that real leads book through Slate, which is 24 chances a day for one
+ * flaky run against the public internet to wake somebody. So between 9pm and 8am
+ * Eastern a full pass failure posts only on the SECOND in a row: one bad run stays
+ * quiet, and a real break still pages within two hours. In the day every failure
+ * posts at once, as before. The dry tick is not covered: it proves less, it was not
+ * part of the decision, and its own cadence did not change.
+ *
+ * Fixed Eastern hours rather than the org's business hours, because this is about
+ * when a person is asleep, not when leads are booking.
+ */
+export const CANARY_QUIET_HOURS_ET = { startHour: 21, endHour: 8 } as const;
+const CANARY_QUIET_ZONE = "America/New_York";
+
+/** Whether `nowMs` falls in the overnight window, judged in Eastern time. */
+export function isCanaryQuietHour(nowMs: number): boolean {
+  const hour = DateTime.fromMillis(nowMs, { zone: CANARY_QUIET_ZONE }).hour;
+  return hour >= CANARY_QUIET_HOURS_ET.startHour || hour < CANARY_QUIET_HOURS_ET.endHour;
+}
+
+/** The consecutive full pass failure count, kept in `rate_limits` by `streak.ts`. */
+export const FULL_FAILURE_STREAK_KEY = "smoke_canary_full_failures";
+
+/**
+ * How far apart two full pass failures may be and still count as in a row: three
+ * hourly runs, so one run GitHub's schedule dropped between them (it has dropped runs
+ * for 2 to 3 hours, smoke-canary.yml) does not make the second read as the first.
+ */
+export const FULL_FAILURE_STREAK_WINDOW_S = 3 * 60 * 60;
+
+/**
+ * Whether a failed full pass is held rather than posted. Held ONLY overnight and only
+ * for the first of a run: a count that could not be read posts, because holding a
+ * failure is safe only while the next one is sure to be counted.
+ */
+export function fullFailureWaits(nowMs: number, streak: "reached" | "below" | "unknown"): boolean {
+  return isCanaryQuietHour(nowMs) && streak === "below";
 }
 
 /** The keys a clean run of `mode` measured healthy: a full pass covers the dry tick too. */

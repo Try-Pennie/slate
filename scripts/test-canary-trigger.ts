@@ -179,41 +179,58 @@ async function main() {
     eq(calls.dispatched, 0, "boundary: dispatch not called");
   }
 
-  // --- FULL-pass parity (#982). The same orchestration serves the 6h full pass
-  // via an injected `staleMs` (its own, much longer threshold) so all the
+  // --- FULL-pass parity (#982). The same orchestration serves the hourly full
+  // pass (#1493) via an injected `staleMs` (its own, longer threshold) so all the
   // guardrails above are reused with zero duplication. The full pass creates real
-  // bookings, so it must NOT double-fire while a merely-late 6h run catches up. ---
+  // bookings, so it must NOT double-fire while a merely-late hourly run catches up. ---
 
-  // 9. The full-pass trigger threshold is the documented 6h30m (6h cadence + a
-  //    30m grace so a late-but-not-dropped scheduled run is not double-fired).
-  eq(CANARY_FULL_TRIGGER_STALE_MS, 390 * 60_000, "full-pass trigger threshold is 6h30m");
+  // 9. The full-pass trigger threshold is the hourly cadence + a 30m grace, so a
+  //    late-but-not-dropped scheduled run is not double-fired (#1493: the cadence
+  //    went from 6h to 1h, and the grace is the one the 6h30m threshold carried).
+  {
+    const wf = readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "smoke-canary.yml"), "utf8");
+    assert(/cron:\s*"0 \* \* \* \*"/.test(wf), "the full pass this threshold is derived from is the hourly cron");
+  }
+  eq(CANARY_FULL_TRIGGER_STALE_MS, (60 + 30) * 60_000, "full-pass trigger threshold is the hourly cadence plus 30m");
   assert(
     CANARY_FULL_TRIGGER_STALE_MS > CANARY_TRIGGER_STALE_MS,
-    "the full-pass threshold is far longer than the dry-pass threshold (6h vs 30m cadence)",
+    "the full-pass threshold is longer than the dry-pass threshold",
+  );
+  // The watchdog's page on a stale full pass is the BACKSTOP behind this gap
+  // fill, so it must sit past one gap fill attempt, its cooldown and a whole
+  // run at the job's timeout (15m), or it pages before the gap fill has had its
+  // chance (the relation the old 8h bound held against 6h30m).
+  assert(
+    CANARY_STALE_BOUNDS_MS["smoke-canary-full"] >= CANARY_FULL_TRIGGER_STALE_MS + CANARY_FULL_DISPATCH_COOLDOWN_MS + 15 * 60_000,
+    "the full pass staleness page sits behind a whole gap fill attempt",
+  );
+  assert(
+    CANARY_STALE_BOUNDS_MS["smoke-canary-full"] <= 4 * 60 * 60_000,
+    "and an hourly full pass that has stopped pages within four hours, not the old eight",
   );
 
-  // 10. staleMs override, FRESH: a full heartbeat 6h old is within the 6h30m
-  //     threshold, so GitHub's 6h schedule is working and we do NOT dispatch.
+  // 10. staleMs override, FRESH: a full heartbeat 80 minutes old is within the
+  //     90m threshold, so GitHub's hourly schedule is working and we do NOT dispatch.
   {
     const { d, calls } = deps({
       staleMs: CANARY_FULL_TRIGGER_STALE_MS,
-      readHeartbeatMs: async () => NOW - 6 * 60 * 60_000,
+      readHeartbeatMs: async () => NOW - 80 * 60_000,
     });
     const r = await triggerCanaryGapFill(d);
-    eq(r.dispatched, false, "full pass 6h old is fresh against the 6h30m threshold");
+    eq(r.dispatched, false, "full pass 80m old is fresh against the 90m threshold");
     eq(r.reason, "fresh", "full-pass fresh reason");
     eq(calls.dispatched, 0, "full fresh: dispatch not called");
   }
 
-  // 11. staleMs override, STALE: a full heartbeat 7h old is past the 6h30m
-  //     threshold (GitHub dropped the 6h run), so fill the gap with a full run.
+  // 11. staleMs override, STALE: a full heartbeat 2h old is past the 90m
+  //     threshold (GitHub dropped the hourly run), so fill the gap with a full run.
   {
     const { d, calls } = deps({
       staleMs: CANARY_FULL_TRIGGER_STALE_MS,
-      readHeartbeatMs: async () => NOW - 7 * 60 * 60_000,
+      readHeartbeatMs: async () => NOW - 2 * 60 * 60_000,
     });
     const r = await triggerCanaryGapFill(d);
-    eq(r.dispatched, true, "full pass 7h old is stale and dispatches");
+    eq(r.dispatched, true, "full pass 2h old is stale and dispatches");
     eq(r.reason, "dispatched", "full-pass dispatched reason");
     eq(calls.dispatched, 1, "full stale: dispatch called once");
   }
