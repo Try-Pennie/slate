@@ -680,7 +680,7 @@ describe("alertOnStaleLanes (#803)", () => {
       expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
     });
 
-    // #982: the 6h full book/reschedule/cancel pass stamps its OWN
+    // #982: the full book/reschedule/cancel pass (hourly since #1493) stamps its OWN
     // `smoke-canary-full` heartbeat. When it goes stale, the copy must be
     // full-pass-specific and point at re-running the FULL pass, not the generic
     // dry-canary message.
@@ -688,7 +688,7 @@ describe("alertOnStaleLanes (#803)", () => {
       heartbeat.readAllHeartbeatMs.mockResolvedValue({
         ...healthy(),
         "smoke-canary": ago(20 * MIN), // dry tick fine
-        "smoke-canary-full": ago(9 * 60 * MIN), // bound is 8h
+        "smoke-canary-full": ago(4 * 60 * MIN), // bound is 3h
       });
 
       const { stale } = await alertOnStaleLanes();
@@ -706,6 +706,9 @@ describe("alertOnStaleLanes (#803)", () => {
       expect(text).toMatch(/full/i);
       expect(text).toMatch(/reschedule|cancel|end to end/i);
       expect(text).toMatch(/mode.*full|Run workflow|Actions/i);
+      // #1493: the schedule it names is the one that runs now.
+      expect(text).toMatch(/hourly scheduled run/);
+      expect(text).not.toMatch(/6h/);
     });
 
     it("keys the dry and full canary alerts separately (one can't throttle the other)", async () => {

@@ -31,14 +31,14 @@ export const CANARY_TRIGGER_STALE_MS = 40 * 60_000;
  *  invocations so the lane can safely run twice. */
 export const CANARY_DISPATCH_COOLDOWN_MS = 15 * 60_000;
 
-/** Full-pass parity (#982). The 6h full book/reschedule/cancel pass stamps its
+/** Full-pass parity (#982). The full book/reschedule/cancel pass stamps its
  *  OWN `smoke-canary-full` heartbeat, so a dropped full run no longer hides
- *  behind the 30m dry tick's stamp. GitHub's cadence for it is 6h; step in only
- *  after a 30m grace so a merely-late (not dropped) scheduled run is not
- *  double-fired. This sits well under the 8h watchdog backstop
- *  (CANARY_STALE_BOUNDS_MS["smoke-canary-full"]), so the gap-fill normally
- *  recovers the pass before the watchdog pages. */
-export const CANARY_FULL_TRIGGER_STALE_MS = 390 * 60_000;
+ *  behind the 30m dry tick's stamp. GitHub's cadence for it is hourly (#1493,
+ *  was 6h); step in only after a 30m grace so a merely-late (not dropped)
+ *  scheduled run is not double-fired. This sits under the 3h watchdog backstop
+ *  (CANARY_STALE_BOUNDS_MS["smoke-canary-full"]) by a whole attempt, so the
+ *  gap-fill normally recovers the pass before the watchdog pages. */
+export const CANARY_FULL_TRIGGER_STALE_MS = (60 + 30) * 60_000;
 
 /** A full gap-fill fires a real booking pass, so hold off longer than the dry
  *  cooldown before re-firing. Realised as a NOT-released DB lock in the wiring. */
@@ -301,7 +301,7 @@ export interface CanaryGapFillWiring {
 
 /**
  * Run EVERY gap-fill in `GAP_FILL_PASSES` with its own lane, lock, cooldown and
- * threshold (#982, #2414, #2466): the 30 minute dry canary tick, the 6 hourly full
+ * threshold (#982, #2414, #2466): the 30 minute dry canary tick, the hourly (#1493) full
  * booking pass, the daily cal.com parity sweep, and the weekly router replay.
  *
  * It is a loop over the table rather than one block per pass, so adding a

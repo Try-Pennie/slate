@@ -50,7 +50,7 @@ on:
     # both offsets the Eastern clock takes, so the two second pause lands where the org
     # advertises no availability at all. Not on the hour, where GitHub's scheduling queue
     # is busiest and runs are most often dropped, and clear of every other schedule in this
-    # repo (clock-shift 04:40, coverage 05:40, the canary at :00 and :30 with its 6h full
+    # repo (clock-shift 04:40, coverage 05:40, the canary at :00 and :30 with its hourly full
     # pass on the hour, burst-counter 10:50, schedule-parity 12:20, router-replay 13:20) so
     # two jobs never queue together.
     - cron: "10 7 * * *"
