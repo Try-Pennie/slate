@@ -238,7 +238,15 @@ that the budget is small.
 
 Keys: `sync_failures`, `watch_lapse`, `bookable_blocked:*`, `bookable_unverified:*`,
 `verify_on_book_outage`, `verify_on_book_calendars_read`, `hydration_all_failing`,
-`pending_event_deletions_refused`, `google_calendar_breaker_open`.
+`pending_event_deletions_refused`, `google_calendar_breaker_open`, `owner_alert_skips`.
+
+**`owner_alert_skips`** (#2436) says more than a fifth of the last week's owner alerts
+(the "previously pitched" event on the owning advisor's calendar, #2371) were skipped
+because the calendar is `gone` or `not-provisioned`, across at least three advisors.
+The calls are booked; what is missing is the alert. The rows are `owner_alert_events`
+written in the last 7 days with a `skip_reason`; group them by `user_id` to see whose
+accounts to fix, then follow the `gone` or `not-provisioned` branch below. One advisor
+alone never pages, and the all clear needs a measured week back under the line.
 
 **What fired it.** A calendar read failed, repeatedly, for one agent or for many. Or,
 for `pending_event_deletions_refused` (#2577), a queued calendar event DELETE was

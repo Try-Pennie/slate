@@ -370,6 +370,12 @@ export const ALERT_FIELDS: {
     help: "A booking handoff has waited more than 30 minutes without being posted to the handoff channel, so the sales team has not been told. Ends once every open handoff has been posted.",
   },
   {
+    key: "owner_alert_skips",
+    urgency: "alert",
+    label: "Owner alerts not reaching advisors' calendars",
+    help: "More than a fifth of the last week's \"previously pitched\" alerts could not be put on the owning advisor's calendar, across at least three advisors, because their Google account was never given Calendar or their calendar has gone. One advisor without Calendar is normal and stays quiet. The calls are booked; the advisors just do not see the alert. It ends once a week of alerts is back under the line.",
+  },
+  {
     key: "empty_tier",
     urgency: "alert",
     label: "Debt tier offering no times",
@@ -621,6 +627,10 @@ export const MONITOR_DEFAULTS = {
     // Handoffs not reaching the channel (#2367): the lane retries every tick. Once a day
     // while unchanged (#3801).
     handoff_undelivered: CONDITION_REPEAT_MS,
+    // Owner alerts skipped for unreachable calendars (#2436): it stays true until a
+    // Workspace admin or the advisors fix their accounts, which is days, not minutes.
+    // Once a day while unchanged (#3801).
+    owner_alert_skips: CONDITION_REPEAT_MS,
     // Merged work that is not live (#2476): it stays true until somebody re-runs a deploy
     // or merges again. Once a day while unchanged (#3801); a newer unshipped commit is a
     // change.

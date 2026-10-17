@@ -205,6 +205,7 @@ import {
 import { catchallPageText, catchallClearText } from "@/lib/monitor/catchall-rate";
 import { formatFollowUpDrainPage, formatFollowUpDrainAllClear } from "@/lib/monitor/follow-up-drain-rate";
 import { formatOwnerNoticeWithheldReport } from "@/lib/monitor/owner-notice-withheld-report";
+import { formatOwnerAlertSkipsPage, formatOwnerAlertSkipsAllClear } from "@/lib/monitor/owner-alert-skips";
 import {
   formatFailureBurstEnded,
   formatFailureRateAlert,
@@ -5195,6 +5196,35 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the lock claim hit a DB error",
     channel: "alert",
     text: rescheduleLockOutageAlert(),
+  },
+  // #2436. The rate trigger, the saturation trigger under the alert floor, and the
+  // all clear with and without a straggler. Measured healthy is zero skips in 205.
+  {
+    key: "owner_alert_skips",
+    state: "several advisors' owner alerts skipped, over the share",
+    channel: "alert",
+    text: formatOwnerAlertSkipsPage(
+      { skipped: 14, alerts: 58, advisors: 5, pct: 24, byReason: { "not-provisioned": 9, gone: 5 } },
+      7,
+    ),
+  },
+  {
+    key: "owner_alert_skips",
+    state: "most of a quiet week's owner alerts skipped",
+    channel: "alert",
+    text: formatOwnerAlertSkipsPage({ skipped: 5, alerts: 7, advisors: 3, pct: 71, byReason: { gone: 5 } }, 7),
+  },
+  {
+    key: "owner_alert_skips",
+    state: "a measured week with none skipped",
+    channel: "recovery",
+    text: formatOwnerAlertSkipsAllClear({ skipped: 0, alerts: 54 }, 7),
+  },
+  {
+    key: "owner_alert_skips",
+    state: "a measured week with one skipped",
+    channel: "recovery",
+    text: formatOwnerAlertSkipsAllClear({ skipped: 1, alerts: 54 }, 7),
   },
   // #2440. Two states because the sentence's verb agrees with the count.
   {

@@ -65,6 +65,7 @@ export const ALERT_KEYS = [
   "regal_call_outcomes_short",
   "handoff_channel_unset",
   "handoff_undelivered",
+  "owner_alert_skips",
   "main_not_deployed",
   "ci_runs_refused",
   "public_booking_stopped",

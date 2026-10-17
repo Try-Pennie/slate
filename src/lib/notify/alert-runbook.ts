@@ -227,6 +227,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   webhook_event_no_subscriber: "a-booking-side-effect-did-not-complete",
   handoff_channel_unset: "a-booking-side-effect-did-not-complete",
   handoff_undelivered: "a-booking-side-effect-did-not-complete",
+  owner_alert_skips: "google-cannot-be-reached-for-an-agent",
 
   // Somebody is off and the cover, or the block itself, is in doubt.
   ooo_coverage_gap: "time-off-cover-or-protection-is-in-doubt",

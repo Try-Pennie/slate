@@ -511,6 +511,18 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "monitor lane re-measures both every tick (#2367).",
   },
   {
+    // #2436. A CONDITION: owner alerts are being skipped for unreachable calendars
+    // across several advisors, which stays true until their accounts are fixed. The
+    // monitor re-measures the last week every tick, so it can say when it is over.
+    key: "owner_alert_skips",
+    kind: "condition",
+    why:
+      "Too many of the last week's owner alerts could not be written to the owning " +
+      "advisor's calendar, across several advisors, because the calendar is gone or was " +
+      "never provisioned; it ends when a measured week is back under the share, never " +
+      "on a week too quiet to judge.",
+  },
+  {
     key: "handoff_undelivered",
     kind: "condition",
     why:

@@ -313,6 +313,8 @@ import { runWebhookSubscriberCheck } from "@/lib/monitor/webhook-subscriber-cove
 import { runHandoffCheck } from "@/lib/handoffs/check";
 import { runOwnerNoticeWithheldReport } from "@/lib/monitor/owner-notice-withheld-report";
 import { countWithheldOwnerNotices } from "@/lib/monitor/owner-notice-withheld-store";
+import { OWNER_ALERT_SKIP_THRESHOLDS, runOwnerAlertSkipsCheck } from "@/lib/monitor/owner-alert-skips";
+import { loadRecentOwnerAlerts } from "@/lib/monitor/owner-alert-skips-store";
 import {
   loadHandoffBookings,
   loadHandoffChannel,
@@ -4102,6 +4104,44 @@ export async function GET(req: NextRequest) {
         settingsUrl: `${appUrl()}/admin/alerts`,
       }).then((result) => {
         log.info("monitor", { msg: "owner notices withheld", status: result.status, count: result.count });
+        return result;
+      }),
+    );
+
+    // Owner alerts skipped for an unreachable calendar (#2436). Each skip is right on
+    // its own row (the step records the reason and stops retrying), and one advisor
+    // without Calendar is normal; what nothing saw was MANY advisors skipping. This
+    // judges the share of the last week's owner alerts carrying a skip_reason, across
+    // at least three advisors, and pages on it. One bounded read on the shared
+    // invocation. A failed read throws, so this boundary records it and nothing is
+    // paged or cleared.
+    // all-clear-proof: scripts/test-owner-alert-skips.ts - pins that a failed read, a
+    // read that filled its bound and a week below the alert floor each send NOTHING in
+    // either direction, and that the all clear hangs only off a measured week.
+    await steps.run("owner_alert_skips", null, () =>
+      runOwnerAlertSkipsCheck({
+        nowMs: now,
+        loadRecent: (sinceIso, limit) => loadRecentOwnerAlerts(db, sinceIso, limit),
+        thresholds: OWNER_ALERT_SKIP_THRESHOLDS,
+        cooldownMs: cooldownMs.owner_alert_skips,
+        notify: (key, ms, text) => {
+          // alert-key: owner_alert_skips
+          // alert-text-ok: our own copy from owner-alert-skips.ts, built from measured
+          // counts and the two skip kinds; no error text can reach it.
+          return sendThrottledAlert(key, ms, text);
+        },
+        // alert-key: owner_alert_skips
+        resolve: (key, text) => resolveAlert(key, text),
+      }).then((result) => {
+        log.info("monitor", {
+          msg: "owner alert skips",
+          status: result.status,
+          ...("verdict" in result
+            ? { alerts: result.verdict.alerts, skipped: result.verdict.skipped }
+            : "read" in result
+              ? { read: result.read }
+              : { alerts: result.alerts, skipped: result.skipped }),
+        });
         return result;
       }),
     );
