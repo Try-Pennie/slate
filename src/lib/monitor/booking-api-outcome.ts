@@ -279,3 +279,16 @@ export function excludedOffsiteTrafficNote(offsiteTotal: number | null): string 
   const calls = offsiteTotal === 1 ? "call" : "calls";
   return `Excludes ${offsiteTotal} ${calls} from pages other than the production site.`;
 }
+
+/**
+ * The third thing the outcome panel leaves out (#3797): refusals proven to be lost
+ * races, a time another booking took after the lead's list was computed. They are
+ * ordinary contention, kept out of the failure share, and stated here so a quiet
+ * share on a busy night is not read as nobody being refused.
+ */
+export function excludedLostRacesNote(lostRaces: number): string {
+  if (lostRaces === 0) return "No lost races in this window.";
+  const races = lostRaces === 1 ? "lost race" : "lost races";
+  const times = lostRaces === 1 ? "a time" : "times";
+  return `Excludes ${lostRaces} ${races}: ${times} another booking took after the lead's list loaded.`;
+}
