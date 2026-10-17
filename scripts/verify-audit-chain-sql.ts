@@ -16,6 +16,9 @@
 //   - every way of tampering the verifier names is caught, by the verifier's own
 //     walk over the real rows: an edited row, a deleted row, a chain recomputed
 //     after an edit, and rows cut off the end;
+//   - a machine write's `details.channel` (#3542) is chained, and editing that one
+//     key, with the append only trigger off for the edit's transaction only, is
+//     caught as an altered row;
 //   - a second run of the migration changes nothing.
 //
 // It also prints the vector `scripts/test-audit-chain.ts` pins, measured here, so
@@ -203,6 +206,16 @@ try {
   eq(sql("select chain_seq from audit_log where action = 'after the rerun';"), "66", "and the trigger carries on from the same head");
   eq((await walkAll(anchored)).status, "intact", "the chain still verifies after the re-run");
 
+  // #3542: a machine write's row, shaped as `marciaAuditEntry` builds it: a null
+  // actor and the channel, the lead's 00Q id and the test mark in details. It is
+  // chained like any other row, which is the whole reason the channel lives in
+  // `details` rather than a new column: 0160 already hashes details.
+  sql(`insert into audit_log (org_id, actor_id, action, details)
+       values ((select id from organizations), null, 'booking.created',
+               '{"channel": "marcia", "booking_id": "b1", "salesforce_id": "00Q5f00000AbCdEFGH", "test": false}');`);
+  eq(sql("select chain_seq from audit_log where action = 'booking.created';"), "67", "a Marcia row is chained by the trigger");
+  eq((await walkAll(anchored)).status, "intact", "and the chain verifies with it");
+
   // --- tampering, by a role that can switch the guard off -----------------------
   // Each case commits its edit, is walked, and is then restored from a snapshot, so
   // the next case starts from the intact chain.
@@ -225,6 +238,18 @@ try {
   eq(altered.status === "broken" ? altered.break : null, { kind: "altered", seq: 30, id: sql("select id from audit_log where chain_seq = 30;") }, "an edited row is caught as altered, at that row");
   sql(restore);
   eq((await walkAll(anchored)).status, "intact", "putting the row back the way it was written verifies again");
+
+  // #3542: editing ONLY details.channel, with the append only trigger switched off
+  // for that one transaction (`tampered`), is caught as an altered row. Without this
+  // a channel could be rewritten from "marcia" to anything and the trail would agree.
+  const channelEdited = await tampered(`update audit_log set details = jsonb_set(details, '{channel}', '"web"') where action = 'booking.created';`);
+  eq(
+    channelEdited.status === "broken" ? channelEdited.break : null,
+    { kind: "altered", seq: 67, id: sql("select id from audit_log where action = 'booking.created';") },
+    "an edited details.channel is caught as altered, at that row",
+  );
+  sql(restore);
+  eq((await walkAll(anchored)).status, "intact", "and the restored channel verifies again");
 
   const deleted = await tampered("delete from audit_log where chain_seq = 12;");
   eq(deleted.status === "broken" ? deleted.break.kind : null, "missing", "a row deleted from the middle is caught as missing");

@@ -2038,7 +2038,10 @@ of the schema 0160 reads plus the 0089 triggers, applies 0160 VERBATIM, and prov
 - a second run of the migration changes nothing;
 - each break the walk names (an edited row, a deleted row, a chain recomputed after an
   edit, rows cut off the end) is caught by the walk itself over the real rows, with a
-  control showing the recomputed chain verifies when nothing is anchored.
+  control showing the recomputed chain verifies when nothing is anchored;
+- a machine write's audit row (#3542, Marcia's `details.channel`, null actor, 00Q id
+  and test mark) is chained, and editing only its `details.channel`, with the append
+  only trigger off for that one transaction, is caught as an altered row.
 
 It also measures the vector in `scripts/lib/audit-chain-vector.ts`, which
 `scripts/test-audit-chain.ts` pins offline, so an encoding change on either side fails
