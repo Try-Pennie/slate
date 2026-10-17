@@ -115,8 +115,9 @@ export async function loadtestGoogleDelay(
  * reads `FAULT_TARGET_CONTRACT`: with a `fails-loud` target faulted it reports the
  * 5xx count rather than barring it, and judges the cron lanes instead. The ordinary
  * pass reaches the confirm path through its reads instead: the verify wave's bulk
- * `freeBusyMany` (`stubFreeBusyMany`, keyed `freeBusyMany:<calendar>`), the per agent
- * `freeBusy` it falls back to (`freeBusy:<email>`) and the calendar list
+ * `freeBusyMany` (`stubFreeBusyMany`) and the per agent `freeBusy` it falls back to
+ * (`stubFreeBusy`), each keyed by `verifyReadFaultKey` on the calendar and the minute
+ * (#3881), and the calendar list
  * (`calendarList:<email>`). An agent neither read can confirm is unverified: the booker
  * re-routes to the next free advisor, and answers a retriable 503 only when nobody
  * could be confirmed. Until #3845 the bulk read was never faulted, so a fault pass
@@ -128,7 +129,9 @@ export async function loadtestGoogleDelay(
  * key, so the same key fails on every run and a failing agent stays the failing agent
  * across passes. That also matters for what is being tested: the streak alerting fires
  * on CONSECUTIVE failures for one agent, which a per-call coin flip would rarely
- * produce.
+ * produce. The confirm's two calendar reads are the exception (#3881): their key carries
+ * the minute (`verifyReadFaultKey`), so a run's verdicts are still reproducible minute
+ * by minute, but no advisor is unreadable to a confirm for the whole run.
  */
 export { LOADTEST_FAULT_PCT, shouldFault } from "@/lib/loadtest-fault";
 
@@ -359,9 +362,28 @@ export function stubWatch(channelId: string, nowMs: number): {
   };
 }
 
+/**
+ * The key the confirm's two calendar reads are faulted by (#3881): which read, the
+ * calendar, and the MINUTE.
+ *
+ * Keyed on the calendar alone, an advisor whose bulk and direct keys both landed in the
+ * failing share could not be read for the whole run, while nothing else booked their
+ * times, so those times stayed on offer and every confirm sent to them was refused (run
+ * 39049243987: 3 of 30, all one advisor at one slot). That measures a permanently broken
+ * calendar, not Google failing a share of its reads, which is what the fault pass says it
+ * does. The minute is the trade the database injector makes for the same reason
+ * (`supabaseFaultKey`): inside a minute the verdict is stable, so a retry in the same
+ * moment meets the same answer; between minutes it moves. The sync read keeps its
+ * calendar-only key (`syncFaultKey`), because its streak alerting is about the same
+ * agent failing on every pass.
+ */
+export function verifyReadFaultKey(read: "freeBusyMany" | "freeBusy", calendar: string, nowMs: number): string {
+  return `${read}:${calendar}:${Math.floor(nowMs / 60_000)}`;
+}
+
 /** Verify-on-book free/busy: report no live conflicts under load. */
-export function stubFreeBusy(email = "unknown"): Interval[] {
-  faultIfDue(`freeBusy:${email}`);
+export function stubFreeBusy(email = "unknown", nowMs: number = Date.now()): Interval[] {
+  faultIfDue(verifyReadFaultKey("freeBusy", email, nowMs));
   return [];
 }
 
@@ -375,8 +397,8 @@ export function stubFreeBusy(email = "unknown"): Interval[] {
  *
  * A faulted calendar comes back `error: true`, the shape Google gives a calendar it
  * would not report on inside its 200 and the one `busyByCalendarFromResponse` produces.
- * Keyed on the bulk call and the calendar (`freeBusyMany:<id>`), deliberately NOT the per
- * agent read's `freeBusy:<email>`: they are two different Google calls (one identity
+ * Keyed on the bulk call, the calendar and the minute (`verifyReadFaultKey`, #3881),
+ * deliberately NOT the per agent read's key: they are two different Google calls (one identity
  * reading the domain, or the agent's own), they fail independently, and that is why the
  * fallback exists. So a pass reaches all three outcomes: read in bulk; missed in bulk and
  * rescued by the direct read; read by neither, the unverified re-route.
@@ -384,9 +406,13 @@ export function stubFreeBusy(email = "unknown"): Interval[] {
  * It cannot fault in production: `freeBusyMany` calls it only under `LOADTEST`, and
  * `shouldInject` asks `isLoadtest()` again at call time. `sw` is for the tests only.
  */
-export function stubFreeBusyMany(calendarIds: string[], sw?: FaultSwitch): Map<string, CalendarBusy> {
+export function stubFreeBusyMany(
+  calendarIds: string[],
+  sw?: FaultSwitch,
+  nowMs: number = Date.now(),
+): Map<string, CalendarBusy> {
   return new Map(
-    calendarIds.map((id) => [id, { busy: [], error: shouldInject("google-read", `freeBusyMany:${id}`, sw) }]),
+    calendarIds.map((id) => [id, { busy: [], error: shouldInject("google-read", verifyReadFaultKey("freeBusyMany", id, nowMs), sw) }]),
   );
 }
 
