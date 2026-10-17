@@ -67,8 +67,29 @@ const silent = { error: () => undefined };
   });
   eq((await forwardBookingCall(deps(), "a.b.c", "drop_tables", {})).body.code, "unknown_operation", "an operation that is not one of the five is refused");
   eq((await forwardBookingCall(deps(), "", "book", {})).body.code, "token_malformed", "no token is refused");
-  eq((await forwardBookingCall(deps({ gatewaySecret: "" }), "a.b.c", "book", {})).body.code, "gateway_unconfigured", "no gateway secret refuses, fail closed");
   eq(called, 0, "and none of those reached the app");
+  // No secret on the deployment: the gateway does NOT answer for the route. It hands
+  // the call on carrying no secret, so the route, which reads the same deployment's
+  // secret, refuses it as unconfigured AND pages marcia_gateway_refused. A refusal
+  // the gateway made itself was only ever a log line (lessons review on #3874).
+  {
+    const seen: Request[] = [];
+    const unconfigured = await forwardBookingCall(
+      deps({
+        gatewaySecret: "",
+        fetch: async (r: Request) => {
+          seen.push(r);
+          return Response.json({ ok: false, code: "gateway_unconfigured" }, { status: 503 });
+        },
+      }),
+      "a.b.c",
+      "book",
+      {},
+    );
+    eq(seen.length, 1, "no gateway secret still reaches the route, which is where it pages");
+    eq(seen[0]?.headers.has(GATEWAY_SECRET_HEADER), false, "carrying no secret header at all");
+    eq([unconfigured.status, unconfigured.body.code], [503, "gateway_unconfigured"], "and the route's fail closed refusal is the answer");
+  }
   const threw = await forwardBookingCall(deps({ fetch: async () => { throw new Error("boom"); } }), "a.b.c", "book", {});
   eq([threw.status, threw.body.code], [500, "internal"], "an app that throws is an answer, not a throw");
   const html = await forwardBookingCall(deps({ fetch: async () => new Response("<html>", { status: 502 }) }), "a.b.c", "book", {});
