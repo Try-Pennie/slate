@@ -59,3 +59,20 @@ paths = [
   '''^src/lib/snowflake/config\.test\.ts$''',
   '''^src/lib/snowflake/client\.test\.ts$''',
 ]
+
+# --- Marcia token fixtures (#3543) ---------------------------------------------
+#
+# The default jwt rule flags every token in Marcia's committed fixture set, which
+# is the contract her signer is held to: tokens signed with a key that names
+# itself public (`FIXTURE_TOKEN_KEY`, refused by `usableTokenKeys` in any real
+# deployment) over an invented lead. Exempted by Dan's sign off on 2026-10-17.
+#
+# Pinned to ONE exact generated file, for the reason given above the PEM block.
+# `scripts/test-machine-token.ts` is what looks instead: it holds the file to
+# exactly what the cases build from the public key, and holds this block to that
+# one path, so neither can change without the other.
+[[allowlists]]
+description = "Marcia token fixtures, each checked by scripts/test-machine-token.ts"
+paths = [
+  '''^src/lib/mcp-booking/machine-token-fixtures\.json$''',
+]
