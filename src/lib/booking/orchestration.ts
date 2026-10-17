@@ -105,6 +105,7 @@ import {
   MANAGE_PHONE_NOT_FOUND,
 } from "./manage-copy.ts";
 import { INVALID_EMAIL, storedFirstName, validateAttendee } from "../attendee.ts";
+import { parseStampMs } from "../date/stamp.ts";
 import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
 import { callingNumberWithinDeadline } from "../salesforce/lead-calling-number.ts";
@@ -5187,6 +5188,12 @@ function refusalRecord(
   };
 }
 
+/** A client sent stamp as the ISO instant it names, or null when it names none (#3797). */
+function storableStamp(stamp: string | undefined): string | null {
+  const ms = parseStampMs(stamp);
+  return ms === null ? null : new Date(ms).toISOString();
+}
+
 /**
  * #3797: judge a refusal at the cached free check against the list the lead picked
  * from, or null when it is not one (another stage, a race lost at the insert, deps
@@ -5439,7 +5446,10 @@ async function createHeld(
             ...refusalRecord(trace, input.startIso, input),
             // #3797: what the judgement concluded and what it was judged against.
             offerVerdict: trace?.offerVerdict ?? null,
-            servedComputedAt: trace?.offerVerdict ? (input.servedComputedAt ?? null) : null,
+            // The client's own string goes to a timestamptz, so it is stored only once
+            // read, as the instant it names: an unreadable one would refuse the insert
+            // and lose the whole decision (its verdict is already `unknown`).
+            servedComputedAt: trace?.offerVerdict ? storableStamp(input.servedComputedAt) : null,
             staleRowCodes: trace?.staleRowCodes && trace.staleRowCodes.length > 0 ? trace.staleRowCodes : null,
             chosenUserId: null,
             chosenAttributes: null,

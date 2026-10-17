@@ -202,6 +202,21 @@ async function main() {
     assert(!provenOfferRace(err), "and is never tallied as a race");
   }
   {
+    // The stamp is the client's own string and `served_computed_at` is a timestamptz,
+    // so one that is not a time must never reach the column: a refused insert loses
+    // the whole routing decision. It is stored only once read, and then as an instant.
+    const made = withMembers(makeDeps({ candidates: [], memberCount: 3, poolAgents: ["a", "b", "c"] }));
+    made.deps.judgeRefusedOffer = async () => ({ verdict: "unknown", staleRowCodes: [] });
+    await refuse(made.deps, { ...refused, servedComputedAt: "not a time" });
+    const row = made.calls.recordRoutingDecision[0];
+    eq([row?.offerVerdict, row?.servedComputedAt], ["unknown", null], "an unreadable stamp is recorded as unknown with no stamp stored");
+
+    const again = withMembers(makeDeps({ candidates: [], memberCount: 3, poolAgents: ["a", "b", "c"] }));
+    again.deps.judgeRefusedOffer = async () => ({ verdict: "race", staleRowCodes: [] });
+    await refuse(again.deps, { ...refused, servedComputedAt: "2026-10-16T02:00:07.526+00:00" });
+    eq(again.calls.recordRoutingDecision[0]?.servedComputedAt, "2026-10-16T02:00:07.526Z", "a readable one is stored as the instant it names");
+  }
+  {
     // A refusal Google made is not this check's to judge.
     const made = withMembers(makeDeps({ candidates: ["a", "b"], freeEmails: new Set(), poolAgents: ["a", "b", "c"] }));
     let asked = 0;
