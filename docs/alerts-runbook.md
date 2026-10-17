@@ -87,7 +87,7 @@ Keys: `empty_tier:*`, `bucket_slots_stale`, `availability_booked_solid`,
 `availability_data_anomaly`, `availability_drift:*`, `fallback_covered_availability`,
 `thin_tier_staffing`, `tier_fallback_deep:*`, `no_eligible_agents:*`,
 `low_booking_volume`, `booking_failure_rate`, `booking_failure_burst_ended`,
-`booking_budget:*`, `calendar_window_uncovered`,
+`booking_failure_volume`, `booking_budget:*`, `calendar_window_uncovered`,
 `booker_unstaffed:*`, `public_booking_stopped`, `booking_race_contention`,
 `booking_race_bound_hit`, `pool_nearly_full`, `busy_cache_drift`, `offered_nobody_free`,
 `smoke_canary_failed:*`.
@@ -171,6 +171,16 @@ that had already stopped when the window crossed the line arrives instead as
 `booking_failure_burst_ended`, once, worded as past: nothing to stop, but the same
 investigation of what refused people, in `/admin/booking-outcomes` over the times it
 names.
+
+**`booking_failure_volume` is the fast page beside the share** (#3276). It fires when 10
+or more booking attempts fail in the last 30 minutes (the last six five minute ticks),
+whatever share of traffic that is, so a run of refusals pages within minutes rather than
+waiting for three hours of successes to be outweighed (on 2026-10-04 it would have paged
+at 7:50pm ET, 55 minutes before the share did). It says whether it looks like a sell out
+(times offered and refused at confirm, `slot_unavailable`) or Slate failing (errors and
+timeouts, named by code). The people it names are a floor: a confirm answered behind
+another in a crowd records nobody. It stands down on the same measured clean half hour as
+the share, never when the count drops under ten.
 
 **`booking_budget:*` is the month, not the minute** (#3179). Half of what the booking
 success (98.5%) or availability (99.5%) target in `docs/slo.md` allows this month has been

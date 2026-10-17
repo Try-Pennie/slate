@@ -604,6 +604,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A burst of failed bookings that had already stopped before the window crossed the line; the notice reports a finished event, says nothing has failed since, and is sent once per burst.",
   },
   {
+    // #3276. A CONDITION beside the share: ten or more failed attempts in the last 30
+    // minutes, whatever share of traffic that is. It ends on the same measured clean
+    // run as the share page, which the monitor re-measures every 5 minutes.
+    key: "booking_failure_volume",
+    kind: "condition",
+    why: "Bookings are failing in volume right now (ten or more failed attempts in 30 minutes); it ends when the last 30 minutes hold a measured clean run of attempts, never when the count merely drops under ten as old ticks age out.",
+  },
+  {
     // #3179. One key per budget (booking success, availability), so each clears on
     // its own.
     key: "booking_budget:*",
@@ -1333,6 +1341,7 @@ export function alertKindOf(key: string): AlertKind | undefined {
  *
  * Derived from each entry's own `why` by that one criterion:
  *   - booking_failure_rate: bookings are failing right now.
+ *   - booking_failure_volume: bookings are failing in volume right now (#3276).
  *   - public_booking_stopped: the kill switch is on, so every public lead is refused.
  *   - hydration_all_failing: named by Dan; the calendar refresh failing everywhere.
  *   - empty_tier:*: a debt tier is offering leads no time at all.
@@ -1348,6 +1357,7 @@ export function alertKindOf(key: string): AlertKind | undefined {
  */
 export const URGENT_CONDITION_KEYS: readonly string[] = [
   "booking_failure_rate",
+  "booking_failure_volume",
   "public_booking_stopped",
   "hydration_all_failing",
   "empty_tier:*",

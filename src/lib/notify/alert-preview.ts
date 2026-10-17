@@ -208,6 +208,8 @@ import {
   formatFailureBurstEnded,
   formatFailureRateAlert,
   formatFailureRateAllClear,
+  formatFailureVolumeAlert,
+  formatFailureVolumeAllClear,
 } from "@/lib/monitor/booking-failure-rate";
 
 /**
@@ -1722,6 +1724,60 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       span: { firstMs: PREVIEW_BURST.newestMs, newestMs: PREVIEW_BURST.newestMs },
       minRecentAttempts: 5,
     }),
+  },
+  {
+    // #3276, the 2026-10-04 shape at the 7:50pm tick: ten refusals in the last six
+    // ticks, every one a time refused at confirm.
+    key: "booking_failure_volume",
+    state: "ten refused times in half an hour, people counted as a floor",
+    channel: "alert",
+    text: formatFailureVolumeAlert({
+      volume: { attempts: 17, failures: 10, byCode: { slot_unavailable: 10 }, firing: true },
+      volumeMinutes: 30,
+      refused: { people: 7, refusals: 10, withoutLead: 0, times: 6 },
+    }),
+  },
+  {
+    key: "booking_failure_volume",
+    state: "Slate erroring rather than a sell out, people not readable",
+    channel: "alert",
+    text: formatFailureVolumeAlert({
+      volume: { attempts: 41, failures: 14, byCode: { internal: 8, verify_unavailable: 4, slot_unavailable: 2 }, firing: true },
+      volumeMinutes: 30,
+      refused: null,
+    }),
+  },
+  {
+    key: "booking_failure_volume",
+    state: "errors only, nobody refused a time",
+    channel: "alert",
+    text: formatFailureVolumeAlert({
+      volume: { attempts: 12, failures: 11, byCode: { API_KEY_REJECTED: 11 }, firing: true },
+      volumeMinutes: 30,
+      refused: { people: 0, refusals: 0, withoutLead: 0 },
+    }),
+  },
+  {
+    key: "booking_failure_volume",
+    state: "refusals recorded with no lead id",
+    channel: "alert",
+    text: formatFailureVolumeAlert({
+      volume: { attempts: 15, failures: 10, byCode: { slot_unavailable: 10 }, firing: true },
+      volumeMinutes: 30,
+      refused: { people: 0, refusals: 6, withoutLead: 6, times: 2 },
+    }),
+  },
+  {
+    key: "booking_failure_volume",
+    state: "failures stopped piling up, nothing failed since",
+    channel: "recovery",
+    text: formatFailureVolumeAllClear({ recentMinutes: 30, recent: { attempts: 6, failures: 0 }, newestFailureMs: PREVIEW_WAVE.newestMs }),
+  },
+  {
+    key: "booking_failure_volume",
+    state: "failures stopped piling up, one ordinary failure in a busy half hour",
+    channel: "recovery",
+    text: formatFailureVolumeAllClear({ recentMinutes: 30, recent: { attempts: 24, failures: 1 }, newestFailureMs: PREVIEW_WAVE.newestMs }),
   },
   // #3179. Spends judged by the real judge against the documented projection, so the
   // budget figures in the copy are the ones docs/slo.md quotes.
