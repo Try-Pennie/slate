@@ -194,6 +194,16 @@ import {
 } from "@/lib/monitor/follow-up-drain-rate";
 import { loadFollowUpState, saveFollowUpState, followUpReadingOf } from "@/lib/monitor/follow-up-drain-rate-store";
 import {
+  runDuplicateCancelCheck,
+  DUPLICATE_CANCEL_THRESHOLDS,
+  type DuplicateCancelResult,
+} from "@/lib/monitor/duplicate-cancel-rate";
+import {
+  duplicateCancelReadingOf,
+  loadDuplicateCancelState,
+  saveDuplicateCancelState,
+} from "@/lib/monitor/duplicate-cancel-rate-store";
+import {
   runAvailabilityTruthCheck,
   type TruthResult,
   type TruthThresholds,
@@ -311,6 +321,10 @@ import {
 import { SHIPPED_MIGRATION_VERSION } from "@/lib/db/migration-version";
 import { runWebhookSubscriberCheck } from "@/lib/monitor/webhook-subscriber-coverage";
 import { runHandoffCheck } from "@/lib/handoffs/check";
+import { runOwnerNoticeWithheldReport } from "@/lib/monitor/owner-notice-withheld-report";
+import { countWithheldOwnerNotices } from "@/lib/monitor/owner-notice-withheld-store";
+import { OWNER_ALERT_SKIP_THRESHOLDS, runOwnerAlertSkipsCheck } from "@/lib/monitor/owner-alert-skips";
+import { loadRecentOwnerAlerts } from "@/lib/monitor/owner-alert-skips-store";
 import {
   loadHandoffBookings,
   loadHandoffChannel,
@@ -1732,6 +1746,55 @@ export async function GET(req: NextRequest) {
           status: result.status,
           ...("verdict" in result
             ? { verdict: result.verdict.status, confirms: result.verdict.confirms, left: result.verdict.left }
+            : { rebased: result.rebased }),
+        });
+        return result;
+      }),
+    );
+
+    // --- Duplicate cancels failing or refused in volume (#2377) ---
+    //
+    // POST /api/bookings/cancel-duplicate counts every answer in the daily tally,
+    // outside the failure share. This judges, off the tally read the failure share
+    // above already made, the day's share answered 503 and the day's share refused for
+    // a person, each against its own line, behind a 40 call floor today's volume (about
+    // five a day) does not reach. Its own failure boundary (L73).
+    // all-clear-proof: scripts/test-duplicate-cancel-rate.ts - pins that a failed tally
+    // read sends NOTHING in either direction, that a first reading or a day rollover
+    // sends nothing, and that a day too quiet to judge clears nothing; each all clear
+    // hangs only off a measured clean six hours.
+    await steps.run<DuplicateCancelResult | null>("duplicate_cancel_rate", null, () =>
+      runDuplicateCancelCheck({
+        nowMs: now,
+        readToday: async () => duplicateCancelReadingOf(await todayMix()),
+        loadState: loadDuplicateCancelState,
+        saveState: saveDuplicateCancelState,
+        thresholds: DUPLICATE_CANCEL_THRESHOLDS,
+        cooldownMs: {
+          unavailable: cooldownMs.duplicate_cancel_unavailable,
+          refused: cooldownMs.duplicate_cancel_refused,
+        },
+        notify: (key, ms, text) => {
+          // alert-key: duplicate_cancel_unavailable
+          // alert-key: duplicate_cancel_refused
+          // alert-text-ok: our own copy from duplicate-cancel-rate.ts, built from
+          // measured counts and fixed stage and refusal words; no error text reaches it.
+          return sendThrottledAlert(key, ms, text);
+        },
+        // alert-key: duplicate_cancel_unavailable
+        // alert-key: duplicate_cancel_refused
+        resolve: (key, text) => resolveAlert(key, text),
+      }).then((result) => {
+        log.info("monitor", {
+          msg: "duplicate cancel rate",
+          status: result.status,
+          ...(result.status === "judged"
+            ? {
+                verdict: result.verdict.status,
+                calls: result.verdict.calls,
+                paged: result.paged.join(",") || "none",
+                cleared: result.cleared.join(",") || "none",
+              }
             : { rebased: result.rebased }),
         });
         return result;
@@ -4079,6 +4142,66 @@ export async function GET(req: NextRequest) {
         },
         log: (fields) => log.info("booking-handoffs", fields),
         warn: (fields) => log.warn("booking-handoffs", fields),
+      }),
+    );
+
+    // Owner reassign notices that never reached the sales side (#2440). The notice
+    // step records `withheld` on itself when no handoff channel is set; this counts
+    // the last week of those and whispers the number once a week on the info channel.
+    // Info, never a page and never an all clear: the reassigns happened, and a handoff
+    // somebody must act on already pages while the channel is unset (#2367). One
+    // server side count on the shared invocation. A failed count throws, so this
+    // boundary records it and sends nothing.
+    await steps.run("owner_notice_withheld", null, () =>
+      runOwnerNoticeWithheldReport({
+        nowMs: now,
+        countWithheld: (sinceIso) => countWithheldOwnerNotices(db, sinceIso),
+        // alert-key: owner_notice_withheld
+        // alert-text-ok: our own copy from owner-notice-withheld-report.ts, built from a
+        // measured count; no error text can reach it.
+        notify: (key, ms, text) => sendThrottledInfo(key, ms, text),
+        settingsUrl: `${appUrl()}/admin/alerts`,
+      }).then((result) => {
+        log.info("monitor", { msg: "owner notices withheld", status: result.status, count: result.count });
+        return result;
+      }),
+    );
+
+    // Owner alerts skipped for an unreachable calendar (#2436). Each skip is right on
+    // its own row (the step records the reason and stops retrying), and one advisor
+    // without Calendar is normal; what nothing saw was MANY advisors skipping. This
+    // judges the share of the last week's owner alerts carrying a skip_reason, across
+    // at least three advisors, and pages on it. One bounded read on the shared
+    // invocation. A failed read throws, so this boundary records it and nothing is
+    // paged or cleared.
+    // all-clear-proof: scripts/test-owner-alert-skips.ts - pins that a failed read, a
+    // read that filled its bound and a week below the alert floor each send NOTHING in
+    // either direction, and that the all clear hangs only off a measured week.
+    await steps.run("owner_alert_skips", null, () =>
+      runOwnerAlertSkipsCheck({
+        nowMs: now,
+        loadRecent: (sinceIso, limit) => loadRecentOwnerAlerts(db, sinceIso, limit),
+        thresholds: OWNER_ALERT_SKIP_THRESHOLDS,
+        cooldownMs: cooldownMs.owner_alert_skips,
+        notify: (key, ms, text) => {
+          // alert-key: owner_alert_skips
+          // alert-text-ok: our own copy from owner-alert-skips.ts, built from measured
+          // counts and the two skip kinds; no error text can reach it.
+          return sendThrottledAlert(key, ms, text);
+        },
+        // alert-key: owner_alert_skips
+        resolve: (key, text) => resolveAlert(key, text),
+      }).then((result) => {
+        log.info("monitor", {
+          msg: "owner alert skips",
+          status: result.status,
+          ...("verdict" in result
+            ? { alerts: result.verdict.alerts, skipped: result.verdict.skipped }
+            : "read" in result
+              ? { read: result.read }
+              : { alerts: result.alerts, skipped: result.skipped }),
+        });
+        return result;
       }),
     );
 
