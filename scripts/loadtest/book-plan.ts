@@ -42,6 +42,46 @@ export const PER_DRIVER_PER_MINUTE = 15;
 export const RUN_MINUTES = 10;
 
 /**
+ * How many lead shaped reads the fault leg sends at the version it just deployed
+ * before its first confirm (#3888). The leg redeploys to inject its faults and drives
+ * the moment the new version reports them, so without these its first confirm is one
+ * of the first requests that version serves anywhere: on run 39065162547 that confirm
+ * waited 3468ms, 2000 of them on the exact ceiling's first call. A real version has
+ * been serving reads before a lead confirms; a fresh version's first request is the
+ * cold leg's population (#3354), not the fault pass's.
+ */
+export const FAULT_WARMUP_READS = 6;
+
+/**
+ * The warm up itself (#3888), with its reads injected so every outcome is driven by a
+ * test. Per code: the availability read, then the bookable check at its first offered
+ * time. A code offering nothing is skipped; a check that is refused or throws is
+ * counted apart and never stops the warm up; a slot read that THROWS (an unreadable
+ * payload, which ends the drive) is not caught, so the warm up cannot swallow it.
+ */
+export async function warmUp(deps: {
+  codes: readonly string[];
+  readSlots: (code: string) => Promise<readonly string[] | null>;
+  check: (code: string, startIso: string) => Promise<{ ok: boolean; status: number }>;
+}): Promise<{ answered: number; notOk: number[]; failed: number }> {
+  let answered = 0;
+  let failed = 0;
+  const notOk: number[] = [];
+  for (const code of deps.codes) {
+    const startIso = (await deps.readSlots(code))?.[0];
+    if (!startIso) continue;
+    try {
+      const res = await deps.check(code, startIso);
+      if (res.ok) answered += 1;
+      else notOk.push(res.status);
+    } catch {
+      failed += 1;
+    }
+  }
+  return { answered, notOk, failed };
+}
+
+/**
  * The steady pass's rate PER ADVISOR, held across roster sizes (#3829): today's four
  * drivers at fifteen a minute over production's 90. A 200 advisor run drives the
  * same pressure on each advisor rather than the same total, so what it measures is

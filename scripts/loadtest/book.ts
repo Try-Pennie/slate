@@ -20,6 +20,8 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
+  FAULT_WARMUP_READS,
+  warmUp,
   requestSchedule,
   availabilityRefreshMs,
   offeredSlots,
@@ -539,7 +541,40 @@ async function fault(): Promise<void> {
     `driver ${DRIVER}: the deployment reports faultPct=${faultPctConfirmed} on ` +
       `${faultTargetsConfirmed.join(",")}; driving ${minutes}m`,
   );
+  await warmFreshVersion();
   await steady("fault", minutes);
+}
+
+/**
+ * #3888: warm the version the fault leg just deployed, the way traffic would, before its
+ * first confirm: for each of FAULT_WARMUP_READS codes in the measured mix, the
+ * availability read the driver makes anyway, then the key authed bookable check at the
+ * first offered time, which passes the same booking API gate (and its limiter objects)
+ * a confirm does. Nothing here is recorded as an attempt and nothing is booked; a read
+ * that fails is only logged, because the leg's own requests are what the judge reads.
+ */
+async function warmFreshVersion(): Promise<void> {
+  const codes = requestSchedule({ total: FAULT_WARMUP_READS, perMinute: 60, startAtMs: Date.now() }).map((r) => r.code);
+  // The same per request bound every driver request has, and its test seam (#3222).
+  const boundMs = effectiveDeadlineMs(REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_OVERRIDE);
+  const out = await warmUp({
+    codes,
+    readSlots: (code) => slotsFor(code, Date.now(), Date.now() + boundMs),
+    check: async (code, startIso) => {
+      const q = new URLSearchParams({ bucketCode: code, startIso });
+      const res = await fetch(`${SLATE_BASE}/api/bookings/bookable?${q.toString()}`, {
+        headers: { Authorization: `Bearer ${API_KEY}`, ...loadtestRunHeaders(RUN_ID) },
+        signal: AbortSignal.timeout(boundMs),
+      });
+      await res.arrayBuffer().catch(() => undefined);
+      return { ok: res.ok, status: res.status };
+    },
+  });
+  console.log(
+    `driver ${DRIVER}: warmed the fault version with ${out.answered} of ${codes.length} bookable checks answered ok` +
+      (out.notOk.length > 0 ? `; refused with ${out.notOk.join(", ")}` : "") +
+      (out.failed > 0 ? `; ${out.failed} did not answer` : ""),
+  );
 }
 
 async function burst(): Promise<void> {
