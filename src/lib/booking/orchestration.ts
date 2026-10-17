@@ -74,6 +74,7 @@ import { isDefinitiveFailure, reachabilityFromError } from "../google/reachabili
 import type { FailureKind } from "../google/sync-health.ts";
 import { normalizeEmail } from "../auth/email.ts";
 import type { CalendarOwnerForAlert, RefusedDeletionForAlert } from "./alert-copy.ts";
+import type { RetentionSweep } from "./reservation-retention.ts";
 import { encodeCursor, type ListQuery } from "./api-request.ts";
 import { webhookDedupeKey } from "../webhooks/dedupe.ts";
 import { runOutboxSteps, type OutboxHandlers } from "./outbox.ts";
@@ -1552,8 +1553,15 @@ export interface BookingDeps {
   /** Batched userId -> email resolver for a verify-on-book wave (skips emailless). */
   loadEmails(userIds: string[]): Promise<Map<string, string>>;
   /** The pre-save idempotency probe: fails OPEN to null on a read error, which the
-   *  unique key index backs (a missed hit re-drives an insert the index refuses). */
+   *  unique key index backs (a missed hit re-drives an insert the index refuses).
+   *  ACTIVE bookings only: it answers "is this a replay", which a cancelled or
+   *  completed booking is not. */
   findBookingByIdempotencyKey(key: string): Promise<Booking | null>;
+  /** #3847: the newest booking on the key in ANY status, for a reservation resume,
+   *  which must tell "committed and since cancelled or completed" from "never
+   *  committed". THROWS on a failed read: the active index cannot stop the recreate
+   *  a missed hit would cause. */
+  findLatestBookingByIdempotencyKey(key: string): Promise<Booking | null>;
   /**
    * #3495: the same read, THROWING on a read error, for the one caller to whom "not
    * there" and "could not tell" must differ: the read back after a save whose answer
@@ -1763,8 +1771,10 @@ export interface BookingDeps {
    *  last_error, set next_attempt_at to now + exponential backoff. */
   bumpReservationAttempt(id: string, attempts: number, lastError: string): Promise<void>;
   /** Retention: delete up to `limit` pending reservations older than the cutoff
-   *  (abandoned rows whose booking never completed). */
-  deleteExpiredReservations(olderThanIso: string, limit: number): Promise<void>;
+   *  whose booking never committed, and KEEP those whose booking committed with
+   *  booking.created still owed, answering their ids as `owed` (#3847). THROWS on
+   *  any failed read or refused delete, deleting nothing it could not judge. */
+  deleteExpiredReservations(olderThanIso: string, limit: number): Promise<RetentionSweep>;
   /**
    * Gated reschedule commit (#615). Applies the move ONLY while the booking is
    * still the one we started moving: status still active AND assignee + gcal
@@ -5279,6 +5289,10 @@ async function createHeld(
       // for the line: only a walk that spends the ladder settles the confirms behind
       // it (#3440). The walk reserves under the same key, so a third retry is still
       // guarded by it.
+      //
+      // #3847: null also means the pending reservation's booking was cancelled or
+      // completed since it committed, so it was settled (deleted) rather than made
+      // again. This lead is asking for the time again, so they walk afresh too.
     }
   }
 
@@ -5605,6 +5619,12 @@ async function createHeld(
       result = answerCommitted(attempt.completed);
       if (committedChainMs !== null) deps.commitCosts.record(committedChainMs, Date.now());
       break;
+    }
+    // A fresh confirm passes what it holds (`known`), and only a resume without it
+    // looks for an earlier booking, so this cannot be settled (#3847). Said loudly
+    // rather than read as a lost race, should that ever stop being true.
+    if (attempt.kind === "settled") {
+      throw new Error(`a fresh confirm's reservation ${reservation.id} was settled, which only a resume can do`);
     }
 
     // The insert lost to a booking that is not this request's own (#2274).
@@ -6069,13 +6089,18 @@ async function finishCommitted(work: () => Promise<void>): Promise<unknown> {
  * `attemptReservation` instead (#3462, #3837), because each acts on a lost attempt
  * itself: the fresh create decides its next advisor before the rollback, and the
  * resume rolls back and then walks the ladder.
+ *
+ * Answers null when the reservation was SETTLED (#3847): its booking committed and
+ * has since been cancelled or completed, so the reservation was deleted and nothing
+ * was made again.
  */
 async function completeReservation(
   deps: BookingDeps,
   reservation: BookingReservation,
-): Promise<CompletedReservation> {
+): Promise<CompletedReservation | null> {
   const attempt = await attemptReservation(deps, reservation);
   if (attempt.kind === "completed") return attempt.completed;
+  if (attempt.kind === "settled") return null;
   await attempt.rollBack();
   throw new SlotUnavailableError();
 }
@@ -6084,7 +6109,8 @@ async function completeReservation(
  * A lead's retry resuming the reservation its earlier confirm left (#3837). Returns the
  * booking it completed, or null when the advisor the reservation pinned has been taken
  * since: the reservation and its event are rolled back by then, so the caller walks
- * the ladder as a fresh confirm.
+ * the ladder as a fresh confirm. Null too when the reservation's booking was cancelled
+ * or completed since it committed (#3847): the reservation is settled, not made again.
  *
  * It holds the reservation's lease, the one the drain takes
  * (`processBookingReservations`), for the whole attempt, so the drain and a lead's
@@ -6129,6 +6155,9 @@ async function resumeReservation(
   try {
     const attempt = await attemptReservation(deps, reservation);
     if (attempt.kind === "completed") return attempt.completed;
+    // #3847: its booking was cancelled or completed since it committed, so the
+    // reservation is already deleted and nothing was made; the lead walks afresh.
+    if (attempt.kind === "settled") return null;
     await attempt.rollBack();
     return null;
   } finally {
@@ -6141,9 +6170,13 @@ async function resumeReservation(
 }
 
 /**
- * What completing a reservation came to (#3462): completed (`CompletedReservation`),
- * or LOST, its insert refused because a booking that is not this request's own
- * holds the slot, with the rollback that loss still owes.
+ * What completing a reservation came to (#3462): completed (`CompletedReservation`);
+ * LOST, its insert refused because a booking that is not this request's own holds
+ * the slot, with the rollback that loss still owes; or SETTLED (#3847), its booking
+ * committed and has since been cancelled or completed, so the reservation was
+ * deleted and nothing was made again. Only a resume (called without `known`, so the
+ * drain and a lead's retry) can answer settled, because only a resume looks for an
+ * earlier booking on the key; a fresh confirm treats settled as an error.
  *
  * The rollback is handed back rather than run, so a lead's confirm can tell the
  * confirms waiting behind it that the time is taken BEFORE it spends the cleanup
@@ -6154,7 +6187,36 @@ async function resumeReservation(
  */
 type ReservationAttempt =
   | { kind: "completed"; completed: CompletedReservation }
-  | { kind: "lost"; rollBack: () => Promise<void> };
+  | { kind: "lost"; rollBack: () => Promise<void> }
+  /** #3847: the resume found this reservation's booking already cancelled or
+   *  completed. The reservation was deleted and nothing was made. Only a resume
+   *  (no `known`) can answer it. */
+  | { kind: "settled"; booking: Booking };
+
+/** The statuses a booking is live in, as the replay read and the active key index count them. */
+function isActiveStatus(status: Booking["status"]): boolean {
+  return status === "confirmed" || status === "rescheduled";
+}
+
+/**
+ * Whether a booking on the reservation's key is the one THIS reservation made
+ * (#3847). The reservation is written before its booking commits, both stamped by
+ * Postgres's own clock, so its booking is never older than it. A booking older than
+ * the reservation is an earlier booking on the same key, cancelled before this
+ * reservation was written. THROWS when either stamp is unreadable: settling a new
+ * create would drop a lead's booking, and recreating would resurrect a cancelled
+ * one, so neither is chosen on a guess; the drain backs off and pages instead.
+ */
+function bookingIsThisReservations(booking: Booking, reservation: BookingReservation): boolean {
+  const bookedMs = Date.parse(booking.created_at);
+  const reservedMs = Date.parse(reservation.created_at);
+  if (!Number.isFinite(bookedMs) || !Number.isFinite(reservedMs)) {
+    throw new Error(
+      `reservation ${reservation.id}: cannot tell whether ${booking.status} booking ${booking.id} is its own (unreadable created_at), so it is neither settled nor made again`,
+    );
+  }
+  return bookedMs >= reservedMs;
+}
 
 /**
  * The reservation half of a lost attempt's rollback (#3859). Every caller that runs
@@ -6215,8 +6277,31 @@ async function attemptReservation(
   // and hands back the winner, so asking again here was one more database wait on
   // every booking (about 130ms at the median, 480ms at the p95, on load run 20) for a
   // case the save already answers. That case's calendar event is handled there.
+  //
+  // #3847: the lookup is the newest booking on the key in ANY status, never the
+  // active only replay read. That read missed a booking cancelled or completed after
+  // it committed, so the reservation read as never committed and the code below made
+  // the booking AGAIN: a calendar event for a call the lead called off, a new booking
+  // row and a booking.created. Such a booking SETTLES the reservation instead. It
+  // throws on a failed read, because the fail open null the replay read gives would
+  // walk straight into that recreate.
   if (key && !known) {
-    const already = await deps.findBookingByIdempotencyKey(key);
+    const latest = await deps.findLatestBookingByIdempotencyKey(key);
+    if (latest && !isActiveStatus(latest.status)) {
+      if (bookingIsThisReservations(latest, reservation)) {
+        await deps.deleteReservation(reservation.id);
+        log.warn("reservations", {
+          msg: "reservation settled: its booking committed and was later cancelled or completed, so it is not made again",
+          reservation_id: reservation.id,
+          booking_id: latest.id,
+          booking_status: latest.status,
+        });
+        return { kind: "settled", booking: latest };
+      }
+      // Otherwise it is an EARLIER booking on the same key (a lead who cancelled and
+      // then booked the same time again), and this reservation is a new create.
+    }
+    const already = latest && isActiveStatus(latest.status) ? latest : null;
     if (already) {
       const bookedCode = already.routing_trace?.bucket_code ?? bucketCode;
       const unfinished = await finishCommitted(async () => {
@@ -6560,11 +6645,15 @@ export async function processBookingReservations(
 ): Promise<{
   processed: number;
   completed: number;
+  /** #3847: reservations whose booking was already cancelled or completed, deleted
+   *  without making anything again. */
+  settled: number;
   failed: number;
   stuck: BookingReservation[];
 }> {
   const rows = await deps.loadDrainableReservations(limit);
   let completed = 0;
+  let settled = 0;
   let failed = 0;
   const stuck: BookingReservation[] = [];
   // Complete reservations concurrently but bounded (AUD-062): each is leased
@@ -6577,8 +6666,14 @@ export async function processBookingReservations(
       // #3263: a lead's confirm answers a committed booking whatever became of
       // the work after it; the drain is what finishes that work, so for the drain
       // an unfinished finish is a failure: it backs off and reaches the stuck alert.
-      const { unfinished } = await completeReservation(deps, reservation);
-      if (unfinished !== null) throw unfinished;
+      const done = await completeReservation(deps, reservation);
+      // #3847: settled, its booking already cancelled or completed. The row is gone
+      // and nothing is owed, so it is neither a completion nor a failure.
+      if (done === null) {
+        settled++;
+        return;
+      }
+      if (done.unfinished !== null) throw done.unfinished;
       completed++;
     } catch (err) {
       failed++;
@@ -6615,7 +6710,7 @@ export async function processBookingReservations(
       await deps.releaseReservationLease(reservation.id, lease);
     }
   });
-  return { processed: rows.length, completed, failed, stuck };
+  return { processed: rows.length, completed, settled, failed, stuck };
 }
 
 /**

@@ -283,7 +283,7 @@ in code (see `AGENTS.md`).
 ## A booking side effect did not complete
 
 Keys: `outbox_drain_stuck`, `outbox_all_handed_off`, `reservation_drain_stuck`,
-`booking_event_insert`, `busy_block_write_through`, `reconcile_busy_blocks`,
+`reservation_created_owed`, `booking_event_insert`, `busy_block_write_through`, `reconcile_busy_blocks`,
 `reconcile_missing_busy_blocks`, `creation_orphan_events`,
 `reassign_intent_dropped`, `reschedule_pin_dropped`, `reschedule_lock_outage`,
 `stale_phone_invite:*`, `webhook_dead:*`, `webhook_event_no_subscriber`,
@@ -328,6 +328,18 @@ which is what makes this family different from the ones above.
   committed and the work after it did not finish" names each booking and the error
   that cut it off. It clears on a measured clean half hour of confirms. The healthy
   rate is zero: none in the 2,933 bookings of the week before it shipped.
+
+- For `reservation_created_owed` (#3847): a booking committed more than a day ago and
+  Regal has never been sent its `booking.created`, most often because the booked bucket
+  no longer resolves (#3516). The reservation is the only record that the send is owed,
+  so retention keeps it rather than deleting it after a day, and this pages once a day
+  until it goes. `booking_reservations.last_error` says why. Either restore the bucket
+  and set the reservation's `attempts` to 0 (past 50 the drain no longer retries it),
+  so the drain sends the webhook and deletes the reservation itself, or tell Regal about
+  the booking by hand and then delete the reservation. It clears only on a sweep that
+  read every candidate and found none owed; a sweep whose read fails neither pages nor
+  clears, and its error is in the Worker log under `tag=booking`. The full sequence is
+  in `docs/dr-runbook.md`, "How long a reservation is kept".
 
 - For `bookable_trait_unrecorded:*` (#2085): an agent's bookable state changed and the
   delivery telling Regal was never recorded, so nothing retries it and **no customer is

@@ -128,6 +128,7 @@ function makeDeps(): BookingDeps {
     getUser: async () => targetAgent,
     loadEmails: async (ids: string[]) => new Map(ids.map((id) => [id, "target@x.com"])),
     findBookingByIdempotencyKey: async () => null,
+    findLatestBookingByIdempotencyKey: async () => null,
     // A reassign never makes a fresh booking, so these refuse loudly rather than letting
     // a cast hide that the fake has no answer for them.
     readBookingByIdempotencyKey: async () => null,
@@ -175,7 +176,7 @@ function makeDeps(): BookingDeps {
     leaseReservation: async () => "lease-1",
     releaseReservationLease: noop,
     bumpReservationAttempt: noop,
-    deleteExpiredReservations: noop,
+    deleteExpiredReservations: async () => ({ deleted: 0, owed: [] }),
     commitReschedule: async () => true,
     claimCancellation: async () => true,
     completeBookingsIfDue: async () => [] as string[],

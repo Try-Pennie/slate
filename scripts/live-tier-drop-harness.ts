@@ -460,7 +460,7 @@ function buildDeps(
     loadDrainableReservations: async () => [],
     leaseReservation: async () => null,
     releaseReservationLease: async () => {},
-    deleteExpiredReservations: async () => {},
+    deleteExpiredReservations: async () => ({ deleted: 0, owed: [] }),
 
     updateBooking: async (bookingId, patch) => {
       await db().from("bookings").update(patch).eq("id", bookingId);

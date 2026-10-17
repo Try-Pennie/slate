@@ -75,6 +75,9 @@ export const ON_DATABASE: ReadonlySet<string> = new Set([
   "findActiveBookingsForPerson",
   "resolveBucketByCode",
   "findBookingByIdempotencyKey",
+  // #3847: the reservation resume's read by key in any status (a drain path, and a
+  // lead's re-submit that finds a reservation pending).
+  "findLatestBookingByIdempotencyKey",
   "loadReservationByKey",
   "displayedTier",
   "resolveBucketPool",

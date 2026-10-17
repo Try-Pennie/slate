@@ -742,6 +742,13 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Reservations are backing off past the attempt cap until they drain; the sweep re-measures.",
   },
   {
+    key: "reservation_created_owed",
+    kind: "condition",
+    why:
+      "Bookings committed over a day ago are still owed booking.created and retention is keeping " +
+      "their reservations (#3847) until somebody sends it or removes them; every retention sweep re-measures.",
+  },
+  {
     key: "pending_event_deletions",
     kind: "condition",
     why: "Calendar deletions are stuck failing until they succeed or are cleared; the sweep re-measures.",

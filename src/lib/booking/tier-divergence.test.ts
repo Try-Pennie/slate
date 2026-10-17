@@ -164,6 +164,7 @@ function makeDeps(): BookingDeps & CommitFreshParts {
     getUser: async () => agentA,
     loadEmails: async (ids) => new Map(ids.map((id) => [id, "a@x.com"])),
     findBookingByIdempotencyKey: async () => null,
+    findLatestBookingByIdempotencyKey: async () => null,
     readBookingByIdempotencyKey: async () => null,
     insertBooking: async (row) => ({
       ok: true as const,
@@ -209,7 +210,7 @@ function makeDeps(): BookingDeps & CommitFreshParts {
     leaseReservation: async () => "lease-1",
     releaseReservationLease: noop,
     bumpReservationAttempt: noop,
-    deleteExpiredReservations: noop,
+    deleteExpiredReservations: async () => ({ deleted: 0, owed: [] }),
     commitReschedule: async () => "ob-1",
     claimCancellation: async () => true,
     completeBookingsIfDue: async () => [] as string[],
