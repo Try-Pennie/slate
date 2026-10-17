@@ -284,6 +284,7 @@ src/lib/cloudflare     reading Cloudflare's GraphQL Analytics answers (shared by
 src/lib/theme          one rule for which theme a person gets: the pre-hydration boot script and its runtime half
 src/lib/twilio         the TaskRouter read: who carries the Redistribute tag, and the flip out of the pool it decides
 src/lib/regal          the inbound Regal call feed: what each call.completed body means, and its retention
+src/lib/mcp-booking    Marcia's booking MCP endpoint (#3541 to #3545): the audit row each of her booking writes records
 src/lib/log-shipping   what the slate-log-tail Worker ships to Better Stack: the redaction, the line parser, the bounded POST
 src/lib/advisor-photos advisor photos from the Google directory: the daily refresh, its guards, and the one resolver every face goes through
 src/lib/{calcom,date,db,embed,supabase}   cal.com dual-write, Luxon helpers, hand-written DB types, embed origin, Supabase clients
