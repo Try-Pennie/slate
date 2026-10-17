@@ -1291,7 +1291,7 @@ export function incompleteness(input: JudgeInput): string[] {
   if (input.driverResults.length !== input.target.drivers) {
     why.push(
       `${input.driverResults.length} driver result files, expected ${input.target.drivers}. ` +
-        "A missing driver lowers every rate by a quarter and nothing in the numbers says so.",
+        "A missing driver lowers every rate by its share and nothing in the numbers says so.",
     );
     // WHICH one, and what its silence means (#3222). A slow driver stops at its own
     // deadline and writes what it ran, so a driver with no file at all hung or

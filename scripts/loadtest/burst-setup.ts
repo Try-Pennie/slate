@@ -66,6 +66,7 @@ import {
   offeredSlots,
   shownTierOf,
   DRIVERS,
+  steadyDriversFor,
   BURST_LEGS,
   BURST_SEQUENCE,
   BURST_SLOT_GAP_MS,
@@ -92,6 +93,7 @@ import {
   type DropMeasure,
 } from "./burst-target.ts";
 import { poolDepthsFrom } from "./pool-depth.ts";
+import { seededRosterVerdict } from "./roster-shape.ts";
 import { PRODUCTION_SUPABASE_REF, PRODUCTION_HOST } from "../../src/lib/loadtest-guard.ts";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
@@ -239,6 +241,7 @@ async function readOrThrow<T>(what: string, read: () => Promise<T>): Promise<T> 
 let candidates: LadderCandidate[];
 let staffedPools = 0;
 let poolCount = 0;
+let seededAdvisors = 0;
 try {
   const db = supabaseAdmin();
   // cap-safe: users is roster bounded, the seeded roster is ~94 rows against a
@@ -254,6 +257,7 @@ try {
       "burst target agents",
     ),
   )) ?? []) as { id: string; attributes: Attributes | null }[];
+  seededAdvisors = agents.length;
   // The buckets and their hand named members through the app's OWN pool reader
   // (#3325), the one the recompute lane groups on, so the ladders below are read from
   // exactly the inputs the booker uses (L107). Test buckets are left out, as the
@@ -284,6 +288,22 @@ try {
   console.error(rosterUnreadable(err instanceof Error ? err.message : String(err)));
   process.exit(4);
 }
+// The roster this run is about (#3829), counted rather than assumed: the seed ran on
+// another machine before the dispatch, so this count is the only place the workflow
+// learns what it is driving. Its own exit code, because seeding the wrong roster and
+// a roster nothing can burst at are different mistakes.
+// env-ok: ROSTER (optional; the workflow's roster input, 90 or 200, and empty for a
+// hand run, which is production's 90)
+const roster = seededRosterVerdict({ seeded: seededAdvisors, named: process.env.ROSTER });
+if (!roster.ok) {
+  console.error(`FAILED: ${roster.why}.`);
+  process.exit(12);
+}
+const steadyDrivers = Array.from({ length: steadyDriversFor(roster.advisors) }, (_, i) => i);
+console.log(
+  `  roster: ${roster.advisors} advisors (production measured ${roster.shape.measuredAt}), so ` +
+    `${steadyDrivers.length} steady drivers`,
+);
 if (staffedPools === 0) {
   console.error(
     `FAILED: not one of the ${poolCount} pools has an agent in it, so there is nothing to burst at. The seed did ` +
@@ -461,7 +481,11 @@ if (out) {
     // the drivers' files and from there to the report.
     `burst_plan=${JSON.stringify(plan)}\n` +
       `burst_count=${plan.bursts.length}\n` +
-      `drivers=${JSON.stringify(drivers)}\ndriver_count=${drivers.length}\n`,
+      `drivers=${JSON.stringify(drivers)}\ndriver_count=${drivers.length}\n` +
+      // #3829: the steady pass grows with the roster at today's rate per advisor, and the
+      // drive matrix and the judge both read it from here, as the bursts read theirs.
+      `steady_drivers=${JSON.stringify(steadyDrivers)}\nsteady_driver_count=${steadyDrivers.length}\n` +
+      `roster_advisors=${roster.advisors}\n`,
     "utf8",
   );
 }

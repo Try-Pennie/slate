@@ -73,6 +73,7 @@ import {
   type DriverMode,
   type DriverResult,
 } from "./book-plan.ts";
+import { rosterLine } from "./roster-shape.ts";
 import type { SoakSample } from "./invariants.ts";
 import { readColdSamples, readColdResult, type ColdLegResult } from "./cold-plan.ts";
 import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
@@ -111,6 +112,19 @@ function wholeNumber(raw: string | undefined, name: string): number {
     process.exit(1);
   }
   return Number(v);
+}
+
+// #3829: how many STEADY drivers the workflow fired, sized from the roster its burst
+// setup counted. A hand run passes none and is judged against today's four.
+// env-ok: EXPECT_STEADY_DRIVERS (optional; the workflow's steady matrix size, unset on
+// a hand run, which drives the four DRIVERS)
+const STEADY_DRIVERS =
+  (process.env.EXPECT_STEADY_DRIVERS ?? "").trim() === ""
+    ? DRIVERS
+    : wholeNumber(process.env.EXPECT_STEADY_DRIVERS, "EXPECT_STEADY_DRIVERS");
+if (STEADY_DRIVERS <= 0) {
+  console.error("FAILED: EXPECT_STEADY_DRIVERS is zero, and a steady pass of no drivers cannot be judged.");
+  process.exit(1);
 }
 
 const RUN_ID = need("RUN_ID");
@@ -667,7 +681,7 @@ const platform = await platformReading(
 
 const input: JudgeInput = {
   runId: RUN_ID,
-  target: { drivers: DRIVERS, perDriverPerMinute: PER_DRIVER_PER_MINUTE, minutes: RUN_MINUTES },
+  target: { drivers: STEADY_DRIVERS, perDriverPerMinute: PER_DRIVER_PER_MINUTE, minutes: RUN_MINUTES },
   driverResults: steady,
   burstResults: burst,
   freshnessSamples: samples,
@@ -722,6 +736,12 @@ lines.push("");
 // env-ok: EXPECT_POST_CONFIRM_RECOMPUTE (optional; the workflow's input, unset on a
 // hand run, which is the on arm)
 lines.push(recomputeArmLine(process.env.EXPECT_POST_CONFIRM_RECOMPUTE));
+lines.push("");
+// #3829: the roster the burst setup counted on the branch, so a 200 advisor run is
+// never read against a 90 one.
+// env-ok: EXPECT_ROSTER_ADVISORS (optional; the advisors the burst setup counted,
+// unset on a hand run)
+lines.push(rosterLine(process.env.EXPECT_ROSTER_ADVISORS, STEADY_DRIVERS));
 lines.push("");
 // #3490: which Google rig the stand in ran, so a run with Google time in its confirms is
 // never read against one without. The preflight refuses a deployment running any other.

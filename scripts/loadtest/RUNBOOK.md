@@ -253,7 +253,7 @@ Two things to know before reading the answer:
 `bar_over_peak` under ten means the premise no longer holds and the run's bar should
 be raised before the next one is dispatched. The run itself was measured at 90
 seeded agents (run 34658545203, 2026-09-11) against a design target of 100 to 200;
-running the booking leg at 200 is tracked on #3124 and has not been done.
+running the booking leg at 200 is #3829, below ("The 200 advisor run").
 
 **First reading against production, 2026-10-16 (#3124).** Run at 20:23 UTC (16:23
 ET), the query above returned:
@@ -319,6 +319,44 @@ profiles it generates, and the exported depths are what that output is checked
 against, so a generator that drifts is caught by two independently produced numbers
 rather than by trusting the generator to have applied its own input.
 
+### The 200 advisor run (#3829)
+
+Slate is designed for 100 to 200 advisors and production has about 90, so the run
+can also be driven at 200. Three things change and nothing else does:
+
+- **The roster.** `SCALED_200_SHAPE` in `roster-shape.ts` is production's measured
+  shape scaled to 200 by the seed's own scaling: the same mix by tier, backend and
+  zone (70, 52, 36, 18, 7, 7, 4 and 4 advisors by profile; 64 Eastern, 56 Phoenix,
+  36 Mountain, 33 Pacific, 11 Central), with the two Beyond advisors still pinned so
+  every `x2x` pool stays one deep. It is checked in as numbers so the run names the
+  roster it measured, and `scripts/test-loadtest-roster-shape.ts` fails the day the
+  numbers stop being what the seed builds. Seed it with `ROSTER=200`; `ROSTER=90`, or
+  nothing, is production's.
+- **The steady traffic.** Held at today's rate PER ADVISOR (60 a minute over 90),
+  so 200 advisors is about 133 a minute: nine drivers at fifteen each
+  (`steadyDriversFor`), each on its own runner and so its own address. The bursts
+  keep their sizes, because a crowd on one slot does not grow with the roster.
+- **The dispatch.** `roster: 200` on the workflow. The burst setup COUNTS the
+  advisors on the branch, refuses on **exit 12** when the count is not the roster
+  the run names (a 200 run on a branch seeded with 90 would pass every bar about the
+  wrong roster), and emits the steady driver list the drive matrix and the judge both
+  read, so the two can never disagree. The report's header names the roster and the
+  steady driver count.
+
+The bars are the 90 advisor run's, unchanged. The cron lanes are what grow with the
+roster (sync and recompute do work per advisor and per pool), and the report's cron
+tick line judges the worst scheduled tick's CPU against the 120,000ms kill. A tick
+that breaks the subrequest ceiling is killed with a status other than success, which
+the platform outcome bar fails by name; Cloudflare publishes no per tick subrequest
+COUNT, so the report prints the window's mean per invocation and says so rather than
+inventing one.
+
+All the drivers share the one load test API key, so at 200 the steady pass asks about
+135 writes a minute of a per key ceiling of 120. That ceiling is Cloudflare's native
+limiter, approximate and per location (#2339); the exact bounds on the key are 1,200
+a minute and 6,000 an hour, which the whole run stays under. Any 429 it does give is
+counted in the outcome mix against the rate bar's floor rather than hidden.
+
 ### The seed refuses a branch whose migrations do not match
 
 Count AND highest version, both, against what the checkout ships. The highest alone
@@ -337,8 +375,9 @@ the seed would understate contention in exactly the zones the run is meant to pr
 
 ### Driving it
 
-Four drivers, **fifteen a minute each for ten minutes**. Fifteen times four is
-**sixty**, which is exactly the per address write ceiling
+Four drivers at 90 advisors, nine at 200 (#3829, above), **fifteen a minute each
+for ten minutes**. At 90, fifteen times four is **sixty**, which is exactly the per
+address write ceiling
 (`BOOKING_API_IP_LIMITER.perMinute`), and that is deliberate: the run sits on the
 ceiling so the judge can attribute the 429s it produces. The pacing constants are
 imported from the app rather than copied, so a run can never drift into measuring a

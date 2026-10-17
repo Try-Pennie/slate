@@ -41,6 +41,29 @@ export const PER_DRIVER_PER_MINUTE = 15;
 export const RUN_MINUTES = 10;
 
 /**
+ * The steady pass's rate PER ADVISOR, held across roster sizes (#3829): today's four
+ * drivers at fifteen a minute over production's 90. A 200 advisor run drives the
+ * same pressure on each advisor rather than the same total, so what it measures is
+ * the roster growing, not the traffic thinning out over it.
+ */
+export const STEADY_CONFIRMS_PER_ADVISOR_PER_MINUTE = (DRIVERS * PER_DRIVER_PER_MINUTE) / 90;
+
+/**
+ * How many steady drivers a roster of `advisors` takes at that rate, rounded UP so a
+ * run never drives less per advisor than today's: 4 at 90, 9 at 200. Each driver
+ * keeps its fifteen a minute, which keeps each driver's address under the booking
+ * API's per address ceilings. The bursts do not grow with it: a crowd on one slot is
+ * the same crowd whatever the roster, so they keep `DRIVERS`.
+ */
+export function steadyDriversFor(advisors: number): number {
+  if (!Number.isSafeInteger(advisors) || advisors <= 0) {
+    throw new Error(`a roster of ${advisors} advisors has no steady pass to size`);
+  }
+  // The small epsilon keeps 90 at exactly four: 90 * (60 / 90) / 15 is 4.000000000000001.
+  return Math.ceil((advisors * STEADY_CONFIRMS_PER_ADVISOR_PER_MINUTE) / PER_DRIVER_PER_MINUTE - 1e-9);
+}
+
+/**
  * What one request costs a driver beside the booking's own wall time: the
  * availability read before it and the loop around it. Measured on run 37215457763
  * (2026-10-04) at a p50 of about 0.5s and a MAX of 1.65s between one booking's

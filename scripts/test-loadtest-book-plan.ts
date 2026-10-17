@@ -26,6 +26,8 @@ import {
   BOOKING_WRITES_PER_MINUTE,
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
+  steadyDriversFor,
+  STEADY_CONFIRMS_PER_ADVISOR_PER_MINUTE,
   RUN_MINUTES,
   chooseBurstSlot,
   burstStartAt,
@@ -1025,6 +1027,35 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   const book = readFileSync(join(import.meta.dirname, "loadtest", "book.ts"), "utf8");
   assert(/mode === "baseline" \? baselineSlot\(slots, baselineBooked\) : pickSlot\(slots\)/.test(book), "the driver books the baseline through it, and only the baseline");
   assert(/baselineBooked\.add\(startIso\)/.test(book), "and records each time it booked, so the next one passes it over");
+}
+
+// --- the steady pass grows with the roster, at today's rate per advisor (#3829) ---
+
+{
+  // Production's 90 keeps exactly today's four drivers, so a 90 run is the run it was.
+  eq(steadyDriversFor(90), DRIVERS, "90 advisors is four steady drivers, as every run before");
+  // 60 a minute over 90 advisors is about 133 over 200, which is nine drivers at fifteen.
+  eq(steadyDriversFor(200), 9, "200 advisors is nine steady drivers");
+  eq(STEADY_CONFIRMS_PER_ADVISOR_PER_MINUTE, 60 / 90, "the rate per advisor is today's: 60 a minute over 90");
+  // Never UNDER the rate per advisor: a run short of it would read as headroom it never measured.
+  for (const n of [50, 90, 120, 150, 200, 250]) {
+    const drivers = steadyDriversFor(n);
+    assert(
+      drivers * PER_DRIVER_PER_MINUTE >= n * STEADY_CONFIRMS_PER_ADVISOR_PER_MINUTE - 1e-9,
+      `${n} advisors get at least today's rate per advisor (${drivers} drivers)`,
+    );
+    assert(
+      (drivers - 1) * PER_DRIVER_PER_MINUTE < n * STEADY_CONFIRMS_PER_ADVISOR_PER_MINUTE,
+      `and no more drivers than that takes (${drivers} at ${n})`,
+    );
+  }
+  let threw = false;
+  try {
+    steadyDriversFor(0);
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a roster of nobody has no steady pass to size");
 }
 
 finish();
