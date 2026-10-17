@@ -26,15 +26,54 @@ export interface SeedBooking {
   kind?: string;
 }
 
+/**
+ * The columns every seeded booking sets, in the order both inserts below give their
+ * values, so a single row and a series cannot drift apart over which columns they fill.
+ */
+const BOOKING_SEED_COLUMNS = `org_id, bucket_id, event_type_id, assigned_user_id, agent_name, agent_email,
+      starts_at, ends_at, original_starts_at, original_ends_at, timezone, status, attendee_name, attendee_email,
+      attendee_phone, external_id, salesforce_id, gcal_event_id, manage_token, idempotency_key, kind, source`;
+
 /** The insert for one booking, its event, token and idempotency key derived from its id. */
 export function bookingInsertSql(b: SeedBooking): string {
-  return `insert into bookings (id, org_id, bucket_id, event_type_id, assigned_user_id, agent_name, agent_email,
-      starts_at, ends_at, original_starts_at, original_ends_at, timezone, status, attendee_name, attendee_email,
-      attendee_phone, external_id, salesforce_id, gcal_event_id, manage_token, idempotency_key, kind, source)
+  return `insert into bookings (id, ${BOOKING_SEED_COLUMNS})
     values ('${b.id}', '${b.orgId}', '${b.bucketId}', '${b.eventTypeId}', '${b.assignedUserId}', 'Agent', 'agent@example.com',
       '${b.startIso}', '${b.endIso}', '${b.startIso}', '${b.endIso}', 'America/New_York', '${b.status ?? "confirmed"}', 'Dana Lead',
       ${sqlLiteral(b.attendeeEmail)}, ${sqlLiteral(b.attendeePhone)}, ${sqlLiteral(b.externalId)}, ${sqlLiteral(b.salesforceId)},
       'gcal-${b.id}', 'tok-${b.id}', 'key-${b.id}', '${b.kind ?? "routed"}', 'booking');`;
+}
+
+/**
+ * Many bookings in ONE statement, for a suite that needs a production sized table so
+ * the planner costs a read as production would (#3863). Rows are numbered 1..rows as
+ * `i`; each field is a SQL expression over `i`. Every row is twenty minutes long on one
+ * agent, so `start` must give each row its own window or the active overlap constraint
+ * (0120) refuses the insert.
+ */
+export interface SeedBookingSeries {
+  orgId: string;
+  bucketId: string;
+  eventTypeId: string;
+  assignedUserId: string;
+  rows: number;
+  /** The start, a timestamptz expression over `i`. */
+  start: string;
+  /** The status, a text expression over `i`. */
+  status: string;
+  /** The idempotency key, a text expression over `i`. */
+  idempotencyKey: string;
+  /** When the row was made, a timestamptz expression over `i`. */
+  createdAt: string;
+}
+
+/** The insert for a series of bookings, event, token and email derived from `i`. */
+export function bookingSeriesInsertSql(s: SeedBookingSeries): string {
+  return `insert into bookings (${BOOKING_SEED_COLUMNS}, created_at)
+    select '${s.orgId}', '${s.bucketId}', '${s.eventTypeId}', '${s.assignedUserId}', 'Agent', 'agent@example.com',
+      t.s, t.s + interval '20 minutes', t.s, t.s + interval '20 minutes', 'America/New_York', ${s.status}, 'Dana Lead',
+      'lead' || i || '@example.com', null, null, null, 'gcal-' || i, 'tok-' || i, ${s.idempotencyKey}, 'routed', 'booking',
+      ${s.createdAt}
+    from generate_series(1, ${s.rows}) as i, lateral (select ${s.start} as s) t;`;
 }
 
 /** One event type, with its buffers. */
