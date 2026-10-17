@@ -440,7 +440,10 @@ function buildDeps(
     },
 
     deleteReservation: async (id) => {
-      await db().from("booking_reservations").delete().eq("id", id);
+      // #3859: the same answer the shipped delete gives, so a lost race here is judged alike.
+      const { data, error } = await db().from("booking_reservations").delete().eq("id", id).select("id");
+      if (error) throw new Error(`reservation ${id} could not be deleted: ${error.message}`);
+      return data && data.length > 0 ? ("deleted" as const) : ("gone" as const);
     },
 
     repinReservationEvent: async (id, fromClientId, toClientId) => {

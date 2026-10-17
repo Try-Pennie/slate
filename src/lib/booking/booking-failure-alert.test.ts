@@ -3,6 +3,7 @@ import { bookingFailureAlert } from "./service";
 import {
   NoEligibleAgentsError,
   ReservationHeldError,
+  ReservationRollbackError,
   VerifyUnavailableError,
   RescheduleLockUnavailableError,
   SlotUnavailableError,
@@ -54,6 +55,17 @@ describe("bookingFailureAlert", () => {
     const err = new ReservationHeldError();
     expect(err).toBeInstanceOf(VerifyUnavailableError);
     expect(bookingFailureAlert(err)).toBeNull();
+  });
+
+  // #3859: a refused rollback delete stops the confirm retryably, and something IS
+  // down, so it pages under the verify outage's key in words naming what refused.
+  it("alerts on a refused reservation rollback, naming the delete rather than the calendars", () => {
+    const err = new ReservationRollbackError("resv-1", new Error("permission denied for table booking_reservations"));
+    expect(err).toBeInstanceOf(VerifyUnavailableError);
+    const spec = bookingFailureAlert(err);
+    expect(spec?.key).toBe("verify_on_book_outage");
+    expect(spec?.message).toMatch(/booking_reservations/);
+    expect(spec?.message).not.toMatch(/free\/busy/);
   });
 
   it("does NOT alert on an ordinary taken slot", () => {

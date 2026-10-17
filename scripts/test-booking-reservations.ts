@@ -356,6 +356,25 @@ async function run() {
     assert(tCalls.reservationBumps.length === 0, "drain: a terminal slot-taken reservation is NOT bumped (no backoff on a deleted row)");
     assert(tRes.stuck.length === 0, "drain: a terminal slot-taken reservation does NOT fire a stuck alert");
 
+    // #3859: the same taken slot, but the rollback's delete is refused. The row still
+    // stands, so it is NOT terminal: it is bumped and retried, and its last_error
+    // records what the database said, not the sentence a lead would be shown.
+    {
+      const { deps: rDeps, calls: rCalls } = makeDeps({
+        drainableReservations: [{ ...terminal, id: "resv-refused" }],
+        insertBookingConflict: true,
+      });
+      rDeps.deleteReservation = async () => {
+        throw new Error("permission denied for table booking_reservations");
+      };
+      const rRes = await processBookingReservations(rDeps, 15);
+      assert(rRes.failed === 1, "drain, refused rollback: counted failed");
+      assert(
+        rCalls.reservationBumps.length === 1 && /permission denied/.test(rCalls.reservationBumps[0].lastError),
+        `drain, refused rollback: bumped for a retry, recording the database's refusal (got ${JSON.stringify(rCalls.reservationBumps)})`,
+      );
+    }
+
     // #3359: Google refusing the attendee's address is just as terminal. On
     // 2026-10-06 reservation 71d4bb58 sat at 13 attempts on the hourly backoff,
     // re-asking Google to invite an address it had already said it never would,
@@ -647,11 +666,37 @@ async function run() {
         throw new Error("supabase 503");
       };
       const { err } = await settle(() => createBooking(input, deps));
-      assert(err instanceof Error && /503/.test(err.message), `#3837 failed rollback: its own error reaches the lead (got ${String(err)})`);
+      // #3859: answered retryably, as the outage it is, with the delete's own error
+      // carried for the log rather than escaping as an unexpected 500.
+      assert(
+        err instanceof VerifyUnavailableError && err.name === "ReservationRollbackError" && /503/.test(String(err.cause)),
+        `#3837 failed rollback: a retryable answer carrying the delete's own error (got ${String(err)})`,
+      );
       assert(calls.reservations.length === 0, "#3837 failed rollback: the ladder is not walked over a reservation still standing");
       assert(
         leases.held.size === 0 && leases.log.includes("release resv-crash"),
         `#3837 failed rollback: the lease is given back, so the drain retries the row (got ${leases.log.join(";")})`,
+      );
+    }
+
+    // 6b. #3859: the stale reservation is already gone when the rollback deletes it
+    //     (the drain finished it after a lapsed lease). That is the state the walk
+    //     needs, so the lead walks the ladder and is booked below, as in 1.
+    {
+      const leases = leaseTable();
+      const { deps, calls } = makeDeps({ ...takenFixture, reservation: crashedReservation() });
+      deps.leaseReservation = leases.lease;
+      deps.releaseReservationLease = leases.release;
+      deps.deleteReservation = async (id) => {
+        calls.deletedReservations.push(id);
+        return "gone";
+      };
+      const { value: res, err } = await settle(() => createBooking(input, deps));
+      assert(err === null, `#3859 already gone: the resumed lead is not refused (got ${String(err)})`);
+      assert(res?.booking.assigned_user_id === "c", `#3859 already gone: booked with the free advisor on the rung below (got ${res?.booking.assigned_user_id})`);
+      assert(
+        calls.reservations.length === 1 && calls.reservations[0].pinned_user_id === "c",
+        `#3859 already gone: the walk reserves under the key, pinned to the advisor it found (got ${JSON.stringify(calls.reservations)})`,
       );
     }
 

@@ -200,6 +200,7 @@ import {
   reconcileRecreatedAlert,
   reschedulePinDroppedAlert,
   rescheduleLockOutageAlert,
+  reservationRollbackAlert,
   verifyOutageAlert,
   dependencyTimeoutAlert,
   reservationDrainRecovery,
@@ -2022,8 +2023,19 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     },
 
     deleteReservation: async (id) => {
-      // write-ok: the reservation expires on its lease regardless, so a refused delete costs one slot until expiry and never releases a live hold.
-      await supabaseAdmin().from("booking_reservations").delete().eq("id", id);
+      // #3859: a lost attempt's rollback deletes the row and then reserves again under
+      // the SAME key, whose insert adopts any row still holding it. A refused delete
+      // discarded here let that insert adopt the lost reservation, pinned to the advisor
+      // just taken, so it throws. The rows it returns say whether one was removed:
+      // none means no row had that id, which a holder of the same key removing it
+      // first can cause, and is the caller's to judge (`dropLostReservation`).
+      const { data, error } = await supabaseAdmin()
+        .from("booking_reservations")
+        .delete()
+        .eq("id", id)
+        .select("id");
+      if (error) throw new Error(`reservation ${id} could not be deleted: ${error.message}`);
+      return data && data.length > 0 ? "deleted" : "gone";
     },
 
     repinReservationEvent: async (id, fromClientId, toClientId) => {
@@ -2542,6 +2554,15 @@ export function bookingFailureAlert(
       key: VERIFY_OUTAGE_ALERT_KEY,
       cooldownMs: VERIFY_OUTAGE_ALERT_COOLDOWN_MS,
       message: dependencyTimeoutAlert({ ...err, spent, reach }),
+    };
+  }
+  // #3859: a refused rollback delete stopped the confirm. The lead's side is the
+  // same retryable outage, so the same key, in words naming what refused.
+  if (err instanceof orchestration.ReservationRollbackError) {
+    return {
+      key: VERIFY_OUTAGE_ALERT_KEY,
+      cooldownMs: VERIFY_OUTAGE_ALERT_COOLDOWN_MS,
+      message: reservationRollbackAlert(),
     };
   }
   if (err instanceof orchestration.VerifyUnavailableError) {

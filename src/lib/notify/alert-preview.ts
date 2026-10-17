@@ -530,6 +530,7 @@ import {
   verifyOutageAlert,
   dependencyTimeoutAlert,
   rescheduleLockOutageAlert,
+  reservationRollbackAlert,
   verifyReadFailedAlert,
   stalePhoneInviteAlert,
 } from "@/lib/booking/alert-copy";
@@ -5089,6 +5090,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "no candidate could be verified",
     channel: "alert",
     text: verifyOutageAlert(),
+  },
+  {
+    key: "verify_on_book_outage",
+    state: "a lost race's reservation rollback was refused (#3859)",
+    channel: "alert",
+    text: reservationRollbackAlert(),
   },
   {
     key: "verify_on_book_outage",

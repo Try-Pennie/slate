@@ -94,6 +94,18 @@ that opened it left a second race a few seconds later with nothing, and the lead
 told to retry while the next advisor was free. Nearer the end of the budget the
 rollback shares that allowance as before, so the worst case stays 12 plus 2 seconds.
 
+The next attempt reserves under the same idempotency key, and the reservation's
+insert adopts any row already holding that key, so the rollback's delete is what
+keeps it off the lost reservation, still pinned to the advisor who was just taken.
+Since #3859 the delete checks its own answer (`dropLostReservation`). A refused delete
+stops the confirm with the retryable outage (`ReservationRollbackError`, a 503 that
+pages under `verify_on_book_outage`) and leaves the row pending for the reservation
+drain; it used to be discarded, so the next attempt could adopt the stale row. A
+delete that finds no row is not a failure: a concurrent confirm of the same lead, or
+the drain after a lapsed lease, removed it first, which is the state the next attempt
+needs, so the confirm goes on and the overlap is logged. The same holds for a resumed
+reservation's walk (#3837) and the drain's own rollback, which retries on a later tick.
+
 The honest limit, as #3338 left it: each step down cost the next confirm its reads
 before the line, and the confirm booking a rung's last advisor held the line for its
 whole confirm (it may yet fail and free that advisor, #3257). Since #3489 a confirm

@@ -20,6 +20,7 @@ import {
   DependencyTimeoutError,
   LostRaceOutOfTimeError,
   timeoutAsRetryable,
+  VerifyUnavailableError,
   type CreateBookingInput,
 } from "../src/lib/booking/orchestration.ts";
 import { DeadlineExceededError } from "../src/lib/fetch-within-deadline.ts";
@@ -810,6 +811,82 @@ async function main() {
       `named link race: no lower rung is resolved (got ${calls.resolveBucketByCode.join(",")})`,
     );
     assert(err instanceof RaceLostRefusalError && err.ladderExhausted === true, "named link race: its one advisor taken is its ladder spent");
+  }
+
+  // --- #3859: the lost attempt's reservation must really be gone before the next ----
+  //
+  // The next attempt reserves under the SAME idempotency key, and the reservation's
+  // insert adopts whatever row already holds that key. So a rollback whose delete was
+  // refused, if the confirm went on, would adopt the lost reservation, still pinned to
+  // the advisor who was just taken. The delete's refusal now stops the confirm with a
+  // retryable answer that carries it, nothing more is reserved, and the row is left
+  // to the reservation drain. A delete that finds the row already gone (a concurrent
+  // confirm of the same lead removed it) is the state the next attempt needs, so the
+  // confirm goes on exactly as before.
+  {
+    const refusedDelete = () => new Error("permission denied for table booking_reservations");
+    // 1. The next advisor on the same rung: the rollback runs before the retry.
+    {
+      const { deps, calls } = makeDeps({
+        candidates: ["a", "b"],
+        freeEmails: new Set(["a@x.com", "b@x.com"]),
+        insertBookingConflictFor: new Set(["a"]),
+      });
+      deps.deleteReservation = async (id) => {
+        calls.deletedReservations.push(id);
+        throw refusedDelete();
+      };
+      const err = await refusal(() => createBooking(input, deps));
+      assert(
+        err instanceof VerifyUnavailableError && err.name === "ReservationRollbackError",
+        `#3859 same rung, refused delete: a retryable answer of its own kind (got ${String(err)})`,
+      );
+      assert(
+        err instanceof Error && /permission denied/.test(String(err.cause)),
+        "#3859 same rung, refused delete: it carries the database's refusal",
+      );
+      assert(calls.reservations.length === 1, `#3859 same rung, refused delete: nothing is reserved again under the key (got ${calls.reservations.length})`);
+      assert(calls.insertBooking.length === 1, "#3859 same rung, refused delete: the second advisor is never attempted");
+    }
+    // 2. Walking down the ladder: the rollback runs while the walk asks the rung below.
+    {
+      const [top, lower] = tierLadder(input.bucketCode);
+      const { deps, calls } = makeDeps({
+        candidatesByCode: { [top]: ["a"], [lower]: ["c"] },
+        freeEmails: new Set(["a@x.com", "c@x.com"]),
+        insertBookingConflictFor: new Set(["a"]),
+      });
+      deps.deleteReservation = async () => {
+        throw refusedDelete();
+      };
+      const err = await refusal(() => createBooking(input, deps));
+      assert(
+        err instanceof VerifyUnavailableError && err.name === "ReservationRollbackError",
+        `#3859 walk down, refused delete: a retryable answer of its own kind (got ${String(err)})`,
+      );
+      assert(calls.reservations.length === 1, `#3859 walk down, refused delete: the rung below is not reserved (got ${calls.reservations.length})`);
+    }
+    // 3. Already gone: the confirm goes on to the next advisor and books them.
+    {
+      const { deps, calls } = makeDeps({
+        candidates: ["a", "b"],
+        freeEmails: new Set(["a@x.com", "b@x.com"]),
+        insertBookingConflictFor: new Set(["a"]),
+      });
+      deps.deleteReservation = async (id) => {
+        calls.deletedReservations.push(id);
+        return "gone";
+      };
+      const err = await refusal(async () => {
+        const res = await createBooking(input, deps);
+        assert(res.booking.assigned_user_id === "b", `#3859 already gone: booked with the next advisor (got ${res.booking.assigned_user_id})`);
+      });
+      assert(err === null, `#3859 already gone: not refused (got ${String(err)})`);
+      assert(
+        calls.reservations.length === 2 && calls.reservations[1].pinned_user_id === "b",
+        `#3859 already gone: the next attempt reserves under the key, pinned to the next advisor (got ${JSON.stringify(calls.reservations)})`,
+      );
+    }
   }
 
   // --- an adopted same-key reservation is not retried under another name --------
