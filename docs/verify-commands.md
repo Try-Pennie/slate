@@ -341,13 +341,7 @@ one is a rare fault somebody fixes the day they read it, so the message says wha
 silence means instead: it repeats once a day until a run passes, and a run that
 passes says nothing.
 
-# Proving the booking refusal alerts can build and send (`scripts/verify-refusal-alerts-live.ts`)
-
-Run it as `node --experimental-strip-types --import ./scripts/register-paths.mjs
-scripts/verify-refusal-alerts-live.ts`. It gets its `pnpm verify:` alias in the same
-change that adds its row to the command table in `AGENTS.md`, which
-`scripts/test-auto-loaded-doc-claims.ts` requires of every alias; that row is waiting
-on a decision about the auto loaded file, so until then the script runs by path.
+# Proving the booking refusal alerts can build and send (`pnpm verify:refusal-alerts`)
 
 `booking_api_ceiling`, `booking_api_credential` and `booking_api_list_read` (#1442,
 #1450, #1709) ship ARMED, and so do the embed booker's `booking_embed_ip_cap`,

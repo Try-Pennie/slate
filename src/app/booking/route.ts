@@ -254,12 +254,13 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
   // limiter and has no refund path, so a transient server outage (503) still
   // consumes one of the lead's 3/min (the hourly DB cap is refunded on an outage;
   // see the catch below). A taken time is the exception, through the retry credit
-  // below (#3364). A block is normally a spammy visitor, so it is deliberately NOT
-  // alerted (that would be noise). But every booking 429 is logged with its scope +
-  // IP at a queryable tag/level, so a too-tight limit surfaces: a cluster of
-  // edge-minute 429s from many distinct IPs (rather than one flooding host) is the
-  // signal to revisit 3/min. The hourly 10/hr cap already bounds sustained abuse,
-  // so the per-minute window only shapes bursts.
+  // below (#3364). One block is normally a spammy visitor, so a single trip never
+  // alerts. The per-minute window records nothing and only shapes bursts; every
+  // booking 429 is logged with its scope + IP at a queryable tag/level, so a cluster
+  // of edge-minute 429s from many distinct IPs is the signal to revisit 3/min. The
+  // hourly address and contact caps are recorded (#1727) and page only when several
+  // distinct addresses or contacts are locked out at once (`booking_embed_ip_cap`,
+  // `booking_embed_contact_cap`), which means the ceiling is turning real leads away.
   const tooMany = (
     scope: "edge-minute" | "hourly" | "contact",
     retry?: string,

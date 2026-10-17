@@ -1,8 +1,6 @@
 // Live positive control for the booking refusal alerts (#1726). Run, from the main
 // checkout:
-//   node --experimental-strip-types --import ./scripts/register-paths.mjs \
-//     scripts/verify-refusal-alerts-live.ts
-// (its `pnpm verify:` alias lands with its row in the AGENTS.md command table).
+//   pnpm verify:refusal-alerts
 //
 // WHY THIS IS NOT A UNIT TEST. `booking_api_ceiling`, `booking_api_credential` and
 // `booking_api_list_read` (#1442, #1450, #1709) ship ARMED, and so do the embed

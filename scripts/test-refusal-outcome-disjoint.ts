@@ -65,11 +65,14 @@ function overlap(order: readonly string[], refusals: readonly string[]): string[
   // The naming convention every refusal follows, held on the share's side too, so a
   // refusal moved ACROSS (dropped from the refusal list and added to the outcomes)
   // still fails here even though the two lists would then be disjoint.
-  eq(
-    OUTCOME_ORDER.filter((o) => o.startsWith("refused_")),
-    [],
-    "no outcome the share divides by is named like a refusal",
-  );
+  const namedLikeRefusals = (outcomes: readonly string[]) => outcomes.filter((o) => o.startsWith("refused_"));
+  eq(namedLikeRefusals(OUTCOME_ORDER), [], "no outcome the share divides by is named like a refusal");
+  // Positive control: a refusal moved across into the outcomes is caught by the
+  // same predicate, so a broken one cannot pass the check above vacuously.
+  {
+    const moved = SELF_INFLICTED_REFUSALS[0]!;
+    eq(namedLikeRefusals([...OUTCOME_ORDER, moved]), [moved], `positive control: ${moved} moved into the outcomes is caught`);
+  }
   for (const name of SELF_INFLICTED_REFUSALS) {
     assert(name.startsWith("refused_"), `${name} follows the refused_ naming the check above relies on`);
   }
@@ -81,9 +84,15 @@ function overlap(order: readonly string[], refusals: readonly string[]): string[
   // The catalog records `own-counter` for every path deliberately kept OUT of the
   // share. Those outcome names are the decision; the refusal list is the mechanism.
   // An entry may name two counters ("a / b"), as the ceiling does.
-  const decided = REFUSAL_CATALOG.flatMap((r) =>
-    r.counting.kind === "own-counter" ? r.counting.outcome.split("/").map((s) => s.trim()) : [],
-  );
+  // De-duplicated, since two entries may name the same counter, and a control that
+  // compares against one name must not fail on a guard that works.
+  const decided = [
+    ...new Set(
+      REFUSAL_CATALOG.flatMap((r) =>
+        r.counting.kind === "own-counter" ? r.counting.outcome.split("/").map((s) => s.trim()) : [],
+      ),
+    ),
+  ];
   assert(decided.length > 0, "the catalog records at least one path kept out of the share, so this half is not vacuous");
   const refusals = new Set<string>(SELF_INFLICTED_REFUSALS);
   eq(
