@@ -73,13 +73,21 @@ async function sample(): Promise<LaneSample> {
   const atMs = Date.now();
   const [beats, alerts] = await Promise.all([
     listAll("lane_heartbeats?select=lane,last_ran_at&order=lane"),
-    listAll("alert_state?select=key,last_sent_at&order=key"),
+    // #3801: what each post named, so a change post is told apart from a repeat.
+    listAll("alert_state?select=key,last_sent_at,subjects,band&order=key"),
   ]);
   const heartbeats: Record<string, string> = {};
   for (const r of beats) heartbeats[String(r.lane)] = String(r.last_ran_at);
   const sent: Record<string, string> = {};
-  for (const r of alerts) sent[String(r.key)] = String(r.last_sent_at);
-  return { atMs, heartbeats, alerts: sent };
+  const alertState: NonNullable<LaneSample["alertState"]> = {};
+  for (const r of alerts) {
+    sent[String(r.key)] = String(r.last_sent_at);
+    alertState[String(r.key)] = {
+      subjects: Array.isArray(r.subjects) ? (r.subjects as unknown[]).map(String) : null,
+      band: typeof r.band === "number" && Number.isFinite(r.band) ? r.band : null,
+    };
+  }
+  return { atMs, heartbeats, alerts: sent, alertState };
 }
 
 const startedAtMs = Date.now();
