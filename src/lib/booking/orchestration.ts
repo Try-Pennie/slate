@@ -120,6 +120,7 @@ import type { WaitPoint } from "./wait-marks.ts";
 import { budgetLeftMs } from "../call-budget.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
+import type { AuditChannel } from "../audit-channel.ts";
 import type { FullApiCaller } from "./api-callers.ts";
 import { rescheduleTimesFrom, type RescheduleTimesFrom } from "./reschedule-times-url.ts";
 import { readReferrerOrigin } from "../embed/referrer-origin.ts";
@@ -1037,6 +1038,12 @@ export interface CreateBookingInput {
    * per page volume alarm would read as a booking any page could have sent.
    */
   apiCaller?: FullApiCaller;
+  /**
+   * #3543: the MCP channel that made the call (today only Marcia, through
+   * `McpBookingGateway`), set ONLY by that channel's server code. The booking then
+   * records `mcp-<channel>` as its source, never `not-given`.
+   */
+  mcpChannel?: AuditChannel;
 }
 
 export interface BookingResult {
@@ -5443,7 +5450,7 @@ async function createHeld(
   // broken link must never cost a lead. The raw value is logged so the link can
   // be found and fixed, and stays in prefill; the column holds only the
   // vocabulary.
-  const sourceReading = readBookingSource(input.prefill, input.apiCaller);
+  const sourceReading = readBookingSource(input.prefill, input.apiCaller, input.mcpChannel);
   if (sourceReading.unrecognisedRaw !== null) {
     log.warn("booking-source", {
       msg: "unrecognised source on the booking link",

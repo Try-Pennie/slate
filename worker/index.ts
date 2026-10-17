@@ -56,6 +56,8 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { routesForCron } from "./cron-routes";
 import { cronStandby } from "./cron-standby";
 import { forwardReceipt } from "./log-shipping-receipt";
+import { forwardBookingCall, type GatewayAnswer } from "./mcp-booking-gateway";
+import { internalMcpRefusal, isInternalMcpPath, stripCarrierHeaders } from "@/lib/mcp-booking/carrier";
 import { laneDecision } from "./lanes-disabled";
 import { loadtestServingProductionHost } from "@/lib/loadtest-guard";
 import { loadtestEntryRefusal, loadtestIdle, loadtestIdleBody } from "@/lib/loadtest-secrets";
@@ -175,6 +177,14 @@ const worker = {
     // the mark is a header anybody can send, and the sender logs the fallback.
     const standbyRefusal = placedLaneStandbyRefusal(request, env.SLATE_CRON_STANDBY);
     if (standbyRefusal) return standbyRefusal;
+    // #3543: an internal MCP path is reachable only through its gateway entrypoint's
+    // in process request, never from the internet, so a public request for one gets
+    // the same 404 an unknown path gets. And no public request reaches the app
+    // carrying the carrier's headers (the lead token, the gateway secret): they are
+    // stripped here, so the internal route's own secret check is a second, independent
+    // wall rather than the only one (L345).
+    if (isInternalMcpPath(request.url)) return internalMcpRefusal();
+    request = stripCarrierHeaders(request);
     return httpsRedirect(request) ?? app.fetch(request, env, ctx, { loadtest, enteredAtMs });
   },
 
@@ -299,6 +309,30 @@ const worker = {
 export default worker;
 
 /**
+ * The load test stand downs every named entrypoint applies before it forwards anything
+ * to the app, in one place so a new entrypoint cannot apply one and forget the other:
+ * the credential refusal (#2335: a load test build holding production's credentials
+ * must not write to production) and the idle one (#3310: an idle load test Worker
+ * holds no secrets between runs, so it forwards nothing, the same as its lanes).
+ * Null when it may go on; each refusal is logged with what it stood down.
+ */
+function entrypointStandDown(env: Env, what: string): "refused" | "idle" | null {
+  const loadtest = env.SLATE_LOADTEST === "true";
+  const bindings = env as unknown as Record<string, unknown>;
+  const refusal = loadtestEntryRefusal({ loadtest, pathname: undefined, bindings, baked: bakedEnv });
+  if (refusal) {
+    log.error("loadtest-guard", { msg: `refusing the ${what}`, why: refusal });
+    return "refused";
+  }
+  const idle = loadtestIdle({ loadtest, bindings, baked: bakedEnv });
+  if (idle) {
+    log.info("loadtest-idle", { msg: `idle between runs, so the ${what} was not forwarded`, missing: idle.join(",") });
+    return "idle";
+  }
+  return null;
+}
+
+/**
  * The log shipping receipt (#3182). The tail worker (`worker/log-tail/index.ts`)
  * calls `shipped()` over its `SLATE` service binding each time Better Stack accepted
  * a cron tick's records, and this stamps the `log-shipping` heartbeat the lane
@@ -313,27 +347,42 @@ export default worker;
  */
 export class LogShippingReceipt extends WorkerEntrypoint<Env> {
   async shipped(): Promise<{ stamped: boolean }> {
-    const refusal = loadtestEntryRefusal({
-      loadtest: this.env.SLATE_LOADTEST === "true",
-      pathname: undefined,
-      bindings: this.env as unknown as Record<string, unknown>,
-      baked: bakedEnv,
-    });
-    if (refusal) {
-      log.error("loadtest-guard", { msg: "refusing the log shipping receipt", why: refusal });
-      return { stamped: false };
-    }
-    // #3310: an idle load test Worker holds no secrets between runs, so it forwards
-    // nothing to the app, the same as its lanes.
-    const idle = loadtestIdle({ loadtest: this.env.SLATE_LOADTEST === "true", bindings: this.env as unknown as Record<string, unknown>, baked: bakedEnv });
-    if (idle) {
-      log.info("loadtest-idle", { msg: "idle between runs, so the log shipping receipt was not forwarded", missing: idle.join(",") });
-      return { stamped: false };
-    }
+    if (entrypointStandDown(this.env, "log shipping receipt")) return { stamped: false };
     return forwardReceipt({
       fetch: (request) => app.fetch(request, this.env, this.ctx),
       cronSecret: this.env.CRON_SECRET ?? "",
       log,
     });
+  }
+}
+
+/**
+ * Marcia's booking gateway (#3543, plan locked decisions 1, 9 and 15). Bound by the
+ * booking MCP Worker alone (`wrangler.mcp-booking.jsonc`), and holding exactly one
+ * method, because a service binding to a named entrypoint exposes every public method
+ * of its class (#3544 pins that no other entrypoint has a `booking` method and that
+ * this one has nothing else).
+ *
+ * WHO MAY CALL: the booking MCP Worker, through its binding; a named entrypoint is
+ * never reachable over HTTP. WHOSE DATA: the one lead Marcia's signed token names,
+ * verified by the internal route with the key only this Worker holds.
+ *
+ * The load test refusals come first, as on every other way in (#2335, #3310).
+ */
+export class McpBookingGateway extends WorkerEntrypoint<Env> {
+  async booking(signedToken: string, operation: string, args: unknown): Promise<GatewayAnswer> {
+    if (entrypointStandDown(this.env, "booking gateway")) {
+      return { status: 503, body: { ok: false, code: "unavailable", class: "unexpected", message: "This deployment is not serving Marcia." } };
+    }
+    return forwardBookingCall(
+      {
+        fetch: (request) => app.fetch(request, this.env, this.ctx),
+        gatewaySecret: typeof this.env.MCP_BOOKING_GATEWAY_SECRET === "string" ? this.env.MCP_BOOKING_GATEWAY_SECRET : "",
+        log,
+      },
+      signedToken,
+      operation,
+      args,
+    );
   }
 }

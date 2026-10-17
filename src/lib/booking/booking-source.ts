@@ -29,11 +29,14 @@
  * The booking API is a FOURTH (#2876). A call that names no page records WHO made
  * it, `api-<caller>`, one value per caller that may BOOK (`FULL_API_CALLERS`),
  * derived from that list so a caller added there gets its source by construction.
- * A cancel only caller (Marcia, #2940) can never create a booking, so it has no
- * source and the database constraint needs no value for it. It used to
+ * A cancel only caller (Marcia's booking API key, #2940) can never create a booking
+ * through the API, so its KEY has no `api-` source and the constraint needs none.
+ * Marcia booking through her booking MCP endpoint (#3543) is a different door and
+ * records `mcp-marcia`, the FIFTH kind: one `mcp-<channel>` per MCP channel. Both
+ * kinds are machine sources (`isMachineSource`). An API booking used to
  * record `not-given`, which the per page volume alarm reads as a booking that could
  * be any page's, so a steady stream of Regal or trypennie API bookings excused a
- * landing page gone dark. An API source is not page traffic and is not unsourced
+ * landing page gone dark. A machine source is not page traffic and is not unsourced
  * (`page-volume.ts`). A page the caller DOES name still wins, being the finer fact.
  *
  * The list, the database constraint (`bookings_source_check`) and this mapping
@@ -41,6 +44,7 @@
  */
 
 import { FULL_API_CALLERS, type FullApiCaller } from "./api-callers.ts";
+import { AUDIT_CHANNELS, type AuditChannel } from "../audit-channel.ts";
 
 /** The URL key a landing page sets. */
 export const BOOKING_SOURCE_PARAM = "source";
@@ -84,13 +88,37 @@ export function isApiSource(source: string | null): source is ApiSource {
   return source !== null && API_SET.has(source);
 }
 
+/**
+ * What a booking made through an MCP channel records (#3543): `mcp-<channel>`, one
+ * per machine channel (`AUDIT_CHANNELS`, today only Marcia), derived from that list.
+ * Like an API source it is not page traffic and is not unsourced, and it is set only
+ * by the channel's own server code, never read off a link.
+ */
+export type McpSource = `mcp-${AuditChannel}`;
+
+export function mcpSourceFor(channel: AuditChannel): McpSource {
+  return `mcp-${channel}`;
+}
+
+export const MCP_SOURCES: readonly McpSource[] = AUDIT_CHANNELS.map(mcpSourceFor);
+
+/** A source a machine caller records, through the booking API or an MCP channel. */
+export type MachineSource = ApiSource | McpSource;
+export const MACHINE_SOURCES: readonly MachineSource[] = [...API_SOURCES, ...MCP_SOURCES];
+const MACHINE_SET: ReadonlySet<string> = new Set(MACHINE_SOURCES);
+
+/** Whether a stored source names a machine caller (API or MCP) rather than a page or an outcome. */
+export function isMachineSource(source: string | null): source is MachineSource {
+  return source !== null && MACHINE_SET.has(source);
+}
+
 /** Every value `bookings.source` can hold (besides null for older rows). */
-export type BookingSource = PageSource | typeof SOURCE_NOT_GIVEN | typeof SOURCE_UNRECOGNISED | ApiSource;
+export type BookingSource = PageSource | typeof SOURCE_NOT_GIVEN | typeof SOURCE_UNRECOGNISED | MachineSource;
 export const BOOKING_SOURCES: readonly BookingSource[] = [
   ...PAGE_SOURCES,
   SOURCE_NOT_GIVEN,
   SOURCE_UNRECOGNISED,
-  ...API_SOURCES,
+  ...MACHINE_SOURCES,
 ];
 
 /** The seven cal.com event types the routing forms booked into. */
@@ -214,6 +242,8 @@ export const SOURCE_DETAILS: Record<BookingSource, SourceDetail> = {
   "api-regal": { page: "The booking API, called by Regal", legacyEventType: null, links: [] },
   "api-trypennie": { page: "The booking API, called by trypennie", legacyEventType: null, links: [] },
   "api-canary": { page: "The booking API, called by the smoke canary", legacyEventType: null, links: [] },
+  // #3543: Marcia's booking MCP endpoint, not a page either.
+  "mcp-marcia": { page: "Marcia, through her booking MCP endpoint", legacyEventType: null, links: [] },
 };
 
 /** How much of an unrecognised value is handed back for the log. */
@@ -237,17 +267,25 @@ function isPageSource(value: string): value is PageSource {
  * Case and surrounding space are ignored, because `OfferHub` on a hand typed link
  * is the same page and nothing about it needs fixing. Absent, empty or blank is
  * `not-given`, or, when the booking came through the key authed booking API,
- * that caller's `api-<caller>` (#2876): the caller is known, so recording nothing
+ * that caller's `api-<caller>` (#2876), or, when it came through an MCP channel's
+ * gateway, that channel's `mcp-<channel>` (#3543, which wins over an API caller,
+ * since only one of the two is ever set): the caller is known, so recording nothing
  * would throw away a fact. Anything else outside the page list, including a link
- * that names one of the outcomes or an API source, is `unrecognised`: only the
- * authenticated caller decides which API source a booking records, never a link.
+ * that names one of the outcomes or a machine source, is `unrecognised`: only the
+ * authenticated caller decides which machine source a booking records, never a link.
  */
 export function readBookingSource(
   prefill: Record<string, unknown> | null | undefined,
   apiCaller?: FullApiCaller,
+  mcpChannel?: AuditChannel,
 ): SourceReading {
   const absent: SourceReading = {
-    source: apiCaller === undefined ? SOURCE_NOT_GIVEN : apiSourceFor(apiCaller),
+    source:
+      mcpChannel !== undefined
+        ? mcpSourceFor(mcpChannel)
+        : apiCaller === undefined
+          ? SOURCE_NOT_GIVEN
+          : apiSourceFor(apiCaller),
     unrecognisedRaw: null,
   };
   const value = prefill?.[BOOKING_SOURCE_PARAM];

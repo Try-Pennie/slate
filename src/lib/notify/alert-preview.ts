@@ -29,7 +29,7 @@ import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { ALERT_CATALOG, type AlertKind } from "@/lib/notify/alert-catalog";
 import { formatRetiredKeyAlert } from "@/lib/booking/retired-keys";
 import { formatCallMeNowFailedAlert } from "@/lib/salesforce/call-me-now";
-import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
+import { PARTNER_BUCKET_CODE, PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import {
   tierUnstaffedMessage,
@@ -585,6 +585,7 @@ import {
 } from "@/lib/booking/reminder-rate";
 import type { HandoffKind } from "@/lib/handoffs/kinds";
 import { formatReminder } from "@/lib/notify/repeat-policy";
+import { marciaFailureAlert, marciaGatewayRefusedAlert, marciaTokenRefusedAlert } from "@/lib/mcp-booking/alert-copy";
 import { formatSmokeCanaryRecovery } from "@/lib/monitor/smoke-canary-failure";
 // The canary's failure message is built by its bare node alerter, which may import
 // nothing outside scripts/ (#1598), so the preview reaches into scripts/ for it rather
@@ -5688,6 +5689,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: auditWriteFailedAlert("role.set", 'column "details" does not exist') },
   { key: "audit_write_failed", state: "the trail stopped recording (client threw)", channel: "alert",
     text: auditWriteFailedAlert("agent.deactivate", "connection reset") },
+  // #3543: Marcia's booking endpoint.
+  { key: "marcia_booking_failed:*", state: "an expected refusal on a write (slot taken)", channel: "alert",
+    text: marciaFailureAlert({ operation: "book", code: "slot_taken", class: "expected", salesforceId: "00Q5f00000AbCdEFGH", bucketCode: "411", test: false }) },
+  { key: "marcia_booking_failed:*", state: "an unexpected failure, on a test lead", channel: "alert",
+    text: marciaFailureAlert({ operation: "cancel", code: "internal", class: "unexpected", salesforceId: "00Q5f00000AbCdEFGH", bucketCode: PARTNER_BUCKET_CODE, test: true }) },
+  { key: "marcia_token_refused:*", state: "a token missing a claim", channel: "alert",
+    text: marciaTokenRefusedAlert({ code: "token_claim_missing", claim: "test" }) },
+  { key: "marcia_token_refused:*", state: "a token with a foreign signature", channel: "alert",
+    text: marciaTokenRefusedAlert({ code: "token_signature_invalid" }) },
+  { key: "marcia_gateway_refused", state: "no secret on the deployment", channel: "alert",
+    text: marciaGatewayRefusedAlert("unconfigured") },
+  { key: "marcia_gateway_refused", state: "a call without the secret", channel: "alert",
+    text: marciaGatewayRefusedAlert("mismatch") },
   { key: "reassign-unknown-reason-code", state: "an unrecognised code", channel: "info",
     text: unknownReasonCodeNotice("owner_switch") },
   // The area label MUST be a value the code really produces (friendlyRateArea, or

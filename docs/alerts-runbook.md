@@ -598,6 +598,20 @@ their own keys.
   section 2). It is an incident, so it never sends an all clear; it goes quiet once
   nobody presents the key for a cooldown.
 
+- `marcia_booking_failed:*`, `marcia_token_refused:*` and `marcia_gateway_refused`
+  (#3543) are Marcia's booking MCP endpoint, which is not deployed yet. Every failed
+  Marcia write pages, expected refusals included (plan decision 11): the key names the
+  operation and the code, and the text says whether it was refused as designed
+  (`slot_taken`, `move_not_offered`, `lead_daily_cap`, `lead_has_booking`) or failed.
+  One kind pages once per 15 minutes; the rest are in the log under `tag=mcp-booking`,
+  with the full error. A run of `marcia_token_refused:*` means Marcia's signer and
+  Slate disagree about the token: check her signer against
+  `src/lib/mcp-booking/machine-token-fixtures.json`, which both are held to.
+  `marcia_gateway_refused` saying the secret is missing is our deployment (set
+  `MCP_BOOKING_GATEWAY_SECRET`, DEPLOY.md); saying a call arrived without it means
+  something other than `McpBookingGateway` reached the internal route, which should be
+  impossible and is worth a look at once. All three are incidents with no all clear.
+
 **Fix or escalate.** A missing secret and a rejected key are both time-sensitive once
 the automated booker is live: leads are being refused for as long as it lasts. A ceiling
 trip is a capacity decision rather than a fault, so it can wait for someone who can

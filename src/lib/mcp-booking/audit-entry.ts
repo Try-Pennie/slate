@@ -36,8 +36,16 @@ export interface MarciaAuditInput {
   booking: { id: string; org_id: string };
   /** The lead's Salesforce 00Q id, from the verified token. */
   salesforceId: string;
-  /** The booking's bucket `is_test`: the one "not real" predicate. */
-  isTest: boolean;
+  /**
+   * The booking's bucket `is_test`: the one "not real" predicate. Null when it
+   * could not be read back, which the row records as unknown rather than guessing.
+   */
+  isTest: boolean | null;
+  /**
+   * The attempt's idempotency key (#3543), so a retry of one attempt is recognised
+   * and records no second row, and so the row names which attempt made it.
+   */
+  attempt?: string;
 }
 
 export function marciaAuditEntry(input: MarciaAuditInput): AuditEntry {
@@ -50,6 +58,7 @@ export function marciaAuditEntry(input: MarciaAuditInput): AuditEntry {
       booking_id: input.booking.id,
       salesforce_id: input.salesforceId,
       test: input.isTest,
+      ...(input.attempt ? { attempt: input.attempt } : {}),
     },
   };
 }

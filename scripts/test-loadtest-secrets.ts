@@ -395,11 +395,32 @@ const BAKED_WITH_SECRET = {
   // The log shipping receipt is the third surface that reaches the app (#3182). It got
   // the production refusal with the lanes, and an idle Worker must not run it either:
   // it would reach a heartbeat write with no secret to authorise it.
-  const receipt = entry.slice(entry.indexOf("class LogShippingReceipt"));
-  const receiptRefusal = receipt.indexOf("loadtestEntryRefusal(");
-  const receiptIdle = receipt.indexOf("loadtestIdle(");
-  assert(receiptIdle > -1 && receiptIdle > receiptRefusal, "the log shipping receipt asks whether the deployment is idle, after the production refusal");
-  assert(receiptIdle < receipt.indexOf("forwardReceipt("), "and before it forwards anything to the app");
+  // #3543: every named entrypoint (the receipt, Marcia's booking gateway, and any added
+  // later) stands down through ONE helper, so the check is on the helper and on every
+  // class reaching it, found by scanning for the classes rather than naming them (L96).
+  const helper = entry.slice(entry.indexOf("function entrypointStandDown("), entry.indexOf("export class"));
+  const helperRefusal = helper.indexOf("loadtestEntryRefusal(");
+  const helperIdle = helper.indexOf("loadtestIdle(");
+  assert(helperRefusal > -1 && helperIdle > helperRefusal, "the entrypoint stand down asks whether the deployment is idle, after the production refusal");
+  // The named entrypoints that reach the app without standing down first, by name.
+  const unguarded = (src: string): { found: string[]; bare: string[] } => {
+    const classes = [...src.matchAll(/export class (\w+) extends WorkerEntrypoint<Env> \{/g)];
+    const bare = classes
+      .filter((m) => {
+        const body = src.slice(m.index!, src.indexOf("\n}\n", m.index!));
+        const standDown = body.indexOf("entrypointStandDown(this.env");
+        return !(standDown > -1 && body.indexOf("app.fetch(") > standDown);
+      })
+      .map((m) => m[1]!);
+    return { found: classes.map((m) => m[1]!), bare };
+  };
+  const real = unguarded(entry);
+  assert(real.found.length >= 2, `the scan found the named entrypoints (${real.found.join(", ")})`);
+  eq(real.bare, [], "every named entrypoint stands down for the load test before it reaches the app");
+  // Positive control: the receipt with its stand down removed is named by the scan.
+  const bypass = entry.replace('if (entrypointStandDown(this.env, "log shipping receipt")) return { stamped: false };', "");
+  assert(bypass !== entry, "positive control: the stand down was removed from a copy of the real source");
+  eq(unguarded(bypass).bare, ["LogShippingReceipt"], "positive control: an entrypoint that reaches the app without standing down is caught");
 }
 
 finish();

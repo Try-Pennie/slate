@@ -210,6 +210,18 @@ const BOOKING_API_KEYS: Record<BookingApiCaller, Record<KeySlot, () => string>> 
 export const bookingApiKeyFor = (caller: BookingApiCaller, slot: KeySlot): string =>
   BOOKING_API_KEYS[caller][slot]();
 
+// Marcia's booking MCP endpoint (#3543). The two slots of the secret Marcia signs her
+// lead tokens with (decision 19's two slot rotation, the same move as the booking API
+// keys: fill the empty slot, point Marcia at it, empty the old one), and the secret
+// `McpBookingGateway` puts on its inner request so the internal route can tell the
+// gateway from anything else. All three empty = the endpoint refuses every call, and
+// nothing else in Slate notices. Not created yet: the endpoint is not deployed.
+export const marciaTokenKeySlots = (): [string, string] => [
+  process.env.MARCIA_TOKEN_KEY_A ?? "",
+  process.env.MARCIA_TOKEN_KEY_B ?? "",
+];
+export const mcpBookingGatewaySecret = (): string => process.env.MCP_BOOKING_GATEWAY_SECRET ?? "";
+
 // Hashes of RETIRED booking API keys (#2879), as `label:sha256:<hex>` entries separated by
 // commas, never the keys. A refused request presenting one pages, naming its host and
 // route (`src/lib/booking/retired-keys.ts`). Empty = the check is inert. A Worker

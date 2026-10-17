@@ -59,6 +59,9 @@ export const PUBLIC_TEST_BUCKET_CODES = ["PARTNER", "DEMO"] as const;
 
 export type PublicTestBucketCode = (typeof PUBLIC_TEST_BUCKET_CODES)[number];
 
+/** The partner test bucket (#2660), where a test flagged Marcia token books (#3543). */
+export const PARTNER_BUCKET_CODE: PublicTestBucketCode = "PARTNER";
+
 /** The demo bucket (#3424). */
 export const DEMO_BUCKET_CODE: PublicTestBucketCode = "DEMO";
 

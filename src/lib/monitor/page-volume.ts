@@ -39,12 +39,12 @@
  * No `@/` imports, so node scripts can run it directly.
  */
 import {
-  API_SOURCES,
+  MACHINE_SOURCES,
   PROSPECT_ID,
   SOURCE_DETAILS,
   SOURCE_NOT_GIVEN,
   SUBMISSION_ID,
-  isApiSource,
+  isMachineSource,
   type PageLink,
   type PageSource,
 } from "../booking/booking-source.ts";
@@ -460,9 +460,10 @@ export function bookingSourcesRecorded(m: PageSourceMeasure): boolean {
 export const UNSOURCED_VALUES = [SOURCE_NOT_GIVEN] as const;
 
 /**
- * Whether a booking is, or might be, a landing page's (#2876). A booking made
- * through the key authed booking API records its caller (`api-regal`, and so on)
- * and came from no page, so it is not page traffic: it can neither excuse a page's
+ * Whether a booking is, or might be, a landing page's (#2876). A booking made by a
+ * machine caller records it: the key authed booking API its caller (`api-regal`, and
+ * so on), an MCP channel its channel (`mcp-marcia`, #3543). Either came from no page,
+ * so it is not page traffic: it can neither excuse a page's
  * shortfall nor stand in the count the unsourced share is quoted against. Every
  * other value is, including `not-given` and null, which might be any page's.
  *
@@ -470,11 +471,12 @@ export const UNSOURCED_VALUES = [SOURCE_NOT_GIVEN] as const;
  * so the two never disagree about what the pages could have sent (L16).
  */
 export function isPageTraffic(source: string | null): boolean {
-  return !isApiSource(source);
+  return !isMachineSource(source);
 }
 
-/** The `bookings.source` values `isPageTraffic` leaves out, for a database filter. */
-export const NON_PAGE_VALUES = API_SOURCES;
+/** The `bookings.source` values `isPageTraffic` leaves out, for a database filter.
+ *  Every machine source, API and MCP (#3543), from the one list. */
+export const NON_PAGE_VALUES = MACHINE_SOURCES;
 
 /**
  * `isPageTraffic` as a PostgREST `or()` filter, for the reads that count or learn

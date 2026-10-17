@@ -167,6 +167,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #2879. A caller presenting a key Slate retired is being refused on every call,
   // which is this family's premise, with a named repair: give it its own key.
   retired_booking_key: "the-booking-api-is-refusing-its-caller",
+  // #3543: Marcia's booking MCP endpoint turning her away, or one of her calls failing.
+  marcia_booking_failed: "the-booking-api-is-refusing-its-caller",
+  marcia_token_refused: "the-booking-api-is-refusing-its-caller",
+  marcia_gateway_refused: "the-booking-api-is-refusing-its-caller",
   // #3718: a lead asked for a call and Salesforce failed before they were marked for one.
   call_me_now_failed: "a-booking-side-effect-did-not-complete",
   call_me_now_hidden: "a-booking-side-effect-did-not-complete",
