@@ -1204,6 +1204,20 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "its own event.",
   },
   {
+    // #2440. INFO: a weekly count of owner reassign notices not posted because no
+    // handoff channel was set. The reassigns happened and are in booking_events; only
+    // the courtesy notice is missing, and a handoff a person must act on already
+    // pages while the channel is unset (handoff_channel_unset).
+    key: "owner_notice_withheld",
+    kind: "info",
+    why:
+      "The week's count of owner reassign notices that never reached the sales side " +
+      "because no handoff channel was set (#2440), read off the withheld reason each " +
+      "notice step records. Nothing is asked at once: the reassigns went through, and " +
+      "a waiting handoff already pages. It is a count over a week that has passed, so " +
+      "there is no state to end, and a week with none sends nothing.",
+  },
+  {
     key: "top_tier_cascade_rate",
     kind: "info",
     why:

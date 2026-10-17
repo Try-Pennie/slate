@@ -204,6 +204,7 @@ import {
 } from "@/lib/monitor/migration-drift";
 import { catchallPageText, catchallClearText } from "@/lib/monitor/catchall-rate";
 import { formatFollowUpDrainPage, formatFollowUpDrainAllClear } from "@/lib/monitor/follow-up-drain-rate";
+import { formatOwnerNoticeWithheldReport } from "@/lib/monitor/owner-notice-withheld-report";
 import {
   formatFailureBurstEnded,
   formatFailureRateAlert,
@@ -5194,6 +5195,27 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the lock claim hit a DB error",
     channel: "alert",
     text: rescheduleLockOutageAlert(),
+  },
+  // #2440. Two states because the sentence's verb agrees with the count.
+  {
+    key: "owner_notice_withheld",
+    state: "several owner reassign notices withheld this week",
+    channel: "info",
+    text: formatOwnerNoticeWithheldReport({
+      count: 6,
+      windowDays: 7,
+      settingsUrl: "https://slate.trypennie.app/admin/alerts",
+    }),
+  },
+  {
+    key: "owner_notice_withheld",
+    state: "one owner reassign notice withheld this week",
+    channel: "info",
+    text: formatOwnerNoticeWithheldReport({
+      count: 1,
+      windowDays: 7,
+      settingsUrl: "https://slate.trypennie.app/admin/alerts",
+    }),
   },
   {
     key: "top_tier_cascade_rate",

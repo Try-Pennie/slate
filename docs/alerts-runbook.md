@@ -735,7 +735,16 @@ lane family above: the memory figure is unknown, not healthy, until the read is 
 
 Keys: `rate_limit_blocked:*`, `ooo_agent_dm`, `ooo_approvals_digest`,
 `ooo-digest-unreachable:*`, `ooo-digest-unrouted-unreachable`, `ooo_undo`,
-`embed_origin_mismatch`, `cron_cpu_not_configured`, `pending_event_deletions_departed`.
+`embed_origin_mismatch`, `cron_cpu_not_configured`, `pending_event_deletions_departed`,
+`owner_notice_withheld`.
+
+**`owner_notice_withheld`** (#2440) says, at most once a week, how many owner reassign
+notices in the last seven days never reached the sales side because no handoff channel
+was set. The reassigns themselves went through and are in each booking's history; only
+the courtesy notice is missing. Each one is recorded on its outbox row as
+`withheld: "no_handoff_channel"` on the `reassign:owner_notice` step, so the list is
+`booking_outbox` rows whose `steps` contain that pair (the Snowflake mirror keeps them
+after the 30 day prune). Set the channel on `/admin/alerts` and the count stops growing.
 
 **`pending_event_deletions_departed`** (#1630) says Slate could not remove old invites
 from the calendar of somebody who has left, because offboarding removed their Google

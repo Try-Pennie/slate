@@ -311,6 +311,8 @@ import {
 import { SHIPPED_MIGRATION_VERSION } from "@/lib/db/migration-version";
 import { runWebhookSubscriberCheck } from "@/lib/monitor/webhook-subscriber-coverage";
 import { runHandoffCheck } from "@/lib/handoffs/check";
+import { runOwnerNoticeWithheldReport } from "@/lib/monitor/owner-notice-withheld-report";
+import { countWithheldOwnerNotices } from "@/lib/monitor/owner-notice-withheld-store";
 import {
   loadHandoffBookings,
   loadHandoffChannel,
@@ -4079,6 +4081,28 @@ export async function GET(req: NextRequest) {
         },
         log: (fields) => log.info("booking-handoffs", fields),
         warn: (fields) => log.warn("booking-handoffs", fields),
+      }),
+    );
+
+    // Owner reassign notices that never reached the sales side (#2440). The notice
+    // step records `withheld` on itself when no handoff channel is set; this counts
+    // the last week of those and whispers the number once a week on the info channel.
+    // Info, never a page and never an all clear: the reassigns happened, and a handoff
+    // somebody must act on already pages while the channel is unset (#2367). One
+    // server side count on the shared invocation. A failed count throws, so this
+    // boundary records it and sends nothing.
+    await steps.run("owner_notice_withheld", null, () =>
+      runOwnerNoticeWithheldReport({
+        nowMs: now,
+        countWithheld: (sinceIso) => countWithheldOwnerNotices(db, sinceIso),
+        // alert-key: owner_notice_withheld
+        // alert-text-ok: our own copy from owner-notice-withheld-report.ts, built from a
+        // measured count; no error text can reach it.
+        notify: (key, ms, text) => sendThrottledInfo(key, ms, text),
+        settingsUrl: `${appUrl()}/admin/alerts`,
+      }).then((result) => {
+        log.info("monitor", { msg: "owner notices withheld", status: result.status, count: result.count });
+        return result;
       }),
     );
 
