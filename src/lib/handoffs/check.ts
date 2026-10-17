@@ -263,7 +263,7 @@ export async function runHandoffCheck(deps: HandoffCheckDeps): Promise<HandoffCh
 
   // --- 1b. handoffs about a TEST booking are never said out loud (#2370) ---------
   // The smoke canary books, reassigns and cancels on the isolated SMOKE agents every
-  // six hours (#396), and the owner guard can refuse one of those moves. Without this
+  // hour (#396, #1493), and the owner guard can refuse one of those moves. Without this
   // that refusal arrives in the sales channel as a lead waiting on a person. Every
   // other outward path suppresses `is_test` at its own choke point (webhooks at
   // `fire`, #459); this is that choke point for handoff delivery, and it is here

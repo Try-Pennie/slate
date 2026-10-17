@@ -2,13 +2,17 @@ name: Smoke canary
 
 # Scheduled production canary for the booking path (#525). Runs the existing smoke
 # scripts against live prod on the dedicated SMOKE test agents/buckets (#396):
-#   - every 30 min: the side-effect-free dry-run health tick (SMOKE_DRY_RUN_ONLY)
-#   - every 6h:     the full strict pass (SMOKE_STRICT) plus the reschedule smoke
+#   - half past each hour: the side-effect-free dry-run health tick (SMOKE_DRY_RUN_ONLY)
+#   - on each hour:        the full strict pass (SMOKE_STRICT) plus the reschedule smoke
+#     (#1493, Dan 2026-10-16: hourly now that real leads book through Slate, so a
+#     broken booking path is noticed within the hour rather than within six; between
+#     9pm and 8am ET a full pass failure pages only on the second in a row, decided
+#     by the Worker in src/lib/monitor/smoke-canary-failure.ts)
 # On success it stamps the smoke-canary heartbeat, so a schedule that silently
 # stops firing goes stale and the lane-watchdog pages (CANARY_STALE_BOUNDS_MS). The
 # full pass ALSO stamps a separate smoke-canary-full heartbeat (#982): the dry tick
 # keeps smoke-canary fresh every 30 min, so without its own heartbeat a
-# silently-dropped 6h full run (the only automated proof a booking can be made,
+# silently-dropped full run (the only automated proof a booking can be made,
 # rescheduled, and cancelled) would never go stale and never page. Any failure (a
 # real regression, or a bad key / missing fixture) posts a Slack alert.
 # workflow_dispatch runs either pass on demand.
@@ -32,8 +36,8 @@ name: Smoke canary
 # and alerts.
 on:
   schedule:
-    - cron: "*/30 * * * *"
-    - cron: "0 */6 * * *"
+    - cron: "30 * * * *"
+    - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -79,17 +83,27 @@ jobs:
             echo "::notice::BOOKING_API_KEY_CANARY is not set as a repo secret, so the smoke canary is skipping. Add it (and REASSIGN_API_KEY) in Settings > Secrets and variables > Actions."
           fi
 
-      - name: Select pass (full on the 6h cron or a manual full dispatch, else dry)
+      # `embed` flags the browser check (below), which stays on every sixth full pass
+      # (#1493): it is judged by the UTC hour the run STARTS in, so a run GitHub starts
+      # an hour late skips the browser for that cycle and the next one runs it.
+      - name: Select pass (full on the hourly cron or a manual full dispatch, else dry)
         id: mode
         if: steps.pre.outputs.configured == '1'
         env:
           SCHEDULE: ${{ github.event.schedule }}
           DISPATCH_MODE: ${{ github.event.inputs.mode }}
         run: |
-          if [ "$SCHEDULE" = "0 */6 * * *" ] || [ "$DISPATCH_MODE" = "full" ]; then
+          if [ "$SCHEDULE" = "0 * * * *" ] || [ "$DISPATCH_MODE" = "full" ]; then
             echo "full=1" >> "$GITHUB_OUTPUT"
+            hour=$((10#$(date -u +%H)))
+            if [ "$DISPATCH_MODE" = "full" ] || [ $((hour % 6)) -eq 0 ]; then
+              echo "embed=1" >> "$GITHUB_OUTPUT"
+            else
+              echo "embed=0" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "full=0" >> "$GITHUB_OUTPUT"
+            echo "embed=0" >> "$GITHUB_OUTPUT"
           fi
 
       # EXPECT_HTTPS_REDIRECT arms the http->https redirect guard (#1024/#1203) so a
@@ -187,11 +201,12 @@ jobs:
       # the embedded scheduler and confirms the modal appears; Slate's embed had no
       # equivalent, so a regression leaving the booker blank would go unnoticed.
       #
-      # FULL PASS ONLY (every 6h), not the 30-minute tick. This is a private repo,
+      # EVERY SIXTH FULL PASS (every 6h), not every run. This is a private repo,
       # so Actions minutes are billed, and a real browser on every tick is roughly
       # 48 runs a day against 4 for the same class of fault. An embed regression
       # arrives with a deploy rather than drifting in, so six hours is the right
-      # granularity for the money.
+      # granularity for the money. When the full pass went hourly (#1493) this
+      # stayed six hourly for that reason, through the mode step's `embed` flag.
       #
       # `continue-on-error`, for the same reason the latency step carries it: a
       # browser against the public internet is the classic source of a flapping
@@ -199,7 +214,7 @@ jobs:
       # stamped, which would page the lane watchdog for a slow page load. It
       # records its failure, the alert step reports it, and the run continues.
       - name: Cache the browser
-        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
+        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.embed == '1'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/ms-playwright
@@ -208,15 +223,15 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
 
       - name: Install the browser
-        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
+        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.embed == '1'
         # chromium only, and --with-deps for the system libraries a headless run
         # needs. A cache hit makes this a few seconds.
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Embed render check (full pass only)
+      - name: Embed render check (every sixth full pass)
         id: embed
         continue-on-error: true
-        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
+        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.embed == '1'
         env:
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
           SMOKE_FAILURE_FILE: smoke-failures.txt
@@ -251,7 +266,7 @@ jobs:
       # #982: stamp the SEPARATE smoke-canary-full heartbeat, but only after a
       # successful FULL pass. The dry tick keeps smoke-canary fresh every 30 min,
       # so this is the only signal that the full book/reschedule/cancel proof is
-      # still running; a dropped 6h run leaves this heartbeat to go stale and page.
+      # still running; a dropped hourly run leaves this heartbeat to go stale and page.
       - name: Stamp full-pass canary heartbeat (full pass success only)
         if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
         env:

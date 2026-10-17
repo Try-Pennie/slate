@@ -15,7 +15,7 @@
 
 /** What the Worker answered, or why there was no usable answer. */
 export type HandoffResult =
-  | { handled: true; outcome: "sent" | "held" }
+  | { handled: true; outcome: "sent" | "held" | "waiting" }
   | { handled: false; reason: string };
 
 export type HandoffFetch = (
@@ -85,9 +85,12 @@ export async function handOffSmokeFailure(
     const body = (await res.json().catch(() => null)) as { outcome?: unknown } | null;
     const outcome = body?.outcome;
     // Only an answer saying the page went out, or was held because the same failure
-    // was already posted, means somebody has been told. "failed" (the Worker's own
-    // Slack post failed) and "skipped" (the Worker cannot post) leave it to us.
-    if (outcome === "sent" || outcome === "held") return { handled: true, outcome };
+    // was already posted, means somebody has been told. "waiting" (#1493) is the
+    // Worker holding the first overnight full pass failure until a second in a row,
+    // which it has counted, so posting it here would undo the hold. "failed" (the
+    // Worker's own Slack post failed) and "skipped" (the Worker cannot post) leave it
+    // to us.
+    if (outcome === "sent" || outcome === "held" || outcome === "waiting") return { handled: true, outcome };
     return { handled: false, reason: `the Worker did not post it (${String(outcome)})` };
   } catch (err) {
     return { handled: false, reason: err instanceof Error ? err.message : String(err) };
