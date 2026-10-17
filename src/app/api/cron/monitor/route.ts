@@ -194,6 +194,16 @@ import {
 } from "@/lib/monitor/follow-up-drain-rate";
 import { loadFollowUpState, saveFollowUpState, followUpReadingOf } from "@/lib/monitor/follow-up-drain-rate-store";
 import {
+  runDuplicateCancelCheck,
+  DUPLICATE_CANCEL_THRESHOLDS,
+  type DuplicateCancelResult,
+} from "@/lib/monitor/duplicate-cancel-rate";
+import {
+  duplicateCancelReadingOf,
+  loadDuplicateCancelState,
+  saveDuplicateCancelState,
+} from "@/lib/monitor/duplicate-cancel-rate-store";
+import {
   runAvailabilityTruthCheck,
   type TruthResult,
   type TruthThresholds,
@@ -1736,6 +1746,55 @@ export async function GET(req: NextRequest) {
           status: result.status,
           ...("verdict" in result
             ? { verdict: result.verdict.status, confirms: result.verdict.confirms, left: result.verdict.left }
+            : { rebased: result.rebased }),
+        });
+        return result;
+      }),
+    );
+
+    // --- Duplicate cancels failing or refused in volume (#2377) ---
+    //
+    // POST /api/bookings/cancel-duplicate counts every answer in the daily tally,
+    // outside the failure share. This judges, off the tally read the failure share
+    // above already made, the day's share answered 503 and the day's share refused for
+    // a person, each against its own line, behind a 40 call floor today's volume (about
+    // five a day) does not reach. Its own failure boundary (L73).
+    // all-clear-proof: scripts/test-duplicate-cancel-rate.ts - pins that a failed tally
+    // read sends NOTHING in either direction, that a first reading or a day rollover
+    // sends nothing, and that a day too quiet to judge clears nothing; each all clear
+    // hangs only off a measured clean six hours.
+    await steps.run<DuplicateCancelResult | null>("duplicate_cancel_rate", null, () =>
+      runDuplicateCancelCheck({
+        nowMs: now,
+        readToday: async () => duplicateCancelReadingOf(await todayMix()),
+        loadState: loadDuplicateCancelState,
+        saveState: saveDuplicateCancelState,
+        thresholds: DUPLICATE_CANCEL_THRESHOLDS,
+        cooldownMs: {
+          unavailable: cooldownMs.duplicate_cancel_unavailable,
+          refused: cooldownMs.duplicate_cancel_refused,
+        },
+        notify: (key, ms, text) => {
+          // alert-key: duplicate_cancel_unavailable
+          // alert-key: duplicate_cancel_refused
+          // alert-text-ok: our own copy from duplicate-cancel-rate.ts, built from
+          // measured counts and fixed stage and refusal words; no error text reaches it.
+          return sendThrottledAlert(key, ms, text);
+        },
+        // alert-key: duplicate_cancel_unavailable
+        // alert-key: duplicate_cancel_refused
+        resolve: (key, text) => resolveAlert(key, text),
+      }).then((result) => {
+        log.info("monitor", {
+          msg: "duplicate cancel rate",
+          status: result.status,
+          ...(result.status === "judged"
+            ? {
+                verdict: result.verdict.status,
+                calls: result.verdict.calls,
+                paged: result.paged.join(",") || "none",
+                cleared: result.cleared.join(",") || "none",
+              }
             : { rebased: result.rebased }),
         });
         return result;

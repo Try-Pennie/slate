@@ -522,6 +522,25 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "never provisioned; it ends when a measured week is back under the share, never " +
       "on a week too quiet to judge.",
   },
+  // #2377. Both CONDITIONS: a sustained share of duplicate cancels failing to complete,
+  // or refused for a person, stays true until the cause is fixed, and the monitor
+  // re-measures the day's window every tick, so each can say when it is over.
+  {
+    key: "duplicate_cancel_unavailable",
+    kind: "condition",
+    why:
+      "A sustained share of duplicate cancel requests is being answered 503 and told to " +
+      "retry, so nothing is cancelled for those leads; it ends when six hours of requests " +
+      "measurably complete again, never on a day too quiet to judge.",
+  },
+  {
+    key: "duplicate_cancel_refused",
+    kind: "condition",
+    why:
+      "A sustained share of duplicate cancel requests is refused for a reason a person has " +
+      "to look at, which no single handoff shows; it ends when six hours of requests are " +
+      "measurably back to an ordinary share.",
+  },
   {
     key: "handoff_undelivered",
     kind: "condition",

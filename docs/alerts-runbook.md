@@ -567,7 +567,20 @@ written down with the reason, never done to make the page stop.
 ## The booking API is refusing its caller
 
 Keys: `booking_api_ceiling`, `booking_api_credential`, `booking_api_list_read`,
-`retired_booking_key:*` (one per retired key and kind of host).
+`retired_booking_key:*` (one per retired key and kind of host), `duplicate_cancel_unavailable`,
+`duplicate_cancel_refused`.
+
+**`duplicate_cancel_unavailable` and `duplicate_cancel_refused`** (#2377) judge the last
+24 hours of `POST /api/bookings/cancel-duplicate`, each answer counted in
+`booking_api_outcome_daily` under a `duplicate_cancel_*` outcome outside the booking
+failure share. Neither speaks until the day holds 40 calls. `unavailable` is more than a
+fifth answered 503: read `tag=duplicate-cancel msg="incomplete"` for the stage, and note
+that `rpc` with `booking_id="null"` is the journey sending no usable id, which Regal has
+to fix, not Slate. `refused` is more than three tenths refused for a person (no other
+call, the named call is the newest, an identity conflict): the open
+`booking_handoffs` rows of kind `duplicate-unresolved` name the bookings, and a share
+this high usually means the journey is naming the wrong booking. Each ends on six
+measured hours back under its line.
 
 **What fired it.** Slate is turning its own integration away. Note this is the opposite
 of the limiter section above: those controls fail OPEN, so a page there means requests

@@ -11,8 +11,28 @@ import {
   duplicateFindingFor,
 } from "@/lib/booking/duplicate-cancel";
 import { log } from "@/lib/log";
+import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
+import { DUPLICATE_CANCEL_OUTCOME_TALLY, DUPLICATE_CANCEL_STAGE_TALLY } from "@/lib/monitor/duplicate-cancel-rate";
+import type { AttemptSource } from "@/lib/monitor/test-traffic";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * #2377: where every answer's tally row says it came from. No bucket is named and
+ * resolving one would cost a booking read per call, so each is counted as REAL
+ * traffic, the direction `test-traffic.ts` takes for any doubt: the smoke canary does
+ * not call this route, so nothing test shaped is being counted.
+ */
+const TALLY_SOURCE: AttemptSource = {
+  by: "unidentifiable",
+  why: "a duplicate cancel names a booking id, not a bucket, and the canary never calls it",
+};
+
+/** Count one answer in the daily tally (#2377). Deferred past the response, and it
+ *  never fails the request: see `recordApiOutcome`. */
+function countAnswer(tallyName: string): void {
+  recordApiOutcome(tallyName, "", null, TALLY_SOURCE);
+}
 
 /**
  * Cancel a lead's EARLIER call, and only when Slate can establish it is a duplicate
@@ -69,6 +89,7 @@ export async function POST(req: NextRequest) {
       laterBookingStartsAt,
     });
     const status = DUPLICATE_CANCEL_STATUS[result.outcome];
+    countAnswer(DUPLICATE_CANCEL_OUTCOME_TALLY[result.outcome]);
     log.info("duplicate-cancel", {
       msg: "outcome",
       booking_id: bookingId,
@@ -93,6 +114,7 @@ export async function POST(req: NextRequest) {
     );
   } catch (err) {
     if (err instanceof DuplicateCancelUnavailableError) {
+      countAnswer(DUPLICATE_CANCEL_STAGE_TALLY[err.stage]);
       log.error(
         "duplicate-cancel",
         { msg: "incomplete", booking_id: bookingId, stage: err.stage },
@@ -110,6 +132,8 @@ export async function POST(req: NextRequest) {
         { status: 503 },
       );
     }
+    // Answered as the rpc stage below, so it is counted as one.
+    countAnswer(DUPLICATE_CANCEL_STAGE_TALLY.rpc);
     log.error(
       "duplicate-cancel",
       { msg: "unexpected failure", booking_id: bookingId },
