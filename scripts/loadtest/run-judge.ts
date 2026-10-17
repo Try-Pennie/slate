@@ -66,7 +66,7 @@ import {
 } from "./platform-reading.ts";
 import {
   BOOKING_WRITES_PER_MINUTE,
-  DRIVERS,
+  expectedSteadyDrivers,
   PER_DRIVER_PER_MINUTE,
   faultMinutesFrom,
   RUN_MINUTES,
@@ -118,14 +118,12 @@ function wholeNumber(raw: string | undefined, name: string): number {
 // setup counted. A hand run passes none and is judged against today's four.
 // env-ok: EXPECT_STEADY_DRIVERS (optional; the workflow's steady matrix size, unset on
 // a hand run, which drives the four DRIVERS)
-const STEADY_DRIVERS =
-  (process.env.EXPECT_STEADY_DRIVERS ?? "").trim() === ""
-    ? DRIVERS
-    : wholeNumber(process.env.EXPECT_STEADY_DRIVERS, "EXPECT_STEADY_DRIVERS");
-if (STEADY_DRIVERS <= 0) {
-  console.error("FAILED: EXPECT_STEADY_DRIVERS is zero, and a steady pass of no drivers cannot be judged.");
+const steadyExpected = expectedSteadyDrivers(process.env.EXPECT_STEADY_DRIVERS);
+if (!steadyExpected.ok) {
+  console.error(`FAILED: ${steadyExpected.why}.`);
   process.exit(1);
 }
+const STEADY_DRIVERS = steadyExpected.drivers;
 
 const RUN_ID = need("RUN_ID");
 const RESULTS = need("RESULTS");

@@ -8,6 +8,7 @@
  * was under, and the report would read as Slate failing rather than as the driver
  * exceeding a ceiling somebody had changed (L41).
  */
+import { seededRosterVerdict } from "./roster-shape.ts";
 import {
   AVAILABILITY_LIMITER,
   BOOKING_API_IP_LIMITER,
@@ -61,6 +62,43 @@ export function steadyDriversFor(advisors: number): number {
   }
   // The small epsilon keeps 90 at exactly four: 90 * (60 / 90) / 15 is 4.000000000000001.
   return Math.ceil((advisors * STEADY_CONFIRMS_PER_ADVISOR_PER_MINUTE) / PER_DRIVER_PER_MINUTE - 1e-9);
+}
+
+/**
+ * What the burst setup emits for the steady pass (#3829): the advisors COUNTED on the
+ * branch, refused when they are not the roster the run names, the drivers that roster
+ * takes, and the GITHUB_OUTPUT lines the drive matrix and the judge both read, so the
+ * two are one number.
+ */
+export function steadyPlanFor(input: {
+  seeded: number;
+  named: string | undefined;
+}): { ok: true; advisors: number; drivers: number[]; outputs: string } | { ok: false; why: string } {
+  const roster = seededRosterVerdict(input);
+  if (!roster.ok) return roster;
+  const drivers = Array.from({ length: steadyDriversFor(roster.advisors) }, (_, i) => i);
+  return {
+    ok: true,
+    advisors: roster.advisors,
+    drivers,
+    outputs:
+      `steady_drivers=${JSON.stringify(drivers)}\nsteady_driver_count=${drivers.length}\n` +
+      `roster_advisors=${roster.advisors}\n`,
+  };
+}
+
+/**
+ * The judge's steady expectation (#3829), from the workflow's EXPECT_STEADY_DRIVERS.
+ * Unset is a hand run of today's four; a positive whole number is taken; anything
+ * else is refused, never read as zero or NaN (L50).
+ */
+export function expectedSteadyDrivers(raw: string | undefined): { ok: true; drivers: number } | { ok: false; why: string } {
+  const v = (raw ?? "").trim();
+  if (v === "") return { ok: true, drivers: DRIVERS };
+  if (!/^\d+$/.test(v) || Number(v) <= 0) {
+    return { ok: false, why: `EXPECT_STEADY_DRIVERS is not a positive whole number: ${JSON.stringify(raw)}` };
+  }
+  return { ok: true, drivers: Number(v) };
 }
 
 /**

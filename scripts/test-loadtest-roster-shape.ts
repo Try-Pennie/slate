@@ -14,6 +14,7 @@ import {
   rosterShapeFor,
   seededRosterVerdict,
   rosterLine,
+  shapeSourceFor,
   scaleShape,
   zoneForIndex,
   shapeFromRoster,
@@ -350,6 +351,21 @@ function seededDepths(shape: RosterShape): Map<string, number> {
     "Roster: not counted (a hand run), driven by 4 steady drivers (#3829).",
     "and a hand run says it was not counted rather than claiming a roster",
   );
+}
+
+{
+  // The seed's choice of roster (#3829): a file, a named roster, or production's, and
+  // never two at once, since only one of them can be the roster the run is about.
+  const file = shapeSourceFor({ file: "/tmp/shape.json", roster: undefined });
+  assert(file.kind === "file" && file.path === "/tmp/shape.json", "a named file is read");
+  const named = shapeSourceFor({ file: undefined, roster: "200" });
+  assert(named.kind === "roster" && named.shape === SCALED_200_SHAPE, "ROSTER=200 is the scaled roster");
+  const none = shapeSourceFor({ file: "", roster: "  " });
+  assert(none.kind === "roster" && none.shape === PRODUCTION_SHAPE, "nothing named is production's");
+  const both = shapeSourceFor({ file: "/tmp/shape.json", roster: "200" });
+  assert(both.kind === "refused" && /both/.test(both.why), "a file AND a roster is refused");
+  const unknown = shapeSourceFor({ file: undefined, roster: "150" });
+  assert(unknown.kind === "refused" && /150/.test(unknown.why), "a roster nobody checked in is refused");
 }
 
 finish();

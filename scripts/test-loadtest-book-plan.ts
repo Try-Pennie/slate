@@ -27,6 +27,8 @@ import {
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
   steadyDriversFor,
+  steadyPlanFor,
+  expectedSteadyDrivers,
   STEADY_CONFIRMS_PER_ADVISOR_PER_MINUTE,
   RUN_MINUTES,
   chooseBurstSlot,
@@ -1056,6 +1058,37 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
     threw = true;
   }
   assert(threw, "a roster of nobody has no steady pass to size");
+}
+
+{
+  // What the burst setup emits for the steady pass (#3829): counted from the branch,
+  // refused when it is not the roster named, and written as the outputs the drive
+  // matrix and the judge read.
+  const at200 = steadyPlanFor({ seeded: 200, named: "200" });
+  assert(at200.ok, "200 seeded for a 200 run is planned");
+  if (at200.ok) {
+    eq(at200.drivers, [0, 1, 2, 3, 4, 5, 6, 7, 8], "nine steady drivers, numbered from zero");
+    eq(
+      at200.outputs,
+      "steady_drivers=[0,1,2,3,4,5,6,7,8]\nsteady_driver_count=9\nroster_advisors=200\n",
+      "written as one line each for GITHUB_OUTPUT",
+    );
+  }
+  const at90 = steadyPlanFor({ seeded: 90, named: undefined });
+  assert(at90.ok && at90.drivers.length === DRIVERS, "a hand run on production's roster keeps four");
+  const wrong = steadyPlanFor({ seeded: 90, named: "200" });
+  assert(!wrong.ok && /90/.test(wrong.why) && /200/.test(wrong.why), "a 200 run on a 90 branch is refused, naming both");
+}
+
+{
+  // The judge's steady expectation (#3829): unset is a hand run of four, a count is
+  // taken, and anything else is refused rather than read as zero or NaN (L50).
+  eq(expectedSteadyDrivers(undefined), { ok: true, drivers: DRIVERS }, "unset is a hand run of four");
+  eq(expectedSteadyDrivers(" "), { ok: true, drivers: DRIVERS }, "and so is blank");
+  eq(expectedSteadyDrivers("9"), { ok: true, drivers: 9 }, "nine is nine");
+  assert(!expectedSteadyDrivers("0").ok, "zero drivers cannot be judged");
+  assert(!expectedSteadyDrivers("nine").ok, "a word is refused");
+  assert(!expectedSteadyDrivers("4.5").ok, "and so is a fraction");
 }
 
 finish();

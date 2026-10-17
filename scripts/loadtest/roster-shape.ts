@@ -214,6 +214,32 @@ export function seededRosterVerdict(input: {
 }
 
 /**
+ * Where the seed takes its roster from (#3829): a shape FILE (a fresh export), a
+ * checked in roster by name, or production's when neither is named. Both at once is
+ * refused, since only one can be the roster the run is about, and so is a name
+ * nobody checked in.
+ */
+export function shapeSourceFor(env: {
+  file: string | undefined;
+  roster: string | undefined;
+}):
+  | { kind: "file"; path: string }
+  | { kind: "roster"; shape: RosterShape }
+  | { kind: "refused"; why: string } {
+  const file = (env.file ?? "").trim();
+  const roster = (env.roster ?? "").trim();
+  if (file !== "" && roster !== "") {
+    return { kind: "refused", why: "ROSTER_SHAPE_FILE and ROSTER are both set; name one roster, not both" };
+  }
+  if (file !== "") return { kind: "file", path: file };
+  try {
+    return { kind: "roster", shape: rosterShapeFor(roster) };
+  } catch (err) {
+    return { kind: "refused", why: (err as Error).message };
+  }
+}
+
+/**
  * The report's roster line (#3829): how many advisors the burst setup COUNTED on the
  * branch and how many steady drivers that sized. A hand run passes no count, and says
  * so rather than claiming production's roster it never checked.

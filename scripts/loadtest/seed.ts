@@ -30,7 +30,7 @@ import { join } from "node:path";
 import { allXbcCodes, bucketSpecForXbc } from "../../src/lib/xbc.ts";
 import { SHIPPED_MIGRATION_VERSION } from "../../src/lib/db/migration-version.ts";
 import { generateSeed } from "./generate.ts";
-import { rosterShapeFor, type RosterShape } from "./roster-shape.ts";
+import { shapeSourceFor, type RosterShape } from "./roster-shape.ts";
 import {
   migrationMismatch,
   resolveAgentCount,
@@ -104,17 +104,15 @@ async function insert(table: string, rows: unknown[]): Promise<void> {
  * about the roster in it.
  */
 function loadShape(): RosterShape {
-  const path = process.env.ROSTER_SHAPE_FILE;
-  // env-ok: ROSTER (optional; 90 or 200, and anything else is refused by rosterShapeFor)
-  const named = process.env.ROSTER;
-  if (path && (named ?? "").trim() !== "") {
-    throw new Error(`ROSTER_SHAPE_FILE and ROSTER are both set; name one roster, not two`);
-  }
-  if (!path) {
-    const shape = rosterShapeFor(named);
+  // env-ok: ROSTER (optional; 90 or 200, and anything else is refused)
+  const source = shapeSourceFor({ file: process.env.ROSTER_SHAPE_FILE, roster: process.env.ROSTER });
+  if (source.kind === "refused") throw new Error(source.why);
+  if (source.kind === "roster") {
+    const shape = source.shape;
     console.log(`  roster shape: ${shape.agents} advisors (production measured ${shape.measuredAt})`);
     return shape;
   }
+  const path = source.path;
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");

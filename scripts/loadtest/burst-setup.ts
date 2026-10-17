@@ -66,7 +66,7 @@ import {
   offeredSlots,
   shownTierOf,
   DRIVERS,
-  steadyDriversFor,
+  steadyPlanFor,
   BURST_LEGS,
   BURST_SEQUENCE,
   BURST_SLOT_GAP_MS,
@@ -93,7 +93,6 @@ import {
   type DropMeasure,
 } from "./burst-target.ts";
 import { poolDepthsFrom } from "./pool-depth.ts";
-import { seededRosterVerdict } from "./roster-shape.ts";
 import { PRODUCTION_SUPABASE_REF, PRODUCTION_HOST } from "../../src/lib/loadtest-guard.ts";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
@@ -294,16 +293,12 @@ try {
 // a roster nothing can burst at are different mistakes.
 // env-ok: ROSTER (optional; the workflow's roster input, 90 or 200, and empty for a
 // hand run, which is production's 90)
-const roster = seededRosterVerdict({ seeded: seededAdvisors, named: process.env.ROSTER });
-if (!roster.ok) {
-  console.error(`FAILED: ${roster.why}.`);
+const steady = steadyPlanFor({ seeded: seededAdvisors, named: process.env.ROSTER });
+if (!steady.ok) {
+  console.error(`FAILED: ${steady.why}.`);
   process.exit(12);
 }
-const steadyDrivers = Array.from({ length: steadyDriversFor(roster.advisors) }, (_, i) => i);
-console.log(
-  `  roster: ${roster.advisors} advisors (production measured ${roster.shape.measuredAt}), so ` +
-    `${steadyDrivers.length} steady drivers`,
-);
+console.log(`  roster: ${steady.advisors} advisors, so ${steady.drivers.length} steady drivers`);
 if (staffedPools === 0) {
   console.error(
     `FAILED: not one of the ${poolCount} pools has an agent in it, so there is nothing to burst at. The seed did ` +
@@ -484,8 +479,7 @@ if (out) {
       `drivers=${JSON.stringify(drivers)}\ndriver_count=${drivers.length}\n` +
       // #3829: the steady pass grows with the roster at today's rate per advisor, and the
       // drive matrix and the judge both read it from here, as the bursts read theirs.
-      `steady_drivers=${JSON.stringify(steadyDrivers)}\nsteady_driver_count=${steadyDrivers.length}\n` +
-      `roster_advisors=${roster.advisors}\n`,
+      steady.outputs,
     "utf8",
   );
 }
