@@ -150,6 +150,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #3275. The same failures as the page above, reported once they had already
   // stopped; the investigation is the same one.
   booking_failure_burst_ended: "the-booker-is-offering-nothing-or-too-little",
+  // #3276. The same failures counted rather than shared out; the same investigation.
+  booking_failure_volume: "the-booker-is-offering-nothing-or-too-little",
   // #3179. The same population as the hourly page, judged over the month.
   booking_budget: "the-booker-is-offering-nothing-or-too-little",
   // #3267. A booking exists and the work after its save is waiting on the drain.
@@ -164,6 +166,11 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   booking_api_ceiling: "the-booking-api-is-refusing-its-caller",
   booking_api_credential: "the-booking-api-is-refusing-its-caller",
   booking_api_list_read: "the-booking-api-is-refusing-its-caller",
+  // #1727. The booker's own limits turning leads away: the booker's family, since the
+  // lead sees fewer times or none, and the first question is whose keys they are.
+  booking_embed_ip_cap: "the-booker-is-offering-nothing-or-too-little",
+  booking_embed_contact_cap: "the-booker-is-offering-nothing-or-too-little",
+  booking_embed_honeypot: "the-booker-is-offering-nothing-or-too-little",
   // #2879. A caller presenting a key Slate retired is being refused on every call,
   // which is this family's premise, with a named repair: give it its own key.
   retired_booking_key: "the-booking-api-is-refusing-its-caller",
@@ -231,6 +238,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   webhook_event_no_subscriber: "a-booking-side-effect-did-not-complete",
   handoff_channel_unset: "a-booking-side-effect-did-not-complete",
   handoff_undelivered: "a-booking-side-effect-did-not-complete",
+  owner_alert_skips: "google-cannot-be-reached-for-an-agent",
+  duplicate_cancel_unavailable: "the-booking-api-is-refusing-its-caller",
+  duplicate_cancel_refused: "the-booking-api-is-refusing-its-caller",
 
   // Somebody is off and the cover, or the block itself, is in doubt.
   ooo_coverage_gap: "time-off-cover-or-protection-is-in-doubt",
@@ -259,6 +269,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #2843: sales ops made the Ultra High and Very High cascade ordinary routing on
   // 2026-09-28, so the number is put on the record and nobody is sent to act on it.
   top_tier_cascade_rate: "something-was-measured-and-is-only-worth-knowing",
+  owner_notice_withheld: "something-was-measured-and-is-only-worth-knowing",
   // #3141: the cron CPU check cannot run without its optional token. An info line,
   // so it sits with the other things only worth knowing rather than with the pages.
   cron_cpu_not_configured: "something-was-measured-and-is-only-worth-knowing",

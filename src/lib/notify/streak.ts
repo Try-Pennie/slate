@@ -24,6 +24,21 @@ export async function recordConsecutiveStreak(
   windowSeconds: number,
   alertAt: number,
 ): Promise<boolean> {
+  return (await trackConsecutiveStreak(key, windowSeconds, alertAt)) === "reached";
+}
+
+/**
+ * The same count, answered three ways (#1493): `reached`, `below`, or `unknown` when
+ * the count could not be read. `recordConsecutiveStreak` folds `unknown` into quiet,
+ * which is right for a caller whose first hit is quiet anyway. A caller holding a
+ * failure ONLY because it can count on hearing the next one must speak on `unknown`
+ * instead, so it needs the difference.
+ */
+export async function trackConsecutiveStreak(
+  key: string,
+  windowSeconds: number,
+  alertAt: number,
+): Promise<"reached" | "below" | "unknown"> {
   try {
     const db = supabaseAdmin();
     // rate_limit_hit returns `count <= p_max`. Allowing one fewer than the
@@ -35,7 +50,11 @@ export async function recordConsecutiveStreak(
     });
     if (error) {
       log.error("streak", { msg: "tracking failed", key }, error);
-      return false;
+      return "unknown";
+    }
+    if (typeof underLimit !== "boolean") {
+      log.error("streak", { msg: "tracking answered no verdict", key });
+      return "unknown";
     }
     const reached = underLimit === false;
     // Tracked and deliberately QUIET: the caller's own decision about this failure
@@ -44,10 +63,10 @@ export async function recordConsecutiveStreak(
     // noted here: the caller is about to send, and the send notes itself only if it
     // returns, so a send that fails still leaves the failure one message.
     if (!reached) noteAlertKey(key);
-    return reached;
+    return reached ? "reached" : "below";
   } catch (err) {
     log.error("streak", { msg: "tracking threw", key }, err);
-    return false;
+    return "unknown";
   }
 }
 

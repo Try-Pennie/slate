@@ -143,23 +143,36 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     id: "rate_limit_ip_hour",
     surface: "embed booker",
     outcome: "429, asked to try again in a few minutes",
-    counting: { kind: "none" },
-    rateSignal: { kind: "none" },
+    counting: { kind: "own-counter", outcome: "refused_embed_ip_hour" },
+    rateSignal: { kind: "uncounted-but-pages", alertKey: "booking_embed_ip_cap" },
     why:
-      "The sustained per-IP cap, and the same reasoning as the burst window above: a trip is " +
-      "abuse shaping, and counting it would dilute the share a real outage has to move.",
+      "The sustained per-IP cap. Kept out of the failure SHARE for the same reason as the burst " +
+      "window above: a trip is abuse shaping, and counting it would dilute the share a real " +
+      "outage has to move. But a SUSTAINED trip across many addresses means either a bot spread " +
+      "across them or the cap being wrong for real traffic, and one benign trip and a systemic " +
+      "one arrive on the identical path (L77). #1727 counts trips under refused_embed_ip_hour, " +
+      "outside OUTCOME_ORDER, and pages as booking_embed_ip_cap on how many DISTINCT addresses " +
+      "the cap is refusing at once, read from the limiter's own rows, because one host flooding " +
+      "produces the same trip volume as many and is exactly what the cap is for. What it cannot " +
+      "see is many real leads behind one shared address, which reads as one.",
   },
   {
     id: "rate_limit_contact_hour",
     surface: "embed booker",
     outcome: "429, asked to try again in a few minutes",
-    counting: { kind: "none" },
-    rateSignal: { kind: "none" },
+    counting: { kind: "own-counter", outcome: "refused_embed_contact_hour" },
+    rateSignal: { kind: "uncounted-but-pages", alertKey: "booking_embed_contact_cap" },
     why:
       "Keyed on the attendee identity precisely so a distributed bot spreading across many IPs " +
-      "is bounded by the fake identity it reuses (#1033). A trip is therefore more likely to be " +
+      "is bounded by the fake identity it reuses (#1033). One trip is therefore more likely to be " +
       "that bot than a real lead, who would have to try five times in an hour with one email to " +
-      "reach it. Same dilution cost as the two above.",
+      "reach it, and counting it into the share has the same dilution cost as the two above. A " +
+      "VOLUME of trips cannot tell that bot from many leads either: one reused identity trips on " +
+      "every request after its fifth. So #1727 decided on a DISTINCT count: trips are counted " +
+      "under refused_embed_contact_hour, outside OUTCOME_ORDER, and the page " +
+      "(booking_embed_contact_cap) is on how many emails and phones the cap is locking out at " +
+      "once, read from the limiter's own rows, with a floor above the two keys one attendee can " +
+      "hold.",
   },
   {
     id: "booking_paused",
@@ -198,13 +211,19 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     id: "honeypot",
     surface: "embed booker",
     outcome: "400, the same generic refusal a malformed request gets",
-    counting: { kind: "none" },
-    rateSignal: { kind: "none" },
+    counting: { kind: "own-counter", outcome: "refused_embed_honeypot" },
+    rateSignal: { kind: "uncounted-but-pages", alertKey: "booking_embed_honeypot" },
     why:
       "A real user cannot fill a field they never see and cannot tab to, so by construction " +
       "every trip is a script. Volume here measures how much bot traffic arrives, which is not " +
       "customers being refused, and feeding it into the failure share would let a scraper mask " +
-      "an outage.",
+      "an outage. So it stays out of the share, and #1727 counts it under " +
+      "refused_embed_honeypot, outside OUTCOME_ORDER, because a SUSTAINED volume is worth " +
+      "knowing on its own: it is either a campaign working through the booker or the field " +
+      "having become visible or autofillable to real leads, who would then be refused with a " +
+      "generic error. Here volume IS the measurement, so it pages as booking_embed_honeypot on " +
+      "a floor derived from measured traffic, spread across several separate intervals so one " +
+      "burst stays quiet.",
   },
   {
     id: "invalid_request",

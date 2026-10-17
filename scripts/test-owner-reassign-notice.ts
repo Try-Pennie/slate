@@ -15,7 +15,8 @@ import { OUTBOX_HANDLERS, reassignOutboxSteps } from "../src/lib/booking/orchest
 import { runOutboxSteps } from "../src/lib/booking/outbox.ts";
 import { OWNER_ALERT_REASON_CODE } from "../src/lib/booking/owner-alert.ts";
 import { formatOwnerReassignNotice } from "../src/lib/booking/owner-notice-copy.ts";
-import type { BookingOutbox, OutboxPayload } from "../src/lib/db/types.ts";
+import { OWNER_NOTICE_WITHHELD } from "../src/lib/booking/owner-notice-withheld.ts";
+import type { BookingOutbox, OutboxPayload, OutboxStep } from "../src/lib/db/types.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { makeDeps, makeBooking, bucket, eventType } from "./lib/booking-fakes.ts";
 
@@ -225,10 +226,24 @@ async function main() {
       handoffChannel: null,
     });
     const r = row(OWNER_PAYLOAD, "ob-unset");
+    const saved: OutboxStep[][] = [];
+    const realSave = deps.saveOutboxSteps;
+    deps.saveOutboxSteps = async (id, steps, lease) => {
+      saved.push(steps.map((s) => ({ ...s })));
+      return realSave(id, steps, lease);
+    };
     const res = await run(deps, r);
     assert(res.delivered === true, "no channel: the row completes rather than failing");
     eq(stateOf(r, NOTICE_STEP), "done", "no channel: the step is done, so nothing retries for ever");
     eq(calls.handoffNoticePosts.length, 0, "no channel: nothing is posted anywhere");
+    // #2440: and the row SAYS so, durably. The reassign itself is in booking_events;
+    // this is the one fact that was missing, that its notice never went out.
+    const persisted = saved.at(-1)?.find((s) => s.name === NOTICE_STEP);
+    eq(
+      persisted?.withheld ?? "missing",
+      OWNER_NOTICE_WITHHELD.noChannel,
+      "no channel: the persisted step records that the notice was withheld for want of a channel",
+    );
   }
 
   // --- a deployment with no Slack at all -------------------------------------
@@ -248,6 +263,27 @@ async function main() {
     assert(res.delivered === true, "no Slack: the row completes rather than retrying for ever");
     eq(stateOf(r, NOTICE_STEP), "done", "no Slack: the step is done");
     eq(calls.handoffNoticePosts.length, 1, "no Slack: it did try once");
+    eq(
+      r.steps.find((s) => s.name === NOTICE_STEP)?.withheld ?? "missing",
+      OWNER_NOTICE_WITHHELD.noSlack,
+      "no Slack: the step records its own reason, distinct from an unset channel",
+    );
+  }
+
+  // --- a notice that WAS posted carries no withheld reason (#2440) ------------
+  // The positive control for the count: if every done step carried a reason, the
+  // weekly count would report every reassign as unannounced.
+  {
+    const ctx = ownedBooking();
+    const { deps } = makeDeps({ existing: ctx, bookingById: ctx, handoffChannel: "C-SALES" });
+    const r = row(OWNER_PAYLOAD, "ob-posted");
+    await run(deps, r);
+    eq(stateOf(r, NOTICE_STEP), "done", "posted: the step is done");
+    eq(
+      r.steps.find((s) => s.name === NOTICE_STEP)?.withheld ?? "none",
+      "none",
+      "posted: a notice that went out records no withheld reason",
+    );
   }
 
   // --- the smoke canary's own bookings are never announced -------------------

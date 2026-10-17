@@ -1,9 +1,7 @@
-import { supabaseAdmin } from "@/lib/supabase/admin";
-import { unwrap } from "@/lib/db/result";
 import type { RateWindowState, OutcomeReading } from "@/lib/monitor/booking-failure-rate";
 import { followUpReading } from "@/lib/monitor/follow-up-drain-rate";
 import type { TodayMix } from "@/lib/monitor/booking-failure-rate-store";
-import type { BookingFailureRateState } from "@/lib/db/types";
+import { loadRateWindowRow, saveRateWindowRow } from "@/lib/monitor/rate-window-row";
 
 /**
  * The IO half of the follow up drain share (#3267), kept out of
@@ -16,11 +14,8 @@ import type { BookingFailureRateState } from "@/lib/db/types";
  * minute samples under a fixed primary key, so a second row per signal is
  * structurally impossible and no migration is needed. `attempts` and `failures` here
  * are today's committed confirms and the ones left to the drain, the baseline the
- * next delta is taken against.
- *
- * Both reads go through `unwrap`: a failed read and a first run are the same empty
- * answer otherwise, and a window silently reset would report an hour it never
- * measured (#277, #1134).
+ * next delta is taken against. The read and the write are `rate-window-row.ts`'s,
+ * shared with the duplicate cancel share (#2377).
  */
 const STATE_KEY = "booking_follow_up";
 
@@ -32,45 +27,11 @@ export function followUpReadingOf({ day, mix }: TodayMix): OutcomeReading {
 }
 
 /** The window, or null when there is none yet. THROWS on a read error. */
-export async function loadFollowUpState(): Promise<RateWindowState | null> {
-  const row = unwrap(
-    await supabaseAdmin()
-      .from("booking_failure_rate_state")
-      .select("key, day, attempts, failures, by_code, refusals, samples")
-      .eq("key", STATE_KEY)
-      .maybeSingle(),
-    "booking_failure_rate_state (booking_follow_up)",
-  ) as BookingFailureRateState | null;
-  if (!row) return null;
-  return {
-    day: row.day,
-    attempts: row.attempts,
-    failures: row.failures,
-    byCode: row.by_code ?? {},
-    samples: row.samples ?? [],
-  };
+export function loadFollowUpState(): Promise<RateWindowState | null> {
+  return loadRateWindowRow(STATE_KEY);
 }
 
-/** Write the advanced window back. Upsert on the fixed key, so a retry or an
- *  overlapping tick can never leave a second row ("assume it runs twice"). */
-export async function saveFollowUpState(state: RateWindowState): Promise<void> {
-  const { error } = await supabaseAdmin()
-    .from("booking_failure_rate_state")
-    .upsert(
-      {
-        key: STATE_KEY,
-        day: state.day,
-        attempts: state.attempts,
-        failures: state.failures,
-        by_code: state.byCode,
-        // Not used by this signal. Written as an empty object because the column is
-        // NOT NULL and its default applies only on INSERT, so the second upsert
-        // would fail without it (the reminder store's reason).
-        refusals: {},
-        samples: state.samples,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "key" },
-    );
-  if (error) throw new Error(`booking_failure_rate_state (booking_follow_up) write failed: ${error.message}`);
+/** Write the advanced window back. THROWS on a refused write. */
+export function saveFollowUpState(state: RateWindowState): Promise<void> {
+  return saveRateWindowRow(STATE_KEY, state);
 }

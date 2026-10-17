@@ -47,7 +47,11 @@
  *
  * No `@/` imports, so scripts/test-api-refusal-signals.ts drives every branch
  * node-natively.
+ *
+ * #1727 adds the EMBED booker's three refusals at the end of the file, on the same
+ * window and the same rules: conditions, measured clears only, `unmeasured` apart.
  */
+import type { EmbedRefusalThresholds } from "./embed-refusal-thresholds.ts";
 
 /** One alert_state key per signal, shared by the page and its all-clear, so the
  *  two can never drift onto different keys and leave a page nothing can clear. */
@@ -78,6 +82,12 @@ export interface RefusalSample {
   credentialRejected: number;
   /** Write-path API_NOT_CONFIGURED refusals. */
   credentialNotConfigured: number;
+  /** #1727: the embed booker's hourly address cap trips. */
+  embedIpHour: number;
+  /** #1727: the embed booker's per contact cap trips. */
+  embedContactHour: number;
+  /** #1727: the embed booker's hidden bot trap trips. */
+  embedHoneypot: number;
 }
 
 /**
@@ -114,6 +124,21 @@ export interface RefusalThresholds {
   /** The same, for an unreadable bookings page. */
   listMinSamples: number;
 }
+
+/**
+ * What the monitor lane judges with. Here rather than in the route (#1726) so the
+ * live verification judges with the SAME numbers the lane does instead of a copy of
+ * them. These ship ARMED because their floors need volume or persistence a quiet
+ * endpoint cannot produce: 20 ceiling refusals at over a tenth of everything sent,
+ * or a refusal in three separate five minute intervals.
+ */
+export const SHIPPED_REFUSAL_THRESHOLDS: RefusalThresholds = {
+  windowMs: 60 * 60_000,
+  ceilingMinRefusals: 20,
+  ceilingPct: 10,
+  credentialMinSamples: 3,
+  listMinSamples: 3,
+};
 
 /** Which of the two ceilings is doing the refusing. */
 export type CeilingScope = "key" | "ip";
@@ -168,6 +193,9 @@ export function samplesFromWindow(
     listRead: s.refusals?.refused_list_read ?? 0,
     credentialRejected: s.refusals?.refused_key_wrong ?? 0,
     credentialNotConfigured: s.refusals?.refused_not_configured ?? 0,
+    embedIpHour: s.refusals?.refused_embed_ip_hour ?? 0,
+    embedContactHour: s.refusals?.refused_embed_contact_hour ?? 0,
+    embedHoneypot: s.refusals?.refused_embed_honeypot ?? 0,
   }));
 }
 
@@ -329,3 +357,212 @@ export const refusalAllClear = {
   credential: "The booking API is accepting its caller's key again.",
   list: "The bookings list is readable again.",
 };
+
+// ============================================================================
+// The EMBED BOOKER's own refusals (#1727)
+// ============================================================================
+//
+// The surface real leads arrive on, so more important than the API path above, not
+// less. Three refusals of the same shape: the hourly address cap, the per contact
+// cap, and the hidden bot trap. Each stays out of the failure share and is judged
+// here on the same rolling window, from samples the failure rate step already
+// advanced and persisted.
+//
+// The two caps are judged on how many DISTINCT addresses or contact keys the
+// limiter is refusing right now, not on how many requests it refused, because one
+// bot hammering one identity and forty leads each tripping once produce the same
+// volume. That count is read from the limiter's own rows by the caller, and only
+// when the window holds a trip at all, so a quiet tick costs no read. Why, and what
+// the count cannot see, is in `embed-refusal-thresholds.ts`.
+
+export type { EmbedRefusalThresholds };
+
+/** One alert_state key per signal, shared by the page and its all-clear. */
+export const EMBED_IP_CAP_ALERT_KEY = "booking_embed_ip_cap";
+export const EMBED_CONTACT_CAP_ALERT_KEY = "booking_embed_contact_cap";
+export const EMBED_HONEYPOT_ALERT_KEY = "booking_embed_honeypot";
+
+/** The trip volume in the window, and whether the window holds any interval at all.
+ *  `measured: false` is a window with nothing in it, which has not found the booker
+ *  healthy, it has failed to look. */
+export interface EmbedTrips {
+  measured: boolean;
+  ipHour: number;
+  contactHour: number;
+  honeypot: number;
+  /** Booking attempts in the same window, for the honeypot page's comparison. */
+  attempts: number;
+}
+
+export function embedTripsInWindow(samples: RefusalSample[], atMs: number, windowMs: number): EmbedTrips {
+  const rows = within(samples, atMs, windowMs);
+  return {
+    measured: rows.length > 0,
+    ipHour: sum(rows, (s) => s.embedIpHour),
+    contactHour: sum(rows, (s) => s.embedContactHour),
+    honeypot: sum(rows, (s) => s.embedHoneypot),
+    attempts: sum(rows, (s) => s.attempts),
+  };
+}
+
+/**
+ * Which locked out counts the caller must read before judging. Only a cap that
+ * recorded a trip in the window can be locking anybody out: a key over its limit in
+ * a live window was refused inside the last window length, and every refusal is
+ * recorded, so a window with none needs no read. That keeps the quiet tick, which
+ * is nearly every tick (none in the 167 hours measured), at zero extra subrequests
+ * on the invocation four lanes share.
+ */
+export function lockoutReadsNeeded(trips: EmbedTrips): { addresses: boolean; contactKeys: boolean } {
+  return { addresses: trips.measured && trips.ipHour > 0, contactKeys: trips.measured && trips.contactHour > 0 };
+}
+
+export type EmbedCapVerdict =
+  | { status: "unmeasured" }
+  | { status: "clear"; trips: number; lockedOut: number }
+  | { status: "paging"; trips: number; lockedOut: number; floor: number };
+
+export type HoneypotVerdict =
+  | { status: "unmeasured" }
+  | { status: "clear"; trips: number; intervals: number }
+  | { status: "paging"; trips: number; intervals: number; attempts: number };
+
+export interface EmbedRefusalVerdicts {
+  ipCap: EmbedCapVerdict;
+  contactCap: EmbedCapVerdict;
+  honeypot: HoneypotVerdict;
+}
+
+/** The locked out counts the caller read, or null for one it did not need to read.
+ *  A null where a read WAS needed is `unmeasured`, never clear. */
+export interface EmbedLockouts {
+  addresses: number | null;
+  contactKeys: number | null;
+}
+
+function judgeCap(measured: boolean, trips: number, lockedOut: number | null, floor: number): EmbedCapVerdict {
+  if (!measured) return { status: "unmeasured" };
+  // No trip in the window: nobody can be locked out, so this is a measured clear
+  // without the read (see `lockoutReadsNeeded`).
+  if (trips === 0) return { status: "clear", trips: 0, lockedOut: 0 };
+  if (lockedOut === null || !Number.isFinite(lockedOut)) return { status: "unmeasured" };
+  if (lockedOut >= floor) return { status: "paging", trips, lockedOut, floor };
+  return { status: "clear", trips, lockedOut };
+}
+
+/** All three verdicts from one window. Judged independently, so one condition
+ *  ending can never clear another. */
+export function judgeEmbedRefusalSignals(
+  samples: RefusalSample[],
+  atMs: number,
+  t: EmbedRefusalThresholds,
+  lockouts: EmbedLockouts,
+): EmbedRefusalVerdicts {
+  const rows = within(samples, atMs, t.windowMs);
+  const trips = embedTripsInWindow(samples, atMs, t.windowMs);
+  let honeypot: HoneypotVerdict;
+  if (!trips.measured) honeypot = { status: "unmeasured" };
+  else {
+    const intervals = intervalsWith(rows, (s) => s.embedHoneypot);
+    honeypot =
+      trips.honeypot >= t.honeypotMinTrips && intervals >= t.honeypotMinIntervals
+        ? { status: "paging", trips: trips.honeypot, intervals, attempts: trips.attempts }
+        : { status: "clear", trips: trips.honeypot, intervals };
+  }
+  return {
+    ipCap: judgeCap(trips.measured, trips.ipHour, lockouts.addresses, t.addressLockoutFloor),
+    contactCap: judgeCap(trips.measured, trips.contactHour, lockouts.contactKeys, t.contactLockoutFloor),
+    honeypot,
+  };
+}
+
+/** The limits each cap page NAMES, derived by the caller from the rules that
+ *  actually refuse, never copied here (L41). */
+export interface EmbedCapLimits {
+  /** Confirms an hour the address cap allows one address. */
+  addressPerHour: number;
+  /** Confirms an hour the contact cap allows one email or one phone. */
+  contactPerHour: number;
+}
+
+const counted = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * The page copy, null for anything that is not paging. Each names the repair (the
+ * rule in `src/lib/rate-limit-core.ts`) and the log tag that tells real leads from a
+ * bot, because the page cannot: that is a judgement about WHO the keys belong to,
+ * and only the log lines carry enough to make it.
+ */
+export const embedRefusalCopy = {
+  ipCap(v: EmbedCapVerdict, windowMs = 60 * 60_000, limits?: EmbedCapLimits): string | null {
+    if (v.status !== "paging") return null;
+    const limit = limits ? ` (${limits.addressPerHour} confirms an hour per address)` : "";
+    return (
+      `The booker's hourly address limit${limit} is refusing ${counted(v.lockedOut, "address", "addresses")} ` +
+      `at once, with ${counted(v.trips, "refusal", "refusals")} in the last ${minutes(windowMs)}. One address ` +
+      `over the limit is the limit doing its job; this many at once is either a bot spread across many ` +
+      `addresses or the limit being wrong for real traffic, in which case leads on those addresses are ` +
+      `being turned away by us. If the addresses in tag=booking-rate-limit scope="hourly" look like ordinary ` +
+      `visitors, raise BOOKING_HOURLY_RATE_RULES in src/lib/rate-limit-core.ts.`
+    );
+  },
+  contactCap(v: EmbedCapVerdict, windowMs = 60 * 60_000, limits?: EmbedCapLimits): string | null {
+    if (v.status !== "paging") return null;
+    const limit = limits ? ` (${limits.contactPerHour} confirms an hour per email or phone)` : "";
+    return (
+      `The booker's per contact limit${limit} is locking out ${counted(v.lockedOut, "email or phone", "emails and phones")} ` +
+      `at once, with ${counted(v.trips, "refusal", "refusals")} in the last ${minutes(windowMs)}. One bot ` +
+      `reusing an identity locks out one or two; this many means real leads may be retrying and being ` +
+      `turned away by us. If the attempts in tag=booking-rate-limit scope="contact" come from many unrelated ` +
+      `addresses, raise BOOKING_CONTACT_HOURLY_RATE_RULES in src/lib/rate-limit-core.ts.`
+    );
+  },
+  honeypot(v: HoneypotVerdict, windowMs = 60 * 60_000): string | null {
+    if (v.status !== "paging") return null;
+    return (
+      `The booker's hidden bot trap was filled ${counted(v.trips, "time", "times")} across ${v.intervals} ` +
+      `separate intervals in the last ${minutes(windowMs)}, against ${counted(v.attempts, "booking attempt", "booking attempts")}. ` +
+      `Nobody can see that field, so either a script is working through the booker, which the trap is ` +
+      `absorbing, or the field has become visible or autofillable and real leads are being refused with a ` +
+      `generic error. Check whether bookings dropped in the same hour. Diagnose via tag=booking-honeypot.`
+    );
+  },
+};
+
+/** The all-clear for each, sent only off a MEASURED clear verdict. */
+export const embedRefusalAllClear = {
+  ipCap: "The booker's hourly address limit is no longer refusing several addresses at once.",
+  contactCap: "The booker's per contact limit is no longer locking out several people at once.",
+  honeypot: "The booker's hidden bot trap is quiet again.",
+};
+
+export interface EmbedAlertPlan {
+  /** Pages to send, each on its own key. */
+  pages: { key: string; text: string }[];
+  /** All-clears to settle in one batch, each off a measured clear verdict only. */
+  recovered: { key: string; text: string }[];
+}
+
+/**
+ * What the monitor lane sends for one tick's verdicts, decided here rather than in
+ * the route so the rule that matters most is testable node-natively: a paging
+ * verdict pages, a CLEAR verdict is offered as an all-clear, and an UNMEASURED one
+ * sends nothing in either direction (#1134, #1152).
+ */
+export function planEmbedRefusalAlerts(
+  v: EmbedRefusalVerdicts,
+  windowMs: number,
+  limits: EmbedCapLimits,
+): EmbedAlertPlan {
+  const plan: EmbedAlertPlan = { pages: [], recovered: [] };
+  const signals = [
+    { key: EMBED_IP_CAP_ALERT_KEY, status: v.ipCap.status, text: embedRefusalCopy.ipCap(v.ipCap, windowMs, limits), clear: embedRefusalAllClear.ipCap },
+    { key: EMBED_CONTACT_CAP_ALERT_KEY, status: v.contactCap.status, text: embedRefusalCopy.contactCap(v.contactCap, windowMs, limits), clear: embedRefusalAllClear.contactCap },
+    { key: EMBED_HONEYPOT_ALERT_KEY, status: v.honeypot.status, text: embedRefusalCopy.honeypot(v.honeypot, windowMs), clear: embedRefusalAllClear.honeypot },
+  ];
+  for (const s of signals) {
+    if (s.text) plan.pages.push({ key: s.key, text: s.text });
+    else if (s.status === "clear") plan.recovered.push({ key: s.key, text: s.clear });
+  }
+  return plan;
+}

@@ -8,6 +8,7 @@ import {
   normalizeMix,
   excludedTestTrafficNote,
   excludedOffsiteTrafficNote,
+  excludedLostRacesNote,
   OUTCOME_DAY_ZONE,
   type OutcomeMix,
   type RawMix,
@@ -59,6 +60,8 @@ function Window({ title, mix }: { title: string; mix: OutcomeMix }) {
       {/* #2752: and the attempts on real buckets from pages that are not the
           production site, where testers book, stated the same three ways. */}
       <p className="mt-1 text-xs text-fg-muted">{excludedOffsiteTrafficNote(mix.offsiteTotal)}</p>
+      {/* #3797: and the refusals proven to be lost races, counted apart from the share. */}
+      <p className="mt-1 text-xs text-fg-muted">{excludedLostRacesNote(mix.lostRacesSinceOffer)}</p>
       {mix.total === 0 ? (
         <p className="mt-3 text-sm text-fg-muted">No direct booking API calls in this window.</p>
       ) : (

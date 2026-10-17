@@ -889,6 +889,12 @@ export interface RoutingDecision {
   /** The refused lead's Salesforce lead id in its 15 character form (#3276), so a
    *  volume of refusals can be counted in people. Null when the request named none. */
   lead_id: string | null;
+  /** #3797 (migration 0186), on a judged `candidate_read_empty` refusal only: whether it
+   *  was a proven lost race, the list stamp it was judged against, and the codes whose
+   *  stored row still offered the refused time (the row proofs). Null otherwise. */
+  offer_verdict: "race" | "stale_offer" | "unknown" | null;
+  served_computed_at: string | null;
+  stale_row_codes: string[] | null;
   /** `rerouted` (#3247, migration 0166) is an admin correcting a booking's bucket:
    *  its own outcome, so the monitors counting `booked` as bookings never count one
    *  booking twice. */
@@ -1023,6 +1029,12 @@ export interface OutboxStep {
   name: string;
   state: OutboxStepState;
   error?: string | null;
+  /**
+   * #2440: on a `done` step whose side effect was deliberately NOT performed, why.
+   * Absent on a step that did its work. Kept in the existing jsonb, so it needs no
+   * migration, and it survives an erasure, which clears only `error` (0093).
+   */
+  withheld?: string | null;
 }
 
 /**

@@ -205,7 +205,9 @@ export function startStoredOfferCheck(t: RefusalTrace, deps: StoredOfferDeps): S
   const settled = (async () => {
     let rows: StoredSlotRow[];
     try {
-      rows = await deps.readRows(codes);
+      // #3797: the rows the lost race judgement already read as the refusal was
+      // recorded, in this same request, rather than a second read of them.
+      rows = t.storedRows ?? (await deps.readRows(codes));
     } catch (err) {
       deps.log.warn(
         TAG,

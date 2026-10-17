@@ -1,4 +1,4 @@
-import type { RateThresholds, RecentThresholds } from "./booking-failure-rate.ts";
+import type { RateThresholds, RecentThresholds, VolumeThresholds } from "./booking-failure-rate.ts";
 
 /**
  * When a wave of refused bookings is a page rather than ordinary contention.
@@ -202,6 +202,36 @@ export const SHIPPED_FAILURE_RATE_RECENT: RecentThresholds = {
   windowMs: 30 * 60_000,
   minAttempts: FAILURE_RATE_FIT.failuresToBreachAtFloor,
   recoverPct: FAILURE_RATE_FIT.failPct / 4,
+};
+
+/**
+ * The volume page beside the share (#3276, Dan 2026-10-04): page when this many booking
+ * attempts fail inside this window, whatever share of traffic that is.
+ *
+ * Both are named so the offline suite asserts the shipped pair rather than a copy of it
+ * (L63), and both were chosen against a real night: 2026-10-04, when leads were refused
+ * from 7:29pm ET and the share paged at 8:45pm.
+ *
+ * - **10 failures.** One lead retried six times in 90 seconds that night, so a floor of
+ *   a handful is one stuck person; ten is past what one person retrying produces while
+ *   still reached early by a real wave. Counting ten distinct leads instead was weighed
+ *   and adds nothing at this number: ten refused leads always means at least ten refused
+ *   attempts, so the count of attempts is the same alarm and needs no identity.
+ * - **30 minutes.** The most refusals in any 15 minutes that night was 9, so a 15 minute
+ *   window would never have fired; in 30 minutes it reached 10 at 7:49pm. Ten in 15 OR
+ *   ten in 30 is the same alarm as ten in 30, since anything that trips the first trips
+ *   the second on the same failure.
+ *
+ * The window is the last six five minute ticks, since a failure is counted by the tick
+ * that measured it, so through the tick sums the replay of that night fires at the
+ * 7:50pm tick rather than at 7:49:23 (scripts/test-monitor-booking-failure-rate.ts).
+ */
+export const FAILURE_VOLUME_FAILURES = 10;
+export const FAILURE_VOLUME_WINDOW_MS = 30 * 60_000;
+
+export const SHIPPED_FAILURE_VOLUME: VolumeThresholds = {
+  windowMs: FAILURE_VOLUME_WINDOW_MS,
+  failures: FAILURE_VOLUME_FAILURES,
 };
 
 /**

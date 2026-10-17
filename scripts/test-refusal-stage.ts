@@ -26,6 +26,7 @@ import {
   refusalLogFields,
   refusalTraceOf,
   refusedLeadId,
+  rungCounts,
   rungStage,
   rungTraceFrom,
 } from "../src/lib/booking/refusal-trace.ts";
@@ -321,6 +322,16 @@ async function main() {
     "vocabulary: only the follower stays off the row",
   );
 }
+
+  // #3797: a rung carries its advisors' ids for the race judgement, and the stored
+  // `stage_counts` must not: it is counts only, and a pool's ids are up to ~200 uuids.
+  {
+    const stored = rungCounts({
+      code: "411", members: 3, read: 3, claimed: 0, checked: 0, stage: "candidate_read_empty",
+      readIds: ["a", "b", "c"], memberIds: ["a", "b", "c"],
+    });
+    assert(!("memberIds" in stored) && !("readIds" in stored), "stage_counts stores counts, never the rung's advisor ids");
+  }
 
 main()
   .then(finish)

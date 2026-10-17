@@ -1731,6 +1731,19 @@ describe("Booker hands back the tier on show with the confirm, unseen (#3495)", 
     const body = await confirmedBody(availability);
     expect("shownTier" in body).toBe(false);
   });
+
+  // #3797: the stamp of the list the lead picked from, so a time taken by somebody
+  // else since then is counted as a lost race rather than a stale offer. Without it
+  // every public refusal is judged as before.
+  it("sends the stamp of the list the lead picked from", async () => {
+    const body = await confirmedBody({ ...availability, slotsComputedAt: "2099-01-01T14:00:00.000Z" });
+    expect(body.slotsComputedAt).toBe("2099-01-01T14:00:00.000Z");
+  });
+
+  it("sends no stamp when the answer carried none, so the refusal is judged as before", async () => {
+    const body = await confirmedBody({ ...availability, slotsComputedAt: null });
+    expect("slotsComputedAt" in body).toBe(false);
+  });
 });
 
 // #215 / #168 / #173: the availability panel has three states that are easy to
