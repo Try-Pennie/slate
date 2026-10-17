@@ -2098,3 +2098,34 @@ on bookings, RLS turned off on one table, a SECURITY DEFINER function granted to
 a grant revoked from bookings with no recorded reason, and a plain
 `postgres:17-alpine` image with no default grants (exit 2).
 
+# Proving the lookup by idempotency key uses its index (`scripts/verify-idempotency-key-index-sql.ts`)
+
+#3863: the reservation resume reads the newest booking on a key in ANY status
+(`findLatestBookingByIdempotencyKey`, #3847). The only index on the column used to be
+0010's partial unique index over active bookings, which a read with no status
+predicate cannot use, so the lookup scanned all of `bookings`. Migration 0185 adds a
+plain index on `bookings (idempotency_key)`.
+
+A text scan can say the index exists (`scripts/test-idempotency-key-index.ts`, in
+`pnpm test`); only the planner can say it is used. This suite replays every migration
+BEFORE 0185 into the `supabase/postgres` image, seeds 12,000 bookings (production held
+10,586 on 2026-10-16), and reads the plan of the lookup's exact PostgREST shape, as a
+custom plan with the key as a literal and as a generic plan with it as a bind
+parameter. Both must be a sequential scan there: that is the control proving the
+check can fail. It then applies 0185 verbatim in one transaction, as `db push` runs a
+file, and both plans must reach `bookings_idempotency_key_idx` with the key as the
+index condition. Sequential scans stay ON throughout, so the index wins on cost.
+
+It also shows why 0185 is not `CONCURRENTLY`: a concurrent build run in a single
+transaction is refused (`cannot run inside a transaction block`), so such a migration
+would not apply through `db push` at all. The plain build over 12,000 rows took about
+50ms.
+
+```
+node --experimental-strip-types scripts/verify-idempotency-key-index-sql.ts
+```
+
+No Docker is exit 2, UNMEASURED. It runs in the DB replay workflow with the other
+`verify-*-sql.ts` suites. Seen failing on a planted control, 0185 with its index
+removed: six assertions failed, every plan a sequential scan.
+

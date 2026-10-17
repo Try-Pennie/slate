@@ -1,0 +1,37 @@
+-- #3863: index bookings(idempotency_key) for the reservation resume's lookup.
+--
+-- findLatestBookingByIdempotencyKey (src/lib/booking/service.ts, #3847) asks for the
+-- newest booking on a key in ANY status, so a booking cancelled or completed since
+-- it committed settles its reservation rather than being made again:
+--
+--   select * from bookings
+--   where idempotency_key = $1
+--   order by created_at desc, id desc
+--   limit 1
+--
+-- The only index on the column is 0010's bookings_idempotency_active_uniq, which is
+-- PARTIAL on status in ('confirmed', 'rescheduled'). This read has no status
+-- predicate, so the planner cannot use that index and scans the whole table. It
+-- runs only on the resume path (the drain, and a retry that finds a reservation
+-- pending), never on an ordinary confirm, but its cost grows with every booking.
+--
+-- WHY THIS SHAPE. The equality is what selects: a key is one lead at one slot in one
+-- bucket, so it holds one row, or a few when the lead cancelled and booked the same
+-- time again. Sorting that handful by created_at is free, so a composite
+-- (idempotency_key, created_at desc, id desc) would buy nothing but width. It is not
+-- partial on status (the read asks every status), and not partial on
+-- `idempotency_key is not null` either: almost every row carries a key, so that
+-- predicate would leave out nothing.
+--
+-- NOT CONCURRENTLY. `supabase db push` runs each migration file in a transaction,
+-- and CREATE INDEX CONCURRENTLY refuses to run inside one. A plain build locks
+-- writes to bookings (never reads) for as long as the build takes. Measured
+-- read only against production on 2026-10-16: 10,586 rows. The replay suite builds
+-- this index over 12,000 seeded rows in about 50ms, psql round trip included, the
+-- same reasoning 0164 used for bookings(gcal_event_id) and 0049 for busy_blocks at
+-- about 500K rows.
+--
+-- scripts/test-idempotency-key-index.ts keeps the query and this index paired, and
+-- scripts/verify-idempotency-key-index-sql.ts reads the plan in a real Postgres.
+create index if not exists bookings_idempotency_key_idx
+  on bookings (idempotency_key);

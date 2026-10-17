@@ -16,42 +16,13 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { assert, finish } from "./lib/harness.ts";
+import { bookingsIndexesLedBy, migrationSql as readMigrationSql } from "./lib/scan-bookings-lookup-index.ts";
 
 const root = join(import.meta.dirname, "..");
 const migrationsDir = join(root, "supabase", "migrations");
 
-/** Lower-cased, comment-stripped migration SQL in file order. */
-function migrationSql(files: string[]): string {
-  return files
-    .map((f) => readFileSync(join(migrationsDir, f), "utf8"))
-    .join("\n")
-    .replace(/--[^\n]*/g, "")
-    .toLowerCase();
-}
-
-/**
- * Names of the bookings indexes that can serve `where gcal_event_id = $1 and
- * status in (...)`. It judges SQL text
- * only, so a planted bad index can be fed to it without touching the repo.
- */
-function holderIndexes(sql: string): string[] {
-  const found: string[] = [];
-  const re =
-    /create\s+(?:unique\s+)?index\s+(?:concurrently\s+)?(?:if\s+not\s+exists\s+)?(\w+)\s+on\s+(?:public\.)?bookings\s*(?:using\s+btree\s*)?\(([^)]*)\)([^;]*);/g;
-  for (const m of sql.matchAll(re)) {
-    const [, name, cols, rest] = m;
-    const lead = cols.split(",")[0].trim();
-    if (lead !== "gcal_event_id") continue;
-    // A status predicate cannot be proved by a runtime IN list; anything else in
-    // the WHERE must be implied by the equality itself (is not null is).
-    const where = rest.match(/\bwhere\b([\s\S]*)$/)?.[1] ?? "";
-    if (/\bstatus\b/.test(where)) continue;
-    const dropped = new RegExp(`drop\\s+index\\s+(?:concurrently\\s+)?(?:if\\s+exists\\s+)?(?:public\\.)?${name}\\b`);
-    if (dropped.test(sql.slice((m.index ?? 0) + m[0].length))) continue;
-    found.push(name);
-  }
-  return found;
-}
+const migrationSql = (files: string[]): string => readMigrationSql(migrationsDir, files);
+const holderIndexes = (sql: string): string[] => bookingsIndexesLedBy(sql, "gcal_event_id");
 
 // Half 1: the query keeps the shape the index serves.
 {
