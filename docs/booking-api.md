@@ -25,15 +25,24 @@ GET /api/availability?bucket=411&from=<ISO>&to=<ISO>
 ```
 
 - `bucket` (required) — the XBC bucket code.
-- `from` / `to` (optional ISO instants) — defaults to now → +a few days.
+- `from` / `to` (optional ISO instants): default from now to a few days ahead.
+  Every slot returned lies inside them (#2220). Slate offers only the next few
+  open days, so a window that starts after the last offered time returns
+  `slots: []` with `emptyBecause: { "kind": "beyond_horizon", "lastOfferedAt":
+  "<ISO>" }`, never the times of another window. A bound that cannot be read as a
+  time is ignored.
 - Public, no auth. Reads the precomputed cache (no live Google), edge-throttled
   ~30/min per datacenter (fails open).
 
 Response:
 
 ```json
-{ "bucket": { "code": "411" }, "slots": ["2026-07-01T15:00:00.000Z", "..."] }
+{ "bucket": { "code": "411" }, "slots": ["2026-07-01T15:00:00.000Z", "..."], "emptyBecause": null }
 ```
+
+`emptyBecause` is null whenever there are slots. With none it says why, when that can
+be told: `closed` (with `reopensOn`), `unstaffed`, `busy`, or `beyond_horizon` (with
+`lastOfferedAt`).
 
 > **Read→book race.** Slots come from a cache that lags real calendars by up to
 > ~1 minute, and verify-on-book runs at booking time. A slot you read here can be
