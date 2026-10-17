@@ -5,8 +5,9 @@
  * passing one.
  *
  * The fault leg faults the WHOLE deployment, so the lanes run under it too, and the
- * runbook has always said what to look for: the failing agents named in ONE throttled
- * page rather than one per failure, and no lane's heartbeat going stale, because a
+ * runbook has always said what to look for: the failing agents named in a throttled
+ * page, once per change (a new agent or a worse band, #3801) rather than once per
+ * failing tick, and no lane's heartbeat going stale, because a
  * failing dependency must not stop a lane running. Until this, a person read those
  * out of an archived log tail, which nobody does on a run that otherwise passed.
  *
@@ -40,7 +41,8 @@ export const LANE_SAMPLE_INTERVAL_MS = 15_000;
 
 /** The longest the sampler ever runs, whatever it is told, so it can never hang the
  *  job (L110). It is also the longest window a send is counted over, which is why the
- *  test holds it under the sync page's cooldown. */
+ *  test holds it under the sync page's cooldown, so within one window a repeat naming
+ *  nothing new can only be the throttle failing (#3801). */
 export const LANE_SAMPLER_MAX_MS = 20 * 60_000;
 
 /** One reading of the two tables, at one instant. */
@@ -50,6 +52,27 @@ export interface LaneSample {
   heartbeats: Record<string, string>;
   /** key -> `last_sent_at` as stored. */
   alerts: Record<string, string>;
+  /**
+   * #3801: key -> what the last post named (`alert_state.subjects`, `band`), so the judge
+   * can tell a change post, which posts at once by design, from the throttle failing.
+   * Absent on a file from before it was recorded; a key missing here is unread.
+   */
+  alertState?: Record<string, { subjects: string[] | null; band: number | null }>;
+}
+
+/**
+ * #3801: whether a send is a CHANGE against the one before it, which Dan's rule posts at
+ * once: a subject the last post did not name, or a worse band. A subject only leaving is
+ * not a change. A send whose state was not read is never excused (L98).
+ */
+export function isChangePost(
+  before: { subjects: string[] | null; band: number | null } | undefined,
+  after: { subjects: string[] | null; band: number | null } | undefined,
+): boolean {
+  if (!before || !after || before.subjects === null || after.subjects === null) return false;
+  const had = new Set(before.subjects);
+  if (after.subjects.some((x) => !had.has(x))) return true;
+  return before.band !== null && after.band !== null && after.band > before.band;
 }
 
 /** What the sampler writes. `kind` keeps it apart from the driver files beside it. */
@@ -306,14 +329,21 @@ export function judgeFaultLanes(e: FaultLaneEvidence, x: FaultLaneExpectations):
   }
 
   // --- the sync page: fired, and throttled ----------------------------------------
-  // Each DISTINCT stamp inside the window is one recorded send.
-  const sends = new Set<string>();
+  // Each DISTINCT stamp inside the window is one recorded send, with what the first
+  // sample that saw it read about what it named.
+  const sends = new Map<string, { subjects: string[] | null; band: number | null } | undefined>();
   for (const sample of s) {
     const raw = sample.alerts[SYNC_FAILURE_ALERT_KEY];
     if (raw === undefined) continue;
     const ms = Date.parse(raw);
-    if (Number.isFinite(ms) && ms >= x.windowStartMs && ms <= e.finishedAtMs) sends.add(raw);
+    if (Number.isFinite(ms) && ms >= x.windowStartMs && ms <= e.finishedAtMs && !sends.has(raw)) {
+      sends.set(raw, sample.alertState?.[SYNC_FAILURE_ALERT_KEY]);
+    }
   }
+  // #3801: a later send that names a new agent (or a worse band) is the change post the
+  // throttle is meant to let through; only a send with nothing new is it failing.
+  const ordered = [...sends.entries()].sort((a, b) => Date.parse(a[0]) - Date.parse(b[0]));
+  const repeats = ordered.filter((cur, i) => i > 0 && !isChangePost(ordered[i - 1]![1], cur[1])).length;
   if (x.syncPageExpected && sends.size === 0) {
     findings.push({
       bar: "the calendar failure page under fault",
@@ -322,15 +352,16 @@ export function judgeFaultLanes(e: FaultLaneEvidence, x: FaultLaneExpectations):
         "failing, so the agents failing to sync were never named to anybody",
     });
   }
-  // Once, because its cooldown is longer than any window the sampler can produce
-  // (pinned by the test), so a second send in one window is the throttle failing,
-  // which is the page arriving once a minute for every failing tick.
-  if (sends.size > 1) {
+  // Once per change, because its cooldown is longer than any window the sampler can
+  // produce (pinned by the test), so a second send naming nothing new in one window is
+  // the throttle failing, which is the page arriving once a minute for every failing tick.
+  if (repeats > 0) {
     findings.push({
       bar: "the calendar failure page under fault",
       detail:
         `the ${SYNC_FAILURE_ALERT_KEY} page was recorded ${sends.size} times in ${minutes(windowMs)}, ` +
-        "where its cooldown allows one, so it is not throttled",
+        `${repeats} of them naming nothing the post before had not, where its cooldown allows one ` +
+        "post per change, so it is not throttled",
     });
   }
   return findings;

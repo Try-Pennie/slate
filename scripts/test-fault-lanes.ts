@@ -315,8 +315,9 @@ function series(frozen: readonly string[], from: number, to: number): FaultLaneE
   const stale = scanAlertSites(watchdog, "lane-watchdog.ts").filter((s) => s.channel === "alert").map((s) => s.key);
   assert(stale.includes(`${STALE_LANE_ALERT_PREFIX}*`), `the watchdog really pages on ${STALE_LANE_ALERT_PREFIX}<lane>`);
 
-  // "Throttled" is judged as at most ONE send per window, which is only right while
-  // the page's cooldown is longer than any window the sampler can produce.
+  // "Throttled" is judged as at most one send per CHANGE in a window (#3801): a repeat
+  // naming nothing new is the throttle failing, which is only right while the page's
+  // cooldown is longer than any window the sampler can produce.
   const m = /const SYNC_ALERT_COOLDOWN_MS = ([\d\s*_]+);/.exec(syncRoute);
   assert(m !== null, "the sync page's cooldown is readable from the route");
   const cooldownMs = m
@@ -328,6 +329,62 @@ function series(frozen: readonly string[], from: number, to: number): FaultLaneE
   assert(
     cooldownMs > LANE_SAMPLER_MAX_MS,
     `the sync page's cooldown (${cooldownMs}ms) outlasts the longest window (${LANE_SAMPLER_MAX_MS}ms)`,
+  );
+}
+
+// --- a change post is not a throttle failure (#3801) -----------------------------
+//
+// Dan's rule since #3801: an unchanged condition posts again once a day, and a CHANGE
+// posts at once, where a change is a new subject or a worse band. At 200 advisors the
+// sync lane reads calendars over more than one tick, so a second failing agent can
+// cross its streak a minute after the first page: run 39074912498 posted with two
+// agents, then with three (reason new-subject), and was failed for it. The sampler now
+// records what each send named, so only a repeat with nothing new is the throttle failing.
+
+/** Two sends a minute apart, with what each named. */
+function twoSends(
+  first: { subjects: string[] | null; band: number | null },
+  second: { subjects: string[] | null; band: number | null },
+): FaultLaneEvidence {
+  const e = healthy();
+  for (const sample of e.samples) {
+    if (sample.atMs >= T0 + 2 * MIN) {
+      sample.alerts[SYNC_FAILURE_ALERT_KEY] = iso(T0 + 2 * MIN);
+      sample.alertState = { [SYNC_FAILURE_ALERT_KEY]: second };
+    } else if (sample.atMs >= T0 + MIN) {
+      sample.alerts[SYNC_FAILURE_ALERT_KEY] = iso(T0 + MIN);
+      sample.alertState = { [SYNC_FAILURE_ALERT_KEY]: first };
+    } else {
+      delete sample.alerts[SYNC_FAILURE_ALERT_KEY];
+    }
+  }
+  return e;
+}
+const throttled = (e: FaultLaneEvidence) => !findingsOf(e).some((d) => d.includes("not throttled"));
+{
+  assert(
+    throttled(twoSends({ subjects: ["a", "b"], band: null }, { subjects: ["a", "b", "c"], band: null })),
+    "a second page naming a new agent is the change post #3801 asks for, not a throttle failure",
+  );
+  assert(
+    throttled(twoSends({ subjects: ["a", "b"], band: null }, { subjects: ["b", "c"], band: null })),
+    "and so is one where a new agent replaced another",
+  );
+  assert(
+    throttled(twoSends({ subjects: ["a"], band: 1 }, { subjects: ["a"], band: 2 }), ),
+    "and one whose band got worse",
+  );
+  assert(
+    !throttled(twoSends({ subjects: ["a", "b"], band: 1 }, { subjects: ["a", "b"], band: 1 })),
+    "but the same page again is the throttle failing",
+  );
+  assert(
+    !throttled(twoSends({ subjects: ["a", "b"], band: null }, { subjects: ["a"], band: null })),
+    "and so is one where an agent only LEFT, which #3801 says is not a change",
+  );
+  assert(
+    !throttled(twoSends({ subjects: ["a"], band: null }, { subjects: null, band: null })),
+    "and a send whose subjects could not be read is counted as a repeat, never excused",
   );
 }
 
