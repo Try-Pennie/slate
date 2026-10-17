@@ -26,13 +26,23 @@ import {
   type RateWindowState,
   type RecentThresholds,
   type RefusedPeople,
+  type VolumeThresholds,
+  readVolume,
+  failureKind,
+  formatFailureVolumeAlert,
+  formatFailureVolumeAllClear,
+  FAILURE_VOLUME_ALERT_KEY,
 } from "../src/lib/monitor/booking-failure-rate.ts";
 import {
   FAILURE_RATE_FIT,
+  FAILURE_VOLUME_FAILURES,
+  FAILURE_VOLUME_WINDOW_MS,
   MEASURED_ATTEMPT_TRAFFIC,
   SHIPPED_FAILURE_RATE_RECENT,
   SHIPPED_FAILURE_RATE_THRESHOLDS,
+  SHIPPED_FAILURE_VOLUME,
 } from "../src/lib/monitor/failure-rate-thresholds.ts";
+import { readFileSync } from "node:fs";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 /** Em/en dash detector built from escapes: writing the characters themselves
@@ -44,6 +54,9 @@ const T0 = Date.UTC(2026, 7, 11, 14, 0, 0);
 
 const THRESHOLDS: RateThresholds = { windowMs: 60 * MIN, minAttempts: 20, failPct: 20 };
 const RECENT: RecentThresholds = { windowMs: 30 * MIN, minAttempts: 5, recoverPct: 5 };
+/** A volume floor the share tests below never reach, so each asserts the share alone.
+ *  The volume page (#3276) is driven with the shipped pair in its own section. */
+const QUIET_VOLUME: VolumeThresholds = { windowMs: 30 * MIN, failures: 1_000_000 };
 
 /** The recent half every live page now carries (#3275): what the last 30 minutes
  *  held, and when the window's failures were recorded. Spread into the copy tests
@@ -362,6 +375,18 @@ const reading = (
     "a refusal with no lead id is a refusal, never a person",
   );
   eq(countRefusedPeople([]), { people: 0, refusals: 0, withoutLead: 0 }, "nothing refused is nothing");
+  // #3276: the distinct times asked for, counted over the same rows, and only when the
+  // read carried them, so an absent column is never read as no times.
+  eq(
+    countRefusedPeople([
+      { lead_id: "00QUi000011BI7B", is_test: false, requested_start: "2026-10-04T23:30:00+00:00" },
+      { lead_id: "00QUi000011BI7B", is_test: false, requested_start: "2026-10-04T23:30:00+00:00" },
+      { lead_id: "00QUl00000OipHQ", is_test: false, requested_start: null },
+      { lead_id: "00QUl00000OipHQ", is_test: true, requested_start: "2026-10-05T00:00:00+00:00" },
+    ]),
+    { people: 2, refusals: 3, withoutLead: 0, times: 1 },
+    "times counts the distinct instants the counted refusals asked for",
+  );
 
   // L36: never embed canned remediation that can steer a diagnosis wrong. The
   // slot_unavailable guidance ("the times being offered are not really free") is
@@ -529,6 +554,8 @@ function harness(overrides: {
   armed?: boolean;
   notifyThrows?: boolean;
   saveThrows?: boolean;
+  /** The volume page's thresholds; defaults to a floor these share tests never reach. */
+  volume?: VolumeThresholds;
   /** What the refused-people read answers, or "throws". Defaults to nobody refused. */
   refused?: RefusedPeople | "throws";
 }): Harness {
@@ -569,6 +596,7 @@ function harness(overrides: {
         },
         thresholds: THRESHOLDS,
         recent: RECENT,
+        volume: overrides.volume ?? QUIET_VOLUME,
         armed: overrides.armed ?? true,
         cooldownMs: 30 * MIN,
         notify: async (key, _cooldownMs, text) => {
@@ -634,8 +662,9 @@ function harness(overrides: {
   const h = harness({ state: HEALTHY, armed: true });
   const out = await h.run();
   assert(out.status === "checked" && out.verdict.status === "healthy", "a measured healthy window is healthy");
-  eq(h.resolved.length, 1, "an armed healthy window sends the all-clear, hung off the MEASURED result");
-  eq(h.resolved[0], FAILURE_RATE_ALERT_KEY, "the all-clear clears the same key the page set");
+  eq(h.resolved.filter((k) => k === FAILURE_RATE_ALERT_KEY).length, 1, "an armed healthy window sends the all-clear, hung off the MEASURED result");
+  eq(h.resolved.at(-1), FAILURE_RATE_ALERT_KEY, "the all-clear clears the same key the page set");
+  eq(h.resolved, [FAILURE_VOLUME_ALERT_KEY, FAILURE_RATE_ALERT_KEY], "and the volume page (#3276) stands down on the same clean run");
   eq(h.notified.length, 0, "a healthy window does not page");
 }
 {
@@ -753,11 +782,11 @@ function harness(overrides: {
 // page says when the failures were, a burst that already ended reads as one, and
 // the all-clear stands on a measured run of recent attempts, never on the share.
 
-const sample = (atMs: number, attempts: number, failures: number): RateSample => ({
+const sample = (atMs: number, attempts: number, failures: number, byCode?: Record<string, number>): RateSample => ({
   atMs,
   attempts,
   failures,
-  byCode: failures > 0 ? { slot_unavailable: failures } : {},
+  byCode: byCode ?? (failures > 0 ? { slot_unavailable: failures } : {}),
 });
 const windowOf = (samples: RateSample[]): RateWindowState => ({
   day: "2026-08-11",
@@ -894,7 +923,7 @@ const windowOf = (samples: RateSample[]): RateWindowState => ({
   const out = await h.run();
   assert(out.status === "checked" && out.verdict.status === "breach", "the window is still over the line (6 of 22)");
   eq(h.notified.map((n) => n.key), [FAILURE_BURST_ENDED_ALERT_KEY], "an ended burst sends one past notice and no page");
-  eq(h.resolved, [FAILURE_RATE_ALERT_KEY], "the clean recent run still settles any page that was open");
+  eq(h.resolved, [FAILURE_VOLUME_ALERT_KEY, FAILURE_RATE_ALERT_KEY], "the clean recent run still settles any page that was open");
   // Once per burst is the past notice's own cooldown, not a stored marker: only a live
   // page gates anything, so only `live` is stored (a stored value nothing reads, L46).
   assert(
@@ -932,7 +961,7 @@ const windowOf = (samples: RateSample[]): RateWindowState => ({
   const ended = windowOf([sample(T0 - 50 * MIN, 10, 6), sample(T0 - 45 * MIN, 5, 0), sample(T0 - 20 * MIN, 7, 0)]);
   const h = harness({ state: ended, resolveAnswers: true });
   await h.run();
-  eq(h.resolved, [FAILURE_RATE_ALERT_KEY], "the open page is all-cleared");
+  eq(h.resolved, [FAILURE_VOLUME_ALERT_KEY, FAILURE_RATE_ALERT_KEY], "the open page is all-cleared");
   eq(h.notified.length, 0, "and the past notice is not sent on top of it");
 }
 {
@@ -968,7 +997,7 @@ const windowOf = (samples: RateSample[]): RateWindowState => ({
   const h = harness({ state: w, resolveAnswers: true });
   await h.run();
   eq(h.notified.length, 0, "old failures plus one ordinary race do not re-page");
-  eq(h.resolved, [FAILURE_RATE_ALERT_KEY], "19 of 20 recent attempts completing stands the page down");
+  eq(h.resolved, [FAILURE_VOLUME_ALERT_KEY, FAILURE_RATE_ALERT_KEY], "19 of 20 recent attempts completing stands the page down");
 }
 {
   // A window that holds nothing recent (the first reading after the state was lost):
@@ -993,6 +1022,7 @@ const windowOf = (samples: RateSample[]): RateWindowState => ({
     readRefusedPeople: async () => ({ people: 0, refusals: 0, withoutLead: 0 }),
     thresholds: THRESHOLDS,
     recent: RECENT,
+    volume: QUIET_VOLUME,
     armed: true,
     cooldownMs: 30 * MIN,
     notify: async (key) => {
@@ -1003,7 +1033,9 @@ const windowOf = (samples: RateSample[]): RateWindowState => ({
     },
     onError: (context) => errors.push(context),
   });
-  eq(errors, ["resolve"], "the failed resolve is reported");
+  // #3276: once for the volume page's all-clear and once for the share's, each asked
+  // on its own so one throwing cannot stop the other being asked.
+  eq(errors, ["resolve", "resolve"], "the failed resolve is reported, for each key it was asked about");
   eq(notified, [FAILURE_BURST_ENDED_ALERT_KEY], "and the burst is still reported");
 }
 {
@@ -1029,6 +1061,7 @@ const windowOf = (samples: RateSample[]): RateWindowState => ({
       readRefusedPeople: async () => ({ people: 0, refusals: 0, withoutLead: 0 }),
       thresholds: THRESHOLDS,
       recent: RECENT,
+      volume: QUIET_VOLUME,
       armed: true,
       cooldownMs: 30 * MIN,
       notify: async (key, cooldownMs) => {
@@ -1097,6 +1130,7 @@ function lane(day: string) {
         readRefusedPeople: async () => ({ people: 0, refusals: 0, withoutLead: 0 }),
         thresholds: SHIPPED_FAILURE_RATE_THRESHOLDS,
         recent: SHIPPED_FAILURE_RATE_RECENT,
+        volume: SHIPPED_FAILURE_VOLUME,
         armed: true,
         cooldownMs: 30 * MIN,
         notify: async (key, cooldownMs, text) => {
@@ -1191,7 +1225,13 @@ const oct4 = (h: number, m: number) => Date.UTC(2026, 9, 4, h + 4, m);
   for (let t = oct4(20, 50); t <= oct4(23, 55); t += 5 * MIN) await l.tick(t, 1, 0);
 
   const pages = l.sent.filter((s) => s.key === FAILURE_RATE_ALERT_KEY && s.kind === "page");
-  const clears = l.sent.filter((s) => s.kind === "clear");
+  const clears = l.sent.filter((s) => s.kind === "clear" && s.key === FAILURE_RATE_ALERT_KEY);
+  // #3276: the same wave crossed ten failures in half an hour too, so the volume page
+  // fired beside the share and stands down on the same clean run.
+  const volumePages = l.sent.filter((s) => s.key === FAILURE_VOLUME_ALERT_KEY && s.kind === "page");
+  const volumeClears = l.sent.filter((s) => s.key === FAILURE_VOLUME_ALERT_KEY && s.kind === "clear");
+  assert(volumePages.length >= 1 && volumePages.every((p) => p.atMs <= lastFailure), "the volume page fired while it was failing");
+  eq(volumeClears.map((c) => c.atMs), [oct4(21, 15)], "and cleared once, on the share's clean run");
   assert(pages.length >= 1, "the live burst pages");
   assert(pages.every((p) => p.atMs <= lastFailure), "every page went out while it was still failing, none on old failures");
   assert(pages.every((p) => p.text.includes("Still failing:")), "and each says it is still failing");
@@ -1220,9 +1260,263 @@ const oct4 = (h: number, m: number) => Date.UTC(2026, 9, 4, h + 4, m);
   eq(l.sent.filter((s) => s.key === FAILURE_BURST_ENDED_ALERT_KEY).length, 0, "and no past notice for a burst already paged");
   // Morning traffic: one attempt a tick. Five clean attempts inside 30 minutes is the floor.
   for (let t = oct14(3, 0); t <= oct14(4, 0); t += 5 * MIN) await l.tick(t, 1, 0);
-  const clears = l.sent.slice(beforeTraffic).filter((s) => s.kind === "clear");
+  const clears = l.sent.slice(beforeTraffic).filter((s) => s.kind === "clear" && s.key === FAILURE_RATE_ALERT_KEY);
   eq(clears.length, 1, "the all-clear comes once the recent window holds a measured clean run");
   eq(clears[0]?.atMs, oct14(3, 20), "at the tick the last 30 minutes first held five clean attempts");
+}
+
+// --- #3276: the volume page, beside the share ----------------------------------------
+
+// The shipped pair, named, and the window it is aged by.
+{
+  eq(FAILURE_VOLUME_FAILURES, 10, "the volume page fires on 10 failed attempts (Dan, 2026-10-04)");
+  eq(FAILURE_VOLUME_WINDOW_MS, 30 * MIN, "inside 30 minutes");
+  eq(SHIPPED_FAILURE_VOLUME, { windowMs: 30 * MIN, failures: 10 }, "and the shipped thresholds are exactly those two constants");
+}
+
+// The count is the last six ticks: a sample exactly 30 minutes old has aged out, and
+// every failure code counts.
+{
+  const s = windowOf([
+    sample(T0 - 30 * MIN, 5, 5),
+    sample(T0 - 25 * MIN, 4, 4, { internal: 4 }),
+    sample(T0 - 5 * MIN, 3, 3, { slot_unavailable: 3 }),
+    sample(T0, 6, 3, { verify_unavailable: 3 }),
+  ]);
+  const v = readVolume(s, T0, SHIPPED_FAILURE_VOLUME);
+  eq(v.failures, 10, "the four ticks inside the window hold 10 failures, the one 30 minutes old none");
+  eq(v.attempts, 13, "and 13 attempts");
+  eq(v.byCode, { internal: 4, slot_unavailable: 3, verify_unavailable: 3 }, "every failure code counts toward it");
+  assert(v.firing, "10 failures in the window fires: the floor is met, not exceeded");
+  const nine = readVolume(windowOf([sample(T0 - 25 * MIN, 4, 4), sample(T0 - 10 * MIN, 3, 3), sample(T0, 2, 2)]), T0, SHIPPED_FAILURE_VOLUME);
+  eq(nine.failures, 9, "nine failures across the six ticks");
+  assert(!nine.firing, "9 failures in 30 minutes does not fire");
+}
+
+// Sell out against Slate failing (Dan, 2026-10-04).
+{
+  eq(failureKind({ slot_unavailable: 9, internal: 1 }).kind, "sell_out", "times refused at confirm leading is a sell out");
+  eq(failureKind({ slot_unavailable: 4, internal: 3, verify_unavailable: 3 }).kind, "slate_failing", "errors at least as many as refused times is Slate failing");
+  eq(failureKind({ internal: 10 }).errors, [{ code: "internal", count: 10 }], "and the errors are listed by code");
+}
+
+// The page copy, in both forms, with the people floor said as a floor.
+{
+  const sellOut = formatFailureVolumeAlert({
+    volume: { attempts: 14, failures: 10, byCode: { slot_unavailable: 10 }, firing: true },
+    volumeMinutes: 30,
+    refused: { people: 6, refusals: 10, withoutLead: 0, times: 4 },
+  });
+  eq(
+    sellOut,
+    "10 of 14 booking attempts failed in the last 30 minutes. This looks like a sell out rather than Slate failing: " +
+      "10 of them were times offered on the page and refused at confirm (slot_unavailable). At least 6 people were " +
+      "refused a time, across 4 times asked for. That is a floor: a confirm answered from the one ahead of it in a " +
+      "crowd records no person. The per call breakdown is in the booking outcome panel.",
+    "the sell out page leads with the count, says what it looks like and gives the people as a floor",
+  );
+  const failing = formatFailureVolumeAlert({
+    volume: { attempts: 40, failures: 12, byCode: { internal: 7, verify_unavailable: 3, slot_unavailable: 2 }, firing: true },
+    volumeMinutes: 30,
+    refused: null,
+  });
+  assert(
+    failing.startsWith(
+      "12 of 40 booking attempts failed in the last 30 minutes. This looks like Slate failing rather than a sell out: " +
+        "10 of them were errors or timeouts (internal (7), verify_unavailable (3)).",
+    ),
+    `the Slate failing page names the errors (got: ${failing})`,
+  );
+  assert(failing.includes("could not be counted"), "a failed people read is said, never read as nobody");
+  const noRefusal = formatFailureVolumeAlert({
+    volume: { attempts: 10, failures: 10, byCode: { internal: 10 }, firing: true },
+    volumeMinutes: 30,
+    refused: { people: 0, refusals: 0, withoutLead: 0 },
+  });
+  assert(!noRefusal.includes("people") && !noRefusal.includes("person"), "a run of errors with no refused time says nothing about people");
+  for (const text of [sellOut, failing, noRefusal]) assert(!DASHES.test(text), "no dash in the volume page copy");
+  eq(
+    formatFailureVolumeAllClear({ recentMinutes: 30, recent: { attempts: 6, failures: 0 }, newestFailureMs: T0 }),
+    "Failed bookings have stopped piling up: all 6 attempts in the last 30 minutes completed, and nothing has failed since 10:00am ET.",
+    "the all-clear quotes the clean run it stood down on, worded apart from the share's",
+  );
+}
+
+// The decision, through the real check.
+{
+  // Ten failures in the last half hour, inside a long window too thin to judge.
+  const thin = windowOf([sample(T0 - 20 * MIN, 5, 5), sample(T0 - 10 * MIN, 5, 5)]);
+  const h = harness({ state: thin, volume: SHIPPED_FAILURE_VOLUME, reading: reading("2026-08-11", 1000, 100), refused: { people: 3, refusals: 10, withoutLead: 0 } });
+  const out = await h.run();
+  assert(out.status === "checked" && out.verdict.status === "insufficient", "the share cannot judge a window of ten attempts");
+  eq(h.notified.map((n) => n.key), [FAILURE_VOLUME_ALERT_KEY], "but ten failures in 30 minutes page on the volume key");
+  assert(out.status === "checked" && out.state.samples.some((s) => s.told === "live"), "and the window records that somebody was told");
+  eq(h.peopleReads, [T0 + MIN - 30 * MIN], "the people are read over the volume window, not the share's");
+}
+{
+  const nine = windowOf([sample(T0 - 20 * MIN, 5, 5), sample(T0 - 10 * MIN, 4, 4)]);
+  const h = harness({ state: nine, volume: SHIPPED_FAILURE_VOLUME, reading: reading("2026-08-11", 1000, 100) });
+  await h.run();
+  eq(h.notified.length, 0, "nine failures in 30 minutes page nothing");
+  eq(h.peopleReads.length, 0, "and spend no read on who was refused");
+}
+{
+  const ten = windowOf([sample(T0 - 20 * MIN, 5, 5), sample(T0 - 10 * MIN, 5, 5)]);
+  const h = harness({ state: ten, volume: SHIPPED_FAILURE_VOLUME, reading: reading("2026-08-11", 1000, 100), armed: false });
+  await h.run();
+  eq(h.notified.length + h.resolved.length, 0, "a disarmed volume page measures and stays silent both ways (L56)");
+}
+{
+  const ten = windowOf([sample(T0 - 20 * MIN, 5, 5), sample(T0 - 10 * MIN, 5, 5)]);
+  const h = harness({ state: ten, volume: SHIPPED_FAILURE_VOLUME, reading: reading("2026-08-11", 1000, 100), refused: "throws" });
+  await h.run();
+  eq(h.notified.map((n) => n.key), [FAILURE_VOLUME_ALERT_KEY], "a failed people read still sends the volume page");
+  assert(h.notified[0]?.text.includes("could not be counted"), "and says the people could not be counted");
+  eq(h.errors.map((e) => e.context), ["refusedPeople"], "and reports the failed read");
+}
+{
+  // The failure path: an unreadable tally neither pages nor clears the volume key.
+  const ten = windowOf([sample(T0 - 20 * MIN, 5, 5), sample(T0 - 10 * MIN, 5, 5)]);
+  const h = harness({ state: ten, volume: SHIPPED_FAILURE_VOLUME, reading: null });
+  await h.run();
+  eq(h.notified.length + h.resolved.length, 0, "an unreadable tally sends nothing about the volume either way");
+}
+{
+  // The all-clear stands on the recent window's measured clean run, never on the
+  // count dipping under ten; a quiet half hour clears nothing.
+  const clean = windowOf([sample(T0 - 40 * MIN, 10, 10), sample(T0 - 10 * MIN, 6, 0)]);
+  const h = harness({ state: clean, volume: SHIPPED_FAILURE_VOLUME, reading: reading("2026-08-11", 1000, 100) });
+  await h.run();
+  assert(h.resolved.includes(FAILURE_VOLUME_ALERT_KEY), "a measured clean half hour clears the volume page");
+  const quiet = windowOf([sample(T0 - 40 * MIN, 10, 10), sample(T0 - 10 * MIN, 2, 0)]);
+  const q = harness({ state: quiet, volume: SHIPPED_FAILURE_VOLUME, reading: reading("2026-08-11", 1000, 100) });
+  await q.run();
+  eq(q.resolved.length, 0, "a half hour with too few attempts clears nothing, though the count is under ten");
+}
+
+{
+  // Ten failures in 220 attempts is also a clean run by the 5% rule. The volume page
+  // fires and is NOT all-cleared on the same tick; the share's all-clear still runs.
+  const busy = windowOf([sample(T0 - 20 * MIN, 110, 5), sample(T0 - 10 * MIN, 110, 5)]);
+  const h = harness({ state: busy, volume: SHIPPED_FAILURE_VOLUME, reading: reading("2026-08-11", 1000, 100) });
+  await h.run();
+  eq(h.notified.map((n) => n.key), [FAILURE_VOLUME_ALERT_KEY], "ten failures page on the volume key whatever the share");
+  assert(!h.resolved.includes(FAILURE_VOLUME_ALERT_KEY), "and the volume page is not all-cleared on the tick it pages");
+  eq(h.resolved, [FAILURE_RATE_ALERT_KEY], "the share's all-clear still stands on the clean run");
+}
+
+// The replay: 2026-10-04 19:29 to 20:44 ET through the tick sums. Every refusal and
+// every booking made that evening, read from production on 2026-10-16 (created_at
+// only, test buckets out); each tick records what landed since the previous one.
+{
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/booking-refusals-2026-10-04.json", import.meta.url), "utf8")) as {
+    refusals: { at: string }[];
+    bookings: string[];
+  };
+  const refusals = fixture.refusals.map((r) => Date.parse(r.at));
+  const bookings = fixture.bookings.map((b) => Date.parse(b));
+  eq(refusals.length, 25, "the fixture holds the evening's 25 refused confirms");
+  const replay = async (drop: number[] = []) => {
+    const l = lane("2026-10-04");
+    const kept = refusals.filter((_, i) => !drop.includes(i));
+    let prev = Date.UTC(2026, 9, 4, 23, 0);
+    await l.tick(prev, 0, 0);
+    for (let t = prev + 5 * MIN; t <= Date.UTC(2026, 9, 5, 1, 30); t += 5 * MIN) {
+      const f = kept.filter((r) => r > prev && r <= t).length;
+      const b = bookings.filter((x) => x > prev && x <= t).length;
+      await l.tick(t, f + b, f);
+      prev = t;
+    }
+    return l.sent.filter((s) => s.key === FAILURE_VOLUME_ALERT_KEY && s.kind === "page");
+  };
+  const pages = await replay();
+  eq(pages[0]?.atMs, oct4(19, 50), "the volume page fires at the 7:50pm ET tick, the first whose six ticks hold ten refusals");
+  assert((pages[0]?.atMs ?? Infinity) < oct4(20, 45), "55 minutes before the 8:45pm share page");
+  assert(pages[0]?.text.startsWith("10 of "), `and says it counted ten (got: ${pages[0]?.text})`);
+  assert(pages[0]?.text.includes("This looks like a sell out"), "and that every one was a time refused at confirm");
+  // The 7:49:23pm refusal is the tenth: without it the evening's first half holds nine
+  // in any six ticks, and nothing fires until the second cluster.
+  const tenth = refusals.findIndex((r) => r === Date.parse("2026-10-04T23:49:23.549Z"));
+  const without = await replay([tenth]);
+  assert(!without.some((p) => p.atMs < oct4(20, 0)), "without the tenth refusal, nine in 30 minutes fire nothing in the first cluster");
+}
+
+// --- #3797: proven lost races are outside the share, so they cannot page -------------
+//
+// The 12:35am ET page of 2026-10-16, replayed through the tick sums: every booking made
+// that night and its seven refusals, read from production on 2026-10-16. Six were proven
+// races (scripts/test-offer-race.ts replays the judgement); the routes now tally those on
+// their own row outside OUTCOME_ORDER, so they are in neither the attempts nor the
+// failures. The ET midnight rollover inside the window is left out of this replay, which
+// only keeps one more sample than the lane would.
+{
+  const fx = JSON.parse(readFileSync(new URL("./fixtures/offer-races-2026-10-15.json", import.meta.url), "utf8")) as {
+    refusals: { refusedAt: string }[];
+    bookings: string[];
+  };
+  const refusals = fx.refusals.map((r) => Date.parse(r.refusedAt));
+  // The reload refusal at 10:02:45pm ET is the one stale offer (index 2).
+  const stale = [refusals[2]!];
+  const bookings = fx.bookings.map((b) => Date.parse(b));
+  const night = async (failing: number[]) => {
+    const l = lane("2026-10-15");
+    let prev = Date.UTC(2026, 9, 16, 1, 30);
+    await l.tick(prev, 0, 0);
+    for (let t = prev + 5 * MIN; t <= Date.UTC(2026, 9, 16, 4, 40); t += 5 * MIN) {
+      const f = failing.filter((r) => r > prev && r <= t).length;
+      const b = bookings.filter((x) => x > prev && x <= t).length;
+      await l.tick(t, f + b, f);
+      prev = t;
+    }
+    return l.sent;
+  };
+  const before = await night(refusals);
+  assert(
+    before.some((s) => s.key === FAILURE_RATE_ALERT_KEY || s.key === FAILURE_BURST_ENDED_ALERT_KEY),
+    "counted the old way, the seven refusals put the share over the line that night (the control)",
+  );
+  const after = await night(stale);
+  eq(after.map((s) => s.key), [], "with the six proven races counted apart, nothing pages, all night");
+}
+{
+  // Races only: twelve proven races in half an hour and no failure. The race row is
+  // outside the tally's attempts and failures, so the window never sees them.
+  const l = lane("2026-10-16");
+  await l.tick(oct14(0, 0) + 2 * 24 * 60 * MIN, 0, 0);
+  for (let k = 1; k <= 12; k++) await l.tick(oct14(0, 0) + 2 * 24 * 60 * MIN + k * 5 * MIN, 2, 0);
+  eq(l.sent.length, 0, "a run of lost races alone pages nothing, share or volume");
+}
+{
+  // The page states the races counted apart beside its count, never inside it.
+  const text = formatFailureRateAlert({
+    attempts: 34,
+    failures: 7,
+    pct: 21,
+    windowMinutes: 180,
+    topCodes: [{ code: "slot_unavailable", count: 7 }],
+    refused: { people: 5, refusals: 7, withoutLead: 0, races: 6 },
+    ...LIVE,
+  });
+  assert(
+    text.includes("(7 refusals); 7 of 34 attempts failed overall (21%). 6 more were lost races, counted apart and not in these numbers"),
+    `the share page names the races counted apart (got: ${text})`,
+  );
+  const vol = formatFailureVolumeAlert({
+    volume: { attempts: 14, failures: 10, byCode: { slot_unavailable: 10 }, firing: true },
+    volumeMinutes: 30,
+    refused: { people: 6, refusals: 10, withoutLead: 0, races: 1 },
+  });
+  assert(vol.includes("1 more was a lost race, counted apart"), `the volume page does too (got: ${vol})`);
+  const none = formatFailureRateAlert({
+    attempts: 34,
+    failures: 7,
+    pct: 21,
+    windowMinutes: 180,
+    topCodes: [{ code: "slot_unavailable", count: 7 }],
+    refused: { people: 5, refusals: 7, withoutLead: 0, races: 0 },
+    ...LIVE,
+  });
+  assert(!none.includes("lost race"), "and says nothing about races when there were none");
 }
 
 // The SHIPPED recent window: shorter than the window it stands down, and a clean run

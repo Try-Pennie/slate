@@ -47,6 +47,14 @@ export const FAILURE_RATE_ALERT_KEY = "booking_failure_rate";
  */
 export const FAILURE_BURST_ENDED_ALERT_KEY = "booking_failure_burst_ended";
 
+/**
+ * alert_state key for the VOLUME page (#3276): enough failed attempts in the last
+ * half hour to page whatever share of traffic they are. Its own key beside the share
+ * page's, so one ending cannot clear the other and a reader can tell which tripped.
+ * A condition, like the share: it ends on a measured clean run of recent attempts.
+ */
+export const FAILURE_VOLUME_ALERT_KEY = "booking_failure_volume";
+
 /** The zone every time in this copy is given in, labelled ET (the roster's zone and
  *  the one the tally is bucketed in). */
 const COPY_ZONE = "America/New_York";
@@ -342,6 +350,73 @@ export function readRecent(state: RateWindowState, atMs: number, recent: RecentT
 }
 
 /**
+ * The volume page (#3276): a COUNT of failed attempts over a short window, beside the
+ * share over the long one.
+ *
+ * The share has to outweigh every success already in three hours before it can fire,
+ * so on 2026-10-04 leads were refused from 7:29pm ET and the share paged at 8:45pm.
+ * A count does not wait on the successes. Every failure code counts (a time refused at
+ * confirm and a Slate error alike, Dan 2026-10-04), over the share's own population,
+ * because it is summed from the same window samples: test traffic and off site hosts
+ * are already left out of the tally they are differenced from, and every refused
+ * confirm is in it, the ones answered behind another in a crowd included. That is why
+ * the count is never read from `routing_decisions`, which records no such follower.
+ *
+ * Resolution is one tick: a sample is recorded by the five minute tick that measured
+ * it, so a 30 minute window is the last six ticks rather than a sliding half hour to
+ * the second. The shipped numbers are in failure-rate-thresholds.ts.
+ */
+export interface VolumeThresholds {
+  /** How far back the count reaches. Aged by the window's own rule (`pruneSamples`). */
+  windowMs: number;
+  /** Failed attempts in that window that page. MET, not exceeded. */
+  failures: number;
+}
+
+export interface VolumeReading extends WindowTotals {
+  /** At least `failures` attempts failed inside the window. */
+  firing: boolean;
+}
+
+/** What the volume window holds as of `atMs`. */
+export function readVolume(state: RateWindowState, atMs: number, volume: VolumeThresholds): VolumeReading {
+  const totals = windowTotals(state, atMs, volume.windowMs);
+  return { ...totals, firing: totals.failures >= volume.failures };
+}
+
+/**
+ * The codes that mean a TIME was refused at confirm rather than Slate failing to
+ * answer. A run of these looks like a sell out of the times on offer (Dan, 2026-10-04);
+ * a run of anything else (internal, verify_unavailable, a timeout) looks like Slate
+ * failing.
+ */
+const TAKEN_TIME_CODES: ReadonlySet<string> = new Set(["slot_unavailable"]);
+
+/** Which a run of failures looks like, and the counts the page says it from. */
+export interface FailureKind {
+  kind: "sell_out" | "slate_failing";
+  /** Failures that were a time refused at confirm. */
+  taken: number;
+  /** Every other failure, by code, most first. */
+  errors: CodeCount[];
+  errorCount: number;
+}
+
+/** A sell out when times refused at confirm outnumber everything else, otherwise Slate failing. */
+export function failureKind(byCode: Record<string, number>): FailureKind {
+  let taken = 0;
+  const errors: CodeCount[] = [];
+  for (const [code, count] of Object.entries(byCode)) {
+    if (count <= 0) continue;
+    if (TAKEN_TIME_CODES.has(code)) taken += count;
+    else errors.push({ code, count });
+  }
+  errors.sort((a, b) => b.count - a.count || a.code.localeCompare(b.code));
+  const errorCount = errors.reduce((sum, e) => sum + e.count, 0);
+  return { kind: taken > errorCount ? "sell_out" : "slate_failing", taken, errors, errorCount };
+}
+
+/**
  * When the window's failures were recorded: the ticks of the first and of the
  * newest sample holding one. A sample is recorded by the five minute tick that
  * measured it, up to one tick after the failure itself, which is why the copy says
@@ -394,6 +469,19 @@ export interface RefusedPeople {
   refusals: number;
   /** Refusals with no lead id, which can be no person in particular. */
   withoutLead: number;
+  /**
+   * How many distinct times the counted refusals asked for (#3276), or absent when the
+   * read did not carry them. The volume page says it, because ten refusals for one
+   * dead time and ten across the evening send a reader to different places.
+   */
+  times?: number;
+  /**
+   * #3797: proven lost races in the same window, counted APART: none of them is in
+   * `refusals` or `people`, as the tally keeps them out of the failure share. Absent
+   * when the read did not carry the verdict. The page states it beside the count so a
+   * reader never has to work out which kind woke them.
+   */
+  races?: number;
 }
 
 /** One refusal row as the store reads it. `is_test` null is a bucket that could not
@@ -402,21 +490,47 @@ export interface RefusedPeople {
 export interface RefusalRow {
   lead_id: string | null;
   is_test: boolean | null;
+  /** The instant the lead asked for (#3272). Optional: a read that did not ask for it
+   *  leaves `times` uncounted rather than counted as none. */
+  requested_start?: string | null;
+  /** #3797: `race` is a proven lost race, which is left out of the people count exactly
+   *  as the tally leaves it out of the failure share. Anything else counts. */
+  offer_verdict?: string | null;
 }
 
 /** Count the people among the window's refusals, leaving test buckets out exactly as
  *  the tally does, so both halves of the page describe one population. */
 export function countRefusedPeople(rows: RefusalRow[]): RefusedPeople {
   const leads = new Set<string>();
+  const times = new Set<string>();
+  let timesRead = false;
+  let racesRead = false;
+  let races = 0;
   let refusals = 0;
   let withoutLead = 0;
   for (const row of rows) {
     if (row.is_test === true) continue;
+    if (row.offer_verdict !== undefined) racesRead = true;
+    // #3797 (Dan, 2026-10-16): a proven race is counted apart and never paged on.
+    if (row.offer_verdict === "race") {
+      races += 1;
+      continue;
+    }
     refusals += 1;
     if (row.lead_id) leads.add(row.lead_id);
     else withoutLead += 1;
+    if (row.requested_start !== undefined) {
+      timesRead = true;
+      if (row.requested_start) times.add(row.requested_start);
+    }
   }
-  return { people: leads.size, refusals, withoutLead };
+  return {
+    people: leads.size,
+    refusals,
+    withoutLead,
+    ...(timesRead ? { times: times.size } : {}),
+    ...(racesRead ? { races } : {}),
+  };
 }
 
 /** "1 refusal" / "5 refusals". */
@@ -432,6 +546,19 @@ function plural(n: number, word: string): string {
 function peopleWere(r: RefusedPeople): string {
   const who = r.people === 1 ? "1 person was" : `${r.people} people were`;
   return r.withoutLead > 0 ? `At least ${who}` : who;
+}
+
+/**
+ * #3797: the sentence naming the proven lost races counted apart, or nothing when there
+ * were none or the read could not say. Beside the count, never inside it.
+ */
+function racesApart(r: RefusedPeople | null | undefined): string {
+  const n = r?.races ?? 0;
+  if (n <= 0) return "";
+  return (
+    ` ${n === 1 ? "1 more was a lost race" : `${n} more were lost races`}, counted apart and not in these ` +
+    "numbers: a time free when the lead's list was computed and taken before they confirmed."
+  );
 }
 
 /** The top few codes as "slot_unavailable (35), internal (3)". */
@@ -560,7 +687,7 @@ export function formatFailureRateAlert(
       ? `The failures in that window were all recorded ${spanWords(input.span)}.`
       : `The failures in that window were recorded ${spanWords(input.span)}.`;
   return (
-    `${countsClause(input)}. Still failing: ${now}. ${when}${naming}${guidance} ` +
+    `${countsClause(input)}.${racesApart(input.refused)} Still failing: ${now}. ${when}${naming}${guidance} ` +
     "The per call breakdown is in the booking outcome panel."
   );
 }
@@ -603,9 +730,76 @@ export function formatFailureBurstEnded(
           `to book in the last ${minutes} minutes, so whether bookings are completing again is not ` +
           "yet known.";
   return (
-    `${lead} ${countsClause(input)}, recorded ${spanWords(input.span)}.${naming}${guidance} ` +
+    `${lead} ${countsClause(input)}, recorded ${spanWords(input.span)}.${racesApart(input.refused)}${naming}${guidance} ` +
     "The per call breakdown is in the booking outcome panel."
   );
+}
+
+/**
+ * The volume page (#3276). Leads with the count and the window, because the count is
+ * what tripped it, then says which it looks like (Dan, 2026-10-04): a sell out, times
+ * offered and refused at confirm, or Slate failing, errors and timeouts.
+ *
+ * The people behind the refusals come from `routing_decisions` and are DETAIL only:
+ * a confirm answered from the verdict of the one ahead of it in a crowd records no
+ * row, so the number is a floor and is always said as one (L11), never as "N people".
+ * A failed read is said as such, never as nobody.
+ */
+export function formatFailureVolumeAlert(input: {
+  volume: VolumeReading;
+  volumeMinutes: number;
+  /** Who was refused a time in the same window, or null when that read failed. */
+  refused: RefusedPeople | null;
+}): string {
+  const { failures, attempts, byCode } = input.volume;
+  const head = `${failures} of ${attempts} booking attempts failed in the last ${input.volumeMinutes} minutes.`;
+  const k = failureKind(byCode);
+  const looks =
+    k.kind === "sell_out"
+      ? ` This looks like a sell out rather than Slate failing: ${k.taken} of them were times offered on the page ` +
+        "and refused at confirm (slot_unavailable)."
+      : ` This looks like Slate failing rather than a sell out: ${k.errorCount} of them were errors or timeouts ` +
+        `(${codeList(k.errors)}).${guidanceFor(k.errors[0]?.code)}`;
+  return `${head}${looks}${peopleDetail(input.refused, k.taken)}${racesApart(input.refused)} The per call breakdown is in the booking outcome panel.`;
+}
+
+/** The people sentence of the volume page, or nothing when no failure was a refusal. */
+function peopleDetail(refused: RefusedPeople | null, taken: number): string {
+  if (taken === 0) return "";
+  if (refused === null) return " The people behind the refusals could not be counted: the read of the refusal records failed.";
+  if (refused.people === 0) {
+    return refused.refusals > 0
+      ? " None of the refusals recorded carried a lead id, so the people behind them are not known."
+      : " No refusal record was found for them, so the people behind them are not known.";
+  }
+  const who = refused.people === 1 ? "1 person was" : `${refused.people} people were`;
+  const times = refused.times && refused.times > 0 ? `, across ${plural(refused.times, "time")} asked for` : "";
+  return (
+    ` At least ${who} refused a time${times}. That is a floor: a confirm answered from the one ahead of it in a ` +
+    "crowd records no person."
+  );
+}
+
+/**
+ * The volume page's all-clear. Hung off the same measured clean run of recent attempts
+ * as the share's (#3275), never off the count dropping under ten, which happens as soon
+ * as the oldest tick ages out with nothing having recovered. Worded apart from the
+ * share's all-clear, because both are open together in a big wave and two identical
+ * messages in a row read as a glitch.
+ */
+export function formatFailureVolumeAllClear(
+  input: RecentCounts & {
+    /** The newest failure still in the share's window, or null when none is left. */
+    newestFailureMs: number | null;
+  },
+): string {
+  const { attempts, failures } = input.recent;
+  const lead = "Failed bookings have stopped piling up:";
+  if (failures > 0) {
+    return `${lead} ${attempts - failures} of ${attempts} attempts in the last ${input.recentMinutes} minutes completed.`;
+  }
+  const since = input.newestFailureMs === null ? "" : `, and nothing has failed since ${etTime(input.newestFailureMs)}`;
+  return `${lead} all ${attempts} attempts in the last ${input.recentMinutes} minutes completed${since}.`;
 }
 
 export type FailureRateResult =
@@ -629,6 +823,8 @@ export type FailureRateResult =
       state: RateWindowState;
       /** What the recent sub window measured (#3275). */
       recent: RecentReading;
+      /** What the volume window measured (#3276). */
+      volume: VolumeReading;
     };
 
 /**
@@ -663,8 +859,12 @@ export async function runBookingFailureRateCheck(deps: {
   readToday: () => Promise<OutcomeReading | null>;
   /**
    * Who was refused a time since `sinceMs` (#3633). Called only on an ARMED tick that
-   * sends a live page or a burst notice, never on a healthy, insufficient or disarmed
-   * one, since four cron lanes share one invocation's subrequest budget. It still
+   * sends a live page, a burst notice or (#3276) a volume page, never on a healthy,
+   * insufficient or disarmed one, since four cron lanes share one invocation's
+   * subrequest budget. The volume page reads over ITS window (the last 30 minutes), so
+   * a tick on which both pages are live makes two reads: one paged read more per tick
+   * only while both are firing, accepted so each page names the people behind the
+   * failures it counted rather than one window's people under the other's count. It still
    * runs on every live tick while the page's cooldown holds, because the cooldown
    * lives inside `notify` and asking it first would cost the same subrequest the skip
    * would save: one paged read per five minute tick, only while failures are live.
@@ -676,7 +876,11 @@ export async function runBookingFailureRateCheck(deps: {
   /** The recent sub window the page stands down on (#3275). Required, so `tsc`
    *  names a caller that would otherwise judge on the window's share alone. */
   recent: RecentThresholds;
+  /** The volume page (#3276). Required, so `tsc` names a caller that would otherwise
+   *  page on the share alone. */
+  volume: VolumeThresholds;
   armed: boolean;
+  /** The cooldown both pages are held by: the volume page borrows the share's setting. */
   cooldownMs: number;
   notify: ThrottledNotify;
   resolve: AlertResolve;
@@ -713,6 +917,8 @@ export async function runBookingFailureRateCheck(deps: {
   const verdict = judgeFailureRate(advanced.state, deps.nowMs, deps.thresholds);
   const recent = readRecent(advanced.state, deps.nowMs, deps.recent);
   const span = failureSpan(advanced.state, deps.nowMs, deps.thresholds.windowMs);
+  const volume = readVolume(advanced.state, deps.nowMs, deps.volume);
+  const volumeMinutes = Math.round(deps.volume.windowMs / 60_000);
 
   // #3275. The window says whether there WAS a wave; the recent sub window says
   // whether it is still happening. Three decisions, each on a measured reading:
@@ -731,13 +937,23 @@ export async function runBookingFailureRateCheck(deps: {
   // on a LIVE page, whose all-clear is already the end of that story.
   const breach = verdict.status === "breach" && span !== null;
   const live = deps.armed && breach && recent.failures > 0 && !recent.completing;
+  // #3276: the volume page, beside the share rather than in place of it. It needs no
+  // breach of the share: ten failures in half an hour page whatever share of traffic
+  // they are.
+  const volumeLive = deps.armed && volume.firing;
+  // The volume page stands down on the measured clean run, but never on a tick still
+  // holding ten failures: ten in 200 or more attempts is also a clean run by the 5%
+  // rule, and a page and its all-clear on one tick would say both things at once.
+  const clearVolume = deps.armed && recent.completing && !volume.firing;
   const pagedLive = advanced.state.samples.some((s) => s.told === "live");
-  const past = deps.armed && breach && recent.failures === 0 && !pagedLive;
+  const past = deps.armed && breach && recent.failures === 0 && !pagedLive && !volumeLive;
   const clear = deps.armed && recent.completing;
 
   // Recorded on the newest sample BEFORE the save, so the record survives a Slack
-  // that hangs. A page held by its cooldown still counts: one is open.
-  const told: RateSample["told"] = live ? "live" : undefined;
+  // that hangs. A page held by its cooldown still counts: one is open. Either page
+  // counts, since both mean somebody was told about these failures and the all-clear
+  // is what ends that story, not a second notice saying the burst is past.
+  const told: RateSample["told"] = live || volumeLive ? "live" : undefined;
   const samples = advanced.state.samples;
   const newest = samples[samples.length - 1];
   const state: RateWindowState =
@@ -765,6 +981,10 @@ export async function runBookingFailureRateCheck(deps: {
     // logged on its own line below, so this line never claims a notice it held.
     told: told ?? null,
     burst_ended: past,
+    volume_min: volumeMinutes,
+    volume_attempts: volume.attempts,
+    volume_failures: volume.failures,
+    volume_firing: volume.firing,
   });
 
   // The people count refines a page and is never a condition of one: a failed read is
@@ -786,7 +1006,32 @@ export async function runBookingFailureRateCheck(deps: {
       .catch((err) => deps.onError?.("notify", err));
   }
 
+  if (volumeLive) {
+    // Its own read, over its own window, so the people it names are the ones behind
+    // the failures it counted rather than three hours of them.
+    const refused = await deps.readRefusedPeople(deps.nowMs - deps.volume.windowMs).catch((err) => {
+      deps.onError?.("refusedPeople", err);
+      return null;
+    });
+    await deps
+      .notify(FAILURE_VOLUME_ALERT_KEY, deps.cooldownMs, formatFailureVolumeAlert({ volume, volumeMinutes, refused }))
+      .catch((err) => deps.onError?.("notify", err));
+  }
+
   let settled = false;
+  if (clearVolume) {
+    // #3276: the volume page stands down on the same measured clean run. Asked on its
+    // own, so a resolve that throws for one key still asks for the other.
+    await deps
+      .resolve(
+        FAILURE_VOLUME_ALERT_KEY,
+        formatFailureVolumeAllClear({ recentMinutes, recent, newestFailureMs: span?.newestMs ?? null }),
+      )
+      .catch((err) => {
+        deps.onError?.("resolve", err);
+        return false;
+      });
+  }
   if (clear) {
     const answer = await deps
       .resolve(
@@ -831,7 +1076,7 @@ export async function runBookingFailureRateCheck(deps: {
       )
       .catch((err) => deps.onError?.("notify", err));
   }
-  return { status: "checked", armed: deps.armed, verdict, rebased, state, recent };
+  return { status: "checked", armed: deps.armed, verdict, rebased, state, recent, volume };
 }
 
 /**

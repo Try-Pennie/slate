@@ -33,6 +33,24 @@ const committed = JSON.parse(
   assert(committed.cases.length >= 15 + MACHINE_TOKEN_CLAIMS.length, `every case is there (${committed.cases.length})`);
 }
 
+// --- the secret scanner's exemption is exactly this file, and this is its check ----
+// gitleaks reads every token in the fixture file as a leaked JWT, so .gitleaks.toml
+// exempts it by path (Dan, 2026-10-17). A path exemption hides a real token pasted
+// in later, so the scanner is told to look away from ONE file and this suite is what
+// looks: the assertion above holds the file to exactly what the cases build from the
+// public fixture key. The block must name that file and nothing else, or a second
+// exemption could ride on this one's check.
+{
+  const toml = readFileSync(fileURLToPath(new URL("../.gitleaks.toml", import.meta.url)), "utf8");
+  // By its description line: the comment introducing a block sits in the chunk BEFORE
+  // the `[[allowlists]]` that opens it, so matching on free text finds the wrong one.
+  const block = toml.split("[[allowlists]]").find((b) => b.includes('description = "Marcia token fixtures'));
+  assert(block !== undefined, "the Marcia token fixture exemption is in .gitleaks.toml");
+  const paths = [...(block ?? "").matchAll(/'''\^(.+?)\$'''/g)].map((m) => m[1].replace(/\\\./g, "."));
+  eq(paths, ["src/lib/mcp-booking/machine-token-fixtures.json"], "it exempts exactly the generated fixture file");
+  assert(FIXTURE_TOKEN_KEY.includes("PUBLIC-never-a-real-key"), "and the key those tokens are signed with says it is public");
+}
+
 // --- every case, both readers -----------------------------------------------------
 for (const c of committed.cases) {
   const v = await verifyMachineToken(c.token, [committed.key], committed.verifyAtMs);
@@ -65,8 +83,10 @@ for (const c of committed.cases) {
 
 // --- rotation: either slot verifies, a foreign key does not -------------------------
 {
-  const a = "slot-a-key-0000000000000000000000000000000000";
-  const b = "slot-b-key-1111111111111111111111111111111111";
+  // Long enough to be accepted as a key, and spelled so no scanner reads them as one:
+  // "key-" followed by hex is a Mailgun key to semgrep's secret rules.
+  const a = "rotation-slot-a-fixture-only-aaaaaaaaaaaaaaaaaaaa";
+  const b = "rotation-slot-b-fixture-only-bbbbbbbbbbbbbbbbbbbb";
   const signedB = await signMachineToken({ ...FIXTURE_CLAIMS }, b);
   assert((await verifyMachineToken(signedB, [a, b], FIXTURE_VERIFY_AT_MS)).ok, "a token signed with slot B verifies while slot A is also set");
   const v = await verifyMachineToken(signedB, [a], FIXTURE_VERIFY_AT_MS);

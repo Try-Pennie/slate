@@ -46,9 +46,13 @@ export async function forwardBookingCall(deps: GatewayDeps, signedToken: unknown
   if (typeof signedToken !== "string" || signedToken.length === 0) {
     return own(401, "token_malformed", "No lead token was given.");
   }
+  // No secret on this deployment is NOT refused here. The call goes on carrying no
+  // secret header, and the internal route, reading the same deployment's secret,
+  // refuses it fail closed as `gateway_unconfigured` and pages
+  // `marcia_gateway_refused`. A refusal made here could only log, so a deployment
+  // that never got its secret would turn every Marcia call away in silence.
   if (!deps.gatewaySecret) {
-    deps.log.error("mcp-booking", { msg: "no MCP_BOOKING_GATEWAY_SECRET on this deployment, so the booking gateway refuses every call" });
-    return own(503, "gateway_unconfigured", "Slate cannot take Marcia's calls on this deployment yet.");
+    deps.log.error("mcp-booking", { msg: "no MCP_BOOKING_GATEWAY_SECRET on this deployment; the internal route will refuse and page" });
   }
   let body: string;
   try {
@@ -60,7 +64,11 @@ export async function forwardBookingCall(deps: GatewayDeps, signedToken: unknown
     const res = await deps.fetch(
       new Request(`${CRON_ORIGIN}${marciaInternalPath(operation)}`, {
         method: "POST",
-        headers: { [GATEWAY_SECRET_HEADER]: deps.gatewaySecret, [LEAD_TOKEN_HEADER]: signedToken, "content-type": "application/json" },
+        headers: {
+          ...(deps.gatewaySecret ? { [GATEWAY_SECRET_HEADER]: deps.gatewaySecret } : {}),
+          [LEAD_TOKEN_HEADER]: signedToken,
+          "content-type": "application/json",
+        },
         body,
       }),
     );

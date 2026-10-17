@@ -21,7 +21,7 @@ export const dynamic = "force-dynamic";
  * key is configured; 401 for a wrong or missing key.
  *
  * The optional `?lane=` selects which canary heartbeat to stamp, restricted to an
- * allowlist (#982): the 30-min dry tick stamps `smoke-canary`, the 6h full pass
+ * allowlist (#982): the 30-min dry tick stamps `smoke-canary`, the hourly full pass
  * additionally stamps `smoke-canary-full`, so a silently-dropped full run no
  * longer hides behind the dry tick's fresh stamp. The allowlist is a security
  * scope, not just validation: without it a booking-key holder could stamp a real

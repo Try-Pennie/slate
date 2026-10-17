@@ -19,6 +19,11 @@
 // visible: the golden has to be edited deliberately, in the same change, with the
 // reasoning attached.
 //
+// `slotsComputedAt` arrived with #3797: the stamp x-slots-computed-at already carries,
+// in the body so the booker can hand it back with its confirm and a time refused at
+// the free check can be judged a lost race. A freshness fact, not routing, and never
+// rendered.
+//
 // `shownTier` arrived with #3495: the tier whose times are on show, which the booker
 // hands back with its confirm so the confirm records it instead of reading the cache
 // for it. Dan, 2026-10-07, on #259: "I don't want the lead to see it. I don't care if
@@ -48,7 +53,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // The frozen contract. Keys are exact and ordered by level; the embed reads all
 // of these and nothing else.
 const GOLDEN_SHAPE = {
-  top: ["bucket", "emptyBecause", "eventType", "orgName", "shownTier", "slots"],
+  top: ["bucket", "emptyBecause", "eventType", "orgName", "shownTier", "slots", "slotsComputedAt"],
   bucket: ["code"],
   eventType: ["description", "durationMin", "name"],
 };
@@ -98,6 +103,7 @@ const fakeResult = {
     "2026-06-10T14:00:00.000Z",
     "2026-06-10T15:00:00.000Z",
   ],
+  computedAt: "2026-06-10T13:55:00.000Z" as string | null,
   routing: {
     requested_code: "411",
     effective_code: "415",
@@ -129,6 +135,8 @@ function buildResponseBody(result: typeof fakeResult, nowMs: number) {
     emptyBecause: slots.length === 0 ? { kind: "busy" as const } : null,
     // #3495: the tier whose times are on show, for the booker to hand back.
     shownTier: result.routing.booked_tier,
+    // #3797: when the list was computed, for the booker to hand back.
+    slotsComputedAt: result.computedAt ?? null,
   };
 }
 
@@ -146,6 +154,8 @@ const GOLDEN_RESPONSE = {
   emptyBecause: null,
   // The EFFECTIVE tier: the times on show are one rung down.
   shownTier: "t2",
+  // #3797: the list's stamp, a freshness fact and not routing.
+  slotsComputedAt: "2026-06-10T13:55:00.000Z",
 };
 
 const body = buildResponseBody(fakeResult, NOW_MS);
@@ -153,7 +163,7 @@ const body = buildResponseBody(fakeResult, NOW_MS);
 eq(JSON.stringify(body), JSON.stringify(GOLDEN_RESPONSE), "response body matches the frozen golden snapshot");
 
 // Field set/shape, asserted level by level so an add/remove/rename is named.
-eq(Object.keys(body).sort().join(","), GOLDEN_SHAPE.top.join(","), "top-level keys are exactly bucket, emptyBecause, eventType, orgName, shownTier, slots");
+eq(Object.keys(body).sort().join(","), GOLDEN_SHAPE.top.join(","), "top-level keys are exactly bucket, emptyBecause, eventType, orgName, shownTier, slots, slotsComputedAt");
 // A response WITH times must never carry a reason for emptiness: the booker keys
 // its copy off this, and a stale "closed" beside a list of times would be absurd.
 eq(body.emptyBecause, null, "a populated response says nothing about why it might be empty");

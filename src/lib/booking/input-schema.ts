@@ -35,3 +35,12 @@ export const prefillSchema = z
  */
 const TIER_KEYS = Object.values(DEBT_TIER).map((t) => t.key) as [string, ...string[]];
 export const shownTierSchema = z.enum(TIER_KEYS).optional().catch(undefined);
+
+/**
+ * The `computed_at` of the slot list the lead picked from (#3797), handed back from
+ * the availability answer's `slotsComputedAt` so a time refused at the free check can
+ * be judged a lost race. A measure only, like `shownTier`: anything that is not a
+ * short string is dropped rather than refusing the booking, and the judgement itself
+ * reads an unparseable stamp as `unknown`, never as a race.
+ */
+export const slotsComputedAtSchema = z.string().max(64).optional().catch(undefined);

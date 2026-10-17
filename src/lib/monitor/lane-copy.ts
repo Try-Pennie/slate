@@ -677,8 +677,8 @@ export function verdictRecoveryText(lane: string): string {
 }
 
 /**
- * Canary alert copy, keyed by which pass went quiet (#525, #982). The 30-min dry
- * tick and the 6h full pass are separate heartbeats: a stale dry tick means the
+ * Canary alert copy, keyed by which pass went quiet (#525, #982). The half hourly dry
+ * tick and the hourly full pass (#1493) are separate heartbeats: a stale dry tick means the
  * whole canary stopped, while a stale `smoke-canary-full` means only the full
  * end-to-end booking proof stopped (the dry tick may still be fine), and recovery
  * is a full-pass re-run, so the two need distinct, actionable messages.
@@ -686,7 +686,7 @@ export function verdictRecoveryText(lane: string): string {
 export function canaryAlertText(lane: StaleLane, boundMin: number): string {
   const quiet = laneQuietClause({ ageMs: lane.ageMs, boundMin, unreadable: lane.unreadable });
   if (lane.lane === "smoke-canary-full") {
-    return `The booking smoke canary's full end to end pass (create, reschedule, cancel) ${quiet}, so the automated proof that a booking can actually be made is no longer running (the quick health tick may still be fine). Both the 6h scheduled run and the Worker gap filler have failed to complete it. Re run it from the Actions tab (Run workflow on smoke-canary, mode full).`;
+    return `The booking smoke canary's full end to end pass (create, reschedule, cancel) ${quiet}, so the automated proof that a booking can actually be made is no longer running (the quick health tick may still be fine). Both the hourly scheduled run and the Worker gap filler have failed to complete it. Re run it from the Actions tab (Run workflow on smoke-canary, mode full).`;
   }
   if (lane.lane === "router-replay") {
     // No hand re run here (#2466), for the reason the parity page below gives: the

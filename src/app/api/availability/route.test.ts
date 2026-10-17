@@ -772,6 +772,16 @@ describe("GET /api/availability names the layer that served it (#3366)", () => {
     expect(servedLine()?.[1]).toMatchObject({ from_anchor: "unreadable" });
   });
 
+  // #2220: an unreadable `to` filters nothing, so the line is where it is seen.
+  it("logs an unreadable to as unreadable, and says nothing of a readable one", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(false));
+    await GET(new NextRequest("http://localhost/api/availability?bucket=411&to=not-a-date"));
+    expect(servedLine()?.[1]).toMatchObject({ to_anchor: "unreadable" });
+    vi.mocked(log.info).mockClear();
+    await GET(new NextRequest("http://localhost/api/availability?bucket=411&to=2099-02-01T00%3A00%3A00.000Z"));
+    expect(servedLine()?.[1]).not.toHaveProperty("to_anchor");
+  });
+
   it("logs nothing about a bucket it could not find", async () => {
     cache.getBucketSlotsWithFallback.mockResolvedValue(null);
     await get("NOPE");
@@ -928,4 +938,78 @@ describe("GET /api/availability reports its own time (#3653)", () => {
 
   const servedFields = () =>
     vi.mocked(log.info).mock.calls.find(([tag, fields]) => tag === "availability" && fields.msg === "slots served")?.[1];
+});
+
+// #2220 (Dan, 2026-10-16): a window past what is offered answers EMPTY and says why,
+// never with the times of another window. `from` used to reach only the cache read,
+// which answers with the stored horizon wherever it is asked, so a request for a week
+// in November came back 200 with September's times and `emptyBecause: null`. Every
+// served time now lies inside the asked window, and an empty answer whose offered
+// times all fall before `from` says `beyond_horizon` with the last time offered.
+describe("GET /api/availability answers the window it was asked about (#2220)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // An open week, set here rather than inherited: an earlier case leaves the mock
+    // on a week with no open day, which would read every empty answer as closed.
+    hours.loadBusinessHoursCached.mockResolvedValue({
+      zone: "America/New_York",
+      rules: [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_minute: 480, end_minute: 1020 })),
+      exceptions: [],
+      source: "stored" as const,
+    });
+    // and a staffed pool with the ordinary horizon, for the same reason.
+    settings.loadBookingHorizonDays.mockResolvedValue(4);
+    eligible.eligibleAgentIdsCached.mockResolvedValue({ ids: ["u1", "u2"], fallbackApplied: false });
+  });
+  const OFFERED = ["2099-01-01T15:00:00.000Z", "2099-01-02T15:00:00.000Z", "2099-01-03T15:00:00.000Z"];
+  const offering = (slots: string[]) => cache.getBucketSlotsWithFallback.mockResolvedValue({ ...slotsFor(false), slots });
+  const ask = (query: string) => GET(new NextRequest(`http://localhost/api/availability?bucket=411&${query}`));
+
+  it("serves only the times inside the asked window, never times before `from`", async () => {
+    offering(OFFERED);
+    const body = await (await ask("from=2099-01-02T00:00:00.000Z&to=2099-01-02T23:59:00.000Z")).json();
+    expect(body.slots).toEqual(["2099-01-02T15:00:00.000Z"]);
+    expect(body.emptyBecause).toBeNull();
+  });
+
+  it("answers a window wholly past the offered times with nothing, and names the last time offered", async () => {
+    offering(OFFERED);
+    const res = await ask("from=2099-02-01T00:00:00.000Z&to=2099-02-07T00:00:00.000Z");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.slots).toEqual([]);
+    expect(body.emptyBecause).toEqual({ kind: "beyond_horizon", lastOfferedAt: "2099-01-03T15:00:00.000Z" });
+    // The window is not empty because the org is shut or full, so neither is asked.
+    expect(hours.loadBusinessHoursCached).not.toHaveBeenCalled();
+  });
+
+  it("trims a window that starts inside what is offered and runs past it to the times offered", async () => {
+    offering(OFFERED);
+    const body = await (await ask("from=2099-01-02T00:00:00.000Z&to=2099-03-01T00:00:00.000Z")).json();
+    expect(body.slots).toEqual(["2099-01-02T15:00:00.000Z", "2099-01-03T15:00:00.000Z"]);
+    expect(body.emptyBecause).toBeNull();
+  });
+
+  it("explains a window as it always did when nothing at all is offered, wherever it is asked", async () => {
+    offering([]);
+    const body = await (await ask("from=2099-02-01T00:00:00.000Z")).json();
+    expect(body.emptyBecause).toEqual({ kind: "busy" });
+  });
+
+  it("explains an empty window inside what is offered as it always did, not as beyond the horizon", async () => {
+    offering(OFFERED);
+    // Between the second and third offered times: inside, just empty.
+    const body = await (await ask("from=2099-01-02T16:00:00.000Z&to=2099-01-03T14:00:00.000Z")).json();
+    expect(body.slots).toEqual([]);
+    expect(body.emptyBecause).toEqual({ kind: "busy" });
+  });
+
+  it("does not filter on an unreadable `from` or `to`, rather than dropping every time and calling the bucket busy", async () => {
+    offering(OFFERED);
+    for (const query of ["from=not-a-date", "to=not-a-date"]) {
+      const body = await (await ask(query)).json();
+      expect(body.slots).toEqual(OFFERED);
+      expect(body.emptyBecause).toBeNull();
+    }
+  });
 });

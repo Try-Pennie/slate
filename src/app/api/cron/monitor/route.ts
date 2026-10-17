@@ -150,7 +150,11 @@ import {
   type FailureRateResult,
   type RateThresholds,
 } from "@/lib/monitor/booking-failure-rate";
-import { SHIPPED_FAILURE_RATE_RECENT, SHIPPED_FAILURE_RATE_THRESHOLDS } from "@/lib/monitor/failure-rate-thresholds";
+import {
+  SHIPPED_FAILURE_RATE_RECENT,
+  SHIPPED_FAILURE_RATE_THRESHOLDS,
+  SHIPPED_FAILURE_VOLUME,
+} from "@/lib/monitor/failure-rate-thresholds";
 import {
   catchallVerdict,
   catchallPageText,
@@ -193,6 +197,16 @@ import {
   type FollowUpDrainResult,
 } from "@/lib/monitor/follow-up-drain-rate";
 import { loadFollowUpState, saveFollowUpState, followUpReadingOf } from "@/lib/monitor/follow-up-drain-rate-store";
+import {
+  runDuplicateCancelCheck,
+  DUPLICATE_CANCEL_THRESHOLDS,
+  type DuplicateCancelResult,
+} from "@/lib/monitor/duplicate-cancel-rate";
+import {
+  duplicateCancelReadingOf,
+  loadDuplicateCancelState,
+  saveDuplicateCancelState,
+} from "@/lib/monitor/duplicate-cancel-rate-store";
 import {
   runAvailabilityTruthCheck,
   type TruthResult,
@@ -301,16 +315,27 @@ import {
   samplesFromWindow,
   type CeilingLimits,
   type RefusalThresholds,
+  embedTripsInWindow,
+  judgeEmbedRefusalSignals,
+  lockoutReadsNeeded,
+  planEmbedRefusalAlerts,
+  SHIPPED_REFUSAL_THRESHOLDS,
+  type EmbedCapLimits,
 } from "@/lib/monitor/api-refusal-signals";
+import { SHIPPED_CEILING_LIMITS, SHIPPED_EMBED_CAP_LIMITS } from "@/lib/monitor/refusal-limits";
+import { SHIPPED_EMBED_REFUSAL_THRESHOLDS } from "@/lib/monitor/embed-refusal-thresholds";
+import { countLockedOutKeys } from "@/lib/monitor/embed-lockouts-store";
 import {
-  BOOKING_API_IP_LIMITER,
-  BOOKING_API_WRITE_LIMITER,
-  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
-  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+  BOOKING_CONTACT_HOURLY_RATE_RULES,
+  BOOKING_HOURLY_RATE_RULES,
 } from "@/lib/rate-limit-core";
 import { SHIPPED_MIGRATION_VERSION } from "@/lib/db/migration-version";
 import { runWebhookSubscriberCheck } from "@/lib/monitor/webhook-subscriber-coverage";
 import { runHandoffCheck } from "@/lib/handoffs/check";
+import { runOwnerNoticeWithheldReport } from "@/lib/monitor/owner-notice-withheld-report";
+import { countWithheldOwnerNotices } from "@/lib/monitor/owner-notice-withheld-store";
+import { OWNER_ALERT_SKIP_THRESHOLDS, runOwnerAlertSkipsCheck } from "@/lib/monitor/owner-alert-skips";
+import { loadRecentOwnerAlerts } from "@/lib/monitor/owner-alert-skips-store";
 import {
   loadHandoffBookings,
   loadHandoffChannel,
@@ -498,25 +523,21 @@ const FAILURE_RATE_THRESHOLDS: RateThresholds = SHIPPED_FAILURE_RATE_THRESHOLDS;
 // where nothing else does. The smoke canary exercises the endpoint with a valid
 // key every 30 minutes, so the measured-clear path gets real exercise either way.
 //
-// The limits the ceiling page names, DERIVED from the rules that actually refuse
-// rather than copied into the copy builder (L41). A figure written by hand beside
-// the rule it describes goes stale the first time somebody changes one, and a
-// message carrying a wrong number is worse than one carrying none: a reader who
-// checks it once and finds it right stops checking.
-const CEILING_LIMITS: CeilingLimits = {
-  keyPerHour: DIRECT_BOOKING_API_HOURLY_RATE_RULES[0].max,
-  keyPerMinute: BOOKING_API_WRITE_LIMITER.perMinute,
-  ipPerHour: DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES[0].max,
-  ipPerMinute: BOOKING_API_IP_LIMITER.perMinute,
-};
+// The limits the ceiling page names are DERIVED from the rules that actually refuse
+// (`refusal-limits.ts`, L41), and the thresholds live beside the judge
+// (`SHIPPED_REFUSAL_THRESHOLDS`) so the live verification (#1726) judges with the
+// same numbers rather than a copy of them.
+const CEILING_LIMITS: CeilingLimits = SHIPPED_CEILING_LIMITS;
 
-const REFUSAL_THRESHOLDS: RefusalThresholds = {
-  windowMs: 60 * 60_000,
-  ceilingMinRefusals: 20,
-  ceilingPct: 10,
-  credentialMinSamples: 3,
-  listMinSamples: 3,
-};
+// --- The embed booker turning real leads away by its own limits (#1727) ---
+//
+// The same window and the same rules as the three above, on the surface real leads
+// arrive on. The floors are DERIVED from a recorded production measurement
+// (`embed-refusal-thresholds.ts`, none of these tripped once in the 167 hours read),
+// and the limits each page names are read off the rules that actually refuse (L41).
+const EMBED_CAP_LIMITS: EmbedCapLimits = SHIPPED_EMBED_CAP_LIMITS;
+
+const REFUSAL_THRESHOLDS: RefusalThresholds = SHIPPED_REFUSAL_THRESHOLDS;
 
 // --- Are the times we offer actually free (#1315) ---
 // One bucket per tick on a rotating cursor, so the whole ladder is covered a few
@@ -1677,16 +1698,20 @@ export async function GET(req: NextRequest) {
           readRefusedPeople: (sinceMs) => readRefusedPeople(sinceMs, now),
           thresholds: FAILURE_RATE_THRESHOLDS,
           recent: SHIPPED_FAILURE_RATE_RECENT,
+          // #3276: ten failed attempts in half an hour page beside the share.
+          volume: SHIPPED_FAILURE_VOLUME,
           armed: settings!.failureRateArmed,
           cooldownMs: cooldownMs.booking_failure_rate,
           notify: (key, cooldownMs, text) => {
             // alert-key: booking_failure_rate
             // alert-key: booking_failure_burst_ended
+            // alert-key: booking_failure_volume
             // alert-text-ok: our own copy from booking-failure-rate.ts, built from
             // measured counts; no error text can reach it.
             return sendThrottledAlert(key, cooldownMs, text);
           },
           // alert-key: booking_failure_rate
+          // alert-key: booking_failure_volume
           resolve: (key, text) => resolveAlert(key, text),
           log: (fields) => log.info("monitor", { ...fields }),
           onError: (context, err) =>
@@ -1732,6 +1757,55 @@ export async function GET(req: NextRequest) {
           status: result.status,
           ...("verdict" in result
             ? { verdict: result.verdict.status, confirms: result.verdict.confirms, left: result.verdict.left }
+            : { rebased: result.rebased }),
+        });
+        return result;
+      }),
+    );
+
+    // --- Duplicate cancels failing or refused in volume (#2377) ---
+    //
+    // POST /api/bookings/cancel-duplicate counts every answer in the daily tally,
+    // outside the failure share. This judges, off the tally read the failure share
+    // above already made, the day's share answered 503 and the day's share refused for
+    // a person, each against its own line, behind a 40 call floor today's volume (about
+    // five a day) does not reach. Its own failure boundary (L73).
+    // all-clear-proof: scripts/test-duplicate-cancel-rate.ts - pins that a failed tally
+    // read sends NOTHING in either direction, that a first reading or a day rollover
+    // sends nothing, and that a day too quiet to judge clears nothing; each all clear
+    // hangs only off a measured clean six hours.
+    await steps.run<DuplicateCancelResult | null>("duplicate_cancel_rate", null, () =>
+      runDuplicateCancelCheck({
+        nowMs: now,
+        readToday: async () => duplicateCancelReadingOf(await todayMix()),
+        loadState: loadDuplicateCancelState,
+        saveState: saveDuplicateCancelState,
+        thresholds: DUPLICATE_CANCEL_THRESHOLDS,
+        cooldownMs: {
+          unavailable: cooldownMs.duplicate_cancel_unavailable,
+          refused: cooldownMs.duplicate_cancel_refused,
+        },
+        notify: (key, ms, text) => {
+          // alert-key: duplicate_cancel_unavailable
+          // alert-key: duplicate_cancel_refused
+          // alert-text-ok: our own copy from duplicate-cancel-rate.ts, built from
+          // measured counts and fixed stage and refusal words; no error text reaches it.
+          return sendThrottledAlert(key, ms, text);
+        },
+        // alert-key: duplicate_cancel_unavailable
+        // alert-key: duplicate_cancel_refused
+        resolve: (key, text) => resolveAlert(key, text),
+      }).then((result) => {
+        log.info("monitor", {
+          msg: "duplicate cancel rate",
+          status: result.status,
+          ...(result.status === "judged"
+            ? {
+                verdict: result.verdict.status,
+                calls: result.verdict.calls,
+                paged: result.paged.join(",") || "none",
+                cleared: result.cleared.join(",") || "none",
+              }
             : { rebased: result.rebased }),
         });
         return result;
@@ -1985,6 +2059,69 @@ export async function GET(req: NextRequest) {
         // alert-key: booking_api_list_read
         await resolveAlert(LIST_ALERT_KEY, refusalAllClear.list);
       }
+      return null;
+    });
+
+    // --- Is the embed booker turning leads away by its own limits (#1727)? ---
+    //
+    // The same window again, so no second read of the state row (L53). Its OWN
+    // boundary rather than a branch of the step above, because it can make up to
+    // two reads of the limiter's rows that the API signals do not need, and a throw
+    // in one must not take the other's judgement with it (L73). A read that fails
+    // throws inside this step, which the step failure streak reports (#2382); it
+    // never reaches the judge as zero, which would clear a page about people still
+    // locked out.
+    //
+    // The reads happen only when the window recorded a trip on that cap, so the
+    // quiet tick, which is nearly every tick, costs no subrequest at all.
+    await steps.run("embed_refusals", null, async () => {
+      if (failureRate.status !== "checked") {
+        log.warn("monitor", {
+          msg: "embed refusal signals skipped",
+          why:
+            failureRate.status === "unverified" || failureRate.status === "skipped"
+              ? failureRate.why
+              : "failure rate step errored",
+        });
+        return null;
+      }
+      const t = SHIPPED_EMBED_REFUSAL_THRESHOLDS;
+      const samples = samplesFromWindow(failureRate.state.samples);
+      const needed = lockoutReadsNeeded(embedTripsInWindow(samples, now, t.windowMs));
+      const lockouts = {
+        addresses: needed.addresses ? await countLockedOutKeys(BOOKING_HOURLY_RATE_RULES[0], now) : null,
+        contactKeys: needed.contactKeys ? await countLockedOutKeys(BOOKING_CONTACT_HOURLY_RATE_RULES[0], now) : null,
+      };
+      const verdicts = judgeEmbedRefusalSignals(samples, now, t, lockouts);
+      log.info("monitor", {
+        msg: "embed refusals",
+        ip_cap: verdicts.ipCap.status,
+        ip_locked_out: lockouts.addresses,
+        contact_cap: verdicts.contactCap.status,
+        contact_locked_out: lockouts.contactKeys,
+        honeypot: verdicts.honeypot.status,
+        honeypot_trips: verdicts.honeypot.status === "unmeasured" ? null : verdicts.honeypot.trips,
+      });
+
+      // Each signal pages and clears on its OWN key. The all-clears are settled in one
+      // batch, which reads alert_state once for all three rather than once each, on
+      // the subrequest budget four cron lanes share.
+      const plan = planEmbedRefusalAlerts(verdicts, t.windowMs, EMBED_CAP_LIMITS);
+      for (const page of plan.pages) {
+        // alert-key: booking_embed_ip_cap
+        // alert-key: booking_embed_contact_cap
+        // alert-key: booking_embed_honeypot
+        // alert-text-ok: our own copy from api-refusal-signals.ts, built from measured
+        // counts; no error text can reach it.
+        await sendThrottledAlert(page.key, cooldownMs.booking_failure_rate, page.text);
+      }
+      // alert-key: booking_embed_ip_cap
+      // alert-key: booking_embed_contact_cap
+      // alert-key: booking_embed_honeypot
+      // all-clear-proof: scripts/test-embed-refusal-signals.ts (an empty window, a
+      // needed lockout read that is missing, and one that came back unreadable each
+      // plan no all-clear at all)
+      await resolveRecovered(plan.recovered);
       return null;
     });
 
@@ -4082,6 +4219,66 @@ export async function GET(req: NextRequest) {
       }),
     );
 
+    // Owner reassign notices that never reached the sales side (#2440). The notice
+    // step records `withheld` on itself when no handoff channel is set; this counts
+    // the last week of those and whispers the number once a week on the info channel.
+    // Info, never a page and never an all clear: the reassigns happened, and a handoff
+    // somebody must act on already pages while the channel is unset (#2367). One
+    // server side count on the shared invocation. A failed count throws, so this
+    // boundary records it and sends nothing.
+    await steps.run("owner_notice_withheld", null, () =>
+      runOwnerNoticeWithheldReport({
+        nowMs: now,
+        countWithheld: (sinceIso) => countWithheldOwnerNotices(db, sinceIso),
+        // alert-key: owner_notice_withheld
+        // alert-text-ok: our own copy from owner-notice-withheld-report.ts, built from a
+        // measured count; no error text can reach it.
+        notify: (key, ms, text) => sendThrottledInfo(key, ms, text),
+        settingsUrl: `${appUrl()}/admin/alerts`,
+      }).then((result) => {
+        log.info("monitor", { msg: "owner notices withheld", status: result.status, count: result.count });
+        return result;
+      }),
+    );
+
+    // Owner alerts skipped for an unreachable calendar (#2436). Each skip is right on
+    // its own row (the step records the reason and stops retrying), and one advisor
+    // without Calendar is normal; what nothing saw was MANY advisors skipping. This
+    // judges the share of the last week's owner alerts carrying a skip_reason, across
+    // at least three advisors, and pages on it. One bounded read on the shared
+    // invocation. A failed read throws, so this boundary records it and nothing is
+    // paged or cleared.
+    // all-clear-proof: scripts/test-owner-alert-skips.ts - pins that a failed read, a
+    // read that filled its bound and a week below the alert floor each send NOTHING in
+    // either direction, and that the all clear hangs only off a measured week.
+    await steps.run("owner_alert_skips", null, () =>
+      runOwnerAlertSkipsCheck({
+        nowMs: now,
+        loadRecent: (sinceIso, limit) => loadRecentOwnerAlerts(db, sinceIso, limit),
+        thresholds: OWNER_ALERT_SKIP_THRESHOLDS,
+        cooldownMs: cooldownMs.owner_alert_skips,
+        notify: (key, ms, text) => {
+          // alert-key: owner_alert_skips
+          // alert-text-ok: our own copy from owner-alert-skips.ts, built from measured
+          // counts and the two skip kinds; no error text can reach it.
+          return sendThrottledAlert(key, ms, text);
+        },
+        // alert-key: owner_alert_skips
+        resolve: (key, text) => resolveAlert(key, text),
+      }).then((result) => {
+        log.info("monitor", {
+          msg: "owner alert skips",
+          status: result.status,
+          ...("verdict" in result
+            ? { alerts: result.verdict.alerts, skipped: result.verdict.skipped }
+            : "read" in result
+              ? { read: result.read }
+              : { alerts: result.alerts, skipped: result.skipped }),
+        });
+        return result;
+      }),
+    );
+
     // Are the request rate limits actually usable in the running deployment? (#1529)
     //
     // The hot path already reports a fail-open per request, but it can only ever speak
@@ -4362,7 +4559,7 @@ export async function GET(req: NextRequest) {
     // dropped that run), throttled by its own NOT-released dispatch lock so it
     // can't double-fire. The full pass creates real bookings on the SMOKE test
     // agents (webhooks are suppressed for is_test), the same side effect as the
-    // scheduled 6h run; the parity pass corrects drifted hours from cal.com and
+    // scheduled hourly run; the parity pass corrects drifted hours from cal.com and
     // sweeps, the same side effect as the scheduled daily run, and its 27h30m
     // threshold is what keeps a merely late daily run from being re-fired, as the
     // replay's 7d4h one does for its weekly run. The

@@ -4,6 +4,7 @@ import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { Attributes, Criteria, RoutingExclusion, RoutingDecision, RoutingStageCount } from "@/lib/db/types";
 import type { RecordedRefusalStage } from "@/lib/booking/refusal-trace";
+import type { OfferVerdict } from "@/lib/booking/offer-race";
 import { log } from "@/lib/log";
 import { misrouteAlert } from "@/lib/notify/misc-alert-copy";
 
@@ -41,6 +42,12 @@ export interface RecordRoutingDecisionInput {
   /** The refused lead's Salesforce lead id, 15 character form, or null (#3276). */
   leadId?: string | null;
   stageCounts?: RoutingStageCount[] | null;
+  /** #3797 (migration 0186), on a `candidate_read_empty` refusal only: whether it was a
+   *  proven lost race, the `computed_at` it was judged against, and the codes whose
+   *  stored row still offered the refused time (the proofs later refusals read). */
+  offerVerdict?: OfferVerdict | null;
+  servedComputedAt?: string | null;
+  staleRowCodes?: string[] | null;
   outcome: RoutingDecision["outcome"];
 }
 
@@ -75,6 +82,12 @@ export function routingDecisionRow(input: RecordRoutingDecisionInput): Record<st
     refusal_stage: input.refusalStage ?? null,
     stage_counts: input.stageCounts ?? null,
     lead_id: input.leadId ?? null,
+    // #3797: written only when the judgement reached the row, so every other row (a
+    // booked decision above all, which `commit_fresh_booking` inserts by naming exactly
+    // these keys as its columns) carries the shape it always did.
+    ...(input.offerVerdict ? { offer_verdict: input.offerVerdict } : {}),
+    ...(input.servedComputedAt ? { served_computed_at: input.servedComputedAt } : {}),
+    ...(input.staleRowCodes && input.staleRowCodes.length > 0 ? { stale_row_codes: input.staleRowCodes } : {}),
   };
 }
 

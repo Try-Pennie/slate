@@ -511,6 +511,37 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "monitor lane re-measures both every tick (#2367).",
   },
   {
+    // #2436. A CONDITION: owner alerts are being skipped for unreachable calendars
+    // across several advisors, which stays true until their accounts are fixed. The
+    // monitor re-measures the last week every tick, so it can say when it is over.
+    key: "owner_alert_skips",
+    kind: "condition",
+    why:
+      "Too many of the last week's owner alerts could not be written to the owning " +
+      "advisor's calendar, across several advisors, because the calendar is gone or was " +
+      "never provisioned; it ends when a measured week is back under the share, never " +
+      "on a week too quiet to judge.",
+  },
+  // #2377. Both CONDITIONS: a sustained share of duplicate cancels failing to complete,
+  // or refused for a person, stays true until the cause is fixed, and the monitor
+  // re-measures the day's window every tick, so each can say when it is over.
+  {
+    key: "duplicate_cancel_unavailable",
+    kind: "condition",
+    why:
+      "A sustained share of duplicate cancel requests is being answered 503 and told to " +
+      "retry, so nothing is cancelled for those leads; it ends when six hours of requests " +
+      "measurably complete again, never on a day too quiet to judge.",
+  },
+  {
+    key: "duplicate_cancel_refused",
+    kind: "condition",
+    why:
+      "A sustained share of duplicate cancel requests is refused for a reason a person has " +
+      "to look at, which no single handoff shows; it ends when six hours of requests are " +
+      "measurably back to an ordinary share.",
+  },
+  {
     key: "handoff_undelivered",
     kind: "condition",
     why:
@@ -604,6 +635,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A burst of failed bookings that had already stopped before the window crossed the line; the notice reports a finished event, says nothing has failed since, and is sent once per burst.",
   },
   {
+    // #3276. A CONDITION beside the share: ten or more failed attempts in the last 30
+    // minutes, whatever share of traffic that is. It ends on the same measured clean
+    // run as the share page, which the monitor re-measures every 5 minutes.
+    key: "booking_failure_volume",
+    kind: "condition",
+    why: "Bookings are failing in volume right now (ten or more failed attempts in 30 minutes); it ends when the last 30 minutes hold a measured clean run of attempts, never when the count merely drops under ten as old ticks age out.",
+  },
+  {
     // #3179. One key per budget (booking success, availability), so each clears on
     // its own.
     key: "booking_budget:*",
@@ -649,6 +688,25 @@ export const ALERT_CATALOG: AlertEntry[] = [
     key: "booking_api_list_read",
     kind: "condition",
     why: "The bookings list cannot be read, so the caller's sync has stalled; it ends when the table is readable again.",
+  },
+  // #1727. The embed booker's own three refusals, the same shape on the surface real
+  // leads arrive on. CONDITIONS for the same reason: each stays true until a limit
+  // is raised, a bot stops, or a field is fixed, and each clears only off a measured
+  // clear verdict.
+  {
+    key: "booking_embed_ip_cap",
+    kind: "condition",
+    why: "The booker's hourly address limit is refusing several addresses at once, which is a spread bot or the limit wrong for real traffic; it ends when fewer than the floor are locked out.",
+  },
+  {
+    key: "booking_embed_contact_cap",
+    kind: "condition",
+    why: "The booker's per contact limit is locking out several people at once, so real leads may be turned away by us; it ends when fewer than the floor are locked out.",
+  },
+  {
+    key: "booking_embed_honeypot",
+    kind: "condition",
+    why: "The booker's hidden bot trap is being filled across many intervals, a campaign or the field reachable by real leads; it ends when the window holds fewer trips than the floor.",
   },
   {
     key: "recompute_headroom",
@@ -1227,6 +1285,20 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "its own event.",
   },
   {
+    // #2440. INFO: a weekly count of owner reassign notices not posted because no
+    // handoff channel was set. The reassigns happened and are in booking_events; only
+    // the courtesy notice is missing, and a handoff a person must act on already
+    // pages while the channel is unset (handoff_channel_unset).
+    key: "owner_notice_withheld",
+    kind: "info",
+    why:
+      "The week's count of owner reassign notices that never reached the sales side " +
+      "because no handoff channel was set (#2440), read off the withheld reason each " +
+      "notice step records. Nothing is asked at once: the reassigns went through, and " +
+      "a waiting handoff already pages. It is a count over a week that has passed, so " +
+      "there is no state to end, and a week with none sends nothing.",
+  },
+  {
     key: "top_tier_cascade_rate",
     kind: "info",
     why:
@@ -1356,6 +1428,7 @@ export function alertKindOf(key: string): AlertKind | undefined {
  *
  * Derived from each entry's own `why` by that one criterion:
  *   - booking_failure_rate: bookings are failing right now.
+ *   - booking_failure_volume: bookings are failing in volume right now (#3276).
  *   - public_booking_stopped: the kill switch is on, so every public lead is refused.
  *   - hydration_all_failing: named by Dan; the calendar refresh failing everywhere.
  *   - empty_tier:*: a debt tier is offering leads no time at all.
@@ -1371,6 +1444,7 @@ export function alertKindOf(key: string): AlertKind | undefined {
  */
 export const URGENT_CONDITION_KEYS: readonly string[] = [
   "booking_failure_rate",
+  "booking_failure_volume",
   "public_booking_stopped",
   "hydration_all_failing",
   "empty_tier:*",

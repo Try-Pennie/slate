@@ -347,6 +347,10 @@ interface AvailabilityResponse {
    *  must not see routing (#259, Dan 2026-10-07). Null or absent when the answer
    *  named none, and then nothing is handed back. */
   shownTier?: string | null;
+  /** #3797: when the list on show was computed, handed back with the confirm so a
+   *  time somebody else took since then counts as a lost race, not a stale offer.
+   *  NEVER rendered. Null or absent when the answer carried none. */
+  slotsComputedAt?: string | null;
 }
 
 export type { CallMeNowConfig };
@@ -954,9 +958,15 @@ export default function Booker({
           // #2073: an agent's own link names the link, and the server decides
           // which bucket the booking is stored in; a routed page names its bucket.
           // #3495: and the tier its times came from, handed back unseen.
+          // #3797: and when that list was computed, also unseen.
           ...(agentLink
             ? { agentLink }
-            : { bucketCode, requestedCode, ...(meta?.shownTier ? { shownTier: meta.shownTier } : {}) }),
+            : {
+                bucketCode,
+                requestedCode,
+                ...(meta?.shownTier ? { shownTier: meta.shownTier } : {}),
+                ...(meta?.slotsComputedAt ? { slotsComputedAt: meta.slotsComputedAt } : {}),
+              }),
           start: selectedSlot,
           timezone: zone,
           salesforceId,

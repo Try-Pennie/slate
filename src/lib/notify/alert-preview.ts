@@ -204,10 +204,20 @@ import {
 } from "@/lib/monitor/migration-drift";
 import { catchallPageText, catchallClearText } from "@/lib/monitor/catchall-rate";
 import { formatFollowUpDrainPage, formatFollowUpDrainAllClear } from "@/lib/monitor/follow-up-drain-rate";
+import { formatOwnerNoticeWithheldReport } from "@/lib/monitor/owner-notice-withheld-report";
+import { formatOwnerAlertSkipsPage, formatOwnerAlertSkipsAllClear } from "@/lib/monitor/owner-alert-skips";
+import {
+  formatDuplicateCancelRefusedAllClear,
+  formatDuplicateCancelRefusedPage,
+  formatDuplicateCancelUnavailableAllClear,
+  formatDuplicateCancelUnavailablePage,
+} from "@/lib/monitor/duplicate-cancel-rate";
 import {
   formatFailureBurstEnded,
   formatFailureRateAlert,
   formatFailureRateAllClear,
+  formatFailureVolumeAlert,
+  formatFailureVolumeAllClear,
 } from "@/lib/monitor/booking-failure-rate";
 
 /**
@@ -220,22 +230,19 @@ const PREVIEW_BURST = { firstMs: Date.UTC(2026, 9, 14, 7, 5), newestMs: Date.UTC
 const PREVIEW_WAVE = { firstMs: Date.UTC(2026, 9, 14, 20, 10), newestMs: Date.UTC(2026, 9, 14, 21, 55) };
 /** When a previewed condition was first posted, for the #3801 reminder states. */
 const PREVIEW_REMINDER_OPENED_MS = Date.UTC(2026, 9, 15, 4, 15);
-import { refusalAllClear, refusalSignalCopy } from "@/lib/monitor/api-refusal-signals";
 import {
-  BOOKING_API_IP_LIMITER,
-  BOOKING_API_WRITE_LIMITER,
-  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
-  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
-} from "@/lib/rate-limit-core";
-
-/** The same figures the lane passes, read from the rules that actually refuse, so
- *  the preview shows the sentence that really ships rather than a lookalike. */
-const PREVIEW_CEILING_LIMITS = {
-  keyPerHour: DIRECT_BOOKING_API_HOURLY_RATE_RULES[0].max,
-  keyPerMinute: BOOKING_API_WRITE_LIMITER.perMinute,
-  ipPerHour: DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES[0].max,
-  ipPerMinute: BOOKING_API_IP_LIMITER.perMinute,
-};
+  embedRefusalAllClear,
+  embedRefusalCopy,
+  refusalAllClear,
+  refusalSignalCopy,
+} from "@/lib/monitor/api-refusal-signals";
+/** The same figures the lane passes (one shared module since #1726), read from the
+ *  rules that actually refuse, so the preview shows the sentence that really ships
+ *  rather than a lookalike. */
+import {
+  SHIPPED_CEILING_LIMITS as PREVIEW_CEILING_LIMITS,
+  SHIPPED_EMBED_CAP_LIMITS as PREVIEW_EMBED_CAP_LIMITS,
+} from "@/lib/monitor/refusal-limits";
 import {
   formatVolumeCountUnreadableAlert,
   formatVolumeCountReadableNotice,
@@ -1442,6 +1449,44 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: refusalAllClear.list,
   },
+  // #1727. The embed booker's own refusals. The limits are read off the real rules,
+  // exactly as the monitor lane passes them, so the preview names the shipped figures.
+  {
+    key: "booking_embed_ip_cap",
+    state: "the hourly address limit is refusing several addresses at once",
+    channel: "alert",
+    text: embedRefusalCopy.ipCap({ status: "paging", trips: 17, lockedOut: 4, floor: 3 }, 60 * 60_000, PREVIEW_EMBED_CAP_LIMITS)!,
+  },
+  {
+    key: "booking_embed_ip_cap",
+    state: "fewer addresses than the floor are locked out",
+    channel: "recovery",
+    text: embedRefusalAllClear.ipCap,
+  },
+  {
+    key: "booking_embed_contact_cap",
+    state: "the per contact limit is locking out several people at once",
+    channel: "alert",
+    text: embedRefusalCopy.contactCap({ status: "paging", trips: 9, lockedOut: 3, floor: 3 }, 60 * 60_000, PREVIEW_EMBED_CAP_LIMITS)!,
+  },
+  {
+    key: "booking_embed_contact_cap",
+    state: "only one email or phone is locked out",
+    channel: "recovery",
+    text: embedRefusalAllClear.contactCap,
+  },
+  {
+    key: "booking_embed_honeypot",
+    state: "the hidden bot trap is filled across many intervals",
+    channel: "alert",
+    text: embedRefusalCopy.honeypot({ status: "paging", trips: 14, intervals: 6, attempts: 38 }, 60 * 60_000)!,
+  },
+  {
+    key: "booking_embed_honeypot",
+    state: "the trap is quiet again",
+    channel: "recovery",
+    text: embedRefusalAllClear.honeypot,
+  },
   {
     // #3267. A slow save cutting several confirms off in one hour: measured healthy
     // is zero of the 2,933 bookings in the week before this shipped.
@@ -1527,6 +1572,25 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       windowMinutes: 180,
       topCodes: [{ code: "slot_unavailable", count: 10 }],
       refused: { people: 2, refusals: 10, withoutLead: 0 },
+      recentMinutes: 30,
+      recent: { attempts: 7, failures: 4 },
+      span: PREVIEW_WAVE,
+    }),
+  },
+  {
+    // #3797: stale offers paging, with the proven lost races of the same window counted
+    // apart beside the count. A window of races alone never pages, so it has no state
+    // here; scripts/test-monitor-booking-failure-rate.ts pins that it sends nothing.
+    key: "booking_failure_rate",
+    state: "stale offers paging, lost races counted apart beside them",
+    channel: "alert",
+    text: formatFailureRateAlert({
+      attempts: 49,
+      failures: 11,
+      pct: 22,
+      windowMinutes: 180,
+      topCodes: [{ code: "slot_unavailable", count: 11 }],
+      refused: { people: 4, refusals: 11, withoutLead: 0, races: 6 },
       recentMinutes: 30,
       recent: { attempts: 7, failures: 4 },
       span: PREVIEW_WAVE,
@@ -1723,6 +1787,71 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       span: { firstMs: PREVIEW_BURST.newestMs, newestMs: PREVIEW_BURST.newestMs },
       minRecentAttempts: 5,
     }),
+  },
+  {
+    // #3276, the 2026-10-04 shape at the 7:50pm tick: ten refusals in the last six
+    // ticks, every one a time refused at confirm.
+    key: "booking_failure_volume",
+    state: "ten refused times in half an hour, people counted as a floor",
+    channel: "alert",
+    text: formatFailureVolumeAlert({
+      volume: { attempts: 17, failures: 10, byCode: { slot_unavailable: 10 }, firing: true },
+      volumeMinutes: 30,
+      refused: { people: 7, refusals: 10, withoutLead: 0, times: 6 },
+    }),
+  },
+  {
+    key: "booking_failure_volume",
+    state: "Slate erroring rather than a sell out, people not readable",
+    channel: "alert",
+    text: formatFailureVolumeAlert({
+      volume: { attempts: 41, failures: 14, byCode: { internal: 8, verify_unavailable: 4, slot_unavailable: 2 }, firing: true },
+      volumeMinutes: 30,
+      refused: null,
+    }),
+  },
+  {
+    key: "booking_failure_volume",
+    state: "errors only, nobody refused a time",
+    channel: "alert",
+    text: formatFailureVolumeAlert({
+      volume: { attempts: 12, failures: 11, byCode: { API_KEY_REJECTED: 11 }, firing: true },
+      volumeMinutes: 30,
+      refused: { people: 0, refusals: 0, withoutLead: 0 },
+    }),
+  },
+  {
+    // #3797: the proven lost races of the same half hour are not in the ten, and said so.
+    key: "booking_failure_volume",
+    state: "stale offers in volume, one lost race counted apart",
+    channel: "alert",
+    text: formatFailureVolumeAlert({
+      volume: { attempts: 16, failures: 10, byCode: { slot_unavailable: 10 }, firing: true },
+      volumeMinutes: 30,
+      refused: { people: 5, refusals: 10, withoutLead: 0, times: 3, races: 1 },
+    }),
+  },
+  {
+    key: "booking_failure_volume",
+    state: "refusals recorded with no lead id",
+    channel: "alert",
+    text: formatFailureVolumeAlert({
+      volume: { attempts: 15, failures: 10, byCode: { slot_unavailable: 10 }, firing: true },
+      volumeMinutes: 30,
+      refused: { people: 0, refusals: 6, withoutLead: 6, times: 2 },
+    }),
+  },
+  {
+    key: "booking_failure_volume",
+    state: "failures stopped piling up, nothing failed since",
+    channel: "recovery",
+    text: formatFailureVolumeAllClear({ recentMinutes: 30, recent: { attempts: 6, failures: 0 }, newestFailureMs: PREVIEW_WAVE.newestMs }),
+  },
+  {
+    key: "booking_failure_volume",
+    state: "failures stopped piling up, one ordinary failure in a busy half hour",
+    channel: "recovery",
+    text: formatFailureVolumeAllClear({ recentMinutes: 30, recent: { attempts: 24, failures: 1 }, newestFailureMs: PREVIEW_WAVE.newestMs }),
   },
   // #3179. Spends judged by the real judge against the documented projection, so the
   // budget figures in the copy are the ones docs/slo.md quotes.
@@ -4200,8 +4329,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the booking canary's full pass went quiet",
     channel: "alert",
     text: canaryAlertText(
-      { lane: "smoke-canary-full", ageMs: 9 * 60 * 60_000, maxStaleMs: 8 * 60 * 60_000, unreadable: false },
-      480,
+      { lane: "smoke-canary-full", ageMs: 4 * 60 * 60_000, maxStaleMs: 3 * 60 * 60_000, unreadable: false },
+      180,
     ),
   },
   {
@@ -5195,6 +5324,114 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the lock claim hit a DB error",
     channel: "alert",
     text: rescheduleLockOutageAlert(),
+  },
+  // #2377. Each signal's page and its all clear with and without a straggler. The
+  // page states use the stage and refusal mixes a broken journey would produce.
+  {
+    key: "duplicate_cancel_unavailable",
+    state: "a share of duplicate cancels answered 503, mostly at the check",
+    channel: "alert",
+    text: formatDuplicateCancelUnavailablePage(
+      {
+        calls: 64,
+        count: 22,
+        pct: 34,
+        byName: { duplicate_cancel_unavailable_rpc: 19, duplicate_cancel_unavailable_handoff: 3 },
+      },
+      24,
+    ),
+  },
+  {
+    key: "duplicate_cancel_unavailable",
+    state: "six measured hours with none failing",
+    channel: "recovery",
+    text: formatDuplicateCancelUnavailableAllClear({ calls: 18, count: 0 }, 6),
+  },
+  {
+    key: "duplicate_cancel_unavailable",
+    state: "six measured hours with one failing",
+    channel: "recovery",
+    text: formatDuplicateCancelUnavailableAllClear({ calls: 40, count: 1 }, 6),
+  },
+  {
+    key: "duplicate_cancel_refused",
+    state: "a share of duplicate cancels refused for a person",
+    channel: "alert",
+    text: formatDuplicateCancelRefusedPage(
+      {
+        calls: 52,
+        count: 21,
+        pct: 40,
+        byName: {
+          duplicate_cancel_no_other_call: 14,
+          duplicate_cancel_identity_conflict: 5,
+          duplicate_cancel_named_is_newest: 2,
+        },
+      },
+      24,
+    ),
+  },
+  {
+    key: "duplicate_cancel_refused",
+    state: "six measured hours at an ordinary share",
+    channel: "recovery",
+    text: formatDuplicateCancelRefusedAllClear({ calls: 30, count: 2 }, 6),
+  },
+  {
+    key: "duplicate_cancel_refused",
+    state: "six measured hours with none refused",
+    channel: "recovery",
+    text: formatDuplicateCancelRefusedAllClear({ calls: 12, count: 0 }, 6),
+  },
+  // #2436. The rate trigger, the saturation trigger under the alert floor, and the
+  // all clear with and without a straggler. Measured healthy is zero skips in 205.
+  {
+    key: "owner_alert_skips",
+    state: "several advisors' owner alerts skipped, over the share",
+    channel: "alert",
+    text: formatOwnerAlertSkipsPage(
+      { skipped: 14, alerts: 58, advisors: 5, pct: 24, byReason: { "not-provisioned": 9, gone: 5 } },
+      7,
+    ),
+  },
+  {
+    key: "owner_alert_skips",
+    state: "most of a quiet week's owner alerts skipped",
+    channel: "alert",
+    text: formatOwnerAlertSkipsPage({ skipped: 5, alerts: 7, advisors: 3, pct: 71, byReason: { gone: 5 } }, 7),
+  },
+  {
+    key: "owner_alert_skips",
+    state: "a measured week with none skipped",
+    channel: "recovery",
+    text: formatOwnerAlertSkipsAllClear({ skipped: 0, alerts: 54 }, 7),
+  },
+  {
+    key: "owner_alert_skips",
+    state: "a measured week with one skipped",
+    channel: "recovery",
+    text: formatOwnerAlertSkipsAllClear({ skipped: 1, alerts: 54 }, 7),
+  },
+  // #2440. Two states because the sentence's verb agrees with the count.
+  {
+    key: "owner_notice_withheld",
+    state: "several owner reassign notices withheld this week",
+    channel: "info",
+    text: formatOwnerNoticeWithheldReport({
+      count: 6,
+      windowDays: 7,
+      settingsUrl: "https://slate.trypennie.app/admin/alerts",
+    }),
+  },
+  {
+    key: "owner_notice_withheld",
+    state: "one owner reassign notice withheld this week",
+    channel: "info",
+    text: formatOwnerNoticeWithheldReport({
+      count: 1,
+      windowDays: 7,
+      settingsUrl: "https://slate.trypennie.app/admin/alerts",
+    }),
   },
   {
     key: "top_tier_cascade_rate",

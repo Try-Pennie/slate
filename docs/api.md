@@ -361,6 +361,10 @@ GET /api/availability?bucket=411&from=<ISO>&to=<ISO>
 - `bucket` (required): the XBC bucket code. Missing: `400 { "error": "Missing bucket" }`.
 - `from` (optional ISO instant): defaults to now.
 - `to` (optional ISO instant): defaults to now plus 4 days.
+- Every slot returned lies inside `from` to `to` (#2220); a bound that cannot be
+  read as a time is ignored. A window that starts after the last time offered
+  answers `slots: []` with `emptyBecause: { "kind": "beyond_horizon",
+  "lastOfferedAt": "<ISO>" }`, never the times of another window.
 
 **Response** (`200`):
 
@@ -369,7 +373,9 @@ GET /api/availability?bucket=411&from=<ISO>&to=<ISO>
   "bucket": { "code": "411" },          // the REQUESTED code (never the effective tier, rule #259)
   "orgName": "…",
   "eventType": { "name": "…", "description": "…", "durationMin": 30 },
-  "slots": ["2026-07-01T15:00:00.000Z", "…"]  // UTC instants, min-notice filtered
+  "slots": ["2026-07-01T15:00:00.000Z", "…"],  // UTC instants, min-notice filtered, inside from..to
+  "emptyBecause": null,                // with no slots: closed, unstaffed, busy or beyond_horizon, or null when it cannot be told
+  "shownTier": "…"                     // handed back with the confirm, never rendered (#3495)
 }
 ```
 

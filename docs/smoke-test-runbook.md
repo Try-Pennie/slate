@@ -118,7 +118,7 @@ handling of a real booking). Then:
    or two, then confirm the slots are live before running the test:
 
    <!-- runbook-verified: 2026-08-03 (8b0db9be) this exact invocation is what the
-        smoke-canary workflow runs every 6 hours against production on the isolated SMOKE
+        smoke-canary workflow runs every hour against production on the isolated SMOKE
         agents, which is the only automated proof a booking can be made, rescheduled and
         cancelled end to end. Not run by hand here: it creates real bookings. -->
 
@@ -180,8 +180,12 @@ so a booking regression is caught without anyone remembering to run it:
   200 there is the bucket open to any website again, and `TEST_PASS_OFF` is the
   deployment missing `EMBED_TEST_PASS_SECRET`. The verdict rules are in
   `scripts/lib/public-test-bucket-check.ts`.
-- **Every 6h**: the full strict pass (`SMOKE_STRICT=1`, plus
-  `scripts/smoke-reschedule.ts`). It sets `SMOKE_SKIP_EVENT_CLEANUP=1` because the
+- **Every hour, on the hour** (#1493, was every 6h): the full strict pass
+  (`SMOKE_STRICT=1`, plus `scripts/smoke-reschedule.ts`); the dry tick runs at
+  half past. Between 9pm and 8am ET a full pass failure pages only on the second
+  in a row (`src/lib/monitor/smoke-canary-failure.ts`). The embed render check
+  still runs on every sixth full pass, since an embed regression arrives with a
+  deploy. It sets `SMOKE_SKIP_EVENT_CLEANUP=1` because the
   runner has no Google service-account creds; the API-driven cancels still tear
   down every booking server-side, only the belt-and-suspenders orphan-event sweep
   is skipped.

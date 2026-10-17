@@ -14,6 +14,8 @@
 import { DateTime } from "luxon";
 import type { HostClass } from "./offsite-origin.ts";
 import { FOLLOW_UP_LEFT_TO_DRAIN_OUTCOME } from "./follow-up-drain-rate.ts";
+import { OFFER_RACE_OUTCOME } from "../booking/offer-race.ts";
+import { DUPLICATE_CANCEL_TALLY_NAMES } from "./duplicate-cancel-rate.ts";
 
 /**
  * The zone whose calendar day the tally is KEYED by: a call is counted on its
@@ -82,9 +84,32 @@ export const SELF_INFLICTED_REFUSALS = [
   "refused_key_wrong",
   /** No key configured on the Worker at all, so every call is refused. */
   "refused_not_configured",
+  /**
+   * The EMBED BOOKER's own three refusals (#1727), the surface real leads arrive on.
+   * Each trip is abuse shaping, so counting it into the share would put bot volume
+   * in the denominator a real outage has to move; each is still worth a sustained
+   * signal, judged in `api-refusal-signals.ts`.
+   *
+   * The two caps are judged by how many DISTINCT addresses or people they are
+   * locking out, read from the limiter's own rows, because a volume cannot tell one
+   * bot hammering one identity from many leads each tripping once. These counts are
+   * the volume beside that reading and the gate that decides whether it is needed.
+   */
+  "refused_embed_ip_hour",
+  "refused_embed_contact_hour",
+  /** A filled hidden field, which no person can see: volume here is bot traffic. */
+  "refused_embed_honeypot",
 ] as const;
 
 export type SelfInflictedRefusal = (typeof SELF_INFLICTED_REFUSALS)[number];
+
+/** The embed booker's three recorded refusals (#1727), by what each one is, so the
+ *  route names a constant the type checks against the list rather than a string. */
+export const EMBED_REFUSAL_OUTCOME = {
+  ipHour: "refused_embed_ip_hour",
+  contactHour: "refused_embed_contact_hour",
+  honeypot: "refused_embed_honeypot",
+} as const satisfies Record<string, SelfInflictedRefusal>;
 
 /** Zero-filled counts, so a reader never has to decide what an absent key meant. */
 export type RefusalCounts = Record<SelfInflictedRefusal, number>;
@@ -95,6 +120,9 @@ export const emptyRefusalCounts = (): RefusalCounts => ({
   refused_list_read: 0,
   refused_key_wrong: 0,
   refused_not_configured: 0,
+  refused_embed_ip_hour: 0,
+  refused_embed_contact_hour: 0,
+  refused_embed_honeypot: 0,
 });
 
 export interface TallyArgs {
@@ -197,6 +225,20 @@ export interface OutcomeMix {
    * confirm already counted, never an attempt of its own.
    */
   followUpLeftToDrain: number;
+  /**
+   * #3797: times refused at the free check that were PROVEN lost races: free when the
+   * lead's list was computed, taken since. Recorded in place of the error, outside
+   * `total`, so they are in neither the failure share's attempts nor its failures, and
+   * shown on the panel so a reader can still see how often leads lose one.
+   */
+  lostRacesSinceOffer: number;
+  /**
+   * #2377: every answer POST /api/bookings/cancel-duplicate gave, by its tally name
+   * (`DUPLICATE_CANCEL_TALLY_NAMES`), zero filled. Outside `total` for the same reason
+   * as the refusals: a duplicate cancel is not a booking attempt, and counting it there
+   * would move the denominator the failure share is taken against.
+   */
+  duplicateCancel: Record<string, number>;
 }
 
 /** The jsonb shape the booking_api_outcome_mix RPC returns for a window. */
@@ -231,7 +273,10 @@ export function normalizeMix(raw: RawMix | null | undefined): OutcomeMix {
   const refusals = emptyRefusalCounts();
   for (const name of SELF_INFLICTED_REFUSALS) refusals[name] = byOutcome[name] ?? 0;
   const followUpLeftToDrain = byOutcome[FOLLOW_UP_LEFT_TO_DRAIN_OUTCOME] ?? 0;
-  return { total, outcomes, errors, testTotal, offsiteTotal, refusals, followUpLeftToDrain };
+  const lostRacesSinceOffer = byOutcome[OFFER_RACE_OUTCOME] ?? 0;
+  const duplicateCancel: Record<string, number> = {};
+  for (const name of DUPLICATE_CANCEL_TALLY_NAMES) duplicateCancel[name] = byOutcome[name] ?? 0;
+  return { total, outcomes, errors, testTotal, offsiteTotal, refusals, followUpLeftToDrain, lostRacesSinceOffer, duplicateCancel };
 }
 
 /**
@@ -269,4 +314,17 @@ export function excludedOffsiteTrafficNote(offsiteTotal: number | null): string 
   if (offsiteTotal === 0) return "No calls from pages other than the production site in this window.";
   const calls = offsiteTotal === 1 ? "call" : "calls";
   return `Excludes ${offsiteTotal} ${calls} from pages other than the production site.`;
+}
+
+/**
+ * The third thing the outcome panel leaves out (#3797): refusals proven to be lost
+ * races, a time another booking took after the lead's list was computed. They are
+ * ordinary contention, kept out of the failure share, and stated here so a quiet
+ * share on a busy night is not read as nobody being refused.
+ */
+export function excludedLostRacesNote(lostRaces: number): string {
+  if (lostRaces === 0) return "No lost races in this window.";
+  const races = lostRaces === 1 ? "lost race" : "lost races";
+  const times = lostRaces === 1 ? "a time" : "times";
+  return `Excludes ${lostRaces} ${races}: ${times} another booking took after the lead's list loaded.`;
 }

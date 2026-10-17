@@ -66,6 +66,7 @@ import {
   type OwnerAlertEventBody,
 } from "./owner-alert.ts";
 import { formatOwnerReassignNotice } from "./owner-notice-copy.ts";
+import { OWNER_NOTICE_STEP, OWNER_NOTICE_WITHHELD } from "./owner-notice-withheld.ts";
 import { bookingDetailHref } from "./detail.ts";
 import { partnerKeysFrom, type PartnerKeys } from "./partner-keys.ts";
 import { bookingIdentityFrom } from "./booking-identity.ts";
@@ -94,6 +95,7 @@ import {
   type RefusalTrace,
   type RungTrace,
 } from "./refusal-trace.ts";
+import type { OfferVerdict } from "./offer-race.ts";
 import { calendarLinks, icsDocument, icsUrl, leadCalendarEvent, type CalendarLinks } from "./calendar-links.ts";
 import type { RecordRoutingDecisionInput } from "../routing/record.ts";
 import { rungExcludesLow, tierKeyOf, tierLadder } from "../routing/tiers.ts";
@@ -104,6 +106,7 @@ import {
   MANAGE_PHONE_NOT_FOUND,
 } from "./manage-copy.ts";
 import { INVALID_EMAIL, storedFirstName, validateAttendee } from "../attendee.ts";
+import { parseStampMs } from "../date/stamp.ts";
 import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
 import { callingNumberWithinDeadline } from "../salesforce/lead-calling-number.ts";
@@ -1003,6 +1006,14 @@ export interface CreateBookingInput {
    * partner call, or a page loaded before this), and the confirm reads it as before.
    */
   shownTier?: string;
+  /**
+   * #3797: the `computed_at` of the slot list the lead picked the time from, as the
+   * availability answer named it (`slotsComputedAt`). Only ever used to judge whether
+   * a time refused at the free check was a lost race; never routed on. Untrusted: an
+   * unreadable one is judged `unknown`, which counts as a refusal did before.
+   * Undefined when the caller did not say, and then nothing is judged.
+   */
+  servedComputedAt?: string;
   /** Allow booking a synthetic test bucket (#396). Set in exactly two places:
    *  the key authed direct booking API, only for a canary caller or for the
    *  public test bucket's code (#2669, `mayBookTestBuckets`); and the Booker's
@@ -1295,7 +1306,10 @@ export interface BookingDeps {
      * Absent for every booker call.
      */
     opts?: RoundRobinOpts,
-  ): Promise<{ candidates: string[]; memberCount: number }>;
+    /** #3797: `memberIds` is every advisor counted in `memberCount`, so a refusal can be
+     *  judged a lost race against their busy time. Optional: a fake that leaves it out
+     *  leaves every refusal unjudged, which counts it exactly as before. */
+  ): Promise<{ candidates: string[]; memberCount: number; memberIds?: string[] }>;
   /**
    * #3489: everything the candidate read needs for every rung of `codes` (a ladder, top
    * first) in ONE request (`ladder_candidate_inputs`), for a slot at `startIso` whose
@@ -1985,6 +1999,25 @@ export interface BookingDeps {
    * -log failure never affects the booking.
    */
   recordRoutingDecision(input: RecordRoutingDecisionInput): Promise<void>;
+  /**
+   * #3797: judge a `candidate_read_empty` refusal against the list the lead picked
+   * from: read its pools' stored rows (the row proofs this refusal leaves) and, when
+   * the confirm carried that list's `computed_at`, the busy time over the requested
+   * window and the row proofs before it (`offer-race.ts`). Called as the refusal is
+   * recorded, so the verdict lands on its routing decision and on the trace the route
+   * tallies from. THROWS on a failed read; the caller then records the verdict as
+   * `unknown`, which counts exactly as a refusal did before. Optional: deps without it
+   * judge nothing.
+   */
+  judgeRefusedOffer?(input: {
+    trace: RefusalTrace;
+    servedComputedAt: string | null;
+    eventType: Pick<EventType, "duration_min" | "buffer_before_min" | "buffer_after_min">;
+  }): Promise<{
+    verdict: OfferVerdict | null;
+    staleRowCodes: string[];
+    storedRows?: { bucket_code: string; payload: unknown; computed_at: string }[];
+  }>;
   /**
    * The bucket's raw pool (its org agents, manual members and criteria), for the
    * routing decision's considered and excluded lists. Injected rather than imported
@@ -2762,7 +2795,7 @@ async function assignAgent(
   const handed = line.handed;
   // #3489: a walk's ladder read, so this rung is judged from rows already in hand.
   const walk: RoundRobinOpts = { ...(handed ? { narrowTo: handed.advisor } : {}), ...(line.inputs ? { inputs: line.inputs } : {}) };
-  const { candidates: ranked, memberCount } = await deps.roundRobinCandidates(
+  const { candidates: ranked, memberCount, memberIds } = await deps.roundRobinCandidates(
     bucket,
     eventType,
     Date.parse(startIso),
@@ -2807,6 +2840,7 @@ async function assignAgent(
       claimedByOthers: seat ? await seat.claimedByOthers() : undefined,
       checked,
       anyUnverified,
+      memberIds,
     });
     // #1300: an EMPTY BUCKET is a misconfiguration and pages; a bucket whose people
     // are simply not on shift is an ordinary evening and must not.
@@ -3726,7 +3760,7 @@ const REASSIGN_STEPS = {
   NOTIFY: "reassign:notify",
   OWNER_ALERT_REMOVE: "reassign:owner_alert_remove",
   OWNER_ALERT: "reassign:owner_alert",
-  OWNER_NOTICE: "reassign:owner_notice",
+  OWNER_NOTICE: OWNER_NOTICE_STEP,
 } as const;
 
 /** Post-commit steps for a contact-owner reassign (#9). Like reschedule, the
@@ -4208,8 +4242,9 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
    *
    * Three outcomes, and they are deliberately not three shades of one:
    *
-   *  - NO channel set: the notice is dropped, recorded in the log, and the step
-   *    completes. It must not page: the monitor lane already owns "handoffs are
+   *  - NO channel set: the notice is dropped, recorded in the log AND on the step
+   *    as a `withheld` reason (#2440, counted weekly by the monitor lane), and the
+   *    step completes. It must not page: the monitor lane already owns "handoffs are
    *    waiting and no channel is set" (#2367), and a reassign notice is not a
    *    handoff, so raising one here would invent a row nobody can resolve.
    *  - Slack REFUSED this post (`not_in_channel`, a rate limit, a timeout): the step
@@ -4245,7 +4280,9 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
         booking_id: booking.id,
         outbox_id: row.id,
       });
-      return;
+      // #2440: recorded on the step itself, so the monitor lane can count a blank
+      // channel stretch once a week rather than leaving only this log line.
+      return { withheld: OWNER_NOTICE_WITHHELD.noChannel };
     }
 
     const text = formatOwnerReassignNotice({
@@ -4267,7 +4304,7 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
         booking_id: booking.id,
         outbox_id: row.id,
       });
-      return;
+      return { withheld: OWNER_NOTICE_WITHHELD.noSlack };
     }
     // Short and ours: this lands in `booking_outbox.last_error`, which the drain's
     // stuck-row page quotes.
@@ -5162,6 +5199,40 @@ function refusalRecord(
   };
 }
 
+/** A client sent stamp as the ISO instant it names, or null when it names none (#3797). */
+function storableStamp(stamp: string | undefined): string | null {
+  const ms = parseStampMs(stamp);
+  return ms === null ? null : new Date(ms).toISOString();
+}
+
+/**
+ * #3797: judge a refusal at the cached free check against the list the lead picked
+ * from, or null when it is not one (another stage, a race lost at the insert, deps
+ * with no judge). NEVER throws: the refusal must still be recorded, and a judgement
+ * that failed is `unknown` when there was a list to judge, which counts exactly as a
+ * refusal did before. Unknown is never folded into a race.
+ */
+async function judgeOffer(
+  deps: Pick<BookingDeps, "judgeRefusedOffer">,
+  err: unknown,
+  trace: RefusalTrace | null,
+  servedComputedAt: string | null,
+  eventType: Pick<EventType, "duration_min" | "buffer_before_min" | "buffer_after_min">,
+): Promise<{
+  verdict: OfferVerdict | null;
+  staleRowCodes: string[];
+  storedRows?: { bucket_code: string; payload: unknown; computed_at: string }[];
+} | null> {
+  if (!deps.judgeRefusedOffer || !trace || trace.stage !== "candidate_read_empty") return null;
+  if (!(err instanceof SlotUnavailableError) || err instanceof RaceLostRefusalError) return null;
+  try {
+    return await deps.judgeRefusedOffer({ trace, servedComputedAt, eventType });
+  } catch (failed) {
+    log.warn("booking", { msg: "could not judge a refused time against the list it was offered from", bucket_code: trace.bucketCode }, failed);
+    return { verdict: servedComputedAt ? "unknown" : null, staleRowCodes: [] };
+  }
+}
+
 /** What a waiting double submit needs to recognise its own booking (#3221). */
 export interface ConfirmTaker {
   idempotencyKey: string;
@@ -5357,7 +5428,17 @@ async function createHeld(
       const requestedRung = trace?.rungs.find((r) => r.code === bucket.code);
       try {
         await profile.time("record-refusal", async () => {
-          const pool = await deps.resolveBucketPool(bucket);
+          // #3797: judged alongside the pool read, so a lost race is told apart from a
+          // stale offer before the decision row is written and before the route tallies.
+          const [pool, offer] = await Promise.all([
+            deps.resolveBucketPool(bucket),
+            judgeOffer(deps, err, trace, input.servedComputedAt ?? null, eventType),
+          ]);
+          if (trace && offer) {
+            if (offer.verdict) trace.offerVerdict = offer.verdict;
+            trace.staleRowCodes = offer.staleRowCodes;
+            if (offer.storedRows) trace.storedRows = offer.storedRows;
+          }
           await deps.recordRoutingDecision({
             orgId: bucket.org_id,
             bookingId: null,
@@ -5374,6 +5455,13 @@ async function createHeld(
               ? buildRoutingTraceExtras(pool, requestedRung.readIds)
               : { considered: [], excluded: [] }),
             ...refusalRecord(trace, input.startIso, input),
+            // #3797: what the judgement concluded and what it was judged against.
+            offerVerdict: trace?.offerVerdict ?? null,
+            // The client's own string goes to a timestamptz, so it is stored only once
+            // read, as the instant it names: an unreadable one would refuse the insert
+            // and lose the whole decision (its verdict is already `unknown`).
+            servedComputedAt: trace?.offerVerdict ? storableStamp(input.servedComputedAt) : null,
+            staleRowCodes: trace?.staleRowCodes && trace.staleRowCodes.length > 0 ? trace.staleRowCodes : null,
             chosenUserId: null,
             chosenAttributes: null,
             emptyPoolFallback: false,

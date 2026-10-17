@@ -67,6 +67,12 @@ const BORROWED_SETTING: Readonly<Record<string, MonitorAlertKey>> = {
   booking_api_ceiling: "booking_failure_rate",
   booking_api_credential: "booking_failure_rate",
   booking_api_list_read: "booking_failure_rate",
+  // #3276: the volume page is held by the share page's cooldown, sent beside it.
+  booking_failure_volume: "booking_failure_rate",
+  // #1727: the embed booker's refusal pages read the same cooldown.
+  booking_embed_ip_cap: "booking_failure_rate",
+  booking_embed_contact_cap: "booking_failure_rate",
+  booking_embed_honeypot: "booking_failure_rate",
 };
 
 const TUNABLE = new Set<string>(ALERT_KEYS);
