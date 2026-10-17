@@ -21,6 +21,7 @@ import { explainEmptyWindow, type EmptyReason } from "@/lib/availability/empty-r
 import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { log } from "@/lib/log";
+import { parseStampMs } from "@/lib/date/stamp";
 import { agentLinkAvailabilityLive } from "@/lib/agent-link/service";
 import { bookingRescheduleTimesLive } from "@/lib/booking/reschedule-times-live";
 import { wakeConfirmLineForCode } from "@/lib/booking/confirm-line-live";
@@ -148,11 +149,14 @@ async function handle(req: NextRequest) {
   // object idle for minutes is back by the time they pick a time.
   wakeConfirmLineForCode(code);
 
-  let slots = filterSlotsFromNow(result.slots, now, result.eventType.min_notice_min);
-  if (toParam) {
-    const toMs = Date.parse(toParam);
-    slots = slots.filter((s) => Date.parse(s) <= toMs);
-  }
+  // #2220: every served time lies inside the window asked about. `from` used to
+  // reach only the cache read, which answers with the stored horizon wherever it is
+  // asked, so a week past it came back with this week's times under a 200. An
+  // unreadable bound filters nothing (the #3366 line logs it as unreadable): an
+  // unreadable `to` used to compare every time against NaN, drop them all, and
+  // explain the empty list as a full calendar.
+  const offered = filterSlotsFromNow(result.slots, now, result.eventType.min_notice_min);
+  const slots = slotsInWindow(offered, params.get("from"), toParam);
 
   // Observability headers (#257/#234): freshness of the served slots and which
   // tier of the read path answered (L1 cache hit / L2 precomputed row / cold live
@@ -176,6 +180,9 @@ async function handle(req: NextRequest) {
     slot_cache: headers["x-slot-cache"],
     computed_at: result.computedAt,
     from_anchor: utcDayOf(from),
+    // #2220: a `to` that cannot be read filters nothing, so it is recorded here, the
+    // one place a caller's bad bound can be seen later.
+    ...(toParam !== null && parseStampMs(toParam) === null ? { to_anchor: "unreadable" } : {}),
     colo: requestColo(req),
     slots: slots.length,
     // #3381: which path wrote what was served, and the newest booking splice since its
@@ -205,8 +212,8 @@ async function handle(req: NextRequest) {
   // Computed only when the result is actually empty, so the ordinary hot path pays
   // nothing extra, and best-effort: if the reason cannot be worked out the client
   // falls back to the vaguer copy rather than the request failing.
-  const emptyBecause =
-    slots.length === 0 ? await whyEmpty(now, result.bucket) : null;
+  const emptyBecause: AvailabilityEmptyReason | null =
+    slots.length === 0 ? (beyondOffered(offered, params.get("from")) ?? (await whyEmpty(now, result.bucket))) : null;
 
   // #2158, Dan's call: a lead meeting a bucket with nobody in it is worth
   // knowing about the moment it happens, not only when the hourly sweep next
@@ -283,6 +290,46 @@ function spanFields(timer: ReturnType<typeof createServerTimer>): Record<string,
     if (ms !== null) out[`${name}_ms`] = ms;
   }
   return out;
+}
+
+/**
+ * Why this route's answer is empty: the shared reasons (#1328), plus one only this
+ * route can give (#2220). `beyond_horizon` is a window that starts after the last
+ * time offered, so nothing in it is offered at all, which is neither a closure nor
+ * a full calendar. It stays off the shared `EmptyReason`: the booker always asks
+ * from today, so it can never receive it, and a lead facing sentence for it would
+ * be copy nobody reads.
+ */
+type AvailabilityEmptyReason = EmptyReason | { kind: "beyond_horizon"; lastOfferedAt: string };
+
+/** `offered` narrowed to the asked window; an unreadable bound narrows nothing. */
+function slotsInWindow(offered: string[], fromParam: string | null, toParam: string | null): string[] {
+  const fromMs = fromParam === null ? null : parseStampMs(fromParam);
+  const toMs = toParam === null ? null : parseStampMs(toParam);
+  return offered.filter((s) => {
+    const ms = parseStampMs(s);
+    // parse-ok: a stored slot that cannot be read is served as it always was; the
+    // window decides only what it can measure.
+    if (ms === null) return true;
+    return (fromMs === null || ms >= fromMs) && (toMs === null || ms <= toMs);
+  });
+}
+
+/**
+ * `beyond_horizon` when every offered time is before the asked `from`, naming the
+ * last of them; otherwise null, and the ordinary explanation answers. Nothing
+ * offered at all is not "beyond": there is no horizon to be past.
+ */
+function beyondOffered(offered: string[], fromParam: string | null): AvailabilityEmptyReason | null {
+  const fromMs = fromParam === null ? null : parseStampMs(fromParam);
+  if (fromMs === null) return null;
+  let last: { ms: number; iso: string } | null = null;
+  for (const s of offered) {
+    const ms = parseStampMs(s);
+    if (ms === null) return null;
+    if (last === null || ms > last.ms) last = { ms, iso: s };
+  }
+  return last !== null && last.ms < fromMs ? { kind: "beyond_horizon", lastOfferedAt: last.iso } : null;
 }
 
 /** The UTC day a `from` anchors to (YYYY-MM-DD), or "unreadable" (#3366). */
