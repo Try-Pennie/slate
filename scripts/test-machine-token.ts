@@ -83,8 +83,10 @@ for (const c of committed.cases) {
 
 // --- rotation: either slot verifies, a foreign key does not -------------------------
 {
-  const a = "slot-a-key-0000000000000000000000000000000000";
-  const b = "slot-b-key-1111111111111111111111111111111111";
+  // Long enough to be accepted as a key, and spelled so no scanner reads them as one:
+  // "key-" followed by hex is a Mailgun key to semgrep's secret rules.
+  const a = "rotation-slot-a-fixture-only-aaaaaaaaaaaaaaaaaaaa";
+  const b = "rotation-slot-b-fixture-only-bbbbbbbbbbbbbbbbbbbb";
   const signedB = await signMachineToken({ ...FIXTURE_CLAIMS }, b);
   assert((await verifyMachineToken(signedB, [a, b], FIXTURE_VERIFY_AT_MS)).ok, "a token signed with slot B verifies while slot A is also set");
   const v = await verifyMachineToken(signedB, [a], FIXTURE_VERIFY_AT_MS);
