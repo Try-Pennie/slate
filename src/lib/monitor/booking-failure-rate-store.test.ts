@@ -240,18 +240,22 @@ describe("readRefusedPeople", () => {
   it("reads only the window's refusals, and joins each to its bucket's test marker", async () => {
     routing.page.mockReturnValue({
       data: [
-        { id: "1", lead_id: "00QUi000011BI7B", buckets: { is_test: false } },
-        { id: "2", lead_id: "00QUi000011BI7B", buckets: { is_test: false } },
-        { id: "3", lead_id: "SMOKE0000000001", buckets: { is_test: true } },
+        { id: "1", lead_id: "00QUi000011BI7B", requested_start: "2026-10-12T20:30:00+00:00", buckets: { is_test: false } },
+        { id: "2", lead_id: "00QUi000011BI7B", requested_start: "2026-10-12T20:30:00+00:00", buckets: { is_test: false } },
+        { id: "3", lead_id: "SMOKE0000000001", requested_start: "2026-10-12T21:00:00+00:00", buckets: { is_test: true } },
+        // #3797: a proven lost race is left out of the people, like the share.
+        { id: "5", lead_id: "00QUi000011bFqE", requested_start: "2026-10-12T23:00:00+00:00", offer_verdict: "race", buckets: { is_test: false } },
         // The bucket was deleted (`on delete set null`): counted, as real.
-        { id: "4", lead_id: "00QUl00000OipHQ", buckets: null },
+        { id: "4", lead_id: "00QUl00000OipHQ", requested_start: "2026-10-12T22:00:00+00:00", buckets: null },
       ],
       error: null,
     });
     const out = await readRefusedPeople(SINCE, UNTIL);
-    expect(out).toEqual({ people: 2, refusals: 3, withoutLead: 0 });
+    // #3276: two distinct times among the counted refusals; the test bucket's is out.
+    // #3797: the proven race is counted apart, in neither the people nor the refusals.
+    expect(out).toEqual({ people: 2, refusals: 3, withoutLead: 0, times: 2, races: 1 });
     expect(from).toHaveBeenCalledWith("routing_decisions");
-    expect(routing.calls).toContainEqual(["select", "id, lead_id, buckets(is_test)"]);
+    expect(routing.calls).toContainEqual(["select", "id, lead_id, requested_start, offer_verdict, buckets(is_test)"]);
     expect(routing.calls).toContainEqual(["not", "refusal_stage", "is", null]);
     expect(routing.calls).toContainEqual(["gte", "created_at", new Date(SINCE).toISOString()]);
     expect(routing.calls).toContainEqual(["lt", "created_at", new Date(UNTIL).toISOString()]);

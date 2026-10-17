@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
 import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 import { ROUTE_CHECK_STAGES, timeStage } from "@/lib/booking/confirm-profile";
-import { refusedLeadId } from "@/lib/booking/refusal-trace";
+import { provenOfferRace, refusedLeadId } from "@/lib/booking/refusal-trace";
+import { OFFER_RACE_OUTCOME } from "@/lib/booking/offer-race";
 import { answerAfterRefusalRefresh } from "@/lib/booking/refusal-stored-offer-live";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { z } from "zod";
@@ -38,6 +39,7 @@ import {
   salesforceIdSchema,
   prefillSchema,
   shownTierSchema,
+  slotsComputedAtSchema,
 } from "@/lib/booking/input-schema";
 import {
   allowRequest,
@@ -119,6 +121,9 @@ const schema = z.object({
   // availability answer so the confirm records it instead of reading the cache for
   // it. A measure only, so a value that is not a tier name is dropped, never a refusal.
   shownTier: shownTierSchema,
+  // #3797: the computed_at of the list the lead picked from, so a refused time can be
+  // judged a lost race. A measure only, dropped rather than refused when malformed.
+  slotsComputedAt: slotsComputedAtSchema,
 }).refine(
   (d) =>
     [d.bucketCode, d.agentLink, d.agentLinkToken].filter((v) => v !== undefined).length === 1,
@@ -547,6 +552,8 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
       referrerOrigin: parsed.data.referrerOrigin,
       // #3495: never through an agent's own link, which routes nothing.
       shownTier: agentLink ? undefined : parsed.data.shownTier,
+      // #3797: never through an agent's own link, which records no routing decision.
+      servedComputedAt: agentLink ? undefined : parsed.data.slotsComputedAt,
     }, progress.facts);
     // Backstop, not the ordinary path (#1337): a second booking is normally
     // DECLINED above before anything is created. Since #1641 the window it
@@ -690,7 +697,13 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
         // WE ADVERTISED. One lost race is ordinary contention, which is why this
         // does not page on its own; fifty in two hours is the cal.com failure of
         // 2026-08-06, and it is indistinguishable from the one without a count.
-        recordRoutedOutcome("error", code, "slot_unavailable", { by: "bucket", code, host });
+        // #3797: a time that was really free when the lead's list was computed and was
+        // taken since is a PROVEN lost race: counted on its own row outside the failure
+        // share, in place of the error, so it never pages (Dan, 2026-10-16). Anything
+        // not proven (no computed_at, an unreadable one, a row Slate had already proven
+        // stale) is the error it always was.
+        if (provenOfferRace(err)) recordRoutedOutcome(OFFER_RACE_OUTCOME, code, null, { by: "bucket", code, host });
+        else recordRoutedOutcome("error", code, "slot_unavailable", { by: "bucket", code, host });
         // #2838: refused AFTER a lost overlap race, counted apart from a time already
         // taken at the free check, and apart again at the reassign bound. A second
         // row outside the failure share, so the share above reads exactly as before.

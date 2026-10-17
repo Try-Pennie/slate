@@ -1299,6 +1299,44 @@ describe("POST /booking outcome tally (#1313)", () => {
     expect(outcomes()).toEqual([["created", null]]);
   });
 
+  // #3797: a time taken after the lead's list was computed is a PROVEN lost race,
+  // counted on its own row in place of the error, so it is outside the failure share.
+  it("counts a proven lost race at the free check apart, in place of the error", async () => {
+    const { traced } = await import("@/lib/booking/refusal-trace");
+    service.createBooking.mockRejectedValue(
+      traced(new service.SlotUnavailableError("taken"), {
+        requestedStart: VALID_BODY.start,
+        bucketCode: "411",
+        stage: "candidate_read_empty",
+        rungs: [],
+        offerVerdict: "race",
+      }),
+    );
+    const res = await post({ ...VALID_BODY, slotsComputedAt: "2026-10-16T02:24:08.327Z" });
+    expect(res.status).toBe(409);
+    expect(outcomes()).toEqual([["race_since_offer", null]]);
+    // The stamp the lead's list carried reaches the confirm, which judges it.
+    expect(service.createBooking.mock.calls.at(-1)?.[0]).toMatchObject({ servedComputedAt: "2026-10-16T02:24:08.327Z" });
+  });
+
+  it("keeps a refusal judged a stale offer, or not judged, as the error it always was", async () => {
+    const { traced } = await import("@/lib/booking/refusal-trace");
+    for (const offerVerdict of ["stale_offer", "unknown", undefined] as const) {
+      recordApiOutcome.mockClear();
+      service.createBooking.mockRejectedValue(
+        traced(new service.SlotUnavailableError("taken"), {
+          requestedStart: VALID_BODY.start,
+          bucketCode: "411",
+          stage: "candidate_read_empty",
+          rungs: [],
+          ...(offerVerdict ? { offerVerdict } : {}),
+        }),
+      );
+      await post(VALID_BODY);
+      expect(outcomes()).toEqual([["error", "slot_unavailable"]]);
+    }
+  });
+
   it("counts a refusal after a lost race apart from a time already taken", async () => {
     service.createBooking.mockRejectedValue(new service.RaceLostRefusalError(1, false));
     const res = await post(VALID_BODY);

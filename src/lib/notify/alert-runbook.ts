@@ -150,6 +150,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #3275. The same failures as the page above, reported once they had already
   // stopped; the investigation is the same one.
   booking_failure_burst_ended: "the-booker-is-offering-nothing-or-too-little",
+  // #3276. The same failures counted rather than shared out; the same investigation.
+  booking_failure_volume: "the-booker-is-offering-nothing-or-too-little",
   // #3179. The same population as the hourly page, judged over the month.
   booking_budget: "the-booker-is-offering-nothing-or-too-little",
   // #3267. A booking exists and the work after its save is waiting on the drain.

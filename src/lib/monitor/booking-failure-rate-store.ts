@@ -169,16 +169,31 @@ export function outcomeReadingOf({ day, mix }: TodayMix): OutcomeReading {
  * proven by `countRefusedPeople`'s unit test rather than by live data.
  */
 export async function readRefusedPeople(sinceMs: number, untilMs: number): Promise<RefusedPeople> {
-  const rows = await selectAllPages<{ lead_id: string | null; buckets: { is_test: boolean } | null }>(
+  const rows = await selectAllPages<{
+    lead_id: string | null;
+    requested_start: string | null;
+    offer_verdict: string | null;
+    buckets: { is_test: boolean } | null;
+  }>(
     "booking failure rate refused people",
     "id",
     () =>
       supabaseAdmin()
         .from("routing_decisions")
-        .select("id, lead_id, buckets(is_test)")
+        // #3276: the requested instant too, so the volume page can say how many times
+        // the refusals asked for.
+        // #3797: and the lost race verdict, so a proven race is left out of the people.
+        .select("id, lead_id, requested_start, offer_verdict, buckets(is_test)")
         .not("refusal_stage", "is", null)
         .gte("created_at", new Date(sinceMs).toISOString())
         .lt("created_at", new Date(untilMs).toISOString()) as unknown as PageableQuery,
   );
-  return countRefusedPeople(rows.map((r) => ({ lead_id: r.lead_id, is_test: r.buckets?.is_test ?? null })));
+  return countRefusedPeople(
+    rows.map((r) => ({
+      lead_id: r.lead_id,
+      requested_start: r.requested_start,
+      offer_verdict: r.offer_verdict,
+      is_test: r.buckets?.is_test ?? null,
+    })),
+  );
 }

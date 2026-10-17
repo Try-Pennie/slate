@@ -15,7 +15,7 @@ import { IANAZone, DateTime } from "luxon";
 import { validateAttendee, type AttendeeErrors } from "../attendee.ts";
 import { validateReason, type ReasonOption, type ValidatedReason } from "./core.ts";
 import { INPUT_LIMITS } from "./input-limits.ts";
-import { bucketCodeSchema, startSchema, timezoneSchema, salesforceIdSchema, prefillSchema, shownTierSchema } from "./input-schema.ts";
+import { bucketCodeSchema, startSchema, timezoneSchema, salesforceIdSchema, prefillSchema, shownTierSchema, slotsComputedAtSchema } from "./input-schema.ts";
 import type { BookingStatus } from "../db/types.ts";
 
 export interface DirectBookingRequest {
@@ -36,6 +36,9 @@ export interface DirectBookingRequest {
    *  handed back what it named (the load test does). Absent otherwise, and the
    *  confirm then reads it as before. */
   shownTier?: string;
+  /** #3797: the computed_at of the slot list the caller picked from, when it read
+   *  availability first; lets a refused time be judged a lost race. */
+  slotsComputedAt?: string;
 }
 
 export type ParseResult =
@@ -63,6 +66,8 @@ const schema = z.object({
   dryRun: z.boolean().default(false),
   // #3495: a measure only, so an unreadable value is dropped, never a refusal.
   shownTier: shownTierSchema,
+  // #3797: a measure only, like shownTier.
+  slotsComputedAt: slotsComputedAtSchema,
 });
 
 const INVALID = { ok: false as const, status: 400 as const, error: "Invalid request" };
@@ -121,6 +126,7 @@ export function parseDirectBookingRequest(raw: unknown): ParseResult {
       confirmReschedule: data.confirmReschedule,
       dryRun: data.dryRun,
       ...(data.shownTier !== undefined ? { shownTier: data.shownTier } : {}),
+      ...(data.slotsComputedAt !== undefined ? { slotsComputedAt: data.slotsComputedAt } : {}),
     },
   };
 }

@@ -150,7 +150,11 @@ import {
   type FailureRateResult,
   type RateThresholds,
 } from "@/lib/monitor/booking-failure-rate";
-import { SHIPPED_FAILURE_RATE_RECENT, SHIPPED_FAILURE_RATE_THRESHOLDS } from "@/lib/monitor/failure-rate-thresholds";
+import {
+  SHIPPED_FAILURE_RATE_RECENT,
+  SHIPPED_FAILURE_RATE_THRESHOLDS,
+  SHIPPED_FAILURE_VOLUME,
+} from "@/lib/monitor/failure-rate-thresholds";
 import {
   catchallVerdict,
   catchallPageText,
@@ -1694,16 +1698,20 @@ export async function GET(req: NextRequest) {
           readRefusedPeople: (sinceMs) => readRefusedPeople(sinceMs, now),
           thresholds: FAILURE_RATE_THRESHOLDS,
           recent: SHIPPED_FAILURE_RATE_RECENT,
+          // #3276: ten failed attempts in half an hour page beside the share.
+          volume: SHIPPED_FAILURE_VOLUME,
           armed: settings!.failureRateArmed,
           cooldownMs: cooldownMs.booking_failure_rate,
           notify: (key, cooldownMs, text) => {
             // alert-key: booking_failure_rate
             // alert-key: booking_failure_burst_ended
+            // alert-key: booking_failure_volume
             // alert-text-ok: our own copy from booking-failure-rate.ts, built from
             // measured counts; no error text can reach it.
             return sendThrottledAlert(key, cooldownMs, text);
           },
           // alert-key: booking_failure_rate
+          // alert-key: booking_failure_volume
           resolve: (key, text) => resolveAlert(key, text),
           log: (fields) => log.info("monitor", { ...fields }),
           onError: (context, err) =>

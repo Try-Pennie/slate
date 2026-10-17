@@ -68,6 +68,20 @@ describe("BookingOutcomesPage", () => {
     expect(screen.getAllByText("NO_ELIGIBLE_AGENTS").length).toBe(2);
   });
 
+  // #3797: a proven lost race is counted apart from the failure share, so the panel
+  // says how many it left out, as it does for the canary and off-site calls.
+  it("states the lost races each window counts apart, and says so when there were none", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    rpc.mockResolvedValue({ data: { by_outcome: { created: 8, race_since_offer: 6 }, by_error: {} }, error: null });
+    render(await BookingOutcomesPage());
+    expect(screen.getAllByText(/^Excludes 6 lost races: times another booking took after the lead's list loaded\.$/).length).toBe(2);
+
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    rpc.mockResolvedValue({ data: { by_outcome: { created: 8 }, by_error: {} }, error: null });
+    render(await BookingOutcomesPage());
+    expect(screen.getAllByText("No lost races in this window.").length).toBe(2);
+  });
+
   it("shows an empty state per window when there is no traffic", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     rpc.mockResolvedValue({ data: { by_outcome: {}, by_error: {} }, error: null });

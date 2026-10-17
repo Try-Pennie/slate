@@ -5,7 +5,8 @@ import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { authorizeBookingApi } from "@/lib/booking/route-auth";
 import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 import { timeStage } from "@/lib/booking/confirm-profile";
-import { refusedLeadId } from "@/lib/booking/refusal-trace";
+import { provenOfferRace, refusedLeadId } from "@/lib/booking/refusal-trace";
+import { OFFER_RACE_OUTCOME } from "@/lib/booking/offer-race";
 import { answerAfterRefusalRefresh } from "@/lib/booking/refusal-stored-offer-live";
 import { makeWaitMarks, readEntryMarks, readLoadtestLeg } from "@/lib/booking/wait-marks";
 import { isLoadtest } from "@/lib/loadtest-guard";
@@ -286,6 +287,8 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts, progress: A
       apiCaller: authd.caller,
       // #3495: the tier the caller had on show, when it sent one; else the confirm reads it.
       shownTier: v.shownTier,
+      // #3797: the list's computed_at, when the caller sent one.
+      servedComputedAt: v.slotsComputedAt,
     }, facts);
 
     const body = {
@@ -404,7 +407,10 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts, progress: A
         status,
         code,
       });
-      recordApiOutcome("error", v.bucketCode, code, { by: "bucket", code: v.bucketCode, host: apiHost });
+      // #3797: a proven lost race at the free check is counted on its own row outside
+      // the failure share, in place of the error, so it never pages.
+      if (provenOfferRace(err)) recordApiOutcome(OFFER_RACE_OUTCOME, v.bucketCode, null, { by: "bucket", code: v.bucketCode, host: apiHost });
+      else recordApiOutcome("error", v.bucketCode, code, { by: "bucket", code: v.bucketCode, host: apiHost });
       // #2838: refused after a lost overlap race, on a row outside the failure share.
       if (err instanceof RaceLostRefusalError) {
         recordApiOutcome(raceOutcomeForRefusal(err), v.bucketCode, null, {
