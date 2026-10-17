@@ -10,11 +10,19 @@
 // Run: node --experimental-strip-types scripts/test-loadtest-roster-shape.ts
 import {
   PRODUCTION_SHAPE,
+  SCALED_200_SHAPE,
+  rosterShapeFor,
+  seededRosterVerdict,
+  rosterLine,
+  shapeSourceFor,
   scaleShape,
   zoneForIndex,
   shapeFromRoster,
   type RosterShape,
 } from "./loadtest/roster-shape.ts";
+import { generateSeed } from "./loadtest/generate.ts";
+import { poolDepthsFrom } from "./loadtest/pool-depth.ts";
+import { allXbcCodes, bucketSpecForXbc } from "../src/lib/xbc.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- the baked shape is internally consistent --------------------------------
@@ -216,6 +224,148 @@ const agent = (debt: string[], backend: string[], timezone = "America/New_York")
   if (!built.ok) throw new Error("unreachable");
   eq(built.shape.agents, 2, "both are still counted as agents");
   eq(built.shape.zones.length, 1, "but only the one with a schedule is counted in a zone");
+}
+
+// --- the 200 advisor roster is checked in, and it IS production scaled (#3829) ---
+
+/** What the seed would produce for a shape, read through the booker's own pool predicate. */
+function seededDepths(shape: RosterShape): Map<string, number> {
+  const seed = generateSeed({
+    agentCount: shape.agents,
+    orgId: "o",
+    nowMs: Date.UTC(2026, 9, 14, 12),
+    windowDays: 1,
+    blocksPerAgentPerDay: 1,
+    shape,
+  });
+  const buckets = allXbcCodes().map((code) => ({
+    id: code,
+    code,
+    criteria: bucketSpecForXbc(code)?.criteria ?? {},
+  }));
+  const depths = poolDepthsFrom({
+    agents: seed.users.map((u) => ({ id: u.id, attributes: u.attributes })),
+    buckets,
+    members: [],
+  });
+  return new Map(depths.map((d) => [d.code, d.depth]));
+}
+
+{
+  eq(SCALED_200_SHAPE.agents, 200, "the scaled roster is 200 advisors");
+  eq(
+    SCALED_200_SHAPE.profiles.reduce((s, p) => s + p.agents, 0),
+    200,
+    "its profiles account for every one of them",
+  );
+  eq(
+    SCALED_200_SHAPE.zones.reduce((s, z) => s + z.agents, 0),
+    200,
+    "and so do its zones",
+  );
+  // The checked in numbers are what scaling production gives, not a hand made mix: a
+  // literal that drifted from the scaling would name a roster the seed never builds.
+  eq(
+    JSON.stringify(SCALED_200_SHAPE.profiles),
+    JSON.stringify(scaleShape(PRODUCTION_SHAPE, 200)),
+    "the profiles are production's scaled to 200 by the seed's own scaling",
+  );
+  const zoneCounts = new Map<string, number>();
+  for (let i = 0; i < 200; i++) {
+    const z = zoneForIndex(SCALED_200_SHAPE, i, 200);
+    zoneCounts.set(z, (zoneCounts.get(z) ?? 0) + 1);
+  }
+  for (const z of SCALED_200_SHAPE.zones) {
+    eq(zoneCounts.get(z.timezone), z.agents, `the seed puts ${z.agents} advisors in ${z.timezone}`);
+  }
+  // Production's zone proportions kept: Eastern 29 of 90 is about 64 of 200.
+  const east = SCALED_200_SHAPE.zones.find((z) => z.timezone === "America/New_York")!;
+  assert(east.agents >= 62 && east.agents <= 66, `Eastern keeps its share (got ${east.agents})`);
+
+  // The depths it records are the ones the seed produces, through the same predicate
+  // the burst setup measures with, and the Beyond pools stay ONE deep, the control.
+  const seeded = seededDepths(SCALED_200_SHAPE);
+  for (const d of SCALED_200_SHAPE.poolDepths) {
+    eq(seeded.get(d.code), d.depth, `code ${d.code} seeds ${d.depth} deep at 200`);
+  }
+  for (const code of ["120", "220", "320", "420", "520"]) {
+    eq(seeded.get(code), 1, `code ${code} is still one deep at 200 advisors`);
+  }
+  // And production's own recorded depths are what the seed produces at 90, so the
+  // two shapes are produced by one generator rather than each by its own story.
+  const at90 = seededDepths(PRODUCTION_SHAPE);
+  for (const d of PRODUCTION_SHAPE.poolDepths) {
+    eq(at90.get(d.code), d.depth, `code ${d.code} seeds ${d.depth} deep at 90`);
+  }
+}
+
+{
+  // Chosen by name, and anything else refused rather than falling back to 90: a run
+  // that asked for 200 and seeded 90 would pass every bar about the wrong roster.
+  assert(rosterShapeFor(undefined) === PRODUCTION_SHAPE, "no roster named is production's");
+  assert(rosterShapeFor("") === PRODUCTION_SHAPE, "an empty one too");
+  assert(rosterShapeFor("90") === PRODUCTION_SHAPE, "90 is production's");
+  assert(rosterShapeFor("200") === SCALED_200_SHAPE, "200 is the scaled roster");
+  let threw = false;
+  try {
+    rosterShapeFor("150");
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a roster nobody checked in is refused");
+}
+
+{
+  // The run names the roster it MEASURED (#3829): the burst setup counts the advisors
+  // the branch holds and refuses a run whose count is not the roster it was asked for.
+  const ok = seededRosterVerdict({ seeded: 200, named: "200" });
+  assert(ok.ok && ok.advisors === 200, "200 seeded under a 200 run is that roster");
+  const ninety = seededRosterVerdict({ seeded: 90, named: "" });
+  assert(ninety.ok && ninety.advisors === 90, "90 seeded with no roster named is production's");
+  const short = seededRosterVerdict({ seeded: 90, named: "200" });
+  assert(!short.ok, "a 200 run on a branch seeded with 90 is refused");
+  assert(!short.ok && /90/.test(short.why) && /200/.test(short.why), "naming both counts");
+  const over = seededRosterVerdict({ seeded: 200, named: "90" });
+  assert(!over.ok, "and so is a 90 run on a branch seeded with 200");
+  const unknown = seededRosterVerdict({ seeded: 150, named: "150" });
+  assert(!unknown.ok, "a roster nobody checked in is refused rather than thrown");
+  const none = seededRosterVerdict({ seeded: 0, named: "90" });
+  assert(!none.ok, "and a branch holding nobody is refused");
+}
+
+{
+  // The report names the roster it measured and how hard it was driven, so a 200 run
+  // is never read against a 90 one (#3829).
+  eq(
+    rosterLine("200", 9),
+    "Roster: **200 advisors**, production's mix scaled from 90, driven by 9 steady drivers (#3829).",
+    "a 200 run says so",
+  );
+  eq(
+    rosterLine("90", 4),
+    "Roster: **90 advisors**, production's, driven by 4 steady drivers (#3829).",
+    "a 90 run says so",
+  );
+  eq(
+    rosterLine(undefined, 4),
+    "Roster: not counted (a hand run), driven by 4 steady drivers (#3829).",
+    "and a hand run says it was not counted rather than claiming a roster",
+  );
+}
+
+{
+  // The seed's choice of roster (#3829): a file, a named roster, or production's, and
+  // never two at once, since only one of them can be the roster the run is about.
+  const file = shapeSourceFor({ file: "/tmp/shape.json", roster: undefined });
+  assert(file.kind === "file" && file.path === "/tmp/shape.json", "a named file is read");
+  const named = shapeSourceFor({ file: undefined, roster: "200" });
+  assert(named.kind === "roster" && named.shape === SCALED_200_SHAPE, "ROSTER=200 is the scaled roster");
+  const none = shapeSourceFor({ file: "", roster: "  " });
+  assert(none.kind === "roster" && none.shape === PRODUCTION_SHAPE, "nothing named is production's");
+  const both = shapeSourceFor({ file: "/tmp/shape.json", roster: "200" });
+  assert(both.kind === "refused" && /both/.test(both.why), "a file AND a roster is refused");
+  const unknown = shapeSourceFor({ file: undefined, roster: "150" });
+  assert(unknown.kind === "refused" && /150/.test(unknown.why), "a roster nobody checked in is refused");
 }
 
 finish();

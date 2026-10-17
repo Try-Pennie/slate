@@ -109,6 +109,150 @@ export const PRODUCTION_SHAPE: RosterShape = {
 };
 
 /**
+ * Production's roster scaled to 200 advisors, the top of the 100 to 200 Slate is
+ * designed for (#3829).
+ *
+ * Checked in as numbers rather than computed at seed time, so the run names the
+ * roster it measured and a reader can see it. Every number is what the seed's own
+ * scaling makes of `PRODUCTION_SHAPE`, and `scripts/test-loadtest-roster-shape.ts`
+ * fails the day they differ: the profiles by `scaleShape`, the zones by
+ * `zoneForIndex`, and the depths by seeding it and reading every pool through the
+ * booker's predicate. The two Beyond advisors stay pinned, so every `x2x` pool is
+ * still exactly one deep and the bursts keep their control.
+ *
+ * `measuredAt` is production's date, because nothing here was measured on any other
+ * day: this is that roster at a size it has not reached.
+ */
+export const SCALED_200_SHAPE: RosterShape = {
+  measuredAt: "2026-09-11",
+  agents: 200,
+  profiles: [
+    { debtTeam: ["low"], backendService: ["achieve"], agents: 70 },
+    { debtTeam: ["low", "medium"], backendService: ["achieve"], agents: 52 },
+    { debtTeam: ["high", "low", "medium"], backendService: ["achieve"], agents: 36 },
+    { debtTeam: ["high", "medium", "very_high"], backendService: ["achieve"], agents: 18 },
+    { debtTeam: ["high", "low", "medium", "very_high"], backendService: ["achieve"], agents: 7 },
+    { debtTeam: ["high", "medium", "ultra_high", "very_high"], backendService: ["achieve"], agents: 7 },
+    { debtTeam: ["high", "ultra_high", "very_high"], backendService: ["achieve"], agents: 4 },
+    { debtTeam: ["high", "medium"], backendService: ["achieve"], agents: 4 },
+    {
+      debtTeam: ["high", "medium", "ultra_high", "very_high"],
+      backendService: ["achieve", "beyond"],
+      agents: 1,
+      pinned: true,
+    },
+    { debtTeam: ["low"], backendService: ["beyond"], agents: 1, pinned: true },
+  ],
+  zones: [
+    { timezone: "America/New_York", agents: 64 },
+    { timezone: "America/Phoenix", agents: 56 },
+    { timezone: "America/Denver", agents: 36 },
+    { timezone: "America/Los_Angeles", agents: 33 },
+    { timezone: "America/Chicago", agents: 11 },
+  ],
+  poolDepths: [
+    { code: "100", depth: 166 },
+    { code: "110", depth: 166 },
+    { code: "120", depth: 1 },
+    { code: "130", depth: 165 },
+    { code: "200", depth: 125 },
+    { code: "220", depth: 1 },
+    { code: "300", depth: 77 },
+    { code: "320", depth: 1 },
+    { code: "400", depth: 37 },
+    { code: "420", depth: 1 },
+    { code: "500", depth: 12 },
+    { code: "520", depth: 1 },
+  ],
+};
+
+/** The rosters a run may name, by advisor count. A name not here is refused. */
+export const ROSTERS = { "90": PRODUCTION_SHAPE, "200": SCALED_200_SHAPE } as const;
+export type RosterName = keyof typeof ROSTERS;
+
+/**
+ * The shape a run named (`ROSTER`), production's when it named none. Anything else
+ * THROWS rather than falling back, because a run that asked for 200 and seeded 90
+ * would pass every bar about a roster nobody chose.
+ */
+export function rosterShapeFor(name: string | undefined): RosterShape {
+  const key = (name ?? "").trim();
+  if (key === "") return PRODUCTION_SHAPE;
+  if (Object.hasOwn(ROSTERS, key)) return ROSTERS[key as RosterName];
+  throw new Error(
+    `ROSTER is ${JSON.stringify(name)}, and the rosters checked in are ${Object.keys(ROSTERS).join(" and ")}`,
+  );
+}
+
+/**
+ * Whether the advisors a branch holds are the roster a run named (#3829).
+ *
+ * The seed runs before the workflow and on another machine, so the workflow cannot
+ * know what was seeded except by counting it. A run asked for 200 on a branch seeded
+ * with 90 would pass every bar about the wrong roster and print 200 in its header,
+ * so a mismatch is refused, naming both numbers.
+ */
+export function seededRosterVerdict(input: {
+  seeded: number;
+  named: string | undefined;
+}): { ok: true; advisors: number; shape: RosterShape } | { ok: false; why: string } {
+  let shape: RosterShape;
+  try {
+    shape = rosterShapeFor(input.named);
+  } catch (err) {
+    return { ok: false, why: (err as Error).message };
+  }
+  if (input.seeded !== shape.agents) {
+    return {
+      ok: false,
+      why:
+        `the branch holds ${input.seeded} bookable advisors and this run names the ${shape.agents} ` +
+        `advisor roster; seed it with ROSTER=${shape.agents}, or dispatch with roster ${input.seeded}`,
+    };
+  }
+  return { ok: true, advisors: input.seeded, shape };
+}
+
+/**
+ * Where the seed takes its roster from (#3829): a shape FILE (a fresh export), a
+ * checked in roster by name, or production's when neither is named. Both at once is
+ * refused, since only one can be the roster the run is about, and so is a name
+ * nobody checked in.
+ */
+export function shapeSourceFor(env: {
+  file: string | undefined;
+  roster: string | undefined;
+}):
+  | { kind: "file"; path: string }
+  | { kind: "roster"; shape: RosterShape }
+  | { kind: "refused"; why: string } {
+  const file = (env.file ?? "").trim();
+  const roster = (env.roster ?? "").trim();
+  if (file !== "" && roster !== "") {
+    return { kind: "refused", why: "ROSTER_SHAPE_FILE and ROSTER are both set; name one roster, not both" };
+  }
+  if (file !== "") return { kind: "file", path: file };
+  try {
+    return { kind: "roster", shape: rosterShapeFor(roster) };
+  } catch (err) {
+    return { kind: "refused", why: (err as Error).message };
+  }
+}
+
+/**
+ * The report's roster line (#3829): how many advisors the burst setup COUNTED on the
+ * branch and how many steady drivers that sized. A hand run passes no count, and says
+ * so rather than claiming production's roster it never checked.
+ */
+export function rosterLine(advisors: string | undefined, steadyDrivers: number): string {
+  const n = (advisors ?? "").trim();
+  const driven = `driven by ${steadyDrivers} steady drivers (#3829).`;
+  if (n === "") return `Roster: not counted (a hand run), ${driven}`;
+  const which = n === String(PRODUCTION_SHAPE.agents) ? "production's" : `production's mix scaled from ${PRODUCTION_SHAPE.agents}`;
+  return `Roster: **${n} advisors**, ${which}, ${driven}`;
+}
+
+/**
  * Scale a shape to a target headcount, preserving the proportions and NOT the
  * pinned profiles.
  *

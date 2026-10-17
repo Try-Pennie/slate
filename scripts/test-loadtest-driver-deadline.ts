@@ -563,4 +563,41 @@ function baselineWiringProblems(yml: string, runJudge: string): string[] {
   );
 }
 
+// --- the steady matrix is sized from the roster, in one place (#3829) ---------------
+//
+// The drive matrix used to be the literal [0, 1, 2, 3] while the judge expected the
+// DRIVERS constant, and nothing tied the two: a matrix of nine against a judge of four
+// reads every 200 advisor run as incomplete, and the reverse passes a short run.
+
+/** Why the steady matrix, the judge's expectation and the roster could drift apart. */
+function steadyMatrixProblems(yml: string): string[] {
+  const out: string[] = [];
+  const drive = new RegExp(`^ {2}drive:\\n([\\s\\S]*?)(?=^ {2}\\S)`, "m").exec(yml)?.[1] ?? "";
+  if (!/driver:\s*\$\{\{\s*fromJSON\(needs\.setup-burst\.outputs\.steady_drivers\)\s*\}\}/.test(drive)) {
+    out.push("the drive matrix is not the burst setup's steady_drivers output");
+  }
+  if (!/EXPECT_STEADY_DRIVERS:\s*\$\{\{\s*needs\.setup-burst\.outputs\.steady_driver_count\s*\}\}/.test(yml)) {
+    out.push("the judge's steady expectation is not the burst setup's steady_driver_count");
+  }
+  if (!/ROSTER:\s*\$\{\{\s*inputs\.roster\s*\}\}/.test(yml)) {
+    out.push("the burst setup is not told which roster the run names");
+  }
+  return out;
+}
+
+{
+  const yml = readFileSync(join(ROOT, ".github/workflows/loadtest.yml"), "utf8");
+  eq(steadyMatrixProblems(yml), [], "the steady matrix, the judge and the roster are one number");
+  // Control: the literal matrix this replaced is caught (L1).
+  const literal = yml.replace(
+    /driver:\s*\$\{\{\s*fromJSON\(needs\.setup-burst\.outputs\.steady_drivers\)\s*\}\}/,
+    "driver: [0, 1, 2, 3]",
+  );
+  assert(literal !== yml, "the control really changed the matrix");
+  assert(
+    steadyMatrixProblems(literal).includes("the drive matrix is not the burst setup's steady_drivers output"),
+    "a literal steady matrix is refused",
+  );
+}
+
 finish();

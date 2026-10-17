@@ -66,13 +66,14 @@ import {
 } from "./platform-reading.ts";
 import {
   BOOKING_WRITES_PER_MINUTE,
-  DRIVERS,
+  expectedSteadyDrivers,
   PER_DRIVER_PER_MINUTE,
   faultMinutesFrom,
   RUN_MINUTES,
   type DriverMode,
   type DriverResult,
 } from "./book-plan.ts";
+import { rosterLine } from "./roster-shape.ts";
 import type { SoakSample } from "./invariants.ts";
 import { readColdSamples, readColdResult, type ColdLegResult } from "./cold-plan.ts";
 import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
@@ -112,6 +113,17 @@ function wholeNumber(raw: string | undefined, name: string): number {
   }
   return Number(v);
 }
+
+// #3829: how many STEADY drivers the workflow fired, sized from the roster its burst
+// setup counted. A hand run passes none and is judged against today's four.
+// env-ok: EXPECT_STEADY_DRIVERS (optional; the workflow's steady matrix size, unset on
+// a hand run, which drives the four DRIVERS)
+const steadyExpected = expectedSteadyDrivers(process.env.EXPECT_STEADY_DRIVERS);
+if (!steadyExpected.ok) {
+  console.error(`FAILED: ${steadyExpected.why}.`);
+  process.exit(1);
+}
+const STEADY_DRIVERS = steadyExpected.drivers;
 
 const RUN_ID = need("RUN_ID");
 const RESULTS = need("RESULTS");
@@ -667,7 +679,7 @@ const platform = await platformReading(
 
 const input: JudgeInput = {
   runId: RUN_ID,
-  target: { drivers: DRIVERS, perDriverPerMinute: PER_DRIVER_PER_MINUTE, minutes: RUN_MINUTES },
+  target: { drivers: STEADY_DRIVERS, perDriverPerMinute: PER_DRIVER_PER_MINUTE, minutes: RUN_MINUTES },
   driverResults: steady,
   burstResults: burst,
   freshnessSamples: samples,
@@ -722,6 +734,12 @@ lines.push("");
 // env-ok: EXPECT_POST_CONFIRM_RECOMPUTE (optional; the workflow's input, unset on a
 // hand run, which is the on arm)
 lines.push(recomputeArmLine(process.env.EXPECT_POST_CONFIRM_RECOMPUTE));
+lines.push("");
+// #3829: the roster the burst setup counted on the branch, so a 200 advisor run is
+// never read against a 90 one.
+// env-ok: EXPECT_ROSTER_ADVISORS (optional; the advisors the burst setup counted,
+// unset on a hand run)
+lines.push(rosterLine(process.env.EXPECT_ROSTER_ADVISORS, STEADY_DRIVERS));
 lines.push("");
 // #3490: which Google rig the stand in ran, so a run with Google time in its confirms is
 // never read against one without. The preflight refuses a deployment running any other.

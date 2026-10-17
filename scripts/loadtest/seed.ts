@@ -30,7 +30,7 @@ import { join } from "node:path";
 import { allXbcCodes, bucketSpecForXbc } from "../../src/lib/xbc.ts";
 import { SHIPPED_MIGRATION_VERSION } from "../../src/lib/db/migration-version.ts";
 import { generateSeed } from "./generate.ts";
-import { PRODUCTION_SHAPE, type RosterShape } from "./roster-shape.ts";
+import { shapeSourceFor, type RosterShape } from "./roster-shape.ts";
 import {
   migrationMismatch,
   resolveAgentCount,
@@ -94,8 +94,9 @@ async function insert(table: string, rows: unknown[]): Promise<void> {
 }
 
 /**
- * The roster shape to reproduce: a fresher export if one is named, else the one
- * baked in from 2026-09-11.
+ * The roster shape to reproduce: a fresher export if one is named, else the checked
+ * in roster `ROSTER` names (90, production's, or 200, production's scaled, #3829).
+ * Naming both is refused, since only one of them can be the roster the run is about.
  *
  * An unreadable file REFUSES rather than falling back to the default. Falling back
  * would seed a run against a shape nobody chose while the log said the file had
@@ -103,8 +104,15 @@ async function insert(table: string, rows: unknown[]): Promise<void> {
  * about the roster in it.
  */
 function loadShape(): RosterShape {
-  const path = process.env.ROSTER_SHAPE_FILE;
-  if (!path) return PRODUCTION_SHAPE;
+  // env-ok: ROSTER (optional; 90 or 200, and anything else is refused)
+  const source = shapeSourceFor({ file: process.env.ROSTER_SHAPE_FILE, roster: process.env.ROSTER });
+  if (source.kind === "refused") throw new Error(source.why);
+  if (source.kind === "roster") {
+    const shape = source.shape;
+    console.log(`  roster shape: ${shape.agents} advisors (production measured ${shape.measuredAt})`);
+    return shape;
+  }
+  const path = source.path;
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
