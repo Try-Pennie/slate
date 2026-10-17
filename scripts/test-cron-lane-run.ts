@@ -29,6 +29,7 @@ import {
   type LaneRunDeps,
   type LaneTick,
   type SelfBinding,
+  ANSWER_READ_MS,
 } from "../worker/lane-run.ts";
 import { laneTimingFields } from "../src/lib/monitor/lane-timing.ts";
 import { loadtestServingProductionHost } from "../src/lib/loadtest-guard.ts";
@@ -498,5 +499,149 @@ assert(
   existsSync(join(ROOT, "src/app", LANE_FAILURE_PATH, "route.ts")),
   "the failure route the dispatcher posts to exists",
 );
+
+// ------------------------------------------------------------ an ok answer is read through (#3885)
+//
+// The dispatcher used to read a lane's body only when it was NOT ok. Over a local
+// service binding nothing buffers a small body in transit, so a lane whose ok answer
+// was never read could not finish delivering it: its invocation stayed open until the
+// tick ended and Cloudflare recorded it cancelled (run 39055855051, three lanes of one
+// five minute tick that ran at Singapore).
+
+/** A body that records whether it was read to its end. */
+function trackedBody(text: string): { body: ReadableStream<Uint8Array>; read: () => boolean } {
+  let finished = false;
+  let sent = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (!sent) {
+        sent = true;
+        controller.enqueue(new TextEncoder().encode(text));
+        return;
+      }
+      finished = true;
+      controller.close();
+    },
+  });
+  return { body, read: () => finished };
+}
+
+{
+  const { deps } = harness(async () => new Response("in process", { status: 200 }));
+  const tracked = trackedBody('{"ok":true}');
+  const self = selfBinding(async () => new Response(tracked.body, { status: 200, headers: { "cf-placement": "local-SIN" } }));
+  deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/complete", tick, deps);
+  eq(out.run.ok, true, "the placed lane answered ok");
+  assert(tracked.read(), "and its ok answer was read to the end, so the lane's invocation can finish");
+}
+
+{
+  const tracked = trackedBody("{}");
+  const { deps } = harness(async () => new Response(tracked.body, { status: 200 }));
+  deps.placed = { binding: null, unavailable: "absent", origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/outbox", tick, deps);
+  eq(out.run.ok, true, "an in process lane answered ok");
+  assert(tracked.read(), "and its answer is read through the same way");
+}
+
+{
+  // A body that cannot be read does not turn an ok lane into a failure: the status
+  // already said what the lane did, and the body carries nothing the dispatcher uses.
+  const broken = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      controller.error(new Error("stream reset"));
+    },
+  });
+  const { deps, seen } = harness(async () => new Response("unused", { status: 200 }));
+  const self = selfBinding(async () => new Response(broken, { status: 200 }));
+  deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/watch", tick, deps);
+  eq(out.failure, null, "an ok lane whose body broke is not a failure");
+  eq(out.run.ok, true, "and is still timed as ok");
+  eq(seen.requests.length, 0, "and is never re-run in process, since it ran");
+  eq(
+    seen.warns.map((w) => [w.fields.msg, w.fields.path, w.fields.answer]),
+    [["a lane's ok answer could not be read through", "/api/cron/watch", "unreadable"]],
+    "but it is logged, by lane and by what happened to the answer (L11)",
+  );
+}
+
+{
+  // A lane that answered ok and then stalled its body must not hold the tick open: the
+  // read is given ANSWER_READ_MS and then the body is let go. The wait is injected, so
+  // this runs at once rather than waiting the deadline out (L524).
+  let cancelled = false;
+  const stalled = new ReadableStream<Uint8Array>({
+    pull() {
+      return new Promise<void>(() => {});
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const waits: number[] = [];
+  const { deps, seen } = harness(async () => new Response("unused", { status: 200 }));
+  deps.wait = async (ms) => {
+    waits.push(ms);
+  };
+  const self = selfBinding(async () => new Response(stalled, { status: 200 }));
+  deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/watch", tick, deps);
+  eq(waits, [ANSWER_READ_MS], "the read waits at most its deadline");
+  eq(out.run.ok, true, "a lane that answered ok and stalled its body is still ok");
+  eq(out.failure, null, "and not a failure");
+  assert(cancelled, "and its body is let go rather than held for the rest of the tick");
+  eq(seen.errors.length, 0, "and nothing is logged as a fault");
+  eq(
+    seen.warns.map((w) => [w.fields.msg, w.fields.answer]),
+    [["a lane's ok answer could not be read through", "deadline"]],
+    "but the stall is logged, so a lane cut off at the deadline is never silent",
+  );
+  // The lane's own time ends when it answered, before the read: the harness clock
+  // moves 5 per reading, so a lane timed at its answer reads 5, the same as any lane.
+  eq(out.run.ms, 5, "and the read is not counted in the lane's recorded time");
+}
+
+{
+  // A NON-ok answer is read for the log, under the same deadline, so a lane that
+  // failed and then stalled its body cannot hold the tick open either.
+  const stalled = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("partial detail"));
+    },
+    pull() {
+      return new Promise<void>(() => {});
+    },
+  });
+  const waits: number[] = [];
+  const { deps, seen } = harness(async () => new Response("unused", { status: 200 }));
+  deps.wait = async (ms) => {
+    waits.push(ms);
+  };
+  const self = selfBinding(async () => new Response(stalled, { status: 500 }));
+  deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/agents", tick, deps);
+  eq(waits, [ANSWER_READ_MS], "the failed answer is read under the same deadline");
+  eq(out.failure?.status, 500, "and the lane is still reported failed with its status");
+  eq(seen.errors[0]?.fields.body, "partial detail", "with whatever of the body arrived before the deadline");
+}
+
+{
+  // A body somebody already locked is reported as unreadable, never thrown into the
+  // lane's own outcome: the lane answered ok and stays ok.
+  const res = new Response("{}", { status: 200 });
+  res.body!.getReader();
+  const { deps, seen } = harness(async () => res);
+  deps.placed = { binding: null, unavailable: "absent", origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/outbox", tick, deps);
+  eq(out.run.ok, true, "a locked ok answer leaves the lane ok");
+  eq(out.failure, null, "and not failed");
+  eq(
+    seen.warns.filter((w) => w.fields.msg === "a lane's ok answer could not be read through").map((w) => w.fields.answer),
+    ["unreadable"],
+    "and says the answer could not be read",
+  );
+}
 
 finish();

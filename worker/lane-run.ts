@@ -144,11 +144,57 @@ export interface LaneRunDeps {
   /** Send lanes over the self binding (#3693). Absent, every lane runs in process. */
   placed?: PlacedDispatch;
   now(): number;
+  /** Resolves after `ms`; injected so a test never waits a deadline out (L524). */
+  wait?: (ms: number) => Promise<void>;
   log: {
     error(tag: string, fields: LogFields, err?: unknown): void;
     warn(tag: string, fields: LogFields, err?: unknown): void;
     info(tag: string, fields: LogFields): void;
   };
+}
+
+/**
+ * How long the dispatcher reads a lane's ok answer before letting it go (#3885). The
+ * answer is a few bytes of JSON, so this only ever ends a body that stalled, and a
+ * stalled body must not hold the tick open after its lane already succeeded.
+ */
+export const ANSWER_READ_MS = 5_000;
+
+/**
+ * Read a response's body through within `ms`, then let it go, with the text that
+ * arrived. Never throws.
+ */
+async function readThrough(
+  res: Response,
+  ms: number,
+  wait?: (ms: number) => Promise<void>,
+): Promise<{ outcome: "read" | "unreadable" | "deadline"; text: string }> {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    reader = res.body?.getReader();
+  } catch {
+    // Already locked or read: nothing more can be read from it here.
+    return { outcome: "unreadable", text: "" };
+  }
+  if (!reader) return { outcome: "read", text: "" };
+  const decoder = new TextDecoder();
+  let text = "";
+  const drain = (async () => {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return "read" as const;
+      text += decoder.decode(value, { stream: true });
+    }
+  })().catch(() => "unreadable" as const);
+  // The real deadline is a timer cleared once the read ends, so a normal answer
+  // leaves nothing pending behind it.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = wait ? wait(ms) : new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)));
+  const outcome = await Promise.race([drain, deadline.then(() => "deadline" as const)]);
+  if (timer !== undefined) clearTimeout(timer);
+  // The reader holds the stream's lock, so the stalled body is let go through it.
+  if (outcome === "deadline") await reader.cancel().catch(() => undefined);
+  return { outcome, text };
 }
 
 export interface LaneTick {
@@ -190,17 +236,39 @@ export async function runLane(
   const startedAt = deps.now();
   let ok = false;
   let failure: LaneFailure | null = null;
+  // When the lane ANSWERED, so reading its answer through is never counted as the
+  // lane's own time (L323).
+  let answeredAt: number | null = null;
   // Which path ran it, written by the dispatch AS it decides, so a lane that throws on
   // either path is still recorded on the path it took.
   const route: LaneRoute = { via: "in_process", placement: null, fallback: null };
   const via = () => route.via;
   try {
     const res = await dispatchLane(path, tick, deps, route);
+    answeredAt = deps.now();
     ok = res.ok;
-    if (!res.ok) {
+    if (res.ok) {
+      // #3885: read an ok answer through too. Over a local service binding nothing
+      // buffers a small body in transit, so a lane whose answer is never read cannot
+      // finish delivering it: its invocation stays open until the tick ends and is
+      // recorded cancelled. A body that will not read, or stalls past ANSWER_READ_MS,
+      // changes nothing: the status already said what the lane did.
+      const answer = (await readThrough(res, ANSWER_READ_MS, deps.wait)).outcome;
+      if (answer !== "read") {
+        deps.log.warn("cron", {
+          msg: "a lane's ok answer could not be read through",
+          path,
+          answer,
+          tick: tick.tickId,
+          via: via(),
+        });
+      }
+    } else {
       // The body is read for the LOG only; the page carries the status, never a
       // response body, which is whatever the lane chose to put there.
-      const body = await res.text().catch(() => "");
+      // Under the same deadline as an ok answer (#3885): a failed lane that stalls its
+      // body must not hold the tick open either. What arrived is what is logged.
+      const body = (await readThrough(res, ANSWER_READ_MS, deps.wait)).text;
       // One failure, one message (Dan, 2026-10-03): a lane that already raised its
       // own alert about this failure says so on the response, and gets no generic
       // page on top of it. The header is set from what the lane's code actually
@@ -226,7 +294,7 @@ export async function runLane(
   // A thrown lane is still measured and still reported as failed: a lane that dies
   // is usually the FAST one, and leaving it out would quietly shrink the record on
   // exactly the tick worth reading.
-  return { run: { path, ms: deps.now() - startedAt, ok, ...route }, failure };
+  return { run: { path, ms: (answeredAt ?? deps.now()) - startedAt, ok, ...route }, failure };
 }
 
 /** The path a lane took, as the dispatch decided it. */
