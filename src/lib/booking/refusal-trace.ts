@@ -204,8 +204,8 @@ export function ladderStage(rungs: RungTrace[]): RefusalStage {
   return best < 0 ? "pool_empty" : order[best];
 }
 
-/** One rung as stored and logged: counts only. */
-export function rungCounts(r: RungTrace): Omit<RungTrace, "readIds"> {
+/** One rung as stored and logged: counts only, never the advisor ids it carries. */
+export function rungCounts(r: RungTrace): Omit<RungTrace, "readIds" | "memberIds"> {
   return { code: r.code, members: r.members, read: r.read, claimed: r.claimed, checked: r.checked, stage: r.stage };
 }
 
