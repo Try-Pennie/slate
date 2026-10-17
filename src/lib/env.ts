@@ -214,8 +214,10 @@ export const bookingApiKeyFor = (caller: BookingApiCaller, slot: KeySlot): strin
 // lead tokens with (decision 19's two slot rotation, the same move as the booking API
 // keys: fill the empty slot, point Marcia at it, empty the old one), and the secret
 // `McpBookingGateway` puts on its inner request so the internal route can tell the
-// gateway from anything else. All three empty = the endpoint refuses every call, and
-// nothing else in Slate notices. Not created yet: the endpoint is not deployed.
+// gateway from anything else. A missing one refuses every call it governs and pages:
+// no gateway secret as `marcia_gateway_refused`, no token key as
+// `marcia_token_refused:token_keys_unconfigured`. Not created yet: the endpoint is not
+// deployed.
 export const marciaTokenKeySlots = (): [string, string] => [
   process.env.MARCIA_TOKEN_KEY_A ?? "",
   process.env.MARCIA_TOKEN_KEY_B ?? "",
