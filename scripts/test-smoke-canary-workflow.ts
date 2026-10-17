@@ -15,8 +15,13 @@ const wf = readFileSync(join(ROOT, ".github", "workflows", "smoke-canary.yml"), 
 
 // --- triggers: two schedules + manual dispatch ---
 assert(/^on:/m.test(wf), "has an `on:` trigger block");
-assert(/cron:\s*"\*\/30 \* \* \* \*"/.test(wf), "schedules the ~30-min dry-run tick");
-assert(/cron:\s*"0 \*\/6 \* \* \*"/.test(wf), "schedules the 6h full pass");
+// #1493 (Dan, 2026-10-16): the full pass runs HOURLY, on the hour, now that real
+// leads book through Slate, and the dry tick fills the half hour between, so the
+// canary still reports every 30 minutes.
+assert(/cron:\s*"30 \* \* \* \*"/.test(wf), "schedules the dry-run tick at half past each hour");
+assert(/cron:\s*"0 \* \* \* \*"/.test(wf), "schedules the hourly full pass");
+assert(!/cron:\s*"0 \*\/6 \* \* \*"/.test(wf), "the old six hourly full pass schedule is gone");
+assert(!/cron:\s*"\*\/30 \* \* \* \*"/.test(wf), "and so is the every 30 minute dry schedule, which would also fire on the hour");
 
 // #1436: the step that decides which pass to run compares `github.event.schedule`
 // against a HAND-COPIED cron string. If the schedule above were ever retimed and
@@ -65,7 +70,7 @@ assert(/\/api\/smoke\/heartbeat/.test(wf), "stamps the smoke-canary heartbeat en
   );
 }
 
-// --- #982: the FULL pass stamps its OWN heartbeat, so a silently-dropped 6h
+// --- #982: the FULL pass stamps its OWN heartbeat, so a silently-dropped hourly
 // full run is not masked by the 30-min dry tick keeping smoke-canary fresh. ---
 {
   const fullStamp = wf.slice(wf.indexOf("full-pass canary heartbeat"), wf.indexOf("Slack alert on failure"));
@@ -158,10 +163,24 @@ assert(/\/api\/smoke\/heartbeat/.test(wf), "stamps the smoke-canary heartbeat en
   // FULL PASS ONLY. This is a private repo, so a real browser on every 30 minute
   // tick is roughly 48 billed runs a day against 4 for the same class of fault,
   // and an embed regression arrives with a deploy rather than drifting in.
+  // #1493: the full pass went hourly and the browser check did NOT go with it. Its
+  // reason above is unchanged (an embed regression arrives with a deploy), so it
+  // stays on every sixth full pass, flagged by the mode step, and so do the two
+  // browser setup steps, which are most of its billed minutes.
   assert(
-    /steps\.mode\.outputs\.full == '1'/.test(embedStep.slice(0, 400)),
-    "the embed check runs on the 6h full pass only, because a browser is billed minutes",
+    /steps\.mode\.outputs\.embed == '1'/.test(embedStep.slice(0, 400)),
+    "the embed check runs only when the mode step flags the six hourly embed pass",
   );
+  for (const name of ["Cache the browser", "Install the browser"]) {
+    const step = wf.slice(wf.indexOf(name), wf.indexOf(name) + 300);
+    assert(/steps\.mode\.outputs\.embed == '1'/.test(step), `${name} runs only on the embed pass`);
+  }
+  {
+    const modeStep = wf.slice(wf.indexOf("id: mode"), wf.indexOf("Booking smoke (dry-run health tick)"));
+    assert(/embed=1/.test(modeStep) && /embed=0/.test(modeStep), "the mode step sets the embed flag both ways");
+    assert(/% 6/.test(modeStep), "on every sixth hour of the day");
+    assert(/DISPATCH_MODE" = "full"[\s\S]*embed=1|embed=1[\s\S]*DISPATCH_MODE" = "full"/.test(modeStep), "and on a manual full dispatch");
+  }
   assert(
     /steps\.embed\.outcome == 'failure'/.test(alertIf),
     "the alert step consults the embed step's outcome too, or its failures are recorded and read by nobody",

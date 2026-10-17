@@ -12,7 +12,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({ rpc, from }),
 }));
 
-import { recordFailureStreak, recordConsecutiveStreak, clearFailureStreak } from "./streak";
+import { recordFailureStreak, recordConsecutiveStreak, clearFailureStreak, trackConsecutiveStreak } from "./streak";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -61,6 +61,38 @@ describe("recordConsecutiveStreak", () => {
       p_window_seconds: 900,
       p_max: 0,
     });
+  });
+});
+
+// #1493: a caller whose safe side is to SPEAK (the overnight canary, which holds a
+// first failure only because it can count on the second) cannot use the boolean
+// above, where a tracking failure and "not yet" both read as false. This answers
+// the three apart.
+describe("trackConsecutiveStreak", () => {
+  it("answers below while the streak is under the threshold", async () => {
+    rpc.mockResolvedValueOnce({ data: true, error: null });
+    expect(await trackConsecutiveStreak("canary", 900, 2)).toBe("below");
+    expect(rpc).toHaveBeenCalledWith("rate_limit_hit", { p_key: "canary", p_window_seconds: 900, p_max: 1 });
+  });
+
+  it("answers reached once the streak reaches the threshold", async () => {
+    rpc.mockResolvedValueOnce({ data: false, error: null });
+    expect(await trackConsecutiveStreak("canary", 900, 2)).toBe("reached");
+  });
+
+  it("answers unknown, not below, when the rpc errors", async () => {
+    rpc.mockResolvedValueOnce({ data: null, error: { message: "boom" } });
+    expect(await trackConsecutiveStreak("canary", 900, 2)).toBe("unknown");
+  });
+
+  it("answers unknown when the rpc throws", async () => {
+    rpc.mockRejectedValueOnce(new Error("db down"));
+    expect(await trackConsecutiveStreak("canary", 900, 2)).toBe("unknown");
+  });
+
+  it("answers unknown when the rpc returns something that is not a boolean", async () => {
+    rpc.mockResolvedValueOnce({ data: null, error: null });
+    expect(await trackConsecutiveStreak("canary", 900, 2)).toBe("unknown");
   });
 });
 

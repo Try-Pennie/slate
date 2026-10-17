@@ -4207,8 +4207,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the booking canary's full pass went quiet",
     channel: "alert",
     text: canaryAlertText(
-      { lane: "smoke-canary-full", ageMs: 9 * 60 * 60_000, maxStaleMs: 8 * 60 * 60_000, unreadable: false },
-      480,
+      { lane: "smoke-canary-full", ageMs: 4 * 60 * 60_000, maxStaleMs: 3 * 60 * 60_000, unreadable: false },
+      180,
     ),
   },
   {

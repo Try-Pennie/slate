@@ -123,7 +123,7 @@ export async function GET(req: NextRequest) {
           .lte("starts_at", windowEndIso)
           // Test bookings are excluded through the BUCKET, which is where the flag
           // lives: `bookings` has no `is_test` of its own. The canary books and
-          // cancels a real row every six hours against a real inbox, and reminding
+          // cancels a real row every hour against a real inbox, and reminding
           // SMOKE about its own fixture would be a live email nobody asked for
           // (#396).
           .eq("buckets.is_test", false)

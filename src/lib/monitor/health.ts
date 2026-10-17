@@ -180,24 +180,26 @@ export function cronLanesNote(): string {
  * 503 (that pages external uptime as if the site were broken). Only the internal
  * lane-watchdog consults this, alerting to Slack.
  *
- * The canary stamps `smoke-canary` on every successful run (the ~30-min
- * side-effect-free dry tick and the 6h full pass both stamp). The bound is 3x the
+ * The canary stamps `smoke-canary` on every successful run (the half hourly
+ * side-effect-free dry tick and the hourly full pass both stamp). The bound is 3x the
  * frequent cadence so ordinary GitHub scheduling jitter (scheduled runs are often
  * delayed several minutes) can't trip a false alert; only a schedule that has
  * genuinely stopped, or is failing before it can stamp, does.
  *
  * `smoke-canary-full` is tracked SEPARATELY (#982). The dry tick and the full pass
  * used to share the one `smoke-canary` stamp, so the 30-min dry tick kept it fresh
- * and a silently-dropped 6h full run (the only automated proof a booking can
+ * and a silently-dropped full run (the only automated proof a booking can
  * actually be created, rescheduled, and cancelled) never went stale and never
- * paged. The full pass now stamps its own heartbeat, judged against an 8h bound:
- * above the 6h cadence and the 6h30m gap-fill trigger, so the Worker gap-filler
+ * paged. The full pass now stamps its own heartbeat, judged against a 3h bound:
+ * above the hourly cadence (#1493, was 6h with an 8h bound) and past the 90m
+ * gap-fill trigger plus its 30m cooldown and a whole run, so the Worker gap-filler
  * normally re-runs the full pass before this backstop pages, and only a full pass
  * that both GitHub AND the gap-filler have failed to complete trips it.
+ * `scripts/test-canary-trigger.ts` holds that relation.
  */
 export const CANARY_STALE_BOUNDS_MS: Record<string, number> = {
   "smoke-canary": 90 * MIN,
-  "smoke-canary-full": 8 * 60 * MIN,
+  "smoke-canary-full": 3 * 60 * MIN,
   // The daily cal.com parity sweep (#2031), which is a scheduled workflow like the
   // two above and belongs to the same family for the same reason: a stopped sweep
   // means a comparison went quiet, never that Slate is down, so it must not reach

@@ -3,6 +3,7 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { shortFailureReason, shortErrorReason } from "@/lib/notify/error-text";
 import { auditWriteFailedAlert } from "@/lib/notify/misc-alert-copy";
 import { log } from "@/lib/log";
+import type { AuditChannel } from "@/lib/audit-channel";
 
 /**
  * The trail records CHANGES, never views (#3089, Dan 2026-10-03: "No, changes
@@ -103,9 +104,21 @@ export const AUDIT_ACTIONS = [
   // #3615: an admin moved that call BACK to the advisor it left. The details name the booking,
   // both advisors and the sweep item; the call then stays with that advisor.
   "booking.demotion_reroute_reverted",
+  // #3542: a booking made, moved or cancelled by a MACHINE channel (today only
+  // Marcia, through her booking MCP endpoint, #3543). The channel is on the row in
+  // `details.channel` and the lead's 00Q id beside it; the actor is null because a
+  // machine caller is not a Slate user. The booker, the manage page and the admin
+  // screens record their booking changes in `booking_events`, not here.
+  "booking.created",
+  "booking.rescheduled",
+  "booking.cancelled",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+
+// #3542: the channel vocabulary lives in an import free module, so the trail's
+// display can key on it too; re-exported here for writers.
+export { AUDIT_CHANNELS, type AuditChannel } from "@/lib/audit-channel";
 
 /** One key for the whole trail: if audit writes are broken they are broken for
  *  every action, so a per-action key would page N times for one cause. */
@@ -131,7 +144,38 @@ export interface AuditEntry {
    * action goes unrecorded. Put that id in `details` instead.
    */
   targetUserId?: string | null;
+  /**
+   * The channel the write came through (#3542), stored as `details.channel`. This
+   * field is the ONE home of that fact (L83): a `channel` key a caller leaves in
+   * `details` is dropped, so nothing can record a channel by writing details.
+   */
+  channel?: AuditChannel;
   details?: Record<string, unknown>;
+}
+
+/** The row `recordAudit` inserts, built apart so it can be tested without a database. */
+export type AuditInsertRow = {
+  org_id: string;
+  actor_id: string | null;
+  action: AuditAction;
+  target_id: string | null;
+  details: Record<string, unknown>;
+};
+
+/**
+ * Build the `audit_log` row for an entry (#3542). The channel is written from the
+ * entry's `channel` field and never from `details`: a stray `details.channel` is
+ * removed, and the field (when present) is set after it.
+ */
+export function auditInsertRow(entry: AuditEntry): AuditInsertRow {
+  const { channel: _ignored, ...details } = entry.details ?? {};
+  return {
+    org_id: entry.orgId,
+    actor_id: entry.actorId ?? null,
+    action: entry.action,
+    target_id: entry.targetUserId ?? null,
+    details: entry.channel ? { ...details, channel: entry.channel } : details,
+  };
 }
 
 /**
@@ -154,13 +198,7 @@ export interface AuditEntry {
  */
 export async function recordAudit(entry: AuditEntry): Promise<void> {
   try {
-    const { error } = await supabaseAdmin().from("audit_log").insert({
-      org_id: entry.orgId,
-      actor_id: entry.actorId ?? null,
-      action: entry.action,
-      target_id: entry.targetUserId ?? null,
-      details: entry.details ?? {},
-    });
+    const { error } = await supabaseAdmin().from("audit_log").insert(auditInsertRow(entry));
     // The shape that actually happens: no exception, just an error nobody read.
     if (error) {
       await reportAuditFailure(entry, shortFailureReason(error.message) ?? "no detail", error);
