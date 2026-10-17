@@ -15,6 +15,7 @@
  * lead id, which is an external id and safe to store (#3276 counts people by it).
  */
 import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
+import type { OfferVerdict } from "./offer-race.ts";
 
 
 /**
@@ -75,6 +76,9 @@ export interface RungTrace {
   stage: RefusalStage;
   /** The free ids the read returned, for the routing decision's considered set. Not logged or stored. */
   readIds?: string[];
+  /** Every advisor in the rung's pool (#3797), so a refusal can be judged a lost race
+   *  against their busy time. Not logged or stored. Absent when the read did not say. */
+  memberIds?: string[];
 }
 
 export interface RefusalTrace {
@@ -88,6 +92,28 @@ export interface RefusalTrace {
   lostRaces?: number;
   /** The refused lead (`refusedLeadId`), so the log line counts people too (#3276). */
   leadId?: string | null;
+  /**
+   * #3797: whether a `candidate_read_empty` refusal was a lost race against the list
+   * the lead picked from (`offer-race.ts`), set as the refusal is recorded. Absent when
+   * it was not judged (another stage, or the confirm carried no `computed_at`). Only
+   * `race` changes how the route tallies it.
+   */
+  offerVerdict?: OfferVerdict;
+  /** #3797: the codes whose stored row still offered the refused time when the refusal
+   *  was recorded: the row proofs a later refusal is judged against. */
+  staleRowCodes?: string[];
+  /** #3797: the stored rows that judgement read, so the route's stored offer check does
+   *  not read them a second time. Not logged or stored. */
+  storedRows?: { bucket_code: string; payload: unknown; computed_at: string }[];
+}
+
+/**
+ * Whether a refusal was a PROVEN lost race at the free check (#3797), which the routes
+ * tally apart from the failure share. A race lost at the insert is its own error
+ * (`RaceLostRefusalError`, #2838) and is never this.
+ */
+export function provenOfferRace(err: unknown): boolean {
+  return refusalTraceOf(err)?.offerVerdict === "race";
 }
 
 const TRACE = Symbol.for("slate.refusalTrace");
@@ -150,8 +176,11 @@ export function rungTraceFrom(m: {
   claimedByOthers: ReadonlySet<string> | undefined;
   checked: number | undefined;
   anyUnverified: boolean;
+  /** #3797: the pool's advisors, when the read returned them. */
+  memberIds?: string[];
 }): RungTrace {
   return {
+    ...(m.memberIds ? { memberIds: m.memberIds } : {}),
     code: m.code,
     members: m.members,
     read: m.read.length,
@@ -199,6 +228,8 @@ export function refusalLogFields(t: RefusalTrace): Record<string, string | numbe
   if (t.leaderRefusal) out.leader_refusal = t.leaderRefusal;
   if (t.lostRaces !== undefined) out.lost_races = t.lostRaces;
   if (t.leadId) out.lead_id = t.leadId;
+  // #3797: absent when the refusal was not judged, never a guess.
+  if (t.offerVerdict) out.offer_verdict = t.offerVerdict;
   return out;
 }
 

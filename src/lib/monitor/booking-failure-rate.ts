@@ -475,6 +475,13 @@ export interface RefusedPeople {
    * dead time and ten across the evening send a reader to different places.
    */
   times?: number;
+  /**
+   * #3797: proven lost races in the same window, counted APART: none of them is in
+   * `refusals` or `people`, as the tally keeps them out of the failure share. Absent
+   * when the read did not carry the verdict. The page states it beside the count so a
+   * reader never has to work out which kind woke them.
+   */
+  races?: number;
 }
 
 /** One refusal row as the store reads it. `is_test` null is a bucket that could not
@@ -486,6 +493,9 @@ export interface RefusalRow {
   /** The instant the lead asked for (#3272). Optional: a read that did not ask for it
    *  leaves `times` uncounted rather than counted as none. */
   requested_start?: string | null;
+  /** #3797: `race` is a proven lost race, which is left out of the people count exactly
+   *  as the tally leaves it out of the failure share. Anything else counts. */
+  offer_verdict?: string | null;
 }
 
 /** Count the people among the window's refusals, leaving test buckets out exactly as
@@ -494,10 +504,18 @@ export function countRefusedPeople(rows: RefusalRow[]): RefusedPeople {
   const leads = new Set<string>();
   const times = new Set<string>();
   let timesRead = false;
+  let racesRead = false;
+  let races = 0;
   let refusals = 0;
   let withoutLead = 0;
   for (const row of rows) {
     if (row.is_test === true) continue;
+    if (row.offer_verdict !== undefined) racesRead = true;
+    // #3797 (Dan, 2026-10-16): a proven race is counted apart and never paged on.
+    if (row.offer_verdict === "race") {
+      races += 1;
+      continue;
+    }
     refusals += 1;
     if (row.lead_id) leads.add(row.lead_id);
     else withoutLead += 1;
@@ -506,8 +524,13 @@ export function countRefusedPeople(rows: RefusalRow[]): RefusedPeople {
       if (row.requested_start) times.add(row.requested_start);
     }
   }
-  const out: RefusedPeople = { people: leads.size, refusals, withoutLead };
-  return timesRead ? { ...out, times: times.size } : out;
+  return {
+    people: leads.size,
+    refusals,
+    withoutLead,
+    ...(timesRead ? { times: times.size } : {}),
+    ...(racesRead ? { races } : {}),
+  };
 }
 
 /** "1 refusal" / "5 refusals". */
@@ -523,6 +546,19 @@ function plural(n: number, word: string): string {
 function peopleWere(r: RefusedPeople): string {
   const who = r.people === 1 ? "1 person was" : `${r.people} people were`;
   return r.withoutLead > 0 ? `At least ${who}` : who;
+}
+
+/**
+ * #3797: the sentence naming the proven lost races counted apart, or nothing when there
+ * were none or the read could not say. Beside the count, never inside it.
+ */
+function racesApart(r: RefusedPeople | null | undefined): string {
+  const n = r?.races ?? 0;
+  if (n <= 0) return "";
+  return (
+    ` ${n === 1 ? "1 more was a lost race" : `${n} more were lost races`}, counted apart and not in these ` +
+    "numbers: a time free when the lead's list was computed and taken before they confirmed."
+  );
 }
 
 /** The top few codes as "slot_unavailable (35), internal (3)". */
@@ -651,7 +687,7 @@ export function formatFailureRateAlert(
       ? `The failures in that window were all recorded ${spanWords(input.span)}.`
       : `The failures in that window were recorded ${spanWords(input.span)}.`;
   return (
-    `${countsClause(input)}. Still failing: ${now}. ${when}${naming}${guidance} ` +
+    `${countsClause(input)}.${racesApart(input.refused)} Still failing: ${now}. ${when}${naming}${guidance} ` +
     "The per call breakdown is in the booking outcome panel."
   );
 }
@@ -694,7 +730,7 @@ export function formatFailureBurstEnded(
           `to book in the last ${minutes} minutes, so whether bookings are completing again is not ` +
           "yet known.";
   return (
-    `${lead} ${countsClause(input)}, recorded ${spanWords(input.span)}.${naming}${guidance} ` +
+    `${lead} ${countsClause(input)}, recorded ${spanWords(input.span)}.${racesApart(input.refused)}${naming}${guidance} ` +
     "The per call breakdown is in the booking outcome panel."
   );
 }
@@ -724,7 +760,7 @@ export function formatFailureVolumeAlert(input: {
         "and refused at confirm (slot_unavailable)."
       : ` This looks like Slate failing rather than a sell out: ${k.errorCount} of them were errors or timeouts ` +
         `(${codeList(k.errors)}).${guidanceFor(k.errors[0]?.code)}`;
-  return `${head}${looks}${peopleDetail(input.refused, k.taken)} The per call breakdown is in the booking outcome panel.`;
+  return `${head}${looks}${peopleDetail(input.refused, k.taken)}${racesApart(input.refused)} The per call breakdown is in the booking outcome panel.`;
 }
 
 /** The people sentence of the volume page, or nothing when no failure was a refusal. */

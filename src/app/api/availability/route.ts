@@ -249,6 +249,9 @@ async function handle(req: NextRequest) {
   // booker hands back with its confirm so the confirm records it instead of reading
   // the cache for it, and never renders. Dan, 2026-10-07: "I don't want the lead to
   // see it. I don't care if it's in the background in a spot they'll never see".
+  // #3797: `slotsComputedAt` is the same stamp as x-slots-computed-at, handed back with
+  // the confirm so a refused time can be judged a lost race. A freshness fact, not
+  // routing (#259), and never rendered.
   return NextResponse.json(
     {
       bucket: { code: result.routing.requested_code },
@@ -261,6 +264,7 @@ async function handle(req: NextRequest) {
       slots,
       emptyBecause,
       shownTier: result.routing.booked_tier,
+      slotsComputedAt: result.computedAt ?? null,
     },
     // Server-Timing is added LAST, so its total covers everything above. Only this
     // 200 carries it: the 404 an unknown and a hidden bucket share stays identical

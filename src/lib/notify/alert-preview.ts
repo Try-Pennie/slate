@@ -1534,6 +1534,25 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     }),
   },
   {
+    // #3797: stale offers paging, with the proven lost races of the same window counted
+    // apart beside the count. A window of races alone never pages, so it has no state
+    // here; scripts/test-monitor-booking-failure-rate.ts pins that it sends nothing.
+    key: "booking_failure_rate",
+    state: "stale offers paging, lost races counted apart beside them",
+    channel: "alert",
+    text: formatFailureRateAlert({
+      attempts: 49,
+      failures: 11,
+      pct: 22,
+      windowMinutes: 180,
+      topCodes: [{ code: "slot_unavailable", count: 11 }],
+      refused: { people: 4, refusals: 11, withoutLead: 0, races: 6 },
+      recentMinutes: 30,
+      recent: { attempts: 7, failures: 4 },
+      span: PREVIEW_WAVE,
+    }),
+  },
+  {
     key: "booking_failure_rate",
     state: "some refusals carry no lead id, so the people count is a floor",
     channel: "alert",
@@ -1755,6 +1774,17 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       volume: { attempts: 12, failures: 11, byCode: { API_KEY_REJECTED: 11 }, firing: true },
       volumeMinutes: 30,
       refused: { people: 0, refusals: 0, withoutLead: 0 },
+    }),
+  },
+  {
+    // #3797: the proven lost races of the same half hour are not in the ten, and said so.
+    key: "booking_failure_volume",
+    state: "stale offers in volume, one lost race counted apart",
+    channel: "alert",
+    text: formatFailureVolumeAlert({
+      volume: { attempts: 16, failures: 10, byCode: { slot_unavailable: 10 }, firing: true },
+      volumeMinutes: 30,
+      refused: { people: 5, refusals: 10, withoutLead: 0, times: 3, races: 1 },
     }),
   },
   {

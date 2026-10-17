@@ -66,6 +66,7 @@ import {
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { postConfirmRecomputeMode, postConfirmRefresh } from "@/lib/booking/post-confirm-recompute";
 import { alertIfMisroute, recordRoutingDecision, routingDecisionRow } from "@/lib/routing/record";
+import { judgeRefusedOfferLive } from "@/lib/booking/offer-race-live";
 import {
   createEvent,
   createEventOnCalendar,
@@ -1500,6 +1501,8 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     // test-observable. Best-effort in the impl (never throws), matching the prior
     // module-function behavior.
     recordRoutingDecision,
+    // #3797: a time refused at the free check judged a lost race or a stale offer.
+    judgeRefusedOffer: judgeRefusedOfferLive,
     resolveBucketPool,
     // #827: the tier the availability cache currently displays for a bucket, so a
     // fresh confirm can measure display-vs-booked tier divergence. `from` matches

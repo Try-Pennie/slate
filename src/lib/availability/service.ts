@@ -580,7 +580,7 @@ export async function roundRobinCandidates(
    */
   excludeLow = false,
   opts: RoundRobinOpts = {},
-): Promise<{ candidates: string[]; memberCount: number }> {
+): Promise<{ candidates: string[]; memberCount: number; memberIds: string[] }> {
   const endMs = startMs + eventType.duration_min * 60_000;
   // #3273: busy time is read over the BUFFERED window, the one `bookableSlotReason`
   // judges and verify on book asks Google about. Read over the bare call, a meeting
@@ -658,7 +658,10 @@ export async function roundRobinCandidates(
   // and the free list alone cannot tell them apart. The members are already loaded
   // here, so this costs nothing.
   const memberCount = members.length;
-  if (free.length <= 1) return { candidates: free, memberCount };
+  // #3797: and who they are, so a refusal can be judged a lost race against their
+  // busy time without resolving the pool a second time. Already loaded, so free.
+  const memberIds = members.map((m) => m.userId);
+  if (free.length <= 1) return { candidates: free, memberCount, memberIds };
   // Per-bucket equal-share (#305): anchor the pay period on the SLOT's start so a
   // next-period slot balances against next-period meetings. A dry-run preview
   // (#380) suppresses the unfair-ordering alert, so a preview never pages.
@@ -672,6 +675,7 @@ export async function roundRobinCandidates(
       reads.share,
     ),
     memberCount,
+    memberIds,
   };
 }
 

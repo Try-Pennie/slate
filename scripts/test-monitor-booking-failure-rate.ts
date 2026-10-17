@@ -1441,6 +1441,84 @@ const oct4 = (h: number, m: number) => Date.UTC(2026, 9, 4, h + 4, m);
   assert(!without.some((p) => p.atMs < oct4(20, 0)), "without the tenth refusal, nine in 30 minutes fire nothing in the first cluster");
 }
 
+// --- #3797: proven lost races are outside the share, so they cannot page -------------
+//
+// The 12:35am ET page of 2026-10-16, replayed through the tick sums: every booking made
+// that night and its seven refusals, read from production on 2026-10-16. Six were proven
+// races (scripts/test-offer-race.ts replays the judgement); the routes now tally those on
+// their own row outside OUTCOME_ORDER, so they are in neither the attempts nor the
+// failures. The ET midnight rollover inside the window is left out of this replay, which
+// only keeps one more sample than the lane would.
+{
+  const fx = JSON.parse(readFileSync(new URL("./fixtures/offer-races-2026-10-15.json", import.meta.url), "utf8")) as {
+    refusals: { refusedAt: string }[];
+    bookings: string[];
+  };
+  const refusals = fx.refusals.map((r) => Date.parse(r.refusedAt));
+  // The reload refusal at 10:02:45pm ET is the one stale offer (index 2).
+  const stale = [refusals[2]!];
+  const bookings = fx.bookings.map((b) => Date.parse(b));
+  const night = async (failing: number[]) => {
+    const l = lane("2026-10-15");
+    let prev = Date.UTC(2026, 9, 16, 1, 30);
+    await l.tick(prev, 0, 0);
+    for (let t = prev + 5 * MIN; t <= Date.UTC(2026, 9, 16, 4, 40); t += 5 * MIN) {
+      const f = failing.filter((r) => r > prev && r <= t).length;
+      const b = bookings.filter((x) => x > prev && x <= t).length;
+      await l.tick(t, f + b, f);
+      prev = t;
+    }
+    return l.sent;
+  };
+  const before = await night(refusals);
+  assert(
+    before.some((s) => s.key === FAILURE_RATE_ALERT_KEY || s.key === FAILURE_BURST_ENDED_ALERT_KEY),
+    "counted the old way, the seven refusals put the share over the line that night (the control)",
+  );
+  const after = await night(stale);
+  eq(after.map((s) => s.key), [], "with the six proven races counted apart, nothing pages, all night");
+}
+{
+  // Races only: twelve proven races in half an hour and no failure. The race row is
+  // outside the tally's attempts and failures, so the window never sees them.
+  const l = lane("2026-10-16");
+  await l.tick(oct14(0, 0) + 2 * 24 * 60 * MIN, 0, 0);
+  for (let k = 1; k <= 12; k++) await l.tick(oct14(0, 0) + 2 * 24 * 60 * MIN + k * 5 * MIN, 2, 0);
+  eq(l.sent.length, 0, "a run of lost races alone pages nothing, share or volume");
+}
+{
+  // The page states the races counted apart beside its count, never inside it.
+  const text = formatFailureRateAlert({
+    attempts: 34,
+    failures: 7,
+    pct: 21,
+    windowMinutes: 180,
+    topCodes: [{ code: "slot_unavailable", count: 7 }],
+    refused: { people: 5, refusals: 7, withoutLead: 0, races: 6 },
+    ...LIVE,
+  });
+  assert(
+    text.includes("(7 refusals); 7 of 34 attempts failed overall (21%). 6 more were lost races, counted apart and not in these numbers"),
+    `the share page names the races counted apart (got: ${text})`,
+  );
+  const vol = formatFailureVolumeAlert({
+    volume: { attempts: 14, failures: 10, byCode: { slot_unavailable: 10 }, firing: true },
+    volumeMinutes: 30,
+    refused: { people: 6, refusals: 10, withoutLead: 0, races: 1 },
+  });
+  assert(vol.includes("1 more was a lost race, counted apart"), `the volume page does too (got: ${vol})`);
+  const none = formatFailureRateAlert({
+    attempts: 34,
+    failures: 7,
+    pct: 21,
+    windowMinutes: 180,
+    topCodes: [{ code: "slot_unavailable", count: 7 }],
+    refused: { people: 5, refusals: 7, withoutLead: 0, races: 0 },
+    ...LIVE,
+  });
+  assert(!none.includes("lost race"), "and says nothing about races when there were none");
+}
+
 // The SHIPPED recent window: shorter than the window it stands down, and a clean run
 // that cannot be carried by one lucky attempt.
 {

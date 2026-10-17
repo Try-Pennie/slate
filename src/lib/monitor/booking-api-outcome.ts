@@ -14,6 +14,7 @@
 import { DateTime } from "luxon";
 import type { HostClass } from "./offsite-origin.ts";
 import { FOLLOW_UP_LEFT_TO_DRAIN_OUTCOME } from "./follow-up-drain-rate.ts";
+import { OFFER_RACE_OUTCOME } from "../booking/offer-race.ts";
 
 /**
  * The zone whose calendar day the tally is KEYED by: a call is counted on its
@@ -197,6 +198,13 @@ export interface OutcomeMix {
    * confirm already counted, never an attempt of its own.
    */
   followUpLeftToDrain: number;
+  /**
+   * #3797: times refused at the free check that were PROVEN lost races: free when the
+   * lead's list was computed, taken since. Recorded in place of the error, outside
+   * `total`, so they are in neither the failure share's attempts nor its failures, and
+   * shown on the panel so a reader can still see how often leads lose one.
+   */
+  lostRacesSinceOffer: number;
 }
 
 /** The jsonb shape the booking_api_outcome_mix RPC returns for a window. */
@@ -231,7 +239,8 @@ export function normalizeMix(raw: RawMix | null | undefined): OutcomeMix {
   const refusals = emptyRefusalCounts();
   for (const name of SELF_INFLICTED_REFUSALS) refusals[name] = byOutcome[name] ?? 0;
   const followUpLeftToDrain = byOutcome[FOLLOW_UP_LEFT_TO_DRAIN_OUTCOME] ?? 0;
-  return { total, outcomes, errors, testTotal, offsiteTotal, refusals, followUpLeftToDrain };
+  const lostRacesSinceOffer = byOutcome[OFFER_RACE_OUTCOME] ?? 0;
+  return { total, outcomes, errors, testTotal, offsiteTotal, refusals, followUpLeftToDrain, lostRacesSinceOffer };
 }
 
 /**

@@ -1,0 +1,2357 @@
+{
+  "source": "production routing_decisions refusals 2026-10-16 01:40Z to 04:05Z; each pool's members (eligibleAgentIds, read 2026-10-16, member ids replaced by A1..) and their busy_blocks over the buffered window, keeping only blocks created by the refusal; servedComputedAt and staleRowCodes from the Worker's slots served and stored row log lines; bookings: every real booking created 01:30Z to 04:40Z (created_at only, test buckets out)",
+  "measuredOn": "2026-10-16",
+  "refusals": [
+    {
+      "refusedAt": "2026-10-16T01:42:12.560Z",
+      "bucketCode": "111",
+      "leadId": "00QUi00000zpCsD",
+      "stage": "candidate_read_empty",
+      "codes": [
+        "111"
+      ],
+      "requestedStart": "2026-10-17T20:40:00.000Z",
+      "servedComputedAt": "2026-10-16T01:40:07.470Z",
+      "staleRowCodes": [],
+      "members": [
+        "A1",
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15",
+        "A16",
+        "A17",
+        "A18",
+        "A19",
+        "A2",
+        "A20",
+        "A21",
+        "A22",
+        "A23",
+        "A24",
+        "A25",
+        "A26",
+        "A27",
+        "A28",
+        "A29",
+        "A3",
+        "A30",
+        "A31",
+        "A32",
+        "A33",
+        "A34",
+        "A35",
+        "A36",
+        "A37",
+        "A38",
+        "A39",
+        "A4",
+        "A40",
+        "A41",
+        "A42",
+        "A43",
+        "A44",
+        "A45",
+        "A46",
+        "A47",
+        "A48",
+        "A49",
+        "A5",
+        "A50",
+        "A51",
+        "A52",
+        "A53",
+        "A54",
+        "A55",
+        "A56",
+        "A57",
+        "A58",
+        "A59",
+        "A6",
+        "A60",
+        "A61",
+        "A62",
+        "A63",
+        "A64",
+        "A65",
+        "A66",
+        "A67",
+        "A68",
+        "A69",
+        "A7",
+        "A70",
+        "A71",
+        "A72",
+        "A73",
+        "A74",
+        "A75",
+        "A8",
+        "A9"
+      ],
+      "blocks": [
+        {
+          "member": "A38",
+          "createdAt": "2026-09-02T18:20:53.063Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A64",
+          "createdAt": "2026-09-03T17:43:16.182Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A29",
+          "createdAt": "2026-09-08T21:25:05.406Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A47",
+          "createdAt": "2026-09-09T16:50:50.114Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A68",
+          "createdAt": "2026-09-09T17:39:42.276Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A31",
+          "createdAt": "2026-09-09T19:20:43.961Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-12T13:02:22.163Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A57",
+          "createdAt": "2026-09-14T11:58:08.049Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A22",
+          "createdAt": "2026-09-23T21:57:49.346Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A72",
+          "createdAt": "2026-09-26T09:01:10.699Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A3",
+          "createdAt": "2026-09-26T09:16:04.809Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A70",
+          "createdAt": "2026-09-26T10:46:02.001Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A34",
+          "createdAt": "2026-09-26T15:01:12.149Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A27",
+          "createdAt": "2026-09-26T21:00:44.139Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A9",
+          "createdAt": "2026-09-26T21:15:47.489Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A65",
+          "createdAt": "2026-09-26T21:45:49.839Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A55",
+          "createdAt": "2026-09-27T03:30:47.459Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A66",
+          "createdAt": "2026-09-27T04:00:47.947Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A69",
+          "createdAt": "2026-09-27T06:30:48.574Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A53",
+          "createdAt": "2026-10-06T15:09:50.351Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A20",
+          "createdAt": "2026-10-12T14:56:21.296Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-13T16:20:14.008Z",
+          "source": "ooo"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-13T16:20:16.403Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A22",
+          "createdAt": "2026-10-14T21:18:40.471Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A45",
+          "createdAt": "2026-10-15T03:09:24.940Z",
+          "source": "slate"
+        },
+        {
+          "member": "A52",
+          "createdAt": "2026-10-15T03:46:18.721Z",
+          "source": "slate"
+        },
+        {
+          "member": "A45",
+          "createdAt": "2026-10-15T22:19:02.031Z",
+          "source": "slate"
+        },
+        {
+          "member": "A59",
+          "createdAt": "2026-10-16T00:19:17.022Z",
+          "source": "slate"
+        },
+        {
+          "member": "A24",
+          "createdAt": "2026-10-16T00:57:32.763Z",
+          "source": "slate"
+        },
+        {
+          "member": "A1",
+          "createdAt": "2026-10-16T01:02:35.120Z",
+          "source": "slate"
+        },
+        {
+          "member": "A24",
+          "createdAt": "2026-10-16T01:20:05.308Z",
+          "source": "slate"
+        },
+        {
+          "member": "A36",
+          "createdAt": "2026-10-16T01:26:34.691Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A23",
+          "createdAt": "2026-10-16T01:40:14.720Z",
+          "source": "slate"
+        },
+        {
+          "member": "A71",
+          "createdAt": "2026-10-16T01:41:54.322Z",
+          "source": "slate"
+        }
+      ]
+    },
+    {
+      "refusedAt": "2026-10-16T02:02:32.422Z",
+      "bucketCode": "112",
+      "leadId": "00QUi000011b66z",
+      "stage": "candidate_read_empty",
+      "codes": [
+        "112"
+      ],
+      "requestedStart": "2026-10-17T21:10:00.000Z",
+      "servedComputedAt": "2026-10-16T02:00:07.526Z",
+      "staleRowCodes": [
+        "112"
+      ],
+      "members": [
+        "A1",
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15",
+        "A16",
+        "A17",
+        "A18",
+        "A19",
+        "A2",
+        "A20",
+        "A21",
+        "A22",
+        "A23",
+        "A24",
+        "A25",
+        "A26",
+        "A27",
+        "A28",
+        "A29",
+        "A3",
+        "A30",
+        "A31",
+        "A32",
+        "A33",
+        "A34",
+        "A35",
+        "A36",
+        "A37",
+        "A38",
+        "A39",
+        "A4",
+        "A40",
+        "A41",
+        "A42",
+        "A43",
+        "A44",
+        "A45",
+        "A46",
+        "A47",
+        "A48",
+        "A49",
+        "A5",
+        "A50",
+        "A51",
+        "A52",
+        "A53",
+        "A54",
+        "A55",
+        "A56",
+        "A57",
+        "A58",
+        "A59",
+        "A6",
+        "A60",
+        "A61",
+        "A62",
+        "A63",
+        "A64",
+        "A65",
+        "A66",
+        "A67",
+        "A68",
+        "A69",
+        "A7",
+        "A70",
+        "A71",
+        "A72",
+        "A73",
+        "A74",
+        "A75",
+        "A8",
+        "A9"
+      ],
+      "blocks": [
+        {
+          "member": "A38",
+          "createdAt": "2026-09-02T18:20:53.063Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A64",
+          "createdAt": "2026-09-03T17:43:16.182Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A29",
+          "createdAt": "2026-09-08T21:25:05.406Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A47",
+          "createdAt": "2026-09-09T16:50:50.114Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A68",
+          "createdAt": "2026-09-09T17:39:42.276Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A31",
+          "createdAt": "2026-09-09T19:20:43.961Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A57",
+          "createdAt": "2026-09-14T11:58:08.049Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A72",
+          "createdAt": "2026-09-26T09:01:10.699Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A3",
+          "createdAt": "2026-09-26T09:16:04.809Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A70",
+          "createdAt": "2026-09-26T10:46:02.001Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A34",
+          "createdAt": "2026-09-26T15:01:12.149Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A27",
+          "createdAt": "2026-09-26T21:00:44.139Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A9",
+          "createdAt": "2026-09-26T21:15:47.489Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A53",
+          "createdAt": "2026-10-06T15:09:50.351Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A22",
+          "createdAt": "2026-10-06T17:53:02.577Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A69",
+          "createdAt": "2026-10-09T21:53:24.179Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A20",
+          "createdAt": "2026-10-12T14:56:21.296Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-13T16:20:14.008Z",
+          "source": "ooo"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-13T16:20:16.403Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A22",
+          "createdAt": "2026-10-14T21:18:40.471Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A25",
+          "createdAt": "2026-10-14T21:32:23.181Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A65",
+          "createdAt": "2026-10-15T21:52:06.465Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A45",
+          "createdAt": "2026-10-15T22:19:02.031Z",
+          "source": "slate"
+        },
+        {
+          "member": "A1",
+          "createdAt": "2026-10-15T22:52:56.226Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A1",
+          "createdAt": "2026-10-16T01:02:35.120Z",
+          "source": "slate"
+        },
+        {
+          "member": "A24",
+          "createdAt": "2026-10-16T01:20:05.308Z",
+          "source": "slate"
+        },
+        {
+          "member": "A59",
+          "createdAt": "2026-10-16T01:31:18.988Z",
+          "source": "slate"
+        },
+        {
+          "member": "A36",
+          "createdAt": "2026-10-16T01:42:21.554Z",
+          "source": "slate"
+        },
+        {
+          "member": "A52",
+          "createdAt": "2026-10-16T01:43:51.326Z",
+          "source": "slate"
+        },
+        {
+          "member": "A23",
+          "createdAt": "2026-10-16T01:51:03.723Z",
+          "source": "slate"
+        },
+        {
+          "member": "A45",
+          "createdAt": "2026-10-16T01:55:34.550Z",
+          "source": "slate"
+        },
+        {
+          "member": "A71",
+          "createdAt": "2026-10-16T02:02:31.982Z",
+          "source": "gcal"
+        }
+      ]
+    },
+    {
+      "refusedAt": "2026-10-16T02:02:45.629Z",
+      "bucketCode": "112",
+      "leadId": "00QUi000011b66z",
+      "stage": "candidate_read_empty",
+      "codes": [
+        "112"
+      ],
+      "requestedStart": "2026-10-17T21:20:00.000Z",
+      "servedComputedAt": "2026-10-16T02:00:07.526Z",
+      "staleRowCodes": [],
+      "members": [
+        "A1",
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15",
+        "A16",
+        "A17",
+        "A18",
+        "A19",
+        "A2",
+        "A20",
+        "A21",
+        "A22",
+        "A23",
+        "A24",
+        "A25",
+        "A26",
+        "A27",
+        "A28",
+        "A29",
+        "A3",
+        "A30",
+        "A31",
+        "A32",
+        "A33",
+        "A34",
+        "A35",
+        "A36",
+        "A37",
+        "A38",
+        "A39",
+        "A4",
+        "A40",
+        "A41",
+        "A42",
+        "A43",
+        "A44",
+        "A45",
+        "A46",
+        "A47",
+        "A48",
+        "A49",
+        "A5",
+        "A50",
+        "A51",
+        "A52",
+        "A53",
+        "A54",
+        "A55",
+        "A56",
+        "A57",
+        "A58",
+        "A59",
+        "A6",
+        "A60",
+        "A61",
+        "A62",
+        "A63",
+        "A64",
+        "A65",
+        "A66",
+        "A67",
+        "A68",
+        "A69",
+        "A7",
+        "A70",
+        "A71",
+        "A72",
+        "A73",
+        "A74",
+        "A75",
+        "A8",
+        "A9"
+      ],
+      "blocks": [
+        {
+          "member": "A38",
+          "createdAt": "2026-09-02T18:20:53.063Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A64",
+          "createdAt": "2026-09-03T17:43:16.182Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A29",
+          "createdAt": "2026-09-08T21:25:05.406Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A47",
+          "createdAt": "2026-09-09T16:50:50.114Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A68",
+          "createdAt": "2026-09-09T17:39:42.276Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A31",
+          "createdAt": "2026-09-09T19:20:43.961Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A57",
+          "createdAt": "2026-09-14T11:58:08.049Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A72",
+          "createdAt": "2026-09-26T09:01:10.699Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A3",
+          "createdAt": "2026-09-26T09:16:04.809Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A70",
+          "createdAt": "2026-09-26T10:46:02.001Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A34",
+          "createdAt": "2026-09-26T15:01:12.149Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A27",
+          "createdAt": "2026-09-26T21:00:44.139Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A9",
+          "createdAt": "2026-09-26T21:15:47.489Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A53",
+          "createdAt": "2026-10-06T15:09:50.351Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A22",
+          "createdAt": "2026-10-06T17:53:02.577Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A69",
+          "createdAt": "2026-10-09T21:53:24.179Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A20",
+          "createdAt": "2026-10-12T14:56:21.296Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-13T16:20:14.008Z",
+          "source": "ooo"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-13T16:20:16.403Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A22",
+          "createdAt": "2026-10-14T21:18:40.471Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A25",
+          "createdAt": "2026-10-14T21:32:23.181Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A5",
+          "createdAt": "2026-10-15T21:24:02.026Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A65",
+          "createdAt": "2026-10-15T21:52:06.465Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A45",
+          "createdAt": "2026-10-15T22:19:02.031Z",
+          "source": "slate"
+        },
+        {
+          "member": "A1",
+          "createdAt": "2026-10-15T22:52:56.226Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A24",
+          "createdAt": "2026-10-16T01:20:05.308Z",
+          "source": "slate"
+        },
+        {
+          "member": "A59",
+          "createdAt": "2026-10-16T01:31:18.988Z",
+          "source": "slate"
+        },
+        {
+          "member": "A36",
+          "createdAt": "2026-10-16T01:42:21.554Z",
+          "source": "slate"
+        },
+        {
+          "member": "A52",
+          "createdAt": "2026-10-16T01:43:51.326Z",
+          "source": "slate"
+        },
+        {
+          "member": "A23",
+          "createdAt": "2026-10-16T01:51:03.723Z",
+          "source": "slate"
+        },
+        {
+          "member": "A45",
+          "createdAt": "2026-10-16T01:55:34.550Z",
+          "source": "slate"
+        },
+        {
+          "member": "A71",
+          "createdAt": "2026-10-16T02:02:31.982Z",
+          "source": "gcal"
+        }
+      ]
+    },
+    {
+      "refusedAt": "2026-10-16T02:03:39.450Z",
+      "bucketCode": "111",
+      "leadId": "00QUi000011b5Sf",
+      "stage": "candidate_read_empty",
+      "codes": [
+        "111"
+      ],
+      "requestedStart": "2026-10-17T21:10:00.000Z",
+      "servedComputedAt": "2026-10-16T02:00:07.526Z",
+      "staleRowCodes": [],
+      "members": [
+        "A1",
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15",
+        "A16",
+        "A17",
+        "A18",
+        "A19",
+        "A2",
+        "A20",
+        "A21",
+        "A22",
+        "A23",
+        "A24",
+        "A25",
+        "A26",
+        "A27",
+        "A28",
+        "A29",
+        "A3",
+        "A30",
+        "A31",
+        "A32",
+        "A33",
+        "A34",
+        "A35",
+        "A36",
+        "A37",
+        "A38",
+        "A39",
+        "A4",
+        "A40",
+        "A41",
+        "A42",
+        "A43",
+        "A44",
+        "A45",
+        "A46",
+        "A47",
+        "A48",
+        "A49",
+        "A5",
+        "A50",
+        "A51",
+        "A52",
+        "A53",
+        "A54",
+        "A55",
+        "A56",
+        "A57",
+        "A58",
+        "A59",
+        "A6",
+        "A60",
+        "A61",
+        "A62",
+        "A63",
+        "A64",
+        "A65",
+        "A66",
+        "A67",
+        "A68",
+        "A69",
+        "A7",
+        "A70",
+        "A71",
+        "A72",
+        "A73",
+        "A74",
+        "A75",
+        "A8",
+        "A9"
+      ],
+      "blocks": [
+        {
+          "member": "A38",
+          "createdAt": "2026-09-02T18:20:53.063Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A64",
+          "createdAt": "2026-09-03T17:43:16.182Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A29",
+          "createdAt": "2026-09-08T21:25:05.406Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A47",
+          "createdAt": "2026-09-09T16:50:50.114Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A68",
+          "createdAt": "2026-09-09T17:39:42.276Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A31",
+          "createdAt": "2026-09-09T19:20:43.961Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A57",
+          "createdAt": "2026-09-14T11:58:08.049Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A72",
+          "createdAt": "2026-09-26T09:01:10.699Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A3",
+          "createdAt": "2026-09-26T09:16:04.809Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A70",
+          "createdAt": "2026-09-26T10:46:02.001Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A34",
+          "createdAt": "2026-09-26T15:01:12.149Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A27",
+          "createdAt": "2026-09-26T21:00:44.139Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A9",
+          "createdAt": "2026-09-26T21:15:47.489Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A53",
+          "createdAt": "2026-10-06T15:09:50.351Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A22",
+          "createdAt": "2026-10-06T17:53:02.577Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A69",
+          "createdAt": "2026-10-09T21:53:24.179Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A20",
+          "createdAt": "2026-10-12T14:56:21.296Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-13T16:20:14.008Z",
+          "source": "ooo"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-13T16:20:16.403Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A22",
+          "createdAt": "2026-10-14T21:18:40.471Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A25",
+          "createdAt": "2026-10-14T21:32:23.181Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A65",
+          "createdAt": "2026-10-15T21:52:06.465Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A45",
+          "createdAt": "2026-10-15T22:19:02.031Z",
+          "source": "slate"
+        },
+        {
+          "member": "A1",
+          "createdAt": "2026-10-15T22:52:56.226Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A1",
+          "createdAt": "2026-10-16T01:02:35.120Z",
+          "source": "slate"
+        },
+        {
+          "member": "A24",
+          "createdAt": "2026-10-16T01:20:05.308Z",
+          "source": "slate"
+        },
+        {
+          "member": "A59",
+          "createdAt": "2026-10-16T01:31:18.988Z",
+          "source": "slate"
+        },
+        {
+          "member": "A36",
+          "createdAt": "2026-10-16T01:42:21.554Z",
+          "source": "slate"
+        },
+        {
+          "member": "A52",
+          "createdAt": "2026-10-16T01:43:51.326Z",
+          "source": "slate"
+        },
+        {
+          "member": "A23",
+          "createdAt": "2026-10-16T01:51:03.723Z",
+          "source": "slate"
+        },
+        {
+          "member": "A45",
+          "createdAt": "2026-10-16T01:55:34.550Z",
+          "source": "slate"
+        },
+        {
+          "member": "A71",
+          "createdAt": "2026-10-16T02:02:31.982Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A24",
+          "createdAt": "2026-10-16T02:02:55.931Z",
+          "source": "slate"
+        },
+        {
+          "member": "A36",
+          "createdAt": "2026-10-16T02:03:22.357Z",
+          "source": "slate"
+        }
+      ]
+    },
+    {
+      "refusedAt": "2026-10-16T02:26:52.209Z",
+      "bucketCode": "112",
+      "leadId": "00QUi000011bFqE",
+      "stage": "candidate_read_empty",
+      "codes": [
+        "112"
+      ],
+      "requestedStart": "2026-10-17T22:30:00.000Z",
+      "servedComputedAt": "2026-10-16T02:24:08.327Z",
+      "staleRowCodes": [],
+      "members": [
+        "A1",
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15",
+        "A16",
+        "A17",
+        "A18",
+        "A19",
+        "A2",
+        "A20",
+        "A21",
+        "A22",
+        "A23",
+        "A24",
+        "A25",
+        "A26",
+        "A27",
+        "A28",
+        "A29",
+        "A3",
+        "A30",
+        "A31",
+        "A32",
+        "A33",
+        "A34",
+        "A35",
+        "A36",
+        "A37",
+        "A38",
+        "A39",
+        "A4",
+        "A40",
+        "A41",
+        "A42",
+        "A43",
+        "A44",
+        "A45",
+        "A46",
+        "A47",
+        "A48",
+        "A49",
+        "A5",
+        "A50",
+        "A51",
+        "A52",
+        "A53",
+        "A54",
+        "A55",
+        "A56",
+        "A57",
+        "A58",
+        "A59",
+        "A6",
+        "A60",
+        "A61",
+        "A62",
+        "A63",
+        "A64",
+        "A65",
+        "A66",
+        "A67",
+        "A68",
+        "A69",
+        "A7",
+        "A70",
+        "A71",
+        "A72",
+        "A73",
+        "A74",
+        "A75",
+        "A8",
+        "A9"
+      ],
+      "blocks": [
+        {
+          "member": "A38",
+          "createdAt": "2026-09-02T18:20:53.063Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-02T18:24:39.003Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A64",
+          "createdAt": "2026-09-03T17:43:16.182Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-04T19:04:09.375Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A29",
+          "createdAt": "2026-09-08T21:25:05.406Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A47",
+          "createdAt": "2026-09-09T16:50:50.114Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A68",
+          "createdAt": "2026-09-09T17:15:05.187Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A59",
+          "createdAt": "2026-09-09T17:15:22.979Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A68",
+          "createdAt": "2026-09-09T17:39:42.276Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A31",
+          "createdAt": "2026-09-09T19:20:43.961Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A57",
+          "createdAt": "2026-09-14T11:58:08.049Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-14T21:18:18.860Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A52",
+          "createdAt": "2026-09-15T14:23:29.854Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-15T16:30:18.763Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-17T13:11:06.137Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-17T17:54:19.099Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-17T20:21:27.212Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-17T20:54:19.971Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-18T15:19:40.274Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-18T15:29:52.872Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-19T14:58:28.905Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A45",
+          "createdAt": "2026-09-19T15:41:17.114Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-19T19:51:15.852Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A72",
+          "createdAt": "2026-09-26T09:01:10.699Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A3",
+          "createdAt": "2026-09-26T09:16:04.809Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A70",
+          "createdAt": "2026-09-26T10:46:02.001Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A34",
+          "createdAt": "2026-09-26T15:01:12.149Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A27",
+          "createdAt": "2026-09-26T21:00:44.139Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A9",
+          "createdAt": "2026-09-26T21:15:47.489Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A73",
+          "createdAt": "2026-09-27T06:30:45.142Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-27T09:15:48.592Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A17",
+          "createdAt": "2026-09-27T09:30:44.801Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-30T15:48:24.333Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A53",
+          "createdAt": "2026-10-06T15:09:50.351Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-08T23:19:23.348Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A62",
+          "createdAt": "2026-10-10T22:41:32.944Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A20",
+          "createdAt": "2026-10-12T14:56:21.296Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-13T16:20:14.008Z",
+          "source": "ooo"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-13T16:20:16.403Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A22",
+          "createdAt": "2026-10-14T20:58:16.448Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A23",
+          "createdAt": "2026-10-14T23:56:18.307Z",
+          "source": "slate"
+        },
+        {
+          "member": "A51",
+          "createdAt": "2026-10-15T05:11:35.225Z",
+          "source": "slate"
+        },
+        {
+          "member": "A22",
+          "createdAt": "2026-10-15T22:40:37.098Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A24",
+          "createdAt": "2026-10-16T01:35:28.778Z",
+          "source": "slate"
+        },
+        {
+          "member": "A71",
+          "createdAt": "2026-10-16T02:15:24.888Z",
+          "source": "slate"
+        },
+        {
+          "member": "A65",
+          "createdAt": "2026-10-16T02:25:36.196Z",
+          "source": "slate"
+        },
+        {
+          "member": "A36",
+          "createdAt": "2026-10-16T02:26:02.382Z",
+          "source": "slate"
+        }
+      ]
+    },
+    {
+      "refusedAt": "2026-10-16T02:27:18.000Z",
+      "bucketCode": "112",
+      "leadId": "00QUi00000pZ0xR",
+      "stage": "candidate_read_empty",
+      "codes": [
+        "112"
+      ],
+      "requestedStart": "2026-10-17T22:30:00.000Z",
+      "servedComputedAt": "2026-10-16T02:24:08.327Z",
+      "staleRowCodes": [],
+      "members": [
+        "A1",
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15",
+        "A16",
+        "A17",
+        "A18",
+        "A19",
+        "A2",
+        "A20",
+        "A21",
+        "A22",
+        "A23",
+        "A24",
+        "A25",
+        "A26",
+        "A27",
+        "A28",
+        "A29",
+        "A3",
+        "A30",
+        "A31",
+        "A32",
+        "A33",
+        "A34",
+        "A35",
+        "A36",
+        "A37",
+        "A38",
+        "A39",
+        "A4",
+        "A40",
+        "A41",
+        "A42",
+        "A43",
+        "A44",
+        "A45",
+        "A46",
+        "A47",
+        "A48",
+        "A49",
+        "A5",
+        "A50",
+        "A51",
+        "A52",
+        "A53",
+        "A54",
+        "A55",
+        "A56",
+        "A57",
+        "A58",
+        "A59",
+        "A6",
+        "A60",
+        "A61",
+        "A62",
+        "A63",
+        "A64",
+        "A65",
+        "A66",
+        "A67",
+        "A68",
+        "A69",
+        "A7",
+        "A70",
+        "A71",
+        "A72",
+        "A73",
+        "A74",
+        "A75",
+        "A8",
+        "A9"
+      ],
+      "blocks": [
+        {
+          "member": "A38",
+          "createdAt": "2026-09-02T18:20:53.063Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-02T18:24:39.003Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A64",
+          "createdAt": "2026-09-03T17:43:16.182Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-04T19:04:09.375Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A29",
+          "createdAt": "2026-09-08T21:25:05.406Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A47",
+          "createdAt": "2026-09-09T16:50:50.114Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A68",
+          "createdAt": "2026-09-09T17:15:05.187Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A59",
+          "createdAt": "2026-09-09T17:15:22.979Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A68",
+          "createdAt": "2026-09-09T17:39:42.276Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A31",
+          "createdAt": "2026-09-09T19:20:43.961Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A57",
+          "createdAt": "2026-09-14T11:58:08.049Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-14T21:18:18.860Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A52",
+          "createdAt": "2026-09-15T14:23:29.854Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-15T16:30:18.763Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-17T13:11:06.137Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-17T17:54:19.099Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-17T20:21:27.212Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-17T20:54:19.971Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-18T15:19:40.274Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-18T15:29:52.872Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-19T14:58:28.905Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A45",
+          "createdAt": "2026-09-19T15:41:17.114Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-19T19:51:15.852Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A72",
+          "createdAt": "2026-09-26T09:01:10.699Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A3",
+          "createdAt": "2026-09-26T09:16:04.809Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A70",
+          "createdAt": "2026-09-26T10:46:02.001Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A34",
+          "createdAt": "2026-09-26T15:01:12.149Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A27",
+          "createdAt": "2026-09-26T21:00:44.139Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A9",
+          "createdAt": "2026-09-26T21:15:47.489Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A73",
+          "createdAt": "2026-09-27T06:30:45.142Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-27T09:15:48.592Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A17",
+          "createdAt": "2026-09-27T09:30:44.801Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-30T15:48:24.333Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A53",
+          "createdAt": "2026-10-06T15:09:50.351Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-08T23:19:23.348Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A62",
+          "createdAt": "2026-10-10T22:41:32.944Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A20",
+          "createdAt": "2026-10-12T14:56:21.296Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-13T16:20:14.008Z",
+          "source": "ooo"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-13T16:20:16.403Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A22",
+          "createdAt": "2026-10-14T20:58:16.448Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A23",
+          "createdAt": "2026-10-14T23:56:18.307Z",
+          "source": "slate"
+        },
+        {
+          "member": "A51",
+          "createdAt": "2026-10-15T05:11:35.225Z",
+          "source": "slate"
+        },
+        {
+          "member": "A22",
+          "createdAt": "2026-10-15T22:40:37.098Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A24",
+          "createdAt": "2026-10-16T01:35:28.778Z",
+          "source": "slate"
+        },
+        {
+          "member": "A71",
+          "createdAt": "2026-10-16T02:15:24.888Z",
+          "source": "slate"
+        },
+        {
+          "member": "A65",
+          "createdAt": "2026-10-16T02:25:36.196Z",
+          "source": "slate"
+        },
+        {
+          "member": "A36",
+          "createdAt": "2026-10-16T02:26:02.382Z",
+          "source": "slate"
+        }
+      ]
+    },
+    {
+      "refusedAt": "2026-10-16T04:01:45.396Z",
+      "bucketCode": "212",
+      "leadId": "00QUi00000efMjv",
+      "stage": "candidate_read_empty",
+      "codes": [
+        "212",
+        "112"
+      ],
+      "requestedStart": "2026-10-16T16:30:00.000Z",
+      "servedComputedAt": "2026-10-16T04:00:16.425Z",
+      "staleRowCodes": [],
+      "members": [
+        "A1",
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15",
+        "A16",
+        "A17",
+        "A18",
+        "A19",
+        "A2",
+        "A20",
+        "A21",
+        "A22",
+        "A23",
+        "A24",
+        "A25",
+        "A26",
+        "A27",
+        "A28",
+        "A29",
+        "A3",
+        "A30",
+        "A31",
+        "A32",
+        "A33",
+        "A34",
+        "A35",
+        "A36",
+        "A37",
+        "A38",
+        "A39",
+        "A4",
+        "A40",
+        "A41",
+        "A42",
+        "A43",
+        "A44",
+        "A45",
+        "A46",
+        "A47",
+        "A48",
+        "A49",
+        "A5",
+        "A50",
+        "A51",
+        "A52",
+        "A53",
+        "A54",
+        "A55",
+        "A56",
+        "A57",
+        "A58",
+        "A59",
+        "A6",
+        "A60",
+        "A61",
+        "A62",
+        "A63",
+        "A64",
+        "A65",
+        "A66",
+        "A67",
+        "A68",
+        "A69",
+        "A7",
+        "A70",
+        "A71",
+        "A72",
+        "A73",
+        "A74",
+        "A75",
+        "A76",
+        "A77",
+        "A78",
+        "A79",
+        "A8",
+        "A80",
+        "A81",
+        "A82",
+        "A83",
+        "A84",
+        "A85",
+        "A86",
+        "A87",
+        "A88",
+        "A89",
+        "A9",
+        "A90",
+        "A91",
+        "A92",
+        "A93"
+      ],
+      "blocks": [
+        {
+          "member": "A78",
+          "createdAt": "2026-09-02T00:11:38.973Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A32",
+          "createdAt": "2026-09-03T16:25:31.240Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A29",
+          "createdAt": "2026-09-08T21:25:24.755Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A22",
+          "createdAt": "2026-09-09T14:45:50.698Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A24",
+          "createdAt": "2026-09-09T16:26:30.187Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A44",
+          "createdAt": "2026-09-10T16:28:38.802Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A49",
+          "createdAt": "2026-09-25T08:30:48.057Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A59",
+          "createdAt": "2026-09-25T16:45:52.799Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A35",
+          "createdAt": "2026-09-25T21:15:34.685Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A49",
+          "createdAt": "2026-09-26T01:00:34.888Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A78",
+          "createdAt": "2026-09-26T06:31:06.248Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A57",
+          "createdAt": "2026-09-26T06:31:09.339Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A3",
+          "createdAt": "2026-09-29T20:53:48.871Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A78",
+          "createdAt": "2026-10-06T16:11:02.264Z",
+          "source": "ooo"
+        },
+        {
+          "member": "A55",
+          "createdAt": "2026-10-07T20:33:36.635Z",
+          "source": "ooo"
+        },
+        {
+          "member": "A55",
+          "createdAt": "2026-10-07T20:33:39.030Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A64",
+          "createdAt": "2026-10-09T18:05:55.858Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A89",
+          "createdAt": "2026-10-12T12:23:08.939Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A89",
+          "createdAt": "2026-10-12T13:28:11.955Z",
+          "source": "ooo"
+        },
+        {
+          "member": "A89",
+          "createdAt": "2026-10-12T13:28:14.606Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A41",
+          "createdAt": "2026-10-12T13:41:22.746Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A37",
+          "createdAt": "2026-10-12T16:24:17.531Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A26",
+          "createdAt": "2026-10-12T16:24:18.742Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A42",
+          "createdAt": "2026-10-12T16:26:52.901Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A26",
+          "createdAt": "2026-10-12T16:34:14.309Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A92",
+          "createdAt": "2026-10-12T16:41:50.178Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A10",
+          "createdAt": "2026-10-12T16:45:10.723Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A14",
+          "createdAt": "2026-10-12T16:46:14.140Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A82",
+          "createdAt": "2026-10-12T16:47:38.821Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A70",
+          "createdAt": "2026-10-12T16:48:30.419Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A69",
+          "createdAt": "2026-10-12T17:08:26.425Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A17",
+          "createdAt": "2026-10-12T18:54:18.760Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A43",
+          "createdAt": "2026-10-13T13:16:09.073Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A88",
+          "createdAt": "2026-10-13T14:29:19.872Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A20",
+          "createdAt": "2026-10-13T15:02:17.236Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A40",
+          "createdAt": "2026-10-13T15:20:05.552Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-13T16:20:14.008Z",
+          "source": "ooo"
+        },
+        {
+          "member": "A33",
+          "createdAt": "2026-10-13T16:20:16.403Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A42",
+          "createdAt": "2026-10-13T23:50:30.878Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A93",
+          "createdAt": "2026-10-14T03:05:47.964Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A77",
+          "createdAt": "2026-10-14T04:46:34.175Z",
+          "source": "slate"
+        },
+        {
+          "member": "A73",
+          "createdAt": "2026-10-14T14:04:03.726Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A79",
+          "createdAt": "2026-10-14T14:38:50.402Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A36",
+          "createdAt": "2026-10-14T14:58:25.469Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A88",
+          "createdAt": "2026-10-14T20:24:57.399Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A74",
+          "createdAt": "2026-10-14T21:23:58.747Z",
+          "source": "ooo"
+        },
+        {
+          "member": "A74",
+          "createdAt": "2026-10-14T21:24:01.361Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A20",
+          "createdAt": "2026-10-14T21:41:34.241Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A90",
+          "createdAt": "2026-10-15T00:33:20.670Z",
+          "source": "slate"
+        },
+        {
+          "member": "A9",
+          "createdAt": "2026-10-15T01:00:07.114Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A38",
+          "createdAt": "2026-10-15T01:04:08.510Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A82",
+          "createdAt": "2026-10-15T01:21:16.217Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A28",
+          "createdAt": "2026-10-15T01:21:27.580Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A28",
+          "createdAt": "2026-10-15T01:22:19.215Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A56",
+          "createdAt": "2026-10-15T01:26:36.212Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A5",
+          "createdAt": "2026-10-15T01:38:54.570Z",
+          "source": "slate"
+        },
+        {
+          "member": "A12",
+          "createdAt": "2026-10-15T01:46:51.347Z",
+          "source": "slate"
+        },
+        {
+          "member": "A38",
+          "createdAt": "2026-10-15T01:59:04.148Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A81",
+          "createdAt": "2026-10-15T02:11:29.483Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A86",
+          "createdAt": "2026-10-15T02:13:39.772Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A86",
+          "createdAt": "2026-10-15T02:14:42.243Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A52",
+          "createdAt": "2026-10-15T02:19:01.821Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A16",
+          "createdAt": "2026-10-15T02:29:03.932Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A91",
+          "createdAt": "2026-10-15T02:43:24.509Z",
+          "source": "slate"
+        },
+        {
+          "member": "A91",
+          "createdAt": "2026-10-15T02:44:18.863Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A1",
+          "createdAt": "2026-10-15T02:45:58.368Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A8",
+          "createdAt": "2026-10-15T03:14:36.952Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A83",
+          "createdAt": "2026-10-15T03:20:32.645Z",
+          "source": "slate"
+        },
+        {
+          "member": "A83",
+          "createdAt": "2026-10-15T03:21:30.230Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A84",
+          "createdAt": "2026-10-15T03:26:46.746Z",
+          "source": "slate"
+        },
+        {
+          "member": "A46",
+          "createdAt": "2026-10-15T03:28:05.888Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A27",
+          "createdAt": "2026-10-15T03:32:40.427Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A4",
+          "createdAt": "2026-10-15T03:35:05.468Z",
+          "source": "slate"
+        },
+        {
+          "member": "A21",
+          "createdAt": "2026-10-15T03:40:39.673Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A61",
+          "createdAt": "2026-10-15T03:42:41.663Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A13",
+          "createdAt": "2026-10-15T03:47:40.392Z",
+          "source": "slate"
+        },
+        {
+          "member": "A2",
+          "createdAt": "2026-10-15T03:57:37.234Z",
+          "source": "slate"
+        },
+        {
+          "member": "A21",
+          "createdAt": "2026-10-15T03:58:25.406Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A68",
+          "createdAt": "2026-10-15T04:00:58.492Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A7",
+          "createdAt": "2026-10-15T04:14:51.384Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A60",
+          "createdAt": "2026-10-15T04:16:30.493Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A48",
+          "createdAt": "2026-10-15T04:21:44.408Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A54",
+          "createdAt": "2026-10-15T04:29:40.068Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A11",
+          "createdAt": "2026-10-15T04:40:07.019Z",
+          "source": "slate"
+        },
+        {
+          "member": "A75",
+          "createdAt": "2026-10-15T05:01:17.285Z",
+          "source": "slate"
+        },
+        {
+          "member": "A76",
+          "createdAt": "2026-10-15T05:27:12.595Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A72",
+          "createdAt": "2026-10-15T05:29:49.162Z",
+          "source": "slate"
+        },
+        {
+          "member": "A31",
+          "createdAt": "2026-10-15T07:01:13.101Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A17",
+          "createdAt": "2026-10-15T07:01:44.159Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A6",
+          "createdAt": "2026-10-15T07:19:10.893Z",
+          "source": "slate"
+        },
+        {
+          "member": "A15",
+          "createdAt": "2026-10-15T08:15:24.903Z",
+          "source": "slate"
+        },
+        {
+          "member": "A47",
+          "createdAt": "2026-10-15T08:23:00.011Z",
+          "source": "slate"
+        },
+        {
+          "member": "A53",
+          "createdAt": "2026-10-15T08:49:31.446Z",
+          "source": "slate"
+        },
+        {
+          "member": "A19",
+          "createdAt": "2026-10-15T09:19:31.035Z",
+          "source": "slate"
+        },
+        {
+          "member": "A62",
+          "createdAt": "2026-10-15T09:44:07.296Z",
+          "source": "slate"
+        },
+        {
+          "member": "A50",
+          "createdAt": "2026-10-15T09:47:18.715Z",
+          "source": "slate"
+        },
+        {
+          "member": "A67",
+          "createdAt": "2026-10-15T10:25:24.156Z",
+          "source": "slate"
+        },
+        {
+          "member": "A71",
+          "createdAt": "2026-10-15T10:50:25.877Z",
+          "source": "slate"
+        },
+        {
+          "member": "A34",
+          "createdAt": "2026-10-15T15:58:38.329Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A62",
+          "createdAt": "2026-10-15T16:13:51.568Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A76",
+          "createdAt": "2026-10-15T16:56:47.967Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A87",
+          "createdAt": "2026-10-15T21:29:51.431Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A15",
+          "createdAt": "2026-10-15T22:14:46.012Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A7",
+          "createdAt": "2026-10-16T00:29:12.042Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A19",
+          "createdAt": "2026-10-16T00:30:32.688Z",
+          "source": "gcal"
+        },
+        {
+          "member": "A66",
+          "createdAt": "2026-10-16T04:01:41.462Z",
+          "source": "slate"
+        }
+      ]
+    }
+  ],
+  "bookings": [
+    "2026-10-16T01:31:18.988Z",
+    "2026-10-16T01:31:59.446Z",
+    "2026-10-16T01:34:56.081Z",
+    "2026-10-16T01:35:28.778Z",
+    "2026-10-16T01:36:13.998Z",
+    "2026-10-16T01:40:14.720Z",
+    "2026-10-16T01:41:54.322Z",
+    "2026-10-16T01:42:21.554Z",
+    "2026-10-16T01:43:51.326Z",
+    "2026-10-16T01:50:48.312Z",
+    "2026-10-16T01:51:03.723Z",
+    "2026-10-16T01:55:34.550Z",
+    "2026-10-16T01:57:02.867Z",
+    "2026-10-16T02:00:23.429Z",
+    "2026-10-16T02:02:55.931Z",
+    "2026-10-16T02:03:22.357Z",
+    "2026-10-16T02:03:55.778Z",
+    "2026-10-16T02:06:06.984Z",
+    "2026-10-16T02:07:08.538Z",
+    "2026-10-16T02:15:24.888Z",
+    "2026-10-16T02:16:19.352Z",
+    "2026-10-16T02:25:36.196Z",
+    "2026-10-16T02:26:02.382Z",
+    "2026-10-16T03:11:27.693Z",
+    "2026-10-16T04:01:41.462Z",
+    "2026-10-16T04:11:43.829Z",
+    "2026-10-16T04:14:07.736Z",
+    "2026-10-16T04:30:22.420Z",
+    "2026-10-16T04:38:30.688Z",
+    "2026-10-16T04:38:34.152Z",
+    "2026-10-16T04:39:05.645Z"
+  ]
+}

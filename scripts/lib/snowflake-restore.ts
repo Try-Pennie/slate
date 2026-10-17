@@ -63,6 +63,11 @@ export const UNMIRRORED_COLUMNS: Record<string, Record<string, string>> = {
     refusal_stage: "null on an inserted decision",
     stage_counts: "null on an inserted decision",
     lead_id: "null on an inserted decision",
+    // #3797: the lost race judgement and its row proofs, read by later refusals and the
+    // failure page while fresh; a restored decision loses them.
+    offer_verdict: "null on an inserted decision",
+    served_computed_at: "null on an inserted decision",
+    stale_row_codes: "null on an inserted decision",
   },
   booking_outbox: {},
   booking_events: {},

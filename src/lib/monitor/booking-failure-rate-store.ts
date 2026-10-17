@@ -172,6 +172,7 @@ export async function readRefusedPeople(sinceMs: number, untilMs: number): Promi
   const rows = await selectAllPages<{
     lead_id: string | null;
     requested_start: string | null;
+    offer_verdict: string | null;
     buckets: { is_test: boolean } | null;
   }>(
     "booking failure rate refused people",
@@ -181,12 +182,18 @@ export async function readRefusedPeople(sinceMs: number, untilMs: number): Promi
         .from("routing_decisions")
         // #3276: the requested instant too, so the volume page can say how many times
         // the refusals asked for.
-        .select("id, lead_id, requested_start, buckets(is_test)")
+        // #3797: and the lost race verdict, so a proven race is left out of the people.
+        .select("id, lead_id, requested_start, offer_verdict, buckets(is_test)")
         .not("refusal_stage", "is", null)
         .gte("created_at", new Date(sinceMs).toISOString())
         .lt("created_at", new Date(untilMs).toISOString()) as unknown as PageableQuery,
   );
   return countRefusedPeople(
-    rows.map((r) => ({ lead_id: r.lead_id, requested_start: r.requested_start, is_test: r.buckets?.is_test ?? null })),
+    rows.map((r) => ({
+      lead_id: r.lead_id,
+      requested_start: r.requested_start,
+      offer_verdict: r.offer_verdict,
+      is_test: r.buckets?.is_test ?? null,
+    })),
   );
 }

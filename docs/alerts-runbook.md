@@ -172,6 +172,16 @@ that had already stopped when the window crossed the line arrives instead as
 investigation of what refused people, in `/admin/booking-outcomes` over the times it
 names.
 
+**A proven lost race never pages** (#3797, Dan 2026-10-16). A time refused at the cached
+free check whose advisor was free when the lead's list was computed, and was taken by a
+booking or a calendar event written since, is tallied on its own row
+(`race_since_offer`), outside the attempts and the failures both pages count and outside
+the people they name; the pages say how many were counted apart. Only a time offered when
+it was never free still counts as `slot_unavailable`, so when that code leads it really is
+the availability cache to start with. A confirm that carried no `computed_at`, one that
+could not be judged, and one handed a list a refusal had already proven stale all count as
+before. The verdict is on `routing_decisions.offer_verdict`.
+
 **`booking_failure_volume` is the fast page beside the share** (#3276). It fires when 10
 or more booking attempts fail in the last 30 minutes (the last six five minute ticks),
 whatever share of traffic that is, so a run of refusals pages within minutes rather than
