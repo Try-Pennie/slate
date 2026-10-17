@@ -125,6 +125,21 @@ export interface RefusalThresholds {
   listMinSamples: number;
 }
 
+/**
+ * What the monitor lane judges with. Here rather than in the route (#1726) so the
+ * live verification judges with the SAME numbers the lane does instead of a copy of
+ * them. These ship ARMED because their floors need volume or persistence a quiet
+ * endpoint cannot produce: 20 ceiling refusals at over a tenth of everything sent,
+ * or a refusal in three separate five minute intervals.
+ */
+export const SHIPPED_REFUSAL_THRESHOLDS: RefusalThresholds = {
+  windowMs: 60 * 60_000,
+  ceilingMinRefusals: 20,
+  ceilingPct: 10,
+  credentialMinSamples: 3,
+  listMinSamples: 3,
+};
+
 /** Which of the two ceilings is doing the refusing. */
 export type CeilingScope = "key" | "ip";
 

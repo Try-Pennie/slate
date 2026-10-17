@@ -305,17 +305,15 @@ import {
   judgeEmbedRefusalSignals,
   lockoutReadsNeeded,
   planEmbedRefusalAlerts,
+  SHIPPED_REFUSAL_THRESHOLDS,
   type EmbedCapLimits,
 } from "@/lib/monitor/api-refusal-signals";
+import { SHIPPED_CEILING_LIMITS, SHIPPED_EMBED_CAP_LIMITS } from "@/lib/monitor/refusal-limits";
 import { SHIPPED_EMBED_REFUSAL_THRESHOLDS } from "@/lib/monitor/embed-refusal-thresholds";
 import { countLockedOutKeys } from "@/lib/monitor/embed-lockouts-store";
 import {
-  BOOKING_API_IP_LIMITER,
-  BOOKING_API_WRITE_LIMITER,
   BOOKING_CONTACT_HOURLY_RATE_RULES,
   BOOKING_HOURLY_RATE_RULES,
-  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
-  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
 } from "@/lib/rate-limit-core";
 import { SHIPPED_MIGRATION_VERSION } from "@/lib/db/migration-version";
 import { runWebhookSubscriberCheck } from "@/lib/monitor/webhook-subscriber-coverage";
@@ -507,17 +505,11 @@ const FAILURE_RATE_THRESHOLDS: RateThresholds = SHIPPED_FAILURE_RATE_THRESHOLDS;
 // where nothing else does. The smoke canary exercises the endpoint with a valid
 // key every 30 minutes, so the measured-clear path gets real exercise either way.
 //
-// The limits the ceiling page names, DERIVED from the rules that actually refuse
-// rather than copied into the copy builder (L41). A figure written by hand beside
-// the rule it describes goes stale the first time somebody changes one, and a
-// message carrying a wrong number is worse than one carrying none: a reader who
-// checks it once and finds it right stops checking.
-const CEILING_LIMITS: CeilingLimits = {
-  keyPerHour: DIRECT_BOOKING_API_HOURLY_RATE_RULES[0].max,
-  keyPerMinute: BOOKING_API_WRITE_LIMITER.perMinute,
-  ipPerHour: DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES[0].max,
-  ipPerMinute: BOOKING_API_IP_LIMITER.perMinute,
-};
+// The limits the ceiling page names are DERIVED from the rules that actually refuse
+// (`refusal-limits.ts`, L41), and the thresholds live beside the judge
+// (`SHIPPED_REFUSAL_THRESHOLDS`) so the live verification (#1726) judges with the
+// same numbers rather than a copy of them.
+const CEILING_LIMITS: CeilingLimits = SHIPPED_CEILING_LIMITS;
 
 // --- The embed booker turning real leads away by its own limits (#1727) ---
 //
@@ -525,18 +517,9 @@ const CEILING_LIMITS: CeilingLimits = {
 // arrive on. The floors are DERIVED from a recorded production measurement
 // (`embed-refusal-thresholds.ts`, none of these tripped once in the 167 hours read),
 // and the limits each page names are read off the rules that actually refuse (L41).
-const EMBED_CAP_LIMITS: EmbedCapLimits = {
-  addressPerHour: BOOKING_HOURLY_RATE_RULES[0].max,
-  contactPerHour: BOOKING_CONTACT_HOURLY_RATE_RULES[0].max,
-};
+const EMBED_CAP_LIMITS: EmbedCapLimits = SHIPPED_EMBED_CAP_LIMITS;
 
-const REFUSAL_THRESHOLDS: RefusalThresholds = {
-  windowMs: 60 * 60_000,
-  ceilingMinRefusals: 20,
-  ceilingPct: 10,
-  credentialMinSamples: 3,
-  listMinSamples: 3,
-};
+const REFUSAL_THRESHOLDS: RefusalThresholds = SHIPPED_REFUSAL_THRESHOLDS;
 
 // --- Are the times we offer actually free (#1315) ---
 // One bucket per tick on a rotating cursor, so the whole ladder is covered a few

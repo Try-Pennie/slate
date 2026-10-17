@@ -225,30 +225,14 @@ import {
   embedRefusalCopy,
   refusalAllClear,
   refusalSignalCopy,
-  type EmbedCapLimits,
 } from "@/lib/monitor/api-refusal-signals";
-import { BOOKING_CONTACT_HOURLY_RATE_RULES, BOOKING_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
-
-/** #1727: the limits the embed cap pages name, read off the real rules. */
-const PREVIEW_EMBED_CAP_LIMITS: EmbedCapLimits = {
-  addressPerHour: BOOKING_HOURLY_RATE_RULES[0]!.max,
-  contactPerHour: BOOKING_CONTACT_HOURLY_RATE_RULES[0]!.max,
-};
+/** The same figures the lane passes (one shared module since #1726), read from the
+ *  rules that actually refuse, so the preview shows the sentence that really ships
+ *  rather than a lookalike. */
 import {
-  BOOKING_API_IP_LIMITER,
-  BOOKING_API_WRITE_LIMITER,
-  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
-  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
-} from "@/lib/rate-limit-core";
-
-/** The same figures the lane passes, read from the rules that actually refuse, so
- *  the preview shows the sentence that really ships rather than a lookalike. */
-const PREVIEW_CEILING_LIMITS = {
-  keyPerHour: DIRECT_BOOKING_API_HOURLY_RATE_RULES[0].max,
-  keyPerMinute: BOOKING_API_WRITE_LIMITER.perMinute,
-  ipPerHour: DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES[0].max,
-  ipPerMinute: BOOKING_API_IP_LIMITER.perMinute,
-};
+  SHIPPED_CEILING_LIMITS as PREVIEW_CEILING_LIMITS,
+  SHIPPED_EMBED_CAP_LIMITS as PREVIEW_EMBED_CAP_LIMITS,
+} from "@/lib/monitor/refusal-limits";
 import {
   formatVolumeCountUnreadableAlert,
   formatVolumeCountReadableNotice,
