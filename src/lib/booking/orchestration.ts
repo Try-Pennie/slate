@@ -6136,9 +6136,13 @@ async function resumeReservation(
 }
 
 /**
- * What completing a reservation came to (#3462): completed (`CompletedReservation`),
- * or LOST, its insert refused because a booking that is not this request's own
- * holds the slot, with the rollback that loss still owes.
+ * What completing a reservation came to (#3462): completed (`CompletedReservation`);
+ * LOST, its insert refused because a booking that is not this request's own holds
+ * the slot, with the rollback that loss still owes; or SETTLED (#3847), its booking
+ * committed and has since been cancelled or completed, so the reservation was
+ * deleted and nothing was made again. Only a resume (called without `known`, so the
+ * drain and a lead's retry) can answer settled, because only a resume looks for an
+ * earlier booking on the key; a fresh confirm treats settled as an error.
  *
  * The rollback is handed back rather than run, so a lead's confirm can tell the
  * confirms waiting behind it that the time is taken BEFORE it spends the cleanup
