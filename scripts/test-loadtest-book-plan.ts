@@ -27,6 +27,8 @@ import {
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
   steadyDriversFor,
+  FAULT_WARMUP_READS,
+  warmUp,
   steadyPlanFor,
   expectedSteadyDrivers,
   STEADY_CONFIRMS_PER_ADVISOR_PER_MINUTE,
@@ -1089,6 +1091,61 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   assert(!expectedSteadyDrivers("0").ok, "zero drivers cannot be judged");
   assert(!expectedSteadyDrivers("nine").ok, "a word is refused");
   assert(!expectedSteadyDrivers("4.5").ok, "and so is a fraction");
+}
+
+{
+  // #3888: the fault leg warms the version it just deployed before its first confirm,
+  // through the same booking API gate, so the fault pass measures degrading under
+  // faults rather than a brand new version's first requests (the cold leg's population).
+  assert(FAULT_WARMUP_READS >= 3 && FAULT_WARMUP_READS <= 10, `a handful of warm up reads (${FAULT_WARMUP_READS})`);
+  const book = readFileSync(join(import.meta.dirname, "loadtest", "book.ts"), "utf8");
+  const fault = book.slice(book.indexOf("async function fault("), book.indexOf("async function burst("));
+  const warmAt = fault.indexOf("await warmFreshVersion(");
+  const driveAt = fault.indexOf('await steady("fault"');
+  assert(warmAt > 0 && driveAt > 0, "the fault leg both warms and drives");
+  assert(warmAt < driveAt, "and warms BEFORE its first confirm");
+  const acceptAt = fault.indexOf('step.action === "accept"');
+  assert(acceptAt > 0 && acceptAt < warmAt, "and only after the deployment reported the faults, so it warms the faulted version");
+  const warmFrom = book.indexOf("async function warmFreshVersion(");
+  const warm = book.slice(warmFrom, book.indexOf("\nasync function ", warmFrom + 1));
+  assert(/\/api\/bookings\/bookable/.test(warm), "through the key authed gate, so the limiter objects are warmed too");
+  assert(/FAULT_WARMUP_READS/.test(warm), "as many times as the plan says");
+  assert(/warmUp\(/.test(warm), "through the tested warm up");
+}
+
+{
+  // The warm up's own behaviour (#3888), driven through fakes.
+  const checked: string[] = [];
+  const out = await warmUp({
+    codes: ["112", "212", "312", "412"],
+    readSlots: async (code) => (code === "312" ? [] : [`${code}-slot`]),
+    check: async (code) => {
+      checked.push(code);
+      if (code === "212") return { ok: false, status: 429 };
+      if (code === "412") throw new Error("socket hang up");
+      return { ok: true, status: 200 };
+    },
+  });
+  eq(checked, ["112", "212", "412"], "a code offering nothing is read but not checked");
+  eq(out.answered, 1, "only an ok answer counts as warmed");
+  eq(out.notOk, [429], "a refused check is named by its status, not counted as warmed");
+  eq(out.failed, 1, "a check that threw is counted apart and does not stop the warm up");
+
+  // A slot read that THROWS is an unreadable payload the drive must stop on, so the warm
+  // up never swallows it.
+  let threw = false;
+  try {
+    await warmUp({
+      codes: ["112"],
+      readSlots: async () => {
+        throw new Error("unreadable availability payload");
+      },
+      check: async () => ({ ok: true, status: 200 }),
+    });
+  } catch {
+    threw = true;
+  }
+  assert(threw, "an unreadable availability payload ends the warm up, and with it the driver");
 }
 
 finish();
