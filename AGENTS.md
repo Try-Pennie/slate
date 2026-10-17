@@ -180,6 +180,7 @@ credentials, what each writes, and which detectors stamp a verdict heartbeat).
 | `verify:ooo-protection` | an approved time off is really BLOCKING the agent, read as the event itself plus free/busy, because busy periods merge |
 | `verify:pool-entry` | the activation gate's calendar reads work against real Google both ways: a readable agent hydrates every calendar, an unlicensed account is refused as not provisioned |
 | `verify:burst-counter` | the `BURST_LIMITER` object is not merely bound but answers AND counts, which the monitor lane deliberately cannot ask |
+| `verify:refusal-alerts` | the six booking refusal alerts (API and embed) move from a measured clear to paging and build their message off a monitor only tally row; writes test rows, deletes them (#1726) |
 | `verify:confirm-line` | the `CONFIRM_LINE` object answers the confirm path's client by its rules; it cannot prove isolates share it, only the load run can |
 | `verify:kill-switch` | the booking kill switch really refuses on the deployed Worker, the one gate here that fails CLOSED |
 | `verify:reroute-on-ineligibility` | a Twilio demotion really moves and audits a held call, and the move back holds (a daily drill on test advisors) |

@@ -19,9 +19,20 @@ import { mapWithConcurrency } from "../concurrency.ts";
 // simultaneous-connection ceiling. Matches the verify-on-book fan-out cap.
 export const OUTBOX_DRAIN_CONCURRENCY = 8;
 
+/**
+ * What a handler may say about a step it completed WITHOUT performing its side
+ * effect (#2440): the reason is persisted on the step, so a deliberately dropped
+ * effect can be counted afterwards rather than only logged. Returning nothing means
+ * the work was done.
+ */
+export interface OutboxStepNote {
+  withheld: string;
+}
+
 /** Performs one named side effect idempotently. Throws to mark the step failed
- *  (the drain retries it next pass); returns to mark it done. */
-export type OutboxStepHandler = (deps: BookingDeps, row: BookingOutbox) => Promise<void>;
+ *  (the drain retries it next pass); returns to mark it done, with a note when the
+ *  effect was deliberately withheld. */
+export type OutboxStepHandler = (deps: BookingDeps, row: BookingOutbox) => Promise<void | OutboxStepNote>;
 export type OutboxHandlers = Record<string, OutboxStepHandler>;
 
 /** Why a row's run ended early, or null when it ran to the end (#1048). Named
@@ -76,9 +87,10 @@ export async function runOutboxSteps(
       continue;
     }
     try {
-      await handler(deps, row);
+      const note = await handler(deps, row);
       step.state = "done";
       step.error = null;
+      if (note?.withheld) step.withheld = note.withheld;
       ran.push(step.name);
     } catch (err) {
       step.state = "failed";

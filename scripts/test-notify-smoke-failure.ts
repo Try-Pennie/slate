@@ -193,7 +193,9 @@ const noIo = ioWith({});
     return { ok: true };
   };
 
-  for (const outcome of ["sent", "held"] as const) {
+  // #1493: "waiting" is the Worker holding the first overnight full pass failure for
+  // the second in a row; posting it here would undo exactly that.
+  for (const outcome of ["sent", "held", "waiting"] as const) {
     posts.length = 0;
     const w = answering(200, { ok: true, outcome });
     const res = await run(post, envWithLog, logIo, w.fetchFn);
@@ -207,6 +209,9 @@ const noIo = ioWith({});
     eq(sent.mode, "full", "of the pass that ran");
     eq(sent.checks, ["availability read took 4210ms"], "naming the failed checks without their log prefix");
     assert(sent.text.includes("availability read took 4210ms"), "carrying the message the step would have posted");
+    if (outcome === "waiting") {
+      assert(/waiting for a second failure/.test(res.reason), `and the run log says it is waiting, not that it posted (${res.reason})`);
+    }
   }
 
   for (const [why, w] of [

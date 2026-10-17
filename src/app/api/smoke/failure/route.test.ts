@@ -24,7 +24,15 @@ vi.mock("@/lib/rate-limit", async (orig) => ({
   bearerFailureWithinLimit: async () => true,
 }));
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+// #1493: the full pass's consecutive failure count. "below" by default, so a test
+// that does not care about the overnight rule sees the first failure of a run.
+const streak = vi.hoisted(() => ({
+  trackConsecutiveStreak: vi.fn(async (_k: string, _w: number, _n: number): Promise<"below" | "reached" | "unknown"> => "below"),
+  clearFailureStreak: vi.fn(async (_k: string) => {}),
+}));
+vi.mock("@/lib/notify/streak", () => streak);
 
+import { DateTime } from "luxon";
 import { POST } from "./route";
 
 const call = (body: unknown, auth = "Bearer canary-secret") =>
@@ -45,6 +53,7 @@ const FAILED = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 
 describe("POST /api/smoke/failure (#3801)", () => {
@@ -105,5 +114,59 @@ describe("POST /api/smoke/failure (#3801)", () => {
     }
     expect(dispatch.resolveRecovered).not.toHaveBeenCalled();
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+});
+
+// #1493 (Dan, 2026-10-16): the full pass runs hourly, and between 9pm and 8am ET a
+// failure of it pages only on the second in a row. The dry tick is unchanged.
+describe("POST /api/smoke/failure overnight (#1493)", () => {
+  const FULL = { ...FAILED, mode: "full" };
+  const at = (iso: string) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(DateTime.fromISO(iso, { zone: "America/New_York" }).toJSDate());
+  };
+
+  it("holds the first overnight full pass failure: no post, and an answer that keeps the workflow from posting", async () => {
+    at("2026-10-16T23:05:00");
+    const res = await call(FULL);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, outcome: "waiting" });
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    const [key, windowS, alertAt] = streak.trackConsecutiveStreak.mock.calls[0];
+    expect(key).toBe("smoke_canary_full_failures");
+    expect(windowS).toBeGreaterThan(2 * 60 * 60);
+    expect(alertAt).toBe(2);
+  });
+
+  it("posts the second overnight failure in a row", async () => {
+    at("2026-10-17T00:05:00");
+    streak.trackConsecutiveStreak.mockResolvedValueOnce("reached");
+    expect(await (await call(FULL)).json()).toEqual({ ok: true, outcome: "sent" });
+    expect(dispatch.sendThrottledAlert.mock.calls[0][0]).toBe("smoke_canary_failed:full");
+  });
+
+  it("posts when the count could not be read, rather than holding a failure it cannot follow up", async () => {
+    at("2026-10-17T02:05:00");
+    streak.trackConsecutiveStreak.mockResolvedValueOnce("unknown");
+    expect(await (await call(FULL)).json()).toEqual({ ok: true, outcome: "sent" });
+  });
+
+  it("posts a daytime full pass failure at once, and still counts it toward the streak", async () => {
+    at("2026-10-16T14:05:00");
+    expect(await (await call(FULL)).json()).toEqual({ ok: true, outcome: "sent" });
+    expect(streak.trackConsecutiveStreak).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the dry tick alone overnight: it posts as before and is not counted", async () => {
+    at("2026-10-16T23:35:00");
+    expect(await (await call(FAILED)).json()).toEqual({ ok: true, outcome: "sent" });
+    expect(streak.trackConsecutiveStreak).not.toHaveBeenCalled();
+  });
+
+  it("a clean full pass clears the streak, and a clean dry tick does not", async () => {
+    await call({ outcome: "passed", mode: "dry" });
+    expect(streak.clearFailureStreak).not.toHaveBeenCalled();
+    await call({ outcome: "passed", mode: "full" });
+    expect(streak.clearFailureStreak).toHaveBeenCalledWith("smoke_canary_full_failures");
   });
 });

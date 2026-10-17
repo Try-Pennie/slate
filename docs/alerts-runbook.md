@@ -90,7 +90,8 @@ Keys: `empty_tier:*`, `bucket_slots_stale`, `availability_booked_solid`,
 `booking_budget:*`, `calendar_window_uncovered`,
 `booker_unstaffed:*`, `public_booking_stopped`, `booking_race_contention`,
 `booking_race_bound_hit`, `pool_nearly_full`, `busy_cache_drift`, `offered_nobody_free`,
-`smoke_canary_failed:*`.
+`smoke_canary_failed:*`, `booking_embed_ip_cap`, `booking_embed_contact_cap`,
+`booking_embed_honeypot`.
 
 **What fired it.** Something between the roster and the cache means a lead sees fewer
 times than they should, or none. The alerts are deliberately split by CAUSE, because
@@ -104,6 +105,23 @@ which posts it at once when a check is newly failing and otherwise once a day; a
 of that pass posts the all-clear (a clean full pass clears both). If the Worker could not
 be reached the workflow posts the same message itself, so a post with no all-clear to
 follow can mean the Worker is down: check `GET /api/health` first.
+
+**`booking_embed_ip_cap`, `booking_embed_contact_cap` and `booking_embed_honeypot` are
+the booker's OWN limits turning people away** (#1727). The two caps page on how many
+DISTINCT addresses, or emails and phones, the limit is refusing at once, read from the
+limiter's rows, never on how many requests it refused: one bot reusing one identity
+trips the contact cap on every request, and that is the cap working. So the first
+question is who the keys belong to. Read `tag=booking-rate-limit msg="throttled"` with
+the scope the page names (`"hourly"` or `"contact"`): many unrelated addresses that
+each booked a few times is real traffic and the repair is the rule the page names in
+`src/lib/rate-limit-core.ts`; a few addresses sending the same shape is a bot and needs
+nothing. The honeypot page means the hidden field was filled across several intervals.
+Nobody can see that field, so it is either a script (the trap is absorbing it) or the
+field has become visible or autofillable and real leads are being refused with a
+generic error: check whether bookings dropped in the same hour, and if they did, check
+the booker's form before anything else. All three clear on their own once the
+condition ends. Their floors come from a measured week of traffic in
+`src/lib/monitor/embed-refusal-thresholds.ts`.
 
 **`empty_tier:*` is about a whole DEBT TIER, not a bucket** (#2505). It fires when
 Low, Medium, High, Very High or Ultra High is offering no booking time on any of the
@@ -238,7 +256,15 @@ that the budget is small.
 
 Keys: `sync_failures`, `watch_lapse`, `bookable_blocked:*`, `bookable_unverified:*`,
 `verify_on_book_outage`, `verify_on_book_calendars_read`, `hydration_all_failing`,
-`pending_event_deletions_refused`, `google_calendar_breaker_open`.
+`pending_event_deletions_refused`, `google_calendar_breaker_open`, `owner_alert_skips`.
+
+**`owner_alert_skips`** (#2436) says more than a fifth of the last week's owner alerts
+(the "previously pitched" event on the owning advisor's calendar, #2371) were skipped
+because the calendar is `gone` or `not-provisioned`, across at least three advisors.
+The calls are booked; what is missing is the alert. The rows are `owner_alert_events`
+written in the last 7 days with a `skip_reason`; group them by `user_id` to see whose
+accounts to fix, then follow the `gone` or `not-provisioned` branch below. One advisor
+alone never pages, and the all clear needs a measured week back under the line.
 
 **What fired it.** A calendar read failed, repeatedly, for one agent or for many. Or,
 for `pending_event_deletions_refused` (#2577), a queued calendar event DELETE was
@@ -559,7 +585,20 @@ written down with the reason, never done to make the page stop.
 ## The booking API is refusing its caller
 
 Keys: `booking_api_ceiling`, `booking_api_credential`, `booking_api_list_read`,
-`retired_booking_key:*` (one per retired key and kind of host).
+`retired_booking_key:*` (one per retired key and kind of host), `duplicate_cancel_unavailable`,
+`duplicate_cancel_refused`.
+
+**`duplicate_cancel_unavailable` and `duplicate_cancel_refused`** (#2377) judge the last
+24 hours of `POST /api/bookings/cancel-duplicate`, each answer counted in
+`booking_api_outcome_daily` under a `duplicate_cancel_*` outcome outside the booking
+failure share. Neither speaks until the day holds 40 calls. `unavailable` is more than a
+fifth answered 503: read `tag=duplicate-cancel msg="incomplete"` for the stage, and note
+that `rpc` with `booking_id="null"` is the journey sending no usable id, which Regal has
+to fix, not Slate. `refused` is more than three tenths refused for a person (no other
+call, the named call is the newest, an identity conflict): the open
+`booking_handoffs` rows of kind `duplicate-unresolved` name the bookings, and a share
+this high usually means the journey is naming the wrong booking. Each ends on six
+measured hours back under its line.
 
 **What fired it.** Slate is turning its own integration away. Note this is the opposite
 of the limiter section above: those controls fail OPEN, so a page there means requests
@@ -735,7 +774,16 @@ lane family above: the memory figure is unknown, not healthy, until the read is 
 
 Keys: `rate_limit_blocked:*`, `ooo_agent_dm`, `ooo_approvals_digest`,
 `ooo-digest-unreachable:*`, `ooo-digest-unrouted-unreachable`, `ooo_undo`,
-`embed_origin_mismatch`, `cron_cpu_not_configured`, `pending_event_deletions_departed`.
+`embed_origin_mismatch`, `cron_cpu_not_configured`, `pending_event_deletions_departed`,
+`owner_notice_withheld`.
+
+**`owner_notice_withheld`** (#2440) says, at most once a week, how many owner reassign
+notices in the last seven days never reached the sales side because no handoff channel
+was set. The reassigns themselves went through and are in each booking's history; only
+the courtesy notice is missing. Each one is recorded on its outbox row as
+`withheld: "no_handoff_channel"` on the `reassign:owner_notice` step, so the list is
+`booking_outbox` rows whose `steps` contain that pair (the Snowflake mirror keeps them
+after the 30 day prune). Set the channel on `/admin/alerts` and the count stops growing.
 
 **`pending_event_deletions_departed`** (#1630) says Slate could not remove old invites
 from the calendar of somebody who has left, because offboarding removed their Google

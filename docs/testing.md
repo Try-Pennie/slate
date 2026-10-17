@@ -160,8 +160,8 @@ the diff touches no input; an unreadable diff runs it. About 6 billed minutes a 
 **The production canary stays**, because a local stack cannot prove the deployed
 Worker, real calendars or the real embed host: `.github/workflows/smoke-canary.yml`
 runs the smoke scripts against live prod on the isolated SMOKE agents and buckets
-(#396), a dry run every 30 min and every 6h a `SMOKE_STRICT` pass, the reschedule
-smoke and the deployed embed render check (#1006, `scripts/smoke-embed-render.ts`),
+(#396), a dry run every 30 min, every hour a `SMOKE_STRICT` pass and the reschedule
+smoke, and every 6h the deployed embed render check (#1006, `scripts/smoke-embed-render.ts`),
 with Slack alerts on failure and a heartbeat the lane watchdog pages on when the
 schedule stops (#982, refired by `src/lib/monitor/canary-trigger.ts`).
 

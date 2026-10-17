@@ -1023,6 +1023,12 @@ export interface OutboxStep {
   name: string;
   state: OutboxStepState;
   error?: string | null;
+  /**
+   * #2440: on a `done` step whose side effect was deliberately NOT performed, why.
+   * Absent on a step that did its work. Kept in the existing jsonb, so it needs no
+   * migration, and it survives an erasure, which clears only `error` (0093).
+   */
+  withheld?: string | null;
 }
 
 /**

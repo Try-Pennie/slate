@@ -15,6 +15,7 @@
 
 import { describeDemotionChange } from "@/lib/booking/demotion-copy";
 import { readDemotionChange } from "@/lib/booking/demotion-plan";
+import { isAuditChannel, type AuditChannel } from "@/lib/audit-channel";
 
 export interface AuditDisplayRow {
   action: string;
@@ -68,6 +69,10 @@ const ACTION_LABEL: Record<string, string> = {
   "regal.ignore_removed": "started reporting a person's Regal calls again",
   "booking.demotion_reroute": "moved a booked call after a Twilio demotion",
   "booking.demotion_reroute_reverted": "moved an automatically moved call back",
+  // #3542: written by a machine channel (Marcia), whose actor text says who.
+  "booking.created": "booked a call",
+  "booking.rescheduled": "moved a call",
+  "booking.cancelled": "cancelled a call",
 };
 
 /**
@@ -76,6 +81,15 @@ const ACTION_LABEL: Record<string, string> = {
  * responsible.
  */
 const AUTOMATED_ACTIONS = new Set(["booking.demotion_reroute"]);
+
+/**
+ * Who a machine channel's null actor is (#3542). A `Record` over the whole channel
+ * vocabulary, so a channel declared in `audit-channel.ts` without wording here fails
+ * `tsc` rather than rendering its rows as "unassigned".
+ */
+const CHANNEL_ACTOR: Record<AuditChannel, string> = {
+  marcia: "Marcia",
+};
 
 /** The action as a readable phrase, falling back to the raw key so an
  *  unlabelled action still renders as something rather than blank. */
@@ -107,6 +121,14 @@ export function auditActorText(
     return "not recorded";
   }
   if (row.actor_id === null && AUTOMATED_ACTIONS.has(row.action)) return "Slate";
+  // #3542: a machine channel's actor is the bot plus the lead it acted for (plan
+  // decision 11). The 00Q id is the only lead identifier the trail may show.
+  const channel = row.details?.channel;
+  if (row.actor_id === null && isAuditChannel(channel)) {
+    const lead = row.details?.salesforce_id;
+    const who = CHANNEL_ACTOR[channel];
+    return typeof lead === "string" && lead ? `${who}, for lead ${lead}` : `${who}, for an unrecorded lead`;
+  }
   return nameOf(row.actor_id);
 }
 
@@ -134,6 +156,12 @@ export function auditDetailText(row: AuditDisplayRow, nameOf?: (id: string | nul
   }
   if (isReconstructed(row)) {
     parts.push("rebuilt from the request record");
+  }
+  // #3542: the test mark a machine write carries, from the booking's bucket. Read
+  // only on a row a machine channel wrote, the one writer that sets it with that
+  // meaning, so another action's own `test` key is never read as a test booking.
+  if (isAuditChannel(row.details?.channel) && row.details?.test === true) {
+    parts.push("test booking");
   }
   return parts.join(", ");
 }
