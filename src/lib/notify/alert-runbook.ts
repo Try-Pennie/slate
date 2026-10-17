@@ -164,6 +164,11 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   booking_api_ceiling: "the-booking-api-is-refusing-its-caller",
   booking_api_credential: "the-booking-api-is-refusing-its-caller",
   booking_api_list_read: "the-booking-api-is-refusing-its-caller",
+  // #1727. The booker's own limits turning leads away: the booker's family, since the
+  // lead sees fewer times or none, and the first question is whose keys they are.
+  booking_embed_ip_cap: "the-booker-is-offering-nothing-or-too-little",
+  booking_embed_contact_cap: "the-booker-is-offering-nothing-or-too-little",
+  booking_embed_honeypot: "the-booker-is-offering-nothing-or-too-little",
   // #2879. A caller presenting a key Slate retired is being refused on every call,
   // which is this family's premise, with a named repair: give it its own key.
   retired_booking_key: "the-booking-api-is-refusing-its-caller",

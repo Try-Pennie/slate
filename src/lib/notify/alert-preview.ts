@@ -220,7 +220,20 @@ const PREVIEW_BURST = { firstMs: Date.UTC(2026, 9, 14, 7, 5), newestMs: Date.UTC
 const PREVIEW_WAVE = { firstMs: Date.UTC(2026, 9, 14, 20, 10), newestMs: Date.UTC(2026, 9, 14, 21, 55) };
 /** When a previewed condition was first posted, for the #3801 reminder states. */
 const PREVIEW_REMINDER_OPENED_MS = Date.UTC(2026, 9, 15, 4, 15);
-import { refusalAllClear, refusalSignalCopy } from "@/lib/monitor/api-refusal-signals";
+import {
+  embedRefusalAllClear,
+  embedRefusalCopy,
+  refusalAllClear,
+  refusalSignalCopy,
+  type EmbedCapLimits,
+} from "@/lib/monitor/api-refusal-signals";
+import { BOOKING_CONTACT_HOURLY_RATE_RULES, BOOKING_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
+
+/** #1727: the limits the embed cap pages name, read off the real rules. */
+const PREVIEW_EMBED_CAP_LIMITS: EmbedCapLimits = {
+  addressPerHour: BOOKING_HOURLY_RATE_RULES[0]!.max,
+  contactPerHour: BOOKING_CONTACT_HOURLY_RATE_RULES[0]!.max,
+};
 import {
   BOOKING_API_IP_LIMITER,
   BOOKING_API_WRITE_LIMITER,
@@ -1440,6 +1453,44 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the list is readable again",
     channel: "recovery",
     text: refusalAllClear.list,
+  },
+  // #1727. The embed booker's own refusals. The limits are read off the real rules,
+  // exactly as the monitor lane passes them, so the preview names the shipped figures.
+  {
+    key: "booking_embed_ip_cap",
+    state: "the hourly address limit is refusing several addresses at once",
+    channel: "alert",
+    text: embedRefusalCopy.ipCap({ status: "paging", trips: 17, lockedOut: 4, floor: 3 }, 60 * 60_000, PREVIEW_EMBED_CAP_LIMITS)!,
+  },
+  {
+    key: "booking_embed_ip_cap",
+    state: "fewer addresses than the floor are locked out",
+    channel: "recovery",
+    text: embedRefusalAllClear.ipCap,
+  },
+  {
+    key: "booking_embed_contact_cap",
+    state: "the per contact limit is locking out several people at once",
+    channel: "alert",
+    text: embedRefusalCopy.contactCap({ status: "paging", trips: 9, lockedOut: 3, floor: 3 }, 60 * 60_000, PREVIEW_EMBED_CAP_LIMITS)!,
+  },
+  {
+    key: "booking_embed_contact_cap",
+    state: "only one email or phone is locked out",
+    channel: "recovery",
+    text: embedRefusalAllClear.contactCap,
+  },
+  {
+    key: "booking_embed_honeypot",
+    state: "the hidden bot trap is filled across many intervals",
+    channel: "alert",
+    text: embedRefusalCopy.honeypot({ status: "paging", trips: 14, intervals: 6, attempts: 38 }, 60 * 60_000)!,
+  },
+  {
+    key: "booking_embed_honeypot",
+    state: "the trap is quiet again",
+    channel: "recovery",
+    text: embedRefusalAllClear.honeypot,
   },
   {
     // #3267. A slow save cutting several confirms off in one hour: measured healthy

@@ -90,7 +90,8 @@ Keys: `empty_tier:*`, `bucket_slots_stale`, `availability_booked_solid`,
 `booking_budget:*`, `calendar_window_uncovered`,
 `booker_unstaffed:*`, `public_booking_stopped`, `booking_race_contention`,
 `booking_race_bound_hit`, `pool_nearly_full`, `busy_cache_drift`, `offered_nobody_free`,
-`smoke_canary_failed:*`.
+`smoke_canary_failed:*`, `booking_embed_ip_cap`, `booking_embed_contact_cap`,
+`booking_embed_honeypot`.
 
 **What fired it.** Something between the roster and the cache means a lead sees fewer
 times than they should, or none. The alerts are deliberately split by CAUSE, because
@@ -104,6 +105,23 @@ which posts it at once when a check is newly failing and otherwise once a day; a
 of that pass posts the all-clear (a clean full pass clears both). If the Worker could not
 be reached the workflow posts the same message itself, so a post with no all-clear to
 follow can mean the Worker is down: check `GET /api/health` first.
+
+**`booking_embed_ip_cap`, `booking_embed_contact_cap` and `booking_embed_honeypot` are
+the booker's OWN limits turning people away** (#1727). The two caps page on how many
+DISTINCT addresses, or emails and phones, the limit is refusing at once, read from the
+limiter's rows, never on how many requests it refused: one bot reusing one identity
+trips the contact cap on every request, and that is the cap working. So the first
+question is who the keys belong to. Read `tag=booking-rate-limit msg="throttled"` with
+the scope the page names (`"hourly"` or `"contact"`): many unrelated addresses that
+each booked a few times is real traffic and the repair is the rule the page names in
+`src/lib/rate-limit-core.ts`; a few addresses sending the same shape is a bot and needs
+nothing. The honeypot page means the hidden field was filled across several intervals.
+Nobody can see that field, so it is either a script (the trap is absorbing it) or the
+field has become visible or autofillable and real leads are being refused with a
+generic error: check whether bookings dropped in the same hour, and if they did, check
+the booker's form before anything else. All three clear on their own once the
+condition ends. Their floors come from a measured week of traffic in
+`src/lib/monitor/embed-refusal-thresholds.ts`.
 
 **`empty_tier:*` is about a whole DEBT TIER, not a bucket** (#2505). It fires when
 Low, Medium, High, Very High or Ultra High is offering no booking time on any of the

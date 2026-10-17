@@ -82,9 +82,32 @@ export const SELF_INFLICTED_REFUSALS = [
   "refused_key_wrong",
   /** No key configured on the Worker at all, so every call is refused. */
   "refused_not_configured",
+  /**
+   * The EMBED BOOKER's own three refusals (#1727), the surface real leads arrive on.
+   * Each trip is abuse shaping, so counting it into the share would put bot volume
+   * in the denominator a real outage has to move; each is still worth a sustained
+   * signal, judged in `api-refusal-signals.ts`.
+   *
+   * The two caps are judged by how many DISTINCT addresses or people they are
+   * locking out, read from the limiter's own rows, because a volume cannot tell one
+   * bot hammering one identity from many leads each tripping once. These counts are
+   * the volume beside that reading and the gate that decides whether it is needed.
+   */
+  "refused_embed_ip_hour",
+  "refused_embed_contact_hour",
+  /** A filled hidden field, which no person can see: volume here is bot traffic. */
+  "refused_embed_honeypot",
 ] as const;
 
 export type SelfInflictedRefusal = (typeof SELF_INFLICTED_REFUSALS)[number];
+
+/** The embed booker's three recorded refusals (#1727), by what each one is, so the
+ *  route names a constant the type checks against the list rather than a string. */
+export const EMBED_REFUSAL_OUTCOME = {
+  ipHour: "refused_embed_ip_hour",
+  contactHour: "refused_embed_contact_hour",
+  honeypot: "refused_embed_honeypot",
+} as const satisfies Record<string, SelfInflictedRefusal>;
 
 /** Zero-filled counts, so a reader never has to decide what an absent key meant. */
 export type RefusalCounts = Record<SelfInflictedRefusal, number>;
@@ -95,6 +118,9 @@ export const emptyRefusalCounts = (): RefusalCounts => ({
   refused_list_read: 0,
   refused_key_wrong: 0,
   refused_not_configured: 0,
+  refused_embed_ip_hour: 0,
+  refused_embed_contact_hour: 0,
+  refused_embed_honeypot: 0,
 });
 
 export interface TallyArgs {
