@@ -260,6 +260,11 @@ export interface FakeOpts {
   handoffChannel?: string | null;
   /** The channel setting read fails, which is not the same as it being unset. */
   handoffChannelThrows?: boolean;
+  /** The owner reassign notice switch (migration 0188). Defaults to ON, so the
+   *  suites about what a posted notice says keep posting one. */
+  ownerNoticeOn?: boolean;
+  /** The switch read fails, which is neither on nor off. */
+  ownerNoticeOnThrows?: boolean;
   /** Slack's own `error` on the post, or null for a post that lands. */
   handoffNoticePostFails?: string | null;
   /** Each advisor's own zone, keyed by user id. Absent means Slate holds none. */
@@ -758,6 +763,10 @@ export function makeDeps(opts: FakeOpts) {
     loadHandoffChannel: async () => {
       if (opts.handoffChannelThrows) throw new Error("handoff channel read failed");
       return opts.handoffChannel === undefined ? "C-SALES" : opts.handoffChannel;
+    },
+    ownerReassignNoticeOn: async () => {
+      if (opts.ownerNoticeOnThrows) throw new Error("owner notice switch read failed");
+      return opts.ownerNoticeOn ?? true;
     },
     postHandoffNotice: async (channel, text) => {
       calls.handoffNoticePosts.push({ channel, text });

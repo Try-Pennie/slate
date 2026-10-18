@@ -135,6 +135,20 @@ export async function loadHandoffChannel(db: Db): Promise<string | null> {
   return channel && channel.trim() ? channel.trim() : null;
 }
 
+/**
+ * Whether the owner reassign notice (#2372) is switched on (migration 0188). No
+ * config row is the column's default, off. A failed read THROWS: on would post a
+ * notice an admin turned off and off would drop one they want, so the notice step
+ * retries instead.
+ */
+export async function loadOwnerReassignNoticeOn(db: Db): Promise<boolean> {
+  const row = unwrap(
+    await db.from("monitor_alert_config").select("owner_reassign_notice_on").eq("id", 1).maybeSingle(),
+    "owner reassign notice switch",
+  ) as { owner_reassign_notice_on: boolean | null } | null;
+  return row?.owner_reassign_notice_on === true;
+}
+
 /** Mark open rows resolved. Guarded on `status = open`, so a row is resolved once. */
 export async function resolveHandoffs(
   db: Db,

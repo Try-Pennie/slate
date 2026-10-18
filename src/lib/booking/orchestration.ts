@@ -1443,6 +1443,12 @@ export interface BookingDeps {
    * answer standing in for a failed read would lose the notice silently.
    */
   loadHandoffChannel(): Promise<string | null>;
+  /**
+   * Whether an admin has the notice switched on (`owner_reassign_notice_on`,
+   * migration 0188). THROWS on an unreadable setting, so the step retries rather
+   * than guessing either way.
+   */
+  ownerReassignNoticeOn(): Promise<boolean>;
   /** Post one notice. Never throws; a refusal comes back as `ok: false`. */
   postHandoffNotice(channel: string, text: string): Promise<{ ok: boolean; error?: string }>;
   /**
@@ -4240,8 +4246,12 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
    * channel. This is a sales notice; landing it in the channel somebody is paged in
    * is how a paging channel stops being read (L36).
    *
-   * Three outcomes, and they are deliberately not three shades of one:
+   * Four outcomes, and they are deliberately not four shades of one:
    *
+   *  - switched OFF on /admin/alerts (migration 0188): the step completes without
+   *    posting or reading the channel, and records `switched_off` on the step, which
+   *    the weekly withheld count (#2440) deliberately does not count. An unreadable
+   *    switch throws, so the step retries rather than guessing either way.
    *  - NO channel set: the notice is dropped, recorded in the log AND on the step
    *    as a `withheld` reason (#2440, counted weekly by the monitor lane), and the
    *    step completes. It must not page: the monitor lane already owns "handoffs are
@@ -4272,6 +4282,10 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
     // the sales team. Read off the BUCKET, which is where the flag lives; `bookings`
     // has no `is_test` column (#2369). The same choke point `fire` uses for webhooks.
     if (bucket.is_test) return;
+
+    if (!(await deps.ownerReassignNoticeOn())) {
+      return { withheld: OWNER_NOTICE_WITHHELD.switchedOff };
+    }
 
     const channel = await deps.loadHandoffChannel();
     if (!channel) {

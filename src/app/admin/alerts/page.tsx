@@ -788,6 +788,19 @@ export default async function AlertSettingsPage({
                 className={`${inputCls} w-72`}
               />
             </div>
+            {/* Migration 0188: the owner reassign notice (#2372) posts only to the
+                handoff channel, so its switch sits under that field. Off unless an
+                admin turns it on. */}
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                name="owner_reassign_notice_on"
+                value="on"
+                defaultChecked={config?.owner_reassign_notice_on === true}
+                className="h-4 w-4"
+              />
+              Post in the handoff channel when a lead&apos;s call goes to the advisor they have already spoken with
+            </label>
           </div>
         </section>
 

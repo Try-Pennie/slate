@@ -26,13 +26,17 @@
  *  and the count, so the count cannot ask about a step name nothing writes. */
 export const OWNER_NOTICE_STEP = "reassign:owner_notice";
 
-/** Why a notice was withheld. Two reasons, because they send a reader to two places:
- *  the alert settings page, or the deployment's Slack token. */
+/** Why a notice was withheld. Three reasons, because they send a reader to three
+ *  places: the alert settings page, the deployment's Slack token, or nowhere at all. */
 export const OWNER_NOTICE_WITHHELD = {
   /** No handoff channel is set, so there was nowhere to post. */
   noChannel: "no_handoff_channel",
   /** This deployment holds no Slack bot token at all. */
   noSlack: "no_slack_token",
+  /** An admin switched the notice off on /admin/alerts (migration 0188). Recorded
+   *  for a person reading the row and never counted: the weekly report is about a
+   *  notice somebody wanted and did not get, and this one nobody wanted. */
+  switchedOff: "switched_off",
 } as const;
 
 export type OwnerNoticeWithheld = (typeof OWNER_NOTICE_WITHHELD)[keyof typeof OWNER_NOTICE_WITHHELD];

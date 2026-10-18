@@ -32,6 +32,7 @@ const blank = {
   awaitingActivationArmed: "",
   belowLeadTierArmed: "",
   regalCallsArmed: "",
+  ownerReassignNoticeOn: "",
   tierRecoveryMinTimes: "",
   tierRecoveryHoldMin: "",
   poolNearlyFullOpenPct: "",
@@ -56,6 +57,7 @@ describe("parseMonitorSettingsForm", () => {
       awaiting_activation_armed: false,
       below_lead_tier_armed: false,
       regal_calls_armed: false,
+      owner_reassign_notice_on: false,
       empty_tier_recovery_min_times: null,
       empty_tier_recovery_hold_min: null,
       pool_nearly_full_open_pct: null,
@@ -89,6 +91,13 @@ describe("parseMonitorSettingsForm", () => {
     expect(set.config.handoff_channel).toBe("C-SALES");
     const unset = parseMonitorSettingsForm({ ...blank, alertsChannel: "#alerts", handoffChannel: "   " });
     expect(unset.config.handoff_channel).toBeNull();
+  });
+
+  // The owner reassign notice switch: checked posts the notice, unchecked or absent
+  // stores false, so a save always writes the admin's decision rather than a null.
+  it("stores the owner reassign notice switch as a definite on or off", () => {
+    expect(parseMonitorSettingsForm({ ...blank, ownerReassignNoticeOn: "on" }).config.owner_reassign_notice_on).toBe(true);
+    expect(parseMonitorSettingsForm({ ...blank, ownerReassignNoticeOn: "" }).config.owner_reassign_notice_on).toBe(false);
   });
 
   it("trims channels and stores null for blank", () => {

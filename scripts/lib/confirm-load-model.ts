@@ -130,6 +130,7 @@ export const ON_DATABASE: ReadonlySet<string> = new Set([
   "loadCalendarOwners",
   "loadDrainableReservations",
   "loadHandoffChannel",
+  "ownerReassignNoticeOn",
   "loadLiveOwnerAlert",
   "loadPastBookingIdsToComplete",
   "loadPendingEventDeletions",

@@ -90,7 +90,7 @@ import {
   setOwnerAlertEventId,
 } from "@/lib/booking/owner-alert-store";
 import { loadAdvisorTimezone } from "@/lib/booking/owner-notice-store";
-import { loadHandoffChannel } from "@/lib/handoffs/store";
+import { loadHandoffChannel, loadOwnerReassignNoticeOn } from "@/lib/handoffs/store";
 import { postSlack } from "@/lib/notify/slack";
 import {
   insertFailureLogFields,
@@ -1258,6 +1258,7 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     // uses, deliberately: two readers of `handoff_channel` would drift, and a sales
     // notice landing somewhere the handoff notices do not is the drift nobody sees.
     loadHandoffChannel: () => loadHandoffChannel(supabaseAdmin()),
+    ownerReassignNoticeOn: () => loadOwnerReassignNoticeOn(supabaseAdmin()),
     // postSlack never throws; an unconfigured bot, a refused channel or a timeout
     // all come back as not-ok with a reason, which the step classifies.
     postHandoffNotice: (channel, text) => postSlack({ channel, text }),

@@ -1105,6 +1105,7 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
     awaitingActivationArmed: String(form.get("awaiting_activation_armed") ?? ""),
     belowLeadTierArmed: String(form.get("below_lead_tier_armed") ?? ""),
     regalCallsArmed: String(form.get("regal_calls_armed") ?? ""),
+    ownerReassignNoticeOn: String(form.get("owner_reassign_notice_on") ?? ""),
     rosterCoverageArmed: String(form.get("roster_coverage_armed") ?? ""),
     tierRecoveryMinTimes: String(form.get("empty_tier_recovery_min_times") ?? ""),
     tierRecoveryHoldMin: String(form.get("empty_tier_recovery_hold_min") ?? ""),

@@ -19,7 +19,7 @@ import {
   type HandoffInput,
 } from "@/lib/handoffs/kinds";
 import { recordHandoff, type HandoffWriter, type NewHandoffRow } from "@/lib/handoffs/record";
-import { handoffWriter, loadHandoffChannel } from "@/lib/handoffs/store";
+import { handoffWriter, loadHandoffChannel, loadOwnerReassignNoticeOn } from "@/lib/handoffs/store";
 import {
   HANDOFF_CHANNEL_UNSET_KEY,
   HANDOFF_POSTS_PER_TICK,
@@ -229,6 +229,24 @@ const OWNER: HandoffInput = {
     threw = true;
   }
   eq(threw, true, "a failed read throws, so it can never be taken for unset");
+}
+
+// --- the owner reassign notice switch: off unless an admin turned it on ------------
+{
+  const cfgDb = (reply: { data: unknown; error: { message: string } | null }) =>
+    ({
+      from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => reply }) }) }),
+    }) as unknown as Parameters<typeof loadOwnerReassignNoticeOn>[0];
+  eq(await loadOwnerReassignNoticeOn(cfgDb({ data: { owner_reassign_notice_on: true }, error: null })), true, "a switch turned on reads on");
+  eq(await loadOwnerReassignNoticeOn(cfgDb({ data: { owner_reassign_notice_on: false }, error: null })), false, "a switch turned off reads off");
+  eq(await loadOwnerReassignNoticeOn(cfgDb({ data: null, error: null })), false, "no config row at all is the column's default, off");
+  let threw = false;
+  try {
+    await loadOwnerReassignNoticeOn(cfgDb({ data: null, error: { message: "column owner_reassign_notice_on does not exist" } }));
+  } catch {
+    threw = true;
+  }
+  eq(threw, true, "a failed read throws, so it can never be taken for off or on");
 }
 
 // --- handoffResolution: each rule in both directions -----------------------------
