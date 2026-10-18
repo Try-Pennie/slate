@@ -1,8 +1,7 @@
 /**
- * Reading the envelope Cloudflare's GraphQL Analytics API answers with, shared by the load run's
- * judge (`scripts/loadtest/platform-reading.ts`) and the hourly cron CPU check
- * (`src/lib/monitor/cron-budget.ts`) so the one fault that blinded the judge for a whole season
- * cannot come back in only one of them (L41).
+ * Reading the envelope Cloudflare's GraphQL Analytics API answers with, for the load run's judge
+ * (`scripts/loadtest/platform-reading.ts`). The hourly cron CPU check used it too until it moved
+ * to the Worker logs on 2026-10-18, when Cloudflare stopped filling the dataset it read.
  *
  * That fault: the API answers HTTP 200 with an `errors` array and a NULL `data` when the query
  * names a field that does not exist, so a reader that treated a 200 as success found no rows and

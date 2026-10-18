@@ -421,7 +421,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "cron_budget_headroom",
     kind: "condition",
-    why: "A cron schedule's worst tick in the last day used more than half the CPU ceiling, read from Cloudflare's own cpuTimeUs, which stays true for a day after the last such tick; the hourly check re-reads the trailing day, so a measured day with every schedule under the line is the healthy result that ends it, and an unread day ends nothing (#3141).",
+    why: "A cron schedule's worst tick in the last day used more than half the CPU ceiling, read from the Worker logs' CPU time, which stays true for a day after the last such tick; the hourly check re-reads the trailing day, so a measured day with every schedule under the line is the healthy result that ends it, and an unread day ends nothing (#3141).",
   },
   {
     key: "agents_on_unset_hours",

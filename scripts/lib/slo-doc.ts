@@ -115,7 +115,7 @@ export function expectedSloDocLines(): SloDocLine[] {
       line:
         `| Cron CPU headroom | No scheduled tick past **${s(CRON_BUDGET_WARN_MS)}** of CPU, half the ` +
         `**${s(CRON_CPU_LIMIT_MS)}** \`limits.cpu_ms\`, in any **${CRON_BUDGET_WINDOW_MS / 3_600_000} hours** ` +
-        `| The hourly check at \`${CRON_BUDGET_ROUTE}\`, reading Cloudflare's \`cpuTimeUs\` for every ` +
+        `| The hourly check at \`${CRON_BUDGET_ROUTE}\`, reading the Worker logs' CPU time for every ` +
         `scheduled invocation (needs \`${CF_ANALYTICS_TOKEN_ENV}\`) | \`src/lib/monitor/cron-budget.ts\` |`,
     },
     {

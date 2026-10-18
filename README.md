@@ -280,7 +280,7 @@ src/lib/automations    Pennie's automations service: the texting line after Call
 src/lib/http           edge-level request handling (http->https redirect, served by worker/index.ts)
 src/lib/platform       which runtime we are on, so a dev machine never pages about production
 src/lib/errors         what an error boundary says when a page could not finish
-src/lib/cloudflare     reading Cloudflare's GraphQL Analytics answers (shared by the cron CPU check and the load run judge)
+src/lib/cloudflare     reading Cloudflare's GraphQL Analytics answers (the load run judge)
 src/lib/theme          one rule for which theme a person gets: the pre-hydration boot script and its runtime half
 src/lib/twilio         the TaskRouter read: who carries the Redistribute tag, and the flip out of the pool it decides
 src/lib/regal          the inbound Regal call feed: what each call.completed body means, and its retention

@@ -8,8 +8,9 @@
 //   - the ceiling, the account and the script are the ones wrangler.jsonc really sets, and the
 //     cron that runs the check really fires;
 //   - the load run's bar and this check share one ceiling and one margin (L41);
-//   - the reading: per cron schedule, the max and the p99 of `cpuTimeUs`, in MILLISECONDS; a
-//     refused, empty, truncated or partly unreadable answer is unmeasured, never zero (L98);
+//   - the reading: per cron schedule, the max and the p99 of the Worker logs' `cpuTimeMs`; a
+//     refused, empty, truncated or partly unreadable answer is unmeasured, never zero (L98), and a
+//     sampled day says it was sampled;
 //   - the verdict: over pages, a measured day under the line is the all clear, and an unset
 //     token, a failed read or an unmeasured answer page nothing and clear nothing (#1134);
 //   - an unset token says so once a day on the info channel, and never claims health;
@@ -23,7 +24,8 @@ import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
 import {
   CF_ANALYTICS_TOKEN_ENV,
-  CF_GRAPHQL_URL,
+  CF_TELEMETRY_URL,
+  CRON_CPU_GROUP_LIMIT,
   CRON_BUDGET_ALERT_KEY,
   CRON_BUDGET_COOLDOWN_MS,
   CRON_BUDGET_ROUTE,
@@ -34,12 +36,10 @@ import {
   CRON_CPU_LIMIT_MS,
   CRON_CPU_NOT_CONFIGURED_COOLDOWN_MS,
   CRON_CPU_NOT_CONFIGURED_KEY,
-  SCHEDULED_CPU_QUERY,
-  SCHEDULED_ROW_LIMIT,
   SLATE_ACCOUNT_ID,
   SLATE_SCRIPT_NAME,
   cronBudgetCallsApp,
-  cronCpuQueryVariables,
+  cronCpuQueryBody,
   cronCpuReachedVerdict,
   formatCronCpuAlert,
   formatCronCpuNotConfigured,
@@ -84,82 +84,146 @@ const TOKEN = "cf-test-token-0123456789abcdef";
   );
   eq(WRANGLER_CRON_CPU_MS, CRON_CPU_LIMIT_MS, "the load run judges against the same ceiling");
   eq(CRON_CPU_MARGIN_SHARE, CRON_BUDGET_WARN_SHARE, "and fails at the same margin this warns at");
-  eq(CF_GRAPHQL_URL, "https://api.cloudflare.com/client/v4/graphql", "the GraphQL Analytics endpoint");
+  eq(
+    CF_TELEMETRY_URL,
+    `https://api.cloudflare.com/client/v4/accounts/${SLATE_ACCOUNT_ID}/workers/observability/telemetry/query`,
+    "the Workers Logs query endpoint, on the production account",
+  );
   eq(CF_ANALYTICS_TOKEN_ENV, "CF_ANALYTICS_TOKEN", "the secret's name");
   eq(DETECTOR_REQUIRED_SETTING[VERDICT], CF_ANALYTICS_TOKEN_ENV, "the watchdog knows the verdict lane needs the same secret");
 }
 
-// --- the query asks the raw scheduled dataset for the fields it has --------------
+// --- the query asks the Worker logs for each schedule's CPU ------------------------
 {
-  // Measured against the live schema 2026-09-13 (scripts/loadtest/platform-reading.ts): the raw
-  // dataset's fields are cpuTimeUs, cron, datetime, environmentName, scheduledDatetime,
-  // scriptName, status, and it has no `sum`.
-  assert(/workersInvocationsScheduled\s*\(/.test(SCHEDULED_CPU_QUERY), "it reads workersInvocationsScheduled");
-  assert(/\bcpuTimeUs\b/.test(SCHEDULED_CPU_QUERY) && /\bcron\b/.test(SCHEDULED_CPU_QUERY), "per invocation CPU and the cron that fired it");
-  assert(!/\b(sum|quantiles|dimensions)\s*\{/.test(SCHEDULED_CPU_QUERY), "and no aggregate block, which a raw dataset does not have");
-  assert(/scriptName:\s*\$script/.test(SCHEDULED_CPU_QUERY), "filtered on the script");
-  assert(/datetime_geq:\s*\$from/.test(SCHEDULED_CPU_QUERY) && /datetime_leq:\s*\$to/.test(SCHEDULED_CPU_QUERY), "and on the window");
-  assert(SCHEDULED_CPU_QUERY.includes(`limit:${SCHEDULED_ROW_LIMIT}`), "asking for the documented page size");
-  const v = cronCpuQueryVariables(NOW);
-  eq(v, { account: SLATE_ACCOUNT_ID, script: SLATE_SCRIPT_NAME, from: "2026-10-02T15:00:00Z", to: "2026-10-03T15:00:00Z" }, "the trailing day, in RFC 3339 with no milliseconds");
-  // A day of every trigger in wrangler.jsonc fits one page with room to spare.
-  const perDay = 1440 + 288 + 24 + 96 + 144 + 4 + 2 + 2 + 2 + 1 + 2;
-  assert(perDay * 2 < SCHEDULED_ROW_LIMIT, "two days of ticks would still fit one page");
+  // #3141 read the raw `workersInvocationsScheduled` analytics dataset. Cloudflare stopped
+  // filling it for every Worker on the account at 2026-10-16T15:21:42Z while the crons kept
+  // firing, so the check went blind. The Worker logs record `$workers.cpuTimeMs` and
+  // `$workers.event.cron` on every scheduled invocation, measured against production 2026-10-18.
+  const body = cronCpuQueryBody(NOW) as {
+    view: string;
+    timeframe: { from: number; to: number };
+    parameters: {
+      datasets: string[];
+      filters: { key: string; operation: string; value: unknown }[];
+      calculations: { operator: string; key?: string; alias: string }[];
+      groupBys: { value: string }[];
+      limit: number;
+    };
+  };
+  eq(body.view, "calculations", "an aggregate, not a list of events");
+  eq(body.timeframe, { from: NOW - CRON_BUDGET_WINDOW_MS, to: NOW }, "over the trailing day, in epoch milliseconds");
+  eq(body.parameters.datasets, ["cloudflare-workers"], "the Workers dataset");
+  const filter = (key: string) => body.parameters.filters.find((f) => f.key === key);
+  eq(filter("$workers.scriptName")?.value, SLATE_SCRIPT_NAME, "filtered on the production script");
+  eq(filter("$workers.eventType")?.value, "scheduled", "and on scheduled invocations only, never requests");
+  eq(body.parameters.groupBys.map((g) => g.value), ["$workers.event.cron"], "one group per cron schedule");
+  const calc = (alias: string) => body.parameters.calculations.find((c) => c.alias === alias);
+  eq([calc("max_cpu")?.operator, calc("max_cpu")?.key], ["max", "$workers.cpuTimeMs"], "the worst tick");
+  eq([calc("p99_cpu")?.operator, calc("p99_cpu")?.key], ["p99", "$workers.cpuTimeMs"], "the p99");
+  eq([calc("with_cpu")?.operator, calc("with_cpu")?.key], ["count", "$workers.cpuTimeMs"], "how many carried a CPU figure");
+  eq([calc("n")?.operator, calc("n")?.key], ["count", undefined], "and how many there were");
+  eq(body.parameters.limit, CRON_CPU_GROUP_LIMIT, "asking for more groups than wrangler.jsonc has triggers");
 }
 
 // --- reading the answer ------------------------------------------------------------
-const envelope = (rows: unknown[]) => ({ data: { viewer: { accounts: [{ workersInvocationsScheduled: rows }] } } });
-const row = (cron: string, cpuTimeUs: unknown) => ({ cron, cpuTimeUs, status: "success" });
+interface Group {
+  cron: string;
+  n: number;
+  max: unknown;
+  p99?: unknown;
+  withCpu?: number;
+  sampleInterval?: number;
+}
+const aggregate = (alias: string, groups: Group[], value: (g: Group) => unknown) => ({
+  alias,
+  aggregates: groups.map((g) => ({
+    groupKey: g.cron,
+    groups: [{ key: "$workers.event.cron", value: g.cron }],
+    value: value(g),
+    count: g.n,
+    sampleInterval: g.sampleInterval ?? 1,
+  })),
+});
+const envelope = (groups: Group[]) => ({
+  success: true,
+  errors: [],
+  result: {
+    calculations: [
+      aggregate("max_cpu", groups, (g) => g.max),
+      aggregate("p99_cpu", groups, (g) => g.p99 ?? g.max),
+      aggregate("with_cpu", groups, (g) => g.withCpu ?? g.n),
+      aggregate("n", groups, (g) => g.n),
+    ],
+  },
+});
+const group = (cron: string, maxMs: unknown, over: Partial<Group> = {}): Group => ({ cron, n: 10, max: maxMs, ...over });
 {
-  const many = Array.from({ length: 100 }, (_, i) => row("* * * * *", (i + 1) * 100_000));
-  const r = readScheduledCpu(200, envelope([...many, row("*/5 * * * *", 70_000_000), row("*/5 * * * *", 1_500_000)]));
+  const r = readScheduledCpu(
+    200,
+    envelope([group("* * * * *", 10_000, { n: 1440, p99: 9_900 }), group("*/5 * * * *", 70_000, { n: 288, p99: 1_500 })]),
+  );
   assert(r.ok, "a well formed answer reads");
   if (r.ok) {
-    eq(r.invocations, 102, "every invocation counted");
+    eq(r.invocations, 1728, "every invocation counted");
     eq(r.crons.map((c) => c.cron), ["*/5 * * * *", "* * * * *"], "worst first");
     const minute = r.crons.find((c) => c.cron === "* * * * *");
-    eq(minute?.maxCpuMs, 10_000, "MICROSECONDS become milliseconds (a thousand times too small passes every bar)");
-    eq(minute?.p99CpuMs, 9_900, "p99 by nearest rank");
-    eq(minute?.invocations, 100, "per cron counts");
+    eq(minute?.maxCpuMs, 10_000, "the logs report MILLISECONDS, taken as they are");
+    eq(minute?.p99CpuMs, 9_900, "the p99 as the logs computed it");
+    eq(minute?.invocations, 1440, "per cron counts");
     eq(r.crons[0].maxCpuMs, 70_000, "the five minute schedule's worst");
+    eq(r.sampled, false, "a day kept whole is not called sampled");
   }
+  const sampled = readScheduledCpu(200, envelope([group("* * * * *", 10_000, { sampleInterval: 1.05 })]));
+  assert(sampled.ok && sampled.sampled, "a day the logs sampled says so, because its worst tick may not be in it");
+
   const refusals: [string, ReturnType<typeof readScheduledCpu>][] = [
-    ["an HTTP refusal", readScheduledCpu(403, { errors: [{ message: "not authorized" }] })],
-    ["a 200 carrying GraphQL errors", readScheduledCpu(200, { data: null, errors: [{ message: "unknown field" }] })],
-    ["a body that is not a listing", readScheduledCpu(200, { data: { viewer: { accounts: [] } } })],
+    ["an HTTP refusal", readScheduledCpu(403, { success: false, errors: [{ code: 10000, message: "Authentication error" }] })],
+    ["a 200 that says it failed", readScheduledCpu(200, { success: false, errors: [{ code: 1, message: "bad query" }] })],
+    ["a body that is not a listing", readScheduledCpu(200, { success: true, result: {} })],
+    ["a listing missing a calculation", readScheduledCpu(200, { success: true, result: { calculations: [aggregate("n", [group("* * * * *", 1)], (g) => g.n)] } })],
     ["an empty day, which cannot be true of a Worker with a minute cron", readScheduledCpu(200, envelope([]))],
     [
-      "a full page, which may be truncated",
-      readScheduledCpu(200, envelope(Array.from({ length: SCHEDULED_ROW_LIMIT }, () => row("* * * * *", 1_000)))),
+      "a full set of groups, which may be truncated",
+      readScheduledCpu(200, envelope(Array.from({ length: CRON_CPU_GROUP_LIMIT }, (_, i) => group(`${i} * * * *`, 1)))),
     ],
+    ["a body that is not JSON", readScheduledCpu(200, null)],
   ];
   for (const [why, got] of refusals) {
     assert(!got.ok, `${why} is not a reading`);
     if (!got.ok) assert(got.why.length > 0, `${why} says why`);
   }
-  const quoted = readScheduledCpu(200, { data: null, errors: [{ message: "unknown field `cpuTimeUs`" }] });
-  assert(!quoted.ok && quoted.why.includes("unknown field `cpuTimeUs`"), "the API's own refusal is quoted, not summarised");
+  const quoted = readScheduledCpu(400, { success: false, errors: [{ code: 7003, message: "unknown key $workers.cpuTimeMs" }] });
+  assert(!quoted.ok && quoted.why.includes("unknown key $workers.cpuTimeMs"), "the API's own refusal is quoted, not summarised");
+  const forbidden = readScheduledCpu(403, { success: false, errors: [{ code: 10000, message: "Authentication error" }] });
+  assert(!forbidden.ok && /Workers Observability/.test(forbidden.why), "a refused token names the permission the logs need");
   // A tick with no readable CPU could be the heavy one, so a day carrying one is never clean.
-  const partial = readScheduledCpu(200, envelope([row("* * * * *", 1_000_000), row("* * * * *", null), { cpuTimeUs: 5 }]));
+  const partial = readScheduledCpu(200, envelope([group("* * * * *", 1_000, { n: 10, withCpu: 8 })]));
   assert(partial.ok, "a partly unreadable day still reads");
   if (partial.ok) {
-    eq(partial.unreadable, 2, "a row with no readable CPU or no cron is counted, never scored zero");
+    eq(partial.unreadable, 2, "a tick with no CPU figure is counted, never scored zero");
     eq(judgeCronCpu(partial).status, "unmeasured", "and holds the all clear back");
   }
-  const partialOver = readScheduledCpu(200, envelope([row("* * * * *", 90_000_000), row("* * * * *", "x")]));
+  const noNumber = readScheduledCpu(200, envelope([group("* * * * *", "x", { n: 5 }), group("*/5 * * * *", 1_000, { n: 3 })]));
+  assert(noNumber.ok && noNumber.unreadable === 5, "a schedule whose worst is not a number counts all its ticks unreadable");
+  // A schedule whose count of ticks carrying CPU is missing or not a number cannot vouch for any
+  // of its ticks, so they are all unread rather than all read.
+  const noCount = readScheduledCpu(200, envelope([group("* * * * *", 1_000, { n: 6, withCpu: "x" as unknown as number })]));
+  assert(noCount.ok && noCount.unreadable === 6, "a malformed CPU count leaves every tick of its schedule unread");
+  if (noCount.ok) eq(judgeCronCpu(noCount).status, "unmeasured", "so the day is not called clean");
+  const partialOver = readScheduledCpu(200, envelope([group("* * * * *", 90_000, { n: 10, withCpu: 9 })]));
   assert(partialOver.ok && judgeCronCpu(partialOver).status === "over", "but a measured breach beside it still pages");
 }
 
 // --- the verdict ---------------------------------------------------------------------
 {
-  const at = (ms: number) => readScheduledCpu(200, envelope([row("* * * * *", ms * 1000), row("*/5 * * * *", 1_000)]));
+  const at = (ms: number) => readScheduledCpu(200, envelope([group("* * * * *", ms), group("*/5 * * * *", 1)]));
   eq(judgeCronCpu(at(CRON_BUDGET_WARN_MS)).status, "within", "exactly at the line is not past it");
   eq(judgeCronCpu(at(CRON_BUDGET_WARN_MS + 1)).status, "over", "one millisecond past it is");
   const over = judgeCronCpu(at(84_000));
   if (over.status === "over") eq(over.over.map((c) => c.cron), ["* * * * *"], "only the schedule past the line is named over");
   eq(judgeCronCpu({ ok: false, why: "refused" }).status, "unmeasured", "a refusal is unmeasured");
-  eq(cronCpuReachedVerdict({ status: "within", crons: [], invocations: 1 }), true, "a clean day is a verdict");
-  eq(cronCpuReachedVerdict({ status: "over", over: [], crons: [], invocations: 1, unreadable: 0 }), true, "so is a breach");
+  eq(cronCpuReachedVerdict({ status: "within", crons: [], invocations: 1, sampled: false }), true, "a clean day is a verdict");
+  eq(cronCpuReachedVerdict({ status: "over", over: [], crons: [], invocations: 1, unreadable: 0, sampled: false }), true, "so is a breach");
   eq(cronCpuReachedVerdict({ status: "unmeasured", why: "x" }), false, "unmeasured is not");
   eq(cronCpuReachedVerdict({ status: "not-configured" }), false, "nor is an unset token");
 }
@@ -170,23 +234,26 @@ const row = (cron: string, cpuTimeUs: unknown) => ({ cron, cpuTimeUs, status: "s
     { cron: "*/5 * * * *", invocations: 288, maxCpuMs: 84_200, p99CpuMs: 61_000 },
     { cron: "* * * * *", invocations: 1440, maxCpuMs: 44_700, p99CpuMs: 30_100 },
   ];
-  const one = formatCronCpuAlert({ status: "over", over: [crons[0]], crons, invocations: 1728, unreadable: 0 });
+  const one = formatCronCpuAlert({ status: "over", over: [crons[0]], crons, invocations: 1728, unreadable: 0, sampled: false });
   assert(one.startsWith("1 cron schedule used more than"), "singular grammar");
   assert(one.includes("60s of CPU") && one.includes("120s"), "it names the line and the ceiling, derived");
   assert(one.includes("`*/5 * * * *`") && one.includes("84.2s") && one.includes("61s"), "it names the schedule, its max and its p99");
   assert(!one.includes("* * * * *`, max"), "a schedule under the line is not listed as over");
-  const two = formatCronCpuAlert({ status: "over", over: crons, crons, invocations: 1728, unreadable: 1 });
+  const two = formatCronCpuAlert({ status: "over", over: crons, crons, invocations: 1728, unreadable: 1, sampled: false });
   assert(two.startsWith("2 cron schedules used"), "plural grammar");
   assert(/1 invocation .*no readable CPU/.test(two), "an unreadable row is named, not hidden");
-  const clear = formatCronCpuRecovery({ status: "within", crons, invocations: 1728 });
+  const clear = formatCronCpuRecovery({ status: "within", crons, invocations: 1728, sampled: false });
   assert(clear.includes("84.2s") && clear.includes("`*/5 * * * *`") && clear.includes("1,728"), "the all clear says what it measured and over how many ticks");
-  assert(/cpuTimeUs/.test(clear), "and where the number came from");
+  assert(/Worker logs/.test(clear), "and where the number came from");
+  assert(!/sampled/.test(clear), "a whole day does not say it was sampled");
+  const sampledClear = formatCronCpuRecovery({ status: "within", crons, invocations: 1728, sampled: true });
+  assert(/sampled/.test(sampledClear), "a sampled day says so, since its worst tick may not be among those kept");
   // #3693: a placed lane is its own request, so the scheduled reading cannot vouch for it.
   assert(/placed/.test(clear) && /not included/.test(clear), "and that a placed lane's CPU is not in it");
   const notConfigured = formatCronCpuNotConfigured();
   assert(notConfigured.includes(CF_ANALYTICS_TOKEN_ENV), "the unset state names the secret");
   assert(/not measured/i.test(notConfigured) && !/healthy|within|under the line/i.test(notConfigured), "and claims nothing about health");
-  for (const text of [one, two, clear, notConfigured]) {
+  for (const text of [one, two, clear, sampledClear, notConfigured]) {
     assert(!/[\u2014\u2013]/.test(text), "no dashes in the copy");
     assert(!/^Slate\b/.test(text), "no message opens with the app's own name");
   }
@@ -226,19 +293,17 @@ async function run(token: string | undefined, answer: () => Promise<{ status: nu
 }
 const day = (worstMs: number) => async () => ({
   status: 200,
-  body: envelope([row("* * * * *", worstMs * 1000), row("*/5 * * * *", 2_000_000)]),
+  body: envelope([group("* * * * *", worstMs), group("*/5 * * * *", 2_000)]),
 });
 {
   const over = await run(TOKEN, day(90_000));
   eq(over.health.status, "over", "a day past the line is over");
   eq(over.notified, [[CRON_BUDGET_ALERT_KEY, CRON_BUDGET_COOLDOWN_MS]], "it pages once, on its key, daily");
   eq(over.resolved, [], "and clears nothing");
-  eq(over.posts.length, 1, "one GraphQL call per check");
-  eq(over.posts[0].url, CF_GRAPHQL_URL, "to the analytics endpoint");
+  eq(over.posts.length, 1, "one query per check");
+  eq(over.posts[0].url, CF_TELEMETRY_URL, "to the Workers Logs endpoint");
   eq(over.posts[0].auth, `Bearer ${TOKEN}`, "with the token as a bearer");
-  const sent = JSON.parse(over.posts[0].body) as { query: string; variables: unknown };
-  eq(sent.query, SCHEDULED_CPU_QUERY, "the pinned query");
-  eq(sent.variables, cronCpuQueryVariables(NOW), "over the trailing day");
+  eq(JSON.parse(over.posts[0].body), cronCpuQueryBody(NOW), "the pinned query, over the trailing day");
 
   const within = await run(TOKEN, day(45_000));
   eq(within.health.status, "within", "a measured day under the line");
@@ -260,8 +325,8 @@ const day = (worstMs: number) => async () => ({
 
   for (const [why, answer] of [
     ["a fetch that throws", async () => { throw new Error("network down"); }],
-    ["a refused token", async () => ({ status: 403, body: { errors: [{ message: "Authentication error" }] } })],
-    ["a schema error", async () => ({ status: 200, body: { data: null, errors: [{ message: "unknown field" }] } })],
+    ["a refused token", async () => ({ status: 403, body: { success: false, errors: [{ code: 10000, message: "Authentication error" }] } })],
+    ["a query error", async () => ({ status: 400, body: { success: false, errors: [{ code: 7003, message: "unknown key" }] } })],
     ["an empty day", async () => ({ status: 200, body: envelope([]) })],
     ["a body that is not JSON", async () => ({ status: 200, body: null })],
   ] as const) {
@@ -273,7 +338,7 @@ const day = (worstMs: number) => async () => ({
   }
 
   // The token must never reach a line anybody reads.
-  const leaky = await run(TOKEN, async () => ({ status: 403, body: { errors: [{ message: `bad token ${TOKEN}` }] } }));
+  const leaky = await run(TOKEN, async () => ({ status: 403, body: { success: false, errors: [{ code: 1, message: `bad token ${TOKEN}` }] } }));
   for (const line of leaky.logs) assert(!line.includes(TOKEN), "no log line carries the token, even when the API echoes it");
 }
 

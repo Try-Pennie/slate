@@ -257,7 +257,7 @@ drains it.
 - What is in the backlog? The alert names the table and the count.
 - `cron_budget_headroom` (#3141) is the invocation rather than one sweep: some tick in
   the last day used more than 60s of CPU, half the 120s ceiling Cloudflare kills it at.
-  It is read hourly from Cloudflare's own `cpuTimeUs` (`workersInvocationsScheduled`),
+  It is read hourly from the Worker logs' CPU time for each scheduled invocation,
   and the page names each schedule with its max and p99. Which lane spent it is under
   `tag=cron msg="lane timings"` for the ticks named. A page dated before 2026-10-04 was
   the old WALL time version, which was switched off because waiting is not CPU; the

@@ -3918,6 +3918,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       ],
       invocations: 1728,
       unreadable: 0,
+      sampled: false,
     }),
   },
   {
@@ -3938,6 +3939,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       ],
       invocations: 1729,
       unreadable: 1,
+      sampled: false,
     }),
   },
   {
@@ -3951,6 +3953,21 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
         { cron: "*/5 * * * *", invocations: 288, maxCpuMs: 21_400, p99CpuMs: 18_000 },
       ],
       invocations: 1728,
+      sampled: false,
+    }),
+  },
+  {
+    key: "cron_budget_headroom",
+    state: "a measured day under the line, which the logs sampled",
+    channel: "recovery",
+    text: formatCronCpuRecovery({
+      status: "within",
+      crons: [
+        { cron: "0 * * * *", invocations: 24, maxCpuMs: 523, p99CpuMs: 523 },
+        { cron: "* * * * *", invocations: 1438, maxCpuMs: 268, p99CpuMs: 8 },
+      ],
+      invocations: 1462,
+      sampled: true,
     }),
   },
   {
