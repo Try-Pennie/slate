@@ -267,8 +267,9 @@ export function readScheduledCpu(httpStatus: number, body: unknown): CronCpuRead
       unreadable += n;
       continue;
     }
+    // A missing or malformed count of ticks carrying CPU vouches for none of them.
     const read = withCpu.get(cron);
-    if (finiteAtLeastZero(read) && read < n) unreadable += n - Math.round(read);
+    unreadable += finiteAtLeastZero(read) ? Math.max(0, n - Math.round(read)) : n;
     // Already MILLISECONDS: the logs' field is cpuTimeMs.
     crons.push({ cron, invocations: n, maxCpuMs: max, p99CpuMs: p99 });
   }

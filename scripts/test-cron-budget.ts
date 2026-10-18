@@ -205,6 +205,11 @@ const group = (cron: string, maxMs: unknown, over: Partial<Group> = {}): Group =
   }
   const noNumber = readScheduledCpu(200, envelope([group("* * * * *", "x", { n: 5 }), group("*/5 * * * *", 1_000, { n: 3 })]));
   assert(noNumber.ok && noNumber.unreadable === 5, "a schedule whose worst is not a number counts all its ticks unreadable");
+  // A schedule whose count of ticks carrying CPU is missing or not a number cannot vouch for any
+  // of its ticks, so they are all unread rather than all read.
+  const noCount = readScheduledCpu(200, envelope([group("* * * * *", 1_000, { n: 6, withCpu: "x" as unknown as number })]));
+  assert(noCount.ok && noCount.unreadable === 6, "a malformed CPU count leaves every tick of its schedule unread");
+  if (noCount.ok) eq(judgeCronCpu(noCount).status, "unmeasured", "so the day is not called clean");
   const partialOver = readScheduledCpu(200, envelope([group("* * * * *", 90_000, { n: 10, withCpu: 9 })]));
   assert(partialOver.ok && judgeCronCpu(partialOver).status === "over", "but a measured breach beside it still pages");
 }
