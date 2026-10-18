@@ -146,8 +146,9 @@ export type GroupingFetch =
   /** A fresh snapshot was fetched and installed. */
   | "installed"
   /**
-   * #3529: the directory had nothing fresh, so this server read the grouping itself and
-   * installed it, inside the confirm's wait (`readOwn`).
+   * #3529: the directory had nothing fresh, or nothing that left the refresh margin
+   * (#3892), so this server read the grouping itself and installed it, inside the
+   * confirm's wait (`readOwn`).
    */
   | "read"
   | "stale"
@@ -219,8 +220,9 @@ export function makeGroupingReader(deps: {
   /**
    * #3529: this server's own read of the grouping, installing it into `store`, coalesced
    * however many ask and rejecting when it fails (`warmPoolKeys`). Run as soon as the
-   * directory answers with nothing fresh, or once it has not answered within its head
-   * start (`ownReadAfterMs`, #3558), so a confirm in the minute's gap between one
+   * directory answers with nothing fresh, or with a grouping that leaves the server less
+   * than `refreshAheadMs` (#3892), or once it has not answered within its head start
+   * (`ownReadAfterMs`, #3558), so a confirm in the minute's gap between one
    * snapshot expiring and the next landing keys by ladder rather than by code. It is the
    * read a server already made after the response; started here, it is the same read,
    * earlier, and a local read's own minute bounds it, so it extends no staleness.
@@ -259,9 +261,10 @@ export function makeGroupingReader(deps: {
   };
 
   // #3558: the directory's answer, raced against the server's own read once the directory
-  // has not answered within its head start (or at once, when it answers with nothing fresh).
-  // Settles on whichever installs a fresh grouping first; with neither fresh, on the
-  // directory's own answer, said as itself.
+  // has not answered within its head start (or at once, when it answers with nothing fresh,
+  // or with a grouping that leaves less than the refresh margin, #3892). Settles on a
+  // directory answer that leaves the margin, or on the own read once it installs a fresh
+  // grouping; with neither, on the directory's own answer, said as itself.
   const withOwnRead = (directory: Promise<Fetched>, readOwn: () => Promise<void>): Promise<Fetched> =>
     new Promise<Fetched>((resolve) => {
       let answered: Fetched | null = null;
@@ -303,7 +306,11 @@ export function makeGroupingReader(deps: {
       const cancelGiveUp = deps.timer(POOL_GROUPING_FETCH_GIVE_UP_MS, () => settle(answered ?? { source: "timeout", ageMs: null }));
       void directory.then((got) => {
         answered = got;
-        if (got.source === "installed" || got.source === "held") return settle(got);
+        // An answer that leaves the server with less than the refresh margin is no more
+        // use to a confirm's key than no answer: it expires between the prelude and the
+        // key (#3759), and a snapshot from the directory can be as old as a held one (run 6
+        // of #3829: 59.8s, 29 confirms keyed by code). So it starts the own read too.
+        if ((got.source === "installed" || got.source === "held") && deps.store.freshFor(deps.refreshAheadMs)) return settle(got);
         if (own === "done") return settle(freshRead() ?? got);
         startOwn();
       });
