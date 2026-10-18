@@ -1029,6 +1029,8 @@ export interface MonitorSettingsFormInput {
   belowLeadTierArmed: string;
   /** Raw value of the arm-Regal-calls checkbox (#2090), same encoding. */
   regalCallsArmed: string;
+  /** Raw value of the owner reassign notice checkbox (migration 0188), same encoding. */
+  ownerReassignNoticeOn: string;
   /** #3227: open times a paged tier needs to count as recovered. Blank is unset. */
   tierRecoveryMinTimes: string;
   /** #3227: minutes it must hold that before the all clear. Blank is unset. */
@@ -1052,6 +1054,7 @@ export interface MonitorSettingsPayload {
     awaiting_activation_armed: boolean;
     below_lead_tier_armed: boolean;
     regal_calls_armed: boolean;
+    owner_reassign_notice_on: boolean;
     empty_tier_recovery_min_times: number | null;
     empty_tier_recovery_hold_min: number | null;
     pool_nearly_full_open_pct: number | null;
@@ -1115,6 +1118,7 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
       awaiting_activation_armed: checked(input.awaitingActivationArmed),
       below_lead_tier_armed: checked(input.belowLeadTierArmed),
       regal_calls_armed: checked(input.regalCallsArmed),
+      owner_reassign_notice_on: checked(input.ownerReassignNoticeOn),
       empty_tier_recovery_min_times: parseBounded(
         input.tierRecoveryMinTimes,
         "Open times to end a tier page",

@@ -283,6 +283,7 @@ describe("parseMonitorSettingsForm low_volume_armed", () => {
     awaitingActivationArmed: "",
     belowLeadTierArmed: "",
     regalCallsArmed: "",
+    ownerReassignNoticeOn: "",
     tierRecoveryMinTimes: "",
     tierRecoveryHoldMin: "",
     poolNearlyFullOpenPct: "",

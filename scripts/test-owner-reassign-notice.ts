@@ -214,6 +214,53 @@ async function main() {
     eq(calls.handoffNoticePosts.length, 0, "unreadable channel: nothing was posted");
   }
 
+  // --- the notice is switched OFF on /admin/alerts -----------------------------
+  // An admin's decision, so the step completes without posting and without asking
+  // which channel it would have used. It records its own reason, distinct from an
+  // unset channel, because the weekly count (#2440) reports only that one and must
+  // not nag about a notice somebody turned off on purpose.
+  {
+    const ctx = ownedBooking();
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: ctx,
+      handoffChannel: "C-SALES",
+      ownerNoticeOn: false,
+    });
+    const r = row(OWNER_PAYLOAD, "ob-switched-off");
+    const res = await run(deps, r);
+    assert(res.delivered === true, "switched off: the row completes");
+    eq(stateOf(r, NOTICE_STEP), "done", "switched off: the step is done, so nothing retries");
+    eq(calls.handoffNoticePosts.length, 0, "switched off: nothing is posted");
+    eq(
+      r.steps.find((s) => s.name === NOTICE_STEP)?.withheld ?? "missing",
+      OWNER_NOTICE_WITHHELD.switchedOff,
+      "switched off: the step records its own reason, distinct from an unset channel",
+    );
+    assert(
+      OWNER_NOTICE_WITHHELD.switchedOff !== OWNER_NOTICE_WITHHELD.noChannel,
+      "switched off is not counted as an unset channel by the weekly report",
+    );
+  }
+
+  // --- the switch cannot be READ: retry, never guess either way ---------------
+  // Guessing on would post a notice an admin turned off; guessing off would drop one
+  // they want. Retrying is the only answer that is not a claim.
+  {
+    const ctx = ownedBooking();
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: ctx,
+      handoffChannel: "C-SALES",
+      ownerNoticeOnThrows: true,
+    });
+    const r = row(OWNER_PAYLOAD, "ob-switch-unreadable");
+    const res = await run(deps, r);
+    assert(res.delivered === false, "unreadable switch: the row stays pending");
+    eq(stateOf(r, NOTICE_STEP), "failed", "unreadable switch: the step retries");
+    eq(calls.handoffNoticePosts.length, 0, "unreadable switch: nothing was posted");
+  }
+
   // --- NO handoff channel is set: silent, and not an error --------------------
   // The monitor lane already pages when a booking HANDOFF is open with no channel
   // set (#2367). A reassign notice is not a handoff, so this must not invent one,

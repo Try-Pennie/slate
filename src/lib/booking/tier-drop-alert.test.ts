@@ -271,6 +271,7 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps & Commi
     // #2372: the same for the owner reassign notice. A suite about the tier ladder
     // must never post to Slack, so the post throws rather than no-oping.
     loadHandoffChannel: async () => null,
+    ownerReassignNoticeOn: async () => false,
     postHandoffNotice: async () => {
       throw new Error("owner reassign notice not exercised by this suite");
     },

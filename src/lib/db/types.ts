@@ -359,6 +359,10 @@ export interface MonitorAlertConfig {
    *  lane is retired. NOT NULL DEFAULT false; read through
    *  `src/lib/calcom/retirement.ts`, written only by `setCalcomRetired`. */
   calcom_retired: boolean;
+  /** Migration 0188: post the owner reassign notice (#2372) to the handoff
+   *  channel. NOT NULL DEFAULT false; read through `loadOwnerReassignNoticeOn`,
+   *  written by `setMonitorSettings`. */
+  owner_reassign_notice_on: boolean;
   updated_at: string;
   updated_by: string | null;
 }
