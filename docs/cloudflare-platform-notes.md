@@ -137,8 +137,9 @@ possibly truncated, never as zero.
 It pages `cron_budget_headroom` when any schedule's worst tick passes half the ceiling
 (`CRON_BUDGET_WARN_MS`, derived from `CRON_CPU_LIMIT_MS`, which
 `scripts/test-cron-budget.ts` holds equal to `limits.cpu_ms`), and clears on a measured day
-under it. The token is an ACCOUNT token with Workers Observability Read; a refusal says the
-permission may be missing. Without the token the check measures nothing and says so in a
+under it. The token is an ACCOUNT token on the whole account with the Workers role
+Metadata Read-only (the dashboard's name since 2026-09-15 for Workers Observability Read);
+a refusal says the permission may be missing. Without the token the check measures nothing and says so in a
 daily info line. The table above stays the last hand reading.
 
 What it replaced: #3168 paged on WALL time, the one thing the Worker can time about
@@ -732,7 +733,7 @@ answer and the printed list is not every line.
 
 ### The token (read only, one per Mac)
 
-The tool needs a **read only Workers Observability** API token. It reads it from
+The tool needs a read only API token carrying the Workers role **Metadata Read-only**. It reads it from
 `.env.local` at the checkout root under the name **`CLOUDFLARE_LOGS_READ_TOKEN`**, or
 from `CLOUDFLARE_API_TOKEN` set in the shell for one run. It reads only that one name
 from the file and never prints the token, not even inside an API error body.
@@ -747,9 +748,10 @@ To create one, in the Cloudflare dashboard, signed in to the Pennie account:
 
 1. My Profile, **API Tokens**, **Create Token**, then **Create Custom Token**.
 2. Name it `Slate logs read only (<which Mac>)`.
-3. Permissions: **Account**, **Workers Observability**, **Read**. Nothing else. (If the
-   page offers the newer Workers roles instead, choose the read only one, never Editor
-   or Admin.)
+3. Permissions: under **Developer Platform**, the **Workers** row, role **Metadata
+   Read-only**. Nothing else. That is the dashboard's name since 2026-09-15; where the
+   page still offers the legacy **Account**, **Workers Observability**, **Read**, it does
+   the same job. Never Editor or Admin.
 4. Account Resources: **Include**, **Pennie**.
 5. **Continue to summary**, then **Create Token**. It is shown once.
 6. Add it to `.env.local` in the checkout as `CLOUDFLARE_LOGS_READ_TOKEN=` followed by

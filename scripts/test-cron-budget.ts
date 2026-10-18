@@ -195,7 +195,7 @@ const group = (cron: string, maxMs: unknown, over: Partial<Group> = {}): Group =
   const quoted = readScheduledCpu(400, { success: false, errors: [{ code: 7003, message: "unknown key $workers.cpuTimeMs" }] });
   assert(!quoted.ok && quoted.why.includes("unknown key $workers.cpuTimeMs"), "the API's own refusal is quoted, not summarised");
   const forbidden = readScheduledCpu(403, { success: false, errors: [{ code: 10000, message: "Authentication error" }] });
-  assert(!forbidden.ok && /Workers Observability/.test(forbidden.why), "a refused token names the permission the logs need");
+  assert(!forbidden.ok && /Workers role Metadata Read-only/.test(forbidden.why), "a refused token names the permission the logs need, by the name the dashboard shows since 2026-09-15");
   // A tick with no readable CPU could be the heavy one, so a day carrying one is never clean.
   const partial = readScheduledCpu(200, envelope([group("* * * * *", 1_000, { n: 10, withCpu: 8 })]));
   assert(partial.ok, "a partly unreadable day still reads");

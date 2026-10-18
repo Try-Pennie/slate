@@ -13,7 +13,7 @@
 // was refused), 3 found but the printed list is incomplete (fewer lines listed than counted,
 // or a slice filled the request limit), so the list must not be read as every line.
 //
-// THE TOKEN. A read only Workers Observability API token, stored in `.env.local` at the
+// THE TOKEN. A read only API token with the Workers role Metadata Read-only, stored in `.env.local` at the
 // checkout root as `CLOUDFLARE_LOGS_READ_TOKEN=<token>` (or `CLOUDFLARE_API_TOKEN` set in the
 // shell for one run). Never `CLOUDFLARE_API_TOKEN` in `.env.local`: wrangler reads that file
 // too and would sign every `wrangler tail` and deploy in with this read only token. The tool
@@ -21,7 +21,8 @@
 // error. To create it (once, by a person, in the Cloudflare dashboard):
 //   1. dash.cloudflare.com, My Profile, API Tokens, Create Token, Create Custom Token.
 //   2. Name it "Slate logs read only (<which Mac>)".
-//   3. Permissions: Account, Workers Observability, Read. Nothing else.
+//   3. Permissions: Developer Platform, Workers, role Metadata Read-only. Nothing else.
+//      (The legacy Account, Workers Observability, Read does the same where still offered.)
 //   4. Account Resources: Include, Pennie. Then Continue to summary, Create Token.
 //   5. Copy the token into `.env.local` as above. It is shown once.
 //   6. Check it: the command above with "tag=recompute" --minutes 60 must exit 0 (PRESENT).
@@ -813,7 +814,7 @@ export function redact(text: string, secret: string | null): string {
 export const TOKEN_MISSING =
   `${TOKEN_ENV} is not set in .env.local or the environment (nor ${SHELL_TOKEN_ENV} in the ` +
   "environment), so nothing was queried. " +
-  "It needs a read only Workers Observability token; the steps to create one and where to " +
+  "It needs a read only token with the Workers role Metadata Read-only; the steps to create one and where to " +
   "put it are in docs/cloudflare-platform-notes.md, under \"The token (read only, one per Mac)\".";
 
 type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
