@@ -21,7 +21,8 @@
 // error. To create it (once, by a person, in the Cloudflare dashboard):
 //   1. dash.cloudflare.com, My Profile, API Tokens, Create Token, Create Custom Token.
 //   2. Name it "Slate logs read only (<which Mac>)".
-//   3. Permissions: Account, Workers Observability, Read. Nothing else.
+//   3. Permissions: Developer Platform, Workers, role Metadata Read-only. Nothing else.
+//      (The legacy Account, Workers Observability, Read does the same where still offered.)
 //   4. Account Resources: Include, Pennie. Then Continue to summary, Create Token.
 //   5. Copy the token into `.env.local` as above. It is shown once.
 //   6. Check it: the command above with "tag=recompute" --minutes 60 must exit 0 (PRESENT).

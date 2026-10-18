@@ -42,8 +42,8 @@
  * is written only on a measured day, so a check that keeps failing to read goes stale and the
  * lane watchdog says so (#1394).
  *
- * NOT CONFIGURED. The read needs `CF_ANALYTICS_TOKEN`, an account token with Workers
- * Observability Read (the name predates the move to the logs, and renaming the secret would cost a
+ * NOT CONFIGURED. The read needs `CF_ANALYTICS_TOKEN`, an account token carrying the Workers
+ * role Metadata Read-only on the whole account, added 2026-10-18 (the name predates the move to the logs, and renaming the secret would cost a
  * deploy step for nothing). It is OPTIONAL: unset, the check says so once a day on the info channel
  * (`cron_cpu_not_configured`), pages nothing, claims nothing, spends no subrequest, and the
  * watchdog does not call its verdict lane blind (`unconfiguredDetector` in verdict-freshness.ts).
@@ -207,7 +207,7 @@ export function readScheduledCpu(httpStatus: number, body: unknown): CronCpuRead
   if (!ok) {
     const permission =
       httpStatus === 401 || httpStatus === 403
-        ? ", and the token may lack the Workers Observability Read permission the logs need"
+        ? ", and the token may lack the Workers role Metadata Read-only, which the logs need"
         : "";
     if (body === null || typeof body !== "object") {
       return { ok: false, why: `the Workers Logs API answered HTTP ${httpStatus} with a body that is not JSON${permission}` };
