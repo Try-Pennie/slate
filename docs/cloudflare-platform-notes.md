@@ -733,7 +733,7 @@ answer and the printed list is not every line.
 
 ### The token (read only, one per Mac)
 
-The tool needs a **read only Workers Observability** API token. It reads it from
+The tool needs a read only API token carrying the Workers role **Metadata Read-only**. It reads it from
 `.env.local` at the checkout root under the name **`CLOUDFLARE_LOGS_READ_TOKEN`**, or
 from `CLOUDFLARE_API_TOKEN` set in the shell for one run. It reads only that one name
 from the file and never prints the token, not even inside an API error body.

@@ -13,7 +13,7 @@
 // was refused), 3 found but the printed list is incomplete (fewer lines listed than counted,
 // or a slice filled the request limit), so the list must not be read as every line.
 //
-// THE TOKEN. A read only Workers Observability API token, stored in `.env.local` at the
+// THE TOKEN. A read only API token with the Workers role Metadata Read-only, stored in `.env.local` at the
 // checkout root as `CLOUDFLARE_LOGS_READ_TOKEN=<token>` (or `CLOUDFLARE_API_TOKEN` set in the
 // shell for one run). Never `CLOUDFLARE_API_TOKEN` in `.env.local`: wrangler reads that file
 // too and would sign every `wrangler tail` and deploy in with this read only token. The tool
@@ -814,7 +814,7 @@ export function redact(text: string, secret: string | null): string {
 export const TOKEN_MISSING =
   `${TOKEN_ENV} is not set in .env.local or the environment (nor ${SHELL_TOKEN_ENV} in the ` +
   "environment), so nothing was queried. " +
-  "It needs a read only Workers Observability token; the steps to create one and where to " +
+  "It needs a read only token with the Workers role Metadata Read-only; the steps to create one and where to " +
   "put it are in docs/cloudflare-platform-notes.md, under \"The token (read only, one per Mac)\".";
 
 type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
