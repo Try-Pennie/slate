@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // #3141: the hourly cron CPU check the Worker calls in process. What is pinned here is the
 // wiring the pure suite cannot see: the token comes from the Worker's environment and goes out
-// as a bearer on ONE POST to the analytics endpoint, a measured day stamps the verdict lane and
+// as a bearer on ONE POST to the Workers Logs endpoint, a measured day stamps the verdict lane and
 // nothing else does, an unset token spends no subrequest, a failed stamp fails the request, and
 // nothing unauthenticated reaches the API. The decisions are pinned in scripts/test-cron-budget.ts.
 

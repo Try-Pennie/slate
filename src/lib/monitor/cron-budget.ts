@@ -51,7 +51,7 @@
  * token: there is no all clear without a measurement.
  *
  * WHAT THIS STOPPED SEEING (#3693). Each lane is now sent over the Worker's binding to itself
- * and runs as its own placed FETCH invocation, so a scheduled invocation's `cpuTimeUs` holds the
+ * and runs as its own placed FETCH invocation, so a scheduled invocation's `$workers.cpuTimeMs` holds the
  * dispatcher plus any lane that fell back to in process, and NOT the placed lanes' own CPU. A
  * quiet reading here therefore no longer says a lane is far from its ceiling; each placed lane
  * has its own `limits.cpu_ms` as a request does. Reading the placed lanes' CPU needs a per
@@ -129,7 +129,7 @@ export function wallPastLine(wallMs: number): boolean {
   return wallMs > CRON_BUDGET_WARN_MS;
 }
 
-/** One schedule's day. Milliseconds, converted once from the API's microseconds. */
+/** One schedule's day. Milliseconds, as the logs report them. */
 export interface CronCpu {
   cron: string;
   invocations: number;

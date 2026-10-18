@@ -435,11 +435,11 @@ status, usageModel`.
 apart. Measured 2026-09-13, the production Worker's CPU p50 was 198ms and its p99
 was **48.9 seconds**, because 79 of 317 invocations that hour were cron lanes
 running under the raised `limits.cpu_ms`. Any per request CPU percentile taken
-from it is therefore the cron lanes unless the window contains no cron at all. Use
-the separate raw dataset **`workersInvocationsScheduled`** (fields `cpuTimeUs`,
-`cron`, `datetime`, `environmentName`, `scheduledDatetime`, `scriptName`,
-`status`) to read cron CPU per invocation, attributed to the cron expression that
-fired it.
+from it is therefore the cron lanes unless the window contains no cron at all. To
+read cron CPU per invocation, attributed to the cron expression that fired it, query
+the Worker logs (`$workers.cpuTimeMs` grouped by `$workers.event.cron`, the cron CPU
+check's query above). The raw dataset `workersInvocationsScheduled` used to answer
+this and has been empty for every Worker on the account since 2026-10-16.
 
 **The lane budget is NOT the request budget, and the load run used to borrow it
 (#2321).** The 198ms p50 above is a reading about whatever traffic that hour held,
