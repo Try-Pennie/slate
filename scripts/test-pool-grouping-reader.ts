@@ -94,7 +94,7 @@ function readerWorld(opts: {
   heldAt?: number | null;
   heldOrigin?: "read" | "snapshot";
   retryMs?: number;
-  /** #3529: the server's own read, run when the directory has nothing fresh: how long it takes, and whether it lands. */
+  /** #3529: the server's own read, run when the directory has nothing fresh or nothing that leaves the refresh margin (#3892): how long it takes, and whether it lands. */
   ownRead?: { ms: number; lands: boolean };
   /** #3558: how long the directory takes to answer. */
   answerAfterMs?: number;
@@ -670,9 +670,43 @@ async function refreshAhead() {
   }
 }
 
+// A SNAPSHOT fetched from the directory can be as close to expiry as the grouping a
+// server held: run 6 of the 200 advisor runs (#3829) met its first burst just before the
+// minute's republish, every server fetched a snapshot 59.8s old, installed it as fresh,
+// and 29 of 100 confirms keyed by code when it expired before their key. With the server's
+// own read on hand, an answer with less than the margin left starts that read rather than
+// settling, exactly as an answer with nothing fresh does (#3558).
+async function snapshotNearExpiry() {
+  const ceilingsMs = 300;
+  const nearlyExpired = () => groupingSnapshotOf(ENTRIES, T0 - (POOL_GROUPING_FRESH_MS - 200));
+  {
+    const w = readerWorld({ answer: answering(nearlyExpired()), ownRead: { ms: 80, lands: true } });
+    const started = w.reader.start();
+    await w.advance(ceilingsMs);
+    const r = await w.reader.wait(started);
+    eq(r.source, "read", "near expiry: a snapshot with less than the margin left starts the server's own read");
+    eq(w.ownReads.length, 1, "near expiry: one own read");
+    assert(w.store.peek("121") !== undefined, "near expiry: and the grouping is still fresh at the key, 300ms later");
+  }
+  {
+    const w = readerWorld({ answer: answering(nearlyExpired()), ownRead: { ms: 80, lands: false } });
+    const started = w.reader.start();
+    await w.advance(ceilingsMs);
+    const r = await w.reader.wait(started);
+    eq(r.source, "installed", "near expiry: an own read that fails leaves the directory's answer standing, said as itself");
+  }
+  {
+    // Control: a snapshot with the margin to spare settles as before, with no own read.
+    const w = readerWorld({ answer: answering(groupingSnapshotOf(ENTRIES, T0 - 5_000)), ownRead: { ms: 80, lands: true } });
+    eq((await w.reader.ensure()).source, "installed", "near expiry control: a fresh snapshot installs as before");
+    eq(w.ownReads.length, 0, "near expiry control: and no own read is made");
+  }
+}
+
 async function main() {
   await readerTests();
   await refreshAhead();
+  await snapshotNearExpiry();
   await ownReadFallback();
   await sameKeyBothWays();
   await timeoutTyping();
