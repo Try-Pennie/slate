@@ -95,19 +95,20 @@ the external uptime monitor on `/api/health` is for, below.
 | A booking can be made end to end | One full pass every 6 hours | The smoke canary, against live production on isolated SMOKE fixtures. It is the only automated proof a booking can be created, rescheduled and cancelled | `.github/workflows/smoke-canary.yml` |
 | Every scheduled lane is running | Each lane stamps a heartbeat; a lane quiet past its own bound pages | The lane watchdog, on bounds set per lane at about 3x its cadence so jitter cannot page | `LANE_STALE_BOUNDS_MS`, `src/lib/monitor/health.ts` |
 | The safety net itself is running | `smoke-canary` within 90 minutes, `smoke-canary-full` within 8 hours | The same watchdog, on separate stamps, because a 30-minute dry tick kept one shared stamp fresh while the 6-hourly full pass silently stopped (#982) | `CANARY_STALE_BOUNDS_MS` |
-| Cron CPU headroom | No scheduled tick past **60s** of CPU, half the **120s** `limits.cpu_ms`, in any **24 hours** | The hourly check at `/api/cron/cron-budget`, reading Cloudflare's `cpuTimeUs` for every scheduled invocation (needs `CF_ANALYTICS_TOKEN`) | `src/lib/monitor/cron-budget.ts` |
+| Cron CPU headroom | No scheduled tick past **60s** of CPU, half the **120s** `limits.cpu_ms`, in any **24 hours** | The hourly check at `/api/cron/cron-budget`, reading the Worker logs' CPU time for every scheduled invocation (needs `CF_ANALYTICS_TOKEN`) | `src/lib/monitor/cron-budget.ts` |
 
 **The cron headroom row is CPU, read from Cloudflare, not timed by the Worker.** A running
 Worker has no reading of its own CPU, so the first version of this row (#3168) judged WALL
 time, and on 2026-10-03 it paged for a five minute tick of about 84s that was almost all
 waiting on the database and Google. Cloudflare kills on CPU, and wall time is no bound on it
 in either direction (the clock advances only at I/O), so that page was switched off the same
-day. Now the hourly tick reads a day of `workersInvocationsScheduled` from the GraphQL
-Analytics API, keeps each schedule's max and p99 CPU, and pages `cron_budget_headroom` when
-a schedule's worst tick passes the line. One GraphQL call an hour is the whole cost.
+day. Now the hourly tick queries a day of scheduled invocations from the Worker logs, keeps
+each schedule's max and p99 CPU, and pages `cron_budget_headroom` when a schedule's worst tick
+passes the line. One query an hour is the whole cost. (It read the GraphQL analytics until
+Cloudflare stopped filling that dataset on 2026-10-16; docs/cloudflare-platform-notes.md.)
 
-What it will not claim. An answer it cannot read (a refused token, a schema error, an empty
-or full page, a tick with no CPU figure) is unmeasured: it pages nothing, clears nothing, and
+What it will not claim. An answer it cannot read (a refused token, a query error, an empty
+day or a full set of groups, a tick with no CPU figure) is unmeasured: it pages nothing, clears nothing, and
 leaves `verdict:cron-budget` unstamped, so a check that keeps failing goes stale and the lane
 watchdog pages after 6 hours. Without `CF_ANALYTICS_TOKEN` it measures nothing at all and
 says so in a daily info line (`cron_cpu_not_configured`) rather than paging or claiming

@@ -24,7 +24,7 @@ vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 import { GET } from "./route";
-import { CF_GRAPHQL_URL, CRON_BUDGET_ALERT_KEY, CRON_CPU_NOT_CONFIGURED_KEY } from "@/lib/monitor/cron-budget";
+import { CF_TELEMETRY_URL, CRON_BUDGET_ALERT_KEY, CRON_CPU_NOT_CONFIGURED_KEY } from "@/lib/monitor/cron-budget";
 
 const req = () =>
   ({
@@ -32,20 +32,35 @@ const req = () =>
     headers: new Headers(),
   }) as unknown as Parameters<typeof GET>[0];
 
-const day = (worstUs: number) => ({
-  data: {
-    viewer: {
-      accounts: [
-        {
-          workersInvocationsScheduled: [
-            { cron: "* * * * *", cpuTimeUs: worstUs, status: "success" },
-            { cron: "*/5 * * * *", cpuTimeUs: 2_000_000, status: "success" },
-          ],
-        },
+// One group per cron schedule, as the Workers Logs query answers.
+const day = (worstMs: number) => {
+  const groups = [
+    { cron: "* * * * *", max: worstMs, n: 1440 },
+    { cron: "*/5 * * * *", max: 2_000, n: 288 },
+  ];
+  const aggregate = (alias: string, value: (g: (typeof groups)[number]) => number) => ({
+    alias,
+    aggregates: groups.map((g) => ({
+      groupKey: g.cron,
+      groups: [{ key: "$workers.event.cron", value: g.cron }],
+      value: value(g),
+      count: g.n,
+      sampleInterval: 1,
+    })),
+  });
+  return {
+    success: true,
+    errors: [],
+    result: {
+      calculations: [
+        aggregate("max_cpu", (g) => g.max),
+        aggregate("p99_cpu", (g) => g.max),
+        aggregate("with_cpu", (g) => g.n),
+        aggregate("n", (g) => g.n),
       ],
     },
-  },
-});
+  };
+};
 
 const fetchMock = vi.fn();
 
@@ -63,13 +78,13 @@ afterEach(() => {
 
 describe("GET /api/cron/cron-budget (#3141)", () => {
   it("reads the day with one bearer POST and clears on a measured day under the line", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(day(40_000_000)), { status: 200 }));
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(day(40_000)), { status: 200 }));
     const res = await GET(req());
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "within" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe(CF_GRAPHQL_URL);
+    expect(url).toBe(CF_TELEMETRY_URL);
     expect(init.method).toBe("POST");
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer tok-123");
     expect(init.signal).toBeInstanceOf(AbortSignal);
@@ -79,7 +94,7 @@ describe("GET /api/cron/cron-budget (#3141)", () => {
   });
 
   it("pages a day past the line, and that is a verdict too", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(day(90_000_000)), { status: 200 }));
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(day(90_000)), { status: 200 }));
     const res = await GET(req());
     expect(await res.json()).toEqual({ status: "over" });
     expect(dispatch.sendThrottledAlert).toHaveBeenCalledWith(CRON_BUDGET_ALERT_KEY, expect.any(Number), expect.stringContaining("90s"));
@@ -115,7 +130,7 @@ describe("GET /api/cron/cron-budget (#3141)", () => {
   });
 
   it("a failed verdict stamp fails the request rather than reading as recorded", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(day(1_000_000)), { status: 200 }));
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(day(1_000)), { status: 200 }));
     verdicts.recordDetectorVerdict.mockRejectedValueOnce(new Error("db down"));
     const res = await GET(req());
     expect(res.status).toBe(500);

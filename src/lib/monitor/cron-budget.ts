@@ -15,25 +15,36 @@
  * Wall time is now a log line the Worker writes for a slow tick (`wallPastLine`), and nothing
  * pages on it or stores it.
  *
- * WHAT IS MEASURED NOW. On the hourly tick the Worker asks `/api/cron/cron-budget` to read
- * Cloudflare's GraphQL Analytics API: the raw `workersInvocationsScheduled` dataset, one row per
- * scheduled invocation of the production Worker over the trailing day, each carrying its own
- * `cpuTimeUs` and the `cron` that fired it. The dataset and its fields were measured against the
- * live schema on 2026-09-13 (`scripts/loadtest/platform-reading.ts`, which reads the same
- * dataset); Cloudflare's docs describe only `workersInvocationsAdaptive`, which mixes requests
- * and crons with no dimension to separate them, so it cannot answer this. Per schedule this keeps
- * the max and the p99, and pages when any schedule's max passes half the ceiling. One GraphQL
- * call an hour, on the hourly invocation, which is the only subrequest this spends.
+ * WHAT IS MEASURED NOW. On the hourly tick the Worker asks `/api/cron/cron-budget` to query the
+ * Worker logs (the Workers Observability telemetry API): every scheduled invocation of the
+ * production Worker over the trailing day, grouped by `$workers.event.cron`, with the max and p99
+ * of `$workers.cpuTimeMs` and two counts. Pages when any schedule's max passes half the ceiling.
+ * One query an hour, on the hourly invocation, which is the only subrequest this spends.
  *
- * WHAT IS NOT A READING (L98, L215). A refused token, an HTTP failure, a 200 carrying GraphQL
- * errors, an empty day (a Worker with a minute cron cannot have one), a full page (it may be
- * truncated) and a row with no readable CPU are all unmeasured or held short of a clean day,
+ * WHY THE LOGS AND NOT THE ANALYTICS. #3141 read the raw `workersInvocationsScheduled` GraphQL
+ * dataset, which Cloudflare never documented. It stopped being filled for EVERY Worker on the
+ * account at 2026-10-16T15:21:42Z while the crons kept firing, measured 2026-10-18, so the check
+ * reported unmeasured for two days and the watchdog paged. The documented
+ * `workersInvocationsAdaptive` mixes requests and crons with no dimension to separate them, so it
+ * cannot answer this. The logs carry the cron and the CPU on every scheduled invocation.
+ *
+ * THE LOGS ARE SAMPLED at high volume: on 2026-10-18 the minute cron came back with a sample
+ * interval of about 1.05, so roughly one tick in twenty was not kept. A breach is still a breach,
+ * but a clean SAMPLED day may have missed its worst tick, so the reading carries `sampled` and the
+ * all clear says so rather than claiming every tick (L11). The logs' query pipeline can also run
+ * behind (about three hours on 2026-08-17, AGENTS.md), which only shortens the newest end of the
+ * day: a heavy tick there is found by a later hourly read, still inside its day.
+ *
+ * WHAT IS NOT A READING (L98, L215). A refused token, an HTTP failure, a body that says it failed,
+ * an empty day (a Worker with a minute cron cannot have one), a full set of groups (it may be
+ * truncated) and a tick with no CPU figure are all unmeasured or held short of a clean day,
  * never zero. Unmeasured pages nothing and clears nothing, and the `verdict:cron-budget` stamp
  * is written only on a measured day, so a check that keeps failing to read goes stale and the
  * lane watchdog says so (#1394).
  *
- * NOT CONFIGURED. The read needs `CF_ANALYTICS_TOKEN`, an account token with Account Analytics
- * Read and nothing else. It is OPTIONAL: unset, the check says so once a day on the info channel
+ * NOT CONFIGURED. The read needs `CF_ANALYTICS_TOKEN`, an account token with Workers
+ * Observability Read (the name predates the move to the logs, and renaming the secret would cost a
+ * deploy step for nothing). It is OPTIONAL: unset, the check says so once a day on the info channel
  * (`cron_cpu_not_configured`), pages nothing, claims nothing, spends no subrequest, and the
  * watchdog does not call its verdict lane blind (`unconfiguredDetector` in verdict-freshness.ts).
  * An open `cron_budget_headroom` page stays open until a measured day clears it, which needs the
@@ -51,7 +62,6 @@
  */
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
-import { graphqlAccountRows, graphqlEnvelopeRefusal } from "../cloudflare/graphql-envelope.ts";
 
 /**
  * `limits.cpu_ms` in wrangler.jsonc. The Worker cannot read its own config at runtime, so the
@@ -99,43 +109,15 @@ export const CRON_BUDGET_VERDICT_CRON = "0 * * * *";
 /** The in process route the Worker calls on that tick. */
 export const CRON_BUDGET_ROUTE = "/api/cron/cron-budget";
 
-/** The Worker secret holding the analytics token. Read by its literal name in the route. */
+/** The Worker secret holding the Cloudflare token. Read by its literal name in the route. */
 export const CF_ANALYTICS_TOKEN_ENV = "CF_ANALYTICS_TOKEN";
-
-/** Cloudflare's GraphQL Analytics endpoint. */
-export const CF_GRAPHQL_URL = "https://api.cloudflare.com/client/v4/graphql";
 
 /** wrangler.jsonc's `account_id` and `name`, held equal to the file by the suite. */
 export const SLATE_ACCOUNT_ID = "3e7f907a9c19e51417873e2cce4fbc5c";
 export const SLATE_SCRIPT_NAME = "slate";
 
-/**
- * The page size asked for. A day of every trigger is about 2,000 rows, so a page that comes back
- * FULL is read as possibly truncated rather than as a day, because the worst tick may be past it.
- */
-export const SCHEDULED_ROW_LIMIT = 10_000;
-
-/** The raw dataset, one row per invocation. It has no `sum` or `quantiles`, so they are computed here. */
-export const SCHEDULED_CPU_QUERY = `query($account:String!,$script:String!,$from:Time!,$to:Time!){
-  viewer { accounts(filter:{accountTag:$account}) {
-    workersInvocationsScheduled(limit:${SCHEDULED_ROW_LIMIT}, filter:{scriptName:$script, datetime_geq:$from, datetime_leq:$to}) {
-      cpuTimeUs cron status
-    } } }
-}`;
-
-/** RFC 3339 to the second, which the API's `Time` scalar takes. */
-function rfc3339(ms: number): string {
-  return `${new Date(ms).toISOString().slice(0, 19)}Z`;
-}
-
-export function cronCpuQueryVariables(nowMs: number): { account: string; script: string; from: string; to: string } {
-  return {
-    account: SLATE_ACCOUNT_ID,
-    script: SLATE_SCRIPT_NAME,
-    from: rfc3339(nowMs - CRON_BUDGET_WINDOW_MS),
-    to: rfc3339(nowMs),
-  };
-}
+/** The Workers Logs query endpoint for the production account. */
+export const CF_TELEMETRY_URL = `https://api.cloudflare.com/client/v4/accounts/${SLATE_ACCOUNT_ID}/workers/observability/telemetry/query`;
 
 /** Whether the Worker asks the app to run the check on this tick. Only the hourly one does. */
 export function cronBudgetCallsApp(cron: string): boolean {
@@ -161,60 +143,144 @@ export type CronCpuReading =
       /** Worst max first. */
       crons: CronCpu[];
       invocations: number;
-      /** Rows with no readable CPU or no cron: counted, never scored zero (L50). */
+      /** Ticks with no readable CPU or no cron: counted, never scored zero (L50). */
       unreadable: number;
+      /** The logs kept only a sample of some schedule's ticks, so its worst may be missing. */
+      sampled: boolean;
     }
   | { ok: false; why: string };
 
-/** Nearest rank, over values sorted ascending. */
-function percentile(sorted: number[], p: number): number {
-  return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)];
+/**
+ * More groups than wrangler.jsonc has triggers (eleven on 2026-10-18). A listing that comes back
+ * with this many is read as possibly truncated rather than as a day.
+ */
+export const CRON_CPU_GROUP_LIMIT = 50;
+
+const CRON_KEY = "$workers.event.cron";
+const CPU_KEY = "$workers.cpuTimeMs";
+
+/** The one query: a day of the production Worker's scheduled invocations, per cron schedule. */
+export function cronCpuQueryBody(nowMs: number): unknown {
+  return {
+    queryId: "slate-cron-cpu",
+    view: "calculations",
+    timeframe: { from: nowMs - CRON_BUDGET_WINDOW_MS, to: nowMs },
+    parameters: {
+      datasets: ["cloudflare-workers"],
+      filters: [
+        { key: "$workers.scriptName", operation: "eq", type: "string", value: SLATE_SCRIPT_NAME },
+        { key: "$workers.eventType", operation: "eq", type: "string", value: "scheduled" },
+      ],
+      calculations: [
+        { operator: "max", key: CPU_KEY, keyType: "number", alias: "max_cpu" },
+        { operator: "p99", key: CPU_KEY, keyType: "number", alias: "p99_cpu" },
+        { operator: "count", key: CPU_KEY, keyType: "number", alias: "with_cpu" },
+        { operator: "count", alias: "n" },
+      ],
+      groupBys: [{ type: "string", value: CRON_KEY }],
+      limit: CRON_CPU_GROUP_LIMIT,
+    },
+  };
+}
+
+interface Aggregate {
+  groups?: { key?: unknown; value?: unknown }[];
+  value?: unknown;
+  sampleInterval?: unknown;
+}
+
+const finiteAtLeastZero = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+
+/** The API's own words for a refusal, quoted rather than summarised. */
+function apiErrors(body: unknown): string {
+  const errors = (body as { errors?: unknown } | null)?.errors;
+  if (!Array.isArray(errors)) return "";
+  const messages = errors
+    .map((e) => (e as { message?: unknown })?.message)
+    .filter((m): m is string => typeof m === "string" && m.trim() !== "");
+  return messages.length > 0 ? `: ${messages.join("; ")}` : "";
 }
 
 /** Read one answer. Every way it is not a reading carries its own sentence. */
 export function readScheduledCpu(httpStatus: number, body: unknown): CronCpuReading {
-  const refused = graphqlEnvelopeRefusal(httpStatus, body, "scheduled invocations");
-  if (refused) return { ok: false, why: refused };
-  const rows = graphqlAccountRows(body, "workersInvocationsScheduled");
-  if (rows === null) {
-    return { ok: false, why: "the analytics API answered with something that is not a scheduled invocation listing" };
+  const ok = httpStatus >= 200 && httpStatus < 300 && (body as { success?: unknown } | null)?.success === true;
+  if (!ok) {
+    const permission =
+      httpStatus === 401 || httpStatus === 403
+        ? ", and the token may lack the Workers Observability Read permission the logs need"
+        : "";
+    if (body === null || typeof body !== "object") {
+      return { ok: false, why: `the Workers Logs API answered HTTP ${httpStatus} with a body that is not JSON${permission}` };
+    }
+    return { ok: false, why: `the Workers Logs API refused the query with HTTP ${httpStatus}${apiErrors(body)}${permission}` };
   }
-  if (rows.length === 0) {
+  const calculations = (body as { result?: { calculations?: unknown } }).result?.calculations;
+  if (!Array.isArray(calculations)) {
+    return { ok: false, why: "the Workers Logs API answered with something that is not a calculation listing" };
+  }
+  const byAlias = new Map<string, Aggregate[]>();
+  for (const c of calculations as { alias?: unknown; aggregates?: unknown }[]) {
+    if (typeof c?.alias === "string" && Array.isArray(c.aggregates)) byAlias.set(c.alias, c.aggregates as Aggregate[]);
+  }
+  const missing = ["max_cpu", "p99_cpu", "with_cpu", "n"].filter((a) => !byAlias.has(a));
+  if (missing.length > 0) {
+    return { ok: false, why: `the Workers Logs API left out ${missing.join(", ")}, so the day cannot be read` };
+  }
+  const cronOf = (a: Aggregate): string | null => {
+    const v = a.groups?.find((g) => g?.key === CRON_KEY)?.value;
+    return typeof v === "string" && v.trim() !== "" ? v : null;
+  };
+  const valueByCron = (alias: string) => {
+    const out = new Map<string, unknown>();
+    for (const a of byAlias.get(alias) ?? []) {
+      const cron = cronOf(a);
+      if (cron !== null) out.set(cron, a.value);
+    }
+    return out;
+  };
+  const counts = byAlias.get("n") ?? [];
+  if (counts.length === 0) {
     return {
       ok: false,
-      why: "the analytics API returned no scheduled invocations for the day, which a Worker with a minute cron cannot have, so the read is blind",
+      why: "the Worker logs held no scheduled invocations for the day, which a Worker with a minute cron cannot have, so the read is blind",
     };
   }
-  if (rows.length >= SCHEDULED_ROW_LIMIT) {
-    return { ok: false, why: `the analytics API returned a full page of ${rows.length} rows, so the day may be truncated` };
+  if (counts.length >= CRON_CPU_GROUP_LIMIT) {
+    return { ok: false, why: `the Workers Logs API returned ${counts.length} cron groups, the most asked for, so the day may be truncated` };
   }
-  const byCron = new Map<string, number[]>();
+  const maxes = valueByCron("max_cpu");
+  const p99s = valueByCron("p99_cpu");
+  const withCpu = valueByCron("with_cpu");
+  const crons: CronCpu[] = [];
+  let invocations = 0;
   let unreadable = 0;
-  for (const r of rows as { cpuTimeUs?: unknown; cron?: unknown }[]) {
-    const us = r?.cpuTimeUs;
-    const cron = r?.cron;
-    if (typeof cron !== "string" || cron.trim() === "" || typeof us !== "number" || !Number.isFinite(us) || us < 0) {
-      unreadable += 1;
+  let sampled = false;
+  for (const a of counts) {
+    const n = finiteAtLeastZero(a.value) ? Math.round(a.value) : 0;
+    invocations += n;
+    if (typeof a.sampleInterval === "number" && a.sampleInterval > 1) sampled = true;
+    const cron = cronOf(a);
+    const max = cron === null ? undefined : maxes.get(cron);
+    const p99 = cron === null ? undefined : p99s.get(cron);
+    // No cron, or a worst that is not a number: every tick of the group is unread (L50).
+    if (cron === null || !finiteAtLeastZero(max) || !finiteAtLeastZero(p99)) {
+      unreadable += n;
       continue;
     }
-    const list = byCron.get(cron) ?? [];
-    // MICROSECONDS to milliseconds. A reading a thousand times too small passes every bar.
-    list.push(us / 1000);
-    byCron.set(cron, list);
+    const read = withCpu.get(cron);
+    if (finiteAtLeastZero(read) && read < n) unreadable += n - Math.round(read);
+    // Already MILLISECONDS: the logs' field is cpuTimeMs.
+    crons.push({ cron, invocations: n, maxCpuMs: max, p99CpuMs: p99 });
   }
-  const crons: CronCpu[] = [...byCron.entries()].map(([cron, values]) => {
-    const sorted = [...values].sort((a, b) => a - b);
-    return { cron, invocations: sorted.length, maxCpuMs: sorted[sorted.length - 1], p99CpuMs: percentile(sorted, 99) };
-  });
   crons.sort((a, b) => b.maxCpuMs - a.maxCpuMs || a.cron.localeCompare(b.cron));
-  return { ok: true, crons, invocations: rows.length, unreadable };
+  return { ok: true, crons, invocations, unreadable, sampled };
 }
 
 export type CronCpuHealth =
   | { status: "not-configured" }
   | { status: "unmeasured"; why: string }
-  | { status: "over"; over: CronCpu[]; crons: CronCpu[]; invocations: number; unreadable: number }
-  | { status: "within"; crons: CronCpu[]; invocations: number };
+  | { status: "over"; over: CronCpu[]; crons: CronCpu[]; invocations: number; unreadable: number; sampled: boolean }
+  | { status: "within"; crons: CronCpu[]; invocations: number; sampled: boolean };
 
 /**
  * The verdict over one reading. A breach is a positive measurement and pages even beside rows
@@ -225,7 +291,14 @@ export function judgeCronCpu(reading: CronCpuReading): Exclude<CronCpuHealth, { 
   if (!reading.ok) return { status: "unmeasured", why: reading.why };
   const over = reading.crons.filter((c) => c.maxCpuMs > CRON_BUDGET_WARN_MS);
   if (over.length > 0) {
-    return { status: "over", over, crons: reading.crons, invocations: reading.invocations, unreadable: reading.unreadable };
+    return {
+      status: "over",
+      over,
+      crons: reading.crons,
+      invocations: reading.invocations,
+      unreadable: reading.unreadable,
+      sampled: reading.sampled,
+    };
   }
   if (reading.unreadable > 0) {
     return {
@@ -233,7 +306,7 @@ export function judgeCronCpu(reading: CronCpuReading): Exclude<CronCpuHealth, { 
       why: `${reading.unreadable} of ${reading.invocations} scheduled invocations carried no readable CPU, so the day cannot be called under the line`,
     };
   }
-  return { status: "within", crons: reading.crons, invocations: reading.invocations };
+  return { status: "within", crons: reading.crons, invocations: reading.invocations, sampled: reading.sampled };
 }
 
 /** Did this check measure a day? The `verdict:cron-budget` stamp hangs off this alone. */
@@ -249,7 +322,7 @@ function cronLine(c: CronCpu): string {
   return `- \`${c.cron}\`, max ${secs(c.maxCpuMs)}, p99 ${secs(c.p99CpuMs)} over ${c.invocations.toLocaleString("en-US")} ${c.invocations === 1 ? "tick" : "ticks"}`;
 }
 
-const SOURCE = `Read from Cloudflare's \`cpuTimeUs\` for each scheduled invocation (workersInvocationsScheduled).`;
+const SOURCE = `Read from the Worker logs' CPU time for each scheduled invocation.`;
 
 /** The page. Names each schedule past the line with its max and p99. */
 export function formatCronCpuAlert(health: Extract<CronCpuHealth, { status: "over" }>): string {
@@ -277,6 +350,7 @@ export function formatCronCpuRecovery(health: Extract<CronCpuHealth, { status: "
     // #3693: a placed lane runs as its own request, so its CPU is not in this figure, and an
     // all clear may claim only what was read (L11).
     ` This counts the scheduled invocations only: a lane that ran placed is its own request and its CPU is not included.` +
+    (health.sampled ? ` The logs sampled the busiest schedules, so a tick not kept could have been heavier.` : "") +
     `\n${SOURCE}`
   );
 }
@@ -325,13 +399,13 @@ export async function runCronCpuCheck(deps: CronCpuDeps): Promise<CronCpuHealth>
   let reading: CronCpuReading;
   try {
     const answer = await deps.post(
-      CF_GRAPHQL_URL,
+      CF_TELEMETRY_URL,
       `Bearer ${token}`,
-      JSON.stringify({ query: SCHEDULED_CPU_QUERY, variables: cronCpuQueryVariables(deps.nowMs) }),
+      JSON.stringify(cronCpuQueryBody(deps.nowMs)),
     );
     reading = readScheduledCpu(answer.status, answer.body);
   } catch (err) {
-    reading = { ok: false, why: `the analytics API call threw: ${err instanceof Error ? err.message : String(err)}` };
+    reading = { ok: false, why: `the Workers Logs API call threw: ${err instanceof Error ? err.message : String(err)}` };
   }
   const health = judgeCronCpu(reading);
   if (health.status === "unmeasured") {
@@ -348,6 +422,8 @@ export async function runCronCpuCheck(deps: CronCpuDeps): Promise<CronCpuHealth>
   await deps
     .resolve(CRON_BUDGET_ALERT_KEY, formatCronCpuRecovery(health))
     .catch(logResolveFailure(CRON_BUDGET_ALERT_KEY));
-  deps.log?.(`cron cpu: within ${health.crons.map((c) => `${c.cron}=${Math.round(c.maxCpuMs)}ms`).join("|")}`);
+  deps.log?.(
+    `cron cpu: within${health.sampled ? " (sampled)" : ""} ${health.crons.map((c) => `${c.cron}=${Math.round(c.maxCpuMs)}ms`).join("|")}`,
+  );
   return health;
 }

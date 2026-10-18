@@ -112,38 +112,34 @@ Headroom for the every minute cron while its four lanes shared it in process (7 
 CPU is billed on **actual usage, not the limit**, so raising the ceiling costs
 nothing by itself. Raise it rather than let invocations get killed.
 
-**Cron CPU is watched hourly from the analytics, once `CF_ANALYTICS_TOKEN` is set (#3141).**
+**Cron CPU is watched hourly from the Worker logs, once `CF_ANALYTICS_TOKEN` is set (#3141).**
 The running Worker has no reading of its own CPU, so the hourly tick asks
-`/api/cron/cron-budget` to read it from the GraphQL Analytics API
-(`https://api.cloudflare.com/client/v4/graphql`):
+`/api/cron/cron-budget` to query the Workers Observability telemetry API
+(`POST /accounts/<account_id>/workers/observability/telemetry/query`) for every scheduled
+invocation of `slate` over the trailing 24 hours, grouped by `$workers.event.cron`, with
+the max and p99 of `$workers.cpuTimeMs` and two counts (`cronCpuQueryBody` in
+`src/lib/monitor/cron-budget.ts` is the exact body). `cpuTimeMs` is milliseconds.
 
-```graphql
-query($account:String!,$script:String!,$from:Time!,$to:Time!){
-  viewer { accounts(filter:{accountTag:$account}) {
-    workersInvocationsScheduled(limit:10000, filter:{scriptName:$script, datetime_geq:$from, datetime_leq:$to}) {
-      cpuTimeUs cron status
-    } } }
-}
-```
+**It used to read the analytics, and that went dark.** The first version read the raw GraphQL
+dataset `workersInvocationsScheduled` (one row per scheduled invocation, `cpuTimeUs` in
+MICROSECONDS), which Cloudflare never documented. It stopped being filled for EVERY Worker on
+the account at 2026-10-16T15:21:42Z while the crons kept firing, measured 2026-10-18, and the
+check reported unmeasured for two days until the watchdog paged. The documented
+`workersInvocationsAdaptive` cannot replace it: it counts cron invocations alongside requests
+with no dimension separating them (the mixed p99 read 48.9 SECONDS on 2026-09-13, which is the
+crons, not a request).
 
-with `account` the `account_id` in wrangler.jsonc, `script` `slate`, and the trailing 24
-hours as RFC 3339 to the second. Why this dataset and not the documented one:
-Cloudflare's docs describe `workersInvocationsAdaptive`, which counts cron invocations
-alongside requests with no dimension separating them (the mixed p99 read 48.9 SECONDS on
-2026-09-13, which is the crons, not a request). `workersInvocationsScheduled` is a RAW
-dataset, one row per scheduled invocation, whose fields were read from the live schema on
-2026-09-13: `cpuTimeUs`, `cron`, `datetime`, `environmentName`, `scheduledDatetime`,
-`scriptName`, `status`. It has no `sum` or `quantiles` block, so the max and p99 per
-schedule are computed in `src/lib/monitor/cron-budget.ts`. **`cpuTimeUs` is MICROSECONDS.**
-A day is about 2,000 rows, well inside the 10,000 page; a page that comes back full is read
-as possibly truncated, and an empty one as a blind read, never as zero.
+**The logs are sampled at volume.** On 2026-10-18 the minute cron came back with a sample
+interval of about 1.05 (1,438 kept ticks), so a clean day's all clear says it was sampled
+rather than claiming every tick. An empty day reads as blind and a full set of groups as
+possibly truncated, never as zero.
 
 It pages `cron_budget_headroom` when any schedule's worst tick passes half the ceiling
 (`CRON_BUDGET_WARN_MS`, derived from `CRON_CPU_LIMIT_MS`, which
 `scripts/test-cron-budget.ts` holds equal to `limits.cpu_ms`), and clears on a measured day
-under it. The token is an ACCOUNT token with Account Analytics Read only; without it the
-check measures nothing and says so in a daily info line. The table above stays the last
-hand reading.
+under it. The token is an ACCOUNT token with Workers Observability Read; a refusal says the
+permission may be missing. Without the token the check measures nothing and says so in a
+daily info line. The table above stays the last hand reading.
 
 What it replaced: #3168 paged on WALL time, the one thing the Worker can time about
 itself, and fired on 2026-10-03 for a five minute tick of about 84s that was nearly all
