@@ -5992,6 +5992,9 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: confirmLineAlertFor(["reach-timeout", "reach-timeout", "bad-answer"]) },
   // #3339: a run of failed reads of the shared line switch on one server, by what the
   // deployment default says, since that is what those confirms were answered with.
+  // #3339: production's default is on, and a server on it errs the other way, so it reads differently.
+  { key: "shared_line_switch_unreadable", state: "a run of failed reads, default on (production)", channel: "alert",
+    text: sharedLineSwitchUnreadableAlert({ count: SWITCH_READ_PAGE_AFTER, windowMs: SWITCH_READ_PAGE_WINDOW_MS, atLeast: false }, "on") },
   { key: "shared_line_switch_unreadable", state: "a run of failed reads, default off", channel: "alert",
     text: sharedLineSwitchUnreadableAlert({ count: SWITCH_READ_PAGE_AFTER, windowMs: SWITCH_READ_PAGE_WINDOW_MS, atLeast: false }, "off") },
   { key: "shared_line_switch_unreadable", state: "a run of failed reads, default unset", channel: "alert",

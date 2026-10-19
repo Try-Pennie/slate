@@ -102,6 +102,23 @@ function world(onWorkers = true) {
   assert(/not set/.test(sharedLineSwitchUnreadableAlert({ count: 3, windowMs: 60_000, atLeast: false }, undefined)), "and an unset default is said as such, which means off");
   assert(/at least 4/i.test(sharedLineSwitchUnreadableAlert({ count: 4, windowMs: 60_000, atLeast: true }, "off")), "a truncated count says at least");
 }
+{
+  // #3339: the consequence follows the default the page names (L180). Production's
+  // default is on since #3339, and a server standing on "on" errs the OTHER way from one
+  // standing on "off": it shares the line somebody may have switched off, rather than
+  // keeping a crowd on its own. A sentence written for one direction is wrong for the other.
+  const m = { count: 3, windowMs: 60_000, atLeast: false };
+  const onText = sharedLineSwitchUnreadableAlert(m, "on");
+  const offText = sharedLineSwitchUnreadableAlert(m, "off");
+  const unsetText = sharedLineSwitchUnreadableAlert(m, undefined);
+  assert(/deployment default, which is on\b/.test(onText), "a default of on is named as on, in the sentence naming the default");
+  assert(/shared line even if somebody switched it off/.test(onText), "a default of on says the server may share a line somebody switched off");
+  assert(!/on its own rather than across every server/.test(onText), "and never claims a default of on keeps a crowd on its own server");
+  for (const [label, text] of [["off", offText], ["unset", unsetText]] as const) {
+    assert(/on its own rather than across every server/.test(text), `a default of ${label} says the server may line a crowd up on its own`);
+    assert(!/even if somebody switched it off/.test(text), `and a default of ${label} never claims the server shares a line switched off`);
+  }
+}
 
 // --- the key -----------------------------------------------------------------------
 const entry = ALERT_CATALOG.find((e) => e.key === SWITCH_READ_ALERT_KEY);

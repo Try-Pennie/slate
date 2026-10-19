@@ -3,7 +3,7 @@
 // answer, so a burst of cold isolates on a saturated database does not all sit on a
 // guessed value for a whole TTL. With no good read in an isolate the answer is the
 // DEPLOYMENT DEFAULT (`SHARED_CONFIRM_LINE_DEFAULT`, a wrangler var: "on" in the load
-// test, "off" in production until activation), and a default that is missing or not
+// test, and "on" in production since #3339), and a default that is missing or not
 // one of the two words means OFF and is reported once.
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-shared-line-switch.ts
 import {

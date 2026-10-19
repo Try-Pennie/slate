@@ -63,15 +63,14 @@ const env = read("loadtest");
 
 {
   // #3325: the shared confirm line's deployment default, the answer an isolate gives
-  // before it has read the stored switch. It is the one var the two environments are
-  // MEANT to disagree on: the load run proves the shared line before production uses
-  // it, so the load test's cold isolates must not silently read OFF. Asserted as
-  // wrangler RESOLVES it, in both environments (vars do not inherit).
+  // before it has read the stored switch. Asserted as wrangler RESOLVES it, in both
+  // environments (vars do not inherit).
   //
-  // Production's "off" is pinned on purpose: the activation issue that switches the
-  // line on in production also flips this to "on", and that change should have to
-  // touch this line.
-  eq(top.vars?.SHARED_CONFIRM_LINE_DEFAULT, "off", "production resolves SHARED_CONFIRM_LINE_DEFAULT off until activation");
+  // Production's "on" is pinned on purpose (#3339): the burst passed on the shared line
+  // in three load runs, so a cold production isolate whose read of the switch failed
+  // takes the shared line rather than its own. Changing it back is a decision about
+  // production's fallback, and that change should have to touch this line.
+  eq(top.vars?.SHARED_CONFIRM_LINE_DEFAULT, "on", "production resolves SHARED_CONFIRM_LINE_DEFAULT on (#3339)");
   eq(env.vars?.SHARED_CONFIRM_LINE_DEFAULT, "on", "env.loadtest resolves SHARED_CONFIRM_LINE_DEFAULT on");
 }
 
@@ -221,11 +220,21 @@ control("the shared line default missing from the load test", "cold isolates wou
 
 {
   // #3325: the one var allowed to differ is held to its own value rather than exempted.
-  // A load test default equal to production's "off" is the fault, not agreement.
+  // A load test default of "off" is the fault, whatever production says.
   const faults = loadtestEnvFaults(top, env);
   assert(
     !faults.some((f) => f.includes("SHARED_CONFIRM_LINE_DEFAULT")),
-    "the shared line default differing between the environments is not reported as drift",
+    "the committed shared line defaults are not reported as a fault",
+  );
+  // #3339: production and the load test both say "on" now, so the line above no longer
+  // exercises a difference. Production turned back to "off" (a rollback of its fallback)
+  // must still not be read as drift the load test has to follow: the run measures the
+  // shared line, so its cold isolates stay on it whatever production falls back to.
+  const rolledBack = clone(top);
+  rolledBack.vars!.SHARED_CONFIRM_LINE_DEFAULT = "off";
+  assert(
+    !loadtestEnvFaults(rolledBack, env).some((f) => f.includes("SHARED_CONFIRM_LINE_DEFAULT")),
+    "production's shared line default back at off is not reported as drift the load test must follow",
   );
   // And production's value has to be a word the reader understands, or every cold
   // production isolate would log a warning and read the line as off.

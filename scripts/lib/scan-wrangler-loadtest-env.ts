@@ -92,9 +92,12 @@ export interface WranglerLike {
  * value the run needs rather than exempted from the check (#3325).
  *
  * The reason an entry belongs here: the var is a deployment DEFAULT for a capability the
- * load run proves before production turns it on, so the run must exercise the
- * capability while production does not yet. Every other var must match production,
- * because the run is meant to exercise production's configuration.
+ * load run exists to measure, so the run must exercise the capability whatever
+ * production's own default is: before production turns it on, and after, should
+ * production ever fall back to off. Production's `SHARED_CONFIRM_LINE_DEFAULT` is "on"
+ * too since #3339, so today the two agree, and the entry keeps the load test's value
+ * from following a production rollback. Every other var must match production, because
+ * the run is meant to exercise production's configuration.
  */
 const LOADTEST_DIFFERS: Record<
   string,

@@ -78,8 +78,8 @@ per unclaimed advisor. As #3338 shipped it, nothing about the line itself change
 no new verdict field, no start rung, no protocol change, no release of the whole crowd
 at once. #3489 since added a bounded release, a walk past claimed rungs and parking,
 each in the section below, because the line served a walking crowd only one confirm
-every two to three seconds. It is the same on the per isolate line, which production
-runs, and on the shared line.
+every two to three seconds. It is the same on the per isolate line and on the shared
+line.
 
 A confirm whose insert loses the race walks on down the same way, from the rung it
 lost on, but only when what its budget has left covers what the attempt that lost
@@ -374,8 +374,10 @@ the rest did not, with the spread of the wait.
 
 `booking_settings.shared_confirm_line`, on the admin Hours page, read once per
 isolate per 15 seconds. A failed read is never cached as the answer: an isolate with
-no good read uses the deployment default `SHARED_CONFIRM_LINE_DEFAULT` (on in the
-load test Worker, off in production until activation).
+no good read uses the deployment default `SHARED_CONFIRM_LINE_DEFAULT`, `"on"` in
+both the load test Worker and production (production since #3339). So while the stored
+switch is off, a cold production isolate whose read failed takes the shared line until
+its next read succeeds, about five seconds later.
 
 **A failed read is counted, not only logged (#3339).** Every failed or late read is a
 `tag=shared-line` log line carrying the error, and is counted on its isolate
@@ -394,9 +396,10 @@ switched back on. When it was activated, and when it was turned off, come from t
 audit trail the admin action writes on every flip (`booking.settings`, immutable),
 never a new column: the newest switch on, then the FIRST switch off after it, so
 pressing off twice cannot restart the clock. Until the line has ever been switched on,
-off is the expected state and says nothing, which is production today. Turning it on
+off is the expected state and says nothing, as in production before the switch is
+first turned on. Turning it on
 is a person's decision, on the admin Hours page (`/admin/business-hours`); the
-production default stays off until then.
+deployment default being on does not turn it on.
 
 Every confirm records how it was served, on its `confirm answered` log line:
 `line` (`shared`, `isolate`, `fallback`), `line_reason`, `line_key` and `line_ms`
@@ -406,7 +409,9 @@ confirm that spent 1.5s on one that timed out used to report `line_ms` 0.
 
 | what happened | what the confirm does | `line` / `line_reason` | pages? |
 |---|---|---|---|
-| switch off | its isolate's line, as before | `isolate` / `off` (`unread-default` when it fell back to the default) | no |
+| switch read off | its isolate's line, as before | `isolate` / `off` | no |
+| switch unread, default `"off"` | its isolate's line | `isolate` / `unread-default` | the failed reads, after 3 in a minute on one isolate |
+| switch unread, default `"on"` (production and the load test since #3339) | the shared line, as if the switch read on | `shared` / `ok`: not told apart from a read on; the failed read's own `tag=shared-line` line says so | the failed reads, after 3 in a minute on one isolate |
 | switch on, no binding | its isolate's line | `fallback` / `unbound` | after 3 in a minute on one isolate |
 | `enter` refused or not answered in 1.5s | its isolate's line, and abandons the attempt | `fallback` / `reach-timeout`, `enter-error` | same |
 | the object answered with something the client cannot read | its isolate's line, and abandons the attempt | `fallback` / `bad-answer` | same |
@@ -463,7 +468,7 @@ The two orders are not alike:
 Since #3560 the client speaks protocol 2, so an older object refuses it, and the client
 uses its isolate's own line at once (`fallback` / `version`) and pages with the remedy:
 redeploy the ConfirmLine Worker at the app's commit. That makes a line Worker rolled back
-alone the same as the shared line switched OFF, the state production runs today, rather
+alone the same as the shared line switched OFF, rather
 than an untested mix of two builds. It does not make a crowd book: on per isolate lines a
 crowd for one slot books one advisor or none (load run 37333201026, and the load model in
 `test-confirm-contention.ts`, which holds the older object order to exactly what the
@@ -496,7 +501,7 @@ So `/api/availability` wakes the line the lead's confirm will join, after its re
 (`wakeConfirmLineForCode`): a `wake` message the object answers with `{ ok: true }` and
 nothing else. `makeLineWaker` does the cheapest checks first: at most once per bucket
 code per server per `CONFIRM_LINE_WAKE_EVERY_MS` (a minute), then the switch and the
-binding, so with the line off (production today) a read never works out which line it
+binding, so with the line switched off a read never works out which line it
 would reach. Only then is the line chosen, by `lineGroupToWake` through the same
 `codeLineGroup` the confirm keys on; a fresh server reads the grouping first, and one
 that cannot be read or still does not settle the line wakes nothing, each said as
