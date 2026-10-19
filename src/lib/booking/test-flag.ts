@@ -13,10 +13,15 @@ import { unwrap } from "@/lib/db/result";
  * string, so nothing typechecks it, and PostgREST answers 42703 at runtime only.
  * `scripts/test-db-column-selects.ts` is what says so now.
  *
- * So the answer is derived here, once, and both callers use it. Two implementations
+ * So the answer is derived here, once, and every caller uses it. Two implementations
  * of "is this the canary's booking" would drift, and the drift is silent in the worst
  * direction: one of them suppresses a real lead's handoff, the other downgrades an
  * incomplete data subject erasure to a whisper.
+ *
+ * The callers: the handoff check (`handoffs/store.ts`), the erasure trail
+ * (`snowflake/erasure-trail.ts`), and the moved invite handler, its check failed page
+ * and its launch sweep (`google/invite-move-deps.ts`, #3930), which hold back every
+ * message about a test booking's moved invite.
  */
 
 /** Three states, not two. `null` is "Slate could not tell", and it is never a guess. */

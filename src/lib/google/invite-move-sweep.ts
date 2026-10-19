@@ -12,7 +12,9 @@
  *    put back;
  *  - writes the moved time as busy (decision 6), which the sync would otherwise only
  *    do on the invite's next change or the calendar's next full resync;
- *  - and posts ONE message listing them all.
+ *  - and posts ONE message listing them all, except smoke test bookings (#3930),
+ *    which are left out by the same `isTest` flag the live handler reads, because
+ *    nobody acts on a test booking, and returned in `testNotPosted` instead.
  *
  * It has no seam that could move an invite, by construction. Bookings the handler
  * already recorded are skipped, so running it after the handler has acted on one
@@ -55,6 +57,8 @@ export interface InviteSweepDeps {
 
 export interface SweepFinding extends InviteMoveFacts {
   step: "moved" | "resized";
+  /** The booking's smoke test flag, as `FreshBooking.isTest`. */
+  isTest: FreshBooking["isTest"];
   userId: string;
   eventId: string;
   /** Google's `updated` stamp when read, the record's key. */
@@ -71,6 +75,11 @@ export interface SweepResult {
   alreadyRecorded: number;
   /** With `apply`: what this run recorded, blocked and posted. Empty on a dry run. */
   reported: SweepFinding[];
+  /**
+   * With `apply`: smoke test bookings this run recorded and blocked and deliberately
+   * left out of the message (#3930), by booking id. Empty on a dry run.
+   */
+  testNotPosted: string[];
   /** With `apply`: findings another run recorded between this one's read and its write. */
   recordedElsewhere: number;
   /** With `apply`: findings whose block or record could not be written, with the reason. */
@@ -92,6 +101,7 @@ export async function sweepOutOfStepInvites(deps: InviteSweepDeps): Promise<Swee
     gone: [],
     alreadyRecorded: upcoming.length - todo.length,
     reported: [],
+    testNotPosted: [],
     recordedElsewhere: 0,
     notRecorded: [],
     posted: null,
@@ -117,6 +127,7 @@ export async function sweepOutOfStepInvites(deps: InviteSweepDeps): Promise<Swee
         const win = eventWindow(event)!;
         result.found.push({
           step,
+          isTest: b.isTest,
           userId: b.assignedUserId!,
           eventId: b.gcalEventId!,
           bookingId: b.id,
@@ -158,7 +169,9 @@ export async function sweepOutOfStepInvites(deps: InviteSweepDeps): Promise<Swee
         result.recordedElsewhere++;
         continue;
       }
-      reported.push(f);
+      // #3930: recorded and blocked, never posted. Only a flag known to be true.
+      if (f.isTest === true) result.testNotPosted.push(f.bookingId);
+      else reported.push(f);
     } catch (err) {
       result.notRecorded.push({ bookingId: f.bookingId, reason: err instanceof Error ? err.message : String(err) });
     }

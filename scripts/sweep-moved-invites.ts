@@ -13,7 +13,8 @@
 //   - records it in `booking_invite_changes` as `report_launch`, so a later change to
 //     the same invite is never taken for a first move and put back;
 //   - writes the moved time as busy, so the advisor is blocked at both times;
-//   - and posts ONE message to the alerts channel listing them all.
+//   - and posts ONE message to the alerts channel listing them all, except smoke test
+//     bookings (#3930), which are recorded and blocked and only printed here.
 // It moves no invite and emails no lead: the sweep has no seam that could.
 //
 // RUN IT ONCE, RIGHT AFTER THE DEPLOY. Until it has run, an invite moved before launch
@@ -55,7 +56,15 @@ console.log(
   `checked ${result.checked} invites, ${result.alreadyRecorded} bookings already recorded by the live handler, ` +
     `${result.found.length} out of step, ${result.gone.length} gone from the calendar, ${result.unreadable.length} unreadable`,
 );
-const shown = apply ? result.reported : result.found;
+// A smoke test booking is never in the message (#3930), dry run included.
+const shown = apply ? result.reported : result.found.filter((f) => f.isTest !== true);
+if (apply && result.testNotPosted.length > 0) {
+  console.log(`${result.testNotPosted.length} smoke test bookings were recorded and blocked, and left out of the message: ${result.testNotPosted.join(", ")}`);
+}
+if (!apply && shown.length < result.found.length) {
+  const tests = result.found.filter((f) => f.isTest === true).map((f) => f.bookingId);
+  console.log(`${tests.length} of those are smoke test bookings, which the message leaves out: ${tests.join(", ")}`);
+}
 if (apply && result.recordedElsewhere > 0) {
   console.log(`${result.recordedElsewhere} were recorded by another run meanwhile, and are left to it.`);
 }

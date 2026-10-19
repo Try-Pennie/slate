@@ -418,6 +418,15 @@ which is what makes this family different from the ones above.
   `pnpm sweep:moved-invites --apply`, listing invites that were already out of step
   when Slate started watching. None were put back; handle each like a
   `booking_invite_moved:*` post.
+- None of the four is ever raised for a smoke test booking (#3930), meaning the
+  canary's and the hand run tests' bookings (an `is_test` bucket, read by
+  `bookingTestFlags`). The live handler still judges, records and puts back a test
+  booking's invite as usual, and it and the check failed page replace the advisor DM,
+  the manager DM and the post with the Worker log line `test booking invite change
+  not alerted` under `tag=invite-move`, which names the booking and what was
+  withheld. The launch sweep puts nothing back for any booking; it records and blocks
+  a test booking's invite like the rest, leaves it out of the message, and prints its
+  id instead.
 
 **Fix or escalate.** The outbox retries with backoff and gives up at a cap, so a row
 past the cap needs the underlying cause fixed and then a re-drain. An orphaned calendar

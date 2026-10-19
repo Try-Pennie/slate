@@ -14,10 +14,12 @@ import { appUrl } from "@/lib/env";
 import { log } from "@/lib/log";
 import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import type { BookingInviteChange } from "@/lib/db/types";
+import { bookingTestFlags, type BookingTestFlag } from "@/lib/booking/test-flag";
 import { mayTakeOverLock, primaryCalendarId, type InviteChangeRecord } from "./invite-moves";
 import {
   INVITE_CHECK_FAILED_KEY,
   INVITE_MOVED_KEY,
+  splitCheckFailures,
   type InviteMoveDeps,
   type NewInviteChange,
 } from "./invite-move-notice";
@@ -109,14 +111,52 @@ async function postDelivered(key: string, text: string): Promise<boolean> {
 }
 
 /**
+ * The smoke test flag of each booking (#3930), through `bookingTestFlags`, the one
+ * predicate every outward path reads for it. A read that fails is LOGGED and answers
+ * an empty map, which every caller reads as "not known to be a test booking", so a
+ * person is told: silence about a real advisor's call is the worse mistake, and a
+ * test booking paging once is only noise.
+ */
+async function testFlagsByBooking(bookingIds: string[]): Promise<Map<string, BookingTestFlag>> {
+  if (bookingIds.length === 0) return new Map();
+  try {
+    const rows: { id: string; bucket_id: string }[] = [];
+    for (const chunk of chunkIdsByUrlBudget(bookingIds)) {
+      // cap-safe: a primary key lookup over the bookings one sync pass could not check.
+      const page = unwrap(
+        await supabaseAdmin().from("bookings").select("id, bucket_id").in("id", chunk),
+        "moved invite booking buckets",
+      ) as { id: string; bucket_id: string }[] | null;
+      rows.push(...(page ?? []));
+    }
+    return await bookingTestFlags(supabaseAdmin(), rows);
+  } catch (err) {
+    log.error("invite-move", { msg: "booking test flags unreadable, alerting as real bookings", bookings: bookingIds.length }, err);
+    return new Map();
+  }
+}
+
+/** The log line that stands in for a smoke test booking's message (#3930). */
+function logSilenced(entry: { bookingId: string; withheld: string }): void {
+  log.info("invite-move", { msg: "test booking invite change not alerted", booking_id: entry.bookingId, withheld: entry.withheld });
+}
+
+/**
  * Page about invites the handler could not check (`InviteMoveSummary.failed`), one
- * post per booking. Never throws: it rides on the sync, which must not fail for it.
+ * post per booking. A smoke test booking's is logged instead (#3930). Never throws:
+ * it rides on the sync, which must not fail for it.
  */
 export async function reportInviteCheckFailures(
   advisorEmail: string,
   failed: { bookingId: string; reason: string }[],
 ): Promise<void> {
-  for (const f of failed) {
+  const { page, silenced } = splitCheckFailures(failed, await testFlagsByBooking(failed.map((f) => f.bookingId)));
+  for (const f of silenced) {
+    // A warn, not an error: nobody acts on a test booking's unchecked invite.
+    log.warn("invite-move", { msg: "an out of step test booking invite could not be checked", booking_id: f.bookingId, reason: f.reason });
+    logSilenced({ bookingId: f.bookingId, withheld: "check_failed" });
+  }
+  for (const f of page) {
     log.error("invite-move", { msg: "an out of step invite could not be checked", booking_id: f.bookingId, reason: f.reason });
     // alert-key: booking_invite_check_failed:*
     await post(
@@ -199,13 +239,22 @@ export function realInviteMoveDeps(args: { userId: string; email: string; timeZo
       const row = unwrap(
         await db()
           .from("bookings")
-          .select("id, status, starts_at, ends_at, gcal_event_id, assigned_user_id, timezone")
+          .select("id, status, starts_at, ends_at, gcal_event_id, assigned_user_id, timezone, bucket_id")
           .eq("id", bookingId)
           .maybeSingle(),
         "moved invite booking",
       );
       if (!row) return null;
+      // #3930: a failed flag read must not stop the revert, so it is caught and read
+      // as unknown, which alerts as a real booking.
+      let isTest: BookingTestFlag = null;
+      try {
+        isTest = (await bookingTestFlags(db(), [{ id: row.id, bucket_id: row.bucket_id }])).get(row.id) ?? null;
+      } catch (err) {
+        log.error("invite-move", { msg: "booking test flag unreadable, alerting as a real booking", booking_id: row.id }, err);
+      }
       return {
+        isTest,
         id: row.id,
         status: row.status,
         startsAt: row.starts_at,
@@ -269,6 +318,7 @@ export function realInviteMoveDeps(args: { userId: string; email: string; timeZo
     },
     dm: async (email, text) => (await dmSlackUserByEmail(email, text)) !== null,
     post,
+    silenced: logSilenced,
   };
 }
 
@@ -291,16 +341,21 @@ export function realInviteSweepDeps(args: { apply: boolean }): InviteSweepDeps {
         timezone: string;
         agent_email: string | null;
         agent_name: string | null;
+        bucket_id: string;
       }>("invite sweep upcoming bookings", "id", () =>
         db()
           .from("bookings")
-          .select("id, status, starts_at, ends_at, gcal_event_id, assigned_user_id, timezone, agent_email, agent_name")
+          .select("id, status, starts_at, ends_at, gcal_event_id, assigned_user_id, timezone, agent_email, agent_name, bucket_id")
           .in("status", [...ACTIVE_STATUSES])
           .gt("ends_at", nowIso)
           .not("gcal_event_id", "is", null),
       );
+      // #3930: a hand run report, so a failed flag read fails the run loudly
+      // (`bookingTestFlags` throws) rather than posting test bookings.
+      const flags = await bookingTestFlags(db(), rows);
       return rows.map(
         (r): SweepBooking => ({
+          isTest: flags.get(r.id) ?? null,
           id: r.id,
           status: r.status,
           startsAt: r.starts_at,
