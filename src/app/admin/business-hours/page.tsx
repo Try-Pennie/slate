@@ -95,7 +95,7 @@ export default async function BusinessHoursPage({
   // `null` is the unreadable state throughout, never an empty value: an empty
   // week and an empty exception list are both legitimate readings, and both are
   // the reassuring one.
-  // The booking horizon sits with the hours: both decide which times exist at
+  // The last resort reach (`horizon_days`, #3922) sits with the hours: both decide which times exist at
   // all, and separating them puts two halves of one answer on two screens.
   let horizonDays: number | null = null;
   try {
@@ -224,7 +224,7 @@ export default async function BusinessHoursPage({
   return (
     <>
       {/* #1892: "Hours", not "Business hours". The page holds the org's real
-          operating window, the holiday closures, the booking horizon AND the new
+          operating window, the holiday closures, the last resort reach AND the new
           agent template, so naming it for the last of those would be wrong, and
           the org's own hours reading as a "default" is exactly the confusion
           #1297 was written about. Dan chose Hours on 2026-09-04. */}

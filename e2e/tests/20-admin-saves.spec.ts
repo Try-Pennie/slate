@@ -14,7 +14,9 @@ import { test, expect, signIn, seed, db, latestAudit } from "../fixtures.ts";
 import { SAVE_OUTCOME_COPY } from "@/lib/admin/save-outcomes";
 import { LAST_RESORT_REACH, SAVE_LAST_RESORT_REACH } from "@/lib/admin/days-offered-copy";
 
-const REACH_BOX = `${LAST_RESORT_REACH} (1 to 7)`;
+// By its name only: the range after it is drawn from HORIZON_MIN and HORIZON_MAX, which
+// live beside the admin database client this process should not load.
+const REACH_BOX = new RegExp(`^${LAST_RESORT_REACH} \\(`);
 
 /** Picks an option from one of the design system's selects, by pointer, as a person does. */
 async function choose(page: Page, combobox: string, option: RegExp): Promise<void> {

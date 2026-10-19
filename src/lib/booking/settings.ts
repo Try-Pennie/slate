@@ -9,9 +9,12 @@ import { LAST_RESORT_REACH } from "@/lib/admin/days-offered-copy";
  * Org-wide booking horizon (#216, folds in audit AUD-076). Precedence store > env >
  * coded default, mirroring loadMonitorSettings.
  *
- * Counts BOOKABLE days, not calendar days (#1326): how many days a lead is offered
- * to choose from. A closed day inside the run does not use one up, so the furthest
- * date reaches beyond this number, and the window actually computed is
+ * Counts BOOKABLE days, not calendar days (#1326). Since #2840 it is NOT how many
+ * days a lead is offered: that is the fixed `OFFERED_OPEN_DAYS`. It is how far the
+ * last resort (#2841) may reach when every tier a lead may use is full for those
+ * days, and how far ahead availability is computed; the admin page calls it the
+ * "Last resort reach" (#3922). A closed day inside the run does not use one up, so
+ * the furthest date reaches beyond this number, and the window actually computed is
  * `searchWindowDays(horizon)` in `availability/bookable-days.ts`.
  *
  * Nothing enforces this as a booking LIMIT. There is no horizon check on the write

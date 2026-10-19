@@ -8,7 +8,8 @@
  * hold three or four, and the flag carried no name, so whichever form redirected
  * lit whatever sentence the page had hardcoded:
  *
- *   /admin/business-hours   saving the booking HORIZON printed "Hours saved.",
+ *   /admin/business-hours   saving the horizon (now the last resort reach, #3922)
+ *                           printed "Hours saved.",
  *                           naming the hours week, which it had not touched
  *   /admin/buckets          changing the direct booking fallback confirmed,
  *                           creating or editing an actual pool did not
