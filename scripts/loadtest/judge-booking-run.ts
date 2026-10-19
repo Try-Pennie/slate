@@ -12,9 +12,8 @@
  * happened, never as a run with a verdict (L288).
  */
 import {
-  absoluteBarText,
   judgeLatency,
-  LOAD_OVER_REST_RATIO_BAR,
+  latencyFailureDetail,
   type BaselineReading,
   type LatencyJudgement,
 } from "./latency-bar.ts";
@@ -252,11 +251,18 @@ export interface JudgeInput {
     faultTargets?: readonly string[];
     /** #3258: whether the run was configured with a same day baseline leg. */
     baseline?: boolean;
+    /**
+     * #3517: whether the run was dispatched with a Google stand in delay (#3490), which
+     * the speed verdict's fixed limit was not calibrated for. Absent is a hand run,
+     * which the workflow's input leaves unset and the report reads as delay off.
+     */
+    googleDelayed?: boolean;
   };
   /**
-   * #3258: the same day baseline, a dozen bookings at rest on the same deployment
-   * just before the steady pass, as the judge entry found it (`baselineReading`).
-   * The steady pass's latency is judged against its median (`latency-bar.ts`).
+   * #3258: the same day baseline, bookings at rest on the same deployment just before
+   * the steady pass (#3517: a warm up of two, then twenty measured), as the judge entry
+   * found it (`baselineReading`). The steady pass's latency is judged against the
+   * median of the measured ones and against a fixed limit (`latency-bar.ts`).
    */
   baseline?: BaselineReading;
   /**
@@ -2167,8 +2173,9 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   }
 
   // --- latency ----------------------------------------------------------------
-  // #3258: against a multiple of the same day baseline when the run has one, with
-  // the absolute bar still reported; against the absolute bar alone when it has none.
+  // #3258: against a multiple of the same day baseline when the run has one, and
+  // (#3517) against a fixed limit that holds whatever that baseline reads; against the
+  // absolute bar alone when it has none.
   if (m.ok === null) {
     fail("latency of successful bookings", "not one request succeeded, so there is no p95 to judge");
   } else {
@@ -2178,19 +2185,15 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       baseline: input.baseline,
       baselineExpected: input.expectedLegs.baseline === true,
       runId: input.runId,
+      googleDelayed: input.expectedLegs.googleDelayed === true,
     });
     m.latency = latency;
     // Dan, 2026-10-05: an unusable baseline voids the speed verdict ONLY. No latency
     // finding is invented and none is dropped in silence: the result carries why
-    // (`speedUnmeasuredOf`).
+    // (`speedUnmeasuredOf`). #3517: the finding names which check failed, the ratio,
+    // the fixed limit or both, and states both numbers either way.
     if (latency.kind === "relative" && !latency.pass) {
-      fail(
-        "latency of successful bookings",
-        `p95 ${m.ok.p95}ms is ${latency.ratio.toFixed(1)} times the same day baseline's median of ` +
-          `${latency.baselineP50}ms (${latency.baselineOk} bookings at rest), over the ` +
-          `${LOAD_OVER_REST_RATIO_BAR} times bar of ${latency.barMs}ms (p50 ${m.ok.p50}ms, max ` +
-          `${m.ok.max}ms). ${absoluteBarText(latency)}`,
-      );
+      fail("latency of successful bookings", latencyFailureDetail(latency, m.ok));
     } else if (latency.kind === "absolute" && !latency.pass) {
       fail(
         "latency of successful bookings",

@@ -1254,7 +1254,7 @@ arrived). The fault drivers' files get the same file checks as the steady ones.
 |---|---|
 | planned bookings completed | every steady driver ran its whole plan. A driver that stopped at its own deadline FAILS this with the driver, how far it got and the run's completed share (#3222); every other bar is still scored on what ran |
 | confirmed a minute | at or above 80 percent of target, with the full outcome mix printed so a short run says WHY |
-| latency | p50, p95 and max over ALL responses. The pass rule (#3258) is the p95 of the **200s** at most `LOAD_OVER_REST_RATIO_BAR` (2.5) times the median of the **same day baseline**: a dozen bookings at rest on the same deployment just before the steady pass. The fixed 5,000ms bar is still **reported** on every run, met or missed, beside the baseline median. A run with no baseline leg (a hand run) is held to the fixed bar and says why; a baseline the workflow ran that did not arrive, arrived twice, could not be read, came from another run or confirmed fewer than 8 voids the **speed verdict only** (Dan, 2026-10-05): every other bar is still judged; a run clean on all of them is UNMEASURED (exit 3), never a pass, and a failure on any of them still FAILS it. See "Latency is judged against its own day" below |
+| latency | p50, p95 and max over ALL responses. The p95 of the **200s** must pass TWO checks (#3258, #3517): the **ratio**, at most `LOAD_OVER_REST_RATIO_BAR` (2.5) times the median of the **same day baseline** (bookings at rest on the same deployment just before the steady pass, the first `BASELINE_WARMUP` (2) dropped as a warm up and the median taken over the next `BASELINE_BOOKINGS` (20)), and the **fixed limit**, at most `STEADY_P95_LIMIT_MS` (1,800ms) whatever the baseline reads. A failure names which check failed, the ratio, the fixed limit or both, and states both numbers. The fixed limit is not applied to a run dispatched with a Google delay (#3490), which it was not calibrated for, and the report says so. A run with no baseline leg (a hand run) is held to the old fixed 5,000ms bar and says why; a baseline the workflow ran that did not arrive, arrived twice, could not be read, came from another run or confirmed fewer than 14 of its measured bookings voids the **speed verdict only** (Dan, 2026-10-05): every other bar is still judged; a run clean on all of them is UNMEASURED (exit 3), never a pass, and a failure on any of them still FAILS it. See "Latency is judged against its own day" below |
 | 5xx and no reply | counted **separately** and both fail: a request answered badly and one never answered send two different people to two different places |
 | resent requests | a request whose connection dropped (no reply of any kind, not the driver's own timeout) is sent once more after a 500ms pause, by the same rule the booker's confirm uses for a lead (`resendOnce`, #3566), and its record carries `resentAfter`, the first send's failure with its cause. One answered on its resend is not unanswered; one still silent fails under no reply. The run fails at **3 or more** resent requests over steady, bursts and the fault pass (`RESENT_FAIL_AT`, Dan 2026-10-14), because a cluster means something is turning connections away. The report prints the count and causes on every run |
 | requests never sent | a request whose bucket's times could not be read at all (`availability-unread`, #3348) fails here, never under no reply: no booking was sent to go unanswered, and the run did not drive the load it planned |
@@ -1346,12 +1346,39 @@ rig, and that day's three arm experiment measured 6.6s with the suspect removed.
 change could pass on its merits on such a day, and a pass on a fast day said nothing
 about the code either.
 
-So the workflow's `baseline` job books a dozen times at rest, one every fifteen
-seconds, after the preflight and before the burst and steady passes, and the judge
-holds the steady p95 to a multiple of that baseline's median
-(`scripts/loadtest/latency-bar.ts`). The multiple is what the code controls: how much
-sixty bookings a minute slow one booking down. The environment cancels, because both
-halves ran on it within minutes.
+So the workflow's `baseline` job books at rest, one every ten seconds, after the
+preflight and before the burst and steady passes, and the judge holds the steady p95
+to a multiple of that baseline's median (`scripts/loadtest/latency-bar.ts`). The
+multiple is what the code controls: how much the steady load slows one booking down.
+The environment cancels, because both halves ran on it within minutes.
+
+**The baseline drops a warm up and takes twenty (#3517).** Twelve bookings at four a
+minute swung the median from 580 to 842ms on three runs of ONE commit while the steady
+pass's own p50 sat at 595 to 625ms, so the verdict followed the baseline. Measured on
+the recorded runs: the first at rest booking is the slowest on most runs (1.58 times
+the rest on the median run, over 1.5 times on 9 of 13), because it is the first call
+to the per address exact ceiling's object for the baseline runner's address and this
+run, which took 251 to 350ms against about 45ms afterwards. Cold isolates were not
+the cause at this pace (1 of 36 baseline confirms read from the server logs). The
+rest was one runner's placement: on the slow run that same object answered in 215ms on
+the median call against 42 and 55ms on the other two, and the baseline is a single
+runner while the steady pass is nine. So the driver now sends `BASELINE_PLANNED` (22),
+the judge drops the first `BASELINE_WARMUP` (2) by position, never by speed, and takes
+the median over the next `BASELINE_BOOKINGS` (20), which a bootstrap over the pooled
+runs puts at plus or minus 5.6 percent rather than 8. The leg's schedule is 210s
+against 165s, **45s more per run**. The per runner part remains, which is why the
+fixed limit below exists. The report's latency line lists the warm up times it dropped.
+
+**And a fixed limit holds whatever the baseline reads (#3517, Dan, 2026-10-18).** The
+steady p95 must also be at most `STEADY_P95_LIMIT_MS`, 1,800ms, so a run whose baseline
+read slow cannot pass at a slow absolute speed. It was calibrated on the 200 advisor
+runs of #3829, Large compute, the Google stand in answering at once, after #3884: runs
+3 to 9 measured 1310 to 1609ms (passing runs 4, 7, 8 and 9: 1488, 1446, 1423, 1609),
+mean 1466ms. 1,800 is 12 percent over the slowest and about three deviations over the
+mean, clear of the dense middle (L172), and run 2's measured regression (1989ms, cold
+isolates before #3884) fails it. A run dispatched with a Google delay (#3490) is judged
+on the ratio alone and its report says the limit was not applied. Recalibrate it,
+beside the figures in `latency-bar.ts`, when the rig changes.
 
 Each baseline booking takes the SOONEST time its code offers that the baseline has not
 already booked, never a random one
@@ -1360,13 +1387,13 @@ drop burst's ladders offer only four or five; a baseline booking that landed on 
 took an advisor the burst could not spare and its setup ended on exit 9 (runs
 38761057057 and 38800509328, both with a baseline booking on 312 at the drop slot).
 
-**What it cannot see:** a change that makes every booking slower at rest raises the
-baseline and the bar with it. That is why the absolute 5s bar and the baseline median
-are printed on every run: a slow day and a slow change are both visible, and the
-reader decides which it was.
+**What the ratio cannot see:** a change that makes every booking slower at rest
+raises the baseline and the ratio bar with it. The fixed limit is what catches that,
+and the baseline median is printed on every run beside both checks.
 
 **An unusable baseline voids only the speed verdict** (Dan, 2026-10-05). Missing,
-doubled, unreadable or malformed, from another run, fewer than 8 confirmed, or a
+doubled, unreadable or malformed, from another run, fewer than 14 of its measured
+bookings confirmed, or a
 results directory that could not be listed: the burst, steady, fault, overlap and
 freshness bars are judged as usual. If any of them fails, the run FAILS (exit 4) and
 the verdict line adds that the speed was also unmeasured. If every one passes, the
@@ -1374,10 +1401,12 @@ run is **UNMEASURED** (exit 3), never a pass, so the workflow is not green: find
 nothing about speed is not a result about speed (L98). The line reads "every other
 bar passed, and speed was UNMEASURED because ...".
 
-**The multiple, 2.5, is provisional.** Dan approved it on 2026-10-05 on that basis. It was set from the 2026-10-04 arms with each
-arm's single at rest control booking standing in for a baseline it did not yet have.
-The first runs carrying a real twelve booking baseline, main and main with the #3258
-recompute fix, are what should confirm or move it.
+**The multiple, 2.5, is no longer provisional (#3517).** Dan approved it on 2026-10-05
+as provisional, set from the 2026-10-04 arms with single at rest bookings standing in
+for a baseline. The runs since then carried a real baseline: the passing 200 advisor
+runs on edc42c10 read 2.5, 1.7 and 2.4 times, and the known regression (run 2 of #3829)
+2.7. What moved those ratios was the baseline rather than the steady pass, so #3517
+steadied the baseline and added the fixed limit, and kept the multiple.
 
 ### The report outlives the branch
 

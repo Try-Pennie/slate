@@ -32,7 +32,7 @@ import { lineArchiveForRun } from "./stored-line-calls.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limit-core.ts";
 import { baselineReading, expectBaselineFrom, latencyReportLine, verdictText } from "./latency-bar.ts";
 import { recomputeArmLine } from "../../src/lib/booking/post-confirm-recompute-modes.ts";
-import { googleDelayLine } from "../../src/lib/google/loadtest-google-delay.ts";
+import { googleDelayLine, googleDelayOn, parseGoogleDelay } from "../../src/lib/google/loadtest-google-delay.ts";
 import {
   REQUEST_CPU_P99_MS,
   cronCpuShareText,
@@ -712,6 +712,12 @@ const input: JudgeInput = {
     // #3258: read and checked above (expectBaselineFrom); unset is a hand run,
     // which keeps the fixed bar.
     baseline: expectBaseline,
+    // #3517: the speed verdict's fixed limit was calibrated with no Google delay, so a
+    // run dispatched with one is judged on the ratio alone, read by the same parser the
+    // report's Google line uses, so the two can never disagree about the rig.
+    // env-ok: EXPECT_GOOGLE_DELAY (optional; the workflow's google_delay input, unset on a hand
+    // run, which is off)
+    googleDelayed: googleDelayOn(parseGoogleDelay(process.env.EXPECT_GOOGLE_DELAY)),
   },
   unreadableDriverFiles,
   budgets: { cpuMsP99: cpuBudgetMs(), cronCpuMs: cronCpuBudgetMs() },
