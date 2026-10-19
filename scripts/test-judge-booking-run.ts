@@ -54,7 +54,10 @@ import {
   BASELINE_BOOKINGS,
   BASELINE_MIN_OK,
   BASELINE_PER_MINUTE,
+  BASELINE_PLANNED,
+  BASELINE_WARMUP,
   LOAD_OVER_REST_RATIO_BAR,
+  STEADY_P95_LIMIT_MS,
   latencyReportLine,
   baselineReading,
   verdictText,
@@ -2054,16 +2057,20 @@ function slowRun(made = 100): JudgeInput {
 // --- #3258: latency is judged against a same day baseline at rest ------------------
 //
 // The fixed 5s p95 bar failed the 09-15 code on 2026-10-04's environment (7.0s), so a
-// run could not pass on its code's merits. With a baseline leg (a dozen bookings at
-// rest on the same deployment, just before the steady pass) the pass rule is the
+// run could not pass on its code's merits. With a baseline leg (bookings at rest on the
+// same deployment just before the steady pass, since #3517 a warm up of two and then
+// twenty measured, one every ten seconds) the pass rule is the
 // steady p95 against a multiple of the baseline's median, which the day moves just
-// as it moves the steady pass. The absolute bar is still REPORTED on every run.
+// as it moves the steady pass. #3517: the median drops the baseline's warm up, and the
+// p95 is ALSO held to a fixed limit that holds whatever the baseline reads. The
+// fixtures sit in today's range (a baseline of 0.5 to 1.2s, a p95 of 1.3 to 2.4s);
+// the pure rule is driven in scripts/test-loadtest-speed-verdict.ts.
 {
-  const restFile = (wallMs: number, n = BASELINE_BOOKINGS, okCount = n): DriverResult => ({
+  const restFile = (wallMs: number, n = BASELINE_PLANNED, okCount = n): DriverResult => ({
     runId: RUN,
     driver: 0,
     mode: "baseline",
-    planned: BASELINE_BOOKINGS,
+    planned: BASELINE_PLANNED,
     startedAtMs: T0 - 5 * 60_000,
     finishedAtMs: T0 - 60_000,
     attempts: Array.from({ length: n }, (_, k) =>
@@ -2088,24 +2095,48 @@ function slowRun(made = 100): JudgeInput {
   assert(BASELINE_PER_MINUTE * 2 < 15, "the baseline paces well below one steady driver, so it measures the path at rest");
   assert(BASELINE_MIN_OK <= BASELINE_BOOKINGS, "the sample floor is reachable");
 
-  // Today's environment: slow at rest, and the steady pass in proportion.
-  const fairDay = withBaseline(6_600, 3_200);
-  assert(!bars(fairDay).includes("latency of successful bookings"), "a p95 over 5s that stays within the multiple of the day's rest passes");
+  // Today's environment: the steady pass in proportion to the day's rest, and inside
+  // the fixed limit.
+  const fairDay = withBaseline(1_500, 700);
+  assert(!bars(fairDay).includes("latency of successful bookings"), "a p95 within the multiple of the day's rest and the fixed limit passes");
   const lat = fairDay.measurements!.latency!;
   eq(lat.kind, "relative", "judged against the baseline");
-  assert(lat.kind === "relative" && lat.absoluteOver, "and the absolute bar is still reported, as missed");
-  assert(lat.kind === "relative" && lat.barMs === Math.round(3_200 * LOAD_OVER_REST_RATIO_BAR), "the bar is the multiple of the baseline median");
+  assert(lat.kind === "relative" && lat.fixedPass && lat.fixedLimitMs === STEADY_P95_LIMIT_MS, "and the fixed limit is judged too, as met");
+  assert(lat.kind === "relative" && lat.ratioBarMs === Math.round(700 * LOAD_OVER_REST_RATIO_BAR), "the ratio bar is the multiple of the baseline median");
 
-  // The code got slower under load on the same day: the multiple is exceeded.
-  const slowUnderLoad = withBaseline(Math.round(3_200 * LOAD_OVER_REST_RATIO_BAR) + 500, 3_200);
+  // The code got slower under load on the same day: the multiple is exceeded, while
+  // the p95 is still inside the fixed limit, so only the ratio is named.
+  const slowUnderLoad = withBaseline(Math.round(500 * LOAD_OVER_REST_RATIO_BAR) + 100, 500);
   const f = slowUnderLoad.findings.find((x) => x.bar === "latency of successful bookings");
   assert(f !== undefined, "a p95 past the multiple of the day's rest fails");
-  assert(f !== undefined && f.detail.includes("baseline") && f.detail.includes("5000ms"), "naming the baseline and still stating the absolute bar");
+  assert(
+    f !== undefined && f.detail.includes("failed the ratio check") && f.detail.includes(`${STEADY_P95_LIMIT_MS}ms`),
+    `naming the ratio and still stating the fixed limit: ${f?.detail}`,
+  );
 
-  // A fast day: the absolute bar met and reported as met.
-  const fastDay = withBaseline(3_000, 2_000);
-  const fl = fastDay.measurements!.latency!;
-  assert(fl.kind === "relative" && !fl.absoluteOver, "a p95 inside 5s reports the absolute bar as met");
+  // #3517: a slow baseline lets a slow run through the ratio (2.0 times), and the
+  // fixed limit fails it through the judge, saying which check it was.
+  const slowBaseline = withBaseline(STEADY_P95_LIMIT_MS + 600, 1_200);
+  const fx = slowBaseline.findings.find((x) => x.bar === "latency of successful bookings");
+  assert(
+    fx !== undefined && fx.detail.includes("failed the fixed limit") && fx.detail.includes(`${Math.round(1_200 * LOAD_OVER_REST_RATIO_BAR)}ms`),
+    `a slow baseline cannot pass a slow run, and the finding states both numbers: ${fx?.detail}`,
+  );
+  // Both at once, through the judge.
+  const overBoth = withBaseline(STEADY_P95_LIMIT_MS + 600, 600).findings.find((x) => x.bar === "latency of successful bookings");
+  assert(overBoth !== undefined && overBoth.detail.includes("failed both checks"), `a run over both names both: ${overBoth?.detail}`);
+  // The same slow baseline run dispatched with a Google delay (#3490) is judged on the
+  // ratio alone, which it passes, because the limit was calibrated with no delay.
+  const delayed = broken((i) => {
+    const all = i.driverResults.flatMap((r) => r.attempts);
+    for (const a of all) a.wallMs = Math.round((STEADY_P95_LIMIT_MS + 600) * 0.6);
+    for (const a of all.slice(0, Math.ceil(all.length * 0.1))) a.wallMs = STEADY_P95_LIMIT_MS + 600;
+    i.expectedLegs = { ...i.expectedLegs, baseline: true, googleDelayed: true };
+    i.baseline = { kind: "file", result: restFile(1_200) };
+  });
+  assert(!bars(delayed).includes("latency of successful bookings"), "with a Google delay the fixed limit does not fail the run");
+  const dl = delayed.measurements!.latency!;
+  assert(dl.kind === "relative" && dl.fixedLimitMs === null, "and the judgement records it as not applied");
 
   // Dan, 2026-10-05: a baseline that is missing, thin, doubled, unreadable or from
   // another run voids the SPEED verdict only. Every other bar is still judged, and the
@@ -2121,7 +2152,7 @@ function slowRun(made = 100): JudgeInput {
   };
   unmeasured(withBaseline(3_000, 2_000, null), "no baseline file", "a missing baseline");
   unmeasured(
-    withBaseline(3_000, 2_000, restFile(2_000, BASELINE_BOOKINGS, BASELINE_MIN_OK - 1)),
+    withBaseline(1_400, 700, restFile(700, BASELINE_PLANNED, BASELINE_WARMUP + BASELINE_MIN_OK - 1)),
     String(BASELINE_MIN_OK),
     "a thin baseline",
   );
@@ -2211,6 +2242,8 @@ function slowRun(made = 100): JudgeInput {
     ["no run id", { ...restFile(2_000), runId: undefined }, "runId"],
     ["an attempt with no status", { ...restFile(2_000), attempts: [{ wallMs: 10 }] }, "status"],
     ["an attempt with no wall time", { ...restFile(2_000), attempts: [{ status: 200 }] }, "wallMs"],
+    // #3517: the warm up is dropped by position, so a booking with none is unreadable.
+    ["an attempt with no position", { ...restFile(2_000), attempts: [{ status: 200, wallMs: 10 }] }, "position n"],
   ] as [string, unknown, string][]) {
     const r = shape(parsed);
     assert(r.kind === "unreadable" && r.why.includes(field), `${label} is unreadable, naming ${field}: ${JSON.stringify(r)}`);
@@ -2256,10 +2289,11 @@ function slowRun(made = 100): JudgeInput {
   assert(hf !== undefined && hf.detail.includes("no same day baseline"), "a run without a baseline is held to the absolute bar, and says so");
   eq(hand.measurements!.latency!.kind, "absolute", "and records which rule judged it");
 
-  // The report says which rule judged the run and always states the absolute bar.
+  // The report says which rule judged the run: with a baseline, the ratio and the fixed
+  // limit beside it (#3517); on a hand run, the fixed 5s bar and why.
   const line = latencyReportLine(fairDay.measurements!.latency!);
-  assert(line.includes("3200ms") && line.includes(`${LOAD_OVER_REST_RATIO_BAR} times`), `the report names the baseline and the multiple: ${line}`);
-  assert(line.includes("5000ms absolute bar"), "and the absolute bar, missed or met");
+  assert(line.includes("700ms") && line.includes(`${LOAD_OVER_REST_RATIO_BAR} times`), `the report names the baseline and the multiple: ${line}`);
+  assert(line.includes(`${STEADY_P95_LIMIT_MS}ms fixed limit`), `and the fixed limit beside it (#3517): ${line}`);
   assert(latencyReportLine(hand.measurements!.latency!).includes("no same day baseline"), "a hand run's report says why the fixed bar judged it");
 
   // #3258 follow up, L11: the latency report line must not claim every other bar was
