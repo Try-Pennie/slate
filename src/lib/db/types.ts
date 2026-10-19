@@ -206,6 +206,32 @@ export interface BookingInviteChange {
   detected_at: string;
 }
 
+/**
+ * #3940 (migration 0191): one advisor's office day as Team capacity history saved it.
+ * Written only through `record_capacity_history`; the rules are
+ * `src/lib/admin/capacity-history.ts`.
+ */
+export interface CapacityHistoryDay {
+  user_id: string;
+  day: string;
+  timezone: string;
+  capacity: number;
+  open_times: string[];
+  is_out: boolean;
+  no_shift: boolean;
+  unsynced: boolean;
+  shift_start: string | null;
+  shift_end: string | null;
+  time_off: { start: string; end: string }[];
+  updated_at: string;
+}
+
+/** #3940 (migration 0191): how far the capacity-history lane has recorded, per org. */
+export interface CapacityHistoryCursor {
+  org_id: string;
+  recorded_through: string;
+}
+
 export interface EventType {
   id: string;
   org_id: string;

@@ -66,15 +66,25 @@ export interface AdvisorDay {
   timeOff: { start: string; end: string }[];
 }
 
+/** How far after a call's start the next call can start: its length and the gap before the next. */
+export function callStepMs(eventType: Pick<CapacityEventType, "duration_min" | "buffer_before_min">): number {
+  return (eventType.duration_min + eventType.buffer_before_min) * 60_000;
+}
+
 /**
  * The starts of the calls that fit among `slots` (the booker's open starts, ascending), packed
  * earliest first. A booked call is busy for its own length only and a later start needs its gap
  * before clear of it, so after a call at S the next fits at S + duration + gap before or later.
  */
-export function callsThatFit(slots: string[], eventType: Pick<CapacityEventType, "duration_min" | "buffer_before_min">): string[] {
-  const step = (eventType.duration_min + eventType.buffer_before_min) * 60_000;
+export function callsThatFit(
+  slots: string[],
+  eventType: Pick<CapacityEventType, "duration_min" | "buffer_before_min">,
+  /** A call already packed before these, at this start: packing carries on after it (#3940). */
+  afterStartMs: number | null = null,
+): string[] {
+  const step = callStepMs(eventType);
   const picked: string[] = [];
-  let nextMs = -Infinity;
+  let nextMs = afterStartMs === null ? -Infinity : afterStartMs + step;
   for (const s of slots) {
     const ms = Date.parse(s);
     if (!Number.isFinite(ms)) throw new Error(`an open start the booker returned is unreadable: "${s}"`);
@@ -95,39 +105,65 @@ export interface AdvisorDayInput {
   nowMs: number;
 }
 
-/** One advisor's day, every number from the booker's own slot rules. */
-export function advisorDay(input: AdvisorDayInput): AdvisorDay {
-  const { member, day, eventType, hours, nowMs } = input;
+/** The booker's open starts for one advisor on one day, against `busy`, as seen at `at`. */
+function daySlots(input: AdvisorDayInput, busy: { start: number; end: number }[], at: number, counts: Map<string, number> = new Map()): string[] {
+  const { member, day, eventType, hours } = input;
   const fromMs = day.toMillis();
   const toMs = day.plus({ days: 1 }).toMillis();
-  // `counts` is the advisor's booked calls per local day, for a daily cap: their real counts for
-  // what is still open, none for what an empty calendar could hold.
-  const slots = (busy: { start: number; end: number }[], at: number, counts: Map<string, number> = new Map()) =>
-    computeBucketSlots({
-      members: [{ ...member, busy, dayCounts: counts }],
-      durationMin: eventType.duration_min,
-      bufferBeforeMin: eventType.buffer_before_min,
-      bufferAfterMin: eventType.buffer_after_min,
-      minNoticeMin: eventType.min_notice_min,
-      dailyCap: eventType.daily_cap,
-      slotIntervalMin: eventType.slot_interval_min,
-      businessHours: hours,
-      from: new Date(fromMs).toISOString(),
-      to: new Date(toMs).toISOString(),
-      nowMs: at,
-    });
-  // Clipped to the day, so time off spanning midnight counts only its part of this day.
-  const off = input.timeOff
+  return computeBucketSlots({
+    members: [{ ...member, busy, dayCounts: counts }],
+    durationMin: eventType.duration_min,
+    bufferBeforeMin: eventType.buffer_before_min,
+    bufferAfterMin: eventType.buffer_after_min,
+    minNoticeMin: eventType.min_notice_min,
+    dailyCap: eventType.daily_cap,
+    slotIntervalMin: eventType.slot_interval_min,
+    businessHours: hours,
+    from: new Date(fromMs).toISOString(),
+    to: new Date(toMs).toISOString(),
+    nowMs: at,
+  });
+}
+
+/** Approved time off clipped to the day, so time off spanning midnight counts only its part of it. */
+function dayTimeOff(input: AdvisorDayInput): { start: number; end: number }[] {
+  const fromMs = input.day.toMillis();
+  const toMs = input.day.plus({ days: 1 }).toMillis();
+  return input.timeOff
     .map((t) => ({ start: Math.max(t.startMs, fromMs), end: Math.min(t.endMs, toMs) }))
     .filter((t) => t.end > t.start);
+}
+
+/**
+ * Every start the booker offers this advisor on the day as seen at `input.nowMs`, before packing:
+ * their calendar and time off both taken. History packs these itself, carrying on from the calls
+ * it saved earlier in the day (#3940).
+ */
+export function openStartsAt(input: AdvisorDayInput): string[] {
+  return daySlots(input, [...input.member.busy, ...dayTimeOff(input)], input.nowMs, input.member.dayCounts ?? new Map());
+}
+
+/** The calls the advisor has booked on the office day, for a daily cap, counted on their own day. */
+export function bookedOnDay(member: MemberAvailability, day: DateTime): number {
+  // The office day's middle, in the advisor's zone: its midnight is the previous evening west of it.
+  return member.dayCounts?.get(day.plus({ hours: 12 }).setZone(member.timezone).toISODate() ?? "") ?? 0;
+}
+
+/** One advisor's day, every number from the booker's own slot rules. */
+export function advisorDay(input: AdvisorDayInput): AdvisorDay {
+  const { member, day, eventType, nowMs } = input;
+  const fromMs = day.toMillis();
+  // `counts` is the advisor's booked calls per local day, for a daily cap: their real counts for
+  // what is still open, none for what an empty calendar could hold.
+  const slots = (busy: { start: number; end: number }[], at: number, counts: Map<string, number> = new Map()) => daySlots(input, busy, at, counts);
+  const off = dayTimeOff(input);
   // "Ignoring the clock": the day as it looked from before it began.
   const beforeDay = fromMs - 86_400_000;
 
   // A daily cap limits how many calls a day can take, which one slot list cannot show: it offers
   // every start while under the cap. So the packed calls stop at whatever the cap leaves.
   const cap = eventType.daily_cap;
-  // The office day's middle, in the advisor's zone: its midnight is the previous evening west of it.
-  const bookedToday = member.dayCounts?.get(day.plus({ hours: 12 }).setZone(member.timezone).toISODate() ?? "") ?? 0;
+  const bookedToday = bookedOnDay(member, day);
   const capped = (picked: string[], already: number) => (cap === null ? picked : picked.slice(0, Math.max(0, cap - already)));
   const open = capped(callsThatFit(slots([...member.busy, ...off], nowMs, member.dayCounts ?? new Map()), eventType), bookedToday);
   const capacity = capped(callsThatFit(slots(off, nowMs), eventType), 0);

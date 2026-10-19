@@ -142,6 +142,11 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // once. Both expressions drive the one lane, under one lock.
   "17 4 * * *": "/api/cron/advisor-photos",
   "17 10 * * *": "/api/cron/advisor-photos",
+  // Team capacity history (#3940): each advisor's calls saved as they pass, so a past day shows
+  // how it ended. Every half hour on its OWN expression: minutes 23 and 53 share a moment with no
+  // other trigger. Its cursor catches up a missed tick, so the cadence sets only how soon a passed
+  // call is saved. It stamps its own heartbeat, bounded in LANE_STALE_BOUNDS_MS.
+  "23,53 * * * *": "/api/cron/capacity-history",
 };
 
 /** Every route a cron expression drives (empty array when unmapped). */
