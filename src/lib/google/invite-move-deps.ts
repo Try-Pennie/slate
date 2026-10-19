@@ -96,14 +96,16 @@ async function post(key: string, text: string): Promise<void> {
 
 /** A post whose delivery the caller must know (the launch sweep's one report). */
 async function postDelivered(key: string, text: string): Promise<boolean> {
-  let outcome: SendOutcome | null = null;
+  // A holder rather than a bare `let`, so the outcome the callback writes is read as
+  // it stands after the await, never as the type narrowed at the declaration.
+  const seen: { outcome: SendOutcome | null } = { outcome: null };
   // alert-key: booking_invite_launch_sweep
   await sendThrottledAlert(key, INVITE_POST_COOLDOWN_MS, text, {
     onOutcome: (o) => {
-      outcome = o;
+      seen.outcome = o;
     },
   }).catch((err: unknown) => log.error("invite-move", { msg: "alert failed to send", key }, err));
-  return outcome === "sent";
+  return seen.outcome === "sent";
 }
 
 /**
