@@ -400,7 +400,16 @@ for (const failing of [...OBJECT_WORKER_CONFIGS, "throw"] as const) {
 {
   const r = await drive({ ...HAPPY, objectFacts: "same", lineBuiltProtocol: 1, liveProtocol: { protocol: 2 } });
   eq(r.result.exit, EXIT.promoted, "a line Worker that is unchanged is not deployed, so there is nothing to refuse");
-  assert(!r.calls.includes("live-protocol"), "and the live app is not asked");
+  // #3854: but it is still compared, so every deploy proves the read the refusal needs.
+  eq(r.calls.filter((c) => c === "live-protocol").length, 1, "and the live app is still asked, once, report only");
+  eq(r.warnings, [], "a comparison that ran raises no warning, whatever it found");
+}
+{
+  const r = await drive({ ...HAPPY, objectFacts: "same", liveProtocol: { unreadable: "the serving app version carries no commit tag" } });
+  eq(r.result.exit, EXIT.promoted, "an unchanged line that could not be compared does not stop the deploy");
+  eq(r.warnings.length, 1, "and is warned about once, where the job is read");
+  assert(/not changed/.test(r.warnings[0] ?? "") && (r.warnings[0] ?? "").includes("no commit tag"), `saying the line was not changed and why it could not be compared (${r.warnings[0]})`);
+  assert(!/WITHOUT the check/.test(r.warnings[0] ?? ""), "never claiming a line went out unchecked");
 }
 
 // --- the log tail worker goes LAST, after Slate is promoted and healthy (#3191) ------

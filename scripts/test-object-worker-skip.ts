@@ -19,6 +19,7 @@ import {
   protocolFromSource,
   readAtCommit,
   uncheckedLineWarning,
+  uncomparedLineWarning,
   type LiveAppProtocol,
   decideObjectWorker,
   deployObjectWorkers,
@@ -314,10 +315,47 @@ for (const live of [{ unreadable: "the serving app version carries no commit tag
   eq(r.result.ok && r.result.unchecked.map((u) => u.config), [A], "and the result names it as unchecked");
   assert(r.result.ok && /could not be checked/.test(r.result.unchecked[0]?.reason ?? ""), "with the reason, for the warning");
 }
+// #3854: an UNCHANGED line is compared too, report only. Until then the comparison ran
+// only on a deploy that changed the line, which was one deploy in thirty after #3838, so
+// the read it depends on had never once succeeded in CI and a broken read would surface
+// only at the moment the refusal was needed (L557, L674). Asking on every deploy costs
+// two wrangler reads and one fetch, and turns that read into something every deploy
+// proves. It still refuses nothing, since a skipped line deploys nothing.
 {
-  const r = await drive({ facts: { [A]: same, [B]: changedB }, live: { protocol: 9 } }, [A, B]);
-  eq(r.liveReads(), 0, "a line Worker that is skipped changes nothing, so the live app is not even asked");
-  eq(r.deployed.map((d) => d.config), [B], "and a changed Worker that is not the line deploys without the check");
+  const r = await drive({ facts: { [A]: { ...same, builtProtocol: 2 }, [B]: changedB }, live: { protocol: 2 } }, [A, B]);
+  eq(r.liveReads(), 1, "a line Worker that is skipped is still compared with the live app, once");
+  eq(r.deployed.map((d) => d.config), [B], "and nothing about the line is deployed");
+  assert(
+    r.logs.includes(`object worker ${A}: unchanged, the line build speaks protocol 2, the live app protocol 2`),
+    `the log says the comparison ran and what it read (${r.logs.join(" | ")})`,
+  );
+  eq(r.result.ok && r.result.uncompared, [], "and nothing is reported as uncompared");
+  eq(r.result.ok && r.result.unchecked, [], "nor as deployed unchecked");
+}
+{
+  const r = await drive({ facts: { [A]: same, [B]: same }, live: { protocol: 2 } }, [B]);
+  eq(r.liveReads(), 0, "a skipped Worker that is not the line never asks");
+}
+for (const live of [{ unreadable: "the serving app version carries no commit tag" }, "throw"] as const) {
+  const r = await drive({ facts: { [A]: { ...same, builtProtocol: 2 } }, live }, [A]);
+  eq(r.result.ok, true, `an unchanged line whose live protocol ${live === "throw" ? "throws" : "is unreadable"} does not fail the run`);
+  eq(r.deployed, [], "and deploys nothing");
+  eq(r.result.ok && r.result.unchecked, [], "it is NOT reported as deployed unchecked, since nothing went out");
+  eq(r.result.ok && r.result.uncompared.map((u) => u.config), [A], "it is reported as uncompared, for the summary");
+  assert(r.result.ok && /could not be checked/.test(r.result.uncompared[0]?.reason ?? ""), `naming why (${r.result.ok && r.result.uncompared[0]?.reason})`);
+}
+{
+  // Only a hand deploy of the app ahead of the line gets here, and the app's own client
+  // already pages confirm_line_unreachable in that state (#3839), so this says it in the
+  // log and adds no second alarm about the same fact (L36).
+  const r = await drive({ facts: { [A]: { ...same, builtProtocol: 1 } }, live: { protocol: 2 } }, [A]);
+  eq(r.result.ok, true, "an unchanged line already older than the live app is not a refusal: there is nothing to refuse");
+  eq(r.deployed, [], "and nothing is deployed");
+  assert(
+    r.logs.some((l) => l.includes(A) && /already older/.test(l) && /protocol 1/.test(l) && /protocol 2/.test(l)),
+    `the log says the serving line is already older, with both protocols (${r.logs.join(" | ")})`,
+  );
+  assert(!r.logs.some((l) => /REFUSED|deploying it would/.test(l)), "and never words it as a refused deploy");
 }
 
 // --- #3854: reading the serving app's commit from a checkout that lacks it ---------
@@ -435,6 +473,12 @@ function fakeGit(repo: FakeRepo) {
 {
   const w = uncheckedLineWarning([{ config: A, reason: "the line's protocol could not be checked against the live app's (the serving app version carries no commit tag)" }], "production");
   assert(w.includes(A) && w.includes("production") && w.includes("no commit tag"), `the warning names the Worker, the environment and why (${w})`);
+}
+{
+  const w = uncomparedLineWarning([{ config: A, reason: "the line's protocol could not be checked against the live app's (the serving app version carries no commit tag)" }], "production");
+  assert(w.includes(A) && w.includes("production") && w.includes("no commit tag"), `the uncompared warning names the Worker, the environment and why (${w})`);
+  assert(/not changed/.test(w) && !/WITHOUT the check/.test(w), `and says the line was not changed, never that it was deployed unchecked (${w})`);
+  assert(/when the line next changes/.test(w), `and says what is at stake: the refusal on the next line change (${w})`);
 }
 
 finish();
