@@ -646,18 +646,26 @@ export async function allowRequest(
 /**
  * How long one hit may wait for the edge counter before the ceiling fails open (#3828).
  *
- * Two seconds, measured on production's counter over the 7 days to 2026-10-16: of 7,151
+ * One second, Dan's decision on 2026-10-18 (#3894): "shorten the ceiling budget to 1 second.
+ * A lead whose confirm meets a counter stall waits at most 1s for it, and about three bookings
+ * a day go through uncounted, which the 6,000 an hour per caller and 1,200 per address
+ * ceilings make harmless." Why one and not two: a cold isolate start costs about 500 to
+ * 1000ms, so a cold confirm that met a two second stall overran the load run's 2500ms startup
+ * bar (`REQUEST_STARTUP_MS`, #3824) on the stall alone (run 3 of #3829 waited the full 2000ms
+ * after a 526ms start), and a real lead on that path waited about three seconds. At one second
+ * a cold confirm plus a stall stays inside the bar, which stays where it is. This reverses
+ * the two seconds chosen on 2026-10-16 in #3828.
+ *
+ * What it costs, measured on production's counter over the 7 days to 2026-10-16: of 7,151
  * calls, 19 took over 1 second, 4 over 2 and 1 over 3 (the slowest 5.9s), in short platform
  * episodes rather than on idle wake; the median was about 75ms and the 95th percentile 261ms.
- * It used to be the 15 second Supabase deadline it inherited from the Postgres count it
- * replaced (#3416), so a stall held a lead's confirm for its whole length (load run
- * 38933668981: 1 to 5 seconds). Now a stall costs a lead at most two seconds, and the few
- * bookings that outlast it (about four a week) go through uncounted, which at 6,000 an hour per
- * caller and 1,200 per address cannot carry anybody past a ceiling. Dan chose two seconds on
- * 2026-10-16 over one, which would give up about three times a day. A sustained stall still
- * pages through the existing fail open alerting.
+ * So about three bookings a day outlast the wait and go through uncounted, which at those
+ * ceilings cannot carry anybody past one. It used to be the 15 second Supabase deadline it
+ * inherited from the Postgres count it replaced (#3416), so a stall held a lead's confirm for
+ * its whole length (load run 38933668981: 1 to 5 seconds). A sustained stall still pages
+ * through the existing fail open alerting (`rate_limit_broken:<prefix>`, #3670).
  */
-export const EXACT_CEILING_DEADLINE_MS = 2_000;
+export const EXACT_CEILING_DEADLINE_MS = 1_000;
 
 /**
  * The label a hit is charged under in a confirm's profile (#3300). Its own dependency, so a run

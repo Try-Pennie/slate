@@ -295,9 +295,10 @@ What moved is where the number is kept, and nothing else:
 - the refusal (429, `throttled_key` / `throttled_ip`, counted under
   `refused_ceiling_*`) and the per address block page;
 - the direction: a hit that cannot be counted (no context, no binding, an error,
-  no answer inside the Supabase request's own deadline and the call budget, or an
-  answer for a different window, which is what an object still running older code
-  gives during a rollout) is SERVED and reported as `rate_limit_broken:<prefix>`,
+  no answer inside one second (`EXACT_CEILING_DEADLINE_MS`, Dan, 2026-10-18,
+  #3894; it was the Supabase request's 15 second deadline until #3828) or the call
+  budget, whichever ends first, or an answer for a different window, which is
+  what an object still running older code gives during a rollout) is SERVED and reported as `rate_limit_broken:<prefix>`,
   exactly as an unreadable row was: a log line each time, and a page only once a
   sustained run of them lands on one server (#3670).
 
