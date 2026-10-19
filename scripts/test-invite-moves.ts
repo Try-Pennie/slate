@@ -25,6 +25,7 @@ import {
 } from "../src/lib/google/invite-moves.ts";
 import {
   noticeOutOfStepInvites,
+  splitCheckFailures,
   type InviteMoveDeps,
   type FreshBooking,
   type NewInviteChange,
@@ -249,6 +250,7 @@ function fresh(over: Partial<FreshBooking> = {}): FreshBooking {
     gcalEventId: EVENT,
     assignedUserId: USER,
     timezone: "America/Chicago",
+    isTest: false,
     ...over,
   };
 }
@@ -262,6 +264,7 @@ function harness(w: World) {
     reverts: [] as [string, string, string, string, string][],
     dms: [] as [string, string][],
     posts: [] as [string, string][],
+    silenced: [] as { bookingId: string; withheld: string }[],
   };
   const deps: InviteMoveDeps = {
     nowMs: w.nowMs,
@@ -307,6 +310,9 @@ function harness(w: World) {
     },
     post: async (key, text) => {
       calls.posts.push([key, text]);
+    },
+    silenced: (entry) => {
+      calls.silenced.push(entry);
     },
   };
   return { deps, calls };
@@ -469,6 +475,78 @@ async function handlerCases(): Promise<void> {
     await noticeOutOfStepInvites(deps, [ITEM]);
     eq([calls.claims, calls.reverts.length], [0, 0], "nothing is read or moved where nothing may be sent");
   }
+
+  // #3930: a smoke test booking (the canary's, or a hand run test on the public test bucket) is
+  // judged and put back exactly as a real one, and nobody is told: there is no person
+  // behind the smoke test advisor. What would have been sent is logged by name.
+  // The 2026-10-19 case: smoketest@'s invite moved, put back, and the DM to the
+  // advisor could not be delivered, so the alerts channel was told.
+  {
+    const { deps, calls } = harness({ nowMs: MORNING, advisorDm: false, booking: fresh({ isTest: true }) });
+    const out = await noticeOutOfStepInvites(deps, [ITEM]);
+    eq(calls.reverts, [[EMAIL, EVENT, BOOKED.startsAt, BOOKED.endsAt, "America/Chicago"]], "a test booking's moved invite is still put back");
+    eq(calls.recorded.map((r) => r.action), ["revert"], "and recorded");
+    eq(calls.outcomes.map((o) => o[1]), ["reverted"], "with its outcome");
+    eq([calls.dms.length, calls.posts.length], [0, 0], "but no advisor DM and no alerts channel post");
+    eq(calls.silenced, [{ bookingId: BOOKING, withheld: "reverted" }], "what was withheld is logged, naming the booking");
+    eq(out.reverted, 1, "the revert is still counted as one");
+    eq(out.silenced, 1, "and the summary counts what was held back");
+  }
+  // The same booking on a REAL advisor's calendar: the channel is still told (the
+  // control for the case above, so the skip cannot be passing by accident).
+  {
+    const { deps, calls } = harness({ nowMs: MORNING, advisorDm: false, booking: fresh({ isTest: false }) });
+    const out = await noticeOutOfStepInvites(deps, [ITEM]);
+    eq(calls.posts.map((p) => p[0]), [`booking_invite_moved:${BOOKING}:1`], "a real advisor who cannot be messaged is still reported");
+    eq([calls.silenced.length, out.silenced], [0, 0], "and nothing is logged as withheld");
+  }
+  // Left near the start: neither the advisor, their manager nor the channel is told.
+  {
+    const { deps, calls } = harness({ nowMs: NEAR, booking: fresh({ isTest: true }) });
+    await noticeOutOfStepInvites(deps, [ITEM]);
+    eq([calls.reverts.length, calls.dms.length, calls.posts.length], [0, 0, 0], "a test booking left near its start tells nobody");
+    eq(calls.silenced, [{ bookingId: BOOKING, withheld: "left" }], "and is logged as left and withheld");
+  }
+  // An end only change, and a refused revert: no post for either.
+  {
+    const { deps, calls } = harness({ nowMs: MORNING, live: RESIZED, booking: fresh({ isTest: true }) });
+    await noticeOutOfStepInvites(deps, [ITEM]);
+    eq(calls.posts.length, 0, "a test booking's resized invite is not posted");
+    eq(calls.silenced, [{ bookingId: BOOKING, withheld: "resized" }], "and is logged");
+  }
+  {
+    const { deps, calls } = harness({ nowMs: MORNING, revertError: new EventGone("events.patch"), booking: fresh({ isTest: true }) });
+    await noticeOutOfStepInvites(deps, [ITEM]);
+    eq(calls.outcomes.map((o) => o[1]), ["event_gone"], "a test booking's refused revert is still recorded");
+    eq(calls.posts.length, 0, "and not posted");
+    eq(calls.silenced, [{ bookingId: BOOKING, withheld: "revert_refused" }], "and is logged");
+  }
+  // A flag Slate could not establish is NOT a test booking: the person is told, since
+  // silence about a real advisor's moved call is the worse mistake.
+  {
+    const { deps, calls } = harness({ nowMs: NEAR, booking: fresh({ isTest: null }) });
+    await noticeOutOfStepInvites(deps, [ITEM]);
+    eq([calls.dms.length, calls.posts.length, calls.silenced.length], [2, 1, 0], "an unknown flag alerts as a real booking");
+  }
+
+  // The check failed page reads the same flag: a test booking is logged, not paged,
+  // and an unknown one is paged.
+  {
+    const failed = [
+      { bookingId: "b-real", reason: "503" },
+      { bookingId: "b-smoke", reason: "503" },
+      { bookingId: "b-unknown", reason: "503" },
+      { bookingId: "b-absent", reason: "503" },
+    ];
+    const flags = new Map<string, boolean | null>([
+      ["b-real", false],
+      ["b-smoke", true],
+      ["b-unknown", null],
+    ]);
+    const split = splitCheckFailures(failed, flags);
+    eq(split.page.map((f) => f.bookingId), ["b-real", "b-unknown", "b-absent"], "only a booking known to be a test one is kept off the page");
+    eq(split.silenced.map((f) => f.bookingId), ["b-smoke"], "and it is returned to be logged");
+  }
 }
 
 // --- the launch sweep (decision 9) ------------------------------------------------
@@ -556,6 +634,49 @@ async function sweepCases(): Promise<void> {
     eq(out3.notRecorded, [{ bookingId: BOOKING, reason: "busy block refused" }], "the invite whose block failed is named, not recorded");
     eq(out3.reported.map((f) => f.bookingId), ["b-5"], "and the rest are still recorded");
     eq(out3.posted, false, "a message that did not go out is said, so it can be sent by hand");
+  }
+
+  // #3930: a smoke test booking found out of step is blocked and recorded like any
+  // other, and left out of the alerts channel message; one made only of test bookings
+  // posts nothing at all.
+  {
+    const posts4: string[] = [];
+    const recorded4: string[] = [];
+    const mirrors4: string[] = [];
+    const sweepDeps = (upcoming: Awaited<ReturnType<InviteSweepDeps["loadUpcoming"]>>): InviteSweepDeps => ({
+      ...deps,
+      loadUpcoming: async () => upcoming,
+      bookingsWithChanges: async () => new Set(),
+      readEvent: async () => MOVED,
+      recordChange: async (row) => {
+        recorded4.push(row.bookingId);
+        return "row";
+      },
+      writeMirror: async (m) => {
+        mirrors4.push(m.eventId);
+      },
+      post: async (_k, text) => {
+        posts4.push(text);
+        return true;
+      },
+    });
+    const out4 = await sweepOutOfStepInvites(
+      sweepDeps([
+        { ...fresh(), advisorEmail: EMAIL, advisorName: "Brian Kenny" },
+        { ...fresh({ id: "b-smoke", gcalEventId: "evt-smoke", isTest: true }), advisorEmail: "smoketest@trypennie.com", advisorName: "Sarah Mitchell" },
+      ]),
+    );
+    eq(recorded4, [BOOKING, "b-smoke"], "the test booking is recorded too");
+    eq(mirrors4, [EVENT, "evt-smoke"], "and its moved time blocked");
+    eq(out4.reported.map((f) => f.bookingId), [BOOKING], "but only the real booking is reported");
+    eq(out4.testNotPosted, ["b-smoke"], "the test one is returned as recorded and not posted");
+    assert(posts4.length === 1 && posts4[0]!.includes("Brian Kenny") && !posts4[0]!.includes("Sarah Mitchell"), "and the message leaves it out");
+
+    posts4.length = 0;
+    const out5 = await sweepOutOfStepInvites(
+      sweepDeps([{ ...fresh({ id: "b-smoke", gcalEventId: "evt-smoke", isTest: true }), advisorEmail: "smoketest@trypennie.com", advisorName: "Sarah Mitchell" }]),
+    );
+    eq([posts4.length, out5.posted], [0, null], "a sweep that found only test bookings posts nothing");
   }
 
   const dry = await sweepOutOfStepInvites({ ...deps, apply: false, recordChange: async () => { throw new Error("dry run wrote"); }, writeMirror: async () => { throw new Error("dry run wrote"); }, post: async () => { throw new Error("dry run posted"); } });

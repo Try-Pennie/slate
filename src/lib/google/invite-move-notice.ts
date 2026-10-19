@@ -31,7 +31,8 @@
  *
  * FAILURE. A read this needs (the lock, the booking, the live invite, the record)
  * that fails stops that invite being judged, so nothing is judged on a guess; the
- * invite is returned in `failed` and the caller pages about it. It is deliberately
+ * invite is returned in `failed` and the caller pages about it (a smoke test
+ * booking's is logged instead, `splitCheckFailures`). It is deliberately
  * NOT thrown into the sync: the sync would then never advance its token, and one
  * unreadable invite would stop every other meeting of that advisor being cached,
  * which offers leads times the advisor is busy. The invite stays mirrored, so both
@@ -39,6 +40,13 @@
  * revert Google refuses is posted to the alerts channel, and a DM that cannot be
  * delivered is said in the channel post. Messages are sent at most once: a run
  * that dies between the record and the DM has used the record.
+ *
+ * SMOKE TEST BOOKINGS TELL NOBODY (#3930). The canary and the hand run tests book on
+ * the smoke test advisors, who are not people: a DM cannot land, and a post would
+ * page somebody with nothing to do. Their changes are judged, recorded and put back
+ * like any other, and every message is replaced by a named log line
+ * (`deps.silenced`). The flag is `bookingTestFlags`, the one predicate the handoff
+ * check and the erasure trail read too.
  */
 import type { GoogleEvent } from "./calendar.ts";
 import { eventWindow } from "./sync-core.ts";
@@ -61,6 +69,7 @@ import {
   managerLeftDm,
 } from "./invite-move-copy.ts";
 import { EventGone } from "../booking/core.ts";
+import type { BookingTestFlag } from "../booking/test-flag.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
 import { parseStampMs } from "../date/stamp.ts";
 
@@ -79,7 +88,20 @@ export interface FreshBooking {
   assignedUserId: string | null;
   /** The lead's zone, which the revert writes the invite in. */
   timezone: string;
+  /**
+   * Whether this is a smoke test booking (#3930), from `bookingTestFlags`
+   * (`booking/test-flag.ts`), the one predicate every outward path reads for it.
+   * `null` when it could not be established, which is treated as a real booking.
+   */
+  isTest: BookingTestFlag;
 }
+
+/**
+ * What a test booking's change would have sent, named in the log line that replaces
+ * it (#3930): the revert's DM, the left move's escalation, the resize post, or the
+ * refused revert's post.
+ */
+export type WithheldNotice = "reverted" | "left" | "resized" | "revert_refused";
 
 /** A change to record. */
 export interface NewInviteChange {
@@ -140,6 +162,8 @@ export interface InviteMoveDeps {
   dm(email: string, text: string): Promise<boolean>;
   /** A post to the alerts channel. Never throws. */
   post(key: string, text: string): Promise<void>;
+  /** Log a message held back because the booking is a smoke test one (#3930). Never throws. */
+  silenced(entry: { bookingId: string; withheld: WithheldNotice }): void;
 }
 
 export interface InviteMoveSummary {
@@ -152,6 +176,13 @@ export interface InviteMoveSummary {
   /** Nothing to do: back in step, already recorded, standing, or past. */
   nothing: number;
   /**
+   * Smoke test bookings whose change was handled (reverted, refused or gone on
+   * revert, left, or resized) with every message to a person held back and logged
+   * instead (#3930).
+   * Counted beside the action as well, so a revert is still a revert.
+   */
+  silenced: number;
+  /**
    * Invites that could not be checked (a read failed), each with a short reason.
    * Returned rather than thrown, so the caller reports them and the sync still
    * advances: a sync that failed every pass over one unreadable invite would stop
@@ -162,6 +193,22 @@ export interface InviteMoveSummary {
 }
 
 const ACTIVE = new Set(["confirmed", "rescheduled"]);
+
+/**
+ * Which unchecked invites to page about (#3930). A smoke test booking's is held back
+ * for the caller to log, by the same flag the handler reads; a flag that is unknown,
+ * or absent because its read failed, pages, because silence about a real advisor's
+ * call is the worse mistake.
+ */
+export function splitCheckFailures<F extends { bookingId: string }>(
+  failed: F[],
+  flags: Map<string, BookingTestFlag>,
+): { page: F[]; silenced: F[] } {
+  const page: F[] = [];
+  const silenced: F[] = [];
+  for (const f of failed) (flags.get(f.bookingId) === true ? silenced : page).push(f);
+  return { page, silenced };
+}
 
 /** Handle the out of step invites one sync pass delivered for one advisor. */
 export async function noticeOutOfStepInvites(
@@ -175,6 +222,7 @@ export async function noticeOutOfStepInvites(
     resized: 0,
     slateOwn: 0,
     nothing: 0,
+    silenced: 0,
     failed: [],
   };
   if (items.length === 0 || !deps.messagesAvailable()) return summary;
@@ -264,14 +312,26 @@ async function judgeUnderLock(
   const movedKey = `${INVITE_MOVED_KEY}:${booking.id}:${decision.change.moveNumber ?? 0}`;
   const action = decision.change.action;
 
+  // #3930: a smoke test booking is judged, recorded and put back exactly as a real
+  // one, which keeps the test bookings honest, and nobody is told: the smoke test
+  // advisor is no person, so a DM cannot land and a post leaves nothing to do. Held
+  // back HERE, at the messages, rather than before the judgement, so the record and
+  // the revert stay the truthful account of what happened (the handoff check's
+  // choice too, #2370). Only a flag known to be true holds anything back.
+  const tell = (withheld: WithheldNotice, send: () => Promise<void>): (() => Promise<void>) => {
+    if (booking.isTest !== true) return send;
+    summary.silenced++;
+    return async () => deps.silenced({ bookingId: booking.id, withheld });
+  };
+
   if (action === "report_resize") {
     summary.resized++;
     const endMs = parseStampMs(win.end) ?? 0;
-    return async () => {
+    return tell("resized", async () => {
       const people = await deps.loadPeople(deps.advisorUserId);
       // alert-key: booking_invite_resized:*
       await deps.post(`${INVITE_RESIZED_KEY}:${booking.id}:${endMs}`, inviteResizedAlert(facts(people.advisorName)));
-    };
+    });
   }
 
   if (action === "revert") {
@@ -289,27 +349,27 @@ async function judgeUnderLock(
     if (refusal !== null) {
       summary.refused++;
       const r = refusal;
-      return async () => {
+      return tell("revert_refused", async () => {
         const people = await deps.loadPeople(deps.advisorUserId);
         // alert-key: booking_invite_moved:*
         await deps.post(movedKey, inviteRevertRefusedAlert(facts(people.advisorName), r));
-      };
+      });
     }
     summary.reverted++;
-    return async () => {
+    return tell("reverted", async () => {
       const people = await deps.loadPeople(deps.advisorUserId);
       const f = facts(people.advisorName);
       if (!(await deps.dm(deps.advisorEmail, advisorRevertedDm(f)))) {
         // alert-key: booking_invite_moved:*
         await deps.post(movedKey, inviteRevertedAdvisorUntoldAlert(f));
       }
-    };
+    });
   }
 
   // Left where the advisor put it (decisions 4 and 5).
   summary.left++;
   const reason: LeftReason = action === "leave_second_move" ? "second-move" : "near-start";
-  return async () => {
+  return tell("left", async () => {
     const people = await deps.loadPeople(deps.advisorUserId);
     const f = facts(people.advisorName);
     // The manager first, so the advisor's DM says only what was measured about them.
@@ -320,5 +380,5 @@ async function judgeUnderLock(
     const advisor = await deps.dm(deps.advisorEmail, advisorLeftDm(f, reason, manager === "told"));
     // alert-key: booking_invite_moved:*
     await deps.post(movedKey, inviteMoveLeftAlert(f, reason, { advisor, manager }));
-  };
+  });
 }
