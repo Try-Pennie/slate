@@ -8,7 +8,7 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-design-match.ts
 import { assert, eq, finish } from "./lib/harness.ts";
-import { frameFixture, verdict, type FrameResult } from "./lib/design-match.ts";
+import { frameFixture, offScreenLines, verdict, type FrameResult } from "./lib/design-match.ts";
 
 const base = {
   nearlyFullPct: 85,
@@ -98,6 +98,13 @@ const row = (frame: string, picture: number, checks = [met("D1")], designChecks 
 {
   const v = verdict([]);
   eq(v.exitCode, 2, "no frames scored is no score, never a match");
+}
+
+// --- decisions with no on screen form ----------------------------------------------
+{
+  const lines = offScreenLines([{ id: "D1" }, { id: "D25", offScreen: "proven by the history lane's tests" }]);
+  eq(lines, ["D25: proven by the history lane's tests"], "each decision left off screen is named with where it is proven");
+  eq(offScreenLines([{ id: "D1" }]), [], "a map with every decision on screen names none");
 }
 
 finish();

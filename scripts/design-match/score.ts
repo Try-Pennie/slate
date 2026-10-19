@@ -2,6 +2,8 @@
 //
 //   node --experimental-strip-types scripts/design-match/score.ts --design docs/design/team-capacity.html --build <url>
 //   node --experimental-strip-types scripts/design-match/score.ts --design docs/design/team-capacity.html --build design
+//   node --experimental-strip-types scripts/design-match/score.ts --design docs/design/team-capacity.html --build design:<other design.html>
+//   any of these with --perturb '<css>' to change the built side on purpose (the negative control)
 //
 // Two halves, and the design is matched only when BOTH are 100%:
 //   decisions  each decision in the design's map has a check (docs/design/<name>.checks.js) run
@@ -24,7 +26,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { chromium, type Frame, type Page } from "playwright";
-import { frameFixture as buildFrameFixture, verdict, type FrameResult } from "../lib/design-match.ts";
+import { frameFixture as buildFrameFixture, offScreenLines, verdict, type FrameResult } from "../lib/design-match.ts";
 
 
 // Out of 255 per channel. Both sides render in the same Chrome, so font smoothing is identical and the
@@ -53,7 +55,7 @@ const designPath = arg("--design");
 const perturb = arg("--perturb");
 if (process.argv.includes("--perturb") && (!perturb || perturb.startsWith("--"))) die("--perturb needs a CSS value");
 const build = arg("--build");
-if (!designPath || !build) die("usage: score.ts --design <design.html> --build <url | design>");
+if (!designPath || !build) die("usage: score.ts --design <design.html> --build <url | design | design:<file>> [--perturb <css>]");
 const designFile = resolve(designPath);
 const stem = designFile.replace(/\.html$/, "");
 const checksSrc = readFileSync(`${stem}.checks.js`, "utf8");
@@ -200,7 +202,8 @@ for (const id of frameIds) {
   await page.close();
 }
 await design.addScriptTag({ content: checksSrc });
-const offScreen = await design.evaluate(() => (window as unknown as { TC_CHECKS: { offScreen?: string }[] }).TC_CHECKS.filter((c) => c.offScreen).length);
+const offScreenList = offScreenLines(await design.evaluate(() => (window as unknown as { TC_CHECKS: { id: string; offScreen?: string }[] }).TC_CHECKS.map((c) => ({ id: c.id, offScreen: c.offScreen }))));
+const offScreen = offScreenList.length;
 await browser.close();
 
 const v = verdict(rows);
@@ -215,6 +218,7 @@ for (const r of rows) {
   console.log(`    ${r.frame.padEnd(4)} picture ${pct(r.picture).padStart(6)}  checks ${r.checks.length - failed.length}/${r.checks.length}${failed.length ? "  missing: " + failed.map((c) => c.id).join(" ") : ""}`);
 }
 writeFileSync(`${outDir}/score.json`, JSON.stringify({ build, ...v, frames: rows.map((r) => ({ frame: r.frame, picture: r.picture, failed: r.checks.filter((c) => !c.ok) })) }, null, 1));
+for (const line of offScreenList) console.log(`  not scored, ${line}`);
 for (const reason of v.reasons) console.log(`  NO SCORE: ${reason}`);
 console.log(v.exitCode === 0 ? "  MATCHED: both halves are 100%" : v.exitCode === 1 ? "  not matched yet" : "  could not score");
 process.exit(v.exitCode);

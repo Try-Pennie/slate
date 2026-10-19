@@ -93,3 +93,11 @@ export function verdict(rows: FrameResult[]) {
   const exitCode = reasons.length ? 2 : matched ? 0 : 1;
   return { met, of: ids.length, decisionScore, pictureScore, matched: exitCode === 0, exitCode, reasons };
 }
+
+/**
+ * One line per decision with no on screen form, naming it and where it is proven instead, so a
+ * score is never read as covering a decision it did not check.
+ */
+export function offScreenLines(checks: { id: string; offScreen?: string }[]): string[] {
+  return checks.filter((c) => c.offScreen).map((c) => `${c.id}: ${c.offScreen}`);
+}
