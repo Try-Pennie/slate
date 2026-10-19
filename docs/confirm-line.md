@@ -78,8 +78,8 @@ per unclaimed advisor. As #3338 shipped it, nothing about the line itself change
 no new verdict field, no start rung, no protocol change, no release of the whole crowd
 at once. #3489 since added a bounded release, a walk past claimed rungs and parking,
 each in the section below, because the line served a walking crowd only one confirm
-every two to three seconds. It is the same on the per isolate line, which production
-runs, and on the shared line.
+every two to three seconds. It is the same on the per isolate line and on the shared
+line.
 
 A confirm whose insert loses the race walks on down the same way, from the rung it
 lost on, but only when what its budget has left covers what the attempt that lost
@@ -396,7 +396,8 @@ switched back on. When it was activated, and when it was turned off, come from t
 audit trail the admin action writes on every flip (`booking.settings`, immutable),
 never a new column: the newest switch on, then the FIRST switch off after it, so
 pressing off twice cannot restart the clock. Until the line has ever been switched on,
-off is the expected state and says nothing, which is production today. Turning it on
+off is the expected state and says nothing, as in production before the switch is
+first turned on. Turning it on
 is a person's decision, on the admin Hours page (`/admin/business-hours`); the
 deployment default being on does not turn it on.
 
@@ -467,7 +468,7 @@ The two orders are not alike:
 Since #3560 the client speaks protocol 2, so an older object refuses it, and the client
 uses its isolate's own line at once (`fallback` / `version`) and pages with the remedy:
 redeploy the ConfirmLine Worker at the app's commit. That makes a line Worker rolled back
-alone the same as the shared line switched OFF, the state production runs today, rather
+alone the same as the shared line switched OFF, rather
 than an untested mix of two builds. It does not make a crowd book: on per isolate lines a
 crowd for one slot books one advisor or none (load run 37333201026, and the load model in
 `test-confirm-contention.ts`, which holds the older object order to exactly what the
@@ -500,7 +501,7 @@ So `/api/availability` wakes the line the lead's confirm will join, after its re
 (`wakeConfirmLineForCode`): a `wake` message the object answers with `{ ok: true }` and
 nothing else. `makeLineWaker` does the cheapest checks first: at most once per bucket
 code per server per `CONFIRM_LINE_WAKE_EVERY_MS` (a minute), then the switch and the
-binding, so with the line off (production today) a read never works out which line it
+binding, so with the line switched off a read never works out which line it
 would reach. Only then is the line chosen, by `lineGroupToWake` through the same
 `codeLineGroup` the confirm keys on; a fresh server reads the grouping first, and one
 that cannot be read or still does not settle the line wakes nothing, each said as

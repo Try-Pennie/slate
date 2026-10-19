@@ -70,7 +70,7 @@ const env = read("loadtest");
   // in three load runs, so a cold production isolate whose read of the switch failed
   // takes the shared line rather than its own. Changing it back is a decision about
   // production's fallback, and that change should have to touch this line.
-  eq(top.vars?.SHARED_CONFIRM_LINE_DEFAULT, "on", "production resolves SHARED_CONFIRM_LINE_DEFAULT on since activation (#3339)");
+  eq(top.vars?.SHARED_CONFIRM_LINE_DEFAULT, "on", "production resolves SHARED_CONFIRM_LINE_DEFAULT on (#3339)");
   eq(env.vars?.SHARED_CONFIRM_LINE_DEFAULT, "on", "env.loadtest resolves SHARED_CONFIRM_LINE_DEFAULT on");
 }
 
