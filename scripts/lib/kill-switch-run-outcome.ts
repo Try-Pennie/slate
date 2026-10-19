@@ -53,7 +53,7 @@ export interface KillSwitchReportDecision {
   /** Whether the run MEASURED whether the switch refuses and releases. Only this may stamp. */
   concluded: boolean;
   /**
-   * Whether the run stood down because GitHub started it inside the org's business
+   * Whether the run stood down because it started inside the org's business
    * hours (#3920). Neither a pass nor a failure, so the reporter says it in its own
    * words rather than in either of theirs.
    */
@@ -191,7 +191,7 @@ export const RUN_JUDGEMENT: Record<KillSwitchExit, RunJudgement> = {
     concluded: false,
     skipped: true,
     headline:
-      "Tonight's kill switch proof was skipped and did not run, because GitHub started it inside " +
+      "Tonight's kill switch proof was skipped and did not run, because it started inside " +
       "the org's business hours, where pausing public booking would turn real leads away.",
   },
   [KILL_SWITCH_EXIT.hoursUnreadable]: {

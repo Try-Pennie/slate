@@ -72,7 +72,7 @@ export const KILL_SWITCH_EXIT = {
    */
   flagNotSet: 14,
   /**
-   * GitHub started the run inside the org's business hours, or within the margin
+   * The run started inside the org's business hours, or within the margin
    * either side of them, so it stood down before pausing anything (#3920).
    *
    * The cron sits in the small hours, and GitHub started it 4.5 to 9.5 hours late on

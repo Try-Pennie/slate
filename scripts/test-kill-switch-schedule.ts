@@ -16,7 +16,7 @@
 // hold for that to be worth anything, and they are what this file drives:
 //
 //  1. ONLY A MEASURED VERDICT STAMPS. The command ends on its own exit code per outcome,
-//     and half of those mean it never got to ask the question. A stamp on one of those
+//     and most of those mean it never got to ask the question. A stamp on one of those
 //     would report the detector concluding while it is blind (L98, L331).
 //  2. THE BOUND IS DERIVED FROM THE SCHEDULE, read out of the workflow file rather than
 //     typed beside it (L614).
