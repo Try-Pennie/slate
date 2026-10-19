@@ -314,6 +314,8 @@ const EXPECTED_PINNED = [
   "rate_limit_refund",
   "reason_usage_counts",
   "reassign_booking_swap",
+  // #3940: merges one capacity history tick and moves its cursor, in plain SQL.
+  "record_capacity_history",
   // #3137: adds one batch of framed booker loads. Security definer, pinned; now() and the
   // date arithmetic are pg_catalog built ins.
   "record_frame_origins",

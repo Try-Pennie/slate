@@ -1087,6 +1087,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `GET /api/cron/advisor-photos` | Reads each active person's photo from the Google directory and keeps the bytes for Slate to serve (#3027). Daily at 04:17 UTC, retried at 10:17 only when the first run reached no verdict. |
 | `GET /api/cron/prune-routing` | Ages out routing decision rows past their retention window. |
 | `GET /api/cron/prune-busy-blocks` | Deletes cached busy blocks whose end is far enough in the past to be unreachable (#1252). |
+| `GET /api/cron/capacity-history` | Saves each advisor's calls still open when they stopped being bookable, with the day's shift, time off and capacity, so Team capacity can show how a past day ended (#3940). Every half hour; a cursor catches a missed tick up, at most a day back. |
 | `GET /api/cron/prune-regal-calls` | Deletes inbound Regal call events received more than three days ago (#2090), and call outcomes received more than 120 days ago (#2944). |
 | `GET /api/cron/prune-booking-alert-state` | Deletes the `alert_state` rows of alerts keyed by booking once that booking both started and was made more than a week ago (#2726). |
 | `GET /api/cron/prune-bookings-pii` | Redacts consumer contact data on bookings past the 24 month window (#1071). |

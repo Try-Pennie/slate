@@ -11,6 +11,8 @@ import type {
 import type {
   CalcomOverrideRemoval,
   BookingInviteChange,
+  CapacityHistoryCursor,
+  CapacityHistoryDay,
   AgentCalendar,
   AgentLink,
   AgentLinkName,
@@ -153,6 +155,21 @@ export interface Database {
       calcom_override_removals: Table<CalcomOverrideRemoval>;
       /** #3919 (migration 0189): invite changes an advisor made in Google Calendar. */
       booking_invite_changes: Table<BookingInviteChange>;
+      /** #3940 (migration 0191): Team capacity history, one row per advisor and office day. */
+      capacity_history: Table<
+        CapacityHistoryDay,
+        [
+          {
+            // #3940: a saved day is read back with its advisor's name and org.
+            foreignKeyName: "capacity_history_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ]
+      >;
+      capacity_history_cursor: Table<CapacityHistoryCursor>;
       webhook_endpoints: Table<WebhookEndpoint>;
       webhook_deliveries: Table<WebhookDelivery>;
       alert_state: Table<AlertState>;
@@ -235,6 +252,13 @@ export interface Database {
     };
     Views: Record<string, never>;
     Functions: {
+      /** #3940 (migration 0191): one capacity-history tick's rows merged in (open times as a
+       *  set union, unsynced sticky) and the org's cursor moved forward, in one transaction.
+       *  Returns the rows written. */
+      record_capacity_history: {
+        Args: { p_org: string; p_rows: unknown; p_through: string };
+        Returns: number;
+      };
       /** The full set of migration versions this database has applied, as the repo's
        *  NNNN prefixes (#516, #814, migration 0072). PostgREST cannot see the
        *  supabase_migrations schema, so the prod lag check reads it through this
