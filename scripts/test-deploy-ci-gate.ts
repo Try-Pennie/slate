@@ -140,6 +140,64 @@ async function gate(env: Record<string, string | undefined>, f: ReturnType<typeo
   eq((await gate(ENV, f)).code, 3, "no ci run at all exits 3 too: GitHub answered, and nothing passed");
 }
 
+// --- GitHub reports a finished ci late (#3926) ------------------------------------
+//
+// The deploy job `needs: ci`, so by the time it runs ci has finished, but the check
+// runs API says so some seconds later. On 2026-10-19, with Actions degraded, that lag
+// refused four deploys in a row: run 39286612509's ci finished at 16:40:57 UTC, the
+// gate read it at 16:41:03 as in_progress, and the same check run read green minutes
+// later. A readable "not finished" or "not there yet" is waited out; a red is not.
+
+const inProgress = { status: 200, body: { check_runs: [run({ status: "in_progress", conclusion: null })] } };
+const green = { status: 200, body: { check_runs: [run()] } };
+
+{
+  const f = fakeFetch([inProgress, inProgress, green]);
+  sleeps.length = 0;
+  const r = await gate(ENV, f);
+  eq(r.code, 0, "a ci GitHub still reports as running is re-read until it reports green");
+  eq(f.calls.length, 3, "re-reading once per wait");
+  assert(/ci passed/.test(r.out), "and the pass is said");
+}
+
+{
+  const f = fakeFetch([{ status: 200, body: { check_runs: [] } }, green]);
+  eq((await gate(ENV, f)).code, 0, "a ci run GitHub has not listed yet is waited for too");
+}
+
+{
+  const f = fakeFetch([inProgress]);
+  sleeps.length = 0;
+  const r = await gate(ENV, f);
+  const waited = sleeps.reduce((a, b) => a + b, 0);
+  eq(r.code, 3, "a ci that never reports finished still refuses, on exit 3");
+  assert(/ci-not-finished/.test(r.out), "by its own reason");
+  assert(waited >= 120_000 && waited <= 300_000, `after waiting two to five minutes, not ${waited}ms`);
+  assert(/waited/.test(r.out), "and the refusal says it waited, so nobody re-runs it hoping for a different answer");
+}
+
+{
+  const f = fakeFetch([{ status: 200, body: { check_runs: [run({ conclusion: "failure" })] } }, green]);
+  sleeps.length = 0;
+  const r = await gate(ENV, f);
+  eq(r.code, 3, "a RED ci refuses at once");
+  eq(f.calls.length, 1, "with no second read, because red is a verdict and not a lag");
+  eq(sleeps.length, 0, "and no wait");
+}
+
+{
+  const f = fakeFetch([inProgress, { status: 502 }, green]);
+  eq((await gate(ENV, f)).code, 0, "an unreadable reply during the wait is waited past as well");
+}
+
+{
+  const f = fakeFetch([inProgress, { status: 502 }]);
+  const r = await gate(ENV, f);
+  eq(r.code, 2, "a wait that ENDS on an unreadable reply exits 2, since GitHub's last word was nothing");
+  assert(!/still said so/.test(r.out), "and never claims GitHub kept saying not finished");
+  assert(/502/.test(r.out) && /re-run this job/.test(r.out), "it names the failure and the re-run remedy");
+}
+
 {
   const f = fakeFetch([{ status: 502 }, { status: 502 }, { status: 502 }]);
   sleeps.length = 0;
