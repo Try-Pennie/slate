@@ -1565,7 +1565,7 @@ this issue was about. Two things about that stamp are the whole design:
   `KILL_SWITCH_EXIT` so a seventeenth ending cannot inherit somebody's guess.
 - **The bound is 58 hours and every part of it is derived** (L614): 24h of cadence,
   doubled so one dropped run does not page, plus the 9h30m worst lateness measured on this
-  workflow (#3920; it read 3h when #2493 wrote it), plus the job's own 10 minute timeout,
+  workflow (re-measured for #3920, up from the 3h first recorded), plus the job's own 10 minute timeout,
   because the stamp lands at the END of a run. A skipped night (exit 15 or 16) stamps
   nothing either, so three in a row are past the bound and page. There is deliberately no
   gap filler, matching the burst counter.
