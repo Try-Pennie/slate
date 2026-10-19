@@ -820,10 +820,9 @@ describe("the new agent starting hours panel (#1651, moved by #1892)", () => {
   });
 });
 
-// #3325: the shared confirm line's switch sits beside the public booking pause, the
-// other switch on this page that changes what happens when a lead presses confirm. It
-// is its own read and its own card, and an unreadable read draws its own state rather
-// than either answer (L530).
+// #3325: the shared confirm line's switch is the last card on the page, below the
+// settings edited on an ordinary day (Dan, 2026-10-19). It is its own read and its own
+// card, and an unreadable read draws its own state rather than either answer (L530).
 describe("the shared confirm line switch (#3325)", () => {
   function cards() {
     const pause = screen.getByText("Online booking", { selector: "h2" }).closest("section");
@@ -831,14 +830,20 @@ describe("the shared confirm line switch (#3325)", () => {
     return { pause, line };
   }
 
-  it("draws its own card directly after the public booking pause", async () => {
+  // Last on the page, below every setting edited on an ordinary day, because it is
+  // switched on once and then left alone (Dan, 2026-10-19). It used to sit directly
+  // after the pause (#3325); online booking stays first as the emergency switch.
+  it("draws its own card as the last section, with online booking first", async () => {
     db.results.booking_settings = { data: { shared_confirm_line: false }, error: null };
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     render(await BusinessHoursPage(props));
 
     const { pause, line } = cards();
     expect(line).not.toBe(pause);
-    expect(pause?.nextElementSibling).toBe(line);
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    expect(headings[0]).toBe("Online booking");
+    expect(headings.at(-1)).toBe("Shared confirm line");
+    expect(line?.nextElementSibling).toBeNull();
     expect(line?.querySelector('[data-state="off"]')).toBeTruthy();
   });
 

@@ -107,8 +107,8 @@ export default async function BusinessHoursPage({
   // fails, because "we could not read whether bookings are running" is a different
   // screen from either answer and the page must not draw one of them instead (L530).
   //
-  // #3325: the shared confirm line's switch, read beside it for the same reason and in
-  // the same way: its own read, null when it fails.
+  // #3325: the shared confirm line's switch, read alongside it for the same reason and
+  // in the same way: its own read, null when it fails. It is drawn last on the page.
   const [publicBookingPaused, sharedConfirmLine] = await Promise.all([
     readPublicBookingPaused(),
     readSharedConfirmLineSetting(),
@@ -221,9 +221,9 @@ export default async function BusinessHoursPage({
           the org's own hours reading as a "default" is exactly the confusion
           #1297 was written about. Dan chose Hours on 2026-09-04. */}
       <AdminPageHeader title="Hours">
-        Whether Slate is taking bookings at all, how confirms for one time are lined up,
-        when Pennie is open, the holidays and closures on top of that, how far ahead a
-        lead can book, and what a new agent starts on. Every offered time is judged
+        Whether Slate is taking bookings at all, when Pennie is open, the holidays and
+        closures on top of that, how far ahead a lead can book, what a new agent starts
+        on, and how confirms for one time are lined up. Every offered time is judged
         against the business hours, so a change there moves the whole roster.
       </AdminPageHeader>
       {/* #1990: the sentence comes from the OUTCOME, so it names the form
@@ -233,9 +233,9 @@ export default async function BusinessHoursPage({
       {saved && <SettingsSaveNotice ok saved={saved} error={sp.error} />}
       {sp.error && !saved && <SettingsSaveNotice ok={false} error={sp.error} saved="" />}
       {/* #2297: first, because it is the one thing on this page somebody needs in
-          an emergency, and the only one that is read rather than edited on an
-          ordinary day. Quiet while bookings are running; the stopped state is the
-          loud one. */}
+          an emergency. The shared confirm line is also left alone on an ordinary
+          day, but nobody reaches for it in a hurry, so it sits last. Quiet while
+          bookings are running; the stopped state is the loud one. */}
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Online booking</h2>
         <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
@@ -244,21 +244,6 @@ export default async function BusinessHoursPage({
           syncing and existing bookings alone.
         </p>
         <PublicBookingSwitch paused={publicBookingPaused} />
-      </section>
-      {/* #3325: beside the pause, because it is the other switch on this page that
-          changes what happens when a lead presses confirm. Quiet either way: neither
-          state is an emergency. */}
-      <section className={cardCls}>
-        <h2 className="mb-1 text-sm font-semibold">Shared confirm line</h2>
-        <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
-          When several leads confirm the same time at once, their confirms wait in a line
-          so one advisor is never given two of them. Each server normally keeps its own
-          line, so in a crowd the lines get in each other&apos;s way and confirms can run
-          out of time with nobody booked. With one line shared by every server, a crowd
-          gets one booking for each free advisor and a quick answer that the time was
-          taken for everyone else.
-        </p>
-        <SharedConfirmLineSwitch on={sharedConfirmLine} />
       </section>
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Business hours</h2>
@@ -356,7 +341,8 @@ export default async function BusinessHoursPage({
           template both look like "hours in a settings screen", and confusing them
           silently moves the whole roster's bookability. Putting them on one page
           reduces the separation, so the distinction is carried by STRUCTURE
-          instead: the org window is first, this is last, they are separate cards
+          instead: the org window is the first hours card and this is the last
+          (only the shared confirm line switch sits below it), they are separate cards
           with separate save buttons, and the headings cannot be misread for each
           other. */}
       <section className={cardCls}>
@@ -420,6 +406,21 @@ export default async function BusinessHoursPage({
             </SaveForm>
           </>
         )}
+      </section>
+      {/* #3325: last on the page, because it is switched on once and then left
+          alone, so everything edited on an ordinary day sits above it (Dan,
+          2026-10-19). Quiet either way: neither state is an emergency. */}
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">Shared confirm line</h2>
+        <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
+          When several leads confirm the same time at once, their confirms wait in a line
+          so one advisor is never given two of them. Each server normally keeps its own
+          line, so in a crowd the lines get in each other&apos;s way and confirms can run
+          out of time with nobody booked. With one line shared by every server, a crowd
+          gets one booking for each free advisor and a quick answer that the time was
+          taken for everyone else.
+        </p>
+        <SharedConfirmLineSwitch on={sharedConfirmLine} />
       </section>
     </>
   );
