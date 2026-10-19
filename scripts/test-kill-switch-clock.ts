@@ -103,7 +103,7 @@ eq(
   eq(judgeDrillClock(seeded(), edge - 1).kind, "inside-hours", "one millisecond before thirty minutes after closing is inside the margin");
   eq(judgeDrillClock(seeded(), edge).kind, "clear", "exactly thirty minutes after closing is clear");
 }
-// The same edges a week after the clocks went back (2026-11-01), so the margin is judged on
+// The same edges the day after the clocks went back (2026-11-01), so the margin is judged on
 // the org's wall clock in whichever offset applies rather than on a fixed UTC hour.
 {
   const edge = at("2026-11-02T07:30:00");
