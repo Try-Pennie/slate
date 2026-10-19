@@ -334,7 +334,8 @@ Keys: `outbox_drain_stuck`, `outbox_all_handed_off`, `reservation_drain_stuck`,
 `reassign_intent_dropped`, `reschedule_pin_dropped`, `reschedule_lock_outage`,
 `stale_phone_invite:*`, `webhook_dead:*`, `webhook_event_no_subscriber`,
 `handoff_channel_unset`, `handoff_undelivered`, `bookable_trait_unrecorded:*`,
-`booking_follow_up_left_to_drain`.
+`booking_follow_up_left_to_drain`, `booking_invite_moved:*`, `booking_invite_resized:*`,
+`booking_invite_check_failed:*`, `booking_invite_launch_sweep`.
 
 **What fired it.** A booking exists and something that should have followed it did not:
 a calendar invite, a busy block, a webhook to Regal. **A real customer is affected**,
@@ -392,6 +393,30 @@ which is what makes this family different from the ones above.
   affected yet**. The change itself is saved. Run `pnpm backfill:bookable-trait` to send
   every agent's current value again (a re-run always sends); the Worker log line under
   `tag=bookable-trait` carries the underlying error.
+
+- For `booking_invite_moved:*` (#3919): an advisor moved a booking's invite in Google
+  Calendar and Slate did NOT put it back, because it was the booking's second move, the
+  call starts within 30 minutes, or Google refused the revert (the post says which, and
+  Google's short reason). The advisor and their manager of record were DMed where the
+  post says so. Until a person acts, the advisor is blocked at both the booked and the
+  moved time and the lead still holds the booked time in Slate, its reminders and
+  Regal. Act on the booking page the post links: reschedule the call in Slate to the
+  time the advisor wants (which also moves the invite and tells the lead), reassign it,
+  or have the advisor move the invite back. A post saying the advisor "could not be
+  messaged" after a successful revert only needs somebody to tell them call times
+  change in Slate. Every change is recorded in `booking_invite_changes`.
+- For `booking_invite_resized:*` (#3919): the advisor changed only when the invite
+  ends. Nothing needs doing; it is posted so its frequency can be seen.
+- For `booking_invite_check_failed:*` (#3919): an invite out of step with its booking
+  could not be checked (a database or Google read failed, the reason is in the post),
+  so it was neither put back nor anybody told. It is deliberately not allowed to fail
+  the calendar sync, which would stop all of that advisor's meetings being cached. Both
+  times stay blocked; handle the booking as a `booking_invite_moved:*` post, and look
+  at the Worker log under `tag=invite-move` if several arrive.
+- For `booking_invite_launch_sweep` (#3919): the one launch report from
+  `pnpm sweep:moved-invites --apply`, listing invites that were already out of step
+  when Slate started watching. None were put back; handle each like a
+  `booking_invite_moved:*` post.
 
 **Fix or escalate.** The outbox retries with backoff and gives up at a cap, so a row
 past the cap needs the underlying cause fixed and then a re-drain. An orphaned calendar

@@ -223,6 +223,9 @@ export function partitionBusyWrites(
     // caches while racing the booking's create, before the booking committed. The
     // delete matches gcal rows by gcal_event_id; the booking's own slate block has a
     // null gcal_event_id, so it is never touched (its lifecycle stays with the booking).
+    // #3919: the sync passes only the Slate events IN STEP with their booking here
+    // (`splitSlateInvites`). One its advisor moved in Google Calendar is left out of
+    // the set and mirrored below like any event, so the advisor is busy at both times.
     if (slateEventIds.has(ev.id)) {
       deletes.push(ev.id);
       continue;

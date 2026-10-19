@@ -116,6 +116,16 @@ export function parseMigrationConstraints(sql: string): MigrationConstraints {
     }
   }
 
+  // A key RE-DECLARED by a later migration: `alter table <t> add primary key (<cols>)`,
+  // as 0053 did to reschedule_locks after dropping its 0033 key. The migrations are
+  // concatenated in apply order, so the last declaration is the one in force; without
+  // this the parser reported the dropped key and a reader reasoned from it (#3919).
+  for (const m of sql.matchAll(
+    /alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(?:public\.)?(\w+)\s+add\s+primary\s+key\s*\(([^)]+)\)/gi,
+  )) {
+    primaryKeys.set(m[1], normCols(m[2]));
+  }
+
   return { uniqueIndexes, partialUniqueIndexes, primaryKeys };
 }
 

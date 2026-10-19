@@ -10,6 +10,7 @@ import type {
 } from "./reroute-hold-refusals";
 import type {
   CalcomOverrideRemoval,
+  BookingInviteChange,
   AgentCalendar,
   AgentLink,
   AgentLinkName,
@@ -150,6 +151,8 @@ export interface Database {
       booking_events: Table<BookingEvent>;
       ooo_requests: Table<OooRequest>;
       calcom_override_removals: Table<CalcomOverrideRemoval>;
+      /** #3919 (migration 0189): invite changes an advisor made in Google Calendar. */
+      booking_invite_changes: Table<BookingInviteChange>;
       webhook_endpoints: Table<WebhookEndpoint>;
       webhook_deliveries: Table<WebhookDelivery>;
       alert_state: Table<AlertState>;

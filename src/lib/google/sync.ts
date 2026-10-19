@@ -64,6 +64,9 @@ import {
   type SyncedApprovedRequest,
 } from "@/lib/monitor/ooo-event-mismatch";
 import { alertStateNoticeStore, slackMismatchMessenger } from "@/lib/monitor/ooo-mismatch-notices";
+import { splitSlateInvites, type BookedInvite, type OutOfStepInvite } from "@/lib/google/invite-moves";
+import { noticeOutOfStepInvites } from "@/lib/google/invite-move-notice";
+import { realInviteMoveDeps, reportInviteCheckFailures } from "@/lib/google/invite-move-deps";
 
 // Renew well before Google's ~7-day watch TTL so a cron outage can't drop push.
 const WATCH_RENEW_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
@@ -328,6 +331,16 @@ const UPSERT_CHUNK = 500;
  * name heuristic), so there are no false skips of externally-booked events.
  */
 export async function loadSlateBookingEventIds(userId: string): Promise<Set<string>> {
+  return new Set((await loadSlateBookingInvites(userId)).keys());
+}
+
+/**
+ * The same bookings keyed by their invite's event id, with the booked times (#3919),
+ * so the sync can tell an invite in step with its booking (skip it, #166) from one
+ * its advisor moved in Google Calendar (mirror it and hand it to the handler). The
+ * times ride on the read the sync already made, so telling them apart costs nothing.
+ */
+export async function loadSlateBookingInvites(userId: string): Promise<Map<string, BookedInvite>> {
   // Paginate rather than trust a single page: this set had no time filter and was
   // cap-safe only while past bookings reliably aged into `completed` (#834). At the
   // 200-agent target a busy agent's active bookings could cross PostgREST's
@@ -336,20 +349,60 @@ export async function loadSlateBookingEventIds(userId: string): Promise<Set<stri
   // selectAllPages throws on a read error instead of returning a short list that
   // would read as "nothing to skip".
   const db = supabaseAdmin();
-  const rows = await selectAllPages<{ gcal_event_id: string | null }>(
+  const rows = await selectAllPages<{
+    id: string;
+    gcal_event_id: string | null;
+    starts_at: string;
+    ends_at: string;
+  }>(
     "sync slate booking event ids",
     "id",
     () =>
       db
         .from("bookings")
-        .select("gcal_event_id")
+        .select("id, gcal_event_id, starts_at, ends_at")
         .eq("assigned_user_id", userId)
         .in("status", ["confirmed", "rescheduled"])
         .not("gcal_event_id", "is", null),
   );
-  return new Set(
-    rows.map((r) => r.gcal_event_id).filter((id): id is string => !!id),
-  );
+  const out = new Map<string, BookedInvite>();
+  for (const r of rows) {
+    if (r.gcal_event_id) out.set(r.gcal_event_id, { bookingId: r.id, startsAt: r.starts_at, endsAt: r.ends_at });
+  }
+  return out;
+}
+
+/**
+ * Put a moved Slate invite right, or leave it for a person and say so (#3919). Runs
+ * only when the pass delivered an invite out of step with its booking, which is
+ * rare, so the common pass spends nothing here.
+ *
+ * It NEVER fails the sync, like `noticeEditedTimeOff`: a pass that threw here would
+ * never advance its token, and one invite that cannot be checked would stop every
+ * other meeting of that advisor being cached, so leads would be offered times the
+ * advisor is busy. An invite it could not check is PAGED instead
+ * (`booking_invite_check_failed:*`), and stays mirrored, so both times stay blocked.
+ */
+async function noticeMovedInvites(
+  userId: string,
+  email: string,
+  timeZone: string,
+  outOfStep: OutOfStepInvite[],
+): Promise<void> {
+  if (outOfStep.length === 0) return;
+  try {
+    const { failed, ...counts } = await noticeOutOfStepInvites(realInviteMoveDeps({ userId, email, timeZone }), outOfStep);
+    log.info("invite-move", { msg: "out of step invites handled", user_id: userId, delivered: outOfStep.length, failed: failed.length, ...counts });
+    if (failed.length > 0) await reportInviteCheckFailures(email, failed);
+  } catch (err) {
+    // Only a fault nobody predicted reaches here (each invite's own failure is in
+    // `failed`), so every invite this pass delivered is reported as unchecked.
+    log.error("invite-move", { msg: "out of step invite handling threw", user_id: userId }, err);
+    await reportInviteCheckFailures(
+      email,
+      outOfStep.map((o) => ({ bookingId: o.bookingId, reason: shortErrorReason(err) })),
+    ).catch((e: unknown) => log.error("invite-move", { msg: "check failure report threw", user_id: userId }, e));
+  }
 }
 
 /** Upsert/delete gcal-sourced busy blocks for a batch of events on one calendar. */
@@ -762,19 +815,29 @@ async function syncCalendar(
     // The agent's own Slate-booking event ids, so the sync skips mirroring them
     // into a duplicate gcal block (#166). Only load when there's something to
     // apply — the common incremental tick has no events, so it skips the query.
-    const slateEventIds =
+    const invites =
       result.events.length > 0
-        ? await loadSlateBookingEventIds(cal.user_id)
-        : new Set<string>();
+        ? await loadSlateBookingInvites(cal.user_id)
+        : new Map<string, BookedInvite>();
+    const slateEventIds = new Set(invites.keys());
+    // #3919: an invite in step with its booking is skipped as #166 always did; one its
+    // advisor moved is mirrored at the time Google holds it, so the advisor is busy at
+    // both times while the two disagree, and handed to the handler below.
+    const { skip: skipEventIds, outOfStep } = splitSlateInvites(result.events, invites, timeZone);
     // A full resync is a change whatever it wrote (it may purge), so it never pays
     // for the count.
-    const busyWrites = await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds, timeZone, {
+    const busyWrites = await applyEvents(cal.user_id, cal.calendar_id, result.events, skipEventIds, timeZone, {
       countMoved: opts.countMoved === true && !full,
       onWriteStart: () => {
         beganWriting = true;
       },
     });
     await noticeEditedTimeOff(cal.user_id, result.events, slateEventIds, timeZone);
+    // Only a DELTA is acted on. A full fetch (bootstrap, or a token Google expired)
+    // returns every event whatever changed, so an invite out of step in it may have
+    // been moved before Slate watched for this, which decision 9 says is reported
+    // and never put back. It is still mirrored above, so both times stay blocked.
+    await noticeMovedInvites(cal.user_id, email, timeZone, full ? [] : outOfStep);
     // Never reconcile against a PARTIAL event set (#1259). A page-capped pass read only
     // the first MAX_SYNC_PAGES pages, so every event on the pages it never fetched
     // looks vanished and its cached busy time would be deleted, leaving the agent
@@ -785,7 +848,7 @@ async function syncCalendar(
         cal.user_id,
         cal.calendar_id,
         result.events,
-        slateEventIds,
+        skipEventIds,
         window,
       );
 
@@ -1022,17 +1085,23 @@ export async function hydrateCalendar(cal: AgentCalendar): Promise<HydrateResult
         return { ok: false, events: 0, skipped: "token-moved" };
       }
 
-      const slateEventIds =
+      const invites =
         result.events.length > 0
-          ? await loadSlateBookingEventIds(cal.user_id)
-          : new Set<string>();
-      await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds, timeZone);
+          ? await loadSlateBookingInvites(cal.user_id)
+          : new Map<string, BookedInvite>();
+      const slateEventIds = new Set(invites.keys());
+      // #3919: the same rule as the incremental pass, so a moved invite's mirror
+      // survives the rotation. Only mirrored here: whatever moved it is acted on by
+      // the pass that DELIVERED the change, and the launch sweep reported anything
+      // older, so a full fetch never puts an invite back on its own.
+      const { skip: skipEventIds } = splitSlateInvites(result.events, invites, timeZone);
+      await applyEvents(cal.user_id, cal.calendar_id, result.events, skipEventIds, timeZone);
       await noticeEditedTimeOff(cal.user_id, result.events, slateEventIds, timeZone);
       // Never reconcile against a PARTIAL set (#1259): a page-capped pass read only the first
       // pages, so everything beyond them looks vanished and its cached busy time would be
       // deleted, leaving the agent looking free during real meetings.
       if (!result.truncated) {
-        await purgeVanished(cal.user_id, cal.calendar_id, result.events, slateEventIds, window);
+        await purgeVanished(cal.user_id, cal.calendar_id, result.events, skipEventIds, window);
       }
 
       // Coverage is only claimed for a pass that actually completed. A truncated pass fetched

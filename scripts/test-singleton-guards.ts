@@ -63,7 +63,11 @@ const SINGLETON_INVARIANTS: {
   { table: "booking_reservations", cols: "idempotency_key", issue: "0052", why: "the create-path concurrency arbiter (one intent per key)" },
   { table: "reassign_intents", cols: "booking_id,gcal_client_id", issue: "0065", why: "one create-intent per (booking, deterministic event id)" },
   { table: "reroute_holds", cols: "booking_id", issue: "#3247/0166", why: "one reroute hold per booking; placing again replaces it, so a booking never holds two advisors" },
-  { table: "reschedule_locks", cols: "booking_id,target_starts_at", issue: "0033", why: "one in-flight reschedule lock per (booking, target)" },
+  // 0053 re-keyed this from (booking, target) to the booking alone, which is what lets
+  // the moved invite handler (#3919) hold it to keep EVERY reschedule of a booking out,
+  // whatever its target, while it puts an invite back. The old entry still named the
+  // 0033 key, and a reader of it concluded the handler's lock excluded nothing.
+  { table: "reschedule_locks", cols: "booking_id", issue: "0053", why: "one in-flight reschedule per booking, whatever its target (0053 re-keyed it from (booking, target)), which the moved invite handler (#3919) also holds while it puts an invite back" },
   { table: "pending_event_deletions", cols: "calendar_email,gcal_event_id", issue: "0044", why: "one pending deletion per (calendar, event)" },
   { table: "ooo_requests", cols: "user_id,starts_at,ends_at", issue: "0025", why: "one active OOO request per (agent, exact window) [partial]" },
   { table: "monitor_alert_config", cols: "id", issue: "0060", why: "single global config row (id pinned to 1)" },
@@ -71,6 +75,8 @@ const SINGLETON_INVARIANTS: {
   { table: "owner_alert_events", cols: "booking_id", issue: "#2371/0126", why: "one LIVE advisor alert per booking [partial: removed_at is null]; removed rows stay as the history of who held the call" },
   { table: "regal_call_events", cols: "event_id", issue: "#2090/0137", why: "one row per Regal eventId, so a redelivered event is never recorded or counted twice" },
   { table: "regal_call_outcomes", cols: "event_id", issue: "#2944/0152", why: "one outcome per Regal eventId, so a redelivered call is never stored twice and the show rate never counts it twice" },
+  { table: "booking_invite_changes", cols: "booking_id,event_updated", issue: "#3919/0189", why: "one record per change Google stamped on a booking's invite, so of two syncs that see the same moved invite only one reverts it or messages anybody" },
+  { table: "booking_invite_changes", cols: "booking_id,move_number", issue: "#3919/0189", why: "one record per move number of a booking, so two runs can never both count a move as the first and both put it back" },
   { table: "calcom_override_removals", cols: "request_id,starts_at,ends_at", issue: "#2890/0153", why: "one stale cal.com block per (request, window), so recording it twice is one row and putting cal.com back takes it out once" },
   { table: "agent_link_names", cols: "user_id", issue: "#3026/0155", why: "one readable booking link name per user, so the copy link and the resolver can never disagree about which name is theirs" },
   { table: "advisor_photos", cols: "user_id", issue: "#3027/0156", why: "one photo row per user (the primary key), so the daily refresh upserts onto it and a person can never hold two pictures" },
