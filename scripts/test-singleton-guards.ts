@@ -63,7 +63,11 @@ const SINGLETON_INVARIANTS: {
   { table: "booking_reservations", cols: "idempotency_key", issue: "0052", why: "the create-path concurrency arbiter (one intent per key)" },
   { table: "reassign_intents", cols: "booking_id,gcal_client_id", issue: "0065", why: "one create-intent per (booking, deterministic event id)" },
   { table: "reroute_holds", cols: "booking_id", issue: "#3247/0166", why: "one reroute hold per booking; placing again replaces it, so a booking never holds two advisors" },
-  { table: "reschedule_locks", cols: "booking_id,target_starts_at", issue: "0033", why: "one in-flight reschedule lock per (booking, target)" },
+  // 0053 re-keyed this from (booking, target) to the booking alone, which is what lets
+  // the moved invite handler (#3919) hold it to keep EVERY reschedule of a booking out,
+  // whatever its target, while it puts an invite back. The old entry still named the
+  // 0033 key, and a reader of it concluded the handler's lock excluded nothing.
+  { table: "reschedule_locks", cols: "booking_id", issue: "0053", why: "one in-flight reschedule per booking, whatever its target (0053 re-keyed it from (booking, target)), which the moved invite handler (#3919) also holds while it puts an invite back" },
   { table: "pending_event_deletions", cols: "calendar_email,gcal_event_id", issue: "0044", why: "one pending deletion per (calendar, event)" },
   { table: "ooo_requests", cols: "user_id,starts_at,ends_at", issue: "0025", why: "one active OOO request per (agent, exact window) [partial]" },
   { table: "monitor_alert_config", cols: "id", issue: "0060", why: "single global config row (id pinned to 1)" },

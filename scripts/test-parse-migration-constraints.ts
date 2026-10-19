@@ -11,6 +11,7 @@ import {
   parseMigrationConstraints,
   parseDeclaredTables,
   normCols,
+  hasSingletonGuard,
 } from "./lib/parse-migration-constraints.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -125,6 +126,18 @@ eq(normCols(' "user_id" , calendar_id '), "user_id,calendar_id", "normCols norma
   );
   assert(!tables.has("legacy"), "a dropped table is not a net declaration");
   assert(tables.has("keep"), "a table that is never dropped stays declared");
+}
+{
+  // A key re-declared by a later migration is the one in force: 0053 dropped
+  // reschedule_locks' 0033 key (booking_id, target_starts_at) and added one on
+  // booking_id alone. Reading only the create table reported the dropped key (#3919).
+  const c = parseMigrationConstraints(
+    "create table locks (\n  booking_id uuid not null,\n  target timestamptz not null,\n  primary key (booking_id, target)\n);\n" +
+      "alter table locks drop constraint if exists locks_pkey;\n" +
+      "alter table locks add primary key (booking_id);",
+  );
+  eq(c.primaryKeys.get("locks"), "booking_id", "the later `add primary key` replaces the created key");
+  assert(hasSingletonGuard(c, "locks", "booking_id"), "so one row per booking is guarded");
 }
 
 finish();

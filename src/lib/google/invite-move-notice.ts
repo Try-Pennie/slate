@@ -11,9 +11,11 @@
  * exactly what an advisor's move looks like. Putting it back then would undo a real
  * reschedule and email the lead the wrong time. Two things close it:
  *
- *  1. The handler takes the booking's RESCHEDULE LOCK (`reschedule_locks`, keyed on
- *     the booking) before it judges anything, the lock every reschedule holds from
- *     before its PATCH until after its commit. A held lock means Slate is moving
+ *  1. The handler takes the booking's RESCHEDULE LOCK (`reschedule_locks`, whose
+ *     primary key is the booking ALONE since migration 0053, whatever the target,
+ *     pinned by scripts/test-singleton-guards.ts) before it judges anything, the
+ *     lock every reschedule holds from before its PATCH until after its commit,
+ *     so two rows for one booking cannot exist. A held lock means Slate is moving
  *     this booking right now, and the handler leaves it entirely alone. Holding it
  *     ourselves also means no reschedule can START while we put an invite back.
  *  2. Under that lock it reads the booking AGAIN and the invite LIVE. The sync's
