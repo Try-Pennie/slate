@@ -16,7 +16,6 @@
  */
 import type { SupplyCell, SupplyFreshness, SupplyTotals } from "./bucket-supply.ts";
 import { bucketSpecForXbc } from "../xbc.ts";
-import { OFFERED_OPEN_DAYS } from "../availability/bookable-days.ts";
 
 /**
  * The booker's offered window in words, built from a day count so the page
@@ -33,11 +32,6 @@ export function offeredWindowPhrase(days: number): string {
   if (days === 1) return "the next open day";
   return `the next ${NUMBER_WORDS[days] ?? String(days)} open days`;
 }
-// Built at module load on purpose: a broken OFFERED_OPEN_DAYS fails every
-// importer, the suites included, before it can ship, rather than one cell.
-// A one day window never produces "other-days" (a pool with a time in a one day
-// window has it on that day), so the plural wording below cannot misread.
-const WINDOW = offeredWindowPhrase(OFFERED_OPEN_DAYS);
 
 /**
  * Every state this page has a name for.
@@ -136,101 +130,109 @@ export function cellStyle(cell: SupplyCell): { cell: string; mark: string } {
 
 /**
  * Ordered most to least actionable, which is also the order somebody scans a key
- * in.
+ * in. Built from the offered open days the report used (#3922), because two of
+ * the meanings name the window.
  */
-export const SUPPLY_LEGEND: SupplyLegendEntry[] = [
-  {
-    id: "nobody-available",
-    label: "Nobody available",
-    meaning:
-      "The day had room for appointments and this pool has none: none offered, and none booked. This is the one to act on.",
-    mark: "N",
-    cell: "bg-error/25 text-fg",
-  },
-  {
-    id: "overflows",
-    label: "Overflows",
-    meaning:
-      `This pool has no times in ${WINDOW}, so its leads are shown the times of the pool named on the row. Nobody is turned away.`,
-    mark: "O",
-    cell: "bg-[var(--bg-alt)] text-fg-muted",
-    swatchExtra: "border border-border",
-  },
-  {
-    id: "other-days",
-    label: "Other days here",
-    meaning:
-      `This pool has no times that day, and its leads are offered its other days in ${WINDOW}. Nobody is turned away.`,
-    mark: "D",
-    cell: "bg-[var(--bg-alt)] text-fg-muted",
-    swatchExtra: "border border-border",
-  },
-  {
-    id: "saturated",
-    label: "Every time taken",
-    meaning: "Every time this pool could have taken an appointment at is booked. Nothing is left for a new lead.",
-    mark: "100%",
-    cell: TONE_CLS.saturated,
-  },
-  {
-    id: "some",
-    label: "Part booked",
-    meaning:
-      "Some of the times this pool could take are booked. The number is booked starts out of the times it could have taken.",
-    mark: "45%",
-    cell: TONE_CLS.some,
-  },
-  {
-    id: "none",
-    label: "Nothing booked",
-    meaning:
-      "This pool has times to offer and none of them are taken. Every bucket reads this way until leads start arriving in Slate.",
-    mark: "0%",
-    cell: TONE_CLS.none,
-    swatchExtra: "border border-border",
-  },
-  {
-    id: "no-capacity",
-    label: "Nothing left today",
-    meaning:
-      "The office is open but no whole appointment fits between the notice cutoff and closing. Not a booked out pool.",
-    mark: "T",
-    cell: "bg-[var(--bg-alt)] text-fg-muted",
-    swatchExtra: "border border-border",
-  },
-  {
-    id: "beyond-horizon",
-    label: "Past this pool's horizon",
-    meaning:
-      "This pool already found its allowance of bookable days earlier in the window, so nothing was computed this far out.",
-    mark: "H",
-    cell: "bg-[var(--bg-alt)] text-fg-muted",
-    swatchExtra: "border border-border",
-  },
-  {
-    id: "closed",
-    label: "Closed",
-    meaning: "The office is not open that day.",
-    mark: "",
-    cell: "bg-transparent text-fg-muted",
-    swatchExtra: "border border-border",
-  },
-  {
-    id: "unknown",
-    label: "Could not check",
-    meaning:
-      "This pool's cached answer could not be read, so nothing here was measured. It is not a report that the pool is empty.",
-    mark: "?",
-    cell: "bg-transparent text-fg-muted",
-    swatchExtra: "border border-dashed border-border",
-  },
-];
+export function supplyLegend(offeredOpenDays: number): SupplyLegendEntry[] {
+  // Built per call from the stored offered open days (#3922), which the report
+  // carries: it was a constant read at module load until the count became a
+  // setting. A one day window never produces "other-days" (a pool with a time in a
+  // one day window has it on that day), so the plural wording cannot misread.
+  const WINDOW = offeredWindowPhrase(offeredOpenDays);
+  return [
+    {
+      id: "nobody-available",
+      label: "Nobody available",
+      meaning:
+        "The day had room for appointments and this pool has none: none offered, and none booked. This is the one to act on.",
+      mark: "N",
+      cell: "bg-error/25 text-fg",
+    },
+    {
+      id: "overflows",
+      label: "Overflows",
+      meaning:
+        `This pool has no times in ${WINDOW}, so its leads are shown the times of the pool named on the row. Nobody is turned away.`,
+      mark: "O",
+      cell: "bg-[var(--bg-alt)] text-fg-muted",
+      swatchExtra: "border border-border",
+    },
+    {
+      id: "other-days",
+      label: "Other days here",
+      meaning:
+        `This pool has no times that day, and its leads are offered its other days in ${WINDOW}. Nobody is turned away.`,
+      mark: "D",
+      cell: "bg-[var(--bg-alt)] text-fg-muted",
+      swatchExtra: "border border-border",
+    },
+    {
+      id: "saturated",
+      label: "Every time taken",
+      meaning: "Every time this pool could have taken an appointment at is booked. Nothing is left for a new lead.",
+      mark: "100%",
+      cell: TONE_CLS.saturated,
+    },
+    {
+      id: "some",
+      label: "Part booked",
+      meaning:
+        "Some of the times this pool could take are booked. The number is booked starts out of the times it could have taken.",
+      mark: "45%",
+      cell: TONE_CLS.some,
+    },
+    {
+      id: "none",
+      label: "Nothing booked",
+      meaning:
+        "This pool has times to offer and none of them are taken. Every bucket reads this way until leads start arriving in Slate.",
+      mark: "0%",
+      cell: TONE_CLS.none,
+      swatchExtra: "border border-border",
+    },
+    {
+      id: "no-capacity",
+      label: "Nothing left today",
+      meaning:
+        "The office is open but no whole appointment fits between the notice cutoff and closing. Not a booked out pool.",
+      mark: "T",
+      cell: "bg-[var(--bg-alt)] text-fg-muted",
+      swatchExtra: "border border-border",
+    },
+    {
+      id: "beyond-horizon",
+      label: "Past this pool's horizon",
+      meaning:
+        "This pool already found its allowance of bookable days earlier in the window, so nothing was computed this far out.",
+      mark: "H",
+      cell: "bg-[var(--bg-alt)] text-fg-muted",
+      swatchExtra: "border border-border",
+    },
+    {
+      id: "closed",
+      label: "Closed",
+      meaning: "The office is not open that day.",
+      mark: "",
+      cell: "bg-transparent text-fg-muted",
+      swatchExtra: "border border-border",
+    },
+    {
+      id: "unknown",
+      label: "Could not check",
+      meaning:
+        "This pool's cached answer could not be read, so nothing here was measured. It is not a report that the pool is empty.",
+      mark: "?",
+      cell: "bg-transparent text-fg-muted",
+      swatchExtra: "border border-dashed border-border",
+    },
+  ];
+}
 
 /** One legend entry by id. Throws rather than returning a default, because a
  *  default is indistinguishable from a deliberate choice (L113) and the caller
  *  is the summary line, which would silently start counting under a blank name. */
-export function supplyLegendEntry(id: SupplyLegendId): SupplyLegendEntry {
-  const found = SUPPLY_LEGEND.find((e) => e.id === id);
+export function supplyLegendEntry(id: SupplyLegendId, offeredOpenDays: number): SupplyLegendEntry {
+  const found = supplyLegend(offeredOpenDays).find((e) => e.id === id);
   if (!found) throw new Error(`no legend entry for ${id}`);
   return found;
 }
@@ -285,8 +287,14 @@ export function sharePercent(share: number): number {
  * It states the counts where they were MEASURED, and states no count at all
  * where nothing was, which is the distinction the whole page exists to make.
  */
-export function supplyCellTitle(cell: SupplyCell, bucketLabel: string, dayLabel: string): string {
+export function supplyCellTitle(
+  cell: SupplyCell,
+  bucketLabel: string,
+  dayLabel: string,
+  offeredOpenDays: number,
+): string {
   const when = `${bucketLabel} on ${dayLabel}`;
+  const WINDOW = offeredWindowPhrase(offeredOpenDays);
   switch (cell.kind) {
     case "counted":
       if (cell.booked === 0) {

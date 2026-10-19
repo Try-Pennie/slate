@@ -1,14 +1,15 @@
 // The booker's offered window and its served slot rule, shared (2026-10-02).
 //
-// The booker offers a lead the next OFFERED_OPEN_DAYS open days, and on a rung
+// The booker offers a lead the next N open days (N the stored offered open days,
+// #3922, 3 today), and on a rung
 // below a top tier lead's own tier only the times an advisor without Low is free.
 // The bucket availability page has to say what that produces, so both sides call
 // these two pure functions rather than each holding a copy.
 //
 // Run: node --experimental-strip-types scripts/test-offered-window-shared.ts
 import { offeredWindowEndFor, offeredWindowFor, servedSlotsForRung, todayCountsUntilLabel } from "../src/lib/availability/offered-window.ts";
-import { OFFERED_OPEN_DAYS } from "../src/lib/availability/bookable-days.ts";
-import { eq, finish } from "./lib/harness.ts";
+import { OFFERED_OPEN_DAYS_DEFAULT } from "../src/lib/booking/days-offered.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 const WEEK = {
   zone: "America/New_York",
@@ -16,17 +17,19 @@ const WEEK = {
   exceptions: [],
 };
 
-eq(OFFERED_OPEN_DAYS, 3, "the booker offers three open days");
+// The window counts the number it is GIVEN (#3922): the stored setting, 3 by default.
+const OFFERED = OFFERED_OPEN_DAYS_DEFAULT;
+eq(OFFERED, 3, "the default is three open days");
 // Thursday 2026-08-06 at 11:19 ET with two hours' notice: Thursday, Friday, and
 // Monday (the weekend is shut), so the window closes Monday at 17:00 ET.
 eq(
-  offeredWindowEndFor(WEEK, Date.parse("2026-08-06T15:19:00.000Z"), 120),
+  offeredWindowEndFor(WEEK, Date.parse("2026-08-06T15:19:00.000Z"), 120, OFFERED),
   Date.parse("2026-08-10T21:00:00.000Z"),
   "the window spans three OPEN days, skipping a shut weekend",
 );
 // At 15:30 ET a two hour notice reaches past the close, so today does not count.
 eq(
-  offeredWindowEndFor(WEEK, Date.parse("2026-08-06T19:30:00.000Z"), 120),
+  offeredWindowEndFor(WEEK, Date.parse("2026-08-06T19:30:00.000Z"), 120, OFFERED),
   Date.parse("2026-08-11T21:00:00.000Z"),
   "a today nobody can still book does not spend one of the three days",
 );
@@ -45,31 +48,31 @@ eq(
   };
   // Tuesday 2026-10-06, daylight time (UTC-4).
   eq(
-    offeredWindowEndFor(LIVE, Date.parse("2026-10-06T21:59:00.000Z"), 5),
+    offeredWindowEndFor(LIVE, Date.parse("2026-10-06T21:59:00.000Z"), 5, OFFERED),
     Date.parse("2026-10-09T00:00:00.000Z"),
     "at 5:59pm EDT today counts: Tuesday, Wednesday, Thursday, closing Thursday 8pm",
   );
   eq(
-    offeredWindowEndFor(LIVE, Date.parse("2026-10-06T22:00:00.000Z"), 5),
+    offeredWindowEndFor(LIVE, Date.parse("2026-10-06T22:00:00.000Z"), 5, OFFERED),
     Date.parse("2026-10-10T00:00:00.000Z"),
     "at 6:00pm EDT today no longer counts: Wednesday, Thursday, Friday",
   );
   // Tuesday 2026-12-08, standard time (UTC-5). 22:30Z is 5:30pm EST: a cutoff held
   // as a fixed offset from UTC would read it as 6:30pm and drop today wrongly.
   eq(
-    offeredWindowEndFor(LIVE, Date.parse("2026-12-08T22:30:00.000Z"), 5),
+    offeredWindowEndFor(LIVE, Date.parse("2026-12-08T22:30:00.000Z"), 5, OFFERED),
     Date.parse("2026-12-11T01:00:00.000Z"),
     "at 5:30pm EST today still counts, so the cutoff follows the wall clock across daylight saving",
   );
   eq(
-    offeredWindowEndFor(LIVE, Date.parse("2026-12-08T23:00:00.000Z"), 5),
+    offeredWindowEndFor(LIVE, Date.parse("2026-12-08T23:00:00.000Z"), 5, OFFERED),
     Date.parse("2026-12-12T01:00:00.000Z"),
     "at 6:00pm EST today no longer counts",
   );
   // Saturday 2026-10-10 at 6:30pm EDT: Sunday is shut, so the next three open
   // days are Monday, Tuesday and Wednesday.
   eq(
-    offeredWindowEndFor(LIVE, Date.parse("2026-10-10T22:30:00.000Z"), 5),
+    offeredWindowEndFor(LIVE, Date.parse("2026-10-10T22:30:00.000Z"), 5, OFFERED),
     Date.parse("2026-10-15T00:00:00.000Z"),
     "after 6pm on Saturday the strip starts Monday, past a shut Sunday",
   );
@@ -93,16 +96,25 @@ eq(
   ];
   for (const [iso, notice, which] of cases) {
     const hours = which === 0 ? WEEK : LIVE;
-    const w = offeredWindowFor(hours, Date.parse(iso), notice);
-    eq(w?.endMs ?? null, offeredWindowEndFor(hours, Date.parse(iso), notice), `the window's close is the booker's own at ${iso}`);
-    eq(w?.days.length ?? null, OFFERED_OPEN_DAYS, `and it names exactly the counted days at ${iso}`);
+    const w = offeredWindowFor(hours, Date.parse(iso), notice, OFFERED);
+    eq(w?.endMs ?? null, offeredWindowEndFor(hours, Date.parse(iso), notice, OFFERED), `the window's close is the booker's own at ${iso}`);
+    eq(w?.days.length ?? null, OFFERED, `and it names exactly the counted days at ${iso}`);
   }
   // Friday 2026-10-09 at 8:11am EDT, the morning the Low page fired: Friday,
   // Saturday and Monday, past the shut Sunday.
-  eq(offeredWindowFor(LIVE, Date.parse("2026-10-09T12:11:00.000Z"), 120)?.days, ["2026-10-09", "2026-10-10", "2026-10-12"], "a Friday morning names Friday, Saturday and Monday");
+  eq(offeredWindowFor(LIVE, Date.parse("2026-10-09T12:11:00.000Z"), 120, OFFERED)?.days, ["2026-10-09", "2026-10-10", "2026-10-12"], "a Friday morning names Friday, Saturday and Monday");
   // After 6pm today is not one of the three, even though its leftovers are served.
-  eq(offeredWindowFor(LIVE, Date.parse("2026-10-09T22:30:00.000Z"), 120)?.days, ["2026-10-10", "2026-10-12", "2026-10-13"], "after 6pm the named days start tomorrow");
-  eq(offeredWindowFor({ zone: "America/New_York", rules: [], exceptions: [] }, Date.parse("2026-10-09T12:11:00.000Z"), 120), null, "an org never open has no window, not an empty one");
+  eq(offeredWindowFor(LIVE, Date.parse("2026-10-09T22:30:00.000Z"), 120, OFFERED)?.days, ["2026-10-10", "2026-10-12", "2026-10-13"], "after 6pm the named days start tomorrow");
+  eq(offeredWindowFor({ zone: "America/New_York", rules: [], exceptions: [] }, Date.parse("2026-10-09T12:11:00.000Z"), 120, OFFERED), null, "an org never open has no window, not an empty one");
+  // #3922: the count is the stored setting, not a constant. Saved as 4, the same
+  // Friday morning names four open days, past the shut Sunday to Tuesday, and the
+  // booker closes the window at the end of Tuesday rather than Monday.
+  eq(offeredWindowFor(LIVE, Date.parse("2026-10-09T12:11:00.000Z"), 120, 4)?.days, ["2026-10-09", "2026-10-10", "2026-10-12", "2026-10-13"], "a stored 4 offers four open days");
+  assert(
+    (offeredWindowEndFor(LIVE, Date.parse("2026-10-09T12:11:00.000Z"), 120, 4) ?? 0) >
+      (offeredWindowEndFor(LIVE, Date.parse("2026-10-09T12:11:00.000Z"), 120, 3) ?? Infinity),
+    "and closes later than three do",
+  );
 }
 
 // The admin page states the cutoff in words built from the same constant.

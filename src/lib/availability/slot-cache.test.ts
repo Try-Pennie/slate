@@ -17,6 +17,12 @@ const mockBusinessHours = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/booking/business-hours-load", () => ({
   loadBusinessHoursCached: mockBusinessHours,
 }));
+// #3922: the offered open days are a stored setting, read through a cached loader.
+// 3 here, as production holds; a test about the setting overrides it.
+const mockOfferedDays = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/booking/days-offered-load", () => ({
+  loadOfferedOpenDaysCached: mockOfferedDays,
+}));
 const OPEN_ALL_WEEK = {
   zone: "America/New_York",
   rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 1440 })),
@@ -83,6 +89,7 @@ const SLOT = "2026-06-08T13:00:00.000Z";
 beforeEach(() => {
   vi.clearAllMocks();
   mockBusinessHours.mockResolvedValue(OPEN_ALL_WEEK);
+  mockOfferedDays.mockResolvedValue(3);
 });
 
 describe("getBucketSlotsWithFallback", () => {
@@ -308,6 +315,48 @@ describe("getBucketSlotsWithFallback", () => {
 
       expect(result!.slots).toEqual([MON, FRI]);
       expect(result!.routing.window_extended).toBe(false);
+    });
+
+    // #3922: the number of open days is the stored setting, not a constant. Saved
+    // as 4, the same Monday offers Monday to Thursday and the window closes at the
+    // end of Thursday, so Thursday is no longer a last resort day.
+    it("offers four open days when four are stored", async () => {
+      mockOfferedDays.mockResolvedValue(4);
+      mockResolveBucketSlots.mockResolvedValue(makeBucketSlots("411", [MON, WED, THU, FRI]));
+
+      const result = await getBucketSlotsWithFallback("411", FROM_ISO, false, NOW);
+
+      expect(result!.slots).toEqual([MON, WED, THU]);
+      expect(result!.routing.window_extended).toBe(false);
+      expect(result!.routing.offered_open_days).toBe(4);
+    });
+
+    it("opens a later day only past the stored count, and says which count it used", async () => {
+      mockOfferedDays.mockResolvedValue(4);
+      mockResolveBucketSlots.mockImplementation(async (code: string) =>
+        code === "511" ? makeBucketSlots("511", [FRI]) : makeBucketSlots(code, []),
+      );
+
+      const result = await getBucketSlotsWithFallback("511", FROM_ISO, false, NOW);
+
+      expect(result!.slots).toEqual([FRI]);
+      expect(result!.routing.window_extended).toBe(true);
+      expect(result!.routing.offered_open_days).toBe(4);
+    });
+
+    // A cold isolate whose first read of the setting fails has no value to use. It
+    // takes the one documented degradation the window has, the stored rows as they
+    // are, rather than a default nobody saved; the rows reach the horizon, so the
+    // lead is shown more days, never fewer.
+    it("serves the stored window unchanged when the offered days cannot be read", async () => {
+      mockOfferedDays.mockRejectedValue(new Error("booking_settings unreadable"));
+      mockResolveBucketSlots.mockResolvedValue(makeBucketSlots("411", [MON, THU, FRI]));
+
+      const result = await getBucketSlotsWithFallback("411", FROM_ISO, false, NOW);
+
+      expect(result!.slots).toEqual([MON, THU, FRI]);
+      expect(result!.routing.window_extended).toBe(false);
+      expect(result!.routing.offered_open_days).toBeNull();
     });
   });
 

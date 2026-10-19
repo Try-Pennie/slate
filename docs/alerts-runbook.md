@@ -125,7 +125,8 @@ condition ends. Their floors come from a measured week of traffic in
 
 **`empty_tier:*` is about a whole DEBT TIER, not a bucket** (#2505). It fires when
 Low, Medium, High, Very High or Ultra High is offering no booking time on any of the
-days the booker shows a lead (the next three open days, #3559), and it says which of
+days the booker shows a lead (the next offered open days, #3559: three unless changed
+on the Hours page, #3922), and it says which of
 the two reasons it is: nobody is
 assigned to the tier at all (a hiring or Twilio tag repair), or the tier has agents
 and none of them has an opening (a schedule, a calendar or a capacity repair). A

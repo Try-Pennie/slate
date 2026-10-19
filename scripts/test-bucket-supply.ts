@@ -165,6 +165,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   return bucketSupplyReport({
     hours: WEEK,
     horizonDays: 4,
+    offeredOpenDays: 3,
     nowMs: AUG_4_1119_ET,
     buckets: BUCKETS,
     depthByCode: DEPTHS,
@@ -199,6 +200,27 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
       unreadable.measurable ? unreadable.rows.find((r) => r.code === "110")?.offeredDays : "unmeasurable",
       null,
       "and a row it could not read carries none, never a guessed window",
+    );
+    // #3922: the days are the stored offered open days, not a constant. Saved as
+    // 4, the same Tuesday shows Tuesday to Friday, and the report says which count
+    // it used so the page's words can name it.
+    const four = reportWith({ offeredOpenDays: 4 });
+    eq(
+      four.measurable ? four.rows.find((r) => r.code === "110")?.offeredDays : "unmeasurable",
+      ["2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07"],
+      "a stored 4 shows four open days",
+    );
+    eq(four.measurable ? four.offeredOpenDays : "unmeasurable", 4, "and the report carries the count it used");
+    // An unreadable setting is no report at all, never one judged over a guess,
+    // for the horizon's reason (#1654): every row's window would quietly mean
+    // something else while looking normal.
+    eq(
+      (() => {
+        const r = reportWith({ offeredOpenDays: null });
+        return r.measurable ? "measured" : r.reason;
+      })(),
+      "offered-open-days",
+      "an unreadable offered open days setting makes the page unmeasurable",
     );
 
     const beyond = report.rows.find((r) => r.code === "120");
@@ -256,6 +278,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   const report = bucketSupplyReport({
     hours: WEEK,
     horizonDays: 4,
+    offeredOpenDays: 3,
     nowMs: AUG_4_1119_ET,
     buckets: BUCKETS,
     depthByCode: DEPTHS,
@@ -374,6 +397,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   ];
   const report = reportWith({
     horizonDays: 4,
+    offeredOpenDays: 3,
     cacheRows: [cachedRow("120", spread, FRESH_STAMP), cachedRow("110", slotsFrom1320(21), FRESH_STAMP)],
   });
   if (!report.measurable) {
@@ -580,6 +604,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
     bucketSupplyReport({
       hours: WEEK,
       horizonDays: 4,
+      offeredOpenDays: 3,
       nowMs: AUG_4_1119_ET,
       buckets: [{ code: "120", name: "Bucket 120" }],
       depthByCode: DEPTHS,
@@ -664,6 +689,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   const unreadable = bucketSupplyReport({
     hours: WEEK,
     horizonDays: 4,
+    offeredOpenDays: 3,
     nowMs: AUG_4_1119_ET,
     buckets: [{ code: "120", name: "Bucket 120" }],
     depthByCode: DEPTHS,
@@ -699,6 +725,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   const report = bucketSupplyReport({
     hours: WEEK,
     horizonDays: 4,
+    offeredOpenDays: 3,
     nowMs: AUG_4_1119_ET,
     buckets: [
       { code: "110", name: "Low | Both | No Legal Param" },
@@ -731,6 +758,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
     const twice = bucketSupplyReport({
       hours: WEEK,
       horizonDays: 4,
+      offeredOpenDays: 3,
       nowMs: AUG_4_1119_ET,
       buckets: [
         { code: "110", name: "Low | Both | No Legal Param" },
@@ -764,6 +792,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   const alone = bucketSupplyReport({
     hours: WEEK,
     horizonDays: 4,
+    offeredOpenDays: 3,
     nowMs: AUG_4_1119_ET,
     buckets: [
       { code: "110", name: "Low | Both | No Legal Param" },
@@ -855,6 +884,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
     return bucketSupplyReport({
       hours: WEEK,
       horizonDays: 4,
+      offeredOpenDays: 3,
       nowMs: AUG_4_1119_ET,
       buckets: codes.map((code) => ({ code, name: `Bucket ${code}` })),
       depthByCode: new Map(
@@ -997,6 +1027,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   const input = {
     hours: WEEK,
     horizonDays: 4,
+    offeredOpenDays: 3,
     nowMs: AUG_4_1119_ET,
     buckets: [
       { code: "211", name: "Medium | Both | Legal" },

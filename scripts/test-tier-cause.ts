@@ -26,6 +26,7 @@ import {
 } from "../src/lib/monitor/tier-cause.ts";
 import { judgeTier, planTierAlerts, tierNoSlotsMessage } from "../src/lib/monitor/tier-staffing.ts";
 import { offeredWindowFor } from "../src/lib/availability/offered-window.ts";
+import { OFFERED_OPEN_DAYS_DEFAULT as OFFERED } from "../src/lib/booking/days-offered.ts";
 import type { WorkingRule } from "../src/lib/availability/compute.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -54,7 +55,7 @@ const SLOT = {
 
 // The window the booker shows at 4:30pm on a Friday: Friday, Saturday and Monday,
 // past the shut Sunday (#3559).
-const WINDOW = offeredWindowFor(BUSINESS_HOURS, NOW, SLOT.minNoticeMin)!;
+const WINDOW = offeredWindowFor(BUSINESS_HOURS, NOW, SLOT.minNoticeMin, OFFERED)!;
 const WINDOW_END = WINDOW.endMs;
 eq(WINDOW.days.join(","), "2026-10-02,2026-10-03,2026-10-05", "the window is Friday, Saturday and Monday");
 eq(WINDOW_END, et(5, 20), "and ends when Monday closes at 8pm ET");

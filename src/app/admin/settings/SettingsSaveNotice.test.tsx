@@ -79,19 +79,19 @@ describe("SettingsSaveNotice", () => {
     expect(screen.queryByRole("status")).toBeNull();
   });
 
-  // Review of #3162: saving the same thing twice (the horizon to 5, then 5 again)
-  // brings the same outcome back, so an effect keyed on the outcome never ran a
-  // second time and the second `?ok=` stayed in the address bar, where a reload
-  // re-shows a confirmation of nothing.
+  // Review of #3162: saving the same thing twice (the days offered, then the same
+  // days offered again) brings the same outcome back, so an effect keyed on the
+  // outcome never ran a second time and the second `?ok=` stayed in the address
+  // bar, where a reload re-shows a confirmation of nothing.
   it("strips the param on every arrival, including a second save with the same outcome", () => {
-    window.history.replaceState(null, "", "/admin/business-hours?ok=booking-horizon");
-    const { rerender } = render(<SettingsSaveNotice ok error={undefined} saved="Booking horizon saved." />);
+    window.history.replaceState(null, "", "/admin/business-hours?ok=days-offered");
+    const { rerender } = render(<SettingsSaveNotice ok error={undefined} saved="Days offered saved." />);
     expect(window.location.search).not.toContain("ok");
 
-    window.history.replaceState(null, "", "/admin/business-hours?ok=booking-horizon");
-    rerender(<SettingsSaveNotice ok error={undefined} saved="Booking horizon saved." />);
+    window.history.replaceState(null, "", "/admin/business-hours?ok=days-offered");
+    rerender(<SettingsSaveNotice ok error={undefined} saved="Days offered saved." />);
     expect(window.location.search, "the second save's param is stripped too").not.toContain("ok");
-    expect(screen.getByRole("status").textContent).toBe("Booking horizon saved.");
+    expect(screen.getByRole("status").textContent).toBe("Days offered saved.");
   });
 
   it("keeps the notice once the server re-renders without the stripped param", () => {

@@ -5576,7 +5576,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: tierFallbackAlert({ requestedCode: "311", effectiveCode: "111" })?.text ?? "",
   },
   { key: "booking_window_extended:*", state: "a customer was offered a day past the window", channel: "alert",
-    text: bookingWindowExtendedAlert("511") },
+    text: bookingWindowExtendedAlert("511", 3) },
   { key: "booker_unstaffed:*", state: "a customer opened a bucket with nobody in it", channel: "alert",
     text: bookerUnstaffedAlert("120") },
 

@@ -50,6 +50,7 @@ const REPORT: BucketSupplyReport = {
   measurable: true,
   zone: "America/New_York",
   horizonDays: 4,
+  offeredOpenDays: 3,
   nowMs: NOW_MS,
   days: [{ iso: "2026-08-04", weekday: 2 }],
   rows: [row("110", "Low | Both | No Legal Param"), row("111", "Low | Both | Legal")],
@@ -85,4 +86,18 @@ describe("/admin/bucket-availability by role", () => {
       expect(rowHeads()).toEqual(["110Low | Both | No Legal Param", "111Low | Both | Legal"]);
     });
   }
+});
+
+// #3922: an unreadable offered open days setting is its own screen, in its own
+// words, never the table judged over a guessed window and never another read's
+// message (L11).
+describe("/admin/bucket-availability when the days offered cannot be read", () => {
+  it("says the days offered could not be read and draws no table", async () => {
+    auth.currentUser.mockResolvedValue({ id: "u1", org_id: "org-1", role: "admin" });
+    loader.loadBucketSupply.mockResolvedValue({ measurable: false, reason: "offered-open-days" });
+    render(await BucketAvailabilityPage());
+    expect(screen.getByText("The days offered could not be read")).toBeTruthy();
+    expect(document.querySelector("table")).toBeNull();
+    expect(document.body.textContent ?? "").not.toMatch(/booking horizon/i);
+  });
 });

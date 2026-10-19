@@ -9,7 +9,7 @@ import {
   setBusinessHours,
   setBusinessHoursException,
   removeBusinessHoursException,
-  setBookingHorizon,
+  setDaysOffered,
   setOrgDefaultHours,
 } from "@/app/admin/actions";
 import {
@@ -30,12 +30,10 @@ import { minutesToTime } from "@/lib/schedule-core";
 import { humanizeZone } from "@/lib/booking/timezones";
 import { BusinessHoursForm, type BusinessHoursDay } from "@/components/ui/BusinessHoursForm";
 import { BusinessHoursExceptions } from "@/components/ui/BusinessHoursExceptions";
-import {
-  HORIZON_DEFAULT,
-  HORIZON_MIN,
-  HORIZON_MAX,
-  readPublicBookingPaused,
-} from "@/lib/booking/settings";
+import { readPublicBookingPaused } from "@/lib/booking/settings";
+import { readDaysOffered } from "@/lib/booking/days-offered-load";
+import { extraFromStored } from "@/lib/booking/days-offered";
+import { DaysOfferedFields } from "@/components/admin/DaysOfferedFields";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { TimeField } from "@/components/ui/TimeField";
@@ -48,8 +46,14 @@ import { PublicBookingSwitch } from "@/components/admin/PublicBookingSwitch";
 import { SharedConfirmLineSwitch } from "@/components/admin/SharedConfirmLineSwitch";
 import { readSharedConfirmLineSetting } from "@/lib/booking/shared-line-switch";
 import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
-import { OFFERED_OPEN_DAYS } from "@/lib/availability/bookable-days";
 import { todayCountsUntilLabel } from "@/lib/availability/offered-window";
+import {
+  DAYS_OFFERED,
+  DAYS_OFFERED_UNREADABLE,
+  DAYS_OFFERED_UNSAVED,
+  SAVE_DAYS_OFFERED,
+  todayCountsNote,
+} from "@/lib/admin/days-offered-copy";
 
 export const metadata = { title: "Hours" };
 
@@ -87,21 +91,12 @@ export default async function BusinessHoursPage({
   // `null` is the unreadable state throughout, never an empty value: an empty
   // week and an empty exception list are both legitimate readings, and both are
   // the reassuring one.
-  // The booking horizon sits with the hours: both decide which times exist at
-  // all, and separating them puts two halves of one answer on two screens.
-  let horizonDays: number | null = null;
-  try {
-    const settings = await supabaseAdmin()
-      .from("booking_settings")
-      .select("horizon_days")
-      .eq("id", 1)
-      .maybeSingle();
-    if (!settings.error && settings.data) {
-      horizonDays = (settings.data as { horizon_days: number | null }).horizon_days;
-    }
-  } catch {
-    // Fall through to the built-in default shown as a placeholder.
-  }
+  // The days offered (#3922) sit with the hours: both decide which times exist at
+  // all, and separating them puts two halves of one answer on two screens. Both of
+  // the card's values come from ONE read through the loader every other reader
+  // uses, and an unreadable row is null, which draws its own notice: a card
+  // pre-filled with guessed values would write them back as fact on the next save.
+  const daysOffered = await readDaysOffered();
 
   // #2297: the kill switch's current state. Its OWN read, resolving to null when it
   // fails, because "we could not read whether bookings are running" is a different
@@ -216,13 +211,13 @@ export default async function BusinessHoursPage({
   return (
     <>
       {/* #1892: "Hours", not "Business hours". The page holds the org's real
-          operating window, the holiday closures, the booking horizon AND the new
+          operating window, the holiday closures, the days offered AND the new
           agent template, so naming it for the last of those would be wrong, and
           the org's own hours reading as a "default" is exactly the confusion
           #1297 was written about. Dan chose Hours on 2026-09-04. */}
       <AdminPageHeader title="Hours">
         Whether Slate is taking bookings at all, when Pennie is open, the holidays and
-        closures on top of that, how far ahead a lead can book, what a new agent starts
+        closures on top of that, how many days a lead is offered, what a new agent starts
         on, and how confirms for one time are lined up. Every offered time is judged
         against the business hours, so a change there moves the whole roster.
       </AdminPageHeader>
@@ -291,49 +286,29 @@ export default async function BusinessHoursPage({
           </UnreadableNotice>
         )}
       </section>
+      {/* #3922: the settled design, docs/design/days-offered.html. Two settings,
+          each named for itself: how many open days every lead is offered (a
+          stored setting since #3922, it was a fixed 3 in code), and how many
+          extra days the last resort (#2841) may add, stored as the reach
+          (`horizon_days` = offered + extra). One button saves both. An unreadable
+          row draws its own notice rather than guessed values a save would then
+          write back as fact (L530). */}
       <section className={cardCls}>
-        <h2 className="mb-1 text-sm font-semibold">Days offered</h2>
-        <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
-          A lead is offered the next {OFFERED_OPEN_DAYS} days the business is open,
-          with today counting only before {todayCountsUntilLabel()}, and a lower tier
-          before a later day. Only when every tier they may use is
-          full for those days are later days offered. This number is how far that
-          can reach, counted from today in days that actually have times, so a
-          closed day does not use one up: with Sundays closed, four days can reach
-          into the following week. Applies to every bucket. A change refreshes
-          availability across all buckets within a minute or two.
-        </p>
-        <SaveForm action={setBookingHorizon} name="booking-horizon" unsaved="changes to the booking window" className="space-y-4">
-          <div>
-            {/* heading-gloss-ok: the accepted RANGE of the number, derived from the same
-                  constants the server validates against. */}
-            <label className={labelCls} htmlFor="horizon_days">
-              Most days offered ({HORIZON_MIN} to {HORIZON_MAX})
-            </label>
-            {/* #1924: pre-filled with the real default, not a placeholder. A
-                required field that loads EMPTY forces an admin to type a number
-                nobody chose, and the grey placeholder looked enough like a value
-                to be mistaken for one, which is how a save wrote null. The value
-                is real now, so a placeholder would say the same thing twice and
-                is gone. `required` is a courtesy that saves a round trip;
-                `parseHorizonForm` is still the control. */}
-            <input
-              type="number"
-              inputMode="numeric"
-              id="horizon_days"
-              name="horizon_days"
-              min={HORIZON_MIN}
-              max={HORIZON_MAX}
-              step={1}
-              required
-              defaultValue={horizonDays ?? HORIZON_DEFAULT}
-              className={`${inputCls} w-40 tabular-nums`}
+        <h2 className="mb-1 text-sm font-semibold">{DAYS_OFFERED}</h2>
+        <p className="mb-3.5 text-xs text-fg-muted">{todayCountsNote(todayCountsUntilLabel())}</p>
+        {daysOffered ? (
+          <SaveForm action={setDaysOffered} name="days-offered" unsaved={DAYS_OFFERED_UNSAVED}>
+            <DaysOfferedFields
+              offered={daysOffered.offeredOpenDays}
+              extra={extraFromStored(daysOffered.offeredOpenDays, daysOffered.horizonDays)}
             />
-          </div>
-          <SubmitButton className={btnCls} pendingLabel="Saving…">
-            Save booking horizon
-          </SubmitButton>
-        </SaveForm>
+            <SubmitButton className={`${btnCls} mt-4`} pendingLabel="Saving…">
+              {SAVE_DAYS_OFFERED}
+            </SubmitButton>
+          </SaveForm>
+        ) : (
+          <UnreadableNotice>{DAYS_OFFERED_UNREADABLE}</UnreadableNotice>
+        )}
       </section>
 
       {/* #1892: the new agent template, moved from its own route.

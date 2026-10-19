@@ -23,6 +23,9 @@
  *   every share on the page MEANS while the numbers still looked normal. The
  *   monitor lane already refuses on these grounds; this page used to take the
  *   default and present the result as measured, and the two cannot both be right.
+ * - The OFFERED OPEN DAYS failing is fatal for the same reason (#3922). They set
+ *   the window every row's cover is judged over and the page's own words name it,
+ *   so a guessed count would quietly change what the page says a lead is shown.
  * - The ROSTER failing is not fatal. The supply half of the page is still worth
  *   reading, so the depth column reads as unknown and the page says so. It never
  *   reads as zero eligible agents.
@@ -31,6 +34,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { readBookingHorizonDays } from "@/lib/booking/settings";
+import { readOfferedOpenDays } from "@/lib/booking/days-offered-load";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import type { TierDepth } from "@/lib/routing/staffing-depth";
 import { log } from "@/lib/log";
@@ -117,6 +121,14 @@ export async function loadBucketSupply(
     return { measurable: false, reason: "booking-horizon" };
   }
 
+  // #3922: the stored offered open days. Null means the read failed, and the
+  // report refuses rather than judging every row over a guessed window.
+  const offeredOpenDays = await readOfferedOpenDays();
+  if (offeredOpenDays === null) {
+    log.error("bucket-supply", { msg: "offered open days unreadable" });
+    return { measurable: false, reason: "offered-open-days" };
+  }
+
   // The times already booked, which is the NUMERATOR of every share on the page
   // (#1937). Keyed by bucket CODE and then by date in the org's zone, so the
   // report never has to know about bucket ids.
@@ -140,6 +152,7 @@ export async function loadBucketSupply(
   return bucketSupplyReport({
     hours,
     horizonDays,
+    offeredOpenDays,
     nowMs: now.getTime(),
     buckets,
     depthByCode,

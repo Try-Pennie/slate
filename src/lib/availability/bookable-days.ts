@@ -47,22 +47,23 @@ import { DateTime } from "luxon";
  *
  * Do not raise this without re-measuring. `booking/settings.ts` records that a 14
  * day horizon was never adopted for this reason, even after the 200 agent load soak
- * passed (#440), and that the offered window stays at four days (#2360).
+ * passed (#440), and that the horizon stays at four days (#2360), which since #2840
+ * is the last resort's reach rather than what a lead is offered.
  */
 export const MAX_CLOSED_RUN_DAYS = 2;
 
-/**
- * How many OPEN business days a lead is offered (#2840), counted by
- * `openDaysWindowEndMs`, before the last resort opens one more (#2841).
+/*
+ * How many OPEN business days a lead is offered (#2840) used to be a constant here,
+ * `OFFERED_OPEN_DAYS = 3`, counted by `openDaysWindowEndMs` before the last resort
+ * opens more (#2841). Sales ops, 2026-09-28 (Slack #C091G6LEQ80,
+ * p1790609176877419), Sam: "You want to contain to 3 days. Cascade down with rule
+ * set. All else fails, day 4 which is 100% open."
  *
- * Sales ops, 2026-09-28 (Slack #C091G6LEQ80, p1790609176877419), Sam: "You want to
- * contain to 3 days. Cascade down with rule set. All else fails, day 4 which is
- * 100% open." The stored rows go on holding the booking horizon's days (four by
- * default), so the horizon is now the reach of the last resort rather than what a
- * lead is shown first, and a horizon of three or fewer leaves no fourth day to
- * open.
+ * Since #3922 it is a stored setting, `booking_settings.offered_open_days` (default
+ * 3), edited on the Hours page and read through `src/lib/booking/days-offered-load.ts`;
+ * its rules are in `src/lib/booking/days-offered.ts`. The constant is gone rather
+ * than kept as a fallback, so nothing can read the coded number as the live one.
  */
-export const OFFERED_OPEN_DAYS = 3;
 
 /** How many calendar days to compute over, to find `bookableDays` days of times. */
 export function searchWindowDays(bookableDays: number): number {

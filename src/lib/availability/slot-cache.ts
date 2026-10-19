@@ -36,6 +36,7 @@ import { makePoolRefreshCoalescer, POST_CONFIRM_REFRESH_WINDOW_MS } from "./pool
 import { appUrl } from "@/lib/env";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
+import { loadOfferedOpenDaysCached } from "@/lib/booking/days-offered-load";
 import { selectWithTierFallback } from "@/lib/routing/tier-fallback";
 import { tierKeyOf } from "@/lib/routing/tiers";
 import { log } from "@/lib/log";
@@ -762,6 +763,12 @@ export interface AvailabilityRoutingMeta {
    * whenever this is true; the availability route alerts on it.
    */
   window_extended: boolean;
+  /**
+   * #3922: how many open days the window counted, the stored setting as this
+   * request read it, so the alert on `window_extended` names the number the lead
+   * was actually given rather than a constant. Null when no window was measured.
+   */
+  offered_open_days: number | null;
 }
 
 /**
@@ -817,18 +824,20 @@ export async function getBucketSlotsWithFallback(
         requested_tier: tierKeyOf(code),
         booked_tier: tierKeyOf(slotsFor.bucket.code),
         window_extended: windowExtended,
+        offered_open_days: offeredWin?.offeredOpenDays ?? null,
       },
     };
   };
 
-  // #2840: the lead is offered the next OFFERED_OPEN_DAYS days the business is
-  // open. Null when that cannot be measured, and then no window is imposed: the
-  // stored rows already hold the horizon the settings ask for, which is exactly
-  // what was served before this existed, so an unreadable week degrades to the
-  // old behaviour rather than to no times at all.
-  const windowEndMs = await timed(SERVER_TIMING_NAMES.hours, () =>
-    offeredWindowEndMs(nowMs, requested.eventType.min_notice_min),
+  // #2840: the lead is offered the next N days the business is open, N the stored
+  // offered open days (#3922). Null when that cannot be measured, and then no
+  // window is imposed: the stored rows already hold the horizon the settings ask
+  // for, which is exactly what was served before this existed, so an unreadable
+  // week or setting degrades to the old behaviour rather than to no times at all.
+  const offeredWin = await timed(SERVER_TIMING_NAMES.hours, () =>
+    offeredWindow(nowMs, requested.eventType.min_notice_min),
   );
+  const windowEndMs = offeredWin?.endMs ?? null;
   const inWindow = (slots: string[]) =>
     windowEndMs === null ? slots : slots.filter((s) => (parseStampMs(s) ?? Infinity) < windowEndMs);
 
@@ -876,14 +885,24 @@ export async function getBucketSlotsWithFallback(
 }
 
 /**
- * When the offered window closes (#2840): the end of the `OFFERED_OPEN_DAYS`th
- * open day, counting today only while a booking can still start before it
- * closes. Null when the org's week cannot be read or holds no such day.
+ * The offered window (#2840): when it closes, the end of the Nth open day with N
+ * the stored offered open days (#3922), counting today only while a booking can
+ * still start before it closes, and the N it counted.
+ *
+ * Null when the org's week or the setting cannot be read, or the week holds no
+ * such day. Both reads are the cached ones, so this costs no round trip on most
+ * requests, and both keep their last known value through a failed refresh; null
+ * is reached only on a cold isolate whose first read failed, where the stored
+ * rows are served as they are rather than cut by a number nobody saved.
  */
-async function offeredWindowEndMs(nowMs: number, minNoticeMin: number): Promise<number | null> {
+async function offeredWindow(
+  nowMs: number,
+  minNoticeMin: number,
+): Promise<{ endMs: number; offeredOpenDays: number } | null> {
   try {
-    const hours = await loadBusinessHoursCached();
-    return offeredWindowEndFor(hours, nowMs, minNoticeMin);
+    const [hours, offeredOpenDays] = await Promise.all([loadBusinessHoursCached(), loadOfferedOpenDaysCached()]);
+    const endMs = offeredWindowEndFor(hours, nowMs, minNoticeMin, offeredOpenDays);
+    return endMs === null ? null : { endMs, offeredOpenDays };
   } catch (err) {
     log.warn("availability", { msg: "offered window unmeasured, serving the stored horizon" }, err);
     return null;

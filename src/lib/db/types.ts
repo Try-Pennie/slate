@@ -399,6 +399,10 @@ export interface BookingSettings {
   /** #216: org-wide booking horizon in days (how far ahead leads can book).
    *  Null = unset; the resolver falls back to env then the coded default. */
   horizon_days: number | null;
+  /** #3922, migration 0190: how many open days every lead is offered. NOT NULL
+   *  DEFAULT 3 with a 1 to 7 check; `horizon_days` holds this plus the last resort's
+   *  extra days. Read through `src/lib/booking/days-offered-load.ts`. */
+  offered_open_days: number;
   /** #2297: the public booking kill switch. True stops the embed's booking WRITE
    *  (availability, sync, the key-authed API, reschedule and cancel all keep
    *  running). Stored NOT NULL DEFAULT false, so a row that predates the column

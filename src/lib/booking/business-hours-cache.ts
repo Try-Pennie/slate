@@ -51,9 +51,9 @@ export interface BusinessHours {
   source: "stored" | "seeded";
 }
 
-export interface CachedHoursDeps {
+export interface CachedHoursDeps<T = BusinessHours> {
   /** The real read. Throws on an unreadable week; never returns a fallback. */
-  load(): Promise<BusinessHours>;
+  load(): Promise<T>;
   /** How long a successful read stays fresh. Aligned to `SLOT_TTL_SECONDS`. */
   ttlMs: number;
   /** Injected clock, so the TTL is testable without waiting. */
@@ -62,13 +62,19 @@ export interface CachedHoursDeps {
   onStale(ageMs: number, err: unknown): void;
 }
 
-export function makeCachedHoursReader(deps: CachedHoursDeps): () => Promise<BusinessHours> {
-  let entry: { value: BusinessHours; readAt: number } | null = null;
+/**
+ * Generic over what it caches since #3922: the offered open days are applied
+ * beside the hours on the same hot path, so they are read on the same terms (the
+ * same TTL, the last known value through a failed refresh, a throw on a cold
+ * isolate's first failure) by this one reader rather than a copy of it (L370).
+ */
+export function makeCachedHoursReader<T = BusinessHours>(deps: CachedHoursDeps<T>): () => Promise<T> {
+  let entry: { value: T; readAt: number } | null = null;
   // One load at a time (#3123): a burst arriving on a cold or expired entry awaits
   // the leader's read rather than each starting its own round trip.
-  const shared = makeSharedInFlight<"hours", BusinessHours>();
+  const shared = makeSharedInFlight<"hours", T>();
 
-  return async function readHours(): Promise<BusinessHours> {
+  return async function readHours(): Promise<T> {
     const now = deps.now();
     if (entry && now - entry.readAt < deps.ttlMs) return entry.value;
 

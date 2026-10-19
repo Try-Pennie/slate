@@ -124,6 +124,7 @@ function slotsFor(isTest: boolean) {
       requested_tier: null,
       booked_tier: null,
       window_extended: false,
+      offered_open_days: 3,
     },
   };
 }
@@ -681,15 +682,15 @@ describe("GET /api/availability?booking= (#2827)", () => {
   });
 });
 
-// #2841: every tier the lead's cascade may use was full for three open days, so
-// the fourth was opened. Sales ops want to be told (Dan, 2026-09-28: "if this
-// happens, something is probably wrong, so I would set up an alert so that we
-// could look at it").
-describe("GET /api/availability: the fourth day was opened", () => {
+// #2841: every tier the lead's cascade may use was full for the offered open days
+// (the stored setting, #3922; 4 in this fixture), so a later day was opened.
+// Sales ops want to be told (Dan, 2026-09-28: "if this happens, something is
+// probably wrong, so I would set up an alert so that we could look at it").
+describe("GET /api/availability: a day past the offered window was opened", () => {
   const extended = (isTest = false) => ({
     ...slotsFor(isTest),
     bucket: { code: "511", is_test: isTest },
-    routing: { ...slotsFor(isTest).routing, requested_code: "511", effective_code: "511", window_extended: true },
+    routing: { ...slotsFor(isTest).routing, requested_code: "511", effective_code: "511", window_extended: true, offered_open_days: 4 },
   });
   beforeEach(() => sendThrottledAlert.mockClear());
   const windowAlerts = () =>
@@ -706,6 +707,8 @@ describe("GET /api/availability: the fourth day was opened", () => {
     expect(calls[0][0]).toBe("booking_window_extended:511");
     expect(typeof calls[0][1]).toBe("number");
     expect(String(calls[0][2])).toContain("511");
+    // #3922: the number the lead was given, as the request read the stored setting.
+    expect(String(calls[0][2])).toContain("next 4 open days");
   });
 
   it("says nothing when the times were inside the window", async () => {

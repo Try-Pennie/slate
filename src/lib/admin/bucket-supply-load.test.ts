@@ -37,6 +37,11 @@ const settings = vi.hoisted(() => ({
   readBookingHorizonDays: vi.fn(async (): Promise<number | null> => 4),
 }));
 
+// #3922: the offered open days, a stored setting read through its own loader.
+const offered = vi.hoisted(() => ({
+  readOfferedOpenDays: vi.fn(async (): Promise<number | null> => 3),
+}));
+
 const depth = vi.hoisted(() => ({
   loadTierDepths: vi.fn(async () => [
     { code: "120", name: "Low | Beyond | No Legal Param", depth: 4, effectiveDepth: 3, poolKey: "pool-low-beyond", poolLabel: "Low with Beyond" },
@@ -60,6 +65,7 @@ const db = vi.hoisted(() => ({
 
 vi.mock("@/lib/booking/business-hours-load", () => hours);
 vi.mock("@/lib/booking/settings", () => settings);
+vi.mock("@/lib/booking/days-offered-load", () => offered);
 vi.mock("@/lib/routing/staffing-depth-load", () => depth);
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
@@ -156,6 +162,7 @@ beforeEach(() => {
     })),
   });
   settings.readBookingHorizonDays.mockResolvedValue(4);
+  offered.readOfferedOpenDays.mockResolvedValue(3);
   depth.loadTierDepths.mockResolvedValue([
     { code: "120", name: "Low | Beyond | No Legal Param", depth: 4, effectiveDepth: 3, poolKey: "pool-low-beyond", poolLabel: "Low with Beyond" },
     { code: "110", name: "Low | Both | No Legal Param", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low" },
@@ -300,6 +307,24 @@ describe("loadBucketSupply (#1254)", () => {
     settings.readBookingHorizonDays.mockResolvedValue(4);
     const report = await loadBucketSupply("o1", new Date("2026-08-04T14:00:00Z"));
     expect(report.measurable).toBe(true);
+  });
+
+  // #3922: the offered open days set the window every row is judged over, so an
+  // unreadable setting is the horizon's case again: no report, never one judged
+  // over a guessed count.
+  it("refuses to report at all when the offered open days could not be read", async () => {
+    offered.readOfferedOpenDays.mockResolvedValue(null);
+    const report = await loadBucketSupply("o1", new Date("2026-08-04T14:00:00Z"));
+    expect(report.measurable === false && report.reason).toBe("offered-open-days");
+  });
+
+  it("judges the window over the stored offered open days, 4 when 4 are saved", async () => {
+    offered.readOfferedOpenDays.mockResolvedValue(4);
+    const report = await loadBucketSupply("o1", new Date("2026-08-04T14:00:00Z"));
+    expect(report.measurable && report.offeredOpenDays).toBe(4);
+    if (!report.measurable) return;
+    const days = report.rows.find((r) => r.code === "110")?.offeredDays;
+    expect(days).toHaveLength(4);
   });
 
   // #1937: what the page is for once leads start arriving.
