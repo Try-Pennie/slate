@@ -75,7 +75,7 @@ import {
   type FaultModeVerdict,
 } from "./preflight-checks.ts";
 import { parseFaultTargets } from "../../src/lib/loadtest-fault.ts";
-import { BASELINE_BOOKINGS, BASELINE_PER_MINUTE } from "./latency-bar.ts";
+import { BASELINE_PER_MINUTE, BASELINE_PLANNED } from "./latency-bar.ts";
 import { readLoadtestEcho, type LoadtestEcho } from "../../src/lib/loadtest-echo.ts";
 
 const PROD_HOSTS = ["slate.trypennie.app", "drukfvgaynzrralbzkzj.supabase.co"];
@@ -337,8 +337,9 @@ function write(result: DriverResult, out: string = OUT): void {
 async function steady(
   mode: "steady" | "fault" | "baseline" = "steady",
   minutes = RUN_MINUTES,
-  // #3258: the baseline paces itself, a dozen bookings at four a minute, so it
-  // measures one booking at rest rather than a driver's share of the load.
+  // #3258: the baseline paces itself (#3517: a warm up and twenty measured bookings,
+  // six a minute, `latency-bar.ts`), so it measures one booking at rest rather than a
+  // driver's share of the load.
   pace: { total: number; perMinute: number } = {
     total: PER_DRIVER_PER_MINUTE * minutes,
     perMinute: PER_DRIVER_PER_MINUTE,
@@ -772,5 +773,5 @@ await (MODE === "burst"
   : MODE === "fault"
     ? fault()
     : MODE === "baseline"
-      ? steady("baseline", 0, { total: BASELINE_BOOKINGS, perMinute: BASELINE_PER_MINUTE })
+      ? steady("baseline", 0, { total: BASELINE_PLANNED, perMinute: BASELINE_PER_MINUTE })
       : steady());

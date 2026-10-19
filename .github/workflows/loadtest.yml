@@ -308,13 +308,15 @@ jobs:
           name: preflight
           path: results/
 
-  # The same day baseline (#3258): a dozen bookings at rest, one every fifteen
-  # seconds, on the deployment and branch the steady pass is about to drive, and
-  # before anything else loads them. The steady pass's latency is judged against a
-  # multiple of its median rather than a fixed number, because a fixed number was
-  # judging the throwaway environment more than the code: the 09-15 code measured
-  # 3.5s at the p95 on 09-15 and 7.0s on 2026-10-04. The absolute bar is still
-  # reported. See scripts/loadtest/latency-bar.ts.
+  # The same day baseline (#3258): bookings at rest, one every ten seconds, on the
+  # deployment and branch the steady pass is about to drive, and before anything else
+  # loads them. Its first two are a warm up the judge drops and the median is taken over
+  # the twenty after them (#3517). The steady pass's p95 is judged against a multiple of
+  # that median, because a bar fixed alone was judging the throwaway environment more
+  # than the code (the 09-15 code measured 3.5s at the p95 on 09-15 and 7.0s on
+  # 2026-10-04), AND against a fixed limit calibrated on the 200 advisor runs, so a slow
+  # baseline cannot pass a slow run. See scripts/loadtest/latency-bar.ts. The timeout
+  # covers the driver's own deadline for this plan (scripts/test-loadtest-driver-deadline.ts).
   baseline:
     needs: preflight
     runs-on: ubuntu-latest
@@ -327,7 +329,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Book a dozen times at rest
+      - name: Book at rest, after a warm up
         env:
           SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
           BOOKING_API_KEY: ${{ secrets.LOADTEST_BOOKING_API_KEY }}

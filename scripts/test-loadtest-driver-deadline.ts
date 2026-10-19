@@ -24,7 +24,7 @@
 // Run: node --experimental-strip-types scripts/test-loadtest-driver-deadline.ts
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
-import { BASELINE_BOOKINGS } from "./loadtest/latency-bar.ts";
+import { BASELINE_PER_MINUTE, BASELINE_PLANNED } from "./loadtest/latency-bar.ts";
 import { promisify } from "node:util";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -474,15 +474,38 @@ function gateProblems(yml: string): string[] {
 
 // --- #3258: the same day baseline leg ---------------------------------------------------
 {
-  // The driver in baseline mode: its own plan (a dozen at four a minute), its own
-  // mode on the file the judge gathers by mode, and its own id prefix, so no steady
-  // booking id is reused. Cut short by the test deadline after its first request.
+  // The driver in baseline mode: its own plan (#3517: its warm up and the bookings
+  // measured after it, at six a minute), its own mode on the file the judge gathers by
+  // mode, and its own id prefix, so no steady booking id is reused. Cut short by the
+  // test deadline after its first request.
   const { code, stderr, result: r } = await runDriver("slow", { MODE: "baseline", DRIVER: "0" }, "baseline.json");
   eq(code, 0, `the baseline driver exits zero ${stderr.slice(0, 300)}`);
   eq(r?.mode, "baseline", "and writes a baseline file, which the judge gathers apart from the steady pass");
-  eq(r?.planned, BASELINE_BOOKINGS, "planning the baseline's dozen, not a steady driver's plan");
+  eq(r?.planned, BASELINE_PLANNED, "planning the warm up and the measured bookings, not a steady driver's plan");
   assert((r?.attempts.length ?? 0) >= 1, "having booked");
   assert(r?.attempts.every((a) => a.externalId.startsWith("run-3222-r-")) ?? false, "under the baseline's own id prefix");
+  eq(r?.attempts[0]?.n, 0, "numbering its bookings from the first, which is the position the judge drops the warm up by");
+}
+
+// --- #3517: the baseline job outlives the baseline driver's own deadline ------------------
+{
+  // A longer plan than the twelve it replaced: the job must still outlive the driver's
+  // deadline for it, so a slow day stops the driver and keeps its file rather than the
+  // platform killing it with nothing written (#3222).
+  const plan = { total: BASELINE_PLANNED, perMinute: BASELINE_PER_MINUTE };
+  const yml = readFileSync(join(ROOT, ".github/workflows/loadtest.yml"), "utf8");
+  const declaredOf = (text: string) =>
+    Number(/^ {4}timeout-minutes:\s*(\d+)/m.exec(/^ {2}baseline:\n([\s\S]*?)(?=^ {2}\S)/m.exec(text)?.[1] ?? "")?.[1] ?? NaN);
+  const declared = declaredOf(yml);
+  // L50: an unreadable timeout is NaN, which would pass no comparison; say so by name.
+  assert(Number.isFinite(declared), "the baseline job's timeout-minutes is read from the workflow");
+  assert(
+    declared >= driveJobTimeoutMinutes(plan),
+    `the baseline job's ${declared} minutes cover the ${driveJobTimeoutMinutes(plan)} its plan needs`,
+  );
+  // Control (L1): a baseline job shorter than its plan needs is read as short.
+  const planted = yml.replace(/(^ {2}baseline:\n[\s\S]*?^ {4}timeout-minutes:\s*)\d+/m, "$13");
+  assert(declaredOf(planted) < driveJobTimeoutMinutes(plan), "control: a three minute baseline job is caught");
 }
 /**
  * Why the baseline is not wired the way the judge relies on (#3258), as findings, so
