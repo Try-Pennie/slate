@@ -629,14 +629,18 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   //
   //   24h    the workflow's own cadence, read off its cron.
   //   x2     so ONE dropped run does not page.
-  //   +3h    the worst GitHub scheduling LATENESS this repo has measured.
+  //   +9h30m the worst GitHub scheduling LATENESS measured on this workflow (#3920: 262
+  //          to 570 minutes over its last 32 runs; it read 3h when #2493 wrote this).
   //   +10m   the job's own `timeout-minutes`, because the stamp lands at the END of a run.
   //
-  // That is 51h10m, and 52 clears it by under an hour.
+  // That is 57h40m, and 58 clears it by under an hour. A night the clock check skips
+  // (#3920, inside business hours) stamps nothing either, so three skipped nights in a
+  // row are past this and page, which is how a schedule that drifted back into the
+  // working day is noticed rather than read as a quiet detector.
   // `scripts/test-kill-switch-schedule.ts` re-derives all of it FROM the workflow file,
   // so editing the cron or the timeout without revisiting this fails the build, and it
   // also refuses a bound with days of slack in it.
-  "verdict:kill-switch": 52 * 60 * MIN,
+  "verdict:kill-switch": 58 * 60 * MIN,
   // The daily proof that the shared confirm line answers (#3340). It runs as its own step
   // of the burst counter's workflow, so it shares that workflow's cron and timeout and the
   // same arithmetic: 24h of cadence, doubled so one dropped run does not page, plus the 3h

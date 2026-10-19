@@ -17,8 +17,8 @@
  * be written down.
  *
  * - **Did it reach a MEASURED verdict?** That is what the `verdict:kill-switch` stamp
- *   records, and it is the only thing that may write it. The command has fourteen
- *   endings and half of them mean it never got to ask the question. A stamp on one of
+ *   records, and it is the only thing that may write it. The command has sixteen
+ *   endings and most of them mean it never got to ask the question. A stamp on one of
  *   those would report the detector concluding while it is blind, which is the exact
  *   substitution the verdict family exists to stop (#1394, L98, L331).
  * - **What to SAY.** The good day says nothing, because a daily message reporting
@@ -52,6 +52,12 @@ export interface KillSwitchSummaryFile {
 export interface KillSwitchReportDecision {
   /** Whether the run MEASURED whether the switch refuses and releases. Only this may stamp. */
   concluded: boolean;
+  /**
+   * Whether the run stood down because it started inside the org's business
+   * hours (#3920). Neither a pass nor a failure, so the reporter says it in its own
+   * words rather than in either of theirs.
+   */
+  skipped: boolean;
   /** What to post, or null when there is nothing worth saying. */
   alert: string | null;
 }
@@ -65,6 +71,11 @@ interface RunJudgement {
   concluded: boolean;
   /** The opening sentence, or null when there is nothing worth saying. */
   headline: string | null;
+  /**
+   * True only for the stand down that is the clock check working (#3920): a skip,
+   * reported as one. Absent everywhere else.
+   */
+  skipped?: true;
 }
 
 /**
@@ -172,6 +183,23 @@ export const RUN_JUDGEMENT: Record<KillSwitchExit, RunJudgement> = {
       "Tonight's kill switch proof stood down without testing anything, because public booking " +
       "was ALREADY stopped and finishing the run would have started it again for whoever stopped it.",
   },
+  // The two clock stand downs (#3920). Neither paused anything, so neither measured the
+  // switch and neither stamps: a run of them reaches the staleness bound and pages, which
+  // is how a schedule that drifted back into business hours is noticed (L98). Both SPEAK,
+  // for the reason alreadyPaused does: silence on this lane means a pass.
+  [KILL_SWITCH_EXIT.insideBusinessHours]: {
+    concluded: false,
+    skipped: true,
+    headline:
+      "Tonight's kill switch proof was skipped and did not run, because it started inside " +
+      "the org's business hours, where pausing public booking would turn real leads away.",
+  },
+  [KILL_SWITCH_EXIT.hoursUnreadable]: {
+    concluded: false,
+    headline:
+      "Tonight's kill switch proof could not read the org's business hours, so it could not tell " +
+      "whether pausing public booking was safe and paused nothing.",
+  },
   [KILL_SWITCH_EXIT.flagNotSet]: {
     concluded: false,
     headline:
@@ -184,6 +212,13 @@ export const RUN_JUDGEMENT: Record<KillSwitchExit, RunJudgement> = {
 export const CONCLUDING_EXITS: ReadonlySet<number> = new Set(
   Object.entries(RUN_JUDGEMENT)
     .filter(([, judgement]) => judgement.concluded)
+    .map(([code]) => Number(code)),
+);
+
+/** The endings that are a SKIP rather than a pass or a failure, derived from the same table. */
+export const SKIPPED_EXITS: ReadonlySet<number> = new Set(
+  Object.entries(RUN_JUDGEMENT)
+    .filter(([, judgement]) => judgement.skipped === true)
     .map(([code]) => Number(code)),
 );
 
@@ -216,6 +251,7 @@ export function decideKillSwitchReport(
   if (summary === null) {
     return {
       concluded: false,
+      skipped: false,
       alert: [
         "Tonight's proof that public booking can be stopped did not complete, so nothing measured " +
           "whether the kill switch still refuses a booking when it is on and releases one when it is off.",
@@ -234,6 +270,7 @@ export function decideKillSwitchReport(
     // must arrive as something somebody reads, not as a silent pass (L98).
     return {
       concluded: false,
+      skipped: false,
       alert: [
         `Tonight's kill switch proof ended on exit ${summary.exit}, which nothing here knows how to ` +
           "read, so whether public booking can still be stopped was not established.",
@@ -244,10 +281,12 @@ export function decideKillSwitchReport(
     };
   }
 
-  if (judgement.headline === null) return { concluded: judgement.concluded, alert: null };
+  const skipped = judgement.skipped === true;
+  if (judgement.headline === null) return { concluded: judgement.concluded, skipped, alert: null };
 
   return {
     concluded: judgement.concluded,
+    skipped,
     alert: [
       judgement.headline,
       // The command's OWN sentence, so the remedy is the one it measured and there is
