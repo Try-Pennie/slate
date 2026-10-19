@@ -6,12 +6,13 @@
  * `loadtest-stub.ts`.
  *
  * Why it exists. The Google stand in answers every call at once, while a production
- * confirm spends seconds on its live free/busy check and its calendar write (#3221).
- * So every load run's confirm latency and burst timing left out production's
- * largest cost, and a crowd that walked the tier ladder inside the confirm line's
+ * confirm waits on its live free/busy check and its calendar write. So every load
+ * run's confirm latency and burst timing left that time out, and a crowd that walked the tier ladder inside the confirm line's
  * wait on a load run said nothing about whether a production crowd would. With this
  * set, the stubbed calls a lead waits on take a time drawn from a production shaped
- * distribution before they answer.
+ * distribution before they answer. The values are read off production's `confirm
+ * answered` lines (`google_read_ms`, `google_write_ms`, #3490) by
+ * `scripts/loadtest/google-timings.ts`; the RUNBOOK's "The Google delay" has the steps.
  *
  * The setting is one string, `SLATE_LOADTEST_GOOGLE_DELAY`, naming a median and a
  * 95th percentile in milliseconds for reads, writes, or both:

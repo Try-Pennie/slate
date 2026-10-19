@@ -1888,12 +1888,19 @@ The sequence, every dispatch from the same commit the deployment was built from:
 
 ## The Google delay (#3490)
 
-The Google stand in (`src/lib/google/loadtest-stub.ts`) answers every call at once. A
-production confirm spends seconds on its live free/busy check and its calendar write
-(about 3s and 5s in #3221; production's confirm read p50 4.8s and p95 8.0s on
-2026-10-05), so a load run's confirm latency and burst timings left out production's
-largest cost. Inside the confirm a load run now reads about 200ms at the median, so the
-stand in's zero is most of the gap between a load run and a production confirm, and the
+The Google stand in (`src/lib/google/loadtest-stub.ts`) answers every call at once, while a
+production confirm waits on its live free/busy check and its calendar write, so a load
+run's confirm latency and burst timings left those out. **No figure for either call had
+been measured when this was built.** The "p50 4.8s, p95 8.0s" once quoted here as
+production's confirm read was the WHOLE confirm's response time in #3258 (489 confirms on
+2026-10-05), and the "about 3s and 5s" were the contention model's assumed Google times
+(`PRODUCTION_PROFILE` in `scripts/lib/confirm-load-model.ts`), not a measurement. Whole
+confirms now run about three times faster, measured on the evening of 2026-10-18 ET over
+the seven days before it (2026-10-12 to 2026-10-19 UTC, ending at the reading): booker new
+bookings p50 1,598ms and p95 3,861ms over 2,800 confirms, booking API new bookings p50 1,439ms
+and p95 3,360ms over 572. The read and the write are parts of the confirm, so at the median
+they take less than that, an upper bound and not a measurement of either.
+Inside the confirm a load run now reads about 200ms at the median, so the stand in's zero is most of the gap between a load run and a production confirm, and the
 burst bars (a crowd walking the tier ladder inside the confirm line's wait) had never had
 Google time in them.
 
@@ -1927,9 +1934,59 @@ with no `--var`, which puts the deployment back to no delay, and the report's he
 the rig.
 
 **Choosing the values.** Take them from production's CURRENT Google timings for those
-calls, not from #3221's October figures: production has moved since. Two runs are
-comparable only on the same setting, so every latency figure, and the steady pass bar's
-same day baseline ratio (#3517), is read against runs that used the same delay.
+calls, never from the figures above: production has moved since, and they were never
+Google timings. Two runs are comparable only on the same setting, so every latency figure,
+and the steady pass bar's same day baseline ratio (#3517), is read against runs that used
+the same delay.
+
+**Where the timings come from (#3490).** Every `confirm answered` line carries the
+confirm's Google time, read off the stage profile every confirm already collects
+(`googleTimingFields` in `src/lib/booking/confirm-profile.ts`, which says exactly what
+each field does and does not measure):
+
+| field | covers |
+|---|---|
+| `google_read_ms`, `google_read_calls` | `google freeBusy` and `google freeBusy.many`, the live check |
+| `google_write_ms`, `google_write_calls` | `google events.insert`, `google events.patch`, `google events.delete`, the calendar writes |
+| `google_mint_ms`, `google_mint_calls` | `google token mint`, which the stand in does NOT delay |
+
+`_ms` is the covered wall time of that group's calls (parallel calls counted once), from
+each call starting to the confirm resuming after its response, excluding reading the
+response body and getting the token. A group the confirm made no call in is ABSENT from the
+line, never 0. `scripts/test-loadtest-google-delay.ts` holds the read and write labels
+against the very calls the stand in delays, so the fields and the delay cover the same set.
+
+**Reading the values off production.** Two to three days of confirms (about 480 a day),
+from a deploy that carries the fields, then two commands from a checkout of current main
+holding the logs token (`scripts/logs.ts` header). The first lists the lines and saves
+logs.ts's exit code, the second turns them into the value. The dates are an example: the
+window must start after the deploy that added the fields.
+
+```
+node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/logs.ts 'msg="confirm answered"' --from 2026-10-20T00:00:00Z --to 2026-10-23T00:00:00Z --lines > google-timings-lines.txt; echo $? > google-timings-exit.txt
+```
+
+```
+node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/google-timings.ts google-timings-lines.txt --logs-exit "$(cat google-timings-exit.txt)"
+```
+
+It prints, per group, the p50, p95 and max per CALL (from confirms that made exactly one
+such call, since the stand in draws one delay per call and a confirm's covered time over
+several calls is not one call's time) and per CONFIRM beside it, then the line
+`google_delay: read=<p50>/<p95>,write=<p50>/<p95>` to dispatch with. Percentiles are
+nearest rank, the judge's own (`percentiles` in `judge-booking-run.ts`). Dry runs are left
+out. It exits 0 on a whole listing, 2 when there is nothing to stand on (logs.ts exited
+anything but 0 or 3, the file has no verdict line, no line carries the fields, which is a
+window from before the deploy, or neither kind gave a usable value), and **3 when the listing is short**: `logs.ts --lines` can list fewer
+rows than it counted (its own exit 3), and then the report says INCOMPLETE and names how
+many of how many the percentiles are over, judged from both the exit code given and the two
+numbers in the file. Narrow `--slice-minutes` and list again rather than using a short
+listing's value. Under 100 single call confirms it warns that the p95 is a handful of rows.
+
+Record in the pair's notes the window, the value used, the listed and counted numbers, and
+that the stand in delays free/busy and event calls only, never token mints, which caused
+most of the slow confirms of 2026-10-12 to 18 (the mint figure the report prints is the
+size of what the pair leaves out).
 
 ## Tearing down (#2322)
 
