@@ -10,7 +10,8 @@ import {
 } from "@/lib/booking/reroute";
 import { placeRerouteHold, releaseRerouteHold } from "@/lib/booking/reroute-hold-store";
 import { rerouteHoldStoreDeps } from "@/lib/booking/reroute-hold-store-live";
-import type { ClaimRerouteHoldRefusal, RerouteSwapRefusal } from "@/lib/db/reroute-hold-refusals";
+import type { RerouteSwapRefusal } from "@/lib/db/reroute-hold-refusals";
+import { readClaimedRerouteHold, rerouteReassignOutcome } from "@/lib/booking/reroute-wiring";
 import { loadCurrentAgentPicture } from "@/lib/availability/service";
 import { readLadderInputsLive } from "@/lib/availability/ladder-inputs-live";
 import { reportWriteFailure } from "@/lib/db/result";
@@ -118,7 +119,7 @@ import {
 } from "@/lib/booking/bulk-reassign";
 import { selectCoverageReassignTarget, type CoverageTargetDeps } from "@/lib/booking/coverage-target";
 import { retryUnplaceableCoverage, type CoverageRetrySummary } from "@/lib/booking/coverage-retry";
-import { coverageSweepActor } from "@/lib/booking/coverage-sweep-actor";
+import { coverageSweepActor, coverageSweepReason } from "@/lib/booking/coverage-sweep-actor";
 import type { CoverageSweepCancelReport } from "@/lib/booking/coverage-sweep-cancel";
 import { recordAudit } from "@/lib/audit";
 import { acquireLease, releaseLock } from "@/lib/locks";
@@ -3451,20 +3452,16 @@ function realRerouteDeps(actor: BookingActor): RerouteDeps {
       ),
     placeHold: (args) => placeRerouteHold(args, holds),
     releaseHold: (bookingId) => releaseRerouteHold(bookingId, holds),
-    claimHold: async (orgId, bookingId, holdId) => {
-      const rows = unwrap(
-        await supabaseAdmin().rpc("claim_reroute_hold", { p_org_id: orgId, p_booking_id: bookingId, p_hold_id: holdId }),
-        "claim_reroute_hold",
-      ) as {
-        agent_user_id: string | null;
-        target_bucket_id: string | null;
-        refused: ClaimRerouteHoldRefusal | null;
-        result: Record<string, unknown> | null;
-      }[];
-      const row = rows?.[0];
-      if (!row) throw new Error(`claim_reroute_hold returned no row for booking ${bookingId}`);
-      return { refused: row.refused, result: row.result, agentUserId: row.agent_user_id, targetBucketId: row.target_bucket_id };
-    },
+    // #1643: the no row refusal and the over cap outcome below live in
+    // reroute-wiring.ts, where a node suite drives them.
+    claimHold: async (orgId, bookingId, holdId) =>
+      readClaimedRerouteHold(
+        unwrap(
+          await supabaseAdmin().rpc("claim_reroute_hold", { p_org_id: orgId, p_booking_id: bookingId, p_hold_id: holdId }),
+          "claim_reroute_hold",
+        ),
+        bookingId,
+      ),
     verifyFree: base.verifyFree,
     agentById: async (id) =>
       unwrap(await supabaseAdmin().from("users").select("id, name, email").eq("id", id).maybeSingle(), "reroute advisor") as
@@ -3472,21 +3469,15 @@ function realRerouteDeps(actor: BookingActor): RerouteDeps {
         | null,
     bucketById: async (id) =>
       unwrap(await supabaseAdmin().from("buckets").select("*").eq("id", id).maybeSingle(), "reroute bucket") as Bucket | null,
-    reassign: async (bookingId, agentEmail, reason, reroute) => {
-      try {
-        await orchestration.reassignBooking(bookingId, agentEmail, reason, base, {
+    reassign: (bookingId, agentEmail, reason, reroute) =>
+      rerouteReassignOutcome(() =>
+        orchestration.reassignBooking(bookingId, agentEmail, reason, base, {
           actor,
           initiator: "admin",
           allowNonBookable: true,
           reroute,
-        });
-        return "moved";
-      } catch (err) {
-        // Thrown before any calendar event exists, so nothing is left to clean up.
-        if (err instanceof orchestration.DailyCapExceededError) return "over_cap";
-        throw err;
-      }
-    },
+        }),
+      ),
     onReleaseFailed: (bookingId, err) => {
       log.error("reroute", { msg: "could not release a reroute hold after a failed confirm; it stays until its lease ends", booking_id: bookingId }, err);
     },
@@ -3625,14 +3616,10 @@ function realBulkReassignDeps(): BulkReassignDeps {
       // #1241 added the offboarding case, it did not widen the guard (see
       // coverage-sweep-actor.ts).
       const sweepActor = coverageSweepActor(job);
-      // The reason was validated when the job was enqueued (the bulk-reassign route).
-      // Do NOT re-validate membership here (#346): a re-check against the live option
-      // set, which loadReasonOptions degrades to coded defaults on a transient read
-      // error, would fail a legitimate, already-approved reassign and burn its retries
-      // (dropping a coverage move). Trust the stored code; structural guard only.
-      const code = (job.reason_code ?? "").trim();
-      if (!code) throw new Error("bulk-reassign job has no reason code");
-      const reason: ValidatedReason = { code, detail: job.reason_detail ?? null };
+      // Why the move is recorded. Throws for a job with no reason code. Structural
+      // only, never a re-check against the live option set (#346): see
+      // coverage-sweep-actor.ts.
+      const reason = coverageSweepReason(job);
       // Downstream signal (#975): a coverage move reuses adminReassignBooking, so
       // it emits the SAME booking.reassigned webhook every reassign already does
       // (#2368; it was booking.rescheduled until then, which told Regal a time
