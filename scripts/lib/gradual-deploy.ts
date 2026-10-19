@@ -42,7 +42,7 @@
  */
 
 import type { ProbeOutcome } from "./post-deploy-probe.ts";
-import { deployObjectWorkers, uncheckedLineWarning, type LiveAppProtocol, type ObjectWorkerFacts } from "./object-worker-skip.ts";
+import { deployObjectWorkers, uncheckedLineWarning, uncomparedLineWarning, type LiveAppProtocol, type ObjectWorkerFacts } from "./object-worker-skip.ts";
 
 /** The Worker's name in wrangler.jsonc, and the key in the version override header. */
 export const WORKER_NAME = "slate";
@@ -560,7 +560,8 @@ export interface GradualOps {
    *  so a stamp that never lands is said. Null when none or unreadable. */
   objectWorkerStamp(config: string): Promise<string | null>;
   /** #3560: the confirm line protocol the app serving now speaks, read from its commit.
-   *  Asked only before the line Worker is deployed. May throw. */
+   *  Asked on every run, before the line Worker is deployed or skipped as unchanged
+   *  (#3854: report only when skipped). May throw. */
   liveAppProtocol(): Promise<LiveAppProtocol>;
   /** Whether a version was uploaded in cron standby (a canary): read from its
    *  annotation. Null when it could not be read. */
@@ -764,6 +765,9 @@ async function runUntilSplit(ops: GradualOps): Promise<GradualResult> {
   // on (the check fails open by design), but a check skipped on every deploy must be
   // visible where the job is read, or it reads as checked for ever.
   if (objects.unchecked.length > 0) ops.warn(uncheckedLineWarning(objects.unchecked, ops.target));
+  // And when the line did not change but could not be compared: nothing went out unchecked,
+  // but the read the refusal depends on is not working, which only a run that says so shows.
+  if (objects.uncompared.length > 0) ops.warn(uncomparedLineWarning(objects.uncompared, ops.target));
 
   // Both versions are uploaded BEFORE the split opens, so the split lasts only as long as
   // the probe, and a failed upload has changed nothing anybody is served.
