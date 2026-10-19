@@ -64,6 +64,29 @@ const oooNotice = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/monitor/ooo-event-mismatch", () => oooNotice);
 
+// #3919: what the sync hands the moved invite handler, and what a handler throw does
+// to the pass. The handler's own decisions are pinned in scripts/test-invite-moves.ts.
+const inviteMoves = vi.hoisted(() => ({
+  noticeOutOfStepInvites: vi.fn(async (_deps: unknown, _items: unknown[]) => ({
+    reverted: 0,
+    left: 0,
+    refused: 0,
+    resized: 0,
+    slateOwn: 0,
+    nothing: 0,
+    failed: [] as { bookingId: string; reason: string }[],
+  })),
+  reportInviteCheckFailures: vi.fn(async (_email: string, _failed: unknown[]) => {}),
+}));
+vi.mock("@/lib/google/invite-move-notice", async (importActual) => ({
+  ...(await importActual<typeof import("./invite-move-notice")>()),
+  noticeOutOfStepInvites: inviteMoves.noticeOutOfStepInvites,
+}));
+vi.mock("@/lib/google/invite-move-deps", () => ({
+  realInviteMoveDeps: (args: unknown) => ({ args }),
+  reportInviteCheckFailures: inviteMoves.reportInviteCheckFailures,
+}));
+
 import {
   applyEvents,
   loadSlateBookingEventIds,
@@ -1834,5 +1857,182 @@ describe("movedBusyRows (#3258)", () => {
         { gcal_event_id: "x", starts_at: "garbage", ends_at: "2026-01-01T11:00:00Z" },
       ]),
     ).toBe(1);
+  });
+});
+
+describe("a Slate booking's invite moved in Google Calendar (#3919)", () => {
+  const BOOKED = { start: "2026-10-19T20:05:00.000Z", end: "2026-10-19T20:25:00.000Z" };
+  const MOVED = { start: "2026-10-19T20:00:00.000Z", end: "2026-10-19T20:20:00.000Z" };
+
+  /** The reads and writes one incremental pass makes, with the agent's booking in it. */
+  function inviteSyncDb() {
+    const upserts: Record<string, unknown>[] = [];
+    const deletedIds: unknown[] = [];
+    const tokenWrites: unknown[] = [];
+    const from = (table: string) => {
+      let mode: "read" | "delete" | "update" = "read";
+      const b: Record<string, unknown> = {
+        select: () => b,
+        eq: () => b,
+        is: () => b,
+        not: () => b,
+        gte: () => b,
+        lt: () => b,
+        gt: () => b,
+        or: () => b,
+        order: () => b,
+        limit: () => b,
+        range: () => b,
+        in: (_col: string, vals: unknown[]) => {
+          if (mode === "delete" && table === "busy_blocks") {
+            deletedIds.push(...vals);
+            return Promise.resolve({ error: null, count: vals.length });
+          }
+          return b;
+        },
+        upsert: (rows: Record<string, unknown>[]) => {
+          upserts.push(...rows);
+          return Promise.resolve({ error: null });
+        },
+        update: (p: Record<string, unknown>) => {
+          mode = "update";
+          if (table === "agent_calendars" && "sync_token" in p) tokenWrites.push(p.sync_token);
+          return b;
+        },
+        delete: () => {
+          mode = "delete";
+          return b;
+        },
+        maybeSingle: () =>
+          Promise.resolve({ data: table === "users" ? { email: "bkenny@trypennie.com" } : null, error: null }),
+        then: (resolve: (v: { data: unknown[] | null; error: unknown }) => unknown) => {
+          let data: unknown[] = [];
+          if (table === "agent_calendars" && mode === "read") {
+            data = [
+              {
+                id: "cal-1",
+                user_id: "agent-1",
+                calendar_id: "bkenny@trypennie.com",
+                sync_token: "stored-token",
+                consecutive_failures: 0,
+                last_success_at: null,
+                last_sync_error: null,
+              },
+            ];
+          }
+          if (table === "availability_schedules") data = [{ timezone: "America/New_York" }];
+          if (table === "bookings") {
+            data = [{ id: "booking-1", gcal_event_id: "slate-evt", starts_at: BOOKED.start, ends_at: BOOKED.end }];
+          }
+          return Promise.resolve({ data, error: null }).then(resolve);
+        },
+      };
+      return b;
+    };
+    return { db: { from } as unknown as ReturnType<typeof supabaseAdmin>, upserts, deletedIds, tokenWrites };
+  }
+
+  const event = (w: { start: string; end: string }) => ({
+    id: "slate-evt",
+    status: "confirmed",
+    start: { dateTime: w.start },
+    end: { dateTime: w.end },
+    updated: "2026-10-19T12:19:04.000Z",
+  });
+
+  beforeEach(() => {
+    inviteMoves.noticeOutOfStepInvites.mockClear();
+    inviteMoves.reportInviteCheckFailures.mockClear();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-19T13:00:00.000Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("mirrors the moved invite as busy and hands it to the handler, rather than discarding it", async () => {
+    calMock.syncEvents.mockImplementationOnce(async () => ({
+      events: [event(MOVED)],
+      nextSyncToken: "next-token",
+      truncated: false,
+    }) as never);
+    const { db, upserts, deletedIds } = inviteSyncDb();
+    admin.current = db;
+
+    await runIncrementalSync("agent-1");
+
+    expect(upserts.map((u) => [u.gcal_event_id, u.starts_at, u.ends_at])).toEqual([
+      ["slate-evt", MOVED.start, MOVED.end],
+    ]);
+    expect(deletedIds).not.toContain("slate-evt");
+    expect(inviteMoves.noticeOutOfStepInvites).toHaveBeenCalledTimes(1);
+    expect(inviteMoves.noticeOutOfStepInvites.mock.calls[0]![1]).toEqual([
+      { eventId: "slate-evt", bookingId: "booking-1", bookedStartsAt: BOOKED.start, step: "moved" },
+    ]);
+  });
+
+  it("still discards an invite in step with its booking, and calls nothing", async () => {
+    calMock.syncEvents.mockImplementationOnce(async () => ({
+      events: [event(BOOKED)],
+      nextSyncToken: "next-token",
+      truncated: false,
+    }) as never);
+    const { db, upserts, deletedIds } = inviteSyncDb();
+    admin.current = db;
+
+    await runIncrementalSync("agent-1");
+
+    expect(upserts).toEqual([]);
+    expect(deletedIds).toContain("slate-evt");
+    expect(inviteMoves.noticeOutOfStepInvites).not.toHaveBeenCalled();
+  });
+
+  it("never fails the pass over an invite it could not check: the token advances and the invite is paged", async () => {
+    // A pass that threw here would never advance its token, so one unreadable invite
+    // would stop every other meeting of this advisor being cached.
+    calMock.syncEvents.mockImplementationOnce(async () => ({
+      events: [event(MOVED)],
+      nextSyncToken: "next-token",
+      truncated: false,
+    }) as never);
+    inviteMoves.noticeOutOfStepInvites.mockImplementationOnce(async () => ({
+      reverted: 0,
+      left: 0,
+      refused: 0,
+      resized: 0,
+      slateOwn: 0,
+      nothing: 0,
+      failed: [{ bookingId: "booking-1", reason: "503" }],
+    }));
+    const { db, tokenWrites, upserts } = inviteSyncDb();
+    admin.current = db;
+
+    await runIncrementalSync("agent-1");
+
+    expect(tokenWrites).toEqual(["next-token"]);
+    expect(upserts.map((u) => u.gcal_event_id)).toEqual(["slate-evt"]);
+    expect(inviteMoves.reportInviteCheckFailures).toHaveBeenCalledWith("bkenny@trypennie.com", [
+      { bookingId: "booking-1", reason: "503" },
+    ]);
+  });
+
+  it("pages every delivered invite as unchecked when the handler itself throws, and still advances", async () => {
+    calMock.syncEvents.mockImplementationOnce(async () => ({
+      events: [event(MOVED)],
+      nextSyncToken: "next-token",
+      truncated: false,
+    }) as never);
+    inviteMoves.noticeOutOfStepInvites.mockImplementationOnce(async () => {
+      throw new Error("a fault nobody predicted");
+    });
+    const { db, tokenWrites } = inviteSyncDb();
+    admin.current = db;
+
+    await runIncrementalSync("agent-1");
+
+    expect(tokenWrites).toEqual(["next-token"]);
+    expect(inviteMoves.reportInviteCheckFailures).toHaveBeenCalledWith("bkenny@trypennie.com", [
+      { bookingId: "booking-1", reason: "a fault nobody predicted" },
+    ]);
   });
 });

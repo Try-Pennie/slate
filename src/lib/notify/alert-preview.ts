@@ -598,6 +598,61 @@ import { formatSmokeCanaryRecovery } from "@/lib/monitor/smoke-canary-failure";
 // nothing outside scripts/ (#1598), so the preview reaches into scripts/ for it rather
 // than holding a copy of the wording (L41).
 import { buildSmokeFailureMessage } from "../../../scripts/lib/smoke-failure-message";
+import {
+  advisorLeftDm,
+  advisorRevertedDm,
+  inviteCheckFailedAlert,
+  inviteLaunchSweepAlert,
+  inviteMoveLeftAlert,
+  inviteResizedAlert,
+  inviteRevertRefusedAlert,
+  inviteRevertedAdvisorUntoldAlert,
+  managerLeftDm,
+  type InviteMoveFacts,
+} from "@/lib/google/invite-move-copy";
+
+/** #3919: the measured booking, 4:05 to 4:25 PM ET, moved five minutes earlier. */
+const INVITE_MOVE_FACTS: InviteMoveFacts = {
+  bookingId: "774521f6-0c1d-4b8e-9f3a-2d5e6a7b8c9d",
+  advisorName: "Dana Whitfield",
+  advisorEmail: "dana.whitfield@trypennie.com",
+  bookedStartsAt: "2026-10-19T20:05:00.000Z",
+  bookedEndsAt: "2026-10-19T20:25:00.000Z",
+  eventStartsAt: "2026-10-19T20:00:00.000Z",
+  eventEndsAt: "2026-10-19T20:20:00.000Z",
+  bookingUrl: "https://slate.trypennie.app/admin/bookings/774521f6-0c1d-4b8e-9f3a-2d5e6a7b8c9d",
+};
+/** The same call moved to the next morning, so the moved time names its day. */
+const INVITE_MOVE_FACTS_OTHER_DAY: InviteMoveFacts = {
+  ...INVITE_MOVE_FACTS,
+  bookingId: "1c9e5a3b-7d2f-4e18-a6b0-93f4c2d1e8a7",
+  advisorName: "Marcus Bell",
+  advisorEmail: "marcus.bell@trypennie.com",
+  eventStartsAt: "2026-10-20T14:00:00.000Z",
+  eventEndsAt: "2026-10-20T14:20:00.000Z",
+  bookingUrl: "https://slate.trypennie.app/admin/bookings/1c9e5a3b-7d2f-4e18-a6b0-93f4c2d1e8a7",
+};
+
+/**
+ * The Slack DMs about a moved invite (#3919). Not alerts: each goes once to one
+ * person. Here so the words an advisor and a manager read can be read before they
+ * ship, from the same builders the handler sends with.
+ */
+export interface InviteMoveDmPreview {
+  to: "advisor" | "manager";
+  state: string;
+  text: string;
+}
+
+export const INVITE_MOVE_DM_PREVIEWS: InviteMoveDmPreview[] = [
+  { to: "advisor", state: "their move was put back", text: advisorRevertedDm(INVITE_MOVE_FACTS) },
+  { to: "advisor", state: "their move was put back, to a time on another day", text: advisorRevertedDm(INVITE_MOVE_FACTS_OTHER_DAY) },
+  { to: "advisor", state: "a second move, left", text: advisorLeftDm(INVITE_MOVE_FACTS, "second-move") },
+  { to: "advisor", state: "a move inside 30 minutes, left", text: advisorLeftDm(INVITE_MOVE_FACTS, "near-start") },
+  { to: "manager", state: "their advisor's second move", text: managerLeftDm(INVITE_MOVE_FACTS, "second-move") },
+  { to: "manager", state: "their advisor's move inside 30 minutes", text: managerLeftDm(INVITE_MOVE_FACTS, "near-start") },
+  { to: "manager", state: "an advisor Slate holds only an address for", text: managerLeftDm({ ...INVITE_MOVE_FACTS, advisorName: null }, "second-move") },
+];
 
 /** One rendered state of one alert. */
 export interface AlertPreview {
@@ -5810,6 +5865,35 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: digestUnroutedUnreachableRecovery() },
   { key: "stale_phone_invite:*", state: "a corrected number the invite did not take", channel: "alert",
     text: stalePhoneInviteAlert("dana.whitfield@trypennie.com", "b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431") },
+  // #3919: a booking's invite moved by its advisor in Google Calendar.
+  { key: "booking_invite_moved:*", state: "a second move, left, advisor and manager both messaged", channel: "alert",
+    text: inviteMoveLeftAlert(INVITE_MOVE_FACTS, "second-move", { advisor: true, manager: "told" }) },
+  { key: "booking_invite_moved:*", state: "a move inside 30 minutes of the call, no manager of record", channel: "alert",
+    text: inviteMoveLeftAlert(INVITE_MOVE_FACTS, "near-start", { advisor: true, manager: "none" }) },
+  { key: "booking_invite_moved:*", state: "a left move whose messages reached nobody", channel: "alert",
+    text: inviteMoveLeftAlert(INVITE_MOVE_FACTS_OTHER_DAY, "second-move", { advisor: false, manager: "unreachable" }) },
+  { key: "booking_invite_moved:*", state: "Google refused putting the invite back", channel: "alert",
+    text: inviteRevertRefusedAlert(INVITE_MOVE_FACTS, { kind: "refused", reason: "403 forbiddenForNonOrganizer" }) },
+  { key: "booking_invite_moved:*", state: "the invite was gone when Slate went to put it back", channel: "alert",
+    text: inviteRevertRefusedAlert(INVITE_MOVE_FACTS, { kind: "gone" }) },
+  { key: "booking_invite_moved:*", state: "put back, but the advisor could not be messaged", channel: "alert",
+    text: inviteRevertedAdvisorUntoldAlert(INVITE_MOVE_FACTS) },
+  { key: "booking_invite_check_failed:*", state: "the record of earlier moves could not be read", channel: "alert",
+    text: inviteCheckFailedAlert(INVITE_MOVE_FACTS.advisorEmail, INVITE_MOVE_FACTS.bookingUrl,
+      shortErrorReason(new Error("booking invite changes read failed: canceling statement due to statement timeout"))) },
+  { key: "booking_invite_resized:*", state: "the call lengthened in Google Calendar", channel: "alert",
+    text: inviteResizedAlert({ ...INVITE_MOVE_FACTS, eventStartsAt: INVITE_MOVE_FACTS.bookedStartsAt, eventEndsAt: "2026-10-19T20:45:00.000Z" }) },
+  { key: "booking_invite_resized:*", state: "the call shortened in Google Calendar", channel: "alert",
+    text: inviteResizedAlert({ ...INVITE_MOVE_FACTS, eventStartsAt: INVITE_MOVE_FACTS.bookedStartsAt, eventEndsAt: "2026-10-19T20:15:00.000Z" }) },
+  { key: "booking_invite_launch_sweep", state: "two invites already out of step at launch", channel: "alert",
+    text: inviteLaunchSweepAlert([
+      { ...INVITE_MOVE_FACTS, step: "moved" },
+      { ...INVITE_MOVE_FACTS_OTHER_DAY, advisorName: null, step: "moved" },
+    ]) },
+  { key: "booking_invite_launch_sweep", state: "one invite out of step at launch, only its end", channel: "alert",
+    text: inviteLaunchSweepAlert([
+      { ...INVITE_MOVE_FACTS, eventStartsAt: INVITE_MOVE_FACTS.bookedStartsAt, eventEndsAt: "2026-10-19T20:45:00.000Z", step: "resized" },
+    ]) },
   { key: "webhook_dead:*", state: "an endpoint dead-lettering", channel: "alert",
     text: webhookDeadAlert("https://hooks.regal.io/slate/bookings", "booking.created", 5, "502 Bad Gateway",
       { intermediary: false }) },

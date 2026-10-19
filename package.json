@@ -29,6 +29,7 @@
     "preview:alerts": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/preview-alerts.ts",
     "check:workflow-settings": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/check-workflow-settings.ts",
     "import:calcom-schedules": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/import-calcom-schedules.ts",
+    "sweep:moved-invites": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/sweep-moved-invites.ts",
     "backfill:bookable-trait": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/backfill-bookable-trait.ts",
     "report:pilot-split": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/report-pilot-split.ts",
     "report:pilot-compare": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/report-pilot-compare.ts",

@@ -989,6 +989,36 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "One real booking was already made from a host page that is not the production site, and its reminder texts and call task have already gone out. A person cancels it or confirms the lead is real; nothing turns an off site booking into an on site one, so there is no healthy state to announce (#2715).",
   },
   {
+    // #3919: an advisor moved a booking's invite in Google Calendar and it was LEFT
+    // (a second move, or inside 30 minutes), or Google refused putting it back, or it
+    // was put back but the advisor could not be told. The suffix is the booking id
+    // and the move number, so each move posts once.
+    key: "booking_invite_moved:*",
+    kind: "incident",
+    suffix: "booking",
+    why: "One advisor edit of one booking's invite, already handled as far as Slate can: a person moves the call, reassigns it or has the advisor put the invite back, and the next edit is a separate move with its own key. Nothing Slate observes says the person has finished, so there is no healthy state to announce.",
+  },
+  {
+    // #3919: an out of step invite whose check failed (a read refused).
+    key: "booking_invite_check_failed:*",
+    kind: "incident",
+    suffix: "booking",
+    why: "One sync pass could not check one booking's changed invite; the invite stays blocked at both times and the next change to it is checked afresh, so there is no state to observe recovering, only the next check.",
+  },
+  {
+    // #3919, decision 1: an end only change, posted so its frequency can be seen.
+    key: "booking_invite_resized:*",
+    kind: "incident",
+    suffix: "booking",
+    why: "One advisor changed when one booking's invite ends; Slate leaves it and blocks the time, and nothing needs doing, so there is nothing to clear. Each new end is its own key.",
+  },
+  {
+    // #3919, decision 9: the one launch sweep's report.
+    key: "booking_invite_launch_sweep",
+    kind: "incident",
+    why: "Sent once, by a hand run sweep at launch, listing the invites already out of step; each is handled by a person and the sweep is not run again, so there is no healthy state to announce.",
+  },
+  {
     key: "call_me_now_failed",
     kind: "incident",
     why: "A lead pressed Call me now and Salesforce failed before the lead was marked for a call (#3718). The lead was already shown the failure and the times to book; whether somebody calls them is a person's decision, and nothing Slate observes afterwards turns that press into a call, so there is no healthy state to announce.",

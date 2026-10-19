@@ -8,6 +8,7 @@
 // Run: pnpm preview:alerts
 import {
   HANDOFF_NOTICE_PREVIEWS,
+  INVITE_MOVE_DM_PREVIEWS,
   OWNER_NOTICE_PREVIEWS,
   previewsByKey,
 } from "../src/lib/notify/alert-preview.ts";
@@ -46,4 +47,11 @@ for (const n of OWNER_NOTICE_PREVIEWS) {
   for (const line of n.text.split("\n")) console.log(`     ${line}`);
 }
 console.log(`\n${"=".repeat(78)}`);
-console.log(`${states} rendered states across ${alerts} alerts and the sales notices.`);
+console.log("MOVED INVITE DMS   [sent once to the advisor, and to their manager when a move is left (#3919)]");
+for (const n of INVITE_MOVE_DM_PREVIEWS) {
+  states++;
+  console.log(`\n  -- to the ${n.to}: ${n.state}`);
+  for (const line of n.text.split("\n")) console.log(`     ${line}`);
+}
+console.log(`\n${"=".repeat(78)}`);
+console.log(`${states} rendered states across ${alerts} alerts, the sales notices and the moved invite DMs.`);

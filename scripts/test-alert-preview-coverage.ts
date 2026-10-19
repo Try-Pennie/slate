@@ -30,6 +30,7 @@ import { ALERT_CATALOG } from "../src/lib/notify/alert-catalog.ts";
 import {
   ALERT_PREVIEWS,
   HANDOFF_NOTICE_PREVIEWS,
+  INVITE_MOVE_DM_PREVIEWS,
   OWNER_NOTICE_PREVIEWS,
   previewsByKey,
 } from "../src/lib/notify/alert-preview.ts";
@@ -131,6 +132,28 @@ for (const n of OWNER_NOTICE_PREVIEWS) {
   );
 }
 
+// #3919: the DMs about a moved invite, to the advisor and to their manager. Each
+// reads differently for a put back move, a second move and one inside 30 minutes,
+// and the advisor's must say where times change and who to ask.
+for (const to of ["advisor", "manager"] as const) {
+  assert(
+    INVITE_MOVE_DM_PREVIEWS.some((n) => n.to === to),
+    `the moved invite DM to the ${to} has a rendered state`,
+  );
+}
+for (const n of INVITE_MOVE_DM_PREVIEWS) {
+  for (const { pattern, why } of BROKEN) {
+    assert(!pattern.test(n.text), `moved invite DM to the ${n.to} (${n.state}) renders ${why}: ${JSON.stringify(n.text.slice(0, 160))}`);
+  }
+  assert(n.text.trim().length > 0, `moved invite DM to the ${n.to} (${n.state}) renders a non-empty message`);
+  assert(!/^\s*Slate\b/i.test(n.text), `moved invite DM to the ${n.to} (${n.state}) opens with the word "Slate"`);
+  assert(!n.text.includes("/booking/manage"), `moved invite DM (${n.state}) carries the lead's manage link`);
+  if (n.to === "advisor") {
+    assert(/not in Google Calendar/.test(n.text), `the advisor's DM (${n.state}) says times change in Slate, not Google`);
+    assert(/ask your manager/.test(n.text), `the advisor's DM (${n.state}) says to ask their manager`);
+  }
+}
+
 for (const p of ALERT_PREVIEWS) {
   for (const { pattern, why } of BROKEN) {
     assert(
@@ -170,6 +193,7 @@ for (const p of ALERT_PREVIEWS) {
     ...ALERT_PREVIEWS.map((p) => `${p.key}|${p.state}|${p.text}`),
     ...HANDOFF_NOTICE_PREVIEWS.map((n) => `${n.kind}|${n.state}|${n.text}`),
     ...OWNER_NOTICE_PREVIEWS.map((n) => `owner-notice|${n.state}|${n.text}`),
+    ...INVITE_MOVE_DM_PREVIEWS.map((n) => `invite-dm|${n.to}|${n.state}|${n.text}`),
   ].join("\n");
   const second = [
     ...again.map((p: { key: string; state: string; text: string }) => `${p.key}|${p.state}|${p.text}`),
@@ -178,6 +202,9 @@ for (const p of ALERT_PREVIEWS) {
     ),
     ...(bust.OWNER_NOTICE_PREVIEWS as { state: string; text: string }[]).map(
       (n) => `owner-notice|${n.state}|${n.text}`,
+    ),
+    ...(bust.INVITE_MOVE_DM_PREVIEWS as { to: string; state: string; text: string }[]).map(
+      (n) => `invite-dm|${n.to}|${n.state}|${n.text}`,
     ),
   ].join("\n");
   assert(first === second, "rendering twice produces identical copy (no wall-clock in the fixtures)");

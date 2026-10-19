@@ -21,6 +21,12 @@ import type { AlertResolve, ThrottledNotify } from "./alert-deps";
  * union EVERY source's blocks, slate included; a google-only union flags every
  * Slate booking as a gap and the sampler cries wolf from its first tick.
  *
+ * The one exception is what keeps this quiet about a moved invite (#3919, decision
+ * 7): a booking's invite its advisor moved in Google Calendar IS mirrored, at the
+ * time Google holds it, for as long as it disagrees with the booking
+ * (`splitSlateInvites`). So the busy time at the moved invite is in the cache and is
+ * not a gap, and the moved invite is reported by its own alerts instead of here.
+ *
  * Fail-safe directions, each pinned by a test:
  *  - a dead live read, or a failed cache read, is `unreadable`, never an empty
  *    finding (comparing live against a cache that failed to load "finds"

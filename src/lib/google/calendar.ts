@@ -64,6 +64,12 @@ export interface GoogleEvent {
   attendees?: { email?: string; self?: boolean; responseStatus?: string }[];
   /** The invite's body, read so the reminder lane can edit one line of it (#1334). */
   description?: string;
+  /**
+   * When the event was last modified (RFC 3339), which Google changes on every edit
+   * (#3919). It names ONE change: two runs that see the same moved invite see the
+   * same stamp, so it is the key that makes acting on that move happen once.
+   */
+  updated?: string;
 }
 
 export interface Interval {

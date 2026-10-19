@@ -183,6 +183,29 @@ export interface CalcomOverrideRemoval {
   resolved_at: string | null;
 }
 
+/**
+ * #3919 (migration 0189): one change to a Slate booking's invite that its advisor
+ * made in Google Calendar, and what Slate did. Read and written only by
+ * `src/lib/google/invite-move-deps.ts`; the rules are `invite-moves.ts`.
+ */
+export interface BookingInviteChange {
+  id: string;
+  booking_id: string;
+  user_id: string;
+  gcal_event_id: string;
+  kind: "moved" | "resized";
+  move_number: number | null;
+  action: "revert" | "leave_second_move" | "leave_near_start" | "report_resize" | "report_launch";
+  outcome: "reverted" | "revert_refused" | "event_gone" | null;
+  outcome_detail: string | null;
+  booked_starts_at: string;
+  booked_ends_at: string;
+  event_starts_at: string;
+  event_ends_at: string;
+  event_updated: string;
+  detected_at: string;
+}
+
 export interface EventType {
   id: string;
   org_id: string;
