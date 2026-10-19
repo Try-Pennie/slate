@@ -272,8 +272,9 @@ export type BucketSupplyReport =
        * `booking-horizon`: the org's horizon could not be read (#1654). It sets
        * both how many day columns exist and where each bucket's own allowance
        * runs out, so a guessed one does not make a share unavailable, it silently
-       * changes what every share MEANS. That is the worst of the three to get
-       * wrong, because the resulting number looks entirely normal.
+       * changes what every share MEANS. It and the offered open days below are
+       * the worst of these to get wrong, because the resulting number looks
+       * entirely normal.
        * `offered-open-days`: the stored offered open days could not be read
        * (#3922). They set the window every row's cover and the nearly full notice
        * are judged over, so a guessed count fails the same way the horizon does.
