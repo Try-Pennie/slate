@@ -75,14 +75,16 @@ export function advisorRevertedDm(f: InviteMoveFacts): string {
 }
 
 /** Decisions 4 and 5: the advisor, when their move was left where they put it. */
-export function advisorLeftDm(f: InviteMoveFacts, reason: LeftReason): string {
+export function advisorLeftDm(f: InviteMoveFacts, reason: LeftReason, managerTold: boolean): string {
+  // Sent after the manager's, so it says only what that DM measured.
+  const told = managerTold ? "told your manager" : "asked for somebody to sort it out";
   const why =
     reason === "second-move"
-      ? "You have moved this call before, so Slate has left it where you put it this time and told your manager."
-      : "It starts in less than 30 minutes, so Slate has left it where you put it and told your manager.";
+      ? `You have moved this call before, so Slate has left it where you put it this time and ${told}.`
+      : `It starts in less than 30 minutes, so Slate has left it where you put it and ${told}.`;
   return [
     `You moved your call at ${inviteWhen(f.bookedStartsAt)} to ${movedTo(f)} in Google Calendar. ${why} ` +
-      `The lead was booked for ${clock(f.bookedStartsAt)}, and Slate keeps you busy at both times until your manager sorts it out.`,
+      `The lead was booked for ${clock(f.bookedStartsAt)}, and Slate keeps you busy at both times until it is sorted out.`,
     SLATE_NOT_GOOGLE,
     askManager(f),
   ].join("\n");
@@ -105,8 +107,11 @@ export function managerLeftDm(f: InviteMoveFacts, reason: LeftReason): string {
 /** Who a left move's messages reached, for the channel post to say. */
 export interface LeftReach {
   advisor: boolean;
-  /** `none`: no manager of record. `unreachable`: one exists and the DM failed. */
-  manager: "told" | "unreachable" | "none";
+  /**
+   * `none`: measured to have no manager of record. `unreachable`: one exists and the
+   * DM failed. `unread`: the lookup itself failed, so whether one exists is unknown.
+   */
+  manager: "told" | "unreachable" | "none" | "unread";
 }
 
 /** Decisions 4 and 5: the alerts channel. */
@@ -121,7 +126,9 @@ export function inviteMoveLeftAlert(f: InviteMoveFacts, reason: LeftReason, reac
       ? "and so was their manager."
       : reach.manager === "unreachable"
         ? "and their manager could not be messaged on Slack."
-        : "and they have no manager of record in Slate.";
+        : reach.manager === "unread"
+          ? "and their manager could not be looked up, so was not messaged."
+          : "and they have no manager of record in Slate.";
   return (
     `${who(f)} moved a booking's invite in Google Calendar from ${inviteWhen(f.bookedStartsAt)} to ${movedTo(f)}. ` +
     `${why}, so it was not moved back, and the advisor is blocked at both times. ${advisor}, ${manager} ` +

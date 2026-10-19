@@ -218,7 +218,7 @@ interface World {
   recordConflict?: boolean;
   revertError?: unknown;
   advisorDm?: boolean;
-  manager?: { name: string | null; email: string } | null;
+  manager?: { name: string | null; email: string } | null | "unread";
   available?: boolean;
 }
 function fresh(over: Partial<FreshBooking> = {}): FreshBooking {
@@ -325,7 +325,8 @@ async function handlerCases(): Promise<void> {
     const { deps, calls } = harness({ nowMs: MORNING, live: again, prior: [rec({})] });
     const out = await noticeOutOfStepInvites(deps, [ITEM]);
     eq(calls.reverts.length, 0, "a second move is not put back");
-    eq(calls.dms.map((d) => d[0]), [EMAIL, "mdiaz@trypennie.com"], "the advisor and their manager are DMed");
+    eq(calls.dms.map((d) => d[0]).sort(), [EMAIL, "mdiaz@trypennie.com"].sort(), "the advisor and their manager are DMed");
+    assert(/told your manager/.test(calls.dms.find((d) => d[0] === EMAIL)![1]), "the advisor is told their manager knows, because that DM was delivered first");
     eq(calls.posts.map((p) => p[0]), [`booking_invite_moved:${BOOKING}:2`], "and it is posted to the alerts channel");
     assert(/second time/i.test(calls.posts[0]![1]), "the post says it is the second move");
     eq(out.left, 1, "the summary counts it as left in place");
@@ -345,6 +346,15 @@ async function handlerCases(): Promise<void> {
     await noticeOutOfStepInvites(deps, [ITEM]);
     eq(calls.dms.map((d) => d[0]), [EMAIL], "only the advisor can be DMed");
     assert(/no manager of record/i.test(calls.posts[0]![1]), "the post says there is no manager to tell");
+    assert(!/told your manager/.test(calls.dms[0]![1]), "and the advisor is not told a manager knows");
+  }
+  // The manager lookup FAILED: never reported as having no manager (L11).
+  {
+    const { deps, calls } = harness({ nowMs: NEAR, manager: "unread" });
+    await noticeOutOfStepInvites(deps, [ITEM]);
+    eq(calls.dms.map((d) => d[0]), [EMAIL], "nobody but the advisor can be DMed");
+    assert(/could not be looked up/.test(calls.posts[0]![1]), "the post says the manager could not be looked up");
+    assert(!/no manager of record/.test(calls.posts[0]![1]), "and never that there is no manager");
   }
   // Slate's own reschedule holds the booking's lock: not a move at all.
   {
@@ -475,6 +485,32 @@ async function sweepCases(): Promise<void> {
   eq(mirrors.map((m) => [m.eventId, m.startsAt]), [[EVENT, "2026-10-19T20:00:00.000Z"]], "and its moved time is blocked");
   eq(posts.length, 1, "one message goes to the alerts channel");
   assert(posts[0]!.includes("Brian Kenny") && !/moved back/i.test(posts[0]!.replace(/not moved back/gi, "")), "naming the advisor and moving nothing back");
+
+  // Another run (the live handler, or an earlier sweep) records one first: that one is
+  // neither blocked again nor reported by this run.
+  {
+    const mirrors2: string[] = [];
+    const posts2: string[] = [];
+    const out2 = await sweepOutOfStepInvites({
+      ...deps,
+      loadUpcoming: async () => [
+        { ...fresh(), advisorEmail: EMAIL, advisorName: "Brian Kenny" },
+        { ...fresh({ id: "b-4", gcalEventId: "evt-4" }), advisorEmail: "ana@trypennie.com", advisorName: "Ana Ruiz" },
+      ],
+      bookingsWithChanges: async () => new Set(),
+      readEvent: async () => MOVED,
+      recordChange: async (row) => (row.bookingId === BOOKING ? null : "row"),
+      writeMirror: async (m) => {
+        mirrors2.push(m.eventId);
+      },
+      post: async (_k, text) => {
+        posts2.push(text);
+      },
+    });
+    eq(mirrors2, ["evt-4"], "only what this run recorded is blocked");
+    eq(out2.recordedElsewhere, 1, "the one recorded elsewhere is counted");
+    assert(posts2.length === 1 && posts2[0]!.includes("Ana Ruiz") && !posts2[0]!.includes("Brian Kenny"), "and only what this run recorded is reported");
+  }
 
   const dry = await sweepOutOfStepInvites({ ...deps, apply: false, recordChange: async () => { throw new Error("dry run wrote"); }, writeMirror: async () => { throw new Error("dry run wrote"); }, post: async () => { throw new Error("dry run posted"); } });
   eq(dry.found.length, 1, "a dry run finds the same and writes nothing");

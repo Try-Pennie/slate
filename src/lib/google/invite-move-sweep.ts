@@ -68,6 +68,10 @@ export interface SweepResult {
   /** Bookings whose invite is gone from the calendar: out of scope here, but counted. */
   gone: string[];
   alreadyRecorded: number;
+  /** With `apply`: what this run recorded, blocked and posted. Empty on a dry run. */
+  reported: SweepFinding[];
+  /** With `apply`: findings another run recorded between this one's read and its write. */
+  recordedElsewhere: number;
 }
 
 export async function sweepOutOfStepInvites(deps: InviteSweepDeps): Promise<SweepResult> {
@@ -82,6 +86,8 @@ export async function sweepOutOfStepInvites(deps: InviteSweepDeps): Promise<Swee
     unreadable: [],
     gone: [],
     alreadyRecorded: upcoming.length - todo.length,
+    reported: [],
+    recordedElsewhere: 0,
   };
   const width = Math.max(1, deps.concurrency ?? 5);
   for (let i = 0; i < todo.length; i += width) {
@@ -123,8 +129,12 @@ export async function sweepOutOfStepInvites(deps: InviteSweepDeps): Promise<Swee
   result.found.sort((a, b) => a.bookedStartsAt.localeCompare(b.bookedStartsAt) || a.bookingId.localeCompare(b.bookingId));
   if (!deps.apply || result.found.length === 0) return result;
 
+  // Only what THIS run recorded is blocked and reported. A null means another run
+  // (the live handler acting on a fresh change, or an earlier sweep) recorded it
+  // first, and that run owns what happens to it.
+  const reported: SweepFinding[] = [];
   for (const f of result.found) {
-    await deps.recordChange({
+    const id = await deps.recordChange({
       bookingId: f.bookingId,
       userId: f.userId,
       gcalEventId: f.eventId,
@@ -139,9 +149,16 @@ export async function sweepOutOfStepInvites(deps: InviteSweepDeps): Promise<Swee
       eventEndsAt: f.eventEndsAt,
       eventUpdated: f.eventUpdated ?? `unstamped:${f.eventStartsAt}:${f.eventEndsAt}`,
     });
+    if (id === null) {
+      result.recordedElsewhere++;
+      continue;
+    }
     await deps.writeMirror({ userId: f.userId, eventId: f.eventId, startsAt: f.eventStartsAt, endsAt: f.eventEndsAt });
+    reported.push(f);
   }
+  result.reported = reported;
+  if (reported.length === 0) return result;
   // alert-key: booking_invite_launch_sweep
-  await deps.post(INVITE_LAUNCH_SWEEP_KEY, inviteLaunchSweepAlert(result.found));
+  await deps.post(INVITE_LAUNCH_SWEEP_KEY, inviteLaunchSweepAlert(reported));
   return result;
 }

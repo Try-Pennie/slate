@@ -126,8 +126,14 @@ export interface InviteMoveDeps {
   setOutcome(id: string, outcome: InviteOutcome, detail: string | null): Promise<void>;
   /** Move the invite back, emailing its guests. Throws `EventGone` or the refusal. */
   revert(email: string, eventId: string, startIso: string, endIso: string, timezone: string): Promise<void>;
-  /** The advisor's name and their manager of record. Never throws: unknown reads as none. */
-  loadPeople(advisorUserId: string): Promise<{ advisorName: string | null; manager: { name: string | null; email: string } | null }>;
+  /**
+   * The advisor's name and their manager of record: null when they have none,
+   * `unread` when the lookup failed, which is never reported as having none. Never throws.
+   */
+  loadPeople(advisorUserId: string): Promise<{
+    advisorName: string | null;
+    manager: { name: string | null; email: string } | null | "unread";
+  }>;
   /** A Slack DM: false when it could not be delivered. Never throws. */
   dm(email: string, text: string): Promise<boolean>;
   /** A post to the alerts channel. Never throws. */
@@ -304,11 +310,12 @@ async function judgeUnderLock(
   return async () => {
     const people = await deps.loadPeople(deps.advisorUserId);
     const f = facts(people.advisorName);
-    const advisor = await deps.dm(deps.advisorEmail, advisorLeftDm(f, reason));
-    let manager: LeftReach["manager"] = "none";
-    if (people.manager) {
-      manager = (await deps.dm(people.manager.email, managerLeftDm(f, reason))) ? "told" : "unreachable";
-    }
+    // The manager first, so the advisor's DM says only what was measured about them.
+    let manager: LeftReach["manager"];
+    if (people.manager === "unread") manager = "unread";
+    else if (people.manager === null) manager = "none";
+    else manager = (await deps.dm(people.manager.email, managerLeftDm(f, reason))) ? "told" : "unreachable";
+    const advisor = await deps.dm(deps.advisorEmail, advisorLeftDm(f, reason, manager === "told"));
     // alert-key: booking_invite_moved:*
     await deps.post(movedKey, inviteMoveLeftAlert(f, reason, { advisor, manager }));
   };

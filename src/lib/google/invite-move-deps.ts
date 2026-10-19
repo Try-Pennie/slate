@@ -214,19 +214,22 @@ export function realInviteMoveDeps(args: { userId: string; email: string; timeZo
           await db().from("users").select("name, manager_id").eq("id", userId).maybeSingle(),
           "moved invite advisor",
         ) as { name: string | null; manager_id: string | null } | null;
-        let manager: { name: string | null; email: string } | null = null;
+        let manager: { name: string | null; email: string } | null | "unread" = null;
         if (me?.manager_id) {
           const m = unwrap(
             await db().from("users").select("name, email").eq("id", me.manager_id).maybeSingle(),
             "moved invite manager",
           ) as { name: string | null; email: string | null } | null;
-          if (m?.email) manager = { name: m.name, email: m.email };
+          // A manager of record with no row or no address exists and cannot be
+          // reached, which is not the same as having none.
+          manager = m?.email ? { name: m.name, email: m.email } : "unread";
         }
         return { advisorName: me?.name ?? null, manager };
       } catch (err) {
-        // Said in the channel post as no manager of record, which still pages a person.
+        // Said in the channel post as a manager who could not be looked up, never as
+        // one who does not exist (L11); the post still reaches a person.
         log.error("invite-move", { msg: "advisor or manager could not be read", user_id: userId }, err);
-        return { advisorName: null, manager: null };
+        return { advisorName: null, manager: "unread" as const };
       }
     },
     dm: async (email, text) => (await dmSlackUserByEmail(email, text)) !== null,

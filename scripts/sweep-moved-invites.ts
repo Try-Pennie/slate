@@ -50,9 +50,13 @@ console.log(
   `checked ${result.checked} invites, ${result.alreadyRecorded} bookings already recorded by the live handler, ` +
     `${result.found.length} out of step, ${result.gone.length} gone from the calendar, ${result.unreadable.length} unreadable`,
 );
-if (result.found.length > 0) {
-  console.log("\nThe alerts channel message:\n");
-  console.log(inviteLaunchSweepAlert(result.found));
+const shown = apply ? result.reported : result.found;
+if (apply && result.recordedElsewhere > 0) {
+  console.log(`${result.recordedElsewhere} were recorded by another run meanwhile, and are left to it.`);
+}
+if (shown.length > 0) {
+  console.log(`\nThe alerts channel message${apply ? " (posted)" : " (not posted)"}:\n`);
+  console.log(inviteLaunchSweepAlert(shown));
 }
 if (result.gone.length > 0) console.log(`\nInvite gone from the advisor's calendar: ${result.gone.join(", ")}`);
 if (result.unreadable.length > 0) {
