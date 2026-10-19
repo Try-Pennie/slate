@@ -338,7 +338,10 @@ export default async function BusinessHoursPage({
               required
               defaultValue={horizonDays ?? HORIZON_DEFAULT}
               aria-describedby="horizon_days-hint"
-              className={`${inputCls} w-40 tabular-nums`}
+              /* max-w, not w-40 (#3922): `inputCls` carries `w-full`, and of two
+                 width utilities the one Tailwind emits later wins, so the box drew
+                 the width of the card for a one digit value. */
+              className={`${inputCls} max-w-40 tabular-nums`}
             />
             <p id="horizon_days-hint" className="mt-1.5 max-w-lg text-xs text-fg-muted">
               {lastResortReachHint(OFFERED_OPEN_DAYS)}

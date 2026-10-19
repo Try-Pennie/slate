@@ -47,7 +47,8 @@ import { DateTime } from "luxon";
  *
  * Do not raise this without re-measuring. `booking/settings.ts` records that a 14
  * day horizon was never adopted for this reason, even after the 200 agent load soak
- * passed (#440), and that the offered window stays at four days (#2360).
+ * passed (#440), and that the horizon stays at four days (#2360), which since #2840
+ * is the last resort's reach rather than what a lead is offered.
  */
 export const MAX_CLOSED_RUN_DAYS = 2;
 

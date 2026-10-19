@@ -28,8 +28,10 @@ import { LAST_RESORT_REACH } from "@/lib/admin/days-offered-copy";
  * the 200-agent load soak; that soak ran and passed on 2026-07-08 (#440) and the
  * cap stayed at 7: the recompute lane has since been measured at 100 to 120
  * percent of its budget on the hot roster (#2022), and on 2026-09-15 Dan chose to
- * keep the offered window at four days rather than widen it (#2360). The search
- * allowance is small for the same reason.
+ * keep this at four days rather than widen it (#2360). That was before #2840, when
+ * it was still the window a lead was offered; it is the last resort's reach now,
+ * and what a lead is offered is the fixed three. The search allowance is small for
+ * the same reason.
  */
 export const HORIZON_DEFAULT = 4;
 export const HORIZON_MIN = 1;

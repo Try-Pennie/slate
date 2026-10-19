@@ -854,6 +854,17 @@ describe("the days offered card (#3922)", () => {
     expect(screen.queryByText(/most days offered/i)).toBeNull();
   });
 
+  // A one digit value drew a box the width of the card: `inputCls` carries `w-full`,
+  // and a second width utility is decided by the order Tailwind emits them, so `w-40`
+  // lost. A max width is a different property and cannot be overruled by it.
+  it("keeps the box narrow, with a max width rather than a competing width", async () => {
+    await card();
+    const box = screen.getByRole("spinbutton", { name: "Last resort reach (1 to 7)" });
+    const classes = box.className.split(/\s+/);
+    expect(classes).toContain("max-w-40");
+    expect(classes).not.toContain("w-40");
+  });
+
   it("names the save button for the same thing the label does", async () => {
     const section = await card();
     const button = screen.getByRole("button", { name: "Save last resort reach" });
