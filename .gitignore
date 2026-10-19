@@ -73,3 +73,6 @@ scripts/typecheck-control.tmp.ts
 # Browser check output: traces, the HTML report, the server log and the
 # egress record (#3079, #3100). Local only; CI uploads it as an artifact.
 /e2e/.artifacts/
+
+# design match score output (scripts/design-match/score.ts)
+/.design-match/
