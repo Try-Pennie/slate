@@ -40,8 +40,9 @@
  * `confirm answered` clock starts (`confirm-latency.ts`), so the wall here IS the
  * `response_ms` on that line, and the profile rides on the request's own
  * `ConfirmLineFacts`: one object per request, never module state, so confirms
- * running side by side in one isolate can never mix (L748). It is only READ, and
- * so only costs its arithmetic, on a confirm that is logged with it.
+ * running side by side in one isolate can never mix (L748). It is READ in full, and
+ * so only costs its arithmetic, on a confirm that is logged with it; every confirm
+ * reads just its Google calls (`googleTimingFields`, #3490).
  *
  * What it costs on every confirm: two clock reads and one small object per span.
  * A confirm runs about a dozen named stages, one span per ladder rung and one per
@@ -223,6 +224,13 @@ export interface ConfirmProfile {
   window(isolateReadyAtMs?: number): { read(): ConfirmProfileReading };
   /** The whole request, read at `at` (the instant the confirm answered). */
   read(at: number): ConfirmRequestReading;
+  /**
+   * #3490: the budgeted calls whose label is one of `labels`, read at `at`: how many,
+   * and their covered time (parallel calls counted once). Null when none was made, so a
+   * caller can leave a field absent rather than write a 0 that reads as a measured
+   * instant call (L90). Reads only the spans already recorded; it starts no timer.
+   */
+  callGroup(labels: readonly string[], at: number): { calls: number; ms: number } | null;
 }
 
 interface Span {
@@ -334,8 +342,80 @@ export function makeConfirmProfile(opts: { now: () => number; startedAt?: number
         calls: observed ? readCalls(calls, startedAt, at, stages) : null,
       };
     },
+    callGroup(labels: readonly string[], at: number) {
+      const list = calls.filter((c) => labels.includes(c.label));
+      if (list.length === 0) return null;
+      return { calls: list.length, ms: coveredMs(list, startedAt, at) };
+    },
   };
   return profile;
+}
+
+/**
+ * #3490: the Google calls a confirm's line times on EVERY confirm, by the exact label
+ * each is profiled under (`google ${label}` in `calendar.ts`, `MINT_LABEL` in `dwd.ts`).
+ *
+ * `read` and `write` are the calls the load test's Google delay stands in for, the ones
+ * cut off at `GOOGLE_CONFIRM_TIMEOUT_MS`: the live free/busy check, and the calendar
+ * writes a confirm makes (the insert on a booking, the patch on a time change, the delete
+ * that rolls a lost insert back). `mint` is the delegated token request, which the delay
+ * does NOT stand in for and which caused most of the slow confirms of 2026-10-12 to 18.
+ * `scripts/test-loadtest-google-delay.ts` holds the read and write labels against the
+ * calls in `calendar.ts` and the mint label against `dwd.ts`, so a renamed label fails the
+ * build rather than leaving its field absent for ever.
+ */
+export const GOOGLE_TIMING_GROUPS: readonly { kind: "read" | "write" | "mint"; labels: readonly string[] }[] = [
+  { kind: "read", labels: ["google freeBusy", "google freeBusy.many"] },
+  { kind: "write", labels: ["google events.insert", "google events.patch", "google events.delete"] },
+  { kind: "mint", labels: ["google token mint"] },
+];
+
+/**
+ * #3490: the `confirm answered` line's Google fields, put on every confirm, fast or slow:
+ * `google_read_ms` / `google_read_calls`, `google_write_ms` / `google_write_calls`,
+ * `google_mint_ms` / `google_mint_calls`.
+ *
+ * What `_ms` measures: the COVERED wall time of that group's calls, from each call
+ * starting to this confirm resuming after its response arrived, with calls that ran side
+ * by side counted once. So two parallel wave chunks of 400 and 500ms read as the time the
+ * lead waited for them, never their 900ms sum, and with one call it is that call's time.
+ *
+ * What it does NOT measure:
+ *   - reading the response BODY, which the caller does after the span ends
+ *     (`fetchWithinBudget` in `call-budget.ts`); a large free/busy reply parses outside it;
+ *   - getting the token: a read or write span starts once the token is in hand, and the
+ *     mint is its own group. A token served from the shared holder or the isolate's cache
+ *     is in no group at all;
+ *   - Google's own processing time: when the isolate is busy with other requests the wait
+ *     to be resumed lands inside the span (see the module header);
+ *   - a call still in flight when the confirm answered, or made after it (deferred work),
+ *     since a call is recorded when it ends and the line is read at the answer;
+ *   - a call refused before it started (a spent budget, the open breaker), which made no
+ *     request.
+ *
+ * A confirm that made no call in a group logs that group's two fields ABSENT, never 0:
+ * a 0 would read as a call that was made and took no time. A call that WAS made and read
+ * as no time (the Worker clock moves at I/O) says 0 with its count. Absent also when
+ * nothing watched the calls (a route running no confirm budget).
+ *
+ * Cost: none of this starts a timer or records anything new. Every confirm already records
+ * each budgeted call's start and end (#3300); this reads that list once per group at the
+ * answer, a filter and an interval merge over a few dozen spans.
+ */
+export function googleTimingFields(profile: ConfirmProfile, at: number): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const g of GOOGLE_TIMING_GROUPS) {
+    const read = profile.callGroup(g.labels, at);
+    if (!read) continue;
+    out[`google_${g.kind}_ms`] = read.ms;
+    out[`google_${g.kind}_calls`] = read.calls;
+  }
+  return out;
+}
+
+/** The time at least one of these calls was in flight inside [from, at], overlaps counted once. */
+function coveredMs(list: { span: Span }[], from: number, at: number): number {
+  return merge(list.map((c) => clip(c.span, from, at))).reduce((n, [a, b]) => n + (b - a), 0);
 }
 
 /** A span's length, an open one closed at `at`, never negative. */
@@ -393,8 +473,7 @@ function readCalls(
     const dependency = c.label.split(" ")[0] || c.label;
     groups.set(dependency, [...(groups.get(dependency) ?? []), c]);
   }
-  const covered = (list: { span: Span }[]) =>
-    merge(list.map((c) => clip(c.span, from, at))).reduce((n, [a, b]) => n + (b - a), 0);
+  const covered = (list: { span: Span }[]) => coveredMs(list, from, at);
   const byDependency = [...groups.entries()]
     .map(([dependency, list]) => ({
       dependency,

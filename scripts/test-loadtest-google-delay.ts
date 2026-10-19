@@ -1,9 +1,11 @@
 // #3490: the load test's Google stand in can take production's time on the confirm path.
 //
 // The stand in answered every call at once, so a load run's confirm latency and its burst
-// timings left out production's largest cost (a live check of about 3s and a calendar write
-// of about 5s on 2026-10-05, #3221). This suite holds the four things that make the delay
-// usable and safe:
+// timings left out production's live check and calendar write. (The 3s and 5s once quoted
+// here were the contention model's assumed figures, never a measurement; the values now come
+// from the `google_*` fields on every `confirm answered` line, #3490.) This suite holds the
+// four things that make the delay usable and safe, plus the confirm line's Google fields
+// counting the same calls the delay stands in for:
 //
 //   1. the setting's grammar, strict, with off as the default and a typo reported rather
 //      than half applied;
@@ -30,6 +32,7 @@ import {
 } from "../src/lib/google/loadtest-google-delay.ts";
 import { loadtestGoogleDelay } from "../src/lib/google/loadtest-stub.ts";
 import { calendarExports } from "./lib/scan-loadtest-stub-coverage.ts";
+import { GOOGLE_TIMING_GROUPS } from "../src/lib/booking/confirm-profile.ts";
 import { awaitGoogleDelay, googleDelayVerdict } from "./loadtest/preflight-checks.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -248,6 +251,28 @@ import { assert, eq, finish } from "./lib/harness.ts";
   for (const e of exports.filter((x) => !leadWaited.includes(x))) {
     assert(!/loadtestGoogleDelay\(/.test(e.body), `${e.name} is not a lead waited call and takes no delay`);
   }
+
+  // #3490: the confirm line's Google fields, which the delay's values are read from, count
+  // exactly the calls the delay stands in for, by the label each one is profiled under. A
+  // renamed label would otherwise leave its field absent for ever, which reads as a confirm
+  // that made no such call (L90).
+  const groupOf = (label: string) => GOOGLE_TIMING_GROUPS.find((g) => g.labels.includes(label))?.kind ?? null;
+  const seen = new Set<string>();
+  for (const e of leadWaited) {
+    const labels = [...e.body.matchAll(/GOOGLE_CONFIRM_TIMEOUT_MS,\s*"([\w.]+)"/g)].map((m) => `google ${m[1]}`);
+    assert(labels.length > 0, `${e.name}: the scan found the label its Google call is profiled under`);
+    const expected = /\/freeBusy`/.test(e.body) ? "read" : "write";
+    for (const label of labels) {
+      seen.add(label);
+      assert(groupOf(label) === expected, `${e.name}: "${label}" is counted as ${expected} on the confirm line (got ${groupOf(label) ?? "nothing"})`);
+    }
+  }
+  for (const g of GOOGLE_TIMING_GROUPS.filter((x) => x.kind !== "mint")) {
+    for (const label of g.labels) assert(seen.has(label), `"${label}" is a label a lead waited call really uses, not a stale entry`);
+  }
+  const dwd = readFileSync("src/lib/google/dwd.ts", "utf8");
+  const mint = /const MINT_LABEL = "([^"]+)"/.exec(dwd)?.[1];
+  eq(GOOGLE_TIMING_GROUPS.find((g) => g.kind === "mint")?.labels, mint ? [mint] : ["(MINT_LABEL not found in dwd.ts)"], "the mint field counts the label dwd.ts mints under");
 }
 
 finish();

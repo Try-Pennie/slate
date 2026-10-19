@@ -20,8 +20,11 @@
  * `CONFIRM_PROFILE_SLOW_MS` or longer: the stages that ran and their time, the
  * wall no stage covers (`unattributed_ms`, split by whether it fell before, between
  * or after the stages), the ladder rungs walked, and the Supabase and Google calls.
- * An ordinary fast confirm's line stays the timing and the status. This line is
- * where a slow confirm page sends its reader.
+ * An ordinary fast confirm's line stays the timing and the status, plus (#3490) the
+ * Google read, write and mint time and call counts read off the same profile
+ * (`googleTimingFields`), so the live check's and the calendar write's spread can be
+ * read from ordinary confirms and not only the slow tail. This line is where a slow
+ * confirm page sends its reader.
  *
  * **What it says about the lead.** One fact, the lead's Salesforce lead id
  * (`lead_id`, the 15 character key of the 00Q id), which is an external id and safe
@@ -34,7 +37,7 @@
  */
 import { log } from "@/lib/log";
 import { refusalLogFields, refusalTraceOf } from "@/lib/booking/refusal-trace";
-import { confirmProfileFields, makeConfirmProfile, type ConfirmProfile } from "@/lib/booking/confirm-profile";
+import { confirmProfileFields, googleTimingFields, makeConfirmProfile, type ConfirmProfile } from "@/lib/booking/confirm-profile";
 import { DependencyTimeoutError } from "@/lib/booking/orchestration";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import type { LineServed } from "@/lib/booking/shared-confirm-line";
@@ -186,6 +189,9 @@ export async function answerTimed(
       ...(typeof opts.facts?.isolateInvocationIndex === "number" ? { isolate_invocation_index: opts.facts.isolateInvocationIndex } : {}),
       ...(opts.facts?.lineTrace ? { line_trace: opts.facts.lineTrace } : {}),
       ...(opts.facts?.loadtestLeg ? { loadtest_leg: opts.facts.loadtestLeg } : {}),
+      // #3490: on EVERY confirm, the Google read, write and mint time, each absent when
+      // no such call was made. What they measure is on `googleTimingFields`.
+      ...(facts?.profile ? googleTimingFields(facts.profile, endedAt) : {}),
       ...(profiled ? confirmProfileFields(profiled.read(endedAt)) : {}),
     });
   };
