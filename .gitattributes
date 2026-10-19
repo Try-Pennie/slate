@@ -1,0 +1,4 @@
+# Settled design files assembled by a build step from captured chrome, fonts and a data snapshot.
+# Marked generated so a review reads the decisions, checks and fixture beside them instead of the
+# embedded data (claude-config#1364). The decision record inside stays readable in any browser.
+docs/design/team-capacity.html linguist-generated=true
