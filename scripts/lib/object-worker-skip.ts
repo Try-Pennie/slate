@@ -200,6 +200,17 @@ export function uncheckedLineWarning(unchecked: { config: string; reason: string
 }
 
 /**
+ * #3854: the warning for a line this run did not change, whose protocol could not be
+ * compared with the live app's. Nothing went out unchecked, so it must never read like
+ * `uncheckedLineWarning`; what it reports is that the read the refusal depends on did not
+ * work, which otherwise surfaces only on the rare deploy that changes the line (L674).
+ */
+export function uncomparedLineWarning(uncompared: { config: string; reason: string }[], where: string): string {
+  const which = uncompared.map((u) => `${u.config} (${u.reason})`).join("; ");
+  return `The confirm line was not changed by this deploy to ${where}, and its protocol could not be compared with the live app's: ${which}. Nothing went out unchecked. This is the read the check that refuses a line older than the live app makes, so until it works that check will not run when the line next changes.`;
+}
+
+/**
  * Refuse a line build older than the live app; deploy otherwise.
  *
  * An unreadable value on EITHER side deploys, with a reason saying the check could not be
@@ -224,6 +235,24 @@ export function decideLineProtocol(built: number | null, live: LiveAppProtocol):
     };
   }
   return { action: "deploy", checked: true, reason: `the line build speaks protocol ${built}, the live app protocol ${live.protocol}` };
+}
+
+/**
+ * #3854: the same comparison for a line that is NOT being deployed, report only. Nothing
+ * is refused (nothing goes out), so an older line says it is ALREADY older rather than
+ * reading as a refused deploy. Only a hand deploy of the app ahead of the line gets there,
+ * and the app's client pages `confirm_line_unreachable` about it already (#3839), so this
+ * is a log line and not a second alarm about one fact (L36).
+ */
+export function judgeUnchangedLine(built: number | null, live: LiveAppProtocol): { checked: boolean; reason: string } {
+  const check = decideLineProtocol(built, live);
+  if (check.action === "refuse" && "protocol" in live) {
+    return {
+      checked: true,
+      reason: `but the serving line speaks protocol ${built} and the live app protocol ${live.protocol}, so the line is already older than the app and confirms are on their isolate's own line (#3560)`,
+    };
+  }
+  return { checked: check.checked, reason: check.reason };
 }
 
 /** What a run knows about one object Worker before deciding. */
@@ -272,19 +301,23 @@ export interface ObjectWorkerOps {
   deploy(config: string, message: string | null): Promise<boolean>;
   /** The bundle hash the serving version's message carries, after a deploy; null when it carries none or could not be read. */
   servingStamp(config: string): Promise<string | null>;
-  /** #3560: the confirm line protocol the live app speaks. Asked only before deploying the line. May throw. */
+  /** #3560: the confirm line protocol the live app speaks. Asked for the line on every run,
+   *  whether or not it deploys (#3854: report only when it does not). May throw. */
   liveAppProtocol(): Promise<LiveAppProtocol>;
   log(line: string): void;
 }
 
 /** `unstamped`: deployed, and the serving version is not confirmed to carry the stamp
  *  (none was written, or it did not read back), so the next run deploys it again.
- *  `unchecked`: the line was deployed without its protocol being compared (#3560). */
+ *  `unchecked`: the line was deployed without its protocol being compared (#3560).
+ *  `uncompared`: the line was unchanged, so nothing went out, and its protocol could not
+ *  be compared either (#3854), which is the read the refusal needs when it next changes. */
 interface Lists {
   deployed: string[];
   skipped: string[];
   unstamped: string[];
   unchecked: { config: string; reason: string }[];
+  uncompared: { config: string; reason: string }[];
 }
 export type ObjectWorkersResult =
   | ({ ok: true } & Lists)
@@ -297,8 +330,15 @@ export type ObjectWorkersResult =
  * either way. Never throws.
  */
 export async function deployObjectWorkers(ops: ObjectWorkerOps, configs: readonly string[]): Promise<ObjectWorkersResult> {
-  const lists: Lists = { deployed: [], skipped: [], unstamped: [], unchecked: [] };
-  const { deployed, skipped, unstamped, unchecked } = lists;
+  const lists: Lists = { deployed: [], skipped: [], unstamped: [], unchecked: [], uncompared: [] };
+  const { deployed, skipped, unstamped, unchecked, uncompared } = lists;
+  const readLive = async (): Promise<LiveAppProtocol> => {
+    try {
+      return await ops.liveAppProtocol();
+    } catch (err) {
+      return { unreadable: `reading it threw: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  };
   for (const config of configs) {
     let facts: ObjectWorkerFacts | null = null;
     let decision: ObjectWorkerDecision;
@@ -309,18 +349,19 @@ export async function deployObjectWorkers(ops: ObjectWorkerOps, configs: readonl
       decision = { action: "deploy", reason: `reading whether it changed failed (${err instanceof Error ? err.message : String(err)})` };
     }
     if (decision.action === "skip") {
+      if (config === CONFIRM_LINE_CONFIG) {
+        // #3854: compared even though nothing deploys, so every run proves the read the
+        // refusal depends on rather than only the rare run that changes the line.
+        const seen = judgeUnchangedLine(facts?.builtProtocol ?? null, await readLive());
+        if (!seen.checked) uncompared.push({ config, reason: seen.reason });
+        ops.log(`object worker ${config}: unchanged, ${seen.reason}`);
+      }
       ops.log(`object worker ${config}: skipped, ${decision.reason}`);
       skipped.push(config);
       continue;
     }
     if (config === CONFIRM_LINE_CONFIG) {
-      let live: LiveAppProtocol;
-      try {
-        live = await ops.liveAppProtocol();
-      } catch (err) {
-        live = { unreadable: `reading it threw: ${err instanceof Error ? err.message : String(err)}` };
-      }
-      const check = decideLineProtocol(facts?.builtProtocol ?? null, live);
+      const check = decideLineProtocol(facts?.builtProtocol ?? null, await readLive());
       if (check.action === "refuse") {
         ops.log(`object worker ${config}: REFUSED, ${check.reason}`);
         return { ok: false, kind: "refused", config, reason: check.reason, ...lists };

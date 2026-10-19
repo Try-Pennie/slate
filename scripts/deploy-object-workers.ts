@@ -19,7 +19,7 @@
 import { appendFileSync } from "node:fs";
 import { OBJECT_WORKER_CONFIGS } from "./lib/gradual-deploy.ts";
 import { objectWorkerOps } from "./lib/object-worker-io.ts";
-import { deployObjectWorkers, deployTargetLabel, uncheckedLineWarning } from "./lib/object-worker-skip.ts";
+import { deployObjectWorkers, deployTargetLabel, uncheckedLineWarning, uncomparedLineWarning } from "./lib/object-worker-skip.ts";
 
 const args = process.argv.slice(2);
 let env = "";
@@ -38,14 +38,15 @@ if (!result.ok && result.kind === "refused") {
   );
   process.exit(3);
 }
-if (result.unchecked.length > 0) {
-  // #3854: the same words as the gradual deploy, as an annotation and in the job summary
-  // (the load run's arm job runs this), so a skipped check is never only in the log.
-  const warning = uncheckedLineWarning(result.unchecked, where);
+// #3854: the same words as the gradual deploy, as an annotation and in the job summary
+// (the load run's arm job runs this), so a skipped check is never only in the log.
+function warnLineCheck(warning: string): void {
   console.warn(`::warning title=confirm line protocol not checked::${warning}`);
   const summaryFile = process.env.GITHUB_STEP_SUMMARY;
   if (summaryFile) appendFileSync(summaryFile, `**Warning:** ${warning}\n`, "utf8");
 }
+if (result.unchecked.length > 0) warnLineCheck(uncheckedLineWarning(result.unchecked, where));
+if (result.uncompared.length > 0) warnLineCheck(uncomparedLineWarning(result.uncompared, where));
 if (!result.ok) {
   console.error(
     `::error title=object worker deploy failed::${result.config} could not be deployed to ${where} (${result.reason}). Deployed: ${result.deployed.join(", ") || "none"}; unchanged and skipped: ${result.skipped.join(", ") || "none"}. Slate's bindings name it, so do not deploy Slate until it deploys.`,
