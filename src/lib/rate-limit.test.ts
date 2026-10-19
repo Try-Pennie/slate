@@ -1654,21 +1654,36 @@ describe("exactCeilingWithinLimit, the hourly ceilings at the edge (#3416)", () 
     consoleErr.mockRestore();
   });
 
-  it("gives up on a stalled counter after about two seconds, not the old fifteen (#3828)", async () => {
+  it("gives up on a stalled counter after one second, serves the lead, and a sustained stall still pages (#3828, #3894)", async () => {
     // Load run 38933668981: two counters stalled 4 to 5 seconds at once, and a lead's confirm
     // waited out the stall because the deadline was the 15 second Supabase one. Production's
-    // counter answers in about 75ms (261ms at the 95th percentile) and took over 2 seconds on
-    // 4 of 7,151 calls in a week. Real time, on a counter that
+    // counter answers in about 75ms (261ms at the 95th percentile) and took over 1 second on
+    // 19 of 7,151 calls in a week. Dan, 2026-10-18 (#3894): one second, so a cold confirm that
+    // meets a stall stays inside the load run's 2500ms startup bar. Real time, on a counter that
     // never answers: the body path does not run under fake timers, and the bounds are loose on
-    // purpose, so this asserts the deadline in force and not the machine's speed (L290).
+    // purpose, so this asserts the deadline in force and not the machine's speed (L290). The
+    // upper bound sits below the old two seconds, so a revert fails here and not only on the pin.
+    //
+    // A sustained stall is the page's threshold of these hits, sent together so the case costs
+    // one deadline rather than five; each is its own failed count on this isolate, exactly as
+    // five leads meeting one stalled object are.
     cf.env = { BURST_LIMITER: answering(() => new Promise<Response>(() => {})) };
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     const started = performance.now();
-    await expect(exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES)).resolves.toBe(true);
+    const served = await Promise.all(
+      Array.from({ length: LIMITER_FAIL_OPEN_PAGE_AFTER }, () =>
+        exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES),
+      ),
+    );
     const waited = performance.now() - started;
+    expect(served).toEqual(Array.from({ length: LIMITER_FAIL_OPEN_PAGE_AFTER }, () => true));
     expect(waited).toBeGreaterThanOrEqual(EXACT_CEILING_DEADLINE_MS - 50);
-    expect(waited).toBeLessThan(5_000);
-    expect(EXACT_CEILING_DEADLINE_MS).toBe(2_000);
+    expect(waited).toBeLessThan(1_900);
+    expect(EXACT_CEILING_DEADLINE_MS).toBe(1_000);
+    // Nothing is sent while the leads wait; the one page goes after the response.
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    await flushAfter();
+    expect(sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual([`rate_limit_broken:${KEY_RULE.prefix}`]);
     consoleErr.mockRestore();
   });
 
