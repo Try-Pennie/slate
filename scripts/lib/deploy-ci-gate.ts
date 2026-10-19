@@ -81,6 +81,22 @@ export function judgeCiForDeploy(sha: string, runs: CheckRun[]): DeployCiVerdict
   return { ok: true, runId: newest.id };
 }
 
+/**
+ * How long a readable "not finished" or "not there yet" is waited out (#3926).
+ *
+ * The deploy job `needs: ci`, so ci has finished by the time this runs, but the check
+ * runs API reports it some seconds later, and on 2026-10-19 (Actions degraded) that
+ * lag refused four deploys running. A RED ci is a verdict and is never waited on.
+ * Twelve reads fifteen seconds apart is three minutes, against a 40 minute job.
+ */
+export const SETTLE_READS = 12;
+export const SETTLE_DELAY_MS = 15_000;
+
+/** The refusals that can be GitHub reporting late rather than the commit failing. */
+export function mayStillSettle(v: DeployCiVerdict): boolean {
+  return !v.ok && (v.reason === "ci-not-finished" || v.reason === "no-ci-run");
+}
+
 /** A read of the check runs: the parsed list, or why there is none. */
 export type CheckRunsRead = { ok: true; runs: CheckRun[] } | { ok: false; error: string };
 

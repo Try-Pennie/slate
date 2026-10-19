@@ -11,8 +11,11 @@
 // Exit codes, each its own so a reader knows which fix applies (L11):
 //   0  ci passed on this sha
 //   1  REPO, HEAD_SHA or GH_TOKEN is missing; nothing was read
-//   2  GitHub could not be read after every attempt; re-run the deploy job
-//   3  GitHub answered and the commit has not passed ci: do not deploy it
+//   2  GitHub could not be read after every attempt, or its last reply while
+//      waiting for ci to report finished could not be read; re-run the deploy job
+//   3  GitHub answered and the commit has not passed ci: do not deploy it. A ci
+//      GitHub still reports as running, or has not listed yet, is re-read for
+//      about three minutes first, because GitHub reports a finished ci late (#3926)
 //   4  this check itself crashed; nothing was deployed
 //
 // Run: GH_TOKEN=... REPO=Try-Pennie/slate HEAD_SHA=<sha> node --experimental-strip-types scripts/check-ci-before-deploy.ts
@@ -20,7 +23,10 @@ import { isEntryPoint } from "./lib/run-alerter.ts";
 import {
   CI_CHECK_NAME,
   judgeCiForDeploy,
+  mayStillSettle,
   parseCheckRuns,
+  SETTLE_DELAY_MS,
+  SETTLE_READS,
   readWithRetry,
   type CheckRunsRead,
 } from "./lib/deploy-ci-gate.ts";
@@ -74,10 +80,27 @@ export async function runGate(
     return 2;
   }
 
-  const verdict = judgeCiForDeploy(sha, got.runs);
-  if (!verdict.ok) {
+  // GitHub reports a finished ci late (#3926), so a readable "not finished" or
+  // "not there yet" is re-read for a bounded time. A red is refused at once.
+  let verdict = judgeCiForDeploy(sha, got.runs);
+  let lastRead: CheckRunsRead = got;
+  for (let i = 1; i < SETTLE_READS && mayStillSettle(verdict); i++) {
+    await deps.sleep(SETTLE_DELAY_MS);
+    lastRead = await read();
+    if (lastRead.ok) verdict = judgeCiForDeploy(sha, lastRead.runs);
+  }
+  if (!lastRead.ok) {
     deps.log(
-      `::error title=Deploy refused::${verdict.detail} (${verdict.reason}). Only a commit whose ci passed on that exact sha may deploy. Nothing was deployed.`,
+      `::error title=Deploy refused::While waiting for GitHub to report ci finished on ${sha}, its last reply could not be read (${lastRead.error}), so nothing says ci passed on it. Nothing was deployed; re-run this job.`,
+    );
+    return 2;
+  }
+  if (!verdict.ok) {
+    const waited = mayStillSettle(verdict)
+      ? ` This waited ${((SETTLE_READS - 1) * SETTLE_DELAY_MS) / 1000} seconds re-reading GitHub and it still said so, so re-running this job will likely get the same answer.`
+      : "";
+    deps.log(
+      `::error title=Deploy refused::${verdict.detail} (${verdict.reason}).${waited} Only a commit whose ci passed on that exact sha may deploy. Nothing was deployed.`,
     );
     return 3;
   }
