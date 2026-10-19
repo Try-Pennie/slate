@@ -19,6 +19,7 @@
  * tells them apart, so the refusal still stands for every job that cannot say why
  * it has nobody (L93, L11).
  */
+import type { ValidatedReason } from "@/lib/booking/core";
 
 export type CoverageSweepActor =
   | { kind: "staff"; userId: string; actingAsUserId: string | null }
@@ -43,4 +44,28 @@ export function coverageSweepActor(job: {
   // column, so the refusal still stands for a job that records no reason for its missing actor.
   if (job.demotion_marked_at) return { kind: "system" };
   throw new Error("bulk-reassign job has no accountable actor (created_by)");
+}
+
+/**
+ * Why the moves a coverage sweep makes are recorded (#1643).
+ *
+ * The other half of what a move is recorded with, beside who made it, and refused
+ * on the same grounds: a customer's appointment moved for no recorded reason cannot
+ * be explained afterwards. It lived as a single line inside the drain's dependency
+ * object, which nothing exports, so no test could reach it and deleting it changed
+ * nothing any suite could see. It is here so one can (the pattern above, #1241).
+ *
+ * Structural only, deliberately. The code was validated against the reason options
+ * when the job was ENQUEUED, and re-validating it here against the live option set
+ * (which degrades to coded defaults on a transient read error) would fail a
+ * legitimate, already approved move and burn its retries (#346). What is refused is
+ * a job that carries no code at all, a blank one included.
+ */
+export function coverageSweepReason(job: {
+  reason_code: string | null;
+  reason_detail: string | null;
+}): ValidatedReason {
+  const code = (job.reason_code ?? "").trim();
+  if (!code) throw new Error("bulk-reassign job has no reason code");
+  return { code, detail: job.reason_detail ?? null };
 }

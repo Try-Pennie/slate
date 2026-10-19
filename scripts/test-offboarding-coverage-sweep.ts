@@ -1,6 +1,6 @@
 // #1241: when the offboarding automation deactivates an agent by API, their
-// upcoming appointments move on their own. Two pure decisions carry that, and both
-// are here because both fail SILENTLY if they are wrong.
+// upcoming appointments move on their own. Three pure decisions carry that, and all
+// three are here because each fails SILENTLY if it is wrong.
 //
 //   planOffboardingCoverageSweep  which lifecycle outcomes sweep, and with what
 //                                 idempotency key. A key that is not stable across
@@ -16,10 +16,15 @@
 //                                 was lost by accident is the recorded reason for
 //                                 having none.
 //
+//   coverageSweepReason           why a sweep's moves are recorded (#1643). The
+//                                 drain refuses a job carrying no reason code, and
+//                                 that refusal had no test anywhere until it moved
+//                                 here beside the actor.
+//
 // Pure-with-fakes → node harness (no module mocking).
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-offboarding-coverage-sweep.ts
 import { planOffboardingCoverageSweep } from "../src/lib/offboarding/coverage-trigger.ts";
-import { coverageSweepActor } from "../src/lib/booking/coverage-sweep-actor.ts";
+import { coverageSweepActor, coverageSweepReason } from "../src/lib/booking/coverage-sweep-actor.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const STAMP = "2026-08-31T14:00:00.000Z";
@@ -183,6 +188,38 @@ const STAMP = "2026-08-31T14:00:00.000Z";
     offboarding_deactivated_at: STAMP,
   });
   eq(actor.kind, "staff", "a recorded actor is never downgraded to a system move");
+}
+
+// --- why the moves are recorded (#1643) -----------------------------------
+for (const [label, code] of [
+  ["no reason code", null],
+  ["an empty reason code", ""],
+  ["a blank reason code", "   "],
+] as const) {
+  // A move recorded with no reason cannot be explained afterwards, so the drain
+  // refuses it by name rather than recording an empty code.
+  let threw = "";
+  try {
+    coverageSweepReason({ reason_code: code, reason_detail: "covering a leave" });
+  } catch (e) {
+    threw = e instanceof Error ? e.message : String(e);
+  }
+  eq(threw, "bulk-reassign job has no reason code", `a job with ${label} is refused by name`);
+}
+
+{
+  // CONTROL: a stored code is trusted as stored (trimmed), with its detail, and is
+  // NOT re-checked against the live option set (#346).
+  eq(
+    coverageSweepReason({ reason_code: " coverage ", reason_detail: "covering a leave" }),
+    { code: "coverage", detail: "covering a leave" },
+    "a job's stored reason is what its moves are recorded with",
+  );
+  eq(
+    coverageSweepReason({ reason_code: "retired_code_no_longer_offered", reason_detail: null }),
+    { code: "retired_code_no_longer_offered", detail: null },
+    "a code no longer in the option set still moves, since it was valid when the sweep was approved",
+  );
 }
 
 finish();
