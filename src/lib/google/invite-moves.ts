@@ -142,6 +142,21 @@ export function mayTakeOverLock(
   return until === null || until <= nowMs;
 }
 
+/**
+ * Which of an advisor's synced calendars a booking invite lives on, for writing its
+ * moved time where the sync would. The invite is on the advisor's PRIMARY calendar,
+ * whose Google id is their address, and that is the only calendar the sync selects
+ * (`selectableCalendarIds`). So: the calendar named by the address; failing that, the
+ * only one there is; otherwise null, never a guess among several, because a row under
+ * a calendar the sync never reads for this event would outlive every later change.
+ */
+export function primaryCalendarId(calendarIds: string[], advisorEmail: string): string | null {
+  const email = advisorEmail.trim().toLowerCase();
+  const named = calendarIds.find((id) => id.trim().toLowerCase() === email);
+  if (named) return named;
+  return calendarIds.length === 1 ? calendarIds[0]! : null;
+}
+
 /** What a recorded change says Slate did. */
 export type InviteAction =
   | "revert"

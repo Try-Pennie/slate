@@ -30,6 +30,8 @@
 // could not be read, listed; 4 some findings could not be blocked or recorded,
 // listed, and a rerun retries them; 5 the message did not post, and is printed to
 // send by hand (its findings are recorded, so a rerun would not report them again).
+// When several hold, every one is printed and the exit code is the most urgent: 5,
+// then 4, then 3.
 import { requireSupabaseCredentials } from "./lib/supabase-credentials.ts";
 
 const apply = process.argv.includes("--apply");
@@ -63,19 +65,21 @@ if (shown.length > 0) {
   console.log(inviteLaunchSweepAlert(shown));
 }
 if (result.gone.length > 0) console.log(`\nInvite gone from the advisor's calendar: ${result.gone.join(", ")}`);
-let code = 0;
+// Every state is printed; the exit code is the most urgent one, so a reader of the
+// code never misses the message that is the only copy of what was found.
+const states: number[] = [];
+if (result.unreadable.length > 0) {
+  console.error(`\nNOT JUDGED, Google could not be read for: ${result.unreadable.join(", ")}`);
+  states.push(3);
+}
 if (result.notRecorded.length > 0) {
   console.error(`\nNOT RECORDED OR BLOCKED, rerun to retry these:`);
   for (const n of result.notRecorded) console.error(`  ${n.bookingId}: ${n.reason}`);
-  code = 4;
+  states.push(4);
 }
 if (apply && shown.length > 0 && !result.posted) {
   // The findings are recorded, so a rerun skips them: the printed message is the only copy.
   console.error("\nThe message did not post to the alerts channel. It is printed above; send it by hand.");
-  code = 5;
+  states.push(5);
 }
-if (result.unreadable.length > 0) {
-  console.error(`\nNOT JUDGED, Google could not be read for: ${result.unreadable.join(", ")}`);
-  code = 3;
-}
-process.exit(code);
+process.exit([5, 4, 3].find((c) => states.includes(c)) ?? 0);

@@ -76,17 +76,18 @@ export function advisorRevertedDm(f: InviteMoveFacts): string {
 
 /** Decisions 4 and 5: the advisor, when their move was left where they put it. */
 export function advisorLeftDm(f: InviteMoveFacts, reason: LeftReason, managerTold: boolean): string {
-  // Sent after the manager's, so it says only what that DM measured.
-  const told = managerTold ? "told your manager" : "asked for somebody to sort it out";
+  // Sent after the manager's, so it says only what that DM measured: their manager
+  // is named as told only when that DM was delivered, and nobody else is claimed.
+  const told = managerTold ? " and told your manager" : "";
   const why =
     reason === "second-move"
-      ? `You have moved this call before, so Slate has left it where you put it this time and ${told}.`
-      : `It starts in less than 30 minutes, so Slate has left it where you put it and ${told}.`;
+      ? `You have moved this call before, so Slate has left it where you put it this time${told}.`
+      : `It starts in less than 30 minutes, so Slate has left it where you put it${told}.`;
   return [
     `You moved your call at ${inviteWhen(f.bookedStartsAt)} to ${movedTo(f)} in Google Calendar. ${why} ` +
       `The lead was booked for ${clock(f.bookedStartsAt)}, and Slate keeps you busy at both times until it is sorted out.`,
     SLATE_NOT_GOOGLE,
-    askManager(f),
+    managerTold ? askManager(f) : `${askManager(f)} Please tell them about this move too.`,
   ].join("\n");
 }
 

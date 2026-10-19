@@ -46,7 +46,7 @@ export interface InviteSweepDeps {
   readEvent(email: string, eventId: string): Promise<GoogleEvent | null>;
   recordChange(row: NewInviteChange): Promise<string | null>;
   /** Write the moved time as the sync would mirror it. */
-  writeMirror(m: { userId: string; eventId: string; startsAt: string; endsAt: string }): Promise<void>;
+  writeMirror(m: { userId: string; advisorEmail: string; eventId: string; startsAt: string; endsAt: string }): Promise<void>;
   /** Post to the alerts channel: whether it was delivered. Never throws. */
   post(key: string, text: string): Promise<boolean>;
   /** How many invites to read at once. */
@@ -146,7 +146,13 @@ export async function sweepOutOfStepInvites(deps: InviteSweepDeps): Promise<Swee
   const reported: SweepFinding[] = [];
   for (const f of result.found) {
     try {
-      await deps.writeMirror({ userId: f.userId, eventId: f.eventId, startsAt: f.eventStartsAt, endsAt: f.eventEndsAt });
+      await deps.writeMirror({
+        userId: f.userId,
+        advisorEmail: f.advisorEmail,
+        eventId: f.eventId,
+        startsAt: f.eventStartsAt,
+        endsAt: f.eventEndsAt,
+      });
       const id = await recordLaunchFinding(deps, f);
       if (id === null) {
         result.recordedElsewhere++;

@@ -17,6 +17,7 @@ import {
   NEAR_START_MS,
   judgeInvite,
   mayTakeOverLock,
+  primaryCalendarId,
   splitSlateInvites,
   decideInviteChange,
   type BookedInvite,
@@ -216,6 +217,14 @@ const live = (e: GoogleEvent) => e;
   assert(mayTakeOverLock({ lease_until: null, gcal_client_id: null }, MORNING), "an unreadable lease counts as expired, as the reschedule's own takeover reads it");
 }
 
+// --- which calendar the launch sweep blocks the moved time on ----------------------
+{
+  eq(primaryCalendarId(["team-ooo@group.calendar.google.com", "BKenny@trypennie.com"], EMAIL), "BKenny@trypennie.com", "the calendar named by the advisor's address, whatever its case");
+  eq(primaryCalendarId(["primary-id"], EMAIL), "primary-id", "the only synced calendar, when there is one");
+  eq(primaryCalendarId(["a", "b"], EMAIL), null, "never a guess among several");
+  eq(primaryCalendarId([], EMAIL), null, "nothing when none is synced");
+}
+
 // --- the handler, through its seams ------------------------------------------------
 interface World {
   nowMs: number;
@@ -357,6 +366,8 @@ async function handlerCases(): Promise<void> {
     eq(calls.dms.map((d) => d[0]), [EMAIL], "only the advisor can be DMed");
     assert(/no manager of record/i.test(calls.posts[0]![1]), "the post says there is no manager to tell");
     assert(!/told your manager/.test(calls.dms[0]![1]), "and the advisor is not told a manager knows");
+    assert(!/asked for|somebody/.test(calls.dms[0]![1]), "nor that anybody else was asked, which nothing measured");
+    assert(/Please tell them about this move/.test(calls.dms[0]![1]), "they are asked to tell their manager themselves");
   }
   // The manager lookup FAILED: never reported as having no manager (L11).
   {

@@ -14,7 +14,7 @@ import { appUrl } from "@/lib/env";
 import { log } from "@/lib/log";
 import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import type { BookingInviteChange } from "@/lib/db/types";
-import { mayTakeOverLock, type InviteChangeRecord } from "./invite-moves";
+import { mayTakeOverLock, primaryCalendarId, type InviteChangeRecord } from "./invite-moves";
 import {
   INVITE_CHECK_FAILED_KEY,
   INVITE_MOVED_KEY,
@@ -332,8 +332,10 @@ export function realInviteSweepDeps(args: { apply: boolean }): InviteSweepDeps {
         await db().from("agent_calendars").select("calendar_id").eq("user_id", m.userId).limit(20),
         "invite sweep advisor calendars",
       ) as { calendar_id: string }[] | null;
-      const calendarId = cals?.[0]?.calendar_id;
-      if (!calendarId) throw new Error(`advisor ${m.userId} has no synced calendar to block the moved time on`);
+      const calendarId = primaryCalendarId((cals ?? []).map((c) => c.calendar_id), m.advisorEmail);
+      if (!calendarId) {
+        throw new Error(`no synced calendar of ${m.advisorEmail} could be told apart as the one holding the invite`);
+      }
       const { error } = await db()
         .from("busy_blocks")
         .upsert(
