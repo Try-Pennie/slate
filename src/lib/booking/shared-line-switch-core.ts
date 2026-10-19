@@ -15,8 +15,8 @@
  * a burst of cold isolates on a saturated database: under the frame lock's policy every
  * one of them would stand on a guessed value for fifteen seconds because its first read
  * happened to fail, which is exactly the moment the line matters. The default comes
- * from the deployment (`SHARED_CONFIRM_LINE_DEFAULT`: on in the load test, off in
- * production until activation), so a load run's cold isolates do not silently read OFF.
+ * from the deployment (`SHARED_CONFIRM_LINE_DEFAULT`: on in the load test, and on in
+ * production since #3339), so a cold isolate does not silently read OFF.
  * A default that is missing, or not exactly `on` or `off`, means off and is reported
  * once per isolate, on the first read rather than only when it is first needed, so a
  * misconfigured deployment says so on an ordinary day.
