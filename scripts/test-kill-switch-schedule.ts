@@ -27,23 +27,37 @@
 //
 // No network, no clock, no real workflow dispatch: the workflow file is read as text and
 // every decision is driven through hand written summaries.
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { VERDICT_STALE_BOUNDS_MS } from "../src/lib/monitor/health.ts";
 import { KILL_SWITCH_VERDICT_LANE } from "../src/lib/monitor/verdict-freshness.ts";
 import { verdictBlindAlertText } from "../src/lib/monitor/lane-copy.ts";
-import { SEEDED_BUSINESS_HOURS } from "../src/lib/booking/business-hours.ts";
+import { SEEDED_BUSINESS_HOURS, BUSINESS_ZONE } from "../src/lib/booking/business-hours.ts";
 import { parseWorkflowSchedules, cronCadenceMs } from "./lib/scan-workflow-schedules.ts";
 import { KILL_SWITCH_EXIT } from "./lib/kill-switch-live-control.ts";
+import { judgeDrillClock } from "./lib/kill-switch-clock.ts";
 import {
   RUN_JUDGEMENT,
   decideKillSwitchReport,
   writeKillSwitchSummary,
   CONCLUDING_EXITS,
+  SKIPPED_EXITS,
 } from "./lib/kill-switch-run-outcome.ts";
+import { run as runNotifier } from "./notify-kill-switch.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ROOT = join(import.meta.dirname, "..");
+
+/**
+ * How late GitHub has started this repo's scheduled workflows, in minutes after the
+ * declared time (#3920). Measured 2026-10-19 over the last 32 scheduled runs of this
+ * workflow (07:10 UTC cron): 262 to 570, median 383. Every other daily cron here showed
+ * the same shape whatever its hour (the shortest anywhere was 173, on the 11:23
+ * dependency audit), so the delay is a property of GitHub's queue rather than of the
+ * hour. The workflow comment records the same figures beside the cron they chose.
+ */
+const MEASURED_GITHUB_DELAY_MIN = { min: 262, max: 570 } as const;
 const WORKFLOW = "kill-switch.yml";
 const WORKFLOW_PATH = join(ROOT, ".github", "workflows", WORKFLOW);
 
@@ -82,6 +96,14 @@ assert(Number.isFinite(timeoutMin), "the job declares an explicit timeout (L313)
 // outside it, in BOTH offsets the Eastern clock takes, and a change to the cron that
 // walked it into business hours has to fail rather than be noticed later.
 //
+// The DECLARED time is not the whole question (#3920, L386). GitHub started the 07:10 UTC
+// cron between 262 and 570 minutes late on every one of its last 32 runs, so every morning
+// the drill landed inside business hours. So this asks two things: that the declared time
+// is outside the hours, and that the declared time plus every delay up to the worst one
+// measured is too, judged by the SAME clock check the command makes before it pauses
+// anything (`judgeDrillClock`), margin included, on every day of a year. A second copy
+// of "when is it safe" written here would drift from the one that decides (L107).
+//
 // The advertised week comes from the SEEDED business hours, never from a window
 // restated here: two copies of "when is Pennie open" drift and this one would drift
 // silently (L41).
@@ -89,10 +111,9 @@ assert(Number.isFinite(timeoutMin), "the job declares an explicit timeout (L313)
 // WHAT THIS CANNOT SEE, so a green run is never read as more than it measured (L400).
 // The seeded week is what the migration writes and what an unconfigured table falls
 // back to; the LIVE week lives in `business_hours` and an admin may edit it. A repo
-// scan cannot read a database, so an org that opened 00:00 to 06:00 would walk the
-// advertised day over this cron with nothing here saying so. Measured 2026-09-17 the
-// stored week matches the seed (08:00 to 20:00, Monday to Saturday), and the run lands
-// roughly five hours clear of the earliest advertised minute in either offset.
+// scan cannot read a database, which is exactly why the command now reads the live week
+// itself and stands down inside it: this sweep says where the cron SHOULD land, and the
+// command's own check is what stops it pausing booking when it does not.
 {
   const [minuteField, hourField] = cron.split(/\s+/);
   const utcHour = Number(hourField);
@@ -128,6 +149,41 @@ assert(Number.isFinite(timeoutMin), "the job declares an explicit timeout (L313)
     !(noon < openDay.start_minute || noon >= openDay.end_minute),
     "control: midday IS inside the advertised day, so the assertions above measured something",
   );
+
+  // The sweep. Every day of a year from a fixed start, so both clock changes are crossed,
+  // and every delay from on time to the worst measured, in ten minute steps (the margin is
+  // thirty, so no window can sit between two samples). The control stops at its first
+  // landing: it only has to show the sweep can find one.
+  const seededReading = {
+    ok: true as const,
+    hours: { zone: BUSINESS_ZONE, rules: SEEDED_BUSINESS_HOURS, exceptions: [] },
+  };
+  const landingsInsideHours = (hour: number, minute: number, stopAtFirst = false): string[] => {
+    const found: string[] = [];
+    for (let day = 0; day < 366; day++) {
+      const declared = Date.UTC(2026, 9, 19 + day, hour, minute);
+      for (let delay = 0; delay <= MEASURED_GITHUB_DELAY_MIN.max; delay += 10) {
+        const decision = judgeDrillClock(seededReading, declared + delay * 60_000);
+        if (decision.kind !== "clear") found.push(`${new Date(declared).toISOString().slice(0, 10)} +${delay}m`);
+        if (stopAtFirst && found.length > 0) return found;
+      }
+    }
+    return found;
+  };
+  const inside = landingsInsideHours(utcHour, utcMinute);
+  eq(
+    inside.length,
+    0,
+    `the declared time plus every delay up to the worst measured (${MEASURED_GITHUB_DELAY_MIN.max} minutes) ` +
+      `lands outside the org's hours and their margin on every day of a year: ${inside.slice(0, 5).join(", ")}`,
+  );
+  // Control: the OLD cron, 07:10 UTC, is exactly the schedule #3920 caught pausing
+  // booking at 10:35 AM, so the same sweep over it must find landings inside the hours,
+  // or the zero above would have meant nothing (L1).
+  assert(
+    landingsInsideHours(7, 10, true).length > 0,
+    "control: the same sweep over the old 07:10 UTC cron finds landings inside the hours",
+  );
 }
 
 // --- the bound is DERIVED from that schedule (L614) ----------------------------
@@ -139,8 +195,10 @@ assert(Number.isFinite(timeoutMin), "the job declares an explicit timeout (L313)
   // costs the whole day. There is no gap filler on this lane, so the bound has to
   // survive one dropped run or it pages for a cause nobody can fix (L36).
   const droppedRunMs = 2 * (cadenceMs as number);
-  // It runs LATE as well as dropping runs, measured at 2 to 3 hours in this repo.
-  const OBSERVED_GITHUB_LATENESS_MS = 3 * 60 * 60_000;
+  // It runs LATE as well as dropping runs. This read 2 to 3 hours when #2493 wrote it;
+  // measured again for #3920 it is up to 9.5 hours on this very workflow, so the run
+  // after a dropped one being merely that late must not be a second page.
+  const OBSERVED_GITHUB_LATENESS_MS = MEASURED_GITHUB_DELAY_MIN.max * 60_000;
   // The stamp lands at the END of the run, so the job's own timeout is part of the
   // worst case gap between two stamps.
   const earliestHonest = droppedRunMs + OBSERVED_GITHUB_LATENESS_MS + timeoutMin * 60_000;
@@ -155,11 +213,19 @@ assert(Number.isFinite(timeoutMin), "the job declares an explicit timeout (L313)
     `the bound is the derivation plus a rounding hour, not an arbitrary large number ` +
       `(bound ${bound}ms, derivation ${earliestHonest}ms)`,
   );
+  // A night the clock check SKIPS stamps nothing (#3920), so a run of skips has to reach
+  // the bound like any other run of nights that measured nothing. Three skipped nights in
+  // a row must page, or a schedule that drifted back into business hours would read as a
+  // detector that is fine (L98).
+  assert(
+    (bound as number) < 3 * (cadenceMs as number),
+    `a run of three skipped nights is past the bound and pages (bound ${bound}ms)`,
+  );
 }
 
 // --- which endings COUNT as a measured verdict --------------------------------
 // Driven over every code the command can end on, enumerated from KILL_SWITCH_EXIT
-// itself rather than from a list written here, so a fifteenth ending added to the
+// itself rather than from a list written here, so a seventeenth ending added to the
 // command fails this rather than quietly inheriting somebody's guess (L96).
 {
   const codes = Object.values(KILL_SWITCH_EXIT);
@@ -251,6 +317,68 @@ assert(Number.isFinite(timeoutMin), "the job declares an explicit timeout (L313)
     !RUN_JUDGEMENT[KILL_SWITCH_EXIT.unreadableReply].concluded,
     "an answer from something other than the booking route measured nothing about the switch",
   );
+
+  // The two clock stand downs (#3920). Neither paused anything, so neither measured the
+  // switch, and a stamp on either would read a night the drill never ran as a healthy
+  // detector (L98).
+  assert(
+    !RUN_JUDGEMENT[KILL_SWITCH_EXIT.insideBusinessHours].concluded,
+    "a run that skipped because GitHub started it inside business hours measured nothing, so it does not stamp",
+  );
+  assert(
+    !RUN_JUDGEMENT[KILL_SWITCH_EXIT.hoursUnreadable].concluded,
+    "a run that could not read the org's hours paused nothing and measured nothing, so it does not stamp",
+  );
+  eq(
+    [...SKIPPED_EXITS].join(","),
+    String(KILL_SWITCH_EXIT.insideBusinessHours),
+    "only the inside-hours stand down is a SKIP; unreadable hours are a read that failed, said as one (L11)",
+  );
+}
+
+// --- a skip is reported in its own words, and never stamped -----------------------
+// Driven end to end through the reporter the workflow runs, from a summary file on disk,
+// because the stamp step reads the reporter's `concluded` and nothing else.
+{
+  const dir = mkdtempSync(join(tmpdir(), "kill-switch-skip-"));
+  const file = join(dir, "summary.json");
+  const posted: string[] = [];
+  const post = async (msg: { text: string }) => {
+    posted.push(msg.text);
+    return { ok: true };
+  };
+  const env = (exit: number) => {
+    writeFileSync(file, JSON.stringify({ exit, detail: `the command's own sentence for exit ${exit}` }));
+    return {
+      KILL_SWITCH_SUMMARY_FILE: file,
+      RUN_URL: "https://github.com/Try-Pennie/slate/actions/runs/1234",
+      SLACK_BOT_TOKEN: "xoxb-test",
+      SLACK_ALERTS_CHANNEL: "C0TEST",
+    };
+  };
+
+  const skipped = await runNotifier(post, env(KILL_SWITCH_EXIT.insideBusinessHours));
+  eq(skipped.concluded, false, "a skipped night leaves the verdict unstamped, so the freshness watch counts it as a night with no verdict");
+  eq(skipped.skipped, true, "and the reporter knows it was a skip");
+  eq(posted.length, 1, "a skip is said out loud, because silence on this lane means a pass");
+  const skipText = posted[0] as string;
+  assert(/skipped|did not run/i.test(skipText.split("\n")[0] as string), `the skip's opening sentence says it did not run: ${skipText}`);
+  assert(!/fail/i.test(skipText.split("\n")[0] as string), "and does not call itself a failure");
+  assert(skipText.includes(`the command's own sentence for exit ${KILL_SWITCH_EXIT.insideBusinessHours}`), "and carries the command's own sentence about when it was judged");
+
+  posted.length = 0;
+  const unreadable = await runNotifier(post, env(KILL_SWITCH_EXIT.hoursUnreadable));
+  eq(unreadable.concluded, false, "unreadable hours leave the verdict unstamped too");
+  eq(unreadable.skipped, false, "and are not reported as a skip");
+  assert(/could not/i.test((posted[0] ?? "").split("\n")[0] as string), "they say the check could not be made");
+
+  posted.length = 0;
+  const passed = await runNotifier(post, env(KILL_SWITCH_EXIT.ok));
+  eq(passed.concluded, true, "control: a pass through the same reporter DOES conclude, so the two falses above measured something");
+  eq(passed.skipped, false, "and is not a skip");
+  eq(posted.length, 0, "and says nothing");
+
+  rmSync(dir, { recursive: true, force: true });
 }
 
 // --- what it SAYS -------------------------------------------------------------

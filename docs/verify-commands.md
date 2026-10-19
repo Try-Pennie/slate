@@ -1481,6 +1481,8 @@ which was the command accusing its subject of a fault its own read had caused.
 | 12 | availability could not be read in EITHER half, so that half is unmeasured |
 | 13 | bookings were ALREADY stopped, so the run stood down without testing anything |
 | 14 | the pause flag could not be written, so the paused half never ran; nothing is left stopped |
+| 15 | **skipped**: now is inside the org's business hours or within 30 minutes of them, so nothing was paused |
+| 16 | the org's business hours could not be read, so nothing was paused |
 
 Exit 2 outranks every other finding, because it is the only one that goes on turning
 real leads away after the command exits: a reader sent to investigate "the switch does
@@ -1501,6 +1503,16 @@ because on a schedule they mean something the codes they shared never did: 13 is
 deployment where somebody has deliberately stopped bookings and finishing the run would
 start them again for them, and 14 is a database write problem rather than an unreachable
 deployment. Neither is a pass and neither is a fault (L11, L98).
+
+Exits 15 and 16 are the clock check #3920 added, which runs before anything is read or
+written. It reads the org's LIVE hours and closed dates (`business_hours`,
+`business_hours_exceptions`), judges the current instant on the org's clock through
+`windowOnDate`, and stands down inside an open window or within 30 minutes either side of
+one. Thirty, because it is larger than the job's whole ten minute timeout, so nothing that
+can separate the check from the pause reaches the open window, and the night left is still
+eleven hours. Hours it cannot read stand down too (16), because a skipped night costs one
+missing verdict and a wrong guess costs real leads. A hand run is checked the same way. The
+rule is `scripts/lib/kill-switch-clock.ts`, driven by `scripts/test-kill-switch-clock.ts`.
 ## It runs NIGHTLY, and outside the hours the org advertises (#2493)
 
 The command had run exactly once, in the session that wrote it, which is the state
@@ -1511,11 +1523,21 @@ answer that issue took, with ONE difference the schedule has to carry.
 
 **Running this command STOPS public booking for about two seconds.** A recurring
 automated pause is cheap before cutover and expensive after it, so
-`.github/workflows/kill-switch.yml` runs at **07:10 UTC**, roughly 03:10 Eastern, which
-is outside the org's advertised 08:00 to 20:00 Monday to Saturday in BOTH offsets the
-Eastern clock takes. `scripts/test-kill-switch-schedule.ts` reads that window out of
-`SEEDED_BUSINESS_HOURS` and re-derives the comparison from the cron, so a schedule
-edited into business hours fails the build rather than being noticed later.
+`.github/workflows/kill-switch.yml` runs overnight, outside the org's advertised 08:00 to
+20:00 Monday to Saturday in BOTH offsets the Eastern clock takes.
+
+**The declared time is not when it runs** (#3920, L386). Declared at 07:10 UTC, GitHub
+started it 262 to 570 minutes late on every one of its last 32 runs (measured 2026-10-19,
+median 383), which is 7:32 AM to 12:40 PM Eastern: it paused live booking every morning.
+The other daily crons here show the same delay at every hour, so it is GitHub's queue. The
+cron is now **01:40 UTC** (21:40 EDT, 20:40 EST), which puts every measured delay between
+about 00:30 and 07:10 Eastern, and the command checks the clock itself before pausing (exits
+15 and 16 above), so a delay past that skips rather than refusing leads.
+`scripts/test-kill-switch-schedule.ts` sweeps the cron plus every delay up to 570 minutes, on
+every day of a year, through that same clock check against `SEEDED_BUSINESS_HOURS`, with
+the old 07:10 cron as its control, so a schedule edited back into business hours fails the
+build. There is no later re-attempt for a skipped night: #3320's re-dispatch pattern is not
+built yet.
 
 That is the residual risk, stated rather than implied: a lead who posts a booking inside
 those two seconds is answered with the paused copy, which tells them to try again
@@ -1532,7 +1554,7 @@ judged with `neverIsStale` ON, because "has never once concluded" is the exact s
 this issue was about. Two things about that stamp are the whole design:
 
 - **Only a run that MEASURED whether the gate refuses and releases may write it.** Six
-  endings conclude and eight do not, and the interesting ones are the bad verdicts that
+  endings conclude and ten do not, and the interesting ones are the bad verdicts that
   DO stamp: a booker that takes a booking while paused, one that refuses while open, and
   one refusing with the cannot-read copy are all definite readings of the thing under
   test, so they stamp AND are posted to Slack. `notRestored` deliberately does NOT stamp
@@ -1540,11 +1562,13 @@ this issue was about. Two things about that stamp are the whole design:
   run found, so the gate's own behaviour may never have been reached. Nor does exit 13,
   because a run that stood down tested nothing. The mapping is in
   `scripts/lib/kill-switch-run-outcome.ts`, one entry per exit code, and the guard walks
-  `KILL_SWITCH_EXIT` so a fifteenth ending cannot inherit somebody's guess.
-- **The bound is 52 hours and every part of it is derived** (L614): 24h of cadence,
-  doubled so one dropped run does not page, plus the 3h worst lateness this repo has
-  measured, plus the job's own 10 minute timeout, because the stamp lands at the END of a
-  run. There is deliberately no gap filler, matching the burst counter.
+  `KILL_SWITCH_EXIT` so a seventeenth ending cannot inherit somebody's guess.
+- **The bound is 58 hours and every part of it is derived** (L614): 24h of cadence,
+  doubled so one dropped run does not page, plus the 9h30m worst lateness measured on this
+  workflow (#3920; it read 3h when #2493 wrote it), plus the job's own 10 minute timeout,
+  because the stamp lands at the END of a run. A skipped night (exit 15 or 16) stamps
+  nothing either, so three in a row are past the bound and page. There is deliberately no
+  gap filler, matching the burst counter.
 
 **The run speaks from the runner** (`scripts/notify-kill-switch.ts`, bare node like the
 other alerters): it repeats once a night until a run passes, and a run that passes says

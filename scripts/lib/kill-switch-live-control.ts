@@ -71,6 +71,24 @@ export const KILL_SWITCH_EXIT = {
    * (L11). Nothing is left stopped either way.
    */
   flagNotSet: 14,
+  /**
+   * GitHub started the run inside the org's business hours, or within the margin
+   * either side of them, so it stood down before pausing anything (#3920).
+   *
+   * The cron sits in the small hours, and GitHub started it 4.5 to 9.5 hours late on
+   * every run for a month, so the two second pause landed on live booking every
+   * morning. A SKIP rather than a fault: the check doing its job. Never a pass,
+   * because nothing was measured (L98), so it leaves the verdict unstamped and a run
+   * of them reaches the staleness bound.
+   */
+  insideBusinessHours: 15,
+  /**
+   * The org's business hours could not be read, so whether pausing was safe could not
+   * be judged and nothing was paused (#3920). Fail safe toward NOT stopping booking.
+   * Its own code rather than the skip's, because a read that failed and a check that
+   * worked send a reader to do different things (L11).
+   */
+  hoursUnreadable: 16,
 } as const;
 
 /** What one POST to the public booking route produced. */

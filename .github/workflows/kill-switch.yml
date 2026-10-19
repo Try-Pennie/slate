@@ -26,12 +26,36 @@ name: Kill switch
 # recording that in AGENTS.md is a rule that lives only in a prompt, which is where this
 # started.
 #
+# THE DECLARED TIME IS NOT WHEN IT RUNS (#3920, L386). This used to be scheduled at 07:10
+# UTC, roughly 03:10 Eastern, and GitHub started it 262 to 570 minutes late on every one of
+# its last 32 runs (measured 2026-10-19, median 383): 7:32 AM to 12:40 PM Eastern, so it
+# paused live booking inside business hours every single morning. On 2026-10-19 the booking
+# route answered two requests at 10:35 AM Eastern with "bookings are paused". Every other
+# daily cron in this repo shows the same delay whatever its hour (the shortest anywhere was
+# 173 minutes), so it is GitHub's queue, not the hour. Two things now answer it:
+#
+#   1. THE COMMAND CHECKS THE CLOCK ITSELF before it pauses anything
+#      (`scripts/lib/kill-switch-clock.ts`). It reads the org's LIVE business hours and
+#      closed dates (`business_hours`, `business_hours_exceptions`, the same reads the booker
+#      uses), judges the current instant on the org's own clock, and stands down when it is
+#      inside an open window or within 30 minutes either side of one: exit 15, a SKIP, said
+#      in the job summary and in Slack in its own words. Hours it cannot read stand down too
+#      (exit 16, said as a read that failed): a skipped night costs one missing verdict,
+#      a wrong guess costs real leads. Neither stamps the verdict, so a run of skipped nights
+#      reaches the staleness bound and pages rather than reading as a healthy detector (L98).
+#   2. THE CRON MOVED EARLIER so GitHub's usual delay still lands overnight. See the cron
+#      line for the arithmetic. The clock check is what makes the cron safe to get wrong.
+#
+# There is deliberately no re-attempt later in the night for a skipped or dropped run. The
+# re-dispatch pattern that would do it (#3320) is not built yet, and a second copy written
+# here would be one more thing to keep in step; with the cron where it is now, every delay
+# measured lands clear, so a skip should be rare enough for the staleness bound to carry it.
+#
 # WHAT IT COSTS, and it is not free. One run a day pauses public booking for about two
-# seconds at roughly 03:10 Eastern on a day the org advertises as shut (08:00 to 20:00
-# Monday to Saturday, `business_hours`), in both offsets the Eastern clock takes. A lead who
-# posts a booking inside those two seconds is answered with the paused copy, which tells
-# them to try again shortly, and the booker's own retry works. That is the residual risk,
-# stated rather than implied.
+# seconds, overnight Eastern, at an instant the command has just checked is outside the
+# org's hours and their margin. A lead who posts a booking inside those two seconds is
+# answered with the paused copy, which tells them to try again shortly, and the booker's own
+# retry works. That is the residual risk, stated rather than implied.
 #
 # It REFUSES to run at all against a deployment where somebody has already stopped public
 # booking (exit 13), because finishing would turn it back on for them. The proof stands
@@ -46,14 +70,30 @@ name: Kill switch
 # the staleness bound on `verdict:kill-switch` is set to survive one dropped run instead.
 on:
   schedule:
-    # 07:10 UTC daily, which is roughly 03:10 Eastern: deep inside the closed window in
-    # both offsets the Eastern clock takes, so the two second pause lands where the org
-    # advertises no availability at all. Not on the hour, where GitHub's scheduling queue
-    # is busiest and runs are most often dropped, and clear of every other schedule in this
-    # repo (clock-shift 04:40, coverage 05:40, the canary at :00 and :30 with its hourly full
-    # pass on the hour, burst-counter 10:50, schedule-parity 12:20, router-replay 13:20) so
-    # two jobs never queue together.
-    - cron: "10 7 * * *"
+    # 01:40 UTC daily (#3920), declared at 21:40 EDT or 20:40 EST, so even a run GitHub
+    # started on time would be outside the org's hours and their 30 minute margin (20:00
+    # close plus 30) in both offsets the Eastern clock takes.
+    #
+    # The point is where it LANDS. Measured 2026-10-19 over this workflow's last 32 runs
+    # at the old 07:10 UTC, GitHub started it 262 to 570 minutes late, median 383, and
+    # the other daily crons here (04:40, 05:40, 07:40, 10:50, 11:23, 12:20) showed the
+    # same 173 to 570 minute spread at every hour. From 01:40 UTC that lands between
+    # about 04:30 and 11:10 UTC: 00:30 to 07:10 EDT, or 23:30 to 06:10 EST, so the median
+    # run lands between 03:00 and 04:00 Eastern and even the worst delay measured clears the 07:30
+    # margin before an 08:00 opening by twenty minutes in summer time. A delay beyond
+    # that, or an org whose live hours open earlier than the seeded 08:00, is what the
+    # command's own clock check stands down for.
+    #
+    # `scripts/test-kill-switch-schedule.ts` sweeps this cron plus every delay from on
+    # time to 570 minutes, on every day of a year, through the same clock check the
+    # command makes, and fails if any landing is inside the seeded hours or their margin.
+    #
+    # Not on the hour, where GitHub's scheduling queue is busiest and runs are most often
+    # dropped, and ten minutes clear of the canary's :30 pass and of every other schedule
+    # in this repo (clock-shift 04:40, coverage 05:40, db-backup and db-replay 07:40,
+    # burst-counter 10:50, dependency-audit 11:23, schedule-parity 12:20, router-replay
+    # 13:20, db-backup 19:40).
+    - cron: "40 1 * * *"
   # No inputs, so a hand dispatch is the same run the schedule makes. Anyone who has just
   # changed the kill switch path can run it here without waiting for tonight, which is what
   # makes this the ANSWER to "re-run it after a change" rather than a second copy of it.
@@ -86,7 +126,7 @@ jobs:
       # night before setup. An absent key is "not configured yet"; a present but wrong one
       # still runs and reports.
       #
-      # A skip stamps nothing, so a workflow left unconfigured goes stale against the 52
+      # A skip stamps nothing, so a workflow left unconfigured goes stale against the 58
       # hour bound and pages as a detector that has never once concluded, which is exactly
       # what it would be.
       - name: Preflight (is the proof configured?)
@@ -146,6 +186,12 @@ jobs:
       # those leaves this unstamped, the verdict goes stale and the lane watchdog pages,
       # because a detector that has stopped concluding otherwise looks exactly like one
       # finding nothing wrong (#1394).
+      #
+      # A night the clock check stood down on (exit 15, inside business hours, or exit 16,
+      # hours unreadable, #3920) concluded nothing and stamps nothing, however routine the
+      # skip: the reporter answers concluded=0 for both. So a run of skipped nights goes
+      # stale like any other run of nights that measured nothing, and the watchdog pages
+      # rather than reading a drill that never ran as a healthy detector (L98).
       #
       # The BAD verdicts stamp too, and that is deliberate: a booker that takes a booking
       # while paused, or refuses while open, is a definite reading of the thing under test,

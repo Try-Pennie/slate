@@ -6,7 +6,7 @@
 // telling.
 //
 // The DECISION is in `lib/kill-switch-run-outcome.ts` and pinned offline, because the
-// command has fourteen endings and half of them mean it never got to ask the question. A
+// command has sixteen endings and most of them mean it never got to ask the question. A
 // stamp on one of those would report the detector concluding while it is blind, which is
 // the exact substitution the verdict family exists to stop (#1394, L98).
 //
@@ -45,12 +45,15 @@ export function readSummary(path: string): KillSwitchSummaryFile | null {
 export async function run(
   post: PostFn,
   env: Record<string, string | undefined>,
-): Promise<{ ok: boolean; reason: string; concluded: boolean }> {
+): Promise<{ ok: boolean; reason: string; concluded: boolean; skipped: boolean; headline: string | null }> {
   const decision = decideKillSwitchReport(
     readSummary(env.KILL_SWITCH_SUMMARY_FILE ?? ""),
     env.RUN_URL ?? "",
   );
-  return postConcludedDecision(post, env, decision);
+  const res = await postConcludedDecision(post, env, decision);
+  // The skip is carried out separately so the log line and the annotation can say it in
+  // its own words: it is neither the silent pass nor the red failure (#3920).
+  return { ...res, skipped: decision.skipped, headline: decision.alert?.split("\n")[0] ?? null };
 }
 
 runAlerter(import.meta.url, async (post, env) => {
@@ -66,6 +69,13 @@ runAlerter(import.meta.url, async (post, env) => {
         `settings.`,
     );
     return 1;
+  }
+  if (res.skipped) {
+    // A notice, not an error: the clock check standing down inside business hours is the
+    // design working, and painting it red would teach a reader to ignore the red ones.
+    console.log(`::notice title=Kill switch proof skipped::${res.headline ?? "skipped inside business hours"}`);
+    console.log(`kill switch: SKIPPED inside business hours, nothing paused; ${res.reason}; concluded=${res.concluded}`);
+    return 0;
   }
   console.log(`kill switch: ${res.reason}; concluded=${res.concluded}`);
   return 0;

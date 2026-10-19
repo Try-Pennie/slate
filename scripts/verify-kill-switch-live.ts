@@ -38,6 +38,12 @@
 // on its own code: an exit code alone cannot tell a real ending from an uncaught throw, because
 // node exits 1 on both (L11, L98). A hand run sets no path and writes nothing.
 //
+// IT CHECKS THE CLOCK FIRST SINCE #3920. A cron's declared time is not when it runs, and GitHub
+// started the nightly run inside business hours every morning for a month. So before it writes
+// anything it reads the org's live hours and closed dates and stands down inside an open window
+// or within 30 minutes of one (exit 15, a skip), or when the hours cannot be read (exit 16).
+// The rule is `scripts/lib/kill-switch-clock.ts`, pinned by `scripts/test-kill-switch-clock.ts`.
+//
 // Env overrides:
 //   SLATE_BASE_URL     the deployment to ask (default https://slate.trypennie.app)
 //   KILL_SWITCH_BUCKET the bucket whose availability is read (default 111, a real public one)
@@ -46,6 +52,7 @@
 //   setting that has to exist before the nightly proof can run, and an unset one
 //   interpolates to the empty string, which is the #1495 fault)
 //   KILL_SWITCH_SUMMARY_FILE  where to record the verdict for the scheduled reporter
+import { appendFileSync } from "node:fs";
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
@@ -66,8 +73,31 @@ const { KILL_SWITCH_EXIT, readProbeReply, judgeKillSwitchRun, restoreFailureMess
   "./lib/kill-switch-live-control.ts"
 );
 const { writeKillSwitchSummary } = await import("./lib/kill-switch-run-outcome.ts");
+const { judgeDrillClock, drillClockExit, drillClockSummaryLine, exceptionsConsultedFrom } = await import(
+  "./lib/kill-switch-clock.ts"
+);
+const { loadBusinessHoursRows, loadBusinessHoursExceptions, businessHoursFromRows } = await import(
+  "@/lib/booking/business-hours-load"
+);
+type OrgHoursReading = import("./lib/kill-switch-clock.ts").OrgHoursReading;
 
 const SUMMARY_FILE = process.env.KILL_SWITCH_SUMMARY_FILE ?? "";
+
+/**
+ * Say the clock's answer on the job's summary page as well as in the log (#3920), so a
+ * skipped night reads as a skip on the Actions page without opening the step. Outside a
+ * workflow there is no summary file and this does nothing. A write that fails is said on
+ * stderr and never stops the run: the summary is a convenience, the verdict file is the record.
+ */
+function writeStepSummary(line: string): void {
+  const path = process.env.GITHUB_STEP_SUMMARY;
+  if (!path) return;
+  try {
+    appendFileSync(path, `${line}\n`, "utf8");
+  } catch (err) {
+    console.error(`(could not write the job summary: ${err instanceof Error ? err.message : String(err)})`);
+  }
+}
 
 /**
  * Record the verdict for the scheduled reporter, then leave.
@@ -141,6 +171,38 @@ async function setPaused(paused: boolean): Promise<boolean> {
     "booking_settings read back",
   ) as { public_booking_paused: boolean | null } | null;
   return (row?.public_booking_paused === true) === paused;
+}
+
+// Ask the CLOCK before anything else (#3920). GitHub started the nightly run 4.5 to 9.5 hours
+// late for a month, so the two second pause landed on live booking every morning, and nothing
+// the workflow declares can prevent that. So the command reads the org's own hours and closed
+// dates, judges this instant on the org's clock, and stands down inside an open window or its
+// margin. Hours it cannot read stand down too: a skipped night costs one missing verdict, which
+// the staleness bound reports, and a wrong guess costs real leads. This runs before the
+// already-paused read and the open probe, so a skip touches nothing at all. Every run checks,
+// a hand run included, because a person in a terminal at 10am stops booking just the same.
+{
+  const nowMs = Date.now();
+  let reading: OrgHoursReading;
+  try {
+    const from = exceptionsConsultedFrom(nowMs);
+    if (from === null) throw new Error("the runner's clock could not be read");
+    // The week and the exceptions from YESTERDAY, so a window closing at midnight carries its
+    // margin into today; resolved by the same function the booker's own read uses, so the two
+    // can never judge one stored week differently.
+    const [rows, exceptions] = await Promise.all([loadBusinessHoursRows(), loadBusinessHoursExceptions(from)]);
+    reading = { ok: true, hours: businessHoursFromRows(rows, exceptions) };
+  } catch (err) {
+    reading = { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+  const clock = judgeDrillClock(reading, nowMs);
+  writeStepSummary(drillClockSummaryLine(clock));
+  const clockExit = drillClockExit(clock);
+  if (clockExit !== null) {
+    console.error(`${clock.kind === "inside-hours" ? "SKIPPED (inside-business-hours)" : "FAILED (hours-unreadable)"}: ${clock.detail}`);
+    leave(clockExit, clock.detail);
+  }
+  console.log(`clock: ${clock.detail}`);
 }
 
 // Refuse to run against a deployment where somebody has ALREADY paused bookings. Clearing that at
