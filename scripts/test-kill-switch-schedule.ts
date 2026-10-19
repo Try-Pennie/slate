@@ -323,7 +323,7 @@ assert(Number.isFinite(timeoutMin), "the job declares an explicit timeout (L313)
   // detector (L98).
   assert(
     !RUN_JUDGEMENT[KILL_SWITCH_EXIT.insideBusinessHours].concluded,
-    "a run that skipped because GitHub started it inside business hours measured nothing, so it does not stamp",
+    "a run that skipped because it started inside business hours measured nothing, so it does not stamp",
   );
   assert(
     !RUN_JUDGEMENT[KILL_SWITCH_EXIT.hoursUnreadable].concluded,

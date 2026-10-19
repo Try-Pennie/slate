@@ -1530,8 +1530,8 @@ automated pause is cheap before cutover and expensive after it, so
 started it 262 to 570 minutes late on every one of its last 32 runs (measured 2026-10-19,
 median 383), which is 7:32 AM to 12:40 PM Eastern: it paused live booking every morning.
 The other daily crons here show the same delay at every hour, so it is GitHub's queue. The
-cron is now **01:40 UTC** (21:40 EDT, 20:40 EST), which puts every measured delay between
-about 00:30 and 07:10 Eastern, and the command checks the clock itself before pausing (exits
+cron is now **01:40 UTC** (21:40 EDT, 20:40 EST), which puts this workflow's measured delays
+between about 02:00 and 07:10 Eastern in summer time (01:00 to 06:10 in winter), and the command checks the clock itself before pausing (exits
 15 and 16 above), so a delay past that skips rather than refusing leads.
 `scripts/test-kill-switch-schedule.ts` sweeps the cron plus every delay up to 570 minutes, on
 every day of a year, through that same clock check against `SEEDED_BUSINESS_HOURS`, with

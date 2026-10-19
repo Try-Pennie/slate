@@ -77,10 +77,12 @@ on:
     # The point is where it LANDS. Measured 2026-10-19 over this workflow's last 32 runs
     # at the old 07:10 UTC, GitHub started it 262 to 570 minutes late, median 383, and
     # the other daily crons here (04:40, 05:40, 07:40, 10:50, 11:23, 12:20) showed the
-    # same 173 to 570 minute spread at every hour. From 01:40 UTC that lands between
-    # about 04:30 and 11:10 UTC: 00:30 to 07:10 EDT, or 23:30 to 06:10 EST, so the median
-    # run lands between 03:00 and 04:00 Eastern and even the worst delay measured clears the 07:30
-    # margin before an 08:00 opening by twenty minutes in summer time. A delay beyond
+    # same 173 to 570 minute spread at every hour. From 01:40 UTC this workflow's own
+    # delays land between about 06:00 and 11:10 UTC: 02:00 to 07:10 EDT, or 01:00 to 06:10
+    # EST (the shortest delay seen anywhere here would land at 04:30 UTC, still overnight).
+    # The median run lands between 03:00 and 04:00 Eastern, and even the worst delay
+    # measured clears the 07:30 margin before an 08:00 opening by twenty minutes in
+    # summer time. A delay beyond
     # that, or an org whose live hours open earlier than the seeded 08:00, is what the
     # command's own clock check stands down for.
     #
