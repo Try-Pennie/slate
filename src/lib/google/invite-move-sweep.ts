@@ -47,7 +47,8 @@ export interface InviteSweepDeps {
   recordChange(row: NewInviteChange): Promise<string | null>;
   /** Write the moved time as the sync would mirror it. */
   writeMirror(m: { userId: string; eventId: string; startsAt: string; endsAt: string }): Promise<void>;
-  post(key: string, text: string): Promise<void>;
+  /** Post to the alerts channel: whether it was delivered. Never throws. */
+  post(key: string, text: string): Promise<boolean>;
   /** How many invites to read at once. */
   concurrency?: number;
 }
@@ -72,6 +73,10 @@ export interface SweepResult {
   reported: SweepFinding[];
   /** With `apply`: findings another run recorded between this one's read and its write. */
   recordedElsewhere: number;
+  /** With `apply`: findings whose block or record could not be written, with the reason. */
+  notRecorded: { bookingId: string; reason: string }[];
+  /** With `apply` and something reported: whether the message was delivered. */
+  posted: boolean | null;
 }
 
 export async function sweepOutOfStepInvites(deps: InviteSweepDeps): Promise<SweepResult> {
@@ -88,6 +93,8 @@ export async function sweepOutOfStepInvites(deps: InviteSweepDeps): Promise<Swee
     alreadyRecorded: upcoming.length - todo.length,
     reported: [],
     recordedElsewhere: 0,
+    notRecorded: [],
+    posted: null,
   };
   const width = Math.max(1, deps.concurrency ?? 5);
   for (let i = 0; i < todo.length; i += width) {
@@ -129,36 +136,50 @@ export async function sweepOutOfStepInvites(deps: InviteSweepDeps): Promise<Swee
   result.found.sort((a, b) => a.bookedStartsAt.localeCompare(b.bookedStartsAt) || a.bookingId.localeCompare(b.bookingId));
   if (!deps.apply || result.found.length === 0) return result;
 
-  // Only what THIS run recorded is blocked and reported. A null means another run
+  // Each invite is BLOCKED first and recorded second, so a failure part way never
+  // leaves a record claiming a block that was not written; the block is the sync's
+  // own rule for an out of step invite, so writing it for one another run recorded
+  // is harmless. Only what THIS run recorded is reported: a null means another run
   // (the live handler acting on a fresh change, or an earlier sweep) recorded it
-  // first, and that run owns what happens to it.
+  // first, and that run owns what happens to it. One invite failing never stops the
+  // rest, and is returned for the caller to name.
   const reported: SweepFinding[] = [];
   for (const f of result.found) {
-    const id = await deps.recordChange({
-      bookingId: f.bookingId,
-      userId: f.userId,
-      gcalEventId: f.eventId,
-      kind: f.step,
-      // A pre launch move is the booking's first, so a later move is its second and
-      // is escalated rather than put back (decision 4).
-      moveNumber: f.step === "moved" ? 1 : null,
-      action: "report_launch",
-      bookedStartsAt: f.bookedStartsAt,
-      bookedEndsAt: f.bookedEndsAt,
-      eventStartsAt: f.eventStartsAt,
-      eventEndsAt: f.eventEndsAt,
-      eventUpdated: f.eventUpdated ?? `unstamped:${f.eventStartsAt}:${f.eventEndsAt}`,
-    });
-    if (id === null) {
-      result.recordedElsewhere++;
-      continue;
+    try {
+      await deps.writeMirror({ userId: f.userId, eventId: f.eventId, startsAt: f.eventStartsAt, endsAt: f.eventEndsAt });
+      const id = await recordLaunchFinding(deps, f);
+      if (id === null) {
+        result.recordedElsewhere++;
+        continue;
+      }
+      reported.push(f);
+    } catch (err) {
+      result.notRecorded.push({ bookingId: f.bookingId, reason: err instanceof Error ? err.message : String(err) });
     }
-    await deps.writeMirror({ userId: f.userId, eventId: f.eventId, startsAt: f.eventStartsAt, endsAt: f.eventEndsAt });
-    reported.push(f);
   }
   result.reported = reported;
   if (reported.length === 0) return result;
+  // The records are already written, so a rerun would skip these as recorded: a post
+  // that did not go out is RETURNED, and the script prints the message to send by hand.
   // alert-key: booking_invite_launch_sweep
-  await deps.post(INVITE_LAUNCH_SWEEP_KEY, inviteLaunchSweepAlert(reported));
+  result.posted = await deps.post(INVITE_LAUNCH_SWEEP_KEY, inviteLaunchSweepAlert(reported));
   return result;
+}
+
+function recordLaunchFinding(deps: InviteSweepDeps, f: SweepFinding): Promise<string | null> {
+  return deps.recordChange({
+    bookingId: f.bookingId,
+    userId: f.userId,
+    gcalEventId: f.eventId,
+    kind: f.step,
+    // A pre launch move is the booking's first, so a later move is its second and
+    // is escalated rather than put back (decision 4).
+    moveNumber: f.step === "moved" ? 1 : null,
+    action: "report_launch",
+    bookedStartsAt: f.bookedStartsAt,
+    bookedEndsAt: f.bookedEndsAt,
+    eventStartsAt: f.eventStartsAt,
+    eventEndsAt: f.eventEndsAt,
+    eventUpdated: f.eventUpdated ?? `unstamped:${f.eventStartsAt}:${f.eventEndsAt}`,
+  });
 }

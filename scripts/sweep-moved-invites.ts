@@ -25,8 +25,11 @@
 // service account, the Slack bot token). Posting from a laptop is refused by default
 // (#1537); `--apply` is the explicit intent, so it opts this one process in.
 //
-// Exit codes: 0 read every invite (found or not); 1 no credentials here, nothing read;
-// 2 the bookings could not be read; 3 some invites could not be read, listed.
+// Exit codes: 0 read every invite (found or not) and posted what it found; 1 no
+// credentials here, nothing read; 2 the bookings could not be read; 3 some invites
+// could not be read, listed; 4 some findings could not be blocked or recorded,
+// listed, and a rerun retries them; 5 the message did not post, and is printed to
+// send by hand (its findings are recorded, so a rerun would not report them again).
 import { requireSupabaseCredentials } from "./lib/supabase-credentials.ts";
 
 const apply = process.argv.includes("--apply");
@@ -55,12 +58,24 @@ if (apply && result.recordedElsewhere > 0) {
   console.log(`${result.recordedElsewhere} were recorded by another run meanwhile, and are left to it.`);
 }
 if (shown.length > 0) {
-  console.log(`\nThe alerts channel message${apply ? " (posted)" : " (not posted)"}:\n`);
+  const state = !apply ? "not posted, dry run" : result.posted ? "posted" : "NOT POSTED, send it by hand";
+  console.log(`\nThe alerts channel message (${state}):\n`);
   console.log(inviteLaunchSweepAlert(shown));
 }
 if (result.gone.length > 0) console.log(`\nInvite gone from the advisor's calendar: ${result.gone.join(", ")}`);
+let code = 0;
+if (result.notRecorded.length > 0) {
+  console.error(`\nNOT RECORDED OR BLOCKED, rerun to retry these:`);
+  for (const n of result.notRecorded) console.error(`  ${n.bookingId}: ${n.reason}`);
+  code = 4;
+}
+if (apply && shown.length > 0 && !result.posted) {
+  // The findings are recorded, so a rerun skips them: the printed message is the only copy.
+  console.error("\nThe message did not post to the alerts channel. It is printed above; send it by hand.");
+  code = 5;
+}
 if (result.unreadable.length > 0) {
   console.error(`\nNOT JUDGED, Google could not be read for: ${result.unreadable.join(", ")}`);
-  process.exit(3);
+  code = 3;
 }
-process.exit(0);
+process.exit(code);

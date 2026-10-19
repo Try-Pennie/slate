@@ -16,6 +16,7 @@ import {
   INVITE_MOVE_TOLERANCE_MS,
   NEAR_START_MS,
   judgeInvite,
+  mayTakeOverLock,
   splitSlateInvites,
   decideInviteChange,
   type BookedInvite,
@@ -204,6 +205,15 @@ const live = (e: GoogleEvent) => e;
     "the same end change is reported once",
   );
   eq(decideInviteChange({ event: live(MOVED), booked: BOOKED, prior: [], nowMs: Date.parse(BOOKED.endsAt) + MIN }), { kind: "nothing", why: "past" }, "a call that has ended is left alone");
+}
+
+// --- whose held lock the handler may take over -------------------------------------
+{
+  const at = (ms: number) => new Date(ms).toISOString();
+  assert(!mayTakeOverLock({ lease_until: at(MORNING + MIN), gcal_client_id: null }, MORNING), "a live lease is somebody at work: never taken");
+  assert(mayTakeOverLock({ lease_until: at(MORNING - MIN), gcal_client_id: null }, MORNING), "an expired unpinned lock, which nothing else removes, is taken over");
+  assert(!mayTakeOverLock({ lease_until: at(MORNING - MIN), gcal_client_id: "evt" }, MORNING), "an expired PINNED lock is a crashed reschedule's, left to its resume and the sweep");
+  assert(mayTakeOverLock({ lease_until: null, gcal_client_id: null }, MORNING), "an unreadable lease counts as expired, as the reschedule's own takeover reads it");
 }
 
 // --- the handler, through its seams ------------------------------------------------
@@ -475,6 +485,7 @@ async function sweepCases(): Promise<void> {
     },
     post: async (_key, text) => {
       posts.push(text);
+      return true;
     },
   };
   const out = await sweepOutOfStepInvites(deps);
@@ -487,7 +498,7 @@ async function sweepCases(): Promise<void> {
   assert(posts[0]!.includes("Brian Kenny") && !/moved back/i.test(posts[0]!.replace(/not moved back/gi, "")), "naming the advisor and moving nothing back");
 
   // Another run (the live handler, or an earlier sweep) records one first: that one is
-  // neither blocked again nor reported by this run.
+  // not reported by this run.
   {
     const mirrors2: string[] = [];
     const posts2: string[] = [];
@@ -505,11 +516,35 @@ async function sweepCases(): Promise<void> {
       },
       post: async (_k, text) => {
         posts2.push(text);
+        return true;
       },
     });
-    eq(mirrors2, ["evt-4"], "only what this run recorded is blocked");
+    eq(mirrors2, [EVENT, "evt-4"], "both are blocked, which is the sync's own rule for an out of step invite");
     eq(out2.recordedElsewhere, 1, "the one recorded elsewhere is counted");
     assert(posts2.length === 1 && posts2[0]!.includes("Ana Ruiz") && !posts2[0]!.includes("Brian Kenny"), "and only what this run recorded is reported");
+  }
+
+  // A block that cannot be written stops only that invite, which is named and never
+  // recorded; and a message that did not post is returned, because a rerun would skip
+  // what is already recorded.
+  {
+    const out3 = await sweepOutOfStepInvites({
+      ...deps,
+      loadUpcoming: async () => [
+        { ...fresh(), advisorEmail: EMAIL, advisorName: "Brian Kenny" },
+        { ...fresh({ id: "b-5", gcalEventId: "evt-5" }), advisorEmail: "ana@trypennie.com", advisorName: "Ana Ruiz" },
+      ],
+      bookingsWithChanges: async () => new Set(),
+      readEvent: async () => MOVED,
+      recordChange: async () => "row",
+      writeMirror: async (m) => {
+        if (m.eventId === EVENT) throw new Error("busy block refused");
+      },
+      post: async () => false,
+    });
+    eq(out3.notRecorded, [{ bookingId: BOOKING, reason: "busy block refused" }], "the invite whose block failed is named, not recorded");
+    eq(out3.reported.map((f) => f.bookingId), ["b-5"], "and the rest are still recorded");
+    eq(out3.posted, false, "a message that did not go out is said, so it can be sent by hand");
   }
 
   const dry = await sweepOutOfStepInvites({ ...deps, apply: false, recordChange: async () => { throw new Error("dry run wrote"); }, writeMirror: async () => { throw new Error("dry run wrote"); }, post: async () => { throw new Error("dry run posted"); } });

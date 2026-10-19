@@ -121,6 +121,27 @@ export function splitSlateInvites(
   return { skip, outOfStep };
 }
 
+/**
+ * Whether the handler may take over a booking's reschedule lock somebody else holds.
+ *
+ * Only a lock that is both PAST its lease and carries NO pin: one left by a handler
+ * (or a reschedule) that died before its Google call. Nothing else ever removes such
+ * a row (the abandoned pin sweep takes only pinned ones), so treating it as held would
+ * leave every later move of that booking unjudged, with nothing said. A live lease
+ * is a reschedule or handler at work now; an expired PINNED one is a reschedule that
+ * crashed after its Google call, which its own resume or the abandoned pin sweep
+ * owns, and taking it would strip the pin a resume needs. A lease that cannot be
+ * read counts as expired, as the reschedule's own takeover reads it.
+ */
+export function mayTakeOverLock(
+  row: { lease_until: string | null; gcal_client_id: string | null },
+  nowMs: number,
+): boolean {
+  if (row.gcal_client_id !== null) return false;
+  const until = parseStampMs(row.lease_until);
+  return until === null || until <= nowMs;
+}
+
 /** What a recorded change says Slate did. */
 export type InviteAction =
   | "revert"

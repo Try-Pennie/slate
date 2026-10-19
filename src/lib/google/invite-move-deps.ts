@@ -8,13 +8,13 @@ import { selectAllPages } from "@/lib/supabase/paginate";
 import { unwrap } from "@/lib/db/result";
 import { getEventOnPrimary, updateEventTime } from "@/lib/google/calendar";
 import { dmSlackUserByEmail, slackConfigured } from "@/lib/notify/slack";
-import { mayWriteAlerts, sendThrottledAlert } from "@/lib/notify/dispatch";
+import { mayWriteAlerts, sendThrottledAlert, type SendOutcome } from "@/lib/notify/dispatch";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { appUrl } from "@/lib/env";
 import { log } from "@/lib/log";
 import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import type { BookingInviteChange } from "@/lib/db/types";
-import type { InviteChangeRecord } from "./invite-moves";
+import { mayTakeOverLock, type InviteChangeRecord } from "./invite-moves";
 import {
   INVITE_CHECK_FAILED_KEY,
   INVITE_MOVED_KEY,
@@ -94,6 +94,18 @@ async function post(key: string, text: string): Promise<void> {
   );
 }
 
+/** A post whose delivery the caller must know (the launch sweep's one report). */
+async function postDelivered(key: string, text: string): Promise<boolean> {
+  let outcome: SendOutcome | null = null;
+  // alert-key: booking_invite_launch_sweep
+  await sendThrottledAlert(key, INVITE_POST_COOLDOWN_MS, text, {
+    onOutcome: (o) => {
+      outcome = o;
+    },
+  }).catch((err: unknown) => log.error("invite-move", { msg: "alert failed to send", key }, err));
+  return outcome === "sent";
+}
+
 /**
  * Page about invites the handler could not check (`InviteMoveSummary.failed`), one
  * post per booking. Never throws: it rides on the sync, which must not fail for it.
@@ -135,9 +147,30 @@ export function realInviteMoveDeps(args: { userId: string; email: string; timeZo
           lease_until: new Date(now + INVITE_MOVE_LOCK_LEASE_MS).toISOString(),
         });
       if (!error) return claimedAt;
-      // Held: a reschedule is moving this booking (or another run is judging it).
-      if ((error as { code?: string }).code === "23505") return null;
-      throw new Error(`reschedule lock could not be taken for a moved invite: ${error.message}`);
+      if ((error as { code?: string }).code !== "23505") {
+        throw new Error(`reschedule lock could not be taken for a moved invite: ${error.message}`);
+      }
+      // Held. A live lease is a reschedule (or another run of this) at work: leave it.
+      // An expired UNPINNED one is a run that died before its Google call, which
+      // nothing else ever removes, so it is taken over (`mayTakeOverLock`).
+      const held = unwrap(
+        await db().from("reschedule_locks").select("lease_until, gcal_client_id").eq("booking_id", bookingId).maybeSingle(),
+        "moved invite held lock",
+      ) as { lease_until: string | null; gcal_client_id: string | null } | null;
+      if (!held || !mayTakeOverLock(held, now)) return null;
+      // The same compare and swap the reschedule's own takeover makes, so of two
+      // claimants only one wins, and never over a row that was re-leased or pinned.
+      const took = unwrap(
+        await db()
+          .from("reschedule_locks")
+          .update({ claimed_at: claimedAt, lease_until: new Date(now + INVITE_MOVE_LOCK_LEASE_MS).toISOString() })
+          .eq("booking_id", bookingId)
+          .is("gcal_client_id", null)
+          .or(`lease_until.is.null,lease_until.lte.${claimedAt}`)
+          .select("booking_id"),
+        "moved invite lock takeover",
+      );
+      return (took ?? []).length > 0 ? claimedAt : null;
     },
     releaseLock: async (bookingId, claimedAt) => {
       // Only the row this run wrote: same booking, same claim stamp, and never one a
@@ -314,6 +347,6 @@ export function realInviteSweepDeps(args: { apply: boolean }): InviteSweepDeps {
         );
       if (error) throw new Error(`moved invite busy block could not be written: ${error.message}`);
     },
-    post,
+    post: postDelivered,
   };
 }
