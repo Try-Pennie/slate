@@ -52,7 +52,6 @@
 //   setting that has to exist before the nightly proof can run, and an unset one
 //   interpolates to the empty string, which is the #1495 fault)
 //   KILL_SWITCH_SUMMARY_FILE  where to record the verdict for the scheduled reporter
-import { appendFileSync } from "node:fs";
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
@@ -73,31 +72,15 @@ const { KILL_SWITCH_EXIT, readProbeReply, judgeKillSwitchRun, restoreFailureMess
   "./lib/kill-switch-live-control.ts"
 );
 const { writeKillSwitchSummary } = await import("./lib/kill-switch-run-outcome.ts");
-const { judgeDrillClock, drillClockExit, drillClockSummaryLine, exceptionsConsultedFrom } = await import(
+const { judgeDrillClock, drillClockExit, drillClockSummaryLine, readOrgHours, appendStepSummary } = await import(
   "./lib/kill-switch-clock.ts"
 );
 const { loadBusinessHoursRows, loadBusinessHoursExceptions, businessHoursFromRows } = await import(
   "@/lib/booking/business-hours-load"
 );
-type OrgHoursReading = import("./lib/kill-switch-clock.ts").OrgHoursReading;
 
 const SUMMARY_FILE = process.env.KILL_SWITCH_SUMMARY_FILE ?? "";
 
-/**
- * Say the clock's answer on the job's summary page as well as in the log (#3920), so a
- * skipped night reads as a skip on the Actions page without opening the step. Outside a
- * workflow there is no summary file and this does nothing. A write that fails is said on
- * stderr and never stops the run: the summary is a convenience, the verdict file is the record.
- */
-function writeStepSummary(line: string): void {
-  const path = process.env.GITHUB_STEP_SUMMARY;
-  if (!path) return;
-  try {
-    appendFileSync(path, `${line}\n`, "utf8");
-  } catch (err) {
-    console.error(`(could not write the job summary: ${err instanceof Error ? err.message : String(err)})`);
-  }
-}
 
 /**
  * Record the verdict for the scheduled reporter, then leave.
@@ -183,20 +166,17 @@ async function setPaused(paused: boolean): Promise<boolean> {
 // a hand run included, because a person in a terminal at 10am stops booking just the same.
 {
   const nowMs = Date.now();
-  let reading: OrgHoursReading;
-  try {
-    const from = exceptionsConsultedFrom(nowMs);
-    if (from === null) throw new Error("the runner's clock could not be read");
-    // The week and the exceptions from YESTERDAY, so a window closing at midnight carries its
-    // margin into today; resolved by the same function the booker's own read uses, so the two
-    // can never judge one stored week differently.
-    const [rows, exceptions] = await Promise.all([loadBusinessHoursRows(), loadBusinessHoursExceptions(from)]);
-    reading = { ok: true, hours: businessHoursFromRows(rows, exceptions) };
-  } catch (err) {
-    reading = { ok: false, reason: err instanceof Error ? err.message : String(err) };
-  }
+  // The week and the exceptions from YESTERDAY, so a window closing at midnight carries its
+  // margin into today, resolved by the same function the booker's own read uses so the two
+  // can never judge one stored week differently. Never throws: a failed read is unreadable.
+  const reading = await readOrgHours(nowMs, {
+    loadRows: loadBusinessHoursRows,
+    loadExceptions: loadBusinessHoursExceptions,
+    resolve: businessHoursFromRows,
+  });
   const clock = judgeDrillClock(reading, nowMs);
-  writeStepSummary(drillClockSummaryLine(clock));
+  const summary = appendStepSummary(process.env.GITHUB_STEP_SUMMARY, drillClockSummaryLine(clock));
+  if (process.env.GITHUB_STEP_SUMMARY && !summary.written) console.error(`(could not write the job summary: ${summary.why})`);
   const clockExit = drillClockExit(clock);
   if (clockExit !== null) {
     console.error(`${clock.kind === "inside-hours" ? "SKIPPED (inside-business-hours)" : "FAILED (hours-unreadable)"}: ${clock.detail}`);

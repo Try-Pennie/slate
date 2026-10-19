@@ -24,6 +24,8 @@ import {
   drillClockExit,
   drillClockSummaryLine,
   exceptionsConsultedFrom,
+  readOrgHours,
+  appendStepSummary,
   DRILL_MARGIN_MINUTES,
   type OrgHoursReading,
 } from "./lib/kill-switch-clock.ts";
@@ -182,5 +184,73 @@ eq(
 // The midnight cases above need yesterday's exception, so the read must start there.
 eq(exceptionsConsultedFrom(at("2026-10-20T00:15:00")), "2026-10-19", "the exceptions read starts at yesterday in the org's zone");
 eq(exceptionsConsultedFrom(Number.NaN), null, "and an unreadable clock names no date rather than a guessed one");
+
+// --- the reads the command makes ---------------------------------------------------
+// Driven through injected readers, because the command's own are the booker's database
+// reads. Every way the read can fail must come back as unreadable, never as a week.
+{
+  const now = at("2026-10-20T00:15:00");
+  const asked: string[] = [];
+  const good = await readOrgHours(now, {
+    loadRows: async () => [],
+    loadExceptions: async (from) => {
+      asked.push(from);
+      return [shut("2026-10-19")];
+    },
+    resolve: (_rows, exceptions) => ({ zone: BUSINESS_ZONE, rules: SEEDED_BUSINESS_HOURS, exceptions }),
+  });
+  eq(asked.join(","), "2026-10-19", "the exceptions are read from yesterday in the org's zone");
+  assert(good.ok && good.hours.exceptions.length === 1, "and what was read reaches the judgement");
+
+  const rowsFail = await readOrgHours(now, {
+    loadRows: async () => {
+      throw new Error("business_hours: connection refused");
+    },
+    loadExceptions: async () => [],
+    resolve: () => ({ zone: BUSINESS_ZONE, rules: SEEDED_BUSINESS_HOURS, exceptions: [] }),
+  });
+  assert(!rowsFail.ok && rowsFail.reason.includes("connection refused"), "a failed week read is unreadable, carrying its reason");
+  eq(judgeDrillClock(rowsFail, at("2026-10-20T03:30:00")).kind, "hours-unreadable", "and the drill stands down on it, at an hour that would otherwise be clear");
+
+  const exceptionsFail = await readOrgHours(now, {
+    loadRows: async () => [],
+    loadExceptions: async () => {
+      throw new Error("business_hours_exceptions: timeout");
+    },
+    resolve: () => ({ zone: BUSINESS_ZONE, rules: SEEDED_BUSINESS_HOURS, exceptions: [] }),
+  });
+  assert(!exceptionsFail.ok, "a failed exceptions read is unreadable too: a closed date nobody could read must not read as open");
+
+  const refused = await readOrgHours(now, {
+    loadRows: async () => [],
+    loadExceptions: async () => [],
+    resolve: () => {
+      throw new Error("business hours are unusable: weekday 9");
+    },
+  });
+  assert(!refused.ok && refused.reason.includes("unusable"), "a week the resolver refuses is unreadable rather than replaced by a default");
+
+  const noClock = await readOrgHours(Number.NaN, {
+    loadRows: async () => [],
+    loadExceptions: async () => [],
+    resolve: () => ({ zone: BUSINESS_ZONE, rules: SEEDED_BUSINESS_HOURS, exceptions: [] }),
+  });
+  assert(!noClock.ok, "an unreadable clock reads nothing and is unreadable");
+}
+
+// --- the job summary line ------------------------------------------------------------
+{
+  const written: string[] = [];
+  const ok = appendStepSummary("/summary", "line one", (_p, t) => written.push(t));
+  assert(ok.written && written[0] === "line one\n", "a summary line is appended with its newline");
+  const none = appendStepSummary(undefined, "line", () => {
+    throw new Error("must not be called");
+  });
+  assert(!none.written && none.why.length > 0, "with no summary path nothing is written, and it says why");
+  const broken = appendStepSummary("/summary", "line", () => {
+    throw new Error("EACCES");
+  });
+  assert(!broken.written && broken.why.includes("EACCES"), "a write that fails is reported rather than thrown, so the run still records its verdict");
+}
 
 finish();

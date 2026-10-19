@@ -512,6 +512,38 @@ const RUN_URL = "https://github.com/Try-Pennie/slate/actions/runs/1234";
   );
 }
 
+// --- the clock check is wired in, and runs BEFORE anything is written (#3920) -------
+// Every clock test holds just as well if the command never asked, or asked after it had
+// already paused booking. Read off the command's own source, comments stripped so a
+// sentence ABOUT the check cannot satisfy it (L3).
+{
+  const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const src = strip(readFileSync(join(ROOT, "scripts", "verify-kill-switch-live.ts"), "utf8"));
+  const judged = src.indexOf("judgeDrillClock(");
+  assert(judged !== -1, "the command judges the clock");
+  assert(
+    /readOrgHours\([^)]*loadBusinessHoursRows[\s\S]{0,200}loadBusinessHoursExceptions[\s\S]{0,200}businessHoursFromRows/.test(src),
+    "with the org's hours read through the booker's own loaders and resolver, not a copy",
+  );
+  for (const [marker, what] of [
+    ["setPaused(true)", "the flag is set"],
+    ["const before = unwrap(", "the settings row is read for a pause somebody already set"],
+    ["await probeBooking()", "the first booking probe is sent"],
+  ] as const) {
+    const at = src.indexOf(marker);
+    assert(at !== -1, `the command still contains ${marker}`);
+    assert(judged < at, `the clock is judged before ${what}, so a skip touches nothing`);
+  }
+  assert(
+    /drillClockExit\([\s\S]{0,200}leave\(clockExit/.test(src),
+    "a clock that says stand down ends the run through leave(), so the verdict file is written and the reporter can read the skip",
+  );
+  assert(
+    /appendStepSummary\(process\.env\.GITHUB_STEP_SUMMARY, drillClockSummaryLine\(/.test(src),
+    "and the clock's answer is written to the job summary",
+  );
+}
+
 // --- the page a reader actually gets ------------------------------------------
 {
   const never = verdictBlindAlertText({

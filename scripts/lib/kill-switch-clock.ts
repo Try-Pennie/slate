@@ -26,11 +26,13 @@
  * Pure: no IO and no clock read. The command reads the hours and the time and hands
  * them in, which is what lets `scripts/test-kill-switch-clock.ts` drive every edge.
  */
+import { appendFileSync } from "node:fs";
 import { DateTime } from "luxon";
 import {
   windowOnDate,
   BUSINESS_ZONE,
   type BusinessHoursException,
+  type BusinessHoursRow,
   type BusinessWindow,
 } from "../../src/lib/booking/business-hours.ts";
 // The availability compute's own wall clock helper, so an open window here becomes an
@@ -152,4 +154,56 @@ export function exceptionsConsultedFrom(nowMs: number, zone: string = BUSINESS_Z
   const now = DateTime.fromMillis(nowMs, { zone });
   if (!now.isValid) return null;
   return now.startOf("day").minus({ days: 1 }).toISODate();
+}
+
+/**
+ * The reads the command makes, handed in so the wiring is driven offline: in the command
+ * they are `loadBusinessHoursRows`, `loadBusinessHoursExceptions` and
+ * `businessHoursFromRows` from `business-hours-load.ts`, the booker's own.
+ */
+export interface OrgHoursReaders {
+  loadRows: () => Promise<BusinessHoursRow[]>;
+  loadExceptions: (fromIsoDate: string) => Promise<BusinessHoursException[]>;
+  resolve: (
+    rows: BusinessHoursRow[],
+    exceptions: BusinessHoursException[],
+  ) => { zone: string; rules: BusinessWindow[]; exceptions: BusinessHoursException[] };
+}
+
+/**
+ * Read the org's week and its exceptions from YESTERDAY onward, and resolve them the way
+ * the booker does. Never throws: a read that fails, a week the resolver refuses, and a
+ * clock that cannot name yesterday all come back as `ok: false` with the reason, which
+ * `judgeDrillClock` turns into a stand down. A guessed week here would be the one way
+ * this check could tell the drill to pause during the day.
+ */
+export async function readOrgHours(nowMs: number, readers: OrgHoursReaders): Promise<OrgHoursReading> {
+  try {
+    const from = exceptionsConsultedFrom(nowMs);
+    if (from === null) return { ok: false, reason: "the runner's clock could not be read" };
+    const [rows, exceptions] = await Promise.all([readers.loadRows(), readers.loadExceptions(from)]);
+    return { ok: true, hours: readers.resolve(rows, exceptions) };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Append one line to the job summary, so the Actions page says what the clock decided
+ * without opening the step. No path (a hand run, outside a workflow) writes nothing. A
+ * write that fails is reported and never thrown: the summary is a convenience, and the
+ * verdict file is the record the reporter reads.
+ */
+export function appendStepSummary(
+  path: string | undefined,
+  line: string,
+  append: (path: string, text: string) => void = (p, t) => appendFileSync(p, t, "utf8"),
+): { written: boolean; why: string } {
+  if (!path?.trim()) return { written: false, why: "no job summary path was set" };
+  try {
+    append(path, `${line}\n`);
+    return { written: true, why: "written" };
+  } catch (err) {
+    return { written: false, why: err instanceof Error ? err.message : String(err) };
+  }
 }
