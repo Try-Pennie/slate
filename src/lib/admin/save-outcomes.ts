@@ -39,6 +39,7 @@
 
 import { FRAME_LOCK_TTL_SECONDS } from "@/lib/embed/frame-lock";
 import { SHARED_LINE_SWITCH_TTL_SECONDS } from "@/lib/booking/shared-line-switch-core";
+import { LAST_RESORT_REACH } from "@/lib/admin/days-offered-copy";
 
 /**
  * Every outcome a form can report.
@@ -90,7 +91,7 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   "agent-ooo-calendar": "Time off calendar saved.",
   alerts: "Alert settings saved.",
   "booker-copy": "Booker copy saved.",
-  "booking-horizon": "Booking horizon saved.",
+  "booking-horizon": `${LAST_RESORT_REACH} saved.`,
   // #2297: the two directions of the kill switch get two sentences, because the
   // one thing a reader needs confirmed is WHICH WAY it went, and a shared
   // "Booking switch saved." would be the word that appears whatever you pressed.

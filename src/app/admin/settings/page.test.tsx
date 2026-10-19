@@ -820,6 +820,76 @@ describe("the new agent starting hours panel (#1651, moved by #1892)", () => {
   });
 });
 
+// #3922: Dan read "Most days offered" holding 4 under a paragraph saying a lead is
+// offered 3 days, and asked which was true. Both were: 3 is fixed in code and is what
+// every lead sees, the box is how far the last resort (#2841) may reach when every
+// tier the lead may use is full. The card now carries each as its own fact.
+describe("the days offered card (#3922)", () => {
+  async function card() {
+    db.results.booking_settings = { data: { horizon_days: 4 }, error: null };
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await BusinessHoursPage(props));
+    const section = screen.getByText("Days offered", { selector: "h2" }).closest("section");
+    expect(section).not.toBeNull();
+    return section!;
+  }
+
+  it("states the fixed number of open days as a fact of its own, not inside a paragraph", async () => {
+    const section = await card();
+    const term = [...section.querySelectorAll("dt")].find((d) => d.textContent === "Every lead");
+    expect(term).toBeTruthy();
+    const value = term!.nextElementSibling;
+    expect(value?.tagName).toBe("DD");
+    expect(value?.textContent).toMatch(/^Next 3 open days/);
+    expect(value?.textContent).toMatch(/today counts only before 6pm New York time/i);
+    // A fact, not a control: nothing on the card can be edited to 3.
+    expect([...section.querySelectorAll("input")].map((i) => i.value)).not.toContain("3");
+  });
+
+  it("names the box for what it does, so it never reads as the normal window", async () => {
+    const section = await card();
+    const box = screen.getByRole("spinbutton", { name: "Last resort reach (1 to 7)" });
+    expect(section.contains(box)).toBe(true);
+    expect((box as HTMLInputElement).value).toBe("4");
+    expect(screen.queryByText(/most days offered/i)).toBeNull();
+  });
+
+  it("names the save button for the same thing the label does", async () => {
+    const section = await card();
+    const button = screen.getByRole("button", { name: "Save last resort reach" });
+    expect(section.contains(button)).toBe(true);
+    expect(screen.queryByRole("button", { name: /booking horizon/i })).toBeNull();
+  });
+
+  it("explains the last resort once, on the box, and drops the long paragraph", async () => {
+    const section = await card();
+    const box = screen.getByRole("spinbutton", { name: "Last resort reach (1 to 7)" });
+    // Reachable by keyboard and screen reader: announced when the box takes focus.
+    const hintId = box.getAttribute("aria-describedby");
+    expect(hintId).toBeTruthy();
+    const hint = document.getElementById(hintId!);
+    expect(section.contains(hint)).toBe(true);
+    // The domain: when it applies, how it counts, and when there is none.
+    expect(hint!.textContent).toMatch(/every tier a lead may use is full/i);
+    expect(hint!.textContent).toMatch(/closed day does not use one up/i);
+    expect(hint!.textContent).toMatch(/3 or fewer there is no last resort/i);
+    // Not the interface.
+    expect(hint!.textContent).not.toMatch(/this number|this box|this field|enter/i);
+    // The old paragraph is gone, and no other prose sits on the card.
+    expect(section.textContent).not.toMatch(/This number is how far/);
+    const prose = [...section.querySelectorAll("p")].filter((p) => p !== hint);
+    expect(prose).toEqual([]);
+    expect(hint!.textContent!.length).toBeLessThan(260);
+  });
+
+  it("confirms a save in the same words as the label and the button", async () => {
+    db.results.booking_settings = { data: { horizon_days: 5 }, error: null };
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await BusinessHoursPage({ searchParams: Promise.resolve({ ok: "booking-horizon" }) }));
+    expect(screen.getByText("Last resort reach saved.")).toBeTruthy();
+  });
+});
+
 // #3325: the shared confirm line's switch is the last card on the page, below the
 // settings edited on an ordinary day (Dan, 2026-10-19). It is its own read and its own
 // card, and an unreadable read draws its own state rather than either answer (L530).

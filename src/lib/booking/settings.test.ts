@@ -156,6 +156,16 @@ describe("parseHorizonForm", () => {
     expect(parseHorizonForm("4.5").errors.length).toBe(1);
     expect(parseHorizonForm("abc").errors.length).toBe(1);
   });
+
+  // #3922: the refusal names the box by its label. "How many days a lead is offered"
+  // described the fixed three, not this number, and "booking horizon" was a third name.
+  it("names the box by its label in every refusal", () => {
+    for (const raw of ["", "9", "4.5"]) {
+      const [message] = parseHorizonForm(raw).errors;
+      expect(message).toMatch(/last resort reach/i);
+      expect(message).not.toMatch(/booking horizon|days a lead is offered/i);
+    }
+  });
 });
 
 describe("loadBookingHorizonDays", () => {

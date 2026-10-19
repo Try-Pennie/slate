@@ -85,13 +85,13 @@ describe("SettingsSaveNotice", () => {
   // re-shows a confirmation of nothing.
   it("strips the param on every arrival, including a second save with the same outcome", () => {
     window.history.replaceState(null, "", "/admin/business-hours?ok=booking-horizon");
-    const { rerender } = render(<SettingsSaveNotice ok error={undefined} saved="Booking horizon saved." />);
+    const { rerender } = render(<SettingsSaveNotice ok error={undefined} saved="Last resort reach saved." />);
     expect(window.location.search).not.toContain("ok");
 
     window.history.replaceState(null, "", "/admin/business-hours?ok=booking-horizon");
-    rerender(<SettingsSaveNotice ok error={undefined} saved="Booking horizon saved." />);
+    rerender(<SettingsSaveNotice ok error={undefined} saved="Last resort reach saved." />);
     expect(window.location.search, "the second save's param is stripped too").not.toContain("ok");
-    expect(screen.getByRole("status").textContent).toBe("Booking horizon saved.");
+    expect(screen.getByRole("status").textContent).toBe("Last resort reach saved.");
   });
 
   it("keeps the notice once the server re-renders without the stripped param", () => {

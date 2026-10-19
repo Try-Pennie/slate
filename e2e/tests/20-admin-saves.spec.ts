@@ -12,6 +12,9 @@
 import type { Page } from "@playwright/test";
 import { test, expect, signIn, seed, db, latestAudit } from "../fixtures.ts";
 import { SAVE_OUTCOME_COPY } from "@/lib/admin/save-outcomes";
+import { LAST_RESORT_REACH, SAVE_LAST_RESORT_REACH } from "@/lib/admin/days-offered-copy";
+
+const REACH_BOX = `${LAST_RESORT_REACH} (1 to 7)`;
 
 /** Picks an option from one of the design system's selects, by pointer, as a person does. */
 async function choose(page: Page, combobox: string, option: RegExp): Promise<void> {
@@ -64,24 +67,24 @@ test("stop and start online booking (the kill switch)", async ({ page }) => {
   expect((await latestAudit("booking.settings"))?.details).toMatchObject({ public_booking_paused: false });
 });
 
-test("save the booking horizon", async ({ page }) => {
+test("save the last resort reach", async ({ page }) => {
   await page.goto("/admin/business-hours");
-  await page.getByRole("spinbutton", { name: "Most days offered (1 to 7)" }).fill("5");
-  await pressAndConfirm(page, "Save booking horizon");
+  await page.getByRole("spinbutton", { name: REACH_BOX }).fill("5");
+  await pressAndConfirm(page, SAVE_LAST_RESORT_REACH);
   await expect(page.getByText(SAVE_OUTCOME_COPY["booking-horizon"])).toBeVisible();
   expect((await row<{ horizon_days: number }>("booking_settings", "id", 1)).horizon_days).toBe(5);
   expect((await latestAudit("booking.settings"))?.details).toMatchObject({ horizon_days: 5 });
-  await expect(page.getByRole("spinbutton", { name: "Most days offered (1 to 7)" })).toHaveValue("5");
+  await expect(page.getByRole("spinbutton", { name: REACH_BOX })).toHaveValue("5");
 
   // Put it back, so the booking spec below sees the seeded week. The notice reads
   // the same for this second save, so it is the stored value that says it landed.
-  await page.getByRole("spinbutton", { name: "Most days offered (1 to 7)" }).fill("7");
-  await pressAndConfirm(page, "Save booking horizon");
+  await page.getByRole("spinbutton", { name: REACH_BOX }).fill("7");
+  await pressAndConfirm(page, SAVE_LAST_RESORT_REACH);
   await expect
     .poll(async () => (await row<{ horizon_days: number }>("booking_settings", "id", 1)).horizon_days)
     .toBe(7);
   await page.reload();
-  await expect(page.getByRole("spinbutton", { name: "Most days offered (1 to 7)" })).toHaveValue("7");
+  await expect(page.getByRole("spinbutton", { name: REACH_BOX })).toHaveValue("7");
 });
 
 test("save a new agent's starting hours", async ({ page }) => {

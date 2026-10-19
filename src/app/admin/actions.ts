@@ -135,6 +135,7 @@ import {
 } from "@/lib/schedule-replacement";
 import type { Criteria, Role, User } from "@/lib/db/types";
 import { seederOwnsCode } from "@/lib/xbc";
+import { LAST_RESORT_REACH } from "@/lib/admin/days-offered-copy";
 import { ME_TABS } from "@/lib/me/nav";
 import {
   COVERAGE_CHOICE_FIELD,
@@ -1407,7 +1408,7 @@ export async function setBookingHorizon(form: FormData): Promise<void> {
   if (error) {
     redirect(
       `/admin/business-hours${refusedQuery(
-        writeRefused("The booking horizon", error),
+        writeRefused(`The ${LAST_RESORT_REACH.toLowerCase()}`, error),
       )}`,
     );
   }

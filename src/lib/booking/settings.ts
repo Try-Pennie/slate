@@ -3,6 +3,7 @@ import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import type { BookingSettings } from "@/lib/db/types";
 import { parseStampMs } from "@/lib/date/stamp";
+import { LAST_RESORT_REACH } from "@/lib/admin/days-offered-copy";
 
 /**
  * Org-wide booking horizon (#216, folds in audit AUD-076). Precedence store > env >
@@ -73,14 +74,14 @@ export function parseHorizonForm(raw: string): HorizonFormPayload {
   if (t === "") {
     return {
       horizon_days: null,
-      errors: [`Enter how many days a lead is offered, between ${HORIZON_MIN} and ${HORIZON_MAX}.`],
+      errors: [`Enter the ${LAST_RESORT_REACH.toLowerCase()}, a whole number of days between ${HORIZON_MIN} and ${HORIZON_MAX}.`],
     };
   }
   const n = Number(t);
   if (!Number.isInteger(n) || n < HORIZON_MIN || n > HORIZON_MAX) {
     return {
       horizon_days: null,
-      errors: [`Booking horizon must be a whole number of days between ${HORIZON_MIN} and ${HORIZON_MAX}.`],
+      errors: [`${LAST_RESORT_REACH} must be a whole number of days between ${HORIZON_MIN} and ${HORIZON_MAX}.`],
     };
   }
   return { horizon_days: n, errors: [] };

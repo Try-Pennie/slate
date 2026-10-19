@@ -50,6 +50,14 @@ import { readSharedConfirmLineSetting } from "@/lib/booking/shared-line-switch";
 import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import { OFFERED_OPEN_DAYS } from "@/lib/availability/bookable-days";
 import { todayCountsUntilLabel } from "@/lib/availability/offered-window";
+import {
+  EVERY_LEAD_TERM,
+  LAST_RESORT_REACH,
+  SAVE_LAST_RESORT_REACH,
+  lastResortReachHint,
+  offeredDaysValue,
+  todayCountsNote,
+} from "@/lib/admin/days-offered-copy";
 
 export const metadata = { title: "Hours" };
 
@@ -222,7 +230,7 @@ export default async function BusinessHoursPage({
           #1297 was written about. Dan chose Hours on 2026-09-04. */}
       <AdminPageHeader title="Hours">
         Whether Slate is taking bookings at all, when Pennie is open, the holidays and
-        closures on top of that, how far ahead a lead can book, what a new agent starts
+        closures on top of that, how many days a lead is offered, what a new agent starts
         on, and how confirms for one time are lined up. Every offered time is judged
         against the business hours, so a change there moves the whole roster.
       </AdminPageHeader>
@@ -291,24 +299,26 @@ export default async function BusinessHoursPage({
           </UnreadableNotice>
         )}
       </section>
+      {/* #3922: two numbers, two facts. The fixed OFFERED_OPEN_DAYS is what every
+          lead is offered, so it is stated as a value of its own rather than inside a
+          paragraph; the box is the reach of the last resort (#2841), named for that,
+          so it cannot be read as the normal window. Both said "offered" before, and
+          Dan asked why the box said 4 when the paragraph said 3. */}
       <section className={cardCls}>
-        <h2 className="mb-1 text-sm font-semibold">Days offered</h2>
-        <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
-          A lead is offered the next {OFFERED_OPEN_DAYS} days the business is open,
-          with today counting only before {todayCountsUntilLabel()}, and a lower tier
-          before a later day. Only when every tier they may use is
-          full for those days are later days offered. This number is how far that
-          can reach, counted from today in days that actually have times, so a
-          closed day does not use one up: with Sundays closed, four days can reach
-          into the following week. Applies to every bucket. A change refreshes
-          availability across all buckets within a minute or two.
-        </p>
-        <SaveForm action={setBookingHorizon} name="booking-horizon" unsaved="changes to the booking window" className="space-y-4">
+        <h2 className="mb-4 text-sm font-semibold">Days offered</h2>
+        <dl className="mb-5">
+          <dt className={labelCls}>{EVERY_LEAD_TERM}</dt>
+          <dd className="mt-1 text-sm text-fg">
+            <span className="font-semibold tabular-nums">{offeredDaysValue(OFFERED_OPEN_DAYS)}</span>
+            <span className="text-fg-muted"> {todayCountsNote(todayCountsUntilLabel())}</span>
+          </dd>
+        </dl>
+        <SaveForm action={setBookingHorizon} name="booking-horizon" unsaved={`changes to the ${LAST_RESORT_REACH.toLowerCase()}`} className="space-y-4">
           <div>
             {/* heading-gloss-ok: the accepted RANGE of the number, derived from the same
                   constants the server validates against. */}
             <label className={labelCls} htmlFor="horizon_days">
-              Most days offered ({HORIZON_MIN} to {HORIZON_MAX})
+              {LAST_RESORT_REACH} ({HORIZON_MIN} to {HORIZON_MAX})
             </label>
             {/* #1924: pre-filled with the real default, not a placeholder. A
                 required field that loads EMPTY forces an admin to type a number
@@ -327,11 +337,15 @@ export default async function BusinessHoursPage({
               step={1}
               required
               defaultValue={horizonDays ?? HORIZON_DEFAULT}
+              aria-describedby="horizon_days-hint"
               className={`${inputCls} w-40 tabular-nums`}
             />
+            <p id="horizon_days-hint" className="mt-1.5 max-w-lg text-xs text-fg-muted">
+              {lastResortReachHint(OFFERED_OPEN_DAYS)}
+            </p>
           </div>
           <SubmitButton className={btnCls} pendingLabel="Saving…">
-            Save booking horizon
+            {SAVE_LAST_RESORT_REACH}
           </SubmitButton>
         </SaveForm>
       </section>
