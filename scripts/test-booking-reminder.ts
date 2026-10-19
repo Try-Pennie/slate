@@ -77,6 +77,10 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
 {
   eq(REMINDER_HOLD_MS, 10 * MIN, "the hold is ten minutes, derived from the measured hand-back");
   eq(REMINDER_HOLD_FLOOR_MS, 60 * MIN, "and never runs past an hour before the call");
+  // #2839: the slowest of 56 real hand-backs measured on 2026-10-18 took 148.5s. A hold
+  // shortened toward the p95 (28.4s) would send the slowest few their reminder from the
+  // advisor who will not call, so it must keep at least three times that tail.
+  assert(REMINDER_HOLD_MS >= 3 * 148_500, "the hold covers the slowest real hand-back three times over");
 
   const created = NOW;
   const start = NOW + 5 * HOUR;

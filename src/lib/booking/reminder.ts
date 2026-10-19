@@ -94,13 +94,21 @@ export function reminderDue(b: ReminderSubject, nowMs: number): boolean {
  *   test buckets:  n = 344, p50 4s, p95 8s, max 49s (the canary calling the route
  *                  directly, so it measures Slate's own swap, not the upstream flow)
  *
- * Five real hand-backs is too few to read a p95 from, so this is the issue's ten
- * minutes CHECKED against the data rather than derived from a tail: it is about six
- * times the worst real hand-back seen, which leaves room for a slower run of the
- * upstream automation, or a retry of it, and the lane's five minute cadence
- * means the reminder lands 10 to 15 minutes after booking, still well inside the
- * 120 minute minimum notice every event type carries today. Re-measure once there
- * are fifty or more real hand-backs; the query is in the #2633 PR.
+ * Five real hand-backs is too few to read a p95 from, so this was the issue's ten
+ * minutes CHECKED against the data rather than derived from a tail.
+ *
+ * Re-measured on production 2026-10-18 (#2839), same query, first hand-back per
+ * booking, test buckets excluded:
+ *
+ *   real buckets:  n = 56, p50 13.5s, p90 20.8s, p95 28.4s, p99 122.6s, max 148.5s
+ *                  (none negative, none over 300s)
+ *
+ * Ten minutes stays. It is the p95 with about twenty times headroom and four times
+ * the slowest real hand-back, so a slower run or a retry of the upstream automation
+ * still lands first. Shortening it toward the p95 buys a lead nothing: the lane's
+ * five minute cadence means the reminder lands 10 to 15 minutes after booking, well
+ * inside the 120 minute minimum notice every event type carries today, while a hold
+ * under the tail sends the slowest few their one reminder from the wrong advisor.
  */
 export const REMINDER_HOLD_MS = 10 * 60_000;
 
