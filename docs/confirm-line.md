@@ -408,7 +408,9 @@ confirm that spent 1.5s on one that timed out used to report `line_ms` 0.
 
 | what happened | what the confirm does | `line` / `line_reason` | pages? |
 |---|---|---|---|
-| switch off | its isolate's line, as before | `isolate` / `off` (`unread-default` when it fell back to the default) | no |
+| switch read off | its isolate's line, as before | `isolate` / `off` | no |
+| switch unread, default `"off"` | its isolate's line | `isolate` / `unread-default` | the failed reads, after 3 in a minute on one isolate |
+| switch unread, default `"on"` (production and the load test since #3339) | the shared line, as if the switch read on | `shared` / `ok`: not told apart from a read on; the failed read's own `tag=shared-line` line says so | the failed reads, after 3 in a minute on one isolate |
 | switch on, no binding | its isolate's line | `fallback` / `unbound` | after 3 in a minute on one isolate |
 | `enter` refused or not answered in 1.5s | its isolate's line, and abandons the attempt | `fallback` / `reach-timeout`, `enter-error` | same |
 | the object answered with something the client cannot read | its isolate's line, and abandons the attempt | `fallback` / `bad-answer` | same |
