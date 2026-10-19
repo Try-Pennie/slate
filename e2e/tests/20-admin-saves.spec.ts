@@ -12,11 +12,7 @@
 import type { Page } from "@playwright/test";
 import { test, expect, signIn, seed, db, latestAudit } from "../fixtures.ts";
 import { SAVE_OUTCOME_COPY } from "@/lib/admin/save-outcomes";
-import { LAST_RESORT_REACH, SAVE_LAST_RESORT_REACH } from "@/lib/admin/days-offered-copy";
-
-// By its name only: the range after it is drawn from HORIZON_MIN and HORIZON_MAX, which
-// live beside the admin database client this process should not load.
-const REACH_BOX = new RegExp(`^${LAST_RESORT_REACH} \\(`);
+import { EXTRA_DAYS_LABEL, OFFERED_DAYS_LABEL, SAVE_DAYS_OFFERED } from "@/lib/admin/days-offered-copy";
 
 /** Picks an option from one of the design system's selects, by pointer, as a person does. */
 async function choose(page: Page, combobox: string, option: RegExp): Promise<void> {
@@ -69,24 +65,40 @@ test("stop and start online booking (the kill switch)", async ({ page }) => {
   expect((await latestAudit("booking.settings"))?.details).toMatchObject({ public_booking_paused: false });
 });
 
-test("save the last resort reach", async ({ page }) => {
+test("save the days offered", async ({ page }) => {
+  type Days = { offered_open_days: number; horizon_days: number };
   await page.goto("/admin/business-hours");
-  await page.getByRole("spinbutton", { name: REACH_BOX }).fill("5");
-  await pressAndConfirm(page, SAVE_LAST_RESORT_REACH);
-  await expect(page.getByText(SAVE_OUTCOME_COPY["booking-horizon"])).toBeVisible();
-  expect((await row<{ horizon_days: number }>("booking_settings", "id", 1)).horizon_days).toBe(5);
-  expect((await latestAudit("booking.settings"))?.details).toMatchObject({ horizon_days: 5 });
-  await expect(page.getByRole("spinbutton", { name: REACH_BOX })).toHaveValue("5");
-
-  // Put it back, so the booking spec below sees the seeded week. The notice reads
-  // the same for this second save, so it is the stored value that says it landed.
-  await page.getByRole("spinbutton", { name: REACH_BOX }).fill("7");
-  await pressAndConfirm(page, SAVE_LAST_RESORT_REACH);
-  await expect
-    .poll(async () => (await row<{ horizon_days: number }>("booking_settings", "id", 1)).horizon_days)
-    .toBe(7);
+  // Both controls are Slate's own dropdown, chosen by pointer as an admin does.
+  await choose(page, OFFERED_DAYS_LABEL, /^4$/);
+  await choose(page, EXTRA_DAYS_LABEL, /^1$/);
+  await expect(page.getByText("Day 5 (4 offered + 1 extra)")).toBeVisible();
+  await pressAndConfirm(page, SAVE_DAYS_OFFERED);
+  await expect(page.getByText(SAVE_OUTCOME_COPY["days-offered"])).toBeVisible();
+  const saved = await row<Days>("booking_settings", "id", 1);
+  expect(saved.offered_open_days).toBe(4);
+  // The reach every existing reader uses: offered plus extra.
+  expect(saved.horizon_days).toBe(5);
+  expect((await latestAudit("booking.settings"))?.details).toMatchObject({
+    offered_open_days: 4,
+    last_resort_extra_days: 1,
+    horizon_days: 5,
+  });
   await page.reload();
-  await expect(page.getByRole("spinbutton", { name: REACH_BOX })).toHaveValue("7");
+  await expect(page.getByRole("combobox", { name: OFFERED_DAYS_LABEL })).toContainText(/^4$/);
+  await expect(page.getByRole("combobox", { name: EXTRA_DAYS_LABEL })).toContainText(/^1$/);
+
+  // Put it back, so the booking spec below sees the seeded week: three offered and
+  // a reach of seven. The notice reads the same for this second save, so it is the
+  // stored row that says it landed.
+  await choose(page, OFFERED_DAYS_LABEL, /^3$/);
+  await choose(page, EXTRA_DAYS_LABEL, /^4$/);
+  await pressAndConfirm(page, SAVE_DAYS_OFFERED);
+  await expect
+    .poll(async () => {
+      const r = await row<Days>("booking_settings", "id", 1);
+      return `${r.offered_open_days}+${r.horizon_days}`;
+    })
+    .toBe("3+7");
 });
 
 test("save a new agent's starting hours", async ({ page }) => {

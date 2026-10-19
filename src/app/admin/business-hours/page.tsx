@@ -9,7 +9,7 @@ import {
   setBusinessHours,
   setBusinessHoursException,
   removeBusinessHoursException,
-  setBookingHorizon,
+  setDaysOffered,
   setOrgDefaultHours,
 } from "@/app/admin/actions";
 import {
@@ -30,12 +30,10 @@ import { minutesToTime } from "@/lib/schedule-core";
 import { humanizeZone } from "@/lib/booking/timezones";
 import { BusinessHoursForm, type BusinessHoursDay } from "@/components/ui/BusinessHoursForm";
 import { BusinessHoursExceptions } from "@/components/ui/BusinessHoursExceptions";
-import {
-  HORIZON_DEFAULT,
-  HORIZON_MIN,
-  HORIZON_MAX,
-  readPublicBookingPaused,
-} from "@/lib/booking/settings";
+import { readPublicBookingPaused } from "@/lib/booking/settings";
+import { readDaysOffered } from "@/lib/booking/days-offered-load";
+import { extraFromStored } from "@/lib/booking/days-offered";
+import { DaysOfferedFields } from "@/components/admin/DaysOfferedFields";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { TimeField } from "@/components/ui/TimeField";
@@ -48,14 +46,12 @@ import { PublicBookingSwitch } from "@/components/admin/PublicBookingSwitch";
 import { SharedConfirmLineSwitch } from "@/components/admin/SharedConfirmLineSwitch";
 import { readSharedConfirmLineSetting } from "@/lib/booking/shared-line-switch";
 import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
-import { OFFERED_OPEN_DAYS } from "@/lib/availability/bookable-days";
 import { todayCountsUntilLabel } from "@/lib/availability/offered-window";
 import {
-  EVERY_LEAD_TERM,
-  LAST_RESORT_REACH,
-  SAVE_LAST_RESORT_REACH,
-  lastResortReachHint,
-  offeredDaysValue,
+  DAYS_OFFERED,
+  DAYS_OFFERED_UNREADABLE,
+  DAYS_OFFERED_UNSAVED,
+  SAVE_DAYS_OFFERED,
   todayCountsNote,
 } from "@/lib/admin/days-offered-copy";
 
@@ -95,21 +91,12 @@ export default async function BusinessHoursPage({
   // `null` is the unreadable state throughout, never an empty value: an empty
   // week and an empty exception list are both legitimate readings, and both are
   // the reassuring one.
-  // The last resort reach (`horizon_days`, #3922) sits with the hours: both decide which times exist at
-  // all, and separating them puts two halves of one answer on two screens.
-  let horizonDays: number | null = null;
-  try {
-    const settings = await supabaseAdmin()
-      .from("booking_settings")
-      .select("horizon_days")
-      .eq("id", 1)
-      .maybeSingle();
-    if (!settings.error && settings.data) {
-      horizonDays = (settings.data as { horizon_days: number | null }).horizon_days;
-    }
-  } catch {
-    // Fall through to the built-in default shown as a placeholder.
-  }
+  // The days offered (#3922) sit with the hours: both decide which times exist at
+  // all, and separating them puts two halves of one answer on two screens. Both of
+  // the card's values come from ONE read through the loader every other reader
+  // uses, and an unreadable row is null, which draws its own notice: a card
+  // pre-filled with guessed values would write them back as fact on the next save.
+  const daysOffered = await readDaysOffered();
 
   // #2297: the kill switch's current state. Its OWN read, resolving to null when it
   // fails, because "we could not read whether bookings are running" is a different
@@ -224,7 +211,7 @@ export default async function BusinessHoursPage({
   return (
     <>
       {/* #1892: "Hours", not "Business hours". The page holds the org's real
-          operating window, the holiday closures, the last resort reach AND the new
+          operating window, the holiday closures, the days offered AND the new
           agent template, so naming it for the last of those would be wrong, and
           the org's own hours reading as a "default" is exactly the confusion
           #1297 was written about. Dan chose Hours on 2026-09-04. */}
@@ -299,58 +286,29 @@ export default async function BusinessHoursPage({
           </UnreadableNotice>
         )}
       </section>
-      {/* #3922: two numbers, two facts. The fixed OFFERED_OPEN_DAYS is what every
-          lead is offered, so it is stated as a value of its own rather than inside a
-          paragraph; the box is the reach of the last resort (#2841), named for that,
-          so it cannot be read as the normal window. Both said "offered" before, and
-          Dan asked why the box said 4 when the paragraph said 3. */}
+      {/* #3922: the settled design, docs/design/days-offered.html. Two settings,
+          each named for itself: how many open days every lead is offered (a
+          stored setting since #3922, it was a fixed 3 in code), and how many
+          extra days the last resort (#2841) may add, stored as the reach
+          (`horizon_days` = offered + extra). One button saves both. An unreadable
+          row draws its own notice rather than guessed values a save would then
+          write back as fact (L530). */}
       <section className={cardCls}>
-        <h2 className="mb-4 text-sm font-semibold">Days offered</h2>
-        <dl className="mb-5">
-          <dt className={labelCls}>{EVERY_LEAD_TERM}</dt>
-          <dd className="mt-1 text-sm text-fg">
-            <span className="font-semibold tabular-nums">{offeredDaysValue(OFFERED_OPEN_DAYS)}</span>
-            <span className="text-fg-muted"> {todayCountsNote(todayCountsUntilLabel())}</span>
-          </dd>
-        </dl>
-        <SaveForm action={setBookingHorizon} name="booking-horizon" unsaved={`changes to the ${LAST_RESORT_REACH.toLowerCase()}`} className="space-y-4">
-          <div>
-            {/* heading-gloss-ok: the accepted RANGE of the number, derived from the same
-                  constants the server validates against. */}
-            <label className={labelCls} htmlFor="horizon_days">
-              {LAST_RESORT_REACH} ({HORIZON_MIN} to {HORIZON_MAX})
-            </label>
-            {/* #1924: pre-filled with the real default, not a placeholder. A
-                required field that loads EMPTY forces an admin to type a number
-                nobody chose, and the grey placeholder looked enough like a value
-                to be mistaken for one, which is how a save wrote null. The value
-                is real now, so a placeholder would say the same thing twice and
-                is gone. `required` is a courtesy that saves a round trip;
-                `parseHorizonForm` is still the control. */}
-            <input
-              type="number"
-              inputMode="numeric"
-              id="horizon_days"
-              name="horizon_days"
-              min={HORIZON_MIN}
-              max={HORIZON_MAX}
-              step={1}
-              required
-              defaultValue={horizonDays ?? HORIZON_DEFAULT}
-              aria-describedby="horizon_days-hint"
-              /* max-w, not w-40 (#3922): `inputCls` carries `w-full`, and of two
-                 width utilities the one Tailwind emits later wins, so the box drew
-                 the width of the card for a one digit value. */
-              className={`${inputCls} max-w-40 tabular-nums`}
+        <h2 className="mb-1 text-sm font-semibold">{DAYS_OFFERED}</h2>
+        <p className="mb-3.5 text-xs text-fg-muted">{todayCountsNote(todayCountsUntilLabel())}</p>
+        {daysOffered ? (
+          <SaveForm action={setDaysOffered} name="days-offered" unsaved={DAYS_OFFERED_UNSAVED}>
+            <DaysOfferedFields
+              offered={daysOffered.offeredOpenDays}
+              extra={extraFromStored(daysOffered.offeredOpenDays, daysOffered.horizonDays)}
             />
-            <p id="horizon_days-hint" className="mt-1.5 max-w-lg text-xs text-fg-muted">
-              {lastResortReachHint(OFFERED_OPEN_DAYS)}
-            </p>
-          </div>
-          <SubmitButton className={btnCls} pendingLabel="Saving…">
-            {SAVE_LAST_RESORT_REACH}
-          </SubmitButton>
-        </SaveForm>
+            <SubmitButton className={`${btnCls} mt-4`} pendingLabel="Saving…">
+              {SAVE_DAYS_OFFERED}
+            </SubmitButton>
+          </SaveForm>
+        ) : (
+          <UnreadableNotice>{DAYS_OFFERED_UNREADABLE}</UnreadableNotice>
+        )}
       </section>
 
       {/* #1892: the new agent template, moved from its own route.

@@ -28,11 +28,11 @@ import {
   readPublicBookingPaused,
   readDemotionRerouteEnabled,
   readPublicBookingPauseState,
-  parseHorizonForm,
   HORIZON_DEFAULT,
   HORIZON_MIN,
   HORIZON_MAX,
 } from "./settings";
+import { parseDaysOfferedForm } from "./days-offered";
 
 describe("parseDefaultBucketForm", () => {
   const valid = new Set(["100", "200", "300"]);
@@ -114,57 +114,17 @@ describe("resolveHorizonDays (store > env > coded default)", () => {
   });
 });
 
-describe("parseHorizonForm", () => {
-  it("accepts a whole number in range", () => {
-    expect(parseHorizonForm("5")).toEqual({ horizon_days: 5, errors: [] });
-  });
-
-  // #1924 reversed this. It used to clear the override, and the field rendered
-  // EMPTY with 4 only as a placeholder, so an admin who saved without typing
-  // wrote null while a grey 4 sat in the box looking like a value. Dan: "if they
-  // try to save with no number, just error and don't let them."
-  //
-  // The old assertion is replaced rather than adjusted: its whole content was the
-  // decision being reversed (L252).
-  it("refuses a blank value rather than clearing the override", () => {
-    for (const raw of ["", "   ", "\t"]) {
-      const parsed = parseHorizonForm(raw);
-      expect(parsed.horizon_days).toBeNull();
-      expect(parsed.errors).toHaveLength(1);
-      // The message tells them what to do, not merely that they were wrong.
-      expect(parsed.errors[0]).toMatch(/between 1 and 7/);
-    }
-  });
-
-  // #1924: the FORM refuses blank and the READER still tolerates null, on
-  // purpose. `horizon_days` is nullable and null rows exist, so removing the
-  // reader's fallback because "the form no longer allows null" would turn a data
-  // state that is still there into a booker offering nothing. Asserted as a PAIR,
-  // because the temptation is to consolidate them.
+// #1924, carried to the Days offered card (#3922): the FORM refuses blank and the
+// READER still tolerates a null horizon, on purpose. `horizon_days` is nullable and
+// null rows exist, so removing the reader's fallback because "the form no longer
+// allows null" would turn a data state that is still there into a booker offering
+// nothing. Asserted as a PAIR, because the temptation is to consolidate them. The
+// form's own rules are pinned in scripts/test-days-offered.ts.
+describe("the days offered form and the horizon reader", () => {
   it("keeps refusing blank at the form while the reader still resolves a null row", () => {
-    expect(parseHorizonForm("").errors).toHaveLength(1);
+    expect(parseDaysOfferedForm("", "1").errors).toHaveLength(1);
+    expect(parseDaysOfferedForm("3", "").errors).toHaveLength(1);
     expect(resolveHorizonDays(null, undefined, HORIZON_DEFAULT)).toBe(HORIZON_DEFAULT);
-  });
-
-  it("refuses an out-of-range value (fail loud, no write)", () => {
-    const r = parseHorizonForm(String(HORIZON_MAX + 1));
-    expect(r.horizon_days).toBeNull();
-    expect(r.errors.length).toBe(1);
-  });
-
-  it("refuses a non-integer value", () => {
-    expect(parseHorizonForm("4.5").errors.length).toBe(1);
-    expect(parseHorizonForm("abc").errors.length).toBe(1);
-  });
-
-  // #3922: the refusal names the box by its label. "How many days a lead is offered"
-  // described the fixed three, not this number, and "booking horizon" was a third name.
-  it("names the box by its label in every refusal", () => {
-    for (const raw of ["", "9", "4.5"]) {
-      const [message] = parseHorizonForm(raw).errors;
-      expect(message).toMatch(/last resort reach/i);
-      expect(message).not.toMatch(/booking horizon|days a lead is offered/i);
-    }
   });
 });
 

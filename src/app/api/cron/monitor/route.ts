@@ -38,6 +38,7 @@ import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
 import { slotCacheKey } from "@/lib/availability/cache-key";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import { readBookingHorizonDays } from "@/lib/booking/settings";
+import { readOfferedOpenDays } from "@/lib/booking/days-offered-load";
 import { recordFailureStreak, clearFailureStreak } from "@/lib/notify/streak";
 import {
   runEmptyReasonCheck,
@@ -988,6 +989,15 @@ export async function GET(req: NextRequest) {
     const horizonDays = await steps.run<number | null>("setup_horizon", null, () =>
       readBookingHorizonDays(),
     );
+    // #3922: how many open days a lead is offered, a stored setting now. Read at
+    // most once a tick and only by the two checks that judge the offered window
+    // (tier staffing and the nearly full whisper), inside their own step
+    // boundaries. The honest read: it resolves to null on a failed read, never to
+    // a default, and each check then judges nothing rather than judging over a
+    // guessed window (L215). It never rejects, so sharing the promise cannot carry
+    // one step's failure into the other.
+    let offeredDaysOnce: Promise<number | null> | null = null;
+    const offeredDaysForTick = () => (offeredDaysOnce ??= readOfferedOpenDays());
     const bucketByCode = new Map((buckets ?? []).map((b) => [b.code, b]));
 
     // Which checks this tick is entitled to run, given what came back. Decided in
@@ -1217,7 +1227,12 @@ export async function GET(req: NextRequest) {
       // slot rows. A tier whose window cannot be worked out (no cached row, an
       // unreadable notice, no open day ahead) is unmeasured on its own, rather
       // than judged against a guessed window (L215).
-      const windows = tierWindows({ rows: slotRows!, hours: businessHours!, nowMs: now });
+      const windows = tierWindows({
+        rows: slotRows!,
+        hours: businessHours!,
+        nowMs: now,
+        offeredOpenDays: await offeredDaysForTick(),
+      });
       const readings = tierReadings({
         agentCounts: tierAgentCounts(tierAgentIds),
         slotByCode: slotByCode!,
@@ -2266,7 +2281,7 @@ export async function GET(req: NextRequest) {
         loadReport: async () => {
           // The booked times and the depths each fail to an explicit unknown, as on
           // the supply page: a share computed over a failed read would be believed.
-          const [booked, depths] = await Promise.all([
+          const [booked, depths, offeredOpenDays] = await Promise.all([
             loadBookedTimes(db, undefined, hours, horizonDays as number, new Date(now)).catch((err) => {
               log.error("monitor", { msg: "nearly full pool booked times unreadable" }, err);
               return null;
@@ -2275,10 +2290,13 @@ export async function GET(req: NextRequest) {
               log.error("monitor", { msg: "nearly full pool depths unreadable" }, err);
               return null;
             }),
+            // Null on a failed read, which makes the report unmeasurable (#3922).
+            offeredDaysForTick(),
           ]);
           return bucketSupplyReport({
             hours,
             horizonDays: horizonDays as number,
+            offeredOpenDays,
             nowMs: now,
             buckets:
               buckets === null

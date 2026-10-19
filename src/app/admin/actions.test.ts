@@ -318,7 +318,7 @@ import {
   setOooCalendarId,
   useDefaultHours,
   setDefaultBucket,
-  setBookingHorizon,
+  setDaysOffered,
   setEventDescription,
   createBucket,
   updateBucket,
@@ -2453,8 +2453,8 @@ describe("a save returns to the page its own form is on (#1922)", () => {
     expect(revalidatePath).toHaveBeenCalledWith("/admin/buckets");
   });
 
-  it("sends a saved booking horizon back to the hours page", async () => {
-    const to = await targetOf(() => setBookingHorizon(form({ horizon_days: "5" })));
+  it("sends saved days offered back to the hours page", async () => {
+    const to = await targetOf(() => setDaysOffered(form({ offered_open_days: "3", last_resort_extra_days: "2" })));
     expect(to).toMatch(/^\/admin\/business-hours\?ok=/);
   });
 
@@ -2475,7 +2475,7 @@ describe("a save returns to the page its own form is on (#1922)", () => {
   // The half that mattered most: a REFUSAL has to reach the page too, or the
   // sentence explaining why the value was rejected goes nowhere.
   it("returns a refusal to the page that can show it, with the reason intact", async () => {
-    const to = await targetOf(() => setBookingHorizon(form({ horizon_days: "9999" })));
+    const to = await targetOf(() => setDaysOffered(form({ offered_open_days: "9999", last_resort_extra_days: "0" })));
     expect(to).toMatch(/^\/admin\/business-hours\?error=/);
     expect(decodeURIComponent(to)).toMatch(/\d/);
   });
@@ -2486,8 +2486,8 @@ describe("a save returns to the page its own form is on (#1922)", () => {
     dbState.rowsByTable.buckets = [{ code: "411", is_test: false }];
     for (const run of [
       () => setDefaultBucket(form({ default_bucket_code: "411" })),
-      () => setBookingHorizon(form({ horizon_days: "5" })),
-      () => setBookingHorizon(form({ horizon_days: "9999" })),
+      () => setDaysOffered(form({ offered_open_days: "3", last_resort_extra_days: "2" })),
+      () => setDaysOffered(form({ offered_open_days: "9999", last_resort_extra_days: "0" })),
       () => setEventDescription(form({ event_type_id: "et1", description: "Hello" })),
     ]) {
       redirect.mockClear();

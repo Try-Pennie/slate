@@ -61,6 +61,7 @@ function renderTable(
     bucketListReadable?: boolean;
     nowMs?: number;
     showCodes?: boolean;
+    offeredOpenDays?: number;
   } = {},
 ) {
   render(
@@ -72,6 +73,7 @@ function renderTable(
       nowMs={over.nowMs ?? NOW_MS}
       depthReadable={over.depthReadable ?? true}
       bucketListReadable={over.bucketListReadable ?? true}
+      offeredOpenDays={over.offeredOpenDays ?? 3}
     />,
   );
 }
@@ -96,12 +98,12 @@ describe("BucketSupplyTable (#1254)", () => {
     // drift back to holding its own sentence while the builder read fine (L41).
     expect(
       screen.getByText(
-        supplyCellTitle(cells[0], "120 Low | Beyond | No Legal Param", "Tuesday, August 4"),
+        supplyCellTitle(cells[0], "120 Low | Beyond | No Legal Param", "Tuesday, August 4", 3),
       ),
     ).toBeTruthy();
     expect(
       screen.getByText(
-        supplyCellTitle(cells[1], "120 Low | Beyond | No Legal Param", "Wednesday, August 5"),
+        supplyCellTitle(cells[1], "120 Low | Beyond | No Legal Param", "Wednesday, August 5", 3),
       ),
     ).toBeTruthy();
   });
@@ -294,8 +296,8 @@ describe("BucketSupplyTable (#1254)", () => {
     // Read from the SUMMARY block, because the key below the table explains the
     // same state in the same words. That is the point of the vocabulary, and it
     // is why a bare text query would pass whether the summary said it or not.
-    expect(summaryText()).toContain(supplyLegendEntry("closed").label);
-    expect(summaryText()).not.toContain(supplyLegendEntry("nobody-available").label);
+    expect(summaryText()).toContain(supplyLegendEntry("closed", 3).label);
+    expect(summaryText()).not.toContain(supplyLegendEntry("nobody-available", 3).label);
   });
 
   it("still says a row is out of date on a day the office is shut", () => {
@@ -304,7 +306,7 @@ describe("BucketSupplyTable (#1254)", () => {
     renderTable([
       row({ freshness: "stale", cells: [{ kind: "closed" }, { kind: "closed" }] }),
     ]);
-    expect(summaryText()).toContain(supplyLegendEntry("closed").label);
+    expect(summaryText()).toContain(supplyLegendEntry("closed", 3).label);
     expect(summaryText()).toContain(freshnessLabel("stale").label);
   });
 
@@ -314,7 +316,7 @@ describe("BucketSupplyTable (#1254)", () => {
     // string, because both read one record. A chip holding its own wording is
     // exactly how the page came to have three names for one state.
     for (const { legendId } of SUPPLY_SUMMARY_STATES) {
-      const label = supplyLegendEntry(legendId).label;
+      const label = supplyLegendEntry(legendId, 3).label;
       expect(screen.getAllByText(label).length).toBeGreaterThanOrEqual(2);
     }
     // The scope is stated once, above the chips, rather than on the end of each.
@@ -347,7 +349,7 @@ describe("BucketSupplyTable for managers", () => {
     const heads = [...document.querySelectorAll("tbody th[scope='row']")].map((n) => n.textContent ?? "");
     expect(heads).toEqual(["Low", "Low with Beyond"]);
     // The cell sentence names the pool, not a code.
-    expect(screen.getByText(supplyCellTitle(lowCells[0], "Low", "Tuesday, August 4"))).toBeTruthy();
+    expect(screen.getByText(supplyCellTitle(lowCells[0], "Low", "Tuesday, August 4", 3))).toBeTruthy();
   });
 
   it("puts no bucket code anywhere on the page, titles included", () => {
@@ -409,15 +411,28 @@ describe("BucketSupplyTable for managers", () => {
     const head = document.querySelector("tbody th[scope='row']")?.textContent ?? "";
     expect(head).toContain("Low with Beyond");
     expect(head).toContain("Leads go to Low with Achieve");
-    expect(screen.getByText(supplyCellTitle(overflow, "Low with Beyond", "Tuesday, August 4"))).toBeTruthy();
+    expect(screen.getByText(supplyCellTitle(overflow, "Low with Beyond", "Tuesday, August 4", 3))).toBeTruthy();
     const summary = summaryText();
-    expect(summary).toMatch(new RegExp(`${supplyLegendEntry("nobody-available").label}\\s*0(?!\\d)`));
-    expect(summary).toMatch(new RegExp(`${supplyLegendEntry("overflows").label}\\s*1(?!\\d)`));
+    expect(summary).toMatch(new RegExp(`${supplyLegendEntry("nobody-available", 3).label}\\s*0(?!\\d)`));
+    expect(summary).toMatch(new RegExp(`${supplyLegendEntry("overflows", 3).label}\\s*1(?!\\d)`));
     // Not painted as the alarm.
     const chip = [...document.querySelectorAll("span[title]")].find((n) =>
-      (n.textContent ?? "").startsWith(supplyLegendEntry("overflows").label),
+      (n.textContent ?? "").startsWith(supplyLegendEntry("overflows", 3).label),
     );
     expect(chip?.className).not.toContain("text-error");
+  });
+
+  // #3922: the window is the stored offered open days, not a constant. Saved as 4,
+  // the key and the cell's sentence both name four days, and none still says three.
+  it("names the stored number of offered open days in the key and the cell", () => {
+    const overflow: SupplyCell = { kind: "overflows", toPool: "Low with Achieve" };
+    renderTable(
+      [row({ code: "120", name: "Low with Beyond", poolKey: "pool-low-beyond", cells: [overflow, { kind: "closed" }] })],
+      { showCodes: false, offeredOpenDays: 4 },
+    );
+    expect(document.body.textContent).toContain("no times in the next four open days");
+    expect(document.body.textContent).not.toContain("the next three open days");
+    expect(screen.getByText(supplyCellTitle(overflow, "Low with Beyond", "Tuesday, August 4", 4))).toBeTruthy();
   });
 
   it("says a pool's leads are offered its other days, calmly, for managers and admins", () => {
@@ -426,10 +441,10 @@ describe("BucketSupplyTable for managers", () => {
       cleanup();
       renderTable([row({ cells })], { showCodes });
       const name = showCodes ? "120 Low | Beyond | No Legal Param" : "Low with Beyond";
-      expect(screen.getByText(supplyCellTitle(cells[0], name, "Tuesday, August 4"))).toBeTruthy();
+      expect(screen.getByText(supplyCellTitle(cells[0], name, "Tuesday, August 4", 3))).toBeTruthy();
       const summary = summaryText();
-      expect(summary).toMatch(new RegExp(`${supplyLegendEntry("other-days").label}\\s*1(?!\\d)`));
-      expect(summary).toMatch(new RegExp(`${supplyLegendEntry("nobody-available").label}\\s*0(?!\\d)`));
+      expect(summary).toMatch(new RegExp(`${supplyLegendEntry("other-days", 3).label}\\s*1(?!\\d)`));
+      expect(summary).toMatch(new RegExp(`${supplyLegendEntry("nobody-available", 3).label}\\s*0(?!\\d)`));
       // A pool serving itself needs no note on the row.
       expect(document.querySelector("tbody th[scope='row']")?.textContent ?? "").not.toMatch(/Leads/);
     }
@@ -442,7 +457,7 @@ describe("BucketSupplyTable for managers", () => {
     expect(document.querySelector("tbody th[scope='row']")?.textContent ?? "").toContain(
       "Leads are offered later days",
     );
-    expect(summaryText()).toMatch(new RegExp(`${supplyLegendEntry("nobody-available").label}\\s*1(?!\\d)`));
+    expect(summaryText()).toMatch(new RegExp(`${supplyLegendEntry("nobody-available", 3).label}\\s*1(?!\\d)`));
   });
 
   it("says where the leads go for an admin too", () => {
@@ -452,7 +467,7 @@ describe("BucketSupplyTable for managers", () => {
     );
     const head = document.querySelector("tbody th[scope='row']")?.textContent ?? "";
     expect(head).toContain("Leads go to Low with Achieve");
-    expect(summaryText()).toMatch(new RegExp(`${supplyLegendEntry("overflows").label}\\s*1(?!\\d)`));
+    expect(summaryText()).toMatch(new RegExp(`${supplyLegendEntry("overflows", 3).label}\\s*1(?!\\d)`));
   });
 
   it("names a pool outside the routing matrix by the bucket's name, never its code", () => {
@@ -485,6 +500,6 @@ describe("BucketSupplyTable for managers", () => {
     // The summary counts pools, so the Low pool's two codes are one: both pools
     // are part booked today, which is two, never the three rows drawn.
     expect(screen.getByText(/^Today, .*, across 2 pools$/)).toBeTruthy();
-    expect(summaryText()).toMatch(new RegExp(`${supplyLegendEntry("some").label}\\s*2(?!\\d)`));
+    expect(summaryText()).toMatch(new RegExp(`${supplyLegendEntry("some", 3).label}\\s*2(?!\\d)`));
   });
 });

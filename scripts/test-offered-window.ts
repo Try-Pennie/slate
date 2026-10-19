@@ -1,13 +1,13 @@
-// #2840: the window a lead is offered is the next THREE days the business is
-// OPEN, not the first three days that happen to have a free time. Sales ops,
-// 2026-09-28 (Slack #C091G6LEQ80, p1790609176877419), Sam: "We never really want
-// to book out further than 3 days if we can help it". Counting days that have
-// times, as the stored rows do, is what let a fully booked pool's strip slide
-// into the next week.
+// #2840: the window a lead is offered is the next N days the business is OPEN,
+// not the first N days that happen to have a free time. N was a fixed 3 (Sales
+// ops, 2026-09-28, Slack #C091G6LEQ80, p1790609176877419, Sam: "We never really
+// want to book out further than 3 days if we can help it"); since #3922 it is the
+// stored offered open days, 3 by default, so these cases pass the count
+// explicitly. Counting days that have times, as the stored rows do, is what let a
+// fully booked pool's strip slide into the next week.
 import { DateTime } from "luxon";
 import { openDaysWindowEndMs, type BusinessHoursException } from "../src/lib/booking/business-hours.ts";
 import { bookingWindowExtendedAlert } from "../src/lib/booking/alert-copy.ts";
-import { OFFERED_OPEN_DAYS } from "../src/lib/availability/bookable-days.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const zone = "America/New_York";
@@ -40,13 +40,17 @@ eq(et(openDaysWindowEndMs(hours, asEt("2026-09-28T09:00"), 4)), "2026-10-01T20:0
 // No open day at all concludes nothing rather than inventing a window (L215).
 eq(openDaysWindowEndMs({ zone, rules: [], exceptions: [] }, asEt("2026-09-28T09:00"), 3), null, "an org never open has no window");
 eq(openDaysWindowEndMs(hours, asEt("2026-09-28T09:00"), 0), null, "a zero day window is no window");
-// The alert names the window the booker actually uses, read from the one
-// constant, so the two cannot drift (L41).
+// The alert names the window the booker actually used for that lead: the stored
+// offered open days as the request read them (#3922), handed in by the route, so
+// a saved 4 reads as 4 in Slack and no constant can drift from the setting (L41).
 {
-  const text = bookingWindowExtendedAlert("511");
-  assert(text.includes(`${OFFERED_OPEN_DAYS} day booking window`), `the alert names the real window (got ${text})`);
-  assert(text.includes(`next ${OFFERED_OPEN_DAYS} open days`), "and the real number of open days");
+  const text = bookingWindowExtendedAlert("511", 3);
+  assert(text.includes("3 day booking window"), `the alert names the real window (got ${text})`);
+  assert(text.includes("next 3 open days"), "and the real number of open days");
   assert(!/\bthree\b/.test(text), "no hand written count left in the copy");
+  const four = bookingWindowExtendedAlert("511", 4);
+  assert(four.includes("4 day booking window") && four.includes("next 4 open days"), `a stored 4 reads as 4 (got ${four})`);
+  assert(!four.includes("3"), "and nothing in it still says 3");
 }
 
 finish();

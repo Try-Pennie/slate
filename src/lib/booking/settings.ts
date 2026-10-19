@@ -3,17 +3,18 @@ import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import type { BookingSettings } from "@/lib/db/types";
 import { parseStampMs } from "@/lib/date/stamp";
-import { LAST_RESORT_REACH } from "@/lib/admin/days-offered-copy";
+import { DAYS_OFFERED_CEILING } from "@/lib/booking/days-offered";
 
 /**
  * Org-wide booking horizon (#216, folds in audit AUD-076). Precedence store > env >
  * coded default, mirroring loadMonitorSettings.
  *
  * Counts BOOKABLE days, not calendar days (#1326). Since #2840 it is NOT how many
- * days a lead is offered: that is the fixed `OFFERED_OPEN_DAYS`. It is how far the
- * last resort (#2841) may reach when every tier a lead may use is full for those
- * days, and how far ahead availability is computed; the admin page calls it the
- * "Last resort reach" (#3922). A closed day inside the run does not use one up, so
+ * days a lead is offered: that is `booking_settings.offered_open_days` (#3922). It
+ * is how far the last resort (#2841) may reach when every tier a lead may use is
+ * full for those days, and how far ahead availability is computed. The admin page
+ * edits it as offered open days plus "Last resort extra days" and stores the sum
+ * here (#3922, `parseDaysOfferedForm`). A closed day inside the run does not use one up, so
  * the furthest date reaches beyond this number, and the window actually computed is
  * `searchWindowDays(horizon)` in `availability/bookable-days.ts`.
  *
@@ -22,7 +23,8 @@ import { LAST_RESORT_REACH } from "@/lib/admin/days-offered-copy";
  * and offered. Widening it therefore cannot let anyone book something they could
  * not book before.
  *
- * The cap is 7 (HORIZON_MAX, mirrored by the check constraint in migration 0087),
+ * The cap is 7 (HORIZON_MAX, which is `DAYS_OFFERED_CEILING`, mirrored by the
+ * check constraint in migration 0087),
  * because per-bucket recompute cost is ~super-linear in the window and the
  * recompute lane is tuned for a small one. A 14 day cap was once held back behind
  * the 200-agent load soak; that soak ran and passed on 2026-07-08 (#440) and the
@@ -30,12 +32,12 @@ import { LAST_RESORT_REACH } from "@/lib/admin/days-offered-copy";
  * percent of its budget on the hot roster (#2022), and on 2026-09-15 Dan chose to
  * keep this at four days rather than widen it (#2360). That was before #2840, when
  * it was still the window a lead was offered; it is the last resort's reach now,
- * and what a lead is offered is the fixed three. The search allowance is small for
+ * and what a lead is offered is the stored offered open days. The search allowance is small for
  * the same reason.
  */
 export const HORIZON_DEFAULT = 4;
 export const HORIZON_MIN = 1;
-export const HORIZON_MAX = 7;
+export const HORIZON_MAX = DAYS_OFFERED_CEILING;
 
 const validHorizon = (n: number | null | undefined): n is number =>
   typeof n === "number" && Number.isInteger(n) && n >= HORIZON_MIN && n <= HORIZON_MAX;
@@ -50,46 +52,6 @@ export function resolveHorizonDays(
   if (validHorizon(stored)) return stored;
   if (validHorizon(env)) return env;
   return def;
-}
-
-export interface HorizonFormPayload {
-  horizon_days: number | null;
-  errors: string[];
-}
-
-/**
- * Parse + validate the admin settings form's horizon field. A value must be a
- * whole number within range; anything else is refused with an error so the action
- * never persists a nonsense horizon. Pure so it is node/vitest-testable without a DB.
- *
- * BLANK IS REFUSED (#1924). Dan: "we shouldn't allow it to be blank. we should
- * require a number and the default should still be 4. if they try to save with no
- * number, just error and don't let them." It used to clear the override, and the
- * field rendered empty with 4 only as a placeholder, so an admin who saved without
- * typing wrote null while a grey 4 sat in the box looking like a value.
- *
- * THE READER'S FALLBACK STAYS, deliberately, and the two layers now say different
- * things: this FORM refuses blank, and `readBookingHorizonDays` still tolerates a
- * null row. `horizon_days` is nullable and null rows exist, so removing that
- * fallback because "the form no longer allows null" would turn a data state that
- * is still there into a booker offering nothing. Do not consolidate them.
- */
-export function parseHorizonForm(raw: string): HorizonFormPayload {
-  const t = (raw ?? "").trim();
-  if (t === "") {
-    return {
-      horizon_days: null,
-      errors: [`Enter the ${LAST_RESORT_REACH.toLowerCase()}, a whole number of days between ${HORIZON_MIN} and ${HORIZON_MAX}.`],
-    };
-  }
-  const n = Number(t);
-  if (!Number.isInteger(n) || n < HORIZON_MIN || n > HORIZON_MAX) {
-    return {
-      horizon_days: null,
-      errors: [`${LAST_RESORT_REACH} must be a whole number of days between ${HORIZON_MIN} and ${HORIZON_MAX}.`],
-    };
-  }
-  return { horizon_days: n, errors: [] };
 }
 
 /**
@@ -147,6 +109,15 @@ export function parseEventDescriptionForm(raw: string): EventDescriptionPayload 
     };
   }
   return { description: normalized, errors: [] };
+}
+
+/**
+ * A stored `horizon_days` resolved the way every reader resolves it: the stored
+ * value, else the env value, else the coded default. For a caller that read the row
+ * itself (the Days offered card reads both of its columns in one read, #3922).
+ */
+export function horizonFromStored(stored: number | null | undefined): number {
+  return resolveHorizonDays(stored, envHorizon(), HORIZON_DEFAULT);
 }
 
 const envHorizon = (): number | undefined => {

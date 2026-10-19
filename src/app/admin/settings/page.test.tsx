@@ -821,12 +821,14 @@ describe("the new agent starting hours panel (#1651, moved by #1892)", () => {
 });
 
 // #3922: Dan read "Most days offered" holding 4 under a paragraph saying a lead is
-// offered 3 days, and asked which was true. Both were: 3 is fixed in code and is what
-// every lead sees, the box is how far the last resort (#2841) may reach when every
-// tier the lead may use is full. The card now carries each as its own fact.
+// offered 3 days, and asked which was true. Both were: 3 was fixed in code and is
+// what every lead sees, the box was how far the last resort (#2841) may reach. The
+// card is now the settled design (docs/design/days-offered.html, four rounds): the
+// offered days are a stored setting, the last resort is entered as extra days, and
+// a fact line states the furthest day with the sum that makes it.
 describe("the days offered card (#3922)", () => {
-  async function card() {
-    db.results.booking_settings = { data: { horizon_days: 4 }, error: null };
+  async function card(stored: { offered_open_days?: number; horizon_days?: number | null } = {}) {
+    db.results.booking_settings = { data: { offered_open_days: 3, horizon_days: 4, ...stored }, error: null };
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     render(await BusinessHoursPage(props));
     const section = screen.getByText("Days offered", { selector: "h2" }).closest("section");
@@ -834,70 +836,71 @@ describe("the days offered card (#3922)", () => {
     return section!;
   }
 
-  it("states the fixed number of open days as a fact of its own, not inside a paragraph", async () => {
+  it("holds today's values in two of Slate's own dropdowns: 3 offered and 1 extra", async () => {
     const section = await card();
-    const term = [...section.querySelectorAll("dt")].find((d) => d.textContent === "Every lead");
-    expect(term).toBeTruthy();
-    const value = term!.nextElementSibling;
-    expect(value?.tagName).toBe("DD");
-    expect(value?.textContent).toMatch(/^Next 3 open days/);
-    expect(value?.textContent).toMatch(/today counts only before 6pm New York time/i);
-    // A fact, not a control: nothing on the card can be edited to 3.
-    expect([...section.querySelectorAll("input")].map((i) => i.value)).not.toContain("3");
+    const offered = screen.getByRole("combobox", { name: "Offered open days" });
+    const extra = screen.getByRole("combobox", { name: "Last resort extra days" });
+    expect(section.contains(offered) && section.contains(extra)).toBe(true);
+    expect(offered.textContent).toBe("3");
+    expect(extra.textContent).toBe("1");
+    // Nothing native and nothing typed: no select, no number box.
+    expect(section.querySelector("select, input[type='number']")).toBeNull();
   });
 
-  it("names the box for what it does, so it never reads as the normal window", async () => {
-    const section = await card();
-    const box = screen.getByRole("spinbutton", { name: "Last resort reach (1 to 7)" });
-    expect(section.contains(box)).toBe(true);
-    expect((box as HTMLInputElement).value).toBe("4");
-    expect(screen.queryByText(/most days offered/i)).toBeNull();
+  it("follows the stored value: 4 offered and a reach of 6 read as 4 and 2", async () => {
+    await card({ offered_open_days: 4, horizon_days: 6 });
+    expect(screen.getByRole("combobox", { name: "Offered open days" }).textContent).toBe("4");
+    expect(screen.getByRole("combobox", { name: "Last resort extra days" }).textContent).toBe("2");
+    expect(screen.getByText("Furthest a lead can be offered").parentElement?.textContent).toContain(
+      "Day 6 (4 offered + 2 extra)",
+    );
   });
 
-  // A one digit value drew a box the width of the card: `inputCls` carries `w-full`,
-  // and a second width utility is decided by the order Tailwind emits them, so `w-40`
-  // lost. A max width is a different property and cannot be overruled by it.
-  it("keeps the box narrow, with a max width rather than a competing width", async () => {
+  it("states the furthest day with the sum that makes it", async () => {
+    const section = await card();
+    const term = screen.getByText("Furthest a lead can be offered");
+    expect(section.contains(term)).toBe(true);
+    expect(term.parentElement?.textContent).toBe("Furthest a lead can be offeredDay 4 (3 offered + 1 extra)");
+  });
+
+  it("says when today counts under the heading, and the old paragraph is gone", async () => {
+    const section = await card();
+    expect(section.textContent).toContain("Today counts only before 6pm New York time.");
+    expect(section.textContent).not.toMatch(/This number is how far|Most days offered|last resort reach/i);
+    expect(section.textContent).toContain("Every lead sees this many open days.");
+    expect(section.textContent).toContain("Added when every tier a lead may use is full. 0 means no last resort.");
+  });
+
+  it("has one button, named for the card", async () => {
+    const section = await card();
+    const buttons = [...section.querySelectorAll("button[type='submit'], button:not([type])")];
+    expect(buttons.map((b) => b.textContent)).toEqual(["Save days offered"]);
+    expect(screen.queryByRole("button", { name: /booking horizon|last resort reach/i })).toBeNull();
+  });
+
+  it("names the page's job as how many days a lead is offered", async () => {
     await card();
-    const box = screen.getByRole("spinbutton", { name: "Last resort reach (1 to 7)" });
-    const classes = box.className.split(/\s+/);
-    expect(classes).toContain("max-w-40");
-    expect(classes).not.toContain("w-40");
+    expect(document.body.textContent).toContain("how many days a lead is offered");
+    expect(document.body.textContent).not.toContain("how far ahead a lead can book");
   });
 
-  it("names the save button for the same thing the label does", async () => {
-    const section = await card();
-    const button = screen.getByRole("button", { name: "Save last resort reach" });
-    expect(section.contains(button)).toBe(true);
-    expect(screen.queryByRole("button", { name: /booking horizon/i })).toBeNull();
-  });
-
-  it("explains the last resort once, on the box, and drops the long paragraph", async () => {
-    const section = await card();
-    const box = screen.getByRole("spinbutton", { name: "Last resort reach (1 to 7)" });
-    // Reachable by keyboard and screen reader: announced when the box takes focus.
-    const hintId = box.getAttribute("aria-describedby");
-    expect(hintId).toBeTruthy();
-    const hint = document.getElementById(hintId!);
-    expect(section.contains(hint)).toBe(true);
-    // The domain: when it applies, how it counts, and when there is none.
-    expect(hint!.textContent).toMatch(/every tier a lead may use is full/i);
-    expect(hint!.textContent).toMatch(/closed day does not use one up/i);
-    expect(hint!.textContent).toMatch(/3 or fewer there is no last resort/i);
-    // Not the interface.
-    expect(hint!.textContent).not.toMatch(/this number|this box|this field|enter/i);
-    // The old paragraph is gone, and no other prose sits on the card.
-    expect(section.textContent).not.toMatch(/This number is how far/);
-    const prose = [...section.querySelectorAll("p")].filter((p) => p !== hint);
-    expect(prose).toEqual([]);
-    expect(hint!.textContent!.length).toBeLessThan(260);
-  });
-
-  it("confirms a save in the same words as the label and the button", async () => {
-    db.results.booking_settings = { data: { horizon_days: 5 }, error: null };
+  // An unreadable row draws its own notice, never the card filled with guesses a
+  // save would then write back as fact (L530).
+  it("says the days offered could not be read rather than drawing guessed values", async () => {
+    db.results.booking_settings = { data: null, error: { message: "read timeout" } };
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    render(await BusinessHoursPage({ searchParams: Promise.resolve({ ok: "booking-horizon" }) }));
-    expect(screen.getByText("Last resort reach saved.")).toBeTruthy();
+    render(await BusinessHoursPage(props));
+    const section = screen.getByText("Days offered", { selector: "h2" }).closest("section")!;
+    expect(section.textContent).toContain("The days offered could not be read just now");
+    expect(section.querySelector("[role='combobox']")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save days offered" })).toBeNull();
+  });
+
+  it("confirms a save in the card's own name", async () => {
+    db.results.booking_settings = { data: { offered_open_days: 3, horizon_days: 4 }, error: null };
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await BusinessHoursPage({ searchParams: Promise.resolve({ ok: "days-offered" }) }));
+    expect(screen.getByText("Days offered saved.")).toBeTruthy();
   });
 });
 

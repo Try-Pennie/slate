@@ -8,8 +8,8 @@
  * hold three or four, and the flag carried no name, so whichever form redirected
  * lit whatever sentence the page had hardcoded:
  *
- *   /admin/business-hours   saving the horizon (now the last resort reach, #3922)
- *                           printed "Hours saved.",
+ *   /admin/business-hours   saving the booking horizon (now the Days offered
+ *                           card, #3922) printed "Hours saved.",
  *                           naming the hours week, which it had not touched
  *   /admin/buckets          changing the direct booking fallback confirmed,
  *                           creating or editing an actual pool did not
@@ -40,7 +40,7 @@
 
 import { FRAME_LOCK_TTL_SECONDS } from "@/lib/embed/frame-lock";
 import { SHARED_LINE_SWITCH_TTL_SECONDS } from "@/lib/booking/shared-line-switch-core";
-import { LAST_RESORT_REACH } from "@/lib/admin/days-offered-copy";
+import { DAYS_OFFERED_SAVED } from "@/lib/admin/days-offered-copy";
 
 /**
  * Every outcome a form can report.
@@ -53,7 +53,6 @@ export const SAVE_OUTCOMES = [
   "agent-ooo-calendar",
   "alerts",
   "booker-copy",
-  "booking-horizon",
   "booking-paused",
   "booking-reasons",
   "booking-resumed",
@@ -62,6 +61,7 @@ export const SAVE_OUTCOMES = [
   "bucket-created",
   "bucket-routing",
   "bucket-updated",
+  "days-offered",
   "event-type-created",
   "event-type-gap",
   "event-type-notice",
@@ -92,7 +92,6 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   "agent-ooo-calendar": "Time off calendar saved.",
   alerts: "Alert settings saved.",
   "booker-copy": "Booker copy saved.",
-  "booking-horizon": `${LAST_RESORT_REACH} saved.`,
   // #2297: the two directions of the kill switch get two sentences, because the
   // one thing a reader needs confirmed is WHICH WAY it went, and a shared
   // "Booking switch saved." would be the word that appears whatever you pressed.
@@ -106,6 +105,8 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   "bucket-created": "Bucket created.",
   "bucket-routing": "Bucket routing saved.",
   "bucket-updated": "Bucket saved.",
+  // #3922: the card's own name, the one its button and its refusals use.
+  "days-offered": DAYS_OFFERED_SAVED,
   "event-type-created": "Event type created.",
   "event-type-gap": "Gap between calls saved. The booker offers times with the new gap within a minute or two.",
   "event-type-notice": "Notice saved. The booker offers times with the new notice within a minute or two.",

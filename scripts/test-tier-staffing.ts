@@ -334,6 +334,7 @@ assert(
     rows: [row("111", 120), row("211", 120), row("311", "soon"), row("411", 120)],
     hours: HOURS,
     nowMs: FRI,
+    offeredOpenDays: 3,
   });
   const low = w.get("1");
   assert(low?.measured === true && low.days.join(",") === "2026-10-09,2026-10-10,2026-10-12", `Low is judged Friday, Saturday and Monday (got ${JSON.stringify(low)})`);
@@ -344,10 +345,21 @@ assert(
   eq(w.get("3")?.measured, false, "an unreadable notice is no window");
   eq(w.get("5")?.measured, false, "a tier with no cached row is no window");
   eq(
-    tierWindows({ rows: [row("111", 120)], hours: { ...HOURS, rules: [] }, nowMs: FRI }).get("1")?.measured,
+    tierWindows({ rows: [row("111", 120)], hours: { ...HOURS, rules: [] }, nowMs: FRI, offeredOpenDays: 3 }).get("1")?.measured,
     false,
     "an org never open is no window",
   );
+  // #3922: the stored offered open days, not a constant. Saved as 4, the same
+  // Friday judges Low over Friday, Saturday, Monday and Tuesday.
+  const four = tierWindows({ rows: [row("111", 120)], hours: HOURS, nowMs: FRI, offeredOpenDays: 4 }).get("1");
+  assert(
+    four?.measured === true && four.days.join(",") === "2026-10-09,2026-10-10,2026-10-12,2026-10-13",
+    `a stored 4 judges four open days (got ${JSON.stringify(four)})`,
+  );
+  // An unreadable setting is no window for any tier, never a window built from a
+  // guessed count (L215): every tier is unmeasured, so nothing pages or clears.
+  const unread = tierWindows({ rows: [row("111", 120), row("211", 120)], hours: HOURS, nowMs: FRI, offeredOpenDays: null });
+  eq([...unread.values()].every((r) => r.measured === false), true, "an unreadable offered days setting measures no tier");
 }
 
 // --- how many open times a tier offers inside the window (#3227) ------------

@@ -1,9 +1,10 @@
 /**
  * What the booker offers a lead, as two pure rules both sides share (2026-10-02).
  *
- * `getBucketSlotsWithFallback` (slot-cache.ts) offers the next
- * `OFFERED_OPEN_DAYS` open days and, on a rung below a top tier lead's own tier,
- * only the times an advisor without Low is free. The bucket availability page has
+ * `getBucketSlotsWithFallback` (slot-cache.ts) offers the next N open days, N
+ * being the stored offered open days (#3922, `days-offered-load.ts`), and, on a
+ * rung below a top tier lead's own tier, only the times an advisor without Low is
+ * free. The bucket availability page has
  * to say what that produces for each pool, and a second copy of either rule would
  * agree with the booker exactly until one of them changed (L107). So the booker
  * and the page call these, and nothing else decides either question.
@@ -12,7 +13,6 @@
  */
 import { DateTime } from "luxon";
 import { openDaysWindow, type BusinessWindow, type BusinessHoursException } from "../booking/business-hours.ts";
-import { OFFERED_OPEN_DAYS } from "./bookable-days.ts";
 import { rungExcludesLow } from "../routing/tiers.ts";
 
 /**
@@ -37,12 +37,13 @@ export function todayCountsUntilLabel(): string {
 }
 
 /**
- * When the offered window closes (#2840): the end of the `OFFERED_OPEN_DAYS`th
- * open day. Today counts only before `TODAY_COUNTS_UNTIL` (#3438), and before
- * that only while a booking can still start before it closes (now plus the
- * event's minimum notice). After the cutoff the count starts from tomorrow's
- * start in New York, so a strip opened at 6:30pm offers the next three open
- * days; any time today still holds is still served, since the window bounds
+ * When the offered window closes (#2840): the end of the `offeredOpenDays`th
+ * open day. The count is passed in, never read here, so every caller states which
+ * reading of the stored setting it used (#3922). Today counts only before
+ * `TODAY_COUNTS_UNTIL` (#3438), and before that only while a booking can still
+ * start before it closes (now plus the event's minimum notice). After the cutoff
+ * the count starts from tomorrow's start in New York, so a strip opened at 6:30pm
+ * offers the next N open days; any time today still holds is still served, since the window bounds
  * only how far ahead the strip reaches. Null when the org's week holds no such
  * day, and then the booker imposes no window at all.
  */
@@ -50,8 +51,9 @@ export function offeredWindowEndFor(
   hours: { zone: string; rules: BusinessWindow[]; exceptions: BusinessHoursException[] },
   nowMs: number,
   minNoticeMin: number,
+  offeredOpenDays: number,
 ): number | null {
-  return offeredWindowFor(hours, nowMs, minNoticeMin)?.endMs ?? null;
+  return offeredWindowFor(hours, nowMs, minNoticeMin, offeredOpenDays)?.endMs ?? null;
 }
 
 /**
@@ -65,6 +67,7 @@ export function offeredWindowFor(
   hours: { zone: string; rules: BusinessWindow[]; exceptions: BusinessHoursException[] },
   nowMs: number,
   minNoticeMin: number,
+  offeredOpenDays: number,
 ): { endMs: number; days: string[] } | null {
   const earliestStartMs = nowMs + minNoticeMin * 60_000;
   const local = DateTime.fromMillis(nowMs, { zone: TODAY_COUNTS_UNTIL.zone });
@@ -72,7 +75,7 @@ export function offeredWindowFor(
   const countFromMs = pastCutoff
     ? Math.max(earliestStartMs, local.plus({ days: 1 }).startOf("day").toMillis())
     : earliestStartMs;
-  return openDaysWindow(hours, countFromMs, OFFERED_OPEN_DAYS);
+  return openDaysWindow(hours, countFromMs, offeredOpenDays);
 }
 
 /**

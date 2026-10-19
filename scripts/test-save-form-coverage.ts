@@ -180,7 +180,7 @@ const MIGRATED: [string, string][] = [
   ["src/app/admin/alerts/page.tsx", "setMonitorSettings"],
   ["src/app/admin/booker-copy/page.tsx", "setEventDescription"],
   ["src/app/admin/buckets/page.tsx", "setDefaultBucket"],
-  ["src/app/admin/business-hours/page.tsx", "setBookingHorizon"],
+  ["src/app/admin/business-hours/page.tsx", "setDaysOffered"],
   ["src/app/admin/business-hours/page.tsx", "setOrgDefaultHours"],
   ["src/app/admin/event-types/page.tsx", "createEventType"],
   ["src/app/admin/agents/page.tsx", "syncSalesforceNow"],

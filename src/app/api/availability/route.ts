@@ -235,17 +235,23 @@ async function handle(req: NextRequest) {
     ).catch(logAlertSendFailure(`booker_unstaffed:${result.bucket.code}`));
   }
 
-  // #2841: every tier this lead's cascade may use was full for the whole three
-  // open day window, so times past it were served. The lead can still book, so
+  // #2841: every tier this lead's cascade may use was full for the whole window of
+  // offered open days, so times past it were served. The lead can still book, so
   // the response is unchanged; somebody should look. Keyed to the code the lead
   // ASKED for, which is what the landing page sent, and throttled per code, because
   // this is the hot path. A failed send never costs the lead their times.
-  if (result.routing.window_extended && !result.bucket.is_test) {
+  //
+  // #3922: the alert names the offered open days the request used. An extended
+  // window was by construction a MEASURED one, so `offered_open_days` is set
+  // whenever `window_extended` is; the second test narrows the type, it filters
+  // nothing.
+  const extendedPast = result.routing.window_extended ? result.routing.offered_open_days : null;
+  if (extendedPast !== null && !result.bucket.is_test) {
     // alert-key: booking_window_extended:*
     await sendThrottledAlert(
       `booking_window_extended:${result.routing.requested_code}`,
       BOOKING_WINDOW_EXTENDED_COOLDOWN_MS,
-      bookingWindowExtendedAlert(result.routing.requested_code),
+      bookingWindowExtendedAlert(result.routing.requested_code, extendedPast),
     ).catch(logAlertSendFailure(`booking_window_extended:${result.routing.requested_code}`));
   }
 

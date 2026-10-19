@@ -226,19 +226,26 @@ export function tierReadings(input: {
  * costs no read: the lane already holds the rows. A row that is missing, or whose
  * notice is not a number, is `measured: false` rather than a window built from a
  * guessed notice, and so is an org with no open day ahead (L215). Pure.
+ *
+ * `offeredOpenDays` is the stored setting (#3922) as the lane read it this tick,
+ * or null when that read failed, and then EVERY tier is unmeasured: a window built
+ * from a guessed count would page or clear a tier over days the booker is not
+ * showing.
  */
 export function tierWindows(input: {
   rows: { bucket_code: string; payload: { eventType?: { min_notice_min?: unknown } | null } | null }[];
   hours: BusinessHoursRules;
   nowMs: number;
+  offeredOpenDays: number | null;
 }): Map<string, WindowReading> {
   const out = new Map<string, WindowReading>();
+  const offered = input.offeredOpenDays;
   for (const tier of DEBT_TIERS) {
     const row = input.rows.find((r) => r.bucket_code === wholeTierPoolCode(tier));
     const notice = row?.payload?.eventType?.min_notice_min;
     const w =
-      typeof notice === "number" && Number.isFinite(notice) && notice >= 0
-        ? offeredWindowFor(input.hours, input.nowMs, notice)
+      offered !== null && typeof notice === "number" && Number.isFinite(notice) && notice >= 0
+        ? offeredWindowFor(input.hours, input.nowMs, notice, offered)
         : null;
     out.set(tier, w === null ? { measured: false } : { measured: true, endMs: w.endMs, days: w.days });
   }

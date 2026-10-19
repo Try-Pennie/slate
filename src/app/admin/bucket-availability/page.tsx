@@ -6,12 +6,40 @@ import { consoleHiddenFor } from "@/lib/env";
 import { cardCls, proseCls } from "@/components/ui/styles";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { loadBucketSupply } from "@/lib/admin/bucket-supply-load";
+import type { BucketSupplyReport } from "@/lib/admin/bucket-supply";
 import { BucketSupplyTable } from "@/components/BucketSupplyTable";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
 export const metadata = { title: "Bucket availability" };
 
 export const dynamic = "force-dynamic";
+
+/**
+ * What the page says in place of the table, one entry per reason it could not
+ * measure. A record keyed on the reasons, so `tsc` names a reason added without
+ * its own words (#3922 added the offered open days).
+ */
+const UNMEASURABLE_COPY: Record<
+  Extract<BucketSupplyReport, { measurable: false }>["reason"],
+  { title: string; body: string }
+> = {
+  "business-hours": {
+    title: "The office hours could not be read",
+    body: "Every figure on this page is measured against the office day, so with the week unreadable there is nothing honest to show. Nothing below was measured, and this is not a report that no bucket has availability.",
+  },
+  "booking-horizon": {
+    title: "The booking horizon could not be read",
+    body: "The horizon sets how many days ahead are offered, so it decides both which days appear here and how many times each one could have held. Showing the standard window instead would change what every share on this page means, and nothing about the resulting numbers would look wrong. Reload in a moment.",
+  },
+  "offered-open-days": {
+    title: "The days offered could not be read",
+    body: "How many open days a lead is offered decides which days every pool is judged over and what the page says a lead is shown. Judging them over a guessed number would change what every row means, and nothing about it would look wrong. Reload in a moment.",
+  },
+  "slot-cache": {
+    title: "The slot cache could not be read",
+    body: "Nothing below was measured, so this is not a report that the buckets are empty. Reload in a moment; if it persists, the slot cache is unreadable and the booker itself is at risk.",
+  },
+};
 
 /**
  * Open availability per debt bucket per day (#1254).
@@ -56,20 +84,8 @@ export default async function BucketAvailabilityPage() {
 
         {!report.measurable ? (
           <section className={cardCls}>
-            <h2 className="mb-1 text-sm font-semibold">
-              {report.reason === "business-hours"
-                ? "The office hours could not be read"
-                : report.reason === "booking-horizon"
-                  ? "The booking horizon could not be read"
-                  : "The slot cache could not be read"}
-            </h2>
-            <p className={`text-sm text-fg-muted ${proseCls}`}>
-              {report.reason === "business-hours"
-                ? "Every figure on this page is measured against the office day, so with the week unreadable there is nothing honest to show. Nothing below was measured, and this is not a report that no bucket has availability."
-                : report.reason === "booking-horizon"
-                  ? "The horizon sets how many days ahead are offered, so it decides both which days appear here and how many times each one could have held. Showing the standard window instead would change what every share on this page means, and nothing about the resulting numbers would look wrong. Reload in a moment."
-                  : "Nothing below was measured, so this is not a report that the buckets are empty. Reload in a moment; if it persists, the slot cache is unreadable and the booker itself is at risk."}
-            </p>
+            <h2 className="mb-1 text-sm font-semibold">{UNMEASURABLE_COPY[report.reason].title}</h2>
+            <p className={`text-sm text-fg-muted ${proseCls}`}>{UNMEASURABLE_COPY[report.reason].body}</p>
           </section>
         ) : (
           <section className={cardCls}>
@@ -83,6 +99,7 @@ export default async function BucketAvailabilityPage() {
               nowMs={report.nowMs}
               depthReadable={report.depthReadable}
               bucketListReadable={report.bucketListReadable}
+              offeredOpenDays={report.offeredOpenDays}
             />
           </section>
         )}

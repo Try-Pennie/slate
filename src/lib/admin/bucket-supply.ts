@@ -274,13 +274,19 @@ export type BucketSupplyReport =
        * runs out, so a guessed one does not make a share unavailable, it silently
        * changes what every share MEANS. That is the worst of the three to get
        * wrong, because the resulting number looks entirely normal.
+       * `offered-open-days`: the stored offered open days could not be read
+       * (#3922). They set the window every row's cover and the nearly full notice
+       * are judged over, so a guessed count fails the same way the horizon does.
        */
-      reason: "business-hours" | "slot-cache" | "booking-horizon";
+      reason: "business-hours" | "slot-cache" | "booking-horizon" | "offered-open-days";
     }
   | {
       measurable: true;
       zone: string;
       horizonDays: number;
+      /** The stored offered open days the window was counted with (#3922), so
+       *  the page's words name the count the booker is using. */
+      offeredOpenDays: number;
       /**
        * The instant every freshness state on the page was judged against
        * (#1938).
@@ -323,6 +329,11 @@ export interface BucketSupplyInput {
   hours: BusinessHoursRules;
   /** Bookable days the booker is configured to offer. */
   horizonDays: number;
+  /**
+   * The stored offered open days (#3922), or null when that read failed, which
+   * makes the whole report unmeasurable rather than judged over a guessed window.
+   */
+  offeredOpenDays: number | null;
   nowMs: number;
   /**
    * Every non-test bucket, or `null` when the bucket list could not be read.
@@ -479,6 +490,8 @@ function eventTypeOf(row: CachedSlotRow): SupplyEventType | null {
  */
 export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport {
   if (input.cacheRows === null) return { measurable: false, reason: "slot-cache" };
+  if (input.offeredOpenDays === null) return { measurable: false, reason: "offered-open-days" };
+  const offeredOpenDays = input.offeredOpenDays;
 
   const { hours, nowMs } = input;
   const days = supplyDays(hours, input.horizonDays, nowMs);
@@ -576,8 +589,8 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
 
   /**
    * What the booker serves a lead on `code` (Dan, 2026-10-02: the page matches
-   * today's booker). `getBucketSlotsWithFallback` offers the next
-   * `OFFERED_OPEN_DAYS` open days (`offeredWindowEndFor`, the same function),
+   * today's booker). `getBucketSlotsWithFallback` offers the next N open days,
+   * N the stored offered open days (#3922; `offeredWindowEndFor`, the same function),
    * walks the router's ladder (`tierLadder`) and serves the FIRST rung with any
    * time inside that window, and only that rung. When no rung has one, its last
    * resort offers times past the window, own tier first.
@@ -672,7 +685,7 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
 
       // The window is the requested bucket's own, as the booker computes it from
       // the requested event type's notice.
-      const window = offeredWindowFor(hours, nowMs, eventType.min_notice_min);
+      const window = offeredWindowFor(hours, nowMs, eventType.min_notice_min, offeredOpenDays);
       const windowEndMs = window?.endMs ?? null;
       offeredDays = window?.days ?? null;
       const plan = servedBy(d.code, windowEndMs);
@@ -786,6 +799,7 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
     measurable: true,
     zone: hours.zone,
     horizonDays: input.horizonDays,
+    offeredOpenDays,
     nowMs,
     days,
     rows,

@@ -1,50 +1,61 @@
 /**
- * The words on the Hours page's "Days offered" card (#3922).
+ * The words on the Hours page's "Days offered" card (#3922), as settled in
+ * `docs/design/days-offered.html` over four design rounds (Dan, 2026-10-19).
  *
- * Two numbers live on that card and they are different facts. `OFFERED_OPEN_DAYS`
- * (fixed in code, 3) is how many open days every lead is offered. `horizon_days`
- * (the box, 4 in production) is how far the last resort (#2841) may reach when
- * every tier the lead may use is full for those days. The card used to say
- * "offered" of both, so Dan read the box as the normal window and asked why it said
- * 4 when the paragraph said 3.
+ * The card holds two settings: how many open days every lead is offered, and how
+ * many extra days the last resort (#2841) may add when every tier a lead may use is
+ * full. Before #3922 the editable box was the furthest day, labelled "Most days
+ * offered", beside a paragraph saying a lead is offered 3, so Dan read the two as
+ * contradicting each other. Each now has its own name, held here ONCE: the labels,
+ * the server's refusals, the save button, the saved sentence and the unsaved changes
+ * warning all read these constants, so no third name ("booking horizon") can creep
+ * back in (D9).
  *
- * So the box has ONE name, and it is held here: the label, the save button, the
- * saved sentence and the refusals all read it from this constant, which is how the
- * button stops being a third name ("Save booking horizon") for the same thing.
- *
- * Pure (no `@/` imports), so the node suite and client code can both reach it.
+ * Pure (no imports at all), so the node suite, the client card and the e2e spec can
+ * all reach it.
  */
 
-/** The box's name, wherever it is referred to. */
-export const LAST_RESORT_REACH = "Last resort reach";
+/** The card's heading, and the name the save, the notice and the warning use. */
+export const DAYS_OFFERED = "Days offered";
 
-/** The save button, naming the same thing the label does. */
-export const SAVE_LAST_RESORT_REACH = `Save ${LAST_RESORT_REACH.toLowerCase()}`;
+/** The one button, saving both values (D9). */
+export const SAVE_DAYS_OFFERED = `Save ${DAYS_OFFERED.toLowerCase()}`;
 
-/** The term beside the fixed fact. */
-export const EVERY_LEAD_TERM = "Every lead";
+/** The saved sentence (D9). */
+export const DAYS_OFFERED_SAVED = `${DAYS_OFFERED} saved.`;
 
-/** The fixed number, stated as a value rather than inside a sentence. */
-export function offeredDaysValue(offeredOpenDays: number): string {
-  return `Next ${offeredOpenDays} open days`;
-}
+/** What the unsaved changes warning says is unsaved: "You have unsaved changes to the days offered". */
+export const DAYS_OFFERED_UNSAVED = `changes to the ${DAYS_OFFERED.toLowerCase()}`;
 
-/** The one qualification the value needs, from the cutoff constant's own label. */
+/** The first control's label. */
+export const OFFERED_DAYS_LABEL = "Offered open days";
+
+/** The second control's label. */
+export const EXTRA_DAYS_LABEL = "Last resort extra days";
+
+/** The domain of each, said once, on the term (D7, L604). */
+export const OFFERED_DAYS_HINT = "Every lead sees this many open days.";
+export const EXTRA_DAYS_HINT = "Added when every tier a lead may use is full. 0 means no last resort.";
+
+/** The one qualification the offered days need, from the cutoff constant's own label (D8). */
 export function todayCountsNote(cutoffLabel: string): string {
   return `Today counts only before ${cutoffLabel}.`;
 }
 
+/** The fact line's term (D3). */
+export const FURTHEST_DAY_TERM = "Furthest a lead can be offered";
+
 /**
- * What the last resort IS, said once, on the box (announced with it through
- * `aria-describedby`). The domain only: when it applies, how its days are counted,
- * and the value at which there is none. The fixed number appears only in that last
- * clause, because the value above the box already states it.
+ * The fact line's value, in two parts so the day can carry the weight the design
+ * gives it: "Day 4" then "(3 offered + 1 extra)". Kept although it repeats both
+ * values, because the furthest day is the number a reader is actually asking about
+ * (D3, Dan's choice in round 2).
  */
-export function lastResortReachHint(offeredOpenDays: number): string {
-  return (
-    `If every tier a lead may use is full for their offered days, the booker ` +
-    `shows later days as a last resort, up to this many days with times counted from ` +
-    `today, so a closed day does not use one up. At ${offeredOpenDays} or fewer there is ` +
-    `no last resort.`
-  );
+export function furthestDayValue(offered: number, extra: number): { day: string; sum: string } {
+  return { day: `Day ${offered + extra}`, sum: `(${offered} offered + ${extra} extra)` };
 }
+
+/** Said in place of the card when its settings could not be read. */
+export const DAYS_OFFERED_UNREADABLE =
+  "The days offered could not be read just now, so nothing is shown here. Reload in a moment. " +
+  "The stored values are unchanged and the booker is still using them.";

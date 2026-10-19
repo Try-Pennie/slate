@@ -210,3 +210,35 @@ describe("uncontrolled, in a form that just submits (#1849)", () => {
     expect(trigger().textContent).toContain("Pacific");
   });
 });
+
+// #3922 (D4 in docs/design/days-offered.html): a control listing bare one digit
+// numbers is drawn narrow with the value centred, the same in the trigger and in
+// every row of the list, so two of them side by side line their numbers up. An
+// opt in for that card, not a standing rule.
+describe("SelectField, compact", () => {
+  const DIGITS: SelectOption[] = ["1", "2", "3"].map((v) => ({ value: v, label: v }));
+
+  it("centres the value in the trigger and in every option, in tabular figures", async () => {
+    render(<SelectField name="n" defaultValue="2" options={DIGITS} ariaLabel="Days" compact />);
+    const button = screen.getByRole("combobox", { name: "Days" });
+    const value = button.querySelector("span");
+    expect(value?.textContent).toBe("2");
+    expect(value?.className).toContain("text-center");
+    expect(value?.className).toContain("tabular-nums");
+    await userEvent.click(button);
+    const options = await screen.findAllByRole("option");
+    expect(options.map((o) => o.textContent)).toEqual(["1", "2", "3"]);
+    for (const o of options) expect(o.className).toContain("justify-center");
+    // The list is not held to the wide minimum a word list needs.
+    expect(screen.getByRole("listbox").className).not.toContain("min-w-44");
+    // Seven 44px rows fit whole, so a list of 1 to 7 never scrolls.
+    expect(screen.getByRole("listbox").className).toContain("max-h-80");
+  });
+
+  it("leaves an ordinary select as it was", async () => {
+    render(<Field />);
+    expect(trigger().querySelector("span")?.className).not.toContain("text-center");
+    await userEvent.click(trigger());
+    expect(screen.getByRole("listbox").className).toContain("min-w-44");
+  });
+});

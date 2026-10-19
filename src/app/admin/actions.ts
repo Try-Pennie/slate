@@ -109,9 +109,9 @@ import {
 } from "@/lib/booking/reason-options";
 import {
   parseDefaultBucketForm,
-  parseHorizonForm,
   parseEventDescriptionForm,
 } from "@/lib/booking/settings";
+import { parseDaysOfferedForm } from "@/lib/booking/days-offered";
 import { markAllBucketSlotsStale } from "@/lib/availability/precompute";
 import { updateEventType, type EventTypePatch } from "@/lib/availability/event-type-store";
 import { log } from "@/lib/log";
@@ -135,7 +135,7 @@ import {
 } from "@/lib/schedule-replacement";
 import type { Criteria, Role, User } from "@/lib/db/types";
 import { seederOwnsCode } from "@/lib/xbc";
-import { LAST_RESORT_REACH } from "@/lib/admin/days-offered-copy";
+import { DAYS_OFFERED } from "@/lib/admin/days-offered-copy";
 import { ME_TABS } from "@/lib/me/nav";
 import {
   COVERAGE_CHOICE_FIELD,
@@ -1374,60 +1374,74 @@ export async function setDefaultBucket(form: FormData): Promise<void> {
 }
 
 /**
- * Save the org-wide booking horizon (#216). Admin-only. The value is validated to
- * the 1..7 range (blank clears the override, falling back to env/coded default);
- * an out-of-range value redirects with an error and NEVER writes. The write is a
- * column-scoped upsert on id=1 (so it can't clobber default_bucket_code) and is
- * idempotent (assume-it-runs-twice). On a successful save every precomputed row is
- * marked stale so the recompute lane rebuilds rows over the NEW window promptly
- * (refresh-on-save); a failure there only logs, because the freshness window still
- * backstops convergence and must not fail the save.
+ * Save the Days offered card (#3922): how many open days every lead is offered, and
+ * how many extra days the last resort may add. Admin only. One button saves both
+ * (D9 in docs/design/days-offered.html).
+ *
+ * `parseDaysOfferedForm` holds the rules (offered 1 to 7, extra 0 or more, the two
+ * together at most 7) and a refusal redirects with its reason and NEVER writes. The
+ * reach is stored as `horizon_days` = offered + extra, so every existing reader of
+ * the horizon (the availability compute, the slot cache, the supply page, the
+ * monitor) keeps working unchanged, and `offered_open_days` beside it (migration
+ * 0190). The write is a column scoped upsert on id=1, so it cannot clobber the
+ * other settings on that row, and it is idempotent (assume it runs twice).
+ *
+ * On a successful save every precomputed row is marked stale so the recompute lane
+ * rebuilds rows over the new reach promptly (refresh on save, #216); a failure
+ * there only logs, because the freshness window still backstops convergence. The
+ * offered days need no refresh: the booker cuts its strip at read time, through a
+ * cached read that picks the new value up within seconds.
  */
-export async function setBookingHorizon(form: FormData): Promise<void> {
+export async function setDaysOffered(form: FormData): Promise<void> {
   const admin = await requireAdmin();
   const db = supabaseAdmin();
 
-  const parsed = parseHorizonForm(String(form.get("horizon_days") ?? ""));
-  if (parsed.errors.length) {
+  const parsed = parseDaysOfferedForm(
+    String(form.get("offered_open_days") ?? ""),
+    String(form.get("last_resort_extra_days") ?? ""),
+  );
+  const { offered_open_days, horizon_days } = parsed;
+  if (parsed.errors.length || offered_open_days === null || horizon_days === null) {
     redirect(`/admin/business-hours${refusedQuery(parsed.errors.join(" "))}`);
   }
 
-  // #2379: refused before anything downstream acts on a horizon that was never
+  // #2379: refused before anything downstream acts on values that were never
   // stored. The invalidation below is the sharpest of those: it marks every cached
   // slot row stale, so a refused save would spend a whole recompute cycle
-  // rebuilding 60 rows over the window that did not change.
+  // rebuilding 60 rows over a window that did not change.
   const { error } = await db.from("booking_settings").upsert(
     {
       id: 1,
-      horizon_days: parsed.horizon_days,
+      offered_open_days,
+      horizon_days,
       updated_at: new Date().toISOString(),
       updated_by: admin.id,
     },
     { onConflict: "id" },
   );
   if (error) {
-    redirect(
-      `/admin/business-hours${refusedQuery(
-        writeRefused(`The ${LAST_RESORT_REACH.toLowerCase()}`, error),
-      )}`,
-    );
+    redirect(`/admin/business-hours${refusedQuery(writeRefused(DAYS_OFFERED, error))}`);
   }
 
-  // Refresh-on-save: converge rows onto the new window now, not only as they age.
+  // Refresh-on-save: converge rows onto the new reach now, not only as they age.
   try {
     await markAllBucketSlotsStale();
   } catch (err) {
-    log.error("admin", { msg: "horizon save: row invalidation failed" }, err);
+    log.error("admin", { msg: "days offered save: row invalidation failed" }, err);
   }
 
   await recordAudit({
     orgId: admin.org_id,
     actorId: admin.id,
     action: "booking.settings",
-    details: { horizon_days: parsed.horizon_days },
+    details: {
+      offered_open_days: parsed.offered_open_days,
+      last_resort_extra_days: parsed.extra_days,
+      horizon_days: parsed.horizon_days,
+    },
   });
   revalidatePath("/admin/business-hours");
-  redirect(`/admin/business-hours${savedQuery("booking-horizon")}`);
+  redirect(`/admin/business-hours${savedQuery("days-offered")}`);
 }
 
 /** The longest gap an admin may keep between calls, in minutes. Two hours is
@@ -2797,7 +2811,7 @@ export type BusinessHoursFormState = {
  *    told how many there are and confirms. So the first submit comes back as
  *    `confirm`, and the second (carrying `confirm_close`) writes.
  *
- *  * NO MASS INVALIDATION. Unlike the booking-horizon save next door, this does NOT
+ *  * NO MASS INVALIDATION. Unlike the days offered save next door, this does NOT
  *    call `markAllBucketSlotsStale`. Gate 1 filters cached slots against the current
  *    hours at READ time (#1296), so a narrowing takes effect on the next request
  *    without touching a single row. Marking 60+ buckets stale would additionally risk

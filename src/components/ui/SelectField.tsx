@@ -60,6 +60,8 @@ export function SelectField({
   placeholder = "Select",
   id,
   disabled = false,
+  compact = false,
+  ariaDescribedBy,
 }: {
   /** Submitted with the form. Omit for a control that only calls `onChange`. */
   name?: string;
@@ -80,6 +82,17 @@ export function SelectField({
   placeholder?: string;
   id?: string;
   disabled?: boolean;
+  /**
+   * For a list of bare one digit numbers (#3922, D4 in docs/design/days-offered.html):
+   * the value is centred in tabular figures in the trigger and in every option, and
+   * the list drops the wide minimum a word list needs, so two of these side by side
+   * line their numbers up. Its height bound is raised just enough to show seven 44px
+   * rows whole, since a short list of numbers should never scroll. The caller sizes
+   * the trigger with `className`. An opt in for that card, not a standing rule.
+   */
+  compact?: boolean;
+  /** The id of a hint explaining what the value means, announced with the control. */
+  ariaDescribedBy?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<number | null>(null);
@@ -215,12 +228,13 @@ export function SelectField({
         aria-controls={listId}
         aria-activedescendant={open && active !== null ? optionId(active) : undefined}
         aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
         disabled={disabled}
         onClick={() => (open ? close(true) : openList())}
         onKeyDown={onKeyDown}
         className="pn-select-trigger flex h-11 w-full items-center justify-between gap-2 rounded-sm border border-border bg-[var(--field)] pl-3 pr-3 text-left text-sm text-fg disabled:opacity-60"
       >
-        <span className="truncate">{label}</span>
+        <span className={compact ? "flex-1 truncate text-center tabular-nums" : "truncate"}>{label}</span>
         <svg
           aria-hidden="true"
           width="12"
@@ -248,7 +262,7 @@ export function SelectField({
         aria-label={ariaLabel}
         // The height it bounds is the whole point: a native menu of several
         // hundred zones took the entire window, and nothing could stop it.
-        className="max-h-72 min-w-44 overflow-y-auto rounded-md border border-border bg-surface py-1 shadow-pop"
+        className={`${compact ? "max-h-80 min-w-21" : "max-h-72 min-w-44"} overflow-y-auto rounded-md border border-border bg-surface py-1 shadow-pop`}
       >
         {options.map((o, i) => (
           <div
@@ -263,7 +277,7 @@ export function SelectField({
             // before the click lands.
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => commit(i)}
-            className={`flex min-h-11 cursor-pointer items-center px-3 text-sm ${
+            className={`flex min-h-11 cursor-pointer items-center px-3 text-sm ${compact ? "justify-center tabular-nums" : ""} ${
               i === active ? "bg-[var(--bg-alt)] text-fg" : "text-fg"
             } ${o.disabled ? "pointer-events-none opacity-50" : ""}`}
           >

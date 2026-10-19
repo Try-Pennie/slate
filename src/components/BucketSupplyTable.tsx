@@ -14,7 +14,7 @@ import { DayHeaderCell } from "@/components/ui/DayHeaderCell";
 import {
   SUPPLY_ALARMING_STATES,
   SUPPLY_DAY_GROUP_HEADER,
-  SUPPLY_LEGEND,
+  supplyLegend,
   SUPPLY_SUMMARY_STATES,
   agentCountLabel,
   cellStyle,
@@ -72,6 +72,7 @@ export function BucketSupplyTable({
   nowMs,
   depthReadable,
   bucketListReadable,
+  offeredOpenDays,
 }: {
   days: SupplyDay[];
   rows: BucketSupplyRow[];
@@ -84,6 +85,9 @@ export function BucketSupplyTable({
   nowMs: number;
   depthReadable: boolean;
   bucketListReadable: boolean;
+  /** The stored offered open days the report counted its window with (#3922),
+   *  so the key and each cell name the window the booker is actually using. */
+  offeredOpenDays: number;
 }) {
   // Grouped ONCE, and the same groups feed both the counts and the manager rows,
   // so the two cannot disagree about what a pool is.
@@ -157,12 +161,12 @@ export function BucketSupplyTable({
             {/* The key's own LABEL for the state, so this is not a second name
                 for it. Its `meaning` is written for a cell ("that day") and
                 reads wrong directly under a line that has just said "Today". */}
-            {supplyLegendEntry("closed").label}, so there was nothing to measure.
+            {supplyLegendEntry("closed", offeredOpenDays).label}, so there was nothing to measure.
           </p>
         ) : (
         <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
           {SUPPLY_SUMMARY_STATES.map(({ totalsKey, legendId }) => {
-            const entry = supplyLegendEntry(legendId);
+            const entry = supplyLegendEntry(legendId, offeredOpenDays);
             const count = totals[totalsKey];
             const alarming = SUPPLY_ALARMING_STATES.includes(legendId) && count > 0;
             return (
@@ -357,7 +361,7 @@ export function BucketSupplyTable({
                       const style = cellStyle(cell);
                       const dayLabel =
                         formatLongDate(DateTime.fromISO(days[i].iso, { zone })) ?? days[i].iso;
-                      const title = supplyCellTitle(cell, bucketLabel, dayLabel);
+                      const title = supplyCellTitle(cell, bucketLabel, dayLabel, offeredOpenDays);
                       return (
                         <td
                           key={days[i].iso}
@@ -417,7 +421,7 @@ export function BucketSupplyTable({
           totals are counts of shares (saturated, part booked, nothing booked)
           and do not map one to one onto the seven entries here, so deriving it
           would be a different change rather than the same one. */}
-      <LegendList entries={SUPPLY_LEGEND} swatchCls="h-5 w-8" />
+      <LegendList entries={supplyLegend(offeredOpenDays)} swatchCls="h-5 w-8" />
 
       <p className="mt-4 text-xs text-fg-muted">
         {/* #1937: this described the OLD ceiling, one synthetic ideal agent's grid

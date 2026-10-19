@@ -102,6 +102,7 @@ function report(tiers: TierSupply[], rows: BucketSupplyRow[] = []): BucketSupply
     measurable: true,
     zone: "America/New_York",
     horizonDays: 4,
+    offeredOpenDays: 3,
     nowMs: NOW_MS,
     days: DAYS.map((iso, i) => ({ iso, weekday: [5, 6, 7, 1, 2][i] })),
     rows,

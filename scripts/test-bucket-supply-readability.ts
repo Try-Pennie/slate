@@ -33,7 +33,7 @@ import {
 } from "../src/lib/admin/bucket-supply.ts";
 import {
   SUPPLY_ALARMING_STATES,
-  SUPPLY_LEGEND,
+  supplyLegend,
   SUPPLY_SUMMARY_STATES,
   agentCountLabel,
   computedAtLabel,
@@ -48,7 +48,6 @@ import {
   type SupplyLegendId,
 } from "../src/lib/admin/bucket-supply-copy.ts";
 import type { BusinessHoursRules } from "../src/lib/availability/compute.ts";
-import { OFFERED_OPEN_DAYS } from "../src/lib/availability/bookable-days.ts";
 import { readFileSync } from "node:fs";
 import { assert, eq, fail, finish } from "./lib/harness.ts";
 
@@ -93,6 +92,7 @@ function codesOf(
   const report = bucketSupplyReport({
     hours: WEEK,
     horizonDays: 4,
+    offeredOpenDays: 3,
     nowMs: NOW,
     buckets,
     depthByCode: new Map(
@@ -303,17 +303,17 @@ function codesOf(
     "other-days",
   ];
   for (const id of ALL_IDS) {
-    const matches = SUPPLY_LEGEND.filter((e) => e.id === id);
+    const matches = supplyLegend(3).filter((e) => e.id === id);
     eq(matches.length, 1, `the key explains ${id} exactly once`);
   }
-  eq(SUPPLY_LEGEND.length, ALL_IDS.length, "the key holds no state the union does not name");
+  eq(supplyLegend(3).length, ALL_IDS.length, "the key holds no state the union does not name");
 
   // Every state the summary counts is one the key explains, which is the whole
   // content of "one vocabulary": a chip naming a state with no entry would be a
   // word above the table that nothing below it defines.
   const totals = supplyTotals(supplyPoolGroups([], NOW), 0);
   for (const { totalsKey, legendId } of SUPPLY_SUMMARY_STATES) {
-    const entry = supplyLegendEntry(legendId);
+    const entry = supplyLegendEntry(legendId, 3);
     assert(entry.label.trim().length > 0, `${legendId} has a label the summary can use`);
     assert(totalsKey in totals, `${totalsKey} is a real count, not a name nothing produces`);
   }
@@ -341,7 +341,7 @@ function codesOf(
   // the caller is a summary chip that would silently count under a blank name.
   let threw = false;
   try {
-    supplyLegendEntry("not-a-state" as SupplyLegendId);
+    supplyLegendEntry("not-a-state" as SupplyLegendId, 3);
   } catch (err) {
     threw = err instanceof Error && err.message.includes("not-a-state");
   }
@@ -400,6 +400,7 @@ function codesOf(
   const report = bucketSupplyReport({
     hours: WEEK,
     horizonDays: 4,
+    offeredOpenDays: 3,
     nowMs: NOW,
     buckets: [{ code: "120", name: "Low" }],
     depthByCode: new Map([["120", { depth: 4, effectiveDepth: 3, poolKey: "pool-120", poolLabel: "Low" }]]),
@@ -453,14 +454,14 @@ function codesOf(
       `${id} is counted on its own chip, never under nobody available`,
     );
   }
-  eq(supplyLegendEntry("overflows").label, "Overflows", "the overflow state has its own name");
-  eq(supplyLegendEntry("other-days").label, "Other days here", "and so does a pool offering its other days");
+  eq(supplyLegendEntry("overflows", 3).label, "Overflows", "the overflow state has its own name");
+  eq(supplyLegendEntry("other-days", 3).label, "Other days here", "and so does a pool offering its other days");
 
   const achieve = { kind: "overflows" as const, toPool: "Low with Achieve" };
-  const title = supplyCellTitle(achieve, "Low with Beyond", "Tuesday, August 4");
+  const title = supplyCellTitle(achieve, "Low with Beyond", "Tuesday, August 4", 3);
   assert(title.includes("Low with Achieve"), `the cell sentence names where the leads go (got ${title})`);
   assert(!/act on/i.test(title), "and does not ask anybody to act");
-  const other = supplyCellTitle({ kind: "other-days" }, "Low with Beyond", "Tuesday, August 4");
+  const other = supplyCellTitle({ kind: "other-days" }, "Low with Beyond", "Tuesday, August 4", 3);
   assert(/other days/i.test(other) && !/act on/i.test(other), `an other days cell says so, calmly (got ${other})`);
 
   eq(leadsNote({ cells: [{ kind: "closed" }, achieve, achieve], offeredLater: false }), "Leads go to Low with Achieve", "the row names the rung once");
@@ -478,20 +479,24 @@ function codesOf(
   eq(poolRowName({ code: "111", name: "111", poolLabel: null }), "Low | Both | Legal", "a manager's row name spells an XBC code out before giving up");
 }
 
-// Review of #3021: the page names the booker's window from the same constant
-// the booker uses, so the wording cannot keep naming a length the booker no
-// longer offers. The legends and tooltips are checked against the phrase for
-// the real constant, the phrase itself is pinned for explicit counts, and a
-// guard refuses a window length written into the copy as a literal.
-{
-  const phrase = offeredWindowPhrase(OFFERED_OPEN_DAYS);
-  assert(supplyLegendEntry("overflows").meaning.includes(phrase), "the overflow legend names the booker's window");
-  assert(supplyLegendEntry("other-days").meaning.includes(phrase), "the other days legend names the booker's window");
+// Review of #3021: the page names the booker's window from the same count the
+// booker uses, so the wording cannot keep naming a length the booker no longer
+// offers. Since #3922 that count is the stored setting, which the report carries,
+// so every phrase is built at render time from it. The legends and tooltips are
+// checked against the phrase for the count they were given (a stored 4 as well as
+// the default 3), the phrase itself is pinned for explicit counts, and a guard
+// refuses a window length written into the copy as a literal.
+for (const days of [3, 4]) {
+  const phrase = offeredWindowPhrase(days);
+  assert(supplyLegendEntry("overflows", days).meaning.includes(phrase), `the overflow legend names the booker's window of ${days}`);
+  assert(supplyLegendEntry("other-days", days).meaning.includes(phrase), `the other days legend names the booker's window of ${days}`);
   assert(
-    supplyCellTitle({ kind: "overflows", toPool: "Low with Achieve" }, "Low with Beyond", "Fri").includes(phrase),
-    "the overflow cell tooltip names the booker's window",
+    supplyCellTitle({ kind: "overflows", toPool: "Low with Achieve" }, "Low with Beyond", "Fri", days).includes(phrase),
+    `the overflow cell tooltip names the booker's window of ${days}`,
   );
-  assert(supplyCellTitle({ kind: "other-days" }, "Low", "Fri").includes(phrase), "the other days tooltip names it too");
+  assert(supplyCellTitle({ kind: "other-days" }, "Low", "Fri", days).includes(phrase), `the other days tooltip names it too, at ${days}`);
+}
+{
   for (const bad of [0, -1, 2.5, Number.NaN]) {
     let threw = false;
     try {
