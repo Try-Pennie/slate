@@ -6,7 +6,9 @@
  * the last value this server read, or with none the deployment default. That is the right
  * thing to SERVE, and until #3339 it was also the only thing that happened: a log line.
  * So a database refusing that read for an hour left every cold server on the deployment
- * default, which is off in production, with nothing anybody would see (L77).
+ * default (off in production until #3339 turned it on), with nothing anybody would see
+ * (L77). Whichever way the default points, a server standing on it is not reading the
+ * switch an admin set, and that is what the page reports.
  *
  * The shape is the shared line's own fallback page (`confirm-line-alert.ts`) and the
  * rate limiter's (#3670), on the same gate: one failed read is a finished event and never
@@ -66,11 +68,16 @@ export function sharedLineSwitchUnreadableAlert(m: MeasuredReadFailures, rawDefa
   const minutes = Math.max(1, Math.round(m.windowMs / 60_000));
   const span = minutes === 1 ? "the last minute" : `the last ${minutes} minutes`;
   const count = `${m.atLeast ? "At least " : ""}${m.count} ${m.count === 1 ? "read" : "reads"}`;
+  // #3339: which way a server on the default can be wrong depends on the default, so the
+  // consequence is derived from the same parse the sentence names (L180).
+  const wrongWay = parseSharedLineDefault(rawDefault).on
+    ? "may put a crowd through the shared line even if somebody switched it off"
+    : "may line a crowd up on its own rather than across every server";
   return (
     `${count} of the shared confirm line switch failed on one server in ${span}, so its confirms used the last ` +
     `value it had read, or with none ${defaultInWords(rawDefault)}, which may not be how the switch on the admin ` +
-    "business hours page is set. Bookings still go through and nothing can be double booked, but a server on the wrong answer " +
-    "may line a crowd up on its own rather than across every server. An engineer should check why " +
+    `business hours page is set. Bookings still go through and nothing can be double booked, but a server on the wrong answer ` +
+    `${wrongWay}. An engineer should check why ` +
     "booking_settings cannot be read (the cause is in the logs under tag=shared-line)."
   );
 }

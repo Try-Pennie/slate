@@ -126,11 +126,13 @@
 		// The shared confirm line's answer in an isolate that has not yet read the stored
 		// switch, booking_settings.shared_confirm_line (#3325). The switch itself is
 		// flipped on the admin Hours page with no deploy; this only covers a cold isolate
-		// whose read failed. "off" until the line is activated in production, when the
-		// activation change flips it to "on". Exactly "on" or "off": anything else is
-		// read as off and logged. env.loadtest sets "on" (vars do not inherit), and
+		// whose read failed. "on" since #3339: the burst passed on the shared line in
+		// three load runs, so a cold isolate that cannot read the switch takes the
+		// shared line rather than its own. The stored switch still decides for every
+		// isolate that has read it. Exactly "on" or "off": anything else is read as
+		// off and logged. env.loadtest sets "on" too (vars do not inherit), and
 		// scripts/test-wrangler-loadtest-env.ts pins both resolved values.
-		"SHARED_CONFIRM_LINE_DEFAULT": "off"
+		"SHARED_CONFIRM_LINE_DEFAULT": "on"
 	},
 	"assets": {
 		"binding": "ASSETS",
@@ -382,10 +384,11 @@
 				"SNOWFLAKE_ROLE": "SLATE_ROLE",
 				// Follows production (#3027); the advisor-photos lane is held back below.
 				"DIRECTORY_ADMIN_SUBJECT": "dwright@trypennie.com",
-				// The one var that deliberately differs from production (#3325): the load run
-				// proves the shared confirm line before production uses it, so a cold isolate
-				// here must not read the line as off. The seed also writes the stored switch
-				// on, and the preflight refuses a branch where it is not.
+				// Held to "on" whatever production says (#3325): the load run exists to measure
+				// the shared confirm line, so a cold isolate here must never read the line as
+				// off. Production is "on" too since #3339, so today the two agree. The seed
+				// also writes the stored switch on, and the preflight refuses a branch where
+				// it is not.
 				"SHARED_CONFIRM_LINE_DEFAULT": "on",
 				// The flag every load test stub and refusal keys on. It exists HERE and
 				// nowhere else, which is the whole safety story: the Google stub, the

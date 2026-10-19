@@ -374,8 +374,10 @@ the rest did not, with the spread of the wait.
 
 `booking_settings.shared_confirm_line`, on the admin Hours page, read once per
 isolate per 15 seconds. A failed read is never cached as the answer: an isolate with
-no good read uses the deployment default `SHARED_CONFIRM_LINE_DEFAULT` (on in the
-load test Worker, off in production until activation).
+no good read uses the deployment default `SHARED_CONFIRM_LINE_DEFAULT`, `"on"` in
+both the load test Worker and production (production since #3339). So while the stored
+switch is off, a cold production isolate whose read failed takes the shared line until
+its next read succeeds, about five seconds later.
 
 **A failed read is counted, not only logged (#3339).** Every failed or late read is a
 `tag=shared-line` log line carrying the error, and is counted on its isolate
@@ -396,7 +398,7 @@ never a new column: the newest switch on, then the FIRST switch off after it, so
 pressing off twice cannot restart the clock. Until the line has ever been switched on,
 off is the expected state and says nothing, which is production today. Turning it on
 is a person's decision, on the admin Hours page (`/admin/business-hours`); the
-production default stays off until then.
+deployment default being on does not turn it on.
 
 Every confirm records how it was served, on its `confirm answered` log line:
 `line` (`shared`, `isolate`, `fallback`), `line_reason`, `line_key` and `line_ms`

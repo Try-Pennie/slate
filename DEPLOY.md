@@ -167,9 +167,10 @@ Change one by editing `wrangler.jsonc` and redeploying.
   run of three failed reads inside a minute on one isolate pages
   `shared_line_switch_unreadable` naming this default's value (#3339). Exactly
   `"on"` or `"off"`; anything else, or unset, is read as off and logged once per
-  isolate. Production commits `"off"` until the line is activated there, and the
-  activation change flips it to `"on"`. `env.loadtest` commits `"on"`, the one var it
-  deliberately sets differently, and `scripts/test-wrangler-loadtest-env.ts` pins both.
+  isolate. Production commits `"on"` since #3339, so a cold isolate that cannot read
+  the switch takes the shared line; the stored switch still decides for every isolate
+  that has read it. `env.loadtest` commits `"on"` too, held there whatever production
+  says, and `scripts/test-wrangler-loadtest-env.ts` pins both.
 - `OOO_APPROVALS_TO` / `OOO_APPROVALS_BCC` / `OOO_APPROVALS_REPLY_TO`: recipients of
   the daily OOO-approvals digest email. Empty `TO` = the digest no-ops.
 - `EMBED_TEST_ORIGINS` (#2666): the websites allowed to open the public test bucket,
