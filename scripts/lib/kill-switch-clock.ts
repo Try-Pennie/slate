@@ -33,6 +33,9 @@ import {
   type BusinessHoursException,
   type BusinessWindow,
 } from "../../src/lib/booking/business-hours.ts";
+// The availability compute's own wall clock helper, so an open window here becomes an
+// instant exactly as it does for the slots a lead is offered (DST included).
+import { timeOnDay } from "../../src/lib/availability/compute.ts";
 import { KILL_SWITCH_EXIT } from "./kill-switch-live-control.ts";
 
 /**
@@ -66,12 +69,6 @@ export type DrillClockDecision =
 
 const MIN_MS = 60_000;
 const LEFT_ALONE = "Public booking was not paused, and nothing was measured about the kill switch.";
-
-/** A wall clock minute on a local day, as an instant. 1440 is the next local midnight. */
-function minuteOnDay(day: DateTime, minutes: number): DateTime {
-  if (minutes >= 1440) return day.plus({ days: 1 }).startOf("day");
-  return day.set({ hour: Math.floor(minutes / 60), minute: minutes % 60, second: 0, millisecond: 0 });
-}
 
 /** "9:14 AM EDT on Monday, October 19": the org's own clock, named with its offset. */
 function spoken(instant: DateTime): string {
@@ -109,8 +106,8 @@ export function judgeDrillClock(
     if (isoDate === null) return unreadable(`the date in ${hours.zone} could not be read`);
     const window = windowOnDate(hours, isoDate, day.weekday);
     if (!window) continue;
-    const opens = minuteOnDay(day, window.start_minute);
-    const closes = minuteOnDay(day, window.end_minute);
+    const opens = timeOnDay(day, window.start_minute);
+    const closes = timeOnDay(day, window.end_minute);
     const from = opens.toMillis() - marginMinutes * MIN_MS;
     const until = closes.toMillis() + marginMinutes * MIN_MS;
     if (nowMs >= from && nowMs < until) {

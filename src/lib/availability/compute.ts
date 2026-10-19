@@ -95,7 +95,7 @@ const MIN = 60_000;
  * window by the offset delta (e.g. 9:00 -> 10:00 on spring-forward). 1440 (24:00)
  * maps to the next local midnight.
  */
-function timeOnDay(day: DateTime, minutes: number): DateTime {
+export function timeOnDay(day: DateTime, minutes: number): DateTime {
   if (minutes >= 1440) return day.plus({ days: 1 }).startOf("day");
   return day.set({
     hour: Math.floor(minutes / 60),
