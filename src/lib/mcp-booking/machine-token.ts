@@ -2,7 +2,8 @@
  * The ONE verifier of Marcia's signed lead token (#3543, plan locked decision 15).
  *
  * It runs only where the secret lives: inside Slate, in the internal route behind
- * `McpBookingGateway`. The booking MCP Worker holds no key and runs only the shape
+ * `McpBookingGateway`, which decides the lead, and in the gateway itself, which asks
+ * it only whether a call may spend Marcia's overall limit (#3879). The booking MCP Worker holds no key and runs only the shape
  * parse in `token-shape.ts`, which this calls first, so the two cannot disagree on
  * what a well formed token is.
  *

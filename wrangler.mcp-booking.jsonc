@@ -35,6 +35,11 @@
 	// 2026-10-16). The claims registry (pennie-mcp-kit#1) must record it once it exists.
 	// The number is a starting value: #3541's spike measures what the free binding
 	// really lets through from more than one location.
+	// It is charged only for a call whose token Slate VERIFIED: the gateway calls this
+	// Worker back before running anything (#3879; why, in worker/mcp-booking/protocol.ts
+	// at AdmitCall), so forged tokens never spend it. The period is also named in the
+	// refusal as MARCIA_LIMIT_PERIOD_SEC, which scripts/test-mcp-booking-worker.ts holds
+	// equal to this one.
 	"ratelimits": [
 		{
 			"name": "MARCIA_LIMITER",
