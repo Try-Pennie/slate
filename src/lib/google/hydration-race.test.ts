@@ -349,6 +349,28 @@ vi.mock("@/lib/notify/dispatch", () => ({
   resolveAlert: vi.fn(async () => false),
   isAlertFiring: vi.fn(async () => false),
 }));
+// #3925: what the rotation hands the moved invite handler. Its decisions are pinned in
+// scripts/test-invite-moves.ts; here only what it is given, and how.
+const inviteMoves = vi.hoisted(() => ({
+  noticeOutOfStepInvites: vi.fn(async (_deps: unknown, _items: unknown[], _opts?: unknown) => ({
+    reverted: 0,
+    left: 0,
+    refused: 0,
+    resized: 0,
+    reported: 0,
+    slateOwn: 0,
+    nothing: 0,
+    silenced: 0,
+    failed: [] as { bookingId: string; reason: string }[],
+  })),
+}));
+vi.mock("@/lib/google/invite-move-notice", () => ({
+  noticeOutOfStepInvites: inviteMoves.noticeOutOfStepInvites,
+}));
+vi.mock("@/lib/google/invite-move-deps", () => ({
+  realInviteMoveDeps: (args: unknown) => ({ args }),
+  reportInviteCheckFailures: vi.fn(async () => {}),
+}));
 vi.mock("@/lib/google/calendar", async () => {
   class SyncTokenExpired extends Error {
     readonly code = 410;
@@ -462,6 +484,58 @@ async function bootstrap(): Promise<void> {
   const res = await hydrateCalendar(cal());
   expect(res.ok).toBe(true);
 }
+
+// #3925: the rotation and a calendar's first hydration read every event, so a move
+// first seen there used to be mirrored and never reported. Handed over as a full read,
+// which the handler reports and never puts back.
+describe("hydrateCalendar hands an out of step invite to the handler as a full read (#3925)", () => {
+  it("hands over the moved invite of a booking, marked as a full read", async () => {
+    await bootstrap();
+    (db.current as FakeDb).seed("bookings", [
+      {
+        id: "bk-1",
+        assigned_user_id: USER_ID,
+        status: "confirmed",
+        gcal_event_id: "evt-slate",
+        starts_at: at(DAY + 3),
+        ends_at: at(DAY + 4),
+      },
+    ]);
+    // The advisor moved it while nothing delivered the change.
+    (google.current as FakeGoogle).put("evt-slate", at(DAY + 5), at(DAY + 6));
+    inviteMoves.noticeOutOfStepInvites.mockClear();
+
+    const res = await hydrateCalendar(cal());
+
+    expect(res.ok).toBe(true);
+    expect(blockFor("evt-slate")).toBeTruthy();
+    expect(inviteMoves.noticeOutOfStepInvites).toHaveBeenCalledTimes(1);
+    expect(inviteMoves.noticeOutOfStepInvites.mock.calls[0]![1]).toEqual([
+      { eventId: "evt-slate", bookingId: "bk-1", bookedStartsAt: at(DAY + 3), step: "moved" },
+    ]);
+    expect(inviteMoves.noticeOutOfStepInvites.mock.calls[0]![2]).toEqual({ fullRead: true });
+  });
+
+  it("hands nothing over when every invite is in step", async () => {
+    await bootstrap();
+    (db.current as FakeDb).seed("bookings", [
+      {
+        id: "bk-1",
+        assigned_user_id: USER_ID,
+        status: "confirmed",
+        gcal_event_id: "evt-slate",
+        starts_at: at(DAY + 3),
+        ends_at: at(DAY + 4),
+      },
+    ]);
+    (google.current as FakeGoogle).put("evt-slate", at(DAY + 3), at(DAY + 4));
+    inviteMoves.noticeOutOfStepInvites.mockClear();
+
+    await hydrateCalendar(cal());
+
+    expect(inviteMoves.noticeOutOfStepInvites).not.toHaveBeenCalled();
+  });
+});
 
 describe("hydrateCalendar against a concurrent push sync (#2411)", () => {
   it("does not revert an event a push sync moved while its fetch was in flight", async () => {

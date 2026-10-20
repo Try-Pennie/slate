@@ -408,9 +408,12 @@ which is what makes this family different from the ones above.
   tells the lead), or have the advisor put the invite back.
 - For `booking_invite_moved:*` (#3919): an advisor moved a booking's invite in Google
   Calendar and Slate did NOT put it back, because it was the booking's second move, the
-  call starts within 30 minutes, or Google refused the revert (the post says which, and
-  Google's short reason). The advisor and their manager of record were DMed where the
-  post says so. Until a person acts, the advisor is blocked at both the booked and the
+  call starts within 30 minutes, Google refused the revert, or (#3925) Slate found the
+  move on a full read of the calendar (a bootstrap, an expired sync token, or the daily
+  rotation) and so cannot tell when it happened (the post says which, and Google's short
+  reason). The advisor and their manager of record were DMed where the post says so; a
+  move found on a full read DMs nobody. A cancel that deletes the invite while Slate is
+  putting it back is Slate's own change and is not posted. Until a person acts, the advisor is blocked at both the booked and the
   moved time and the lead still holds the booked time in Slate, its reminders and
   Regal. Act on the booking page the post links: reschedule the call in Slate to the
   time the advisor wants (which also moves the invite and tells the lead), reassign it,

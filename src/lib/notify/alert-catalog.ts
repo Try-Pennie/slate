@@ -1010,8 +1010,9 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     // #3919: an advisor moved a booking's invite in Google Calendar and it was LEFT
     // (a second move, or inside 30 minutes), or Google refused putting it back, or it
-    // was put back but the advisor could not be told. The suffix is the booking id
-    // and the move number, so each move posts once.
+    // was put back but the advisor could not be told, or (#3925) a first move was
+    // found on a full read of the calendar and reported rather than put back. The
+    // suffix is the booking id and the move number, so each move posts once.
     key: "booking_invite_moved:*",
     kind: "incident",
     suffix: "booking",

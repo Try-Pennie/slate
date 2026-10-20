@@ -67,7 +67,7 @@ vi.mock("@/lib/monitor/ooo-event-mismatch", () => oooNotice);
 // #3919: what the sync hands the moved invite handler, and what a handler throw does
 // to the pass. The handler's own decisions are pinned in scripts/test-invite-moves.ts.
 const inviteMoves = vi.hoisted(() => ({
-  noticeOutOfStepInvites: vi.fn(async (_deps: unknown, _items: unknown[]) => ({
+  noticeOutOfStepInvites: vi.fn(async (_deps: unknown, _items: unknown[], _opts?: unknown) => ({
     reverted: 0,
     left: 0,
     refused: 0,
@@ -107,6 +107,7 @@ import {
 } from "./sync-coalesce";
 import { WATCH_PAGING } from "@/lib/notify/alerts";
 import { GoogleHttpError } from "@/lib/google/http-error";
+import { SyncTokenExpired } from "@/lib/google/calendar";
 import { idFilterBytes, MAX_IN_FILTER_BYTES } from "@/lib/db/id-batch";
 import { movedBusyRows } from "./sync-core";
 import { BUSY_WINDOW_AHEAD_DAYS } from "./sync-coalesce";
@@ -1969,6 +1970,34 @@ describe("a Slate booking's invite moved in Google Calendar (#3919)", () => {
     expect(inviteMoves.noticeOutOfStepInvites.mock.calls[0]![1]).toEqual([
       { eventId: "slate-evt", bookingId: "booking-1", bookedStartsAt: BOOKED.start, step: "moved" },
     ]);
+    // A delta saw the change happen, so the handler may put it back.
+    expect(inviteMoves.noticeOutOfStepInvites.mock.calls[0]![2]).toEqual({ fullRead: false });
+  });
+
+  // #3925: a pass after Google expired the token reads every event, so a move first
+  // seen there used to be mirrored and never reported. It is handed over too, marked
+  // as a full read, which the handler reports and never puts back.
+  it("hands a moved invite found on a full read after an expired token to the handler, as a full read", async () => {
+    calMock.syncEvents
+      .mockImplementationOnce(async () => {
+        throw new SyncTokenExpired();
+      })
+      .mockImplementationOnce(async () => ({
+        events: [event(MOVED)],
+        nextSyncToken: "next-token",
+        truncated: false,
+      }) as never);
+    const { db, upserts } = inviteSyncDb();
+    admin.current = db;
+
+    await runIncrementalSync("agent-1");
+
+    expect(upserts.map((u) => u.gcal_event_id)).toEqual(["slate-evt"]);
+    expect(inviteMoves.noticeOutOfStepInvites).toHaveBeenCalledTimes(1);
+    expect(inviteMoves.noticeOutOfStepInvites.mock.calls[0]![1]).toEqual([
+      { eventId: "slate-evt", bookingId: "booking-1", bookedStartsAt: BOOKED.start, step: "moved" },
+    ]);
+    expect(inviteMoves.noticeOutOfStepInvites.mock.calls[0]![2]).toEqual({ fullRead: true });
   });
 
   it("still discards an invite in step with its booking, and calls nothing", async () => {

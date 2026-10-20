@@ -186,7 +186,9 @@ export type InviteAction =
   | "leave_second_move"
   | "leave_near_start"
   | "report_resize"
-  | "report_launch";
+  | "report_launch"
+  /** #3925: a first move found on a FULL read of the calendar, which cannot say when it moved. */
+  | "report_full_read";
 
 /** How a revert went. Null for every other action, and for a revert not yet finished. */
 export type InviteOutcome = "reverted" | "revert_refused" | "event_gone";

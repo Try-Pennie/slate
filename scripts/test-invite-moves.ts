@@ -240,6 +240,9 @@ interface World {
   advisorDm?: boolean;
   manager?: { name: string | null; email: string } | null | "unread";
   available?: boolean;
+  /** #3925: the booking as read again once a revert has been sent, or a read that fails. */
+  bookingAfterRevert?: FreshBooking | null;
+  rereadThrows?: boolean;
 }
 function fresh(over: Partial<FreshBooking> = {}): FreshBooking {
   return {
@@ -280,7 +283,11 @@ function harness(w: World) {
       calls.releases++;
     },
     reassignInFlight: async () => w.reassign === true,
-    loadBooking: async () => (w.booking === undefined ? fresh() : w.booking),
+    loadBooking: async () => {
+      if (calls.reverts.length > 0 && w.rereadThrows) throw new Error("moved invite booking: statement timeout");
+      if (calls.reverts.length > 0 && w.bookingAfterRevert !== undefined) return w.bookingAfterRevert;
+      return w.booking === undefined ? fresh() : w.booking;
+    },
     readEvent: async () => {
       calls.reads++;
       if (w.liveThrows) throw new Error("events.get failed: 503 backendError");
@@ -442,6 +449,90 @@ async function handlerCases(): Promise<void> {
     eq(calls.outcomes.map((o) => o[1]), ["event_gone"], "an invite Google says is gone is recorded as gone");
     assert(calls.posts.length === 1 && /no longer on/i.test(calls.posts[0]![1]), "and posted, saying the invite is gone");
   }
+  // #3925: a cancel that lands while the invite is being put back deletes it, and the
+  // revert meets a gone event. That is Slate's own change, not a lost invite: the
+  // outcome is still recorded, and nobody is paged.
+  {
+    const { deps, calls } = harness({
+      nowMs: MORNING,
+      revertError: new EventGone("events.patch"),
+      bookingAfterRevert: fresh({ status: "cancelled" }),
+    });
+    const out = await noticeOutOfStepInvites(deps, [ITEM]);
+    eq(calls.outcomes.map((o) => o[1]), ["event_gone"], "cancelled mid revert: the outcome is still recorded as gone");
+    eq([calls.posts.length, calls.dms.length], [0, 0], "cancelled mid revert: nothing claims the invite went missing");
+    eq([out.slateOwn, out.refused], [1, 0], "cancelled mid revert: counted as Slate's own change, not a refusal");
+  }
+  {
+    // The same for a booking that was reassigned (another invite) or is gone.
+    const moved = harness({ nowMs: MORNING, revertError: new EventGone("events.patch"), bookingAfterRevert: fresh({ gcalEventId: "another-event" }) });
+    await noticeOutOfStepInvites(moved.deps, [ITEM]);
+    eq(moved.calls.posts.length, 0, "reassigned mid revert: not paged either");
+    const gone = harness({ nowMs: MORNING, revertError: new EventGone("events.patch"), bookingAfterRevert: null });
+    await noticeOutOfStepInvites(gone.deps, [ITEM]);
+    eq(gone.calls.posts.length, 0, "deleted mid revert: not paged either");
+  }
+  {
+    // A re-read that fails cannot say the booking moved on, so the gone invite is
+    // still reported: silence is only for a measured cancel.
+    const { deps, calls } = harness({ nowMs: MORNING, revertError: new EventGone("events.patch"), rereadThrows: true });
+    await noticeOutOfStepInvites(deps, [ITEM]);
+    assert(calls.posts.length === 1 && /no longer on/i.test(calls.posts[0]![1]), "re-read failed: the gone invite is still posted");
+  }
+  {
+    // A refusal that is NOT a gone event is never explained away by a cancel.
+    const { deps, calls } = harness({
+      nowMs: MORNING,
+      revertError: new GoogleHttpError("events.patch failed: 403", 403, "forbiddenForNonOrganizer"),
+      bookingAfterRevert: fresh({ status: "cancelled" }),
+    });
+    await noticeOutOfStepInvites(deps, [ITEM]);
+    eq(calls.posts.length, 1, "a 403 is posted whatever the booking became");
+  }
+
+  // #3925: a move first seen on a FULL read (a bootstrap, a pass after an expired
+  // token, the daily rotation) cannot say when it happened, so it is reported and
+  // recorded, never put back, and nobody is DMed for it.
+  {
+    const { deps, calls } = harness({ nowMs: MORNING });
+    const out = await noticeOutOfStepInvites(deps, [ITEM], { fullRead: true });
+    eq(calls.reverts.length, 0, "full read: a first move is not put back");
+    eq(calls.recorded.map((r) => [r.kind, r.moveNumber, r.action]), [["moved", 1, "report_full_read"]], "full read: it is recorded as the first move, reported");
+    eq(calls.dms.length, 0, "full read: nobody is DMed");
+    eq(calls.posts.map((p) => p[0]), [`booking_invite_moved:${BOOKING}:1`], "full read: it is posted under the booking's move key");
+    assert(/full read/i.test(calls.posts[0]![1]) && /not move it back/i.test(calls.posts[0]![1]), "full read: the post says how it was found and that it was left");
+    eq(out.reported, 1, "full read: the summary counts it as reported");
+  }
+  {
+    // Recorded, so the next full read of the same invite is the standing move, not news.
+    const { deps, calls } = harness({ nowMs: MORNING, prior: [rec({ action: "report_full_read", outcome: null })] });
+    await noticeOutOfStepInvites(deps, [ITEM], { fullRead: true });
+    eq([calls.recorded.length, calls.posts.length], [0, 0], "full read again: a standing reported move is not reported twice");
+  }
+  {
+    // A second move, or one near the start, is handled as it always is: those never revert.
+    const again = { ...MOVED, updated: "2026-10-19T14:02:00.000Z" } as GoogleEvent;
+    const { deps, calls } = harness({ nowMs: MORNING, live: again, prior: [rec({})] });
+    await noticeOutOfStepInvites(deps, [ITEM], { fullRead: true });
+    eq(calls.recorded.map((r) => r.action), ["leave_second_move"], "full read: a second move is left and escalated as usual");
+    eq(calls.dms.length, 2, "full read: the advisor and manager are DMed for it");
+  }
+  {
+    // A smoke test booking's full read report is logged, not posted.
+    const { deps, calls } = harness({ nowMs: MORNING, booking: fresh({ isTest: true }) });
+    await noticeOutOfStepInvites(deps, [ITEM], { fullRead: true });
+    eq(calls.posts.length, 0, "full read, test booking: not posted");
+    eq(calls.silenced, [{ bookingId: BOOKING, withheld: "reported" }], "full read, test booking: logged as reported and withheld");
+  }
+  {
+    // A reported move is standing, so the same invite's next DELTA is not a first move
+    // to put back: the lead accepting it changes `updated` and nothing else.
+    const accepted = { ...MOVED, updated: "2026-10-19T15:00:00.000Z" } as GoogleEvent;
+    const { deps, calls } = harness({ nowMs: MORNING, live: accepted, prior: [rec({ action: "report_full_read", outcome: null })] });
+    await noticeOutOfStepInvites(deps, [ITEM]);
+    eq([calls.reverts.length, calls.recorded.length], [0, 0], "a reported move later seen on a delta is not put back");
+  }
+
   // The advisor cannot be reached on Slack after a revert: somebody else is told.
   {
     const { deps, calls } = harness({ nowMs: MORNING, advisorDm: false });
