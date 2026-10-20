@@ -110,6 +110,7 @@ import {
 import {
   parseDefaultBucketForm,
   parseEventDescriptionForm,
+  readNearlyFullPct,
 } from "@/lib/booking/settings";
 import { parseDaysOfferedForm } from "@/lib/booking/days-offered";
 import { markAllBucketSlotsStale } from "@/lib/availability/precompute";
@@ -1461,6 +1462,9 @@ export async function setNearlyFullPct(form: FormData): Promise<void> {
   if ("error" in parsed) {
     redirect(`/admin/team-capacity${refusedQuery(parsed.error)}`);
   }
+  // The line it replaces, so the trail says what it was as well as what it became (L529). A read
+  // that fails does not stop the save; the entry says the old value could not be read.
+  const before = await readNearlyFullPct();
   const { error } = await supabaseAdmin().from("booking_settings").upsert(
     {
       id: 1,
@@ -1477,7 +1481,7 @@ export async function setNearlyFullPct(form: FormData): Promise<void> {
     orgId: admin.org_id,
     actorId: admin.id,
     action: "booking.settings",
-    details: { capacity_nearly_full_pct: parsed.pct },
+    details: { from: { capacity_nearly_full_pct: before ?? "unreadable" }, to: { capacity_nearly_full_pct: parsed.pct } },
   });
   revalidatePath("/admin/team-capacity");
   redirect(`/admin/team-capacity${savedQuery("nearly-full")}`);
