@@ -268,13 +268,13 @@ Two things to know before reading the answer:
   attempt tallies (`booking_api_outcome_daily`) are daily, so they cannot answer a per
   minute question.
 
-`bar_over_peak` divides the bar the block was verified with, **60**, not today's 70:
-the block is held verbatim to its 2026-10-16 run against production (the marker
-above), and changing it means running it there again. So read it against 70 by
-scaling it by 70/60, or read `busiest_minute` directly: above **7** the bar is under
-ten times the peak, the premise no longer holds, and the bar should be raised before
-the next run is dispatched. (Slate's half alone cannot show the whole peak before
-cutover; the daily lane below adds cal.com's.)
+`bar_over_peak` divides **70**, the bar it was last verified against (2026-10-20, the
+marker above). The block is held verbatim to that run, so when the bar moves again the
+number in it moves too and the block is run against production again, as it was on
+2026-10-20. Or read `busiest_minute` directly: above **7** the bar is under ten times
+the peak, the premise no longer holds, and the bar should be raised before the next
+run is dispatched. (Slate's half alone cannot show the whole peak before cutover; the
+daily lane below adds cal.com's.)
 
 **Nobody has to remember to re-read it** (#3124). The daily `busy-minutes` lane
 counts the last 7 UTC days the same way (this query's `real_bookings`, through the
