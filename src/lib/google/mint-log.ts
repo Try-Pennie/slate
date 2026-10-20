@@ -5,8 +5,10 @@
  * measured against Google's token endpoint, and two mints have run out of it
  * (2026-10-05 on the reminder lane, 2026-10-13 on the confirm path) with nothing
  * recorded to say how long an ordinary mint takes. So every mint that actually
- * goes to Google writes one line on settling, and a week of them gives the p50 and
- * the maximum the deadline should be sized from.
+ * goes to Google writes one line on settling. Six days of them were read on
+ * 2026-10-20 and kept every deadline as it was (the reading is on
+ * `DELEGATED_TOKEN_TIMEOUT_MS`); the lines stay, so the next change to a deadline
+ * is sized from a fresh reading rather than that one.
  *
  * Only a real mint writes. A cache hit never reaches Google, so it measures
  * nothing about the token endpoint, and it is most of the calls: a token is good
