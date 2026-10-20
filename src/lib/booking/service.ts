@@ -191,6 +191,8 @@ import { afterResponse, deferWebhookSend } from "@/lib/after-response";
 import { pageAfterAnswer, type PageScheduler } from "@/lib/notify/post-commit-page";
 import { DeadlineExceededError, findDeadlineExceeded, isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { GoogleBreakerOpenError } from "@/lib/google/breaker";
+import { isDefinitiveFailure, reachabilityFromError } from "@/lib/google/reachability-classify";
+import type { FailureKind } from "@/lib/google/sync-health";
 import { sendThrottledAlert, sendThrottledInfo, resolveRecovered } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { strandedInviteAlert } from "@/lib/google/invite-move-copy";
@@ -470,29 +472,69 @@ export async function calendarsForEmails(
  * Two failures still propagate, because each has its own classification further up
  * and an unverified agent would hide it: a deadline (#3313, the dependency timeout)
  * and the open breaker (#3134, already the retriable outage for the whole confirm).
+ *
+ * The reschedule guard's read; the booker's goes through `readAgentCalendar`, which
+ * also says when Google refused the agent (#3700). Here a refusal is `null` too: the
+ * guard re-routes on it, which is what an advisor Google refuses needs.
  */
 async function unlessReadFailed<T>(email: string, read: () => Promise<T | null>): Promise<T | null> {
+  const outcome = await readAgentCalendar(email, read);
+  return outcome.refused ? null : outcome.value;
+}
+
+/**
+ * #3700: one agent's own calendar read, telling a read Google REFUSED apart from one
+ * that could not tell.
+ *
+ * A refusal is a definitive failure (`isDefinitiveFailure`, so both a gone account and
+ * `403 notACalendarUser`): the account was archived or removed from the Workspace, its
+ * delegation revoked, or it was never given Calendar. No retry fixes that, so the
+ * booker leaves the agent out of the wave and books the next free one, and a wave with
+ * nobody else is the ordinary no availability refusal. Scored `unverified`, as #3845
+ * left it, it was the retriable outage: the lead was told to try again for a slot no
+ * retry can fix, and a pool of one archived advisor paged as a Google outage. The sync
+ * lane already pages the account itself (`last_failure_kind`); this line is what says
+ * a confirm met it.
+ *
+ * Anything else that fails the read is `{ value: null }`, could not tell, as before.
+ */
+type AgentRead<T> = { refused: false; value: T | null } | { refused: true; failure: FailureKind };
+
+async function readAgentCalendar<T>(email: string, read: () => Promise<T | null>): Promise<AgentRead<T>> {
   try {
-    return await read();
+    return { refused: false, value: await read() };
   } catch (err) {
     if (findDeadlineExceeded(err) || err instanceof GoogleBreakerOpenError) throw err;
+    const failure = reachabilityFromError(err);
+    if (isDefinitiveFailure(failure)) {
+      log.warn(
+        "booking",
+        { msg: "Google refused the agent's calendar read, so they cannot take the time", email, failure },
+        err,
+      );
+      return { refused: true, failure };
+    }
     log.error("booking", { msg: "agent calendar read failed, reporting it could not tell rather than free", email }, err);
-    return null;
+    return { refused: false, value: null };
   }
 }
 
-/** Outcome of a single-agent verify: confirmed free, confirmed busy, or — when a
- *  calendar couldn't be read — unverifiable (#319). `unverified` is never treated
- *  as free (no double-book) and lets the caller flag a likely outage. */
-type AgentVerdict = "free" | "busy" | "unverified";
+/** Outcome of a single agent verify: confirmed free, confirmed busy, or (when a
+ *  calendar couldn't be read) unverifiable (#319). `unverified` is never treated
+ *  as free (no double-book) and lets the caller flag a likely outage. `refused` is
+ *  Google refusing the agent outright (#3700, `readAgentCalendar`): never free, and
+ *  never an outage either, so the wave moves on to the next advisor. */
+type AgentVerdict = "free" | "busy" | "unverified" | "refused";
 
 /**
- * Direct per-agent verify (impersonates the agent, checks all their calendars) —
+ * Direct per agent verify (impersonates the agent, checks all their calendars):
  * the accurate fallback for the bulk verifier when a calendar couldn't be read in
  * the cross-identity batch (#314) or the bulk call failed wholesale. A
  * calendar-read failure yields `unverified` (skip + alert) instead of being
  * conflated with `busy`, so a verify-on-book outage is distinguishable from a
- * genuinely full slot (#319).
+ * genuinely full slot (#319). A read Google refuses outright (a definitive
+ * failure, #3700) yields `refused` instead: no retry fixes it, so it is not an
+ * outage, and the agent simply cannot take the time.
  */
 async function checkAgentFree(
   email: string,
@@ -514,9 +556,10 @@ async function checkAgentFree(
   // NOT a yes. This is the fallback the bulk wave hands an agent to precisely
   // because it could not read one of their calendars, so answering "free" here
   // would book the lead over whatever that calendar held.
-  const free = await unlessReadFailed(email, () => isFree(email, startIso, endIso, ids.length ? ids : ["primary"], ignore));
-  if (free === null) return "unverified";
-  return free ? "free" : "busy";
+  const read = await readAgentCalendar(email, () => isFree(email, startIso, endIso, ids.length ? ids : ["primary"], ignore));
+  if (read.refused) return "refused";
+  if (read.value === null) return "unverified";
+  return read.value ? "free" : "busy";
 }
 
 /**
@@ -527,24 +570,45 @@ async function checkAgentFree(
  * that turns an `AgentVerdict` into those sets (#2412). `unverified` must never
  * land in `free`: it is the answer for an agent whose calendars could not be
  * read, and the booker surfaces it as a retriable outage rather than assigning
- * the slot.
+ * the slot. A `refused` agent (#3700) lands in neither set, exactly like a busy
+ * one: they cannot take the time. It is reported in `refused` too, so the wave's
+ * caller can tell a wave Google refused ENTIRELY (`wholeWaveRefused`) from a full one.
  */
 export async function verifyAgentsDirectly(
   emails: string[],
   startIso: string,
   endIso: string,
-): Promise<{ free: Set<string>; unverified: Set<string> }> {
+): Promise<{ free: Set<string>; unverified: Set<string>; refused: Set<string> }> {
   const free = new Set<string>();
   const unverified = new Set<string>();
-  if (emails.length === 0) return { free, unverified };
+  const refused = new Set<string>();
+  if (emails.length === 0) return { free, unverified, refused };
   const verdicts = await mapWithConcurrency(emails, VERIFY_CONCURRENCY, (email) =>
     checkAgentFree(email, startIso, endIso),
   );
   emails.forEach((email, i) => {
     if (verdicts[i] === "free") free.add(email);
     else if (verdicts[i] === "unverified") unverified.add(email);
+    else if (verdicts[i] === "refused") refused.add(email);
   });
-  return { free, unverified };
+  return { free, unverified, refused };
+}
+
+/**
+ * #3700: did Google refuse EVERY advisor in a wave of two or more?
+ *
+ * One refused advisor is an offboarded account, and leaving them out is right. Every
+ * advisor in a wave refused at once is far likelier to be Slate's own credential: the
+ * shared classifier calls any 400, 401, 403 or 404 a definitive failure, so delegation
+ * revoked, a bad service account key or a clock skewed `invalid_grant` on the mint
+ * refuses everybody alike. Read as refusals, that outage would answer every lead "pick
+ * another time", walk the ladder down, and page nobody, so the caller scores the whole
+ * wave unverified instead: the retriable outage, which pages as `verify_on_book_outage`.
+ * A wave of exactly one refused advisor stays a refusal, because that is the archived
+ * one person pool this issue is about, and one advisor cannot tell the two apart.
+ */
+function wholeWaveRefused(waveSize: number, refused: number): boolean {
+  return waveSize >= 2 && refused === waveSize;
 }
 
 /**
@@ -1249,39 +1313,65 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
         .map((e) => ({ email: e, calendarIds: byEmail.get(e) ?? [e] }));
       const fallback = new Set<string>(readFailed);
 
-      if (bulkAgents.length > 0) {
-        try {
-          // Read as one candidate's identity — domain free/busy is cross-visible.
-          const subject = bulkAgents[0].email;
-          const allCalIds = [
-            ...new Set(bulkAgents.flatMap((a) => a.calendarIds)),
-          ];
-          const maps = await mapWithConcurrency(
-            chunkCalendarIds(allCalIds),
-            VERIFY_CONCURRENCY,
-            (chunk) => freeBusyMany(subject, startIso, endIso, chunk),
-          );
-          const busyByCalendar = new Map<string, CalendarBusy>();
-          for (const m of maps) for (const [k, v] of m) busyByCalendar.set(k, v);
+      // Read as one candidate's identity: domain free/busy is cross-visible.
+      const readBulk = async (wave: typeof bulkAgents) => {
+        const subject = wave[0].email;
+        const allCalIds = [...new Set(wave.flatMap((a) => a.calendarIds))];
+        const maps = await mapWithConcurrency(
+          chunkCalendarIds(allCalIds),
+          VERIFY_CONCURRENCY,
+          (chunk) => freeBusyMany(subject, startIso, endIso, chunk),
+        );
+        const busyByCalendar = new Map<string, CalendarBusy>();
+        for (const m of maps) for (const [k, v] of m) busyByCalendar.set(k, v);
+        const res = freeAgentsFromBusy(wave, busyByCalendar, Date.parse(startIso), Date.parse(endIso));
+        for (const e of res.free) free.add(e);
+        for (const e of res.needsFallback) fallback.add(e);
+      };
 
-          const res = freeAgentsFromBusy(
-            bulkAgents,
-            busyByCalendar,
-            Date.parse(startIso),
-            Date.parse(endIso),
-          );
-          for (const e of res.free) free.add(e);
-          for (const e of res.needsFallback) fallback.add(e);
+      // #3700: the bulk read retries ONCE, as the next advisor, when Google refused the
+      // subject itself. The whole call is made AS the subject, so a subject Google
+      // refuses outright (archived in the Workspace, `403 notACalendarUser`; or a
+      // token mint refused for a deleted account) fails every calendar in it, and one
+      // offboarded advisor at the top of the round robin sent the whole wave to the
+      // slower per agent reads. Which advisor is refused is not known before asking
+      // (the booking path reads no sync health), so the refusal itself picks the next
+      // subject. The refused one goes to their own per agent read, which meets the same
+      // refusal and leaves them out of the wave (`readAgentCalendar`), rather than being
+      // read through somebody else, where an archived calendar could read as empty.
+      // Only once: two refused subjects in a row is more likely Slate's own credential
+      // than two offboarded advisors, and walking the whole wave would put a Google
+      // round trip per advisor on the lead's confirm. A transient failure is not
+      // retried at all: a second subject would meet the same outage.
+      let bulkWave = bulkAgents;
+      let retried = false;
+      while (bulkWave.length > 0) {
+        try {
+          await readBulk(bulkWave);
+          break;
         } catch (err) {
           // #3313: a deadline is not a bulk failure. The confirm's budget is spent
           // (or this call's own limit is), so the per agent reads would meet the
           // same deadline and score every candidate unverified, paging a Google
           // or database outage about Slate's own clock. It goes up as itself.
           if (isDeadlineExceeded(err)) throw err;
+          const failure = reachabilityFromError(err);
+          if (!retried && bulkWave.length > 1 && isDefinitiveFailure(failure)) {
+            retried = true;
+            log.warn(
+              "booking",
+              { msg: "verify-on-book bulk freeBusy refused its subject, asking again as the next advisor", email: bulkWave[0].email, failure },
+              err,
+            );
+            fallback.add(bulkWave[0].email);
+            bulkWave = bulkWave.slice(1);
+            continue;
+          }
           // Total bulk failure (e.g. the subject's delegated token couldn't be
-          // minted) — verify everyone directly per agent rather than fail.
+          // minted): verify everyone directly per agent rather than fail.
           log.error("booking", { msg: "verify-on-book bulk freeBusy failed, falling back to per-agent" }, err);
-          for (const a of bulkAgents) fallback.add(a.email);
+          for (const a of bulkWave) fallback.add(a.email);
+          break;
         }
       }
 
@@ -1289,6 +1379,16 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
         const direct = await verifyAgentsDirectly([...fallback], startIso, endIso);
         for (const e of direct.free) free.add(e);
         for (const e of direct.unverified) unverified.add(e);
+        // #3700: a wave Google refused entirely is an outage, never a full slot. This
+        // also covers the bulk read's stop after two refused subjects: those advisors
+        // land here with everyone else, and are judged with them.
+        if (wholeWaveRefused(emails.length, direct.refused.size)) {
+          log.error("booking", {
+            msg: "Google refused every advisor in the wave, likely Slate's own credential, answering the retriable outage",
+            count: direct.refused.size,
+          });
+          for (const e of direct.refused) unverified.add(e);
+        }
       }
 
       return { free, unverified };
