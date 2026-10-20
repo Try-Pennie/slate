@@ -8,7 +8,10 @@
  * was under, and the report would read as Slate failing rather than as the driver
  * exceeding a ceiling somebody had changed (L41).
  */
-import { seededRosterVerdict } from "./roster-shape.ts";
+import { PRODUCTION_SHAPE, seededRosterVerdict } from "./roster-shape.ts";
+// The booking load run's bar (#3124): ONE number, read here and by the daily busy minute
+// alert, so the run and the alert that says when to raise it cannot disagree.
+import { LOAD_RUN_BOOKINGS_PER_MINUTE } from "../../src/lib/load-bar.ts";
 import {
   AVAILABILITY_LIMITER,
   BOOKING_API_IP_LIMITER,
@@ -30,17 +33,54 @@ export const AVAILABILITY_PER_MINUTE = AVAILABILITY_LIMITER.perMinute;
 export const BOOKING_WRITES_PER_MINUTE = BOOKING_API_IP_LIMITER.perMinute;
 
 /**
- * The run's own target: four drivers at fifteen a minute for ten minutes.
- *
- * Fifteen times four is SIXTY, which is exactly the per address write ceiling, and
- * that is the point rather than an accident. The run is meant to sit on the
- * ceiling so the judge can attribute the 429s it produces (#2244); aiming under it
- * would leave the limiter unexercised and aiming far over it would make the whole
- * run a measurement of the limiter instead of of the booking path.
+ * How many drivers fire each BURST (#3325, #3429), and how many share one address in the
+ * availability pacing below. Four, as every run has fired. It is not the steady pass's
+ * count, which is sized from the load bar (`STEADY_DRIVERS_AT_PRODUCTION`), and the
+ * bursts keep it whatever the bar or the roster: a crowd on one slot is the same crowd.
  */
 export const DRIVERS = 4;
-export const PER_DRIVER_PER_MINUTE = 15;
+/** How long the steady pass drives. */
 export const RUN_MINUTES = 10;
+
+/**
+ * The most one steady driver is asked a minute: one request every four seconds, the pace
+ * every run at the old bar of 60 kept (four drivers at fifteen). A driver sends one
+ * request at a time, and a slow deployment already stretched a ten minute plan at this
+ * pace to fourteen to sixteen minutes (#3222), so a higher bar takes more drivers rather
+ * than faster ones.
+ */
+export const MAX_PER_DRIVER_PER_MINUTE = 15;
+
+/**
+ * The steady pass that drives `bar` bookings a minute (#3124): the fewest drivers at no
+ * more than `MAX_PER_DRIVER_PER_MINUTE` each whose share of the bar is a whole number a
+ * minute, so every driver's plan is whole requests and the drivers together drive the
+ * bar exactly, never a little over it. 70 is five at fourteen; 60 was four at fifteen.
+ * A bar that is not a positive whole number throws: a pace made from it would be a
+ * number nobody chose.
+ */
+export function steadyPacingFor(bar: number): { drivers: number; perDriverPerMinute: number } {
+  if (!Number.isSafeInteger(bar) || bar <= 0) {
+    throw new Error(`a bar of ${bar} bookings a minute has no steady pass to size`);
+  }
+  for (let drivers = Math.ceil(bar / MAX_PER_DRIVER_PER_MINUTE); ; drivers++) {
+    if (bar % drivers === 0) return { drivers, perDriverPerMinute: bar / drivers };
+  }
+}
+
+/** Production's roster, the one the bar is driven on exactly: the checked in shape's 90. */
+export const PRODUCTION_ADVISORS = PRODUCTION_SHAPE.agents;
+
+const PACING = steadyPacingFor(LOAD_RUN_BOOKINGS_PER_MINUTE);
+/**
+ * The steady drivers at production's roster: together they drive exactly
+ * `LOAD_RUN_BOOKINGS_PER_MINUTE` (`src/lib/load-bar.ts`, #3124). Five at 70. Each is its
+ * own runner and so its own address, which is why the pass can sit above the 60 a
+ * minute per address write ceiling without any one driver coming near it.
+ */
+export const STEADY_DRIVERS_AT_PRODUCTION = PACING.drivers;
+/** One steady driver's pace, derived from the bar: fourteen a minute at 70. */
+export const PER_DRIVER_PER_MINUTE = PACING.perDriverPerMinute;
 
 /**
  * How many lead shaped reads the fault leg sends at the version it just deployed
@@ -83,25 +123,26 @@ export async function warmUp(deps: {
 }
 
 /**
- * The steady pass's rate PER ADVISOR, held across roster sizes (#3829): today's four
- * drivers at fifteen a minute over production's 90. A 200 advisor run drives the
- * same pressure on each advisor rather than the same total, so what it measures is
- * the roster growing, not the traffic thinning out over it.
+ * The steady pass's rate PER ADVISOR, held across roster sizes (#3829): the load bar
+ * over production's 90. A 200 advisor run drives the same pressure on each advisor
+ * rather than the same total, so what it measures is the roster growing, not the
+ * traffic thinning out over it.
  */
-export const STEADY_CONFIRMS_PER_ADVISOR_PER_MINUTE = (DRIVERS * PER_DRIVER_PER_MINUTE) / 90;
+export const STEADY_CONFIRMS_PER_ADVISOR_PER_MINUTE = LOAD_RUN_BOOKINGS_PER_MINUTE / PRODUCTION_ADVISORS;
 
 /**
  * How many steady drivers a roster of `advisors` takes at that rate, rounded UP so a
- * run never drives less per advisor than today's: 4 at 90, 9 at 200. Each driver
- * keeps its fifteen a minute, which keeps each driver's address under the booking
- * API's per address ceilings. The bursts do not grow with it: a crowd on one slot is
- * the same crowd whatever the roster, so they keep `DRIVERS`.
+ * run never drives less per advisor than the bar: 5 at 90, 12 at 200 at a bar of 70.
+ * Each driver keeps the bar's pace (`PER_DRIVER_PER_MINUTE`), which keeps each driver's
+ * address under the booking API's per address ceilings. The bursts do not grow with it:
+ * a crowd on one slot is the same crowd whatever the roster, so they keep `DRIVERS`.
  */
 export function steadyDriversFor(advisors: number): number {
   if (!Number.isSafeInteger(advisors) || advisors <= 0) {
     throw new Error(`a roster of ${advisors} advisors has no steady pass to size`);
   }
-  // The small epsilon keeps 90 at exactly four: 90 * (60 / 90) / 15 is 4.000000000000001.
+  // The small epsilon keeps 90 at exactly the bar's count: the rate per advisor is a
+  // fraction, so 90 times it over the pace can come out a hair over a whole number.
   return Math.ceil((advisors * STEADY_CONFIRMS_PER_ADVISOR_PER_MINUTE) / PER_DRIVER_PER_MINUTE - 1e-9);
 }
 
@@ -130,12 +171,12 @@ export function steadyPlanFor(input: {
 
 /**
  * The judge's steady expectation (#3829), from the workflow's EXPECT_STEADY_DRIVERS.
- * Unset is a hand run of today's four; a positive whole number is taken; anything
- * else is refused, never read as zero or NaN (L50).
+ * Unset is a hand run at production's roster, which drives the bar; a positive whole
+ * number is taken; anything else is refused, never read as zero or NaN (L50).
  */
 export function expectedSteadyDrivers(raw: string | undefined): { ok: true; drivers: number } | { ok: false; why: string } {
   const v = (raw ?? "").trim();
-  if (v === "") return { ok: true, drivers: DRIVERS };
+  if (v === "") return { ok: true, drivers: STEADY_DRIVERS_AT_PRODUCTION };
   if (!/^\d+$/.test(v) || Number(v) <= 0) {
     return { ok: false, why: `EXPECT_STEADY_DRIVERS is not a positive whole number: ${JSON.stringify(raw)}` };
   }

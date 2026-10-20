@@ -1,4 +1,4 @@
-// #3124: the peak query in scripts/loadtest/RUNBOOK.md ("The peak the 60 a minute
+// #3124: the peak query in scripts/loadtest/RUNBOOK.md ("The peak the load run's
 // bar rests on") is pinned to the schema it reads.
 //
 // The load run's bar is only as good as the peak it was set against, and the peak

@@ -1,9 +1,11 @@
-// Drives the booking API against a seeded (isolated) branch at ten times the
-// booking path's peak (#2243).
+// Drives the booking API against a seeded (isolated) branch at the load bar, ten
+// times the booking path's peak (#2243, #3124: LOAD_RUN_BOOKINGS_PER_MINUTE).
 //
 // The July soak (#440) drove the cron lanes and never confirmed a single booking,
 // so the path a lead actually takes has never been under load. This is the driver
-// that does it: four of these run together, each reading availability, picking a
+// that does it: the steady drivers run together, as many as `steadyDriversFor` sizes
+// from the bar and the roster (five at 90 advisors at 70 a minute; the bursts keep
+// four), each reading availability, picking a
 // time at random from what was offered (the baseline driver takes the soonest, #3782),
 // and posting a booking.
 //
@@ -574,6 +576,8 @@ async function fault(): Promise<void> {
  * that fails is only logged, because the leg's own requests are what the judge reads.
  */
 async function warmFreshVersion(): Promise<void> {
+  // load-bar-ok: only the codes are taken from this schedule, never its times, so its
+  // rate is not the bar and paces nothing.
   const codes = requestSchedule({ total: FAULT_WARMUP_READS, perMinute: 60, startAtMs: Date.now() }).map((r) => r.code);
   // The same per request bound every driver request has, and its test seam (#3222).
   const boundMs = effectiveDeadlineMs(REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_OVERRIDE);

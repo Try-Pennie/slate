@@ -193,15 +193,33 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
      subrequests across both during a backlog). Not a subrequest-ceiling threat at 10,000,
      but a CPU contributor worth capping.
 
-## The peak the 60 a minute bar rests on (#3124)
+## The peak the load run's bar rests on (#3124)
 
-The booking path run's bar is **60 confirmed bookings a minute for ten minutes**,
-set on 2026-09-11 in the plan on #2240 beside a measured busiest minute of 6, so it
-sits ten times over the peak measured then. That premise has to be re-checkable, because it is the whole reason 60 is the
-number. What was measured, from the plan's own comment on #2240: routed cal.com
-form responses ran **450 to 1,013 a day** over the ten days before, and the
-**busiest minute in 30 days held 6**. Those came from cal.com, since Slate took no
-real bookings then.
+(Titled "The peak the 60 a minute bar rests on" until the bar moved to 70; migration
+0193 cites it by that name, and an applied migration is not edited.)
+
+The booking path run's bar is **70 confirmed bookings a minute for ten minutes**,
+and it lives in ONE place: `LOAD_RUN_BOOKINGS_PER_MINUTE` in `src/lib/load-bar.ts`.
+The steady pass is sized from it (`steadyPacingFor` in `book-plan.ts`, below), the
+daily busy minute alert judges against it, and `scripts/test-load-bar-literals.ts`
+fails the build on a copy of it in the load test code.
+
+**70 since 2026-10-20.** Dan raised it from 60 that day
+([decision](https://github.com/Try-Pennie/slate/issues/3124#issuecomment-6299370108)),
+which keeps it **ten times over the whole traffic peak of 7 a minute** measured the
+same afternoon
+([reading](https://github.com/Try-Pennie/slate/issues/3124#issuecomment-6299234214)):
+cal.com's routed responses and Slate's routed bookings over the 30 days from
+2026-09-20 19:15 UTC, added minute by minute. The busiest minute, 7, was reached
+twice: 2026-10-01 14:20 UTC (7 on cal.com, none on Slate) and 2026-10-02 13:23 UTC
+(3 on cal.com, 4 on Slate). Against that peak 60 was only 8.6 times over.
+
+That premise has to be re-checkable, because it is the whole reason the bar is the
+number it is. **60 was set on 2026-09-11** in the plan on #2240 beside a measured
+busiest minute of 6, ten times over the peak measured then. What was measured, from
+the plan's own comment on #2240: routed cal.com form responses ran **450 to 1,013 a
+day** over the ten days before, and the **busiest minute in 30 days held 6**. Those
+came from cal.com, since Slate took no real bookings then.
 
 Slate's own traffic answers the same question now. This query reads the last 30 days
 of real routed bookings (test buckets excluded, the same `is_test` the canary
@@ -250,8 +268,13 @@ Two things to know before reading the answer:
   attempt tallies (`booking_api_outcome_daily`) are daily, so they cannot answer a per
   minute question.
 
-`bar_over_peak` under ten means the premise no longer holds and the run's bar should
-be raised before the next one is dispatched.
+`bar_over_peak` divides the bar the block was verified with, **60**, not today's 70:
+the block is held verbatim to its 2026-10-16 run against production (the marker
+above), and changing it means running it there again. So read it against 70 by
+scaling it by 70/60, or read `busiest_minute` directly: above **7** the bar is under
+ten times the peak, the premise no longer holds, and the bar should be raised before
+the next run is dispatched. (Slate's half alone cannot show the whole peak before
+cutover; the daily lane below adds cal.com's.)
 
 **Nobody has to remember to re-read it** (#3124). The daily `busy-minutes` lane
 counts the last 7 UTC days the same way (this query's `real_bookings`, through the
@@ -281,8 +304,8 @@ them with a routed booking (UTC days), not 30, and the busiest day was
 
 What that reading says, and what it does not:
 
-- **On Slate's own traffic the premise holds**: 60 a minute is 12 times the busiest
-  minute Slate has carried.
+- **On Slate's own traffic the premise held**: 60 a minute was 12 times the busiest
+  minute Slate had carried (70 is 14 times it).
 - **That traffic is the pilot's share, not the whole.** Since 2026-10-02 the
   Salesforce pilot sends Slate half of the leads on tiers 1 to 5 (ADR 0009).
   If the whole of the traffic peaks in proportion, the busiest minute at cutover is
@@ -290,7 +313,9 @@ What that reading says, and what it does not:
   ten the premise asks for. Peaks do not have to scale in proportion, so that is an
   estimate, not a measurement: the measurement is cal.com's routing form responses
   over the same 30 days, read the way the 2026-09-11 figure (6) was, and it has to
-  be read before cutover (#65) to settle whether 60 stays the bar.
+  be read before cutover (#65) to settle whether 60 stays the bar. **Settled
+  2026-10-20**: the whole peak was 7, so 60 was 8.6 times over it, and Dan raised the
+  bar to 70 (above).
 
 ## The booking path run (#2243)
 
@@ -340,10 +365,11 @@ can also be driven at 200. Three things change and nothing else does:
   roster it measured, and `scripts/test-loadtest-roster-shape.ts` fails the day the
   numbers stop being what the seed builds. Seed it with `ROSTER=200`; `ROSTER=90`, or
   nothing, is production's.
-- **The steady traffic.** Held at today's rate PER ADVISOR (60 a minute over 90),
-  so 200 advisors is about 133 a minute: nine drivers at fifteen each
-  (`steadyDriversFor`), each on its own runner and so its own address. The bursts
-  keep their sizes, because a crowd on one slot does not grow with the roster.
+- **The steady traffic.** Held at the load bar's rate PER ADVISOR (70 a minute over
+  90), so 200 advisors is about 156 a minute: twelve drivers at fourteen each, 168
+  a minute (`steadyDriversFor`, rounded up so no run drives less per advisor than the
+  bar), each on its own runner and so its own address. The bursts keep their sizes,
+  because a crowd on one slot does not grow with the roster.
 - **The dispatch.** `roster: 200` on the workflow. The burst setup COUNTS the
   advisors on the branch, refuses on **exit 12** when the count is not the roster
   the run names (a 200 run on a branch seeded with 90 would pass every bar about the
@@ -360,10 +386,18 @@ COUNT, so the report prints the window's mean per invocation and says so rather 
 inventing one.
 
 All the drivers share the one load test API key, so at 200 the steady pass asks about
-135 writes a minute of a per key ceiling of 120. That ceiling is Cloudflare's native
+168 writes a minute of a per key ceiling of 120. That ceiling is Cloudflare's native
 limiter, approximate and per location (#2339); the exact bounds on the key are 1,200
-a minute and 6,000 an hour, which the whole run stays under. Any 429 it does give is
-counted in the outcome mix against the rate bar's floor rather than hidden.
+a minute and 6,000 an hour, which the whole run stays under (at 200: 1,680 steady
+writes, about 212 in the bursts, 27 baseline, the fault pass's few dozen and the
+ceiling control's 1,201 from one address, about 3,200 in the hour). Any 429 it does
+give is counted in the outcome mix against the rate bar's floor rather than hidden.
+
+**The 200 advisor run's speed bar was calibrated at 135 a minute**, not 168: the
+1800ms limit on the steady p95 (`latency-bar.ts`) comes from the 200 advisor runs of
+#3829 at nine drivers. The 90 advisor run at 70 is still far lighter than those runs.
+A 200 advisor run at 168 a minute is the rig changing, which is when that comment
+says to recalibrate.
 
 ### The seed refuses a branch whose migrations do not match
 
@@ -383,16 +417,25 @@ the seed would understate contention in exactly the zones the run is meant to pr
 
 ### Driving it
 
-Four drivers at 90 advisors, nine at 200 (#3829, above), **fifteen a minute each
-for ten minutes**. At 90, fifteen times four is **sixty**, which is exactly the per
-address write ceiling
-(`BOOKING_API_IP_LIMITER.perMinute`), and that is deliberate: the run sits on the
-ceiling so the judge can attribute the 429s it produces. The pacing constants are
-imported from the app rather than copied, so a run can never drift into measuring a
-ceiling somebody changed. That ceiling is APPROXIMATE (#2339), so sitting on it is
-a statement about what the drivers are asking for rather than a prediction that
-they will be refused at it; what the run's 429s are attributed against is the
-ceiling control's own step below.
+**Five drivers at 90 advisors, twelve at 200** (#3829, above), **fourteen a minute
+each for ten minutes**, so at 90 the drivers together drive exactly the load bar of
+70 (#3124). The sizing is derived, never written: `steadyPacingFor` takes
+`LOAD_RUN_BOOKINGS_PER_MINUTE` and returns the fewest drivers at no more than fifteen
+a minute each (`MAX_PER_DRIVER_PER_MINUTE`, the pace every run at 60 kept) whose share
+is a whole number, so raising the bar moves the drivers, their pace, the deadline and
+the job timeouts with it. A higher bar takes MORE drivers rather than faster ones,
+because a driver sends one request at a time and fifteen a minute already stretched
+to fourteen to sixteen minutes on a slow deployment (#3222).
+
+At the old bar the four drivers at fifteen added up to **sixty**, exactly the per
+address write ceiling (`BOOKING_API_IP_LIMITER.perMinute`), and that was read as the
+run sitting on the ceiling. In the workflow it never did: each driver is its own
+runner and so its own address, at fourteen of that ceiling's sixty. At 70 the pass
+as a whole is above it, which only matters for a hand run of every driver from one
+machine. The limiter constants are still imported from the app rather than copied,
+so a run can never drift into measuring a ceiling somebody changed, and that ceiling
+is APPROXIMATE (#2339); what the run's 429s are attributed against is the ceiling
+control's own step below.
 
 ```
 SLATE_BASE=https://<loadtest>.workers.dev BOOKING_API_KEY=<key> \
@@ -406,8 +449,8 @@ node --experimental-strip-types scripts/loadtest/book.ts
   most contended slot cache, the cold ones have one agent pools where every second
   booking is a conflict. The sequence is interleaved so any prefix is representative.
 - **The slot is picked at RANDOM** from what the bucket offered on the steady and fault
-  legs, and it is the only deliberately non-deterministic choice in the run. Four
-  drivers each taking the first offered time would contend on one slot all run, which
+  legs, and it is the only deliberately non-deterministic choice in the run. The
+  steady drivers each taking the first offered time would contend on one slot all run, which
   measures the unique index over and over and never measures the path at a rate. The
   baseline is the exception: it books one at a time, at rest, and takes the SOONEST
   time so it stays clear of the times the bursts are planned on (#3782, below).
@@ -997,6 +1040,7 @@ meant to hold back run unannounced.
 | `snowflake-reconcile` | **held back** | pages Slack on drift it would itself create |
 | `prune-bookings-pii` | **held back** | gates on an export that never ran, and redacts against a mirror that is not there |
 | `prune-warehouse-pii` | **held back** | writes the real warehouse |
+| `busy-minutes` | **held back** | reads cal.com and pages Slack about the branch's synthetic bookings (#3124); the lane also stands itself down on `isLoadtest()` |
 
 A lane added later is covered by construction: the known set is derived from
 `CRON_ROUTES` rather than listed beside it, so a new lane is either in the disable
@@ -1005,9 +1049,9 @@ list or it runs, and the guard names it either way.
 ## Judging the booking path run (#2244)
 
 `.github/workflows/loadtest.yml`, **`workflow_dispatch` only**, because a run
-creates six hundred bookings. `concurrency: { group: loadtest,
+creates about seven hundred bookings at 90 advisors. `concurrency: { group: loadtest,
 cancel-in-progress: false }`: a half run leaves a seeded branch, a deployment and
-six hundred bookings behind, and the next run seeded on top of them would report
+hundreds of bookings behind, and the next run seeded on top of them would report
 clashes this one created. Every job carries a timeout.
 
 ### A freshly created deployment is not warm, and the preflight waits for it (#2347)
@@ -1113,8 +1157,8 @@ It makes ONE real booking and checks three things:
   **reservation row is gone** (the confirm path deletes it on success, so its
   ABSENCE is the assertion);
 - the `gcal_event_id` is the **stub's shape**. If it is not, `SLATE_LOADTEST` is
-  not on for that deployment and the run is about to create six hundred real
-  calendar events and send six hundred real invitations, which is the single most
+  not on for that deployment and the run is about to create hundreds of real
+  calendar events and send hundreds of real invitations, which is the single most
   expensive way this can go wrong;
 - the database really **refuses a planted clash**, and the judge's own overlap
   predicate really goes red on one and stays quiet on a back to back pair. Both
@@ -1240,8 +1284,9 @@ minute plan took fourteen to sixteen, one driver met the job's timeout, wrote
 nothing, and the judge could only call the run incomplete, so the run produced no
 verdict on the latency bar it should have failed. Each steady and fault driver now
 keeps a deadline of its own (`driverDeadlineMs` in `book-plan.ts`: the time the plan
-takes when every request sits at the 5,000ms bar, fifteen minutes for the steady
-plan), stops there, writes a whole file marked `cutShort` with the count it made,
+takes when every request sits at the 5,000ms bar plus the slowest overhead seen, held
+at three quarters of the deadline: about twenty one minutes for a steady plan of
+fourteen a minute), stops there, writes a whole file marked `cutShort` with the count it made,
 and exits zero so the ceiling check and the fault pass still run. Every request also
 carries its own abort (`requestAbortMs`: thirty seconds, and never more than a minute
 past the deadline, inside the grace before the job's timeout), so a request that never
@@ -1261,7 +1306,7 @@ arrived). The fault drivers' files get the same file checks as the steady ones.
 | bar | what it is |
 |---|---|
 | planned bookings completed | every steady driver ran its whole plan. A driver that stopped at its own deadline FAILS this with the driver, how far it got and the run's completed share (#3222); every other bar is still scored on what ran |
-| confirmed a minute | at or above 80 percent of target, with the full outcome mix printed so a short run says WHY |
+| confirmed a minute | at or above 80 percent of target, with the full outcome mix printed so a short run says WHY. The target is the steady drivers times their pace: at 90 advisors exactly the load bar, `LOAD_RUN_BOOKINGS_PER_MINUTE` (70, so a floor of 56); at 200, twelve at fourteen (168, floor 134.4) |
 | latency | p50, p95 and max over ALL responses. The p95 of the **200s** must pass TWO checks (#3258, #3517): the **ratio**, at most `LOAD_OVER_REST_RATIO_BAR` (2.5) times the median of the **same day baseline** (bookings at rest on the same deployment just before the steady pass, sent from `BASELINE_RUNNERS` (3) runners taking turns (#3914), each runner's first `BASELINE_WARMUP` (2) dropped as a warm up and the median pooled over the `BASELINE_BOOKINGS` (21) measured after them), and the **fixed limit**, at most `STEADY_P95_LIMIT_MS` (1,800ms) whatever the baseline reads. A failure names which check failed, the ratio, the fixed limit or both, and states both numbers. The fixed limit is not applied to a run dispatched with a Google delay (#3490), which it was not calibrated for, and the report says so. A run with no baseline leg (a hand run) is held to the old fixed 5,000ms bar and says why; a baseline the workflow ran that did not arrive, arrived twice from one runner, is missing a runner, could not be read, came from another run or has a runner that confirmed fewer than `BASELINE_MIN_OK_PER_RUNNER` (5) of its 7 measured bookings voids the **speed verdict only** (Dan, 2026-10-05): every other bar is still judged; a run clean on all of them is UNMEASURED (exit 3), never a pass, and a failure on any of them still FAILS it. See "Latency is judged against its own day" below |
 | 5xx and no reply | counted **separately** and both fail: a request answered badly and one never answered send two different people to two different places |
 | resent requests | a request whose connection dropped (no reply of any kind, not the driver's own timeout) is sent once more after a 500ms pause, by the same rule the booker's confirm uses for a lead (`resendOnce`, #3566), and its record carries `resentAfter`, the first send's failure with its cause. One answered on its resend is not unanswered; one still silent fails under no reply. The run fails at **3 or more** resent requests over steady, bursts and the fault pass (`RESENT_FAIL_AT`, Dan 2026-10-14), because a cluster means something is turning connections away. The report prints the count and causes on every run |

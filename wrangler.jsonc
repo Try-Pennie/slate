@@ -343,7 +343,7 @@
 	//
 	// The namespace ids are 2001 to 2007 rather than the production 1001 to 1007
 	// because a namespace id is ACCOUNT scoped: reusing one would have the load
-	// run's sixty writes a minute counting against the ceiling real leads are
+	// run's writes (the load bar's rate, #3124) counting against the ceiling real leads are
 	// judged by. `scripts/test-wrangler-loadtest-env.ts` resolves this env through
 	// wrangler's own `unstable_readConfig` and asserts the RESOLVED result, so the
 	// inheritance rules above are measured rather than believed.
@@ -404,11 +404,13 @@
 				// `agents` reads Salesforce and rewrites the roster the seed just built,
 				// `bulk-reassign` makes real Google reassignments, `monitor`,
 				// `erasure-audit` and `snowflake-reconcile` page Slack about a synthetic
-				// org, `ooo-digest` and `ooo-approvals` send real email to real managers,
+				// org, `busy-minutes` reads cal.com and pages Slack about the branch's
+				// synthetic bookings (#3124, and it also stands down on `isLoadtest()`),
+				// `ooo-digest` and `ooo-approvals` send real email to real managers,
 				// `snowflake-export` writes the warehouse, and the two PII prunes redact
 				// against a mirror that is not there. The kept lanes are the ones the run
 				// is measuring; the full table is in `scripts/loadtest/RUNBOOK.md`.
-				"SLATE_LANES_DISABLED": "advisor-photos,agents,bulk-reassign,erasure-audit,monitor,ooo-approvals,ooo-digest,prune-bookings-pii,prune-warehouse-pii,snowflake-export,snowflake-reconcile"
+				"SLATE_LANES_DISABLED": "advisor-photos,agents,bulk-reassign,busy-minutes,erasure-audit,monitor,ooo-approvals,ooo-digest,prune-bookings-pii,prune-warehouse-pii,snowflake-export,snowflake-reconcile"
 			},
 			"ratelimits": [
 				{

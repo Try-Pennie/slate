@@ -29,6 +29,10 @@ import {
   BOOKING_WRITES_PER_MINUTE,
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
+  MAX_PER_DRIVER_PER_MINUTE,
+  PRODUCTION_ADVISORS,
+  STEADY_DRIVERS_AT_PRODUCTION,
+  steadyPacingFor,
   steadyDriversFor,
   FAULT_WARMUP_READS,
   warmUp,
@@ -82,6 +86,8 @@ import { join } from "node:path";
 import { LOADTEST_LEGS, LOADTEST_LEG_HEADER } from "../src/lib/booking/wait-marks.ts";
 import { LOADTEST_RUN_HEADER, readLoadtestRunScope } from "../src/lib/loadtest-run-scope.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { LOAD_RUN_BOOKINGS_PER_MINUTE } from "../src/lib/load-bar.ts";
+import { PRODUCTION_SHAPE } from "./loadtest/roster-shape.ts";
 
 // --- the ceilings come from the app, not from a copy --------------------------
 
@@ -92,14 +98,57 @@ import { assert, eq, finish } from "./lib/harness.ts";
     BOOKING_API_IP_LIMITER.perMinute,
     "and so does the per address write ceiling",
   );
-  // The run's target sits exactly ON the write ceiling, deliberately, so the judge
-  // can attribute the 429s it produces rather than leaving the limiter unexercised.
-  eq(
-    DRIVERS * PER_DRIVER_PER_MINUTE,
-    BOOKING_WRITES_PER_MINUTE,
-    "four drivers at fifteen a minute is exactly the per address write ceiling",
-  );
   eq(RUN_MINUTES, 10, "the steady run is ten minutes");
+}
+
+// --- the steady pass drives the load bar, read from its one constant (#3124) -------
+
+{
+  // The bar is src/lib/load-bar.ts's, and the steady pass at production's roster drives
+  // exactly it: never a copy of the number here, so the run and the daily busy minute
+  // alert judge the same bar.
+  eq(PRODUCTION_ADVISORS, PRODUCTION_SHAPE.agents, "production's roster is the checked in shape's, 90");
+  eq(
+    STEADY_DRIVERS_AT_PRODUCTION * PER_DRIVER_PER_MINUTE,
+    LOAD_RUN_BOOKINGS_PER_MINUTE,
+    "the steady pass at production's roster drives exactly the load bar",
+  );
+  // At 70: five drivers at fourteen. Fifteen a driver, the pace every run at 60 kept,
+  // is the most one driver is asked, so 70 takes a fifth driver rather than a faster four.
+  eq(steadyPacingFor(70), { drivers: 5, perDriverPerMinute: 14 }, "70 a minute is five drivers at fourteen");
+  eq(STEADY_DRIVERS_AT_PRODUCTION, 5, "five steady drivers at production's roster");
+  eq(PER_DRIVER_PER_MINUTE, 14, "each at fourteen a minute");
+  assert(Number.isInteger(PER_DRIVER_PER_MINUTE), "a driver's rate is a whole number, so its plan is whole requests");
+  assert(PER_DRIVER_PER_MINUTE <= MAX_PER_DRIVER_PER_MINUTE, "no driver is asked more than fifteen a minute");
+  assert(
+    PER_DRIVER_PER_MINUTE < BOOKING_WRITES_PER_MINUTE,
+    "and each driver, on its own runner, stays under the per address write ceiling",
+  );
+}
+
+{
+  // The derivation itself: the fewest drivers at no more than fifteen each whose share
+  // of the bar is a whole number a minute.
+  eq(steadyPacingFor(60), { drivers: 4, perDriverPerMinute: 15 }, "the old bar was four at fifteen, as every run before");
+  eq(steadyPacingFor(75), { drivers: 5, perDriverPerMinute: 15 }, "75 is five at fifteen");
+  eq(steadyPacingFor(65), { drivers: 5, perDriverPerMinute: 13 }, "65 is five at thirteen");
+  eq(steadyPacingFor(80), { drivers: 8, perDriverPerMinute: 10 }, "80 does not split six or seven ways, so eight at ten");
+  eq(steadyPacingFor(15), { drivers: 1, perDriverPerMinute: 15 }, "a bar one driver can carry is one driver");
+  for (const bar of [1, 7, 14, 61, 70, 97, 120, 200]) {
+    const p = steadyPacingFor(bar);
+    eq(p.drivers * p.perDriverPerMinute, bar, `${bar} is driven exactly`);
+    assert(p.perDriverPerMinute <= MAX_PER_DRIVER_PER_MINUTE, `${bar}: no driver over fifteen`);
+    assert(Number.isInteger(p.perDriverPerMinute), `${bar}: a whole rate per driver`);
+  }
+  for (const bad of [0, -70, 70.5, Number.NaN]) {
+    let threw = false;
+    try {
+      steadyPacingFor(bad);
+    } catch {
+      threw = true;
+    }
+    assert(threw, `a bar of ${bad} has no steady pass to size`);
+  }
 }
 
 // --- the schedule -------------------------------------------------------------
@@ -1130,11 +1179,16 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
 // --- the steady pass grows with the roster, at today's rate per advisor (#3829) ---
 
 {
-  // Production's 90 keeps exactly today's four drivers, so a 90 run is the run it was.
-  eq(steadyDriversFor(90), DRIVERS, "90 advisors is four steady drivers, as every run before");
-  // 60 a minute over 90 advisors is about 133 over 200, which is nine drivers at fifteen.
-  eq(steadyDriversFor(200), 9, "200 advisors is nine steady drivers");
-  eq(STEADY_CONFIRMS_PER_ADVISOR_PER_MINUTE, 60 / 90, "the rate per advisor is today's: 60 a minute over 90");
+  // Production's 90 drives exactly the bar: five drivers at fourteen.
+  eq(steadyDriversFor(90), STEADY_DRIVERS_AT_PRODUCTION, "90 advisors is the bar's own driver count");
+  eq(steadyDriversFor(90), 5, "which is five at 70 a minute");
+  // 70 a minute over 90 advisors is about 156 over 200, which is twelve drivers at fourteen.
+  eq(steadyDriversFor(200), 12, "200 advisors is twelve steady drivers");
+  eq(
+    STEADY_CONFIRMS_PER_ADVISOR_PER_MINUTE,
+    LOAD_RUN_BOOKINGS_PER_MINUTE / PRODUCTION_ADVISORS,
+    "the rate per advisor is the bar over production's 90",
+  );
   // Never UNDER the rate per advisor: a run short of it would read as headroom it never measured.
   for (const n of [50, 90, 120, 150, 200, 250]) {
     const drivers = steadyDriversFor(n);
@@ -1163,24 +1217,28 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   const at200 = steadyPlanFor({ seeded: 200, named: "200" });
   assert(at200.ok, "200 seeded for a 200 run is planned");
   if (at200.ok) {
-    eq(at200.drivers, [0, 1, 2, 3, 4, 5, 6, 7, 8], "nine steady drivers, numbered from zero");
+    eq(at200.drivers, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], "twelve steady drivers, numbered from zero");
     eq(
       at200.outputs,
-      "steady_drivers=[0,1,2,3,4,5,6,7,8]\nsteady_driver_count=9\nroster_advisors=200\n",
+      "steady_drivers=[0,1,2,3,4,5,6,7,8,9,10,11]\nsteady_driver_count=12\nroster_advisors=200\n",
       "written as one line each for GITHUB_OUTPUT",
     );
   }
   const at90 = steadyPlanFor({ seeded: 90, named: undefined });
-  assert(at90.ok && at90.drivers.length === DRIVERS, "a hand run on production's roster keeps four");
+  assert(at90.ok && at90.drivers.length === STEADY_DRIVERS_AT_PRODUCTION, "a hand run on production's roster drives the bar");
   const wrong = steadyPlanFor({ seeded: 90, named: "200" });
   assert(!wrong.ok && /90/.test(wrong.why) && /200/.test(wrong.why), "a 200 run on a 90 branch is refused, naming both");
 }
 
 {
-  // The judge's steady expectation (#3829): unset is a hand run of four, a count is
-  // taken, and anything else is refused rather than read as zero or NaN (L50).
-  eq(expectedSteadyDrivers(undefined), { ok: true, drivers: DRIVERS }, "unset is a hand run of four");
-  eq(expectedSteadyDrivers(" "), { ok: true, drivers: DRIVERS }, "and so is blank");
+  // The judge's steady expectation (#3829): unset is a hand run at production's roster,
+  // a count is taken, and anything else is refused rather than read as zero or NaN (L50).
+  eq(
+    expectedSteadyDrivers(undefined),
+    { ok: true, drivers: STEADY_DRIVERS_AT_PRODUCTION },
+    "unset is a hand run at production's roster, which drives the bar",
+  );
+  eq(expectedSteadyDrivers(" "), { ok: true, drivers: STEADY_DRIVERS_AT_PRODUCTION }, "and so is blank");
   eq(expectedSteadyDrivers("9"), { ok: true, drivers: 9 }, "nine is nine");
   assert(!expectedSteadyDrivers("0").ok, "zero drivers cannot be judged");
   assert(!expectedSteadyDrivers("nine").ok, "a word is refused");
