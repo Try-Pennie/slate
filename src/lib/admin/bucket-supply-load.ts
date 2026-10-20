@@ -26,9 +26,10 @@
  * - The OFFERED OPEN DAYS failing is fatal for the same reason (#3922). They set
  *   the window every row's cover is judged over and the page's own words name it,
  *   so a guessed count would quietly change what the page says a lead is shown.
- * - The ROSTER failing is not fatal. The supply half of the page is still worth
- *   reading, so the depth column reads as unknown and the page says so. It never
- *   reads as zero eligible agents.
+ * - The ROSTER failing is not fatal. The depth column reads as unknown and the page
+ *   says so, never as zero eligible agents. Since #3939 the days read unknown too,
+ *   because a day is counted in the calls of the pool's own advisors and the roster
+ *   is what says who they are; a shut day still says it is shut.
  */
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
@@ -41,8 +42,10 @@ import { log } from "@/lib/log";
 import { DateTime } from "luxon";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { searchWindowDays } from "@/lib/availability/bookable-days";
+import { loadPoolCalls } from "@/lib/admin/bucket-calls-load";
 import {
   bucketSupplyReport,
+  supplyDays,
   type BucketSupplyReport,
   type CachedSlotRow,
   type SupplyBucket,
@@ -106,8 +109,10 @@ export async function loadBucketSupply(
   // tiers page and the monitor rather than re-derived, so the three can never
   // disagree about who can take a bucket's bookings.
   let depthByCode: Map<string, SupplyDepth> | null = null;
+  let depths: TierDepth[] | null = null;
   try {
-    depthByCode = supplyDepthMap(await loadTierDepths(db, orgId, now));
+    depths = await loadTierDepths(db, orgId, now);
+    depthByCode = supplyDepthMap(depths);
   } catch (err) {
     log.error("bucket-supply", { msg: "staffing depth unreadable" }, err);
     depthByCode = null;
@@ -129,8 +134,10 @@ export async function loadBucketSupply(
     return { measurable: false, reason: "offered-open-days" };
   }
 
-  // The times already booked, which is the NUMERATOR of every share on the page
-  // (#1937). Keyed by bucket CODE and then by date in the org's zone, so the
+  // The times already booked (#1937). Since #3939 the page's shares are counted in
+  // calls, so on the page these feed only the cover judgement (which days a pool
+  // still has times on); they are still the numerator of the monitor's start time
+  // measure, which builds this report without calls. Keyed by bucket CODE and then by date in the org's zone, so the
   // report never has to know about bucket ids.
   //
   // `bookings` is a growth table rather than a roster bounded one, so this is
@@ -149,6 +156,19 @@ export async function loadBucketSupply(
     bookedByCodeAndDate = null;
   }
 
+  // Each pool's day in calls, from its own eligible advisors' calendars (#3939): staffing depth's
+  // list of who is in each pool, so this page and routing never disagree about the pool. Without
+  // that list there is no pool to add up, and every open day reads unknown.
+  const callsByCode =
+    depths === null
+      ? null
+      : await loadPoolCalls(
+          orgId,
+          new Map(depths.map((d) => [d.code, d.agents.map((a) => a.id)])),
+          supplyDays(hours, horizonDays, now.getTime()).map((d) => d.iso),
+          now.getTime(),
+        );
+
   return bucketSupplyReport({
     hours,
     horizonDays,
@@ -158,6 +178,7 @@ export async function loadBucketSupply(
     depthByCode,
     cacheRows,
     bookedByCodeAndDate,
+    callsByCode,
   });
 }
 

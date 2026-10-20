@@ -209,9 +209,8 @@ export function BucketSupplyTable({
       {!depthReadable && (
         <p className="mb-4 rounded-md border border-border bg-[var(--bg-alt)] px-4 py-3 text-sm text-fg-muted">
           The roster could not be read, so both agent columns say unknown throughout.
-          That is not a report that no agent can take these bookings. Without the roster the
-          buckets cannot be matched to their pools, so each booked share beside it counts only
-          the bookings made through that bucket.
+          That is not a report that no agent can take these bookings. Without the roster no
+          pool can be matched to its advisors, so how full each day is reads unknown too.
         </p>
       )}
       {!bucketListReadable && (
@@ -224,8 +223,8 @@ export function BucketSupplyTable({
       <div className="overflow-x-auto rounded-md border border-border">
         <table className="w-full min-w-[860px] border-collapse text-sm">
           <caption className="sr-only">
-            The share of each debt bucket&apos;s possible appointment times that are booked, day by
-            day. Rows are grouped by debt tier, highest first, and inside each tier the pools with
+            The share of each debt bucket&apos;s calls already taken, out of the calls its
+            advisors&apos; shifts could hold, day by day. Rows are grouped by debt tier, highest first, and inside each tier the pools with
             nobody available, an unreadable answer or an out of date one come first. Times are{" "}
             {zone}.
           </caption>
@@ -432,12 +431,11 @@ export function BucketSupplyTable({
             numbers come from, because the column headers now carry the unit and
             the question. Today's date moved into the summary line above, where
             the counts it scopes are. */}
-        Every number is read from the slot cache the booker itself serves, plus the bookings
-        already made, so this page adds no calendar traffic and nothing here is a live check of
-        a calendar. What a share is measured against is what THAT pool could have taken: the
-        times it is still offering plus the times already booked, counted as start times. A time
-        nobody in the pool was ever free for was never a possible appointment, so it is in
-        neither.
+        Each share is the calls already taken out of the calls the pool&apos;s advisors&apos; shifts
+        could hold, as on Team capacity: anything on an advisor&apos;s calendar counts as taken, and
+        approved time off comes off what the shift could hold. Advisors whose calendars are not
+        syncing, or who are out, count in neither. Which pool a lead is offered comes from the
+        slot cache the booker itself serves.
       </p>
     </>
   );

@@ -44,10 +44,21 @@ const offered = vi.hoisted(() => ({
 
 const depth = vi.hoisted(() => ({
   loadTierDepths: vi.fn(async () => [
-    { code: "120", name: "Low | Beyond | No Legal Param", depth: 4, effectiveDepth: 3, poolKey: "pool-low-beyond", poolLabel: "Low with Beyond" },
-    { code: "110", name: "Low | Both | No Legal Param", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low" },
+    { code: "120", name: "Low | Beyond | No Legal Param", depth: 4, effectiveDepth: 3, poolKey: "pool-low-beyond", poolLabel: "Low with Beyond", agents: [{ id: "a1", name: "A", out: false }] },
+    { code: "110", name: "Low | Both | No Legal Param", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low", agents: [{ id: "a1", name: "A", out: false }, { id: "a2", name: "B", out: false }] },
   ]),
 }));
+
+// #3939: each pool's day in calls, from its advisors' calendars. Stood in for here; the adding up
+// is driven by scripts/test-bucket-calls.ts and the reads by bucket-calls-load.test.ts.
+const DAY0 = "2026-08-04";
+const CALLS = () =>
+  new Map([
+    ["110", new Map([[DAY0, { taken: 5, capacity: 20 }]])],
+    ["120", new Map([[DAY0, { taken: 2, capacity: 8 }]])],
+  ]);
+const calls = vi.hoisted(() => ({ loadPoolCalls: vi.fn() }));
+vi.mock("@/lib/admin/bucket-calls-load", () => calls);
 
 // The two table reads, each with its own error seam, so one can be made to fail
 // while the other stays healthy.
@@ -148,6 +159,7 @@ const EVENT_TYPE = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  calls.loadPoolCalls.mockImplementation(async () => CALLS());
   db.bookingRows = [];
   db.bookingError = null;
   db.bookingQuery = { select: "", filters: [] };
@@ -164,8 +176,8 @@ beforeEach(() => {
   settings.readBookingHorizonDays.mockResolvedValue(4);
   offered.readOfferedOpenDays.mockResolvedValue(3);
   depth.loadTierDepths.mockResolvedValue([
-    { code: "120", name: "Low | Beyond | No Legal Param", depth: 4, effectiveDepth: 3, poolKey: "pool-low-beyond", poolLabel: "Low with Beyond" },
-    { code: "110", name: "Low | Both | No Legal Param", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low" },
+    { code: "120", name: "Low | Beyond | No Legal Param", depth: 4, effectiveDepth: 3, poolKey: "pool-low-beyond", poolLabel: "Low with Beyond", agents: [{ id: "a1", name: "A", out: false }] },
+    { code: "110", name: "Low | Both | No Legal Param", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low", agents: [{ id: "a1", name: "A", out: false }, { id: "a2", name: "B", out: false }] },
   ]);
   db.slotRows = [
     {
@@ -189,18 +201,21 @@ beforeEach(() => {
 });
 
 describe("loadBucketSupply (#1254)", () => {
-  it("measures each bucket's booked share against what that bucket could take", async () => {
+  it("measures each pool's day in calls taken out of the calls its shifts could hold", async () => {
     const report = await loadBucketSupply("org-1", NOW);
     expect(report.measurable).toBe(true);
     if (!report.measurable) return;
 
     const thin = report.rows.find((r) => r.code === "120");
     const full = report.rows.find((r) => r.code === "110");
-    // #1937: the share is BOOKED out of POSSIBLE. With nothing booked, each
-    // reads as an honest zero against its OWN ceiling, which is what that
-    // bucket could have taken rather than one ideal agent's grid.
-    expect(thin?.cells[0]).toEqual({ kind: "counted", booked: 0, capacity: 9, share: 0 });
-    expect(full?.cells[0]).toEqual({ kind: "counted", booked: 0, capacity: 21, share: 0 });
+    // #3939: calls taken out of the calls the pool's shifts could hold, Team capacity's measure.
+    expect(thin?.cells[0]).toEqual({ kind: "counted", booked: 2, capacity: 8, share: 2 / 8 });
+    expect(full?.cells[0]).toEqual({ kind: "counted", booked: 5, capacity: 20, share: 5 / 20 });
+    // Each pool's own advisors, as staffing depth lists them, over the page's days.
+    const [org, agentsByCode, days] = calls.loadPoolCalls.mock.calls[0]!;
+    expect(org).toBe("org-1");
+    expect(agentsByCode).toEqual(new Map([["120", ["a1"]], ["110", ["a1", "a2"]]]));
+    expect(days[0]).toBe(DAY0);
     expect(thin?.depth).toBe(4);
     expect(thin?.effectiveDepth).toBe(3);
     expect(report.depthReadable).toBe(true);
@@ -235,14 +250,11 @@ describe("loadBucketSupply (#1254)", () => {
 
     expect(report.depthReadable).toBe(false);
     expect(report.rows.every((r) => r.depth === null && r.effectiveDepth === null)).toBe(true);
-    // And the supply half is still measured: losing the roster must not blank a
-    // page that can still answer the question it exists for.
-    expect(report.rows.find((r) => r.code === "120")?.cells[0]).toEqual({
-      kind: "counted",
-      booked: 0,
-      capacity: 9,
-      share: 0,
-    });
+    // #3939: a day is counted in the calls of the pool's own advisors, and the roster is what says
+    // who they are, so without it the day is unknown rather than measured some other way: a share
+    // in start times beside shares in calls would be one word for two measures (L118).
+    expect(calls.loadPoolCalls).not.toHaveBeenCalled();
+    expect(report.rows.find((r) => r.code === "120")?.cells[0]).toEqual({ kind: "unknown" });
   });
 
   it("falls back to the cache's own codes when the bucket list read errors", async () => {
@@ -253,13 +265,8 @@ describe("loadBucketSupply (#1254)", () => {
 
     expect(report.bucketListReadable).toBe(false);
     expect(report.rows.map((r) => r.code).sort()).toEqual(["110", "120"]);
-    // Still measured, because the cache is what carries the answer.
-    expect(report.rows.find((r) => r.code === "110")?.cells[0]).toEqual({
-      kind: "counted",
-      booked: 0,
-      capacity: 21,
-      share: 0,
-    });
+    // Still measured: the cache carries which pool serves, the calls how full it is.
+    expect(report.rows.find((r) => r.code === "110")?.cells[0]).toEqual({ kind: "counted", booked: 5, capacity: 20, share: 5 / 20 });
   });
 
   it("reports a bucket with no cached row as never computed, not as empty", async () => {
@@ -327,8 +334,8 @@ describe("loadBucketSupply (#1254)", () => {
     expect(days).toHaveLength(4);
   });
 
-  // #1937: what the page is for once leads start arriving.
-  it("counts the times already booked against what the bucket could take", async () => {
+  // #3939: booked times still feed the cover judgement, while how full the day is comes from calls.
+  it("measures a day in calls even when bookings have been made through the bucket", async () => {
     db.bookingRows = FULL_DAY.slice(0, 7).map((starts_at) => ({
       starts_at,
       buckets: { code: "110" },
@@ -337,19 +344,19 @@ describe("loadBucketSupply (#1254)", () => {
     expect(report.measurable).toBe(true);
     if (!report.measurable) return;
 
+    // The booked times are still read: they decide which days a pool still has times on (and the
+    // monitor's start time measure, driven in scripts/test-bucket-supply.ts). How full the day is
+    // comes from the calls (#3939).
     const cell = report.rows.find((r) => r.code === "110")?.cells[0];
-    // The seven booked times are no longer being offered, so the ceiling is the
-    // 21 the cache still holds plus nothing new: they are the same instants.
-    expect(cell).toEqual({ kind: "counted", booked: 7, capacity: 21, share: 7 / 21 });
+    expect(cell).toEqual({ kind: "counted", booked: 5, capacity: 20, share: 5 / 20 });
   });
 
-  // 2026-10-02: a pool's bookings count for every code of the pool, through the
-  // pool key staffing depth computed, so a code nobody booked through still
-  // reports how busy its pool is.
-  it("combines a pool's bookings across its codes, by staffing depth's pool key", async () => {
+  // Every code of a pool carries staffing depth's pool key and label, and reads the same pool's
+  // calls (#3939): the pool, not the code a lead came in on, is what fills up.
+  it("gives every code of a pool its pool's key, label and calls", async () => {
     depth.loadTierDepths.mockResolvedValue([
-      { code: "110", name: "Low | Both | No Legal Param", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low" },
-      { code: "111", name: "Low | Both | Legal", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low" },
+      { code: "110", name: "Low | Both | No Legal Param", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low", agents: [] },
+      { code: "111", name: "Low | Both | Legal", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low", agents: [] },
     ]);
     db.bucketRows = [
       { code: "110", name: "Low | Both | No Legal Param", is_test: false },
@@ -361,13 +368,15 @@ describe("loadBucketSupply (#1254)", () => {
       payload: { slots: FULL_DAY.slice(7), eventType: EVENT_TYPE },
       computed_at: stamp,
     }));
+    const pool = new Map([[DAY0, { taken: 5, capacity: 20 }]]);
+    calls.loadPoolCalls.mockResolvedValue(new Map([["110", pool], ["111", pool]]));
     db.bookingRows = FULL_DAY.slice(0, 7).map((starts_at) => ({ starts_at, buckets: { code: "110" } }));
     const report = await loadBucketSupply("org-1", NOW);
     expect(report.measurable).toBe(true);
     if (!report.measurable) return;
     const a = report.rows.find((r) => r.code === "110");
     const b = report.rows.find((r) => r.code === "111");
-    expect(a?.cells[0]).toEqual({ kind: "counted", booked: 7, capacity: 21, share: 7 / 21 });
+    expect(a?.cells[0]).toEqual({ kind: "counted", booked: 5, capacity: 20, share: 5 / 20 });
     expect(b?.cells).toEqual(a?.cells);
     expect(b?.poolKey).toBe("pool-low");
     expect(b?.poolLabel).toBe("Low");
@@ -413,6 +422,14 @@ describe("loadBucketSupply (#1254)", () => {
     const report = await loadBucketSupply("org-1", NOW);
     if (!report.measurable) throw new Error("expected a report");
     expect(report.rows.find((r) => r.code === "120")?.cells[0]).toEqual({ kind: "nobody-available" });
+  });
+
+  it("says unknown rather than a share when the advisors' calendars cannot be read (#3939)", async () => {
+    calls.loadPoolCalls.mockResolvedValue(null);
+    const report = await loadBucketSupply("org-1", NOW);
+    if (!report.measurable) throw new Error("expected a report");
+    expect(report.rows.every((r) => r.cells.every((c) => c.kind !== "counted"))).toBe(true);
+    expect(report.rows.find((r) => r.code === "110")?.cells[0]).toEqual({ kind: "unknown" });
   });
 
   // A read that could not measure must never be scored as zero booked, which is

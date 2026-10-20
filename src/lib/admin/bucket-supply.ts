@@ -55,6 +55,7 @@ import { rungExcludesLow, tierLadder, wholeTierPoolCode } from "../routing/tiers
 import { DEBT_TIER } from "../xbc.ts";
 import { offeredWindowFor, servedSlotsForRung } from "../availability/offered-window.ts";
 import { computedAtLabel } from "./bucket-supply-copy.ts";
+import type { PoolCalls } from "./bucket-calls.ts";
 
 /**
  * The event-type numbers the slot grid is laid out from. The same fields the
@@ -115,11 +116,15 @@ export type SupplyCell =
    * hour grid).
    */
   | { kind: "beyond-horizon" }
-  /** This bucket's cached payload could not be measured. NOT zero. */
+  /**
+   * Something behind this day could not be read: the bucket's cached payload, its
+   * bookings, or (on the page, #3939) the roster or its advisors' calendars. NOT zero.
+   */
   | { kind: "unknown" }
   /**
    * The day could hold appointments and this bucket has none of them: nothing
-   * offered and nothing booked (#1937).
+   * offered and nothing booked (#1937), or, on the page (#3939), its advisors
+   * hold no calls that day (nobody working it, or everyone out or not syncing).
    *
    * Its own answer rather than a zero share, because there is no ceiling to be a
    * share OF, and because it is the state worth acting on: a booked out bucket
@@ -147,6 +152,11 @@ export type SupplyCell =
   /**
    * A real measurement (#1937): how many of the times this bucket could have
    * taken an appointment at were actually booked.
+   *
+   * On the page (#3939, `callsByCode` given) it is in CALLS instead: `booked` is
+   * the calls taken by anything on the pool's advisors' calendars and `capacity`
+   * the calls their shifts could hold, Team capacity's measure. What follows
+   * describes the start time measure the monitor's nearly full check still reads.
    *
    * `capacity` is what is still OFFERED plus what is already TAKEN, both counted
    * as distinct start times on the same grid from the same source, which is the
@@ -363,6 +373,14 @@ export interface BucketSupplyInput {
    * day looks like (L11).
    */
   bookedByCodeAndDate: Map<string, Map<string, string[]>> | null;
+  /**
+   * Each code's calls per day (#3939, `callsByCode`): when given, a measured day is calls taken by
+   * anything on the pool's advisors' calendars out of the calls their shifts could hold, Team
+   * capacity's own measure. Null means the calendars could not be read, so every open day is
+   * unknown. Left out, a day is booked start times out of possible start times, which is what the
+   * monitor's nearly full check (`pool_fullness`) reads every five minutes without a calendar read.
+   */
+  callsByCode?: Map<string, Map<string, PoolCalls>> | null;
 }
 
 /** The theoretical maximum for one day, or the fact that there was never a day. */
@@ -742,6 +760,15 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
             : { kind: "overflows", toPool: plan.winner.toPool };
         }
 
+        // In calls, when the page handed them over (#3939): the cover judgement above still reads
+        // the slot cache, because which pool serves a lead is the booker's question, while how full
+        // a pool's day is comes from its advisors' calendars, as on Team capacity.
+        if (input.callsByCode !== undefined) {
+          const reading = input.callsByCode === null ? undefined : input.callsByCode.get(d.code)?.get(day.iso);
+          if (reading === undefined) return { kind: "unknown" };
+          if (reading.capacity === 0) return { kind: "nobody-available" };
+          return { kind: "counted", booked: reading.taken, capacity: reading.capacity, share: reading.taken / reading.capacity };
+        }
         return {
           kind: "counted",
           booked: taken.size,
