@@ -287,7 +287,7 @@ seeded agents (run 34658545203, 2026-09-11) against a design target of 100 to 20
 running the booking leg at 200 is #3829, below ("The 200 advisor run").
 
 **First reading against production, 2026-10-16 (#3124).** Run at 20:23 UTC (16:23
-ET), the query above returned:
+ET), the query above, then dividing 60, returned:
 
 | bookings in 30 days | busiest day | busiest minute | when | bar over peak |
 |---|---|---|---|---|
