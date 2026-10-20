@@ -10,7 +10,7 @@
 // arguments, so `scripts/test-calcom-roster.ts` drives it with no network and no
 // real clock.
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { retryDelayMs, CAL_SCHEDULES_API_VERSION } from "@/lib/calcom/schedule-import";
+import { retryDelayMs, retryAfterMs, CAL_SCHEDULES_API_VERSION } from "@/lib/calcom/schedule-import";
 import { selectAllPages } from "@/lib/supabase/paginate";
 // `pickDefaultSchedule` moved to `src/lib/calcom/schedule-import.ts` (#2627), because
 // the activation path in the Worker now reads a default schedule too and one choice
@@ -42,6 +42,9 @@ export const CAL_BOOKINGS_API_VERSION = "2024-08-13";
 export interface CalGetResult {
   status: number;
   json: unknown;
+  /** cal.com's Retry-After on a refusal the ladder gave up on, so a later read can
+   *  honour it (#3963). Absent on an answer. */
+  retryAfter?: string | null;
 }
 
 /**
@@ -92,10 +95,124 @@ export function makeCalGet(opts: {
       }
       if (res.ok) return { status: res.status, json: await res.json().catch(() => null) };
       const wait = retryDelayMs(res.status, res.headers.get("retry-after"), attempt);
-      if (wait === null) return { status: res.status, json: null };
+      if (wait === null) return { status: res.status, json: null, retryAfter: res.headers.get("retry-after") };
       await sleep(wait);
     }
   };
+}
+
+/**
+ * One agent's cal.com read, as the sweep and the import consume it: an answer
+ * (any status), or a transport fault the ladder could not ride out.
+ */
+export type CalRead =
+  | ({ kind: "answered" } & CalGetResult)
+  | { kind: "threw"; error: unknown };
+
+/**
+ * Whether a read earns a second attempt after the sweep (#3963). A rate limit only.
+ *
+ * Five of seven daily parity runs ended with exactly three agents unmeasured, a
+ * different three each day, every one a 429 that had already climbed the whole
+ * ladder. The ladder retries INSIDE the burst that caused the refusal, a few
+ * seconds apart; a read made after the sweep is over, once cal.com's window has
+ * passed, is a different attempt and usually answers.
+ *
+ * Nothing else earns one. A 5xx or a thrown fetch already climbed the same ladder
+ * as a transport fault, and a 4xx that is not a rate limit cannot be fixed by
+ * asking again: another read cannot create a schedule that is not there.
+ */
+export function earnsSecondRead(read: CalRead): boolean {
+  return read.kind === "answered" && read.status === 429;
+}
+
+/**
+ * The wait before the second read, when cal.com did not ask for longer.
+ *
+ * cal.com's API meters keys per MINUTE, so a full minute after the last refusal
+ * is a fresh window whatever the rest of the sweep spent. It is counted from the
+ * end of the sweep rather than from the refusal, so it can only ever be longer
+ * than needed, never early. It costs a minute on a day cal.com refused somebody
+ * and nothing on a day it did not, inside a job whose timeout is 25 minutes.
+ */
+export const SECOND_READ_BACKOFF_MS = 60_000;
+/** The most a Retry-After may make the second pass wait, so one absurd header
+ *  cannot spend the job's timeout sleeping. A refusal still standing after it is
+ *  reported unmeasured, as it always was. */
+export const SECOND_READ_MAX_WAIT_MS = 5 * 60_000;
+
+/**
+ * How long to wait before the second pass: cal.com's longest Retry-After when it
+ * asked for more than the backoff, otherwise the backoff.
+ *
+ * A Retry-After SHORTER than the backoff does not win, because the ladder already
+ * honoured it on every rung and was still refused, which is the measured proof it
+ * was not enough.
+ */
+export function secondReadWaitMs(refused: readonly CalRead[]): number {
+  let wait = SECOND_READ_BACKOFF_MS;
+  for (const r of refused) {
+    if (r.kind !== "answered") continue;
+    const asked = retryAfterMs(r.retryAfter);
+    if (asked !== null && asked > wait) wait = asked;
+  }
+  return Math.min(wait, SECOND_READ_MAX_WAIT_MS);
+}
+
+export interface SecondReadOutcome<T> {
+  /** Every item's final read: the second one where there was one. */
+  reads: Map<T, CalRead>;
+  /** Items cal.com rate limited on the first pass, so read again. */
+  retried: number;
+  /** Of those, how many were not rate limited the second time. */
+  recovered: number;
+  /** The wait before the second pass, or null when there was none. */
+  waitedMs: number | null;
+}
+
+/**
+ * Read every item once, paced, then read each rate limited one once more after a
+ * backoff (#3963). Shared by `pnpm verify:calcom-parity` and
+ * `pnpm import:calcom-schedules`, which read the same endpoint in the same lane
+ * and meet the same refusals: one rule, so the two cannot drift into retrying
+ * differently (L370).
+ *
+ * `sleep` is an argument so this is driven offline with recorded waits (L524).
+ * Pacing comes BEFORE each read, so the first one pays it too, as both callers
+ * always did. The single backoff stands in for the second pass's first pace.
+ * A read that throws is recorded rather than raised, so one agent's transport
+ * fault cannot end the run.
+ */
+export async function readEachWithSecondRead<T>(
+  items: readonly T[],
+  read: (item: T) => Promise<CalGetResult>,
+  opts: { sleep: (ms: number) => Promise<void>; paceMs: number },
+): Promise<SecondReadOutcome<T>> {
+  const attempt = async (item: T): Promise<CalRead> => {
+    try {
+      return { kind: "answered", ...(await read(item)) };
+    } catch (error) {
+      return { kind: "threw", error };
+    }
+  };
+  const reads = new Map<T, CalRead>();
+  for (const item of items) {
+    await opts.sleep(opts.paceMs);
+    reads.set(item, await attempt(item));
+  }
+  const refused = items.filter((item) => earnsSecondRead(reads.get(item)!));
+  if (refused.length === 0) return { reads, retried: 0, recovered: 0, waitedMs: null };
+
+  const waitedMs = secondReadWaitMs(refused.map((item) => reads.get(item)!));
+  let recovered = 0;
+  for (const [i, item] of refused.entries()) {
+    await opts.sleep(i === 0 ? waitedMs : opts.paceMs);
+    const again = await attempt(item);
+    // Read twice and no more. Still refused stays unmeasured, exactly as before.
+    if (!earnsSecondRead(again)) recovered++;
+    reads.set(item, again);
+  }
+  return { reads, retried: refused.length, recovered, waitedMs };
 }
 
 /**

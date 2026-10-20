@@ -535,6 +535,12 @@ eq(
   );
   assert(/30 work different hours/.test(cappedLine) && /and 28 more/.test(cappedLine), `the rest is counted from the count: ${cappedLine}`);
 
+  // One agent reads as one, in the alert's own words at that count (#3963).
+  const oneLine = lineOf(
+    parityDriftFromSummary({ total: 102, compared: 98, findings: [{ verdict: "hours-differ", count: 1, agents: ["a@x"] }] }, RUN),
+  );
+  assert(/1 works different hours \(a@x\)/.test(oneLine), `one agent works, not work: ${oneLine}`);
+
   // The alert can still be firing over a sweep that paged nothing (a clear that has
   // not landed). Naming nobody as though that were the drift would be a false all clear.
   const quietLine = lineOf(

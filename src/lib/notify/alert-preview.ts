@@ -3670,6 +3670,58 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     ),
   },
   {
+    // #3963: every count on the page at ONE, because "1 agent were corrected" is
+    // what shipped on 2026-10-20 and only a singular fixture can show it.
+    key: "schedule_parity_drift",
+    state: "one agent corrected, one left differing and one unread",
+    channel: "alert",
+    text: buildScheduleParityAlert(
+      classifyParitySweep({
+        total: 102,
+        compared: 99,
+        runUrl: "https://github.com/Try-Pennie/slate/actions/runs/1",
+        findings: [
+          { verdict: "hours-differ", count: 1, agents: ["jsullivan@"] },
+          { verdict: "calcom-unreachable", count: 1, agents: ["fcaruso@"] },
+        ],
+        corrected: { count: 1, agents: ["radeyemo@"] },
+      }),
+    ),
+  },
+  {
+    // #3963: bookable in Slate with no attribute any pool matches, so neither
+    // system offers them. It used to read as somebody "Slate offers", which was
+    // false and pointed at cal.com for a fix that is made in Twilio.
+    key: "schedule_parity_drift",
+    state: "a bookable agent is in no routing pool",
+    channel: "alert",
+    text: buildScheduleParityAlert(
+      classifyParitySweep({
+        total: 102,
+        compared: 100,
+        runUrl: "https://github.com/Try-Pennie/slate/actions/runs/1",
+        findings: [{ verdict: "bookable-in-no-pool", count: 1, agents: ["asmith@"] }],
+        corrected: { count: 0, agents: [] },
+      }),
+    ),
+  },
+  {
+    // #3963: the other direction. cal.com routes them leads and no Slate pool
+    // reaches them, so at cutover they would get none. This read as agreement.
+    key: "schedule_parity_drift",
+    state: "agents cal.com routes are in no Slate routing pool",
+    channel: "alert",
+    text: buildScheduleParityAlert(
+      classifyParitySweep({
+        total: 102,
+        compared: 100,
+        runUrl: "https://github.com/Try-Pennie/slate/actions/runs/1",
+        findings: [{ verdict: "in-no-pool-still-routed", count: 2, agents: ["bjones@", "ckim@"] }],
+        corrected: { count: 0, agents: [] },
+      }),
+    ),
+  },
+  {
     key: "schedule_parity_drift",
     state: "the two systems agree again",
     channel: "recovery",
@@ -3688,6 +3740,20 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
         runUrl: "https://github.com/x/y",
         findings: [],
         corrected: { count: 4, agents: ["dshearer@", "sconner@", "chammar@", "jarmstrong@"] },
+      }),
+    ),
+  },
+  {
+    key: "schedule_parity_drift",
+    state: "they agree again after the lane corrected one, with one standing",
+    channel: "recovery",
+    text: buildScheduleParityAllClear(
+      classifyParitySweep({
+        total: 102,
+        compared: 101,
+        runUrl: "https://github.com/x/y",
+        findings: [{ verdict: "no-calcom-schedule", count: 1, agents: ["jsaminu@"] }],
+        corrected: { count: 1, agents: ["dshearer@"] },
       }),
     ),
   },

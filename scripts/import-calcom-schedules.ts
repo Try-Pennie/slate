@@ -71,7 +71,7 @@ const { loadCalcomRetired, calcomHoursWriteRefusal } = await import("@/lib/calco
 // The reads this shares with `pnpm verify:calcom-parity`. One definition of "who
 // is a bookable agent", because two would drift and the command would then report
 // agreement about a roster this never wrote to.
-const { makeCalGet, emailIndex, loadBookableRoster } = await import(
+const { makeCalGet, emailIndex, loadBookableRoster, readEachWithSecondRead } = await import(
   "./lib/calcom-roster.ts"
 );
 
@@ -206,20 +206,39 @@ const render = (rs: { weekday: number; start_minute: number; end_minute: number 
   return `days ${days} ${windows.join(" / ")}`;
 };
 
+// Read every agent that has a row on both sides, paced, and read each one cal.com
+// rate limited once more after a backoff (#3963). The rule is shared with the
+// parity sweep in `readEachWithSecondRead`, so the two cannot retry differently.
+const readable = agents.filter(
+  (a) => a.scheduleId !== null && a.timezone !== null && Boolean(calId.get(a.email.toLowerCase())),
+);
+const pass = await readEachWithSecondRead(
+  readable,
+  (a) => calGet(`/organizations/${org}/users/${calId.get(a.email.toLowerCase())}/schedules`),
+  { sleep, paceMs: PACE_MS },
+);
+if (pass.retried > 0) {
+  console.log(
+    `cal.com rate limited ${pass.retried} agent(s); read again after ${Math.round((pass.waitedMs ?? 0) / 1000)}s, ` +
+      `${pass.recovered} answered the second time`,
+  );
+}
+
 for (const agent of agents) {
   if (agent.scheduleId === null || agent.timezone === null) {
     skipped.push({ email: agent.email, why: "no availability_schedules row in Slate", kind: "permanent" });
     continue;
   }
   const cid = calId.get(agent.email.toLowerCase());
-  if (!cid) {
+  const outcome = pass.reads.get(agent);
+  if (!cid || outcome === undefined) {
     skipped.push({ email: agent.email, why: "no cal.com account, so there is nothing to import", kind: "permanent" });
     continue;
   }
   let calSchedule: unknown;
   try {
-    await sleep(PACE_MS);
-    const r = await calGet(`/organizations/${org}/users/${cid}/schedules`);
+    if (outcome.kind === "threw") throw outcome.error;
+    const r = outcome;
     if (r.status < 200 || r.status >= 300) {
       skipped.push({
         email: agent.email,

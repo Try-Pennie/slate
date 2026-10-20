@@ -38,8 +38,9 @@ export type ParityVerdictClass =
  *
  * The order within `paging` follows `OUTCOME_ORDER`: the two roster findings that
  * put a real lead in front of the wrong person, then the three that change what a
- * lead is offered, then the two where Slate and cal.com disagree about who is in
- * the pool at all.
+ * lead is offered, then the ones where Slate and cal.com disagree about who is in
+ * the pool at all, including the two (#3963) where no Slate routing pool reaches
+ * somebody who is bookable.
  */
 export const PARITY_VERDICT_CLASS = {
   "departed-still-hosting": "paging",
@@ -52,7 +53,15 @@ export const PARITY_VERDICT_CLASS = {
   // (#2088). It pages for the same reason its neighbour does, and it is the louder
   // of the two: the incumbent made this decision explicitly.
   "bookable-not-routable": "paging",
+  // The other direction (#3963): cal.com routes them, no Slate pool reaches them,
+  // so at cutover they get no leads. It read as agreement before.
+  "in-no-pool-still-routed": "paging",
   "absent-from-slate": "paging",
+  // Bookable in Slate and in no routing pool, so neither system offers them
+  // (#3963). It pages because it is fixable today and only by a person: their debt
+  // tier is tagged in Twilio and the roster sync does the rest. It used to arrive
+  // as `bookable-not-hosting`, which claimed Slate offers them.
+  "bookable-in-no-pool": "paging",
   // Nine admins, managers and team leads who host in cal.com and are correctly not
   // bookable in Slate. It is the commonest non-agreement the sweep produces, and it
   // is deliberately absent from `OUTCOME_ORDER` because an exit code for it would
@@ -88,20 +97,60 @@ export const PARITY_VERDICT_CLASS = {
 export type ParityVerdict = keyof typeof PARITY_VERDICT_CLASS;
 
 /**
- * How each paging verdict is said to a person, in the vocabulary of the roster.
- * Exported for `pnpm verify:parallel-run-readiness` (#2089), so its drift line and
- * this page name a difference in the same words.
+ * How each paging verdict is said to a person, in the vocabulary of the roster, at
+ * one agent and at many. Both forms are written out because the verb is what
+ * changes ("1 works", "6 work"), and a sentence that counts its noun but not its
+ * verb is what shipped "1 agent were corrected" (#3963).
  */
-export const PAGING_LABEL: Record<string, string> = {
-  "departed-still-hosting": "have left Slate and can still be booked in cal.com",
-  "held-back-still-hosting": "Slate will not route to and cal.com still can",
-  "timezone-differs": "are in a different timezone",
-  "days-differ": "work different days",
-  "hours-differ": "work different hours",
-  "bookable-not-hosting": "Slate offers and cal.com does not list at all",
-  "bookable-not-routable": "Slate offers and cal.com withholds from routing",
-  "absent-from-slate": "host in cal.com and have no Slate record",
+const PAGING_LABEL: Record<string, { one: string; many: string }> = {
+  "departed-still-hosting": {
+    one: "has left Slate and can still be booked in cal.com",
+    many: "have left Slate and can still be booked in cal.com",
+  },
+  "held-back-still-hosting": {
+    one: "Slate will not route to and cal.com still can",
+    many: "Slate will not route to and cal.com still can",
+  },
+  "timezone-differs": { one: "is in a different timezone", many: "are in a different timezone" },
+  "days-differ": { one: "works different days", many: "work different days" },
+  "hours-differ": { one: "works different hours", many: "work different hours" },
+  "bookable-not-hosting": {
+    one: "Slate offers and cal.com does not list at all",
+    many: "Slate offers and cal.com does not list at all",
+  },
+  "bookable-not-routable": {
+    one: "Slate offers and cal.com withholds from routing",
+    many: "Slate offers and cal.com withholds from routing",
+  },
+  "absent-from-slate": {
+    one: "hosts in cal.com and has no Slate record",
+    many: "host in cal.com and have no Slate record",
+  },
+  "bookable-in-no-pool": {
+    one: "is bookable in Slate and in no routing pool, so neither system offers them",
+    many: "are bookable in Slate and in no routing pool, so neither system offers them",
+  },
+  "in-no-pool-still-routed": {
+    one: "is bookable in Slate and in no routing pool while cal.com still routes them leads",
+    many: "are bookable in Slate and in no routing pool while cal.com still routes them leads",
+  },
 };
+
+/**
+ * The words after the count for one paging verdict. Exported for
+ * `pnpm verify:parallel-run-readiness` (#2089), so its drift line and this page
+ * name a difference in the same words at the same count.
+ */
+export function pagingLabel(verdict: string, count: number): string {
+  const label = PAGING_LABEL[verdict];
+  if (!label) return verdict;
+  return count === 1 ? label.one : label.many;
+}
+
+/** One or many, by count: the one place a sentence here picks its verb (#3963). */
+function byCount(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
+}
 
 /** One verdict's share of a sweep, as the run reported it. */
 export interface ParityFinding {
@@ -206,7 +255,7 @@ function agentList(f: ParityFinding): string {
 }
 
 function agentWord(n: number): string {
-  return n === 1 ? "agent" : "agents";
+  return byCount(n, "agent", "agents");
 }
 
 /** What the lane wrote this morning, or nothing when no apply ran (#2092). */
@@ -215,7 +264,7 @@ function correctionLine(c: ParityCorrection | undefined): string | null {
   const named = c.agents.slice(0, NAMED_AGENT_CAP);
   const rest = c.count - named.length;
   const who = named.length > 0 ? `: ${named.join(", ")}${rest > 0 ? ` and ${rest} more` : ""}` : "";
-  return `${c.count} ${agentWord(c.count)} were corrected from cal.com automatically${who}.`;
+  return `${c.count} ${agentWord(c.count)} ${byCount(c.count, "was", "were")} corrected from cal.com automatically${who}.`;
 }
 
 /**
@@ -234,9 +283,9 @@ function correctionLine(c: ParityCorrection | undefined): string | null {
  * somebody who has left is a person deciding which system is wrong.
  */
 export function buildScheduleParityAlert(j: ParityJudgement): string {
-  const head = `${j.drifted} of ${j.total} ${agentWord(j.total)} differ between Slate and cal.com.`;
+  const head = `${j.drifted} of ${j.total} ${agentWord(j.total)} ${byCount(j.drifted, "differs", "differ")} between Slate and cal.com.`;
   const lines = j.paging.map(
-    (f) => `${f.count} ${PAGING_LABEL[f.verdict] ?? f.verdict}${agentList(f)}`,
+    (f) => `${f.count} ${pagingLabel(f.verdict, f.count)}${agentList(f)}`,
   );
   const tail: string[] = [];
   const corrected = correctionLine(j.corrected);
@@ -244,15 +293,20 @@ export function buildScheduleParityAlert(j: ParityJudgement): string {
   if (j.unmeasured > 0) {
     tail.push(`${j.unmeasured} could not be read, so nothing is claimed about them.`);
   }
-  const hoursDrift = j.paging.some((f) =>
-    f.verdict === "hours-differ" || f.verdict === "days-differ" || f.verdict === "timezone-differs",
-  );
-  if (hoursDrift) {
+  const hoursDrift = j.paging
+    .filter((f) => f.verdict === "hours-differ" || f.verdict === "days-differ" || f.verdict === "timezone-differs")
+    .reduce((n, f) => n + f.count, 0);
+  if (hoursDrift > 0) {
     tail.push(
       j.corrected === undefined
         ? "Re-import the hours with APPLY=1 pnpm import:calcom-schedules"
-        : "The import already ran this morning and could not fix these, so they need a person. The run says which it refused.",
+        : `The import already ran this morning and could not fix ${byCount(hoursDrift, "this one, so it needs", "these, so they need")} a person. The run says which it refused.`,
     );
+  }
+  // #3963: the fix for somebody in no pool is in Twilio, not in either system the
+  // comparison reads, so the page says where rather than leaving it to be guessed.
+  if (j.paging.some((f) => f.verdict === "bookable-in-no-pool" || f.verdict === "in-no-pool-still-routed")) {
+    tail.push("Tag their debt tier in Twilio, and the roster sync gives them the attributes a pool matches.");
   }
   return [head, ...lines, ...tail, j.runUrl].join("\n");
 }
@@ -273,7 +327,7 @@ export function buildScheduleParityAllClear(j: ParityJudgement): string {
   const corrected = correctionLine(j.corrected);
   if (corrected) parts.push(corrected);
   if (j.standing > 0) {
-    parts.push(`${j.standing} still have no week to compare on one side, unchanged.`);
+    parts.push(`${j.standing} still ${byCount(j.standing, "has", "have")} no week to compare on one side, unchanged.`);
   }
   return parts.join("\n");
 }
@@ -282,8 +336,13 @@ export function buildScheduleParityAllClear(j: ParityJudgement): string {
 
 /** How many agents one finding may name before the rest are dropped. */
 const WIRE_AGENT_CAP = 8;
-/** How many distinct verdicts one sweep may report. There are fourteen in total. */
-const WIRE_FINDING_CAP = 20;
+/**
+ * How many findings one sweep may report: one per verdict, since the sweep sends
+ * each verdict once. DERIVED from the vocabulary rather than written as a number,
+ * because it was a literal 20 while the verdicts grew to 19 (#3963), and the next
+ * one would have had the endpoint refuse every sweep carrying them all.
+ */
+const WIRE_FINDING_CAP = Object.keys(PARITY_VERDICT_CLASS).length;
 /** Long enough for an email plus a name, short enough that one cannot fill a page. */
 const WIRE_AGENT_CHARS = 120;
 /** The only place a run link may point. */
@@ -295,7 +354,7 @@ const RUN_URL_PREFIX = "https://github.com/";
  * The caller holds the booking API key, which makes this a trusted CALLER and not
  * trusted CONTENT: what it sends is rendered into an alert somebody reads on a
  * phone and acts on. Two things are therefore closed rather than validated loosely.
- * The verdict is a vocabulary, refused unless it is one of the fourteen the sweep
+ * The verdict is a vocabulary, refused unless it is one in `PARITY_VERDICT_CLASS`, the ones the sweep
  * can actually produce, so no name reaches the copy that the classification does
  * not know what to do with. And the run link may only be a GitHub URL, because it
  * is the one part of the message a reader clicks without reading.

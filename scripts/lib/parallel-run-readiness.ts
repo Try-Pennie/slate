@@ -47,7 +47,7 @@ import { judgeCalendarCoverage, type CalendarWindowRow } from "../../src/lib/mon
 import {
   classifyParitySweep,
   parseParitySweep,
-  PAGING_LABEL,
+  pagingLabel,
   type ParityFinding,
 } from "../../src/lib/monitor/schedule-parity-alert.ts";
 
@@ -117,7 +117,7 @@ function driftLine(d: ParityDriftDetail): string {
     const shown = f.agents.slice(0, DRIFT_NAME_CAP);
     const rest = f.count - shown.length;
     const who = shown.length ? ` (${shown.join(", ")}${rest > 0 ? ` and ${rest} more` : ""})` : "";
-    return `${f.count} ${PAGING_LABEL[f.verdict] ?? f.verdict}${who}`;
+    return `${f.count} ${pagingLabel(f.verdict, f.count)}${who}`;
   });
   return `the cal.com comparison is reporting drift on ${total} agent(s): ${groups.join("; ")}; ${d.runUrl}`;
 }

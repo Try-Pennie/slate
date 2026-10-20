@@ -77,7 +77,7 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { unwrap } = await import("@/lib/db/result");
 const { paceMs, skipKindForStatus, pickDefaultSchedule } = await import("@/lib/calcom/schedule-import");
-const { makeCalGet, emailIndex, loadBookableRoster, readEventTypeId } = await import(
+const { makeCalGet, emailIndex, loadBookableRoster, readEventTypeId, readEachWithSecondRead } = await import(
   "./lib/calcom-roster.ts"
 );
 const { compareAgentSchedule, reclassifyAgentOwnedHours, VERDICT_RANK } = await import(
@@ -350,32 +350,44 @@ interface Row {
 }
 const rows: Row[] = [];
 
+// Every agent with a cal.com account is read first, paced BEFORE each read so the
+// first agent pays it too (the run that met 429 at agent 15 did so by opening at
+// full speed), and each one cal.com rate limited is read once more after a backoff
+// (#3963). The rule lives in `readEachWithSecondRead`, shared with the import.
+const withCalId = agents.filter((a) => index.index.has(a.email.toLowerCase()));
+const pass = await readEachWithSecondRead(
+  withCalId,
+  (a) => calGet(`/organizations/${org}/users/${index.index.get(a.email.toLowerCase())}/schedules`),
+  { sleep, paceMs: PACE_MS },
+);
+if (pass.retried > 0) {
+  console.log(
+    `note: cal.com rate limited ${pass.retried} agent(s); read again after ${Math.round((pass.waitedMs ?? 0) / 1000)}s, ` +
+      `${pass.recovered} answered the second time\n`,
+  );
+}
+
 for (const agent of agents) {
   const slate = agent.scheduleId === null || agent.timezone === null
     ? null
     : { timezone: agent.timezone, rules: agent.rules };
 
   let cal: CalcomSide;
-  const calId = index.index.get(agent.email.toLowerCase());
-  if (calId === undefined) {
+  const outcome = pass.reads.get(agent);
+  if (outcome === undefined) {
     cal = { kind: "user-missing" };
   } else {
-    // Paced BEFORE the read, not after, so the first agent pays it too: the run
-    // that met 429 at agent 15 did so by opening at full speed.
-    await sleep(PACE_MS);
-    let read;
-    try {
-      read = await calGet(`/organizations/${org}/users/${calId}/schedules`);
-    } catch (err) {
+    if (outcome.kind === "threw") {
       // The ladder re-throws a transport fault it could not ride out. That is one
       // agent's read, not the run's, so it is recorded and the sweep continues.
       rows.push({
         email: agent.email,
         verdict: "calcom-unreachable",
-        reasons: [`the read threw and did not recover: ${String(err).slice(0, 120)}`],
+        reasons: [`the read threw and did not recover: ${String(outcome.error).slice(0, 120)}`],
       });
       continue;
     }
+    const read = outcome;
     if (read.status < 200 || read.status >= 300) {
       cal = {
         kind: "read-failed",

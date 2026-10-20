@@ -265,13 +265,22 @@ export function retryDelayMs(
   if (!retryable) return null;
   if (attempt >= MAX_ATTEMPTS) return null;
   // The server's own instruction wins: it knows when it will accept us again.
-  if (retryAfterHeader !== null) {
-    const seconds = Number(retryAfterHeader.trim());
-    // An unreadable Retry-After falls through to the backoff rather than becoming
-    // NaN, which a timer treats as zero and which would turn the retry into a storm.
-    if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
-  }
-  return BASE_DELAY_MS * 2 ** attempt;
+  return retryAfterMs(retryAfterHeader) ?? BASE_DELAY_MS * 2 ** attempt;
+}
+
+/**
+ * A Retry-After header in milliseconds, or null when there is none or it cannot be
+ * read. Shared by the ladder above and the second read after a sweep (#3963), so
+ * the two can never disagree about what cal.com asked for.
+ *
+ * An unreadable value is null rather than NaN, which a timer treats as zero and
+ * which would turn a retry into a storm. Only the seconds form is read; an HTTP
+ * date is treated as unreadable and the caller's own backoff applies.
+ */
+export function retryAfterMs(header: string | null | undefined): number | null {
+  if (header === null || header === undefined || header.trim() === "") return null;
+  const seconds = Number(header.trim());
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : null;
 }
 
 /**
