@@ -549,6 +549,8 @@ jobs:
   # outside the `ci` fan-in so a comment GitHub refuses never blocks a merge. It fails
   # when nothing was measured or posting failed.
   design-score:
+    # alert-latency-ok: it runs only on a pull request, and a pull request run has no
+    # deploy, so it never holds a deploy's run open or delays the deploy failure alert.
     needs: browser
     if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.browser.outputs.decision == 'run' }}
     timeout-minutes: 5  # a download and two comments
