@@ -368,6 +368,8 @@ describe("loadBucketSupply (#1254)", () => {
       payload: { slots: FULL_DAY.slice(7), eventType: EVENT_TYPE },
       computed_at: stamp,
     }));
+    const pool = new Map([[DAY0, { taken: 5, capacity: 20 }]]);
+    calls.loadPoolCalls.mockResolvedValue(new Map([["110", pool], ["111", pool]]));
     db.bookingRows = FULL_DAY.slice(0, 7).map((starts_at) => ({ starts_at, buckets: { code: "110" } }));
     const report = await loadBucketSupply("org-1", NOW);
     expect(report.measurable).toBe(true);
@@ -375,7 +377,7 @@ describe("loadBucketSupply (#1254)", () => {
     const a = report.rows.find((r) => r.code === "110");
     const b = report.rows.find((r) => r.code === "111");
     expect(a?.cells[0]).toEqual({ kind: "counted", booked: 5, capacity: 20, share: 5 / 20 });
-    expect(b?.cells[0]).toEqual({ kind: "unknown" });
+    expect(b?.cells).toEqual(a?.cells);
     expect(b?.poolKey).toBe("pool-low");
     expect(b?.poolLabel).toBe("Low");
   });
