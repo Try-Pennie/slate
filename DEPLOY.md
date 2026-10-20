@@ -1117,10 +1117,11 @@ observability notes carry the real headroom numbers to compare against.
 ## Capacity: the database and the Google quota (#3124)
 
 The Worker's own ceilings (CPU, subrequests, the shared every minute invocation) are
-measured and live in `docs/cloudflare-platform-notes.md`. The two shared resources
-OUTSIDE Cloudflare are only partly measured, and this section says what is known
-about each, what is not, and how to read the missing half, so the next capacity
-question starts from a recorded state rather than a guess.
+measured and live in `docs/cloudflare-platform-notes.md`. This section records the
+two shared resources OUTSIDE Cloudflare: what was read, when, where to read it again,
+and what is still not known, so the next capacity question starts from a recorded
+state rather than a guess. Every dashboard figure below is a reading on one day, not
+a guarantee; re-read it before any capacity decision and after cutover (#65).
 
 **The load premise.** How busy Slate really gets is the peak query in
 `scripts/loadtest/RUNBOOK.md` ("The peak the 60 a minute bar rests on"), re-runnable
@@ -1151,10 +1152,18 @@ and the RUNBOOK says why the whole of the traffic may put the bar under ten time
   dashboard's Compute and Disk page is the tie breaker if they ever disagree. The
   load run's branch must match it; the RUNBOOK's step 1 says how to check both.
 
-What is not known, and where to read it: the **database size against its disk**
-(Dashboard > Project Settings > Compute and Disk), and the **PostgREST pool size and
-its saturation** (Dashboard > Reports > Database). Neither has been recorded, and
-neither can be read from this repo. Growth is driven by the
+- **Disk: 0.75 GB used of 8 GB** (about 9 percent), the plan's included 8 GB of
+  gp3, read on 2026-10-18 at about 9 PM ET (Dashboard > Project Settings > Compute
+  and Disk). Most of it is the database itself, then WAL, then system.
+- **Connections: about 20 at the 7 day peak against a maximum of 160** (about 12
+  percent), 17 at the time of reading, read on 2026-10-18 at about 9 PM ET over the
+  7 days from 2026-10-11 (Dashboard > Reports > Database). The bars are mostly
+  PostgREST with small Postgres, reserved, auth and storage shares, and they stay
+  level through day and night, so the load is the steady cron lanes rather than
+  bookings, and cutover volume should move it little.
+
+Neither figure can be read from this repo, so a change to either is only seen on
+the dashboard. Growth is driven by the
 append only tables (`booking_events`, `audit_log`, `webhook_deliveries`) and by
 bookings, and retention is the only thing that bounds them (`docs/pii-retention.md`).
 
@@ -1163,11 +1172,27 @@ service account through domain wide delegation, so every call Slate makes counts
 against the ONE Google Cloud project that owns that service account's OAuth client.
 The calls are the every minute sync backstop, Google push channel renewals, the live
 `freeBusy` at confirm (batched at Google's 20 calendars a call, #2412), event writes
-on book, reschedule and cancel, and the verify commands run by hand. What is not
-known: that project's per day and per minute quota for the Calendar API, and how near
-Slate runs to it. Read both in the Google Cloud console (APIs and Services > Google
-Calendar API > Quotas, and its Metrics tab for the traffic) for the project that owns
-`GOOGLE_SA_CLIENT_EMAIL`. A quota refusal (a 429, or a 403 whose reason is
+on book, reschedule and cancel, and the verify commands run by hand.
+
+Read in the Google Cloud console on 2026-10-18 at about 8:57 PM ET (APIs and
+Services > Google Calendar API, Quotas and Metrics tabs, for the project that owns
+`GOOGLE_SA_CLIENT_EMAIL`):
+
+- **Quotas:** 10,000 queries a minute for the project, and 600 a minute per user.
+  There is no per day cap.
+- **Traffic over the 30 days before:** the highest point was about 1.85 requests a
+  second (about 110 a minute) around 2026-10-04, and since about 2026-10-11 it sits
+  flat near 1.7 a second around the clock. So the peak is about 1.1 percent of the
+  project limit, roughly 90 times headroom. The chart averages over its interval, so
+  a single minute can run higher; ten times the reading is still about 11 percent.
+  Like the database, the load is near constant day and night, which says it is the
+  sync lanes rather than bookings.
+- **Per user:** a delegated call is made as the user its token impersonates
+  (`signJwt` in `src/lib/google/dwd.ts`), normally the advisor whose calendar it
+  touches, so the 600 a minute per user limit applies per advisor rather than to
+  Slate as a whole. No usage against it was shown.
+
+A quota refusal (a 429, or a 403 whose reason is
 `quotaExceeded` or a rate limit) is classified `transient` by
 `src/lib/google/reachability-classify.ts`, so running out reads as a run of
 transient calendar failures rather than under a quota name of its own.
