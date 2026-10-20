@@ -160,9 +160,9 @@ export default async function TeamCapacityPage({
     <>
       {header}
       <TeamCapacityView
-        // A picked date comes back as a new page with a new day list; keyed on it, the screen opens
-        // on the picked day rather than keeping the day selected before.
-        key={`${sources.map((s) => s.iso).join(",")}|${initialIndex}`}
+        // Every load from the server starts the screen afresh: a picked date opens on that day
+        // rather than keeping the one selected before, and a saved line closes its form.
+        key={`${sources.map((s) => s.iso).join(",")}|${initialIndex}|${nowMs}`}
         view={teamCapacityView({ zone: report.zone, todayIso, nowMs, durationMin: report.eventType.duration_min, nearlyFullPct, days: sources })}
         zone={report.zone}
         todayIso={todayIso}

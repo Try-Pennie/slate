@@ -134,6 +134,10 @@ eq(axisPos("2026-11-03T13:00:00.000Z", Z), 0, "8am after the clocks change is st
 {
   assert(designFixturesEnabled("1", "localhost:3100"), "the e2e run on this machine gets the frames");
   assert(designFixturesEnabled("1", "127.0.0.1:3100") && designFixturesEnabled("1", "[::1]:3100"), "by any loopback name");
+  // The frames' branch reads the fixture from disk, which a Worker has none of, so no deployment
+  // may carry the flag at all; the loopback check is the second lock, not the only one.
+  const wrangler = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+  assert(!wrangler.includes("SLATE_DESIGN_FIXTURES"), "no deployment in wrangler.jsonc sets the design frames flag");
   for (const [flag, host] of [[undefined, "localhost:3100"], ["true", "localhost:3100"], ["1", "slate.trypennie.app"], ["1", "localhost.evil.test"], ["1", null]] as const) {
     assert(!designFixturesEnabled(flag, host), `never with flag ${String(flag)} on host ${String(host)}`);
   }

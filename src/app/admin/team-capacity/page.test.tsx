@@ -132,6 +132,19 @@ describe("/admin/team-capacity", () => {
     expect(selectedTab()).toBe(`${DateTime.fromISO(later, { zone: Z }).toFormat("ccc")}, ${DateTime.fromISO(later, { zone: Z }).toFormat("LLL d")}`);
   });
 
+  it("closes the line's form when the page comes back from a save", async () => {
+    const view = await renderPage();
+    screen.getByRole("button", { name: "Change" }).click();
+    await screen.findByRole("button", { name: "Cancel" });
+    // The save redirects back here, so the server renders the page again, a moment later.
+    const later = Date.now() + 1000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(later);
+    view.rerender(await TeamCapacityPage({ searchParams: Promise.resolve({ ok: "nearly-full" }) }));
+    clock.mockRestore();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Change" })).toBeTruthy();
+  });
+
   it("opens on tomorrow when the past day picked holds nothing saved", async () => {
     await renderPage({ day: iso(-3) });
     expect(selectedTab()).toMatch(/^Tomorrow/);
