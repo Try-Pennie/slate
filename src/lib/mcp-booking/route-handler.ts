@@ -9,7 +9,9 @@
  *     none (an unconfigured deployment refuses everything, it never waves calls on);
  *  2. Marcia's signed lead token, by the one verifier (`machine-token.ts`), with the
  *     lead taken from it and from nothing else;
- *  3. then the operation, which never throws (`runMarciaOperation`).
+ *  3. the gateway's mark that Marcia's overall limit admitted the call (#3879), so a
+ *     verified call the gateway did not charge is refused rather than run unmetered;
+ *  4. then the operation, which never throws (`runMarciaOperation`).
  *
  * WHO MAY CALL: a holder of the gateway secret, which is only the Slate Worker
  * itself. WHOSE DATA: the one lead the verified token names.
@@ -17,7 +19,7 @@
  * The route reads no cookie and no session: there is no person here, only Marcia.
  */
 import { timingSafeEqual } from "@/lib/bearer-auth";
-import { GATEWAY_SECRET_HEADER, LEAD_TOKEN_HEADER } from "./carrier.ts";
+import { GATEWAY_SECRET_HEADER, LEAD_TOKEN_HEADER, LIMIT_ADMITTED_HEADER } from "./carrier.ts";
 import { usableTokenKeys, verifyMachineToken } from "./machine-token.ts";
 import { describeTokenRefusal, type MachineTokenRefusal, type MarciaLeadClaims } from "./token-shape.ts";
 import type { MarciaAnswer, MarciaOperation } from "./operations.ts";
@@ -63,6 +65,13 @@ export async function handleMarciaInternal(req: Request, op: MarciaOperation, en
     return refusal(401, verified.refusal.code, describeTokenRefusal(verified.refusal), {
       ...("claim" in verified.refusal ? { claim: verified.refusal.claim } : {}),
     });
+  }
+  // #3879: Marcia's overall limit is charged by the gateway for a token IT verified. A
+  // token this route verified but the gateway did not charge means the two disagree
+  // (their key reads, say), and the call would run unmetered: refuse it instead.
+  if (req.headers.get(LIMIT_ADMITTED_HEADER) !== "1") {
+    deps.logError("a verified Marcia call arrived without the gateway's limit mark, so it was refused", { operation: op });
+    return refusal(503, "marcia_limit_unchecked", "Slate could not check Marcia's call limit just now. Try again in a minute.");
   }
 
   let body: unknown;

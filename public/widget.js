@@ -7,7 +7,7 @@
  *
  *   Cal("init", "<namespace>", { origin });   // per-namespace origin
  *   Cal.ns["<ns>"]("ui", { ... });             // accepted (Slate styles itself)
- *   Cal.ns["<ns>"]("prerender", { ... });      // accepted, no-op (pre build is on intent, below)
+ *   Cal.ns["<ns>"]("prerender", { calLink, type: "modal" });  // build the modal now, hidden (below)
  *   Cal("on", { action: "bookingSuccessful", callback });
  *   Cal.ns["<ns>"]("closeModal"); Cal("closeModal");  // hide the modal, as the close button does
  *   window.Cal.config.forwardQueryParams = true;
@@ -48,8 +48,8 @@
  * booked with, so a host looks a booking up with the id from the event's booking,
  * never with one it re-derives from its own page.
  *
- * The modal frame is built by the FIRST open (or before it, on intent: see Pre
- * build below) and kept across close and reopen
+ * The modal frame is built by the FIRST open (or before it, on intent or on the
+ * host's prerender: see Pre build below) and kept across close and reopen
  * (#2678), the way cal.com keeps its modal: closing hides the overlay, and the
  * next click on a trigger with the same namespace and the same booking URL shows
  * the same iframe again, so the Booker inside keeps its chosen day, time and
@@ -58,20 +58,33 @@
  * URL differs (another xbc, other params) replaces that namespace's frame, and a
  * second namespace gets a frame of its own.
  *
- * Pre build (#2679): cal.com's `prerender` builds its modal at page load so the
- * first click opens a booker that has already loaded. Slate does the same thing
- * one step later, on the trigger's FIRST hover, focus or touch: the same intent
- * that warms the availability read (#251) also builds that namespace's frame,
- * hidden, so the click only shows it. The `prerender` command itself stays an
- * accepted no-op. A pre built frame is invisible to the lead and to the host: it
+ * Pre build: the frame is built, hidden, before the click, so the click only
+ * shows it, in two ways.
+ *
+ * - On intent (#2679): the trigger's FIRST hover, focus or touch, the same
+ *   intent that warms the availability read (#251). Its 12 second load clock
+ *   starts at the pre build, so a frame that never loads is reported on the
+ *   first open rather than after another twelve seconds.
+ * - On the host's `prerender` (#3706), as cal.com's own prerender builds its
+ *   modal at page load. A phone sends its touch with its click, so intent comes
+ *   too late there, and only this gets the lead a booker that has already
+ *   loaded. It takes the arguments a cal.com host already sends: `calLink`, read
+ *   like a trigger's link with its `metadata[...]` entries read as metadata, and
+ *   `type` ("modal" or absent); `calOrigin`, `pageType` and `options` are
+ *   ignored, and the frame is built at the namespace's init origin. Its load
+ *   clock runs only once it is shown: a frame built at page load can sit hidden
+ *   for minutes, and twelve seconds of that are not a wait any lead sat through,
+ *   so a frame still loading at the click gets twelve seconds from the click.
+ *
+ * Either way a pre built frame is invisible to the lead and to the host: it
  * takes no focus, no key and no scroll lock, and nothing it says is announced
- * until the first show, because a hover is not a view (bookerViewed,
- * bookerReady and any linkFailed are held and announced right after that
- * click's navigatedToBooker). Its 12 second load clock starts at the pre build,
- * so a frame that never loads is reported on the first open rather than after
- * another twelve seconds. Intent never replaces a namespace's existing frame;
- * only a click does. A device with no hover pre builds on the touch, or simply
- * builds on the click as before.
+ * until the first show, because a hover or a prerender is not a view
+ * (bookerViewed, bookerReady and any linkFailed are held and announced right
+ * after that click's navigatedToBooker). Neither ever replaces a namespace's
+ * existing frame, and a namespace holds one at most; a click on another link
+ * (another xbc, other params) replaces it, exactly as for a frame the click
+ * built. A device with no hover and a host with no prerender simply build on
+ * the click as before.
  */
 (function () {
   "use strict";
@@ -127,6 +140,12 @@
   // resize and lifecycle messages are matched through `frames` instead.
   var activeIframe = null;
   var activeModalHide = null;
+  // Prerenders that arrived before they could be built (#3706). The loader
+  // stub's queue is drained just below, ahead of the frame code further down, so
+  // a prerender the host queued before this script downloaded waits here until
+  // the end of the file, and then until the page has a body.
+  var prerenderReady = false;
+  var pendingPrerenders = [];
 
   function ensureNs(ns) {
     return (namespaces[ns] = namespaces[ns] || { origin: "", ui: {} });
@@ -176,8 +195,11 @@
       // cal.com's inline embed (#3718): the booker drawn inside an element on the
       // host page rather than in a modal.
       renderInline(ns, args[1]);
+    } else if (method === "prerender") {
+      // cal.com's command for building the modal before the click (#3706).
+      prerender(ns, args[1]);
     }
-    // "prerender" and anything else: accepted, no-op (kept API-compatible).
+    // Anything else: accepted, no-op (kept API-compatible).
   }
 
   function registerNs(ns) {
@@ -474,17 +496,93 @@
     frame.show(trigger);
   }
 
-  // The trigger's first hover, focus or touch (#2679): build the namespace's
-  // frame hidden, so the click that usually follows only shows it. Never replaces
-  // a frame the namespace already holds, whatever link it was built for, because
-  // that frame may hold a booker the lead has already used; a click on another
-  // link still replaces it, as above. A frame the host page tore out is gone, so
-  // it is built again. At most one build per namespace and link per page load.
-  function prebuildFrame(link, ns, trigger) {
+  // Build the namespace's frame hidden, so the click that usually follows only
+  // shows it: on the trigger's first hover, focus or touch (#2679), or when the
+  // host calls prerender (#3706). Never replaces a frame the namespace already
+  // holds, whatever link it was built for, because that frame may hold a booker
+  // the lead has already used; a click on another link still replaces it, as
+  // above. A frame the host page tore out is gone, so it is built again. At most
+  // one build per namespace per page load, however many hovers or prerenders.
+  // `clockAtShow` is the prerender's load clock rule (see prerender below).
+  function prebuildFrame(link, ns, config, clockAtShow) {
     var frame = frames[ns];
     if (frame && document.body.contains(frame.overlay)) return;
     if (frame) frame.destroy();
-    frames[ns] = buildFrame(bookingUrl(link, ns, readTriggerConfig(trigger)));
+    frames[ns] = buildFrame(bookingUrl(link, ns, config), false, clockAtShow);
+  }
+
+  // cal.com's `prerender` (#3706), in the shape a cal.com host already sends:
+  //
+  //   Cal.ns[ns]("prerender", { calLink, type: "modal", calOrigin, pageType, options })
+  //
+  // It builds that namespace's modal frame now, hidden, exactly as the intent
+  // pre build does, so the first click only shows it, and warms the bucket's
+  // times. What is read:
+  //
+  // - `calLink` is read like a trigger's data-cal-link, except that its
+  //   `metadata[<key>]` query entries are read as metadata, the way a trigger's
+  //   data-cal-config is (#2716). cal.com takes metadata in either place, and a
+  //   host whose click carries it in the config while its prerender carries it on
+  //   the link (trypennie does both) must get one URL from the two, or the click
+  //   would find a frame built for another link and replace it.
+  // - `type` must be "modal" or absent. Slate has no floating button, and an
+  //   inline card is drawn by `inline`, never prerendered.
+  // - `calOrigin` is ignored: the frame is built at the namespace's init origin,
+  //   which is where the click builds, and a host moved from cal.com still sends
+  //   cal.com's own origin here. `pageType` and `options` are no ops.
+  //
+  // The load clock: a prerendered frame runs NO clock while hidden, and gets the
+  // full twelve seconds from its first show if it is still loading then. A
+  // prerender comes at page load, so the frame may sit hidden for minutes,
+  // loading alongside the host page's own assets or frozen with a sleeping
+  // phone, and twelve seconds of that measure nothing a lead waited through. A
+  // clock running from the prerender would show a lead an error decided before
+  // they asked and count a failure they may never have seen, so a timeout here
+  // is only ever reported for a wait the lead sat through. The intent pre build
+  // keeps its clock from the hover (#2679): a hover comes about a second before
+  // its click, so the two clocks nearly coincide there.
+  //
+  // A throw is swallowed and not reported, as the intent pre build's is: the
+  // click builds again on the path the error beacon watches.
+  function prerender(ns, opts) {
+    if (!prerenderReady) {
+      pendingPrerenders.push([ns, opts]);
+      return;
+    }
+    if (!document.body) {
+      pendingPrerenders.push([ns, opts]);
+      document.addEventListener("DOMContentLoaded", flushPrerenders);
+      return;
+    }
+    try {
+      if (!opts || typeof opts !== "object") return;
+      if (opts.type != null && opts.type !== "modal") return;
+      if (typeof opts.calLink !== "string" || !opts.calLink) return;
+      var link = opts.calLink;
+      var config = {};
+      var q = link.indexOf("?");
+      if (q >= 0) {
+        var kept = new URLSearchParams();
+        new URLSearchParams(link.slice(q + 1)).forEach(function (v, k) {
+          if (/^metadata\[.+\]$/.test(k)) config[k] = v;
+          else kept.append(k, v);
+        });
+        var rest = kept.toString();
+        link = link.slice(0, q) + (rest ? "?" + rest : "");
+      }
+      warmAvailability(link, ns);
+      prebuildFrame(link, ns, config, true);
+    } catch (_e) {
+      /* never throw into the host page */
+    }
+  }
+
+  function flushPrerenders() {
+    var queued = pendingPrerenders;
+    pendingPrerenders = [];
+    queued.forEach(function (p) {
+      prerender(p[0], p[1]);
+    });
   }
 
   function prefersReducedMotion() {
@@ -642,7 +740,7 @@
     });
   }
 
-  function buildFrame(bookUrl, compact) {
+  function buildFrame(bookUrl, compact, clockAtShow) {
     ensureChromeStyle();
     var reduceMotion = prefersReducedMotion();
 
@@ -758,7 +856,8 @@
     // error and its retry are up. The timer runs only while "loading", from the
     // build until the first close (so a pre built frame's clock starts at the
     // pre build, #2679), and after that only while the modal is shown, so a
-    // reopen of a loaded frame starts no clock.
+    // reopen of a loaded frame starts no clock. A prerendered frame's clock
+    // starts at its first show instead of its build (#3706).
     var loadState = "loading";
 
     // Whether this frame has ever been on screen, and what it said before then
@@ -865,8 +964,10 @@
     paintClose();
     // The clock starts at the build: for a click that is the open itself, and
     // for a pre build it is the hover, so the first open of a frame that has
-    // been failing to load for twelve seconds says so at once (#2679).
-    armLoadTimer();
+    // been failing to load for twelve seconds says so at once (#2679). A
+    // prerendered frame starts it at its first show instead (#3706): show()
+    // arms it for a frame still loading, so the twelve seconds are the lead's.
+    if (!clockAtShow) armLoadTimer();
 
     // Loads of THIS iframe. The second and later announce `bookerReloaded`: a
     // retry after a failed load, or a reload from inside the frame. A close and
@@ -987,7 +1088,8 @@
       // loaded needs none, and a close mid-load stopped it, so a reopen of a
       // frame still loading starts it again rather than spinning forever. A
       // pre built frame's first show finds its clock already running from the
-      // pre build and keeps it (#2679).
+      // pre build and keeps it (#2679); a prerendered one still loading has
+      // none yet, and gets its twelve seconds from here (#3706).
       if (loadState === "loading" && !loadTimer) armLoadTimer();
 
       activeIframe = iframe;
@@ -1191,7 +1293,8 @@
       prebuildFrame(
         el.getAttribute("data-cal-link") || "",
         el.getAttribute("data-cal-namespace") || "",
-        el,
+        readTriggerConfig(el),
+        false,
       );
     } catch (_e) {
       /* never throw into the host page */
@@ -1219,6 +1322,11 @@
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", warmAllTriggers);
   }
+
+  // Everything a prerender needs is set up now (#3706), so build any the loader
+  // stub queued before this script ran.
+  prerenderReady = true;
+  flushPrerenders();
 
   // The Booker's own lifecycle messages and the cal.com event each becomes
   // (#2658). The raw name is what a host framing /book itself listens for; the

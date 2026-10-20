@@ -6,7 +6,13 @@
 //   - the plan's test: the same JSON-RPC id from two sessions with different nonces
 //     acts twice (the id is never an identity), and a call refused by the shape check
 //     never reaches Slate;
-//   - Marcia's overall limit refuses with the period named, and fails closed;
+//   - Marcia's overall limit refuses with the period named, and fails closed, driven
+//     through the Worker's own entry with its binding missing and with one that throws;
+//   - #3879: the limit is spent ONLY by a call whose token Slate verified, so a burst of
+//     forged tokens past the limit leaves a correctly signed call still going through,
+//     driven through the protocol, the real gateway and the real internal route;
+//   - the limit's period is written once: the constant agrees with the config, and the
+//     refusal's words are built from it;
 //   - the config: no workers.dev, no preview URLs, invocation logs off, exactly one
 //     service binding (to McpBookingGateway), no vars or secrets, the limiter claimed;
 //   - the Worker's imports stay inside its folder and the import free modules, so the
@@ -16,10 +22,14 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { unstable_readConfig } from "wrangler";
-import { handleMcp, MARCIA_LIMIT_PERIOD_SEC, type GatewayAnswer, type ProtocolDeps } from "../worker/mcp-booking/protocol.ts";
+import { handleMcp, MARCIA_LIMIT_PERIOD_SEC, marciaOverLimitText, type GatewayAnswer, type ProtocolDeps } from "../worker/mcp-booking/protocol.ts";
+import mcpWorker, { type BookingMcpEnv } from "../worker/mcp-booking/index.ts";
 import { BOOKING_TOOLS } from "../worker/mcp-booking/registry.ts";
+import { forwardBookingCall, type GatewayDeps } from "../worker/mcp-booking-gateway.ts";
+import { marciaInternalPath } from "../src/lib/mcp-booking/carrier.ts";
 import { MARCIA_OPERATIONS } from "../src/lib/mcp-booking/operation-names.ts";
 import { signMachineToken } from "../src/lib/mcp-booking/machine-token.ts";
+import { handleMarciaInternal } from "../src/lib/mcp-booking/route-handler.ts";
 import { FIXTURE_CLAIMS, FIXTURE_VERIFY_AT_MS } from "./lib/machine-token-fixture-cases.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -32,7 +42,11 @@ function deps(over: Partial<ProtocolDeps> = {}) {
   const logs: string[] = [];
   const d: ProtocolDeps = {
     nowMs: () => FIXTURE_VERIFY_AT_MS,
-    booking: async (token, operation, args): Promise<GatewayAnswer> => {
+    // As the gateway treats a token that verifies: it asks the limit first, and a
+    // refusal from it is the answer.
+    booking: async (token, operation, args, admit): Promise<GatewayAnswer> => {
+      const refused = await admit();
+      if (refused !== null) return refused;
       calls.push({ token, operation, args });
       return { status: 200, body: { ok: true, operation, data: {} } };
     },
@@ -117,20 +131,133 @@ for (const [label, token] of [
 }
 
 // --- the overall limit -------------------------------------------------------------------------
+type ToolAnswer = {
+  result: { isError: boolean; content: { text: string }[]; structuredContent?: { ok?: boolean; code?: string; message?: string } };
+};
 {
   const { d, calls } = deps({ withinLimit: async () => false });
-  const res = (await (await handleMcp(rpc({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "book", arguments: {} } }), d)).json()) as {
-    result: { isError: boolean; content: { text: string }[] };
-  };
-  assert(res.result.isError && res.result.content[0]!.text.includes(`try again within ${MARCIA_LIMIT_PERIOD_SEC} seconds`), "over the limit, the refusal names the period");
+  const res = (await (await handleMcp(rpc({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "book", arguments: {} } }), d)).json()) as ToolAnswer;
+  eq(
+    [res.result.isError, res.result.structuredContent?.code, res.result.structuredContent?.message],
+    [true, "marcia_over_limit", marciaOverLimitText()],
+    "over the limit, the call is refused in words built from the period",
+  );
   eq(calls.length, 0, "and Slate is not called");
   const broken = deps({ withinLimit: async () => { throw new Error("limiter outage"); } });
   const b = await handleMcp(rpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "book", arguments: {} } }), broken.d);
-  const bb = (await b.json()) as { result: { isError: boolean; content: { text: string }[] } };
+  const bb = (await b.json()) as ToolAnswer;
   assert(b.status === 200 && bb.result.isError && bb.result.content[0]!.text.includes("could not check"), "a limiter that throws refuses with an answer, never a bare 500");
   eq([broken.calls.length, broken.logs.length], [0, 1], "and Slate is not called, and it is logged");
-  const entry = readFileSync("worker/mcp-booking/index.ts", "utf8");
-  assert(/if \(!env\.MARCIA_LIMITER\) \{[\s\S]*?return false;/.test(entry), "a deployment without its limiter refuses every call (fail closed)");
+  // #3879 part 3: the words come from the period they are given, so they can only name
+  // the constant, which the config section below holds equal to wrangler's period.
+  assert(marciaOverLimitText(37).includes("within 37 seconds"), "the refusal names whatever period it is built from");
+  eq(marciaOverLimitText(), marciaOverLimitText(MARCIA_LIMIT_PERIOD_SEC), "and is built from MARCIA_LIMIT_PERIOD_SEC by default");
+}
+
+// The calls below that run on the real clock use the fixture claims re-dated to now.
+const nowSec = Math.floor(Date.now() / 1000);
+const REAL_KEY = "marcia-key-for-the-worker-suite-000000000000";
+const FORGER_KEY = "a-key-somebody-guessed-for-the-suite-0000000";
+const GATEWAY_SECRET = "gateway-secret-for-the-worker-suite-00000000";
+const silent = { error: () => undefined };
+
+/** The real gateway, handing its inner request to `fetch`, verifying with REAL_KEY. */
+const gatewayDeps = (fetch: GatewayDeps["fetch"], nowMs: () => number): GatewayDeps => ({
+  fetch,
+  gatewaySecret: GATEWAY_SECRET,
+  tokenKeySlots: [REAL_KEY, ""],
+  nowMs,
+  log: silent,
+});
+
+// --- #3879 part 2: the ENTRY fails closed on its limiter, driven rather than read (L135) --------
+{
+  const live = await signMachineToken({ ...FIXTURE_CLAIMS, iat: nowSec, exp: nowSec + 600, nonce: "entry-nonce-000000000001" }, REAL_KEY);
+  const viaEntry = async (limiter: BookingMcpEnv["MARCIA_LIMITER"] | "absent") => {
+    const reached: string[] = [];
+    const env: BookingMcpEnv = {
+      SLATE: {
+        booking: (t, o, a, admit) =>
+          forwardBookingCall(
+            gatewayDeps(async (r) => {
+              reached.push(new URL(r.url).pathname);
+              return Response.json({ ok: true, operation: o, data: {} });
+            }, () => Date.now()),
+            t,
+            o,
+            a,
+            admit,
+          ),
+      },
+      ...(limiter === "absent" ? {} : { MARCIA_LIMITER: limiter }),
+    };
+    const res = await mcpWorker.fetch(rpc({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "book", arguments: { slot_id: "s1" } } }, live), env);
+    return { res: (await res.json()) as ToolAnswer, reached };
+  };
+  const ok = await viaEntry({ limit: async () => ({ success: true }) });
+  eq([ok.res.result.isError, ok.reached.length], [false, 1], "positive control: through the entry with a limiter that admits, the call reaches Slate");
+  const over = await viaEntry({ limit: async () => ({ success: false }) });
+  eq([over.res.result.isError, over.res.result.structuredContent?.code, over.reached.length], [true, "marcia_over_limit", 0], "through the entry, a limiter that says no refuses and Slate's app is never reached");
+  const missing = await viaEntry("absent");
+  eq([missing.res.result.isError, missing.reached.length], [true, 0], "a deployment without its MARCIA_LIMITER binding refuses the call (fail closed), and Slate's app is never reached");
+  const throws = await viaEntry({ limit: async () => { throw new Error("limiter outage"); } });
+  eq([throws.res.result.isError, throws.reached.length], [true, 0], "a MARCIA_LIMITER whose limit() throws refuses the call (fail closed), and Slate's app is never reached");
+}
+
+// --- #3879 part 1: forged tokens never spend Marcia's limit ---------------------------------------
+// The whole path but the operation: the protocol, the real gateway, and the real internal
+// route with the real verifier. The limiter counts like the binding, against the limit
+// wrangler.mcp-booking.jsonc configures.
+{
+  type Ratelimit = { name: string; simple: { limit: number; period: number } };
+  const configured = (unstable_readConfig({ config: "wrangler.mcp-booking.jsonc" }) as unknown as { ratelimits?: Ratelimit[] }).ratelimits?.[0];
+  const LIMIT = configured?.simple.limit ?? 0;
+  assert(LIMIT > 0, "the configured limit is read from wrangler.mcp-booking.jsonc");
+  let charged = 0;
+  const runs: string[] = [];
+  const opAt = new Map(MARCIA_OPERATIONS.map((op) => [marciaInternalPath(op), op] as const));
+  const route = (req: Request) =>
+    handleMarciaInternal(
+      req,
+      opAt.get(new URL(req.url).pathname)!,
+      { gatewaySecret: GATEWAY_SECRET, tokenKeySlots: [REAL_KEY, ""] },
+      {
+        nowMs: () => FIXTURE_VERIFY_AT_MS,
+        run: async (op, _args, claims) => {
+          runs.push(claims.nonce);
+          return { ok: true, operation: op, status: 200, data: {} };
+        },
+        alertToken: async () => undefined,
+        alertGateway: async () => undefined,
+        logError: () => undefined,
+      },
+    );
+  const { d } = deps({
+    withinLimit: async () => ++charged <= LIMIT,
+    booking: (t, o, a, admit) => forwardBookingCall(gatewayDeps(route, () => FIXTURE_VERIFY_AT_MS), t, o, a, admit),
+  });
+  const book = async (token: string, id: number) =>
+    (await (await handleMcp(rpc({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "book", arguments: { slot_id: "s1" } } }, token), d)).json()) as ToolAnswer;
+
+  const forgedOutcomes = new Set<string>();
+  for (let i = 0; i < LIMIT + 20; i++) {
+    const forged = await signMachineToken({ ...FIXTURE_CLAIMS, nonce: `forged-${String(i).padStart(18, "0")}` }, FORGER_KEY);
+    const r = await book(forged, 100 + i);
+    forgedOutcomes.add(r.result.isError ? String(r.result.structuredContent?.code) : "ran");
+  }
+  eq([...forgedOutcomes], ["token_signature_invalid"], `${LIMIT + 20} forged tokens are each refused by Slate's verifier`);
+  eq([charged, runs.length], [0, 0], "and none of them spent Marcia's limit or ran anything");
+
+  const signed = await signMachineToken({ ...FIXTURE_CLAIMS, nonce: "marcia-real-000000000001" }, REAL_KEY);
+  const after = await book(signed, 1);
+  eq([after.result.isError, runs, charged], [false, ["marcia-real-000000000001"], 1], "after the forged burst, Marcia's correctly signed call still goes through, spending one");
+
+  // Positive control: the limit still bites, on verified calls.
+  for (let i = 2; i <= LIMIT; i++) {
+    await book(await signMachineToken({ ...FIXTURE_CLAIMS, nonce: `marcia-real-${String(i).padStart(12, "0")}` }, REAL_KEY), i);
+  }
+  const past = await book(await signMachineToken({ ...FIXTURE_CLAIMS, nonce: "marcia-real-past-the-limit" }, REAL_KEY), 999);
+  eq([past.result.structuredContent?.code, runs.length], ["marcia_over_limit", LIMIT], `verified calls past the limit of ${LIMIT} are refused, and exactly ${LIMIT} ran`);
 }
 
 // --- the config --------------------------------------------------------------------------------
@@ -143,7 +270,7 @@ for (const [label, token] of [
     observability?: { enabled?: boolean; logs?: { invocation_logs?: boolean } };
     services?: { binding: string; service: string; entrypoint?: string }[];
     vars?: Record<string, unknown>;
-    ratelimits?: { name: string; namespace_id: string }[];
+    ratelimits?: { name: string; namespace_id: string; simple?: { limit: number; period: number } }[];
     routes?: unknown[];
   };
   const c = unstable_readConfig({ config: "wrangler.mcp-booking.jsonc" }) as unknown as Resolved;
@@ -154,6 +281,8 @@ for (const [label, token] of [
   eq(c.services, [{ binding: "SLATE", service: "slate", entrypoint: "McpBookingGateway" }], "exactly one binding, to McpBookingGateway");
   eq(Object.keys(c.vars ?? {}), [], "no vars: the server holds no key");
   eq((c.ratelimits ?? []).map((r) => [r.name, r.namespace_id]), [["MARCIA_LIMITER", "1008"]], "Marcia's overall limit on its own namespace");
+  // #3879 part 3: the period is configured here and named in the refusal; the two agree.
+  eq(c.ratelimits?.[0]?.simple?.period, MARCIA_LIMIT_PERIOD_SEC, "MARCIA_LIMIT_PERIOD_SEC is the period wrangler.mcp-booking.jsonc configures");
   const slate = unstable_readConfig({ config: "wrangler.jsonc" }) as unknown as Resolved;
   const slateLoadtest = unstable_readConfig({ config: "wrangler.jsonc", env: "loadtest" }) as unknown as Resolved;
   const taken = new Set([...(slate.ratelimits ?? []), ...(slateLoadtest.ratelimits ?? [])].map((r) => r.namespace_id));
