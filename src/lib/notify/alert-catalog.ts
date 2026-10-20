@@ -973,6 +973,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Named bookings did not move and never will on their own; a human re-runs them.",
   },
   {
+    // #3924: a crashed in place reschedule left the lead's invite out of step and the
+    // abandoned pin sweep could not put it back. The suffix is the booking id and the
+    // crashed move's target, so each crashed move posts once.
+    key: "reschedule_invite_stranded:*",
+    kind: "incident",
+    suffix: "booking",
+    why: "One crashed move of one booking's invite, which the sweep tried once and could not put back. The sweep frees the lock and never sees it again, and a person moving the call or having the advisor put the invite back is nothing Slate observes, so there is no healthy state to announce.",
+  },
+  {
     key: "reassign_intent_dropped",
     kind: "incident",
     why: "Named bookings stayed on the original agent; a human re-runs the reassignment.",

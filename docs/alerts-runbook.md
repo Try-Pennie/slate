@@ -332,7 +332,7 @@ in code (see `AGENTS.md`).
 Keys: `outbox_drain_stuck`, `outbox_all_handed_off`, `reservation_drain_stuck`,
 `reservation_created_owed`, `booking_event_insert`, `busy_block_write_through`, `reconcile_busy_blocks`,
 `reconcile_missing_busy_blocks`, `creation_orphan_events`,
-`reassign_intent_dropped`, `reschedule_pin_dropped`, `reschedule_lock_outage`,
+`reassign_intent_dropped`, `reschedule_pin_dropped`, `reschedule_invite_stranded:*`, `reschedule_lock_outage`,
 `stale_phone_invite:*`, `webhook_dead:*`, `webhook_event_no_subscriber`,
 `handoff_channel_unset`, `handoff_undelivered`, `bookable_trait_unrecorded:*`,
 `booking_follow_up_left_to_drain`, `booking_invite_moved:*`, `booking_invite_resized:*`,
@@ -395,6 +395,17 @@ which is what makes this family different from the ones above.
   every agent's current value again (a re-run always sends); the Worker log line under
   `tag=bookable-trait` carries the underlying error.
 
+- For `reschedule_pin_dropped` and `reschedule_invite_stranded:*` (#757, #3924): a
+  reschedule crashed before it saved its new time, so the booking is still at its
+  original time. An in place move PATCHes the lead's invite (emailing them) before it
+  saves, so the abandoned pin sweep reads the invite and, when it is at the crashed
+  move's time, moves it back to the booked time, emailing the lead again; the dropped
+  post counts those. `reschedule_invite_stranded:*` is one booking whose invite it
+  could NOT put back: Google refused, the invite was gone, the booking or invite could
+  not be read, or the invite was at a third time Slate never wrote (the post says
+  which). Until a person acts the lead's invite may say a time Slate does not hold.
+  Reschedule the call in Slate to the time the lead wants (which moves the invite and
+  tells the lead), or have the advisor put the invite back.
 - For `booking_invite_moved:*` (#3919): an advisor moved a booking's invite in Google
   Calendar and Slate did NOT put it back, because it was the booking's second move, the
   call starts within 30 minutes, or Google refused the revert (the post says which, and

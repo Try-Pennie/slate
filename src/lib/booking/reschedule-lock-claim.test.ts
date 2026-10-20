@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { claimRescheduleLock } from "./service";
-import { RescheduleLockUnavailableError } from "./orchestration";
+import { claimRescheduleLock, releaseAbandonedPinLock, takeOverAbandonedPinLock } from "./service";
+import { RescheduleLockUnavailableError, type AbandonedReschedulePin } from "./orchestration";
+import { mayTakeOverLock } from "@/lib/google/invite-moves";
 
 // AUD-050 / #480: the expired-lease takeover in claimReschedule used to re-lease
 // UNCONDITIONALLY, so two claimants that both read the same crashed (expired)
@@ -28,7 +29,7 @@ function makeFakeDb(
   const pkCol = (table: string) => (table === "bookings" ? "id" : "booking_id");
 
   class Builder {
-    private mode: "select" | "insert" | "update" = "select";
+    private mode: "select" | "insert" | "update" | "delete" = "select";
     private insertRow?: Row;
     private patch?: Row;
     private selected = false;
@@ -51,6 +52,15 @@ function makeFakeDb(
     }
     eq(col: string, val: unknown) {
       this.filters.push((r) => String(r[col]) === String(val));
+      return this;
+    }
+    // #3924: the abandoned pin sweep's takeover and release.
+    delete() {
+      this.mode = "delete";
+      return this;
+    }
+    lt(col: string, val: string) {
+      this.filters.push((r) => r[col] != null && Date.parse(String(r[col])) < Date.parse(val));
       return this;
     }
     or(expr: string) {
@@ -87,6 +97,10 @@ function makeFakeDb(
         return { data: null, error: null };
       }
       const matches = [...table.values()].filter((r) => this.filters.every((f) => f(r)));
+      if (this.mode === "delete") {
+        for (const r of matches) table.delete(String(r[pkCol(this.table)]));
+        return { data: null, error: null };
+      }
       if (this.mode === "update") {
         if (this.table === "reschedule_locks" && seed.updateError) {
           return { data: null, error: seed.updateError };
@@ -167,5 +181,77 @@ describe("claimRescheduleLock expired-lease takeover CAS (AUD-050)", () => {
     // with the typed retriable error, never re-open the concurrent-duplicate window.
     const db = makeFakeDb({ insertError: { code: "57014" } });
     await expect(claimRescheduleLock(db, "bk1", T, NOW)).rejects.toThrow(RescheduleLockUnavailableError);
+  });
+});
+
+// #3924: the abandoned pin sweep takes a crashed in place pin's lock over before it
+// puts the lead's invite back, so nothing else acts on the booking meanwhile. These
+// drive the real seams against the same CAS honouring fake.
+describe("abandoned pin sweep takeover (#3924)", () => {
+  const GRACE = 2 * 60_000;
+  const abandoned = (): Row => ({ ...expiredLockAtT(), claimed_at: "2026-06-01T11:00:00.000Z", lease_until: new Date(NOW - GRACE - 1000).toISOString() });
+  const pin: AbandonedReschedulePin = {
+    booking_id: "bk1",
+    pinned_agent_email: "a@x.com",
+    gcal_client_id: "slate-abc",
+    branch: "in_place",
+    booking_gcal_event_id: "slate-abc",
+    target_starts_at: T,
+    booking_starts_at: OLD,
+  };
+  const lockRow = async (db: ReturnType<typeof makeFakeDb>) =>
+    (await db.from("reschedule_locks").select("*").eq("booking_id", "bk1").maybeSingle()).data as Row | null;
+
+  it("takes the row over, keeps its pin, and leaves it held to everything else", async () => {
+    const db = makeFakeDb({ locks: [abandoned()], bookings: [{ id: "bk1", starts_at: OLD }] });
+    const token = await takeOverAbandonedPinLock(db, pin, GRACE, NOW);
+    expect(token).toBe(new Date(NOW).toISOString());
+    const row = (await lockRow(db))!;
+    expect(Date.parse(String(row.lease_until))).toBeGreaterThan(NOW);
+    expect(row.gcal_client_id).toBe("slate-abc");
+    // Its target is the booking's own time while the sweep holds it...
+    expect(row.target_starts_at).toBe(OLD);
+    // ...so the moved invite handler finds it held (a live, pinned lock)...
+    expect(mayTakeOverLock({ lease_until: String(row.lease_until), gcal_client_id: String(row.gcal_client_id) }, NOW + 1)).toBe(false);
+    // ...and a lead re-sending the abandoned move is told it just changed, never "done".
+    expect((await claimRescheduleLock(db, "bk1", T, NOW + 1)).outcome).toBe("conflict");
+  });
+
+  it("of two sweeps at once, only one takes the row", async () => {
+    const db = makeFakeDb({ locks: [abandoned()] });
+    const tokens = await Promise.all([
+      takeOverAbandonedPinLock(db, pin, GRACE, NOW),
+      takeOverAbandonedPinLock(db, pin, GRACE, NOW),
+    ]);
+    expect(tokens.filter((t) => t !== null)).toHaveLength(1);
+  });
+
+  it("leaves a row a reschedule has since re-leased, or re-pinned to another event", async () => {
+    const live = makeFakeDb({ locks: [{ ...abandoned(), lease_until: new Date(NOW + 60_000).toISOString() }] });
+    expect(await takeOverAbandonedPinLock(live, pin, GRACE, NOW)).toBeNull();
+    const repinned = makeFakeDb({ locks: [{ ...abandoned(), gcal_client_id: "slate-other" }] });
+    expect(await takeOverAbandonedPinLock(repinned, pin, GRACE, NOW)).toBeNull();
+    // Inside the grace is not abandoned yet either: the sweep chose it by the same rule.
+    const fresh = makeFakeDb({ locks: [{ ...abandoned(), lease_until: new Date(NOW - 1000).toISOString() }] });
+    expect(await takeOverAbandonedPinLock(fresh, pin, GRACE, NOW)).toBeNull();
+  });
+
+  it("throws when the takeover cannot be confirmed, so no invite is touched on a guess", async () => {
+    const db = makeFakeDb({ locks: [abandoned()], updateError: { code: "57014" } });
+    await expect(takeOverAbandonedPinLock(db, pin, GRACE, NOW)).rejects.toThrow(/could not be taken over/);
+  });
+
+  it("frees only the row it took, never one a reschedule has claimed since", async () => {
+    const db = makeFakeDb({ locks: [abandoned()] });
+    const token = (await takeOverAbandonedPinLock(db, pin, GRACE, NOW))!;
+    await releaseAbandonedPinLock(db, "bk1", token);
+    expect(await lockRow(db)).toBeNull();
+
+    const taken = makeFakeDb({ locks: [abandoned()] });
+    const mine = (await takeOverAbandonedPinLock(taken, pin, GRACE, NOW))!;
+    // The sweep's lease ran out and a reschedule claimed the row with its own stamp.
+    await taken.from("reschedule_locks").update({ claimed_at: "2026-06-01T12:05:00.000Z" }).eq("booking_id", "bk1");
+    await releaseAbandonedPinLock(taken, "bk1", mine);
+    expect(await lockRow(taken)).not.toBeNull();
   });
 });
