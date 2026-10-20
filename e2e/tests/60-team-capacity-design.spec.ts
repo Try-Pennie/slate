@@ -11,7 +11,7 @@
  * the decision), 2 no score at all. Anything but 0 fails, with the report attached.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect, signIn, seed } from "../fixtures.ts";
@@ -54,6 +54,14 @@ test("Team capacity matches its settled design on both halves", async ({ page },
   const report = `${run.stdout ?? ""}\n${run.stderr ?? ""}`;
   writeFileSync(join(dir, "report.txt"), report);
   await info.attach("design-match report", { path: join(dir, "report.txt"), contentType: "text/plain" });
+  // On a difference, both pictures of every frame go with the report, so a run on another machine
+  // shows what differed rather than only that something did.
+  if (run.status !== 0) {
+    const pics = join(ROOT, ".design-match", "team-capacity");
+    for (const name of existsSync(pics) ? readdirSync(pics).filter((n) => n.endsWith(".png")) : []) {
+      await info.attach(name, { path: join(pics, name), contentType: "image/png" });
+    }
+  }
   expect(run.error, report).toBeUndefined();
   expect(report, report).toContain("MATCHED: both halves are 100%");
   expect(run.status, report).toBe(0);

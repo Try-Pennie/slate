@@ -498,6 +498,9 @@ jobs:
         with:
           name: browser-checks
           path: e2e/.artifacts/
+          # The folder's own name starts with a dot, and the action skips hidden files unless
+          # told otherwise, so without this the step found nothing to keep on every failure.
+          include-hidden-files: true
           retention-days: 7
 
   # Deploy to the slate Worker on every push to main, after ci passes. Skips
