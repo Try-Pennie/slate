@@ -370,8 +370,9 @@ const steady = loadDrivers("steady");
 const burst = loadDrivers("burst");
 // #3258: the same day baseline at rest, which the latency bar is judged against.
 // Read from EVERY result file rather than through `loadDrivers`, which would take
-// the first baseline silently and count a corrupt baseline.json as missing:
-// `baselineReading` refuses two, and calls a corrupt one unreadable.
+// the first baseline silently and count a corrupt baseline file as missing:
+// `baselineReading` refuses two from one runner, names a runner whose file never
+// arrived (#3914), and calls a corrupt one unreadable.
 function resultFileEntries(): {
   files: { name: string; parsed?: unknown; error?: string }[];
   listingError?: string;

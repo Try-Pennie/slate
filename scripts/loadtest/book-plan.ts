@@ -15,6 +15,7 @@ import {
 } from "../../src/lib/rate-limit-core.ts";
 import { codeSequence, MEASURED_CODE_MIX, type CodeWeight } from "./code-mix.ts";
 import { OK_P95_MS } from "./judge-booking-run.ts";
+import { BASELINE_GAP_MS, BASELINE_PER_MINUTE, BASELINE_PLANNED, BASELINE_RUNNERS } from "./latency-bar.ts";
 // Type only, erased under --experimental-strip-types: the attempt carries the echo the
 // deployment sent, read through the one parser both sides share (#3325, L41).
 import type { LoadtestEcho } from "../../src/lib/loadtest-echo.ts";
@@ -755,18 +756,94 @@ export function pickSlot<T>(slots: readonly T[], rand: () => number = Math.rando
  * and so is one the baseline already sent a booking at: it books the same codes every
  * run, and four bookings at one slot would walk the ladder or be refused rather than
  * book at rest.
+ *
+ * #3914: with `owner` set, only a time that runner owns (`baselineOwner`), because the
+ * baseline is spread across runners that cannot see each other's booked times, and three
+ * runners each taking the soonest time would put three bookings on it.
  */
-export function baselineSlot(slots: readonly string[], booked: ReadonlySet<string> = new Set()): string | null {
+export function baselineSlot(
+  slots: readonly string[],
+  booked: ReadonlySet<string> = new Set(),
+  owner?: { runner: number; runners: number },
+): string | null {
   let soonest: string | null = null;
   let soonestMs = Infinity;
   for (const t of slots) {
     const ms = Date.parse(t);
+    if (owner !== undefined && baselineOwner(t, owner.runners) !== owner.runner) continue;
     if (Number.isFinite(ms) && ms < soonestMs && !booked.has(t)) {
       soonest = t;
       soonestMs = ms;
     }
   }
   return soonest;
+}
+
+/**
+ * Which baseline runner may book a time (#3914), or null for a time that does not parse.
+ *
+ * Decided by the INSTANT, hashed, rather than by its position in the offered list (which
+ * moves as times are booked and as the clock walks) or by its minute modulo the runner
+ * count (which hands every time on a 30 or 60 minute grid to one runner when the grid's
+ * step is a multiple of the count). FNV-1a over the epoch minute spreads any grid across
+ * the runners, and every runner computes the same owner with nothing shared between them.
+ */
+export function baselineOwner(iso: string, runners: number = BASELINE_RUNNERS): number | null {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  const key = String(Math.floor(ms / 60_000));
+  let h = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h % Math.max(1, runners);
+}
+
+/**
+ * When a baseline runner sends its first booking (#3914): the next mark of the shared ten
+ * second clock that is this runner's turn. The marks are epoch multiples of `gapMs`, and
+ * mark k belongs to runner k modulo the runner count, so the runners take turns with no
+ * coordination beyond the runners' own clocks, which GitHub keeps in sync to well under a
+ * second, and a runner that comes up late simply starts on a later turn of its own. With
+ * one booking every `runners` marks after that (`BASELINE_PER_MINUTE`), the deployment
+ * sees at most one baseline booking per mark, however the runners' starts fall.
+ */
+export function baselineStartAtMs(
+  nowMs: number,
+  runner: number,
+  runners: number = BASELINE_RUNNERS,
+  gapMs: number = BASELINE_GAP_MS,
+): number {
+  const cycle = gapMs * runners;
+  const cycleStart = Math.floor(nowMs / cycle) * cycle;
+  const turn = cycleStart + runner * gapMs;
+  return turn >= nowMs ? turn : turn + cycle;
+}
+
+/**
+ * The gap the baseline runners take turns on: `BASELINE_GAP_MS`, or a SHORTER override
+ * (the deadline seam's rule, `effectiveDeadlineMs`), so the real driver can be run in a
+ * test without waiting out a real turn. A longer one is refused, because it would stretch
+ * the leg toward its job's timeout, and an unreadable one is ignored rather than becoming
+ * a NaN schedule (L50).
+ */
+export function baselineGapFrom(raw: string | undefined): number {
+  return effectiveDeadlineMs(BASELINE_GAP_MS, raw);
+}
+
+/**
+ * The baseline job's `timeout-minutes` floor (#3914): one runner's own deadline for its
+ * plan, plus the one cycle it may wait for its first turn, plus the runner's setup and
+ * one request's grace, as the drive job's is. `scripts/test-loadtest-driver-deadline.ts`
+ * holds the workflow's number at or above it.
+ */
+export function baselineJobTimeoutMinutes(): number {
+  const plan = { total: BASELINE_PLANNED, perMinute: BASELINE_PER_MINUTE };
+  const turnWaitMs = BASELINE_GAP_MS * BASELINE_RUNNERS;
+  return Math.ceil(
+    (driverDeadlineMs(plan) + turnWaitMs) / 60_000 + DRIVE_JOB_SETUP_MINUTES + DRIVE_DEADLINE_GRACE_MINUTES,
+  );
 }
 
 /** One recorded response. The judge (#2244) reads these and nothing else. */
