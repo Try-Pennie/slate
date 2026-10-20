@@ -909,6 +909,17 @@ internal routes refuse every call and page (`marcia_gateway_refused`,
 `marcia_token_refused:token_keys_unconfigured`). Wiring it into the gradual deploy
 is #3539.
 
+Marcia's overall limit (`MARCIA_LIMITER`, 60 a minute) is bound on this Worker but
+charged only for a call whose token Slate verified (#3879): the gateway verifies with
+the same token keys, then calls this Worker back over the binding before anything
+runs. So a forged token never spends it, and **a measurement of the limit (the
+#3541 step that drives it from more than one location) must use correctly signed
+test tokens**: forged or unsigned calls are refused by Slate without touching the
+count, so counting them measures nothing. Nothing runs unmetered: a call with no
+callback, or whose limiter is missing or throws, is refused; and without the token
+keys the gateway charges nothing only because the route then refuses the same token
+for the same reason.
+
 ## Verify after deploy
 1. Hit `https://slate.trypennie.app/api/health` → expect HTTP `200` with
    `{"status":"ok",...}`. A `503` `{"status":"degraded",...}` means the DB is

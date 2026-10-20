@@ -1178,6 +1178,253 @@ describe("widget.js pre builds the modal frame on the trigger's first intent (#2
   });
 });
 
+// #3706: the host's own `prerender` command builds the namespace's frame at the
+// moment it is called, as cal.com's does, rather than waiting for a hover a phone
+// never sends (touch and click arrive together). The argument is exactly what
+// trypennie sends cal.com today (`useCalPrerender.ts`): a calLink carrying the
+// page's own query plus `metadata[sfdc_submission_id]`, a type, cal.com's own
+// origin, a pageType and options. Every guarantee of the intent pre build holds:
+// invisible, no focus, no key, no scroll lock, and nothing announced until the
+// first show, because a prerender is not a view.
+describe("widget.js builds the modal frame when the host calls prerender (#3706)", () => {
+  type AnyCal = ((...args: unknown[]) => void) & {
+    ns: Record<string, (...args: unknown[]) => void>;
+    config: { forwardQueryParams?: boolean };
+  };
+  const cal = () => (window as unknown as { Cal: AnyCal }).Cal;
+  const ORIGIN = "https://slate.test";
+  const FORM = "255a083e-529e-42e1-ba94-9556fae95fe4";
+
+  /** The call trypennie's useCalPrerender makes, field for field. */
+  function prerender(ns: string, calLink: string, extra: Record<string, unknown> = {}) {
+    cal()("init", ns, { origin: ORIGIN });
+    cal().ns[ns]("prerender", {
+      calLink,
+      type: "modal",
+      calOrigin: "https://trypennie.cal.com",
+      pageType: "team.event.booking.slots",
+      options: { backgroundSlotsFetch: true },
+      ...extra,
+    });
+  }
+  function trigger(ns: string, link: string, config?: Record<string, string>): HTMLDivElement {
+    const el = document.createElement("div");
+    el.setAttribute("data-cal-link", link);
+    el.setAttribute("data-cal-namespace", ns);
+    if (config) el.setAttribute("data-cal-config", JSON.stringify(config));
+    document.body.appendChild(el);
+    return el;
+  }
+  const allIframes = () => Array.from(document.querySelectorAll<HTMLIFrameElement>("iframe"));
+
+  it("builds one hidden frame at the call, at the namespace's own origin, with nothing on screen and nothing announced", () => {
+    const all = calOn("*");
+    const ns = freshNs();
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    const focusedBefore = document.activeElement;
+    prerender(ns, `router?form=${FORM}&xbc=411`);
+
+    expect(shownOverlay()).toBeNull();
+    const built = allIframes();
+    expect(built).toHaveLength(1);
+    const src = new URL(built[0].getAttribute("src")!);
+    // Slate's origin from init, never the cal.com origin the host also sends:
+    // the click builds at init's origin, so a frame anywhere else is never shown.
+    expect(src.origin).toBe(ORIGIN);
+    expect(src.pathname).toBe("/book");
+    expect(src.searchParams.get("xbc")).toBe("411");
+    const overlay = built[0].closest(".slate-widget-overlay") as HTMLElement;
+    expect(overlay.getAttribute("aria-hidden")).toBe("true");
+    expect(overlay.style.visibility).toBe("hidden");
+    expect(overlay.style.display).not.toBe("none");
+    expect(document.body.style.overflow).toBe("");
+    expect(document.activeElement).toBe(focusedBefore);
+    expect(all).not.toHaveBeenCalled();
+  });
+
+  it("starts the availability read for the link's bucket at the call", () => {
+    const fetchSpy = vi.fn((..._args: unknown[]) => Promise.resolve({} as Response));
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchSpy as unknown as typeof fetch;
+    prerender(freshNs(), `router?form=${FORM}&xbc=3706`);
+    const calls = fetchSpy.mock.calls.filter((c) => String(c[0]) === `${ORIGIN}/api/availability?bucket=3706`);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("the first click shows the prerendered frame: no second frame, no reload, and its held stages announced after navigatedToBooker", () => {
+    const all = calOn("*");
+    const ns = freshNs();
+    prerender(ns, `router?form=${FORM}&xbc=411`);
+    const built = allIframes()[0];
+    const builtSrc = built.getAttribute("src");
+    fromActiveFrame(built, { type: EMBED_MESSAGE.bookerViewed, data: { slotsLoaded: false } });
+    fromActiveFrame(built, { type: EMBED_MESSAGE.bookerReady, data: { slotsLoaded: true } });
+    expect(all).not.toHaveBeenCalled();
+
+    trigger(ns, `router?form=${FORM}&xbc=411`).click();
+    expect(shownIframe()).toBe(built);
+    expect(allIframes()).toHaveLength(1);
+    expect(built.getAttribute("src")).toBe(builtSrc);
+    expect(eventsOf(all)).toEqual([
+      { type: "navigatedToBooker", data: {} },
+      { type: "bookerViewed", data: { slotsLoaded: false } },
+      { type: "bookerReady", data: { slotsLoaded: true } },
+    ]);
+    expect(document.body.style.overflow).toBe("hidden");
+  });
+
+  it("matches trypennie's offer portal click: the page's forwarded query and the submission id as metadata on both sides build one frame", () => {
+    const ns = freshNs();
+    const before = window.location.pathname + window.location.search;
+    const forwardBefore = cal().config.forwardQueryParams;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // What useCalParams leaves on the page before the prerender runs.
+    window.history.replaceState({}, "", "/offerportal/p-1?xbc=411&submissionId=a0G5x00000AbCdEQAU&external_id=00Q5x00000Lead01&source=offerhub");
+    cal().config.forwardQueryParams = true;
+    try {
+      // useCalPrerender: the page's query, plus the submission id as cal.com metadata.
+      const page = new URL(document.URL);
+      page.searchParams.set("metadata[sfdc_submission_id]", "a0G5x00000AbCdEQAU");
+      prerender(ns, `router?form=${FORM}&${page.searchParams.toString()}`);
+      const built = allIframes()[0];
+      const src = new URL(built.getAttribute("src")!);
+      // The metadata is read as metadata, as a trigger's data-cal-config is, never
+      // forwarded under its cal.com spelling.
+      expect([...src.searchParams.keys()].some((k) => k.startsWith("metadata["))).toBe(false);
+      expect(src.searchParams.get("submissionId")).toBe("a0G5x00000AbCdEQAU");
+      expect(src.searchParams.get("form")).toBe(FORM);
+
+      // BookButton: the bare form link, the metadata in data-cal-config.
+      trigger(ns, `router?form=${FORM}`, {
+        layout: "month_view",
+        "cal.embed.pageType": "user.event.booking.slots",
+        "metadata[sfdc_submission_id]": "a0G5x00000AbCdEQAU",
+      }).click();
+      expect(shownIframe()).toBe(built);
+      expect(allIframes()).toHaveLength(1);
+    } finally {
+      cal().config.forwardQueryParams = forwardBefore;
+      window.history.replaceState({}, "", before);
+      warn.mockRestore();
+    }
+  });
+
+  it("a click on a link the prerender was not built for replaces the frame, and the replaced frame announces nothing", () => {
+    const viewed = calOn("bookerViewed");
+    const ns = freshNs();
+    prerender(ns, `router?form=${FORM}&xbc=411`);
+    const built = allIframes()[0];
+    fromActiveFrame(built, { type: EMBED_MESSAGE.bookerViewed, data: { slotsLoaded: false } });
+
+    trigger(ns, `router?form=${FORM}&xbc=412`).click();
+    expect(built.isConnected).toBe(false);
+    expect(shownIframe()!.getAttribute("src")).toMatch(/xbc=412/);
+    expect(allIframes()).toHaveLength(1);
+    expect(viewed).not.toHaveBeenCalled();
+  });
+
+  it("runs no load clock while the prerendered frame is hidden, so a page left open for minutes reports nothing and shows no error", () => {
+    vi.useFakeTimers();
+    const failed = calOn("linkFailed");
+    const ns = freshNs();
+    prerender(ns, `router?form=${FORM}&xbc=411`);
+    vi.advanceTimersByTime(5 * 60_000);
+    expect(document.querySelector('.slate-widget-overlay [role="alert"]')).toBeNull();
+
+    // The click shows the spinner, not an error decided minutes ago.
+    trigger(ns, `router?form=${FORM}&xbc=411`).click();
+    expect(failed).not.toHaveBeenCalled();
+    expect(loaderEl()!.getAttribute("role")).toBe("status");
+    expect(retryBtn()).toBeUndefined();
+  });
+
+  it("gives a prerendered frame still loading at the click twelve seconds from the click, the wait a lead actually sat through", () => {
+    vi.useFakeTimers();
+    const failed = calOn("linkFailed");
+    const ns = freshNs();
+    prerender(ns, `router?form=${FORM}&xbc=411`);
+    vi.advanceTimersByTime(30_000);
+    trigger(ns, `router?form=${FORM}&xbc=411`).click();
+
+    vi.advanceTimersByTime(11_999);
+    expect(failed).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(eventsOf(failed)[0]).toEqual({
+      type: "linkFailed",
+      data: { code: "load_timeout", msg: "The booking form did not load in time" },
+    });
+    expect(retryBtn()).toBeTruthy();
+  });
+
+  it("a prerendered frame that loaded while hidden opens with no loader and no clock", () => {
+    vi.useFakeTimers();
+    const failed = calOn("linkFailed");
+    const reloaded = calOn("bookerReloaded");
+    const ns = freshNs();
+    prerender(ns, `router?form=${FORM}&xbc=411`);
+    allIframes()[0].dispatchEvent(new Event("load"));
+
+    trigger(ns, `router?form=${FORM}&xbc=411`).click();
+    expect(loaderEl()).toBeNull();
+    vi.advanceTimersByTime(30_000);
+    expect(failed).not.toHaveBeenCalled();
+    expect(reloaded).not.toHaveBeenCalled();
+  });
+
+  it("builds at most one frame per namespace: a second prerender and a later hover keep the first", () => {
+    const ns = freshNs();
+    prerender(ns, `router?form=${FORM}&xbc=411`);
+    const built = allIframes()[0];
+    prerender(ns, `router?form=${FORM}&xbc=411`);
+    prerender(ns, `router?form=${FORM}&xbc=412`);
+    trigger(ns, `router?form=${FORM}&xbc=411`).dispatchEvent(new Event("pointerover", { bubbles: true }));
+    expect(allIframes()).toEqual([built]);
+  });
+
+  it("takes no key from the host page while the prerendered frame is hidden", () => {
+    const ns = freshNs();
+    prerender(ns, `router?form=${FORM}&xbc=411`);
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    document.dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(false);
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    document.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(false);
+  });
+
+  it("builds nothing for a prerender it cannot read, and never throws into the host page", () => {
+    const ns = freshNs();
+    cal()("init", ns, { origin: ORIGIN });
+    expect(() => {
+      cal().ns[ns]("prerender");
+      cal().ns[ns]("prerender", "router?xbc=411");
+      cal().ns[ns]("prerender", { type: "modal" });
+      cal().ns[ns]("prerender", { calLink: 411, type: "modal" });
+      // Slate has no floating button and no prerendered inline card.
+      cal().ns[ns]("prerender", { calLink: "router?xbc=411", type: "floatingButton" });
+      cal().ns[ns]("prerender", { calLink: "router?xbc=411", type: "inline" });
+    }).not.toThrow();
+    expect(allIframes()).toHaveLength(0);
+  });
+
+  it("a prerender that throws leaves the click to build and open as before", () => {
+    const ns = freshNs();
+    const original = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation(((tag: string) => {
+      if (tag === "iframe") throw new Error("iframe blocked by host CSP");
+      return original(tag);
+    }) as typeof document.createElement);
+    try {
+      expect(() => prerender(ns, `router?form=${FORM}&xbc=411`)).not.toThrow();
+    } finally {
+      vi.mocked(document.createElement).mockRestore();
+    }
+    expect(allIframes()).toHaveLength(0);
+    trigger(ns, `router?form=${FORM}&xbc=411`).click();
+    expect(shownIframe()).toBeTruthy();
+  });
+});
+
 // #3718: cal.com's inline embed, `Cal("inline", { elementOrSelector, calLink, config })`,
 // draws the booker INSIDE an element on the host page instead of in a modal. It shares
 // the modal's URL builder, so every parameter rule above holds for it too, and its

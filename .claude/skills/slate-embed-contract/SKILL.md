@@ -74,11 +74,13 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
 1. **`Cal()` global API shape** (`widget.js` global + `ns` handlers):
    - `Cal("init", "<ns>", { origin })` - origin per namespace
    - `Cal.ns["<ns>"]("ui", { theme, brandColor, layout, ... })`
-   - `Cal.ns["<ns>"]("prerender", ...)` - accepted, no-op. Slate does NOT build
-     the frame at page load the way cal.com's pre-render does; it warms the
-     availability read at render (#251), and builds the frame, hidden, on the
-     trigger's first hover, focus or touch (#2679), then KEEPS it (see "One
-     frame per namespace" and "Pre built on intent" below).
+   - `Cal.ns["<ns>"]("prerender", { calLink, type: "modal", ... })` - builds
+     that namespace's frame, hidden, at the call, the way cal.com's prerender
+     does (#3706), and warms its bucket's times. Without it Slate warms the
+     availability read at render (#251) and builds the frame on the trigger's
+     first hover, focus or touch (#2679). Either way the frame is then KEPT
+     (see "One frame per namespace", "Pre built on intent" and "Pre built by
+     the host's prerender" below).
    - `Cal("on", { action: "bookingSuccessful", callback })`
    - `window.Cal.config.forwardQueryParams = true`
    - The loader stub queues commands before `widget.js` loads; keep draining
@@ -251,6 +253,33 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
      a click does), render never pre builds (that would load a booker per button
      on every page view), and a pre build that throws is swallowed, because the
      click builds again on the path the error beacon watches.
+
+     **Pre built by the host's prerender (#3706).** On a phone the touch and the
+     click arrive together, so the intent pre build comes too late, and the lead
+     waited on a cold frame (the leading explanation for the offer portal's
+     `load_timeout` share of `fail_booker_load`, #3708). So
+     `Cal.ns[ns]("prerender", opts)` builds the namespace's frame at the call,
+     under every rule above (hidden, no focus, no key, no scroll lock, stages
+     held until the first show, one frame per namespace, never replacing one,
+     replaced by a click on another link, a throw swallowed). It reads what a
+     cal.com host already sends: `calLink` like a trigger's `data-cal-link`,
+     except that its `metadata[<key>]` query entries are read as metadata the
+     way `data-cal-config` is, so trypennie's prerender (metadata on the link)
+     and its BookButton (metadata in the config) build ONE URL; `type` must be
+     `"modal"` or absent; `calOrigin` is ignored (the frame is built at the
+     namespace's init origin, where the click builds), as are `pageType` and
+     `options`. A prerender the loader stub queued before `widget.js` loaded is
+     built once the file has finished loading (`widget-prerender-queued.test.ts`).
+     **Its load clock differs from intent's:** none runs while it is hidden,
+     and a frame still loading at the first show gets twelve seconds from that
+     show. A prerender comes at page load, so the frame can sit hidden for
+     minutes, loading alongside the host page or frozen with a sleeping phone;
+     twelve seconds of that are no wait a lead sat through, and a clock from the
+     build would show the lead an error decided before they asked and count a
+     failure they may never have seen. The intent clock stays at the hover,
+     which comes about a second before its click. Times read at page load are
+     not re-read on the show (cal.com's `backgroundSlotsFetch` does that); a time
+     taken in between is a lost race at confirm.
 
 5. **`widget.js` stays vanilla / dependency-free.** Single IIFE served as plain
    `/widget.js`, no build step (~6KB). Do NOT import React, Tailwind, `globals.css`,
