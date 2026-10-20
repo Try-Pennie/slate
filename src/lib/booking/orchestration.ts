@@ -108,6 +108,7 @@ import {
 import { INVALID_EMAIL, storedFirstName, validateAttendee } from "../attendee.ts";
 import { parseStampMs } from "../date/stamp.ts";
 import type { GoogleEvent } from "../google/calendar.ts";
+import type { StrandedInviteReason } from "../google/invite-move-copy.ts";
 import { judgeAbandonedInvite } from "../google/invite-moves.ts";
 import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
@@ -361,13 +362,8 @@ export interface StrandedInvite {
   targetStartsAt: string;
   /** Where Google holds the invite now, or null when it was not read. */
   inviteStartsAt: string | null;
-  /**
-   * `refused`: Google refused the put back. `gone`: the invite was gone when the
-   * put back reached it. `unreadable`: the booking or the invite could not be read,
-   * so nothing was judged. `elsewhere`: the invite is at neither the booked time
-   * nor the crashed move's, which is not a time Slate wrote.
-   */
-  reason: "refused" | "gone" | "unreadable" | "elsewhere";
+  /** Why it was not put back (`StrandedInviteReason`, beside the words that say it). */
+  reason: StrandedInviteReason;
   /** The short reason a refusal or a failed read gave. */
   detail: string | null;
 }
@@ -7011,7 +7007,7 @@ async function putBackAbandonedInvite(
   try {
     booking = await deps.readBookingInviteState(row.booking_id);
   } catch (err) {
-    return stranded("unreadable", row.booking_starts_at, null, shortErrorReason(err));
+    return stranded("booking-unreadable", row.booking_starts_at, null, shortErrorReason(err));
   }
   if (!booking || !INVITE_ACTIVE.has(booking.status) || booking.gcal_event_id !== eventId) return null;
   const endsMs = parseStampMs(booking.ends_at);
@@ -7020,7 +7016,7 @@ async function putBackAbandonedInvite(
   try {
     event = await deps.readEventOnPrimary(row.pinned_agent_email, eventId);
   } catch (err) {
-    return stranded("unreadable", booking.starts_at, null, shortErrorReason(err));
+    return stranded("invite-unreadable", booking.starts_at, null, shortErrorReason(err));
   }
   if (!event) return null;
   const booked = { startsAt: booking.starts_at, endsAt: booking.ends_at };

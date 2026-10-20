@@ -210,10 +210,20 @@ export function inviteLaunchSweepAlert(found: (InviteMoveFacts & { step: "moved"
 }
 
 /**
+ * #3924: why the abandoned pin sweep did not put an invite back. `refused`: Google
+ * refused the put back. `gone`: the invite was gone when the put back reached it.
+ * `booking-unreadable` and `invite-unreadable`: that read failed, so nothing was
+ * judged. `elsewhere`: the invite is at neither the booked time nor the crashed
+ * move's, which is not a time Slate wrote.
+ */
+export type StrandedInviteReason = "refused" | "gone" | "booking-unreadable" | "invite-unreadable" | "elsewhere";
+
+/**
  * #3924: an invite a crashed in place reschedule left out of step with its booking,
  * which the abandoned pin sweep did not put back. Each reason claims only what the
  * sweep measured: `refused` and `gone` saw the invite at the crashed move's time,
- * `elsewhere` saw it at a third, and `unreadable` saw nothing, so it says so.
+ * `elsewhere` saw it at a third, and the two unreadable ones saw nothing, so they
+ * say which read failed.
  */
 export interface StrandedInviteFacts {
   advisorEmail: string;
@@ -223,7 +233,7 @@ export interface StrandedInviteFacts {
   targetStartsAt: string;
   /** Where Google holds it, or null when it was not read. */
   inviteStartsAt: string | null;
-  reason: "refused" | "gone" | "unreadable" | "elsewhere";
+  reason: StrandedInviteReason;
   /** Google's or the database's short reason, already one line. */
   detail: string | null;
   bookingUrl: string;
@@ -232,10 +242,10 @@ export interface StrandedInviteFacts {
 export function strandedInviteAlert(f: StrandedInviteFacts): string {
   const booked = f.bookedStartsAt ? inviteWhen(f.bookedStartsAt) : "its booked time";
   const target = inviteWhen(f.targetStartsAt);
-  if (f.reason === "unreadable") {
+  if (f.reason === "booking-unreadable" || f.reason === "invite-unreadable") {
     return (
       `A reschedule of a booking on ${f.advisorEmail}'s calendar crashed before it saved its move to ${target}, ` +
-      `and Slate could not read ${f.bookedStartsAt ? "the invite" : "the booking"} afterwards ` +
+      `and Slate could not read ${f.reason === "invite-unreadable" ? "the invite" : "the booking"} afterwards ` +
       `(${f.detail ?? "no reason given"}). So nothing was moved back, and the lead's invite may say ${target} ` +
       `while Slate holds the call at ${booked}. Look at the booking and the advisor's calendar: ${f.bookingUrl}`
     );

@@ -213,11 +213,26 @@ async function run() {
     const res = await processAbandonedReschedulePins(deps, 0, NOW);
     const s = res.strandedInvites[0];
     assert(
-      res.strandedInvites.length === 1 && s.reason === "unreadable" && s.inviteStartsAt === null && (s.detail ?? "").includes("503"),
+      res.strandedInvites.length === 1 && s.reason === "invite-unreadable" && s.inviteStartsAt === null && (s.detail ?? "").includes("503"),
       "unreadable: an invite that could not be read is reported, with no time claimed for it",
     );
     assert(calls.updateEventTime.length === 1, "unreadable: nothing is moved on a guess");
     assert(getLease("bk1") === undefined, "unreadable: the lock is freed");
+  }
+
+  // --- 7b. the booking cannot be read under the lock: reported as that, not as the invite
+  {
+    const { deps, calls } = await crashedInPlace();
+    deps.readBookingInviteState = async () => {
+      throw new Error("abandoned pin booking: canceling statement due to statement timeout");
+    };
+    const res = await processAbandonedReschedulePins(deps, 0, NOW);
+    const s = res.strandedInvites[0];
+    assert(
+      res.strandedInvites.length === 1 && s.reason === "booking-unreadable" && s.inviteStartsAt === null,
+      "booking unreadable: reported as the booking that could not be read, never as the invite",
+    );
+    assert(calls.updateEventTime.length === 1 && calls.readEventOnPrimary.length === 0, "booking unreadable: no invite read, nothing moved");
   }
 
   // --- 8. the invite is at a third time: not what the crash wrote, so not put back

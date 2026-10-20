@@ -95,7 +95,7 @@ describe("sweepAbandonedReschedulePins", () => {
       sweep({
         swept: 2,
         dropped: 2,
-        strandedInvites: [STRANDED, { ...STRANDED, bookingId: "bk-8", reason: "unreadable", inviteStartsAt: null }],
+        strandedInvites: [STRANDED, { ...STRANDED, bookingId: "bk-8", reason: "invite-unreadable", inviteStartsAt: null }],
       }),
     );
 
