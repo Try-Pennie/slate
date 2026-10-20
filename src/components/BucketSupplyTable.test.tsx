@@ -242,7 +242,8 @@ describe("BucketSupplyTable (#1254)", () => {
     );
     expect(groups).toEqual([
       "Agents who can take these bookings",
-      "Booked share of the appointment times the pool could have taken",
+      // #3939: in calls, Team capacity's measure.
+      "Share of the pool's calls already taken",
     ]);
     // And the pair underneath is two columns of one fact each, never `84 (75 today)`.
     // Read in DOCUMENT order, not visual order: the headers that span both rows

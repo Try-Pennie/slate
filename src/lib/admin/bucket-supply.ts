@@ -55,6 +55,7 @@ import { rungExcludesLow, tierLadder, wholeTierPoolCode } from "../routing/tiers
 import { DEBT_TIER } from "../xbc.ts";
 import { offeredWindowFor, servedSlotsForRung } from "../availability/offered-window.ts";
 import { computedAtLabel } from "./bucket-supply-copy.ts";
+import type { PoolCalls } from "./bucket-calls.ts";
 
 /**
  * The event-type numbers the slot grid is laid out from. The same fields the
@@ -363,6 +364,14 @@ export interface BucketSupplyInput {
    * day looks like (L11).
    */
   bookedByCodeAndDate: Map<string, Map<string, string[]>> | null;
+  /**
+   * Each code's calls per day (#3939, `callsByCode`): when given, a measured day is calls taken by
+   * anything on the pool's advisors' calendars out of the calls their shifts could hold, Team
+   * capacity's own measure. Null means the calendars could not be read, so every open day is
+   * unknown. Left out, a day is booked start times out of possible start times, which is what the
+   * monitor's nearly full check (`pool_fullness`) reads every five minutes without a calendar read.
+   */
+  callsByCode?: Map<string, Map<string, PoolCalls>> | null;
 }
 
 /** The theoretical maximum for one day, or the fact that there was never a day. */
@@ -742,6 +751,15 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
             : { kind: "overflows", toPool: plan.winner.toPool };
         }
 
+        // In calls, when the page handed them over (#3939): the cover judgement above still reads
+        // the slot cache, because which pool serves a lead is the booker's question, while how full
+        // a pool's day is comes from its advisors' calendars, as on Team capacity.
+        if (input.callsByCode !== undefined) {
+          const reading = input.callsByCode === null ? undefined : input.callsByCode.get(d.code)?.get(day.iso);
+          if (reading === undefined) return { kind: "unknown" };
+          if (reading.capacity === 0) return { kind: "nobody-available" };
+          return { kind: "counted", booked: reading.taken, capacity: reading.capacity, share: reading.taken / reading.capacity };
+        }
         return {
           kind: "counted",
           booked: taken.size,

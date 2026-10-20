@@ -41,8 +41,10 @@ import { log } from "@/lib/log";
 import { DateTime } from "luxon";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { searchWindowDays } from "@/lib/availability/bookable-days";
+import { loadPoolCalls } from "@/lib/admin/bucket-calls-load";
 import {
   bucketSupplyReport,
+  supplyDays,
   type BucketSupplyReport,
   type CachedSlotRow,
   type SupplyBucket,
@@ -106,8 +108,10 @@ export async function loadBucketSupply(
   // tiers page and the monitor rather than re-derived, so the three can never
   // disagree about who can take a bucket's bookings.
   let depthByCode: Map<string, SupplyDepth> | null = null;
+  let depths: TierDepth[] | null = null;
   try {
-    depthByCode = supplyDepthMap(await loadTierDepths(db, orgId, now));
+    depths = await loadTierDepths(db, orgId, now);
+    depthByCode = supplyDepthMap(depths);
   } catch (err) {
     log.error("bucket-supply", { msg: "staffing depth unreadable" }, err);
     depthByCode = null;
@@ -149,6 +153,19 @@ export async function loadBucketSupply(
     bookedByCodeAndDate = null;
   }
 
+  // Each pool's day in calls, from its own eligible advisors' calendars (#3939): staffing depth's
+  // list of who is in each pool, so this page and routing never disagree about the pool. Without
+  // that list there is no pool to add up, and every open day reads unknown.
+  const callsByCode =
+    depths === null
+      ? null
+      : await loadPoolCalls(
+          orgId,
+          new Map(depths.map((d) => [d.code, d.agents.map((a) => a.id)])),
+          supplyDays(hours, horizonDays, now.getTime()).map((d) => d.iso),
+          now.getTime(),
+        );
+
   return bucketSupplyReport({
     hours,
     horizonDays,
@@ -158,6 +175,7 @@ export async function loadBucketSupply(
     depthByCode,
     cacheRows,
     bookedByCodeAndDate,
+    callsByCode,
   });
 }
 

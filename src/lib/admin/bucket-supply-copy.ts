@@ -144,7 +144,7 @@ export function supplyLegend(offeredOpenDays: number): SupplyLegendEntry[] {
       id: "nobody-available",
       label: "Nobody available",
       meaning:
-        "The day had room for appointments and this pool has none: none offered, and none booked. This is the one to act on.",
+        "The day had room for calls and nobody in this pool can take one. This is the one to act on.",
       mark: "N",
       cell: "bg-error/25 text-fg",
     },
@@ -168,24 +168,24 @@ export function supplyLegend(offeredOpenDays: number): SupplyLegendEntry[] {
     },
     {
       id: "saturated",
-      label: "Every time taken",
-      meaning: "Every time this pool could have taken an appointment at is booked. Nothing is left for a new lead.",
+      label: "Every call taken",
+      meaning: "Every call this pool's advisors could hold is taken. Nothing is left for a new lead.",
       mark: "100%",
       cell: TONE_CLS.saturated,
     },
     {
       id: "some",
-      label: "Part booked",
+      label: "Part taken",
       meaning:
-        "Some of the times this pool could take are booked. The number is booked starts out of the times it could have taken.",
+        "Some of the calls this pool's advisors could hold are taken, by calls or anything else on their calendars. The number is calls taken out of the calls their shifts could hold.",
       mark: "45%",
       cell: TONE_CLS.some,
     },
     {
       id: "none",
-      label: "Nothing booked",
+      label: "Nothing taken",
       meaning:
-        "This pool has times to offer and none of them are taken. Every bucket reads this way until leads start arriving in Slate.",
+        "This pool's advisors have calls to give and nothing on their calendars has taken any of them.",
       mark: "0%",
       cell: TONE_CLS.none,
       swatchExtra: "border border-border",
@@ -270,11 +270,12 @@ export const SUPPLY_ALARMING_STATES: SupplyLegendId[] = ["nobody-available", "un
 /**
  * The unit, stated ONCE, over the columns it applies to (#1938).
  *
- * Every number under these headers is a share of appointment START TIMES, and
+ * Every number under these headers is a share of CALLS (#3939: calls taken out of the calls the
+ * pool's advisors' shifts could hold, Team capacity's measure; it was appointment start times), and
  * nothing on the page said so except a paragraph above the table, which is where
  * a reader arrives last. A spanning header says it where the numbers are.
  */
-export const SUPPLY_DAY_GROUP_HEADER = "Booked share of the appointment times the pool could have taken";
+export const SUPPLY_DAY_GROUP_HEADER = "Share of the pool's calls already taken";
 
 /** How a share reads as a percentage, with no false precision. */
 export function sharePercent(share: number): number {
@@ -298,11 +299,11 @@ export function supplyCellTitle(
   switch (cell.kind) {
     case "counted":
       if (cell.booked === 0) {
-        return `${when}: nothing booked, out of ${cell.capacity} times it could have taken.`;
+        return `${when}: nothing taken, out of ${cell.capacity} calls its advisors could hold.`;
       }
-      return `${when}: ${cell.booked} of ${cell.capacity} possible times booked, ${sharePercent(cell.share)} percent.`;
+      return `${when}: ${cell.booked} of ${cell.capacity} calls taken, ${sharePercent(cell.share)} percent.`;
     case "nobody-available":
-      return `${when}: nobody available. The day had room for appointments and this pool has none offered and none booked.`;
+      return `${when}: nobody available. The day had room for calls and nobody in this pool can take one.`;
     case "overflows":
       return `${when}: this pool has no times in ${WINDOW}, so its leads are shown ${cell.toPool ?? "another pool"}'s times instead.`;
     case "other-days":
