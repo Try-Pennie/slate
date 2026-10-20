@@ -12,6 +12,7 @@ import {
   incompleteness,
   burstShortfall,
   percentiles,
+  weightedPercentiles,
   overlaps,
   JUDGE_EXIT,
   OK_P95_MS,
@@ -51,10 +52,11 @@ import {
   type LoadtestEcho,
 } from "../src/lib/loadtest-echo.ts";
 import {
-  BASELINE_BOOKINGS,
-  BASELINE_MIN_OK,
+  BASELINE_BOOKINGS_PER_RUNNER,
+  BASELINE_MIN_OK_PER_RUNNER,
   BASELINE_PER_MINUTE,
   BASELINE_PLANNED,
+  BASELINE_RUNNERS,
   BASELINE_WARMUP,
   LOAD_OVER_REST_RATIO_BAR,
   STEADY_P95_LIMIT_MS,
@@ -1485,6 +1487,29 @@ function slowRun(made = 100): JudgeInput {
   eq(p.max, 100, "the max is the max");
   assert(p.p95 >= p.p50, "and the p95 is at or above the p50");
 
+  // #3915: a percentile over Cloudflare's sampled rows, each standing for `weight` lines.
+  eq(weightedPercentiles([]), null, "no samples gives null");
+  let same = true;
+  for (const values of [[5], [1, 2, 3, 4, 100], [9, 3, 7, 7, 1, 20, 4, 4], Array.from({ length: 41 }, (_, i) => (i * 37) % 101)]) {
+    const w = weightedPercentiles(values.map((value) => ({ value, weight: 1 })));
+    const u = percentiles(values);
+    if (JSON.stringify(w) !== JSON.stringify(u)) same = false;
+  }
+  assert(same, "at weight 1 throughout it is exactly the judge's nearest rank, so the two never read a p95 differently");
+  // Ten fast lines kept whole and one slow line kept 1 in 10: the slow one stands for half.
+  const fast = Array.from({ length: 10 }, (_, i) => ({ value: (i + 1) * 100, weight: 1 }));
+  const wp = weightedPercentiles([...fast, { value: 5000, weight: 10 }])!;
+  eq(percentiles([...fast.map((s) => s.value), 5000])!.p50, 600, "unweighted, the slow line is one row in eleven");
+  eq(wp.p50, 5000, "weighted, it is ten lines of twenty, so the median lands on it");
+  eq(wp.max, 5000, "the max is the max whatever the weights");
+  let threw = false;
+  try {
+    weightedPercentiles([{ value: 1, weight: 0 }]);
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a weight that is not a positive number throws rather than quietly dropping its row");
+
   const win = (s: string, e: string): JudgedBooking => ({
     id: "x",
     external_id: "x",
@@ -2058,42 +2083,48 @@ function slowRun(made = 100): JudgeInput {
 //
 // The fixed 5s p95 bar failed the 09-15 code on 2026-10-04's environment (7.0s), so a
 // run could not pass on its code's merits. With a baseline leg (bookings at rest on the
-// same deployment just before the steady pass, since #3517 a warm up of two and then
-// twenty measured, one every ten seconds) the pass rule is the
+// same deployment just before the steady pass, since #3517 a warm up and then measured
+// bookings, since #3914 from several runners taking turns on one ten second clock) the
+// pass rule is the
 // steady p95 against a multiple of the baseline's median, which the day moves just
 // as it moves the steady pass. #3517: the median drops the baseline's warm up, and the
 // p95 is ALSO held to a fixed limit that holds whatever the baseline reads. The
 // fixtures sit in today's range (a baseline of 0.5 to 1.2s, a p95 of 1.3 to 2.4s);
 // the pure rule is driven in scripts/test-loadtest-speed-verdict.ts.
 {
-  const restFile = (wallMs: number, n = BASELINE_PLANNED, okCount = n): DriverResult => ({
+  /** One baseline runner's file: `okCount` of its `n` bookings confirmed, the rest refused. */
+  const restFile = (wallMs: number, n = BASELINE_PLANNED, okCount = n, driver = 0): DriverResult => ({
     runId: RUN,
-    driver: 0,
+    driver,
     mode: "baseline",
     planned: BASELINE_PLANNED,
     startedAtMs: T0 - 5 * 60_000,
     finishedAtMs: T0 - 60_000,
     attempts: Array.from({ length: n }, (_, k) =>
-      attempt(0, k, {
-        externalId: `${RUN}-r-0-${k}`,
+      attempt(driver, k, {
+        externalId: `${RUN}-r-${driver}-${k}`,
         wallMs,
+        seenIp: `203.0.113.${20 + driver}`,
         ...(k >= okCount ? { status: 409, outcome: "SLOT_TAKEN" } : {}),
       }),
     ),
   });
-  /** A run whose steady p95 is `p95Ms`, with a baseline at rest of `restMs`. */
-  const withBaseline = (p95Ms: number, restMs: number, baseline: DriverResult | null = restFile(restMs)) =>
+  /** #3914: every baseline runner's file, all at rest at `wallMs`. */
+  const restFiles = (wallMs: number): DriverResult[] =>
+    Array.from({ length: BASELINE_RUNNERS }, (_, d) => restFile(wallMs, BASELINE_PLANNED, BASELINE_PLANNED, d));
+  /** A run whose steady p95 is `p95Ms`, with a baseline at rest of `restMs` on every runner. */
+  const withBaseline = (p95Ms: number, restMs: number, baseline: DriverResult[] | null = restFiles(restMs)) =>
     broken((i) => {
       const all = i.driverResults.flatMap((r) => r.attempts);
       for (const a of all) a.wallMs = Math.round(p95Ms * 0.6);
       for (const a of all.slice(0, Math.ceil(all.length * 0.1))) a.wallMs = p95Ms;
       i.expectedLegs = { ...i.expectedLegs, baseline: true };
-      i.baseline = baseline ? { kind: "file", result: baseline } : { kind: "absent" };
+      i.baseline = baseline ? { kind: "runners", results: baseline } : { kind: "absent" };
     });
 
   eq(idPrefix(RUN, "baseline"), `${RUN}-r`, "the baseline's bookings carry their own prefix, so no steady id is reused");
-  assert(BASELINE_PER_MINUTE * 2 < 15, "the baseline paces well below one steady driver, so it measures the path at rest");
-  assert(BASELINE_MIN_OK <= BASELINE_BOOKINGS, "the sample floor is reachable");
+  assert(BASELINE_PER_MINUTE * BASELINE_RUNNERS * 2 < 15, "the baseline runners together pace well below one steady driver, so they measure the path at rest");
+  assert(BASELINE_MIN_OK_PER_RUNNER <= BASELINE_BOOKINGS_PER_RUNNER, "the per runner sample floor is reachable");
 
   // Today's environment: the steady pass in proportion to the day's rest, and inside
   // the fixed limit.
@@ -2132,7 +2163,7 @@ function slowRun(made = 100): JudgeInput {
     for (const a of all) a.wallMs = Math.round((STEADY_P95_LIMIT_MS + 600) * 0.6);
     for (const a of all.slice(0, Math.ceil(all.length * 0.1))) a.wallMs = STEADY_P95_LIMIT_MS + 600;
     i.expectedLegs = { ...i.expectedLegs, baseline: true, googleDelayed: true };
-    i.baseline = { kind: "file", result: restFile(1_200) };
+    i.baseline = { kind: "runners", results: restFiles(1_200) };
   });
   assert(!bars(delayed).includes("latency of successful bookings"), "with a Google delay the fixed limit does not fail the run");
   const dl = delayed.measurements!.latency!;
@@ -2152,17 +2183,31 @@ function slowRun(made = 100): JudgeInput {
   };
   unmeasured(withBaseline(3_000, 2_000, null), "no baseline file", "a missing baseline");
   unmeasured(
-    withBaseline(1_400, 700, restFile(700, BASELINE_PLANNED, BASELINE_WARMUP + BASELINE_MIN_OK - 1)),
-    String(BASELINE_MIN_OK),
-    "a thin baseline",
+    withBaseline(1_400, 700, [
+      restFile(700, BASELINE_PLANNED, BASELINE_PLANNED, 0),
+      restFile(700, BASELINE_PLANNED, BASELINE_WARMUP + BASELINE_MIN_OK_PER_RUNNER - 1, 1),
+      ...restFiles(700).slice(2),
+    ]),
+    String(BASELINE_MIN_OK_PER_RUNNER),
+    "a thin baseline runner",
   );
   unmeasured(
     broken((i) => {
       i.expectedLegs = { ...i.expectedLegs, baseline: true };
-      i.baseline = { kind: "several", files: ["baseline.json", "baseline-2.json"] };
+      i.baseline = { kind: "several", runner: 0, files: ["baseline-0.json", "baseline-0-again.json"] };
     }),
-    "baseline-2.json",
-    "two baseline files",
+    "baseline-0-again.json",
+    "two baseline files for one runner",
+  );
+  // #3914: a runner whose file never arrived leaves the spread short, which is unmeasured
+  // rather than a median quietly taken over fewer placements than the run claims.
+  unmeasured(
+    broken((i) => {
+      i.expectedLegs = { ...i.expectedLegs, baseline: true };
+      i.baseline = { kind: "missing", runners: [1], files: ["baseline-0.json", "baseline-2.json"] };
+    }),
+    "runner 1",
+    "a baseline runner whose file never arrived",
   );
   unmeasured(
     broken((i) => {
@@ -2175,7 +2220,7 @@ function slowRun(made = 100): JudgeInput {
   unmeasured(
     broken((i) => {
       i.expectedLegs = { ...i.expectedLegs, baseline: true };
-      i.baseline = { kind: "file", result: { ...restFile(2_000), runId: "run-older" } };
+      i.baseline = { kind: "runners", results: [{ ...restFile(2_000), runId: "run-older" }, ...restFiles(2_000).slice(1)] };
     }),
     "run-older",
     "a baseline from another run",
@@ -2235,7 +2280,7 @@ function slowRun(made = 100): JudgeInput {
   }
 
   // #3294 review: a malformed baseline is unreadable, never a crash, and never cast blind.
-  const shape = (parsed: unknown) => baselineReading([{ name: "baseline.json", parsed }]);
+  const shape = (parsed: unknown) => baselineReading([{ name: "baseline-0.json", parsed }]);
   for (const [label, parsed, field] of [
     ["no attempts", { mode: "baseline", runId: RUN }, "attempts"],
     ["attempts not a list", { mode: "baseline", runId: RUN, attempts: "x" }, "attempts"],
@@ -2244,6 +2289,9 @@ function slowRun(made = 100): JudgeInput {
     ["an attempt with no wall time", { ...restFile(2_000), attempts: [{ status: 200 }] }, "wallMs"],
     // #3517: the warm up is dropped by position, so a booking with none is unreadable.
     ["an attempt with no position", { ...restFile(2_000), attempts: [{ status: 200, wallMs: 10 }] }, "position n"],
+    // #3914: which runner sent it, since each runner's warm up is its own.
+    ["no runner", { ...restFile(2_000), driver: undefined }, "runner"],
+    ["a runner the baseline does not have", { ...restFile(2_000), driver: BASELINE_RUNNERS }, `runner ${BASELINE_RUNNERS}`],
   ] as [string, unknown, string][]) {
     const r = shape(parsed);
     assert(r.kind === "unreadable" && r.why.includes(field), `${label} is unreadable, naming ${field}: ${JSON.stringify(r)}`);
@@ -2261,18 +2309,34 @@ function slowRun(made = 100): JudgeInput {
   );
 
   // How the judge entry turns the results directory into a reading.
-  const good = restFile(2_000);
-  eq(baselineReading([{ name: "baseline.json", parsed: good }]), { kind: "file", result: good }, "one baseline file is the reading");
+  const good = restFiles(2_000);
+  const named = (files: DriverResult[]) => files.map((f) => ({ name: `baseline-${f.driver}.json`, parsed: f }));
+  eq(baselineReading(named(good)), { kind: "runners", results: good }, "one file from every runner is the reading");
+  eq(
+    baselineReading(named([...good].reverse())),
+    { kind: "runners", results: good },
+    "in runner order, whatever order the directory listed them in",
+  );
   eq(baselineReading([{ name: "driver-0.json", parsed: { mode: "steady" } }]), { kind: "absent" }, "no baseline file is absent");
   eq(
-    baselineReading([{ name: "baseline.json", parsed: good }, { name: "baseline-again.json", parsed: good }]),
-    { kind: "several", files: ["baseline.json", "baseline-again.json"] },
-    "two baseline files are refused, never the first silently taken",
+    baselineReading([...named(good), { name: "baseline-0-again.json", parsed: good[0] }]),
+    { kind: "several", runner: 0, files: ["baseline-0.json", "baseline-0-again.json"] },
+    "two files from one runner are refused, never the first silently taken",
   );
   eq(
-    baselineReading([{ name: "baseline.json", error: "Unexpected end of JSON input" }]),
-    { kind: "unreadable", file: "baseline.json", why: "Unexpected end of JSON input" },
-    "a corrupt baseline.json is unreadable, not absent",
+    baselineReading(named(good.filter((f) => f.driver !== 1))),
+    { kind: "missing", runners: [1], files: named(good.filter((f) => f.driver !== 1)).map((f) => f.name) },
+    "a runner whose file never arrived is named as missing",
+  );
+  eq(
+    baselineReading([{ name: "baseline.json", parsed: good[0] }]),
+    { kind: "missing", runners: Array.from({ length: BASELINE_RUNNERS - 1 }, (_, i) => i + 1), files: ["baseline.json"] },
+    "a single runner's baseline, as every run before #3914 sent, is a short spread rather than the whole baseline",
+  );
+  eq(
+    baselineReading([{ name: "baseline-1.json", error: "Unexpected end of JSON input" }, ...named(good.filter((f) => f.driver !== 1))]),
+    { kind: "unreadable", file: "baseline-1.json", why: "Unexpected end of JSON input" },
+    "a corrupt baseline file is unreadable, not absent",
   );
   eq(
     baselineReading([{ name: "driver-9.json", error: "boom" }]),

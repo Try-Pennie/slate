@@ -32,6 +32,8 @@ import {
   type LoadtestLead,
   pickSlot,
   baselineSlot,
+  baselineStartAtMs,
+  baselineGapFrom,
   driverDeadlineMs,
   effectiveDeadlineMs,
   deadlineReached,
@@ -75,7 +77,7 @@ import {
   type FaultModeVerdict,
 } from "./preflight-checks.ts";
 import { parseFaultTargets } from "../../src/lib/loadtest-fault.ts";
-import { BASELINE_PER_MINUTE, BASELINE_PLANNED } from "./latency-bar.ts";
+import { BASELINE_PLANNED, BASELINE_RUNNERS } from "./latency-bar.ts";
 import { readLoadtestEcho, type LoadtestEcho } from "../../src/lib/loadtest-echo.ts";
 
 const PROD_HOSTS = ["slate.trypennie.app", "drukfvgaynzrralbzkzj.supabase.co"];
@@ -137,6 +139,18 @@ const REQUEST_TIMEOUT_OVERRIDE = process.env.DRIVE_REQUEST_TIMEOUT_MS;
 // read alone, #3348, so a test shortening the booking request's bound does not also
 // race the slot read against a loaded runner)
 const AVAILABILITY_TIMEOUT_OVERRIDE = process.env.DRIVE_AVAILABILITY_TIMEOUT_MS;
+// env-ok: BASELINE_GAP_MS (optional; a test seam that can only SHORTEN the ten second
+// clock the baseline runners take turns on, #3914, so a test need not wait out a turn)
+const BASELINE_GAP = baselineGapFrom(process.env.BASELINE_GAP_MS);
+// #3914: a baseline runner is one of the runners the judge expects, or its file would be
+// refused as a runner the baseline does not have; refused here, before anything is sent.
+if (MODE === "baseline" && !(Number.isInteger(DRIVER) && DRIVER >= 0 && DRIVER < BASELINE_RUNNERS)) {
+  console.error(
+    `FAILED: DRIVER is ${JSON.stringify(process.env.DRIVER)}, and a baseline runner is 0 to ${BASELINE_RUNNERS - 1}, ` +
+      "so nothing was attempted.",
+  );
+  process.exit(1);
+}
 
 /**
  * The abort signal for one request (#3222). Bounded by its own timeout and by the
@@ -337,19 +351,20 @@ function write(result: DriverResult, out: string = OUT): void {
 async function steady(
   mode: "steady" | "fault" | "baseline" = "steady",
   minutes = RUN_MINUTES,
-  // #3258: the baseline paces itself (#3517: a warm up and twenty measured bookings,
-  // six a minute, `latency-bar.ts`), so it measures one booking at rest rather than a
-  // driver's share of the load.
-  pace: { total: number; perMinute: number } = {
+  // #3258: the baseline paces itself (#3517: a warm up and then measured bookings,
+  // `latency-bar.ts`), so it measures one booking at rest rather than a driver's share of
+  // the load. #3914: it starts on its own runner's turn of the shared clock (`startAtMs`).
+  pace: { total: number; perMinute: number; startAtMs?: number } = {
     total: PER_DRIVER_PER_MINUTE * minutes,
     perMinute: PER_DRIVER_PER_MINUTE,
   },
 ): Promise<void> {
   const startedAtMs = Date.now();
+  const planStartAtMs = pace.startAtMs ?? startedAtMs;
   const plan = requestSchedule({
     total: pace.total,
     perMinute: pace.perMinute,
-    startAtMs: startedAtMs,
+    startAtMs: planStartAtMs,
   });
   // Its OWN deadline, derived from the plan (#3222). The drivers send one request
   // at a time, so a slow deployment stretches the run; without this the job's
@@ -359,7 +374,9 @@ async function steady(
     driverDeadlineMs({ total: plan.length, perMinute: pace.perMinute }),
     DEADLINE_OVERRIDE,
   );
-  const deadlineAtMs = startedAtMs + deadlineMs;
+  // From the plan's start, so a runner waiting for its first turn (#3914) spends none of
+  // its deadline on the wait.
+  const deadlineAtMs = planStartAtMs + deadlineMs;
   let cutShort = false;
   const attempts: BookingAttempt[] = [];
   const baselineBooked = new Set<string>();
@@ -395,8 +412,10 @@ async function steady(
     }
     // #3782: the baseline takes the soonest time it has not already sent a booking at,
     // clear of the latest times the bursts are planned on; the steady and fault legs
-    // keep spreading across what is offered.
-    const startIso = mode === "baseline" ? baselineSlot(slots, baselineBooked) : pickSlot(slots);
+    // keep spreading across what is offered. #3914: only a time this runner owns, so two
+    // baseline runners never book one time.
+    const startIso =
+      mode === "baseline" ? baselineSlot(slots, baselineBooked, { runner: DRIVER, runners: BASELINE_RUNNERS }) : pickSlot(slots);
     if (mode === "baseline" && startIso !== null) baselineBooked.add(startIso);
     if (startIso === null) {
       // A bucket offering nothing is RECORDED rather than skipped in silence, with a
@@ -773,5 +792,11 @@ await (MODE === "burst"
   : MODE === "fault"
     ? fault()
     : MODE === "baseline"
-      ? steady("baseline", 0, { total: BASELINE_PLANNED, perMinute: BASELINE_PER_MINUTE })
+      ? steady("baseline", 0, {
+          total: BASELINE_PLANNED,
+          // One booking every runners turns of the shared clock (#3914), so the runners
+          // together send one every gap: `BASELINE_PER_MINUTE` at the real gap.
+          perMinute: 60_000 / (BASELINE_GAP * BASELINE_RUNNERS),
+          startAtMs: baselineStartAtMs(Date.now(), DRIVER, BASELINE_RUNNERS, BASELINE_GAP),
+        })
       : steady());

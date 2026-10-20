@@ -1254,7 +1254,7 @@ arrived). The fault drivers' files get the same file checks as the steady ones.
 |---|---|
 | planned bookings completed | every steady driver ran its whole plan. A driver that stopped at its own deadline FAILS this with the driver, how far it got and the run's completed share (#3222); every other bar is still scored on what ran |
 | confirmed a minute | at or above 80 percent of target, with the full outcome mix printed so a short run says WHY |
-| latency | p50, p95 and max over ALL responses. The p95 of the **200s** must pass TWO checks (#3258, #3517): the **ratio**, at most `LOAD_OVER_REST_RATIO_BAR` (2.5) times the median of the **same day baseline** (bookings at rest on the same deployment just before the steady pass, the first `BASELINE_WARMUP` (2) dropped as a warm up and the median taken over the next `BASELINE_BOOKINGS` (20)), and the **fixed limit**, at most `STEADY_P95_LIMIT_MS` (1,800ms) whatever the baseline reads. A failure names which check failed, the ratio, the fixed limit or both, and states both numbers. The fixed limit is not applied to a run dispatched with a Google delay (#3490), which it was not calibrated for, and the report says so. A run with no baseline leg (a hand run) is held to the old fixed 5,000ms bar and says why; a baseline the workflow ran that did not arrive, arrived twice, could not be read, came from another run or confirmed fewer than 14 of its measured bookings voids the **speed verdict only** (Dan, 2026-10-05): every other bar is still judged; a run clean on all of them is UNMEASURED (exit 3), never a pass, and a failure on any of them still FAILS it. See "Latency is judged against its own day" below |
+| latency | p50, p95 and max over ALL responses. The p95 of the **200s** must pass TWO checks (#3258, #3517): the **ratio**, at most `LOAD_OVER_REST_RATIO_BAR` (2.5) times the median of the **same day baseline** (bookings at rest on the same deployment just before the steady pass, sent from `BASELINE_RUNNERS` (3) runners taking turns (#3914), each runner's first `BASELINE_WARMUP` (2) dropped as a warm up and the median pooled over the `BASELINE_BOOKINGS` (21) measured after them), and the **fixed limit**, at most `STEADY_P95_LIMIT_MS` (1,800ms) whatever the baseline reads. A failure names which check failed, the ratio, the fixed limit or both, and states both numbers. The fixed limit is not applied to a run dispatched with a Google delay (#3490), which it was not calibrated for, and the report says so. A run with no baseline leg (a hand run) is held to the old fixed 5,000ms bar and says why; a baseline the workflow ran that did not arrive, arrived twice from one runner, is missing a runner, could not be read, came from another run or has a runner that confirmed fewer than `BASELINE_MIN_OK_PER_RUNNER` (5) of its 7 measured bookings voids the **speed verdict only** (Dan, 2026-10-05): every other bar is still judged; a run clean on all of them is UNMEASURED (exit 3), never a pass, and a failure on any of them still FAILS it. See "Latency is judged against its own day" below |
 | 5xx and no reply | counted **separately** and both fail: a request answered badly and one never answered send two different people to two different places |
 | resent requests | a request whose connection dropped (no reply of any kind, not the driver's own timeout) is sent once more after a 500ms pause, by the same rule the booker's confirm uses for a lead (`resendOnce`, #3566), and its record carries `resentAfter`, the first send's failure with its cause. One answered on its resend is not unanswered; one still silent fails under no reply. The run fails at **3 or more** resent requests over steady, bursts and the fault pass (`RESENT_FAIL_AT`, Dan 2026-10-14), because a cluster means something is turning connections away. The report prints the count and causes on every run |
 | requests never sent | a request whose bucket's times could not be read at all (`availability-unread`, #3348) fails here, never under no reply: no booking was sent to go unanswered, and the run did not drive the load it planned |
@@ -1362,12 +1362,42 @@ run, which took 251 to 350ms against about 45ms afterwards. Cold isolates were n
 the cause at this pace (1 of 36 baseline confirms read from the server logs). The
 rest was one runner's placement: on the slow run that same object answered in 215ms on
 the median call against 42 and 55ms on the other two, and the baseline is a single
-runner while the steady pass is nine. So the driver now sends `BASELINE_PLANNED` (22),
-the judge drops the first `BASELINE_WARMUP` (2) by position, never by speed, and takes
-the median over the next `BASELINE_BOOKINGS` (20), which a bootstrap over the pooled
-runs puts at plus or minus 5.6 percent rather than 8. The leg's schedule is 210s
-against 165s, **45s more per run**. The per runner part remains, which is why the
-fixed limit below exists. The report's latency line lists the warm up times it dropped.
+runner while the steady pass is nine. So each driver drops its first `BASELINE_WARMUP`
+(2) by position, never by speed, and the median is taken over more bookings, which a
+bootstrap over the pooled runs puts at plus or minus 5.6 percent for twenty rather than
+8 for twelve.
+
+**And it is spread across three runners (#3914).** Dropping the warm up left the
+per runner part: one runner's address still decided the whole baseline, and a FAST
+placement could make the ratio too strict as easily as a slow one made it loose. So the
+`baseline` job is a matrix of `BASELINE_RUNNERS` (3), each its own address and so its
+own limiter object, each sending `BASELINE_PLANNED` (9: its warm up and 7 measured), and
+the judge pools the median over all 21 measured bookings, the way the steady p95 is
+pooled over its drivers. One runner whose object answers slowly or quickly is then a
+third of the sample, not all of it. Two things keep it a measurement at rest:
+
+- the runners **take turns** on one ten second clock (`baselineStartAtMs`): mark k of
+  the epoch belongs to runner k modulo three, and each runner books once every three
+  marks from its first turn, so the deployment sees one baseline booking every ten
+  seconds and never two at once, however the runners' starts fall;
+- each offered time **belongs to one runner** (`baselineOwner`, a hash of the instant),
+  so two runners never book one time and none walks a ladder another emptied.
+
+Judging the ratio on the server's own time instead was weighed and rejected: the 215ms
+was measured on the server, inside the confirm's call to that object, so a server side
+time carries the same placement. The judge refuses a short spread rather than pooling
+it: a runner whose file never arrived, or that confirmed fewer than
+`BASELINE_MIN_OK_PER_RUNNER` (5) of its 7, makes the speed UNMEASURED, naming the
+runner. The report's latency line gives the pooled median, each runner's own median
+and warm up times, and how many addresses the deployment saw across the runners (the
+limiter keys on that address, so fewer addresses than runners means some runners
+shared an object, and the line says so).
+
+**What it costs.** About a minute more on the run's critical path (each runner is 240s
+of bookings plus up to 30s for its first turn, against 210s), and about ten more billed
+minutes a run on ubuntu-latest: three jobs of about five minutes each against one of
+four or five. Three runner slots for those minutes, at a point in the run where nothing
+else runs. The fixed limit below stays, for a change that slows every booking at rest.
 
 **And a fixed limit holds whatever the baseline reads (#3517, Dan, 2026-10-18).** The
 steady p95 must also be at most `STEADY_P95_LIMIT_MS`, 1,800ms, so a run whose baseline
@@ -1392,8 +1422,8 @@ raises the baseline and the ratio bar with it. The fixed limit is what catches t
 and the baseline median is printed on every run beside both checks.
 
 **An unusable baseline voids only the speed verdict** (Dan, 2026-10-05). Missing,
-doubled, unreadable or malformed, from another run, fewer than 14 of its measured
-bookings confirmed, or a
+doubled from one runner, short of a runner, unreadable or malformed, from another run,
+a runner with fewer than 5 of its 7 measured bookings confirmed, or a
 results directory that could not be listed: the burst, steady, fault, overlap and
 freshness bars are judged as usual. If any of them fails, the run FAILS (exit 4) and
 the verdict line adds that the speed was also unmeasured. If every one passes, the
@@ -2003,14 +2033,18 @@ It prints, per group, the p50, p95 and max per CALL (from confirms that made exa
 such call, since the stand in draws one delay per call and a confirm's covered time over
 several calls is not one call's time) and per CONFIRM beside it, then the line
 `google_delay: read=<p50>/<p95>,write=<p50>/<p95>` to dispatch with. Percentiles are
-nearest rank, the judge's own (`percentiles` in `judge-booking-run.ts`). Dry runs are left
-out. It exits 0 on a whole listing, 2 when there is nothing to stand on (logs.ts exited
-anything but 0 or 3, the file has no verdict line, no line carries the fields, which is a
+nearest rank, the judge's own (`percentiles` in `judge-booking-run.ts`), weighted by each
+row's `weight=` (#3915): when the Worker is busy Cloudflare stores some confirms in place of
+several it never keeps, logs.ts exits 4 and prints the weight on those rows, and the report
+weights every figure by it and says the window was sampled. Dry runs are left out. It exits
+0 on a whole listing, sampled or not, 2 when there is nothing to stand on (logs.ts exited
+anything but 0, 3 or 4, the file has no verdict line, no line carries the fields, which is a
 window from before the deploy, or neither kind gave a usable value), and **3 when the listing is short**: `logs.ts --lines` can list fewer
-rows than it counted (its own exit 3), and then the report says INCOMPLETE and names how
-many of how many the percentiles are over, judged from both the exit code given and the two
-numbers in the file. Narrow `--slice-minutes` and list again rather than using a short
-listing's value. Under 100 single call confirms it warns that the p95 is a handful of rows.
+rows than Cloudflare stored (its own exit 3), and then the report says INCOMPLETE and names how
+many of how many the percentiles are over, judged from both the exit code given and the
+numbers in the file (the rows' weights must add up to the count). List again, narrowing
+`--slice-minutes`, rather than using a short listing's value. Under 100 single call confirms
+it warns that the p95 is a handful of rows.
 
 Record in the pair's notes the window, the value used, the listed and counted numbers, and
 that the stand in delays free/busy and event calls only, never token mints, which caused

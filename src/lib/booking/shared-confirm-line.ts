@@ -12,6 +12,9 @@
  *
  * - The switch is off, or could not be read and the deployment default is off: the
  *   isolate's own line, exactly as before (`isolate`, `off` / `unread-default`).
+ * - The switch could not be read and the deployment default is on (production since
+ *   #3339): the shared line, as if it read on, but said apart from one that did
+ *   (`shared`, `unread-default-on`, #3910).
  * - No binding: the isolate's line, and a reach failure is reported, because a switch
  *   that is on cannot be honoured (`fallback`, `unbound`).
  * - `enter` refused, or not answered within `CONFIRM_LINE_REACH_MS`: the isolate's
@@ -79,6 +82,7 @@ export const CONFIRM_LINE_GONE_RETRIES = 2;
 export type LineMode = "shared" | "isolate" | "fallback";
 export type LineReason =
   | "ok"
+  | "unread-default-on"
   | "off"
   | "unread-default"
   | "unbound"
@@ -440,20 +444,22 @@ export function makeSharedConfirmLine<T>(deps: {
   };
 
   /** Which line this confirm uses, before any call to the object. */
-  const decide = async (key: LineKey): Promise<{ use: "shared" } | { use: "isolate" | "fallback"; reason: LineReason }> => {
+  const decide = async (key: LineKey): Promise<{ use: "shared" | "isolate" | "fallback"; reason: LineReason }> => {
     const sw = await deps.enabled();
     if (!sw.on) return { use: "isolate", reason: sw.source === "default" ? "unread-default" : "off" };
     if (!deps.namespace) return { use: "fallback", reason: "unbound" };
     void key;
-    return { use: "shared" };
+    // #3910: with the default on, a switch it could not read takes the shared line too,
+    // and must not log as one that read on.
+    return { use: "shared", reason: sw.source === "default" ? "unread-default-on" : "ok" };
   };
 
   const enterOnce = async (key: LineKey, waitMs: number | undefined): Promise<LineTurn<T>> => {
-    const served: LineServed = { line: "shared", reason: "ok", key: keyKindOf(key.group), lineMs: 0 };
     const stashed = stash.get(isolateKeyOf(key)) ?? null;
     // Cleared only once the switch has been read: a read that throws leaves what the
     // lookahead kept where `release` will find it (#3351).
     const how = await decide(key);
+    const served: LineServed = { line: "shared", reason: how.reason, key: keyKindOf(key.group), lineMs: 0 };
     stash.delete(isolateKeyOf(key));
     if (how.use !== "shared") {
       // #3351: the switch or binding changed since the lookahead kept a lead or ticket

@@ -10,8 +10,11 @@
 // drops rows (#3299). The output says how many slices it read.
 //
 // Exit: 0 found, 1 trustworthy absence, 2 UNVERIFIABLE (the query itself is broken, or it
-// was refused), 3 found but the printed list is incomplete (fewer lines listed than counted,
-// or a slice filled the request limit), so the list must not be read as every line.
+// was refused), 3 found but the printed list is incomplete (fewer lines listed than Cloudflare
+// stored, or a slice filled the request limit), so the list must not be read as every line,
+// 4 found and every stored line printed, but Cloudflare SAMPLED the window (#3915): the count
+// is its estimate, some lines were never stored, and each line kept in place of several
+// carries `weight=N`, which any percentile over the list must be weighted by.
 //
 // THE TOKEN. A read only API token with the Workers role Metadata Read-only, stored in `.env.local` at the
 // checkout root as `CLOUDFLARE_LOGS_READ_TOKEN=<token>` (or `CLOUDFLARE_API_TOKEN` set in the
@@ -91,8 +94,10 @@ export interface CountQuery {
     filterCombination: "and";
     filters: { id: string; key: string; operation: string; type: string; value: string }[];
     calculations: { alias: string; operator: string }[];
-    groupBys: never[];
+    groupBys: { type: "string"; value: string }[];
     havings: never[];
+    /** How many GROUPS a grouped calculation returns; the API's default is 10. */
+    limit?: number;
   };
   /** Unix MILLISECONDS. Verified against the live API: it 400s on ISO strings,
    *  even though the Cloudflare MCP tool accepts them. */
@@ -646,6 +651,12 @@ export interface LogLine {
   level: string | null;
   /** null when the event carried no readable text: kept and printed as such, never dropped. */
   message: string | null;
+  /**
+   * How many lines this stored row stands for (#3915): 1 for a row Cloudflare kept whole, N
+   * for one it kept in place of N, null when that could not be read. Absent until `listLines`
+   * has read the weights.
+   */
+  weight?: number | null;
 }
 
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
@@ -684,27 +695,135 @@ export function linesFromResponse(body: unknown): LogLine[] {
   return events.map(eventToLine);
 }
 
-/** One printed line: UTC timestamp, level (a dash when there is none), text. */
+/**
+ * One printed line: UTC timestamp, level (a dash when there is none), then `weight=N` when
+ * the row stands for more than one line (`weight=unknown` when that could not be read), then
+ * the text. A row at weight 1 prints exactly as it did before weights were read.
+ */
 export function formatLine(line: LogLine): string {
   const when = line.timestampMs === null ? "(no timestamp)" : new Date(line.timestampMs).toISOString();
   const text =
     line.message ?? "(the line text could not be read from this event; the payload shape may have changed)";
-  return `${when}  ${line.level ?? "-"}  ${text}`;
+  const weight =
+    line.weight === undefined || line.weight === 1 ? "" : `weight=${line.weight === null ? "unknown" : line.weight}  `;
+  return `${when}  ${line.level ?? "-"}  ${weight}${text}`;
+}
+
+/**
+ * The weight `formatLine` printed on a line: 1 when it printed none, null for `unknown`. Kept
+ * beside the formatter so a reader of saved output and the printer agree on the column (L41).
+ * Only the column after the level is read, never a `weight=` inside the line's own text.
+ */
+export function weightOfPrintedLine(printed: string): number | null {
+  const m = /^(?:\(no timestamp\)|\S+) {2}\S+ {2}weight=(\S+) {2}/.exec(printed);
+  if (!m) return 1;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 export type EventsFn = (q: EventsQuery) => Promise<LogLine[]>;
+
+// ---------------------------------------------------------------------------------------
+// Sampling (#3915). Workers Logs samples at ingestion when a Worker is busy: it stores some
+// rows and gives each a weight, the number of lines it stands for, and a `count` is the SUM of
+// those weights, an estimate, while the events view lists the rows actually stored. Measured
+// 2026-10-18 15:30 to 16:30 UTC on `confirm answered`: counted 69, stored 51, of which 49 at
+// weight 1 and 2 at weight 10. Paging the events view returned the same 51, and so did one
+// minute slices; the other 18 lines were never stored, so nothing can list them.
+//
+// The weights are read by counting grouped by `$metadata.id`: each group is one stored row
+// and its count is that row's weight. The groups' number must be asked for INSIDE
+// `parameters`: without it the API returns 10, and the request's own `limit` does not change
+// that (measured 2026-10-20).
+// ---------------------------------------------------------------------------------------
+
+export interface WeightsQuery extends CountQuery {
+  parameters: CountQuery["parameters"] & { limit: number };
+}
+
+/** The count's filters, grouped by row id, asking for as many groups as a listing has rows. */
+export function buildWeightsQuery(input: {
+  needle: string;
+  fromIso: string;
+  toIso: string;
+  service?: string;
+  limit?: number;
+}): WeightsQuery {
+  const count = buildCountQuery(input);
+  return {
+    ...count,
+    queryId: "slate-log-weights",
+    parameters: {
+      ...count.parameters,
+      groupBys: [{ type: "string", value: "$metadata.id" }],
+      limit: input.limit ?? EVENTS_LIMIT,
+    },
+  };
+}
+
+/**
+ * Row id to weight, out of a grouped count (`result.calculations[0].aggregates`, each carrying
+ * `groups: [{ key: "$metadata.id", value }]` and `value`). THROWS on a missing aggregates list
+ * and on a counted group with no row id, for the reason `countFromResponse` does; an
+ * ungrouped zero, which a window with no rows can carry, is no rows.
+ */
+export function weightsFromResponse(body: unknown): Map<string, number> {
+  const aggregates = (
+    body as {
+      result?: { calculations?: { aggregates?: { groups?: { key?: string; value?: unknown }[]; value?: unknown }[] }[] };
+    }
+  )?.result?.calculations?.[0]?.aggregates;
+  if (!Array.isArray(aggregates)) {
+    throw new Error(
+      "observability response did not match the expected shape (result.calculations[0].aggregates) for the row weights. " +
+        "Refusing to read it as no rows. The API payload has probably changed.",
+    );
+  }
+  const weights = new Map<string, number>();
+  for (const a of aggregates) {
+    const id = a?.groups?.find((g) => g?.key === "$metadata.id")?.value;
+    const value = a?.value;
+    if (typeof id !== "string") {
+      if (value === 0) continue;
+      throw new Error(
+        "observability response carried a counted group with no row id, so the rows' weights cannot be told apart. " +
+          "The API payload has probably changed.",
+      );
+    }
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      throw new Error(`observability response gave row ${id} a weight that is not a positive number (${String(value)}).`);
+    }
+    weights.set(id, value);
+  }
+  return weights;
+}
+
+export type WeightsFn = (q: WeightsQuery) => Promise<Map<string, number>>;
 
 export interface IncompleteSlice extends Slice {
   reason: string;
 }
 
+/** A slice whose every stored row was listed, but which Cloudflare sampled. */
+export interface SampledSlice extends Slice {
+  /** Rows Cloudflare stored, all of them listed. */
+  stored: number;
+  /** The lines those rows stand for: the sum of their weights. */
+  standsFor: number;
+}
+
 /**
- * Count AND list each slice, merge, and say where the listing is not the whole set.
+ * Count AND list each slice, read each stored row's weight, merge, and say where the listing
+ * is not the whole set.
  *
  * The verdict still comes from the controlled COUNT, never from the length of the list: a
  * short list is exactly the #3299 failure, and reading it as the complete set would repeat
- * it. A slice is incomplete when it listed fewer lines than it counted, when it filled the
- * request limit (so it may hold more), or when an event's text could not be read.
+ * it. The listing is judged against the rows Cloudflare STORED, not the count, which is an
+ * estimate when it sampled (#3915). A slice is incomplete when it listed fewer rows than were
+ * stored, when it filled the request limit (so it may hold more), when an event's text could
+ * not be read, or when a row of a sampled slice has no weight. A slice listing every stored
+ * row of a sampled window is SAMPLED instead: whole as far as anything can be, with lines
+ * never stored that no narrower slice, page or retry could list.
  */
 export async function listLines(input: {
   needle: string;
@@ -713,6 +832,7 @@ export async function listLines(input: {
   toIso: string;
   query: QueryFn;
   events: EventsFn;
+  weights: WeightsFn;
   sliceMs?: number;
   limit?: number;
 }): Promise<{
@@ -720,40 +840,73 @@ export async function listLines(input: {
   judgement: MergedJudgement;
   lines: LogLine[];
   incomplete: IncompleteSlice[];
+  sampled: SampledSlice[];
 }> {
   const limit = input.limit ?? EVENTS_LIMIT;
   const slices: SliceCount[] = [];
   const incomplete: IncompleteSlice[] = [];
+  const sampled: SampledSlice[] = [];
   const seen = new Set<string>();
   const lines: LogLine[] = [];
   for (const s of sliceWindow(input)) {
-    const [counted, listed] = await Promise.all([
+    const eventsQuery = buildEventsQuery({ needle: input.needle, fromIso: s.fromIso, toIso: s.toIso, limit });
+    const [counted, firstListing, weights] = await Promise.all([
       countSlice({ ...input, fromIso: s.fromIso, toIso: s.toIso }),
-      input.events(buildEventsQuery({ needle: input.needle, fromIso: s.fromIso, toIso: s.toIso, limit })),
+      input.events(eventsQuery),
+      input.weights(buildWeightsQuery({ needle: input.needle, fromIso: s.fromIso, toIso: s.toIso, limit })),
     ]);
+    // A listing short of the stored rows is asked for once more before it is reported: on
+    // 2026-10-20 one hour listed 4 of the 19 rows it stored, and 19 on every later ask.
+    const stored = weights.size;
+    let listed = firstListing;
+    if (listed.length < stored && listed.length < limit) listed = await input.events(eventsQuery);
+    const isSampled = [...weights.values()].some((w) => w !== 1);
+    // A row the weights do not hold landed between the requests, or the two views disagree.
+    // In a slice stored whole it can only be weight 1 like its neighbours; in a sampled one
+    // its weight is unknown, and a weighted figure over it would be a guess.
+    const weighted = listed.map((l) => ({
+      ...l,
+      weight: (l.id !== null ? weights.get(l.id) : undefined) ?? (isSampled ? null : 1),
+    }));
     const judgement = counted.judge(0);
     const reasons: string[] = [];
-    if (listed.length >= limit) {
+    if (listed.length >= limit || stored >= limit) {
       reasons.push(
         `listed ${listed.length} lines, the most one request returns, so this slice may hold more; ` +
           "re-run with a narrower --slice-minutes",
       );
-    } else if (listed.length < judgement.needleCount) {
+    } else if (listed.length < stored) {
       reasons.push(
-        `listed ${listed.length} of ${judgement.needleCount} counted lines, so ` +
-          `${judgement.needleCount - listed.length} are missing from what is printed`,
+        `listed ${listed.length} of the ${stored} lines Cloudflare stored, so ${stored - listed.length} are ` +
+          "missing from what is printed; run it again, or with a narrower --slice-minutes",
+      );
+    }
+    // The count is the sum of the stored rows' weights, so the two must agree. Weights that
+    // fall short mean the weights read itself lost rows, and a listing judged against it
+    // could be short with nothing said.
+    const standsFor = [...weights.values()].reduce((sum, w) => sum + w, 0);
+    if (standsFor < judgement.needleCount - 0.5) {
+      reasons.push(
+        `Cloudflare counted ${judgement.needleCount} lines but the weights of the rows it stored add up to ` +
+          `${standsFor}, so rows may be missing from what is printed; run it again`,
       );
     }
     const unreadable = listed.filter((l) => l.message === null).length;
     if (unreadable > 0) reasons.push(`${unreadable} line(s) carried no readable text`);
+    const unweighed = weighted.filter((l) => l.weight === null).length;
+    if (unweighed > 0) {
+      reasons.push(`${unweighed} line(s) of this sampled slice have no weight, so a figure weighted over them would be a guess`);
+    }
     if (reasons.length > 0) incomplete.push({ ...s, reason: reasons.join("; ") });
+    else if (isSampled) sampled.push({ ...s, stored, standsFor });
     let repeated = 0;
-    for (const line of listed) {
+    for (const line of weighted) {
       // Adjacent slices share a boundary instant, so a row stamped exactly on it can come
       // back from both, in the listing AND in the count. Its id says it is one row.
       if (line.id !== null) {
         if (seen.has(line.id)) {
-          repeated++;
+          // The count holds it at its weight, so that is what comes out of this slice's.
+          repeated += line.weight ?? 1;
           continue;
         }
         seen.add(line.id);
@@ -768,7 +921,7 @@ export async function listLines(input: {
     slices.push({ ...s, judgement: repeated > 0 ? counted.judge(repeated) : judgement });
   }
   lines.sort((a, b) => (a.timestampMs ?? Infinity) - (b.timestampMs ?? Infinity));
-  return { slices, judgement: mergeJudgements(slices.map((s) => s.judgement)), lines, incomplete };
+  return { slices, judgement: mergeJudgements(slices.map((s) => s.judgement)), lines, incomplete, sampled };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -820,8 +973,11 @@ export const TOKEN_MISSING =
 type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 
 /** Count and list against Cloudflare's observability API, with the fetch injectable. */
-export function cloudflareClient(token: string, fetchFn: FetchFn = fetch): { count: QueryFn; events: EventsFn } {
-  const post = async (q: CountQuery | EventsQuery): Promise<unknown> => {
+export function cloudflareClient(
+  token: string,
+  fetchFn: FetchFn = fetch,
+): { count: QueryFn; events: EventsFn; weights: WeightsFn } {
+  const post = async (q: CountQuery | EventsQuery | WeightsQuery): Promise<unknown> => {
     const res = await fetchFn(
       `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/observability/telemetry/query`,
       {
@@ -844,6 +1000,7 @@ export function cloudflareClient(token: string, fetchFn: FetchFn = fetch): { cou
       return { count: countFromResponse(body), newestMs: newestBucketMsFromResponse(body) };
     },
     events: async (q) => linesFromResponse(await post(q)),
+    weights: async (q) => weightsFromResponse(await post(q)),
   };
 }
 
@@ -863,7 +1020,8 @@ const USAGE =
 
 /**
  * The command. Exit codes: 0 found, 1 trustworthy absence, 2 UNVERIFIABLE or refused, 3
- * found but the printed list is incomplete. Every line it writes passes through `redact`.
+ * found but the printed list is incomplete, 4 found and every stored line printed but the
+ * window was sampled (#3915). Every line it writes passes through `redact`.
  */
 export async function run(argv: string[], io: RunIo): Promise<number> {
   let token: string | null = null;
@@ -953,11 +1111,21 @@ async function runChecked(
 
   const client = cloudflareClient(token, io.fetch);
   const result = lines
-    ? await listLines({ needle, control, fromIso, toIso, query: client.count, events: client.events, sliceMs })
+    ? await listLines({
+        needle,
+        control,
+        fromIso,
+        toIso,
+        query: client.count,
+        events: client.events,
+        weights: client.weights,
+        sliceMs,
+      })
     : {
         ...(await searchSliced({ needle, control, fromIso, toIso, query: client.count, sliceMs })),
         lines: [] as LogLine[],
         incomplete: [] as IncompleteSlice[],
+        sampled: [] as SampledSlice[],
       };
   const j = result.judgement;
 
@@ -998,12 +1166,24 @@ async function runChecked(
   }
   out(`${j.verdict.toUpperCase()}: "${needle}" matched ${j.needleCount} line(s) between ${fromIso} and ${toIso}.`);
   out(`control ("${control}") matched ${j.controlCount}: ${j.reason}`);
+  if (result.sampled.length > 0) {
+    // stdout, beside the verdict, so a file saved from it carries the caveat with the lines.
+    const stored = result.sampled.reduce((n, s) => n + s.stored, 0);
+    const standsFor = result.sampled.reduce((n, s) => n + s.standsFor, 0);
+    out(
+      `SAMPLED: in ${result.sampled.length} of ${result.slices.length} slice(s) Cloudflare stored ${stored} rows ` +
+        `for ${standsFor} counted lines and never stored the rest, so no query can list them, and every row it ` +
+        "stored is printed. A line printed with weight=N stands for N lines: weight any percentile over this list " +
+        "by it, or the busy minutes Cloudflare sampled count for too little.",
+    );
+  }
   if (lines && j.verdict === "absent" && result.lines.length > 0) {
     // The listing found rows the count did not. The rows are real, so they win.
     out(`note: the count found none, but the listing printed ${result.lines.length} line(s) above; read those.`);
     return 0;
   }
   if (result.incomplete.length > 0) return 3;
+  if (result.sampled.length > 0 && j.verdict === "present") return 4;
   return exitCodeFor(j);
 }
 

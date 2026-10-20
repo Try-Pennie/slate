@@ -260,9 +260,10 @@ export interface JudgeInput {
   };
   /**
    * #3258: the same day baseline, bookings at rest on the same deployment just before
-   * the steady pass (#3517: a warm up of two, then twenty measured), as the judge entry
-   * found it (`baselineReading`). The steady pass's latency is judged against the
-   * median of the measured ones and against a fixed limit (`latency-bar.ts`).
+   * the steady pass (#3517: each runner's warm up of two, then its measured bookings;
+   * #3914: from three runners), as the judge entry found it (`baselineReading`). The
+   * steady pass's latency is judged against the median pooled over every runner's
+   * measured bookings and against a fixed limit (`latency-bar.ts`).
    */
   baseline?: BaselineReading;
   /**
@@ -320,6 +321,34 @@ export function percentiles(values: number[]): { p50: number; p95: number; max: 
   const s = [...values].sort((a, b) => a - b);
   const at = (q: number) => s[Math.min(s.length - 1, Math.floor(q * s.length))]!;
   return { p50: at(0.5), p95: at(0.95), max: s[s.length - 1]! };
+}
+
+/**
+ * The same nearest rank over samples that each stand for `weight` values (#3915): Cloudflare
+ * stores some log rows in place of several lines it never kept, and a percentile over the
+ * rows alone counts each of those as one. The rank is the first value whose running weight
+ * passes the quantile of the total, which at weight 1 throughout is exactly `percentiles`.
+ * THROWS on a weight that is not a positive number, which would otherwise drop its row from
+ * the figure with nothing said.
+ */
+export function weightedPercentiles(
+  samples: readonly { value: number; weight: number }[],
+): { p50: number; p95: number; max: number } | null {
+  if (samples.length === 0) return null;
+  for (const s of samples) {
+    if (!Number.isFinite(s.weight) || s.weight <= 0) throw new Error(`weightedPercentiles: weight ${s.weight} is not a positive number`);
+  }
+  const s = [...samples].sort((a, b) => a.value - b.value);
+  const total = s.reduce((sum, x) => sum + x.weight, 0);
+  const at = (q: number) => {
+    let running = 0;
+    for (const x of s) {
+      running += x.weight;
+      if (running > q * total) return x.value;
+    }
+    return s[s.length - 1]!.value;
+  };
+  return { p50: at(0.5), p95: at(0.95), max: s[s.length - 1]!.value };
 }
 
 /** Two windows overlap when each starts before the other ends: the half-open
