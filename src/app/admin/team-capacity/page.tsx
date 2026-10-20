@@ -150,8 +150,9 @@ export default async function TeamCapacityPage({
   // a day history holds only part of (the first) or that the office was shut.
   const pastOffered = pickedPast !== null && pickable.includes(pickedPast) && pastAdvisors !== null && pastAdvisors.length > 0;
   const sources = daySources(report, pickedPast, pastOffered ? pastAdvisors : null);
-  // A day the picker would not offer (nothing saved, or past the cached calendars) opens on the
-  // default day instead, and says nothing: the picker never offered it.
+  // A day the picker would not offer (nothing saved, history's partly recorded first day, a day the
+  // office was shut, or past the cached calendars) opens on the default day instead, and says
+  // nothing: the picker never offered it.
   const pickedIndex = picked ? sources.findIndex((s) => s.iso === picked) : -1;
   if (picked && pickedIndex < 0) log.info("team-capacity", { msg: "picked day not offered", day: picked });
   // The page opens on tomorrow (D12), found by date: after the booker's evening cutoff the window
