@@ -149,6 +149,11 @@ export type SupplyCell =
    * A real measurement (#1937): how many of the times this bucket could have
    * taken an appointment at were actually booked.
    *
+   * On the page (#3939, `callsByCode` given) it is in CALLS instead: `booked` is
+   * the calls taken by anything on the pool's advisors' calendars and `capacity`
+   * the calls their shifts could hold, Team capacity's measure. What follows
+   * describes the start time measure the monitor's nearly full check still reads.
+   *
    * `capacity` is what is still OFFERED plus what is already TAKEN, both counted
    * as distinct start times on the same grid from the same source, which is the
    * whole reason the two are comparable. `share` is `booked / capacity` and is

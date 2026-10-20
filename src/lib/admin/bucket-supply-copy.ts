@@ -220,7 +220,7 @@ export function supplyLegend(offeredOpenDays: number): SupplyLegendEntry[] {
       id: "unknown",
       label: "Could not check",
       meaning:
-        "This pool's cached answer could not be read, so nothing here was measured. It is not a report that the pool is empty.",
+        "A read behind this pool failed (its cached answer, the roster or its advisors' calendars), so nothing here was measured. It is not a report that the pool is empty.",
       mark: "?",
       cell: "bg-transparent text-fg-muted",
       swatchExtra: "border border-dashed border-border",
@@ -315,7 +315,7 @@ export function supplyCellTitle(
     case "closed":
       return `${when}: the office is closed.`;
     case "unknown":
-      return `${when}: could not be checked, because this pool's cached answer could not be read.`;
+      return `${when}: could not be checked, because a read behind it failed: the pool's cached answer, the roster or its advisors' calendars.`;
   }
 }
 

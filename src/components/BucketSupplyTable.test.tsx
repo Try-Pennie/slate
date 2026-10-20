@@ -143,7 +143,7 @@ describe("BucketSupplyTable (#1254)", () => {
 
     // And the sentence says WHY, rather than saying nothing.
     expect(
-      screen.getAllByText(/could not be checked, because this pool's cached answer/).length,
+      screen.getAllByText(/could not be checked, because a read behind it failed/).length,
     ).toBe(2);
   });
 
