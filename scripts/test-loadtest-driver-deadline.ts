@@ -24,7 +24,7 @@
 // Run: node --experimental-strip-types scripts/test-loadtest-driver-deadline.ts
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
-import { BASELINE_PER_MINUTE, BASELINE_PLANNED } from "./loadtest/latency-bar.ts";
+import { BASELINE_PLANNED, BASELINE_RUNNERS } from "./loadtest/latency-bar.ts";
 import { promisify } from "node:util";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -57,6 +57,7 @@ import {
   BURST_SPACING_MS,
   type DriverResult,
   BURST_RUNNER_START_WORST_SECONDS,
+  baselineJobTimeoutMinutes,
 } from "./loadtest/book-plan.ts";
 import { OK_P95_MS } from "./loadtest/judge-booking-run.ts";
 import { AVAILABILITY_UNREAD, NO_SLOTS_OFFERED, TIMED_OUT } from "./loadtest/outcomes.ts";
@@ -475,24 +476,31 @@ function gateProblems(yml: string): string[] {
 // --- #3258: the same day baseline leg ---------------------------------------------------
 {
   // The driver in baseline mode: its own plan (#3517: its warm up and the bookings
-  // measured after it, at six a minute), its own mode on the file the judge gathers by
-  // mode, and its own id prefix, so no steady booking id is reused. Cut short by the
-  // test deadline after its first request.
-  const { code, stderr, result: r } = await runDriver("slow", { MODE: "baseline", DRIVER: "0" }, "baseline.json");
+  // measured after it; #3914: one runner's share, sent on its own turn), its own mode on
+  // the file the judge gathers by mode, and its own id prefix, so no steady booking id is
+  // reused. Cut short by the test deadline after its first request. The ten second gap is
+  // shortened through its seam, which may only shorten, so the test does not wait out a
+  // real turn.
+  const runner = String(BASELINE_RUNNERS - 1);
+  const { code, stderr, result: r } = await runDriver(
+    "slow",
+    { MODE: "baseline", DRIVER: runner, BASELINE_GAP_MS: "20" },
+    `baseline-${runner}.json`,
+  );
   eq(code, 0, `the baseline driver exits zero ${stderr.slice(0, 300)}`);
   eq(r?.mode, "baseline", "and writes a baseline file, which the judge gathers apart from the steady pass");
-  eq(r?.planned, BASELINE_PLANNED, "planning the warm up and the measured bookings, not a steady driver's plan");
+  eq(r?.driver, BASELINE_RUNNERS - 1, "naming the runner it was, which is whose warm up the judge drops");
+  eq(r?.planned, BASELINE_PLANNED, "planning one runner's warm up and measured bookings, not a steady driver's plan");
   assert((r?.attempts.length ?? 0) >= 1, "having booked");
-  assert(r?.attempts.every((a) => a.externalId.startsWith("run-3222-r-")) ?? false, "under the baseline's own id prefix");
+  assert(r?.attempts.every((a) => a.externalId.startsWith(`run-3222-r-${runner}-`)) ?? false, "under the baseline's own id prefix and its runner");
   eq(r?.attempts[0]?.n, 0, "numbering its bookings from the first, which is the position the judge drops the warm up by");
 }
 
 // --- #3517: the baseline job outlives the baseline driver's own deadline ------------------
 {
-  // A longer plan than the twelve it replaced: the job must still outlive the driver's
-  // deadline for it, so a slow day stops the driver and keeps its file rather than the
-  // platform killing it with nothing written (#3222).
-  const plan = { total: BASELINE_PLANNED, perMinute: BASELINE_PER_MINUTE };
+  // The job must outlive the driver's deadline for one runner's plan AND the turn it may
+  // wait for before its first booking (#3914), so a slow day stops the driver and keeps
+  // its file rather than the platform killing it with nothing written (#3222).
   const yml = readFileSync(join(ROOT, ".github/workflows/loadtest.yml"), "utf8");
   const declaredOf = (text: string) =>
     Number(/^ {4}timeout-minutes:\s*(\d+)/m.exec(/^ {2}baseline:\n([\s\S]*?)(?=^ {2}\S)/m.exec(text)?.[1] ?? "")?.[1] ?? NaN);
@@ -500,12 +508,12 @@ function gateProblems(yml: string): string[] {
   // L50: an unreadable timeout is NaN, which would pass no comparison; say so by name.
   assert(Number.isFinite(declared), "the baseline job's timeout-minutes is read from the workflow");
   assert(
-    declared >= driveJobTimeoutMinutes(plan),
-    `the baseline job's ${declared} minutes cover the ${driveJobTimeoutMinutes(plan)} its plan needs`,
+    declared >= baselineJobTimeoutMinutes(),
+    `the baseline job's ${declared} minutes cover the ${baselineJobTimeoutMinutes()} its plan and its turn need`,
   );
   // Control (L1): a baseline job shorter than its plan needs is read as short.
   const planted = yml.replace(/(^ {2}baseline:\n[\s\S]*?^ {4}timeout-minutes:\s*)\d+/m, "$13");
-  assert(declaredOf(planted) < driveJobTimeoutMinutes(plan), "control: a three minute baseline job is caught");
+  assert(declaredOf(planted) < baselineJobTimeoutMinutes(), "control: a three minute baseline job is caught");
 }
 /**
  * Why the baseline is not wired the way the judge relies on (#3258), as findings, so
@@ -516,9 +524,20 @@ function baselineWiringProblems(yml: string, runJudge: string): string[] {
   const out: string[] = [];
   const job = (name: string) => new RegExp(`^ {2}${name}:\\n([\\s\\S]*?)(?=^ {2}\\S)`, "m").exec(yml)?.[1] ?? "";
   const baseline = job("baseline");
-  if (!/MODE: baseline/.test(baseline) || !/OUT: results\/baseline\.json/.test(baseline)) {
-    out.push("the baseline job does not drive baseline mode into baseline.json");
+  if (!/MODE: baseline/.test(baseline) || !/OUT: results\/baseline-\$\{\{ matrix\.driver \}\}\.json/.test(baseline)) {
+    out.push("the baseline job does not drive baseline mode into one file per runner");
   }
+  // #3914: one runner per index the judge expects, each its own address, each named on
+  // its file and its artifact, and none cancelled by a sibling's failure (the judge
+  // names a missing runner; a cancelled one would read as missing for no reason).
+  const matrix = /^ {6}matrix:\n {8}driver: \[([^\]]*)\]/m.exec(baseline)?.[1];
+  const expected = Array.from({ length: BASELINE_RUNNERS }, (_, i) => String(i)).join(", ");
+  if (matrix === undefined || matrix.split(",").map((x) => x.trim()).join(", ") !== expected) {
+    out.push(`the baseline matrix is not the ${BASELINE_RUNNERS} runners the judge expects (${expected})`);
+  }
+  if (!/fail-fast: false/.test(baseline)) out.push("one baseline runner failing cancels the others");
+  if (!/DRIVER: \$\{\{ matrix\.driver \}\}/.test(baseline)) out.push("the baseline runners do not each name their runner");
+  if (!/name: baseline-\$\{\{ matrix\.driver \}\}/.test(baseline)) out.push("the baseline runners' artifacts are not named apart");
   if (!/needs: preflight/.test(baseline)) out.push("the baseline does not wait for the preflight to warm the deployment");
   const setup = jobGate(yml, "setup-burst");
   if (!setup.needs.includes("baseline")) out.push("the burst setup does not wait for the baseline to finish at rest");
@@ -577,6 +596,22 @@ function baselineWiringProblems(yml: string, runJudge: string): string[] {
     baselineWiringProblems(tailBare, runJudge),
     ["burst-tail is skipped behind a failed baseline"],
     "control: a burst tail that would be skipped behind a failed baseline is caught, and only that",
+  );
+  // #3914 controls: a baseline back on one runner, or runners uploading over one
+  // artifact name, is caught, and only that.
+  const oneRunner = yml.replace(/(^ {2}baseline:\n[\s\S]*?^ {6}matrix:\n {8}driver: )\[[^\]]*\]/m, "$1[0]");
+  assert(oneRunner !== yml, "control setup: the baseline matrix was really narrowed");
+  eq(
+    baselineWiringProblems(oneRunner, runJudge),
+    [`the baseline matrix is not the ${BASELINE_RUNNERS} runners the judge expects (${Array.from({ length: BASELINE_RUNNERS }, (_, i) => i).join(", ")})`],
+    "control: a baseline sent from one runner again is caught, and only that",
+  );
+  const sharedArtifact = yml.replace(/name: baseline-\$\{\{ matrix\.driver \}\}/, "name: baseline");
+  assert(sharedArtifact !== yml, "control setup: the artifact name was really shared");
+  eq(
+    baselineWiringProblems(sharedArtifact, runJudge),
+    ["the baseline runners' artifacts are not named apart"],
+    "control: runners uploading over one artifact name are caught, and only that",
   );
   const noPass = runJudge.replace(/baseline: expectBaseline,/, "baseline: false,");
   eq(

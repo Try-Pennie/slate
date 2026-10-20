@@ -22,6 +22,9 @@ import {
   externalIdFor,
   pickSlot,
   baselineSlot,
+  baselineStartAtMs,
+  baselineOwner,
+  baselineGapFrom,
   AVAILABILITY_PER_MINUTE,
   BOOKING_WRITES_PER_MINUTE,
   DRIVERS,
@@ -73,6 +76,7 @@ import {
   AVAILABILITY_LIMITER,
   BOOKING_API_IP_LIMITER,
 } from "../src/lib/rate-limit-core.ts";
+import { BASELINE_GAP_MS, BASELINE_PER_MINUTE, BASELINE_PLANNED, BASELINE_RUNNERS } from "./loadtest/latency-bar.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { LOADTEST_LEGS, LOADTEST_LEG_HEADER } from "../src/lib/booking/wait-marks.ts";
@@ -1029,8 +1033,98 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   );
   eq(baselineSlot(["2026-10-15T20:10:00.000Z"], new Set(["2026-10-15T20:10:00.000Z"])), null, "and a code offering only booked times offers nothing");
   const book = readFileSync(join(import.meta.dirname, "loadtest", "book.ts"), "utf8");
-  assert(/mode === "baseline" \? baselineSlot\(slots, baselineBooked\) : pickSlot\(slots\)/.test(book), "the driver books the baseline through it, and only the baseline");
+  assert(
+    /mode === "baseline" \? baselineSlot\(slots, baselineBooked, \{ runner: DRIVER, runners: BASELINE_RUNNERS \}\) : pickSlot\(slots\)/.test(book),
+    "the driver books the baseline through it, as its own runner, and only the baseline",
+  );
   assert(/baselineBooked\.add\(startIso\)/.test(book), "and records each time it booked, so the next one passes it over");
+}
+
+// --- #3914: the baseline is spread across runners that take turns ----------------------
+//
+// One runner's address decided the whole baseline: the per address limiter object it
+// meets answered the median booking in 215ms on run 39090439214 against 42 and 55ms on two
+// other runs of one commit. So the baseline is sent from several runners, each its own
+// address and object, and the median is pooled the way the steady pass's p95 is. Two
+// things keep that a measurement AT REST: the runners take turns on one ten second clock,
+// so the deployment still sees one baseline booking every ten seconds and never two at
+// once, and each offered time belongs to ONE runner, so no two runners book one time.
+{
+  const T = Date.parse("2026-10-20T14:00:03.217Z");
+  const cycle = BASELINE_GAP_MS * BASELINE_RUNNERS;
+  let turnsHeld = true;
+  for (let now = T; now < T + 2 * cycle; now += 1_337) {
+    for (let r = 0; r < BASELINE_RUNNERS; r++) {
+      const at = baselineStartAtMs(now, r);
+      if (!(at >= now && at - now < cycle && at % BASELINE_GAP_MS === 0 && (at / BASELINE_GAP_MS) % BASELINE_RUNNERS === r)) {
+        turnsHeld = false;
+      }
+    }
+  }
+  assert(turnsHeld, "every runner starts on the next ten second mark that is its own turn, at most one cycle away");
+  eq(baselineStartAtMs(T - (T % cycle), 0), T - (T % cycle), "a runner already on its own mark starts there rather than a cycle later");
+
+  // Runners that come up at different moments, as matrix jobs do, still never send in
+  // one ten seconds: each runner's plan is one booking a cycle, from its own turn.
+  const skews = [0, 47_120, 3_901, 88_000, 12_345];
+  const sends: { runner: number; atMs: number }[] = [];
+  for (let r = 0; r < BASELINE_RUNNERS; r++) {
+    const plan = requestSchedule({ total: BASELINE_PLANNED, perMinute: BASELINE_PER_MINUTE, startAtMs: baselineStartAtMs(T + skews[r % skews.length]!, r) });
+    eq(plan.length, BASELINE_PLANNED, `runner ${r} plans its warm ups and its measured bookings`);
+    for (const p of plan) sends.push({ runner: r, atMs: p.atMs });
+  }
+  sends.sort((a, b) => a.atMs - b.atMs);
+  const closest = Math.min(...sends.slice(1).map((s, i) => s.atMs - sends[i]!.atMs));
+  assert(closest >= BASELINE_GAP_MS, `no two baseline bookings are sent inside ten seconds of each other (closest ${closest}ms)`);
+  assert(sends.slice(1).some((s, i) => s.runner !== sends[i]!.runner), "and the runners really do interleave");
+
+  // Each offered time belongs to exactly one runner, whatever the slot grid's step.
+  for (const stepMin of [15, 30, 60]) {
+    const counts = Array<number>(BASELINE_RUNNERS).fill(0);
+    let total = 0;
+    for (let t = Date.parse("2026-10-20T13:00:00.000Z"); t < Date.parse("2026-10-27T13:00:00.000Z"); t += stepMin * 60_000) {
+      const owner = baselineOwner(new Date(t).toISOString());
+      if (owner !== null) counts[owner]! += 1;
+      total += 1;
+    }
+    eq(counts.reduce((a, b) => a + b, 0), total, `on a ${stepMin} minute grid every time has an owner`);
+    assert(
+      counts.every((c) => c >= total * 0.2),
+      `on a ${stepMin} minute grid every runner owns a fair share of the week, never none (${counts.join(", ")} of ${total})`,
+    );
+  }
+  eq(baselineOwner("not a time"), null, "a time that does not parse belongs to nobody");
+  eq(
+    baselineOwner("2026-10-20T14:00:00.000Z"),
+    baselineOwner("2026-10-20T14:00:00Z"),
+    "the owner is decided by the instant, not by how the time is spelled",
+  );
+
+  // Three runners booking from one offered list never take the same time, and each
+  // still takes the soonest time it owns.
+  const offered = Array.from({ length: 48 }, (_, i) => new Date(Date.parse("2026-10-20T15:00:00.000Z") + i * 30 * 60_000).toISOString());
+  const taken = new Map<string, number>();
+  let collided = false;
+  for (let r = 0; r < BASELINE_RUNNERS; r++) {
+    const mine = new Set<string>();
+    for (let i = 0; i < BASELINE_PLANNED; i++) {
+      const t = baselineSlot(offered, mine, { runner: r, runners: BASELINE_RUNNERS });
+      if (t === null) break;
+      if (taken.has(t)) collided = true;
+      taken.set(t, r);
+      mine.add(t);
+    }
+    const first = offered.find((t) => baselineOwner(t) === r);
+    eq(baselineSlot(offered, new Set(), { runner: r, runners: BASELINE_RUNNERS }), first ?? null, `runner ${r} takes the soonest time it owns`);
+  }
+  assert(!collided, "no two runners book one time, so none of them walks a ladder another emptied");
+
+  // The ten second gap has a test seam that may only SHORTEN it (the deadline seam's rule),
+  // so the real driver can be run in a test without waiting for its turn.
+  eq(baselineGapFrom(undefined), BASELINE_GAP_MS, "unset is the ten second gap");
+  eq(baselineGapFrom("50"), 50, "a shorter gap is taken, for a test");
+  eq(baselineGapFrom("60000"), BASELINE_GAP_MS, "a longer one is refused, so a run can never be slowed into its job timeout");
+  eq(baselineGapFrom("soon"), BASELINE_GAP_MS, "an unreadable one is ignored rather than becoming a NaN schedule (L50)");
 }
 
 // --- the steady pass grows with the roster, at today's rate per advisor (#3829) ---

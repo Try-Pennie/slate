@@ -9,8 +9,9 @@
  *
  * So a run now measures its own day. A BASELINE leg books at rest, one every ten
  * seconds, on the same deployment and branch just before the steady pass, when
- * nothing else is running: a warm up of two the judge drops, then twenty measured
- * (#3517, the constants below). Their median is what one booking costs on that
+ * nothing else is running, from three runners taking turns (#3914): each runner's warm
+ * up of two the judge drops, then seven measured, pooled into twenty one (#3517, the
+ * constants below). Their median is what one booking costs on that
  * environment at rest. The steady pass is then held to a MULTIPLE of it: the bar
  * asks how much the code degrades under the steady load, which is the code's
  * property, and the environment cancels because both halves ran on it within
@@ -37,7 +38,21 @@
  * where its object answers from moves the whole sample, and twelve bookings add about
  * plus or minus 8 percent of sampling noise on top (a bootstrap of the pooled runs).
  * The warm up below removes the first booking's cost and more bookings halve the
- * noise; the per runner part remains, which is what the fixed limit backstops.
+ * noise.
+ *
+ * The per runner part is what #3914 removes. The baseline is now sent from
+ * `BASELINE_RUNNERS` runners, each its own address and so its own limiter object, and
+ * the median is POOLED over all of them, the way the steady p95 is pooled over its
+ * drivers. One runner whose object answers slowly, or quickly, is then a third of the
+ * sample rather than all of it. Judging the ratio on the server's own time instead was
+ * weighed and rejected: the 215ms was measured ON the server, inside the confirm's call
+ * to that object, so a server side time carries exactly the same placement and would
+ * have changed what is measured without removing the swing. The runners take turns on
+ * one ten second clock (`baselineStartAtMs` in book-plan.ts) and each offered time
+ * belongs to one runner (`baselineOwner`), so the deployment still sees one baseline
+ * booking every ten seconds, never two at once and never two at one time, which is the
+ * pace and the at rest meaning the ratio was calibrated on. The fixed limit stays: it
+ * is what catches a change that slows every booking at rest.
  *
  * The older swing in the issue (2.7s to 9.6s, runs 37520312761 to 37699327346) was a
  * different environment: every booking of 37601024392's baseline took 6.8 to 12.3s,
@@ -46,33 +61,54 @@
 import type { DriverResult } from "./book-plan.ts";
 
 /**
- * How many leading bookings the baseline sends and then drops (#3517). The first
- * booking of a run is its slowest on most runs (above); one more is dropped as margin,
- * so a refused or unanswered first booking still leaves the address's object warm
- * before anything is measured. Dropped by POSITION, never by speed, so the rule can
- * never flatter the baseline. 10s of run time at the pace below.
+ * How many runners send the baseline (#3914), each from its own address. Three, so one
+ * runner's placement is never the majority of the pooled median, at the cost of two more
+ * jobs (priced in the workflow beside the baseline job). The workflow's matrix lists
+ * exactly these indices, held by `scripts/test-loadtest-driver-deadline.ts`.
+ */
+export const BASELINE_RUNNERS = 3;
+/**
+ * How many leading bookings EACH runner sends and then drops (#3517). The first booking
+ * an address sends is its slowest on most runs (above), because its limiter object is
+ * new on that call, and each runner is a new address, so each drops its own. One more is
+ * dropped as margin, so a refused or unanswered first booking still leaves the object
+ * warm before anything is measured. Dropped by POSITION, never by speed, so the rule can
+ * never flatter the baseline.
  */
 export const BASELINE_WARMUP = 2;
 /**
- * How many bookings the median is taken over, after the warm up. Twenty halves the
- * spread twelve gave: a bootstrap over the 13 runs' pooled at rest bookings puts the
- * 90 percent band of a median at plus or minus 8 percent for 12 and 5.6 for 20.
+ * How many bookings each runner measures after its warm up. Seven on each of three
+ * runners pools twenty one, at least the twenty #3517 measured, so the sampling spread
+ * stays at about plus or minus 5.6 percent (its bootstrap over the 13 runs' pooled at
+ * rest bookings put 12 at 8 percent and 20 at 5.6).
  */
-export const BASELINE_BOOKINGS = 20;
-/** What the baseline driver plans: the warm ups, then the measured bookings. */
-export const BASELINE_PLANNED = BASELINE_WARMUP + BASELINE_BOOKINGS;
+export const BASELINE_BOOKINGS_PER_RUNNER = 7;
+/** How many measured bookings the median is pooled over, across every runner. */
+export const BASELINE_BOOKINGS = BASELINE_RUNNERS * BASELINE_BOOKINGS_PER_RUNNER;
+/** What ONE runner's baseline driver plans: its warm ups, then its measured bookings. */
+export const BASELINE_PLANNED = BASELINE_WARMUP + BASELINE_BOOKINGS_PER_RUNNER;
 /**
- * One every ten seconds. At rest bookings took 0.4 to 1.3s on every run since
- * 2026-10-15 (12.3s at worst on the slow branches before), and the driver sends one at
- * a time, so they never overlap. The leg's schedule is 21 gaps of 10s, 210s, against
- * 165s for the twelve at four a minute: 45s more per run.
+ * The deployment sees one baseline booking every ten seconds, as it did from one runner
+ * (#3517). At rest bookings took 0.4 to 1.3s on every run since 2026-10-15 (12.3s at
+ * worst on the slow branches before), so turns ten seconds apart never overlap on a
+ * healthy deployment.
  */
-export const BASELINE_PER_MINUTE = 6;
+export const BASELINE_GAP_MS = 10_000;
 /**
- * Fewer measured successes than this and there is no median worth a bar: the speed
- * verdict is void. Two thirds of the measured bookings, the share the twelve held (8).
+ * One runner's pace: one booking every `BASELINE_RUNNERS` turns, so the runners together
+ * send six a minute. One runner's schedule is 8 gaps of 30s, 240s, plus up to one 30s
+ * cycle waiting for its first turn, against 210s for the single runner of #3517: up to a
+ * minute more per run.
  */
-export const BASELINE_MIN_OK = 14;
+export const BASELINE_PER_MINUTE = 60_000 / (BASELINE_GAP_MS * BASELINE_RUNNERS);
+/**
+ * Fewer measured successes than this on ANY runner and the speed verdict is void. Two
+ * thirds of a runner's measured bookings, rounded up, the share #3517's floor held (14
+ * of 20). Per runner rather than pooled, because a runner that confirmed nothing would
+ * leave the median on fewer placements than the report claims, which is the single
+ * runner baseline again under another name.
+ */
+export const BASELINE_MIN_OK_PER_RUNNER = Math.ceil((BASELINE_BOOKINGS_PER_RUNNER * 2) / 3);
 
 /**
  * The steady p95 may be at most this multiple of the baseline median.
@@ -117,16 +153,34 @@ export const STEADY_P95_LIMIT_MS = 1800;
 /** Which of the two checks a run failed, ratio first, in the order the report states them. */
 export type SpeedCheck = "ratio" | "fixed limit";
 
+/** One baseline runner's share of the reading (#3914), so the report shows each placement. */
+export interface BaselineRunner {
+  /** The runner's index, 0 to `BASELINE_RUNNERS` minus one. */
+  driver: number;
+  /** How many of its measured bookings succeeded, its warm ups never among them. */
+  ok: number;
+  /** The median of those, which is what this runner's placement alone would have read. */
+  medianMs: number;
+  /** The wall time of each warm up it dropped, in send order. */
+  warmupMs: number[];
+}
+
 export type LatencyJudgement =
   | {
       kind: "relative";
       steadyP95: number;
-      /** The median over the measured bookings, after the warm up was dropped. */
+      /** The median POOLED over every runner's measured bookings, after each runner's warm up. */
       baselineP50: number;
-      /** How many measured bookings succeeded, the warm ups never among them. */
+      /** How many measured bookings succeeded across the runners, the warm ups never among them. */
       baselineOk: number;
-      /** The wall time of each warm up the median dropped, in send order, so the report shows them. */
-      warmupMs: number[];
+      /** #3914: each runner's own figures, in runner order. */
+      runners: BaselineRunner[];
+      /**
+       * #3914: how many distinct addresses the deployment saw across the runners, which is
+       * how many limiter objects the spread really reached. Null when no booking carried
+       * an echoed address, never 0 (L90).
+       */
+      addresses: number | null;
       ratioBarMs: number;
       ratio: number;
       ratioPass: boolean;
@@ -145,16 +199,27 @@ function median(values: number[]): number {
   return s.length % 2 === 1 ? s[mid]! : Math.round((s[mid - 1]! + s[mid]!) / 2);
 }
 
+/** "runner 1" or "runners 1 and 2", for a reason line. */
+function runnerList(runners: readonly number[]): string {
+  if (runners.length === 1) return `runner ${runners[0]}`;
+  return `runners ${runners.slice(0, -1).join(", ")} and ${runners[runners.length - 1]}`;
+}
+
 /**
- * What the judge entry found in the results directory for the baseline (#3258).
- * Four answers, because each sends a reader somewhere different (L11): none
- * arrived, two or more arrived (taking the first silently would judge the day by
- * whichever the directory listed first), one could not be parsed, or one usable file.
+ * What the judge entry found in the results directory for the baseline (#3258, #3914).
+ * Each answer sends a reader somewhere different (L11): none arrived, one runner sent
+ * two (taking the first silently would judge the day by whichever the directory listed
+ * first), some runners' files never arrived, one could not be parsed, or one usable
+ * file from every runner.
  */
 export type BaselineReading =
-  | { kind: "file"; result: DriverResult }
+  /** One usable file from every runner, in runner order. */
+  | { kind: "runners"; results: DriverResult[] }
   | { kind: "absent" }
-  | { kind: "several"; files: string[] }
+  /** Two or more files from ONE runner. */
+  | { kind: "several"; runner: number; files: string[] }
+  /** #3914: some runners' files arrived and these runners' did not. */
+  | { kind: "missing"; runners: number[]; files: string[] }
   | { kind: "unreadable"; file: string; why: string }
   /** The results directory itself could not be listed, so nothing was looked at. */
   | { kind: "unlisted"; why: string };
@@ -165,7 +230,7 @@ export type BaselineReading =
  * is reported as unreadable rather than cast blind and crashing the judge.
  */
 function baselineShapeProblem(parsed: unknown): string | null {
-  const f = parsed as { runId?: unknown; attempts?: unknown };
+  const f = parsed as { runId?: unknown; attempts?: unknown; driver?: unknown };
   if (typeof f.runId !== "string") return "it carries no runId string";
   if (!Array.isArray(f.attempts)) return "its attempts field is not a list";
   for (const [i, a] of f.attempts.entries()) {
@@ -176,13 +241,19 @@ function baselineShapeProblem(parsed: unknown): string | null {
     // would leave nobody able to say which bookings were the warm up.
     if (typeof at?.n !== "number" || !Number.isInteger(at.n)) return `attempt ${i} has no whole number position n`;
   }
+  // #3914: each runner's warm up is its own, so a file must say which runner sent it,
+  // and a runner the baseline does not have is a file from some other plan.
+  if (typeof f.driver !== "number" || !Number.isInteger(f.driver)) return "it names no whole number runner (driver)";
+  if (f.driver < 0 || f.driver >= BASELINE_RUNNERS) {
+    return `it names runner ${f.driver}, and the baseline runs on runners 0 to ${BASELINE_RUNNERS - 1}`;
+  }
   return null;
 }
 
 /**
  * The reading from every result file the judge gathered. A file counts as the
  * baseline when it SAYS mode baseline, or when it is named like one and cannot be
- * parsed: a corrupt `baseline.json` is an unreadable baseline, never an absent one.
+ * parsed: a corrupt `baseline-1.json` is an unreadable baseline, never an absent one.
  */
 export function baselineReading(
   files: { name: string; parsed?: unknown; error?: string }[],
@@ -199,26 +270,41 @@ export function baselineReading(
       f.parsed !== null &&
       (f.parsed as { mode?: unknown }).mode === "baseline",
   );
-  if (found.length > 1) return { kind: "several", files: found.map((f) => f.name) };
   if (found.length === 0) return { kind: "absent" };
-  const only = found[0]!;
-  const problem = baselineShapeProblem(only.parsed);
-  if (problem !== null) return { kind: "unreadable", file: only.name, why: problem };
-  return { kind: "file", result: only.parsed as DriverResult };
+  for (const f of found) {
+    const problem = baselineShapeProblem(f.parsed);
+    if (problem !== null) return { kind: "unreadable", file: f.name, why: problem };
+  }
+  const byRunner = new Map<number, typeof found>();
+  for (const f of found) {
+    const d = (f.parsed as DriverResult).driver;
+    byRunner.set(d, [...(byRunner.get(d) ?? []), f]);
+  }
+  for (const [runner, fs] of [...byRunner].sort((a, b) => a[0] - b[0])) {
+    if (fs.length > 1) return { kind: "several", runner, files: fs.map((f) => f.name) };
+  }
+  const missing = Array.from({ length: BASELINE_RUNNERS }, (_, i) => i).filter((i) => !byRunner.has(i));
+  if (missing.length > 0) return { kind: "missing", runners: missing, files: found.map((f) => f.name) };
+  return {
+    kind: "runners",
+    results: [...byRunner.values()].map((fs) => fs[0]!.parsed as DriverResult).sort((a, b) => a.driver - b.driver),
+  };
 }
 
 /**
  * Which rule judges this run's latency, and its answer.
  *
  * - A run with no baseline leg (a hand run) keeps the absolute bar as the bar.
- * - A baseline the run was configured for that is missing, doubled, unreadable,
- *   from another run, or too thin for a median is `unmeasured`. Dan, 2026-10-05:
- *   that voids the SPEED verdict only; every other bar is still judged, and the
- *   speed result is reported as unmeasured, never as a pass and never as the fixed
- *   bar quietly standing in for the rule the run was configured with (L98).
- * - A usable baseline judges two checks (#3517): the ratio against its median, taken
- *   after the first `BASELINE_WARMUP` bookings are dropped, and the fixed limit,
- *   which holds whatever the baseline reads unless the run carried a Google delay.
+ * - A baseline the run was configured for that is missing, doubled, short of a runner,
+ *   unreadable, from another run, or too thin on any runner for a median is
+ *   `unmeasured`. Dan, 2026-10-05: that voids the SPEED verdict only; every other bar is
+ *   still judged, and the speed result is reported as unmeasured, never as a pass and
+ *   never as the fixed bar quietly standing in for the rule the run was configured
+ *   with (L98).
+ * - A usable baseline judges two checks (#3517): the ratio against its median, pooled
+ *   over every runner (#3914) after each runner's first `BASELINE_WARMUP` bookings are
+ *   dropped, and the fixed limit, which holds whatever the baseline reads unless the run
+ *   carried a Google delay.
  */
 export function judgeLatency(input: {
   steadyP95: number;
@@ -250,7 +336,17 @@ export function judgeLatency(input: {
   if (reading.kind === "several") {
     return {
       kind: "unmeasured",
-      why: `${reading.files.length} baseline files arrived (${reading.files.join(", ")}), so which one measured the day cannot be told`,
+      why:
+        `baseline runner ${reading.runner} sent ${reading.files.length} files (${reading.files.join(", ")}), so which ` +
+        "one measured the day cannot be told",
+    };
+  }
+  if (reading.kind === "missing") {
+    return {
+      kind: "unmeasured",
+      why:
+        `the baseline is spread across ${BASELINE_RUNNERS} runners and no file arrived from ` +
+        `${runnerList(reading.runners)}, so its median would rest on fewer placements than the run claims`,
     };
   }
   if (reading.kind === "unlisted") {
@@ -259,24 +355,54 @@ export function judgeLatency(input: {
   if (reading.kind === "unreadable") {
     return { kind: "unmeasured", why: `the baseline file ${reading.file} could not be read (${reading.why})` };
   }
-  const baseline = reading.result;
-  if (baseline.runId !== input.runId) {
-    return { kind: "unmeasured", why: `the baseline file is from run ${baseline.runId}, not ${input.runId}` };
-  }
-  // #3517: the warm up is dropped by POSITION in the plan, never by speed, and its
-  // successes never count toward the floor.
-  const warmup = baseline.attempts.filter((a) => a.n < BASELINE_WARMUP);
-  const measured = baseline.attempts.filter((a) => a.n >= BASELINE_WARMUP);
-  const ok = measured.filter((a) => a.status === 200).map((a) => a.wallMs);
-  if (ok.length < BASELINE_MIN_OK) {
+  // A judge handed a set by some other route than `baselineReading` is held to the same
+  // rule: one file from every runner, or the spread is short.
+  const files = reading.results;
+  const present = new Set(files.map((f) => f.driver));
+  const absentRunners = Array.from({ length: BASELINE_RUNNERS }, (_, i) => i).filter((i) => !present.has(i));
+  if (absentRunners.length > 0 || files.length !== BASELINE_RUNNERS) {
     return {
       kind: "unmeasured",
       why:
-        `the same day baseline confirmed ${ok.length} of the ${measured.length} bookings it measured after its ` +
-        `${BASELINE_WARMUP} warm up, and a median needs at least ${BASELINE_MIN_OK}`,
+        `the baseline is spread across ${BASELINE_RUNNERS} runners and ` +
+        (absentRunners.length > 0 ? `no file arrived from ${runnerList(absentRunners)}` : `${files.length} files arrived`) +
+        ", so its median would rest on fewer placements than the run claims",
     };
   }
-  const baselineP50 = median(ok);
+  const otherRun = files.find((f) => f.runId !== input.runId);
+  if (otherRun !== undefined) {
+    return {
+      kind: "unmeasured",
+      why: `baseline runner ${otherRun.driver}'s file is from run ${otherRun.runId}, not ${input.runId}`,
+    };
+  }
+  // #3517: each runner's warm up is dropped by POSITION in its plan, never by speed, and
+  // its successes never count toward the floor. #3914: the floor is per runner, and the
+  // median is pooled over every runner's measured bookings.
+  const runners: BaselineRunner[] = [];
+  const pooled: number[] = [];
+  for (const f of [...files].sort((a, b) => a.driver - b.driver)) {
+    const measured = f.attempts.filter((a) => a.n >= BASELINE_WARMUP);
+    const ok = measured.filter((a) => a.status === 200).map((a) => a.wallMs);
+    if (ok.length < BASELINE_MIN_OK_PER_RUNNER) {
+      return {
+        kind: "unmeasured",
+        why:
+          `baseline runner ${f.driver} confirmed ${ok.length} of the ${measured.length} bookings it measured after its ` +
+          `${BASELINE_WARMUP} warm up, and each runner needs at least ${BASELINE_MIN_OK_PER_RUNNER}, or the median ` +
+          "rests on fewer placements than the run claims",
+      };
+    }
+    runners.push({
+      driver: f.driver,
+      ok: ok.length,
+      medianMs: median(ok),
+      warmupMs: f.attempts.filter((a) => a.n < BASELINE_WARMUP).map((a) => a.wallMs),
+    });
+    pooled.push(...ok);
+  }
+  const seen = new Set(files.flatMap((f) => f.attempts.map((a) => a.seenIp)).filter((ip): ip is string => typeof ip === "string" && ip !== ""));
+  const baselineP50 = median(pooled);
   const ratioBarMs = Math.round(baselineP50 * LOAD_OVER_REST_RATIO_BAR);
   const ratioPass = steadyP95 <= ratioBarMs;
   const fixedLimitMs = input.googleDelayed ? null : STEADY_P95_LIMIT_MS;
@@ -286,8 +412,9 @@ export function judgeLatency(input: {
     kind: "relative",
     steadyP95,
     baselineP50,
-    baselineOk: ok.length,
-    warmupMs: warmup.map((a) => a.wallMs),
+    baselineOk: pooled.length,
+    runners,
+    addresses: seen.size === 0 ? null : seen.size,
     ratioBarMs,
     ratio: baselineP50 > 0 ? steadyP95 / baselineP50 : Infinity,
     ratioPass,
@@ -304,8 +431,8 @@ type RelativeJudgement = Extract<LatencyJudgement, { kind: "relative" }>;
 function ratioText(j: RelativeJudgement): string {
   return (
     `${j.ratio.toFixed(1)} times the same day baseline's median of ${j.baselineP50}ms (${j.baselineOk} ` +
-    `bookings at rest, first ${BASELINE_WARMUP} dropped as warm up), against the ${LOAD_OVER_REST_RATIO_BAR} ` +
-    `times bar of ${j.ratioBarMs}ms`
+    `bookings at rest from ${j.runners.length} runners, each runner's first ${BASELINE_WARMUP} dropped as warm up), ` +
+    `against the ${LOAD_OVER_REST_RATIO_BAR} times bar of ${j.ratioBarMs}ms`
   );
 }
 
@@ -347,10 +474,20 @@ function absoluteBarText(j: { steadyP95: number; absoluteBarMs: number }): strin
     : `p95 ${j.steadyP95}ms is inside the ${j.absoluteBarMs}ms absolute bar`;
 }
 
+/** How many addresses the spread reached, said against how many runners sent it (#3914). */
+function addressText(j: RelativeJudgement): string {
+  if (j.addresses === null) return "the deployment echoed no address, so how many limiter objects it reached is unknown";
+  if (j.addresses < j.runners.length) {
+    return `only ${j.addresses} addresses for ${j.runners.length} runners, so some runners shared a limiter object`;
+  }
+  return `${j.addresses} addresses`;
+}
+
 /**
  * The report's one line on latency: which rule judged it and against what. With a
- * baseline (#3517) that is the median, the warm ups it dropped, and both checks with
- * each one's verdict; a hand run states the fixed 5s bar and why it judged.
+ * baseline (#3517, #3914) that is the pooled median, each runner's own median and the
+ * warm ups it dropped, how many addresses the spread reached, and both checks with each
+ * one's verdict; a hand run states the fixed 5s bar and why it judged.
  */
 export function latencyReportLine(j: LatencyJudgement, platformUnmeasured: string | null = null): string {
   if (j.kind === "unmeasured") {
@@ -366,14 +503,21 @@ export function latencyReportLine(j: LatencyJudgement, platformUnmeasured: strin
   }
   // #3517: both checks, each with its own verdict, and the warm ups the median dropped,
   // so a reader can see what the baseline was taken over and which check decided.
-  const warm = j.warmupMs.length === 0 ? "none sent" : j.warmupMs.map((ms) => `${ms}ms`).join(", ");
+  // #3914: per runner, so a slow or fast placement is visible beside the pooled figure.
+  const perRunner = j.runners
+    .map((r) => {
+      const warm = r.warmupMs.length === 0 ? "no warm up sent" : `warm up ${r.warmupMs.map((ms) => `${ms}ms`).join(", ")}`;
+      return `runner ${r.driver} ${r.medianMs}ms over ${r.ok} (${warm})`;
+    })
+    .join("; ");
   const fixed =
     j.fixedLimitMs === null
       ? `fixed limit not applied: the run carried a Google delay and the ${STEADY_P95_LIMIT_MS}ms fixed limit was calibrated with none`
       : `${j.fixedPass ? "inside" : "OVER"} the ${j.fixedLimitMs}ms fixed limit`;
   return (
-    `- latency: same day baseline median ${j.baselineP50}ms over ${j.baselineOk} bookings at rest (first ` +
-    `${BASELINE_WARMUP} dropped as warm up: ${warm}); the steady p95 of ${j.steadyP95}ms is ` +
+    `- latency: same day baseline median ${j.baselineP50}ms over ${j.baselineOk} bookings at rest from ` +
+    `${j.runners.length} runners on ${addressText(j)}, each runner's first ${BASELINE_WARMUP} dropped as warm up ` +
+    `(${perRunner}); the steady p95 of ${j.steadyP95}ms is ` +
     `${j.ratio.toFixed(1)} times it, ${j.ratioPass ? "inside" : "OVER"} the ratio bar of ` +
     `${LOAD_OVER_REST_RATIO_BAR} times (${j.ratioBarMs}ms), and ${fixed}`
   );
