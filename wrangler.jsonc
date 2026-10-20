@@ -343,7 +343,7 @@
 	//
 	// The namespace ids are 2001 to 2007 rather than the production 1001 to 1007
 	// because a namespace id is ACCOUNT scoped: reusing one would have the load
-	// run's sixty writes a minute counting against the ceiling real leads are
+	// run's writes (the load bar's rate, #3124) counting against the ceiling real leads are
 	// judged by. `scripts/test-wrangler-loadtest-env.ts` resolves this env through
 	// wrangler's own `unstable_readConfig` and asserts the RESOLVED result, so the
 	// inheritance rules above are measured rather than believed.
