@@ -79,7 +79,7 @@ function pageAround(what: string): string {
 }
 
 /** Counted, never paged: a deploy replacing the object answers `gone`. */
-const NEVER_PAGES: ReadonlySet<LineReason> = new Set(["gone", "off", "unread-default", "ok", "abandoned"]);
+const NEVER_PAGES: ReadonlySet<LineReason> = new Set(["gone", "off", "unread-default", "ok", "unread-default-on", "abandoned"]);
 
 export function makeReachFailureReporter(deps: {
   now: () => number;
