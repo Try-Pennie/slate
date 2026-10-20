@@ -225,7 +225,7 @@ export interface PickableInput {
   zone: string;
   /** How far ahead a day can be picked: as far as cached calendar time reaches. */
   aheadDays: number;
-  /** The past days history holds. */
+  /** The past days history holds, from its very first (`HISTORY_BEGAN`). */
   saved: string[];
   /** Whether the office is open that day (`windowOnDate`), past and future alike. */
   isOpen: (iso: string, weekday: number) => boolean;
@@ -234,11 +234,17 @@ export interface PickableInput {
 /**
  * The days the date picker offers, ascending: a past day only when history saved it (Dan,
  * 2026-10-19), a coming day only as far ahead as calendars are cached, and never a closed day.
+ *
+ * Never the first day history saved: the recorder's first run saves nothing and its second covers
+ * only the rest of that day, so the calls that passed earlier were never saved as open and the day
+ * would read nearly full. Every later day is covered from its start.
  */
 export function pickableDays(input: PickableInput): string[] {
   const today = DateTime.fromISO(input.todayIso, { zone: input.zone }).startOf("day");
   const open = (d: DateTime) => input.isOpen(d.toISODate()!, d.weekday);
-  const past = input.saved
+  const past = [...new Set(input.saved)]
+    .sort()
+    .slice(1)
     .filter((iso) => iso < input.todayIso)
     .filter((iso) => open(DateTime.fromISO(iso, { zone: input.zone })));
   const coming: string[] = [];
@@ -246,5 +252,5 @@ export function pickableDays(input: PickableInput): string[] {
     const d = today.plus({ days: i });
     if (open(d)) coming.push(d.toISODate()!);
   }
-  return [...new Set([...past].sort()), ...coming];
+  return [...past, ...coming];
 }

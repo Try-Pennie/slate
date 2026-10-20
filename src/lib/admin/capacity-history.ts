@@ -38,6 +38,12 @@ import {
 } from "./team-capacity.ts";
 
 /**
+ * The day the recorder shipped (#3940). The picker asks for saved days from here, so the earliest it
+ * is handed is history's real first day, the partly recorded one it leaves out.
+ */
+export const HISTORY_BEGAN = "2026-10-19";
+
+/**
  * How far back a tick catches up after the lane was down. A day, well inside the 36 hours past busy
  * time is kept: further back, a pruned call would read as open time, so that stretch is skipped and
  * said rather than saved wrong. The lane's heartbeat pages long before this is reached.

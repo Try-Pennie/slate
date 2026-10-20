@@ -130,11 +130,14 @@ eq(axisPos("2026-11-03T13:00:00.000Z", Z), 0, "8am after the clocks change is st
     todayIso: "2026-10-19",
     zone: Z,
     aheadDays: 3,
-    saved: ["2026-10-17", "2026-10-16", "2026-10-18", "2026-10-19"],
+    saved: ["2026-10-17", "2026-10-15", "2026-10-16", "2026-10-18", "2026-10-19"],
     isOpen: (_iso, weekday) => weekday !== 7,
   });
   eq(days, ["2026-10-16", "2026-10-17", "2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22"], "saved past days and the days ahead, never a closed Sunday, never a past day nothing saved");
-  assert(!days.includes("2026-10-15"), "a past day with nothing saved is not offered (Dan, 2026-10-19)");
+  // History starts partway through its first day (the recorder's first run saves nothing and its
+  // second covers only the rest of that day), so the earliest saved day would read nearly full.
+  assert(!days.includes("2026-10-15"), "the first day history saved is never offered: it was only partly recorded");
+  assert(!days.includes("2026-10-14"), "a past day with nothing saved is not offered (Dan, 2026-10-19)");
   assert(!days.includes("2026-10-23"), "nor a day past the cached calendars");
 }
 
