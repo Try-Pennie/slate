@@ -207,10 +207,14 @@ describe("the refused advisor pool exit (#3700)", () => {
       from: () => ({ delete: () => ({ eq: async () => ({}) }) }),
       rpc: async () => ({ data: true, error: null }),
     } as never);
-    await GET(req());
-    expect(poolExit.takeRefusedAdvisorsOutOfPool).toHaveBeenCalledWith(["u2"]);
-    sync.runIncrementalSync.mockReset();
-    sync.runIncrementalSync.mockResolvedValue({ events: 0, truncated: false, goneSkipped: 0 });
+    try {
+      await GET(req());
+      expect(poolExit.takeRefusedAdvisorsOutOfPool).toHaveBeenCalledWith(["u2"]);
+    } finally {
+      // clearAllMocks keeps implementations, so the throwing one must not outlive this test.
+      sync.runIncrementalSync.mockReset();
+      sync.runIncrementalSync.mockResolvedValue({ events: 0, truncated: false, goneSkipped: 0 });
+    }
   });
 
   it("a step that throws still finishes the tick and stamps the heartbeat", async () => {

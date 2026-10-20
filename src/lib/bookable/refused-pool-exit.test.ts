@@ -161,6 +161,8 @@ describe("taking them out", () => {
     expect(h.writes).toEqual([{ userId: "u-1", stampIso: new Date(NOW).toISOString() }]);
     expect(h.posts).toHaveLength(1);
     expect(h.posts[0]!.key).toBe("refused_advisor_left_pool:u-1");
+    // The write decides who posts; the cooldown must not outlast a real second removal.
+    expect(h.posts[0]!.cooldownMs).toBeLessThanOrEqual(REFUSED_POOL_EXIT_AFTER_MS);
     expect(h.posts[0]!.text).toContain("Dana Whitfield");
     expect(h.posts[0]!.text).toContain("dana@trypennie.com");
     expect(h.posts[0]!.text).toContain("Morgan Lee");

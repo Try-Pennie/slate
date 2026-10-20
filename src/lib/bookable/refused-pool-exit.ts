@@ -54,8 +54,14 @@ export {
   type RefusedCalendarRow,
 } from "@/lib/bookable/refused-pool-exit-rule";
 
-/** A week, per advisor: the post is an incident and the write decides who posts. */
-const REFUSED_POOL_EXIT_COOLDOWN_MS = 7 * 24 * 60 * 60_000;
+/**
+ * Per advisor. The write's compare and swap is what decides who posts, so this only
+ * backs it up against a double send, and it must stay SHORTER than the quickest
+ * second removal could follow the first: a return takes an hourly roster run, and a
+ * second removal another full period of refusal after that. Anything longer (a week
+ * was the first draft) would swallow the note for a real second removal.
+ */
+const REFUSED_POOL_EXIT_COOLDOWN_MS = REFUSED_POOL_EXIT_AFTER_MS;
 
 /** The alert family, one key per advisor (catalogued in alert-catalog.ts). */
 export const REFUSED_POOL_EXIT_KEY_PREFIX = "refused_advisor_left_pool:";
