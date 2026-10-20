@@ -8,7 +8,7 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-design-match.ts
 import { assert, eq, finish } from "./lib/harness.ts";
-import { frameFixture, offScreenLines, verdict, type FrameResult } from "./lib/design-match.ts";
+import { CONTENT_READY, frameFixture, offScreenLines, verdict, waitForContent, type FrameResult } from "./lib/design-match.ts";
 
 const day = (open: number, openTimes: string[]) => ({
   iso: "2026-10-19", open, capacity: 10, out: false, openTimes,
@@ -121,6 +121,20 @@ const row = (frame: string, picture: number, checks = [met("D1")], designChecks 
   const lines = offScreenLines([{ id: "D1" }, { id: "D25", offScreen: "proven by the history lane's tests" }]);
   eq(lines, ["D25: proven by the history lane's tests"], "each decision left off screen is named with where it is proven");
   eq(offScreenLines([{ id: "D1" }]), [], "a map with every decision on screen names none");
+}
+
+// --- a built page is pictured only once its content is on screen (#3947) ------------------------
+// CI photographed the page's loading placeholder: a streamed page fires load before its content
+// arrives on a slow machine. The scorer waits for the design's own hooks, and a page that never
+// shows them is no score rather than a picture of a placeholder.
+{
+  const asked: { selector: string; timeout: number }[] = [];
+  const arrives = { waitForSelector: async (selector: string, o: { timeout: number }) => { asked.push({ selector, timeout: o.timeout }); return null; } };
+  eq(await waitForContent(arrives, 30_000), undefined, "content that arrives is ready");
+  eq(asked, [{ selector: CONTENT_READY, timeout: 30_000 }], "and is asked for by the design's own hooks inside the page");
+  const never = { waitForSelector: async () => { throw new Error("Timeout 30000ms exceeded"); } };
+  const why = await waitForContent(never, 30_000);
+  assert(typeof why === "string" && why.includes(CONTENT_READY), "content that never arrives is a reason not to score, naming what was waited for");
 }
 
 finish();

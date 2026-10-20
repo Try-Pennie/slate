@@ -26,7 +26,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { chromium, type Frame, type Page } from "playwright";
-import { frameFixture as buildFrameFixture, offScreenLines, verdict, type FrameResult } from "../lib/design-match.ts";
+import { frameFixture as buildFrameFixture, offScreenLines, verdict, waitForContent, type FrameResult } from "../lib/design-match.ts";
 
 
 // Out of 255 per channel. Both sides render in the same Chrome, so font smoothing is identical and the
@@ -194,6 +194,8 @@ for (const id of frameIds) {
     // A page that could not be loaded at all is no score; a page the server answered, a 404
     // included, is a page that does not match yet (L11).
     loadError = await page.goto(url.toString()).then(() => undefined, (e: unknown) => String(e).split("\n")[0]);
+    // Its content, not its loading placeholder: on a slow machine load fires first (#3947).
+    if (!loadError) loadError = await waitForContent(page, 30_000);
     if (!loadError) await settle(page);
   }
   if (loadError) {
