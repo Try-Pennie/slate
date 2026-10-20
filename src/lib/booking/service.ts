@@ -527,12 +527,14 @@ async function readAgentCalendar<T>(email: string, read: () => Promise<T | null>
 type AgentVerdict = "free" | "busy" | "unverified" | "refused";
 
 /**
- * Direct per-agent verify (impersonates the agent, checks all their calendars) —
+ * Direct per agent verify (impersonates the agent, checks all their calendars):
  * the accurate fallback for the bulk verifier when a calendar couldn't be read in
  * the cross-identity batch (#314) or the bulk call failed wholesale. A
  * calendar-read failure yields `unverified` (skip + alert) instead of being
  * conflated with `busy`, so a verify-on-book outage is distinguishable from a
- * genuinely full slot (#319).
+ * genuinely full slot (#319). A read Google refuses outright (a definitive
+ * failure, #3700) yields `refused` instead: no retry fixes it, so it is not an
+ * outage, and the agent simply cannot take the time.
  */
 async function checkAgentFree(
   email: string,
