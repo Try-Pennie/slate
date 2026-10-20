@@ -22,24 +22,33 @@
  * single call confirms, and the per confirm spread over every confirm is printed beside it
  * so a reader sees when the two diverge.
  *
- * **A short listing says so.** `logs.ts --lines` can list fewer rows than it counted (its
- * exit 3: a slice that filled the request limit, or rows the events view did not return).
+ * **A short listing says so.** `logs.ts --lines` can list fewer rows than Cloudflare stored
+ * (its exit 3: a slice that filled the request limit, or rows the events view did not return).
  * The percentiles are then over the rows listed, which may not be a fair sample of the
  * window, and the report says INCOMPLETE and exits 3 rather than printing a value that
  * reads as the whole window (L98). The shortfall is judged from both the exit code given
- * and the two numbers in the file, so a forgotten `--logs-exit` cannot hide it.
+ * and the numbers in the file, so a forgotten `--logs-exit` cannot hide it.
+ *
+ * **A sampled listing is weighted (#3915).** When the Worker is busy Cloudflare stores some
+ * rows in place of several lines it never keeps, and the count logs.ts prints is the sum of
+ * the stored rows' weights. logs.ts then exits 4 and prints `weight=N` on each row standing
+ * for N lines. Every percentile here is weighted by it, so a burst of confirms Cloudflare
+ * kept one in ten of counts for what it was. A listing whose weights add up to less than the
+ * count, or that holds a row of unknown weight, is INCOMPLETE as above.
  *
  * Percentiles are the judge's own nearest rank (`percentiles` in `judge-booking-run.ts`),
- * so this and a load run's report read a p95 the same way (L41).
+ * weighted by `weightedPercentiles` beside it, which at weight 1 is the same figure, so this
+ * and a load run's report read a p95 the same way (L41).
  */
 import { readFileSync } from "node:fs";
-import { percentiles } from "./judge-booking-run.ts";
+import { weightedPercentiles } from "./judge-booking-run.ts";
+import { weightOfPrintedLine } from "../logs.ts";
 import { isEntryPoint } from "../lib/run-alerter.ts";
 import { formatGoogleDelay, parseGoogleDelay, GOOGLE_DELAY_MAX_MS, type GoogleDelaySetting } from "../../src/lib/google/loadtest-google-delay.ts";
 import { GOOGLE_TIMING_GROUPS } from "../../src/lib/booking/confirm-profile.ts";
 
 export const GOOGLE_TIMINGS_EXIT = {
-  /** Every counted line was listed, and a value was produced. */
+  /** Every stored line was listed (weighted when Cloudflare sampled), and a value was produced. */
   complete: 0,
   /**
    * Nothing to stand on: logs.ts could not verify, found nothing or exited with a code that is
@@ -54,14 +63,21 @@ export const GOOGLE_TIMINGS_EXIT = {
 export const THIN_SAMPLE = 100;
 
 type Kind = (typeof GOOGLE_TIMING_GROUPS)[number]["kind"];
-type Spread = { n: number; p50: number; p95: number; max: number } | null;
+/** `n` rows, standing for `standsFor` lines by their weights. */
+type Spread = { n: number; standsFor: number; p50: number; p95: number; max: number } | null;
 
 export interface GoogleTimingsReport {
   kind: "report";
   listed: number;
+  /** The lines the listed rows stand for: the sum of their weights. */
+  standsFor: number;
   counted: number;
   dryRuns: number;
   incomplete: boolean;
+  /** Listed rows logs.ts could not read a weight for. */
+  unweighed: number;
+  /** Some row stands for more than one line: Cloudflare sampled the window. */
+  sampled: boolean;
   logsExit: number;
   groups: Record<Kind, { perCall: Spread; perConfirm: Spread }>;
   /** The `google_delay` value, or null when neither read nor write had a single call confirm. */
@@ -75,9 +91,11 @@ export type GoogleTimingsResult = GoogleTimingsReport | { kind: "refused"; why: 
 
 const fieldsOf = (line: string) => new Map([...line.matchAll(/ (\w+)=("[^"]*"|\S+)/g)].map((m) => [m[1]!, m[2]!]));
 
-function spread(values: number[]): Spread {
-  const p = percentiles(values);
-  return p ? { n: values.length, ...p } : null;
+type Sample = { value: number; weight: number };
+
+function spread(samples: Sample[]): Spread {
+  const p = weightedPercentiles(samples);
+  return p ? { n: samples.length, standsFor: samples.reduce((s, x) => s + x.weight, 0), ...p } : null;
 }
 
 /** The report, from what `logs.ts --lines` printed to stdout and the exit code it gave. */
@@ -85,9 +103,12 @@ export function summariseGoogleTimings(stdout: string, logsExit: number): Google
   const refused = (why: string) => ({ kind: "refused" as const, why, exit: GOOGLE_TIMINGS_EXIT.refused });
   if (logsExit === 1) return refused("logs.ts found no confirm answered line in the window (exit 1), so there is nothing to measure.");
   if (logsExit === 2) return refused("logs.ts could not verify the window (exit 2); its count is not an answer, so neither is any percentile over it.");
-  // Only 0 (a whole listing) and 3 (a short one) are listings at all; anything else is
-  // logs.ts failing in a way it does not name (a crash, a missing node), never a pass (L184).
-  if (logsExit !== 0 && logsExit !== 3) return refused(`logs.ts exited ${logsExit}, which is not one of its answers (0, 1, 2, 3); read its stderr and run it again.`);
+  // Only 0 (a whole listing), 3 (a short one) and 4 (a whole one of a sampled window) are
+  // listings at all; anything else is logs.ts failing in a way it does not name (a crash, a
+  // missing node), never a pass (L184).
+  if (logsExit !== 0 && logsExit !== 3 && logsExit !== 4) {
+    return refused(`logs.ts exited ${logsExit}, which is not one of its answers (0, 1, 2, 3, 4); read its stderr and run it again.`);
+  }
   const lines = stdout.split("\n");
   const verdict = lines.map((l) => /^(PRESENT|ABSENT)\b.* matched (\d+) line\(s\)/.exec(l)).find((m) => m !== null);
   if (!verdict) {
@@ -98,20 +119,23 @@ export function summariseGoogleTimings(stdout: string, logsExit: number): Google
   // never the verdict line, which echoes the needle and so also holds `msg="confirm answered"`.
   const rows = lines
     .filter((l) => /^(\d{4}-\d\d-\d\dT\S+|\(no timestamp\)) {2}/.test(l) && l.includes('msg="confirm answered"'))
-    .map(fieldsOf);
-  const dryRuns = rows.filter((f) => f.get("dry_run") === "true").length;
-  const live = rows.filter((f) => f.get("dry_run") !== "true");
+    .map((l) => ({ fields: fieldsOf(l), weight: weightOfPrintedLine(l) }));
+  const unweighed = rows.filter((r) => r.weight === null).length;
+  const standsFor = rows.reduce((s, r) => s + (r.weight ?? 0), 0);
+  const dryRuns = rows.filter((r) => r.fields.get("dry_run") === "true").length;
+  // A row of unknown weight is left out of the figures, and the listing is incomplete below.
+  const live = rows.filter((r) => r.fields.get("dry_run") !== "true" && r.weight !== null);
   const groups = {} as GoogleTimingsReport["groups"];
   for (const g of GOOGLE_TIMING_GROUPS) {
-    const perConfirm: number[] = [];
-    const perCall: number[] = [];
-    for (const f of live) {
+    const perConfirm: Sample[] = [];
+    const perCall: Sample[] = [];
+    for (const { fields: f, weight } of live) {
       const ms = Number(f.get(`google_${g.kind}_ms`));
       const calls = Number(f.get(`google_${g.kind}_calls`));
       // Absent means no such call; a field that does not read as a number is not a measurement.
       if (!f.has(`google_${g.kind}_ms`) || !Number.isFinite(ms) || !Number.isFinite(calls)) continue;
-      perConfirm.push(ms);
-      if (calls === 1) perCall.push(ms);
+      perConfirm.push({ value: ms, weight: weight ?? 1 });
+      if (calls === 1) perCall.push({ value: ms, weight: weight ?? 1 });
     }
     groups[g.kind] = { perCall: spread(perCall), perConfirm: spread(perConfirm) };
   }
@@ -140,13 +164,19 @@ export function summariseGoogleTimings(stdout: string, logsExit: number): Google
   }
   const value = formatGoogleDelay(setting);
   const googleDelay = value === "" ? null : value;
-  const incomplete = logsExit === 3 || rows.length < counted;
+  // The count is the sum of the stored rows' weights, so rows whose weights fall short of it
+  // are a short listing whatever the exit code says. Half a line of slack, for a weight the
+  // API reports as a fraction.
+  const incomplete = logsExit === 3 || unweighed > 0 || standsFor < counted - 0.5;
   return {
     kind: "report",
     listed: rows.length,
+    standsFor,
     counted,
     dryRuns,
     incomplete,
+    unweighed,
+    sampled: rows.some((r) => r.weight !== 1),
     logsExit,
     groups,
     googleDelay,
@@ -157,16 +187,29 @@ export function summariseGoogleTimings(stdout: string, logsExit: number): Google
 }
 
 const n = (x: number) => x.toLocaleString("en-US");
-const describe = (s: Spread) => (s ? `n=${n(s.n)}, p50 ${n(s.p50)}ms, p95 ${n(s.p95)}ms, max ${n(s.max)}ms` : "none");
+const describe = (s: Spread) =>
+  s
+    ? `n=${n(s.n)}${s.standsFor !== s.n ? ` standing for ${n(s.standsFor)}` : ""}, p50 ${n(s.p50)}ms, p95 ${n(s.p95)}ms, max ${n(s.max)}ms`
+    : "none";
 
 /** The report as lines to print. */
 export function formatGoogleTimingsReport(r: GoogleTimingsReport): string[] {
   const out: string[] = [];
-  out.push(`confirm answered lines: listed ${n(r.listed)} of ${n(r.counted)} counted (logs.ts exit ${r.logsExit}); ${n(r.dryRuns)} dry run(s) left out.`);
+  const listed = r.sampled
+    ? `listed ${n(r.listed)} lines standing for ${n(r.standsFor)} of ${n(r.counted)} counted`
+    : `listed ${n(r.listed)} of ${n(r.counted)} counted`;
+  out.push(`confirm answered lines: ${listed} (logs.ts exit ${r.logsExit}); ${n(r.dryRuns)} dry run(s) left out.`);
   if (r.incomplete) {
+    const unweighed = r.unweighed > 0 ? `, and ${n(r.unweighed)} listed line(s) of unknown weight are left out of them` : "";
     out.push(
-      `INCOMPLETE: logs.ts listed ${n(r.listed)} of ${n(r.counted)} lines, so the percentiles are over the ${n(r.listed)} listed, ` +
-        "which may not be a fair sample of the window. Narrow the window or the slices (--slice-minutes) until the listing is whole.",
+      `INCOMPLETE: logs.ts listed ${n(r.listed)} rows standing for ${n(r.standsFor)} of ${n(r.counted)} lines, so the percentiles ` +
+        `are over the ${n(r.listed)} listed${unweighed}, which may not be a fair sample of the window. List again, narrowing ` +
+        "the slices (--slice-minutes), until the listing is whole.",
+    );
+  } else if (r.sampled) {
+    out.push(
+      "Cloudflare sampled this window: some confirms were never stored, and each stored row stands for the lines it " +
+        "was kept in place of, so every figure below is weighted by that. No listing can hold the lines never stored.",
     );
   }
   for (const g of GOOGLE_TIMING_GROUPS) {

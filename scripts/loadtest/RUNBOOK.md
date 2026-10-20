@@ -2033,14 +2033,18 @@ It prints, per group, the p50, p95 and max per CALL (from confirms that made exa
 such call, since the stand in draws one delay per call and a confirm's covered time over
 several calls is not one call's time) and per CONFIRM beside it, then the line
 `google_delay: read=<p50>/<p95>,write=<p50>/<p95>` to dispatch with. Percentiles are
-nearest rank, the judge's own (`percentiles` in `judge-booking-run.ts`). Dry runs are left
-out. It exits 0 on a whole listing, 2 when there is nothing to stand on (logs.ts exited
-anything but 0 or 3, the file has no verdict line, no line carries the fields, which is a
+nearest rank, the judge's own (`percentiles` in `judge-booking-run.ts`), weighted by each
+row's `weight=` (#3915): when the Worker is busy Cloudflare stores some confirms in place of
+several it never keeps, logs.ts exits 4 and prints the weight on those rows, and the report
+weights every figure by it and says the window was sampled. Dry runs are left out. It exits
+0 on a whole listing, sampled or not, 2 when there is nothing to stand on (logs.ts exited
+anything but 0, 3 or 4, the file has no verdict line, no line carries the fields, which is a
 window from before the deploy, or neither kind gave a usable value), and **3 when the listing is short**: `logs.ts --lines` can list fewer
-rows than it counted (its own exit 3), and then the report says INCOMPLETE and names how
-many of how many the percentiles are over, judged from both the exit code given and the two
-numbers in the file. Narrow `--slice-minutes` and list again rather than using a short
-listing's value. Under 100 single call confirms it warns that the p95 is a handful of rows.
+rows than Cloudflare stored (its own exit 3), and then the report says INCOMPLETE and names how
+many of how many the percentiles are over, judged from both the exit code given and the
+numbers in the file (the rows' weights must add up to the count). List again, narrowing
+`--slice-minutes`, rather than using a short listing's value. Under 100 single call confirms
+it warns that the p95 is a handful of rows.
 
 Record in the pair's notes the window, the value used, the listed and counted numbers, and
 that the stand in delays free/busy and event calls only, never token mints, which caused

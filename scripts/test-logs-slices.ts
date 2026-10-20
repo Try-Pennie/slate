@@ -1,6 +1,6 @@
 // Reading production log LINES, in narrow windows (#3664, #3299).
 //
-// Two halves, both driven through fakes with no network:
+// Three parts, all driven through fakes with no network:
 //
 //   - #3299: a wide window silently drops rows. On 2026-10-05 the events view returned
 //     26 rows for `tag=booking-reminder msg="cycle"` over 25 hours, and 287 when the same
@@ -10,6 +10,12 @@
 //     matching lines through the API's events view, keeps the positive control rule, and
 //     says when the listing is not the whole set rather than letting a short list read as
 //     the complete one.
+//   - #3915: the count is Cloudflare's ESTIMATE, the sum of each stored row's sample weight,
+//     while the listing is the rows it stored. Measured 2026-10-18 15:30 to 16:30 UTC on
+//     `confirm answered`: 69 counted, 51 stored and listed, 49 kept at weight 1 and 2 at
+//     weight 10. The other 18 were never stored, so no slice, page or retry can list them.
+//     The tool reads each row's weight, says the listing is sampled rather than short, and
+//     prints the weight on the line so a percentile can be weighted by it.
 //
 // And the token is never printed, on any path, including an error body that echoes it.
 //
@@ -23,6 +29,9 @@ import {
   buildEventsQuery,
   linesFromResponse,
   formatLine,
+  buildWeightsQuery,
+  weightsFromResponse,
+  weightOfPrintedLine,
   mergeJudgements,
   judge,
   searchSliced,
@@ -36,6 +45,7 @@ import {
   CONTROL_NEEDLE,
   type CountQuery,
   type EventsQuery,
+  type WeightsQuery,
   type LogLine,
 } from "./logs.ts";
 import { readFileSync } from "node:fs";
@@ -209,6 +219,7 @@ const T0 = Date.parse("2026-10-05T00:00:00Z");
 type Fake = {
   count: (q: CountQuery) => Promise<{ count: number; newestMs: number | null }>;
   events: (q: EventsQuery) => Promise<LogLine[]>;
+  weights: (q: WeightsQuery) => Promise<Map<string, number>>;
   asked: { kind: string; needle: string; from: number; to: number }[];
 };
 function fakeCloudflare(opts: {
@@ -242,6 +253,11 @@ function fakeCloudflare(opts: {
         level: "info",
         message: `slate tag=booking-reminder msg="cycle" n=${i}`,
       }));
+    },
+    // Every counted row was stored at weight 1: an unsampled hour.
+    weights: async (q) => {
+      asked.push({ kind: "weights", needle: needleOf(q), from: q.timeframe.from, to: q.timeframe.to });
+      return new Map(Array.from({ length: opts.needlePerHour }, (_, i) => [`${q.timeframe.from}-${i}`, 1]));
     },
   };
 }
@@ -282,6 +298,7 @@ function fakeCloudflare(opts: {
     toIso: iso(T0 + 3 * HOUR),
     query: cf.count,
     events: cf.events,
+    weights: cf.weights,
   });
   eq(r.lines.length, 9, "lines from every slice are merged");
   let sorted = true;
@@ -290,10 +307,12 @@ function fakeCloudflare(opts: {
   }
   assert(sorted, "and printed oldest first, whatever order each slice returned them in");
   eq(r.incomplete.length, 0, "a listing that matches the count in every slice is complete");
+  eq(r.sampled.length, 0, "and an hour stored at weight 1 throughout is not sampled");
   assert(r.judgement.verdict === "present", "and the verdict still comes from the controlled count");
 }
 {
-  // The events view returning FEWER lines than the count is the #3299 shape inside a slice.
+  // The events view returning FEWER lines than Cloudflare STORED is the #3299 shape inside a
+  // slice, and it is a fault of the listing, not of sampling.
   const cf = fakeCloudflare({ needlePerHour: 5, listedPerHour: 2 });
   const r = await listLines({
     needle: "tag=x",
@@ -302,9 +321,18 @@ function fakeCloudflare(opts: {
     toIso: iso(T0 + 2 * HOUR),
     query: cf.count,
     events: cf.events,
+    weights: cf.weights,
   });
-  eq(r.incomplete.length, 2, "a slice that listed fewer lines than it counted is reported incomplete");
-  assert(/3 of 5|5 counted|counted 5/.test(r.incomplete[0]?.reason ?? ""), "naming how many lines are missing");
+  eq(r.incomplete.length, 2, "a slice that listed fewer lines than Cloudflare stored is reported incomplete");
+  assert(
+    /listed 2 of the 5 lines Cloudflare stored/.test(r.incomplete[0]?.reason ?? ""),
+    `naming how many it listed of how many were stored (got ${r.incomplete[0]?.reason})`,
+  );
+  eq(
+    cf.asked.filter((a) => a.kind === "events").length,
+    4,
+    "a short listing is asked for once more before it is reported, and no more than once",
+  );
 }
 {
   // A slice whose listing filled the request limit may have been cut off.
@@ -316,6 +344,7 @@ function fakeCloudflare(opts: {
     toIso: iso(T0 + HOUR),
     query: cf.count,
     events: cf.events,
+    weights: cf.weights,
   });
   eq(r.incomplete.length, 1, "a slice that hit the request limit is reported as possibly truncated");
   assert(/--slice-minutes/.test(r.incomplete[0]?.reason ?? ""), "and names the remedy, a narrower slice");
@@ -337,7 +366,9 @@ function fakeCloudflare(opts: {
     const shared = { id: BOUNDARY_ID, timestampMs: T0 + HOUR, level: "info", message: "slate tag=x boundary" };
     return first ? [own, shared] : [shared, own];
   };
-  const r = await listLines({ needle: "tag=x", control: CONTROL_NEEDLE, fromIso: iso(T0), toIso: iso(T0 + 2 * HOUR), query: count, events });
+  const weights: Parameters<typeof listLines>[0]["weights"] = async (q) =>
+    new Map([[`own-${q.timeframe.from}`, 1], [BOUNDARY_ID, 1]]);
+  const r = await listLines({ needle: "tag=x", control: CONTROL_NEEDLE, fromIso: iso(T0), toIso: iso(T0 + 2 * HOUR), query: count, events, weights });
   eq(r.lines.length, 3, "the boundary row is printed once");
   eq(r.judgement.needleCount, 3, "and counted once, so the count matches the rows it describes");
   assert(/found 3 matching/.test(r.judgement.reason), "the verdict's sentence carries the corrected count too");
@@ -354,13 +385,177 @@ function fakeCloudflare(opts: {
     return { count: 1, newestMs: T0 + HOUR };
   };
   const events: Parameters<typeof listLines>[0]["events"] = async () => [shared];
-  const r = await listLines({ needle: "tag=x", control: CONTROL_NEEDLE, fromIso: iso(T0), toIso: iso(T0 + 2 * HOUR), query: count, events });
+  const weights: Parameters<typeof listLines>[0]["weights"] = async () => new Map([["only-row", 1]]);
+  const r = await listLines({ needle: "tag=x", control: CONTROL_NEEDLE, fromIso: iso(T0), toIso: iso(T0 + 2 * HOUR), query: count, events, weights });
   const later = r.slices[1].judgement;
   eq(later.needleCount, 0, "the slice holding only the repeat counts nothing");
   eq(later.verdict, "absent", "and is judged an absence, not left reading as present");
   assert(!/found 1 matching/.test(later.reason), "with a sentence that no longer claims the row");
   eq(r.judgement.needleCount, 1, "while the window still holds the one row, once");
   eq(r.judgement.verdict, "present", "and is present");
+}
+
+// --- Cloudflare's sampling (#3915): the count is an estimate, the listing is what was stored.
+{
+  const q = buildWeightsQuery({ needle: "tag=x", fromIso: iso(T0), toIso: iso(T0 + HOUR) });
+  eq(q.view, "calculations", "each row's weight is read through the calculations view");
+  eq(
+    q.parameters.groupBys,
+    [{ type: "string", value: "$metadata.id" }],
+    "grouped by row id, so each group is one stored row and its count is that row's sample weight",
+  );
+  // Measured 2026-10-20: with no `parameters.limit` the API returns 10 groups, and the
+  // request's top level `limit` does not change that.
+  eq(q.parameters.limit, EVENTS_LIMIT, "asks inside `parameters` for as many groups as one listing returns rows");
+  const keys = q.parameters.filters.map((f) => f.key);
+  assert(keys.includes("message") && !keys.includes("$metadata.message"), "filters on the bare message field");
+  assert(!keys.some((k) => /level/.test(k)), "never filters on level");
+
+  const group = (id: string, value: number) => ({ groups: [{ key: "$metadata.id", value: id }], value, count: value });
+  const m = weightsFromResponse({ result: { calculations: [{ aggregates: [group("a", 1), group("b", 10)] }] } });
+  eq(m.size, 2, "one entry per stored row");
+  eq(m.get("b"), 10, "carrying the row's weight: the number of lines it stands for");
+  eq(weightsFromResponse({ result: { calculations: [{ aggregates: [] }] } }).size, 0, "no stored row reads as an empty map");
+  eq(
+    weightsFromResponse({ result: { calculations: [{ aggregates: [{ value: 0 }] }] } }).size,
+    0,
+    "and so does the ungrouped zero some responses carry",
+  );
+  let threw = false;
+  try {
+    weightsFromResponse({ result: {} });
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a response with no aggregates throws rather than reading as no rows");
+  threw = false;
+  try {
+    weightsFromResponse({ result: { calculations: [{ aggregates: [{ value: 3 }] }] } });
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a counted group with no row id throws, since its rows could not be told apart");
+}
+{
+  // The measured slice, 2026-10-18 15:30 to 16:30 UTC: counted 69, stored and listed 51, of
+  // which 49 at weight 1 and 2 at weight 10.
+  const ids = Array.from({ length: 51 }, (_, i) => `r${i}`);
+  const weightOf = (i: number) => (i >= 49 ? 10 : 1);
+  let listings = 0;
+  const r = await listLines({
+    needle: 'msg="confirm answered"',
+    control: CONTROL_NEEDLE,
+    fromIso: iso(T0),
+    toIso: iso(T0 + HOUR),
+    query: async (q) => {
+      const needle = q.parameters.filters.find((f) => f.key === "message")!.value;
+      return { count: needle === CONTROL_NEEDLE ? 60 : 69, newestMs: q.timeframe.to - MIN };
+    },
+    events: async () => {
+      listings++;
+      return ids.map((id, i) => ({ id, timestampMs: T0 + i * MIN, level: "info", message: `slate msg="confirm answered" n=${i}` }));
+    },
+    weights: async () => new Map(ids.map((id, i) => [id, weightOf(i)])),
+  });
+  eq(listings, 1, "a listing holding every stored row is not asked for again");
+  eq(r.incomplete.length, 0, "listing every row Cloudflare stored is NOT a short listing, though it is under the count");
+  eq(r.sampled.length, 1, "it is reported as sampled instead");
+  eq(r.sampled[0]?.stored, 51, "naming how many rows Cloudflare stored");
+  eq(r.sampled[0]?.standsFor, 69, "and how many they stand for");
+  eq(r.lines.filter((l) => l.weight === 10).length, 2, "each line carries its own weight");
+  eq(
+    r.lines.reduce((s, l) => s + (l.weight ?? 0), 0),
+    69,
+    "and the weights add up to the count, so a weighted figure describes the whole window",
+  );
+  eq(r.judgement.needleCount, 69, "the verdict's count is still Cloudflare's");
+}
+{
+  // A listing that came back short once and whole on asking again: measured 2026-10-20, one
+  // hour listed 4 of the 19 rows it stored, and 19 on every later ask.
+  const ids = ["a", "b", "c"];
+  let listings = 0;
+  const r = await listLines({
+    needle: "tag=x",
+    control: CONTROL_NEEDLE,
+    fromIso: iso(T0),
+    toIso: iso(T0 + HOUR),
+    query: async (q) => ({
+      count: q.parameters.filters.find((f) => f.key === "message")!.value === CONTROL_NEEDLE ? 60 : 3,
+      newestMs: q.timeframe.to - MIN,
+    }),
+    events: async () => {
+      listings++;
+      const n = listings === 1 ? 1 : 3;
+      return ids.slice(0, n).map((id, i) => ({ id, timestampMs: T0 + i * MIN, level: "info", message: `slate tag=x ${id}` }));
+    },
+    weights: async () => new Map(ids.map((id) => [id, 1])),
+  });
+  eq(listings, 2, "a listing short of the stored rows is asked for again");
+  eq(r.incomplete.length, 0, "and a whole second answer is a whole listing");
+  eq(r.lines.length, 3, "with every row printed once");
+}
+{
+  // A sampled slice whose listing holds a row the weights do not: its weight is unknown, and
+  // a figure weighted over it would be guessed, so the slice is incomplete.
+  const r = await listLines({
+    needle: "tag=x",
+    control: CONTROL_NEEDLE,
+    fromIso: iso(T0),
+    toIso: iso(T0 + HOUR),
+    query: async (q) => ({
+      count: q.parameters.filters.find((f) => f.key === "message")!.value === CONTROL_NEEDLE ? 60 : 11,
+      newestMs: q.timeframe.to - MIN,
+    }),
+    events: async () =>
+      ["a", "b", "late"].map((id, i) => ({ id, timestampMs: T0 + i * MIN, level: "info", message: `slate tag=x ${id}` })),
+    weights: async () => new Map([["a", 1], ["b", 10]]),
+  });
+  eq(r.lines.find((l) => l.id === "late")?.weight, null, "a sampled slice's row with no weight reads as unknown, never 1");
+  eq(r.incomplete.length, 1, "and the slice is incomplete");
+  assert(/weight/.test(r.incomplete[0]?.reason ?? ""), `saying it is the weight that is missing (got ${r.incomplete[0]?.reason})`);
+}
+{
+  // The same in a slice stored at weight 1 throughout: a row that landed between the two
+  // requests can only have been stored unsampled like its neighbours, so it is weight 1.
+  const r = await listLines({
+    needle: "tag=x",
+    control: CONTROL_NEEDLE,
+    fromIso: iso(T0),
+    toIso: iso(T0 + HOUR),
+    query: async (q) => ({
+      count: q.parameters.filters.find((f) => f.key === "message")!.value === CONTROL_NEEDLE ? 60 : 2,
+      newestMs: q.timeframe.to - MIN,
+    }),
+    events: async () =>
+      ["a", "b", "late"].map((id, i) => ({ id, timestampMs: T0 + i * MIN, level: "info", message: `slate tag=x ${id}` })),
+    weights: async () => new Map([["a", 1], ["b", 1]]),
+  });
+  eq(r.lines.find((l) => l.id === "late")?.weight, 1, "an unsampled slice's late row is weight 1");
+  eq(r.incomplete.length, 0, "and nothing is incomplete");
+}
+{
+  // The weight is printed on the line, between the level and the text, only when it is not 1.
+  const base = { id: "x", timestampMs: T0, level: "info", message: 'slate tag=booking msg="confirm answered" response_ms=900' };
+  const ten = formatLine({ ...base, weight: 10 });
+  assert(ten.includes("  info  weight=10  slate tag=booking"), `a weighted line prints weight=10 before the text (got ${ten})`);
+  assert(!formatLine({ ...base, weight: 1 }).includes("weight="), "a line at weight 1 prints as before");
+  assert(!formatLine(base).includes("weight="), "and so does a line with no weight read");
+  assert(formatLine({ ...base, weight: null }).includes("  weight=unknown  "), "an unknown weight is printed as unknown");
+  eq(weightOfPrintedLine(ten), 10, "the printed weight reads back");
+  eq(weightOfPrintedLine(formatLine(base)), 1, "a line printed with no weight reads back as 1");
+  eq(weightOfPrintedLine(formatLine({ ...base, weight: null })), null, "and an unknown one as null");
+  eq(
+    weightOfPrintedLine(formatLine({ ...base, timestampMs: null, level: null, weight: 4 })),
+    4,
+    "including on a line with no timestamp and no level",
+  );
+  // A field in the line's own text named weight is the line's, not the tool's.
+  eq(
+    weightOfPrintedLine(formatLine({ ...base, message: "slate tag=x weight=99" })),
+    1,
+    "a weight= inside the text is not read as the line's weight",
+  );
 }
 
 // --- The token: where it comes from, and that it is never printed.
@@ -439,6 +634,9 @@ function fakeCloudflare(opts: {
       });
     }
     const n = needle === CONTROL_NEEDLE ? 60 : 1;
+    if ((b as { parameters: { groupBys?: unknown[] } }).parameters.groupBys?.length) {
+      return json({ result: { calculations: [{ aggregates: [{ groups: [{ key: "$metadata.id", value: `e${b.timeframe.from}` }], value: n }] }] } });
+    }
     const t = new Date(b.timeframe.to - MIN).toISOString().slice(0, 19).replace("T", " ");
     return json({ result: { calculations: [{ aggregates: [{ value: n }], series: [{ time: t, data: [{ value: n }] }] }] } });
   };
@@ -508,6 +706,49 @@ function fakeCloudflare(opts: {
   });
   eq(short.code, 3, "lines counted but not listed exits 3, its own code: found, and the listing is incomplete");
   assert(short.err.some((l) => /incomplete/i.test(l)), "and warns that the printed list is not the whole set");
+
+  // #3915: a sampled window. Cloudflare counts 12, stores three rows, one of them at weight 10.
+  type Body = Parameters<typeof healthy>[0] & { parameters: { groupBys?: unknown[] } };
+  const sampled = (b: Body) => {
+    const needle = b.parameters.filters.find((f) => f.key === "message")!.value;
+    if (needle === CONTROL_NEEDLE) return healthy(b);
+    const rows = [
+      { id: "s1", w: 1 },
+      { id: "s2", w: 1 },
+      { id: "s3", w: 10 },
+    ];
+    if (b.view === "events") {
+      const events = rows.map((r, i) => ({
+        $metadata: { id: r.id },
+        timestamp: b.timeframe.from + (i + 1) * MIN,
+        source: { message: `slate ${needle} n=${i}` },
+      }));
+      return json({ result: { events: { events } } });
+    }
+    if (b.parameters.groupBys?.length) {
+      const aggregates = rows.map((r) => ({ groups: [{ key: "$metadata.id", value: r.id }], value: r.w }));
+      return json({ result: { calculations: [{ aggregates }] } });
+    }
+    const t = new Date(b.timeframe.to - MIN).toISOString().slice(0, 19).replace("T", " ");
+    return json({ result: { calculations: [{ aggregates: [{ value: 12 }], series: [{ time: t, data: [{ value: 12 }] }] }] } });
+  };
+  const samp = await drive(["tag=booking", "--lines", "--minutes", "60"], sampled);
+  eq(samp.code, 4, "every stored line listed in a sampled window exits 4, its own code, never 3");
+  assert(samp.out.some((l) => /  weight=10  /.test(l)), "the line Cloudflare kept 1 in 10 of is printed with weight=10");
+  assert(
+    samp.out.some((l) => /^SAMPLED: /.test(l) && /stored 3 /.test(l) && /12 counted/.test(l)),
+    `stdout says how many were stored of how many counted (got ${samp.out.join(" | ")})`,
+  );
+  assert(
+    ![...samp.out, ...samp.err].some((l) => /missing from what is printed|narrower --slice-minutes/.test(l)),
+    "and does not send the reader to narrow the slices, which can never list a line that was not stored",
+  );
+  const sampledAndShort = await drive(["tag=booking", "--lines", "--minutes", "60"], (b) =>
+    b.view === "events" && b.parameters.filters.find((f) => f.key === "message")!.value !== CONTROL_NEEDLE
+      ? json({ result: { events: { events: [] } } })
+      : sampled(b),
+  );
+  eq(sampledAndShort.code, 3, "a sampled window whose listing is also short exits 3: the shortfall is the one to act on");
 
   const tooWide = await drive(["tag=booking", "--slice-minutes", "120"], healthy);
   eq(tooWide.code, 2, "a slice wider than an hour is refused at the command line");
