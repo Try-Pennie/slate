@@ -2,54 +2,26 @@
 // scripts/test-design-match.ts drives it without Chrome. scripts/design-match/score.ts does the
 // rendering and hands its results here.
 
-/** The fixture file a design's frames and the built page's fixture preview both draw from. */
-export interface DesignFixture {
-  nearlyFullPct: number;
-  examples: { unsynced: string; timeOff: { advisor: string; dayIndex: number; start: string; end: string } };
-  frames: Record<string, { theme: string; examples?: boolean; illustrate?: string; [k: string]: unknown }>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the snapshot's shape belongs to the design, not to the scorer
-  snapshot: any;
-}
+import { fixtureView, type DesignFixtureFile } from "../../src/lib/admin/team-capacity-fixture.ts";
 
-/** A fixture time, or a throw: an unreadable one would compare false both ways and silently drop a call (L50). */
-function stampMs(iso: string): number {
-  const ms = Date.parse(iso);
-  if (!Number.isFinite(ms)) throw new Error(`the fixture holds an unreadable time: "${iso}"`);
-  return ms;
-}
+/** The fixture file a design's frames and the built page's fixture preview both draw from. */
+export type DesignFixture = DesignFixtureFile;
 
 /**
- * The data one frame draws, after that frame's illustrations, exactly as the design applies them,
- * so the built page's fixture preview can be checked against the same numbers. A copy: the shared
- * fixture is never changed. A frame the fixture does not name throws rather than drawing nothing.
+ * The data one frame draws, after that frame's illustrations, so the checks expect exactly the
+ * numbers the page's fixture preview renders: both come from `fixtureView`, the one place the
+ * illustrations are applied. A frame the fixture does not name throws rather than drawing nothing.
  */
 export function frameFixture(fixture: DesignFixture, id: string) {
-  const v = fixture.frames[id];
-  if (!v) throw new Error(`the fixture names no frame "${id}"`);
-  const snap = JSON.parse(JSON.stringify(fixture.snapshot));
-  const unsynced: string[] = [];
-  if (v.examples) {
-    unsynced.push(fixture.examples.unsynced);
-    const t = fixture.examples.timeOff;
-    const callMin = fixture.snapshot?.eventType?.duration_min;
-    if (!Number.isFinite(callMin) || callMin <= 0) throw new Error("the fixture's snapshot carries no call length (eventType.duration_min)");
-    const CALL_MS = callMin * 60_000;
-    const s0 = stampMs(t.start);
-    const s1 = stampMs(t.end);
-    for (const a of snap.advisors) {
-      if (a.name !== t.advisor) continue;
-      const d = a.days[t.dayIndex];
-      d.openTimes = d.openTimes.filter((x: string) => stampMs(x) + CALL_MS <= s0 || stampMs(x) >= s1);
-      d.open = d.openTimes.length;
-    }
-  }
-  if (v.illustrate === "today-full") {
-    for (const a of snap.advisors) {
-      a.days[0].open = 0;
-      a.days[0].openTimes = [];
-    }
-  }
-  return { fixture: snap, unsynced, timeOff: fixture.examples.timeOff.advisor, nearlyFull: fixture.nearlyFullPct, frame: id };
+  const view = fixtureView(fixture, id);
+  const advisors = view.report.measurable ? view.report.advisors : fixture.snapshot.advisors;
+  return {
+    fixture: { offeredOpenDays: fixture.snapshot.offeredOpenDays, advisors },
+    unsynced: view.unsynced,
+    timeOff: fixture.examples.timeOff.advisor,
+    nearlyFull: fixture.nearlyFullPct,
+    frame: id,
+  };
 }
 
 export interface CheckResult {

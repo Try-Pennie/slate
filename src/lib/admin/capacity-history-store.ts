@@ -55,6 +55,13 @@ export async function writeHistory(orgId: string, rows: HistoryRow[], throughMs:
   return written;
 }
 
+/** The past days history holds for the org from `fromIso` on, so the picker offers only those. */
+export async function readSavedDays(orgId: string, fromIso: string): Promise<string[]> {
+  const days = unwrap(await supabaseAdmin().rpc("capacity_history_days", { p_org: orgId, p_from: fromIso }), "capacity history days");
+  if (!Array.isArray(days)) throw new Error("capacity_history_days returned no list");
+  return days as string[];
+}
+
 /** A past office day as it was saved, one advisor each, ordered by name like a coming day. */
 export async function loadCapacityHistoryDay(orgId: string, day: string): Promise<TeamCapacityAdvisor[]> {
   const db = supabaseAdmin();

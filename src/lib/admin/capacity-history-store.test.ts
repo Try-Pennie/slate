@@ -30,7 +30,7 @@ vi.mock("@/lib/supabase/paginate", () => ({
   },
 }));
 
-import { loadCapacityHistoryDay, readHistoryCursor, readSavedCalls, writeHistory } from "./capacity-history-store";
+import { loadCapacityHistoryDay, readHistoryCursor, readSavedCalls, readSavedDays, writeHistory } from "./capacity-history-store";
 
 beforeEach(() => {
   db.result = { data: null, error: null };
@@ -88,6 +88,15 @@ describe("capacity history store", () => {
     await expect(writeHistory("org", [], 0)).rejects.toThrow();
     db.rpc = { data: null, error: null };
     await expect(writeHistory("org", [], 0)).rejects.toThrow(/no row count/);
+  });
+
+  it("lists the saved days, and refuses rather than offering none when the read fails", async () => {
+    db.rpc = { data: ["2026-10-20", "2026-10-21"], error: null };
+    expect(await readSavedDays("org", "2026-01-01")).toEqual(["2026-10-20", "2026-10-21"]);
+    db.rpc = { data: null, error: { message: "denied" } };
+    await expect(readSavedDays("org", "2026-01-01")).rejects.toThrow();
+    db.rpc = { data: null, error: null };
+    await expect(readSavedDays("org", "2026-01-01")).rejects.toThrow(/no list/);
   });
 
   it("reads a past day back by name, scoped to the org", async () => {

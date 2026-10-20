@@ -28,7 +28,7 @@
       if (d.out) { out++; return; }
       open += d.open; cap += d.capacity;
     });
-    var full = cap ? (open === 0 ? 100 : Math.min(99, Math.floor(100 * (1 - open / cap)))) : null;
+    var full = cap ? (open === 0 ? 100 : Math.min(99, Math.floor((100 * (cap - open)) / cap))) : null;
     return { open: open, cap: cap, out: out, unsynced: unsynced, full: full };
   }
 
@@ -201,7 +201,7 @@
       return text(one(doc, "day-note")) === "Leads can't book this day yet, so it will fill up more than it shows." ? pass() : fail("the note reads '" + text(one(doc, "day-note")) + "'");
     } },
     { id: "D24", frames: ["f9"], check: function (doc) {
-      if (!/^Ended \d+% full, with room left for [\d,]+ more calls\.$/.test(text(one(doc, "day-note")))) return fail("the summary reads '" + text(one(doc, "day-note")) + "'");
+      if (!/^Ended \d+% full, with room left for [\d,]+ more calls?\.$/.test(text(one(doc, "day-note")))) return fail("the summary reads '" + text(one(doc, "day-note")) + "'");
       return one(doc, "open-call") ? pass() : fail("unused room is not drawn");
     } },
     { id: "D25", frames: [], offScreen: "History is stored as each half hour passes: proven by the history lane's own tests, not on screen." },

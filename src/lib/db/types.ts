@@ -429,6 +429,10 @@ export interface BookingSettings {
    *  DEFAULT 3 with a 1 to 7 check; `horizon_days` holds this plus the last resort's
    *  extra days. Read through `src/lib/booking/days-offered-load.ts`. */
   offered_open_days: number;
+  /** #3936, migration 0192: the percent of a day's capacity at which Team capacity
+   *  flags the day nearly full. NOT NULL DEFAULT 85 with a 1 to 99 check. Read
+   *  through `readNearlyFullPct` in `src/lib/booking/settings.ts`. */
+  capacity_nearly_full_pct: number;
   /** #2297: the public booking kill switch. True stops the embed's booking WRITE
    *  (availability, sync, the key-authed API, reschedule and cancel all keep
    *  running). Stored NOT NULL DEFAULT false, so a row that predates the column

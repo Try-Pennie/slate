@@ -10,16 +10,29 @@
 import { assert, eq, finish } from "./lib/harness.ts";
 import { frameFixture, offScreenLines, verdict, type FrameResult } from "./lib/design-match.ts";
 
+const day = (open: number, openTimes: string[]) => ({
+  iso: "2026-10-19", open, capacity: 10, out: false, openTimes,
+  shiftStart: "2026-10-19T13:00:00Z", shiftEnd: "2026-10-19T20:40:00Z", fullShiftStart: "2026-10-19T13:00:00Z", fullShiftEnd: "2026-10-19T21:00:00Z",
+});
 const base = {
   nearlyFullPct: 85,
   examples: { unsynced: "B", timeOff: { advisor: "A", dayIndex: 0, start: "2026-10-19T17:00:00Z", end: "2026-10-19T18:00:00Z" } },
-  frames: { plain: { theme: "light" }, ex: { theme: "light", examples: true }, full: { theme: "light", illustrate: "today-full" } },
+  picker: { closedWeekday: 7, savedFrom: "2026-10-12", aheadDays: 21 },
+  frames: {
+    plain: { theme: "light" as const },
+    ex: { theme: "light" as const, examples: true },
+    full: { theme: "light" as const, illustrate: "today-full" as const },
+    picked: { theme: "light" as const, pick: "2026-10-26" },
+  },
   snapshot: {
-    eventType: { duration_min: 20 },
+    takenAt: "2026-10-19T12:00:00Z",
+    zone: "America/New_York",
+    offeredOpenDays: 1,
+    eventType: { duration_min: 20, slot_interval_min: 10, min_notice_min: 5, buffer_before_min: 10, buffer_after_min: 10 },
     days: ["2026-10-19"],
     advisors: [
-      { name: "A", days: [{ iso: "2026-10-19", open: 3, capacity: 10, out: false, openTimes: ["2026-10-19T16:00:00Z", "2026-10-19T17:20:00Z", "2026-10-19T18:00:00Z"] }] },
-      { name: "B", days: [{ iso: "2026-10-19", open: 1, capacity: 10, out: false, openTimes: ["2026-10-19T15:00:00Z"] }] },
+      { name: "A", timezone: "America/New_York", days: [day(3, ["2026-10-19T16:00:00Z", "2026-10-19T17:20:00Z", "2026-10-19T18:00:00Z"])] },
+      { name: "B", timezone: "America/New_York", days: [day(1, ["2026-10-19T15:00:00Z"])] },
     ],
   },
 };
@@ -38,6 +51,9 @@ const base = {
 
   const full = frameFixture(base, "full");
   assert(full.fixture.advisors.every((a: { days: { open: number }[] }) => a.days[0].open === 0), "the full day frame empties today for everyone");
+
+  const picked = frameFixture(base, "picked");
+  eq(picked.fixture.advisors[0].days.map((d: { iso: string }) => d.iso), ["2026-10-19", "2026-10-26"], "a picked date joins the days, drawn from the window's last day");
 
   let threw = false;
   try { frameFixture(base, "missing"); } catch { threw = true; }

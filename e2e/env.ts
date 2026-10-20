@@ -138,6 +138,9 @@ export function e2eServerEnv(
     SUPABASE_SECRET_KEY: stack.secretKey,
     GOOGLE_HOSTED_DOMAIN: E2E_EMAIL_DOMAIN,
     SLATE_LOADTEST: "true",
+    // #3936: lets /admin/team-capacity?frame=<id> render a frame of the settled design from its
+    // fixture, so the design match score can compare the page with the design. Loopback only.
+    SLATE_DESIGN_FIXTURES: "1",
     ...extra,
   };
   for (const key of ["PATH", "HOME", "TMPDIR"] as const) {

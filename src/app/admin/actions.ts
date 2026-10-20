@@ -110,6 +110,7 @@ import {
 import {
   parseDefaultBucketForm,
   parseEventDescriptionForm,
+  readNearlyFullPct,
 } from "@/lib/booking/settings";
 import { parseDaysOfferedForm } from "@/lib/booking/days-offered";
 import { markAllBucketSlotsStale } from "@/lib/availability/precompute";
@@ -136,6 +137,7 @@ import {
 import type { Criteria, Role, User } from "@/lib/db/types";
 import { seederOwnsCode } from "@/lib/xbc";
 import { DAYS_OFFERED } from "@/lib/admin/days-offered-copy";
+import { parseNearlyFullPct } from "@/lib/admin/team-capacity-copy";
 import { ME_TABS } from "@/lib/me/nav";
 import {
   COVERAGE_CHOICE_FIELD,
@@ -1442,6 +1444,47 @@ export async function setDaysOffered(form: FormData): Promise<void> {
   });
   revalidatePath("/admin/business-hours");
   redirect(`/admin/business-hours${savedQuery("days-offered")}`);
+}
+
+/**
+ * Save the nearly full line on Team capacity (#3936, D9 in docs/design/team-capacity.html):
+ * the percent of a day's capacity at which the page flags the day. Admin only; a manager
+ * reads the line and never sees Change.
+ *
+ * A value outside 1 to 99 is refused with its reason and never written. The write is a
+ * column scoped upsert on id=1, so it cannot clobber the other settings on that row, and
+ * it is idempotent (assume it runs twice). Refused before the audit entry, the cache
+ * invalidation and the saved notice, so none of them claims a value that was not stored.
+ */
+export async function setNearlyFullPct(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const parsed = parseNearlyFullPct(String(form.get("capacity_nearly_full_pct") ?? ""));
+  if ("error" in parsed) {
+    redirect(`/admin/team-capacity${refusedQuery(parsed.error)}`);
+  }
+  // The line it replaces, so the trail says what it was as well as what it became (L529). A read
+  // that fails does not stop the save; the entry says the old value could not be read.
+  const before = await readNearlyFullPct();
+  const { error } = await supabaseAdmin().from("booking_settings").upsert(
+    {
+      id: 1,
+      capacity_nearly_full_pct: parsed.pct,
+      updated_at: new Date().toISOString(),
+      updated_by: admin.id,
+    },
+    { onConflict: "id" },
+  );
+  if (error) {
+    redirect(`/admin/team-capacity${refusedQuery(writeRefused("The nearly full line", error))}`);
+  }
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "booking.settings",
+    details: { from: { capacity_nearly_full_pct: before ?? "unreadable" }, to: { capacity_nearly_full_pct: parsed.pct } },
+  });
+  revalidatePath("/admin/team-capacity");
+  redirect(`/admin/team-capacity${savedQuery("nearly-full")}`);
 }
 
 /** The longest gap an admin may keep between calls, in minutes. Two hours is
