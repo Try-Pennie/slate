@@ -1085,6 +1085,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `GET /api/cron/ooo-approvals` | Moves approved and declined time-off requests through their side effects. |
 | `GET /api/cron/ooo-digest` | The daily 7am ET time-off digest, and the record of whether it landed. |
 | `GET /api/cron/advisor-photos` | Reads each active person's photo from the Google directory and keeps the bytes for Slate to serve (#3027). Daily at 04:17 UTC, retried at 10:17 only when the first run reached no verdict. |
+| `GET /api/cron/busy-minutes` | The daily check on the booking load run's bar (#3124): pages when a minute of more than a tenth of the bar happened on 3 of the last 7 UTC days, counting cal.com's routed responses and Slate's routed bookings together until cal.com is retired. Daily at 05:41 UTC, retried at 09:41 only when the first run reached no verdict. |
 | `GET /api/cron/prune-routing` | Ages out routing decision rows past their retention window. |
 | `GET /api/cron/prune-busy-blocks` | Deletes cached busy blocks whose end is far enough in the past to be unreachable (#1252). |
 | `GET /api/cron/capacity-history` | Saves each advisor's calls still open when they stopped being bookable, with the day's shift, time off and capacity, so Team capacity can show how a past day ended (#3940). Every half hour; a cursor catches a missed tick up, at most a day back. |

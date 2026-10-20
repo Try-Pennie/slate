@@ -300,6 +300,11 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   advisor_photos_unread: "a-lane-or-schedule-has-gone-quiet",
   // #3027. The refresh ran and the directory's data looks wrong for some people.
   advisor_photos_held: "the-roster-or-routing-data-is-wrong",
+  // #3124. The bar outgrown is a measurement worth knowing: nothing is broken, and the
+  // remedy (raise the bar, rerun the load run) is in the message. The check unable to
+  // count is a detector that has stopped producing, the first question of that family.
+  load_bar_outgrown: "something-was-measured-and-is-only-worth-knowing",
+  load_bar_unread: "a-lane-or-schedule-has-gone-quiet",
   // #2114. The same family, one step later: Twilio was read fine and Slate could
   // not finish acting on it, so an agent Twilio withholds may still be in the
   // pool, or somebody's calls are still with an agent who has left it.

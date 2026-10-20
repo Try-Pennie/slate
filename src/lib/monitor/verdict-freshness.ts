@@ -253,6 +253,18 @@ export const AVAILABILITY_LATENCY_VERDICT_LANE = "verdict:availability-latency";
 export const ADVISOR_PHOTOS_VERDICT_LANE = "verdict:advisor-photos";
 
 /**
+ * The daily busy minute check (#3124): a run that counted BOTH halves of the week's
+ * routed bookings (Slate's, and cal.com's until it is marked retired) and judged them
+ * against the load run's bar.
+ *
+ * It needs this stamp because it is silent on a healthy week and, if it stopped
+ * counting, silent on a broken one: the bar would quietly stop being ten times over
+ * real traffic with nothing saying so. The stamp is also the lane's only heartbeat, so
+ * a schedule that stopped firing goes stale here too.
+ */
+export const BUSY_MINUTES_VERDICT_LANE = "verdict:busy-minutes";
+
+/**
  * The busy drift sampler (#1591). It shipped observe only and exempt from this
  * family, because going blind silenced nothing. Armed, it pages on drift that
  * persists, so a sampler whose live or cached read keeps failing would silence
@@ -327,6 +339,7 @@ export type DetectorVerdictLane =
   | typeof REGAL_CALL_FEED_VERDICT_LANE
   | typeof REGAL_CALL_OUTCOMES_VERDICT_LANE
   | typeof ADVISOR_PHOTOS_VERDICT_LANE
+  | typeof BUSY_MINUTES_VERDICT_LANE
   | typeof AVAILABILITY_LATENCY_VERDICT_LANE
   | typeof BUSY_DRIFT_VERDICT_LANE
   | typeof CRON_BUDGET_VERDICT_LANE

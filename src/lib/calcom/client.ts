@@ -9,7 +9,7 @@ import {
   type DateOverride,
 } from "@/lib/calcom/overrides";
 import { CAL_SCHEDULES_API_VERSION, pickDefaultSchedule } from "@/lib/calcom/schedule-import";
-import { bookedByTier, readRoutingResponses } from "@/lib/calcom/routing-responses";
+import { bookedByTier, readRoutingResponses, type RoutingReadResult } from "@/lib/calcom/routing-responses";
 import {
   readCalcomBookingByUid,
   readCalcomBookingsCreated,
@@ -415,17 +415,16 @@ export async function readScheduleForImport(
 const ROUTING_PACE_MS = 550;
 
 /**
- * cal.com's bookings per debt tier created in [fromIso, toIso) (#2893), for the daily
- * carried share. Null when cal.com is not configured here, which is the state after
- * cutover, and never on a failed read: a refused page or a changed payload THROWS,
- * because a share from part of cal.com's traffic would lean toward Slate and thin
- * every anchor with it. About ten requests a day, paced.
+ * Every cal.com routing form response created at or after `fromIso`, across every form
+ * in the org, paced against cal.com's limit. Null when cal.com is not configured here,
+ * which is the state after cutover. A refused page or a changed payload is a `{ ok:
+ * false }` answer, never a shorter list: each caller decides what a partial read means
+ * for it, and none may count one. Shared by the daily carried share (#2893) and the
+ * busy minute check (#3124), so cal.com's traffic is read one way.
  */
-export async function calcomTierBookingCounts(fromIso: string, toIso: string): Promise<Record<"1" | "2" | "3" | "4" | "5", number> | null> {
+export async function readCalcomRoutingResponses(fromIso: string): Promise<RoutingReadResult | null> {
   if (!calcomConfigured()) return null;
-  const fromMs = Date.parse(fromIso); // parse-ok: built by the caller from a number with toISOString
-  const toMs = Date.parse(toIso); // parse-ok: as above
-  const read = await readRoutingResponses({
+  return readRoutingResponses({
     get: async (path, apiVersion) => {
       const r = await calcomFetch(path, { headers: { "cal-api-version": apiVersion } });
       return { status: r.status, json: { data: r.data } };
@@ -435,6 +434,20 @@ export async function calcomTierBookingCounts(fromIso: string, toIso: string): P
     paceMs: ROUTING_PACE_MS,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   });
+}
+
+/**
+ * cal.com's bookings per debt tier created in [fromIso, toIso) (#2893), for the daily
+ * carried share. Null when cal.com is not configured here, which is the state after
+ * cutover, and never on a failed read: a refused page or a changed payload THROWS,
+ * because a share from part of cal.com's traffic would lean toward Slate and thin
+ * every anchor with it. About ten requests a day, paced.
+ */
+export async function calcomTierBookingCounts(fromIso: string, toIso: string): Promise<Record<"1" | "2" | "3" | "4" | "5", number> | null> {
+  const fromMs = Date.parse(fromIso); // parse-ok: built by the caller from a number with toISOString
+  const toMs = Date.parse(toIso); // parse-ok: as above
+  const read = await readCalcomRoutingResponses(fromIso);
+  if (read === null) return null;
   if (!read.ok) {
     throw new Error(
       `cal.com routing responses could not be read (${read.reason}, status ${read.status}${read.formName ? `, form ${read.formName}` : ""})`,

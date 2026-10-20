@@ -23,6 +23,10 @@
 import { parseStampMs } from "../date/stamp.ts";
 
 export interface RoutingResponse {
+  /** cal.com's id for the response, as text, when it carried one (#3124). A paged read
+   *  sorted newest first can return a response twice when a new one arrives between
+   *  pages, so a per minute count dedupes on this. */
+  id?: string;
   /** The form (landing page) the lead filled in. */
   formName: string;
   /** When the response was recorded, as cal.com wrote it. */
@@ -52,6 +56,7 @@ interface RawForm {
   name: string;
 }
 interface RawResponse {
+  id?: unknown;
   response: unknown;
   createdAt: string;
   routedToBookingUid?: string | null;
@@ -89,6 +94,7 @@ export async function readRoutingResponses(opts: {
       }
       for (const r of data) {
         rows.push({
+          ...(typeof r.id === "number" || typeof r.id === "string" ? { id: String(r.id) } : {}),
           formName: form.name,
           createdAt: r.createdAt,
           code: extractCode(r.response),

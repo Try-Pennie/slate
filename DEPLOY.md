@@ -730,6 +730,7 @@ not a subset; `scripts/test-cron-routes.ts` fails CI if any lane below drifts):
 - `*/15 * * * *` → `/api/cron/hydrate-calendars` (re-bootstraps a slice of the agent calendars over the cached window, #1261; the batch is DERIVED from the live calendar count so every calendar is refreshed at least once a day at any roster size, rather than a fixed number that is right today and halves the refresh rate as the roster grows. Its own expression, never co-scheduled: the every-minute invocation is the one already short of CPU headroom, and this lane makes a real Google call per calendar. Needed because Google's incremental delta is not scoped to the bootstrap window and delivers an unchanged event exactly once, so without a periodic re-bootstrap a far-future event would be dropped by any window filter and never re-added. Stamps `hydrate-calendars` with a matching bound in `LANE_STALE_BOUNDS_MS`, because this lane going quiet means coverage expiring everywhere)
 - `*/10 * * * *` → `/api/cron/snowflake-export` (archival-mirror export to Snowflake, #1099; its own expression so it gets its own CPU budget, resumable via export_cursor, no-op until SNOWFLAKE_PRIVATE_KEY is set)
 - `17 4 * * *` **and** `17 10 * * *` → `/api/cron/advisor-photos` (daily advisor photo refresh from the Google directory, #3027; the 10:17 run stands down when the 04:17 run already reached a verdict, so it is the automatic re attempt; held back on the load test Worker)
+- `41 5 * * *` **and** `41 9 * * *` → `/api/cron/busy-minutes` (the daily check on the booking load run's bar, #3124: has a minute of more than a tenth of `LOAD_RUN_BOOKINGS_PER_MINUTE` happened on 3 of the last 7 UTC days? Until cal.com is marked retired it adds cal.com's routed responses to Slate's routed bookings minute by minute, reading about 25 cal.com pages paced 550ms apart with `CALCOM_API_KEY`; Slate's half is one call to the `routed_bookings_per_minute` RPC, migration 0193. Night ET because cal.com meters the key the working day's time off writes also use. The 09:41 run stands down when the 05:41 run reached a verdict, and only it pages `load_bar_unread` when a half could not be read. Its only heartbeat is `verdict:busy-minutes`, 30 hours in `VERDICT_STALE_BOUNDS_MS`, kept out of `LANE_STALE_BOUNDS_MS` because a capacity check that did not run is not the site being down. Stands down on the load test Worker)
 - `23,53 * * * *` → `/api/cron/capacity-history` (Team capacity history, #3940: saves each advisor's calls still open when they stopped being bookable, with the day's shift, time off and capacity, so a past day shows how it ended. Its own expression; a cursor catches a missed tick up, at most a day back, inside the 36 hours past busy time is kept. Kept for good, no prune. Stamps `capacity-history` with a 90 minute bound in `LANE_STALE_BOUNDS_MS`)
 - `0 */6 * * *` → `/api/cron/snowflake-reconcile` (counts Supabase vs Snowflake per mirrored table + a positive control, Slack-alerts on drift, #1101; the precondition future deletion must pass) **+** `/api/cron/erasure-audit` (reads the pii.erasure audit trail and Slack-alerts if Snowflake still holds contact PII for an erased booking, i.e. the warehouse purge is incomplete, #1103; also executes the purge SQL itself against the warehouse with an id that cannot match, so a statement that stops compiling pages on `snowflake_purge_sql_broken` instead of being discovered during a real deletion request, #1128)
 
@@ -1130,6 +1131,17 @@ when Slate stops carrying only the pilot's share. Its first production reading,
 2026-10-16: a busiest minute of 5 and a busiest day of 512 routed bookings, so the 60
 a minute bar is 12 times Slate's own peak. That is the pilot's half of tiers 1 to 5,
 and the RUNBOOK says why the whole of the traffic may put the bar under ten times.
+
+**The premise is now re-read every day** (#3124). The `busy-minutes` lane
+(05:41 UTC, retried at 09:41) counts the last 7 whole UTC days of routed bookings per
+minute, cal.com's routed responses plus Slate's routed real bookings until cal.com is
+marked retired, and pages `load_bar_outgrown` when a minute of more than a tenth of
+`LOAD_RUN_BOOKINGS_PER_MINUTE` (`src/lib/load-bar.ts`, 70, so 8 or more) happened on 3
+or more of those days. A half it could not read pages `load_bar_unread` instead,
+never a quiet week. Its cost: one Supabase RPC returning one row, and about 25 paced
+cal.com reads (one for the forms, one per 250 responses of each, at about 4,500
+responses a week), on its own expression so it shares no invocation's CPU or
+subrequest budget; no new secret, since it reads with `CALCOM_API_KEY`.
 
 **Supabase.** What is known:
 

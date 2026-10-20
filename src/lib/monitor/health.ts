@@ -749,6 +749,15 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // retry, 30 hours, and two hours of cron lateness on top makes 32. A whole day
   // with no verdict at either slot passes the bound and pages, which is the point.
   "verdict:advisor-photos": 32 * 60 * MIN,
+  // The daily busy minute check (#3124). Derived from its two crons the same way: it
+  // runs at 05:41 UTC and, only when that run reached no verdict, again at 09:41. Its
+  // longest LEGITIMATE gap is a verdict at 05:41 followed by the next day's at 09:41,
+  // 28 hours, and two hours of cron lateness on top makes 30. A whole day with no
+  // verdict at either slot passes the bound and pages, as does a schedule that stopped
+  // firing, since this stamp is the lane's only heartbeat. Kept out of
+  // LANE_STALE_BOUNDS_MS on purpose: that map drives the external /api/health 503, and
+  // a capacity check that did not run is not the site being down.
+  "verdict:busy-minutes": 30 * 60 * MIN,
   // The busy drift sampler (#1591) concludes on every 5 minute tick whose live and
   // cached reads both work for at least one agent: no time window, no traffic
   // floor, and a clean sample is an answer. So, like the calendar window check it
