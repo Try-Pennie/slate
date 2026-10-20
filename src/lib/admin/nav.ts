@@ -111,6 +111,8 @@ export const ADMIN_NAV: AdminNavGroup[] = [
         label: "Bucket availability",
         gate: "manager",
       },
+      // #3936: last under Availability, beside Team hours (D1 in docs/design/team-capacity.html).
+      { href: "/admin/team-capacity", label: "Team capacity", gate: "manager" },
     ],
   },
   {

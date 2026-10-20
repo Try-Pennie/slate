@@ -169,6 +169,29 @@ export async function readBookingHorizonDays(): Promise<number | null> {
 }
 
 /**
+ * The line at which Team capacity flags a day nearly full (#3936, migration 0191), or
+ * **null** when the read failed. Never the default in place of a failed read: a page
+ * flagging days against a line nobody read would look exactly like one that read it.
+ */
+export async function readNearlyFullPct(): Promise<number | null> {
+  try {
+    const db = supabaseAdmin();
+    const row = unwrap(
+      await db.from("booking_settings").select("capacity_nearly_full_pct").eq("id", 1).maybeSingle(),
+      "booking_settings.capacity_nearly_full_pct",
+    ) as Pick<BookingSettings, "capacity_nearly_full_pct"> | null;
+    // No row is the column default, a real answer: the row is created on the first save.
+    return row?.capacity_nearly_full_pct ?? NEARLY_FULL_DEFAULT_PCT;
+  } catch (err) {
+    log.error("booking-settings", { msg: "nearly full line read failed" }, err);
+    return null;
+  }
+}
+
+/** The column default in migration 0191, for an org whose settings row does not exist yet. */
+export const NEARLY_FULL_DEFAULT_PCT = 85;
+
+/**
  * The resolved horizon for the BOOKING path, which degrades deliberately.
  *
  * Unlike getDefaultBucketCode (which throws on a read error, because a false "no
