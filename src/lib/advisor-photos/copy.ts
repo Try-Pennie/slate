@@ -3,7 +3,7 @@
  * their all clears, and the outcome a button press shows an admin. Pure, so
  * `pnpm preview:alerts` renders the real wording rather than a copy of it.
  */
-import { FLIP_TO_NONE_LIMIT, type RefreshPlan } from "@/lib/advisor-photos/core";
+import { FLIP_TO_NONE_LIMIT, isPhotoHash, type RefreshPlan } from "@/lib/advisor-photos/core";
 import { needsAttention, type RefreshOutcome, type RefusedWhy } from "@/lib/advisor-photos/refresh";
 import { awaitingFirstRead, type AdvisorPhoto } from "@/lib/advisor-photos/resolve";
 
@@ -28,6 +28,13 @@ const REFUSED: Record<Exclude<RefusedWhy, "unknown-user">, string> = {
   "slate-unreadable":
     "Slate could not read its own roster or photo table, so it did not ask Google anything. Check that the advisor_photos migration is applied and the database is answering.",
 };
+
+/**
+ * What to do about a repeated image that is really a shared picture, said the same
+ * way on the nightly page and on an agent's page after "Refresh from Google" (#3959).
+ */
+const SHARED_IMAGE_REMEDY =
+  "If it is a real shared picture such as a logo, add its hash to the known shared images list in src/lib/advisor-photos/core.ts, and the next run stores it for everybody.";
 
 /** The page when a daily run measured nothing. */
 export function photosUnreadAlert(
@@ -75,7 +82,7 @@ export function photosHeldAlert(plan: RefreshPlan): string {
       ? `Open /advisor-photo/${r.sha256} on Slate to see it.`
       : `Slate has not stored it for anybody, so look at one of their photos in Google Admin. Its hash is ${r.sha256}.`;
     parts.push(
-      `One identical image is held by ${plural(r.holders.length, "person", "people")} (${names(r.holders)}). It may be a Google placeholder, so it was not stored for ${r.held.length ? names(r.held) : "anybody new"}. ${look} If it is a real shared picture such as a logo, add its hash to the known shared images list in src/lib/advisor-photos/core.ts, and the next run stores it for everybody.`,
+      `One identical image is held by ${plural(r.holders.length, "person", "people")} (${names(r.holders)}). It may be a Google placeholder, so it was not stored for ${r.held.length ? names(r.held) : "anybody new"}. ${look} ${SHARED_IMAGE_REMEDY}`,
     );
   }
   if (plan.streaks.length) {
@@ -105,7 +112,8 @@ export function photosHeldRecovery(): string {
  *
  * It travels in the page address, so it is a CODE plus counts as numbers, never a
  * sentence: a crafted link can then only ever produce one of the sentences below,
- * never words of its own choosing. The page looks the copy up from this file.
+ * never words of its own choosing. The one exception is a repeated image's hash
+ * (#3959), which is refused unless it is exactly 64 lower case hex characters. The page looks the copy up from this file.
  * Nothing in it names a person either, since an address is browser history.
  */
 export const PHOTO_OUTCOME_CODES = [
@@ -156,6 +164,11 @@ export interface PhotoOutcome {
   held?: boolean;
   /** For "repeated": how many people hold the image. */
   holders?: number;
+  /**
+   * For "repeated": the image's hash, so the page can say where to see it. A hash
+   * names no person, and anything that is not exactly one is refused on the way in.
+   */
+  sha256?: string;
   /** For "cut-short", and "nothing-read" that also hit the deadline: how many people the run never reached. */
   notReached?: number;
 }
@@ -180,7 +193,9 @@ export function photoOutcome(
   const c = plan.counts;
   if (scope === "one") {
     if (plan.notInDirectory.length) return { code: "not-in-directory" };
-    if (plan.repeated.length) return { code: "repeated", holders: plan.repeated[0]!.holders.length };
+    if (plan.repeated.length) {
+      return { code: "repeated", holders: plan.repeated[0]!.holders.length, sha256: plan.repeated[0]!.sha256 };
+    }
     if (c.failed) return { code: "read-failed" };
     if (c.gained || c.changed) return { code: "updated" };
     if (c.lost) return { code: "now-none" };
@@ -202,6 +217,7 @@ export function photoOutcomeQuery(o: PhotoOutcome, param: "photos" | "photo"): s
   if (o.counts) for (const k of Object.keys(COUNT_PARAMS) as CountName[]) q.set(COUNT_PARAMS[k], String(o.counts[k]));
   if (o.held) q.set("ph", "1");
   if (o.holders !== undefined) q.set("pn", String(o.holders));
+  if (o.sha256 !== undefined) q.set("px", o.sha256);
   if (o.notReached !== undefined) q.set("pr", String(o.notReached));
   return q.toString();
 }
@@ -223,6 +239,9 @@ export function photoOutcomeFromParams(
   if ((code === "done" || code === "cut-short") && param !== "photos") return null;
   // The not reached count belongs to cut-short and nothing-read alone.
   if (one("pr") !== undefined && code !== "cut-short" && code !== "nothing-read") return null;
+  // The image hash belongs to repeated alone, and must be exactly a hash.
+  const px = one("px");
+  if (px !== undefined && (code !== "repeated" || !isPhotoHash(px))) return null;
   const out: PhotoOutcome = { code: code as PhotoOutcomeCode };
   if (code === "done" || code === "cut-short") {
     const counts = {} as Record<CountName, number>;
@@ -243,6 +262,7 @@ export function photoOutcomeFromParams(
     const n = count(one("pn"));
     if (n === null) return null;
     out.holders = n;
+    if (px !== undefined) out.sha256 = px;
   }
   return out;
 }
@@ -268,9 +288,12 @@ const ONE_TEXT: Record<Exclude<PhotoOutcomeCode, "done" | "cut-short" | "repeate
 /** The sentence for an outcome, and whether it is good news. */
 export function photoOutcomeText(o: PhotoOutcome): { ok: boolean; text: string } {
   if (o.code === "repeated") {
+    // In a one person run every other holder comes from a stored row, so the image
+    // page serves it. A link written before #3959 carries no hash and says less.
+    const look = o.sha256 ? ` Open /advisor-photo/${o.sha256} on Slate to see it. ${SHARED_IMAGE_REMEDY}` : "";
     return {
       ok: false,
-      text: `Google's photo for this person is the same image ${o.holders ?? 0} people hold, so it may be a placeholder and was not stored.`,
+      text: `Google's photo for this person is the same image ${o.holders ?? 0} people hold, so it may be a placeholder and was not stored.${look}`,
     };
   }
   if (o.code === "nothing-read" && o.notReached !== undefined) {
