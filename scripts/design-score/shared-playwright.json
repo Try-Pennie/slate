@@ -1,0 +1,5 @@
+{
+ "about": "The one Playwright each Mac shares for the design match score's design side (claude-config#1385). install-playwright.sh installs this version and its Chromium under HOME/root, and capture-web.mjs finds it there. The root is outside ~/.claude, so the sync never carries it.",
+ "version": "1.63.0",
+ "root": ".local/share/design-score/playwright"
+}

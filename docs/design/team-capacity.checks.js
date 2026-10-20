@@ -1,14 +1,16 @@
 // The decision checks for the Team capacity design (docs/design/team-capacity.html), one entry per
-// decision in its decision map (D1 to D28); D25 has no on screen form, so it is listed and not
-// scored. Each runs in the browser against ONE rendered frame,
+// decision its decision map verifies by a check (D1 to D28 but D25, which has no on screen form and
+// is marked "verify": "elsewhere" in the map). Each runs in the browser against ONE rendered frame,
 // either a design frame or the built page rendering the same fixture, and reads only what both
 // sides share: the data-tc hooks, visible text, roles and computed colours. Never a styling class,
 // since the build draws with Tailwind and the design does not.
 //
-// Loaded by scripts/design-match/score.ts (claude-config#1364 is the general version).
-// window.TC_CHECKS = [{ id, frames, check(doc, ctx) -> { ok, detail } }], where ctx carries the
-// fixture and the frame's own variant. A decision with no on screen form says so in `offScreen`
-// and is proven elsewhere; it is left out of the screen score and reported by name.
+// Loaded by the design match score's web adapter (scripts/design-score/capture-web.mjs, copied from
+// claude-config): window.DESIGN_CHECKS = [{ id, frames, check(doc, ctx) -> { ok, detail } }], where
+// ctx is { frame, fixture }, the frame's id and the committed fixture
+// (docs/design/fixtures/team-capacity.json) as it is on disk. The frames apply illustrations to it
+// (a calendar not syncing, an hour off, a full day), so frameView applies them here the same way;
+// scripts/test-design-checks-frame-view.ts holds it to fixtureView, the page's own.
 (function () {
   var q = function (doc, tc) { return Array.prototype.slice.call(doc.querySelectorAll('[data-tc="' + tc + '"]')); };
   var one = function (doc, tc) { return doc.querySelector('[data-tc="' + tc + '"]'); };
@@ -18,13 +20,49 @@
   var fail = function (detail) { return { ok: false, detail: detail }; };
   var before = function (a, b) { return !!(a && b && (a.compareDocumentPosition(b) & 4)); };
 
+  // One frame's numbers, after its illustrations: what fixtureView
+  // (src/lib/admin/team-capacity-fixture.ts) hands the page for the same frame.
+  function frameView(fixture, frame) {
+    var f = fixture.frames[frame];
+    if (!f) throw new Error("the fixture names no frame " + frame);
+    var snap = fixture.snapshot, t = fixture.examples.timeOff;
+    var callMs = snap.eventType.duration_min * 60000;
+    // An unreadable time refuses, as fixtureView's does: dropped as a call, it would move the totals
+    // the checks expect while every comparison with it quietly read false (L50).
+    var stamp = function (iso) {
+      var ms = Date.parse(iso);
+      if (!isFinite(ms)) throw new Error("the fixture holds an unreadable time: \"" + iso + "\"");
+      return ms;
+    };
+    var advisors = snap.advisors.map(function (a) {
+      return { name: a.name, days: a.days.map(function (d, i) {
+        var day = { open: d.open, capacity: d.capacity, out: d.out };
+        if (f.examples && a.name === t.advisor && i === t.dayIndex) {
+          var s0 = stamp(t.start), s1 = stamp(t.end);
+          day.open = d.openTimes.filter(function (x) { var ms = stamp(x); return ms + callMs <= s0 || ms >= s1; }).length;
+        }
+        if (f.illustrate === "today-full" && i === 0) day.open = 0;
+        return day;
+      }) };
+    });
+    return {
+      offeredOpenDays: snap.offeredOpenDays,
+      advisors: advisors,
+      unsynced: f.examples ? [fixture.examples.unsynced] : [],
+      timeOff: t.advisor,
+      nearlyFull: fixture.nearlyFullPct,
+    };
+  }
+  var view = function (ctx) { return frameView(ctx.fixture, ctx.frame); };
+  window.DESIGN_CHECKS_FRAME_VIEW = frameView;
+
   // The team totals the cards must show, from the fixture, by the settled rules: out and
   // not syncing advisors count in neither number, and the percent rounds down.
-  function expectedTotals(ctx, dayIdx) {
+  function expectedTotals(v, dayIdx) {
     var open = 0, cap = 0, out = 0, unsynced = 0;
-    ctx.fixture.advisors.forEach(function (a) {
+    v.advisors.forEach(function (a) {
       var d = a.days[dayIdx];
-      if (ctx.unsynced.indexOf(a.name) >= 0) { unsynced++; return; }
+      if (v.unsynced.indexOf(a.name) >= 0) { unsynced++; return; }
       if (d.out) { out++; return; }
       open += d.open; cap += d.capacity;
     });
@@ -35,7 +73,7 @@
   var ALL = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9"];
   var LIGHT = ["f1", "f3", "f4", "f5", "f7", "f8", "f9"];
 
-  window.TC_CHECKS = [
+  window.DESIGN_CHECKS = [
     { id: "D1", frames: ["f1"], check: function (doc) {
       var h1 = doc.querySelector("main h1");
       if (text(h1) !== "Team capacity") return fail("page heading is '" + text(h1) + "'");
@@ -50,9 +88,9 @@
     } },
     { id: "D3", frames: ALL, check: function (doc, ctx) {
       var cards = q(doc, "day-card");
-      if (cards.length !== ctx.fixture.offeredOpenDays) return fail(cards.length + " day cards found");
+      if (cards.length !== view(ctx).offeredOpenDays) return fail(cards.length + " day cards found");
       for (var i = 0; i < cards.length; i++) {
-        var want = expectedTotals(ctx, i).open;
+        var want = expectedTotals(view(ctx), i).open;
         var got = Number(text(cards[i].querySelector('[data-tc="calls-open"]')).replace(/,/g, ""));
         if (got !== want) return fail("card " + (i + 1) + " shows " + got + " calls open, the fixture gives " + want);
       }
@@ -60,7 +98,7 @@
     } },
     { id: "D4", frames: ["f1"], check: function (doc, ctx) {
       var n = q(doc, "day-card").length;
-      return n === ctx.fixture.offeredOpenDays ? pass() : fail(n + " day cards, the window is " + ctx.fixture.offeredOpenDays);
+      return n === view(ctx).offeredOpenDays ? pass() : fail(n + " day cards, the window is " + view(ctx).offeredOpenDays);
     } },
     { id: "D5", frames: ["f1"], check: function (doc) {
       var c = q(doc, "day-card")[0];
@@ -72,9 +110,9 @@
     } },
     { id: "D6", frames: ALL, check: function (doc, ctx) {
       var cards = q(doc, "day-card");
-      if (cards.length !== ctx.fixture.offeredOpenDays) return fail(cards.length + " day cards found");
+      if (cards.length !== view(ctx).offeredOpenDays) return fail(cards.length + " day cards found");
       for (var i = 0; i < cards.length; i++) {
-        var want = expectedTotals(ctx, i).full;
+        var want = expectedTotals(view(ctx), i).full;
         var m = /^(\d+)% full/.exec(text(cards[i].querySelector('[data-tc="pct"]')));
         if (!m || Number(m[1]) !== want) return fail("card " + (i + 1) + " reads '" + text(cards[i].querySelector('[data-tc="pct"]')) + "', expected " + want + "% full");
       }
@@ -82,9 +120,9 @@
     } },
     { id: "D7", frames: ["f1"], check: function (doc, ctx) {
       var cards = q(doc, "day-card"), tabs = q(doc, "day-tab");
-      if (cards.length !== ctx.fixture.offeredOpenDays) return fail(cards.length + " day cards found");
+      if (cards.length !== view(ctx).offeredOpenDays) return fail(cards.length + " day cards found");
       for (var i = 0; i < cards.length; i++) {
-        var t = expectedTotals(ctx, i), flagged = t.full >= ctx.nearlyFull && t.open > 0;
+        var t = expectedTotals(view(ctx), i), flagged = t.full >= view(ctx).nearlyFull && t.open > 0;
         var chip = cards[i].querySelector('[data-tc="flag"]');
         if (flagged !== (text(chip) === "Nearly full")) return fail("card " + (i + 1) + " flag is '" + text(chip) + "' at " + t.full + "%");
         if (flagged && rgb(doc, chip, "backgroundColor") !== "rgb(255, 208, 115)") return fail("the Nearly full chip is " + rgb(doc, chip, "backgroundColor") + ", not mustard");
@@ -104,22 +142,22 @@
       if (ctx.frame === "f1") {
         var line = one(doc, "nearly-full-line");
         if (!line) return fail("no nearly full line");
-        if (text(line).indexOf("Nearly full at " + ctx.nearlyFull + "% full or more.") !== 0) return fail("the line reads '" + text(line) + "'");
+        if (text(line).indexOf("Nearly full at " + view(ctx).nearlyFull + "% full or more.") !== 0) return fail("the line reads '" + text(line) + "'");
         var b = line.querySelector("button");
         return b && text(b) === "Change" ? pass() : fail("Change is not a button");
       }
       var form = one(doc, "nearly-full-form");
       var input = form && form.querySelector("input");
-      if (!input || input.value !== String(ctx.nearlyFull)) return fail("no input holding " + ctx.nearlyFull + " when Change is open");
+      if (!input || input.value !== String(view(ctx).nearlyFull)) return fail("no input holding " + view(ctx).nearlyFull + " when Change is open");
       return /Save/.test(text(form)) && /Cancel/.test(text(form)) ? pass() : fail("the open form lacks Save or Cancel");
     } },
     { id: "D10", frames: ["f1"], check: function (doc, ctx) {
       var n = q(doc, "lane-row").length;
-      return n === ctx.fixture.advisors.length ? pass() : fail(n + " advisor rows, the fixture has " + ctx.fixture.advisors.length);
+      return n === view(ctx).advisors.length ? pass() : fail(n + " advisor rows, the fixture has " + view(ctx).advisors.length);
     } },
     { id: "D11", frames: ["f1"], check: function (doc, ctx) {
       var names = q(doc, "advisor").map(text);
-      if (names.length !== ctx.fixture.advisors.length) return fail(names.length + " advisor names found");
+      if (names.length !== view(ctx).advisors.length) return fail(names.length + " advisor names found");
       var sorted = names.slice().sort(function (a, b) { return a.localeCompare(b); });
       return names.join("|") === sorted.join("|") ? pass() : fail("advisors are not in name order");
     } },
@@ -163,16 +201,16 @@
       return gap >= 16 ? pass() : fail("only " + Math.round(gap) + "px between the timeline and the Open count");
     } },
     { id: "D17", frames: ["f4"], check: function (doc, ctx) {
-      var row = q(doc, "lane-row").find(function (r) { return text(r.querySelector('[data-tc="advisor"]')) === ctx.timeOff; });
+      var row = q(doc, "lane-row").find(function (r) { return text(r.querySelector('[data-tc="advisor"]')) === view(ctx).timeOff; });
       var t = row && row.querySelector('[data-tc="time-off"]');
-      return t && /repeating-linear-gradient/.test(rgb(doc, t, "backgroundImage")) ? pass() : fail("the hour off is not striped on " + ctx.timeOff + "'s row");
+      return t && /repeating-linear-gradient/.test(rgb(doc, t, "backgroundImage")) ? pass() : fail("the hour off is not striped on " + view(ctx).timeOff + "'s row");
     } },
     { id: "D18", frames: ["f1"], check: function (doc) {
       var w = one(doc, "whole-day");
       return w && text(w) === "Out, approved time off" ? pass() : fail("no grey bar reading Out, approved time off");
     } },
     { id: "D19", frames: ["f3"], check: function (doc, ctx) {
-      var row = q(doc, "lane-row").find(function (r) { return text(r.querySelector('[data-tc="advisor"]')) === ctx.unsynced[0]; });
+      var row = q(doc, "lane-row").find(function (r) { return text(r.querySelector('[data-tc="advisor"]')) === view(ctx).unsynced[0]; });
       if (!row || !row.querySelector('[data-state="not-syncing"]')) return fail("the not syncing lane is not marked");
       if (!/Calendar not syncing/.test(text(row))) return fail("the lane does not say Calendar not syncing");
       var c0 = q(doc, "day-card")[0];
@@ -204,7 +242,6 @@
       if (!/^Ended \d+% full, with room left for [\d,]+ more calls?\.$/.test(text(one(doc, "day-note")))) return fail("the summary reads '" + text(one(doc, "day-note")) + "'");
       return one(doc, "open-call") ? pass() : fail("unused room is not drawn");
     } },
-    { id: "D25", frames: [], offScreen: "History is stored as each half hour passes: proven by the history lane's own tests, not on screen." },
     { id: "D26", frames: ["f10"], check: function (doc) {
       var f = one(doc, "failed");
       if (!f || !/^Couldn't load advisor calendars/.test(text(f))) return fail("no failure card naming the read");
