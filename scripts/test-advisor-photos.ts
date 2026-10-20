@@ -6,6 +6,7 @@ import {
   FAILING_PAGE_AFTER_MS,
   FLIP_TO_NONE_LIMIT,
   KNOWN_PLACEHOLDER_SHA256,
+  KNOWN_SHARED_IMAGE_SHA256,
   PHOTO_MAX_BYTES,
   REPEATED_IMAGE_FLOOR,
   decodeBase64Url,
@@ -38,7 +39,7 @@ import {
   photoBody,
 } from "./lib/advisor-photo-fixtures.ts";
 import { awaitingFirstRead, photoRefreshCovers, type AdvisorPhoto } from "../src/lib/advisor-photos/resolve.ts";
-import { agentPhotoStateText } from "../src/lib/advisor-photos/copy.ts";
+import { agentPhotoStateText, photosHeldAlert } from "../src/lib/advisor-photos/copy.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const NOW = Date.parse("2026-10-03T04:20:00Z");
@@ -234,6 +235,73 @@ const row = (id: string, state: "photo" | "none", sha: string | null, failing: s
   eq(three.full.length, 0, "it is not written as a new photo for anybody");
   eq(three.touch.join(","), "p", "the person who already held it keeps it");
   assert(needsAttention(three), "a repeated image needs a person");
+}
+
+// --- a known shared image is stored for everybody (#3959) ---------------------------
+{
+  // The measured Pennie logo: two advisors already hold it, a third is new and has
+  // never been read. Before #3959 the third was held every night and paged forever.
+  const LOGO = "b7d16fe2802cd56631bcf7e2930317c4169fc60d84cee22f573e0d5df3c888e0";
+  assert(KNOWN_SHARED_IMAGE_SHA256.has(LOGO), "the measured Pennie logo is on the known shared list");
+  const logo: Extract<PhotoRead, { kind: "photo" }> = { ...(await photoRead(60)), sha256: LOGO };
+  const plan = planRefresh({
+    nowMs: NOW,
+    full: true,
+    users: [user("p"), user("q"), user("r")],
+    rows: [row("p", "photo", LOGO), row("q", "photo", LOGO)],
+    reads: new Map<string, PhotoRead>([["p", logo], ["q", logo], ["r", logo]]),
+  });
+  eq(plan.repeated.length, 0, "three holders of a known shared image is not a repeated image");
+  eq(plan.full.map((r) => r.user_id).join(","), "r", "it is stored for the new holder");
+  eq(plan.full[0]?.sha256, LOGO, "as that image");
+  eq(plan.touch.sort().join(","), "p,q", "and the two who held it keep it");
+  eq(plan.counts.gained, 1, "the new holder is counted as gaining a photo");
+  assert(!needsAttention(plan), "and nobody is paged about it");
+
+  // Control: the same three people and the same shape, on an image NOT on the list,
+  // still holds the newcomer and reports it exactly as before.
+  const other = await photoRead(61);
+  assert(!KNOWN_SHARED_IMAGE_SHA256.has(other.sha256), "the control image is not on the list");
+  const control = planRefresh({
+    nowMs: NOW,
+    full: true,
+    users: [user("p"), user("q"), user("r")],
+    rows: [row("p", "photo", other.sha256), row("q", "photo", other.sha256)],
+    reads: new Map<string, PhotoRead>([["p", other], ["q", other], ["r", other]]),
+  });
+  eq(control.repeated.length, 1, "an unlisted image held by three is still reported");
+  eq(control.repeated[0]!.held.join(","), "r@x.test", "and still held for the newcomer");
+  eq(control.full.length, 0, "and still not stored for them");
+  assert(needsAttention(control), "and still pages");
+}
+
+// --- the two hash lists can never contradict each other (#3959) ----------------------
+{
+  for (const sha of KNOWN_SHARED_IMAGE_SHA256) {
+    assert(isPhotoHash(sha), `${sha} is a lower case SHA-256, so a read can ever match it`);
+    assert(!KNOWN_PLACEHOLDER_SHA256.has(sha), `${sha} is not also a known placeholder`);
+  }
+  for (const sha of KNOWN_PLACEHOLDER_SHA256) {
+    assert(isPhotoHash(sha), `${sha} is a lower case SHA-256, so a read can ever match it`);
+  }
+  assert(KNOWN_SHARED_IMAGE_SHA256.size > 0, "the known shared list is not empty, so the loop above checked something");
+}
+
+// --- the repeated image page names the remedy for a real shared picture (#3959) ------
+{
+  const sha = "c".repeat(64);
+  const heldPlan = (held: string[]) => ({
+    ...planRefresh({ nowMs: NOW, full: true, users: [], rows: [], reads: new Map() }),
+    repeated: [{ sha256: sha, holders: ["a@x.test", "b@x.test", "c@x.test"], held }],
+  });
+  const stored = photosHeldAlert(heldPlan(["c@x.test"]));
+  assert(stored.includes(`/advisor-photo/${sha}`), "when somebody holds it stored, the page links to the image");
+  assert(stored.includes("src/lib/advisor-photos/core.ts"), "and names the list a real shared picture goes on");
+  assert(!stored.includes("nothing is wrong"), "and never says nothing is wrong, which changes no state (L111)");
+  const unstored = photosHeldAlert(heldPlan(["a@x.test", "b@x.test", "c@x.test"]));
+  assert(!unstored.includes("/advisor-photo/"), "when nobody holds it stored, no link is offered, since it would not load");
+  assert(unstored.includes(sha), "but the hash is still named");
+  assert(unstored.includes("src/lib/advisor-photos/core.ts"), "with the same remedy");
 }
 
 {

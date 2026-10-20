@@ -189,6 +189,23 @@ describe("refreshAdvisorPhotoFor", () => {
     expect(photoOutcomeText(outcomeOf("photo").outcome!).text).toBe("Photo updated from Google.");
   });
 
+  it("names the image and the remedy when Google's photo is a repeated image (#3959)", async () => {
+    const sha = "d".repeat(64);
+    lane.refreshOnePhoto.mockResolvedValue({
+      status: "measured",
+      plan: plan({ repeated: [{ sha256: sha, holders: ["a@x", "b@x", "c@x"], held: ["c@x"] }] }),
+      applied: true,
+      verdict: false,
+    });
+    await expect(refreshAdvisorPhotoFor(form("u1"))).rejects.toThrow(/NEXT_REDIRECT:/);
+    const { outcome } = outcomeOf("photo");
+    expect(outcome).toEqual({ code: "repeated", holders: 3, sha256: sha });
+    const { ok, text } = photoOutcomeText(outcome!);
+    expect(ok).toBe(false);
+    expect(text).toContain(`/advisor-photo/${sha}`);
+    expect(text).toContain("src/lib/advisor-photos/core.ts");
+  });
+
   it("says when Google's directory does not hold the address", async () => {
     lane.refreshOnePhoto.mockResolvedValue({ status: "measured", plan: plan({ notInDirectory: ["a@x"] }), applied: true, verdict: false });
     await expect(refreshAdvisorPhotoFor(form("u1"))).rejects.toThrow(/NEXT_REDIRECT:/);
@@ -202,6 +219,10 @@ describe("reading an outcome back from the address", () => {
     expect(photoOutcomeFromParams({ photos: "done", pa: "3" }, "photos")).toBeNull();
     expect(photoOutcomeFromParams({ photos: "done", pa: "x", pg: "1", pc: "0", pl: "0", pu: "0", pf: "0", pm: "0", pd: "0" }, "photos")).toBeNull();
     expect(photoOutcomeFromParams({ photo: "repeated", pn: "lots" }, "photo")).toBeNull();
+    // The image's hash is the only free text that rides along, so anything that is
+    // not exactly a hash draws nothing (#3959).
+    expect(photoOutcomeFromParams({ photo: "repeated", pn: "3", px: "call 555 now" }, "photo")).toBeNull();
+    expect(photoOutcomeFromParams({ photo: "updated", px: "d".repeat(64) }, "photo")).toBeNull();
   });
 
   it("accepts cut-short only on the roster's parameter, never on one person's", () => {
@@ -220,7 +241,7 @@ describe("reading an outcome back from the address", () => {
         ? { code, counts: { attempted: 1, gained: 1, changed: 0, lost: 0, unchanged: 0, failed: 0, notInDirectory: 0, deleted: 0 }, held: false }
         : code === "cut-short"
           ? { code, counts: { attempted: 1, gained: 1, changed: 0, lost: 0, unchanged: 0, failed: 0, notInDirectory: 0, deleted: 0 }, held: false, notReached: 4 }
-          : code === "repeated" ? { code, holders: 3 } : { code };
+          : code === "repeated" ? { code, holders: 3, sha256: "d".repeat(64) } : { code };
       const param = code === "done" || code === "cut-short" ? "photos" : "photo";
       const back = photoOutcomeFromParams(Object.fromEntries(new URLSearchParams(photoOutcomeQuery(o, param))), param);
       expect(back).toEqual(o);

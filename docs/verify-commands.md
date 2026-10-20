@@ -2093,7 +2093,10 @@ and are easy to get wrong:
 - **A 200 is not proof of a photo.** Google serves its grey silhouette placeholder as
   an ordinary image to some accounts. It is held by hash in `KNOWN_PLACEHOLDER_SHA256`
   (`core.ts`), and any image three or more people hold is not written for newcomers
-  and is reported, so a NEW placeholder is caught too.
+  and is reported, so a NEW placeholder is caught too. A real picture several people
+  share (the Pennie logo, measured 2026-10-20) is exempt by hash through
+  `KNOWN_SHARED_IMAGE_SHA256` beside it, and is stored for everybody (#3959). The
+  held page names that list as the remedy once the image has been looked at.
 - **`thumbnailPhotoUrl`'s host says nothing.** #2600 treated `lh3.google.com` as a
   placeholder; 27 accounts there hold real uploads. That rule is deleted.
 - **`users.avatar_url` is a fallback, never a picture to draw.** It is the sign in

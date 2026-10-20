@@ -46,13 +46,35 @@ export const KNOWN_PLACEHOLDER_SHA256: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * How many active people may hold one identical image before a run stops
- * writing it as a NEW photo for anybody who did not already hold it.
+ * Images several people REALLY share as their photo, by the SHA-256 of their
+ * bytes. One of these is stored for everybody who holds it, however many do,
+ * and is never held back or reported as a repeated image (#3959).
  *
- * Three, because two is legitimate today: two advisors (measured 2026-10-02)
- * deliberately share one Pennie logo as their directory photo. A run reports
- * every image at or over this floor, with who holds it, as a repeated image
- * that may be a placeholder; it never silently stores or silently drops one.
+ * Evidence, 2026-10-20: this exact 10,469 byte 96x96 PNG was opened and looked
+ * at, and it is the Pennie "P" logo on navy. Two active advisors had held it as
+ * their stored photo since 2026-10-03, and a third, new advisor read it on
+ * 2026-10-20. Without this entry the third was held on every nightly run (a held
+ * person gets no row, so stays never read) and the page repeated for ever.
+ *
+ * Add a hash here only after looking at the image at `/advisor-photo/<hash>` and
+ * seeing a real picture. A hash may not also be in KNOWN_PLACEHOLDER_SHA256, which
+ * `scripts/test-advisor-photos.ts` checks.
+ */
+export const KNOWN_SHARED_IMAGE_SHA256: ReadonlySet<string> = new Set([
+  "b7d16fe2802cd56631bcf7e2930317c4169fc60d84cee22f573e0d5df3c888e0",
+]);
+
+/**
+ * How many active people may hold one identical image, not on the known shared
+ * list above, before a run stops writing it as a NEW photo for anybody who did
+ * not already hold it.
+ *
+ * Three, so that two people sharing a picture nobody has listed yet are still
+ * stored, while three is enough to suspect a placeholder. The Pennie logo two
+ * advisors shared when this was set (measured 2026-10-02) is now on that list,
+ * so it no longer depends on this floor. A run reports every unlisted image at or
+ * over this floor, with who holds it, as a repeated image that may be a
+ * placeholder; it never silently stores or silently drops one.
  */
 export const REPEATED_IMAGE_FLOOR = 3;
 
@@ -392,8 +414,12 @@ export function planRefresh(input: PlanInput): RefreshPlan {
     if (!holdersBySha.has(sha)) holdersBySha.set(sha, new Set());
     holdersBySha.get(sha)!.add(u.email);
   }
+  // A known shared image is never repeated, however many hold it: it is stored
+  // like any other photo and reported nowhere (#3959).
   const repeatedShas = new Set(
-    [...holdersBySha].filter(([, holders]) => holders.size >= REPEATED_IMAGE_FLOOR).map(([sha]) => sha),
+    [...holdersBySha]
+      .filter(([sha, holders]) => holders.size >= REPEATED_IMAGE_FLOOR && !KNOWN_SHARED_IMAGE_SHA256.has(sha))
+      .map(([sha]) => sha),
   );
 
   // The flip guard, counted before anything is decided.

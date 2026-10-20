@@ -28,12 +28,22 @@ name: Shifted clock test run
 #     finds it within a day of it being written and always before the day it would
 #     have broken main, at three passes a day rather than three per push.
 #
-# WHAT IT COSTS, measured rather than quoted from the comment beside the CI job, which
-# still says 106s and is stale: run 35266508062 took 3m7s for the whole node-tests job,
-# so a pass is roughly 2m40s once setup is taken off. Three passes, sequential, sharing
-# one checkout and one install, is about 9 minutes of wall clock and, on ubuntu-latest
-# at the 1x multiplier, about 9 billed minutes a day. A matrix would pay the setup three
-# times over for no wall clock gain on a job nobody waits for.
+# ONE JOB PER SHIFT (#3960). The three passes used to run one after another in one job
+# under one 25 minute limit. By run 39402068299 (2026-10-20) a pass took 533s (+1d
+# 533.24s, +3mo 532.10s, 885 suites, concurrency 2), so three were about 27 minutes,
+# the limit cut off the third, and the alert pointed at output the cut off pass had
+# never printed (it printed a pass's log only once the pass ended). Now a plan job
+# turns the one list into a matrix, each shift runs in its own job under its own limit
+# and streams its log as it runs, and one report job reads every shift's log and
+# marker. The suite keeps growing, so a pass gets its own limit rather than all three
+# sharing one that every new suite eats into.
+#
+# WHAT IT COSTS, measured off that run (setup took 21s): each shift job is about 9.5
+# minutes, billed as 10, so three are 30, plus a minute each for the plan and the report
+# job, about 32 billed minutes a day on ubuntu-latest at the 1x multiplier, against
+# about 28 for the single job had it finished: about 4 more a day, 120 a month (approved
+# by Dan 2026-10-20 over raising the limit). Wall clock drops from about 27 minutes to
+# about 11.
 #
 # WHAT IT CANNOT SEE, said here so a green run is never read as more than it is
 # (L400): the vitest suites are NOT shifted. The hook is an `--import` on each node
@@ -57,6 +67,8 @@ name: Shifted clock test run
 #
 # Needs the SLACK_BOT_TOKEN repo secret and the SLACK_ALERTS_CHANNEL repo variable,
 # the same two the other scheduled lanes use.
+#
+# The shape is pinned by scripts/test-clock-shift-workflow.ts.
 on:
   schedule:
     # 04:40 UTC, which is the small hours Eastern. Deliberately the quietest slot of
@@ -75,22 +87,52 @@ concurrency:
   group: clock-shift
   cancel-in-progress: false
 
+env:
+  # ONE list, read by the plan job that turns it into the matrix and by the report
+  # that judges every shift, so a shift cannot be run and then not judged, or judged
+  # and never run (L41). It lives here because a matrix cannot read `env`, which is
+  # the whole reason the plan job exists. Each is chosen for what it crosses:
+  #   +1d    the #2497 shape itself, a fixture meaning "tomorrow" becoming "today"
+  #   +3mo   a month roll, and from most dates a clock change
+  #   +13mo  a year roll, and from ANY date both of the year's clock changes
+  CLOCK_SHIFTS: "+1d +3mo +13mo"
+  CLOCK_SHIFT_LOG_DIR: clock-shift-logs
+
 jobs:
+  plan:
+    # A few seconds of shell, billed as one minute.
+    timeout-minutes: 2
+    runs-on: ubuntu-latest
+    outputs:
+      shifts: ${{ steps.list.outputs.shifts }}
+    steps:
+      - name: Turn the shift list into the matrix
+        id: list
+        run: echo "shifts=$(jq -cn --arg s "$CLOCK_SHIFTS" '$s | split(" ") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+
   shifted:
-    # Three passes of a suite measured at about 2m40s on a runner, plus setup, so about
-    # 9 minutes. Well clear, and low enough that a hung suite is reported rather than
-    # sitting there until GitHub's own six hour ceiling.
+    needs: plan
+    # 25: the pass's own 18 minute limit below, plus setup (21s on run 39402068299),
+    # timeout's 30s kill grace, the marker and the upload, with room to spare. The job
+    # limit is the backstop for a hang outside the suite (an install, an upload); the
+    # pass limit is what stops a slow suite, inside the job, so the steps that tell the
+    # report how the pass ended still run.
     timeout-minutes: 25
     runs-on: ubuntu-latest
+    strategy:
+      # Every shift runs, whatever another one did. A shift that cancelled its siblings
+      # would leave them unmeasured, and two date dependent suites found by different
+      # shifts are two findings.
+      fail-fast: false
+      matrix:
+        shift: ${{ fromJSON(needs.plan.outputs.shifts) }}
     env:
-      # ONE list, read by the loop that runs the shifts and by the step that reports
-      # them, so a shift cannot be run and then not judged, or judged and never run
-      # (L41). Each is chosen for what it crosses:
-      #   +1d    the #2497 shape itself, a fixture meaning "tomorrow" becoming "today"
-      #   +3mo   a month roll, and from most dates a clock change
-      #   +13mo  a year roll, and from ANY date both of the year's clock changes
-      CLOCK_SHIFTS: "+1d +3mo +13mo"
-      CLOCK_SHIFT_LOG_DIR: clock-shift-logs
+      SHIFT: ${{ matrix.shift }}
+      # One pass took 533s on 2026-10-20, so 18 minutes is about twice that: room for
+      # the suite to grow for months, and still short enough that a hung pass is
+      # reported the same morning (L315). When a pass nears it, raise it here and in
+      # MEASURED_PASS_SECONDS in scripts/test-clock-shift-workflow.ts, or split the pass.
+      PASS_LIMIT_MINUTES: "18"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -101,41 +143,83 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      # Every shift runs, whatever the one before it did. A shift that stopped the
-      # loop would leave the later ones unmeasured and reported as agreement, and two
-      # date dependent suites found by different shifts are two findings.
+      # The output streams through tee, so a pass that is stopped has still printed
+      # everything it got through, in this job's log, and the same text lands in the
+      # file the report reads. `timeout` stops the pass at its own limit and says so
+      # by its exit code (124, or 137 once the kill grace is spent), which is how the
+      # report can tell a pass the clock stopped from one that crashed.
       #
       # The step itself never fails: its exit code cannot tell a finding from an
-      # install that died, and the step below is what decides. Each pass writes its
-      # whole output to a file named for the shift, which is how a verdict is tied to
-      # the shift it belongs to without a slug kept in step by hand.
-      - name: Run the node suite at each shifted date
+      # install that died, and the report job is what decides.
+      - name: Run the node suite at this shifted date
+        id: suite
+        shell: bash
         run: |
           mkdir -p "$CLOCK_SHIFT_LOG_DIR"
-          for shift in $CLOCK_SHIFTS; do
-            log="$CLOCK_SHIFT_LOG_DIR/$shift.log"
-            echo "::group::node suite at $shift"
-            if SLATE_CLOCK_SHIFT="$shift" SLATE_CLOCK_SHIFT_QUIET=1 pnpm test:node > "$log" 2>&1; then
-              tail -n 3 "$log"
-            else
-              cat "$log"
-            fi
-            echo "::endgroup::"
-          done
+          set +e
+          # parse-ok: tee only copies the output; the suite's own exit code is read from PIPESTATUS below, never the pipeline's
+          SLATE_CLOCK_SHIFT="$SHIFT" SLATE_CLOCK_SHIFT_QUIET=1 timeout --kill-after=30s "${PASS_LIMIT_MINUTES}m" pnpm test:node 2>&1 | tee "$CLOCK_SHIFT_LOG_DIR/$SHIFT.log"
+          code="${PIPESTATUS[0]}"
+          set -e
+          printf 'exit=%s\nseconds=%s\n' "$code" "$SECONDS" > "$CLOCK_SHIFT_LOG_DIR/$SHIFT.outcome"
 
-      # Runs whatever happened above, because "a suite depends on the date" and "the
-      # run never got that far" are two different things to say and only one of them
-      # is about the tests. A missing log is a missing verdict rather than a shorter
-      # list, so a shift that never ran cannot read as agreement (L98).
-      #
+      # Runs whatever happened above, including a cancelled run, so the report always
+      # learns how this pass ended. A pass cancelled mid suite never wrote its exit
+      # code, and the step outcome recorded here is what says so.
+      - name: Record how the pass ended
+        if: always()
+        shell: bash
+        env:
+          SUITE_OUTCOME: ${{ steps.suite.outcome }}
+        run: |
+          mkdir -p "$CLOCK_SHIFT_LOG_DIR"
+          printf 'step=%s\nlimit_minutes=%s\n' "$SUITE_OUTCOME" "$PASS_LIMIT_MINUTES" >> "$CLOCK_SHIFT_LOG_DIR/$SHIFT.outcome"
+
+      - name: Keep the log for the report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: clock-shift-${{ matrix.shift }}
+          path: ${{ env.CLOCK_SHIFT_LOG_DIR }}/
+          if-no-files-found: warn
+          retention-days: 7
+
+  report:
+    needs: [plan, shifted]
+    # Always, because "a suite depends on the date" and "a pass never finished" are
+    # two different things to say and only one of them is about the tests. A shift
+    # whose job failed, was cancelled or never started is a missing verdict rather
+    # than a shorter list, so it cannot read as agreement (L98).
+    if: always()
+    # A checkout, a node setup, a download and one Slack post.
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No cache and no install: the runner image's own node may predate the type
+      # stripping flag, so a pinned node is the one thing this job sets up.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      # Every shift's log and marker, into the one directory the report reads. A run
+      # whose shifts uploaded nothing finds nothing here, which the report says rather
+      # than this step failing first and taking the report with it.
+      - name: Fetch every shift's log
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          pattern: clock-shift-*
+          merge-multiple: true
+          path: ${{ env.CLOCK_SHIFT_LOG_DIR }}
+
       # Bare node, no alias hook: scripts/test-dependency-free-scripts.ts holds it to
       # importing nothing outside scripts/.
       - name: Say what the shifted runs found
-        if: always()
         env:
-          # Referenced from the job's env rather than written out again, so the list
-          # the loop ran and the list this judges cannot diverge, while still being
-          # declared on the step that reads them.
+          # Referenced from the workflow's env rather than written out again, so the
+          # list the matrix ran and the list this judges cannot diverge, while still
+          # being declared on the step that reads them.
           CLOCK_SHIFTS: ${{ env.CLOCK_SHIFTS }}
           CLOCK_SHIFT_LOG_DIR: ${{ env.CLOCK_SHIFT_LOG_DIR }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
