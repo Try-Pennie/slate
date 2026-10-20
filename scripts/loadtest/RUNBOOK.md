@@ -227,7 +227,7 @@ isolation uses, and agent link bookings excluded by `kind = 'routed'`, since the
 not route, migration 0144) and reports the busiest minute, when it was, the busiest day, and how many
 times over that minute the bar sits:
 
-<!-- runbook-verified: 2026-10-16 (d830b9eb) run verbatim against production (drukfvgaynzrralbzkzj) through the Supabase connector at 20:23 UTC; returned bookings_30d 6886, busiest_day 512, busiest_minute 5 at 2026-10-10 15:30 UTC, bar_over_peak 12.0. Its shape is also pinned offline by scripts/test-capacity-peak-sql.ts. -->
+<!-- runbook-verified: 2026-10-20 (98c199b0) run verbatim against production (drukfvgaynzrralbzkzj) through the Supabase connector at 21:40 UTC, after the bar moved to 70; returned bookings_30d 8573, busiest_day 512, busiest_minute 5 at 2026-10-10 15:30 UTC, bar_over_peak 14.0 (Slate's share only; the whole traffic peak is 7, see above). A control read the newest routed booking at 21:37 UTC, three minutes before, so the window reached the present. Its shape is also pinned offline by scripts/test-capacity-peak-sql.ts. -->
 ```sql
 -- Busiest minute and day of real bookings, last 30 days. Read only.
 with real_bookings as (
@@ -253,7 +253,7 @@ select
   (select max(bookings) from per_day) as busiest_day,
   (select max(bookings) from per_minute) as busiest_minute,
   (select minute from per_minute order by bookings desc, minute desc limit 1) as busiest_minute_at,
-  round(60.0 / nullif((select max(bookings) from per_minute), 0), 1) as bar_over_peak;
+  round(70.0 / nullif((select max(bookings) from per_minute), 0), 1) as bar_over_peak;
 ```
 
 Two things to know before reading the answer:
@@ -292,6 +292,12 @@ ET), the query above returned:
 | bookings in 30 days | busiest day | busiest minute | when | bar over peak |
 |---|---|---|---|---|
 | 6,886 | 512 | 5 | 2026-10-10 15:30 UTC (11:30 ET) | 12.0 |
+
+**Second reading, 2026-10-20, after the bar moved to 70.** Run verbatim at 21:40 UTC
+(5:40 PM ET) with the query computing against 70: 8,573 bookings in 30 days, busiest
+day 512, busiest minute still 5 at 2026-10-10 15:30 UTC, bar over peak 14.0. The
+control read the newest routed booking three minutes before. That is Slate's share
+only; the whole traffic peak the bar is set against is 7 (above).
 
 A second read only query in the same session, over the same rows, is the control
 that the window reached the present rather than older data alone (L171): the newest
