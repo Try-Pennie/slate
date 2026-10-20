@@ -12,6 +12,7 @@ import {
   nearlyFullSentence,
   noShiftWords,
   parseNearlyFullPct,
+  fullLine,
   pastDaySummary,
   pickedDayLabel,
   UNMEASURABLE_COPY,
@@ -39,6 +40,8 @@ for (const bad of ["", "0", "100", "85.5", "minus three", "eighty", "085"]) {
 // --- the rest -----------------------------------------------------------------------
 eq(pastDaySummary(36, 1001), "Ended 36% full, with room left for 1,001 more calls.", "a past day's summary, as the design writes it");
 eq(pastDaySummary(95, 1), "Ended 95% full, with room left for 1 more call.", "one call left is singular");
+eq(pastDaySummary(null, 0), "Nobody was counted this day.", "a day nobody could be counted on never reads as 0% full");
+eq([fullLine(37), fullLine(null)], ["37% full", "Nobody counted"], "a card's line, measured or not");
 eq(noShiftWords(true), "No shift today", "today's no shift words");
 eq(noShiftWords(false), "No shift", "no other day is called today");
 eq(zoneShort("America/Phoenix"), "AZ", "Arizona by its short name");

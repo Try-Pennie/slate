@@ -7,7 +7,7 @@ import { CalendarMonth } from "@/components/ui/CalendarMonth";
 import { cardCls } from "@/components/ui/styles";
 import { SaveForm } from "@/components/ui/SaveForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { nearlyFullSentence } from "@/lib/admin/team-capacity-copy";
+import { fullLine, nearlyFullSentence } from "@/lib/admin/team-capacity-copy";
 import type { CapacityRow, TeamCapacityView as View } from "@/lib/admin/team-capacity-view";
 import "@/app/admin/team-capacity/team-capacity.css";
 
@@ -64,10 +64,10 @@ export function TeamCapacityView({
                 <span className="tunit">{c.unit}</span>
               </div>
               <div className="tbar">
-                <span className="tfill" data-tc="full-bar" style={{ width: `${c.fullPct}%` }} />
+                <span className="tfill" data-tc="full-bar" style={{ width: `${c.fullPct ?? 0}%` }} />
               </div>
               <div className="tpct" data-tc="pct">
-                {`${c.fullPct}% full`}
+                {fullLine(c.fullPct)}
                 {c.flag && (
                   <span className="chip" data-tc="flag">
                     {c.flag === "full" ? "Full" : "Nearly full"}

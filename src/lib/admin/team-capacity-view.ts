@@ -36,7 +36,8 @@ export interface CapacityCard {
   sub: string;
   open: number;
   unit: string;
-  fullPct: number;
+  /** Share of capacity used, or null when nobody on the day could be counted. */
+  fullPct: number | null;
   flag: "full" | "nearly-full" | null;
   out: number;
   notCounted: number;
@@ -140,7 +141,7 @@ export function teamCapacityView(input: TeamCapacityViewInput): TeamCapacityView
       sub: l.sub,
       open: t.open,
       unit: callsOpenUnit(t.open),
-      fullPct: t.fullPct ?? 0,
+      fullPct: t.fullPct,
       flag: dayFlag(t, nearlyFullPct),
       out: t.out,
       notCounted: t.notCounted,

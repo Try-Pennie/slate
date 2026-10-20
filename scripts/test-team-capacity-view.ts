@@ -86,6 +86,14 @@ eq(axisPos("2026-11-03T13:00:00.000Z", Z), 0, "8am after the clocks change is st
   eq(v.tabs[1].label, "Tomorrow, Tue Oct 20", "tomorrow by name");
 }
 
+// --- a day nobody could be counted on -----------------------------------------------------------
+{
+  const out = day({ out: true });
+  const v = view([source("2026-10-20", "window", [{ advisor: advisor("Avery"), day: out }]), source("2026-10-16", "past", [{ advisor: advisor("Avery"), day: { ...out, iso: "2026-10-16" } }])]);
+  eq(v.cards[0].fullPct, null, "a card with nobody counted carries no percent, never 0");
+  eq(v.days[1].note, "Nobody was counted this day.", "nor does a past day's summary");
+}
+
 // --- a saved past day -------------------------------------------------------------------------
 {
   const v = view([

@@ -34,8 +34,17 @@ export function nearlyFullSentence(pct: number): string {
 
 export const BEYOND_WINDOW_NOTE = "Leads can't book this day yet, so it will fill up more than it shows.";
 
+/** A day nobody could be counted on (everyone out, off shift or not syncing): never "0% full". */
+export const NOBODY_COUNTED = "Nobody counted";
+
 export function pastDaySummary(fullPct: number | null, open: number): string {
-  return `Ended ${fullPct ?? 0}% full, with room left for ${open.toLocaleString("en-US")} more ${open === 1 ? "call" : "calls"}.`;
+  if (fullPct === null) return "Nobody was counted this day.";
+  return `Ended ${fullPct}% full, with room left for ${open.toLocaleString("en-US")} more ${open === 1 ? "call" : "calls"}.`;
+}
+
+/** A card's percent line: the share used, or that nobody could be counted. */
+export function fullLine(fullPct: number | null): string {
+  return fullPct === null ? NOBODY_COUNTED : `${fullPct}% full`;
 }
 
 export const OUT_WORDS = "Out, approved time off";
