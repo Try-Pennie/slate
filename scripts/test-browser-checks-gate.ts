@@ -16,7 +16,9 @@
 //     program, so a root `*.d.ts` can break it);
 //   - the root configuration the build and the install read;
 //   - the schema the local stack is built from (`supabase/migrations/`);
-//   - the suite (`e2e/`), the workflow, and the gate's own code.
+//   - the suite (`e2e/`), the workflow, and the gate's own code;
+//   - the settled designs its design test draws (`docs/design/`) and the copied design
+//     match score that scores them (`scripts/design-score/`, #3954).
 //
 // Each must match a pattern in BROWSER_INPUT_PATTERNS. A control removes `src/**`
 // and requires the check to notice (L1).

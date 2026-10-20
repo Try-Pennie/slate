@@ -27,12 +27,19 @@
     if (!f) throw new Error("the fixture names no frame " + frame);
     var snap = fixture.snapshot, t = fixture.examples.timeOff;
     var callMs = snap.eventType.duration_min * 60000;
+    // An unreadable time refuses, as fixtureView's does: dropped as a call, it would move the totals
+    // the checks expect while every comparison with it quietly read false (L50).
+    var stamp = function (iso) {
+      var ms = Date.parse(iso);
+      if (!isFinite(ms)) throw new Error("the fixture holds an unreadable time: \"" + iso + "\"");
+      return ms;
+    };
     var advisors = snap.advisors.map(function (a) {
       return { name: a.name, days: a.days.map(function (d, i) {
         var day = { open: d.open, capacity: d.capacity, out: d.out };
         if (f.examples && a.name === t.advisor && i === t.dayIndex) {
-          var s0 = Date.parse(t.start), s1 = Date.parse(t.end);
-          day.open = d.openTimes.filter(function (x) { var ms = Date.parse(x); return ms + callMs <= s0 || ms >= s1; }).length;
+          var s0 = stamp(t.start), s1 = stamp(t.end);
+          day.open = d.openTimes.filter(function (x) { var ms = stamp(x); return ms + callMs <= s0 || ms >= s1; }).length;
         }
         if (f.illustrate === "today-full" && i === 0) day.open = 0;
         return day;

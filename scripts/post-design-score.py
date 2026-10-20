@@ -10,8 +10,8 @@ design; there the score is posted, on the pull request and on that issue, by the
 `post` (scripts/design-score/design_score.py), where the close gate reads it. Anywhere else nothing
 is posted and it says so, since a comment on every pull request that touches the app is noise.
 
-Which issue is a Match issue is the copied score's own rule (score_github.is_match_issue), so this
-and the close gate cannot disagree about it.
+Which issues are a milestone's Match issues is the copied score's own reading (score_github.match_issues,
+which its post and the close gate use too), so none of them can disagree about it.
 
 Exit codes: 0 posted, or nothing to post; 2 no score (the capture holds no readable score, or it
 says the score could not be measured, since then nothing was measured) or posting failed. A score
@@ -42,9 +42,7 @@ def match_issues(gh, repo, pr, design):
     milestone = view.get("milestone") or {}
     if not milestone.get("number"):
         return None, []
-    issues = gh.api("repos/%s/issues?milestone=%d&state=all&per_page=100" % (repo, milestone["number"]),
-                    repo, paginate=True)
-    return milestone, [i for i in issues if not i.get("pull_request") and sg.is_match_issue(i)[1] == design]
+    return milestone, sg.match_issues(gh, repo, milestone["number"], design)
 
 
 def main(argv, gh=None, post=design_score.post):

@@ -104,6 +104,9 @@ const small: DesignFixtureFile = {
   let refused = false;
   try { fixtureView(bad, "ex"); } catch { refused = true; }
   assert(refused, "an unreadable time in the fixture is refused, never silently dropped as a call");
+  let refusedChecks = false;
+  try { frameView(bad, "ex"); } catch { refusedChecks = true; }
+  assert(refusedChecks, "and the checks refuse it too, rather than expecting totals with that call dropped");
 
   for (const id of Object.keys(small.frames)) {
     eq(frameView(small, id), pageView(small, id), `the checks see what the page draws on the small fixture's ${id} frame`);

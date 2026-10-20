@@ -670,9 +670,7 @@ def post(score_path, repo, pr):
             print("design-score post: NO MATCH ISSUE: pull request %s is in no milestone, so the score is on the "
                   "pull request only, where the close gate does not read it" % pr)
             return 1
-        issues = gh.api("repos/%s/issues?milestone=%d&state=all&per_page=100" % (repo, milestone["number"]),
-                        repo, paginate=True)
-        matches = [i for i in issues if not i.get("pull_request") and sg.is_match_issue(i)[1] == s.get("design")]
+        matches = sg.match_issues(gh, repo, milestone["number"], s.get("design"))
         if not matches:
             print("design-score post: NO MATCH ISSUE: milestone %s holds no Match the settled design issue for %s, "
                   "so the score is on the pull request only" % (milestone.get("title"), s.get("design")))

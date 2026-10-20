@@ -61,6 +61,20 @@ def is_match_issue(issue):
     return (design is not None or titled), design
 
 
+def milestone_issues(gh, repo, number):
+    """Every issue in milestone `number` of `repo`, open or closed, never a pull request (GitHub lists
+    both from this endpoint). Read through `gh` (a GitHub below), every page of it."""
+    issues = gh.api("repos/%s/issues?milestone=%d&state=all&per_page=100" % (repo, number), repo, paginate=True)
+    return [i for i in issues if not i.get("pull_request")]
+
+
+def match_issues(gh, repo, number, design):
+    """The Match the settled design issues in milestone `number` whose mark names `design`. The one
+    reading of a milestone's Match issues the post, the close gate and an app's CI share, so they
+    cannot disagree about which issue a score belongs on."""
+    return [i for i in milestone_issues(gh, repo, number) if is_match_issue(i)[1] == design]
+
+
 def score_comment(score, lines, note=""):
     """The body of a score comment: the score as printed, then the score file itself."""
     verdict = {"matched": "matched, both halves 100%", "not-matched": "not matched yet",
