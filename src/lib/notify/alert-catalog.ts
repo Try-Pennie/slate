@@ -1138,6 +1138,17 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "One activation attempt was refused; the operator retries and the refusal has no ongoing state.",
   },
   {
+    // #3700. The suffix is the advisor's user id.
+    key: "refused_advisor_left_pool:*",
+    kind: "incident",
+    suffix: "bounded",
+    why:
+      "Slate took one advisor out of the pool because Google refused their calendar for the whole " +
+      "period; the removal is done, and the wait for their return is the pending activation's own " +
+      "state (retried hourly, named by agents_awaiting_activation past its grace), so an all clear " +
+      "here would say nothing.",
+  },
+  {
     key: "bookable_unverified:*",
     kind: "incident",
     suffix: "bounded",

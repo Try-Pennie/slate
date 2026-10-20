@@ -201,6 +201,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   watch_lapse: "google-cannot-be-reached-for-an-agent",
   bookable_blocked: "google-cannot-be-reached-for-an-agent",
   bookable_unverified: "google-cannot-be-reached-for-an-agent",
+  // #3700. Slate acted on a refused account; the procedure is that family's.
+  refused_advisor_left_pool: "google-cannot-be-reached-for-an-agent",
   // #2577: the deletion drain ended rows because Google refused the calendar for
   // good; the remedy is the gone or not-provisioned branch of the same procedure.
   pending_event_deletions_refused: "google-cannot-be-reached-for-an-agent",

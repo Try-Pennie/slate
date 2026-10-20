@@ -65,6 +65,7 @@ import {
   MONITOR_STEP_REARM_TICKS,
 } from "@/lib/monitor/step-failure";
 import { ACTIVATION_BUDGET_MS } from "@/lib/bookable/activation-allowance";
+import { REFUSED_POOL_EXIT_AFTER_MS } from "@/lib/bookable/refused-pool-exit-rule";
 import { formatUnsetHoursAlert, formatUnsetHoursRecovery } from "@/lib/monitor/unset-hours";
 import {
   formatBelowLeadTierAlert,
@@ -354,6 +355,7 @@ import {
   bookableTimedOutAlert,
   bookableContendedAlert,
   bookableTraitUnrecordedAlert,
+  refusedAdvisorLeftPoolAlert,
   boundaryCatchAlert,
   embedOriginMismatchAlert,
   testBucketClientErrorInfo,
@@ -6115,6 +6117,18 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: bookableTraitUnrecordedAlert("dana.whitfield@trypennie.com", false) },
   { key: "bookable_trait_unrecorded:*", state: "an agent made bookable and Regal not told", channel: "alert",
     text: bookableTraitUnrecordedAlert("ariel.nwosu@trypennie.com", true) },
+  // #3700. The constant is imported rather than spelled, so the preview cannot claim
+  // a period the sync lane does not wait.
+  { key: "refused_advisor_left_pool:*", state: "an archived account, other advisors still in its pools", channel: "alert",
+    text: refusedAdvisorLeftPoolAlert({ name: "Dana Whitfield", email: "dana.whitfield@trypennie.com",
+      managerName: "Morgan Lee", failure: "not-provisioned", refusedForMs: REFUSED_POOL_EXIT_AFTER_MS, poolsLeftEmpty: [] }) },
+  { key: "refused_advisor_left_pool:*", state: "a deleted account, the last advisor in two pools", channel: "alert",
+    text: refusedAdvisorLeftPoolAlert({ name: "Sam Okafor", email: "sam.okafor@trypennie.com",
+      managerName: null, failure: "gone", refusedForMs: REFUSED_POOL_EXIT_AFTER_MS,
+      poolsLeftEmpty: ["Low Beyond", "Medium Beyond"] }) },
+  { key: "refused_advisor_left_pool:*", state: "the pool check could not be made, no name on the row", channel: "alert",
+    text: refusedAdvisorLeftPoolAlert({ name: null, email: "kit.alvarez@trypennie.com",
+      managerName: "Morgan Lee", failure: "not-provisioned", refusedForMs: REFUSED_POOL_EXIT_AFTER_MS, poolsLeftEmpty: null }) },
   { key: "bookable_blocked:*", state: "calendar definitively gone", channel: "alert",
     text: bookableBlockedAlert("dana.whitfield@trypennie.com") },
   { key: "bookable_blocked:*", state: "the account was never signed up for Calendar", channel: "alert",
