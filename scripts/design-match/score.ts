@@ -55,7 +55,15 @@ const designPath = arg("--design");
 const perturb = arg("--perturb");
 if (process.argv.includes("--perturb") && (!perturb || perturb.startsWith("--"))) die("--perturb needs a CSS value");
 const build = arg("--build");
-if (!designPath || !build) die("usage: score.ts --design <design.html> --build <url | design | design:<file>> [--perturb <css>]");
+if (!designPath || !build) die("usage: score.ts --design <design.html> --build <url | design | design:<file>> [--perturb <css>] [--storage <state.json>] [--channel <chrome | bundled>]");
+// --storage <file>: a Playwright storage state the BUILT pages open with, so a page behind sign in
+// (every admin page) is scored as the person it is drawn for. The design side never needs one.
+const storage = arg("--storage");
+if (process.argv.includes("--storage") && (!storage || storage.startsWith("--"))) die("--storage needs a file");
+// --channel: which browser draws both sides. Both are always drawn by the same one, so the choice
+// moves nothing between them; it only has to exist on the machine (CI has Playwright's own).
+const channelArg = arg("--channel") ?? "chrome";
+if (channelArg !== "chrome" && channelArg !== "bundled") die("--channel is chrome or bundled");
 const designFile = resolve(designPath);
 const stem = designFile.replace(/\.html$/, "");
 const checksSrc = readFileSync(`${stem}.checks.js`, "utf8");
@@ -117,7 +125,7 @@ async function pictureMatch(page: Page, a: Buffer, b: Buffer): Promise<number> {
 // Deterministic rasterisation: on the GPU the striped gradients came out a few levels different
 // between two renders of one frame on some runs (#3934's control read 99.9% one run in three).
 const browser = await chromium.launch({
-  channel: "chrome",
+  ...(channelArg === "chrome" ? { channel: "chrome" } : {}),
   args: ["--disable-gpu", "--force-color-profile=srgb", "--disable-partial-raster", "--disable-lcd-text", "--font-render-hinting=none"],
 });
 const design = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
@@ -178,7 +186,9 @@ for (const id of frameIds) {
   } else if (build === "design") {
     page = await renderDesignFrame(id);
   } else {
-    page = await browser.newPage({ viewport: { width: WIDTH, height: 900 } });
+    page = storage
+      ? await (await browser.newContext({ viewport: { width: WIDTH, height: 900 }, storageState: storage })).newPage()
+      : await browser.newPage({ viewport: { width: WIDTH, height: 900 } });
     const url = new URL(build); url.searchParams.set("frame", id);
     // A page that could not be loaded at all is no score; a page the server answered, a 404
     // included, is a page that does not match yet (L11).

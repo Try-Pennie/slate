@@ -28,7 +28,7 @@
       if (d.out) { out++; return; }
       open += d.open; cap += d.capacity;
     });
-    var full = cap ? (open === 0 ? 100 : Math.min(99, Math.floor(100 * (1 - open / cap)))) : null;
+    var full = cap ? (open === 0 ? 100 : Math.min(99, Math.floor((100 * (cap - open)) / cap))) : null;
     return { open: open, cap: cap, out: out, unsynced: unsynced, full: full };
   }
 

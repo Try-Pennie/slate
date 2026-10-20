@@ -8,10 +8,12 @@
  * like with like. This module is the one place those illustrations are applied; the scorer's
  * expected numbers come from here too (scripts/lib/design-match.ts).
  *
- * Pure (luxon free, JSON in and out). Only ever reached behind `designFixturesEnabled`.
+ * Pure (JSON in and out, the picker rule from team-capacity-view). Only ever reached behind the
+ * fixture flag.
  */
 import type { AdvisorDay, CapacityEventType, TeamCapacityAdvisor } from "./team-capacity";
 import type { TeamCapacityReport } from "./team-capacity-load";
+import { pickableDays } from "./team-capacity-view";
 
 export interface FixtureDay {
   iso: string;
@@ -39,6 +41,8 @@ export interface FixtureFrame {
 export interface DesignFixtureFile {
   nearlyFullPct: number;
   examples: { unsynced: string; timeOff: { advisor: string; dayIndex: number; start: string; end: string } };
+  /** The date picker's world: the office's closed weekday, and the first day history saved. */
+  picker: { closedWeekday: number; savedFrom: string; aheadDays: number };
   frames: Record<string, FixtureFrame>;
   snapshot: {
     takenAt: string;
@@ -60,6 +64,8 @@ export interface FixtureView {
   changeOpen: boolean;
   /** The illustrated not syncing advisor, for the scorer's expected totals. */
   unsynced: string[];
+  /** The days the date picker offers. */
+  pickable: string[];
 }
 
 function stampMs(iso: string): number {
@@ -118,5 +124,30 @@ export function fixtureView(fixture: DesignFixtureFile, frameId: string): Fixtur
     calendarOpen: !!frame.calendarOpen,
     changeOpen: !!frame.changeOpen,
     unsynced,
+    pickable: fixturePickable(fixture),
   };
+}
+
+/** Every day from the fixture's first saved day to the day before it was taken counts as saved. */
+function fixturePickable(fixture: DesignFixtureFile): string[] {
+  const { closedWeekday, savedFrom, aheadDays } = fixture.picker;
+  const todayIso = fixture.snapshot.days[0];
+  const saved: string[] = [];
+  for (let ms = Date.parse(`${savedFrom}T12:00:00Z`); ; ms += 86_400_000) {
+    const iso = new Date(ms).toISOString().slice(0, 10);
+    if (iso >= todayIso) break;
+    saved.push(iso);
+  }
+  return pickableDays({ todayIso, zone: fixture.snapshot.zone, aheadDays, saved, isOpen: (_iso, weekday) => weekday !== closedWeekday });
+}
+
+/**
+ * Whether the page may answer `?frame=` from the design's fixture: only when the e2e run set the
+ * flag AND the request is to this machine, so a deploy that somehow carried the flag still never
+ * serves invented numbers to anybody.
+ */
+export function designFixturesEnabled(flag: string | undefined, host: string | null): boolean {
+  if (flag !== "1" || !host) return false;
+  const name = host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.split(":")[0];
+  return name === "localhost" || name === "127.0.0.1" || name === "[::1]";
 }

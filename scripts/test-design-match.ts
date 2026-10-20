@@ -17,6 +17,7 @@ const day = (open: number, openTimes: string[]) => ({
 const base = {
   nearlyFullPct: 85,
   examples: { unsynced: "B", timeOff: { advisor: "A", dayIndex: 0, start: "2026-10-19T17:00:00Z", end: "2026-10-19T18:00:00Z" } },
+  picker: { closedWeekday: 7, savedFrom: "2026-10-12", aheadDays: 21 },
   frames: {
     plain: { theme: "light" as const },
     ex: { theme: "light" as const, examples: true },

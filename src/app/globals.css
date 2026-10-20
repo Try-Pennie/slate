@@ -266,6 +266,22 @@
 
   --tracking-tight: -0.02em;
   --tracking-normal: 0;
+
+  /* Team capacity (#3936): the settled design's own colours (docs/design/team-capacity.html). */
+  --tc-taken: rgb(60, 152, 218);          /* used up time, 3.13:1 on white */
+  --tc-hatch: rgba(52, 52, 52, 0.18);     /* outside the shift, approved time off */
+  --tc-past: rgba(52, 52, 52, 0.32);      /* hours already gone today */
+  --tc-flag: rgb(255, 208, 115);          /* nearly full chip and dot, Pennie mustard */
+  --tc-flag-fg: rgb(52, 52, 52);
+  --tc-flag-card: rgb(255, 246, 227);
+  --tc-full: rgb(196, 61, 61);            /* Full, Pennie rose */
+  --tc-full-fg: rgb(255, 255, 255);
+  --tc-full-card: rgb(252, 238, 238);
+  --tc-grey-bar: rgb(232, 232, 234);
+  --tc-grey-bar-fg: rgb(80, 80, 86);
+  --tc-note: rgb(240, 237, 230);
+  --tc-tab-on: rgb(130, 208, 255);        /* sky, graphite text: 7.36:1 */
+  --tc-tab-on-fg: rgb(52, 52, 52);
 }
 
 /* ---------------- Dark scope — flip SEMANTIC vars only ----------------
@@ -325,6 +341,17 @@
      graphite, so the step that keeps it readable is LIGHTER: 6.76:1 for the
      label, 1.30:1 from the rest fill, matching light's step the other way. */
   --error-hover:      rgb(236, 176, 176);
+
+  /* Team capacity (#3936), dark. */
+  --tc-taken: rgb(130, 208, 255);
+  --tc-hatch: rgba(246, 246, 246, 0.22);
+  --tc-past: rgba(246, 246, 246, 0.4);
+  --tc-flag-card: rgb(62, 52, 30);
+  --tc-full-card: rgb(72, 34, 36);
+  --tc-grey-bar: rgb(58, 56, 65);
+  --tc-grey-bar-fg: rgb(210, 208, 216);
+  --tc-note: rgb(58, 56, 65);
+  --tc-tab-on-fg: rgb(29, 33, 47);
 }
 
 /* Dark variant for utilities: drive `dark:` off the data attribute, not the OS. */

@@ -20,3 +20,22 @@ alter table booking_settings
 
 comment on column booking_settings.capacity_nearly_full_pct is
   'The share of a day''s capacity, in percent, at which Team capacity flags the day as nearly full (#3936). Default 85. Edited on /admin/team-capacity.';
+
+-- #3936: the past days Team capacity history holds for an organisation, from p_from
+-- on, so the page's date picker offers only days that were saved (Dan, 2026-10-19:
+-- a day with nothing saved is never offered). One row back, an array, so the read
+-- never meets PostgREST's row cap however long history grows.
+create or replace function capacity_history_days(p_org uuid, p_from date)
+returns date[]
+language sql
+stable
+set search_path = public
+as $$
+  select coalesce(array_agg(distinct h.day order by h.day), '{}')
+  from capacity_history h
+  join users u on u.id = h.user_id
+  where u.org_id = p_org and h.day >= p_from;
+$$;
+
+-- Server only, through the secret key client.
+revoke execute on function capacity_history_days(uuid, date) from public, anon, authenticated;

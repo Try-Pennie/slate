@@ -99,3 +99,9 @@ export function parseNearlyFullPct(raw: string): { pct: number } | { error: stri
   if (n < 1 || n > 99) return { error: "Enter a whole number from 1 to 99." };
   return { pct: n };
 }
+
+/** The nearly full line could not be read: never replaced by the default (0192's note). */
+export const LINE_UNREADABLE_COPY = { heading: "Couldn't load the nearly full line", body: "Try reloading in a minute." };
+
+/** Saved history could not be read, for the date picker or a past day (#3940). */
+export const HISTORY_UNREADABLE_COPY = { heading: "Couldn't load past days", body: "Try reloading in a minute." };

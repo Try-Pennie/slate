@@ -1,0 +1,113 @@
+/*
+ * Team capacity (#3936), the settled design's own stylesheet (docs/design/team-capacity.html),
+ * carried over unchanged so the page draws what the design draws. The design match score holds the
+ * two together; change one only with the other.
+ *
+ * Every rule is scoped under .tc-scope, the class on the page's own two blocks, because the
+ * design's short class names (.tab, .chip, .lane) would otherwise style any other page that
+ * happened to use them once this stylesheet had loaded.
+ */
+
+.tc-scope .totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+
+.tc-scope .tcard { background: var(--surface); border-radius: var(--radius-md, 10px); box-shadow: var(--shadow-xs); padding: 16px 18px; color: var(--fg); }
+
+:root[data-theme="dark"] .tc-scope .tcard { border: 1px solid var(--border); box-shadow: none; }
+
+.tc-scope .tday { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin-bottom: 8px; }
+
+.tc-scope .tday-top { font-weight: 600; }
+
+.tc-scope .tday-sub, .tc-scope .tunit, .tc-scope .tout { color: var(--fg-muted); }
+
+.tc-scope .tday-sub, .tc-scope .tout { font-size: 12.5px; }
+
+.tc-scope .tnum { font-variant-numeric: tabular-nums; }
+
+.tc-scope .tbig { font-size: 30px; font-weight: 600; }
+
+.tc-scope .tbar { height: 8px; border-radius: 4px; background: var(--bg-alt); overflow: hidden; margin: 8px 0 6px; }
+
+.tc-scope .tfill { display: block; height: 100%; background: var(--tc-taken); }
+
+.tc-scope .tpct { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+
+.tc-scope .chip { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--tc-flag); color: var(--tc-flag-fg); }
+
+.tc-scope .tcard.flag { background: var(--tc-flag-card); }
+
+.tc-scope .tcard.flag.full { background: var(--tc-full-card); }
+
+.tc-scope .tcard.flag.full .chip { background: var(--tc-full); color: var(--tc-full-fg); }
+
+.tc-scope .ctl { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--fg); }
+
+.tc-scope .ctl .num-in { width: 72px; margin: 0 6px; text-align: right; font-variant-numeric: tabular-nums; }
+
+.tc-scope .tl { padding-top: 2px; }
+
+.tc-scope .tabs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 10px; }
+
+.tc-scope .tab { font: inherit; border: 1px solid var(--border); background: var(--surface); color: var(--fg); border-radius: 16px; padding: 7px 14px; cursor: pointer; }
+
+.tc-scope .tab.on { background: var(--tc-tab-on); border-color: var(--tc-tab-on); color: var(--tc-tab-on-fg); }
+
+.tc-scope .tab .dot { display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: var(--tc-flag); margin-right: 7px; vertical-align: 1px; }
+
+.tc-scope .tab.flag.full .dot { background: var(--tc-full); }
+
+.tc-scope .dd { position: relative; }
+
+.tc-scope .tc-pop { position: absolute; z-index: 5; top: calc(100% + 6px); right: 0; }
+
+.tc-scope .beyond-note { margin: 0 0 10px; padding: 8px 12px; border-radius: 10px; background: var(--tc-note); font-size: 13.5px; color: var(--fg); }
+
+.tc-scope .axis, .tc-scope .tr, .tc-scope .gh { display: grid; grid-template-columns: 200px 1fr 48px; column-gap: 16px; align-items: center; }
+
+.tc-scope .axis { height: 30px; border-bottom: 1px solid var(--border); }
+
+.tc-scope .ax-t { position: relative; height: 100%; }
+
+.tc-scope .tick { position: absolute; top: 8px; transform: translateX(-50%); font-size: 11px; color: var(--fg-muted); }
+
+.tc-scope .now-l { position: absolute; top: 6px; transform: translateX(-50%); font-size: 11px; font-weight: 600; background: var(--surface); color: var(--fg); padding: 0 3px; z-index: 1; }
+
+.tc-scope .ax-r { text-align: right; font-weight: 600; font-size: 12.5px; }
+
+.tc-scope .rows { position: relative; }
+
+.tc-scope .nowline { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1.5px solid var(--fg); z-index: 2; pointer-events: none; }
+
+.tc-scope .tr { height: 30px; border-bottom: 1px solid var(--border-soft, var(--border)); }
+
+.tc-scope .nm { padding-left: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.tc-scope .nm-n { margin-right: 6px; color: var(--fg); }
+
+.tc-scope .cal-name { color: var(--cue-line); text-decoration: underline; text-underline-offset: 2px; }
+
+.tc-scope .nm-z { color: var(--fg-muted); font-size: 11.5px; }
+
+.tc-scope .lane { position: relative; height: 14px; }
+
+.tc-scope .offshift { position: absolute; top: 0; left: 0; width: 100%; height: 14px; border-radius: 3px; }
+
+.tc-scope .off-hatch, .tc-scope .toff-hatch { background: repeating-linear-gradient(135deg, var(--tc-hatch) 0 2px, transparent 2px 6px); }
+
+.tc-scope .wholepill { background: var(--tc-grey-bar); color: var(--tc-grey-bar-fg); display: flex; align-items: center; padding-left: 10px; font-size: 12px; height: 18px; top: -2px; box-sizing: border-box; }
+
+.tc-scope .shift { position: absolute; top: 0; height: 14px; border-radius: 3px; background: var(--tc-taken); }
+
+.tc-scope .past { position: absolute; top: 0; height: 14px; border-radius: 3px; background: repeating-linear-gradient(135deg, var(--tc-past) 0 2px, var(--surface) 2px 6px); }
+
+.tc-scope .toff { position: absolute; top: 0; height: 14px; }
+
+.tc-scope .slot { position: absolute; top: 0; height: 14px; background: var(--surface); box-shadow: inset 0 0 0 1.5px var(--tc-taken); border-radius: 2px; }
+
+.tc-scope .lane.faded > .shift, .tc-scope .lane.faded > .slot, .tc-scope .lane.faded > .past { opacity: 0.25; }
+
+.tc-scope .lane-tag { position: absolute; top: -2px; right: 0; font-size: 12px; font-weight: 600; background: var(--surface); color: var(--fg); padding: 0 4px; }
+
+.tc-scope .cnt { text-align: right; font-weight: 600; padding-right: 8px; font-variant-numeric: tabular-nums; }
+
+.tc-scope .cnt.n0 { font-weight: 400; color: var(--fg-muted); }

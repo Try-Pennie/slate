@@ -146,6 +146,10 @@ Change one by editing `wrangler.jsonc` and redeploying.
 - `SLATE_DEV_PREVIEW`: never set in a deployment. It is a local `.env.local`
   opt-in for `/dev/preview`, which acts as any user with no sign-in, and is only
   honoured under `pnpm dev` (NODE_ENV `development`) on a loopback host (#3086).
+- `SLATE_DESIGN_FIXTURES`: never set in a deployment. The e2e run (`e2e/env.ts`) sets it so
+  `/admin/team-capacity?frame=<id>` renders a frame of the settled design from its fixture, for
+  the design match score (#3936). Honoured only on a loopback host, so even a deployment that
+  carried it would never serve the invented numbers.
 - `AGENT_SCHEDULING_LIVE`: launch flag over the CONSOLE. `"false"` = only super
   admins reach `/admin`; `"true"` opens it to the managers and admins whose roles
   already allow it. The committed production value is `"true"` (changed 2026-10-02), pinned by

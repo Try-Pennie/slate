@@ -28,8 +28,20 @@ assert(files.length > 100, `the scanner found source to judge (${files.length})`
 
 // The paint itself: a repeating gradient in the marker's two colours. Anything
 // drawing this is claiming to be a hazard surface.
+//
+// The two colours are what make it the marker, as this comment always said, and the
+// test now asks that rather than any stripe at all (#3936). Team capacity draws time
+// outside a shift and approved time off as a fine grey hatch, which Dan settled in its
+// design rounds (docs/design/team-capacity.html, D16 and D17), and a grey hatch at 18%
+// reads as nothing like the yellow and navy bar. A file that names either marker
+// colour anywhere and also paints a stripe still counts, so the guard errs toward
+// flagging rather than toward missing a second hazard surface.
 const STRIPE = /repeating-linear-gradient/;
-const stripeFiles = files.filter((f) => STRIPE.test(readFileSync(f, "utf8")));
+const MARKER_COLOURS = /--pennie-(?:yellow|navy)\b/;
+const paintsHazard = (src: string) => STRIPE.test(src) && MARKER_COLOURS.test(src);
+assert(paintsHazard("background: repeating-linear-gradient(45deg, var(--pennie-yellow) 0 8px, var(--pennie-navy) 8px 16px)"), "the marker's own paint is recognised");
+assert(!paintsHazard("background: repeating-linear-gradient(135deg, var(--tc-hatch) 0 2px, transparent 2px 6px)"), "a grey hatch is not the marker");
+const stripeFiles = files.filter((f) => paintsHazard(readFileSync(f, "utf8")));
 eq(
   stripeFiles.join(", "),
   join("src", "app", "globals.css"),
