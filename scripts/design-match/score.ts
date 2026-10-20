@@ -132,6 +132,9 @@ const design = await browser.newPage({ viewport: { width: 1400, height: 1000 } }
 await design.goto(`file://${designFile}`);
 await design.waitForFunction(() => typeof (window as unknown as { frameHtml?: unknown }).frameHtml === "function");
 
+// One signed in session for every built frame, opened once and closed with the browser.
+const buildContext = storage ? await browser.newContext({ viewport: { width: WIDTH, height: 900 }, storageState: storage }) : null;
+
 const rows: FrameResult[] = [];
 /**
  * Waits on the conditions a picture depends on rather than on the clock (L290): every font
@@ -186,9 +189,7 @@ for (const id of frameIds) {
   } else if (build === "design") {
     page = await renderDesignFrame(id);
   } else {
-    page = storage
-      ? await (await browser.newContext({ viewport: { width: WIDTH, height: 900 }, storageState: storage })).newPage()
-      : await browser.newPage({ viewport: { width: WIDTH, height: 900 } });
+    page = buildContext ? await buildContext.newPage() : await browser.newPage({ viewport: { width: WIDTH, height: 900 } });
     const url = new URL(build); url.searchParams.set("frame", id);
     // A page that could not be loaded at all is no score; a page the server answered, a 404
     // included, is a page that does not match yet (L11).
