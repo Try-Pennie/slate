@@ -69,8 +69,13 @@ export function photosHeldAlert(plan: RefreshPlan): string {
     );
   }
   for (const r of plan.repeated) {
+    // The image page serves only a hash somebody's row holds, so it is offered
+    // only when this run left it stored for at least one holder (L111).
+    const look = r.holders.length > r.held.length
+      ? `Open /advisor-photo/${r.sha256} on Slate to see it.`
+      : `Slate has not stored it for anybody, so look at one of their photos in Google Admin. Its hash is ${r.sha256}.`;
     parts.push(
-      `One identical image is held by ${plural(r.holders.length, "person", "people")} (${names(r.holders)}). A repeated image may be a Google placeholder, so it was not stored for ${r.held.length ? names(r.held) : "anybody new"}. If it is a real shared picture such as a logo, nothing is wrong.`,
+      `One identical image is held by ${plural(r.holders.length, "person", "people")} (${names(r.holders)}). It may be a Google placeholder, so it was not stored for ${r.held.length ? names(r.held) : "anybody new"}. ${look} If it is a real shared picture such as a logo, add its hash to the known shared images list in src/lib/advisor-photos/core.ts, and the next run stores it for everybody.`,
     );
   }
   if (plan.streaks.length) {

@@ -5715,6 +5715,10 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: photosHeldAlert(previewPhotoPlan({ flipGuardTripped: true, heldNone: ["ada@trypennie.com", "ben@trypennie.com", "cy@trypennie.com", "dee@trypennie.com"] })) },
   { key: "advisor_photos_held", state: "one image held by three people", channel: "alert",
     text: photosHeldAlert(previewPhotoPlan({ repeated: [{ sha256: "a".repeat(64), holders: ["ada@trypennie.com", "ben@trypennie.com", "cy@trypennie.com"], held: ["cy@trypennie.com"] }] })) },
+  // #3959: when nobody holds the image stored, the image page would not load, so
+  // the page says where else to look.
+  { key: "advisor_photos_held", state: "one image held by three people, stored for none", channel: "alert",
+    text: photosHeldAlert(previewPhotoPlan({ repeated: [{ sha256: "a".repeat(64), holders: ["ada@trypennie.com", "ben@trypennie.com", "cy@trypennie.com"], held: ["ada@trypennie.com", "ben@trypennie.com", "cy@trypennie.com"] }] })) },
   { key: "advisor_photos_held", state: "one person unreadable for three days", channel: "alert",
     text: photosHeldAlert(previewPhotoPlan({ streaks: [{ email: "ada@trypennie.com", failingSince: "2026-10-01T04:20:00.000Z", reason: "answered 503" }] })) },
   { key: "advisor_photos_held", state: "somebody never read whose read failed", channel: "alert",
