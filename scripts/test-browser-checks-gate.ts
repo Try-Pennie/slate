@@ -88,6 +88,8 @@ function browserRunInputs(tracked: string[]): string[] {
   ]);
   return tracked.filter((f) => {
     if (/^(src|public|e2e|supabase\/migrations)\//.test(f)) return true;
+    // The design test draws each settled design and scores it with the copied score (#3954).
+    if (/^(docs\/design|scripts\/design-score)\//.test(f)) return true;
     if (RUN_WIRING.has(f) || ROOT_CONFIG.has(f)) return true;
     // The tsconfig program: every TypeScript file outside the excluded trees.
     if (/\.(ts|tsx|mts)$/.test(f) && !/^(scripts|worker|node_modules)\//.test(f) && !f.startsWith(".")) {
@@ -104,7 +106,7 @@ const unmatched = (inputs: string[], patterns: readonly string[]) =>
 const tracked = sourceFiles({ paths: ["."], match: /./ });
 const inputs = browserRunInputs(tracked);
 assert(inputs.length > 100, `the run's inputs were enumerated from the tree (${inputs.length} files)`);
-for (const must of ["src/middleware.ts", "e2e/run.ts", "next.config.ts", "pnpm-lock.yaml", "cloudflare-env.d.ts", ".github/workflows/ci.yml"]) {
+for (const must of ["src/middleware.ts", "e2e/run.ts", "next.config.ts", "pnpm-lock.yaml", "cloudflare-env.d.ts", ".github/workflows/ci.yml", "docs/design/team-capacity.html", "docs/design/team-capacity.checks.js", "scripts/design-score/capture-web.mjs"]) {
   assert(inputs.includes(must), `${must} is counted as an input`);
 }
 const missed = unmatched(inputs, BROWSER_INPUT_PATTERNS);

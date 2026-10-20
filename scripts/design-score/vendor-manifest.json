@@ -1,0 +1,16 @@
+{
+ "format": "design-score-vendor",
+ "version": 1,
+ "from": "claude-config payload/skills/design-rounds/score (design_file.py from design-rounds)",
+ "copiedAt": "2026-10-20T15:15:12Z",
+ "refresh": "python3 ~/.claude/skills/design-rounds/score/vendor-score.py copy <this folder>",
+ "files": {
+  "capture-web.mjs": "sha256:4fd4b9a6cc74ab7d5d087c6696277d1b8f19025de2fb672b847ab2982352a7dc",
+  "design_file.py": "sha256:381d6caaaf40f8d96c29f09692c733c28cbbb5aaa428c910e562dfb412bfa8d3",
+  "design_score.py": "sha256:0d44692bd634576c63add8f72fb50ae09515fcfaa2b5c44f36bfbb87d8b8eb5a",
+  "pngio.py": "sha256:27b51822c6323b8616be4ddef607f9d6c51b86729c1d75d5504c2abcc6c0db20",
+  "score_github.py": "sha256:55ac8b5cb0f5092fde06aad5e4f50a2ce21eff3f7fba7cf23a9544adf2d4a188",
+  "shared-playwright.json": "sha256:fe9555a37d13574731140048d056d08113e3407eba3026974c24cbecc4986191",
+  "vendor-score.py": "sha256:48560c5f2a4cbdaf743c315c3aa66d354cb1c6d8c91249c0457e5c5769fcbd1a"
+ }
+}

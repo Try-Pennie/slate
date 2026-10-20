@@ -252,6 +252,7 @@ const FAN_IN_EXEMPT: Record<string, string> = {
   ci: "the fan-in itself",
   "security-scan-main": "the scan on a push to main: detective there (#3087), so it must never hold the fan-in or the deploy",
   deploy: "runs AFTER the gate (needs: [ci, migration-drift]), it is not one of its legs",
+  "design-score": "only POSTS the design match score (#3954); the score gates through the browser leg's own e2e test, and a comment GitHub refuses must not block a merge",
 };
 
 for (const name of jobNames) {
@@ -456,7 +457,8 @@ assert(
   assert(heavy.length >= 5, `#3100: the build, browser and suite steps follow the gate (${heavy.length})`);
   for (const s of heavy) {
     assert(
-      /if:\s*(failure\(\) && )?steps\.gate\.outputs\.decision == 'run'/.test(s),
+      // !cancelled(): the design score is kept whatever the run's outcome (#3954).
+      /if:\s*(\$\{\{\s*)?(failure\(\) && |!cancelled\(\) && )?steps\.gate\.outputs\.decision == 'run'/.test(s),
       `#3100: every step after the gate runs only on decision == 'run': ${s.split("\n")[0].trim()}`,
     );
   }

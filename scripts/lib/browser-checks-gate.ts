@@ -23,12 +23,15 @@
 
 /** Every path the browser run reads: the app the build compiles and serves, the
  *  root configuration and TypeScript `next build` typechecks, the schema the local
- *  stack is built from, the suite itself, and the workflow that runs it. */
+ *  stack is built from, the suite itself, the settled designs and the copied design
+ *  match score its design test draws and scores (#3954), and the workflow that runs it. */
 export const BROWSER_INPUT_PATTERNS: readonly string[] = [
   "src/**",
   "public/**",
   "e2e/**",
   "supabase/migrations/**",
+  "docs/design/**",
+  "scripts/design-score/**",
   "*.ts",
   "*.mts",
   "*.mjs",

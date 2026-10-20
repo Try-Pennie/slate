@@ -5,8 +5,9 @@
  * docs/design/fixtures/team-capacity.json, some with an illustration applied (a calendar not
  * syncing, an hour off, a full day, a picked date). The page's fixture preview renders the real
  * component from the same data with the same illustrations, so the design match score compares
- * like with like. This module is the one place those illustrations are applied; the scorer's
- * expected numbers come from here too (scripts/lib/design-match.ts).
+ * like with like. This module is the one place the page applies those illustrations; the design's
+ * checks (docs/design/team-capacity.checks.js) apply them again in the browser, and
+ * scripts/test-design-checks-frame-view.ts holds that copy to this one.
  *
  * Pure (JSON in and out, the picker rule from team-capacity-view). Only ever reached behind the
  * fixture flag.

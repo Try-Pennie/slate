@@ -131,6 +131,16 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm lint
 
+      # The design match score's tools are a COPY of claude-config's (#3954), kept in
+      # scripts/design-score so the score runs here. This compares the folder with its own
+      # manifest, which catches a hand edit, a missing file or one that is not part of the
+      # copy. CI has no ~/.claude, so it says it did not compare with claude-config, and does
+      # not fetch it: every change to the score there would then fail an unrelated pull
+      # request here (L538). Refreshing the copy is a deliberate change made on a Mac.
+      - name: The design score tools match their copy
+        if: ${{ !cancelled() }}
+        run: python3 scripts/design-score/vendor-score.py check scripts/design-score
+
       # #3051: run, skip (with a notice and a step summary saying why) or refuse.
       # Imports nothing from node_modules, so it runs even when the install failed.
       - name: Decide whether the migration drift check runs
@@ -440,6 +450,8 @@ jobs:
     if: github.event_name == 'pull_request'
     timeout-minutes: 20  # measured 5m47s on CI (PR #3162); a cold image pull adds a few minutes
     runs-on: ubuntu-latest
+    outputs:
+      decision: ${{ steps.gate.outputs.decision }}
     steps:
       # Depth 2: the gate reads the pull request merge commit against its first parent.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -451,6 +463,16 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
         run: node --experimental-strip-types scripts/browser-checks-gate.ts
+
+      # The run itself is of the pull request's HEAD, not GitHub's merge commit (#3954). The
+      # design match score counts only for a commit whose tree is the pull request's head, and
+      # the merge commit's tree differs from it once main has moved, so a score drawn there
+      # could never close a design milestone. The gate above still reads the merge commit,
+      # which is what its diff is defined against.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.gate.outputs.decision == 'run'
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         if: steps.gate.outputs.decision == 'run'
@@ -492,6 +514,19 @@ jobs:
           CI: "1"
         run: pnpm test:e2e
 
+      # The design match score the run drew (e2e/tests/60-team-capacity-design.spec.ts), for the
+      # design-score job to post. Kept whatever the run's outcome: a score that is not matched
+      # yet is still posted on a design milestone's pull request.
+      - name: Keep the design score
+        if: ${{ !cancelled() && steps.gate.outputs.decision == 'run' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: design-score
+          path: e2e/.artifacts/design-score/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Keep the report, traces and server log
         if: failure() && steps.gate.outputs.decision == 'run'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -502,6 +537,44 @@ jobs:
           # told otherwise, so without this the step found nothing to keep on every failure.
           include-hidden-files: true
           retention-days: 7
+
+  # --- The design match score, posted (#3954) ----------------------------------------
+  #
+  # The browser leg draws each settled design beside the page and scores it; the score
+  # GATES there, since its e2e test fails on anything but a match. This job only POSTS the
+  # score, on a pull request in a design milestone and on that milestone's "Match the
+  # settled design" issue, where the close gate reads it (scripts/post-design-score.py).
+  # Anywhere else it posts nothing and says so. It is separate from the browser leg so
+  # that leg keeps holding no credential (scripts/test-browser-checks-gate.ts), and it is
+  # outside the `ci` fan-in so a comment GitHub refuses never blocks a merge. It fails
+  # when nothing was measured or posting failed.
+  design-score:
+    needs: browser
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.browser.outputs.decision == 'run' }}
+    timeout-minutes: 5  # a download and two comments
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Fetch the design score
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: design-score
+          path: ${{ runner.temp }}/design-score
+
+      - name: Post the design score
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: python3 scripts/post-design-score.py "$RUNNER_TEMP/design-score/team-capacity" --repo "$REPO" --pr "$PR_NUMBER"
 
   # Deploy to the slate Worker on every push to main, after ci passes. Skips
   # (passes) until the CLOUDFLARE_API_TOKEN secret is set; run pnpm cf:deploy

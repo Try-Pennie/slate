@@ -74,5 +74,3 @@ scripts/typecheck-control.tmp.ts
 # egress record (#3079, #3100). Local only; CI uploads it as an artifact.
 /e2e/.artifacts/
 
-# design match score output (scripts/design-match/score.ts)
-/.design-match/
