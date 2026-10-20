@@ -12,6 +12,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
+import { windowOnDate } from "@/lib/booking/business-hours";
 import { readOfferedOpenDays } from "@/lib/booking/days-offered-load";
 import { offeredWindowFor } from "@/lib/availability/offered-window";
 import { loadMembersAvailability, resolveBucketByCode, type ResolvedBucket } from "@/lib/availability/service";
@@ -193,7 +194,12 @@ export async function loadTeamCapacity(opts: LoadTeamCapacityOptions): Promise<T
   const window = offeredWindowFor(hours, nowMs, eventType.min_notice_min, offered);
   // No window is not an empty one: drawn, it would read as a team with no room (L10).
   if (!window || window.days.length === 0) return refuse("no-open-days");
-  const windowDays = window.days;
+  // After the 6 PM cutoff the booker's days start tomorrow, but it still serves whatever today has
+  // left, so today stays on the page ahead of them (#3949, Dan, 2026-10-19), on an open day only.
+  const today = DateTime.fromMillis(nowMs, { zone: hours.zone });
+  const todayIso = today.toISODate()!;
+  const todayOpen = windowOnDate(hours, todayIso, today.weekday) !== null;
+  const windowDays = todayOpen && window.days[0] > todayIso ? [todayIso, ...window.days] : window.days;
   // The picked day comes from a URL, so anything that is not a real date is ignored rather than
   // allowed to turn the busy read's bounds into NaN.
   const extra = opts.extraDay && /^\d{4}-\d{2}-\d{2}$/.test(opts.extraDay) && DateTime.fromISO(opts.extraDay, { zone: hours.zone }).isValid ? opts.extraDay : null;

@@ -96,6 +96,14 @@ describe("/admin/team-capacity", () => {
     expect(selectedTab()).toMatch(/^Tomorrow/);
   });
 
+  it("puts every day's card in one row, five after the 6 PM cutoff (#3949)", async () => {
+    load.loadTeamCapacity.mockResolvedValue(report([iso(0), iso(1), iso(2), iso(3), iso(4)]));
+    await renderPage();
+    const row = document.querySelector<HTMLElement>("section.totals");
+    expect(document.querySelectorAll('[data-tc="day-card"]').length).toBe(5);
+    expect(row?.style.gridTemplateColumns).toBe("repeat(5, minmax(0, 1fr))");
+  });
+
   it("lets an admin move the line and a manager only read it", async () => {
     await renderPage();
     expect(screen.getByRole("button", { name: "Change" })).toBeTruthy();

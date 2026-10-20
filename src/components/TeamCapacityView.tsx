@@ -52,7 +52,8 @@ export function TeamCapacityView({
   return (
     <>
       <div className="tc-scope flex flex-col gap-3">
-        <section className="totals">
+        {/* One row however many days there are: after 6 PM today joins the booker's four (#3949). */}
+        <section className="totals" style={{ gridTemplateColumns: `repeat(${view.cards.length}, minmax(0, 1fr))` }}>
           {view.cards.map((c) => (
             <div key={c.iso} data-tc="day-card" className={`tcard${c.flag === "full" ? " flag full" : c.flag === "nearly-full" ? " flag" : ""}`}>
               <div className="tday">
