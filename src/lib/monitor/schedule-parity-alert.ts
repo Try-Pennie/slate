@@ -38,8 +38,9 @@ export type ParityVerdictClass =
  *
  * The order within `paging` follows `OUTCOME_ORDER`: the two roster findings that
  * put a real lead in front of the wrong person, then the three that change what a
- * lead is offered, then the two where Slate and cal.com disagree about who is in
- * the pool at all.
+ * lead is offered, then the ones where Slate and cal.com disagree about who is in
+ * the pool at all, including the two (#3963) where no Slate routing pool reaches
+ * somebody who is bookable.
  */
 export const PARITY_VERDICT_CLASS = {
   "departed-still-hosting": "paging",
