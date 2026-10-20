@@ -123,7 +123,8 @@ export type SupplyCell =
   | { kind: "unknown" }
   /**
    * The day could hold appointments and this bucket has none of them: nothing
-   * offered and nothing booked (#1937).
+   * offered and nothing booked (#1937), or, on the page (#3939), its advisors
+   * hold no calls that day (nobody working it, or everyone out or not syncing).
    *
    * Its own answer rather than a zero share, because there is no ceiling to be a
    * share OF, and because it is the state worth acting on: a booked out bucket

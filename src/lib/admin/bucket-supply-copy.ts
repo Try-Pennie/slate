@@ -87,7 +87,8 @@ export interface SupplyLegendEntry {
 export type SupplyTone = "saturated" | "some" | "none";
 
 export const TONE_CLS: Record<SupplyTone, string> = {
-  // Every possible time taken: nothing left for a new lead.
+  // Every call the pool's advisors could hold is taken (on the monitor, every possible
+  // start): nothing left for a new lead.
   saturated: "bg-pennie-sky text-pennie-graphite",
   some: "bg-pennie-yellow text-pennie-graphite",
   // Quiet, not wrong. An error tint here would paint the entire page red today.
