@@ -156,6 +156,27 @@ async function main() {
     assert(lastServed(unread.served)?.reason === "unread-default", "off: a switch it could not read is told apart from one that is off");
   }
 
+  // --- switched on by the DEFAULT: the shared line, and it says so (#3910) ----------
+  // Production's default is "on" (#3339), so a confirm whose switch read failed takes
+  // the shared line too, and its log line must not read like one whose switch read on.
+  {
+    const w = world();
+    const unread = w.client({ on: { on: true, source: "default" } });
+    const t = (await w.settle(unread.line.enter(KEY, 10_000))) as LineTurn<string>;
+    assert(t.kind === "lead", "default on: the confirm leads on the shared line");
+    assert(
+      lastServed(unread.served)?.line === "shared" && lastServed(unread.served)?.reason === "unread-default-on",
+      `default on: recorded as shared, unread-default-on (got ${JSON.stringify(lastServed(unread.served))})`,
+    );
+    assert(unread.reach.length === 0, "default on: nothing is reported as a reach failure, the failed read pages on its own");
+    const read = w.client({ on: { on: true, source: "read" } });
+    await w.settle(read.line.enter({ ...KEY, instant: "2" }, 10_000));
+    assert(
+      lastServed(read.served)?.line === "shared" && lastServed(read.served)?.reason === "ok",
+      `read on: still recorded as shared, ok (got ${JSON.stringify(lastServed(read.served))})`,
+    );
+  }
+
   // --- switched on but not bound: the isolate's line, and a reach failure ----------
   {
     const w = world();
