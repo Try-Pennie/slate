@@ -1,6 +1,6 @@
 // Reading production log LINES, in narrow windows (#3664, #3299).
 //
-// Two halves, both driven through fakes with no network:
+// Three parts, all driven through fakes with no network:
 //
 //   - #3299: a wide window silently drops rows. On 2026-10-05 the events view returned
 //     26 rows for `tag=booking-reminder msg="cycle"` over 25 hours, and 287 when the same
