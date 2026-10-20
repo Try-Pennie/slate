@@ -115,8 +115,8 @@ export interface FreshBooking {
 
 /**
  * What a test booking's change would have sent, named in the log line that replaces
- * it (#3930): the revert's DM, the left move's escalation, the resize post, or the
- * refused revert's post.
+ * it (#3930): the revert's DM, the left move's escalation, the resize post, the
+ * refused revert's post, or (#3925) the post reporting a move found on a full read.
  */
 export type WithheldNotice = "reverted" | "left" | "resized" | "revert_refused" | "reported";
 
@@ -196,7 +196,7 @@ export interface InviteMoveSummary {
   nothing: number;
   /**
    * Smoke test bookings whose change was handled (reverted, refused or gone on
-   * revert, left, or resized) with every message to a person held back and logged
+   * revert, left, resized, or reported from a full read) with every message to a person held back and logged
    * instead (#3930).
    * Counted beside the action as well, so a revert is still a revert.
    */
