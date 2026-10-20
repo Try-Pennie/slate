@@ -42,7 +42,8 @@ export type TeamCapacityReport =
       measurable: true;
       nowMs: number;
       zone: string;
-      /** The booking window's days, as the booker counts them (`offeredWindowFor`). */
+      /** The booking window's days, as the booker counts them (`offeredWindowFor`), led by today
+       *  after the 6 PM cutoff while the office is open, since its remaining times are still served (#3949). */
       windowDays: string[];
       /** Every day reported: the window's, then the one asked for if it is not among them. */
       days: string[];
