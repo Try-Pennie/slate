@@ -330,6 +330,27 @@ function sweep(over: Partial<ParitySweep> = {}): ParitySweep {
   assert(/Twilio/.test(routed) && /debt tier/.test(routed), `and names the fix (${routed})`);
 }
 
+{
+  // A sweep reporting EVERY verdict at once is accepted, so adding a verdict can
+  // never push a real sweep over the findings cap and get the whole payload
+  // refused. The cap was a literal 20 while the vocabulary grew to 19 (#3963).
+  const every = Object.keys(PARITY_VERDICT_CLASS).map((verdict) => ({ verdict, count: 1, agents: ["a@x"] }));
+  const parsed = parseParitySweep({
+    total: 102,
+    compared: 100,
+    runUrl: "https://github.com/x/y/actions/runs/1",
+    findings: every,
+  });
+  assert(!("error" in parsed), `a sweep carrying every verdict once is accepted (${JSON.stringify(parsed).slice(0, 80)})`);
+  const doubled = parseParitySweep({
+    total: 102,
+    compared: 100,
+    runUrl: "https://github.com/x/y/actions/runs/1",
+    findings: [...every, every[0]],
+  });
+  assert("error" in doubled, "and one carrying even one more finding than there are verdicts is refused");
+}
+
 // --- one agent reads as one agent (#3963) -----------------------------------------
 //
 // The 2026-10-20 page said "1 agent were corrected from cal.com automatically": the

@@ -335,8 +335,13 @@ export function buildScheduleParityAllClear(j: ParityJudgement): string {
 
 /** How many agents one finding may name before the rest are dropped. */
 const WIRE_AGENT_CAP = 8;
-/** How many distinct verdicts one sweep may report. There are fourteen in total. */
-const WIRE_FINDING_CAP = 20;
+/**
+ * How many findings one sweep may report: one per verdict, since the sweep sends
+ * each verdict once. DERIVED from the vocabulary rather than written as a number,
+ * because it was a literal 20 while the verdicts grew to 19 (#3963), and the next
+ * one would have had the endpoint refuse every sweep carrying them all.
+ */
+const WIRE_FINDING_CAP = Object.keys(PARITY_VERDICT_CLASS).length;
 /** Long enough for an email plus a name, short enough that one cannot fill a page. */
 const WIRE_AGENT_CHARS = 120;
 /** The only place a run link may point. */
@@ -348,7 +353,7 @@ const RUN_URL_PREFIX = "https://github.com/";
  * The caller holds the booking API key, which makes this a trusted CALLER and not
  * trusted CONTENT: what it sends is rendered into an alert somebody reads on a
  * phone and acts on. Two things are therefore closed rather than validated loosely.
- * The verdict is a vocabulary, refused unless it is one of the fourteen the sweep
+ * The verdict is a vocabulary, refused unless it is one in `PARITY_VERDICT_CLASS`, the ones the sweep
  * can actually produce, so no name reaches the copy that the classification does
  * not know what to do with. And the run link may only be a GitHub URL, because it
  * is the one part of the message a reader clicks without reading.
