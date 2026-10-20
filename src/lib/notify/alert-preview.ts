@@ -618,6 +618,7 @@ import {
   advisorRevertedDm,
   inviteCheckFailedAlert,
   inviteLaunchSweepAlert,
+  inviteMoveFoundOnFullReadAlert,
   inviteMoveLeftAlert,
   inviteResizedAlert,
   inviteRevertRefusedAlert,
@@ -6052,6 +6053,9 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: inviteRevertRefusedAlert(INVITE_MOVE_FACTS, { kind: "refused", reason: "403 forbiddenForNonOrganizer" }) },
   { key: "booking_invite_moved:*", state: "the invite was gone when Slate went to put it back", channel: "alert",
     text: inviteRevertRefusedAlert(INVITE_MOVE_FACTS, { kind: "gone" }) },
+  // #3925: a first move found on a full read of the calendar, reported and not put back.
+  { key: "booking_invite_moved:*", state: "a move found on a full read of the calendar, reported", channel: "alert",
+    text: inviteMoveFoundOnFullReadAlert(INVITE_MOVE_FACTS_OTHER_DAY) },
   { key: "booking_invite_moved:*", state: "put back, but the advisor could not be messaged", channel: "alert",
     text: inviteRevertedAdvisorUntoldAlert(INVITE_MOVE_FACTS) },
   // #3924: a crashed in place reschedule's invite the abandoned pin sweep could not put back.

@@ -382,16 +382,23 @@ export async function loadSlateBookingInvites(userId: string): Promise<Map<strin
  * other meeting of that advisor being cached, so leads would be offered times the
  * advisor is busy. An invite it could not check is PAGED instead
  * (`booking_invite_check_failed:*`), and stays mirrored, so both times stay blocked.
+ *
+ * `fullRead` (#3925): the pass read every event rather than a delta (a bootstrap, a
+ * pass after Google expired the token, the rotation), so it cannot say when an invite
+ * moved, and the handler reports such a move instead of putting it back.
  */
 async function noticeMovedInvites(
   userId: string,
   email: string,
   timeZone: string,
   outOfStep: OutOfStepInvite[],
+  fullRead: boolean,
 ): Promise<void> {
   if (outOfStep.length === 0) return;
   try {
-    const { failed, ...counts } = await noticeOutOfStepInvites(realInviteMoveDeps({ userId, email, timeZone }), outOfStep);
+    const { failed, ...counts } = await noticeOutOfStepInvites(realInviteMoveDeps({ userId, email, timeZone }), outOfStep, {
+      fullRead,
+    });
     log.info("invite-move", { msg: "out of step invites handled", user_id: userId, delivered: outOfStep.length, failed: failed.length, ...counts });
     if (failed.length > 0) await reportInviteCheckFailures(email, failed);
   } catch (err) {
@@ -833,11 +840,11 @@ async function syncCalendar(
       },
     });
     await noticeEditedTimeOff(cal.user_id, result.events, slateEventIds, timeZone);
-    // Only a DELTA is acted on. A full fetch (bootstrap, or a token Google expired)
-    // returns every event whatever changed, so an invite out of step in it may have
-    // been moved before Slate watched for this, which decision 9 says is reported
-    // and never put back. It is still mirrored above, so both times stay blocked.
-    await noticeMovedInvites(cal.user_id, email, timeZone, full ? [] : outOfStep);
+    // A full fetch (bootstrap, or a token Google expired) returns every event whatever
+    // changed, so an invite out of step in it may have moved at any time before: it is
+    // reported and never put back (#3925; it used to be mirrored and nothing more). A
+    // delta saw the change happen, and only a delta's move is put back.
+    await noticeMovedInvites(cal.user_id, email, timeZone, outOfStep, full);
     // Never reconcile against a PARTIAL event set (#1259). A page-capped pass read only
     // the first MAX_SYNC_PAGES pages, so every event on the pages it never fetched
     // looks vanished and its cached busy time would be deleted, leaving the agent
@@ -1091,12 +1098,14 @@ export async function hydrateCalendar(cal: AgentCalendar): Promise<HydrateResult
           : new Map<string, BookedInvite>();
       const slateEventIds = new Set(invites.keys());
       // #3919: the same rule as the incremental pass, so a moved invite's mirror
-      // survives the rotation. Only mirrored here: whatever moved it is acted on by
-      // the pass that DELIVERED the change, and the launch sweep reported anything
-      // older, so a full fetch never puts an invite back on its own.
-      const { skip: skipEventIds } = splitSlateInvites(result.events, invites, timeZone);
+      // survives the rotation. #3925: and handed to the handler as a FULL read, which
+      // reports a move nothing delivered (a first hydration, or a change a delta never
+      // carried) and never puts it back. One already handled is recorded, so the
+      // handler finds it standing and says nothing.
+      const { skip: skipEventIds, outOfStep } = splitSlateInvites(result.events, invites, timeZone);
       await applyEvents(cal.user_id, cal.calendar_id, result.events, skipEventIds, timeZone);
       await noticeEditedTimeOff(cal.user_id, result.events, slateEventIds, timeZone);
+      await noticeMovedInvites(cal.user_id, email, timeZone, outOfStep, true);
       // Never reconcile against a PARTIAL set (#1259): a page-capped pass read only the first
       // pages, so everything beyond them looks vanished and its cached busy time would be
       // deleted, leaving the agent looking free during real meetings.

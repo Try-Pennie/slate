@@ -137,6 +137,20 @@ export function inviteMoveLeftAlert(f: InviteMoveFacts, reason: LeftReason, reac
   );
 }
 
+/**
+ * #3925: a first move found on a FULL read of the advisor's calendar (a bootstrap, a
+ * pass after Google expired the sync token, or the daily rotation) rather than as the
+ * change happened. Nothing says when it moved, so it is reported and not put back.
+ */
+export function inviteMoveFoundOnFullReadAlert(f: InviteMoveFacts): string {
+  return (
+    `${who(f)} moved a booking's invite in Google Calendar from ${inviteWhen(f.bookedStartsAt)} to ${movedTo(f)}. ` +
+    `Slate found it on a full read of their calendar rather than as it changed, so it cannot tell when the ` +
+    `invite moved, and did not move it back. The advisor is blocked at both times. Somebody needs to move the ` +
+    `call in Slate, give it to another advisor, or have the advisor put the invite back: ${f.bookingUrl}`
+  );
+}
+
 /** A revert Google refused: the advisor's move stands. */
 export type RevertRefusal = { kind: "gone" } | { kind: "refused"; reason: string };
 

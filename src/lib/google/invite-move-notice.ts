@@ -41,6 +41,22 @@
  * delivered is said in the channel post. Messages are sent at most once: a run
  * that dies between the record and the DM has used the record.
  *
+ * A MOVE FOUND ON A FULL READ IS REPORTED, NEVER PUT BACK (#3925). A bootstrap, a
+ * pass after Google expired the sync token, and the daily rotation read every event
+ * whatever changed, so an out of step invite in one may have moved at any time
+ * before (the 2026-10-19 decision that a full fetch never puts an invite back). Such
+ * passes hand their invites here with `fullRead`, and a first move that would have
+ * been put back is recorded as `report_full_read` and posted instead, with nobody
+ * DMed. A second move, one near the start and an end only change are handled as on
+ * any pass, because none of those moves an invite. The record makes the move
+ * standing, so the next full read of it is not news and a further move is a second.
+ *
+ * A CANCEL DURING A PUT BACK IS NOT A LOST INVITE (#3925). A cancel takes no
+ * reschedule lock, so it can delete the invite between the read and the revert, and
+ * the revert then meets a gone event. The booking is read again before that is
+ * reported: one no longer active, or no longer holding this invite, is Slate's own
+ * change, and nobody is paged. A re-read that fails reports as before.
+ *
  * SMOKE TEST BOOKINGS TELL NOBODY (#3930). The canary and the hand run tests book on
  * the smoke test advisors, who are not people: a DM cannot land, and a post would
  * page somebody with nothing to do. Their changes are judged, recorded and put back
@@ -59,6 +75,7 @@ import {
 import {
   advisorLeftDm,
   advisorRevertedDm,
+  inviteMoveFoundOnFullReadAlert,
   inviteMoveLeftAlert,
   inviteResizedAlert,
   inviteRevertRefusedAlert,
@@ -101,7 +118,7 @@ export interface FreshBooking {
  * it (#3930): the revert's DM, the left move's escalation, the resize post, or the
  * refused revert's post.
  */
-export type WithheldNotice = "reverted" | "left" | "resized" | "revert_refused";
+export type WithheldNotice = "reverted" | "left" | "resized" | "revert_refused" | "reported";
 
 /** A change to record. */
 export interface NewInviteChange {
@@ -171,6 +188,8 @@ export interface InviteMoveSummary {
   left: number;
   refused: number;
   resized: number;
+  /** #3925: first moves found on a full read, recorded and posted, never put back. */
+  reported: number;
   /** Slate's own reschedule or reassign was in flight, or the booking moved on. */
   slateOwn: number;
   /** Nothing to do: back in step, already recorded, standing, or past. */
@@ -210,16 +229,21 @@ export function splitCheckFailures<F extends { bookingId: string }>(
   return { page, silenced };
 }
 
-/** Handle the out of step invites one sync pass delivered for one advisor. */
+/**
+ * Handle the out of step invites one sync pass delivered for one advisor. `fullRead`
+ * says the pass read every event rather than a delta, so nothing it found is put back.
+ */
 export async function noticeOutOfStepInvites(
   deps: InviteMoveDeps,
   items: { eventId: string; bookingId: string; bookedStartsAt: string }[],
+  opts: { fullRead?: boolean } = {},
 ): Promise<InviteMoveSummary> {
   const summary: InviteMoveSummary = {
     reverted: 0,
     left: 0,
     refused: 0,
     resized: 0,
+    reported: 0,
     slateOwn: 0,
     nothing: 0,
     silenced: 0,
@@ -236,7 +260,7 @@ export async function noticeOutOfStepInvites(
       }
       let after: (() => Promise<void>) | null = null;
       try {
-        after = await judgeUnderLock(deps, item, summary);
+        after = await judgeUnderLock(deps, item, summary, opts.fullRead === true);
       } finally {
         await deps.releaseLock(item.bookingId, token);
       }
@@ -250,10 +274,17 @@ export async function noticeOutOfStepInvites(
   return summary;
 }
 
+/** Whether the booking, read again, is no longer the active holder of this invite. Throws on a failed read. */
+async function bookingMovedOn(deps: InviteMoveDeps, item: { eventId: string; bookingId: string }): Promise<boolean> {
+  const b = await deps.loadBooking(item.bookingId);
+  return !b || !ACTIVE.has(b.status) || b.gcalEventId !== item.eventId;
+}
+
 async function judgeUnderLock(
   deps: InviteMoveDeps,
   item: { eventId: string; bookingId: string },
   summary: InviteMoveSummary,
+  fullRead: boolean,
 ): Promise<(() => Promise<void>) | null> {
   if (await deps.reassignInFlight(item.bookingId)) {
     summary.slateOwn++;
@@ -276,11 +307,16 @@ async function judgeUnderLock(
   }
   const prior = await deps.loadChanges(item.bookingId);
   const booked = { startsAt: booking.startsAt, endsAt: booking.endsAt };
-  const decision = decideInviteChange({ event, booked, prior, nowMs: deps.nowMs, timeZone: deps.timeZone });
-  if (decision.kind === "nothing") {
+  const decided = decideInviteChange({ event, booked, prior, nowMs: deps.nowMs, timeZone: deps.timeZone });
+  if (decided.kind === "nothing") {
     summary.nothing++;
     return null;
   }
+  // #3925: a full read never puts an invite back; the move is reported instead.
+  const decision =
+    fullRead && decided.change.action === "revert"
+      ? { ...decided, change: { ...decided.change, action: "report_full_read" as const } }
+      : decided;
   const win = eventWindow(event, deps.timeZone ?? "UTC")!;
   const rowId = await deps.recordChange({
     bookingId: booking.id,
@@ -334,6 +370,15 @@ async function judgeUnderLock(
     });
   }
 
+  if (action === "report_full_read") {
+    summary.reported++;
+    return tell("reported", async () => {
+      const people = await deps.loadPeople(deps.advisorUserId);
+      // alert-key: booking_invite_moved:*
+      await deps.post(movedKey, inviteMoveFoundOnFullReadAlert(facts(people.advisorName)));
+    });
+  }
+
   if (action === "revert") {
     let refusal: { kind: "gone" } | { kind: "refused"; reason: string } | null = null;
     try {
@@ -346,6 +391,12 @@ async function judgeUnderLock(
       refusal === null ? "reverted" : refusal.kind === "gone" ? "event_gone" : "revert_refused",
       refusal?.kind === "refused" ? refusal.reason : null,
     );
+    // #3925: a cancel (or reassign) that landed during the revert deleted the invite on
+    // purpose. Only a MEASURED move on stays silent: a re-read that fails reports.
+    if (refusal?.kind === "gone" && (await bookingMovedOn(deps, item).catch(() => false))) {
+      summary.slateOwn++;
+      return null;
+    }
     if (refusal !== null) {
       summary.refused++;
       const r = refusal;
