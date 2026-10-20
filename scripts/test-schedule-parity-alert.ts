@@ -319,6 +319,15 @@ function sweep(over: Partial<ParitySweep> = {}): ParitySweep {
   );
   assert(/Slate offers/.test(other), "an agent a pool does reach still reads as Slate offering them");
   assert(!/Twilio/.test(other), "and is not sent to Twilio, which would not fix it");
+
+  // Routed by cal.com and in no Slate pool: the same fix, different words.
+  eq(PARITY_VERDICT_CLASS["in-no-pool-still-routed"], "paging", "routed by cal.com and offered by no Slate pool pages");
+  const routed = buildScheduleParityAlert(
+    classifyParitySweep(sweep({ findings: [{ verdict: "in-no-pool-still-routed", count: 2, agents: ["a@", "b@"] }] })),
+  );
+  assert(/^2 are bookable in Slate and in no routing pool while cal\.com still routes them leads: a@, b@$/m.test(routed), `it says cal.com routes them (${routed})`);
+  assert(!/neither system/.test(routed), "and never that neither system offers them");
+  assert(/Twilio/.test(routed) && /debt tier/.test(routed), `and names the fix (${routed})`);
 }
 
 // --- one agent reads as one agent (#3963) -----------------------------------------
@@ -387,6 +396,7 @@ function sweep(over: Partial<ParitySweep> = {}): ParitySweep {
     "hours-differ": "1 works different hours",
     "absent-from-slate": "1 hosts in cal.com and has no Slate record",
     "bookable-in-no-pool": "1 is bookable in Slate and in no routing pool, so neither system offers them",
+    "in-no-pool-still-routed": "1 is bookable in Slate and in no routing pool while cal.com still routes them leads",
   };
   for (const v of paging) {
     const one = pagingLabel(v, 1);

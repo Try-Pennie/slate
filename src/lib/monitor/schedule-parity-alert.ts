@@ -52,6 +52,9 @@ export const PARITY_VERDICT_CLASS = {
   // (#2088). It pages for the same reason its neighbour does, and it is the louder
   // of the two: the incumbent made this decision explicitly.
   "bookable-not-routable": "paging",
+  // The other direction (#3963): cal.com routes them, no Slate pool reaches them,
+  // so at cutover they get no leads. It read as agreement before.
+  "in-no-pool-still-routed": "paging",
   "absent-from-slate": "paging",
   // Bookable in Slate and in no routing pool, so neither system offers them
   // (#3963). It pages because it is fixable today and only by a person: their debt
@@ -125,6 +128,10 @@ const PAGING_LABEL: Record<string, { one: string; many: string }> = {
   "bookable-in-no-pool": {
     one: "is bookable in Slate and in no routing pool, so neither system offers them",
     many: "are bookable in Slate and in no routing pool, so neither system offers them",
+  },
+  "in-no-pool-still-routed": {
+    one: "is bookable in Slate and in no routing pool while cal.com still routes them leads",
+    many: "are bookable in Slate and in no routing pool while cal.com still routes them leads",
   },
 };
 
@@ -297,7 +304,7 @@ export function buildScheduleParityAlert(j: ParityJudgement): string {
   }
   // #3963: the fix for somebody in no pool is in Twilio, not in either system the
   // comparison reads, so the page says where rather than leaving it to be guessed.
-  if (j.paging.some((f) => f.verdict === "bookable-in-no-pool")) {
+  if (j.paging.some((f) => f.verdict === "bookable-in-no-pool" || f.verdict === "in-no-pool-still-routed")) {
     tail.push("Tag their debt tier in Twilio, and the roster sync gives them the attributes a pool matches.");
   }
   return [head, ...lines, ...tail, j.runUrl].join("\n");

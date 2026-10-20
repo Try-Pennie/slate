@@ -979,6 +979,7 @@ the real answer is that nothing was compared.
 | 26 | **bookable in Slate and in a routing pool, while cal.com withholds them from every routed decision** |
 | 27 | an hours, days or timezone difference on a week the AGENT set themselves, which the lane will not overwrite |
 | 28 | **bookable in Slate and in no routing pool**, and cal.com does not route to them either, so neither system offers them; the fix is their debt tier in Twilio |
+| 29 | **bookable in Slate and in no routing pool while cal.com still routes them leads**, so at cutover they get none; the fix is their debt tier in Twilio |
 
 **Exit 23 and exit 28 are split on whether a pool reaches the agent** (#3963). The
 bookable flag alone does not make Slate offer anybody: on 2026-10-20 an agent was
@@ -990,7 +991,9 @@ asked through the shipped pool predicate (`matchableAgentIds`, which calls
 `agentIdsFromPool`, the same one the recompute lane and `/admin/tiers` use), never
 an attribute check written beside it. It applies whether cal.com does not list them
 (once exit 23) or withholds them (once exit 26). A bookable agent cal.com DOES route
-to and no pool reaches is still read as agreement; that gap is noted on the issue.
+to and no pool reaches used to read as agreement, because the routable check came
+first; it is exit 29 now, with its own words, since "neither system offers them"
+would be false there.
 
 The ordering across the two halves lives in ONE table
 (`OUTCOME_ORDER`), written out rather than folded together from the two halves'

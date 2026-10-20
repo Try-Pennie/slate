@@ -79,6 +79,13 @@ import { assert, eq, finish } from "./lib/harness.ts";
     "and a measured gap in the pools outranks an agent who could not be read",
   );
   eq(EXIT_CODE["bookable-in-no-pool" as never], 28, "it exits on its own code, the next free one");
+  // Routed by cal.com and in no Slate pool outranks the case neither system offers:
+  // at cutover it is leads lost, where the other is a person never set up.
+  assert(
+    beats("in-no-pool-still-routed", "bookable-in-no-pool"),
+    "an agent cal.com routes whom no Slate pool reaches outranks one neither system offers",
+  );
+  eq(EXIT_CODE["in-no-pool-still-routed" as never], 29, "and it has its own code");
   assert(
     beats("hours-differ", "no-calcom-user"),
     "a measured difference outranks an agent who could not be compared",

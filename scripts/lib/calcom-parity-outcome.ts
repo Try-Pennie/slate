@@ -58,6 +58,10 @@ export const OUTCOME_ORDER: readonly ParityOutcome[] = [
   "hours-differ",
   "bookable-not-routable",
   "bookable-not-hosting",
+  // #3963: cal.com routes them and no Slate pool reaches them, so at cutover they
+  // get no leads. Below Slate offering somebody cal.com does not route, which is a
+  // lead offered wrongly; above the case where neither system offers them.
+  "in-no-pool-still-routed",
   "absent-from-slate",
   // #3963: bookable in Slate and in no routing pool, so NEITHER system offers them.
   // Below Slate offering somebody cal.com does not route (which is a lead offered
@@ -127,6 +131,7 @@ export const EXIT_CODE: Record<ParityOutcome, number> = {
   "held-back-still-hosting": 24,
   "departed-still-hosting": 25,
   "bookable-in-no-pool": 28,
+  "in-no-pool-still-routed": 29,
 };
 
 /**

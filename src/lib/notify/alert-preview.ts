@@ -3706,6 +3706,22 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     ),
   },
   {
+    // #3963: the other direction. cal.com routes them leads and no Slate pool
+    // reaches them, so at cutover they would get none. This read as agreement.
+    key: "schedule_parity_drift",
+    state: "agents cal.com routes are in no Slate routing pool",
+    channel: "alert",
+    text: buildScheduleParityAlert(
+      classifyParitySweep({
+        total: 102,
+        compared: 100,
+        runUrl: "https://github.com/Try-Pennie/slate/actions/runs/1",
+        findings: [{ verdict: "in-no-pool-still-routed", count: 2, agents: ["bjones@", "ckim@"] }],
+        corrected: { count: 0, agents: [] },
+      }),
+    ),
+  },
+  {
     key: "schedule_parity_drift",
     state: "the two systems agree again",
     channel: "recovery",

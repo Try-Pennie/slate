@@ -436,6 +436,21 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
     ROSTER_VERDICT_RANK["bookable-in-no-pool"] > ROSTER_VERDICT_RANK.agree,
     "the new verdict outranks agreement, so it still pages",
   );
+  // cal.com ROUTES to them and no Slate pool reaches them. This read as agreement,
+  // because the routable check came first: at cutover they would get no leads
+  // while every run said both systems agree. Its own verdict, because "neither
+  // system offers them" would be false here.
+  const routed = classifyRosterMember(slate({ matchableByAnyBucket: false }), "routable", null);
+  eq(routed.verdict, "in-no-pool-still-routed", "routed by cal.com and in no Slate pool is a finding, not agreement");
+  assert(/cal\.com still routes/.test(routed.reason), `it says cal.com still routes them (${routed.reason})`);
+  assert(/Twilio/.test(routed.reason) && /debt tier/.test(routed.reason), `and where the fix is (${routed.reason})`);
+  assert(!/Slate offers/.test(routed.reason), `without claiming Slate offers them (${routed.reason})`);
+  assert(
+    ROSTER_VERDICT_RANK["in-no-pool-still-routed"] > ROSTER_VERDICT_RANK.agree,
+    "and it outranks agreement, so it pages",
+  );
+  // The other direction for it: in a pool and routed is still the healthy case.
+  eq(classifyRosterMember(slate({ matchableByAnyBucket: true }), "routable", null).verdict, "agree", "in a pool and routed still agrees");
   // A departed agent in no pool is still the departure, which outranks everything.
   const gone = classifyRosterMember(
     slate({ matchableByAnyBucket: false, deactivatedAt: "2026-10-01T00:00:00Z" }),

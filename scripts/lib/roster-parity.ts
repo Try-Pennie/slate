@@ -83,6 +83,9 @@ export type RosterVerdict =
   /** Bookable in Slate, cal.com does not route to them, and no routing pool
    *  reaches them either, so Slate offers them to nobody (#3963). */
   | "bookable-in-no-pool"
+  /** Bookable in Slate and in no routing pool while cal.com still routes them, so
+   *  Slate would give them no leads at all (#3963). */
+  | "in-no-pool-still-routed"
   /** Slate offers somebody cal.com does not list as a host at all. */
   | "bookable-not-hosting"
   /** Slate offers somebody cal.com lists and deliberately withholds from routing. */
@@ -117,6 +120,9 @@ export const ROSTER_VERDICT_RANK: Record<RosterVerdict, number> = {
   // who somebody has to go and set up, and nothing is mis-offered by either today.
   "bookable-in-no-pool": 2,
   "bookable-not-hosting": 3,
+  // Level with Slate offering somebody cal.com does not route: the same
+  // disagreement about who takes leads, in the other direction.
+  "in-no-pool-still-routed": 3,
   // Above "not a host at all", because it is the stronger statement: cal.com holds
   // this person and deliberately withholds them, so Slate offering them is a
   // decision the incumbent has explicitly made the other way.
@@ -308,12 +314,25 @@ export function classifyRosterMember(
   if (slate.isTest) return { verdict: "agree", reason: "" };
 
   if (slate.bookable) {
-    if (standing === "routable") return { verdict: "agree", reason: "" };
     // The bookable flag alone does not make Slate offer anybody: a pool has to
     // reach them (#3963). tgill@ was bookable with {"role":"Sales"} only, matched
     // no bucket, and was reported as somebody "Slate offers", which sent the reader
     // to cal.com's host list for a fix that lives in Twilio. `matchableByAnyBucket`
     // is the shipped pool predicate, computed by the caller, never a rule here.
+    //
+    // Asked BEFORE the routable check, which used to come first and so read an
+    // agent cal.com routes, and no Slate pool reaches, as agreement: at cutover
+    // they would get no leads while every run said the two systems agree.
+    if (!slate.matchableByAnyBucket && standing === "routable") {
+      return {
+        verdict: "in-no-pool-still-routed",
+        reason:
+          "bookable in Slate but in no routing pool (no bucket matches their attributes or names them), " +
+          "so Slate does not offer them to anyone while cal.com still routes them leads. " +
+          "Tag their debt tier in Twilio and the roster sync gives them the attributes a pool matches",
+      };
+    }
+    if (standing === "routable") return { verdict: "agree", reason: "" };
     if (!slate.matchableByAnyBucket) {
       return {
         verdict: "bookable-in-no-pool",
