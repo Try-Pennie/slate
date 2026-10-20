@@ -46,6 +46,8 @@ export const OFF_DATABASE: ReadonlySet<string> = new Set([
   "updateEventContact",
   "busyIntervalsForAgent",
   "readEventDescription",
+  // #3924: the abandoned pin sweep's read of the invite it may put back.
+  "readEventOnPrimary",
   "createOwnerAlertEvent",
   "deleteOwnerAlertEvent",
   "moveOwnerAlertEvent",
@@ -123,6 +125,10 @@ export const ON_DATABASE: ReadonlySet<string> = new Set([
   "liveBookingHoldingEvent",
   "loadAbandonedReassignIntents",
   "loadAbandonedReschedulePins",
+  // #3924: the abandoned pin sweep's claim on a row, its release, and its booking read.
+  "takeOverAbandonedReschedulePin",
+  "releaseAbandonedReschedulePin",
+  "readBookingInviteState",
   "loadAgentDisplayName",
   "loadBookingAssignees",
   "loadBookingById",

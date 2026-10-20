@@ -339,7 +339,8 @@ async function run() {
       calls.enqueueEventDeletion.length === 1 && calls.enqueueEventDeletion[0].eventId === "slateorphan",
       "sweep: enqueues the orphaned reassign event for durable deletion",
     );
-    assert(calls.releaseReschedule === 3, "sweep: frees every swept lock row");
+    // #3924: freed through the token that took each row over, never a blind delete.
+    assert(calls.releaseAbandonedPin.length === 3, "sweep: frees every swept lock row");
   }
 
   // --- #757: the sweep must SAY when a reschedule was genuinely lost ---

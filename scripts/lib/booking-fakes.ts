@@ -357,7 +357,12 @@ export function makeDeps(opts: FakeOpts) {
     resolveBucketByCode: [] as string[],
     deleteEvent: [] as { id: string }[],
     enqueueEventDeletion: [] as { email: string; eventId: string; bookingId: string | null }[],
-    updateEventTime: [] as { id: string }[],
+    /** The times each PATCH asked for, so a test can tell a move from a put back (#3924). */
+    updateEventTime: [] as { id: string; start?: string; end?: string }[],
+    /** #3924: every invite the abandoned pin sweep read, and every pin it took over or freed. */
+    readEventOnPrimary: [] as string[],
+    takeOverAbandonedPin: [] as string[],
+    releaseAbandonedPin: [] as string[],
     updateEventDescription: [] as { email: string; id: string; description: string }[],
     updateBookingPhone: [] as { bookingId: string; phone: string }[],
     updateEventContact: [] as {
@@ -548,7 +553,14 @@ export function makeDeps(opts: FakeOpts) {
   const gcalByClientId = new Map<string, string>();
   // In-memory reschedule_locks table for the per-booking lease state machine.
   const RESCHEDULE_TTL = 2 * 60 * 1000;
-  const locks = new Map<string, { target: string; leaseUntilMs: number; pin: ReschedulePin | null }>();
+  // `token` is set only on a row the abandoned pin sweep took over (#3924).
+  const locks = new Map<string, { target: string; leaseUntilMs: number; pin: ReschedulePin | null; token?: string }>();
+  let sweepClaims = 0;
+  // #3924: where Google holds each invite a PATCH has moved. An invite no PATCH has
+  // touched is where its booking says, which is what a fresh booking's invite holds.
+  const googleEvents = new Map<string, { start: string; end: string }>();
+  const bookingNamed = (bookingId: string): Booking | undefined =>
+    [opts.existing, opts.bookingById].find((c) => c?.booking?.id === bookingId)?.booking;
   if (opts.heldLease && opts.existing) {
     locks.set(opts.existing.booking.id, {
       target: opts.heldLease.target,
@@ -798,9 +810,10 @@ export function makeDeps(opts: FakeOpts) {
     enqueueEventDeletion: async (email, eventId, bookingId) => {
       calls.enqueueEventDeletion.push({ email, eventId, bookingId });
     },
-    updateEventTime: async (_email, id) => {
-      calls.updateEventTime.push({ id });
+    updateEventTime: async (_email, id, start, end) => {
+      calls.updateEventTime.push({ id, start, end });
       if (opts.updateEventTimeGone) throw new EventGone("events.patch"); // #617
+      googleEvents.set(id, { start, end });
       fireConcurrent(); // #615: a concurrent cancel/reassign lands mid-PATCH
     },
     // #1341: the invite body carries the number the advisor dials, so a phone
@@ -1039,7 +1052,69 @@ export function makeDeps(opts: FakeOpts) {
       const l = locks.get(bookingId);
       if (l && Date.parse(l.target) === Date.parse(target)) locks.delete(bookingId);
     },
-    loadAbandonedReschedulePins: async () => opts.abandonedPins ?? [],
+    // Rows handed in by a suite, or (#3924) the fake table's own pinned rows past
+    // their lease plus the grace, joined to the booking as the real loader joins it.
+    loadAbandonedReschedulePins: async (graceMs) => {
+      if (opts.abandonedPins) return opts.abandonedPins;
+      const cutoff = Date.now() - graceMs;
+      const rows: AbandonedReschedulePin[] = [];
+      for (const [bookingId, l] of locks) {
+        if (!l.pin || l.leaseUntilMs >= cutoff) continue;
+        const b = bookingNamed(bookingId);
+        rows.push({
+          booking_id: bookingId,
+          pinned_agent_email: l.pin.pinned_agent_email,
+          gcal_client_id: l.pin.gcal_client_id,
+          branch: l.pin.branch,
+          booking_gcal_event_id: b?.gcal_event_id ?? null,
+          target_starts_at: l.target,
+          booking_starts_at: b?.starts_at ?? null,
+        });
+      }
+      return rows;
+    },
+    // #3924: the compare and swap the real seam makes. A row a suite handed in
+    // (`abandonedPins`) has no row in the fake table, so it is taken as it stands.
+    takeOverAbandonedReschedulePin: async (pin, graceMs) => {
+      calls.takeOverAbandonedPin.push(pin.booking_id);
+      const l = locks.get(pin.booking_id);
+      const token = `sweep-${++sweepClaims}`;
+      if (!l) return opts.abandonedPins ? token : null;
+      if (l.pin?.gcal_client_id !== pin.gcal_client_id || l.leaseUntilMs >= Date.now() - graceMs) return null;
+      l.leaseUntilMs = Date.now() + RESCHEDULE_TTL;
+      if (pin.booking_starts_at) l.target = pin.booking_starts_at;
+      l.token = token;
+      return token;
+    },
+    releaseAbandonedReschedulePin: async (bookingId, token) => {
+      calls.releaseAbandonedPin.push(bookingId);
+      if (locks.get(bookingId)?.token === token) locks.delete(bookingId);
+    },
+    readBookingInviteState: async (bookingId) => {
+      const b = bookingNamed(bookingId);
+      return b
+        ? {
+            status: b.status,
+            starts_at: b.starts_at,
+            ends_at: b.ends_at,
+            gcal_event_id: b.gcal_event_id,
+            agent_email: b.agent_email,
+            timezone: b.timezone,
+          }
+        : null;
+    },
+    readEventOnPrimary: async (_email, id) => {
+      calls.readEventOnPrimary.push(id);
+      const held =
+        googleEvents.get(id) ??
+        [opts.existing, opts.bookingById]
+          .map((c) => c?.booking)
+          .filter((b): b is Booking => b?.gcal_event_id === id)
+          .map((b) => ({ start: b.starts_at, end: b.ends_at }))[0];
+      return held
+        ? { id, status: "confirmed", start: { dateTime: held.start }, end: { dateTime: held.end }, updated: `${id}@${held.start}` }
+        : null;
+    },
     // #518 reassign-intent state. writeReassignIntent is an idempotent UPSERT on
     // (booking_id, gcal_client_id): a same-target retry (identical deterministic
     // id) must NOT create a second row or throw, so #449's idempotent retry holds.
@@ -1254,9 +1329,11 @@ export function makeDeps(opts: FakeOpts) {
   };
   // Test helper: peek at a booking's in-memory reschedule lease (or undefined if
   // released), so a test can assert whether a cleanup delete clobbered it (#480).
-  const getLease = (bookingId: string): { target: string; leaseUntilMs: number; pin: ReschedulePin | null } | undefined =>
+  const getLease = (
+    bookingId: string,
+  ): { target: string; leaseUntilMs: number; pin: ReschedulePin | null; token?: string } | undefined =>
     locks.get(bookingId);
-  return { deps, calls, expireLease, getLease, setOwnerAlertCreateFails, setHandoffNoticePostFails };
+  return { deps, calls, expireLease, getLease, googleEvents, setOwnerAlertCreateFails, setHandoffNoticePostFails };
 }
 
 // Validated reasons for the changed reschedule/cancel/reassign signatures.

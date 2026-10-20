@@ -231,6 +231,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   creation_orphan_events: "a-booking-side-effect-did-not-complete",
   reassign_intent_dropped: "a-booking-side-effect-did-not-complete",
   reschedule_pin_dropped: "a-booking-side-effect-did-not-complete",
+  reschedule_invite_stranded: "a-booking-side-effect-did-not-complete",
   reschedule_lock_outage: "a-booking-side-effect-did-not-complete",
   stale_phone_invite: "a-booking-side-effect-did-not-complete",
   booking_invite_moved: "a-booking-side-effect-did-not-complete",

@@ -462,10 +462,19 @@ export function reservationDrainRecovery(): string {
   );
 }
 
-/** A reschedule abandoned mid-flight: the booking did NOT move. */
-export function reschedulePinDroppedAlert(dropped: number): string {
+/**
+ * A reschedule abandoned mid-flight: the booking did NOT move. #3924: `putBack` counts
+ * the ones whose lead invite the crashed move had already changed, which the sweep
+ * moved back, emailing the lead the original time, so whoever re-runs the move knows
+ * the lead has had two emails about it.
+ */
+export function reschedulePinDroppedAlert(dropped: number, putBack = 0): string {
+  const back =
+    putBack > 0
+      ? ` For ${putBack} of them the lead's invite had already been moved to the new time; the sweep moved it back to the original time and the lead was emailed it.`
+      : "";
   return (
-    `${dropped} reschedule(s) were abandoned mid-flight (crash before the move committed) and cleaned up by the sweep. The booking(s) are STILL AT THEIR ORIGINAL TIME; the requested move did NOT happen, and the attendee may believe it did. Re-run the reschedule. Diagnose via the reschedule_locks table + booking_events.`
+    `${dropped} reschedule(s) were abandoned mid-flight (crash before the move committed) and cleaned up by the sweep. The booking(s) are STILL AT THEIR ORIGINAL TIME; the requested move did NOT happen, and the attendee may believe it did.${back} Re-run the reschedule. Diagnose via the reschedule_locks table + booking_events.`
   );
 }
 

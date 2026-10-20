@@ -475,6 +475,10 @@ function buildDeps(
     readReschedulePin: async () => null,
     releaseReschedule: async () => {},
     loadAbandonedReschedulePins: async () => [],
+    takeOverAbandonedReschedulePin: async () => null,
+    releaseAbandonedReschedulePin: async () => {},
+    readBookingInviteState: async () => null,
+    readEventOnPrimary: async () => null,
 
     insertBookingEvent: async () => null,
     hasBookingEvent: async () => false,

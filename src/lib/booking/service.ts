@@ -193,6 +193,8 @@ import { DeadlineExceededError, findDeadlineExceeded, isDeadlineExceeded } from 
 import { GoogleBreakerOpenError } from "@/lib/google/breaker";
 import { sendThrottledAlert, sendThrottledInfo, resolveRecovered } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
+import { strandedInviteAlert } from "@/lib/google/invite-move-copy";
+import { isLoadtest } from "@/lib/loadtest-guard";
 import {
   bookingEventInsertAlert,
   stalePhoneInviteAlert,
@@ -1019,6 +1021,58 @@ export async function claimRescheduleLock(
     target_starts_at: lock.target_starts_at,
   };
   return sameTarget ? { outcome: "resume", pin } : { outcome: "fresh-after-abandon", pin };
+}
+
+/**
+ * #3924: the abandoned pin sweep's takeover of one row, a compare and swap on the
+ * row still naming the pin's event and still past its lease plus the grace, which
+ * is what the sweep's own read selected it by. A reschedule that adopted the pin
+ * since, or another sweep, has re-leased it, so the WHERE matches nothing and the
+ * sweep leaves the row to them. The token is the claim stamp, which is what the
+ * release below matches on. Why the target moves to the booking's own time is on
+ * `BookingDeps.takeOverAbandonedReschedulePin`. THROWS on a failed write, because a
+ * takeover nobody can confirm must not go on to touch a lead's invite.
+ */
+export async function takeOverAbandonedPinLock(
+  db: ReturnType<typeof supabaseAdmin>,
+  pin: orchestration.AbandonedReschedulePin,
+  graceMs: number,
+  now: number,
+): Promise<string | null> {
+  if (!pin.gcal_client_id) return null;
+  const claimedAt = new Date(now).toISOString();
+  const { data, error } = await db
+    .from("reschedule_locks")
+    .update({
+      claimed_at: claimedAt,
+      lease_until: new Date(now + RESCHEDULE_LOCK_TTL_MS).toISOString(),
+      ...(pin.booking_starts_at ? { target_starts_at: pin.booking_starts_at } : {}),
+    })
+    .eq("booking_id", pin.booking_id)
+    .eq("gcal_client_id", pin.gcal_client_id)
+    .lt("lease_until", new Date(now - graceMs).toISOString())
+    .select("booking_id");
+  if (error) throw new Error(`abandoned reschedule pin could not be taken over: ${error.message}`);
+  return (data ?? []).length > 0 ? claimedAt : null;
+}
+
+/**
+ * #3924: free a row the sweep took over, and only while its claim stamp is still
+ * the sweep's: past the sweep's own lease a reschedule may have taken it over, and
+ * that holder's lock is not the sweep's to delete. A refused delete is logged; the
+ * lease runs out on its own and the next sweep finds the invite already in step.
+ */
+export async function releaseAbandonedPinLock(
+  db: ReturnType<typeof supabaseAdmin>,
+  bookingId: string,
+  claimedAt: string,
+): Promise<void> {
+  const { error } = await db
+    .from("reschedule_locks")
+    .delete()
+    .eq("booking_id", bookingId)
+    .eq("claimed_at", claimedAt);
+  if (error) log.error("reschedule", { msg: "abandoned pin lock release failed", booking_id: bookingId }, error);
 }
 
 /**
@@ -2369,6 +2423,24 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
         booking_starts_at: liveById.get(r.booking_id)?.starts_at ?? null,
       }));
     },
+    // #3924: the sweep's own claim on each row, and its release by that claim.
+    takeOverAbandonedReschedulePin: (pin, graceMs) =>
+      takeOverAbandonedPinLock(supabaseAdmin(), pin, graceMs, Date.now()),
+    releaseAbandonedReschedulePin: (bookingId, token) =>
+      releaseAbandonedPinLock(supabaseAdmin(), bookingId, token),
+    readBookingInviteState: async (bookingId) =>
+      unwrap(
+        await supabaseAdmin()
+          .from("bookings")
+          .select("status, starts_at, ends_at, gcal_event_id, agent_email, timezone")
+          .eq("id", bookingId)
+          .maybeSingle(),
+        "abandoned pin booking",
+      ),
+    // A load run writes no invite, and its stub answers every read at the current
+    // time, which would read as an invite moved somewhere Slate never wrote. So under
+    // the flag there is no invite to judge, as the moved invite handler stands down.
+    readEventOnPrimary: async (email, eventId) => (isLoadtest() ? null : getEventOnPrimary(email, eventId)),
 
     // #518 reassign-intent state. UPSERT on (booking_id, gcal_client_id): a
     // same-target retry (identical deterministic id, #449) refreshes the lease
@@ -4342,6 +4414,10 @@ export async function drainBookingReservations() {
  * reschedule vanish while the booking quietly stayed at its original time (#757).
  * A pin whose booking DID reach its target is not counted, so a merely-unreleased
  * lock stays quiet.
+ *
+ * #3924: an in place pin's lead invite is put back by the sweep, which the dropped
+ * alert counts, and one it could not put back is posted on its own, per booking,
+ * because each needs a person to look at that booking.
  */
 export async function sweepAbandonedReschedulePins() {
   const result = await orchestration.processAbandonedReschedulePins(
@@ -4352,11 +4428,33 @@ export async function sweepAbandonedReschedulePins() {
     await sendThrottledAlert(
       "reschedule_pin_dropped",
       DRAIN_ALERT_COOLDOWN_MS,
-      reschedulePinDroppedAlert(result.dropped),
+      reschedulePinDroppedAlert(result.dropped, result.invitesPutBack),
     ).catch(logAlertSendFailure("reschedule_pin_dropped"));
+  }
+  for (const s of result.strandedInvites) {
+    // The target rides in the key, so a later crash of another move of the same
+    // booking is its own post rather than a repeat the cooldown swallows.
+    const key = `${RESCHEDULE_INVITE_STRANDED_KEY}:${s.bookingId}:${Date.parse(s.targetStartsAt)}`;
+    log.error("reschedule", {
+      msg: "a crashed reschedule's invite was not put back",
+      booking_id: s.bookingId,
+      reason: s.reason,
+      detail: s.detail,
+    });
+    // alert-key: reschedule_invite_stranded:*
+    await sendThrottledAlert(
+      key,
+      STRANDED_INVITE_COOLDOWN_MS,
+      strandedInviteAlert({ ...s, bookingUrl: `${appUrl()}/admin/bookings/${s.bookingId}` }),
+    ).catch(logAlertSendFailure(key));
   }
   return result;
 }
+
+/** #3924: the per booking report of an invite the abandoned pin sweep could not put back. */
+export const RESCHEDULE_INVITE_STRANDED_KEY = "reschedule_invite_stranded";
+/** A day: each key names one crashed move, so this only stops one being posted twice. */
+const STRANDED_INVITE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 /**
  * GC abandoned standalone-reassign create intents (#518) on the /api/cron/outbox

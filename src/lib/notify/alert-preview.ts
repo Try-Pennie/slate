@@ -623,7 +623,9 @@ import {
   inviteRevertRefusedAlert,
   inviteRevertedAdvisorUntoldAlert,
   managerLeftDm,
+  strandedInviteAlert,
   type InviteMoveFacts,
+  type StrandedInviteFacts,
 } from "@/lib/google/invite-move-copy";
 
 /** #3919: the measured booking, 4:05 to 4:25 PM ET, moved five minutes earlier. */
@@ -646,6 +648,17 @@ const INVITE_MOVE_FACTS_OTHER_DAY: InviteMoveFacts = {
   eventStartsAt: "2026-10-20T14:00:00.000Z",
   eventEndsAt: "2026-10-20T14:20:00.000Z",
   bookingUrl: "https://slate.trypennie.app/admin/bookings/1c9e5a3b-7d2f-4e18-a6b0-93f4c2d1e8a7",
+};
+
+/** #3924: the same call, whose crashed reschedule had moved its invite to the next morning. */
+const STRANDED_INVITE: StrandedInviteFacts = {
+  advisorEmail: INVITE_MOVE_FACTS.advisorEmail,
+  bookedStartsAt: INVITE_MOVE_FACTS.bookedStartsAt,
+  targetStartsAt: "2026-10-20T14:00:00.000Z",
+  inviteStartsAt: "2026-10-20T14:00:00.000Z",
+  reason: "refused",
+  detail: "403 forbiddenForNonOrganizer",
+  bookingUrl: INVITE_MOVE_FACTS.bookingUrl,
 };
 
 /**
@@ -5389,6 +5402,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: reschedulePinDroppedAlert(2),
   },
   {
+    key: "reschedule_pin_dropped",
+    state: "a move that never happened, its lead invite already moved and put back",
+    channel: "alert",
+    text: reschedulePinDroppedAlert(2, 1),
+  },
+  {
     key: "reassign_intent_dropped",
     state: "a reassignment that never happened",
     channel: "alert",
@@ -6035,6 +6054,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: inviteRevertRefusedAlert(INVITE_MOVE_FACTS, { kind: "gone" }) },
   { key: "booking_invite_moved:*", state: "put back, but the advisor could not be messaged", channel: "alert",
     text: inviteRevertedAdvisorUntoldAlert(INVITE_MOVE_FACTS) },
+  // #3924: a crashed in place reschedule's invite the abandoned pin sweep could not put back.
+  { key: "reschedule_invite_stranded:*", state: "Google refused putting the invite back", channel: "alert",
+    text: strandedInviteAlert(STRANDED_INVITE) },
+  { key: "reschedule_invite_stranded:*", state: "the invite was gone when Slate went to put it back", channel: "alert",
+    text: strandedInviteAlert({ ...STRANDED_INVITE, reason: "gone", detail: null }) },
+  { key: "reschedule_invite_stranded:*", state: "the invite could not be read", channel: "alert",
+    text: strandedInviteAlert({ ...STRANDED_INVITE, reason: "invite-unreadable", inviteStartsAt: null,
+      detail: shortErrorReason(new Error("events.get failed: 503 backendError")) }) },
+  { key: "reschedule_invite_stranded:*", state: "the booking could not be read", channel: "alert",
+    text: strandedInviteAlert({ ...STRANDED_INVITE, reason: "booking-unreadable", inviteStartsAt: null,
+      detail: shortErrorReason(new Error("abandoned pin booking: canceling statement due to statement timeout")) }) },
+  { key: "reschedule_invite_stranded:*", state: "the invite at a third time", channel: "alert",
+    text: strandedInviteAlert({ ...STRANDED_INVITE, reason: "elsewhere", inviteStartsAt: "2026-10-20T15:30:00.000Z", detail: null }) },
   { key: "booking_invite_check_failed:*", state: "the record of earlier moves could not be read", channel: "alert",
     text: inviteCheckFailedAlert(INVITE_MOVE_FACTS.advisorEmail, INVITE_MOVE_FACTS.bookingUrl,
       shortErrorReason(new Error("booking invite changes read failed: canceling statement due to statement timeout"))) },
