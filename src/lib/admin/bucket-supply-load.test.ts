@@ -201,7 +201,7 @@ beforeEach(() => {
 });
 
 describe("loadBucketSupply (#1254)", () => {
-  it("measures each bucket's booked share against what that bucket could take", async () => {
+  it("measures each pool's day in calls taken out of the calls its shifts could hold", async () => {
     const report = await loadBucketSupply("org-1", NOW);
     expect(report.measurable).toBe(true);
     if (!report.measurable) return;
