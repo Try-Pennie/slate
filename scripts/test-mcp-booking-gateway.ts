@@ -16,6 +16,7 @@ import {
   CARRIER_HEADERS,
   GATEWAY_SECRET_HEADER,
   LEAD_TOKEN_HEADER,
+  LIMIT_ADMITTED_HEADER,
   isInternalMcpPath,
   marciaInternalPath,
   stripCarrierHeaders,
@@ -29,6 +30,10 @@ import { assert, eq, finish } from "./lib/harness.ts";
 const SECRET = "gateway-secret-for-the-suite-0000000000000000";
 const KEY = "marcia-key-for-the-suite-00000000000000000000";
 const silent = { error: () => undefined };
+/** An `admit` for calls whose token never verifies, so it must never be asked. */
+const noAdmit = async () => {
+  throw new Error("admit was called for a token that does not verify");
+};
 
 // --- the gateway's inner Request ----------------------------------------------------
 {
@@ -40,11 +45,14 @@ const silent = { error: () => undefined };
         return Response.json({ ok: true, operation: "find_times", data: { times: [] } }, { status: 200 });
       },
       gatewaySecret: SECRET,
+      tokenKeySlots: [KEY, ""],
+      nowMs: () => FIXTURE_VERIFY_AT_MS,
       log: silent,
     },
     "a.b.c",
     "find_times",
     { time_zone: "America/Chicago" },
+    noAdmit,
   );
   eq(seen.length, 1, "one inner request");
   eq(new URL(seen[0]!.url).pathname, "/api/internal/mcp-booking/find-times", "to the operation's internal path");
@@ -62,11 +70,13 @@ const silent = { error: () => undefined };
       return Response.json({});
     },
     gatewaySecret: SECRET,
+    tokenKeySlots: [KEY, ""],
+    nowMs: () => FIXTURE_VERIFY_AT_MS,
     log: silent,
     ...over,
   });
-  eq((await forwardBookingCall(deps(), "a.b.c", "drop_tables", {})).body.code, "unknown_operation", "an operation that is not one of the five is refused");
-  eq((await forwardBookingCall(deps(), "", "book", {})).body.code, "token_malformed", "no token is refused");
+  eq((await forwardBookingCall(deps(), "a.b.c", "drop_tables", {}, noAdmit)).body.code, "unknown_operation", "an operation that is not one of the five is refused");
+  eq((await forwardBookingCall(deps(), "", "book", {}, noAdmit)).body.code, "token_malformed", "no token is refused");
   eq(called, 0, "and none of those reached the app");
   // No secret on the deployment: the gateway does NOT answer for the route. It hands
   // the call on carrying no secret, so the route, which reads the same deployment's
@@ -85,15 +95,64 @@ const silent = { error: () => undefined };
       "a.b.c",
       "book",
       {},
+      noAdmit,
     );
     eq(seen.length, 1, "no gateway secret still reaches the route, which is where it pages");
     eq(seen[0]?.headers.has(GATEWAY_SECRET_HEADER), false, "carrying no secret header at all");
     eq([unconfigured.status, unconfigured.body.code], [503, "gateway_unconfigured"], "and the route's fail closed refusal is the answer");
   }
-  const threw = await forwardBookingCall(deps({ fetch: async () => { throw new Error("boom"); } }), "a.b.c", "book", {});
+  const threw = await forwardBookingCall(deps({ fetch: async () => { throw new Error("boom"); } }), "a.b.c", "book", {}, noAdmit);
   eq([threw.status, threw.body.code], [500, "internal"], "an app that throws is an answer, not a throw");
-  const html = await forwardBookingCall(deps({ fetch: async () => new Response("<html>", { status: 502 }) }), "a.b.c", "book", {});
+  const html = await forwardBookingCall(deps({ fetch: async () => new Response("<html>", { status: 502 }) }), "a.b.c", "book", {}, noAdmit);
   eq(html.body.code, "gateway_unreadable", "a non JSON answer is named as unreadable, never passed on as data");
+}
+
+// --- #3879: Marcia's limit is asked only for a token that verifies, and fails closed -----
+{
+  const good = await signMachineToken({ ...FIXTURE_CLAIMS }, KEY);
+  const forged = await signMachineToken({ ...FIXTURE_CLAIMS }, "a-forged-key-for-the-suite-0000000000000000");
+  const run = async (token: string, admit: unknown) => {
+    const order: string[] = [];
+    const answer = await forwardBookingCall(
+      {
+        fetch: async (r) => {
+          order.push(r.headers.get(LIMIT_ADMITTED_HEADER) === "1" ? "forwarded, marked admitted" : "forwarded");
+          return Response.json({ ok: true, operation: "book", data: {} });
+        },
+        gatewaySecret: SECRET,
+        tokenKeySlots: [KEY, ""],
+        nowMs: () => FIXTURE_VERIFY_AT_MS,
+        log: silent,
+      },
+      token,
+      "book",
+      {},
+      typeof admit === "function"
+        ? async () => {
+            order.push("admit");
+            return (admit as () => Promise<unknown>)();
+          }
+        : admit,
+    );
+    return { answer, order };
+  };
+  const admitted = await run(good, async () => null);
+  eq([admitted.order, admitted.answer.status], [["admit", "forwarded, marked admitted"], 200], "a verified token asks the limit once, BEFORE anything is forwarded, and the inner request says it was admitted");
+  const forgedCall = await run(forged, async () => null);
+  eq(forgedCall.order, ["forwarded"], "a forged token never asks the limit: it is forwarded uncharged and unmarked, for the route to refuse and page");
+  const overLimit = { status: 429, body: { ok: false, code: "marcia_over_limit", class: "expected", message: "too many" } };
+  const refused = await run(good, async () => overLimit);
+  eq([refused.order, refused.answer], [["admit"], overLimit], "a refusal from the limit is the answer, and nothing is forwarded");
+  for (const [label, admit] of [
+    ["no admit at all", undefined],
+    ["an admit that is not a function", "yes"],
+    ["an admit that throws (the stub could not be reached)", async () => { throw new Error("rpc stub gone"); }],
+    ["an admit that answers undefined", async () => undefined],
+    ["an admit that answers something unreadable", async () => ({ status: "429" })],
+  ] as const) {
+    const r = await run(good, admit);
+    eq([r.order.some((o) => o.startsWith("forwarded")), r.answer.body.code], [false, "marcia_limit_unchecked"], `${label}: refused fail closed, and nothing is forwarded`);
+  }
 }
 
 // --- the public handler's two walls ----------------------------------------------------
@@ -155,10 +214,15 @@ function routeDeps() {
   };
   return { deps, runs, tokenAlerts, gatewayAlerts };
 }
-const call = (token: string | null, secret: string | null) =>
+const call = (token: string | null, secret: string | null, admitted = true) =>
   new Request("https://slate.trypennie.app/api/internal/mcp-booking/book", {
     method: "POST",
-    headers: { ...(secret ? { [GATEWAY_SECRET_HEADER]: secret } : {}), ...(token ? { [LEAD_TOKEN_HEADER]: token } : {}), cookie: "slate-impersonate=someone" },
+    headers: {
+      ...(secret ? { [GATEWAY_SECRET_HEADER]: secret } : {}),
+      ...(token ? { [LEAD_TOKEN_HEADER]: token } : {}),
+      ...(admitted ? { [LIMIT_ADMITTED_HEADER]: "1" } : {}),
+      cookie: "slate-impersonate=someone",
+    },
     body: JSON.stringify({ args: { slot_id: "s1" } }),
   });
 const env = { gatewaySecret: SECRET, tokenKeySlots: [KEY, ""] };
@@ -201,6 +265,15 @@ const env = { gatewaySecret: SECRET, tokenKeySlots: [KEY, ""] };
   const noKeys = routeDeps();
   const r7 = await handleMarciaInternal(call(good, SECRET), "book", { ...env, tokenKeySlots: ["", ""] }, noKeys.deps);
   eq([((await r7.json()) as { code: string }).code, noKeys.runs.length], ["token_keys_unconfigured", 0], "no token key configured refuses every token");
+
+  // #3879: a token the route verifies but the gateway did not charge is refused, so a
+  // disagreement between the two verifications can never run a call unmetered.
+  const uncharged = routeDeps();
+  const r8 = await handleMarciaInternal(call(good, SECRET, false), "book", env, uncharged.deps);
+  eq([r8.status, ((await r8.json()) as { code: string }).code, uncharged.runs.length], [503, "marcia_limit_unchecked", 0], "a verified token without the gateway's limit mark is refused and nothing runs");
+  const unmarkedForged = routeDeps();
+  const r9 = await handleMarciaInternal(call(`${h}.${p}.`, SECRET, false), "book", env, unmarkedForged.deps);
+  eq([((await r9.json()) as { code: string }).code, unmarkedForged.tokenAlerts], ["token_malformed", ["token_malformed"]], "an unmarked token that does not verify is still refused by its own name, and pages");
 }
 
 finish();

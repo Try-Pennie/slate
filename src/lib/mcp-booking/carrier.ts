@@ -25,8 +25,15 @@ export const MARCIA_INTERNAL_PREFIX = "/api/internal/mcp-booking/";
 
 export const GATEWAY_SECRET_HEADER = "x-slate-mcp-gateway-secret";
 export const LEAD_TOKEN_HEADER = "x-slate-mcp-lead-token";
+/**
+ * Set to `"1"` by the gateway only once Marcia's overall limit admitted the call
+ * (#3879). The route refuses a VERIFIED token arriving without it, so if the gateway's
+ * verification ever disagreed with the route's (it charges only what it verified),
+ * the call is refused rather than run uncharged.
+ */
+export const LIMIT_ADMITTED_HEADER = "x-slate-mcp-limit-admitted";
 /** Every header the carrier uses, all stripped from a public request. */
-export const CARRIER_HEADERS = [GATEWAY_SECRET_HEADER, LEAD_TOKEN_HEADER] as const;
+export const CARRIER_HEADERS = [GATEWAY_SECRET_HEADER, LEAD_TOKEN_HEADER, LIMIT_ADMITTED_HEADER] as const;
 
 /** The env name of the secret the gateway and the internal route share. */
 export const GATEWAY_SECRET_ENV = "MCP_BOOKING_GATEWAY_SECRET";
