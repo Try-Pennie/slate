@@ -351,8 +351,6 @@ describe("loadBucketSupply (#1254)", () => {
     expect(cell).toEqual({ kind: "counted", booked: 5, capacity: 20, share: 5 / 20 });
   });
 
-  // 2026-10-02: a pool's bookings count for every code of the pool, through the
-  // pool key staffing depth computed, so a code nobody booked through still
   // Every code of a pool carries staffing depth's pool key and label, and reads the same pool's
   // calls (#3939): the pool, not the code a lead came in on, is what fills up.
   it("gives every code of a pool its pool's key, label and calls", async () => {

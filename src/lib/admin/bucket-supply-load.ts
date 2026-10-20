@@ -26,9 +26,10 @@
  * - The OFFERED OPEN DAYS failing is fatal for the same reason (#3922). They set
  *   the window every row's cover is judged over and the page's own words name it,
  *   so a guessed count would quietly change what the page says a lead is shown.
- * - The ROSTER failing is not fatal. The supply half of the page is still worth
- *   reading, so the depth column reads as unknown and the page says so. It never
- *   reads as zero eligible agents.
+ * - The ROSTER failing is not fatal. The depth column reads as unknown and the page
+ *   says so, never as zero eligible agents. Since #3939 the days read unknown too,
+ *   because a day is counted in the calls of the pool's own advisors and the roster
+ *   is what says who they are; a shut day still says it is shut.
  */
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
@@ -133,8 +134,10 @@ export async function loadBucketSupply(
     return { measurable: false, reason: "offered-open-days" };
   }
 
-  // The times already booked, which is the NUMERATOR of every share on the page
-  // (#1937). Keyed by bucket CODE and then by date in the org's zone, so the
+  // The times already booked (#1937). Since #3939 the page's shares are counted in
+  // calls, so on the page these feed only the cover judgement (which days a pool
+  // still has times on); they are still the numerator of the monitor's start time
+  // measure, which builds this report without calls. Keyed by bucket CODE and then by date in the org's zone, so the
   // report never has to know about bucket ids.
   //
   // `bookings` is a growth table rather than a roster bounded one, so this is

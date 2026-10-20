@@ -116,7 +116,10 @@ export type SupplyCell =
    * hour grid).
    */
   | { kind: "beyond-horizon" }
-  /** This bucket's cached payload could not be measured. NOT zero. */
+  /**
+   * Something behind this day could not be read: the bucket's cached payload, its
+   * bookings, or (on the page, #3939) the roster or its advisors' calendars. NOT zero.
+   */
   | { kind: "unknown" }
   /**
    * The day could hold appointments and this bucket has none of them: nothing
