@@ -76,7 +76,10 @@ export default async function TeamCapacityPage({
   // The design's frames, from the fixture, never from the database.
   const host = (await headers()).get("host");
   if (sp.frame && designFixturesEnabled(process.env.SLATE_DESIGN_FIXTURES, host)) {
-    const fixture = (await import("../../../../docs/design/fixtures/team-capacity.json")).default as unknown as DesignFixtureFile;
+    // Read from disk, never imported: an import would put the whole fixture in every deployment's
+    // bundle for a branch only the e2e run on this machine reaches.
+    const { readFile } = await import("node:fs/promises");
+    const fixture = JSON.parse(await readFile(`${process.cwd()}/docs/design/fixtures/team-capacity.json`, "utf8")) as DesignFixtureFile;
     const f = fixtureView(fixture, sp.frame);
     const theme = <StandaloneTheme theme={f.theme} />;
     if (!f.report.measurable) return <>{theme}{refused(UNMEASURABLE_COPY[f.report.reason])}</>;

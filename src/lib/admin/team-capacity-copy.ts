@@ -35,7 +35,7 @@ export function nearlyFullSentence(pct: number): string {
 export const BEYOND_WINDOW_NOTE = "Leads can't book this day yet, so it will fill up more than it shows.";
 
 export function pastDaySummary(fullPct: number | null, open: number): string {
-  return `Ended ${fullPct ?? 0}% full, with room left for ${open.toLocaleString("en-US")} more calls.`;
+  return `Ended ${fullPct ?? 0}% full, with room left for ${open.toLocaleString("en-US")} more ${open === 1 ? "call" : "calls"}.`;
 }
 
 export const OUT_WORDS = "Out, approved time off";

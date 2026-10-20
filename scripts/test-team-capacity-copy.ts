@@ -38,6 +38,7 @@ for (const bad of ["", "0", "100", "85.5", "minus three", "eighty", "085"]) {
 
 // --- the rest -----------------------------------------------------------------------
 eq(pastDaySummary(36, 1001), "Ended 36% full, with room left for 1,001 more calls.", "a past day's summary, as the design writes it");
+eq(pastDaySummary(95, 1), "Ended 95% full, with room left for 1 more call.", "one call left is singular");
 eq(noShiftWords(true), "No shift today", "today's no shift words");
 eq(noShiftWords(false), "No shift", "no other day is called today");
 eq(zoneShort("America/Phoenix"), "AZ", "Arizona by its short name");
