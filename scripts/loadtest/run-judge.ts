@@ -115,9 +115,10 @@ function wholeNumber(raw: string | undefined, name: string): number {
 }
 
 // #3829: how many STEADY drivers the workflow fired, sized from the roster its burst
-// setup counted. A hand run passes none and is judged against today's four.
+// setup counted. A hand run passes none and is judged against production's roster,
+// whose drivers together drive the load bar (#3124, STEADY_DRIVERS_AT_PRODUCTION).
 // env-ok: EXPECT_STEADY_DRIVERS (optional; the workflow's steady matrix size, unset on
-// a hand run, which drives the four DRIVERS)
+// a hand run, which drives STEADY_DRIVERS_AT_PRODUCTION)
 const steadyExpected = expectedSteadyDrivers(process.env.EXPECT_STEADY_DRIVERS);
 if (!steadyExpected.ok) {
   console.error(`FAILED: ${steadyExpected.why}.`);

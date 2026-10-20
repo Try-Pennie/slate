@@ -105,7 +105,9 @@ const env = read("loadtest");
     assert(!disabled.includes(measured), `the ${measured} lane is NOT held back: the run measures it`);
   }
   // And the lanes that reach outside the isolated branch MUST be.
-  for (const outward of ["agents", "ooo-approvals", "ooo-digest", "snowflake-export", "monitor"]) {
+  // #3124: busy-minutes reads cal.com and pages Slack about the synthetic roster's
+  // bookings. Its own isLoadtest() check stands it down too; this list is the usual way.
+  for (const outward of ["agents", "ooo-approvals", "ooo-digest", "snowflake-export", "monitor", "busy-minutes"]) {
     assert(
       disabled.includes(outward),
       `the ${outward} lane IS held back: it reaches a system the branch does not have`,

@@ -1125,12 +1125,15 @@ state rather than a guess. Every dashboard figure below is a reading on one day,
 a guarantee; re-read it before any capacity decision and after cutover (#65).
 
 **The load premise.** How busy Slate really gets is the peak query in
-`scripts/loadtest/RUNBOOK.md` ("The peak the 60 a minute bar rests on"), re-runnable
+`scripts/loadtest/RUNBOOK.md` ("The peak the load run's bar rests on"), re-runnable
 against production. Re-run it before any capacity decision and after cutover (#65),
 when Slate stops carrying only the pilot's share. Its first production reading,
-2026-10-16: a busiest minute of 5 and a busiest day of 512 routed bookings, so the 60
-a minute bar is 12 times Slate's own peak. That is the pilot's half of tiers 1 to 5,
-and the RUNBOOK says why the whole of the traffic may put the bar under ten times.
+2026-10-16: a busiest minute of 5 and a busiest day of 512 routed bookings, 12 times
+under the bar of 60 that stood then. That was the pilot's half of tiers 1 to 5; the
+whole traffic peak, cal.com's routed responses and Slate's bookings added minute by
+minute, read 7 on 2026-10-20, so Dan raised the bar to **70 a minute**
+(`LOAD_RUN_BOOKINGS_PER_MINUTE` in `src/lib/load-bar.ts`, the one place it lives),
+ten times that peak.
 
 **The premise is now re-read every day** (#3124). The `busy-minutes` lane
 (05:41 UTC, retried at 09:41) counts the last 7 whole UTC days of routed bookings per

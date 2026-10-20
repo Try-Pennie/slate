@@ -1,8 +1,9 @@
 // The per address write ceiling, proved against a bound that really refuses (#2339).
 //
-// The run paces itself at the per address ceiling (four drivers at fifteen a
-// minute is sixty, and `BOOKING_API_IP_LIMITER.perMinute` is sixty), so its 429s
-// are meant to be attributable. But "we saw no 429s" and "the ceiling is not
+// The run used to pace itself at the per address ceiling (four drivers at fifteen a
+// minute was sixty, and `BOOKING_API_IP_LIMITER.perMinute` is sixty), so its 429s
+// were meant to be attributable; since #3124 the steady pass drives the load bar
+// instead, each driver on its own runner. Either way "we saw no 429s" and "the ceiling is not
 // applying" are the same observation from inside the run, and the second is the
 // one that would make every other number about a run that was never bounded.
 //

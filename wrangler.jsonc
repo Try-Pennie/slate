@@ -404,11 +404,13 @@
 				// `agents` reads Salesforce and rewrites the roster the seed just built,
 				// `bulk-reassign` makes real Google reassignments, `monitor`,
 				// `erasure-audit` and `snowflake-reconcile` page Slack about a synthetic
-				// org, `ooo-digest` and `ooo-approvals` send real email to real managers,
+				// org, `busy-minutes` reads cal.com and pages Slack about the branch's
+				// synthetic bookings (#3124, and it also stands down on `isLoadtest()`),
+				// `ooo-digest` and `ooo-approvals` send real email to real managers,
 				// `snowflake-export` writes the warehouse, and the two PII prunes redact
 				// against a mirror that is not there. The kept lanes are the ones the run
 				// is measuring; the full table is in `scripts/loadtest/RUNBOOK.md`.
-				"SLATE_LANES_DISABLED": "advisor-photos,agents,bulk-reassign,erasure-audit,monitor,ooo-approvals,ooo-digest,prune-bookings-pii,prune-warehouse-pii,snowflake-export,snowflake-reconcile"
+				"SLATE_LANES_DISABLED": "advisor-photos,agents,bulk-reassign,busy-minutes,erasure-audit,monitor,ooo-approvals,ooo-digest,prune-bookings-pii,prune-warehouse-pii,snowflake-export,snowflake-reconcile"
 			},
 			"ratelimits": [
 				{

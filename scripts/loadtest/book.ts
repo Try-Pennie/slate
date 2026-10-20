@@ -574,6 +574,8 @@ async function fault(): Promise<void> {
  * that fails is only logged, because the leg's own requests are what the judge reads.
  */
 async function warmFreshVersion(): Promise<void> {
+  // load-bar-ok: only the codes are taken from this schedule, never its times, so its
+  // rate is not the bar and paces nothing.
   const codes = requestSchedule({ total: FAULT_WARMUP_READS, perMinute: 60, startAtMs: Date.now() }).map((r) => r.code);
   // The same per request bound every driver request has, and its test seam (#3222).
   const boundMs = effectiveDeadlineMs(REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_OVERRIDE);

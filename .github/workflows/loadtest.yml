@@ -45,9 +45,12 @@ name: Booking path load run
 #               burst confirm joins the startup bar's population. The drive,
 #               freshness and archive wait for it to CLOSE (#3450): stopping one
 #               tail silences every other tail on the Worker, so two never overlap.
-#   drivers     four of them at 90 advisors, nine at 200 (#3829), fifteen a minute
-#               each for ten minutes; at 90 that is exactly
-#               the per address write ceiling.
+#   drivers     the steady pass, for ten minutes, sized from the load bar
+#               (LOAD_RUN_BOOKINGS_PER_MINUTE in src/lib/load-bar.ts, #3124): at 90
+#               advisors the drivers together drive exactly the bar, and at 200 the
+#               same rate per advisor (#3829). `steadyPacingFor` in book-plan.ts says
+#               how many and how fast; at 70 a minute, five at fourteen at 90 and
+#               twelve at 200. Each is its own runner and so its own address.
 #   freshness   the existing soak sampler, one sample a minute, so recompute is
 #               measured UNDER the load rather than before or after it.
 #   archive     `wrangler tail` for the window, because observability's own
@@ -160,8 +163,9 @@ on:
         description: >-
           Which checked in roster the branch was seeded with (#3829): 90 is
           production's, 200 is production's scaled to 200 advisors with the same mix
-          by tier, backend and zone. The steady pass grows with it at today's rate
-          per advisor (four drivers at 90, nine at 200); the bursts keep their size.
+          by tier, backend and zone. The steady pass grows with it at the load bar's
+          rate per advisor (five drivers at 90, twelve at 200, at 70 a minute); the
+          bursts keep their size.
           The burst setup counts the seeded advisors and refuses a run whose count is
           not this roster.
         type: choice
@@ -555,17 +559,18 @@ jobs:
     runs-on: ubuntu-latest
     # DERIVED, not chosen (#3222): `driveJobTimeoutMinutes` in book-plan.ts, the
     # driver's own deadline (the slowest passing plan, every request at the latency
-    # bar, held at three quarters of it, about twenty two minutes, #3163) plus the
-    # runner's setup and one in flight request's grace.
+    # bar, held at three quarters of it, about twenty one minutes at fourteen a
+    # minute, #3163) plus the runner's setup and one in flight request's grace. The
+    # plan is one driver's share of the load bar (#3124), so raising the bar moves it.
     # scripts/test-loadtest-driver-deadline.ts holds this number equal to it. A slow
     # driver stops at its deadline, writes what it ran and exits zero, so the judge
     # FAILS the run with figures and the ceiling and fault legs still run; only a
     # genuinely hung driver ever meets this timeout, and its missing file says so.
-    timeout-minutes: 28
+    timeout-minutes: 26
     strategy:
-      # Never cancel a sibling: the drivers at fifteen a minute ARE the load, and a
-      # run missing one is judged as incomplete rather than as a slower run. How many
-      # comes from the roster the setup counted (#3829): four at 90, nine at 200.
+      # Never cancel a sibling: the drivers together ARE the load, and a run missing
+      # one is judged as incomplete rather than as a slower run. How many comes from
+      # the load bar and the roster the setup counted (#3124, #3829).
       fail-fast: false
       matrix:
         driver: ${{ fromJSON(needs.setup-burst.outputs.steady_drivers) }}
@@ -686,7 +691,7 @@ jobs:
     # DERIVED (#3222): `archiveJobTimeoutMinutes` in book-plan.ts, the tail
     # window below plus the runner's setup, held equal by
     # scripts/test-loadtest-driver-deadline.ts.
-    timeout-minutes: 32
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -721,7 +726,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          ARCHIVE_TAIL_MINUTES: "29"
+          ARCHIVE_TAIL_MINUTES: "27"
         run: |
           mkdir -p results
           setsid timeout "$((ARCHIVE_TAIL_MINUTES + 1))m" npx wrangler tail --env loadtest --format json > results/tail.jsonl 2> results/tail.err &
@@ -1018,7 +1023,7 @@ jobs:
           # The lanes env.loadtest holds back, so the judge knows which lanes should
           # have kept running under fault without reading wrangler.jsonc itself (#3104).
           # A copy, held equal to wrangler's resolved value by scripts/test-fault-lanes.ts.
-          EXPECT_LANES_DISABLED: advisor-photos,agents,bulk-reassign,erasure-audit,monitor,ooo-approvals,ooo-digest,prune-bookings-pii,prune-warehouse-pii,snowflake-export,snowflake-reconcile
+          EXPECT_LANES_DISABLED: advisor-photos,agents,bulk-reassign,busy-minutes,erasure-audit,monitor,ooo-approvals,ooo-digest,prune-bookings-pii,prune-warehouse-pii,snowflake-export,snowflake-reconcile
           # What each burst was worth (#2278) is no longer handed over here: since
           # #3429 the plan carries each burst's measured capacity into the drivers'
           # own files, and the report reads it from there.

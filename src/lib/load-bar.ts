@@ -6,11 +6,12 @@
  * 7 a minute measured that day (cal.com's routed responses plus Slate's routed
  * bookings, added minute by minute; the reading is on #3124).
  *
- * Today the load run's own judge still holds its 60 in `scripts/loadtest/book-plan.ts`
- * (four drivers at fifteen a minute). Pointing the judge at this constant is the bar
- * change still to do under #3124, together with a passing load run at 70; until then
- * this is what the daily busy minute check (`src/lib/monitor/busy-minutes.ts`) judges
- * against, because 70 is the bar Dan set.
+ * Two readers, and no copies: the load run's steady pass is sized from it
+ * (`steadyPacingFor` in `scripts/loadtest/book-plan.ts`: five drivers at fourteen a
+ * minute at production's 90 advisors, so the judge's target is exactly this number), and
+ * the daily busy minute check (`src/lib/monitor/busy-minutes.ts`) judges against it.
+ * `scripts/test-load-bar-literals.ts` fails the build on a copy of it in the load test
+ * code. A passing load run at 70 is still to come under #3124.
  *
  * Pure and import free, so the load test scripts can read it on bare node.
  */
