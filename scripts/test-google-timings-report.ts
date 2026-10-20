@@ -70,7 +70,7 @@ rows.push(row(24, ""));
   }
 }
 
-// --- logs.ts listed fewer rows than it counted (its exit 3): the percentile SAYS so --------
+// --- logs.ts listed fewer rows than Cloudflare stored (its exit 3): the percentile SAYS so -
 {
   const stdout = [...rows, verdict(30)].join("\n");
   const r = summariseGoogleTimings(stdout, 3);
