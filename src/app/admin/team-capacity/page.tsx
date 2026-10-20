@@ -18,6 +18,7 @@ import { readNearlyFullPct } from "@/lib/booking/settings";
 import { BUSY_WINDOW_AHEAD_DAYS } from "@/lib/google/sync-coalesce";
 import { loadTeamCapacity, type TeamCapacityReport } from "@/lib/admin/team-capacity-load";
 import { loadCapacityHistoryDay, readSavedDays } from "@/lib/admin/capacity-history-store";
+import { EVERY_SAVED_DAY_FROM } from "@/lib/admin/capacity-history";
 import { HISTORY_UNREADABLE_COPY, LINE_UNREADABLE_COPY, UNMEASURABLE_COPY } from "@/lib/admin/team-capacity-copy";
 import { pickableDays, teamCapacityView, type CapacityDaySource } from "@/lib/admin/team-capacity-view";
 import { designFixturesEnabled, fixtureView, type DesignFixtureFile } from "@/lib/admin/team-capacity-fixture";
@@ -121,7 +122,7 @@ export default async function TeamCapacityPage({
       log.error("team-capacity", { msg: "office hours read failed for the date picker" }, err);
       return null;
     }),
-    readSavedDays(me.org_id, DateTime.fromISO(todayIso).minus({ years: 2 }).toISODate()!).catch((err: unknown) => {
+    readSavedDays(me.org_id, EVERY_SAVED_DAY_FROM).catch((err: unknown) => {
       log.error("team-capacity", { msg: "saved days read failed" }, err);
       return null;
     }),
@@ -145,9 +146,13 @@ export default async function TeamCapacityPage({
     saved: savedDays,
     isOpen: (iso, weekday) => windowOnDate(hours, iso, weekday) !== null,
   });
-  const sources = daySources(report, pickedPast, pastAdvisors && pastAdvisors.length > 0 ? pastAdvisors : null);
-  // A day the picker would not offer (nothing saved, or past the cached calendars) opens on the
-  // default day instead, and says nothing: the picker never offered it.
+  // A past day opens only when the picker would offer it, so an address typed by hand cannot reach
+  // a day history holds only part of (the first) or that the office was shut.
+  const pastOffered = pickedPast !== null && pickable.includes(pickedPast) && pastAdvisors !== null && pastAdvisors.length > 0;
+  const sources = daySources(report, pickedPast, pastOffered ? pastAdvisors : null);
+  // A day the picker would not offer (nothing saved, history's partly recorded first day, a day the
+  // office was shut, or past the cached calendars) opens on the default day instead, and says
+  // nothing: the picker never offered it.
   const pickedIndex = picked ? sources.findIndex((s) => s.iso === picked) : -1;
   if (picked && pickedIndex < 0) log.info("team-capacity", { msg: "picked day not offered", day: picked });
   // The page opens on tomorrow (D12), found by date: after the booker's evening cutoff the window

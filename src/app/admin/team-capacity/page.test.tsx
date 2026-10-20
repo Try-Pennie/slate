@@ -32,6 +32,12 @@ import TeamCapacityPage from "./page";
 const Z = "America/New_York";
 const today = DateTime.now().setZone(Z).startOf("day");
 const iso = (n: number) => today.plus({ days: n }).toISODate()!;
+/** A past day the office was open (the hours below shut Sundays), whatever today is. */
+const openPastDay = () => {
+  let d = today.minus({ days: 3 });
+  while (d.weekday === 7) d = d.minus({ days: 1 });
+  return d;
+};
 const advisorDay = (d: string) => ({
   iso: d, open: 3, capacity: 10, out: false, noShift: false,
   openTimes: [], shiftStart: null, shiftEnd: null, fullShiftStart: null, fullShiftEnd: null, timeOff: [],
@@ -76,7 +82,8 @@ describe("/admin/team-capacity", () => {
   it("scopes every read to the viewer's own organisation", async () => {
     await renderPage();
     expect(load.loadTeamCapacity).toHaveBeenCalledWith(expect.objectContaining({ orgId: "org-1" }));
-    expect(store.readSavedDays).toHaveBeenCalledWith("org-1", expect.any(String));
+    // Every saved day, so the first one it leaves out is history's real first day.
+    expect(store.readSavedDays).toHaveBeenCalledWith("org-1", "1970-01-01");
   });
 
   it("opens on tomorrow, found by date", async () => {
@@ -113,8 +120,9 @@ describe("/admin/team-capacity", () => {
   });
 
   it("opens a saved past day from history, and says how it ended", async () => {
-    const past = iso(-3);
-    store.readSavedDays.mockResolvedValue([past]);
+    const past = openPastDay().toISODate()!;
+    // The first saved day is left out as partly recorded, so history began the week before.
+    store.readSavedDays.mockResolvedValue([openPastDay().minus({ days: 7 }).toISODate()!, past]);
     store.loadCapacityHistoryDay.mockResolvedValue([{ id: "u1", name: "Avery Calder", email: "avery@x.test", timezone: Z, unsynced: false, days: [{ ...advisorDay(past), open: 2, capacity: 8 }] }]);
     await renderPage({ day: past });
     expect(store.loadCapacityHistoryDay).toHaveBeenCalledWith("org-1", past);
@@ -143,6 +151,15 @@ describe("/admin/team-capacity", () => {
     clock.mockRestore();
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
     expect(screen.getByRole("button", { name: "Change" })).toBeTruthy();
+  });
+
+  it("never opens the first day history saved, even by its address", async () => {
+    const first = openPastDay().toISODate()!;
+    store.readSavedDays.mockResolvedValue([first]);
+    store.loadCapacityHistoryDay.mockResolvedValue([{ id: "u1", name: "Avery Calder", email: "avery@x.test", timezone: Z, unsynced: false, days: [{ ...advisorDay(first), open: 0, capacity: 8 }] }]);
+    await renderPage({ day: first });
+    expect(selectedTab()).toMatch(/^Tomorrow/);
+    expect(document.querySelector('[data-tc="day-note"]')).toBeNull();
   });
 
   it("opens on tomorrow when the past day picked holds nothing saved", async () => {

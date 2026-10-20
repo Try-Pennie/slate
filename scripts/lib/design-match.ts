@@ -73,3 +73,21 @@ export function verdict(rows: FrameResult[]) {
 export function offScreenLines(checks: { id: string; offScreen?: string }[]): string[] {
   return checks.filter((c) => c.offScreen).map((c) => `${c.id}: ${c.offScreen}`);
 }
+
+/**
+ * What a built page shows once its content is on screen: the design's own hooks, inside the page's
+ * main area. A streamed page fires load before its content arrives on a slow machine, and CI once
+ * photographed the loading placeholder in its place (#3947).
+ */
+export const CONTENT_READY = "main [data-tc]";
+
+/** Waits for the content; resolves to nothing when it arrives, or to why the page cannot be scored. */
+export async function waitForContent(
+  page: { waitForSelector(selector: string, options: { timeout: number }): Promise<unknown> },
+  timeoutMs: number,
+): Promise<string | undefined> {
+  return page.waitForSelector(CONTENT_READY, { timeout: timeoutMs }).then(
+    () => undefined,
+    () => `the page never showed its content (${CONTENT_READY}) within ${Math.round(timeoutMs / 1000)}s`,
+  );
+}
