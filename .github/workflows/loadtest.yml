@@ -310,8 +310,9 @@ jobs:
 
   # The same day baseline (#3258): bookings at rest, one every ten seconds, on the
   # deployment and branch the steady pass is about to drive, and before anything else
-  # loads them. Its first two are a warm up the judge drops and the median is taken over
-  # the twenty after them (#3517). The steady pass's p95 is judged against a multiple of
+  # loads them. Each runner's first two are a warm up the judge drops (#3517), and the
+  # median is pooled over the seven each runner sends after them, twenty one in all
+  # (#3914, below). The steady pass's p95 is judged against a multiple of
   # that median, because a bar fixed alone was judging the throwaway environment more
   # than the code (the 09-15 code measured 3.5s at the p95 on 09-15 and 7.0s on
   # 2026-10-04), AND against a fixed limit calibrated on the 200 advisor runs, so a slow

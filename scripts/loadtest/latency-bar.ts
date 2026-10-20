@@ -9,8 +9,9 @@
  *
  * So a run now measures its own day. A BASELINE leg books at rest, one every ten
  * seconds, on the same deployment and branch just before the steady pass, when
- * nothing else is running: a warm up of two the judge drops, then twenty measured
- * (#3517, the constants below). Their median is what one booking costs on that
+ * nothing else is running, from three runners taking turns (#3914): each runner's warm
+ * up of two the judge drops, then seven measured, pooled into twenty one (#3517, the
+ * constants below). Their median is what one booking costs on that
  * environment at rest. The steady pass is then held to a MULTIPLE of it: the bar
  * asks how much the code degrades under the steady load, which is the code's
  * property, and the environment cancels because both halves ran on it within
