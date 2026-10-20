@@ -122,6 +122,16 @@ describe("/admin/team-capacity", () => {
     expect(document.querySelector('[data-tc="day-note"]')?.textContent).toBe("Ended 75% full, with room left for 2 more calls.");
   });
 
+  it("opens on the picked day when a date is picked after another day was shown", async () => {
+    const view = await renderPage();
+    expect(selectedTab()).toMatch(/^Tomorrow/);
+    // The picker navigates to ?day=, and the page comes back with that day added to the list.
+    const later = iso(10);
+    load.loadTeamCapacity.mockResolvedValue({ ...report([iso(0), iso(1), iso(2), iso(3)]), days: [iso(0), iso(1), iso(2), iso(3), later], advisors: [{ ...report([iso(0)]).advisors[0], days: [iso(0), iso(1), iso(2), iso(3), later].map(advisorDay) }] });
+    view.rerender(await TeamCapacityPage({ searchParams: Promise.resolve({ day: later }) }));
+    expect(selectedTab()).toBe(`${DateTime.fromISO(later, { zone: Z }).toFormat("ccc")}, ${DateTime.fromISO(later, { zone: Z }).toFormat("LLL d")}`);
+  });
+
   it("opens on tomorrow when the past day picked holds nothing saved", async () => {
     await renderPage({ day: iso(-3) });
     expect(selectedTab()).toMatch(/^Tomorrow/);

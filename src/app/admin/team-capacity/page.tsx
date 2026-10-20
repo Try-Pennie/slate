@@ -157,6 +157,9 @@ export default async function TeamCapacityPage({
     <>
       {header}
       <TeamCapacityView
+        // A picked date comes back as a new page with a new day list; keyed on it, the screen opens
+        // on the picked day rather than keeping the day selected before.
+        key={`${sources.map((s) => s.iso).join(",")}|${initialIndex}`}
         view={teamCapacityView({ zone: report.zone, todayIso, nowMs, durationMin: report.eventType.duration_min, nearlyFullPct, days: sources })}
         zone={report.zone}
         todayIso={todayIso}

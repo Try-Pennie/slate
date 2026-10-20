@@ -169,7 +169,7 @@ export async function readBookingHorizonDays(): Promise<number | null> {
 }
 
 /**
- * The line at which Team capacity flags a day nearly full (#3936, migration 0191), or
+ * The line at which Team capacity flags a day nearly full (#3936, migration 0192), or
  * **null** when the read failed. Never the default in place of a failed read: a page
  * flagging days against a line nobody read would look exactly like one that read it.
  */
@@ -188,7 +188,10 @@ export async function readNearlyFullPct(): Promise<number | null> {
   }
 }
 
-/** The column default in migration 0191, for an org whose settings row does not exist yet. */
+/**
+ * The column default in migration 0192, for an org whose settings row does not exist yet. Held to
+ * the migration's own default by scripts/test-team-capacity-copy.ts, so the two cannot drift.
+ */
 export const NEARLY_FULL_DEFAULT_PCT = 85;
 
 /**

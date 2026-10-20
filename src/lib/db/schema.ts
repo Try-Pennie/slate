@@ -252,15 +252,15 @@ export interface Database {
     };
     Views: Record<string, never>;
     Functions: {
-      /** #3940 (migration 0191): one capacity-history tick's rows merged in (open times as a
-       *  set union, unsynced sticky) and the org's cursor moved forward, in one transaction.
-       *  Returns the rows written. */
       /** #3936 (migration 0192): the past days capacity history holds for an org, from
        *  `p_from` on, as one array, so the read never meets the row cap. */
       capacity_history_days: {
         Args: { p_org: string; p_from: string };
         Returns: string[];
       };
+      /** #3940 (migration 0191): one capacity-history tick's rows merged in (open times as a
+       *  set union, unsynced sticky) and the org's cursor moved forward, in one transaction.
+       *  Returns the rows written. */
       record_capacity_history: {
         Args: { p_org: string; p_rows: unknown; p_through: string };
         Returns: number;

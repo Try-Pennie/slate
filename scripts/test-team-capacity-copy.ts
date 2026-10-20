@@ -3,7 +3,9 @@
 // and a sentence for every reason the page cannot measure.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-team-capacity-copy.ts
+import { readFileSync } from "node:fs";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { NEARLY_FULL_DEFAULT_PCT } from "../src/lib/booking/settings.ts";
 import {
   calendarHref,
   dayLabel,
@@ -51,5 +53,13 @@ for (const [reason, copy] of Object.entries(UNMEASURABLE_COPY)) {
   assert(!DASHES.test(copy.heading + copy.body), `${reason} has no dashes`);
 }
 eq(UNMEASURABLE_COPY.calendars, { heading: "Couldn't load advisor calendars", body: "Try reloading in a minute." }, "the failed read wording Dan settled");
+
+// --- the default line is the column's own default ------------------------------------------------
+{
+  const sql = readFileSync(new URL("../supabase/migrations/0192_capacity_nearly_full_pct.sql", import.meta.url), "utf8");
+  const m = /capacity_nearly_full_pct smallint not null default (\d+)/.exec(sql);
+  assert(m !== null, "the migration declares the column's default");
+  eq(Number(m?.[1]), NEARLY_FULL_DEFAULT_PCT, "the code's default line is the column default, so a missing row and a new one agree");
+}
 
 finish();
