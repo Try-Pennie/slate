@@ -260,9 +260,10 @@ export interface JudgeInput {
   };
   /**
    * #3258: the same day baseline, bookings at rest on the same deployment just before
-   * the steady pass (#3517: a warm up of two, then twenty measured), as the judge entry
-   * found it (`baselineReading`). The steady pass's latency is judged against the
-   * median of the measured ones and against a fixed limit (`latency-bar.ts`).
+   * the steady pass (#3517: each runner's warm up of two, then its measured bookings;
+   * #3914: from three runners), as the judge entry found it (`baselineReading`). The
+   * steady pass's latency is judged against the median pooled over every runner's
+   * measured bookings and against a fixed limit (`latency-bar.ts`).
    */
   baseline?: BaselineReading;
   /**

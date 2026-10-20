@@ -101,6 +101,7 @@ export type ConfirmLine = (typeof CONFIRM_LINES)[number];
 
 export const CONFIRM_LINE_REASONS = [
   "ok",
+  "unread-default-on",
   "off",
   "unread-default",
   "unbound",

@@ -310,17 +310,42 @@ jobs:
 
   # The same day baseline (#3258): bookings at rest, one every ten seconds, on the
   # deployment and branch the steady pass is about to drive, and before anything else
-  # loads them. Its first two are a warm up the judge drops and the median is taken over
-  # the twenty after them (#3517). The steady pass's p95 is judged against a multiple of
+  # loads them. Each runner's first two are a warm up the judge drops (#3517), and the
+  # median is pooled over the seven each runner sends after them, twenty one in all
+  # (#3914, below). The steady pass's p95 is judged against a multiple of
   # that median, because a bar fixed alone was judging the throwaway environment more
   # than the code (the 09-15 code measured 3.5s at the p95 on 09-15 and 7.0s on
   # 2026-10-04), AND against a fixed limit calibrated on the 200 advisor runs, so a slow
   # baseline cannot pass a slow run. See scripts/loadtest/latency-bar.ts. The timeout
-  # covers the driver's own deadline for this plan (scripts/test-loadtest-driver-deadline.ts).
+  # covers one runner's deadline for its plan plus the turn it may wait for
+  # (`baselineJobTimeoutMinutes`, held by scripts/test-loadtest-driver-deadline.ts).
+  #
+  # Spread across three runners (#3914), because ONE runner's address decided the whole
+  # baseline: the per address limiter object it meets answered the median booking in
+  # 215ms on run 39090439214 against 42 and 55ms on two runs of the same commit, while the
+  # nine steady drivers' p50 did not move. Each runner is its own address and object, and
+  # the judge pools the median over all three, as the steady p95 is pooled over its
+  # drivers. They take turns on one ten second clock and never book one time, so the
+  # deployment still sees one booking every ten seconds. The list below must match
+  # `BASELINE_RUNNERS`; the same test holds it.
+  #
+  # Cost (#3914, measured against run 39093966606, whose baseline job took 3m13s of which
+  # 27s was setup): each runner is about 30s of setup, up to 30s waiting for its turn and
+  # 240s of bookings, so about five billed minutes each and fifteen for the leg, against
+  # four or five for the one runner of #3517: about ten more billed minutes a run on
+  # ubuntu-latest (1x). Three runner slots for those five minutes instead of one, at a
+  # point in the run where nothing else is running, so the run's peak is unchanged. Wall
+  # clock on the critical path: about a minute more, since the setup waits for the leg.
   baseline:
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      # Never cancel a sibling: the judge names a runner whose file is missing, and a
+      # runner cancelled by another's failure would read as missing for no reason of its own.
+      fail-fast: false
+      matrix:
+        driver: [0, 1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -334,13 +359,13 @@ jobs:
           SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
           BOOKING_API_KEY: ${{ secrets.LOADTEST_BOOKING_API_KEY }}
           MODE: baseline
-          DRIVER: 0
-          OUT: results/baseline.json
+          DRIVER: ${{ matrix.driver }}
+          OUT: results/baseline-${{ matrix.driver }}.json
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/book.ts
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: baseline
+          name: baseline-${{ matrix.driver }}
           path: results/
 
   # The burst leg runs BEFORE the steady pass and alone, which is a decision rather
