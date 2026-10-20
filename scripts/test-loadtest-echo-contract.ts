@@ -45,8 +45,8 @@ function roundTrip(pairs: [string, string][]): LoadtestEcho {
   eq([...CONFIRM_LINES], ["shared", "isolate", "fallback"], "the three lines");
   eq(
     [...CONFIRM_LINE_REASONS],
-    ["ok", "off", "unread-default", "unbound", "reach-timeout", "enter-error", "gone", "bad-answer", "version", "abandoned"],
-    "the ten reasons",
+    ["ok", "unread-default-on", "off", "unread-default", "unbound", "reach-timeout", "enter-error", "gone", "bad-answer", "version", "abandoned"],
+    "the eleven reasons",
   );
   eq([...CONFIRM_LINE_KEYS], ["ladder", "code", "link", "none"], "the four key kinds");
 }

@@ -52,17 +52,29 @@ const MINT_LABEL = "google token mint";
  * send takes it: the 24 hour reminder email (`/api/cron/booking-reminders`) and
  * the OOO approvals digest (`/api/cron/ooo-approvals`), and so does the directory
  * photo lane (`src/lib/advisor-photos/google.ts`) and the smoke canary's event
- * cleanup (`scripts/lib/smoke-event-cleanup.ts`). A calendar call passes its OWN
- * deadline instead: `GOOGLE_CONFIRM_TIMEOUT_MS` on the confirm path and for the
- * reminder lane's invite rewrite, `CALENDAR_WRITE_TIMEOUT_MS` for the OOO writes
- * and the reminder lane's invite read, `GOOGLE_SYNC_TIMEOUT_MS` (15 seconds) on
- * the sync lanes; the first two are 8 seconds as well. The mint also waits no
- * longer than the enclosing call budget has left, so a mint on the confirm path
- * is held to what the lead can wait.
+ * cleanup (`scripts/lib/smoke-event-cleanup.ts`), and the mint made after a
+ * response to refresh an ageing token (`backgroundMint`). A calendar call passes
+ * its OWN deadline instead: `GOOGLE_CONFIRM_TIMEOUT_MS` on the confirm path and
+ * for the reminder lane's invite rewrite, `CALENDAR_WRITE_TIMEOUT_MS` for the OOO
+ * writes and the reminder lane's invite read, `GOOGLE_SYNC_TIMEOUT_MS` (15
+ * seconds) on the sync lanes; the first two are 8 seconds as well. The mint also
+ * waits no longer than the enclosing call budget has left, so a mint on the
+ * confirm path is held to what the lead can wait.
  *
- * 8 seconds was borrowed from the lead facing call budget, not measured, and two
- * mints have run out of it (#3298). Every mint now logs its duration
- * (`mint-log.ts`); size this from that reading, not from this comment.
+ * Measured, and kept (#3298): every mint logged from 2026-10-14 16:00 to
+ * 2026-10-20 18:00 UTC, the six days after the shared holder (#3512) took most
+ * mints off the confirm path. No 8 second mint timed out: 801 confirm path mints
+ * (median about 120ms, slowest 2.2s), 597 other calendar call mints (slowest
+ * 2.7s), 26,642 Gmail mints (two over 4s, none over 8s) and 2,980 after response
+ * refreshes (slowest 6.7s, four mints started together). The 15 second sync
+ * lanes had 16 of 129,498 over 8s and one timeout, mostly several in the same
+ * minute, so the tail follows how many mints run at once more than Google's own
+ * speed. Nobody waits on either: a missed sync mint heals on the next minute's
+ * run, and a reminder email that fails is retried on the next. Re-measure before
+ * changing either number: count
+ * `tag=google-token-mint` lines by `deadline_ms`, `request` and `duration_ms` band
+ * in hourly or whole UTC day windows: one window across all six days, not on day
+ * boundaries, counted 12% more lines than its own hours did.
  */
 export const DELEGATED_TOKEN_TIMEOUT_MS = 8000;
 
