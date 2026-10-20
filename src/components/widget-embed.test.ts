@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { EMBED_MESSAGE, INLINE_PIECES, LINK_FAILED, PIECE_MESSAGE } from "@/lib/embed/lifecycle-events";
@@ -1186,14 +1186,47 @@ describe("widget.js pre builds the modal frame on the trigger's first intent (#2
 // origin, a pageType and options. Every guarantee of the intent pre build holds:
 // invisible, no focus, no key, no scroll lock, and nothing announced until the
 // first show, because a prerender is not a view.
+//
+// Whether Slate honours it is Slate's own admin switch (Dan, 2026-10-20): widget.js
+// asks `GET <origin>/api/embed/config` and builds only on `{ prerender: true }`.
+// Every other answer (false, an error, a status that is not ok, a body that is not
+// that shape, or no answer within the cap) leaves the prerender a no op, exactly as
+// before #3989, and the click builds as it always has. Each test uses an origin of
+// its own, because the answer is asked once per origin per page load.
 describe("widget.js builds the modal frame when the host calls prerender (#3706)", () => {
   type AnyCal = ((...args: unknown[]) => void) & {
     ns: Record<string, (...args: unknown[]) => void>;
     config: { forwardQueryParams?: boolean };
   };
   const cal = () => (window as unknown as { Cal: AnyCal }).Cal;
-  const ORIGIN = "https://slate.test";
   const FORM = "255a083e-529e-42e1-ba94-9556fae95fe4";
+  /** How long widget.js waits for the setting before building nothing. */
+  const CONFIG_CAP_MS = 2000;
+
+  let originSeq = 0;
+  let ORIGIN = "";
+  /** What the config endpoint answers in this test; a function gets the call. */
+  let configAnswer: () => Promise<unknown> = () => configResponse({ prerender: true });
+  let fetchSpy: ReturnType<typeof vi.fn>;
+  function configResponse(body: unknown, ok = true): Promise<unknown> {
+    return Promise.resolve({ ok, status: ok ? 200 : 500, json: () => Promise.resolve(body) });
+  }
+  const configCalls = () =>
+    fetchSpy.mock.calls.filter((c) => String(c[0]) === `${ORIGIN}/api/embed/config`);
+
+  beforeEach(() => {
+    ORIGIN = `https://slate-${++originSeq}.test`;
+    configAnswer = () => configResponse({ prerender: true });
+    fetchSpy = vi.fn((url: unknown) =>
+      String(url).endsWith("/api/embed/config") ? configAnswer() : Promise.resolve({} as Response),
+    );
+    (globalThis as unknown as { fetch: unknown }).fetch = fetchSpy;
+  });
+
+  /** Let the config answer, and the build that follows it, run. */
+  async function settle() {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  }
 
   /** The call trypennie's useCalPrerender makes, field for field. */
   function prerender(ns: string, calLink: string, extra: Record<string, unknown> = {}) {
@@ -1207,6 +1240,11 @@ describe("widget.js builds the modal frame when the host calls prerender (#3706)
       ...extra,
     });
   }
+  /** A prerender with the switch on, once its answer has arrived. */
+  async function prerendered(ns: string, calLink: string, extra: Record<string, unknown> = {}) {
+    prerender(ns, calLink, extra);
+    await settle();
+  }
   function trigger(ns: string, link: string, config?: Record<string, string>): HTMLDivElement {
     const el = document.createElement("div");
     el.setAttribute("data-cal-link", link);
@@ -1217,12 +1255,38 @@ describe("widget.js builds the modal frame when the host calls prerender (#3706)
   }
   const allIframes = () => Array.from(document.querySelectorAll<HTMLIFrameElement>("iframe"));
 
-  it("builds one hidden frame at the call, at the namespace's own origin, with nothing on screen and nothing announced", () => {
+  it("asks the namespace's own Slate origin for the setting, without credentials, before building anything", async () => {
+    let answer: (v: unknown) => void = () => {};
+    configAnswer = () => new Promise((resolve) => (answer = resolve));
+    const ns = freshNs();
+    prerender(ns, `router?form=${FORM}&xbc=411`);
+    expect(configCalls()).toHaveLength(1);
+    const init = configCalls()[0][1] as RequestInit;
+    expect(init.credentials).toBe("omit");
+    // Nothing is built, and no time is fetched, until Slate says yes.
+    expect(allIframes()).toHaveLength(0);
+    expect(fetchSpy.mock.calls.some((c) => String(c[0]).includes("/api/availability"))).toBe(false);
+    answer({ ok: true, status: 200, json: () => Promise.resolve({ prerender: true }) });
+    await settle();
+    expect(allIframes()).toHaveLength(1);
+  });
+
+  it("asks once per origin per page load, however many namespaces prerender", async () => {
+    const a = freshNs();
+    const b = freshNs();
+    prerender(a, `router?form=${FORM}&xbc=411`);
+    prerender(b, `router?form=${FORM}&xbc=412`);
+    await settle();
+    expect(configCalls()).toHaveLength(1);
+    expect(allIframes()).toHaveLength(2);
+  });
+
+  it("builds one hidden frame at the call, at the namespace's own origin, with nothing on screen and nothing announced", async () => {
     const all = calOn("*");
     const ns = freshNs();
     (document.activeElement as HTMLElement | null)?.blur?.();
     const focusedBefore = document.activeElement;
-    prerender(ns, `router?form=${FORM}&xbc=411`);
+    await prerendered(ns, `router?form=${FORM}&xbc=411`);
 
     expect(shownOverlay()).toBeNull();
     const built = allIframes();
@@ -1242,18 +1306,101 @@ describe("widget.js builds the modal frame when the host calls prerender (#3706)
     expect(all).not.toHaveBeenCalled();
   });
 
-  it("starts the availability read for the link's bucket at the call", () => {
-    const fetchSpy = vi.fn((..._args: unknown[]) => Promise.resolve({} as Response));
-    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchSpy as unknown as typeof fetch;
-    prerender(freshNs(), `router?form=${FORM}&xbc=3706`);
+  it("starts the availability read for the link's bucket once the setting says yes", async () => {
+    await prerendered(freshNs(), `router?form=${FORM}&xbc=3706`);
     const calls = fetchSpy.mock.calls.filter((c) => String(c[0]) === `${ORIGIN}/api/availability?bucket=3706`);
     expect(calls).toHaveLength(1);
   });
 
-  it("the first click shows the prerendered frame: no second frame, no reload, and its held stages announced after navigatedToBooker", () => {
-    const all = calOn("*");
+  // Every answer but a well formed yes leaves the prerender a no op: no frame, no
+  // availability read, nothing thrown into the host page, nothing shown to the lead,
+  // and the click still builds and opens the booker exactly as before.
+  const noAnswers: [string, () => Promise<unknown>][] = [
+    ["says no", () => configResponse({ prerender: false })],
+    ["answers with a status that is not ok", () => configResponse({ prerender: true }, false)],
+    ["answers a string for the flag", () => configResponse({ prerender: "true" })],
+    ["answers null", () => configResponse(null)],
+    ["answers an array", () => configResponse([true])],
+    ["answers a body that is not JSON", () => Promise.resolve({ ok: true, status: 200, json: () => Promise.reject(new SyntaxError("Unexpected token <")) })],
+    ["cannot be reached", () => Promise.reject(new TypeError("Failed to fetch"))],
+  ];
+  for (const [what, answer] of noAnswers) {
+    it(`builds nothing when the setting ${what}, and the click still opens the booker`, async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      configAnswer = answer;
+      const ns = freshNs();
+      expect(() => prerender(ns, `router?form=${FORM}&xbc=411`)).not.toThrow();
+      await settle();
+      expect(allIframes()).toHaveLength(0);
+      expect(fetchSpy.mock.calls.some((c) => String(c[0]).includes("/api/availability"))).toBe(false);
+      expect(document.querySelector('.slate-widget-overlay [role="alert"]')).toBeNull();
+      expect(error).not.toHaveBeenCalled();
+      error.mockRestore();
+
+      trigger(ns, `router?form=${FORM}&xbc=411`).click();
+      expect(shownIframe()).toBeTruthy();
+      expect(allIframes()).toHaveLength(1);
+    });
+  }
+
+  it("builds nothing when the setting does not answer within the cap, even if a yes arrives later", async () => {
+    vi.useFakeTimers();
+    let answer: (v: unknown) => void = () => {};
+    configAnswer = () => new Promise((resolve) => (answer = resolve));
     const ns = freshNs();
     prerender(ns, `router?form=${FORM}&xbc=411`);
+    await vi.advanceTimersByTimeAsync(CONFIG_CAP_MS);
+    answer({ ok: true, status: 200, json: () => Promise.resolve({ prerender: true }) });
+    await settle();
+    expect(allIframes()).toHaveLength(0);
+
+    trigger(ns, `router?form=${FORM}&xbc=411`).click();
+    expect(shownIframe()).toBeTruthy();
+  });
+
+  it("builds when a yes arrives just inside the cap", async () => {
+    vi.useFakeTimers();
+    let answer: (v: unknown) => void = () => {};
+    configAnswer = () => new Promise((resolve) => (answer = resolve));
+    prerender(freshNs(), `router?form=${FORM}&xbc=411`);
+    await vi.advanceTimersByTimeAsync(CONFIG_CAP_MS - 1);
+    answer({ ok: true, status: 200, json: () => Promise.resolve({ prerender: true }) });
+    await settle();
+    expect(allIframes()).toHaveLength(1);
+  });
+
+  it("with the setting off, the hover still pre builds the frame, as before", async () => {
+    configAnswer = () => configResponse({ prerender: false });
+    const ns = freshNs();
+    prerender(ns, `router?form=${FORM}&xbc=411`);
+    await settle();
+    expect(allIframes()).toHaveLength(0);
+    const el = trigger(ns, `router?form=${FORM}&xbc=411`);
+    el.dispatchEvent(new Event("pointerover", { bubbles: true }));
+    expect(allIframes()).toHaveLength(1);
+    const built = allIframes()[0];
+    el.click();
+    expect(shownIframe()).toBe(built);
+  });
+
+  it("a yes that arrives after the lead already clicked keeps the frame the click built", async () => {
+    let answer: (v: unknown) => void = () => {};
+    configAnswer = () => new Promise((resolve) => (answer = resolve));
+    const ns = freshNs();
+    prerender(ns, `router?form=${FORM}&xbc=411`);
+    trigger(ns, `router?form=${FORM}&xbc=411`).click();
+    const shown = shownIframe();
+    expect(shown).toBeTruthy();
+    answer({ ok: true, status: 200, json: () => Promise.resolve({ prerender: true }) });
+    await settle();
+    expect(allIframes()).toEqual([shown]);
+    expect(shownIframe()).toBe(shown);
+  });
+
+  it("the first click shows the prerendered frame: no second frame, no reload, and its held stages announced after navigatedToBooker", async () => {
+    const all = calOn("*");
+    const ns = freshNs();
+    await prerendered(ns, `router?form=${FORM}&xbc=411`);
     const built = allIframes()[0];
     const builtSrc = built.getAttribute("src");
     fromActiveFrame(built, { type: EMBED_MESSAGE.bookerViewed, data: { slotsLoaded: false } });
@@ -1272,7 +1419,7 @@ describe("widget.js builds the modal frame when the host calls prerender (#3706)
     expect(document.body.style.overflow).toBe("hidden");
   });
 
-  it("matches trypennie's offer portal click: the page's forwarded query and the submission id as metadata on both sides build one frame", () => {
+  it("matches trypennie's offer portal click: the page's forwarded query and the submission id as metadata on both sides build one frame", async () => {
     const ns = freshNs();
     const before = window.location.pathname + window.location.search;
     const forwardBefore = cal().config.forwardQueryParams;
@@ -1284,7 +1431,7 @@ describe("widget.js builds the modal frame when the host calls prerender (#3706)
       // useCalPrerender: the page's query, plus the submission id as cal.com metadata.
       const page = new URL(document.URL);
       page.searchParams.set("metadata[sfdc_submission_id]", "a0G5x00000AbCdEQAU");
-      prerender(ns, `router?form=${FORM}&${page.searchParams.toString()}`);
+      await prerendered(ns, `router?form=${FORM}&${page.searchParams.toString()}`);
       const built = allIframes()[0];
       const src = new URL(built.getAttribute("src")!);
       // The metadata is read as metadata, as a trigger's data-cal-config is, never
@@ -1308,10 +1455,10 @@ describe("widget.js builds the modal frame when the host calls prerender (#3706)
     }
   });
 
-  it("a click on a link the prerender was not built for replaces the frame, and the replaced frame announces nothing", () => {
+  it("a click on a link the prerender was not built for replaces the frame, and the replaced frame announces nothing", async () => {
     const viewed = calOn("bookerViewed");
     const ns = freshNs();
-    prerender(ns, `router?form=${FORM}&xbc=411`);
+    await prerendered(ns, `router?form=${FORM}&xbc=411`);
     const built = allIframes()[0];
     fromActiveFrame(built, { type: EMBED_MESSAGE.bookerViewed, data: { slotsLoaded: false } });
 
@@ -1322,11 +1469,12 @@ describe("widget.js builds the modal frame when the host calls prerender (#3706)
     expect(viewed).not.toHaveBeenCalled();
   });
 
-  it("runs no load clock while the prerendered frame is hidden, so a page left open for minutes reports nothing and shows no error", () => {
+  it("runs no load clock while the prerendered frame is hidden, so a page left open for minutes reports nothing and shows no error", async () => {
     vi.useFakeTimers();
     const failed = calOn("linkFailed");
     const ns = freshNs();
-    prerender(ns, `router?form=${FORM}&xbc=411`);
+    await prerendered(ns, `router?form=${FORM}&xbc=411`);
+    expect(allIframes()).toHaveLength(1);
     vi.advanceTimersByTime(5 * 60_000);
     expect(document.querySelector('.slate-widget-overlay [role="alert"]')).toBeNull();
 
@@ -1337,11 +1485,12 @@ describe("widget.js builds the modal frame when the host calls prerender (#3706)
     expect(retryBtn()).toBeUndefined();
   });
 
-  it("gives a prerendered frame still loading at the click twelve seconds from the click, the wait a lead actually sat through", () => {
+  it("gives a prerendered frame still loading at the click twelve seconds from the click, the wait a lead actually sat through", async () => {
     vi.useFakeTimers();
     const failed = calOn("linkFailed");
     const ns = freshNs();
-    prerender(ns, `router?form=${FORM}&xbc=411`);
+    await prerendered(ns, `router?form=${FORM}&xbc=411`);
+    expect(allIframes()).toHaveLength(1);
     vi.advanceTimersByTime(30_000);
     trigger(ns, `router?form=${FORM}&xbc=411`).click();
 
@@ -1356,12 +1505,12 @@ describe("widget.js builds the modal frame when the host calls prerender (#3706)
     expect(retryBtn()).toBeTruthy();
   });
 
-  it("a prerendered frame that loaded while hidden opens with no loader and no clock", () => {
+  it("a prerendered frame that loaded while hidden opens with no loader and no clock", async () => {
     vi.useFakeTimers();
     const failed = calOn("linkFailed");
     const reloaded = calOn("bookerReloaded");
     const ns = freshNs();
-    prerender(ns, `router?form=${FORM}&xbc=411`);
+    await prerendered(ns, `router?form=${FORM}&xbc=411`);
     allIframes()[0].dispatchEvent(new Event("load"));
 
     trigger(ns, `router?form=${FORM}&xbc=411`).click();
@@ -1371,19 +1520,20 @@ describe("widget.js builds the modal frame when the host calls prerender (#3706)
     expect(reloaded).not.toHaveBeenCalled();
   });
 
-  it("builds at most one frame per namespace: a second prerender and a later hover keep the first", () => {
+  it("builds at most one frame per namespace: a second prerender and a later hover keep the first", async () => {
     const ns = freshNs();
-    prerender(ns, `router?form=${FORM}&xbc=411`);
+    await prerendered(ns, `router?form=${FORM}&xbc=411`);
     const built = allIframes()[0];
-    prerender(ns, `router?form=${FORM}&xbc=411`);
-    prerender(ns, `router?form=${FORM}&xbc=412`);
+    await prerendered(ns, `router?form=${FORM}&xbc=411`);
+    await prerendered(ns, `router?form=${FORM}&xbc=412`);
     trigger(ns, `router?form=${FORM}&xbc=411`).dispatchEvent(new Event("pointerover", { bubbles: true }));
     expect(allIframes()).toEqual([built]);
   });
 
-  it("takes no key from the host page while the prerendered frame is hidden", () => {
+  it("takes no key from the host page while the prerendered frame is hidden", async () => {
     const ns = freshNs();
-    prerender(ns, `router?form=${FORM}&xbc=411`);
+    await prerendered(ns, `router?form=${FORM}&xbc=411`);
+    expect(allIframes()).toHaveLength(1);
     const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
     document.dispatchEvent(escape);
     expect(escape.defaultPrevented).toBe(false);
@@ -1392,7 +1542,7 @@ describe("widget.js builds the modal frame when the host calls prerender (#3706)
     expect(tab.defaultPrevented).toBe(false);
   });
 
-  it("builds nothing for a prerender it cannot read, and never throws into the host page", () => {
+  it("builds nothing, and asks nothing, for a prerender it cannot read, and never throws into the host page", async () => {
     const ns = freshNs();
     cal()("init", ns, { origin: ORIGIN });
     expect(() => {
@@ -1404,21 +1554,29 @@ describe("widget.js builds the modal frame when the host calls prerender (#3706)
       cal().ns[ns]("prerender", { calLink: "router?xbc=411", type: "floatingButton" });
       cal().ns[ns]("prerender", { calLink: "router?xbc=411", type: "inline" });
     }).not.toThrow();
+    await settle();
     expect(allIframes()).toHaveLength(0);
+    expect(configCalls()).toHaveLength(0);
   });
 
-  it("a prerender that throws leaves the click to build and open as before", () => {
+  it("a prerender whose build throws leaves the click to build and open as before", async () => {
     const ns = freshNs();
     const original = document.createElement.bind(document);
     vi.spyOn(document, "createElement").mockImplementation(((tag: string) => {
       if (tag === "iframe") throw new Error("iframe blocked by host CSP");
       return original(tag);
     }) as typeof document.createElement);
+    const rejections: unknown[] = [];
+    const onRejection = (e: PromiseRejectionEvent) => rejections.push(e.reason);
+    window.addEventListener("unhandledrejection", onRejection);
     try {
       expect(() => prerender(ns, `router?form=${FORM}&xbc=411`)).not.toThrow();
+      await settle();
     } finally {
       vi.mocked(document.createElement).mockRestore();
+      window.removeEventListener("unhandledrejection", onRejection);
     }
+    expect(rejections).toEqual([]);
     expect(allIframes()).toHaveLength(0);
     trigger(ns, `router?form=${FORM}&xbc=411`).click();
     expect(shownIframe()).toBeTruthy();

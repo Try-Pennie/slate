@@ -18,6 +18,7 @@ export const CATEGORY_EXEMPTIONS: CategoryExemption[] = [
   { category: "health", prefix: "/api/health", reason: "Uptime and availability probes for external monitors, answering no question a person asks." },
   { category: "csp-report", prefix: "/api/csp-report", reason: "Where browsers post policy violations; an inbound report, not an action." },
   { category: "client-errors", prefix: "/api/client-errors", reason: "The browser error beacon; an inbound report, not an action." },
+  { category: "embed config", prefix: "/api/embed/config", reason: "The embed's own settings, read by widget.js on a host page before it builds a booker; it answers no question a person asks." },
   { category: "auth callback", prefix: "/api/auth/callback", reason: "The staff sign in callback, a step of the browser's own login." },
   { category: "slack", prefix: "/api/slack", reason: "Inbound Slack interactions, signed by Slack and answered to Slack." },
   { category: "regal", prefix: "/api/regal", reason: "Inbound Regal call events, sent by Regal on its own key." },
