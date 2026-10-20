@@ -17,6 +17,10 @@ const SRC = join(ROOT, "src");
 const JSDOM_TS_EXCEPTIONS = new Map<string, string>([
   ["src/components/widget-embed.test.ts", "drives the real widget.js IIFE in a browser environment"],
   [
+    "src/components/widget-prerender-queued.test.ts",
+    "drives the real widget.js IIFE behind a loader stub that queued a prerender (#3706)",
+  ],
+  [
     "src/lib/supabase/pkce-flow.test.ts",
     "the real Supabase browser client writes the PKCE verifier through document.cookie (#3112)",
   ],
