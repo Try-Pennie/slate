@@ -227,7 +227,7 @@ export type StrandedInviteReason = "refused" | "gone" | "booking-unreadable" | "
  */
 export interface StrandedInviteFacts {
   advisorEmail: string;
-  /** The booking's own time, or null when the booking could not be read. */
+  /** The booking's own time as last read, or null when no read found it. */
   bookedStartsAt: string | null;
   /** Where the crashed reschedule was moving the invite. */
   targetStartsAt: string;

@@ -356,7 +356,10 @@ export interface StrandedInvite {
   bookingId: string;
   /** The advisor whose calendar holds the invite. */
   advisorEmail: string;
-  /** The booking's own time, or null when the booking could not be read. */
+  /**
+   * The booking's own time: read under the lock, or, when that read failed, the one
+   * the sweep read before it. Null only when neither read found it.
+   */
   bookedStartsAt: string | null;
   /** Where the crashed reschedule was moving it. */
   targetStartsAt: string;
