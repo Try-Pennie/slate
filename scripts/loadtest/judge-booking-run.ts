@@ -323,6 +323,34 @@ export function percentiles(values: number[]): { p50: number; p95: number; max: 
   return { p50: at(0.5), p95: at(0.95), max: s[s.length - 1]! };
 }
 
+/**
+ * The same nearest rank over samples that each stand for `weight` values (#3915): Cloudflare
+ * stores some log rows in place of several lines it never kept, and a percentile over the
+ * rows alone counts each of those as one. The rank is the first value whose running weight
+ * passes the quantile of the total, which at weight 1 throughout is exactly `percentiles`.
+ * THROWS on a weight that is not a positive number, which would otherwise drop its row from
+ * the figure with nothing said.
+ */
+export function weightedPercentiles(
+  samples: readonly { value: number; weight: number }[],
+): { p50: number; p95: number; max: number } | null {
+  if (samples.length === 0) return null;
+  for (const s of samples) {
+    if (!Number.isFinite(s.weight) || s.weight <= 0) throw new Error(`weightedPercentiles: weight ${s.weight} is not a positive number`);
+  }
+  const s = [...samples].sort((a, b) => a.value - b.value);
+  const total = s.reduce((sum, x) => sum + x.weight, 0);
+  const at = (q: number) => {
+    let running = 0;
+    for (const x of s) {
+      running += x.weight;
+      if (running > q * total) return x.value;
+    }
+    return s[s.length - 1]!.value;
+  };
+  return { p50: at(0.5), p95: at(0.95), max: s[s.length - 1]!.value };
+}
+
 /** Two windows overlap when each starts before the other ends: the half-open
  *  `[starts_at, ends_at)` comparison, so back-to-back calls do not read as a clash. */
 export function overlaps(a: JudgedBooking, b: JudgedBooking): boolean {

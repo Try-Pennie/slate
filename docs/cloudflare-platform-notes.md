@@ -635,6 +635,16 @@ rows** from data that is actually present, so none of them can be told apart fro
   was asked one hour at a time. Nothing in the wide answer says it is partial, so missing
   rows read as absence. Ask one hour at a time and add the results up; `scripts/logs.ts`
   does this for counts and for printed lines, and refuses a slice wider than an hour.
+- **A count is an ESTIMATE when the Worker was busy, and the lines it estimates were never
+  stored (#3915).** Workers Logs samples at ingestion: it stores some rows and gives each a
+  weight, the number of lines it stands for, and a `count` is the SUM of the weights. On
+  2026-10-18 15:30 to 16:30 UTC `msg="confirm answered"` counted **69** while the events
+  view listed **51**; counting grouped by `$metadata.id` showed 49 rows at weight 1 and 2 at
+  weight 10, which is 69. Paging the events view (`offset`) and one minute slices both
+  returned the same 51, so no query can list the other 18. A percentile over the listing
+  alone under-counts exactly the busy minutes that were sampled, so weight it by each row's
+  weight. That grouped count needs its group limit inside `parameters` (`parameters.limit`):
+  without it the API returns 10 groups, and the request's own `limit` does not change that.
 - **Ingestion lags a minute or two, and a too-narrow window drops late arrivals.**
   A count taken immediately after emitting returns 0, and a window that ends too
   soon undercounts (a 50-line level read back as 30 until the window was widened).
@@ -725,12 +735,22 @@ because they are read one after another. The positive control is judged PER SLIC
 slice whose control is live is a hit, but one slice whose control found nothing makes
 an absence over the whole window unverifiable, since nobody could see into it.
 
+`--lines` also reads each stored row's sample weight (above), and judges the listing
+against the rows Cloudflare STORED rather than against the count. A row standing for more
+than one line prints `weight=N` between its level and its text, and a listing short of the
+stored rows is asked for once more before it is reported, because one hour listed 4 of its
+19 stored rows once on 2026-10-20 and all 19 on every later ask.
+
 Exit codes are grep-like, with distinct ones for the cases that must not be believed:
 **0** found, **1** trustworthy absence, **2** UNVERIFIABLE or refused (the control came
 back empty, the token is missing, the API refused), **3** found but the printed list is
-incomplete (a slice listed fewer lines than it counted, or filled the 2,000 row request
-limit, or carried an event whose text could not be read). On a 3 the count is the
-answer and the printed list is not every line.
+incomplete (a slice listed fewer rows than Cloudflare stored, or filled the 2,000 row request
+limit, or carried an event whose text or, in a sampled slice, whose weight could not be
+read), **4** found and every stored row printed, but Cloudflare sampled the window: a
+`SAMPLED:` line beside the verdict says how many rows stand for how many counted lines. On a
+3 the count is the answer and the printed list is not every line; on a 4 the list is every
+line that exists to list, and any figure over it is weighted by `weight=` (as
+`scripts/loadtest/google-timings.ts` does).
 
 ### The token (read only, one per Mac)
 

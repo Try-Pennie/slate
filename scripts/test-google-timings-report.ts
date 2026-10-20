@@ -12,12 +12,13 @@ import { formatLine } from "./logs.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 /** One printed row, through logs.ts's own formatter, so the fixture is what the tool prints. */
-const row = (i: number, fields: string) =>
+const row = (i: number, fields: string, weight?: number | null) =>
   formatLine({
     id: null,
     timestampMs: Date.UTC(2026, 9, 20, 12, 0, i),
     level: "info",
     message: `slate tag=booking msg="confirm answered" confirm_kind="new" response_ms=1500 status=200${fields ? ` ${fields}` : ""}`,
+    weight,
   });
 
 // The verdict exactly as logs.ts prints it, which echoes the needle unescaped, so the line
@@ -69,7 +70,7 @@ rows.push(row(24, ""));
   }
 }
 
-// --- logs.ts listed fewer rows than it counted (its exit 3): the percentile SAYS so --------
+// --- logs.ts listed fewer rows than Cloudflare stored (its exit 3): the percentile SAYS so -
 {
   const stdout = [...rows, verdict(30)].join("\n");
   const r = summariseGoogleTimings(stdout, 3);
@@ -85,10 +86,50 @@ rows.push(row(24, ""));
   assert(quiet.kind === "report" && quiet.incomplete && quiet.exit === GOOGLE_TIMINGS_EXIT.incomplete, "incomplete: listed below counted is incomplete whatever the exit code");
 }
 
+// --- #3915: Cloudflare sampled the window (logs.ts exit 4): weighted, and whole -----------
+// Ten confirms stored whole and one kept 1 in 10, so 11 rows stand for the 20 counted. The
+// slow one is half the window, which an unweighted median would read as one row in eleven.
+const sampledRows: string[] = [];
+for (let i = 1; i <= 10; i++) {
+  sampledRows.push(row(i, `google_read_ms=${i * 100} google_read_calls=1 google_write_ms=${i * 100} google_write_calls=1`));
+}
+sampledRows.push(row(11, "google_read_ms=5000 google_read_calls=1 google_write_ms=5000 google_write_calls=1", 10));
+{
+  const r = summariseGoogleTimings([...sampledRows, verdict(20)].join("\n"), 4);
+  assert(r.kind === "report", `sampled: a report (got ${r.kind}${r.kind === "refused" ? `: ${r.why}` : ""})`);
+  if (r.kind === "report") {
+    eq(r.listed, 11, "sampled: eleven rows listed");
+    eq(r.standsFor, 20, "sampled: standing for twenty lines, by their weights");
+    eq(r.counted, 20, "sampled: which is the count logs.ts printed");
+    eq(r.incomplete, false, "sampled: every stored row was listed, so it is not short");
+    eq(r.sampled, true, "sampled: and it says it was sampled");
+    eq(r.groups.read.perCall?.p50, 5000, "sampled: the median is weighted, so the slow line is half the window");
+    eq(r.groups.read.perCall?.n, 11, "sampled: n is the rows the figure is over");
+    eq(r.exit, GOOGLE_TIMINGS_EXIT.complete, "sampled: a whole, weighted listing exits 0");
+    const text = formatGoogleTimingsReport(r).join("\n");
+    assert(/listed 11 lines standing for 20 of 20 counted/.test(text), `sampled: the report says what the rows stand for (got ${text})`);
+    assert(/weighted/i.test(text) && /never stored/i.test(text), `sampled: and that the figures are weighted for lines never stored (got ${text})`);
+    assert(!/INCOMPLETE/.test(text), "sampled: and is not called incomplete");
+  }
+  // exit 4 from a file whose rows carry no weights (a listing from before the weights were
+  // printed) stands for 11 of 20: short, whatever the exit code says.
+  const unweighted = [...sampledRows.slice(0, 10), row(11, "google_read_ms=5000 google_read_calls=1 google_write_ms=5000 google_write_calls=1")];
+  const short = summariseGoogleTimings([...unweighted, verdict(20)].join("\n"), 4);
+  assert(short.kind === "report" && short.incomplete && short.exit === GOOGLE_TIMINGS_EXIT.incomplete, "sampled: weights that do not reach the count are incomplete");
+  // A row whose weight logs.ts could not read makes any weighted figure a guess.
+  const unknown = [...sampledRows.slice(0, 10), row(11, "google_read_ms=5000 google_read_calls=1 google_write_ms=5000 google_write_calls=1", null)];
+  const guessed = summariseGoogleTimings([...unknown, verdict(20)].join("\n"), 3);
+  assert(guessed.kind === "report" && guessed.incomplete, "sampled: a row of unknown weight is incomplete");
+  if (guessed.kind === "report") {
+    const text = formatGoogleTimingsReport(guessed).join("\n");
+    assert(/1 listed line\(s\) of unknown weight/.test(text), `sampled: and says which kind of shortfall it is (got ${text})`);
+  }
+}
+
 // --- nothing it can stand on refuses rather than printing a delay -------------------------
 {
   const stdout = [...rows, verdict(rows.length)].join("\n");
-  for (const code of [1, 2, 4, 127]) {
+  for (const code of [1, 2, 5, 127]) {
     const r = summariseGoogleTimings(stdout, code);
     assert(r.kind === "refused" && r.exit === GOOGLE_TIMINGS_EXIT.refused, `logs.ts exit ${code}: refused (got ${r.kind})`);
   }
