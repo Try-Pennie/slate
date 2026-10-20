@@ -565,9 +565,10 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // offers a time, so this bound is a maintenance window rather than a measure of the
   // cadence, the same six hours as the tier staffing alarm beside it.
   "verdict:offered-nobody-free": 6 * 60 * MIN,
-  // The buffer breach check (#3040). It concludes on every 5 minute tick that reads
-  // at least one upcoming booking, which is every tick while anybody is booked, so the
-  // bound is the same six hour maintenance window as the two checks above.
+  // The buffer breach check (#3040). It concludes on every 5 minute tick that judges
+  // at least one upcoming booking with an assigned advisor, which is every tick while
+  // anybody is booked, so the bound is the same six hour maintenance window as the
+  // two checks above.
   "verdict:buffer-breach": 6 * 60 * MIN,
   // The Twilio half of the hourly roster sync (#2114). Six missed runs.
   //

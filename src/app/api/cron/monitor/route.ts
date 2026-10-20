@@ -4812,7 +4812,7 @@ export async function GET(req: NextRequest) {
       recordDetectorVerdict(AVAILABILITY_TRUTH_VERDICT_LANE, truthReachedVerdict(availabilityTruth)),
       // #3381: only a tick that judged at least one served time stamps.
       recordDetectorVerdict(OFFERED_NOBODY_FREE_VERDICT_LANE, offeredNobodyFreeReachedVerdict(offeredNobodyFree)),
-      // #3040: only a tick that read at least one upcoming booking stamps.
+      // #3040: only a tick that judged at least one booking with an assigned advisor stamps.
       recordDetectorVerdict(BUFFER_BREACH_VERDICT_LANE, bufferBreachReachedVerdict(bufferBreach)),
       recordDetectorVerdict(FAILURE_RATE_VERDICT_LANE, failureRateReachedVerdict(failureRate)),
       recordDetectorVerdict(LOW_VOLUME_VERDICT_LANE, lowVolumeReachedVerdict(volume)),
