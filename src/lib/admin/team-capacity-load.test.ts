@@ -96,6 +96,19 @@ describe("loadTeamCapacity", () => {
     expect(r.advisors[0].days).toHaveLength(4);
   });
 
+  it("keeps today after the 6 PM cutoff, ahead of the booker's days (#3949)", async () => {
+    // Monday 19 October, 7:10 PM in New York: the booker's days start tomorrow, and today's
+    // remaining times are still served, so the page still shows today.
+    const r = await loadTeamCapacity({ orgId: "org", now: new Date("2026-10-19T23:10:00Z") });
+    expect(r.measurable && r.windowDays).toEqual(["2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23"]);
+  });
+
+  it("does not add today after the cutoff on a day the office is shut", async () => {
+    // Sunday 25 October, 7:10 PM: the office's week here holds no Sunday.
+    const r = await loadTeamCapacity({ orgId: "org", now: new Date("2026-10-25T23:10:00Z") });
+    expect(r.measurable && r.windowDays).toEqual(["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29"]);
+  });
+
   it("adds a picked day after the window's", async () => {
     const r = await loadTeamCapacity({ orgId: "org", now, extraDay: "2026-10-26" });
     expect(r.measurable && r.days).toEqual(["2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-26"]);
