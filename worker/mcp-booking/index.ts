@@ -8,10 +8,11 @@
  * `slate-booking-mcp.trypennie.dev` (a manual custom domain step). Until then nothing
  * reaches it.
  *
- * It holds NO secret (plan locked decision 15): it shape checks Marcia's lead token,
- * applies Marcia's overall limit, and hands each tool call to Slate's
- * `McpBookingGateway` over its one service binding, which is where the token is
- * verified. Its own invocation logs are off in its config, because the incoming
+ * It holds NO secret (plan locked decision 15): it shape checks Marcia's lead token
+ * and hands each tool call to Slate's `McpBookingGateway` over its one service
+ * binding, which is where the token is verified. It holds Marcia's overall limit, but
+ * charges it only when the gateway calls back for a token that verified (#3879), so
+ * forged tokens can never spend it. Its own invocation logs are off in its config, because the incoming
  * `Authorization` header carries the lead token and Cloudflare logs invocation
  * headers verbatim (locked decision 1); its console lines carry no token, argument
  * or answer.
@@ -21,11 +22,12 @@
  * runs the other way here: the app does not reach this).
  */
 import { log } from "../../src/lib/log.ts";
-import { handleMcp, type GatewayAnswer } from "./protocol.ts";
+import { handleMcp, type AdmitCall, type GatewayAnswer } from "./protocol.ts";
 
 /** The binding names in `wrangler.mcp-booking.jsonc`. */
 export interface BookingMcpEnv {
-  SLATE: { booking(signedToken: string, operation: string, args: unknown): Promise<GatewayAnswer> };
+  /** `admit` crosses the binding as an RPC stub, which the gateway calls once the token verifies (#3879). */
+  SLATE: { booking(signedToken: string, operation: string, args: unknown, admit: AdmitCall): Promise<GatewayAnswer> };
   MARCIA_LIMITER?: { limit(input: { key: string }): Promise<{ success: boolean }> };
 }
 
@@ -35,7 +37,7 @@ const worker = {
     if (url.pathname !== "/mcp") return new Response("Not found", { status: 404 });
     return handleMcp(request, {
       nowMs: () => Date.now(),
-      booking: (token, operation, args) => env.SLATE.booking(token, operation, args),
+      booking: (token, operation, args, admit) => env.SLATE.booking(token, operation, args, admit),
       withinLimit: async () => {
         // A deployment without its limiter binding is misconfigured: refuse rather
         // than run Marcia unmetered (fail closed), and say so in this Worker's logs.

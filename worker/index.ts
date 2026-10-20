@@ -58,6 +58,7 @@ import { cronStandby } from "./cron-standby";
 import { forwardReceipt } from "./log-shipping-receipt";
 import { forwardBookingCall, type GatewayAnswer } from "./mcp-booking-gateway";
 import { internalMcpRefusal, isInternalMcpPath, stripCarrierHeaders } from "@/lib/mcp-booking/carrier";
+import { MARCIA_TOKEN_KEY_ENV } from "@/lib/mcp-booking/machine-token";
 import { laneDecision } from "./lanes-disabled";
 import { loadtestServingProductionHost } from "@/lib/loadtest-guard";
 import { loadtestEntryRefusal, loadtestIdle, loadtestIdleBody } from "@/lib/loadtest-secrets";
@@ -370,19 +371,24 @@ export class LogShippingReceipt extends WorkerEntrypoint<Env> {
  * The load test refusals come first, as on every other way in (#2335, #3310).
  */
 export class McpBookingGateway extends WorkerEntrypoint<Env> {
-  async booking(signedToken: string, operation: string, args: unknown): Promise<GatewayAnswer> {
+  /** `admit` is the booking MCP Worker's limit check, an RPC stub called only for a verified token (#3879). */
+  async booking(signedToken: string, operation: string, args: unknown, admit?: unknown): Promise<GatewayAnswer> {
     if (entrypointStandDown(this.env, "booking gateway")) {
       return { status: 503, body: { ok: false, code: "unavailable", class: "unexpected", message: "This deployment is not serving Marcia." } };
     }
+    const slot = (v: unknown) => (typeof v === "string" ? v : "");
     return forwardBookingCall(
       {
         fetch: (request) => app.fetch(request, this.env, this.ctx),
-        gatewaySecret: typeof this.env.MCP_BOOKING_GATEWAY_SECRET === "string" ? this.env.MCP_BOOKING_GATEWAY_SECRET : "",
+        gatewaySecret: slot(this.env.MCP_BOOKING_GATEWAY_SECRET),
+        tokenKeySlots: MARCIA_TOKEN_KEY_ENV.map((name) => slot(this.env[name])),
+        nowMs: () => Date.now(),
         log,
       },
       signedToken,
       operation,
       args,
+      admit,
     );
   }
 }
