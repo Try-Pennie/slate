@@ -571,24 +571,44 @@ async function checkAgentFree(
  * land in `free`: it is the answer for an agent whose calendars could not be
  * read, and the booker surfaces it as a retriable outage rather than assigning
  * the slot. A `refused` agent (#3700) lands in neither set, exactly like a busy
- * one: they cannot take the time, and nothing about it is an outage.
+ * one: they cannot take the time. It is reported in `refused` too, so the wave's
+ * caller can tell a wave Google refused ENTIRELY (`wholeWaveRefused`) from a full one.
  */
 export async function verifyAgentsDirectly(
   emails: string[],
   startIso: string,
   endIso: string,
-): Promise<{ free: Set<string>; unverified: Set<string> }> {
+): Promise<{ free: Set<string>; unverified: Set<string>; refused: Set<string> }> {
   const free = new Set<string>();
   const unverified = new Set<string>();
-  if (emails.length === 0) return { free, unverified };
+  const refused = new Set<string>();
+  if (emails.length === 0) return { free, unverified, refused };
   const verdicts = await mapWithConcurrency(emails, VERIFY_CONCURRENCY, (email) =>
     checkAgentFree(email, startIso, endIso),
   );
   emails.forEach((email, i) => {
     if (verdicts[i] === "free") free.add(email);
     else if (verdicts[i] === "unverified") unverified.add(email);
+    else if (verdicts[i] === "refused") refused.add(email);
   });
-  return { free, unverified };
+  return { free, unverified, refused };
+}
+
+/**
+ * #3700: did Google refuse EVERY advisor in a wave of two or more?
+ *
+ * One refused advisor is an offboarded account, and leaving them out is right. Every
+ * advisor in a wave refused at once is far likelier to be Slate's own credential: the
+ * shared classifier calls any 400, 401, 403 or 404 a definitive failure, so delegation
+ * revoked, a bad service account key or a clock skewed `invalid_grant` on the mint
+ * refuses everybody alike. Read as refusals, that outage would answer every lead "pick
+ * another time", walk the ladder down, and page nobody, so the caller scores the whole
+ * wave unverified instead: the retriable outage, which pages as `verify_on_book_outage`.
+ * A wave of exactly one refused advisor stays a refusal, because that is the archived
+ * one person pool this issue is about, and one advisor cannot tell the two apart.
+ */
+function wholeWaveRefused(waveSize: number, refused: number): boolean {
+  return waveSize >= 2 && refused === waveSize;
 }
 
 /**
@@ -1359,6 +1379,16 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
         const direct = await verifyAgentsDirectly([...fallback], startIso, endIso);
         for (const e of direct.free) free.add(e);
         for (const e of direct.unverified) unverified.add(e);
+        // #3700: a wave Google refused entirely is an outage, never a full slot. This
+        // also covers the bulk read's stop after two refused subjects: those advisors
+        // land here with everyone else, and are judged with them.
+        if (wholeWaveRefused(emails.length, direct.refused.size)) {
+          log.error("booking", {
+            msg: "Google refused every advisor in the wave, likely Slate's own credential, answering the retriable outage",
+            count: direct.refused.size,
+          });
+          for (const e of direct.refused) unverified.add(e);
+        }
       }
 
       return { free, unverified };

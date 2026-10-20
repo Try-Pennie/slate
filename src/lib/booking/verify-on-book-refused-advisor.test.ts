@@ -83,8 +83,9 @@ let googleCalls: { as: string; items: string[] }[] = [];
  * answers every calendar clean, except a refused advisor's own, which Google will
  * not report on (`notFound` inside the 200). `transient` answers every call 503.
  */
-function google(opts: { refused?: string[]; transient?: boolean } = {}) {
+function google(opts: { refused?: string[]; transient?: boolean; busy?: string[] } = {}) {
   const refused = new Set(opts.refused ?? []);
+  const busy = new Set(opts.busy ?? []);
   googleCalls = [];
   vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
     const auth = String((init.headers as Record<string, string>).authorization ?? "");
@@ -100,7 +101,12 @@ function google(opts: { refused?: string[]; transient?: boolean } = {}) {
     }
     return json({
       calendars: Object.fromEntries(
-        items.map((id) => [id, refused.has(id) ? { errors: [{ domain: "global", reason: "notFound" }] } : { busy: [] }]),
+        items.map((id) => [
+          id,
+          refused.has(id)
+            ? { errors: [{ domain: "global", reason: "notFound" }] }
+            : { busy: busy.has(id) ? [{ start: START, end: END }] : [] },
+        ]),
       ),
     });
   });
@@ -172,6 +178,58 @@ describe("an advisor Google refuses is left out of the wave (#3700)", () => {
     const picked = await select([OK1]);
     expect(picked.assignment).toBeNull();
     expect(picked.anyUnverified).toBe(true);
+  });
+});
+
+// The guard on the refusal: Google refusing EVERY advisor in a wave of two or more is
+// far likelier to be Slate's own credential (delegation revoked, a bad service account
+// key, a clock skewed `invalid_grant` on the mint) than that many offboarded advisors,
+// and it must stay the retriable outage that pages, never a quiet "pick another time"
+// that walks the ladder down. A wave of one refused advisor is the archived one person
+// pool this issue is about, and stays the no availability refusal (above).
+describe("a wave Google refuses entirely is an outage, not a full slot (#3700)", () => {
+  const ALL = [REFUSED, OK1, OK2];
+
+  it("a wave of three all refused is the retriable outage, and says how many", async () => {
+    google({ refused: ALL });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await realDeps().verifyFree(ALL, START, END);
+    expect([...res.free]).toEqual([]);
+    expect([...res.unverified].sort()).toEqual([...ALL].sort());
+
+    const picked = await select(ALL);
+    // `assignAgent` throws VerifyUnavailableError on exactly this outcome.
+    expect(picked.assignment).toBeNull();
+    expect(picked.anyUnverified).toBe(true);
+
+    const lines = errors.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes("every advisor") && l.includes("count=3"))).toBe(true);
+  });
+
+  it("the same holds for a token mint refused for every advisor", async () => {
+    google();
+    const { GoogleHttpError } = await import("@/lib/google/http-error");
+    dwd.getDelegatedToken.mockImplementation(async () => {
+      throw new GoogleHttpError("Delegated token failed: 400 invalid_grant", 400, "invalid_grant");
+    });
+
+    const res = await realDeps().verifyFree([OK1, OK2], START, END);
+
+    expect([...res.unverified].sort()).toEqual([OK1, OK2]);
+  });
+
+  // The control: a refused advisor beside a BUSY one is a full slot, as before.
+  it("a wave of two with one refused and one busy is still no availability", async () => {
+    google({ refused: [REFUSED], busy: [OK1] });
+
+    const res = await realDeps().verifyFree([REFUSED, OK1], START, END);
+    expect([...res.free]).toEqual([]);
+    expect([...res.unverified]).toEqual([]);
+
+    const picked = await select([REFUSED, OK1]);
+    expect(picked.assignment).toBeNull();
+    expect(picked.anyUnverified).toBe(false);
   });
 });
 
