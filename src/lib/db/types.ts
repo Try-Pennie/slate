@@ -195,7 +195,7 @@ export interface BookingInviteChange {
   gcal_event_id: string;
   kind: "moved" | "resized";
   move_number: number | null;
-  // `report_full_read` from migration 0193 (#3925).
+  // `report_full_read` from migration 0194 (#3925).
   action: "revert" | "leave_second_move" | "leave_near_start" | "report_resize" | "report_launch" | "report_full_read";
   outcome: "reverted" | "revert_refused" | "event_gone" | null;
   outcome_detail: string | null;
