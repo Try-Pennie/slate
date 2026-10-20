@@ -75,6 +75,8 @@ export const ALERT_KEYS = [
   "retired_booking_key",
   "advisor_photos_unread",
   "advisor_photos_held",
+  "load_bar_outgrown",
+  "load_bar_unread",
   "csp_violation",
 ] as const;
 

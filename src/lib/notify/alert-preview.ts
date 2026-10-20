@@ -587,6 +587,21 @@ import {
 } from "@/lib/advisor-photos/copy";
 import type { RefreshPlan } from "@/lib/advisor-photos/core";
 import {
+  loadBarOutgrownAlert,
+  loadBarOutgrownRecovery,
+  loadBarUnreadAlert,
+  loadBarUnreadRecovery,
+} from "@/lib/monitor/busy-minutes-copy";
+import {
+  busyWindow,
+  judgeBusyMinutes,
+  slateMinutesFrom,
+  type BusyVerdict,
+  type CalcomHalf,
+  type UnmeasuredReason,
+} from "@/lib/monitor/busy-minutes";
+import { LOAD_RUN_BOOKINGS_PER_MINUTE } from "@/lib/load-bar";
+import {
   formatReminderFailureRateAlert,
   formatReminderFailureRateAllClear,
 } from "@/lib/booking/reminder-rate";
@@ -1009,6 +1024,37 @@ function previewPhotoPlan(over: Partial<RefreshPlan>): RefreshPlan {
     },
     ...over,
   };
+}
+
+/**
+ * A busy minute verdict from the real judge (#3124), over a fixed week, so the preview
+ * shows only what the check would send. `slate` is [ISO minute, bookings]; `calcom` is
+ * [ISO stamp, routed responses at it]. Throws when the fixture does not land where the
+ * caller says, so a preview can never show a message the check would not send.
+ */
+function previewBusyVerdict(
+  slate: [string, number][],
+  calcom: [string, number][] | CalcomHalf,
+  want: "measured",
+): Extract<BusyVerdict, { kind: "measured" }>;
+function previewBusyVerdict(slate: [string, number][] | null, calcom: [string, number][] | CalcomHalf, want: "unmeasured"): UnmeasuredReason[];
+function previewBusyVerdict(
+  slate: [string, number][] | null,
+  calcom: [string, number][] | CalcomHalf,
+  want: "measured" | "unmeasured",
+): Extract<BusyVerdict, { kind: "measured" }> | UnmeasuredReason[] {
+  const ms = (iso: string): number => Date.parse(iso); // parse-ok: fixed ISO literals in this file, and the judge refuses anything outside its window
+  const window = busyWindow(ms("2026-10-20T05:41:00Z"));
+  const slateHalf = slate === null
+    ? ({ ok: false } as const)
+    : slateMinutesFrom(slate.map(([iso, n]) => [Math.floor(ms(iso) / 60_000), n]), window);
+  let id = 0;
+  const calHalf: CalcomHalf = Array.isArray(calcom)
+    ? { kind: "read", routed: calcom.flatMap(([iso, n]) => Array.from({ length: n }, () => ({ id: String(id++), createdAt: iso }))) }
+    : calcom;
+  const v = judgeBusyMinutes({ barPerMinute: LOAD_RUN_BOOKINGS_PER_MINUTE, window, slate: slateHalf, calcom: calHalf });
+  if (v.kind !== want) throw new Error(`busy minute preview fixture judged ${v.kind}, not ${want}`);
+  return v.kind === "measured" ? v : v.reasons;
 }
 
 /** A budget spend from the real judge, for the #3179 previews. Throws if the fixture
@@ -5777,6 +5823,44 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: photosDeadlineAlert(89, 40) },
   { key: "advisor_photos_unread", state: "refreshing again", channel: "recovery",
     text: photosUnreadRecovery() },
+  // #3124: the daily busy minute check against the load run's bar. Every fixture goes
+  // through the real judge over a fixed week, so a state here is one the check sends.
+  { key: "load_bar_outgrown", state: "busy minutes on 3 of 7 days, cal.com and Slate added", channel: "alert",
+    text: loadBarOutgrownAlert(previewBusyVerdict(
+      [["2026-10-14T14:20:00Z", 4], ["2026-10-15T15:30:00Z", 9], ["2026-10-17T13:23:00Z", 3], ["2026-10-16T14:05:00Z", 2]],
+      [["2026-10-14T14:20:30Z", 5], ["2026-10-17T13:23:10Z", 5], ["2026-10-16T14:05:40Z", 3]],
+      "measured",
+    )) },
+  { key: "load_bar_outgrown", state: "after cutover, counting Slate alone", channel: "alert",
+    text: loadBarOutgrownAlert(previewBusyVerdict(
+      [["2026-10-13T14:00:00Z", 8], ["2026-10-15T15:30:00Z", 11], ["2026-10-16T13:10:00Z", 9], ["2026-10-19T14:40:00Z", 8]],
+      { kind: "retired" },
+      "measured",
+    )) },
+  { key: "load_bar_outgrown", state: "a week with fewer busy days", channel: "recovery",
+    text: loadBarOutgrownRecovery(previewBusyVerdict(
+      [["2026-10-14T14:20:00Z", 4], ["2026-10-15T15:30:00Z", 5]],
+      [["2026-10-14T14:20:30Z", 4], ["2026-10-16T13:00:00Z", 6]],
+      "measured",
+    )) },
+  { key: "load_bar_unread", state: "cal.com refused a page part way", channel: "alert",
+    text: loadBarUnreadAlert(previewBusyVerdict([["2026-10-15T15:30:00Z", 5]], { kind: "unreadable", status: 429, formName: "Debt Relief Main" }, "unmeasured")) },
+  { key: "load_bar_unread", state: "cal.com never answered", channel: "alert",
+    text: loadBarUnreadAlert(previewBusyVerdict([["2026-10-15T15:30:00Z", 5]], { kind: "unreadable", status: 0 }, "unmeasured")) },
+  { key: "load_bar_unread", state: "Slate's read failed and cal.com's was partial", channel: "alert",
+    text: loadBarUnreadAlert(previewBusyVerdict(null, { kind: "unreadable", status: 503, formName: "Debt Relief Main" }, "unmeasured")) },
+  { key: "load_bar_unread", state: "cal.com empty while not marked retired", channel: "alert",
+    text: loadBarUnreadAlert(previewBusyVerdict([["2026-10-15T15:30:00Z", 5]], [], "unmeasured")) },
+  { key: "load_bar_unread", state: "no cal.com key while cal.com is live", channel: "alert",
+    text: loadBarUnreadAlert(previewBusyVerdict([["2026-10-15T15:30:00Z", 5]], { kind: "not-configured" }, "unmeasured")) },
+  { key: "load_bar_unread", state: "the retired switch unreadable", channel: "alert",
+    text: loadBarUnreadAlert(previewBusyVerdict([["2026-10-15T15:30:00Z", 5]], { kind: "retired-unknown" }, "unmeasured")) },
+  { key: "load_bar_unread", state: "a routed cal.com response with no readable time", channel: "alert",
+    text: loadBarUnreadAlert(previewBusyVerdict([["2026-10-15T15:30:00Z", 5]], { kind: "read", routed: [{ id: "1", createdAt: "not a time" }] }, "unmeasured")) },
+  { key: "load_bar_unread", state: "no routed booking anywhere after cutover", channel: "alert",
+    text: loadBarUnreadAlert(previewBusyVerdict([], { kind: "retired" }, "unmeasured")) },
+  { key: "load_bar_unread", state: "counting again", channel: "recovery",
+    text: loadBarUnreadRecovery() },
   { key: "advisor_photos_held", state: "a wave of lost photos refused", channel: "alert",
     text: photosHeldAlert(previewPhotoPlan({ flipGuardTripped: true, heldNone: ["ada@trypennie.com", "ben@trypennie.com", "cy@trypennie.com", "dee@trypennie.com"] })) },
   { key: "advisor_photos_held", state: "one image held by three people", channel: "alert",

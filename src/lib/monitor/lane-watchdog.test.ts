@@ -169,6 +169,8 @@ const healthy = () => ({
   "verdict:cross-system-bookings": ago(30 * MIN),
   // #3027: the daily photo refresh, this morning's run.
   "verdict:advisor-photos": ago(6 * 60 * MIN),
+  // #3124: the daily busy minute check, this morning's run.
+  "verdict:busy-minutes": ago(6 * 60 * MIN),
   // #1228: noodge's two keyed checks stamp every five minutes, and are judged with
   // neverIsStale ON, so a healthy fleet has both a few minutes old.
   "uptime:api-health": ago(3 * MIN),

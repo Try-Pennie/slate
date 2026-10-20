@@ -38,6 +38,7 @@ import {
   REGAL_CALL_FEED_VERDICT_LANE,
   REGAL_CALL_OUTCOMES_VERDICT_LANE,
   ADVISOR_PHOTOS_VERDICT_LANE,
+  BUSY_MINUTES_VERDICT_LANE,
   BUSY_DRIFT_VERDICT_LANE,
   OFFERED_NOBODY_FREE_VERDICT_LANE,
   CRON_BUDGET_VERDICT_LANE,
@@ -507,6 +508,13 @@ const VERDICT_SUBJECT: Record<DetectorVerdictLane, VerdictSubject> = {
     // This stamp is the lane's only heartbeat, so a schedule that stopped firing
     // lands here too, and that is the first thing to rule out (L11).
     look: 'that the 17 4 * * * and 17 10 * * * crons are in wrangler.jsonc and firing, then the Worker logs for tag=advisor-photos and any advisor_photos_unread page',
+  },
+  [BUSY_MINUTES_VERDICT_LANE]: {
+    what: "the daily count of routed bookings a minute that says when the booking load run's bar needs raising",
+    cost: "real traffic could grow past a tenth of the load run's bar with nothing saying the bar had stopped being ten times over it",
+    // The stamp is the lane's only heartbeat, so a schedule that stopped firing lands
+    // here too, and that is the first thing to rule out (L11).
+    look: 'that the 41 5 * * * and 41 9 * * * crons are in wrangler.jsonc and firing, then the Worker logs for tag=busy-minutes and any load_bar_unread page',
   },
   [BUSY_DRIFT_VERDICT_LANE]: {
     what: "the sampler asking whether the busy time Slate has cached for each agent matches their live Google calendar",

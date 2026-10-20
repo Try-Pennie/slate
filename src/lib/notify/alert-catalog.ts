@@ -257,6 +257,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A measured photo refresh held something back for a person (a wave of lost photos, a repeated image, somebody failing three days running, somebody never read whose read failed, somebody missing from the directory); it ends when a measured run has none of those, which is the recovery (#3027).",
   },
   {
+    key: "load_bar_outgrown",
+    kind: "condition",
+    why: "A minute of more than a tenth of the booking load run's bar happened on 3 or more of the last 7 days, which stays true until the bar is raised or the busy days roll out of the window; the daily check that MEASURED a week with fewer such days is the recovery (#3124).",
+  },
+  {
+    key: "load_bar_unread",
+    kind: "condition",
+    why: "The daily busy minute check could not count a week (a half unreadable, partial or empty while live), which stays true until a run counts both halves; that measured run is the recovery (#3124).",
+  },
+  {
     key: "twilio_sync_failures",
     kind: "condition",
     why: "The roster sync cannot read Twilio, so the Redistribute tag is not being acted on; it stays true until a run reads Twilio successfully, which is the recovery.",

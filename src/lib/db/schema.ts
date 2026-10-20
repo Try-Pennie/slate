@@ -252,6 +252,13 @@ export interface Database {
     };
     Views: Record<string, never>;
     Functions: {
+      /** #3124 (migration 0193): routed real bookings per minute since the epoch over
+       *  [p_from, p_to), as one jsonb array of [minute, bookings], so the read never meets
+       *  the row cap. Judged by `slateMinutesFrom` before anything counts it. */
+      routed_bookings_per_minute: {
+        Args: { p_from: string; p_to: string };
+        Returns: unknown;
+      };
       /** #3936 (migration 0192): the past days capacity history holds for an org, from
        *  `p_from` on, as one array, so the read never meets the row cap. */
       capacity_history_days: {

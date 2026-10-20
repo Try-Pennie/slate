@@ -424,6 +424,18 @@ export const ALERT_FIELDS: {
     help: "The daily photo read worked and held something back: a wave of removed photos, one image too many people share, somebody unreadable for three days, or somebody Google's directory does not hold.",
   },
   {
+    key: "load_bar_outgrown",
+    urgency: "alert",
+    label: "Load run bar outgrown",
+    help: "On 3 or more of the last 7 days, some minute held more routed bookings than a tenth of the booking load run's bar, counting cal.com and Slate together until cal.com is retired. Nothing is broken: the load run no longer proves ten times the real peak, so its bar needs raising and the run repeating. Checked once a day; ends when a later week has fewer such days.",
+  },
+  {
+    key: "load_bar_unread",
+    urgency: "alert",
+    label: "Busy minute check could not count",
+    help: "The daily check on the booking load run's bar could not count a week of bookings, because Slate's or cal.com's half could not be read, so nobody knows whether the bar still covers real traffic. Says which half and why, and ends on the next day it counts.",
+  },
+  {
     key: "retired_booking_key",
     urgency: "page",
     label: "A retired booking key still in use",
@@ -675,6 +687,15 @@ export const MONITOR_DEFAULTS = {
     // morning's run ask again if the state still holds, and never twice in a day.
     advisor_photos_unread: 23 * 60 * 60_000,
     advisor_photos_held: 23 * 60 * 60_000,
+    // The daily busy minute check (#3124). Its remedy is a code change and a load run,
+    // days of work rather than minutes, and the 7 day window keeps the condition true
+    // for days once it holds, so a daily repeat would restate it every morning (L36).
+    // Six and a half days says it about once a week while nobody has raised the bar,
+    // landing on the next week's run rather than the one after.
+    load_bar_outgrown: (6 * 24 + 12) * 60 * 60_000,
+    // A run that could not count, said only on the day's last attempt, so at most once
+    // a day; 23 hours lets the next day's last attempt ask again if it still cannot.
+    load_bar_unread: 23 * 60 * 60_000,
     // Something refused under the enforced content security policy (#2575). Each
     // refusal is a page that did not fully load for a real person, and every lead
     // on a broken page reports the same thing, so hourly per directive: a broken

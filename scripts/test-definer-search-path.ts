@@ -337,6 +337,9 @@ const EXPECTED_PINNED = [
   // #3247: the one clash rule the hold trigger and placement share. Security INVOKER.
   "reroute_window_clash",
   "reserve_agent_link_name",
+  // #3124: routed real bookings per minute for the daily busy minute check. Security
+  // INVOKER, plain SQL; floor, extract and jsonb_agg are pg_catalog built ins.
+  "routed_bookings_per_minute",
   // #2369: the digit rule two stored phone numbers are compared by. Deliberately not
   // libphonenumber, which no SQL expression reproduces; see migration 0124.
   "slate_phone_match_key",

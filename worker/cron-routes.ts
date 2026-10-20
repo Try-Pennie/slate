@@ -142,6 +142,16 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // once. Both expressions drive the one lane, under one lock.
   "17 4 * * *": "/api/cron/advisor-photos",
   "17 10 * * *": "/api/cron/advisor-photos",
+  // The daily busy minute check (#3124): has a minute of more than a tenth of the load
+  // run's bar happened on 3 of the last 7 days? Its OWN expressions, never co-scheduled:
+  // it pages through about 25 paced cal.com reads, about half a minute of wall clock.
+  // 05:41 UTC, and 09:41 as the automatic re attempt (L533), which stands down once the
+  // first run reached a verdict. Night ET on purpose: cal.com meters the endpoint per
+  // key, and the same key does the working day's time off writes. Minute 41 shares a
+  // moment with no other trigger. src/lib/monitor/busy-minutes.ts holds the pair, and
+  // scripts/test-busy-minutes.ts holds this map to it.
+  "41 5 * * *": "/api/cron/busy-minutes",
+  "41 9 * * *": "/api/cron/busy-minutes",
   // Team capacity history (#3940): each advisor's calls saved as they pass, so a past day shows
   // how it ended. Every half hour on its OWN expression: minutes 23 and 53 share a moment with no
   // other trigger. Its cursor catches up a missed tick, so the cadence sets only how soon a passed

@@ -251,7 +251,15 @@ Two things to know before reading the answer:
   minute question.
 
 `bar_over_peak` under ten means the premise no longer holds and the run's bar should
-be raised before the next one is dispatched. The run itself was measured at 90
+be raised before the next one is dispatched.
+
+**Nobody has to remember to re-read it** (#3124). The daily `busy-minutes` lane
+counts the last 7 UTC days the same way (this query's `real_bookings`, through the
+`routed_bookings_per_minute` RPC, plus cal.com's routed responses minute by minute
+until cal.com is marked retired) and pages `load_bar_outgrown` when a minute of more
+than a tenth of `LOAD_RUN_BOOKINGS_PER_MINUTE` (`src/lib/load-bar.ts`) happened on 3
+or more of them. The alert's threshold is derived from that constant, so raising the
+bar moves the alert with it. The run itself was measured at 90
 seeded agents (run 34658545203, 2026-09-11) against a design target of 100 to 200;
 running the booking leg at 200 is #3829, below ("The 200 advisor run").
 
