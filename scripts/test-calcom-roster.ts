@@ -18,6 +18,11 @@ import {
   loadBookableRoster,
   makeCalGet,
   readEventTypeId,
+  earnsSecondRead,
+  secondReadWaitMs,
+  readEachWithSecondRead,
+  SECOND_READ_BACKOFF_MS,
+  SECOND_READ_MAX_WAIT_MS,
   CAL_SCHEDULES_API_VERSION,
   CAL_BOOKINGS_API_VERSION,
 } from "./lib/calcom-roster.ts";
@@ -181,6 +186,110 @@ import { assert, eq, finish } from "./lib/harness.ts";
   await calGet("/organizations/1/users");
   eq(sawAuth, "Bearer secret-key", "the key is sent");
   assert(sawUrl.startsWith("https://api.cal.com/v2/organizations/1/users"), `the path is under the v2 API (${sawUrl})`);
+}
+
+{
+  // The refusal carries cal.com's own Retry-After out of the ladder, so the second
+  // read below can honour it rather than guess (#3963).
+  const calGet = makeCalGet({
+    key: "k",
+    sleep: async () => {},
+    fetchImpl: (async () => new Response("", { status: 429, headers: { "retry-after": "90" } })) as unknown as typeof fetch,
+  });
+  const r = await calGet("/busy");
+  eq(r.status, 429, "a sustained rate limit is still a refusal");
+  eq(r.retryAfter, "90", "and it says how long cal.com asked us to wait");
+}
+
+// --- a second read for the agents cal.com rate limited (#3963) -------------------
+//
+// Five of seven daily runs ended with exactly three agents unmeasured, a different
+// three each day, every one a 429 that had already climbed the whole ladder. The
+// ladder retries inside the burst that caused the refusal; a second read after the
+// sweep has finished, and after cal.com's window has passed, is what turns a rate
+// limit into a delay rather than a missing comparison.
+{
+  const res = (status: number, retryAfter: string | null = null) => ({ status, json: status === 200 ? { data: [] } : null, retryAfter });
+  eq(earnsSecondRead({ kind: "answered", ...res(429) }), true, "a rate limit earns a second read");
+  eq(earnsSecondRead({ kind: "answered", ...res(500) }), false, "a server fault does not: the ladder already rode it out");
+  eq(earnsSecondRead({ kind: "answered", ...res(404) }), false, "a not found does not: another read cannot create a schedule");
+  eq(earnsSecondRead({ kind: "answered", ...res(200) }), false, "an answer does not");
+  eq(earnsSecondRead({ kind: "threw", error: new Error("x") }), false, "a transport fault does not");
+
+  eq(secondReadWaitMs([{ kind: "answered", ...res(429) }]), SECOND_READ_BACKOFF_MS, "no Retry-After waits the fixed backoff");
+  eq(secondReadWaitMs([{ kind: "answered", ...res(429, "5") }]), SECOND_READ_BACKOFF_MS, "a shorter Retry-After was already honoured by the ladder and failed, so the backoff wins");
+  eq(secondReadWaitMs([{ kind: "answered", ...res(429, "90") }, { kind: "answered", ...res(429, "70") }]), 90_000, "a longer Retry-After is honoured, the longest one");
+  eq(secondReadWaitMs([{ kind: "answered", ...res(429, "soon") }]), SECOND_READ_BACKOFF_MS, "an unreadable Retry-After falls back to the backoff, never NaN");
+  eq(secondReadWaitMs([{ kind: "answered", ...res(429, "86400") }]), SECOND_READ_MAX_WAIT_MS, "and a huge one is capped, so the job's timeout is not spent waiting");
+}
+{
+  // The fixtures the issue names: 429 then 200 is measured, 429 twice stays
+  // unmeasured, a non 429 failure is never read again. Waits are recorded, never
+  // slept, so this finishes instantly (L524).
+  const answers: Record<string, number[]> = {
+    healthy: [200],
+    "429-then-200": [429, 200],
+    "429-twice": [429, 429],
+    "500": [500],
+    "404": [404],
+  };
+  const calls: Record<string, number> = {};
+  const waits: number[] = [];
+  const items = [...Object.keys(answers), "throws"];
+  const out = await readEachWithSecondRead(
+    items,
+    async (item) => {
+      calls[item] = (calls[item] ?? 0) + 1;
+      if (item === "throws") throw new Error("socket hang up");
+      const status = answers[item][calls[item] - 1];
+      return { status, json: status === 200 ? { data: [item] } : null, retryAfter: null };
+    },
+    { sleep: async (ms) => void waits.push(ms), paceMs: 250 },
+  );
+  const status = (item: string) => {
+    const r = out.reads.get(item);
+    return r?.kind === "answered" ? r.status : r?.kind;
+  };
+  eq(status("429-then-200"), 200, "429 then 200 ends measured");
+  eq(calls["429-then-200"], 2, "after exactly one more read");
+  eq(status("429-twice"), 429, "429 twice stays unmeasured, exactly as before");
+  eq(calls["429-twice"], 2, "and is read only twice, never a third time");
+  eq(status("500"), 500, "a server fault is left as it was");
+  eq(calls["500"], 1, "and not read again");
+  eq(calls["404"], 1, "nor is a not found");
+  eq(status("throws"), "threw", "a read that throws is recorded, not raised, so one agent cannot end the run");
+  eq(calls.throws, 1, "and is not read again");
+  eq(calls.healthy, 1, "an answered agent is read once");
+  eq(out.reads.size, items.length, "every agent has an outcome");
+  eq(out.retried, 2, "two agents earned a second read");
+  eq(out.recovered, 1, "and one of them answered");
+  eq(
+    waits,
+    [250, 250, 250, 250, 250, 250, SECOND_READ_BACKOFF_MS, 250],
+    "paced on every read, and one backoff before the second pass (standing in for its first pace), not one per agent",
+  );
+}
+{
+  // A sweep cal.com never refused pays no backoff at all: the common day before
+  // this change, and most of the roster, must not get slower.
+  const waits: number[] = [];
+  const out = await readEachWithSecondRead(
+    ["a", "b"],
+    async () => ({ status: 200, json: { data: [] } }),
+    { sleep: async (ms) => void waits.push(ms), paceMs: 250 },
+  );
+  eq(waits, [250, 250], "no second pass, no backoff");
+  eq(out.retried, 0, "nothing retried");
+}
+{
+  // An empty list reads nothing and waits for nothing.
+  const waits: number[] = [];
+  const out = await readEachWithSecondRead([], async () => ({ status: 200, json: null }), {
+    sleep: async (ms) => void waits.push(ms),
+    paceMs: 250,
+  });
+  eq(out.reads.size, 0, "nothing read");
+  eq(waits, [], "nothing waited");
 }
 
 // --- the event type id, which decides which host list is read ------------------

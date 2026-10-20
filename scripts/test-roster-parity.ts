@@ -400,6 +400,51 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
   eq(r.verdict, "held-back-still-hosting", "and somebody a bucket CAN match is still the page it exists for");
 }
 
+// --- bookable, and in no routing pool (#3963) -------------------------------------
+// tgill@ was bookable in Slate with attributes {"role":"Sales"} only, no
+// debt_team, no backend_service and no bucket_members row, measured 2026-10-20. No
+// pool reaches them, so Slate offers them to nobody, and the page called them
+// somebody "Slate offers and cal.com does not list at all". The claim was false and
+// the remedy it implied (a cal.com host list) was the wrong system: the fix is
+// tagging their debt tier in Twilio, which the roster sync turns into attributes.
+// `matchableByAnyBucket` is computed by the caller through the shipped pool
+// predicate (`matchableAgentIds`, `scripts/test-bucket-matchability.ts`), so this
+// asks the same question the recompute lane and /admin/tiers ask.
+{
+  const r = classifyRosterMember(slate({ matchableByAnyBucket: false }), "not-a-host", null);
+  eq(r.verdict, "bookable-in-no-pool", "bookable, in no pool and not a cal.com host is its own verdict");
+  assert(!/Slate offers/.test(r.reason), `and does not claim Slate offers them (${r.reason})`);
+  assert(/Twilio/.test(r.reason), `it names where the fix is made (${r.reason})`);
+  assert(/debt tier/.test(r.reason), `and what to set there (${r.reason})`);
+}
+{
+  // cal.com withholding them changes nothing about Slate offering nobody, and
+  // "bookable-not-routable" makes the same false claim that Slate offers them.
+  const r = classifyRosterMember(slate({ matchableByAnyBucket: false }), "excluded", null);
+  eq(r.verdict, "bookable-in-no-pool", "withheld by cal.com and in no pool is the same finding");
+  assert(!/Slate offers/.test(r.reason), `still without the false claim (${r.reason})`);
+  assert(/withholds/.test(r.reason), `and it says what cal.com does with them (${r.reason})`);
+}
+{
+  // THE OTHER DIRECTION. An agent a pool really reaches keeps the verdict that says
+  // Slate offers them, or the split would have quietened every real case of it.
+  const notHost = classifyRosterMember(slate({ matchableByAnyBucket: true }), "not-a-host", null);
+  eq(notHost.verdict, "bookable-not-hosting", "bookable, in a pool and not a cal.com host is still bookable-not-hosting");
+  const excluded = classifyRosterMember(slate({ matchableByAnyBucket: true }), "excluded", null);
+  eq(excluded.verdict, "bookable-not-routable", "and in a pool and withheld is still bookable-not-routable");
+  assert(
+    ROSTER_VERDICT_RANK["bookable-in-no-pool"] > ROSTER_VERDICT_RANK.agree,
+    "the new verdict outranks agreement, so it still pages",
+  );
+  // A departed agent in no pool is still the departure, which outranks everything.
+  const gone = classifyRosterMember(
+    slate({ matchableByAnyBucket: false, deactivatedAt: "2026-10-01T00:00:00Z" }),
+    "routable",
+    null,
+  );
+  eq(gone.verdict, "departed-still-hosting", "leaving still outranks being in no pool");
+}
+
 // --- where the withheld set comes from (#2153) ---------------------------------
 // It was sixteen addresses typed into this file from the cal.com UI on 2026-09-08,
 // and nothing maintained it. Measured 2026-09-10 it was wrong in both directions:

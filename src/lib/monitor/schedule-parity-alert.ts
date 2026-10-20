@@ -53,6 +53,11 @@ export const PARITY_VERDICT_CLASS = {
   // of the two: the incumbent made this decision explicitly.
   "bookable-not-routable": "paging",
   "absent-from-slate": "paging",
+  // Bookable in Slate and in no routing pool, so neither system offers them
+  // (#3963). It pages because it is fixable today and only by a person: their debt
+  // tier is tagged in Twilio and the roster sync does the rest. It used to arrive
+  // as `bookable-not-hosting`, which claimed Slate offers them.
+  "bookable-in-no-pool": "paging",
   // Nine admins, managers and team leads who host in cal.com and are correctly not
   // bookable in Slate. It is the commonest non-agreement the sweep produces, and it
   // is deliberately absent from `OUTCOME_ORDER` because an exit code for it would
@@ -88,20 +93,56 @@ export const PARITY_VERDICT_CLASS = {
 export type ParityVerdict = keyof typeof PARITY_VERDICT_CLASS;
 
 /**
- * How each paging verdict is said to a person, in the vocabulary of the roster.
- * Exported for `pnpm verify:parallel-run-readiness` (#2089), so its drift line and
- * this page name a difference in the same words.
+ * How each paging verdict is said to a person, in the vocabulary of the roster, at
+ * one agent and at many. Both forms are written out because the verb is what
+ * changes ("1 works", "6 work"), and a sentence that counts its noun but not its
+ * verb is what shipped "1 agent were corrected" (#3963).
  */
-export const PAGING_LABEL: Record<string, string> = {
-  "departed-still-hosting": "have left Slate and can still be booked in cal.com",
-  "held-back-still-hosting": "Slate will not route to and cal.com still can",
-  "timezone-differs": "are in a different timezone",
-  "days-differ": "work different days",
-  "hours-differ": "work different hours",
-  "bookable-not-hosting": "Slate offers and cal.com does not list at all",
-  "bookable-not-routable": "Slate offers and cal.com withholds from routing",
-  "absent-from-slate": "host in cal.com and have no Slate record",
+const PAGING_LABEL: Record<string, { one: string; many: string }> = {
+  "departed-still-hosting": {
+    one: "has left Slate and can still be booked in cal.com",
+    many: "have left Slate and can still be booked in cal.com",
+  },
+  "held-back-still-hosting": {
+    one: "Slate will not route to and cal.com still can",
+    many: "Slate will not route to and cal.com still can",
+  },
+  "timezone-differs": { one: "is in a different timezone", many: "are in a different timezone" },
+  "days-differ": { one: "works different days", many: "work different days" },
+  "hours-differ": { one: "works different hours", many: "work different hours" },
+  "bookable-not-hosting": {
+    one: "Slate offers and cal.com does not list at all",
+    many: "Slate offers and cal.com does not list at all",
+  },
+  "bookable-not-routable": {
+    one: "Slate offers and cal.com withholds from routing",
+    many: "Slate offers and cal.com withholds from routing",
+  },
+  "absent-from-slate": {
+    one: "hosts in cal.com and has no Slate record",
+    many: "host in cal.com and have no Slate record",
+  },
+  "bookable-in-no-pool": {
+    one: "is bookable in Slate and in no routing pool, so neither system offers them",
+    many: "are bookable in Slate and in no routing pool, so neither system offers them",
+  },
 };
+
+/**
+ * The words after the count for one paging verdict. Exported for
+ * `pnpm verify:parallel-run-readiness` (#2089), so its drift line and this page
+ * name a difference in the same words at the same count.
+ */
+export function pagingLabel(verdict: string, count: number): string {
+  const label = PAGING_LABEL[verdict];
+  if (!label) return verdict;
+  return count === 1 ? label.one : label.many;
+}
+
+/** One or many, by count: the one place a sentence here picks its verb (#3963). */
+function byCount(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
+}
 
 /** One verdict's share of a sweep, as the run reported it. */
 export interface ParityFinding {
@@ -206,7 +247,7 @@ function agentList(f: ParityFinding): string {
 }
 
 function agentWord(n: number): string {
-  return n === 1 ? "agent" : "agents";
+  return byCount(n, "agent", "agents");
 }
 
 /** What the lane wrote this morning, or nothing when no apply ran (#2092). */
@@ -215,7 +256,7 @@ function correctionLine(c: ParityCorrection | undefined): string | null {
   const named = c.agents.slice(0, NAMED_AGENT_CAP);
   const rest = c.count - named.length;
   const who = named.length > 0 ? `: ${named.join(", ")}${rest > 0 ? ` and ${rest} more` : ""}` : "";
-  return `${c.count} ${agentWord(c.count)} were corrected from cal.com automatically${who}.`;
+  return `${c.count} ${agentWord(c.count)} ${byCount(c.count, "was", "were")} corrected from cal.com automatically${who}.`;
 }
 
 /**
@@ -234,9 +275,9 @@ function correctionLine(c: ParityCorrection | undefined): string | null {
  * somebody who has left is a person deciding which system is wrong.
  */
 export function buildScheduleParityAlert(j: ParityJudgement): string {
-  const head = `${j.drifted} of ${j.total} ${agentWord(j.total)} differ between Slate and cal.com.`;
+  const head = `${j.drifted} of ${j.total} ${agentWord(j.total)} ${byCount(j.drifted, "differs", "differ")} between Slate and cal.com.`;
   const lines = j.paging.map(
-    (f) => `${f.count} ${PAGING_LABEL[f.verdict] ?? f.verdict}${agentList(f)}`,
+    (f) => `${f.count} ${pagingLabel(f.verdict, f.count)}${agentList(f)}`,
   );
   const tail: string[] = [];
   const corrected = correctionLine(j.corrected);
@@ -244,15 +285,20 @@ export function buildScheduleParityAlert(j: ParityJudgement): string {
   if (j.unmeasured > 0) {
     tail.push(`${j.unmeasured} could not be read, so nothing is claimed about them.`);
   }
-  const hoursDrift = j.paging.some((f) =>
-    f.verdict === "hours-differ" || f.verdict === "days-differ" || f.verdict === "timezone-differs",
-  );
-  if (hoursDrift) {
+  const hoursDrift = j.paging
+    .filter((f) => f.verdict === "hours-differ" || f.verdict === "days-differ" || f.verdict === "timezone-differs")
+    .reduce((n, f) => n + f.count, 0);
+  if (hoursDrift > 0) {
     tail.push(
       j.corrected === undefined
         ? "Re-import the hours with APPLY=1 pnpm import:calcom-schedules"
-        : "The import already ran this morning and could not fix these, so they need a person. The run says which it refused.",
+        : `The import already ran this morning and could not fix ${byCount(hoursDrift, "this one, so it needs", "these, so they need")} a person. The run says which it refused.`,
     );
+  }
+  // #3963: the fix for somebody in no pool is in Twilio, not in either system the
+  // comparison reads, so the page says where rather than leaving it to be guessed.
+  if (j.paging.some((f) => f.verdict === "bookable-in-no-pool")) {
+    tail.push("Tag their debt tier in Twilio, and the roster sync gives them the attributes a pool matches.");
   }
   return [head, ...lines, ...tail, j.runUrl].join("\n");
 }
@@ -273,7 +319,7 @@ export function buildScheduleParityAllClear(j: ParityJudgement): string {
   const corrected = correctionLine(j.corrected);
   if (corrected) parts.push(corrected);
   if (j.standing > 0) {
-    parts.push(`${j.standing} still have no week to compare on one side, unchanged.`);
+    parts.push(`${j.standing} still ${byCount(j.standing, "has", "have")} no week to compare on one side, unchanged.`);
   }
   return parts.join("\n");
 }

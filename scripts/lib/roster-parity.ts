@@ -80,6 +80,9 @@ export type RosterVerdict =
   /** A cal.com host account that is deliberately not a Slate user, named in
    *  `KNOWN_NON_SLATE_HOSTS` with its reason. Expected, and can never fail a run. */
   | "known-not-in-slate"
+  /** Bookable in Slate, cal.com does not route to them, and no routing pool
+   *  reaches them either, so Slate offers them to nobody (#3963). */
+  | "bookable-in-no-pool"
   /** Slate offers somebody cal.com does not list as a host at all. */
   | "bookable-not-hosting"
   /** Slate offers somebody cal.com lists and deliberately withholds from routing. */
@@ -110,6 +113,9 @@ export const ROSTER_VERDICT_RANK: Record<RosterVerdict, number> = {
   "known-not-in-slate": 0,
   "not-bookable-by-design": 1,
   "absent-from-slate": 2,
+  // Level with a host missing from Slate: both are a person neither system offers
+  // who somebody has to go and set up, and nothing is mis-offered by either today.
+  "bookable-in-no-pool": 2,
   "bookable-not-hosting": 3,
   // Above "not a host at all", because it is the stronger statement: cal.com holds
   // this person and deliberately withholds them, so Slate offering them is a
@@ -303,6 +309,21 @@ export function classifyRosterMember(
 
   if (slate.bookable) {
     if (standing === "routable") return { verdict: "agree", reason: "" };
+    // The bookable flag alone does not make Slate offer anybody: a pool has to
+    // reach them (#3963). tgill@ was bookable with {"role":"Sales"} only, matched
+    // no bucket, and was reported as somebody "Slate offers", which sent the reader
+    // to cal.com's host list for a fix that lives in Twilio. `matchableByAnyBucket`
+    // is the shipped pool predicate, computed by the caller, never a rule here.
+    if (!slate.matchableByAnyBucket) {
+      return {
+        verdict: "bookable-in-no-pool",
+        reason:
+          "bookable in Slate but in no routing pool (no bucket matches their attributes or names them), " +
+          "so Slate does not offer them to anyone, and cal.com does not route to them either: it " +
+          `${standing === "excluded" ? "withholds them from routing" : "does not list them as a host"}. ` +
+          "Tag their debt tier in Twilio and the roster sync gives them the attributes a pool matches",
+      };
+    }
     if (standing === "excluded") {
       return {
         verdict: "bookable-not-routable",

@@ -14,6 +14,7 @@ import {
   buildScheduleParityAlert,
   buildScheduleParityAllClear,
   PARITY_VERDICT_CLASS,
+  pagingLabel,
   type ParitySweep,
 } from "@/lib/monitor/schedule-parity-alert";
 import { ROSTER_VERDICT_RANK } from "./lib/roster-parity.ts";
@@ -300,6 +301,99 @@ function sweep(over: Partial<ParitySweep> = {}): ParitySweep {
     "error" in impossible,
     "and a lane claiming to have corrected more agents than it looked at is refused",
   );
+}
+
+// --- bookable in Slate and in no routing pool (#3963) -----------------------------
+// tgill@ on 2026-10-20: bookable, {"role":"Sales"} only, no pool reaches them. The
+// page said "Slate offers" them, which was false, and pointed nowhere useful.
+{
+  eq(PARITY_VERDICT_CLASS["bookable-in-no-pool"], "paging", "somebody bookable whom Slate offers nobody pages");
+  const text = buildScheduleParityAlert(
+    classifyParitySweep(sweep({ findings: [{ verdict: "bookable-in-no-pool", count: 1, agents: ["tgill@"] }] })),
+  );
+  assert(!/Slate offers/.test(text), `the page does not claim Slate offers them (${text})`);
+  assert(/neither system offers them: tgill@$/m.test(text), `it names them (${text})`);
+  assert(/Twilio/.test(text) && /debt tier/.test(text), `and says the fix is their debt tier in Twilio (${text})`);
+  const other = buildScheduleParityAlert(
+    classifyParitySweep(sweep({ findings: [{ verdict: "bookable-not-hosting", count: 1, agents: ["x@"] }] })),
+  );
+  assert(/Slate offers/.test(other), "an agent a pool does reach still reads as Slate offering them");
+  assert(!/Twilio/.test(other), "and is not sent to Twilio, which would not fix it");
+}
+
+// --- one agent reads as one agent (#3963) -----------------------------------------
+//
+// The 2026-10-20 page said "1 agent were corrected from cal.com automatically": the
+// noun was counted and the verb was not. Every sentence here that puts a count in
+// front of a verb is driven at one AND at many, so a hard coded plural cannot come
+// back in any of them.
+{
+  const one = buildScheduleParityAlert(
+    classifyParitySweep(
+      sweep({
+        findings: [
+          { verdict: "hours-differ", count: 1, agents: ["a@x"] },
+          { verdict: "calcom-unreachable", count: 1, agents: ["r@x"] },
+        ],
+        corrected: { count: 1, agents: ["b@x"] },
+      }),
+    ),
+  );
+  assert(/^1 agent was corrected from cal\.com automatically: b@x\.$/m.test(one), `one correction says was (${one})`);
+  assert(!/1 agent were/.test(one), "and never were");
+  assert(/^1 of 102 agents differs between Slate and cal\.com\.$/m.test(one), `one difference says differs (${one})`);
+  assert(/^1 works different hours: a@x$/m.test(one), `one agent works, not work (${one})`);
+  assert(/could not fix this one, so it needs a person/.test(one), `the remedy speaks of one (${one})`);
+
+  const many = buildScheduleParityAlert(
+    classifyParitySweep(
+      sweep({
+        findings: [{ verdict: "hours-differ", count: 6, agents: ["a@x"] }],
+        corrected: { count: 17, agents: ["b@x"] },
+      }),
+    ),
+  );
+  assert(/^17 agents were corrected from cal\.com automatically/m.test(many), `many corrections say were (${many})`);
+  assert(/^6 of 102 agents differ between Slate and cal\.com\.$/m.test(many), `many differences say differ (${many})`);
+  assert(/^6 work different hours: a@x and 5 more$/m.test(many), `many agents work (${many})`);
+  assert(/could not fix these, so they need a person/.test(many), `and of many (${many})`);
+
+  const clearOne = buildScheduleParityAllClear(
+    classifyParitySweep(
+      sweep({
+        findings: [{ verdict: "no-calcom-schedule", count: 1, agents: ["s@x"] }],
+        corrected: { count: 1, agents: ["b@x"] },
+      }),
+    ),
+  );
+  assert(/^1 agent was corrected from cal\.com automatically/m.test(clearOne), `the all clear says was too (${clearOne})`);
+  assert(/^1 still has no week to compare on one side, unchanged\.$/m.test(clearOne), `one standing agent has (${clearOne})`);
+
+  const clearMany = buildScheduleParityAllClear(
+    classifyParitySweep(sweep({ findings: [{ verdict: "no-calcom-schedule", count: 2, agents: ["s@x"] }] })),
+  );
+  assert(/^2 still have no week to compare on one side, unchanged\.$/m.test(clearMany), `many standing agents have (${clearMany})`);
+}
+{
+  // Every paging verdict reads correctly at one. Driven off the classification
+  // rather than a list written here, so a verdict added tomorrow is held to it too.
+  const paging = Object.entries(PARITY_VERDICT_CLASS)
+    .filter(([, cls]) => cls === "paging")
+    .map(([v]) => v);
+  const expectedOne: Record<string, string> = {
+    "departed-still-hosting": "1 has left Slate and can still be booked in cal.com",
+    "timezone-differs": "1 is in a different timezone",
+    "days-differ": "1 works different days",
+    "hours-differ": "1 works different hours",
+    "absent-from-slate": "1 hosts in cal.com and has no Slate record",
+    "bookable-in-no-pool": "1 is bookable in Slate and in no routing pool, so neither system offers them",
+  };
+  for (const v of paging) {
+    const one = pagingLabel(v, 1);
+    const many = pagingLabel(v, 2);
+    assert(one !== v && many !== v, `${v} has its own words at one and at many`);
+    if (expectedOne[v]) eq(`1 ${one}`, expectedOne[v], `${v} at one`);
+  }
 }
 
 finish();

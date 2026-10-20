@@ -67,6 +67,18 @@ import { assert, eq, finish } from "./lib/harness.ts";
     beats("timezone-differs", "bookable-not-hosting"),
     "a zone that moves every window outranks Slate offering somebody cal.com does not route to",
   );
+  // #3963: somebody bookable whom no pool reaches is offered by NEITHER system, so
+  // nothing is mis-offered today; it ranks below Slate offering somebody cal.com
+  // does not route, and above the states where nothing could be compared.
+  assert(
+    beats("bookable-not-hosting", "bookable-in-no-pool"),
+    "Slate offering somebody cal.com does not route outranks an agent neither system offers",
+  );
+  assert(
+    beats("bookable-in-no-pool", "calcom-unreachable"),
+    "and a measured gap in the pools outranks an agent who could not be read",
+  );
+  eq(EXIT_CODE["bookable-in-no-pool" as never], 28, "it exits on its own code, the next free one");
   assert(
     beats("hours-differ", "no-calcom-user"),
     "a measured difference outranks an agent who could not be compared",
