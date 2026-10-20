@@ -449,8 +449,8 @@ node --experimental-strip-types scripts/loadtest/book.ts
   most contended slot cache, the cold ones have one agent pools where every second
   booking is a conflict. The sequence is interleaved so any prefix is representative.
 - **The slot is picked at RANDOM** from what the bucket offered on the steady and fault
-  legs, and it is the only deliberately non-deterministic choice in the run. Four
-  drivers each taking the first offered time would contend on one slot all run, which
+  legs, and it is the only deliberately non-deterministic choice in the run. The
+  steady drivers each taking the first offered time would contend on one slot all run, which
   measures the unique index over and over and never measures the path at a rate. The
   baseline is the exception: it books one at a time, at rest, and takes the SOONEST
   time so it stays clear of the times the bursts are planned on (#3782, below).
