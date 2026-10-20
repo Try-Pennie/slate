@@ -549,13 +549,14 @@ export function offeredNobodyFreeReachedVerdict(result: OfferedNobodyFreeResult 
 /**
  * Did the buffer breach check judge at least one upcoming booking? (#3040)
  *
- * `examined > 0` and nothing less. Production holds hundreds of upcoming bookings, so
+ * At least one booking WITH an advisor, and nothing less: an unassigned booking is
+ * counted in `examined` but pairs with nothing, so it judged nothing. Production holds hundreds of upcoming bookings, so
  * a read that keeps returning none is a filter or a window gone wrong, and stamping it
  * would let a check that never once held a booking against the buffers read as one
  * that keeps finding them clear (L98). A null result is a step that skipped or threw.
  */
 export function bufferBreachReachedVerdict(result: BufferBreachResult | null): boolean {
-  return result?.status === "measured" && result.examined > 0;
+  return result?.status === "measured" && result.examined - result.unassigned > 0;
 }
 
 /**

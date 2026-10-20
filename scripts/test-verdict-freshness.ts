@@ -538,10 +538,10 @@ assert(
 
 // --- the buffer breach check (#3040) ---------------------------------------------
 {
-  const measured = (examined: number) => ({
+  const measured = (examined: number, unassigned = 0) => ({
     status: "measured" as const,
     examined,
-    unassigned: 0,
+    unassigned,
     breaches: 0,
     forced: 0,
     breachPairs: [],
@@ -549,6 +549,10 @@ assert(
   });
   assert(bufferBreachReachedVerdict(measured(1)), "a tick that judged a booking has concluded, breach or not");
   assert(!bufferBreachReachedVerdict(measured(0)), "a tick that read no bookings has NOT concluded");
+  assert(
+    !bufferBreachReachedVerdict(measured(3, 3)),
+    "a tick whose every booking had no advisor judged no pair, so it has NOT concluded",
+  );
   assert(!bufferBreachReachedVerdict(null), "a tick that skipped or threw has not concluded either");
 }
 
