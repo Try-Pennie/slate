@@ -334,8 +334,8 @@ describe("loadBucketSupply (#1254)", () => {
     expect(days).toHaveLength(4);
   });
 
-  // #1937: what the page is for once leads start arriving.
-  it("counts the times already booked against what the bucket could take", async () => {
+  // #3939: booked times still feed the cover judgement, while how full the day is comes from calls.
+  it("measures a day in calls even when bookings have been made through the bucket", async () => {
     db.bookingRows = FULL_DAY.slice(0, 7).map((starts_at) => ({
       starts_at,
       buckets: { code: "110" },
@@ -353,8 +353,9 @@ describe("loadBucketSupply (#1254)", () => {
 
   // 2026-10-02: a pool's bookings count for every code of the pool, through the
   // pool key staffing depth computed, so a code nobody booked through still
-  // reports how busy its pool is.
-  it("combines a pool's bookings across its codes, by staffing depth's pool key", async () => {
+  // Every code of a pool carries staffing depth's pool key and label, and reads the same pool's
+  // calls (#3939): the pool, not the code a lead came in on, is what fills up.
+  it("gives every code of a pool its pool's key, label and calls", async () => {
     depth.loadTierDepths.mockResolvedValue([
       { code: "110", name: "Low | Both | No Legal Param", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low", agents: [] },
       { code: "111", name: "Low | Both | Legal", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low", agents: [] },
@@ -376,6 +377,7 @@ describe("loadBucketSupply (#1254)", () => {
     const a = report.rows.find((r) => r.code === "110");
     const b = report.rows.find((r) => r.code === "111");
     expect(a?.cells[0]).toEqual({ kind: "counted", booked: 5, capacity: 20, share: 5 / 20 });
+    expect(b?.cells[0]).toEqual({ kind: "unknown" });
     expect(b?.poolKey).toBe("pool-low");
     expect(b?.poolLabel).toBe("Low");
   });
