@@ -18,7 +18,7 @@ import { readNearlyFullPct } from "@/lib/booking/settings";
 import { BUSY_WINDOW_AHEAD_DAYS } from "@/lib/google/sync-coalesce";
 import { loadTeamCapacity, type TeamCapacityReport } from "@/lib/admin/team-capacity-load";
 import { loadCapacityHistoryDay, readSavedDays } from "@/lib/admin/capacity-history-store";
-import { HISTORY_BEGAN } from "@/lib/admin/capacity-history";
+import { EVERY_SAVED_DAY_FROM } from "@/lib/admin/capacity-history";
 import { HISTORY_UNREADABLE_COPY, LINE_UNREADABLE_COPY, UNMEASURABLE_COPY } from "@/lib/admin/team-capacity-copy";
 import { pickableDays, teamCapacityView, type CapacityDaySource } from "@/lib/admin/team-capacity-view";
 import { designFixturesEnabled, fixtureView, type DesignFixtureFile } from "@/lib/admin/team-capacity-fixture";
@@ -122,7 +122,7 @@ export default async function TeamCapacityPage({
       log.error("team-capacity", { msg: "office hours read failed for the date picker" }, err);
       return null;
     }),
-    readSavedDays(me.org_id, HISTORY_BEGAN).catch((err: unknown) => {
+    readSavedDays(me.org_id, EVERY_SAVED_DAY_FROM).catch((err: unknown) => {
       log.error("team-capacity", { msg: "saved days read failed" }, err);
       return null;
     }),

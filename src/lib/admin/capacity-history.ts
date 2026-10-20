@@ -38,10 +38,10 @@ import {
 } from "./team-capacity.ts";
 
 /**
- * The day the recorder shipped (#3940). The picker asks for saved days from here, so the earliest it
- * is handed is history's real first day, the partly recorded one it leaves out.
+ * The picker asks for every saved day, so the earliest it is handed is always history's real first
+ * day, the partly recorded one it leaves out. One array of dates, a few hundred a year.
  */
-export const HISTORY_BEGAN = "2026-10-19";
+export const EVERY_SAVED_DAY_FROM = "1970-01-01";
 
 /**
  * How far back a tick catches up after the lane was down. A day, well inside the 36 hours past busy

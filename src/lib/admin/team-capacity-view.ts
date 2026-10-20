@@ -225,7 +225,7 @@ export interface PickableInput {
   zone: string;
   /** How far ahead a day can be picked: as far as cached calendar time reaches. */
   aheadDays: number;
-  /** The past days history holds, from its very first (`HISTORY_BEGAN`). */
+  /** Every past day history holds, from its very first (`EVERY_SAVED_DAY_FROM`). */
   saved: string[];
   /** Whether the office is open that day (`windowOnDate`), past and future alike. */
   isOpen: (iso: string, weekday: number) => boolean;

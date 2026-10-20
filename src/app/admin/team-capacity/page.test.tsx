@@ -82,7 +82,8 @@ describe("/admin/team-capacity", () => {
   it("scopes every read to the viewer's own organisation", async () => {
     await renderPage();
     expect(load.loadTeamCapacity).toHaveBeenCalledWith(expect.objectContaining({ orgId: "org-1" }));
-    expect(store.readSavedDays).toHaveBeenCalledWith("org-1", expect.any(String));
+    // Every saved day, so the first one it leaves out is history's real first day.
+    expect(store.readSavedDays).toHaveBeenCalledWith("org-1", "1970-01-01");
   });
 
   it("opens on tomorrow, found by date", async () => {
