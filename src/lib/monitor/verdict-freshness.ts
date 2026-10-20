@@ -45,6 +45,7 @@ import type { AuditChainResult } from "@/lib/monitor/audit-chain";
 import type { RegalFeedQuietResult, RegalFeedUnreadableResult } from "@/lib/monitor/regal-call-feed";
 import type { RegalCallOutcomesResult } from "@/lib/monitor/regal-call-outcomes";
 import type { OfferedNobodyFreeResult } from "@/lib/monitor/offered-nobody-free";
+import type { BufferBreachResult } from "@/lib/monitor/buffer-breach";
 import type { monitorSetupGates } from "@/lib/monitor/setup-gates";
 
 /**
@@ -289,6 +290,14 @@ export const CRON_BUDGET_VERDICT_LANE = "verdict:cron-budget";
 export const OFFERED_NOBODY_FREE_VERDICT_LANE = "verdict:offered-nobody-free";
 
 /**
+ * The buffer breach check (#3040): are two active calls on one advisor closer than the
+ * call type's buffers? Silent on a healthy day, and silent when its read returns nothing
+ * it can judge, so the stamp is what tells a check holding real bookings against the
+ * buffers from one that has stopped reading any.
+ */
+export const BUFFER_BREACH_VERDICT_LANE = "verdict:buffer-breach";
+
+/**
  * Verdict lanes whose detector needs an OPTIONAL secret to run at all, by the secret's name.
  *
  * Unset, such a detector cannot conclude by construction, and it says so in its own quiet state
@@ -343,7 +352,8 @@ export type DetectorVerdictLane =
   | typeof AVAILABILITY_LATENCY_VERDICT_LANE
   | typeof BUSY_DRIFT_VERDICT_LANE
   | typeof CRON_BUDGET_VERDICT_LANE
-  | typeof OFFERED_NOBODY_FREE_VERDICT_LANE;
+  | typeof OFFERED_NOBODY_FREE_VERDICT_LANE
+  | typeof BUFFER_BREACH_VERDICT_LANE;
 
 /**
  * Did this availability truth tick compare real calendars and decide?
@@ -534,6 +544,18 @@ export function busyDriftReachedVerdict(result: BusyDriftResult | null): boolean
  */
 export function offeredNobodyFreeReachedVerdict(result: OfferedNobodyFreeResult | null): boolean {
   return result?.status === "measured" && result.judged > 0;
+}
+
+/**
+ * Did the buffer breach check judge at least one upcoming booking? (#3040)
+ *
+ * `examined > 0` and nothing less. Production holds hundreds of upcoming bookings, so
+ * a read that keeps returning none is a filter or a window gone wrong, and stamping it
+ * would let a check that never once held a booking against the buffers read as one
+ * that keeps finding them clear (L98). A null result is a step that skipped or threw.
+ */
+export function bufferBreachReachedVerdict(result: BufferBreachResult | null): boolean {
+  return result?.status === "measured" && result.examined > 0;
 }
 
 /**
@@ -840,4 +862,5 @@ export const GATED_CHECK_VERDICT_COVERAGE: Record<MonitorGatedCheck, DetectorVer
   regalCallsUnreadable: { lane: REGAL_CALL_FEED_VERDICT_LANE },
   regalCallOutcomes: { lane: REGAL_CALL_OUTCOMES_VERDICT_LANE },
   offeredNobodyFree: { lane: OFFERED_NOBODY_FREE_VERDICT_LANE },
+  bufferBreach: { lane: BUFFER_BREACH_VERDICT_LANE },
 };

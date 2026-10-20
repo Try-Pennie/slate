@@ -40,6 +40,8 @@ import {
   BUSY_DRIFT_VERDICT_LANE,
   OFFERED_NOBODY_FREE_VERDICT_LANE,
   offeredNobodyFreeReachedVerdict,
+  BUFFER_BREACH_VERDICT_LANE,
+  bufferBreachReachedVerdict,
   CRON_BUDGET_VERDICT_LANE,
   OFFSITE_ORIGIN_VERDICT_LANE,
   AUTH_SIGN_IN_VERDICT_LANE,
@@ -231,6 +233,7 @@ const HOUR = 60 * 60_000;
         BUSY_DRIFT_VERDICT_LANE,
         CRON_BUDGET_VERDICT_LANE,
         OFFERED_NOBODY_FREE_VERDICT_LANE,
+        BUFFER_BREACH_VERDICT_LANE,
       ]
         .sort()
         .join(","),
@@ -531,6 +534,22 @@ assert(
     "an unreadable tick has not concluded",
   );
   assert(!offeredNobodyFreeReachedVerdict(null), "a tick that skipped or threw has not concluded either");
+}
+
+// --- the buffer breach check (#3040) ---------------------------------------------
+{
+  const measured = (examined: number) => ({
+    status: "measured" as const,
+    examined,
+    unassigned: 0,
+    breaches: 0,
+    forced: 0,
+    breachPairs: [],
+    forcedPairs: [],
+  });
+  assert(bufferBreachReachedVerdict(measured(1)), "a tick that judged a booking has concluded, breach or not");
+  assert(!bufferBreachReachedVerdict(measured(0)), "a tick that read no bookings has NOT concluded");
+  assert(!bufferBreachReachedVerdict(null), "a tick that skipped or threw has not concluded either");
 }
 
 // --- a lane outside the family is named as a code fault, never a crash (L11) ---------

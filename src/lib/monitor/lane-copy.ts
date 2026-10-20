@@ -41,6 +41,7 @@ import {
   BUSY_MINUTES_VERDICT_LANE,
   BUSY_DRIFT_VERDICT_LANE,
   OFFERED_NOBODY_FREE_VERDICT_LANE,
+  BUFFER_BREACH_VERDICT_LANE,
   CRON_BUDGET_VERDICT_LANE,
   parkedDetector,
   type DetectorVerdictLane,
@@ -433,6 +434,11 @@ const VERDICT_SUBJECT: Record<DetectorVerdictLane, VerdictSubject> = {
     what: "the check judging the times the booker serves with the confirm's own candidate read",
     cost: "the booker could go on offering times the confirm refuses, as it did for bucket 112 on 2026-10-06, and the only sign would be leads being turned away",
     look: 'the Worker logs for msg="offered nobody free" under tag=monitor, and whether the pool listing, the markers in alert_state or the ladder read are failing',
+  },
+  [BUFFER_BREACH_VERDICT_LANE]: {
+    what: "the check asking whether any advisor holds two upcoming calls closer than the call type's buffer",
+    cost: "an advisor could be booked back to back or into an overlap, as 57 pairs were in October, and nothing would say so until a lead was kept waiting",
+    look: 'the Worker logs for msg="buffer breaches" under tag=monitor, and whether the bookings, event types or buckets read is failing',
   },
   [TIER_STAFFING_VERDICT_LANE]: {
     what: "the check asking whether each debt tier is offering a lead any booking time on the days the booker shows",

@@ -193,6 +193,11 @@ stamps on every tick that judged at least one served time with the confirm's can
 read, found free or not, and never on an unreadable pool list or marker set or a tick
 whose every read failed. Six hours, like the tier staffing alarm.
 
+`verdict:buffer-breach` (#3040) watches the check for two upcoming calls on one
+advisor closer than the call type's buffers. It stamps on every tick that read at
+least one upcoming booking, breach or not, and never on a read that returned none, a
+skipped gate or a thrown read. Six hours, like the two above.
+
 `verdict:regal-call-outcomes` (#2944) watches the call outcome ratio: outcome rows
 written to `regal_call_outcomes` against completed calls received, over two hours.
 It stamps on a judged ratio (healthy or short) and never on a window with no calls

@@ -15,7 +15,7 @@
 // minutes. The read window the confirm and the candidate read use (bufferedWindow)
 // is checked the same way, since a window that stops at the call's own minutes
 // cannot see a booking that ends exactly as the new call starts (#2989, #3273).
-// Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-back-to-back-buffer-3040.ts
+// Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-back-to-back-buffer-rules.ts
 import {
   computeBucketSlots,
   freeMembersForSlot,

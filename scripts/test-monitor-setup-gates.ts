@@ -35,6 +35,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
   assert(g.belowLeadTier.run, "a healthy tick runs the below lead tier check");
   assert(g.offsiteOrigin.run, "a healthy tick runs the off site origin check");
   assert(g.offeredNobodyFree.run, "a healthy tick runs the served versus confirm check");
+  assert(g.bufferBreach.run, "a healthy tick runs the buffer breach check");
 }
 
 // --- each read, alone, gates exactly the checks that depend on it --------------
@@ -96,6 +97,11 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     // shifts and the horizon it does not consume must not silence it.
     const offered = c.name !== "slotHealth" && c.name !== "businessHours";
     eq(g.offeredNobodyFree.run, offered, `${c.name} unreadable: served versus confirm check runs = ${offered}`);
+    // #3040: the buffer breach check judges bookings from now to the horizon, so the
+    // horizon is the one read that stands it down; it reads its own bookings, event
+    // types and buckets.
+    const buffer = c.name !== "horizonDays";
+    eq(g.bufferBreach.run, buffer, `${c.name} unreadable: buffer breach check runs = ${buffer}`);
   }
 }
 
@@ -224,6 +230,8 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     offsiteOrigin: true,
     // #3381: it has no arming switch, only a cooldown, so it keeps judging.
     offeredNobodyFree: true,
+    // #3040: no switch, only the coded daily repeat.
+    bufferBreach: true,
     // An armed switch (and, for the volume alarm, the floors) decides whether each
     // of these pages, so none may judge on a guessed one.
     availabilityTruth: false,
