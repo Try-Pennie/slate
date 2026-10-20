@@ -12,6 +12,7 @@ import {
   incompleteness,
   burstShortfall,
   percentiles,
+  weightedPercentiles,
   overlaps,
   JUDGE_EXIT,
   OK_P95_MS,
@@ -1484,6 +1485,29 @@ function slowRun(made = 100): JudgeInput {
   const p = percentiles([1, 2, 3, 4, 100])!;
   eq(p.max, 100, "the max is the max");
   assert(p.p95 >= p.p50, "and the p95 is at or above the p50");
+
+  // #3915: a percentile over Cloudflare's sampled rows, each standing for `weight` lines.
+  eq(weightedPercentiles([]), null, "no samples gives null");
+  let same = true;
+  for (const values of [[5], [1, 2, 3, 4, 100], [9, 3, 7, 7, 1, 20, 4, 4], Array.from({ length: 41 }, (_, i) => (i * 37) % 101)]) {
+    const w = weightedPercentiles(values.map((value) => ({ value, weight: 1 })));
+    const u = percentiles(values);
+    if (JSON.stringify(w) !== JSON.stringify(u)) same = false;
+  }
+  assert(same, "at weight 1 throughout it is exactly the judge's nearest rank, so the two never read a p95 differently");
+  // Ten fast lines kept whole and one slow line kept 1 in 10: the slow one stands for half.
+  const fast = Array.from({ length: 10 }, (_, i) => ({ value: (i + 1) * 100, weight: 1 }));
+  const wp = weightedPercentiles([...fast, { value: 5000, weight: 10 }])!;
+  eq(percentiles([...fast.map((s) => s.value), 5000])!.p50, 600, "unweighted, the slow line is one row in eleven");
+  eq(wp.p50, 5000, "weighted, it is ten lines of twenty, so the median lands on it");
+  eq(wp.max, 5000, "the max is the max whatever the weights");
+  let threw = false;
+  try {
+    weightedPercentiles([{ value: 1, weight: 0 }]);
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a weight that is not a positive number throws rather than quietly dropping its row");
 
   const win = (s: string, e: string): JudgedBooking => ({
     id: "x",
