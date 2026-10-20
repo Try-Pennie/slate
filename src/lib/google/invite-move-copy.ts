@@ -208,3 +208,59 @@ export function inviteLaunchSweepAlert(found: (InviteMoveFacts & { step: "moved"
     lines.join("\n")
   );
 }
+
+/**
+ * #3924: an invite a crashed in place reschedule left out of step with its booking,
+ * which the abandoned pin sweep did not put back. Each reason claims only what the
+ * sweep measured: `refused` and `gone` saw the invite at the crashed move's time,
+ * `elsewhere` saw it at a third, and `unreadable` saw nothing, so it says so.
+ */
+export interface StrandedInviteFacts {
+  advisorEmail: string;
+  /** The booking's own time, or null when the booking could not be read. */
+  bookedStartsAt: string | null;
+  /** Where the crashed reschedule was moving the invite. */
+  targetStartsAt: string;
+  /** Where Google holds it, or null when it was not read. */
+  inviteStartsAt: string | null;
+  reason: "refused" | "gone" | "unreadable" | "elsewhere";
+  /** Google's or the database's short reason, already one line. */
+  detail: string | null;
+  bookingUrl: string;
+}
+
+export function strandedInviteAlert(f: StrandedInviteFacts): string {
+  const booked = f.bookedStartsAt ? inviteWhen(f.bookedStartsAt) : "its booked time";
+  const target = inviteWhen(f.targetStartsAt);
+  if (f.reason === "unreadable") {
+    return (
+      `A reschedule of a booking on ${f.advisorEmail}'s calendar crashed before it saved its move to ${target}, ` +
+      `and Slate could not read ${f.bookedStartsAt ? "the invite" : "the booking"} afterwards ` +
+      `(${f.detail ?? "no reason given"}). So nothing was moved back, and the lead's invite may say ${target} ` +
+      `while Slate holds the call at ${booked}. Look at the booking and the advisor's calendar: ${f.bookingUrl}`
+    );
+  }
+  if (f.reason === "elsewhere") {
+    const now = f.inviteStartsAt ? inviteWhen(f.inviteStartsAt) : "another time";
+    return (
+      `A reschedule of a booking on ${f.advisorEmail}'s calendar crashed before it saved its move to ${target}, ` +
+      `and the invite now says ${now}, which is neither that nor the booked ${booked}, so Slate did not move it ` +
+      `back. The advisor is blocked at both times. Move the call in Slate, give it to another advisor, or have ` +
+      `the advisor put the invite back: ${f.bookingUrl}`
+    );
+  }
+  const head =
+    `A reschedule moved a booking's invite on ${f.advisorEmail}'s calendar to ${target}, with the lead emailed, ` +
+    `and crashed before it saved the new time, so Slate still holds the call at ${booked}.`;
+  if (f.reason === "gone") {
+    return (
+      `${head} When Slate went to move the invite back it was no longer on their calendar, so the lead may have ` +
+      `no invite for the call. Look at the booking: ${f.bookingUrl}`
+    );
+  }
+  return (
+    `${head} Google refused to move the invite back (${f.detail ?? "no reason given"}), so the lead's invite ` +
+    `may still say ${target}, and the advisor is blocked at both times. Move the call in Slate to the time the ` +
+    `lead wants, or have the advisor put the invite back: ${f.bookingUrl}`
+  );
+}

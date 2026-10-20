@@ -83,6 +83,29 @@ export function judgeInvite(
   return "in-step";
 }
 
+/**
+ * What an abandoned IN PLACE reschedule left on its booking's invite (#3924). The
+ * reschedule PATCHes the invite to its target BEFORE it commits the booking, so a
+ * crash between the two leaves the invite at the target, with the lead emailed it,
+ * while the booking still holds its own time.
+ *  - `nothing`: the invite starts where the booking does (the PATCH never landed, or
+ *    the move committed), holds no time, or only its end differs. None of that is
+ *    the crash's doing.
+ *  - `put-back`: it starts at the pin's target, the time the crashed PATCH wrote.
+ *  - `elsewhere`: it starts at neither, so it is not a time Slate wrote, and it is
+ *    reported rather than undone.
+ */
+export function judgeAbandonedInvite(
+  event: GoogleEvent,
+  booked: { startsAt: string; endsAt: string },
+  targetStartsAt: string,
+  timeZone = "UTC",
+): "nothing" | "put-back" | "elsewhere" {
+  if (judgeInvite(event, booked, timeZone) !== "moved") return "nothing";
+  const win = eventWindow(event, timeZone)!;
+  return near(win.start, targetStartsAt) ? "put-back" : "elsewhere";
+}
+
 /** One Slate invite this pass delivered out of step with its booking. */
 export interface OutOfStepInvite {
   eventId: string;

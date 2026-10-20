@@ -107,6 +107,8 @@ import {
 } from "./manage-copy.ts";
 import { INVALID_EMAIL, storedFirstName, validateAttendee } from "../attendee.ts";
 import { parseStampMs } from "../date/stamp.ts";
+import type { GoogleEvent } from "../google/calendar.ts";
+import { judgeAbandonedInvite } from "../google/invite-moves.ts";
 import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
 import { callingNumberWithinDeadline } from "../salesforce/lead-calling-number.ts";
@@ -332,6 +334,54 @@ export interface AbandonedReschedulePin {
    *  from one that committed and merely failed to release its lock (#757). Null
    *  when the booking no longer exists. */
   booking_starts_at: string | null;
+}
+
+/** #3924: what the abandoned pin sweep reads of a booking before it touches its invite. */
+export interface BookingInviteState {
+  status: BookingStatus;
+  starts_at: string;
+  ends_at: string;
+  gcal_event_id: string | null;
+  agent_email: string | null;
+  /** The lead's zone, which the put back writes the invite in. */
+  timezone: string;
+}
+
+/**
+ * #3924: an invite an abandoned in place reschedule left out of step with its
+ * booking, which the sweep did not put back. Reported per booking by the caller.
+ */
+export interface StrandedInvite {
+  bookingId: string;
+  /** The advisor whose calendar holds the invite. */
+  advisorEmail: string;
+  /** The booking's own time, or null when the booking could not be read. */
+  bookedStartsAt: string | null;
+  /** Where the crashed reschedule was moving it. */
+  targetStartsAt: string;
+  /** Where Google holds the invite now, or null when it was not read. */
+  inviteStartsAt: string | null;
+  /**
+   * `refused`: Google refused the put back. `gone`: the invite was gone when the
+   * put back reached it. `unreadable`: the booking or the invite could not be read,
+   * so nothing was judged. `elsewhere`: the invite is at neither the booked time
+   * nor the crashed move's, which is not a time Slate wrote.
+   */
+  reason: "refused" | "gone" | "unreadable" | "elsewhere";
+  /** The short reason a refusal or a failed read gave. */
+  detail: string | null;
+}
+
+/** What one abandoned pin sweep did (#439, #757, #3924). */
+export interface AbandonedPinSweep {
+  /** Rows the sweep took over and cleaned up. A row somebody else holds now is not counted. */
+  swept: number;
+  enqueued: number;
+  dropped: number;
+  /** #3924: lead invites a crashed in place move had changed, moved back to the booked time. */
+  invitesPutBack: number;
+  /** #3924: such invites that could not be put back, each to be reported. */
+  strandedInvites: StrandedInvite[];
 }
 
 /**
@@ -1862,6 +1912,22 @@ export interface BookingDeps {
   /** Lease-pins past `lease_until + graceMs`, each with the booking's live
    *  gcal_event_id, for the abandoned-pin GC sweep (#439). */
   loadAbandonedReschedulePins(graceMs: number): Promise<AbandonedReschedulePin[]>;
+  /**
+   * #3924: take an abandoned pin's lock over for the sweep. A compare and swap on the
+   * row still naming this pin's event and still past its lease plus `graceMs`, which
+   * re-leases it, so a reschedule or the moved invite handler arriving meanwhile
+   * finds it held, and of two sweeps only one acts. It also points the row's target
+   * at the booking's own time, so a lead re-sending the abandoned move is answered
+   * "just changed" rather than "done" while the sweep is undoing it. A token, or null
+   * when somebody else holds the row now. THROWS on a failed write.
+   */
+  takeOverAbandonedReschedulePin(pin: AbandonedReschedulePin, graceMs: number): Promise<string | null>;
+  /** #3924: free the lock the sweep took over, only while its token still holds it. Never throws. */
+  releaseAbandonedReschedulePin(bookingId: string, token: string): Promise<void>;
+  /** #3924: the booking's status, time and invite now, or null when it is gone. THROWS on a failed read. */
+  readBookingInviteState(bookingId: string): Promise<BookingInviteState | null>;
+  /** #3924: the invite now, on the advisor's primary calendar, or null when gone. THROWS when unreadable. */
+  readEventOnPrimary(email: string, eventId: string): Promise<GoogleEvent | null>;
   /**
    * Record a crash-safe standalone-reassign intent (#518) BEFORE the Google
    * create, so a crash between the create and the swap is cleaned by the sweep.
@@ -6840,15 +6906,40 @@ export async function processBookingReservations(
  * silent"). A pin whose booking DID reach the target is not dropped: that
  * reschedule committed and only its lock release was lost, and alerting on it would
  * cry wolf.
+ *
+ * #3924: an IN PLACE pin can leave the lead's invite wrong, not just a stray lock.
+ * The move PATCHes the booking's own invite with `sendUpdates=all` before it commits,
+ * so a crash between the two leaves the lead emailed a time nobody booked, and the
+ * moved invite handler (#3919) cannot see it, because it arrived while this pin held
+ * the booking's lock. So for an in place pin the sweep reads the invite and, when it
+ * is at the pin's target, PATCHes it back to the booking's time, which emails the
+ * lead the booked time again. Anything it cannot put back is returned in
+ * `strandedInvites` for the caller to report. Undoing rather than finishing the
+ * move is this sweep's rule throughout: it never completes a reschedule.
+ *
+ * Every row is TAKEN OVER before it is touched (`takeOverAbandonedReschedulePin`), a
+ * compare and swap on the row still being the abandoned one, and freed with the
+ * token that took it. So two sweeps never both act on a row, and a reschedule that
+ * adopted the pin between the read and the takeover keeps it: the sweep no longer
+ * deletes a lock a live holder has just taken. While the sweep holds it, a lead's
+ * reschedule and the moved invite handler find the booking locked and leave it.
+ * A failed queueing throws with the lock still leased, so the next sweep retries it.
  */
 export async function processAbandonedReschedulePins(
   deps: BookingDeps,
   graceMs: number,
-): Promise<{ swept: number; enqueued: number; dropped: number }> {
+  nowMs: number = Date.now(),
+): Promise<AbandonedPinSweep> {
   const rows = await deps.loadAbandonedReschedulePins(graceMs);
+  let swept = 0;
   let enqueued = 0;
   let dropped = 0;
+  let invitesPutBack = 0;
+  const strandedInvites: StrandedInvite[] = [];
   for (const row of rows) {
+    const token = await deps.takeOverAbandonedReschedulePin(row, graceMs);
+    if (token === null) continue;
+    swept += 1;
     // A reroute's pin always names an event of its own. An in place pin names the
     // booking's own event, unless the move RECREATED a deleted one (#617, #3217),
     // when it names that recreated event, which a crash before the commit leaves
@@ -6872,9 +6963,79 @@ export async function processAbandonedReschedulePins(
     ) {
       dropped += 1;
     }
-    await deps.releaseReschedule(row.booking_id);
+    if (row.branch === "in_place" && row.gcal_client_id) {
+      const invite = await putBackAbandonedInvite(deps, row, row.gcal_client_id, nowMs);
+      if (invite === "put-back") invitesPutBack += 1;
+      else if (invite !== null) strandedInvites.push(invite);
+    }
+    await deps.releaseAbandonedReschedulePin(row.booking_id, token);
   }
-  return { swept: rows.length, enqueued, dropped };
+  return { swept, enqueued, dropped, invitesPutBack, strandedInvites };
+}
+
+const INVITE_ACTIVE: ReadonlySet<BookingStatus> = new Set<BookingStatus>(["confirmed", "rescheduled"]);
+
+/**
+ * #3924: put an abandoned in place move's invite back to its booking's time, under
+ * the lock the sweep holds. Null when there is nothing to do; never throws, because
+ * a failure here is a report, not a reason to leave the lock or stop the sweep.
+ *
+ * The booking is read again under the lock, because the sweep's own read came
+ * before it. A booking that is gone, cancelled or completed, reassigned (its invite
+ * is another event now), or whose call has ended is left alone: there is nothing
+ * the lead could still be misled about that a put back would fix, and a cancelled
+ * call must never be emailed about. An invite that is gone or holds no time is left
+ * too: that is not something the crashed move did.
+ */
+async function putBackAbandonedInvite(
+  deps: BookingDeps,
+  row: AbandonedReschedulePin,
+  eventId: string,
+  nowMs: number,
+): Promise<"put-back" | StrandedInvite | null> {
+  const stranded = (
+    reason: StrandedInvite["reason"],
+    bookedStartsAt: string | null,
+    inviteStartsAt: string | null,
+    detail: string | null,
+  ): StrandedInvite => ({
+    bookingId: row.booking_id,
+    advisorEmail: row.pinned_agent_email,
+    bookedStartsAt,
+    targetStartsAt: row.target_starts_at,
+    inviteStartsAt,
+    reason,
+    detail,
+  });
+  let booking: BookingInviteState | null;
+  try {
+    booking = await deps.readBookingInviteState(row.booking_id);
+  } catch (err) {
+    return stranded("unreadable", row.booking_starts_at, null, shortErrorReason(err));
+  }
+  if (!booking || !INVITE_ACTIVE.has(booking.status) || booking.gcal_event_id !== eventId) return null;
+  const endsMs = parseStampMs(booking.ends_at);
+  if (endsMs !== null && endsMs <= nowMs) return null;
+  let event: GoogleEvent | null;
+  try {
+    event = await deps.readEventOnPrimary(row.pinned_agent_email, eventId);
+  } catch (err) {
+    return stranded("unreadable", booking.starts_at, null, shortErrorReason(err));
+  }
+  if (!event) return null;
+  const booked = { startsAt: booking.starts_at, endsAt: booking.ends_at };
+  const verdict = judgeAbandonedInvite(event, booked, row.target_starts_at, booking.timezone);
+  if (verdict === "nothing") return null;
+  const inviteStartsAt = event.start?.dateTime ?? event.start?.date ?? null;
+  if (verdict === "elsewhere") return stranded("elsewhere", booking.starts_at, inviteStartsAt, null);
+  try {
+    await deps.updateEventTime(row.pinned_agent_email, eventId, booking.starts_at, booking.ends_at, booking.timezone);
+  } catch (err) {
+    return err instanceof EventGone
+      ? stranded("gone", booking.starts_at, inviteStartsAt, null)
+      : stranded("refused", booking.starts_at, inviteStartsAt, shortErrorReason(err));
+  }
+  return "put-back";
 }
 
 /**
