@@ -1,7 +1,7 @@
 // Say what the shifted test run found (#2503).
 //
-// Invoked by .github/workflows/clock-shift.yml after every shift has run, whatever
-// those steps exited with. A red run in the Actions tab of a scheduled workflow is
+// Invoked once by .github/workflows/clock-shift.yml's report job, after every
+// shift's own job has finished, whatever those jobs did. A red run in the Actions tab of a scheduled workflow is
 // a detector nobody is looking at, so this is the part that reaches a person, and
 // it is also the part that refuses to call a run clean when the run measured
 // nothing (L98).
@@ -18,7 +18,8 @@ import { postToAlertsChannel } from "./lib/slack-post.ts";
 import {
   decideClockShiftReport,
   expectedSuiteCount,
-  readShiftLog,
+  judgeShift,
+  readShiftOutcome,
   type ShiftVerdict,
 } from "./lib/clock-shift-report.ts";
 
@@ -28,11 +29,12 @@ export type PostFn = (msg: {
 }) => Promise<{ ok: boolean; error?: string }>;
 
 /**
- * One log per shift, named after the shift EXACTLY as the workflow's own list
- * spells it, so the association between a verdict and the shift it belongs to is
- * the shift itself rather than a slug kept in step by hand (L41). A file that is
- * absent reads as a step that never ran, which the decision reports rather than
- * skipping over, so a dropped shift cannot shorten the list in silence.
+ * One log and one marker per shift, named after the shift EXACTLY as the workflow's
+ * own list spells it, so the association between a verdict and the shift it belongs
+ * to is the shift itself rather than a slug kept in step by hand (L41). Each shift
+ * runs in its own job and the report job downloads them all into one directory
+ * (#3960). Every shift asked for gets a verdict: one whose job left neither file is
+ * reported as such, so a dropped shift cannot shorten the list in silence.
  */
 export function collectVerdicts(
   dir: string,
@@ -41,12 +43,17 @@ export function collectVerdicts(
 ): ShiftVerdict[] {
   if (!dir.trim() || !existsSync(dir)) return [];
   const files = new Set(readdirSync(dir));
-  const out: ShiftVerdict[] = [];
-  for (const spec of askedFor) {
-    if (!files.has(`${spec}.log`)) continue;
-    out.push(readShiftLog(spec, readFileSync(join(dir, `${spec}.log`), "utf8"), expectedSuites));
-  }
-  return out;
+  const read = (name: string): string | null =>
+    files.has(name) ? readFileSync(join(dir, name), "utf8") : null;
+  return askedFor.map((spec) => {
+    const marker = read(`${spec}.outcome`);
+    return judgeShift(
+      spec,
+      read(`${spec}.log`),
+      marker === null ? null : readShiftOutcome(marker),
+      expectedSuites,
+    );
+  });
 }
 
 export async function run(

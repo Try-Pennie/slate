@@ -7,10 +7,11 @@
 //   AGREED            every shift ran the whole suite and nothing failed.
 //   DATE DEPENDENT    a suite passes today and fails on another day. This is the
 //                     finding the run exists for, and it names the suites.
-//   UNMEASURED        a shift never ran, ran on the wrong clock, or covered fewer
-//                     suites than the checkout holds. It is NOT a pass: a run that
-//                     executed nothing and a run that found nothing render the same
-//                     in an Actions tab and identically in silence (L98).
+//   UNMEASURED        a shift never ran, hit its time limit, was cancelled, ran on
+//                     the wrong clock, or covered fewer suites than the checkout
+//                     holds. It is NOT a pass: a run that executed nothing and a
+//                     run that found nothing render the same in an Actions tab and
+//                     identically in silence (L98).
 //
 // The suite COUNT is the anti vacuity floor and it is exact rather than a minimum.
 // It comes from the checkout the run was made on, so it cannot drift away from the
@@ -91,7 +92,7 @@ export function readShiftLog(
   const fields = m ? summaryFields(m[3] as string) : null;
   if (!m || !fields) {
     return unmeasured(
-      "the run left no summary line, so it died before the suite finished. Read the step's output.",
+      `the run left no summary line, so it died before the suite finished. Read the ${spec} job's log.`,
     );
   }
   // Both captures are `\d+`, so neither can be NaN, and the comparisons below are
@@ -140,6 +141,109 @@ export function readShiftLog(
   };
 }
 
+/**
+ * How one shift's pass ended, from the marker its job writes beside its log (#3960).
+ *
+ * Each shift runs in its own job. The step running the suite writes `exit=` and
+ * `seconds=` once the suite has stopped, for whatever reason, and an `if: always()`
+ * step then adds `step=` (GitHub's outcome for that step) and `limit_minutes=` (the
+ * pass's own time limit). A pass the job was cancelled under never writes the first
+ * two, which is itself the evidence: the step outcome says `cancelled`.
+ */
+export interface ShiftOutcome {
+  /** GitHub's outcome for the suite step: success, failure, cancelled, skipped, or "" when not recorded. */
+  step: string;
+  /** The suite's exit code, or null when the step never got past the suite. */
+  exit: number | null;
+  /** How long the step ran, in seconds, or null. */
+  seconds: number | null;
+  /** The pass's own time limit in minutes, or null. */
+  limitMinutes: number | null;
+}
+
+/** A whole number or null: an empty or unreadable value never reaches a comparison as NaN (L50). */
+function wholeNumber(raw: string | undefined): number | null {
+  return raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : null;
+}
+
+/** Read a marker. Unknown keys are ignored; a key written twice keeps its first value. */
+export function readShiftOutcome(text: string): ShiftOutcome {
+  const fields = new Map<string, string>();
+  for (const line of text.split("\n")) {
+    const at = line.indexOf("=");
+    if (at <= 0) continue;
+    const key = line.slice(0, at).trim();
+    if (!fields.has(key)) fields.set(key, line.slice(at + 1).trim());
+  }
+  return {
+    step: fields.get("step") ?? "",
+    exit: wholeNumber(fields.get("exit")),
+    seconds: wholeNumber(fields.get("seconds")),
+    limitMinutes: wholeNumber(fields.get("limit_minutes")),
+  };
+}
+
+/** `timeout` exits 124 when it stops the suite, or 137 when the suite outlived its kill grace too. */
+const TIMEOUT_EXIT = 124;
+const KILLED_EXIT = 137;
+
+/**
+ * Whether the pass's own time limit stopped it. A 137 counts only once the pass had
+ * run past its limit: inside it, something other than the clock killed the suite,
+ * and blaming the limit would send somebody to raise a number nothing reached.
+ */
+function stoppedByLimit(o: ShiftOutcome): boolean {
+  if (o.exit === TIMEOUT_EXIT) return true;
+  return (
+    o.exit === KILLED_EXIT &&
+    o.seconds !== null &&
+    o.limitMinutes !== null &&
+    o.seconds >= o.limitMinutes * 60
+  );
+}
+
+/** Said when a shift's job left nothing at all for the report to read. */
+const LEFT_NOTHING = "its job left nothing to read, so it never ran or its log never reached the report.";
+
+/**
+ * One shift's verdict from what its job left behind: its log, its marker, either,
+ * or neither (#3960). A log carrying the runner's summary is the verdict whatever the
+ * marker says, because the suite finished. Without one, the marker says WHY there is
+ * no verdict, which is the difference between a pass that hit its time limit (raise
+ * the limit, or split the suite) and one that crashed (read what it printed): the
+ * 2026-10-20 alert answered the first with the second's words.
+ */
+export function judgeShift(
+  spec: string,
+  log: string | null,
+  outcome: ShiftOutcome | null,
+  expectedSuites: number,
+): ShiftVerdict {
+  if (log !== null && SUMMARY.test(log)) return readShiftLog(spec, log, expectedSuites);
+  const unmeasured = (why: string): ShiftVerdict => ({
+    spec,
+    state: "unmeasured",
+    executed: 0,
+    failed: [],
+    why,
+  });
+  const where = `What it printed by then is in the ${spec} job's log.`;
+  if (outcome && stoppedByLimit(outcome)) {
+    const limit = outcome.limitMinutes !== null ? `its ${outcome.limitMinutes} minute` : "its";
+    return unmeasured(`it hit ${limit} time limit and was stopped before the suite finished. ${where}`);
+  }
+  if (outcome?.step === "cancelled") {
+    return unmeasured(
+      `it was cancelled before the suite finished, by hand or by the job's own time limit. ${where}`,
+    );
+  }
+  if (outcome?.step === "skipped") {
+    return unmeasured(`its job stopped before the suite started. The ${spec} job's earlier steps say why.`);
+  }
+  if (log !== null) return readShiftLog(spec, log, expectedSuites);
+  return unmeasured(LEFT_NOTHING);
+}
+
 /** How many suites the checkout this run was made on holds. */
 export function expectedSuiteCount(scriptsDir: string): number {
   return discoverSuiteNames(scriptsDir).length;
@@ -167,7 +271,7 @@ export function decideClockShiftReport(
         state: "unmeasured",
         executed: 0,
         failed: [],
-        why: "the step produced no output at all, so it never ran.",
+        why: LEFT_NOTHING,
       },
   );
 

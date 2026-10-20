@@ -15,7 +15,9 @@ import { join, resolve } from "node:path";
 import {
   decideClockShiftReport,
   expectedSuiteCount,
+  judgeShift,
   readShiftLog,
+  readShiftOutcome,
 } from "./lib/clock-shift-report.ts";
 import { collectVerdicts, run } from "./notify-clock-shift.ts";
 import { discoverSuiteNames } from "./lib/suite-discovery.ts";
@@ -191,6 +193,102 @@ const red = (pass: number, fail: number, clock: string, names: string[]) =>
   }
 }
 
+// --- how a pass ended, when its own log cannot say (#3960) -----------------------
+//
+// On 2026-10-20 the +13mo pass was cut off by the job's time limit and the alert
+// said it "died before the suite finished. Read the step's output", where the step
+// had printed nothing. Each shift is its own job now, and each job leaves a small
+// marker saying how its pass ended, so a pass stopped by the clock says so.
+{
+  const partial = "Slowest: scripts/test-a.ts 900ms\n";
+  const marker = (lines: string[]) => readShiftOutcome(lines.join("\n") + "\n");
+
+  const cutMarker = marker(["exit=124", "seconds=1080", "step=success", "limit_minutes=18"]);
+  eq(cutMarker.exit, 124, "the marker gives the suite's exit code");
+  eq(cutMarker.seconds, 1080, "and how long the pass ran");
+  eq(cutMarker.limitMinutes, 18, "and the pass's own time limit");
+  eq(cutMarker.step, "success", "and how GitHub says the step ended");
+
+  const unreadable = marker(["exit=abc", "seconds=", "limit_minutes=NaN"]);
+  eq(unreadable.exit, null, "an unreadable exit code is null, never NaN (L50)");
+  eq(unreadable.seconds, null, "and so is an empty duration");
+  eq(unreadable.limitMinutes, null, "and an unreadable limit");
+  eq(unreadable.step, "", "and a marker naming no step reads as an unknown step");
+
+  const cut = judgeShift("+13mo", partial, cutMarker, 499);
+  eq(cut.state, "unmeasured", "a pass stopped by its time limit measured nothing");
+  assert(/18 minute time limit/.test(cut.why), `and says it hit its time limit (${cut.why})`);
+  assert(!/died before/.test(cut.why), `rather than that it died (${cut.why})`);
+  assert(/\+13mo job's log/.test(cut.why), `and says where its partial log is (${cut.why})`);
+
+  // timeout's KILL after the grace exits 137 rather than 124. Past the limit that is
+  // the same finding; well inside it, something else killed the pass, and blaming
+  // the clock would send somebody to raise a limit nothing reached.
+  const killedLate = judgeShift(
+    "+13mo",
+    partial,
+    marker(["exit=137", "seconds=1110", "step=success", "limit_minutes=18"]),
+    499,
+  );
+  assert(/time limit/.test(killedLate.why), `a kill after the limit is the limit (${killedLate.why})`);
+  const killedEarly = judgeShift(
+    "+13mo",
+    partial,
+    marker(["exit=137", "seconds=200", "step=success", "limit_minutes=18"]),
+    499,
+  );
+  assert(!/time limit/.test(killedEarly.why), `a kill inside the limit is not blamed on it (${killedEarly.why})`);
+  assert(/no summary line/.test(killedEarly.why), `and reads as a pass that died (${killedEarly.why})`);
+  assert(/\+13mo job's log/.test(killedEarly.why), `pointing at that job's log (${killedEarly.why})`);
+
+  const cancelled = judgeShift("+13mo", partial, marker(["step=cancelled", "limit_minutes=18"]), 499);
+  eq(cancelled.state, "unmeasured", "a cancelled pass measured nothing");
+  assert(/cancelled/.test(cancelled.why), `and says it was cancelled (${cancelled.why})`);
+  assert(/\+13mo job's log/.test(cancelled.why), `and where its partial log is (${cancelled.why})`);
+
+  const skipped = judgeShift("+3mo", null, marker(["step=skipped", "limit_minutes=18"]), 499);
+  eq(skipped.state, "unmeasured", "a job that never reached the suite measured nothing");
+  assert(/before the suite started/.test(skipped.why), `and says the suite never started (${skipped.why})`);
+
+  const nothing = judgeShift("+1d", null, null, 499);
+  eq(nothing.state, "unmeasured", "a shift with no log and no marker measured nothing");
+  assert(/never reached the report/.test(nothing.why), `and says nothing arrived (${nothing.why})`);
+
+  // A pass that printed its summary finished the suite, whatever the marker says
+  // about the moments after it: the summary is the verdict.
+  const finished = judgeShift("+1d", green(499, "+1d"), cutMarker, 499);
+  eq(finished.state, "agreed", "a pass that printed its summary is judged by it");
+  const finding = judgeShift(
+    "+1d",
+    red(498, 1, "+1d", ["scripts/test-x.ts"]),
+    marker(["exit=1", "seconds=530", "step=success", "limit_minutes=18"]),
+    499,
+  );
+  eq(finding.state, "date-dependent", "and a failure under the shift is still a finding");
+
+  const reasons = [cut, killedEarly, cancelled, skipped, nothing].map((v) => v.why);
+  eq(new Set(reasons).size, reasons.length, "each way a pass ends early gives its own reason");
+
+  // The 2026-10-20 shape end to end: two passes agree, the third is cut off.
+  const all = ["+1d", "+3mo", "+13mo"];
+  const decision = decideClockShiftReport(
+    all,
+    [judgeShift("+1d", green(499, "+1d"), null, 499), judgeShift("+3mo", green(499, "+3mo"), null, 499), cut],
+    "https://example.test/run/4",
+  );
+  assert(!decision.ok, "a cut off pass fails the run");
+  const text = decision.alert ?? "";
+  assert(/\+13mo/.test(text) && /time limit/.test(text), `and the alert says which pass hit the limit (${text})`);
+  assert(!/died before/.test(text), "without saying it died");
+  assert(
+    ![...text].some((c) => c.charCodeAt(0) === 0x2014 || c.charCodeAt(0) === 0x2013),
+    "with no em or en dash",
+  );
+  for (const v of [cut, killedEarly, cancelled, skipped, nothing]) {
+    assert(!/undefined|NaN|null|\[object Object\]/.test(v.why), `renders no placeholder (${v.why})`);
+  }
+}
+
 // --- the expected count comes from the checkout --------------------------------
 {
   const real = expectedSuiteCount(SCRIPTS);
@@ -244,6 +342,31 @@ const red = (pass: number, fail: number, clock: string, names: string[]) =>
     );
     assert(!unsent.ok, "a finding whose alert could not be posted is still red");
     assert(/channel_not_found/.test(unsent.reason), "and says Slack was the reason");
+
+    // The fan in reads each job's marker beside its log (#3960): a partial log with
+    // a marker saying the pass hit its limit is reported as cut off, and a shift
+    // whose job left nothing at all is still named rather than dropped.
+    posted.length = 0;
+    const three = ["+1d", "+3mo", "+13mo"];
+    writeFileSync(join(dir, "+1d.log"), green(real, "+1d"), "utf8");
+    writeFileSync(join(dir, "+3mo.log"), "Slowest: scripts/test-a.ts 900ms\n", "utf8");
+    writeFileSync(
+      join(dir, "+3mo.outcome"),
+      "exit=124\nseconds=1080\nstep=success\nlimit_minutes=18\n",
+      "utf8",
+    );
+    const fannedIn = collectVerdicts(dir, three, real);
+    eq(fannedIn.map((v) => v.spec).join(" "), "+1d +3mo +13mo", "every shift asked for gets a verdict");
+    eq(fannedIn[0]?.state, "agreed", "the finished pass agrees");
+    assert(/time limit/.test(fannedIn[1]?.why ?? ""), `the cut off pass says so (${fannedIn[1]?.why})`);
+    assert(
+      /never reached the report/.test(fannedIn[2]?.why ?? ""),
+      `the shift whose job left nothing is named (${fannedIn[2]?.why})`,
+    );
+    const cutRun = await run(post, { CLOCK_SHIFTS: three.join(" ") }, { dir, scriptsDir: SCRIPTS });
+    assert(!cutRun.ok, "a run with a cut off pass is red");
+    eq(posted.length, 1, "and somebody is told");
+    assert(/\+3mo run measured nothing: it hit its 18 minute time limit/.test(posted[0] ?? ""), `once (${posted[0]})`);
 
     // A directory that is not there at all is a missing verdict per shift, never an
     // empty list read as nothing to report.
