@@ -166,7 +166,15 @@ class GitHub:
             return [x for page in data for x in page]
         return data
 
-    def raw(self, path, repo, ref):
-        """A file's bytes as GitHub holds it at `ref`."""
-        return self.call(["api", "-H", "Accept: application/vnd.github.raw",
-                          "repos/%s/contents/%s?ref=%s" % (repo, path, ref)], repo, binary=True)
+    def raw(self, path, repo, ref=None):
+        """A file's bytes as GitHub holds it at `ref`, or on the default branch when none is named."""
+        where = "repos/%s/contents/%s" % (repo, path) + ("?ref=%s" % ref if ref else "")
+        return self.call(["api", "-H", "Accept: application/vnd.github.raw", where], repo, binary=True)
+
+    def write(self, method, endpoint, repo, **fields):
+        """Sends `fields` to `endpoint` with `method` (POST a comment, PATCH a state), as the account
+        that can see `repo`. Each field goes as raw text (-f), so a body is never read as a file."""
+        args = ["api", "-X", method, endpoint]
+        for name, value in fields.items():
+            args += ["-f", "%s=%s" % (name, value)]
+        return self.call(args, repo)
