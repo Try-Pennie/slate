@@ -196,21 +196,31 @@ result over exactly the defect it exists to find (L98).
 CALENDAR rather than by commit is how a gate starts being skipped (L36). Not CI: it
 would gate merges on a question the change in front of it did not ask, and a
 legitimately date sensitive suite should be fixed deliberately rather than discovered
-by somebody trying to merge something else. Daily, at 04:40 UTC, costs three passes of
-the node suite sharing one install: about 9 minutes of wall clock and about 9 billed
-minutes a day on ubuntu-latest's 1x multiplier. Measured off run 35266508062 (3m7s for
-the whole node-tests job), not off the 106s the comment beside that job still claims.
+by somebody trying to merge something else. Daily, at 04:40 UTC.
+
+**One job per shift (#3960).** A pass took about 533s on 2026-10-20 (run 39402068299),
+so three in one job were about 27 minutes, the 25 minute limit cut off the third, and
+the alert pointed at output that pass never printed. Now a plan job turns the list into
+a matrix, each shift runs in its own job under its own 18 minute pass limit (`timeout`,
+about twice a pass) inside a 25 minute job, streams its log as it runs and uploads it
+with a marker saying how the pass ended, and one report job (always runs, bare node)
+reads them all. A pass stopped by its limit is reported as exactly that. Cost: about 32
+billed minutes a day on ubuntu-latest's 1x multiplier (three 10 minute shift jobs, a
+minute each for plan and report), about 4 more than one job, for about 11 minutes of
+wall clock instead of 27. `scripts/test-clock-shift-workflow.ts` pins the shape.
 
 The three shifts are `+1d` (the #2497 shape itself), `+3mo` (a month roll, and from
 most dates a clock change) and `+13mo` (a year roll and, from ANY date, both of the
-year's clock changes). They live in ONE list in the workflow, read by the loop that
-runs them and by the step that judges them, so a shift cannot be run and not judged.
+year's clock changes). They live in ONE list in the workflow's env, read by the plan job
+that builds the matrix and by the report that judges it, so a shift cannot be run and
+not judged.
 
 **Finding nothing is not a pass.** `scripts/lib/clock-shift-report.ts` separates three
 outcomes, and the third is the one that would otherwise read as the first: agreement, a
 date dependent suite (named, with the shift that found it), and a run that measured
-nothing. A run measures nothing when it left no summary line, reported no clock or the
-wrong one, covered fewer suites than the checkout holds, or produced no log at all. The
+nothing. A run measures nothing when it hit its time limit, was cancelled, left no
+summary line, reported no clock or the wrong one, covered fewer suites than the checkout
+holds, or its job left no log at all. The
 expected suite count comes from the checkout through `discoverSuiteNames`, the same
 function the runner discovers them with, so it cannot drift from the thing it describes.
 
