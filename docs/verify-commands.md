@@ -973,10 +973,10 @@ the real answer is that nothing was compared.
 | 17 | **the timezone differs** |
 | 21 | not bookable in Slate, hosts in cal.com, and no bucket's criteria can match them |
 | 22 | a cal.com host with no Slate record at all |
-| 23 | **bookable in Slate and not a cal.com host at all**, so Slate offers somebody the incumbent never routes to |
+| 23 | **bookable in Slate, in a routing pool, and not a cal.com host at all**, so Slate offers somebody the incumbent never routes to |
 | 24 | **an agent Slate will not route who cal.com still can** |
 | 25 | **somebody who has left Slate and can still be booked in cal.com** |
-| 26 | **bookable in Slate while cal.com withholds them from every routed decision** |
+| 26 | **bookable in Slate and in a routing pool, while cal.com withholds them from every routed decision** |
 | 27 | an hours, days or timezone difference on a week the AGENT set themselves, which the lane will not overwrite |
 | 28 | **bookable in Slate and in no routing pool**, and cal.com does not route to them either, so neither system offers them; the fix is their debt tier in Twilio |
 
