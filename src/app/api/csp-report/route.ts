@@ -14,8 +14,9 @@ export const dynamic = "force-dynamic";
  * Where a browser posts a Content Security Policy violation (#2565).
  *
  * The policy is ENFORCED since #2575, so a violation is no longer information
- * about what a policy WOULD break: something was refused for a real person. Dan decided on 2026-10-02 that this sends a
- * THROTTLED PAGE on the alert channel, keyed on the violated directive mapped onto
+ * about what a policy WOULD break: a resource was refused for a real person. Dan
+ * decided on 2026-10-02 that this sends a THROTTLED PAGE on the alert channel, unless
+ * `cspViolationPage` names a reason it does not, keyed on the violated directive mapped onto
  * the policy's own directive list (`cspViolationPage`), so a burst of one refusal
  * is one page per cooldown and no caller can mint a key.
  *
