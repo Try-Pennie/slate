@@ -44,7 +44,6 @@ import { appUrl } from "@/lib/env";
 import {
   resolveBucketByCode,
   resolveBucketPool,
-  resolveRouting,
   roundRobinCandidates,
 } from "@/lib/availability/service";
 import {
@@ -3765,19 +3764,25 @@ export function systemReassignBooking(
 }
 
 /**
- * The live coverage-target deps (#972): the ordered eligible list from
- * `resolveRouting`, and the batched email / live verify-on-book / working-hours /
- * per-day booking-count reads reused verbatim from the booking path's `realDeps`
- * so the two can't drift. Freeness is verified live, never from the cache.
+ * The live coverage-target deps (#972, #3308): Reroute's own search, wired exactly as
+ * `realRerouteDeps` wires it, so the sweep, Reroute and the booker answer "who can take
+ * this call" by one rule (the round robin over the cached free advisors, then the live
+ * verify). The current advisor's picture is never read: the sweep searches the booking
+ * as unassigned (`selectCoverageReassignTarget`).
  */
 function realCoverageTargetDeps(): CoverageTargetDeps {
   const base = realDeps();
-  return {
-    orderedEligibleIds: async (bucket) => (await resolveRouting(bucket.code))?.eligibleIds ?? [],
+  const searchDeps = {
+    resolveBucketByCode: base.resolveBucketByCode,
+    roundRobinCandidates: base.roundRobinCandidates,
     loadEmails: base.loadEmails,
     verifyFree: base.verifyFree,
-    agentWorkingHours: base.agentWorkingHours,
-    agentActiveBookingStartsMs: base.agentActiveBookingStartsMs,
+    loadCurrentAgentPicture,
+    now: () => Date.now(),
+  };
+  return {
+    findTarget: (booking, requested, excludeUserIds) =>
+      orchestration.findRerouteTarget(searchDeps, booking, requested, { excludeUserIds }),
     userIdsOnApprovedTimeOff,
   };
 }
