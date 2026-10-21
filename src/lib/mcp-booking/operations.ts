@@ -399,7 +399,9 @@ async function offeredTimes(ctx: Ctx, zone: string, fromIso: string, pick: (slot
   const now = ctx.deps.nowMs();
   const read = await ctx.deps.readSlots(ctx.bucketCode, fromIso, ctx.claims.test, now);
   if (!read) return null;
-  const cutoff = now + read.minNoticeMin * 60_000;
+  // The slot read ignores `fromIso` (#3381) and returns the whole stored window from
+  // now, so the floor is applied here, where the offer is made, whatever the reader does.
+  const cutoff = Math.max(now + read.minNoticeMin * 60_000, Date.parse(fromIso));
   const open = read.slots.filter((s) => Date.parse(s) >= cutoff && withinLeadCallingWindow(s, zone));
   const times: OfferedTime[] = [];
   for (const startIso of pick(open)) {

@@ -82,6 +82,42 @@ async function firstSlot(fake: ReturnType<typeof makeMarciaFake>, c = claims()):
   eq(bad.ok ? null : bad.code, "args_invalid", "an unknown zone is refused, never guessed");
 }
 
+// --- find_times honours `from` (live 2026-10-21: "from tomorrow" was offered today) -------
+// The real slot read ignores `from` (#3381) and returns the bucket's whole window from
+// now, so the rule has to live where the offer is made. NOW is 07:00 CDT on 1 June.
+{
+  const TWO_DAYS = [
+    "2026-06-01T13:00:00.000Z", // 1 June 08:00 CDT
+    "2026-06-01T18:00:00.000Z", // 1 June 13:00 CDT
+    "2026-06-02T00:30:00.000Z", // 1 June 19:30 CDT: 2 June in UTC, still 1 June for the lead
+    "2026-06-02T14:00:00.000Z", // 2 June 09:00 CDT
+    "2026-06-02T15:00:00.000Z", // 2 June 10:00 CDT
+  ];
+  const fake = makeMarciaFake({ nowMs: NOW, slots: TWO_DAYS });
+  const tomorrow = await runMarciaOperation("find_times", { from: "2026-06-02" }, claims(), fake.deps);
+  assert(tomorrow.ok, "find_times answers with a from date");
+  eq(
+    ((okData(tomorrow)?.times as Times) ?? []).map((t) => t.starts_at),
+    ["2026-06-02T14:00:00.000Z", "2026-06-02T15:00:00.000Z"],
+    "a from date offers only times on or after it, the day read in the lead's zone",
+  );
+
+  const none = await runMarciaOperation("find_times", {}, claims(), fake.deps);
+  eq(
+    ((okData(none)?.times as Times) ?? []).map((t) => t.starts_at),
+    TWO_DAYS,
+    "with no from date, every open time from now is offered as before",
+  );
+
+  const noticed = makeMarciaFake({ nowMs: NOW, slots: TWO_DAYS, minNoticeMin: 6 * 60 + 30 });
+  const past = await runMarciaOperation("find_times", { from: "2026-05-20" }, claims(), noticed.deps);
+  eq(
+    ((okData(past)?.times as Times) ?? []).map((t) => t.starts_at),
+    TWO_DAYS.slice(2),
+    "a from date in the past still offers nothing before now plus the minimum notice",
+  );
+}
+
 // --- book, and the lead coming from the token only ----------------------------------
 {
   const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS });
