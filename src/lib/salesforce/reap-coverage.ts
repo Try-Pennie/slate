@@ -18,9 +18,13 @@ export interface ReapCoverageCounts {
  * Move the remaining calls of every advisor the hourly Salesforce reap just departed
  * (#1678), through the SAME offboarding coverage the lifecycle API runs (#1241): the
  * plan is `planOffboardingCoverageSweep`, keyed on the row's own stored departure stamp
- * (never a fresh clock read), so a retry of the same departure converges onto the one
- * sweep the unique (agent, departure) index allows, and `cover` is the shared
- * `coverDeparture`.
+ * (never a fresh clock read), so this departure and any later offboarding call for the
+ * same one (the lifecycle API's retry) land on the one sweep the unique (agent,
+ * departure) index allows, and `cover` is the shared `coverDeparture`.
+ *
+ * The reap itself never retries: its next hour selects only rows still active, so a
+ * departure whose enqueue failed is not picked up again from here. That gap is what the
+ * monitor below is for.
  *
  * Only advisors THIS run's write departed are passed in (the write is a compare and swap
  * on `deactivated_at is null`), so an admin's own departure in the admin UI, which keeps
