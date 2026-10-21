@@ -1191,7 +1191,7 @@ describe("widget.js pre builds the modal frame on the trigger's first intent (#2
 // asks `GET <origin>/api/embed/config` and builds only on `{ prerender: true }`.
 // Every other answer (false, an error, a status that is not ok, a body that is not
 // that shape, or no answer within the cap) leaves the prerender a no op, exactly as
-// before #3989, and the click builds as it always has. Each test uses an origin of
+// before the prerender build shipped, and the click builds as it always has. Each test uses an origin of
 // its own, because the answer is asked once per origin per page load.
 describe("widget.js builds the modal frame when the host calls prerender (#3706)", () => {
   type AnyCal = ((...args: unknown[]) => void) & {
