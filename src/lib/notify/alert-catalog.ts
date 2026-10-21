@@ -1093,6 +1093,17 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "turns on (#1974).",
   },
   {
+    key: "opaque_script_errors:*",
+    kind: "incident",
+    // The surface, from Slate's route list plus `other` (#2755).
+    suffix: "bounded",
+    why:
+      "Browsers at several different addresses already reported a script error with every detail hidden, on loads " +
+      "that have finished (#3323). There is no state that CLEARS: the all clear would have to say no browser has " +
+      "reported one since, which is also exactly what a quiet hour with nobody on the page looks like, so it would " +
+      "announce something nobody measured. The next burst is counted against its own window and pages for itself.",
+  },
+  {
     key: "rr_ordering_degraded",
     kind: "incident",
     why: "One assignment may not reflect fair share; that booking is made and the next is judged on its own.",

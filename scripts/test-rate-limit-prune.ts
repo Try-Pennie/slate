@@ -17,7 +17,8 @@
 //      the only way a streak or boundary key could fall inside the prune's scope.
 //   4. The SQL function deletes by prefix plus a colon and by the database's own
 //      clock, under the pinned search_path every Slate function carries.
-//   5. The window counters (`boundary_count`, `unrecognised_page_count`, #3176)
+//   5. The window counters (`boundary_count`, `unrecognised_page_count`, #3176,
+//      and `opaque_script_error_address`, `opaque_script_error_count`, #3323)
 //      are pruned as a group of their own, aged from THEIR window rather than the
 //      limiters', and their key space is named in one place so the prune and the
 //      writer cannot drift apart.
@@ -135,8 +136,8 @@ eq(
 // 5. The window counters (#3176): their own group, aged from their own window.
 eq(
   [...counterPlan.prefixes].sort(),
-  ["boundary_count", "unrecognised_page_count"],
-  "the boundary catch and unrecognised page counters are pruned",
+  ["boundary_count", "opaque_script_error_address", "opaque_script_error_count", "unrecognised_page_count"],
+  "the boundary catch, unrecognised page and opaque script error counters are pruned",
 );
 eq(
   [...counterPlan.prefixes].sort(),

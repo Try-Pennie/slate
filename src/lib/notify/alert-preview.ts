@@ -368,10 +368,12 @@ import {
   retentionSkippedText,
   unknownReasonCodeNotice,
   unrecognisedPageReports,
+  opaqueScriptErrorBurstAlert,
   watchLapseRecovery,
   googleBreakerClosedAlert,
   googleBreakerOpenAlert,
 } from "@/lib/notify/misc-alert-copy";
+import { OPAQUE_BURST_THRESHOLD } from "@/lib/api/boundary-count";
 import {
   friendlyRateArea,
   limiterBlockedAlert,
@@ -6261,6 +6263,13 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   { key: "internal_error:*", state: "browser reports from pages Slate does not serve, uncounted", channel: "alert",
     text: unexpectedFaultAlert("client_error:other",
       `${unrecognisedPageReports({ count: null, measured: false, windowMinutes: 30 })} error on /wp-login.php: Loading chunk 412 failed`) },
+  // #3323: a single opaque cross origin script error never pages; a burst across
+  // different addresses does. Two states: the figure read back, and the figure
+  // unreadable, when the copy says only what the increment itself decided.
+  { key: "opaque_script_errors:*", state: "a burst of detail free script errors on the booker, counted", channel: "alert",
+    text: opaqueScriptErrorBurstAlert({ surface: "book", addresses: 5, threshold: OPAQUE_BURST_THRESHOLD, windowMinutes: 15 }) },
+  { key: "opaque_script_errors:*", state: "a burst of detail free script errors on the booker, the figure unreadable", channel: "alert",
+    text: opaqueScriptErrorBurstAlert({ surface: "book", addresses: null, threshold: OPAQUE_BURST_THRESHOLD, windowMinutes: 15 }) },
   // #1974: a page that failed to RENDER, which is a different event from a 500
   // and reads differently: nobody got a status code, somebody got a screen.
   // Three states, because the SCOPE sentence is what decides whether the reader

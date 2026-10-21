@@ -796,7 +796,7 @@ observe says the holder stopped: it simply goes quiet once nobody presents the k
 
 ## An unexpected fault was reported
 
-Keys: `internal_error:*`, `boundary_error:*`, `csp_violation:*`.
+Keys: `internal_error:*`, `boundary_error:*`, `csp_violation:*`, `opaque_script_errors:*`.
 
 **What fired it.** A route threw something nobody predicted. The alert carries a short
 human reason; the full text, with the stack, is in the log (never in the alert, #1133).
@@ -819,6 +819,26 @@ only reports, a third-party font with no named source (#3417) and the Google pro
 logo an add-on draws beside a phone number (`img-src`, host `fonts.gstatic.com`, path
 under `/s/i/productlogos/`, no named source, #3699) are logged with `paged=false` and
 never page. Every other refused image still pages.
+
+**`opaque_script_errors:*` (#3323).** Browsers at several different addresses (five or
+more in fifteen minutes, `OPAQUE_BURST_THRESHOLD` in `src/lib/api/boundary-count.ts`)
+reported `Script error.` with no file, no position and no stack on the named page. A
+browser sends exactly that when the script that threw came from another site: an
+extension, a translator, an app's built in browser injecting its own code. Slate serves
+its own bundles from its own origin, so its own faults never look like this. A single
+one is logged and never pages; the key is the surface.
+- Read the lines with `tag=client-errors` and `msg="opaque cross origin script error"`
+  for the window. Each carries `user_agent`: the question is whether they share one
+  browser (one in app browser, one extension's host browser) or are spread across many.
+- One browser in common: open the page in that browser (for an in app browser, open the
+  booking link from inside that app) and try to book. If the booker works, the script
+  is noisy but harmless and nothing needs doing; if it fails, the fault is real for
+  every lead in that browser and worth a fix or a note to whoever owns the link.
+- Spread across many browsers at once, starting with a deploy: something Slate now
+  loads is being treated as another origin (a script or chunk served from a different
+  host). Check the deploy and the `csp_violation:*` lines in the same window.
+- A burst that never recurs needs nothing. There is no all clear, because a quiet
+  window is also what nobody opening the page looks like.
 
 ---
 

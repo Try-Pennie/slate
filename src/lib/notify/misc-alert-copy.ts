@@ -298,6 +298,46 @@ export function browserErrorAlert(surface: string, detail: string): string {
   return `A browser reported an error on ${where} (${detail}). ${notServer} Full detail is in the Worker logs at level error.`;
 }
 
+/** Where a surface from `clientErrorSurface` is, in words: one phrasing for every
+ *  page level alert that names one. */
+function surfacePlace(surface: string): string {
+  if (surface === "root") return "the home page (/)";
+  if (surface === "other") return "a page Slate does not serve";
+  return `a page under /${surface}`;
+}
+
+/**
+ * A burst of OPAQUE cross origin script errors on one page (#3323).
+ *
+ * A single one never pages: it is the browser's sanitised stand in for an error
+ * thrown by a script from another site (an extension, a translator, an app's built
+ * in browser), with the message, file and position all withheld, so nobody can act
+ * on it. This is sent only once `threshold` different addresses have reported one
+ * inside the window, which one lead's browser cannot do however often it reloads.
+ *
+ * It says what was counted and no more (L11): browsers at different addresses, not
+ * people, and the threshold "or more" when the figure could not be read back, since
+ * the burst itself was decided inside the increment. It carries no error text,
+ * because there is none: the one phrase the browser sends is the same every time
+ * and says nothing, so no error is passed in at all.
+ */
+export function opaqueScriptErrorBurstAlert(c: {
+  surface: string;
+  addresses: number | null;
+  threshold: number;
+  windowMinutes: number;
+}): string {
+  const many = c.addresses === null ? `${c.threshold} or more` : `${c.addresses}`;
+  return (
+    `Browsers at ${many} different addresses reported a script error with no detail on ${surfacePlace(c.surface)} ` +
+    `in the last ${c.windowMinutes} minutes. A browser hides the detail when the script that failed came from ` +
+    `another site, such as an extension, a translator or an app's built in browser, so the page's own code is ` +
+    `probably not the cause, but this many at once can mean the page is failing for a whole group of leads. ` +
+    `The log lines under tag=client-errors name the browser each report came from: open the page in that ` +
+    `browser and try to book.`
+  );
+}
+
 /**
  * A browser refused something on a Slate page under the ENFORCED content security
  * policy (#2575, Dan 2026-10-02: a throttled page).
@@ -322,12 +362,7 @@ export function cspViolationAlert(v: {
   sourceNamed?: boolean;
 }): string {
   const what = describeBlocked(v.blocked, v.directive);
-  const where =
-    v.surface === "root"
-      ? "the home page (/)"
-      : v.surface === "other"
-        ? "a page Slate does not serve"
-        : `a page under /${v.surface}`;
+  const where = surfacePlace(v.surface);
   const rule = v.directive === "other" ? "under a rule Slate's policy does not name" : `under its ${v.directive} rule`;
   return (
     `A browser refused ${what} on ${where}, because the enforced content security policy does not allow it (${rule}). ` +

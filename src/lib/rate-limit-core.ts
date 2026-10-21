@@ -270,7 +270,8 @@ export const RATE_LIMIT_PRUNE_MARGIN_SECONDS = 3600;
 /**
  * A count kept in `rate_limits` under `${prefix}:${signature}` that decides nothing
  * about a caller (#3176): the error boundary's catch count (#1974) and the count of
- * reports from pages Slate does not serve (#2755). They borrow `rate_limit_hit`
+ * reports from pages Slate does not serve (#2755), and the opaque cross origin
+ * script error burst count with its per address row (#3323). They borrow `rate_limit_hit`
  * for its atomic rolling window, so they need pruning like a limiter row, but they
  * are not limiter rules and their window is their own.
  *
@@ -299,8 +300,32 @@ export const UNRECOGNISED_PAGE_COUNTER: WindowCounter = {
   windowSeconds: BOUNDARY_COUNT_WINDOW_SECONDS,
 };
 
+/** The window opaque cross origin script errors are counted over (#3323): 15
+ *  minutes. How it was sized is beside `OPAQUE_BURST_THRESHOLD`. */
+export const OPAQUE_SCRIPT_ERROR_WINDOW_SECONDS = 15 * 60;
+
+/** One row per surface and ADDRESS that sent an opaque report in the window
+ *  (#3323), so a browser reloading is counted once. The address is already held
+ *  for the same caller by the beacon's own limiter rows (`clienterr:*`), for longer. */
+export const OPAQUE_SCRIPT_ERROR_ADDRESS_COUNTER: WindowCounter = {
+  prefix: "opaque_script_error_address",
+  windowSeconds: OPAQUE_SCRIPT_ERROR_WINDOW_SECONDS,
+};
+
+/** How many distinct addresses sent an opaque report on one surface in the window
+ *  (#3323): the figure the burst page is decided on. */
+export const OPAQUE_SCRIPT_ERROR_BURST_COUNTER: WindowCounter = {
+  prefix: "opaque_script_error_count",
+  windowSeconds: OPAQUE_SCRIPT_ERROR_WINDOW_SECONDS,
+};
+
 /** Every window counter, which is exactly what the counter group of the prune covers. */
-export const WINDOW_COUNTERS: readonly WindowCounter[] = [BOUNDARY_CATCH_COUNTER, UNRECOGNISED_PAGE_COUNTER];
+export const WINDOW_COUNTERS: readonly WindowCounter[] = [
+  BOUNDARY_CATCH_COUNTER,
+  UNRECOGNISED_PAGE_COUNTER,
+  OPAQUE_SCRIPT_ERROR_ADDRESS_COUNTER,
+  OPAQUE_SCRIPT_ERROR_BURST_COUNTER,
+];
 
 /** `prune_rate_limits` refuses an age under an hour, so no group is planned below it. */
 const PRUNE_FLOOR_SECONDS = 3600;
