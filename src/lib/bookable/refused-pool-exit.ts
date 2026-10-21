@@ -42,6 +42,8 @@ import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import type { ThrottledNotify } from "@/lib/monitor/alert-deps";
 import {
   REFUSED_POOL_EXIT_AFTER_MS,
+  REFUSED_POOL_EXIT_AUDIT_VIA,
+  heldOutEpisodeStart,
   refusedAdvisorIds,
   type RefusedCalendarRow,
 } from "@/lib/bookable/refused-pool-exit-rule";
@@ -49,6 +51,8 @@ import {
 export {
   REFUSED_POOL_EXIT_AFTER_MS,
   REFUSED_POOL_EXIT_MIN_FAILED_READS,
+  REFUSED_POOL_EXIT_AUDIT_VIA,
+  heldOutEpisodeStart,
   isRefusedThroughoutPeriod,
   refusedAdvisorIds,
   type RefusedCalendarRow,
@@ -156,8 +160,11 @@ export async function takeRefusedAdvisorsOutOfPool(
       targetUserId: a.id,
       details: {
         bookable: false,
-        via: "calendar-refused",
+        via: REFUSED_POOL_EXIT_AUDIT_VIA,
         failure,
+        // The mark this write stamped: how the hourly activation retry knows the
+        // episode is ours and says its blocked note once (`heldOutSince` below).
+        pending_since: stampIso,
         refused_for_min: Math.round(REFUSED_POOL_EXIT_AFTER_MS / 60_000),
       },
     });
@@ -244,6 +251,31 @@ async function poolsOnlyThem(userId: string): Promise<string[]> {
     if (!seen.has(d.poolKey)) seen.set(d.poolKey, d.poolLabel ?? d.code);
   }
   return [...seen.values()];
+}
+
+/**
+ * The start of the episode when this advisor's CURRENT pending mark was written by
+ * the pool exit, else null (#3700), for the activation retry's blocked note
+ * (`BookableDeps.heldOutSince`). Read from the exit's own audit rows, newest first: a
+ * handful is plenty, since each removal writes one and a return clears the mark.
+ * THROWS on a failed read, which the caller treats as "not held out": the note then
+ * repeats on its ordinary cooldown, the loud direction to be wrong in. If the exit's
+ * audit insert itself failed (it pages when it does), the same fallback applies.
+ */
+export async function heldOutSince(userId: string, pendingSince: string | null): Promise<number | null> {
+  if (pendingSince === null) return null;
+  // error-ok: a failed read throws below, and the caller notes on the ordinary cooldown.
+  const { data, error } = await supabaseAdmin()
+    .from("audit_log")
+    .select("details")
+    .eq("action", "agent.bookable")
+    .eq("target_id", userId)
+    .eq("details->>via", REFUSED_POOL_EXIT_AUDIT_VIA)
+    .order("created_at", { ascending: false })
+    .limit(5);
+  if (error) throw new Error(`held out audit read failed: ${error.message}`);
+  const details = ((data ?? []) as { details: Record<string, unknown> | null }[]).map((r) => r.details ?? {});
+  return heldOutEpisodeStart(pendingSince, details);
 }
 
 export const defaultRefusedPoolExitDeps: RefusedPoolExitDeps = {

@@ -53,6 +53,32 @@ export const REFUSED_POOL_EXIT_AFTER_MS = 60 * 60_000;
  */
 export const REFUSED_POOL_EXIT_MIN_FAILED_READS = GONE_BACKOFF_STREAK + 2;
 
+/** The audit row's `details.via` for a pool exit this rule decided. */
+export const REFUSED_POOL_EXIT_AUDIT_VIA = "calendar-refused";
+
+/**
+ * Whether the advisor's CURRENT pending mark is one the pool exit wrote, and if so
+ * when (#3700): the start of the episode the activation retry's blocked note is said
+ * once for. The exit records the mark it stamped as `details.pending_since` on its
+ * audit row, so matching it to the row's mark tells this episode from an earlier one,
+ * and from a mark anybody else wrote. Compared as instants, because Postgres hands a
+ * timestamptz back as `+00:00` where the write sent `Z`.
+ */
+export function heldOutEpisodeStart(
+  pendingSince: string | null,
+  auditDetails: readonly { via?: unknown; pending_since?: unknown }[],
+): number | null {
+  const markMs = parseStampMs(pendingSince);
+  if (markMs === null) return null;
+  const matches = auditDetails.some(
+    (d) =>
+      d.via === REFUSED_POOL_EXIT_AUDIT_VIA &&
+      typeof d.pending_since === "string" &&
+      parseStampMs(d.pending_since) === markMs,
+  );
+  return matches ? markMs : null;
+}
+
 /** One `agent_calendars` row as the rule reads it (sync lane columns only). */
 export interface RefusedCalendarRow {
   user_id: string;

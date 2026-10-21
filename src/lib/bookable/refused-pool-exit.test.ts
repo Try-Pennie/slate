@@ -14,6 +14,8 @@ import {
   REFUSED_POOL_EXIT_MIN_FAILED_READS,
   isRefusedThroughoutPeriod,
   refusedAdvisorIds,
+  heldOutEpisodeStart,
+  REFUSED_POOL_EXIT_AUDIT_VIA,
   takeRefusedAdvisorsOutOfPool,
   type RefusedCalendarRow,
   type RefusedAdvisorRow,
@@ -137,6 +139,26 @@ describe("the period rule, one calendar at a time", () => {
   });
 });
 
+// #3700: the activation retry says its blocked note once for an advisor the pool exit
+// took out. It knows them by the audit row the exit wrote, matched to the CURRENT
+// pending mark, so a later mark (a hire, a person's toggle) is never mistaken for it.
+describe("which pending mark the pool exit wrote", () => {
+  const mark = "2026-10-20T15:00:00.000Z";
+  it("the mark the exit recorded is its episode, whatever format the database returns it in", () => {
+    const details = [{ via: REFUSED_POOL_EXIT_AUDIT_VIA, pending_since: mark }];
+    expect(heldOutEpisodeStart("2026-10-20T15:00:00+00:00", details)).toBe(Date.parse(mark));
+    expect(heldOutEpisodeStart(mark, details)).toBe(Date.parse(mark));
+  });
+
+  it("a different mark, another writer's row, or no mark is not a held out episode", () => {
+    expect(heldOutEpisodeStart("2026-10-20T16:00:00.000Z", [{ via: REFUSED_POOL_EXIT_AUDIT_VIA, pending_since: mark }])).toBeNull();
+    expect(heldOutEpisodeStart(mark, [{ via: "salesforce-sync", pending_since: mark }])).toBeNull();
+    expect(heldOutEpisodeStart(null, [{ via: REFUSED_POOL_EXIT_AUDIT_VIA, pending_since: mark }])).toBeNull();
+    expect(heldOutEpisodeStart(mark, [{ via: REFUSED_POOL_EXIT_AUDIT_VIA }])).toBeNull();
+    expect(heldOutEpisodeStart(mark, [])).toBeNull();
+  });
+});
+
 describe("the advisor rule: every calendar they hold", () => {
   it("an advisor whose only calendar is refused is named", () => {
     expect(refusedAdvisorIds([cal()], NOW)).toEqual(["u-1"]);
@@ -170,7 +192,14 @@ describe("taking them out", () => {
     expect(h.audits).toEqual([
       {
         targetUserId: "u-1",
-        details: expect.objectContaining({ bookable: false, via: "calendar-refused", failure: "not-provisioned" }),
+        // `pending_since` is the mark the write stamped, which is how the hourly
+        // activation retry knows this episode is the pool exit's (#3700).
+        details: expect.objectContaining({
+          bookable: false,
+          via: "calendar-refused",
+          failure: "not-provisioned",
+          pending_since: new Date(NOW).toISOString(),
+        }),
       },
     ]);
   });

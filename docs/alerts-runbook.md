@@ -287,9 +287,12 @@ of the pool, because Google refused every calendar they hold, `gone` or
 a tick where that advisor's read failed again. Archiving an account in the Workspace,
 which offboarding does, is the usual cause. The advisor is not departed: `bookable` is
 false and `bookable_pending_since` is stamped, so the hourly roster run retries their
-activation, the activation gate refuses them (a `bookable_blocked:*` page each try)
-until every calendar reads, and `agents_awaiting_activation` names them past its four
-hour grace. If they have left, nothing is needed: the Salesforce reap departs them and
+activation and the activation gate refuses them until every calendar reads. That
+refusal posts `bookable_blocked:*` once for the episode, not on every hourly retry,
+and again only when the reason changes: the retry knows the episode by the pool exit's
+audit row (`via: calendar-refused`, `pending_since` equal to the row's current mark).
+`agents_awaiting_activation` names them once past its four hour grace and then
+reminds daily, as any condition does. If they have left, nothing is needed: the Salesforce reap departs them and
 the retries stop. If they have not, restore the account (the branches below), and they
 come back on the next hourly run. To keep them out for good, press "Stop trying to make
 them bookable" on their profile, which clears the mark. If the note says a pool now has nobody bookable, check
