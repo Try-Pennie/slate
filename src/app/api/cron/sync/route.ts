@@ -29,6 +29,7 @@ import {
 import { leaseHeldThroughout } from "@/lib/monitor/lease-heartbeat";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
+import { takeRefusedAdvisorsOutOfPool } from "@/lib/bookable/refused-pool-exit";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -205,6 +206,16 @@ export async function GET(req: NextRequest) {
     await markAgentsSynced(results.filter((r) => !r.leaseLost).map((r) => r.userId));
 
     await alertSyncFailures(results.filter((r) => r.error), ordered.length);
+
+    // #3700: an advisor Google has refused for the whole period leaves the pool, with a
+    // return owed through the activation gate. Only the advisors whose sync failed on
+    // THIS tick are judged, so the verdict always rests on a read a minute old, and an
+    // ordinary tick (no failures) reads nothing. The write's compare and swap is what
+    // keeps an overlapping run from posting twice. Never throws: a pool exit that could
+    // not be judged must not become a sync failure, and the next failed read retries it.
+    await takeRefusedAdvisorsOutOfPool(results.filter((r) => r.error).map((r) => r.userId)).catch(
+      (err) => log.error("sync", { msg: "refused advisor pool exit failed" }, err),
+    );
 
     // A missed Google push means the change only surfaced now, via this
     // backstop. Refresh the affected pools inline (#296) so it shows in ~1 min

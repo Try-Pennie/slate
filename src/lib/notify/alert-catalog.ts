@@ -1137,10 +1137,24 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "One customer on this bucket was offered times past the window of offered open days (the stored setting on the Hours page, #3922) because every tier their cascade may use was full (#2841). They were still offered times, so it is not the dead end booker_unstaffed reports. It records a visit that is over; what to look at is the staffing depth, which /admin/tiers shows.",
   },
   {
+    // The suffix is the agent id, or for an advisor the calendar refused pool exit
+    // took out (#3700) the agent id and the refusal reason, so each reason is said
+    // once per episode. Bounded either way: the reasons are a fixed list.
     key: "bookable_blocked:*",
     kind: "incident",
     suffix: "bounded",
     why: "One activation attempt was refused; the operator retries and the refusal has no ongoing state.",
+  },
+  {
+    // #3700. The suffix is the advisor's user id.
+    key: "refused_advisor_left_pool:*",
+    kind: "incident",
+    suffix: "bounded",
+    why:
+      "Slate took one advisor out of the pool because Google refused their calendar for the whole " +
+      "period; the removal is done, and the wait for their return is the pending activation's own " +
+      "state (retried hourly, named by agents_awaiting_activation past its grace), so an all clear " +
+      "here would say nothing.",
   },
   {
     key: "bookable_unverified:*",

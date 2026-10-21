@@ -25,6 +25,7 @@ import {
   type AwaitingActivationRow,
 } from "@/lib/monitor/awaiting-activation";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { signatureSubjects, reminderIntervalMs, CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
 
 // A fixed clock: nothing here may read the real one (L290).
 const NOW = Date.UTC(2026, 8, 17, 12, 0, 0);
@@ -230,6 +231,32 @@ function row(over: Partial<AwaitingActivationRow> = {}): AwaitingActivationRow {
   const recovery = formatAwaitingActivationRecovery();
   assert(/4 hours/.test(recovery), "the all clear names the same window the alert measured");
   assert(!/^Slate/.test(recovery), "and does not open with the word Slate");
+}
+
+// #3700: somebody still waiting is not news every hour.
+//
+// An advisor the calendar refused pool exit took out carries the pending mark, so once
+// past the grace they are named here, and their wait grows by an hour on every monitor
+// pass. This is a CONDITION, so the dispatcher (#3801) posts it again only on a
+// change or after a day, and a change is a subject the last post did not carry. The
+// subjects are the message's lines with every number and unit stripped, so the same
+// people waiting longer must read as the same subjects; otherwise the growing hours
+// would post hourly. Pinned here because the hourly retry is what this page watches.
+{
+  const waiting = agentsAwaitingActivation([row({ bookable_pending_since: hoursAgo(5) })]);
+  const atFive = signatureSubjects(formatAwaitingActivationAlert(waiting, NOW));
+  const atSix = signatureSubjects(formatAwaitingActivationAlert(waiting, NOW + 60 * 60_000));
+  const atThirty = signatureSubjects(formatAwaitingActivationAlert(waiting, NOW + 25 * 60 * 60_000));
+  eq(atSix, atFive, "the same advisor waiting an hour longer is not a new subject");
+  eq(atThirty, atFive, "nor a day longer, so only the daily reminder repeats it");
+  assert(
+    reminderIntervalMs(AWAITING_ACTIVATION_KEY, CONDITION_REPEAT_MS) >= CONDITION_REPEAT_MS,
+    "and that reminder is daily, never hourly",
+  );
+}
+
+{
+  const recovery = formatAwaitingActivationRecovery();
   assert(!/[\u2014\u2013]/.test(recovery), "no dashes there either");
 }
 

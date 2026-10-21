@@ -7,8 +7,9 @@
  * Regal has to know whether Slate can route a lead to an agent, and three writes
  * can change that: the bookable flip (the admin toggle, `POST
  * /api/users/bookable` and the hourly Salesforce activation all share it, #2071),
- * the offboarding departure and return (#1324), and the Salesforce reap's batch
- * departure (#2386). A behaviour every writer has to remember to opt into is
+ * the offboarding departure and return (#1324), the Salesforce reap's batch
+ * departure (#2386), and the sync lane taking out an advisor Google refuses (#3700,
+ * `refused-pool-exit.ts`). A behaviour every writer has to remember to opt into is
  * enforced by nothing, and a site that never opts in looks exactly like a site
  * where the condition never arises (L621). So the helper OWNS the write: it reads
  * the rows before, performs the write, reads what it wrote back from the same
@@ -78,7 +79,18 @@ export type RoutableWrite =
    */
   | { kind: "depart"; userIds: string[]; stampIso: string }
   /** A return. A compare and swap on `deactivated_at is not null`. */
-  | { kind: "return"; userId: string };
+  | { kind: "return"; userId: string }
+  /**
+   * Out of the pool with a return owed (#3700): Google has refused the advisor's
+   * calendar for a sustained period, so they cannot take a call, but this is not a
+   * departure and `deactivated_at` is never stamped. The pending mark is written in
+   * the same statement, which is what hands the way back to the existing activation
+   * gate: the hourly roster run retries every marked row, and the gate admits them
+   * only once every calendar of theirs reads. A compare and swap on `bookable` true
+   * and not departed, so a second run, or a person who turned them off first,
+   * matches nothing and gets no row back.
+   */
+  | { kind: "hold-out"; userId: string; stampIso: string };
 
 export interface RoutableWriteDeps {
   /** Record one trait for Regal. Throws when it could not be recorded. */
@@ -155,6 +167,12 @@ function applyWrite(db: ReturnType<typeof supabaseAdmin>, w: RoutableWrite) {
       return users.update(deactivationPatch(w.stampIso)).in("id", w.userIds).is("deactivated_at", null);
     case "return":
       return users.update(reactivationPatch()).eq("id", w.userId).not("deactivated_at", "is", null);
+    case "hold-out":
+      return users
+        .update({ bookable: false, bookable_pending_since: w.stampIso })
+        .eq("id", w.userId)
+        .eq("bookable", true)
+        .is("deactivated_at", null);
   }
 }
 
@@ -166,6 +184,8 @@ function describe(w: RoutableWrite): string {
       return `deactivation of ${w.userIds.length} user(s)`;
     case "return":
       return `reactivation of ${w.userId}`;
+    case "hold-out":
+      return `pool exit with a return owed for ${w.userId}`;
   }
 }
 
