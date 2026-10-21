@@ -88,11 +88,11 @@ export function ceilingControlBudget(exactBound: number): number {
 /**
  * The share of the per KEY minute ceiling this control will spend.
  *
- * The control and the run's drivers hold ONE booking API key, and the per key
- * ceiling is checked FIRST and returns before the per address one is reached. So a
- * control sending fast enough to trip the key ceiling never reaches the ceiling it
- * exists to prove, and on a run where the two overlap it would throttle the
- * drivers as well. A share rather than the whole, so a little drift either way
+ * The control and the run's drivers hold ONE booking API key, and a per key
+ * refusal is the answer whatever the per address ceiling said (the two are asked
+ * side by side since #3124, and the key's verdict wins). So a control sending fast
+ * enough to trip the key ceiling never sees the ceiling it exists to prove, and on
+ * a run where the two overlap it would throttle the drivers as well. A share rather than the whole, so a little drift either way
  * still lands under it.
  */
 export const CEILING_CONTROL_KEY_SHARE = 0.8;
@@ -138,7 +138,7 @@ export const CEILING_TIGHTNESS_FLOOR = 0.5;
 export const CEILING_REFUSED_BY = {
   /** The per address backstop, which is the one this control exists to prove. */
   address: "throttled_ip",
-  /** The per key ceiling, which is checked FIRST and short circuits the other. */
+  /** The per key ceiling, whose refusal wins over the other's (#3124). */
   key: "throttled_key",
 } as const;
 
@@ -163,7 +163,7 @@ export const CEILING_CONCLUSION = {
   addressUnmeasured: "address-unmeasured",
   /** Refusals arrived and none said which ceiling made them, so none can be credited. */
   refusalUnattributed: "refusal-unattributed",
-  /** Every refusal came from the per KEY ceiling, which runs first and short circuits. */
+  /** Every refusal came from the per KEY ceiling, whose refusal wins over the address's. */
   keyCeilingOnly: "key-ceiling-only",
   /** Too few writes reached the deployment to cross the exact bound, so nothing is proved. */
   underBudget: "under-budget",
@@ -202,8 +202,8 @@ export interface CeilingAttempt {
    *
    * REQUIRED for the same reason. Both ceilings answer 429 through one refusal, so
    * a verdict that assumed a 429 was the per ADDRESS one would credit a per key
-   * refusal to a ceiling that was never reached: the key check runs first and
-   * short circuits the address check entirely.
+   * refusal to a ceiling whose verdict was never the answer: a key refusal wins
+   * over the address check's, whatever that said (#3124).
    */
   refusedBy: string | null;
 }
@@ -395,9 +395,9 @@ export function ceilingVerdict(
       ...base,
       conclusion: CEILING_CONCLUSION.keyCeilingOnly,
       detail:
-        `every one of the ${refusedByKey} refusals came from the per KEY ceiling, which is checked ` +
-        "first and short circuits the per address one, so this control never reached the ceiling " +
-        "it exists to prove. Run it with the key to itself, or more slowly",
+        `every one of the ${refusedByKey} refusals came from the per KEY ceiling, whose refusal ` +
+        "wins over the per address one, so this control never saw the ceiling it exists to " +
+        "prove. Run it with the key to itself, or more slowly",
     };
   }
   // The three ways the control's own premise, that every write lands on ONE

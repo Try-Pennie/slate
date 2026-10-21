@@ -1790,9 +1790,10 @@ Three real defects, and the third is the one worth carrying forward:
 
 So the control aims at the bound that IS exact: the per address HOURLY cap in
 Postgres (1,200), and it reads the deployment's own `x-loadtest-refused-by` echo
-rather than inferring which ceiling a 429 came from. That matters because the per
-KEY ceiling is checked FIRST and returns before the per address one is reached, so
-without the echo a per key refusal would be credited to the ceiling under test.
+rather than inferring which ceiling a 429 came from. That matters because a per
+KEY refusal is the answer whatever the per address ceiling said (the two are asked
+side by side since #3124, and the key's verdict wins), so without the echo a per key
+refusal would be credited to the ceiling under test.
 For the same reason the step now runs AFTER the steady pass rather than alongside
 it: the two share one API key, and a control sending fast enough to trip the key
 ceiling would both miss its own target and throttle the drivers.

@@ -865,7 +865,9 @@ export function steadyLineReading(attempts: readonly BookingAttempt[]): SteadyLi
 /** The span names as a report reads them, in the order a confirm passes them. */
 export const WAIT_SPAN_LABELS: Record<WaitSpanField, string> = {
   wait_route_ms: "route",
-  wait_auth_ms: "auth",
+  // #3124: the key and address checks run side by side, so auth is the longer of the two
+  // paths, and each path's pair of steps below overlaps the other's rather than adding up.
+  wait_auth_ms: "auth (key and address side by side)",
   // #3529: auth's steps, each named for the call it waited on.
   wait_auth_key_edge_ms: "auth key limiter",
   wait_auth_key_ceiling_ms: "auth key ceiling",

@@ -83,7 +83,7 @@ if (EXACT_BOUND === null) {
   process.exit(1);
 }
 const BUDGET = ceilingControlBudget(EXACT_BOUND);
-/** Held under the per KEY ceiling, which is checked first and short circuits this one. */
+/** Held under the per KEY ceiling, whose refusal wins over this one's (#3124). */
 const PER_MINUTE = ceilingControlPerMinute(BOOKING_API_WRITE_LIMITER.perMinute);
 
 /** How many go out together. Small, because the pacing is what decides the rate. */

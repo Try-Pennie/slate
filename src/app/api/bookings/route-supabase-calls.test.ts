@@ -369,8 +369,10 @@ describe("the hourly ceilings on the edge counter, through the route (#3416)", (
     expect(out.body).toEqual({ error: "Rate limit exceeded for this API key." });
     expect(out.reachedLine).toBe(false);
     expect(seen.outcomes).toEqual(["refused_ceiling_key"]);
-    // Refused at the caller's ceiling, so the address's was never spent on it.
-    expect(cf.counts.get(`exact:bookapi:ip:h:ip:${IP}`)).toBe(1);
+    // #3124: the two ceilings are asked side by side, so the refused request was counted
+    // against the address too, every request the machine sent rather than only those its
+    // key let through. Asked one after the other this stayed at 1.
+    expect(cf.counts.get(`exact:bookapi:ip:h:ip:${IP}`)).toBe(2);
   });
 
   // THE DIRECTION, end to end. A ceiling whose counter cannot be read lets the request

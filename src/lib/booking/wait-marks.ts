@@ -13,7 +13,7 @@
  * The points, in the order a direct booking API confirm passes them:
  *   entry       the Worker's fetch handler, before Next is reached (worker/index.ts)
  *   handler     the booking route's POST handler starting
- *   authed      the key, address and hourly ceilings answered
+ *   authed      the key, address and hourly ceilings answered (side by side, #3124)
  *   line_start  the confirm's first call into its line (a lookahead or an enter)
  *   line_turn   the line handing the confirm its turn, or answering it outright
  *   decided     the person decision made, as leader
@@ -99,33 +99,54 @@ const SPAN_ENDING_AT = {
 } as const satisfies Record<Exclude<WaitPoint, "entry">, string>;
 
 /**
- * #3529: the steps INSIDE the auth span (`authorizeBookingApi`), in the order it asks
- * them: the per key edge limiter, the per key exact ceiling, the per address edge
- * limiter; the per address exact ceiling then ends at `authed`. Load run 37785947346
- * failed its startup bar on one confirm whose auth span was 2.7s, spent in waits before
- * each rate limit object call that one span could not tell apart. Not points of the main
- * sequence: a route without the address ceiling stamps none, and that is not missing.
+ * #3529: the steps INSIDE the auth span (`authorizeBookingApi`): each limiter answering.
+ * Load run 37785947346 failed its startup bar on one confirm whose auth span was 2.7s,
+ * spent in waits before each rate limit object call that one span could not tell apart.
+ * Not points of the main sequence: a route without the address ceiling stamps no address
+ * step, and that is not missing.
+ *
+ * #3124: the per key path (edge limiter, then exact ceiling) and the per address path
+ * (the same two) run SIDE BY SIDE, so a lead waits one exact ceiling deadline for both
+ * rather than one after the other. Their steps have an order only WITHIN a path, and the
+ * two paths' steps interleave freely.
  */
-export const AUTH_STEPS = ["key_edge", "key_ceiling", "ip_edge"] as const;
+export const AUTH_STEPS = ["key_edge", "key_ceiling", "ip_edge", "ip_ceiling"] as const;
 export type AuthStep = (typeof AUTH_STEPS)[number];
 
-/** The auth span's split, each step's span named for the call it waited on, in order. */
-const AUTH_SPLIT = [
-  { from: "handler", to: "key_edge", name: "wait_auth_key_edge_ms" },
-  { from: "key_edge", to: "key_ceiling", name: "wait_auth_key_ceiling_ms" },
-  { from: "key_ceiling", to: "ip_edge", name: "wait_auth_ip_edge_ms" },
-  { from: "ip_edge", to: "authed", name: "wait_auth_ip_ceiling_ms" },
-] as const satisfies readonly { from: WaitPoint | AuthStep; to: WaitPoint | AuthStep; name: string }[];
+/**
+ * The auth span's split, one entry per PATH (#3124), each step's span named for the call
+ * it waited on and measured from where that call started: the handler for a path's edge
+ * limiter (both paths start there), the edge answering for its exact ceiling. So a path's
+ * two spans add up to that path's own wait, the auth span is the LONGER path, and the two
+ * paths overlap: adding all four counts the overlap twice.
+ *
+ * The field names are the ones #3529 wrote. The key's two mean what they did; the address
+ * edge limiter's span used to start at the key's ceiling answering and now starts at the
+ * handler, the only honest start once the paths overlap.
+ */
+const AUTH_PATHS = [
+  [
+    { from: "handler", to: "key_edge", name: "wait_auth_key_edge_ms" },
+    { from: "key_edge", to: "key_ceiling", name: "wait_auth_key_ceiling_ms" },
+  ],
+  [
+    { from: "handler", to: "ip_edge", name: "wait_auth_ip_edge_ms" },
+    { from: "ip_edge", to: "ip_ceiling", name: "wait_auth_ip_ceiling_ms" },
+  ],
+] as const satisfies readonly (readonly { from: WaitPoint | AuthStep; to: WaitPoint | AuthStep; name: string }[])[];
 
 /** Every span the marks write, in the order a confirm passes them, then the whole. */
-export type WaitSpanField = (typeof SPAN_ENDING_AT)[keyof typeof SPAN_ENDING_AT] | (typeof AUTH_SPLIT)[number]["name"] | "wait_total_ms";
+export type WaitSpanField =
+  | (typeof SPAN_ENDING_AT)[keyof typeof SPAN_ENDING_AT]
+  | (typeof AUTH_PATHS)[number][number]["name"]
+  | "wait_total_ms";
 /**
  * The span names, derived from the points so the reader and the report can never hold
  * a copy that drifts from what is written (L41). Auth's steps sit right after it.
  */
 export const WAIT_SPAN_FIELDS: readonly WaitSpanField[] = [
   ...(WAIT_POINTS.slice(1) as Exclude<WaitPoint, "entry">[]).flatMap((p): WaitSpanField[] =>
-    p === "authed" ? [SPAN_ENDING_AT[p], ...AUTH_SPLIT.map((s) => s.name)] : [SPAN_ENDING_AT[p]],
+    p === "authed" ? [SPAN_ENDING_AT[p], ...AUTH_PATHS.flatMap((path) => path.map((s) => s.name))] : [SPAN_ENDING_AT[p]],
   ),
   "wait_total_ms",
 ];
@@ -186,11 +207,18 @@ export function makeWaitMarks(now: () => number, entryAtMs: number | null | unde
         const prevPoint = WAIT_POINTS[i - 1]!;
         if (prev !== undefined && t >= prev && !outOfOrder.includes(point) && !outOfOrder.includes(prevPoint)) out[name] = t - prev;
       }
-      // #3529: auth's split only whole, every end stamped and in order, so its steps
-      // always sum to the auth span and a refusal part way through invents nothing.
-      const ends = AUTH_SPLIT.map((s) => [at.get(s.from), at.get(s.to)] as const);
-      if (ends.every(([a, b]) => a !== undefined && b !== undefined && b >= a)) {
-        AUTH_SPLIT.forEach((s, i) => (out[s.name] = ends[i]![1]! - ends[i]![0]!));
+      // #3529, #3124: auth's split per path, each only whole: every end stamped and in
+      // order, and inside a measured auth span (a refusal never reaches `authed`), so a
+      // path's steps always add up to its own wait within that span, and a refusal or a
+      // path that never ran invents nothing.
+      const authed = at.get("authed");
+      for (const path of AUTH_PATHS) {
+        const ends = path.map((s) => [at.get(s.from), at.get(s.to)] as const);
+        const last = ends[ends.length - 1]![1];
+        const whole = ends.every(([a, b]) => a !== undefined && b !== undefined && b >= a);
+        if (whole && authed !== undefined && last !== undefined && last <= authed) {
+          path.forEach((s, i) => (out[s.name] = ends[i]![1]! - ends[i]![0]!));
+        }
       }
       const entryAt = at.get("entry");
       if (entryAt !== undefined) out[ENTRY_STAMP_FIELD] = entryAt;

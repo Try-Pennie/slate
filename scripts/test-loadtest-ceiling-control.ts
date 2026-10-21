@@ -222,11 +222,11 @@ function refusedAt(at: number, total: number) {
   );
 }
 
-// --- the per KEY ceiling refused, and it short circuits the address one -----------
+// --- the per KEY ceiling refused, and its refusal wins over the address one --------
 {
   // The fault the echo exists to catch. Without it these 429s read as proof of the
-  // per address ceiling, and the run would pass a bar that ceiling never met: the
-  // key check runs FIRST and returns before the address check is reached.
+  // per address ceiling, and the run would pass a bar that ceiling never met: a key
+  // refusal is the answer whatever the address check said (#3124).
   const v = ceilingVerdict(
     attempts([
       { n: 40, status: 200 },
