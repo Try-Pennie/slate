@@ -35,6 +35,7 @@
 // Run, from a checkout of current main with the production credentials beside it:
 //   REROUTE_LIVE_APPLY=1 REROUTE_LIVE_ACTOR_EMAIL=<admin address> pnpm verify:reroute-live
 import { loadEnvFiles } from "./smoke-env.ts";
+import { liveTestWorldPreflight } from "./lib/live-test-world-preflight.ts";
 import { PUBLIC_TEST_BUCKET_CODES } from "../src/lib/embed/public-test-bucket.ts";
 import {
   REROUTE_LIVE_OUTCOMES,
@@ -46,7 +47,6 @@ import {
   rerouteLostEvent,
   residue,
   testCallIdentity,
-  runMeetsCanary,
   startIsClear,
   type ResidueCheck,
   type RerouteLiveOutcome,
@@ -67,9 +67,9 @@ function exit(outcome: RerouteLiveOutcome, detail?: string): never {
 if (process.env.REROUTE_LIVE_APPLY !== "1") exit("notConfigured", "set REROUTE_LIVE_APPLY=1 to let it book and cancel test calls");
 const actorEmail = (process.env.REROUTE_LIVE_ACTOR_EMAIL ?? "").trim().toLowerCase();
 if (!actorEmail) exit("notConfigured", "set REROUTE_LIVE_ACTOR_EMAIL to the admin this run acts as");
-if (!process.env.SUPABASE_SECRET_KEY || !process.env.NEXT_PUBLIC_SUPABASE_URL) exit("notConfigured", "no Supabase credentials in .env.local or .dev.vars");
 // The whole run, not only its start, must stay clear of the canary's window.
-if (runMeetsCanary(Date.now())) exit("canaryWindow", "start again between eight and twenty one minutes past :00 or :30");
+const preflight = liveTestWorldPreflight(process.env, Date.now());
+if (preflight) exit(preflight.outcome, preflight.detail);
 
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { unwrap } = await import("@/lib/db/result");

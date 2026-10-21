@@ -27,7 +27,7 @@ import {
 import type { AuditEntry } from "../../src/lib/audit.ts";
 import type { ReasonOption } from "../../src/lib/booking/core.ts";
 import { CANCEL_REASONS } from "../../src/lib/booking/core.ts";
-import type { LeadContact, MarciaDeps, MarciaFailure } from "../../src/lib/mcp-booking/operations.ts";
+import type { ContactFillReport, LeadContact, MarciaDeps, MarciaFailure } from "../../src/lib/mcp-booking/operations.ts";
 import { bookingMatchesLookupIds, lookupStrongIds } from "../../src/lib/booking/lookup-identity.ts";
 import type { BookingStatus } from "../../src/lib/db/types.ts";
 import { PARTNER_BUCKET_CODE } from "../../src/lib/embed/public-test-bucket.ts";
@@ -64,6 +64,8 @@ export interface FakeServiceOpts {
   leadContact?: FakeContactAnswer;
   /** The bucket's minimum notice in minutes, as the slot read reports it (default 0). */
   minNoticeMin?: number;
+  /** When true, reporting where a fill came from throws, as a broken logger might. */
+  contactFilledThrows?: boolean;
 }
 
 const BUCKETS: Record<string, { is_test: boolean; org: string }> = {
@@ -84,6 +86,7 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
   const owns = (x: FakeBooking, identity: { externalId?: string | null; salesforceId?: string | null }) =>
     bookingMatchesLookupIds({ external_id: x.externalId, salesforce_id: x.salesforceId }, lookupStrongIds({ externalId: identity.externalId ?? null, salesforceId: identity.salesforceId ?? null }));
   const contactFailures: { source: "bookings" | "salesforce"; err: unknown }[] = [];
+  const contactFills: ContactFillReport[] = [];
   const answerContact = async (a: FakeContactAnswer | undefined): Promise<LeadContact | null> => {
     if (a instanceof Error) throw a;
     return a ?? null;
@@ -219,6 +222,10 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
     contactLookupFailed: (source, err) => {
       contactFailures.push({ source, err });
     },
+    contactFilled: (report) => {
+      contactFills.push(report);
+      if (opts.contactFilledThrows) throw new Error("the fill report could not be logged");
+    },
   };
 
   return {
@@ -231,6 +238,7 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
     missed,
     contactReads,
     contactFailures,
+    contactFills,
     /** A booking some OTHER channel wrote (the embed, the #250 API), with its own id spellings. */
     seedBooking(b: { salesforceId: string; externalId: string | null; startsAt: string; bucketCode?: string }) {
       bookings.push({

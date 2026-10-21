@@ -15,6 +15,7 @@ vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert: vi.fn() }));
 vi.mock("@/lib/monitor/record-api-outcome", () => ({ recordApiOutcome: vi.fn() }));
 
 import { realMarciaDeps } from "./real-deps";
+import { log } from "@/lib/log";
 
 const NOW = Date.parse("2026-10-21T14:00:00.000Z");
 const FROM = "2026-10-23T04:00:00.000Z";
@@ -46,5 +47,19 @@ describe("realMarciaDeps().readSlots", () => {
     // if one did, judging it from now would answer a question nobody asked.
     await expect(realMarciaDeps().readSlots("511", "not a date", false, NOW)).rejects.toThrow();
     expect(mockFallback).not.toHaveBeenCalled();
+  });
+});
+
+describe("realMarciaDeps().contactFilled", () => {
+  // #4006: the proof of a Salesforce fill reads this line, so it must name the source
+  // of each field and carry no value.
+  it("logs which source filled which field, by name only", () => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => undefined);
+    realMarciaDeps().contactFilled({ bookings: ["name"], salesforce: ["email", "phone"], missing: [] });
+    expect(info).toHaveBeenCalledTimes(1);
+    const [tag, fields] = info.mock.calls[0]!;
+    expect(tag).toBe("mcp-booking");
+    expect(fields).toMatchObject({ from_bookings: "name", from_salesforce: "email,phone", still_missing: null });
+    info.mockRestore();
   });
 });

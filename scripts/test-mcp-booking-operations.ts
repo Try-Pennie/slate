@@ -600,6 +600,22 @@ const sfLead = sfLeadContact();
   const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: { name: null, firstName: null, email: earlier.email, phone: null }, leadContact: sfLead });
   await moveOnce(fake, withoutClaims(claims(), "name", "email", "phone"));
   eq(fake.bookings[0]?.attendee, { name: sfLead.name, firstName: sfLead.firstName, email: earlier.email, phone: sfLead.phone }, "each field from the first source holding it, bookings before Salesforce");
+  // #4006: where each field came from is reported, by name, so the log can show it.
+  eq(fake.contactFills, [{ bookings: ["email"], salesforce: ["name", "phone"], missing: [] }], "and which source filled which field is reported, by field name");
+  assert(!JSON.stringify(fake.contactFills).includes("@"), "never with a value");
+}
+{
+  // #4006: a field nobody holds is reported as still missing, beside what was filled.
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: null, leadContact: { name: null, firstName: null, email: sfLead.email, phone: null } });
+  await moveOnce(fake, withoutClaims(claims(), "email", "phone"));
+  eq(fake.contactFills, [{ bookings: [], salesforce: ["email"], missing: ["phone"] }], "a field no source held is reported as missing");
+}
+{
+  // #4006: a report that cannot be made never stops the move.
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: null, leadContact: sfLead, contactFilledThrows: true });
+  const a = await moveOnce(fake, withoutClaims(claims(), "email"));
+  assert(a.ok && okData(a)?.outcome === "rescheduled", "a fill report that throws does not stop the move");
+  eq(fake.bookings[0]?.attendee.email, sfLead.email, "and the fill it would have reported still lands");
 }
 {
   // Both lookups fail: moves anyway, logs each failure by source, pages nobody.
@@ -609,6 +625,7 @@ const sfLead = sfLeadContact();
   eq(fake.bookings[0]?.attendee, {}, "with what it has");
   eq(fake.contactFailures.map((f) => f.source), ["bookings", "salesforce"], "and reports each failed lookup by its source");
   eq(fake.alerts.length, 0, "without paging anybody");
+  eq(fake.contactFills, [{ bookings: [], salesforce: [], missing: ["name", "email", "phone"] }], "and reports that nothing was filled");
 }
 {
   // A lookup that answers in a throw from the very first read still reaches Salesforce.
@@ -623,6 +640,7 @@ const sfLead = sfLeadContact();
   await moveOnce(fake, c);
   eq(fake.bookings[0]?.attendee, { name: c.name, email: c.email, phone: c.phone }, "a token value always wins over a looked up one");
   eq(fake.contactReads.length, 0, "and a token carrying all three costs no lookup");
+  eq(fake.contactFills.length, 0, "and reports no fill, since nothing was looked up");
 }
 {
   // A looked up value the token rule would refuse is not used.

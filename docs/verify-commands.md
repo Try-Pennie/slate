@@ -2056,6 +2056,74 @@ are pinned offline by `scripts/test-reroute-live-check.ts`.
 the reroute wiring in `service.ts`, `findRerouteTarget`, or migrations touching
 `reroute_holds` or `reassign_booking_swap`).
 
+# Proving Marcia's Salesforce Lead contact fill (`scripts/verify-marcia-lead-fill-live.ts`)
+
+#4006. #4001 fills a Marcia move's missing name, email or phone from the lead's
+earlier Slate bookings and then the Salesforce Lead (`attendeeFor` in
+`src/lib/mcp-booking/operations.ts`), the Lead read bounded at 2.5 seconds. Every
+suite drives that read through fakes, so this proves it once against the real org,
+from the DEPLOYED Worker, the way Marcia reaches it.
+
+It signs its own TEST tokens with Marcia's token key (the same HS256 key Marcia's
+Pipedream signer holds), read from the file `MARCIA_TOKEN_KEY_FILE` names, or from
+`MARCIA_TOKEN_KEY_A`, and never printed. Nobody needs to read the key into a
+transcript: the operator points the variable at the private file that holds it. A
+test token routes every call to `PARTNER`, so no webhook, no Regal text and no
+monitor counts it (#2760).
+
+The run, in order, stopping before any write at the first problem:
+
+1. reads the Lead from Salesforce here: it must hold an Email and a Phone (or
+   MobilePhone), and the Email must be a `@trypennie.com` address, because the
+   moved and cancelled invites go to whatever the fill writes;
+2. reads Slate: no earlier TEST booking of the lead may hold an email or a phone
+   (the move would fill from it before asking Salesforce, and prove the wrong
+   source), and the lead may hold no active call in either world;
+3. asks the deployed booking MCP (`slate-booking-mcp.trypennie.dev`) for times,
+   books one test call HERE with a name only (a net new Marcia book needs all three
+   on the token), then moves it through the MCP with a token carrying no name,
+   email or phone;
+4. reads the moved booking and passes only if its email and phone are the Lead's
+   (compared here, never printed). With step 2 holding, Salesforce is the only place
+   they could have come from. The slate Worker also logs, by field name only, `a
+   lead's missing contact fields were looked up` with `from_salesforce`.
+
+Then, always, it cancels the test call and reads back that it is cancelled. It refuses
+to start inside the smoke canary's window, since the partner bucket is smoketest@'s.
+
+```
+VERIFY_MARCIA_FILL_APPLY=1 VERIFY_MARCIA_LEAD_ID=<00Q lead id> MARCIA_TOKEN_KEY_FILE=<path> node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-marcia-lead-fill-live.ts
+```
+
+Run it from a checkout of current main holding `.env.local` (Supabase and Salesforce
+credentials). It is not a `pnpm` alias yet, because the alias must also be named in
+`AGENTS.md`'s command table, which is the main session's to edit.
+
+| exit | what it met |
+|---|---|
+| 0 | the move filled the Lead's email and phone, and the test call is cancelled |
+| 1 | no flag, no lead id, no usable token key, or no credentials; nothing attempted |
+| 2 | inside the canary's window; nothing attempted |
+| 3 | the Lead cannot prove it (missing, no email or phone, email outside Pennie); nothing booked |
+| 4 | Slate holds the lead's details or a call already, so the Lead would never be asked; nothing booked |
+| 5 | the Lead could not be read from here; nothing booked |
+| 6 | find_times did not offer two times on `PARTNER`; nothing booked |
+| 7 | **the booking MCP refused a call**, named by code (`token_signature_invalid` means the key is not production's, and pages `marcia_token_refused`) |
+| 8 | the test call could not be booked |
+| 9 | **the move landed without the Lead's email and phone**: the fill did not come from Salesforce (a timed out or refused read logs `a lead contact lookup failed`) |
+| 10 | cleanup left the test call active, named: cancel it by hand |
+| 11 | cleanup could not read the test call's status, named |
+| 12 | Slate's bookings for the lead could not be read, so whether they answer first is unknown; nothing booked |
+| 13 | the move landed but the moved booking could not be read back, so the fill is unmeasured (the call is still cancelled) |
+| 14 | the run itself failed in a way no step expected, named |
+
+A cleanup problem (10, 11) wins the exit code, and its message still says what the
+run had found before cleanup.
+
+Its pure decisions (which leads can prove it, when Slate answers first, the verdict by
+field, the token's claims, reading the MCP's answer, one code per outcome) are pinned
+offline by `scripts/test-marcia-lead-fill-check.ts`. **Not yet run live.**
+
 # Proving the advisor photo refresh (`pnpm verify:advisor-photos`)
 
 The daily `advisor-photos` lane (#3027) reads every active person's photo from the
