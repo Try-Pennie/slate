@@ -5,14 +5,12 @@ import { parseStampMs } from "@/lib/date/stamp";
 /**
  * Which of `userIds` have APPROVED time off overlapping [startIso, endIso) (#1236).
  *
- * This exists because coverage selection cannot answer the question from anything
- * it already reads. Freeness there is LIVE Google only, deliberately never
- * `busy_blocks`, so an agent on approved leave is excluded only as a side effect of
- * `runPostApproval` having successfully written an event to their calendar. That
- * write is best-effort by design: when it fails the OOO flow falls back to a
- * slate-source busy block, which availability can see and coverage selection
- * cannot. `ooo_requests` is the only signal that does not depend on Google having
- * accepted anything, which is what makes it the right one to gate a placement on.
+ * This exists because coverage selection cannot trust the calendar for it. Its
+ * search (Reroute's, #3308) sees approved leave only as the calendar shows it: the
+ * event `runPostApproval` writes, or the slate-source busy block it falls back to
+ * when Google refuses, and either can lag the approval or be missing outright.
+ * `ooo_requests` is the only signal that does not depend on Google having accepted
+ * anything, which is what makes it the right one to gate a placement on.
  *
  * Overlap is half-open on both sides (`starts_at < endIso AND ends_at > startIso`),
  * so time off that merely abuts the booking does not exclude an agent: a window

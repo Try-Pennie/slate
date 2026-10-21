@@ -1,77 +1,76 @@
-import { DateTime } from "luxon";
-
-import { isUnderDailyCap, type WorkingRule } from "@/lib/availability/compute";
-import { bookingWindow, bufferedWindow, selectReassignTarget, type SelectionOutcome, type VerifyResult } from "@/lib/booking/core";
+import { VerifyUnavailableError, type RerouteTarget } from "@/lib/booking/orchestration";
+import { bookingWindow, type SelectionOutcome } from "@/lib/booking/core";
 import type { Booking, Bucket, EventType } from "@/lib/db/types";
+import { log } from "@/lib/log";
 
 /**
- * Verify-on-book wave size for coverage target selection: how many ordered
- * candidates to live-check per batched free/busy round-trip. Matches the booker's
- * wave sizing (Google's 20-calendar freeBusy cap, #167) so a wave of
- * single-calendar agents is one round-trip.
+ * How many times one selection may find its pick on approved time off and search again
+ * without them. The booker's own read already leaves out an advisor whose time off reached
+ * the calendar cache, so a second pass is the rare case of a Google write that failed and a
+ * cache that has not caught up; a third is stranger still. Past this the item is retried on
+ * a later tick rather than searched for ever on one.
  */
-const COVERAGE_VERIFY_WAVE_SIZE = 20;
+const MAX_TIME_OFF_RESEARCHES = 3;
 
 /** The side effects coverage target selection needs; `service.ts` wires the real ones. */
 export interface CoverageTargetDeps {
   /**
-   * The bucket's eligible agent ids in round-robin (equal-share) order, fallback
-   * applied. The real impl walks `resolveRouting`'s ordered `eligibleIds`. This
-   * is only the ORDER; freeness is verified live below, never from the cache.
+   * Reroute's own search (`findRerouteTarget`), bound to the live deps: the booker's round
+   * robin over the cached free advisors (business hours, working hours, the buffered
+   * calendar, the daily cap, Reroute holds and the Low rule), then the LIVE verify on book
+   * over the buffered window. `excludeUserIds` are never offered.
    */
-  orderedEligibleIds(bucket: Bucket): Promise<string[]>;
-  /** Batched userId -> email resolver for a verify wave (skips emailless). */
-  loadEmails(userIds: string[]): Promise<Map<string, string>>;
-  /** LIVE verify-on-book free check over [startIso, endIso), not the cache. */
-  verifyFree(emails: string[], startIso: string, endIso: string, ids?: ReadonlyMap<string, string>): Promise<VerifyResult>;
-  /** One agent's working-hours schedule (timezone + rules), for the cap's local day. */
-  agentWorkingHours(userId: string): Promise<{ timezone: string; rules: WorkingRule[] }>;
+  findTarget(
+    booking: Booking,
+    requested: { bucket: Bucket; eventType: EventType },
+    excludeUserIds: readonly string[],
+  ): Promise<RerouteTarget>;
   /**
    * Which of `userIds` have APPROVED time off overlapping [startIso, endIso).
    *
    * Authoritative, and deliberately not derived from Google or from `busy_blocks`
-   * (#1236): see the note in `selectCoverageReassignTarget` for why neither can be
-   * trusted for this. Throwing is the correct behavior on a read error; the caller
-   * turns it into a retry rather than guessing.
+   * (#1236): see the note in `selectCoverageReassignTarget`. Throwing is the correct
+   * behaviour on a read error; the caller turns it into a retry rather than guessing.
    */
-  userIdsOnApprovedTimeOff(
-    userIds: string[],
-    startIso: string,
-    endIso: string,
-  ): Promise<Set<string>>;
-  /** One agent's active booking starts (epoch-ms) in [fromIso, toIso), excluding a booking. */
-  agentActiveBookingStartsMs(
-    userId: string,
-    fromIso: string,
-    toIso: string,
-    excludeBookingId: string,
-  ): Promise<number[]>;
+  userIdsOnApprovedTimeOff(userIds: string[], startIso: string, endIso: string): Promise<Set<string>>;
 }
 
 /**
- * Pick a covering agent for one booking being reassigned off an out agent (#972):
- * the first agent GENUINELY free at the booking's original time AND under their
- * daily cap, in round-robin order, excluding the out agent (the booking's current
- * `assigned_user_id`). Returns a null assignment when unplaceable at that time.
+ * Pick a covering advisor for one booking being moved off an out agent (#972), by the
+ * SAME rule the booker and Reroute use to answer "who can take this call" (#3308).
  *
- * The reassign swap rides `allow_double_book`, so freeness is the LIVE
- * verify-on-book path over the booking's exact original window, never the
- * `busy_blocks` cache, which can be stale mid-churn and silently double-book the
- * covering agent (the red-team's critical catch). The daily-cap check reads the
- * agent's authoritative per-local-day count so that, moved one booking at a time,
- * each committed move is reflected in the next pick's count (#973's serialization).
- * `anyUnverified` distinguishes a genuine no-coverage miss from a verify outage so
- * the engine can report vs retry (see `selectReassignTarget`).
+ * Until #3308 the sweep had a selection of its own: every member of the booking's pool in
+ * round robin order, judged only by live Google and the daily cap. Reroute and the booker
+ * judge a fixed time through `roundRobinCandidates` first, which also applies the org's
+ * business hours, the advisor's working hours, Reroute holds and the Low rule, and only
+ * then ask Google. So the sweep could hand a call to an advisor who was off shift (an empty
+ * evening calendar reads as free) or one an admin was holding for a reroute, and the two
+ * paths could disagree about the same advisor at the same time (L342, L261). Both pad the
+ * call by the event type's buffers the same way (`bufferedWindow`), and both ask Google the
+ * same question, so neither one ever found someone the other could not: the 2026-10-05 and
+ * 2026-10-12 strandings were real full slots (see #3308). Now there is one rule.
  *
- * Approved time off is checked SEPARATELY from freeness, and it has to be (#1236).
- * Live Google is the only freeness signal here, so an agent on approved leave is
- * excluded only because `runPostApproval` managed to put an event on their calendar.
- * That write is best-effort: when it fails, the OOO flow falls back to a
- * slate-source `busy_blocks` row, which availability can see and this selection
- * cannot, by design. Two agents off the same week plus one failed Google write was
- * therefore enough to place every booking swept off the first onto the second, who
- * was also away, which is #1219 recreated by the fix for #1219. `ooo_requests` is
- * the one signal that does not depend on Google having accepted anything.
+ * The out agent is never kept. Reroute's search keeps a booking's current advisor when
+ * they still fit, which is right for a bucket correction and wrong here: they are the
+ * reason the sweep exists, and an agent swept off their own day (a manager covering an
+ * active agent) still fits on paper. So the booking is searched as if nobody held it, with
+ * the out agent excluded, and a keep can only mean nobody else anywhere.
+ *
+ * Approved time off is checked SEPARATELY, and it has to be (#1236). The booker reads time
+ * off from the calendar: the event `runPostApproval` writes, or the slate busy block it
+ * falls back to when Google refuses. Both can lag (a cache not yet refreshed, a write that
+ * failed outright), and placing a call swept off one absent agent onto a second absent one
+ * is #1219 again. `ooo_requests` does not depend on Google having accepted anything, so a
+ * pick on approved time off is excluded and the search runs again.
+ *
+ * Only the booking's OWN bucket is placed into here. A target the search found on a lower
+ * rung of the tier ladder is reported as nobody in this pool: moving a call into another
+ * bucket rides the Reroute swap and its hold, which is #3485's change, not this one.
+ *
+ * `anyUnverified` is true when the answer could not be known: a live verify outage, an
+ * unreadable time off check, or any other failed read. The bulk engine retries those and
+ * settles them `failed` only after its attempt cap, so one outage never strands a call as
+ * `unplaceable` and never places it on somebody nobody could check.
  */
 export async function selectCoverageReassignTarget(
   ctx: { booking: Booking; bucket: Bucket; eventType: EventType },
@@ -79,50 +78,44 @@ export async function selectCoverageReassignTarget(
 ): Promise<SelectionOutcome> {
   const { booking, bucket, eventType } = ctx;
   const { startIso, endIso } = bookingWindow(booking.starts_at, eventType.duration_min);
-  const ordered = await deps.orderedEligibleIds(bucket);
+  const unassigned: Booking = { ...booking, assigned_user_id: null };
+  const exclude: string[] = booking.assigned_user_id ? [booking.assigned_user_id] : [];
 
-  // The out agent is excluded from the time-off read as well as from selection:
-  // they are the reason this sweep exists, so asking whether they are away is a
-  // wasted row. `selectReassignTarget` still excludes them from placement.
-  const askable = ordered.filter((id) => id !== booking.assigned_user_id);
-  let candidates: string[];
-  try {
-    const away = await deps.userIdsOnApprovedTimeOff(askable, startIso, endIso);
-    candidates = ordered.filter((id) => !away.has(id));
-  } catch {
-    // FAIL CLOSED, and specifically as an OUTAGE rather than as no-coverage. An
-    // `unplaceable` outcome is terminal in the bulk engine, so treating an
-    // unreadable time-off check as "nobody available" would let one database
-    // hiccup strand a customer's booking on an absent agent permanently. Reporting
-    // it unverified reuses the retry path a Google verify outage already takes, and
-    // never places the booking on an agent we could not check.
-    return { assignment: null, anyUnverified: true };
+  for (let pass = 0; pass <= MAX_TIME_OFF_RESEARCHES; pass++) {
+    let target: RerouteTarget;
+    try {
+      target = await deps.findTarget(unassigned, { bucket, eventType }, exclude);
+    } catch (err) {
+      if (!(err instanceof VerifyUnavailableError)) {
+        // A failed read behind the search (the pool, the cache, the holds). Retried like an
+        // outage rather than thrown, so one bad read cannot stop the drain's whole tick.
+        log.error("coverage-target", { msg: "coverage target search failed; the item will retry", booking_id: booking.id }, err);
+      }
+      return { assignment: null, anyUnverified: true };
+    }
+    if (target.outcome !== "move-in-requested") {
+      // Keep outcomes need somebody to keep and the booking was searched unassigned, so
+      // they mean nobody anywhere; a cascaded move means nobody in the booking's own pool.
+      return { assignment: null, anyUnverified: false };
+    }
+    let away: Set<string>;
+    try {
+      away = await deps.userIdsOnApprovedTimeOff([target.userId], startIso, endIso);
+    } catch (err) {
+      // FAIL CLOSED, as an outage rather than as nobody free: never place a call on an
+      // advisor whose absence could not be checked, and never settle it unplaceable for it.
+      log.error("coverage-target", { msg: "approved time off could not be read; the item will retry", booking_id: booking.id }, err);
+      return { assignment: null, anyUnverified: true };
+    }
+    if (!away.has(target.userId)) {
+      return { assignment: { userId: target.userId, email: target.email }, anyUnverified: false };
+    }
+    exclude.push(target.userId);
   }
-
-  // Cap is checked ONLY for a confirmed-free candidate (in `selectReassignTarget`),
-  // so an uncapped event type or a busy agent never triggers these reads.
-  const isUnderCap = async (userId: string): Promise<boolean> => {
-    if (eventType.daily_cap === null) return true;
-    const wh = await deps.agentWorkingHours(userId);
-    const day = DateTime.fromISO(booking.starts_at, { zone: wh.timezone }).startOf("day");
-    const startsMs = await deps.agentActiveBookingStartsMs(
-      userId,
-      day.toISO()!,
-      day.plus({ days: 1 }).toISO()!,
-      booking.id,
-    );
-    return isUnderDailyCap(startsMs, wh.timezone, Date.parse(booking.starts_at), eventType.daily_cap);
-  };
-
-  return selectReassignTarget(
-    candidates,
-    booking.assigned_user_id,
-    (ids) => deps.loadEmails(ids),
-    (emails, ids) => {
-      const [fromIso, toIso] = bufferedWindow(eventType, startIso, endIso);
-      return deps.verifyFree(emails, fromIso, toIso, ids);
-    },
-    isUnderCap,
-    COVERAGE_VERIFY_WAVE_SIZE,
-  );
+  log.warn("coverage-target", {
+    msg: "every pick was on approved time off the calendar did not show; the item will retry",
+    booking_id: booking.id,
+    excluded: exclude.length,
+  });
+  return { assignment: null, anyUnverified: true };
 }
