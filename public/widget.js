@@ -75,6 +75,9 @@
  *   clock runs only once it is shown: a frame built at page load can sit hidden
  *   for minutes, and twelve seconds of that are not a wait any lead sat through,
  *   so a frame still loading at the click gets twelve seconds from the click.
+ *   Whether a prerender builds anything is Slate's own admin switch: the origin
+ *   is asked once per page load (`GET /api/embed/config`), and anything but a
+ *   yes within two seconds leaves the click to build, as before.
  *
  * Either way a pre built frame is invisible to the lead and to the host: it
  * takes no focus, no key and no scroll lock, and nothing it says is announced
@@ -515,9 +518,10 @@
   //
   //   Cal.ns[ns]("prerender", { calLink, type: "modal", calOrigin, pageType, options })
   //
-  // It builds that namespace's modal frame now, hidden, exactly as the intent
-  // pre build does, so the first click only shows it, and warms the bucket's
-  // times. What is read:
+  // When Slate's prerender switch is on (prerenderAllowed below), it builds that
+  // namespace's modal frame, hidden, exactly as the intent pre build does, so the
+  // first click only shows it, and warms the bucket's times. Off, it does nothing
+  // at all, as before #3706. What is read:
   //
   // - `calLink` is read like a trigger's data-cal-link, except that its
   //   `metadata[<key>]` query entries are read as metadata, the way a trigger's
@@ -570,11 +574,58 @@
         var rest = kept.toString();
         link = link.slice(0, q) + (rest ? "?" + rest : "");
       }
-      warmAvailability(link, ns);
-      prebuildFrame(link, ns, config, true);
+      prerenderAllowed(originFor(ns)).then(function (yes) {
+        if (!yes) return;
+        try {
+          warmAvailability(link, ns);
+          prebuildFrame(link, ns, config, true);
+        } catch (_e) {
+          /* never throw into the host page */
+        }
+      });
     } catch (_e) {
       /* never throw into the host page */
     }
+  }
+
+  // Whether Slate honours a prerender is Slate's own admin switch (#3706, Dan
+  // 2026-10-20), so the host's call alone builds nothing: the origin is asked once
+  // per page load, and only `{ prerender: true }` within the wait builds. Any other
+  // answer (no, an error, a status that is not ok, a body of another shape, or none
+  // in time) resolves false, never rejects, and the click builds as it always has,
+  // with nothing shown to the lead. The wait is short because a prerender is a head
+  // start: an answer later than this would be a frame racing the lead's click.
+  var PRERENDER_CONFIG_WAIT_MS = 2000;
+  var prerenderAsked = {};
+  function prerenderAllowed(origin) {
+    if (!prerenderAsked[origin]) {
+      prerenderAsked[origin] = new Promise(function (resolve) {
+        var timer = setTimeout(function () {
+          resolve(false);
+        }, PRERENDER_CONFIG_WAIT_MS);
+        function answer(yes) {
+          clearTimeout(timer);
+          resolve(yes);
+        }
+        try {
+          fetch(origin + "/api/embed/config", { credentials: "omit" })
+            .then(function (r) {
+              return r.ok ? r.json() : null;
+            })
+            .then(
+              function (b) {
+                answer(!!b && b.prerender === true);
+              },
+              function () {
+                answer(false);
+              },
+            );
+        } catch (_e) {
+          answer(false);
+        }
+      });
+    }
+    return prerenderAsked[origin];
   }
 
   function flushPrerenders() {

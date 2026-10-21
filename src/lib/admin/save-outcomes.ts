@@ -39,6 +39,7 @@
  */
 
 import { FRAME_LOCK_TTL_SECONDS } from "@/lib/embed/frame-lock";
+import { EMBED_PRERENDER_LANDS_SECONDS } from "@/lib/embed/prerender-switch-core";
 import { SHARED_LINE_SWITCH_TTL_SECONDS } from "@/lib/booking/shared-line-switch-core";
 import { DAYS_OFFERED_SAVED } from "@/lib/admin/days-offered-copy";
 
@@ -69,6 +70,8 @@ export const SAVE_OUTCOMES = [
   "frame-unlocked",
   "nearly-full",
   "org-default-hours",
+  "prerender-off",
+  "prerender-on",
   "regal-ignore-added",
   "regal-ignore-removed",
   "shared-line-off",
@@ -117,6 +120,10 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   // #3936: the line's own name, the one the sentence on the page uses.
   "nearly-full": "Nearly full line saved.",
   "org-default-hours": "Default hours for a new agent saved.",
+  // #3706: which way it went and when it lands, like the frame lock above. What each
+  // state means for a lead is drawn once, by the switch beneath this notice (L605).
+  "prerender-on": `Saved. Within ${EMBED_PRERENDER_LANDS_SECONDS} seconds, partner pages that ask will load the booker with the page.`,
+  "prerender-off": `Saved. Within ${EMBED_PRERENDER_LANDS_SECONDS} seconds, partner pages load the booker on the tap again.`,
   // #2090. Each names what now happens, because the one thing the reader needs
   // confirmed is which way the list moved.
   "regal-ignore-added": "Added to the ignore list. Their calls in Regal are no longer reported.",

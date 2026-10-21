@@ -26,7 +26,7 @@ type Emitted = { detail: { type: string; data: unknown } };
 
 const events: Emitted[] = [];
 
-beforeAll(() => {
+beforeAll(async () => {
   delete (window as unknown as { Cal?: unknown }).Cal;
   // The cal.com loader stub, as trypennie's slateLoaderScript writes it, minus the
   // script tag it appends: it queues every command until the real script runs.
@@ -64,8 +64,20 @@ beforeAll(() => {
     pageType: "team.event.booking.slots",
     options: { backgroundSlotsFetch: true },
   });
-  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({} as Response)));
+  // Slate's own switch says yes (#3706), so the queued prerender is honoured.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: unknown) =>
+      Promise.resolve(
+        String(url) === `${ORIGIN}/api/embed/config`
+          ? ({ ok: true, status: 200, json: () => Promise.resolve({ prerender: true }) } as unknown as Response)
+          : ({} as Response),
+      ),
+    ),
+  );
   new Function(widgetSrc)();
+  // Let the setting's answer, and the build that follows it, run.
+  for (let i = 0; i < 10; i++) await Promise.resolve();
 });
 
 describe("widget.js builds a prerender the loader stub queued before it loaded (#3706)", () => {
