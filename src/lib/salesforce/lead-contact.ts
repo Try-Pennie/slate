@@ -1,10 +1,12 @@
 /**
  * One Salesforce Lead's name, first name, email and phone (#3541).
  *
- * Read for a Marcia booking whose signed token carried none of them and whose lead
- * Slate has never booked (Dan, 2026-10-20: Regal, which feeds Marcia, may not hold
- * them). `src/lib/mcp-booking/operations.ts` decides when it is asked, and holds
- * whatever comes back to the token's own rules before booking it.
+ * Read for a Marcia move (or a book landing on the call the lead already holds)
+ * whose signed token lacks a field the lead's earlier Slate bookings do not hold
+ * either (Dan, 2026-10-20: Regal, which feeds Marcia, may not hold them). A net new
+ * book never reaches it: that is refused `lead_contact_missing` on the token alone.
+ * `src/lib/mcp-booking/operations.ts` decides when it is asked, and holds whatever
+ * comes back to the token's own rules before using it.
  *
  * The phone is `Phone`, falling to `MobilePhone` when that is empty, the order the
  * call me now reader already reads a Lead's numbers in (`call-me-now.ts`).
