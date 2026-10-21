@@ -807,14 +807,18 @@ cause (a Google blip, a lost race) may need nothing. A route failing every reque
 deploy to revert.
 
 **`csp_violation:*` (#2575).** A browser refused something on a Slate page under the
-enforced content security policy, so part of that page did not load. The key is the
+enforced content security policy. The report says one resource was blocked (or some
+code or styling stopped), never whether the page looked any different. The key is the
 violated directive. Read the redacted reports with `tag=csp-report`: the `blocked` and
 `document` fields say what and where. If it started with a deploy and the blocked thing
 is Slate's own (a new script, image host or connection), the policy in `src/lib/csp.ts`
 is missing it: add that one source to that one directive, never widen the directive to
 make the page quiet. If it is something Slate never loads, the policy did its job, and
-the question is how it got onto the page. A browser extension's own refusals and report
-only reports are logged and never page.
+the question is how it got onto the page. A browser extension's own refusals, report
+only reports, a third-party font with no named source (#3417) and the Google product
+logo an add-on draws beside a phone number (`img-src`, host `fonts.gstatic.com`, path
+under `/s/i/productlogos/`, no named source, #3699) are logged with `paged=false` and
+never page. Every other refused image still pages.
 
 **`opaque_script_errors:*` (#3323).** Browsers at several different addresses (five or
 more in fifteen minutes, `OPAQUE_BURST_THRESHOLD` in `src/lib/api/boundary-count.ts`)

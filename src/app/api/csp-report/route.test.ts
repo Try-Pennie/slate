@@ -303,10 +303,14 @@ describe("the page an enforced violation sends (#2575)", () => {
     }
   });
 
-  it("still says part of the page did not load when what was refused is a file", async () => {
+  it("says only that one resource was blocked when what was refused is a file, never that the page did not load (#3699)", async () => {
+    // A report says the browser refused one resource. It never measured whether the
+    // page looked or worked any differently, so the page must not claim it did (L11).
     await POST(req(ENFORCED));
 
-    expect(dispatch.sendThrottledAlert.mock.calls[0][2]).toContain("did not load");
+    const text = dispatch.sendThrottledAlert.mock.calls[0][2];
+    expect(text).toContain("The browser blocked that one resource");
+    expect(text).not.toContain("did not load");
   });
 
   it("never keys on text a caller invented", async () => {
@@ -382,5 +386,55 @@ describe("#3417 injected passive third-party refusal", () => {
   it("still pages a passive refusal of Slate's OWN origin (a real gap in our loading)", async () => {
     await POST(req({ "csp-report": { ...INJECTED["csp-report"], "blocked-uri": "https://slate.trypennie.app/fonts/own.woff2" } }));
     expect(dispatch.sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual(["csp_violation:font-src"]);
+  });
+});
+
+// #3699: the Google Voice logo a browser add-on draws beside a phone number paged
+// production four times in a week, the last at 2026-10-21T02:08:27Z on /book. It is the
+// one refused image logged rather than paged: host exactly fonts.gstatic.com, path under
+// /s/i/productlogos/, no named source. Every other refused image still pages.
+describe("#3699 the Google product logo refused under img-src", () => {
+  const VOICE_LOGO =
+    "https://fonts.gstatic.com/s/i/productlogos/voice_2020q4/v7/web-24dp/logo_voice_2020q4_color_2x_web_24dp.png";
+  const LOGO_REPORT = {
+    "csp-report": {
+      "document-uri": "https://slate.trypennie.app/book",
+      referrer: "https://trypennie.com/",
+      "violated-directive": "img-src",
+      "blocked-uri": VOICE_LOGO,
+      disposition: "enforce",
+    },
+  };
+
+  it("logs the Voice logo with not_paged=injected-passive and does NOT page", async () => {
+    const res = await POST(req(LOGO_REPORT));
+    expect(res.status).toBe(204);
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    expect(logged.warn).toHaveBeenCalledWith(
+      "csp-report",
+      expect.objectContaining({
+        directive: "img-src",
+        blocked: VOICE_LOGO,
+        source: "(none)",
+        paged: false,
+        not_paged: "injected-passive",
+      }),
+    );
+  });
+
+  it("still pages an image from the same host under another path", async () => {
+    await POST(req({ "csp-report": { ...LOGO_REPORT["csp-report"], "blocked-uri": "https://fonts.gstatic.com/s/i/other/logo.png" } }));
+    expect(dispatch.sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual(["csp_violation:img-src"]);
+    expect(logged.warn).toHaveBeenCalledWith("csp-report", expect.objectContaining({ paged: true }));
+  });
+
+  it("still pages the product logo path on another host", async () => {
+    await POST(req({ "csp-report": { ...LOGO_REPORT["csp-report"], "blocked-uri": "https://evil.example/s/i/productlogos/logo.png" } }));
+    expect(dispatch.sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual(["csp_violation:img-src"]);
+  });
+
+  it("still pages the Voice logo when the report names a source", async () => {
+    await POST(req({ "csp-report": { ...LOGO_REPORT["csp-report"], "source-file": "https://slate.trypennie.app/_next/static/chunks/a.js" } }));
+    expect(dispatch.sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual(["csp_violation:img-src"]);
   });
 });

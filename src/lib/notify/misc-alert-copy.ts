@@ -374,7 +374,10 @@ export function cspViolationAlert(v: {
 /**
  * What the refusal did to the page, which depends on what was refused.
  *
- * A refused file or address never arrived, so part of the page did not load. A
+ * A refused file or address is one resource the browser blocked, and that is all the
+ * report says: it never measured whether the page looked or worked any differently
+ * without it, so the sentence claims no more (#3699, L11; it said "part of that page did
+ * not load", about a Google logo an add-on had injected). A
  * refused `eval` or `inline` is different, and what it means depends on the rule:
  * under `script-src` some code was stopped from running, and under `style-src` some
  * styling was not applied. Anything else, the Trusted Types keywords included, gets
@@ -388,7 +391,7 @@ export function cspViolationAlert(v: {
  * script that tried it; elsewhere it is usually the page, so the pointer is neutral.
  */
 function refusalConsequence(directive: string, b: BlockedResource, sourceNamed: boolean): string {
-  if (b.kind !== "keyword") return "Part of that page did not load for whoever had it open.";
+  if (b.kind !== "keyword") return "The browser blocked that one resource for whoever had it open.";
   const codeOrStyle = b.keyword === "eval" || b.keyword === "inline";
   const scripted = codeOrStyle && directive === "script-src";
   const pointer = !sourceNamed

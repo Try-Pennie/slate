@@ -438,8 +438,49 @@ export type CspPageDecision =
  * widespread gap (a font Slate newly uses but forgot to allow) still shows in the logs by
  * host, and detecting it as a page belongs in a monitor-lane aggregate off the hot path
  * (#3598), not here.
+ *
+ * ONE image is the exception (#3699, Dan 2026-10-13): see `isGoogleProductLogo`.
  */
 const CSP_INJECTED_PASSIVE_DIRECTIVES = new Set(["font-src"]);
+
+/** The one host and path a refused image may be logged rather than paged for (#3699). */
+const GOOGLE_PRODUCT_LOGO_HOST = "fonts.gstatic.com";
+const GOOGLE_PRODUCT_LOGO_PATH = "/s/i/productlogos/";
+
+/**
+ * Whether a refused image is a Google product logo, the one `img-src` refusal treated as
+ * injected passive (#3699).
+ *
+ * A browser add-on draws Google Voice's "click to call" logo
+ * (`https://fonts.gstatic.com/s/i/productlogos/voice_2020q4/...`) beside a phone number on
+ * the page; Slate never loads it, and it paged production four times in its first week.
+ * The exfiltration worry that keeps `img-src` paging is an image request carrying a page's
+ * data to a host an ATTACKER reads, and this host is Google's, so the request delivers
+ * nothing to anybody who planted it. The match is deliberately narrow: https, the host
+ * exactly (no other port, no look alike or sibling subdomain), and the parsed path under
+ * the product logo prefix, so a dot segment climbing out of it fails. Any other image from
+ * that host, the same path on any other host, and a report naming a source all page.
+ * The policy is unchanged: the image is still blocked.
+ */
+function isGoogleProductLogo(blocked: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(blocked);
+  } catch {
+    return false;
+  }
+  return (
+    url.protocol === "https:" &&
+    url.host === GOOGLE_PRODUCT_LOGO_HOST &&
+    url.pathname.startsWith(GOOGLE_PRODUCT_LOGO_PATH)
+  );
+}
+
+/** Whether a refusal under this directive, of this resource, is of the passive class. */
+function isPassiveRefusal(directive: string, blocked: string): boolean {
+  if (CSP_INJECTED_PASSIVE_DIRECTIVES.has(directive)) return true;
+  return directive === "img-src" && isGoogleProductLogo(blocked);
+}
 
 /** The host of a (redacted) URL, or null when it is not a readable absolute URL. */
 function hostOf(value: string): string | null {
@@ -454,10 +495,11 @@ function hostOf(value: string): string | null {
  * Whether a violation is the injected passive third-party class (#3417): true when it is
  * logged rather than paged, false when it pages at once. False on any doubt, which pages,
  * the safe direction. True needs all of: no named source, a concrete third-party origin,
- * a passive directive, and a host that is NOT the page's own.
+ * a passive directive (or the one Google product logo under `img-src`, #3699), and a
+ * host that is NOT the page's own.
  */
 function isInjectedPassive(directive: string, v: ViolationSummary, blocked: BlockedResource): boolean {
-  if (!CSP_INJECTED_PASSIVE_DIRECTIVES.has(directive)) return false;
+  if (!isPassiveRefusal(directive, v.blocked)) return false;
   if (v.sourceNamed) return false; // a named script is our own code; it pages
   if (blocked.kind !== "origin") return false; // inline/eval/data/blob/unreadable page at once
   const blockedHost = hostOf(blocked.origin);

