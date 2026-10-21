@@ -62,6 +62,8 @@ export interface FakeServiceOpts {
   knownContact?: FakeContactAnswer;
   /** What the Salesforce Lead holds (default: nothing). */
   leadContact?: FakeContactAnswer;
+  /** The bucket's minimum notice in minutes, as the slot read reports it (default 0). */
+  minNoticeMin?: number;
 }
 
 const BUCKETS: Record<string, { is_test: boolean; org: string }> = {
@@ -108,11 +110,13 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
   const deps: MarciaDeps = {
     nowMs: () => now,
     slotSecret: "a-gateway-secret-for-the-suite-only-0000000000",
+    // Ignores `from` on purpose, as the real cached read does (#3381): the whole stored
+    // window comes back from now, so the operations must apply `from` themselves.
     readSlots: async (code, _from, allowTest) => {
       const b = BUCKETS[code];
       if (!b || (b.is_test && !allowTest)) return null;
       const held = new Set(bookings.filter((x) => active(x) && x.bucketCode === code).map((x) => x.startsAt));
-      return { slots: opts.slots.filter((s) => !held.has(s)), minNoticeMin: 0, computedAt: "2026-06-01T00:00:00.000Z" };
+      return { slots: opts.slots.filter((s) => !held.has(s)), minNoticeMin: opts.minNoticeMin ?? 0, computedAt: "2026-06-01T00:00:00.000Z" };
     },
     book: async (input: ApiBookingInput): Promise<ApiBookingResult> => {
       const b = BUCKETS[input.bucketCode];
