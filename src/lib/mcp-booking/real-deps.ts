@@ -38,7 +38,12 @@ export function realMarciaDeps(): MarciaDeps {
     nowMs: () => Date.now(),
     slotSecret: mcpBookingGatewaySecret(),
     readSlots: async (code, fromIso, allowTest, nowMs) => {
-      const r = await getBucketSlotsWithFallback(code, fromIso, allowTest, nowMs);
+      // #4014: the tier and the offered days are judged from the day the lead asked
+      // for, not from now. An unreadable from is refused by find_times before it gets
+      // here; if one did arrive, reading from now would answer another question.
+      const lookFromMs = Date.parse(fromIso);
+      if (!Number.isFinite(lookFromMs)) throw new Error("find_times reached the slot read with a from it cannot read");
+      const r = await getBucketSlotsWithFallback(code, fromIso, allowTest, nowMs, undefined, { lookFromMs });
       return r ? { slots: r.slots, minNoticeMin: r.eventType.min_notice_min, computedAt: r.computedAt } : null;
     },
     book: (input) => bookViaApi(input),
