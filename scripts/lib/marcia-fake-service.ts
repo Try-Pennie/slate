@@ -227,11 +227,11 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
     contactReads,
     contactFailures,
     /** A booking some OTHER channel wrote (the embed, the #250 API), with its own id spellings. */
-    seedBooking(b: { salesforceId: string; externalId: string | null; startsAt: string }) {
+    seedBooking(b: { salesforceId: string; externalId: string | null; startsAt: string; bucketCode?: string }) {
       bookings.push({
         id: `seed${++seq}`,
         org_id: "org1",
-        bucketCode: "411",
+        bucketCode: b.bucketCode ?? "411",
         salesforceId: b.salesforceId,
         externalId: b.externalId,
         startsAt: b.startsAt,

@@ -30,13 +30,16 @@
  * A token may carry no `name`, `email`, `phone` or `time_zone` (Dan, 2026-10-20:
  * Regal, which feeds Marcia, may not hold them). With no zone signed and none
  * passed, every operation uses `DEFAULT_LEAD_TIME_ZONE` and its answer says so in
- * `time_zone_note`, so the model confirms the zone with the lead. With a contact
- * field missing, book and move fill it from what Slate already knows about the
- * salesforce_id (`attendeeFor`): the lead's earlier Slate bookings, then the
- * Salesforce Lead. Anything still missing is left out, as the booking API leaves
- * out a field nobody sent, and the booking goes ahead: the invite is then titled
- * with the event type alone, carries no attendee, and no text or call number is
- * stored.
+ * `time_zone_note`, so the model confirms the zone with the lead.
+ *
+ * Name, email and phone are REQUIRED for a net new booking (Dan, 2026-10-21): a book
+ * while the lead holds no call in that world is refused `lead_contact_missing`,
+ * naming the fields the token lacks, and nothing is booked. The token's shape check
+ * cannot know the operation, so this rule lives in the book operation. For a move,
+ * or a book landing on the call the lead already holds, a missing field is filled
+ * from what Slate already knows about the salesforce_id (`attendeeFor`): the lead's
+ * earlier Slate bookings, then the Salesforce Lead. Anything still missing is left
+ * out, as the booking API leaves out a field nobody sent, and the move goes ahead.
  *
  * Pure apart from its deps, so `scripts/test-mcp-booking-operations.ts` drives it.
  */
@@ -115,6 +118,7 @@ export const MARCIA_REFUSALS = {
   cap_unreadable: { class: "unexpected", status: 503 },
   history_unreadable: { class: "unexpected", status: 503 },
   lead_has_booking: { class: "expected", status: 409 },
+  lead_contact_missing: { class: "expected", status: 422 },
   slot_invalid: { class: "unexpected", status: 400 },
   args_invalid: { class: "unexpected", status: 400 },
   reason_invalid: { class: "unexpected", status: 400 },
@@ -162,6 +166,8 @@ export type MarciaAnswer =
       alternatives?: OfferedTime[];
       /** Present when the alternatives are written in an ASSUMED zone. */
       time_zone_note?: string;
+      /** For lead_contact_missing: which of name, email and phone the token lacked. Never a value. */
+      missing_fields?: ("name" | "email" | "phone")[];
     };
 
 /** What an alert about a failure may carry: ids, the class and the code. Never the token or the lead's contact data (L658). */
@@ -220,7 +226,7 @@ export interface MarciaDeps {
   knownContact(salesforceIds: readonly string[], isTest: boolean): Promise<LeadContact | null>;
   /**
    * What the Salesforce Lead with this id holds, or null when Salesforce returns no
-   * such lead. Asked only for a real token. May throw (a refusal or the deadline);
+   * such lead. May throw (a refusal or the deadline);
    * a throw is reported and booked past.
    */
   leadContact(salesforceId: string): Promise<LeadContact | null>;
@@ -288,6 +294,8 @@ const MESSAGES: Record<MarciaRefusalCode, string> = {
   cap_unreadable: "Slate could not check how many changes this lead has made today. Try again in a minute.",
   history_unreadable: "Slate could not check whether this call was already handled. Try again in a minute.",
   lead_has_booking: "The lead already has a call booked. Use move to change its time.",
+  lead_contact_missing:
+    "Slate needs the lead's name, email and phone to book a new call, and Marcia's token is missing the ones in missing_fields. Ask the lead for them.",
   slot_invalid: "That slot id was not offered to this lead, or has expired. Find times again.",
   args_invalid: "The arguments were not valid for this operation.",
   reason_invalid: "That cancel reason is not one of Slate's reasons.",
@@ -347,7 +355,11 @@ interface Ctx {
   lead: { short: string; long: string };
 }
 
-async function refuse(ctx: Ctx, code: MarciaRefusalCode, extra: { alternatives?: OfferedTime[]; zone?: Zone; cause?: unknown } = {}): Promise<MarciaAnswer> {
+async function refuse(
+  ctx: Ctx,
+  code: MarciaRefusalCode,
+  extra: { alternatives?: OfferedTime[]; zone?: Zone; missingFields?: ("name" | "email" | "phone")[]; cause?: unknown } = {},
+): Promise<MarciaAnswer> {
   const spec = MARCIA_REFUSALS[code];
   // Every failed WRITE alerts, expected or not (decision 11). A read alerts only on
   // something going wrong: an expected read refusal is not a failed write.
@@ -372,6 +384,7 @@ async function refuse(ctx: Ctx, code: MarciaRefusalCode, extra: { alternatives?:
     class: spec.class,
     message: MESSAGES[code],
     ...(extra.alternatives ? { alternatives: extra.alternatives, ...(extra.zone ? zoneNote(extra.zone) : {}) } : {}),
+    ...(extra.missingFields ? { missing_fields: extra.missingFields } : {}),
   };
 }
 
@@ -477,8 +490,9 @@ type ContactField = (typeof CONTACT_FIELDS)[number];
  *   1. the token's claim (Marcia's value always wins over a looked up one);
  *   2. the lead's earlier Slate bookings with this salesforce_id, in the token's
  *      world, newest first per field (`knownContactFromBookings`);
- *   3. the Salesforce Lead with this id, for a REAL token only: a test booking must
- *      never put a real lead's address on an invite.
+ *   3. the Salesforce Lead with this id, for a test token too (Dan, 2026-10-21).
+ * Reached only for a booking the lead already holds (a move, or a book landing on
+ * that call): a net new book needs all three on the token (`lead_contact_missing`).
  * A lookup runs only while a field is still missing. A value found elsewhere is held
  * to the same rule the claim is (`contactValueValid`), so Slate never books a value
  * it would have refused from Marcia. A failed lookup is reported by its source and
@@ -515,7 +529,7 @@ async function attendeeFor(ctx: Ctx): Promise<ApiBookingInput["attendee"]> {
   };
   const { short, long } = ctx.lead;
   if (missing().length > 0) await lookUp("bookings", () => ctx.deps.knownContact([short, long], ctx.claims.test));
-  if (missing().length > 0 && !ctx.claims.test) await lookUp("salesforce", () => ctx.deps.leadContact(long));
+  if (missing().length > 0) await lookUp("salesforce", () => ctx.deps.leadContact(long));
   // A fixed key order, and no key for a field nobody holds: the booking API leaves a
   // field nobody sent out, and "" would be stored and matched as though it were one.
   return {
@@ -588,6 +602,14 @@ async function bookOrMove(ctx: Ctx, args: Record<string, unknown>, op: "book" | 
     if (held.length === 0) return refuse(ctx, "no_booking");
     const capped = await capRefusal(ctx);
     if (capped) return refuse(ctx, capped);
+  } else if (!held.some((b) => b.isTest === ctx.claims.test)) {
+    // A NET NEW booking (Dan, 2026-10-21): the lead holds no call in this world, so this
+    // book creates one, and a new call needs the lead's name, email and phone ON THE
+    // TOKEN. Judged on the token alone, before any lookup: a lead Slate is meeting for
+    // the first time is confirmed by Marcia asking them, never by an old record. A book
+    // landing on a call the lead holds (dedupe, confirm) is not net new and fills below.
+    const missingFields = CONTACT_FIELDS.filter((f) => !ctx.claims[f]);
+    if (missingFields.length > 0) return refuse(ctx, "lead_contact_missing", { missingFields });
   }
   const input: ApiBookingInput = {
     bucketCode: ctx.bucketCode,
