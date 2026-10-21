@@ -514,6 +514,30 @@ const sfLead = { name: "Salesforce Lead Name", firstName: "Salesforce", email: "
     eq(okData(cancelled)?.outcome, "cancelled", `${what}: cancel cancels it`);
     eq(fake.bookings[0]?.status, "cancelled", `${what}: and the booking is cancelled`);
     eq([...(fake.contactReads[0]?.salesforceIds ?? [])].sort(), [ID15, ID18].sort(), `${what}: the contact fill asks the bookings for both spellings`);
+    eq([fake.bookings[0]?.salesforceId, fake.bookings[0]?.externalId], [stored, null], `${what}: and the booking keeps the ids it was written with`);
+  }
+  {
+    // The held call read that picks the spelling cannot be read: book refuses rather
+    // than risk booking a second call for a lead whose first it could not see.
+    const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS });
+    const c = claims({ salesforce_id: ID15 });
+    const slot = await firstSlot(fake, c);
+    fake.deps.lookup = async () => {
+      throw new Error("bookings read failed");
+    };
+    const a = await runMarciaOperation("book", { slot_id: slot }, c, fake.deps);
+    assert(!a.ok && a.class === "unexpected", "a book whose held call read fails is refused as unexpected");
+    eq(fake.bookings.length, 0, "and books nothing");
+    assert(fake.alerts.some((f) => f.operation === "book"), "and alerts, as every failed write does");
+  }
+  // A NEW booking stores exactly the spelling the token carried, in both id columns,
+  // as every other channel stores its caller's: webhook consumers may key on it.
+  for (const signed of [ID15, ID18]) {
+    const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS });
+    const c = claims({ salesforce_id: signed });
+    const a = await runMarciaOperation("book", { slot_id: await firstSlot(fake, c) }, c, fake.deps);
+    assert(a.ok && okData(a)?.outcome === "created", `a ${signed.length} character token books`);
+    eq([fake.bookings[0]?.salesforceId, fake.bookings[0]?.externalId], [signed, signed], `and stores its ${signed.length} character id as both salesforce_id and external_id`);
   }
 }
 

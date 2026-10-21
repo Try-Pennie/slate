@@ -339,9 +339,10 @@ interface Ctx {
   /**
    * The token's lead id in BOTH spellings (`leadIdSpellings`). A booking stores
    * whichever spelling its channel sent, and the token accepts either, so every
-   * lookup asks with both, and Slate's own records (slot ids, the audit trail and
-   * the per lead cap it counts, a new booking's `salesforce_id`) use `long`, so one
-   * lead is one key whichever spelling Marcia signed.
+   * lookup asks with both, and Marcia's own records (slot ids, the audit trail and
+   * the per lead cap it counts) use `long`, so one lead is one key whichever
+   * spelling Marcia signed. A booking row stores the token's own spelling
+   * (`bookingIdsFor`).
    */
   lead: { short: string; long: string };
 }
@@ -441,6 +442,30 @@ async function auditWrite(ctx: Ctx, action: MarciaAuditAction, bookingId: string
   } catch (err) {
     await ctx.deps.auditMissed(action, bookingId, err).catch(() => undefined);
   }
+}
+
+/**
+ * The lead ids a book or move hands the booking service.
+ *
+ * A NEW booking stores exactly the spelling the token carried, in both id columns, as
+ * every other channel stores its caller's spelling: webhook consumers (Regal) may key
+ * on `external_id`, and nobody decided to change what it holds. So both fields are the
+ * token's spelling, EXCEPT when the lead already holds a call in this world stored only
+ * under the OTHER spelling. Then `salesforceId` carries that stored spelling, so the
+ * person decision behind book and move (which matches every id it is given against
+ * either column) finds the call and moves or dedupes it instead of booking a second
+ * one. That case always matches, so it never creates a row, and the other spelling is
+ * never written anywhere.
+ */
+function bookingIdsFor(ctx: Ctx, held: readonly ApiBookingView[]): { salesforceId: string; externalId: string } {
+  const signed = ctx.claims.salesforce_id;
+  const spellings = new Set([ctx.lead.short, ctx.lead.long]);
+  const sameWorld = held.filter((b) => b.isTest === ctx.claims.test);
+  const holdsSigned = sameWorld.some((b) => b.salesforceId === signed || b.externalId === signed);
+  const otherSpelling = holdsSigned
+    ? undefined
+    : sameWorld.flatMap((b) => [b.salesforceId, b.externalId]).find((id): id is string => typeof id === "string" && id !== signed && spellings.has(id));
+  return { salesforceId: otherSpelling ?? signed, externalId: signed };
 }
 
 const CONTACT_FIELDS = ["name", "email", "phone"] as const;
@@ -549,15 +574,18 @@ async function bookOrMove(ctx: Ctx, args: Record<string, unknown>, op: "book" | 
   }
   const slot = await readSlotId(args.slot_id, ctx.lead.long, ctx.deps.slotSecret, ctx.deps.nowMs());
   if (!slot.ok || slot.bucketCode !== ctx.bucketCode) return refuse(ctx, "slot_invalid");
+  // The calls the lead holds, under either spelling of its id: a move needs one, and
+  // both ops need to know which spelling a held call is stored under (`bookingIdsFor`).
+  let held: ApiBookingView[];
+  try {
+    held = await ctx.deps.lookup(identityOf(ctx));
+  } catch (err) {
+    return refuse(ctx, codeForBookingError(err), { cause: err });
+  }
   if (op === "move") {
     // A move moves a call the lead HOLDS. With none, `confirmReschedule` would quietly
     // create one, and the answer would say "moved" about a booking that never existed.
-    try {
-      const held = await ctx.deps.lookup(identityOf(ctx));
-      if (held.length === 0) return refuse(ctx, "no_booking");
-    } catch (err) {
-      return refuse(ctx, codeForBookingError(err), { cause: err });
-    }
+    if (held.length === 0) return refuse(ctx, "no_booking");
     const capped = await capRefusal(ctx);
     if (capped) return refuse(ctx, capped);
   }
@@ -565,12 +593,9 @@ async function bookOrMove(ctx: Ctx, args: Record<string, unknown>, op: "book" | 
     bucketCode: ctx.bucketCode,
     startIso: slot.startIso,
     timezone: zone,
-    // The two spellings again, so the person decision behind book and move finds a
-    // booking stored under either; a new booking stores the long one as its lead id.
-    salesforceId: ctx.lead.long,
+    ...bookingIdsFor(ctx, held),
     attendee: await attendeeFor(ctx),
     prefill: {},
-    externalId: ctx.lead.short,
     confirmReschedule: op === "move",
     allowTestBuckets: ctx.claims.test,
     idempotencyKey: attempt,
