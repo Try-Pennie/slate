@@ -542,18 +542,57 @@ async function attendeeFor(ctx: Ctx): Promise<ApiBookingInput["attendee"]> {
   };
 }
 
+/** `near` is a 24 hour local clock time, exactly HH:MM. Anything else is refused, never read loosely. */
+const NEAR_CLOCK = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+/** The instant `near` names on `day`, in the lead's zone, or null when it is not an HH:MM time. */
+function nearInstant(day: DateTime, near: unknown): DateTime | null {
+  const m = typeof near === "string" ? NEAR_CLOCK.exec(near) : null;
+  if (!m) return null;
+  const at = day.startOf("day").set({ hour: Number(m[1]), minute: Number(m[2]) });
+  return at.isValid ? at : null;
+}
+
+/**
+ * Up to five open times on `target`'s day in the lead's zone, nearest `target` first
+ * (a tie goes to the earlier), then given back in start order. Marcia moves a lead to
+ * the offered time nearest what they asked for, so with only the first five of the
+ * day a lead asking for 3pm was moved to 9:30am (live 2026-10-21).
+ */
+function nearestOnDay(open: string[], target: DateTime, zone: string): string[] {
+  const dayOf = (iso: string) => DateTime.fromISO(iso, { setZone: false }).setZone(zone).toISODate();
+  const targetDay = target.setZone(zone).toISODate();
+  const targetMs = target.toMillis();
+  const distance = (iso: string) => Math.abs(Date.parse(iso) - targetMs);
+  return open
+    .filter((s) => dayOf(s) === targetDay)
+    .sort((a, b) => distance(a) - distance(b) || Date.parse(a) - Date.parse(b))
+    .slice(0, MAX_OFFERED_TIMES)
+    .sort((a, b) => Date.parse(a) - Date.parse(b));
+}
+
 async function findTimes(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAnswer> {
   const z = zoneFor(args, ctx.claims);
   if (!z) return refuse(ctx, "args_invalid");
   const zone = z.zone;
   let fromIso = new Date(ctx.deps.nowMs()).toISOString();
+  // The day `near` is read on: the from date in the lead's zone, else today there. A
+  // from date already past is read as now, for `near` as for the offer itself.
+  let day = DateTime.fromMillis(ctx.deps.nowMs(), { zone });
   if (args.from !== undefined) {
     const from = typeof args.from === "string" ? DateTime.fromISO(args.from, { zone }) : null;
     if (!from || !from.isValid) return refuse(ctx, "args_invalid");
-    fromIso = DateTime.max(from, DateTime.fromMillis(ctx.deps.nowMs())).toUTC().toISO() ?? fromIso;
+    day = DateTime.max(from, day);
+    fromIso = day.toUTC().toISO() ?? fromIso;
+  }
+  let pick = (open: string[]) => open.slice(0, MAX_OFFERED_TIMES);
+  if (args.near !== undefined) {
+    const target = nearInstant(day, args.near);
+    if (!target) return refuse(ctx, "args_invalid");
+    pick = (open) => nearestOnDay(open, target, zone);
   }
   try {
-    const found = await offeredTimes(ctx, zone, fromIso, (open) => open.slice(0, MAX_OFFERED_TIMES));
+    const found = await offeredTimes(ctx, zone, fromIso, pick);
     if (!found) return refuse(ctx, "unknown_bucket");
     return {
       ok: true,

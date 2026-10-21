@@ -118,6 +118,98 @@ async function firstSlot(fake: ReturnType<typeof makeMarciaFake>, c = claims()):
   );
 }
 
+// --- find_times `near` a time of day (live 2026-10-21: "3pm tomorrow" was offered 8:00
+// to 9:30am and moved to 9:30am, because only the first five times from `from` came back).
+// NOW is 07:00 CDT on 1 June; every slot below is on the half hour, written in UTC.
+{
+  // Every half hour a lead may be called on 2 June (08:00 to 19:30 CDT), plus a morning
+  // on 1 June and on 3 June, so a pick that ignores the day is caught.
+  const halfHoursCdt = (day: string, fromHour: number, toHour: number, skip: string[] = []): string[] => {
+    const out: string[] = [];
+    for (let h = fromHour; h <= toHour; h++) {
+      for (const m of [0, 30]) {
+        const local = `${day}T${String(h).padStart(2, "0")}:${m === 0 ? "00" : "30"}`;
+        if (skip.includes(local.slice(11))) continue;
+        out.push(new Date(Date.parse(`${local}:00-05:00`)).toISOString());
+      }
+    }
+    return out;
+  };
+  const cdt = (local: string) => new Date(Date.parse(`${local}:00-05:00`)).toISOString();
+  const starts = (a: MarciaAnswer) => ((okData(a)?.times as Times) ?? []).map((t) => t.starts_at);
+
+  const FULL = [...halfHoursCdt("2026-06-01", 8, 10), ...halfHoursCdt("2026-06-02", 8, 19), ...halfHoursCdt("2026-06-03", 8, 10)];
+  const full = makeMarciaFake({ nowMs: NOW, slots: FULL });
+  const at3 = await runMarciaOperation("find_times", { from: "2026-06-02", near: "15:00" }, claims(), full.deps);
+  assert(at3.ok, "find_times answers with near");
+  eq(
+    starts(at3),
+    ["2026-06-02T14:00", "2026-06-02T14:30", "2026-06-02T15:00", "2026-06-02T15:30", "2026-06-02T16:00"].map(cdt),
+    "near 15:00 offers the five open times nearest 3pm that day, 3pm itself among them, in start order",
+  );
+  eq(((okData(at3)?.times as Times) ?? [])[2]?.label, "Tuesday, June 2 at 3:00pm CDT", "and each is still written out in the lead's zone");
+
+  const unchanged = await runMarciaOperation("find_times", { from: "2026-06-02" }, claims(), full.deps);
+  eq(starts(unchanged), halfHoursCdt("2026-06-02", 8, 10).slice(0, MAX_OFFERED_TIMES), "with no near, the first five times from the day are offered as before");
+
+  // 3pm itself is taken: its neighbours come back, the tie at 90 minutes going to the earlier.
+  const gap = makeMarciaFake({ nowMs: NOW, slots: [...halfHoursCdt("2026-06-02", 8, 19, ["15:00"]), ...halfHoursCdt("2026-06-03", 8, 19)] });
+  eq(
+    starts(await runMarciaOperation("find_times", { from: "2026-06-02", near: "15:00" }, claims(), gap.deps)),
+    ["2026-06-02T13:30", "2026-06-02T14:00", "2026-06-02T14:30", "2026-06-02T15:30", "2026-06-02T16:00"].map(cdt),
+    "with no time open at that exact minute, the nearest open neighbours are offered",
+  );
+
+  // A day with two open times offers those two, never a time from another day.
+  const thin = makeMarciaFake({ nowMs: NOW, slots: [...halfHoursCdt("2026-06-02", 8, 19), cdt("2026-06-03T09:00"), cdt("2026-06-03T17:30"), ...halfHoursCdt("2026-06-04", 8, 19)] });
+  eq(
+    starts(await runMarciaOperation("find_times", { from: "2026-06-03", near: "15:00" }, claims(), thin.deps)),
+    [cdt("2026-06-03T09:00"), cdt("2026-06-03T17:30")],
+    "a day with fewer than five open times offers what it has",
+  );
+
+  // With no from, near is read on today in the lead's zone.
+  eq(
+    starts(await runMarciaOperation("find_times", { near: "09:00" }, claims(), full.deps)),
+    halfHoursCdt("2026-06-01", 8, 10).slice(0, MAX_OFFERED_TIMES),
+    "near with no from date is read on today, in the lead's zone",
+  );
+  eq(
+    starts(await runMarciaOperation("find_times", { from: "2026-05-20", near: "09:00" }, claims(), full.deps)),
+    halfHoursCdt("2026-06-01", 8, 10).slice(0, MAX_OFFERED_TIMES),
+    "a from date in the past is read as today, as it is without near, never as an empty day",
+  );
+
+  // A slot at 19:30 CDT on 2 June is 00:30 UTC on 3 June, and is still 2 June to the lead.
+  eq(
+    starts(await runMarciaOperation("find_times", { from: "2026-06-02", near: "19:59" }, claims(), full.deps)),
+    ["2026-06-02T17:30", "2026-06-02T18:00", "2026-06-02T18:30", "2026-06-02T19:00", "2026-06-02T19:30"].map(cdt),
+    "the day is the lead's day, not the UTC one",
+  );
+
+  // The calling window and the minimum notice still apply: nothing before 08:00 for the lead.
+  const early = makeMarciaFake({ nowMs: NOW, slots: [cdt("2026-06-02T06:00"), cdt("2026-06-02T07:30"), ...halfHoursCdt("2026-06-02", 8, 19)] });
+  eq(
+    starts(await runMarciaOperation("find_times", { from: "2026-06-02", near: "06:00" }, claims(), early.deps)),
+    halfHoursCdt("2026-06-02", 8, 10).slice(0, MAX_OFFERED_TIMES),
+    "near never offers a time outside the lead's calling window",
+  );
+  // 07:00 now plus 150 minutes' notice: nothing before 09:30 today, however near 09:00 is.
+  const noticed = makeMarciaFake({ nowMs: NOW, slots: FULL, minNoticeMin: 150 });
+  eq(
+    starts(await runMarciaOperation("find_times", { near: "09:00" }, claims(), noticed.deps)),
+    ["2026-06-01T09:30", "2026-06-01T10:00", "2026-06-01T10:30"].map(cdt),
+    "near never offers a time inside the minimum notice",
+  );
+
+  for (const near of ["3pm", "15", "25:00", "15:60", "15:00:00", " 15:00", "", 1500, null]) {
+    const r = await runMarciaOperation("find_times", { from: "2026-06-02", near }, claims(), full.deps);
+    eq(r.ok ? null : r.code, "args_invalid", `a malformed near (${JSON.stringify(near)}) is refused, never guessed`);
+  }
+  const noDay = await runMarciaOperation("find_times", { from: "next tuesday", near: "15:00" }, claims(), full.deps);
+  eq(noDay.ok ? null : noDay.code, "args_invalid", "near with a from that is not a date is refused");
+}
+
 // --- book, and the lead coming from the token only ----------------------------------
 {
   const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS });

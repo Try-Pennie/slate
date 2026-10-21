@@ -52,7 +52,15 @@ const TOOLS: Record<MarciaOperation, Omit<BookingTool, "name" | "gatewayMethod" 
     description: "Find up to five open times for this lead's call, already written out in the lead's time zone. Offer them as written.",
     inputSchema: {
       type: "object",
-      properties: { time_zone: timeZone, from: { type: "string", description: "Look from this date (YYYY-MM-DD in the lead's zone) instead of now." } },
+      properties: {
+        time_zone: timeZone,
+        from: { type: "string", description: "Look from this date (YYYY-MM-DD in the lead's zone) instead of now." },
+        near: {
+          type: "string",
+          description:
+            "When the lead asks for a time of day, pass it here (HH:MM, 24 hour, in the lead's zone, e.g. 15:00 for 3pm) to get the open times nearest it on the from day, or today without from.",
+        },
+      },
       additionalProperties: false,
     },
   },
