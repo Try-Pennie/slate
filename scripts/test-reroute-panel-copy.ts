@@ -101,6 +101,26 @@ eq(proposalCopy(move("312", 2), true).heading, "Two tiers down, in 312", "R9: tw
   eq(c.body, "Taylor Brooks can keep this call.", "the advisor is eligible there");
 }
 {
+  // #3487: the advisor is out and nobody else is free. Never "stays", never a bucket change.
+  const out = (reason: "time_off" | "not_free" | "no_schedule"): RerouteProposal =>
+    ({ kind: "none", requested: bucket("512"), current: { advisor: advisor("Taylor Brooks"), reason } });
+  const c = proposalCopy(out("time_off"), true);
+  eq(c.heading, "Nobody is free", "an out advisor with nobody else free reads as nobody free");
+  eq(c.body,
+    "Taylor Brooks is on time off for this call, and nobody else in 512 or any tier below is free. Nothing has changed. Reassign it to an advisor by name.",
+    "naming the time off, that nothing changed, and the booking's own reassign, which can pick anyone");
+  eq(c.primary, null, "no confirm: there is nothing to keep");
+  eq(c.note, false, "no note");
+  eq(c.held, false, "nothing is held");
+  assert(!/stays|Change the/.test(`${c.heading} ${c.body}`), "never says the advisor stays or offers a bucket change");
+  eq(proposalCopy(out("not_free"), false).body,
+    "Taylor Brooks is not free for this call, and nobody else in Ultra High or any tier below is free. Nothing has changed. Reassign it to an advisor by name.",
+    "not free, in a manager's pool words");
+  eq(proposalCopy(out("no_schedule"), true).body,
+    "Taylor Brooks has no schedule in Slate, and nobody else in 512 or any tier below is free. Nothing has changed. Reassign it to an advisor by name.",
+    "no schedule");
+}
+{
   const c = proposalCopy({ kind: "none", requested: bucket("512") }, true);
   eq(c.heading, "Nobody is free", "R11: nobody");
   eq(c.body, "Nobody in 512 or any tier below is free at this time. Nothing has changed.", "R11: and nothing changed");

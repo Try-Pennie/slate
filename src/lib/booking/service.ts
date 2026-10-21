@@ -3688,6 +3688,8 @@ function realRerouteDeps(actor: BookingActor): RerouteDeps {
     insertBookingEvent: async (row) => {
       await base.insertBookingEvent(row);
     },
+    currentAdvisorUnavailable: (booking, kept) =>
+      orchestration.currentAgentUnavailableIn({ loadCurrentAgentPicture, now: () => Date.now() }, booking, kept),
     readLiveHold: async (bookingId) => {
       const row = unwrap(
         await supabaseAdmin()
