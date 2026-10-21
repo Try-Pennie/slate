@@ -3098,6 +3098,9 @@ export function currentAgentFitsRung(
   return currentAgentUnavailableReason(picture, eventType, booking, nowMs) === null;
 }
 
+/** Why the current advisor cannot take a booking's time (#3487). */
+export type CurrentAgentUnavailable = "time_off" | "no_schedule" | "not_free";
+
 /**
  * Why the current advisor cannot take the booking's time at all, whatever pool it
  * sits in (#3487): approved time off over it, no schedule row, or not free for its
@@ -3106,8 +3109,6 @@ export function currentAgentFitsRung(
  * `currentAgentFitsRung`, shared so the last resort and the keep confirm judge an
  * out advisor by the one rule every rung does.
  */
-export type CurrentAgentUnavailable = "time_off" | "no_schedule" | "not_free";
-
 export function currentAgentUnavailableReason(
   picture: Pick<CurrentAgentPicture, "member" | "onTimeOff" | "businessHours">,
   eventType: EventType,

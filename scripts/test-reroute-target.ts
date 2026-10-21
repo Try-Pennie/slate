@@ -6,7 +6,9 @@
 //   1. keep the current advisor if they are eligible in the corrected bucket;
 //   2. otherwise anyone else free in it;
 //   3. otherwise down the tiers, the current advisor first at each rung;
-//   4. otherwise keep the current advisor as the last resort, with a warning.
+//   4. otherwise keep the current advisor as the last resort, with a warning, but
+//      only when they can take the call themselves (#3487); one on time off, off
+//      shift or not free is none-current-unavailable, never a keep.
 // The time never changes, and a live verify failure is a retriable error, never a
 // silent keep.
 //
