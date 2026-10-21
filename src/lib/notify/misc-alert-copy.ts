@@ -502,6 +502,78 @@ export function bookableTraitUnrecordedAlert(email: string, slateBookable: boole
   );
 }
 
+/** What one advisor's taken out of the pool note says (#3700). */
+export interface RefusedAdvisorLeftPool {
+  name: string | null;
+  email: string;
+  managerName: string | null;
+  /**
+   * How Google refused the calendar. Only the two definitive kinds reach here;
+   * `not-provisioned` is what archiving an account or removing its licence answers.
+   */
+  failure: "gone" | "not-provisioned";
+  /** How long the calendar had been refused before Slate acted. */
+  refusedForMs: number;
+  /**
+   * Pools this advisor was the only bookable one in, so nobody bookable is left in
+   * them. Null when that could not be checked; empty when every pool kept someone.
+   */
+  poolsLeftEmpty: string[] | null;
+}
+
+/** "A", "A and B", "A, B and C". */
+function listInWords(items: string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/** A sustained period as a person would say it: "an hour", "2 hours", "45 minutes". */
+function refusedPeriod(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hours = Math.round(minutes / 60);
+  return hours === 1 ? "an hour" : `${hours} hours`;
+}
+
+/**
+ * An advisor was taken out of the booking pool because Google refuses their
+ * calendar (#3700).
+ *
+ * An incident: Slate has done something, and the note says what, why and what
+ * brings them back. The ongoing state is already spoken for: the activation the
+ * pending mark owes is retried hourly, and `agents_awaiting_activation` names
+ * anybody still waiting past its grace.
+ *
+ * Leads come first in the consequence because that is what a manager reads it for,
+ * and an emptied pool is said outright: the advisor is removed either way (a refused
+ * calendar cannot take a call), but the reader has to know nobody is left.
+ */
+export function refusedAdvisorLeftPoolAlert(a: RefusedAdvisorLeftPool): string {
+  const who = a.name ? `${a.name} (${a.email})` : a.email;
+  const why =
+    a.failure === "not-provisioned"
+      ? "Google says the account has no Calendar, which is what archiving it or removing its licence does"
+      : "Google refuses the account outright, which usually means it was deleted or its access was revoked";
+  const pools =
+    a.poolsLeftEmpty === null
+      ? " Slate could not check whether this leaves a pool with nobody bookable; /admin/tiers shows it."
+      : a.poolsLeftEmpty.length > 0
+        ? ` They were the only bookable advisor in ${listInWords(a.poolsLeftEmpty)}, which now ${
+            a.poolsLeftEmpty.length === 1 ? "has" : "have"
+          } nobody bookable.`
+        : "";
+  const manager = a.managerName ? ` Their manager is ${a.managerName}.` : "";
+  return (
+    `${who} has been taken out of the booking pool, so leads are no longer offered their times. ` +
+    `Their Google calendar has been refused for over ${refusedPeriod(a.refusedForMs)}: ${why}.` +
+    pools +
+    manager +
+    ` If they have left Pennie, nothing needs doing. Otherwise a Workspace admin restores the account ` +
+    `(un-archive it, or give back its Google licence), and once every calendar of theirs reads again ` +
+    `Slate puts them back in the pool within about an hour.`
+  );
+}
+
 /** A held back stretch as a person would say it. */
 function heldFor(ms: number): string {
   const minutes = Math.round(ms / 60_000);

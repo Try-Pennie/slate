@@ -253,6 +253,45 @@ describe("departure and return", () => {
   });
 });
 
+// #3700: Google refuses an advisor's calendar for a sustained period, so the sync
+// lane takes them out of the pool and owes them a return through the activation
+// gate. Not a departure: `deactivated_at` is never stamped.
+describe("taking a refused advisor out with a return owed", () => {
+  it("clears bookable, stamps the pending mark, leaves deactivated_at alone, and owes false", async () => {
+    seed({ bookable: true });
+    const { d, emitted } = deps();
+    const written = await writeRoutableState({ kind: "hold-out", userId: "u-1", stampIso: LEFT }, d);
+    expect(store.patches).toEqual([{ bookable: false, bookable_pending_since: LEFT }]);
+    expect(written.map((r) => r.id)).toEqual(["u-1"]);
+    expect(store.rows.get("u-1")?.deactivated_at).toBeNull();
+    expect(emitted.map((e) => [e.userId, e.slateBookable])).toEqual([["u-1", false]]);
+  });
+
+  it("a second run against the same advisor matches nothing, so it writes and owes nothing", async () => {
+    seed({ bookable: true });
+    const first = deps();
+    await writeRoutableState({ kind: "hold-out", userId: "u-1", stampIso: LEFT }, first.d);
+    const second = deps();
+    const written = await writeRoutableState(
+      { kind: "hold-out", userId: "u-1", stampIso: "2026-09-20T12:01:00.000Z" },
+      second.d,
+    );
+    expect(written).toEqual([]);
+    expect(second.emitted).toEqual([]);
+    // The first stamp stands: it is when the wait for the return began.
+    expect(store.rows.get("u-1")?.bookable_pending_since).toBe(LEFT);
+  });
+
+  it("never touches a departed advisor", async () => {
+    seed({ bookable: true, deactivated_at: "2026-09-19T00:00:00.000Z" });
+    const { d, emitted } = deps();
+    const written = await writeRoutableState({ kind: "hold-out", userId: "u-1", stampIso: LEFT }, d);
+    expect(written).toEqual([]);
+    expect(emitted).toEqual([]);
+    expect(store.rows.get("u-1")?.bookable_pending_since).toBeNull();
+  });
+});
+
 describe("a trait that could not be recorded", () => {
   it("does not fail the write that already committed, and pages per agent instead", async () => {
     seed({ bookable: true }, { bookable: true });

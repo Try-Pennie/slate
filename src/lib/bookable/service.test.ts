@@ -79,6 +79,7 @@ vi.mock("@/lib/bookable/routable-write", () => ({
 }));
 
 import { applyBookableByEmail, applyBookableByUserId, BookableLookupError } from "./service";
+import { shouldSendAlert } from "@/lib/notify/alerts";
 import {
   ACTIVATION_BUDGET_MS,
   MAX_ACTIVATIONS_PER_RUN,
@@ -751,5 +752,156 @@ describe("an advisor Twilio holds on Redistribute (#3028)", () => {
     await expect(applyBookableByUserId("u1", true, d)).rejects.toBeInstanceOf(BookableLookupError);
     expect(updates).toEqual([]);
     expect(d.checkReachable).not.toHaveBeenCalled();
+  });
+});
+
+// #3700: an advisor the calendar refused pool exit took out (`hold-out`) carries the
+// pending mark, so the hourly roster run retries their activation and the gate keeps
+// refusing while Google does. That refusal is the one the pool exit note already
+// told everybody about, so it posts ONCE for the episode, not on every hourly retry.
+// It posts again when the reason changes, or for a new episode (returned, then taken
+// out again). A hire who was never held out keeps the existing 30 minute cooldown.
+// The fake below decides with the dispatcher's own predicate (`shouldSendAlert`),
+// keyed and stamped the way `alert_state` is, so "held back" is the real rule's verdict.
+describe("the blocked note for an advisor the refused pool exit took out (#3700)", () => {
+  const HOUR = 60 * 60_000;
+  const EPISODE_MS = Date.parse("2026-10-20T15:00:00.000Z");
+  const EPISODE = new Date(EPISODE_MS).toISOString();
+
+  function throttled(clock: { now: number }) {
+    const last = new Map<string, number>();
+    const posted: { key: string; text: string }[] = [];
+    const notify = vi.fn(async (key: string, cooldownMs: number, text: string) => {
+      if (!shouldSendAlert(last.get(key) ?? null, clock.now, cooldownMs)) return;
+      last.set(key, clock.now);
+      posted.push({ key, text });
+    });
+    return { notify, posted };
+  }
+
+  /** `heldOutSince` answers the episode start only for the mark the pool exit wrote. */
+  function retryDeps(clock: { now: number }, heldOutMs: number | null, ...outcomes: Reachability[]) {
+    const t = throttled(clock);
+    const d = {
+      ...deps(...outcomes),
+      notify: t.notify,
+      now: () => clock.now,
+      heldOutSince: vi.fn(async (_userId: string, pendingSince: string | null) =>
+        heldOutMs !== null && pendingSince !== null && Date.parse(pendingSince) === heldOutMs ? heldOutMs : null,
+      ),
+    };
+    return { d, posted: t.posted };
+  }
+
+  beforeEach(() => {
+    updates.length = 0;
+    patches.length = 0;
+  });
+
+  it("a held out advisor still refused on three hourly retries gets one note", async () => {
+    currentUser = { id: "u1", bookable: false, email: "dana@trypennie.com", bookable_pending_since: EPISODE };
+    const clock = { now: EPISODE_MS };
+    const { d, posted } = retryDeps(clock, EPISODE_MS, "not-provisioned");
+    for (const at of [5 * 60_000, HOUR + 5 * 60_000, 2 * HOUR + 5 * 60_000]) {
+      clock.now = EPISODE_MS + at;
+      const res = await applyBookableByUserId("u1", true, d);
+      expect(res).toMatchObject({ status: "blocked", reason: "google_not_provisioned" });
+    }
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.text).toContain("dana@trypennie.com");
+    expect(updates).toEqual([]);
+  });
+
+  it("a held out advisor whose refusal changes reason gets a second note, once", async () => {
+    currentUser = { id: "u1", bookable: false, email: "dana@trypennie.com", bookable_pending_since: EPISODE };
+    const clock = { now: EPISODE_MS };
+    const { d, posted } = retryDeps(clock, EPISODE_MS, "not-provisioned", "not-provisioned", "reachable");
+    d.onboardIntoPool.mockResolvedValue({
+      calendars: 1,
+      hydrated: 0,
+      failed: 1,
+      contended: 0,
+      watch: "renewed" as PoolEntryResult["watch"],
+      outOfBudget: false,
+    });
+    for (const at of [5 * 60_000, HOUR + 5 * 60_000, 2 * HOUR + 5 * 60_000, 3 * HOUR + 5 * 60_000]) {
+      clock.now = EPISODE_MS + at;
+      await applyBookableByUserId("u1", true, d);
+    }
+    // Not provisioned twice (one note), then unreadable twice (one more note).
+    expect(posted).toHaveLength(2);
+    expect(posted[0]!.key).not.toBe(posted[1]!.key);
+  });
+
+  it("taken out again after a return, the advisor gets the note again", async () => {
+    const clock = { now: EPISODE_MS };
+    const secondMs = EPISODE_MS + 5 * HOUR;
+    const t = throttled(clock);
+    const d = {
+      ...deps("not-provisioned"),
+      notify: t.notify,
+      now: () => clock.now,
+      // Both marks were written by the pool exit.
+      heldOutSince: vi.fn(async (_userId: string, pendingSince: string | null) =>
+        pendingSince === null ? null : Date.parse(pendingSince),
+      ),
+    };
+    currentUser = { id: "u1", bookable: false, email: "dana@trypennie.com", bookable_pending_since: EPISODE };
+    clock.now = EPISODE_MS + 5 * 60_000;
+    await applyBookableByUserId("u1", true, d);
+    clock.now = EPISODE_MS + HOUR + 5 * 60_000;
+    await applyBookableByUserId("u1", true, d);
+    currentUser = {
+      id: "u1",
+      bookable: false,
+      email: "dana@trypennie.com",
+      bookable_pending_since: new Date(secondMs).toISOString(),
+    };
+    clock.now = secondMs + 5 * 60_000;
+    await applyBookableByUserId("u1", true, d);
+    expect(t.posted).toHaveLength(2);
+  });
+
+  it("CONTROL: a normally blocked new hire still gets the note on each hourly retry", async () => {
+    currentUser = { id: "u1", bookable: false, email: "hire@trypennie.com", bookable_pending_since: EPISODE };
+    const clock = { now: EPISODE_MS };
+    const { d, posted } = retryDeps(clock, null, "not-provisioned");
+    for (const at of [5 * 60_000, HOUR + 5 * 60_000, 2 * HOUR + 5 * 60_000]) {
+      clock.now = EPISODE_MS + at;
+      await applyBookableByUserId("u1", true, d);
+    }
+    expect(posted.map((p) => p.key)).toEqual(["bookable_blocked:u1", "bookable_blocked:u1", "bookable_blocked:u1"]);
+  });
+
+  it("CONTROL: with no held out check wired, the existing behaviour stands", async () => {
+    currentUser = { id: "u1", bookable: false, email: "hire@trypennie.com", bookable_pending_since: EPISODE };
+    const clock = { now: EPISODE_MS };
+    const t = throttled(clock);
+    const d = { ...deps("not-provisioned"), notify: t.notify, now: () => clock.now };
+    for (const at of [5 * 60_000, HOUR + 5 * 60_000]) {
+      clock.now = EPISODE_MS + at;
+      await applyBookableByUserId("u1", true, d);
+    }
+    expect(t.posted).toHaveLength(2);
+  });
+
+  it("a held out check that fails falls back to the existing behaviour, never to silence", async () => {
+    currentUser = { id: "u1", bookable: false, email: "dana@trypennie.com", bookable_pending_since: EPISODE };
+    const clock = { now: EPISODE_MS };
+    const t = throttled(clock);
+    const d = {
+      ...deps("not-provisioned"),
+      notify: t.notify,
+      now: () => clock.now,
+      heldOutSince: vi.fn(async (): Promise<number | null> => {
+        throw new Error("audit read failed");
+      }),
+    };
+    for (const at of [5 * 60_000, HOUR + 5 * 60_000]) {
+      clock.now = EPISODE_MS + at;
+      const res = await applyBookableByUserId("u1", true, d);
+      expect(res).toMatchObject({ status: "blocked" });
+    }
+    expect(t.posted).toHaveLength(2);
   });
 });
