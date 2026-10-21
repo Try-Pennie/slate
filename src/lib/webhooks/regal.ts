@@ -161,8 +161,9 @@ const CLIENT_SYNC_ACTIONS: Partial<Record<BookingWebhookEvent, string>> = {
 };
 
 /**
- * Whether Regal must receive NOTHING for this event (#2073): an agent link
- * booking's reassign, which cal.com's personal link never reported.
+ * Whether Regal must receive NOTHING for this event (#2073): any event an agent
+ * link booking has no Client Sync action for, today its reassign, which cal.com's
+ * personal link never reported, and its contact update (#1512).
  * Asked per endpoint by the emitter, so other subscribers still get the event.
  */
 export function regalSendsNothingFor(event: BookingWebhookEvent, p: Pick<BookingEventPayload, "booking_kind">): boolean {
