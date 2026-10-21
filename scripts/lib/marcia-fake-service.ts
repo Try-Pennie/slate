@@ -27,7 +27,7 @@ import {
 import type { AuditEntry } from "../../src/lib/audit.ts";
 import type { ReasonOption } from "../../src/lib/booking/core.ts";
 import { CANCEL_REASONS } from "../../src/lib/booking/core.ts";
-import type { MarciaDeps, MarciaFailure } from "../../src/lib/mcp-booking/operations.ts";
+import type { LeadContact, MarciaDeps, MarciaFailure } from "../../src/lib/mcp-booking/operations.ts";
 import type { BookingStatus } from "../../src/lib/db/types.ts";
 import { PARTNER_BUCKET_CODE } from "../../src/lib/embed/public-test-bucket.ts";
 
@@ -41,7 +41,13 @@ export interface FakeBooking {
   key: string;
   eventId: string;
   source: string | null;
+  /** The zone and the attendee the write was asked for, exactly as passed. */
+  timezone: string;
+  attendee: ApiBookingInput["attendee"];
 }
+
+/** What a contact lookup answers in the suite: the contact, none, or a throw. */
+export type FakeContactAnswer = LeadContact | null | Error;
 
 export interface FakeServiceOpts {
   nowMs: number;
@@ -49,6 +55,10 @@ export interface FakeServiceOpts {
   keyFrom?: "input" | "lead-and-slot";
   /** Starts another lead has just taken, so a book of one is refused SLOT_TAKEN. */
   takenByOthers?: Set<string>;
+  /** What the lead's earlier Slate bookings hold (default: nothing). */
+  knownContact?: FakeContactAnswer;
+  /** What the Salesforce Lead holds (default: nothing). */
+  leadContact?: FakeContactAnswer;
 }
 
 const BUCKETS: Record<string, { is_test: boolean; org: string }> = {
@@ -63,6 +73,12 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
   const alerts: MarciaFailure[] = [];
   const outcomes: { outcome: string; bucketCode: string; errorCode: string | null }[] = [];
   const missed: string[] = [];
+  const contactReads: { source: "bookings" | "salesforce"; salesforceId: string; isTest: boolean | null }[] = [];
+  const contactFailures: { source: "bookings" | "salesforce"; err: unknown }[] = [];
+  const answerContact = async (a: FakeContactAnswer | undefined): Promise<LeadContact | null> => {
+    if (a instanceof Error) throw a;
+    return a ?? null;
+  };
   let now = opts.nowMs;
   let seq = 0;
 
@@ -110,6 +126,8 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
         if (mine.startsAt === input.startIso) return result(mine, "deduped");
         mine.startsAt = input.startIso;
         mine.status = "rescheduled";
+        mine.timezone = input.timezone;
+        mine.attendee = input.attendee;
         return result(mine, "rescheduled");
       }
       if (opts.takenByOthers?.has(input.startIso)) throw new SlotUnavailableError();
@@ -127,6 +145,8 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
         key,
         eventId,
         source: input.mcpChannel ? `mcp-${input.mcpChannel}` : null,
+        timezone: input.timezone,
+        attendee: input.attendee,
       };
       bookings.push(row);
       return result(row, "created");
@@ -174,6 +194,17 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
     alert: async (f) => {
       alerts.push(f);
     },
+    knownContact: async (salesforceId, isTest) => {
+      contactReads.push({ source: "bookings", salesforceId, isTest });
+      return answerContact(opts.knownContact);
+    },
+    leadContact: async (salesforceId) => {
+      contactReads.push({ source: "salesforce", salesforceId, isTest: null });
+      return answerContact(opts.leadContact);
+    },
+    contactLookupFailed: (source, err) => {
+      contactFailures.push({ source, err });
+    },
   };
 
   return {
@@ -184,6 +215,8 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
     alerts,
     outcomes,
     missed,
+    contactReads,
+    contactFailures,
     advance(ms: number) {
       now += ms;
     },

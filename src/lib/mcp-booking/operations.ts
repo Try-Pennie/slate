@@ -27,6 +27,17 @@
  * reconfirmed as decision 39); the alert is throttled per operation and code so one
  * outage does not page per call.
  *
+ * A token may carry no `name`, `email`, `phone` or `time_zone` (Dan, 2026-10-20:
+ * Regal, which feeds Marcia, may not hold them). With no zone signed and none
+ * passed, every operation uses `DEFAULT_LEAD_TIME_ZONE` and its answer says so in
+ * `time_zone_note`, so the model confirms the zone with the lead. With a contact
+ * field missing, book and move fill it from what Slate already knows about the
+ * salesforce_id (`attendeeFor`): the lead's earlier Slate bookings, then the
+ * Salesforce Lead. Anything still missing is left out, as the booking API leaves
+ * out a field nobody sent, and the booking goes ahead: the invite is then titled
+ * with the event type alone, carries no attendee, and no text or call number is
+ * stored.
+ *
  * Pure apart from its deps, so `scripts/test-mcp-booking-operations.ts` drives it.
  */
 import { DateTime, IANAZone } from "luxon";
@@ -43,7 +54,7 @@ import type { BookingStatus } from "@/lib/db/types";
 import { marciaAuditEntry, type MarciaAuditAction } from "./audit-entry.ts";
 import { attemptKey, type MarciaWriteOperation } from "./attempt.ts";
 import { issueSlotId, readSlotId } from "./slot-id.ts";
-import type { MarciaLeadClaims } from "./token-shape.ts";
+import { contactValueValid, type MarciaLeadClaims } from "./token-shape.ts";
 
 import type { MarciaOperation } from "./operation-names.ts";
 export { MARCIA_OPERATIONS, isMarciaOperation, type MarciaOperation } from "./operation-names.ts";
@@ -63,6 +74,29 @@ export const ALTERNATIVES_ON_TAKEN = 2;
  */
 export const MARCIA_LEAD_DAILY_CHANGE_CAP = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The zone times are judged and written in when the token signed none and the model
+ * passed none (Dan, 2026-10-20): most of Pennie's leads are Eastern, and the answer
+ * says it was assumed (`ASSUMED_ZONE_NOTE`) rather than presenting it as the lead's.
+ */
+export const DEFAULT_LEAD_TIME_ZONE = "America/New_York";
+
+/** What an answer carries, as `time_zone_note`, when its zone was assumed. */
+export const ASSUMED_ZONE_NOTE =
+  `Slate does not know this lead's time zone, so the times in this answer are in ${DEFAULT_LEAD_TIME_ZONE} (US Eastern). ` +
+  "Confirm the lead's time zone, and if it is different, call again with time_zone set to it.";
+
+/** A lead's name, first name, email and phone as another source holds them, null per fact it lacks. */
+export interface LeadContact {
+  name: string | null;
+  firstName: string | null;
+  email: string | null;
+  phone: string | null;
+}
+
+/** Where a missing contact field is looked for, in this order. */
+export type ContactSource = "bookings" | "salesforce";
 
 /** Whether a failure was an expected refusal or something going wrong. */
 export type FailureClass = "expected" | "unexpected";
@@ -125,6 +159,8 @@ export type MarciaAnswer =
       class: FailureClass;
       message: string;
       alternatives?: OfferedTime[];
+      /** Present when the alternatives are written in an ASSUMED zone. */
+      time_zone_note?: string;
     };
 
 /** What an alert about a failure may carry: ids, the class and the code. Never the token or the lead's contact data (L658). */
@@ -174,6 +210,20 @@ export interface MarciaDeps {
   /** Count a booking attempt's outcome, as the #250 API does. */
   recordOutcome(outcome: string, bucketCode: string, errorCode: string | null): void;
   alert(failure: MarciaFailure): Promise<void>;
+  /**
+   * What the lead's earlier Slate bookings hold, newest first per field, in the
+   * token's world only (a test token never reads a real lead's details), or null
+   * when they hold nothing. May throw; a throw is reported and booked past.
+   */
+  knownContact(salesforceId: string, isTest: boolean): Promise<LeadContact | null>;
+  /**
+   * What the Salesforce Lead with this id holds, or null when Salesforce returns no
+   * such lead. Asked only for a real token. May throw (a refusal or the deadline);
+   * a throw is reported and booked past.
+   */
+  leadContact(salesforceId: string): Promise<LeadContact | null>;
+  /** A contact lookup failed: log which one, never a value. Must not throw. */
+  contactLookupFailed(source: ContactSource, err: unknown): void;
 }
 
 /** The bucket a token books into: the partner test bucket when test flagged (decision 20). */
@@ -188,12 +238,26 @@ function argsOf(raw: unknown): Record<string, unknown> | null {
   return typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
 }
 
-/** The zone to show and judge times in: the token's, unless a valid one was passed. */
-function zoneFor(args: Record<string, unknown>, claims: MarciaLeadClaims): string | null {
-  const z = args.time_zone;
-  if (z === undefined || z === null || z === "") return claims.time_zone;
-  return typeof z === "string" && IANAZone.isValidZone(z) ? z : null;
+/** The zone an operation shows and judges times in, and whether it was assumed. */
+interface Zone {
+  zone: string;
+  assumed: boolean;
 }
+
+/**
+ * A valid zone the model passed, else the token's, else `DEFAULT_LEAD_TIME_ZONE`,
+ * marked assumed. Null for a passed zone that is not one: refused, never guessed.
+ */
+function zoneFor(args: Record<string, unknown>, claims: MarciaLeadClaims): Zone | null {
+  const z = args.time_zone;
+  if (z === undefined || z === null || z === "") {
+    return claims.time_zone ? { zone: claims.time_zone, assumed: false } : { zone: DEFAULT_LEAD_TIME_ZONE, assumed: true };
+  }
+  return typeof z === "string" && IANAZone.isValidZone(z) ? { zone: z, assumed: false } : null;
+}
+
+/** The field an answer carries when its zone was assumed, and nothing otherwise. */
+const zoneNote = (z: Zone): { time_zone_note?: string } => (z.assumed ? { time_zone_note: ASSUMED_ZONE_NOTE } : {});
 
 export function formatTime(iso: string, zone: string): string {
   const dt = DateTime.fromISO(iso, { setZone: false }).setZone(zone).setLocale("en-US");
@@ -272,7 +336,7 @@ interface Ctx {
   bucketCode: string;
 }
 
-async function refuse(ctx: Ctx, code: MarciaRefusalCode, extra: { alternatives?: OfferedTime[]; cause?: unknown } = {}): Promise<MarciaAnswer> {
+async function refuse(ctx: Ctx, code: MarciaRefusalCode, extra: { alternatives?: OfferedTime[]; zone?: Zone; cause?: unknown } = {}): Promise<MarciaAnswer> {
   const spec = MARCIA_REFUSALS[code];
   // Every failed WRITE alerts, expected or not (decision 11). A read alerts only on
   // something going wrong: an expected read refusal is not a failed write.
@@ -296,7 +360,7 @@ async function refuse(ctx: Ctx, code: MarciaRefusalCode, extra: { alternatives?:
     code,
     class: spec.class,
     message: MESSAGES[code],
-    ...(extra.alternatives ? { alternatives: extra.alternatives } : {}),
+    ...(extra.alternatives ? { alternatives: extra.alternatives, ...(extra.zone ? zoneNote(extra.zone) : {}) } : {}),
   };
 }
 
@@ -364,9 +428,68 @@ async function auditWrite(ctx: Ctx, action: MarciaAuditAction, bookingId: string
   }
 }
 
+const CONTACT_FIELDS = ["name", "email", "phone"] as const;
+type ContactField = (typeof CONTACT_FIELDS)[number];
+
+/**
+ * The attendee a book or move writes (Dan, 2026-10-20). Per field, the first that
+ * holds a usable value wins:
+ *   1. the token's claim (Marcia's value always wins over a looked up one);
+ *   2. the lead's earlier Slate bookings with this salesforce_id, in the token's
+ *      world, newest first per field (`knownContactFromBookings`);
+ *   3. the Salesforce Lead with this id, for a REAL token only: a test booking must
+ *      never put a real lead's address on an invite.
+ * A lookup runs only while a field is still missing. A value found elsewhere is held
+ * to the same rule the claim is (`contactValueValid`), so Slate never books a value
+ * it would have refused from Marcia. A failed lookup is reported by its source and
+ * booked past, never a refusal: the lead gets their call with what Slate has.
+ * The first name travels only with the name it came beside.
+ */
+async function attendeeFor(ctx: Ctx): Promise<ApiBookingInput["attendee"]> {
+  const found: Partial<Record<ContactField, string>> = {};
+  let firstName: string | undefined;
+  for (const f of CONTACT_FIELDS) {
+    const v = ctx.claims[f];
+    if (typeof v === "string" && v !== "") found[f] = v;
+  }
+  const missing = () => CONTACT_FIELDS.filter((f) => found[f] === undefined);
+  const fill = (from: LeadContact | null) => {
+    if (!from) return;
+    for (const f of missing()) {
+      const v = from[f];
+      if (!contactValueValid(f, v)) continue;
+      found[f] = v;
+      if (f === "name" && from.firstName) firstName = from.firstName;
+    }
+  };
+  const lookUp = async (source: ContactSource, read: () => Promise<LeadContact | null>) => {
+    try {
+      fill(await read());
+    } catch (err) {
+      try {
+        ctx.deps.contactLookupFailed(source, err);
+      } catch {
+        // Reporting is best effort: the booking goes ahead either way.
+      }
+    }
+  };
+  const id = ctx.claims.salesforce_id;
+  if (missing().length > 0) await lookUp("bookings", () => ctx.deps.knownContact(id, ctx.claims.test));
+  if (missing().length > 0 && !ctx.claims.test) await lookUp("salesforce", () => ctx.deps.leadContact(id));
+  // A fixed key order, and no key for a field nobody holds: the booking API leaves a
+  // field nobody sent out, and "" would be stored and matched as though it were one.
+  return {
+    ...(found.name !== undefined ? { name: found.name } : {}),
+    ...(firstName !== undefined && found.name !== undefined ? { firstName } : {}),
+    ...(found.email !== undefined ? { email: found.email } : {}),
+    ...(found.phone !== undefined ? { phone: found.phone } : {}),
+  };
+}
+
 async function findTimes(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAnswer> {
-  const zone = zoneFor(args, ctx.claims);
-  if (!zone) return refuse(ctx, "args_invalid");
+  const z = zoneFor(args, ctx.claims);
+  if (!z) return refuse(ctx, "args_invalid");
+  const zone = z.zone;
   let fromIso = new Date(ctx.deps.nowMs()).toISOString();
   if (args.from !== undefined) {
     const from = typeof args.from === "string" ? DateTime.fromISO(args.from, { zone }) : null;
@@ -380,7 +503,7 @@ async function findTimes(ctx: Ctx, args: Record<string, unknown>): Promise<Marci
       ok: true,
       operation: "find_times",
       status: 200,
-      data: { time_zone: zone, times: found.times, data_as_of: found.computedAt },
+      data: { time_zone: zone, ...zoneNote(z), times: found.times, data_as_of: found.computedAt },
     };
   } catch (err) {
     return refuse(ctx, "internal", { cause: err });
@@ -388,8 +511,9 @@ async function findTimes(ctx: Ctx, args: Record<string, unknown>): Promise<Marci
 }
 
 async function bookOrMove(ctx: Ctx, args: Record<string, unknown>, op: "book" | "move"): Promise<MarciaAnswer> {
-  const zone = zoneFor(args, ctx.claims);
-  if (!zone) return refuse(ctx, "args_invalid");
+  const z = zoneFor(args, ctx.claims);
+  if (!z) return refuse(ctx, "args_invalid");
+  const zone = z.zone;
   const attempt = attemptKey(op, ctx.claims);
   // A retry of an attempt that already wrote is a replay, recognised FIRST: it answers
   // with the booking it made, and is never judged again by a slot id that has since
@@ -403,7 +527,7 @@ async function bookOrMove(ctx: Ctx, args: Record<string, unknown>, op: "book" | 
   if (replayOf) {
     try {
       const done = await ctx.deps.bookingById({ bookingId: replayOf, identity: identityOf(ctx.claims), status: null });
-      return { ok: true, operation: op, status: 200, data: { outcome: op === "book" ? "created" : "rescheduled", replay: true, booking: view(done, zone) } };
+      return { ok: true, operation: op, status: 200, data: { outcome: op === "book" ? "created" : "rescheduled", replay: true, booking: view(done, zone), ...zoneNote(z) } };
     } catch (err) {
       return refuse(ctx, codeForBookingError(err), { cause: err });
     }
@@ -427,7 +551,7 @@ async function bookOrMove(ctx: Ctx, args: Record<string, unknown>, op: "book" | 
     startIso: slot.startIso,
     timezone: zone,
     salesforceId: ctx.claims.salesforce_id,
-    attendee: { name: ctx.claims.name, email: ctx.claims.email, phone: ctx.claims.phone },
+    attendee: await attendeeFor(ctx),
     prefill: {},
     externalId: ctx.claims.salesforce_id,
     confirmReschedule: op === "move",
@@ -442,7 +566,7 @@ async function bookOrMove(ctx: Ctx, args: Record<string, unknown>, op: "book" | 
     const code = codeForBookingError(err);
     ctx.deps.recordOutcome("error", ctx.bucketCode, tallyCodeFor(err));
     if (err instanceof SlotUnavailableError) {
-      return refuse(ctx, "slot_taken", { alternatives: await alternativesTo(ctx, zone, slot.startIso), cause: err });
+      return refuse(ctx, "slot_taken", { alternatives: await alternativesTo(ctx, zone, slot.startIso), zone: z, cause: err });
     }
     return refuse(ctx, code, { cause: err });
   }
@@ -463,15 +587,16 @@ async function bookOrMove(ctx: Ctx, args: Record<string, unknown>, op: "book" | 
     const action: MarciaAuditAction = result.outcome === "rescheduled" ? "booking.rescheduled" : "booking.created";
     await auditWrite(ctx, action, result.booking.id, attempt);
   }
-  return { ok: true, operation: op, status: 200, data: { outcome: result.outcome, booking: booked } };
+  return { ok: true, operation: op, status: 200, data: { outcome: result.outcome, booking: booked, ...zoneNote(z) } };
 }
 
 async function lookup(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAnswer> {
-  const zone = zoneFor(args, ctx.claims);
-  if (!zone) return refuse(ctx, "args_invalid");
+  const z = zoneFor(args, ctx.claims);
+  if (!z) return refuse(ctx, "args_invalid");
+  const zone = z.zone;
   try {
     const bookings = await ctx.deps.lookup({ externalId: ctx.claims.salesforce_id, salesforceId: ctx.claims.salesforce_id });
-    return { ok: true, operation: "lookup", status: 200, data: { bookings: bookings.map((b) => view(b, zone)) } };
+    return { ok: true, operation: "lookup", status: 200, data: { bookings: bookings.map((b) => view(b, zone)), ...zoneNote(z) } };
   } catch (err) {
     return refuse(ctx, codeForBookingError(err), { cause: err });
   }
@@ -479,8 +604,9 @@ async function lookup(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAn
 
 /** The cancel reason rules of decision 17, applied to a code Slate's own validator accepted. */
 async function cancel(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAnswer> {
-  const zone = zoneFor(args, ctx.claims);
-  if (!zone) return refuse(ctx, "args_invalid");
+  const z = zoneFor(args, ctx.claims);
+  if (!z) return refuse(ctx, "args_invalid");
+  const zone = z.zone;
   const attempt = attemptKey("cancel", ctx.claims);
   // A retry of a cancel that already landed answers as the first call did, FIRST,
   // before any rule is judged again: no second write, no lookup that would now find
@@ -494,7 +620,7 @@ async function cancel(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAn
   if (already) {
     try {
       const done = await ctx.deps.bookingById({ bookingId: already, identity: identityOf(ctx.claims), status: null });
-      return { ok: true, operation: "cancel", status: 200, data: { outcome: "already_cancelled", booking: view(done, zone) } };
+      return { ok: true, operation: "cancel", status: 200, data: { outcome: "already_cancelled", booking: view(done, zone), ...zoneNote(z) } };
     } catch (err) {
       return refuse(ctx, codeForBookingError(err), { cause: err });
     }
@@ -539,14 +665,14 @@ async function cancel(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAn
   try {
     const cancelled = await ctx.deps.cancel({ bookingId, identity: identityOf(ctx.claims), reason: validated.reason });
     await auditWrite(ctx, "booking.cancelled", cancelled.id, attempt);
-    return { ok: true, operation: "cancel", status: 200, data: { outcome: "cancelled", booking: view(cancelled, zone) } };
+    return { ok: true, operation: "cancel", status: 200, data: { outcome: "cancelled", booking: view(cancelled, zone), ...zoneNote(z) } };
   } catch (err) {
     // A retry of an attempt that already cancelled finds nothing ACTIVE to cancel.
     // Read the booking in any status: cancelled means this attempt already acted,
     // and it answers as it did the first time, with no second write.
     if (err instanceof BookingNotFoundError) {
       const already = await ctx.deps.bookingById({ bookingId, identity: identityOf(ctx.claims), status: "cancelled" }).catch(() => null);
-      if (already) return { ok: true, operation: "cancel", status: 200, data: { outcome: "already_cancelled", booking: view(already, zone) } };
+      if (already) return { ok: true, operation: "cancel", status: 200, data: { outcome: "already_cancelled", booking: view(already, zone), ...zoneNote(z) } };
     }
     return refuse(ctx, codeForBookingError(err), { cause: err });
   }

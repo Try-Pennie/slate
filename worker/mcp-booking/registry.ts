@@ -31,7 +31,11 @@ export interface BookingTool {
   route: string;
 }
 
-const timeZone = { type: "string", description: "The lead's IANA time zone, only if it differs from the one Marcia signed, e.g. America/Denver." };
+const timeZone = {
+  type: "string",
+  description:
+    "The lead's IANA time zone, only if it differs from the one Marcia signed or the answer said the zone was assumed (time_zone_note), e.g. America/Denver.",
+};
 const slotId = { type: "string", description: "A slot_id exactly as find_times returned it. Never a time you wrote yourself." };
 
 /** Book and move take the same arguments: a slot id find_times gave, and optionally a zone. */
