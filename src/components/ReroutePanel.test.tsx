@@ -147,6 +147,24 @@ describe("ReroutePanel, as an admin (codes)", () => {
     await screen.findByText("Nobody is free");
   });
 
+  it("an advisor on time off with nobody else free is never a keep (#3487)", async () => {
+    const user = userEvent.setup();
+    const OUT = { ...NONE, current: { advisor: advisor("Taylor Brooks"), reason: "time_off" } };
+    const fn = mockFetch({ find: () => ({ body: OUT }) });
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("Nobody is free");
+    expect(
+      screen.getByText(
+        "Taylor Brooks is on time off for this call, and nobody else in 512 or any tier below is free. Nothing has changed. Reassign it to an advisor by name.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/stays/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Change the bucket/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Look for a different advisor" })).toBeNull();
+    expect(sent(fn, "/reroute/confirm")).toEqual([]);
+  });
+
   it("offers no different-advisor button on a move result (#3596)", async () => {
     const user = userEvent.setup();
     mockFetch({});

@@ -3055,6 +3055,18 @@ export interface RerouteTargetDeps
 export type RerouteTarget =
   | { outcome: "keep-in-requested" | "keep-cascaded" | "keep-last-resort"; bucket: Bucket; eventType: EventType; rungsDropped: number }
   | {
+      /**
+       * #3487: nobody else on any rung is free AND the current advisor cannot take
+       * the call either, so there is nobody to keep. Its own outcome, carrying why,
+       * so it never reads as a keep of an advisor who is out.
+       */
+      outcome: "none-current-unavailable";
+      reason: CurrentAgentUnavailable;
+      bucket: Bucket;
+      eventType: EventType;
+      rungsDropped: 0;
+    }
+  | {
       outcome: "move-in-requested" | "move-cascaded";
       bucket: Bucket;
       eventType: EventType;
@@ -3080,15 +3092,36 @@ export function currentAgentFitsRung(
   excludeLow: boolean,
   nowMs: number,
 ): boolean {
-  const { pool, member } = picture;
+  const { pool } = picture;
   if (pool.fallbackApplied || !pool.ids.includes(agentId)) return false;
   if (excludeLow && (pool.lowIds === undefined || pool.lowIds.includes(agentId))) return false;
-  if (picture.onTimeOff || member === null) return false;
+  return currentAgentUnavailableReason(picture, eventType, booking, nowMs) === null;
+}
+
+/**
+ * Why the current advisor cannot take the booking's time at all, whatever pool it
+ * sits in (#3487): approved time off over it, no schedule row, or not free for its
+ * exact window (off shift, another meeting inside the call or its buffers, or over
+ * their daily cap with other calls). Null when they can. The availability half of
+ * `currentAgentFitsRung`, shared so the last resort and the keep confirm judge an
+ * out advisor by the one rule every rung does.
+ */
+export type CurrentAgentUnavailable = "time_off" | "no_schedule" | "not_free";
+
+export function currentAgentUnavailableReason(
+  picture: Pick<CurrentAgentPicture, "member" | "onTimeOff" | "businessHours">,
+  eventType: EventType,
+  booking: Pick<Booking, "starts_at" | "ends_at">,
+  nowMs: number,
+): CurrentAgentUnavailable | null {
+  const { member } = picture;
+  if (picture.onTimeOff) return "time_off";
+  if (member === null) return "no_schedule";
   const startMs = Date.parse(booking.starts_at);
   const endMs = Date.parse(booking.ends_at);
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return false;
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return "not_free";
   const adjusted = withoutOwnBooking(member, { startMs, endMs });
-  return (
+  const free =
     freeMembersAtExactWindow(
       [adjusted],
       {
@@ -3101,8 +3134,23 @@ export function currentAgentFitsRung(
         nowMs,
       },
       startMs,
-    ).length === 1
-  );
+    ).length === 1;
+  return free ? null : "not_free";
+}
+
+/**
+ * #3487: `currentAgentUnavailableReason` for the booking's current advisor in one
+ * bucket, read through the same picture the search reads. A booking with nobody on
+ * it has nobody to judge (null). Every read throws on failure, never reads as free.
+ */
+export async function currentAgentUnavailableIn(
+  deps: Pick<RerouteTargetDeps, "loadCurrentAgentPicture" | "now">,
+  booking: Booking,
+  rung: { bucket: Bucket; eventType: EventType },
+): Promise<CurrentAgentUnavailable | null> {
+  if (!booking.assigned_user_id) return null;
+  const picture = await deps.loadCurrentAgentPicture(rung.bucket, rung.eventType, booking);
+  return currentAgentUnavailableReason(picture, rung.eventType, booking, deps.now());
 }
 
 /**
@@ -3110,7 +3158,8 @@ export function currentAgentFitsRung(
  * phase 2 #3248), through the booker's own `roundRobinCandidates`, `assignAgent` and
  * `walkTierLadder`, in Dan's order: at each rung, keep the current advisor if they
  * fit, otherwise the first advisor in round robin order verified free; nobody on
- * any rung keeps the current advisor as the last resort.
+ * any rung keeps the current advisor as the last resort, unless they cannot take
+ * the call either (#3487), which is `none-current-unavailable`.
  *
  * The window is the booking's STORED start and end, never recomputed. A verify
  * outage throws `VerifyUnavailableError` (retriable) rather than cascading past an
@@ -3129,6 +3178,8 @@ export async function findRerouteTarget(
   const endIso = new Date(booking.ends_at).toISOString();
   const allowTest = requested.bucket.is_test;
 
+  // The current advisor's picture on the requested rung, kept for the last resort.
+  let requestedPicture: CurrentAgentPicture | null = null;
   type Hit =
     | { keep: true; bucket: Bucket; eventType: EventType }
     | { keep: false; bucket: Bucket; eventType: EventType; userId: string; email: string; candidates: string[] };
@@ -3140,6 +3191,7 @@ export async function findRerouteTarget(
 
     if (current) {
       const picture = await deps.loadCurrentAgentPicture(resolved.bucket, resolved.eventType, booking);
+      if (i === 0) requestedPicture = picture;
       if (currentAgentFitsRung(picture, current, resolved.eventType, booking, excludeLow, deps.now())) {
         return { hit: true, value: { keep: true, bucket: resolved.bucket, eventType: resolved.eventType } };
       }
@@ -3168,6 +3220,16 @@ export async function findRerouteTarget(
   });
 
   if (!winner) {
+    // #3487: the last resort keeps an advisor who can still take the call. One who
+    // cannot (time off, off shift, not free) is not kept: there is nobody to keep.
+    // Judged on the requested rung, whose event type the kept call would carry.
+    const reason =
+      current && requestedPicture
+        ? currentAgentUnavailableReason(requestedPicture, requested.eventType, booking, deps.now())
+        : null;
+    if (reason) {
+      return { outcome: "none-current-unavailable", reason, bucket: requested.bucket, eventType: requested.eventType, rungsDropped: 0 };
+    }
     return { outcome: "keep-last-resort", bucket: requested.bucket, eventType: requested.eventType, rungsDropped: 0 };
   }
   const { value, rungsDropped } = winner;
