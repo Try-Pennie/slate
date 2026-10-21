@@ -111,6 +111,8 @@ function sweep(over: Partial<ParitySweep> = {}): ParitySweep {
   const text = buildScheduleParityAlert(
     classifyParitySweep(
       sweep({
+        total: 160,
+        compared: 95,
         findings: [
           { verdict: "days-differ", count: 6, agents: ["forellana@x", "jarias@x"] },
           { verdict: "hours-differ", count: 6, agents: ["z@x"] },
@@ -118,7 +120,17 @@ function sweep(over: Partial<ParitySweep> = {}): ParitySweep {
       }),
     ),
   );
-  assert(/12 of 102/.test(text), "it leads with how many agents drifted out of how many");
+  // It said "12 of 160 agents differ", and 160 is everybody either roster names,
+  // departed users and staff included, so it understated the drift among the
+  // agents a lead can be booked with. It cannot divide by the compared count
+  // either: a roster finding (somebody who left and still hosts) is about a person
+  // outside it. So it gives the count, then the scale, and makes no ratio.
+  eq(
+    text.split("\n")[0],
+    "12 agents differ between Slate and cal.com. 95 bookable agents were compared.",
+    "it leads with how many differ, then how many were compared",
+  );
+  assert(!/160/.test(text), "it does not divide by everybody either roster names");
   assert(/days/.test(text) && /hours/.test(text), "and names each kind of difference");
   assert(/forellana@x/.test(text), "and names agents so the reader can go and look");
   assert(!/^Slate/.test(text), "it does not open with the word Slate: Slack already says who sent it");
@@ -371,8 +383,12 @@ function sweep(over: Partial<ParitySweep> = {}): ParitySweep {
   );
   assert(/^1 agent was corrected from cal\.com automatically: b@x\.$/m.test(one), `one correction says was (${one})`);
   assert(!/1 agent were/.test(one), "and never were");
-  assert(/^1 of 102 agents differs between Slate and cal\.com\.$/m.test(one), `one difference says differs (${one})`);
+  assert(/^1 agent differs between Slate and cal\.com\. 102 bookable agents were compared\.$/m.test(one), `one difference says differs (${one})`);
   assert(/^1 works different hours: a@x$/m.test(one), `one agent works, not work (${one})`);
+  const oneCompared = buildScheduleParityAlert(
+    classifyParitySweep(sweep({ compared: 1, findings: [{ verdict: "hours-differ", count: 1, agents: ["a@x"] }] })),
+  );
+  assert(/ 1 bookable agent was compared\.$/m.test(oneCompared), `one compared says was (${oneCompared})`);
   assert(/could not fix this one, so it needs a person/.test(one), `the remedy speaks of one (${one})`);
 
   const many = buildScheduleParityAlert(
@@ -384,7 +400,7 @@ function sweep(over: Partial<ParitySweep> = {}): ParitySweep {
     ),
   );
   assert(/^17 agents were corrected from cal\.com automatically/m.test(many), `many corrections say were (${many})`);
-  assert(/^6 of 102 agents differ between Slate and cal\.com\.$/m.test(many), `many differences say differ (${many})`);
+  assert(/^6 agents differ between Slate and cal\.com\. 102 bookable agents were compared\.$/m.test(many), `many differences say differ (${many})`);
   assert(/^6 work different hours: a@x and 5 more$/m.test(many), `many agents work (${many})`);
   assert(/could not fix these, so they need a person/.test(many), `and of many (${many})`);
 
