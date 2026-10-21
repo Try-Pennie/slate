@@ -178,6 +178,7 @@ function routeDeps(o: { targets: RerouteTarget[]; free: string[] }) {
     onReleaseFailed: () => {},
     keepSwap: async () => ({ refused: null, updated: true }),
     insertBookingEvent: async () => {},
+    currentAdvisorUnavailable: async () => null,
     readLiveHold: async () => ({
       holdId: "H1", agentUserId: "NEW", targetBucketId: "b512", requestedBucketId: "b512", rungsDropped: 0, expiresAt: "2031-03-04T10:05:00.000Z",
     }),

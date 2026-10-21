@@ -6,13 +6,16 @@
 //   1. keep the current advisor if they are eligible in the corrected bucket;
 //   2. otherwise anyone else free in it;
 //   3. otherwise down the tiers, the current advisor first at each rung;
-//   4. otherwise keep the current advisor as the last resort, with a warning.
+//   4. otherwise keep the current advisor as the last resort, with a warning, but
+//      only when they can take the call themselves (#3487); one on time off, off
+//      shift or not free is none-current-unavailable, never a keep.
 // The time never changes, and a live verify failure is a retriable error, never a
 // silent keep.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-reroute-target.ts
 import {
   findRerouteTarget,
+  currentAgentUnavailableIn,
   VerifyUnavailableError,
   type RerouteTargetDeps,
   type CurrentAgentPicture,
@@ -226,6 +229,62 @@ async function run() {
     const r = await findRerouteTarget(deps, booking, requested("212"));
     eq(r.outcome, "keep-last-resort", "nobody anywhere: the current advisor is the last resort");
     eq(r.bucket.code, "212", "and the bucket is still corrected to the requested one");
+  }
+
+  // --- #3487: the last resort keeps only an advisor who can take the call ----------------------
+  // Reroute kept an advisor on approved time off, and said they stay, because the last
+  // resort never asked whether the current advisor could serve the time at all.
+  {
+    const { deps } = fake({ buckets: ["212", "112"], membership: { "212": { member: true } }, onTimeOff: true, candidates: { "212": ["A"], "112": ["B"] }, free: new Set() });
+    const r = await findRerouteTarget(deps, booking, requested("212"));
+    eq(r.outcome, "none-current-unavailable", "an advisor on time off with nobody else free is NOT kept as the last resort");
+    eq(r.outcome === "none-current-unavailable" ? r.reason : null, "time_off", "and the reason says it is the time off");
+  }
+  {
+    const off = curShift({ rules: [{ weekday: 2, start_minute: 11 * 60, end_minute: 17 * 60 }] });
+    const { deps } = fake({ buckets: ["212"], currentMember: off, candidates: { "212": ["A"] }, free: new Set() });
+    const r = await findRerouteTarget(deps, booking, requested("212"));
+    eq(r.outcome === "none-current-unavailable" ? r.reason : r.outcome, "not_free", "an advisor off shift at the time is not kept either");
+  }
+  {
+    const busy = curShift({ busy: [{ start: Date.parse(START), end: Date.parse(END) }, { start: Date.parse("2031-03-04T10:10:00Z"), end: Date.parse("2031-03-04T10:40:00Z") }] });
+    const { deps } = fake({ buckets: ["212"], currentMember: busy, candidates: { "212": ["A"] }, free: new Set() });
+    const r = await findRerouteTarget(deps, booking, requested("212"));
+    eq(r.outcome === "none-current-unavailable" ? r.reason : r.outcome, "not_free", "an advisor with another meeting over the call is not kept");
+  }
+  {
+    const { deps } = fake({ buckets: ["212"], currentMember: null, candidates: { "212": ["A"] }, free: new Set() });
+    const r = await findRerouteTarget(deps, booking, requested("212"));
+    eq(r.outcome === "none-current-unavailable" ? r.reason : r.outcome, "no_schedule", "an advisor with no schedule row is not kept");
+  }
+  {
+    // Control: outside every pool on the ladder, but free and on shift, they still stay.
+    const { deps } = fake({ buckets: ["212", "112"], candidates: { "212": ["A"] }, free: new Set() });
+    eq((await findRerouteTarget(deps, booking, requested("212"))).outcome, "keep-last-resort",
+      "control: an available advisor with nobody else free is still the last resort");
+  }
+  {
+    // The rule is judged on the REQUESTED bucket's event type, whose buffers the kept call keeps.
+    const { deps, calls } = fake({ buckets: ["212", "112"], onTimeOff: true, candidates: {}, free: new Set() });
+    await findRerouteTarget(deps, booking, requested("212"));
+    eq(calls.pictures.filter((c) => c === "212").length, 1, "the requested bucket's picture is read once, not again for the last resort");
+  }
+
+  // --- #3487: the keep confirm's own check reads the same picture and rule ---------------------
+  {
+    const { deps, calls } = fake({ buckets: ["412"], onTimeOff: true });
+    eq(await currentAgentUnavailableIn(deps, booking, requested("412")), "time_off", "the confirm check names time off");
+    eq(calls.pictures, ["412"], "read in the bucket the advisor would be kept in");
+    const { deps: d2 } = fake({ buckets: ["412"] });
+    eq(await currentAgentUnavailableIn(d2, booking, requested("412")), null, "control: an available advisor passes");
+    const { deps: d3, calls: c3 } = fake({ buckets: ["412"] });
+    eq(await currentAgentUnavailableIn(d3, { ...booking, assigned_user_id: null } as Booking, requested("412")), null,
+      "a booking with nobody on it has nobody to judge");
+    eq(c3.pictures.length, 0, "and reads nothing");
+    const { deps: d4 } = fake({ buckets: ["412"], pictureThrows: true });
+    let err = "";
+    try { await currentAgentUnavailableIn(d4, booking, requested("412")); } catch (e) { err = e instanceof Error ? e.message : String(e); }
+    assert(/ooo_requests read failed/.test(err), "a failed read throws, never reads as available");
   }
 
   // --- a verify outage or an unreadable read is retriable, never a keep ------------------------
