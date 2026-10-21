@@ -2113,6 +2113,12 @@ credentials). It is not a `pnpm` alias yet, because the alias must also be named
 | 9 | **the move landed without the Lead's email and phone**: the fill did not come from Salesforce (a timed out or refused read logs `a lead contact lookup failed`) |
 | 10 | cleanup left the test call active, named: cancel it by hand |
 | 11 | cleanup could not read the test call's status, named |
+| 12 | Slate's bookings for the lead could not be read, so whether they answer first is unknown; nothing booked |
+| 13 | the move landed but the moved booking could not be read back, so the fill is unmeasured (the call is still cancelled) |
+| 14 | the run itself failed in a way no step expected, named |
+
+A cleanup problem (10, 11) wins the exit code, and its message still says what the
+run had found before cleanup.
 
 Its pure decisions (which leads can prove it, when Slate answers first, the verdict by
 field, the token's claims, reading the MCP's answer, one code per outcome) are pinned

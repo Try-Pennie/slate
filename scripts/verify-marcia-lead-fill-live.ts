@@ -38,6 +38,7 @@ import {
   LEAD_FILL_OUTCOMES,
   RUN_TIME_ZONE,
   fillVerdict,
+  finalOutcome,
   leadFillClaims,
   leadIdProblem,
   leadProblem,
@@ -110,7 +111,7 @@ try {
   const active = await service.lookupPersonBookings({ externalId: spellings.short, salesforceId: spellings.long });
   first = slateAnswersFirst(known ? { email: known.email, phone: known.phone } : null, active.length);
 } catch (err) {
-  exit("bookingsAnswerFirst", `Slate's bookings for the lead could not be read (${err instanceof Error ? err.name : "a throw"}), so whether they answer first is unknown`);
+  exit("slateUnreadable", err instanceof Error ? err.name : "the read threw");
 }
 if (first) exit("bookingsAnswerFirst", first);
 step("no earlier test booking holds an email or a phone, and the lead holds no active call");
@@ -179,19 +180,23 @@ try {
   step(`the move landed through the booking MCP in ${moved.ms}ms (the Lead read's cap is 2500ms of that)`);
 
   // --- 4. the moved row against the Lead -------------------------------------------------
-  const row = unwrap(await db.from("bookings").select("attendee_email, attendee_phone").eq("id", made).single(), "moved booking") as {
-    attendee_email: string | null;
-    attendee_phone: string | null;
-  };
+  let row: { attendee_email: string | null; attendee_phone: string | null };
+  try {
+    row = unwrap(await db.from("bookings").select("attendee_email, attendee_phone").eq("id", made).single(), "moved booking") as typeof row;
+  } catch (err) {
+    throw Object.assign(new Error(err instanceof Error ? err.name : "the read threw"), { outcome: "rowUnreadable" as const });
+  }
   const verdict = fillVerdict(row, lead!);
   if (!verdict.ok) outcome = { outcome: "notFilled", detail: `${verdict.why}. A timed out or refused Lead read logs "a lead contact lookup failed" on the slate Worker` };
   else step("the moved booking holds the Lead's email and phone");
 } catch (err) {
-  const o = (err as { outcome?: LeadFillOutcome }).outcome ?? "mcpRefused";
+  // A throw no step tagged is the run's own fault, never claimed as an MCP refusal.
+  const o = (err as { outcome?: LeadFillOutcome }).outcome ?? "unexpected";
   outcome = { outcome: o, detail: err instanceof Error ? err.message : String(err) };
 }
 
 // --- always: cancel the test call, and prove it is cancelled ------------------------------
+let cleanup: { outcome: "residue" | "cleanupUnverified"; detail: string } | null = null;
 if (made) {
   const reason = validateReason({ code: "other", detail: "lead fill check" }, CANCEL_REASONS);
   try {
@@ -199,13 +204,13 @@ if (made) {
   } catch {
     // Judged by the read below, never by the cancel's own answer.
   }
-  let status: string | null = null;
   try {
-    status = (unwrap(await db.from("bookings").select("status").eq("id", made).single(), "cleanup read") as { status: string }).status;
+    const status = (unwrap(await db.from("bookings").select("status").eq("id", made).single(), "cleanup read") as { status: string }).status;
+    if (status !== "cancelled") cleanup = { outcome: "residue", detail: `booking ${made} is ${status}; cancel it by hand` };
+    else step(`test call ${made} cancelled`);
   } catch {
-    exit("cleanupUnverified", `read booking ${made} and cancel it by hand if it is active`);
+    cleanup = { outcome: "cleanupUnverified", detail: `read booking ${made} and cancel it by hand if it is active` };
   }
-  if (status !== "cancelled") exit("residue", `booking ${made} is ${status}; cancel it by hand`);
-  step(`test call ${made} cancelled`);
 }
-exit(outcome.outcome, outcome.detail);
+const end = finalOutcome(outcome, cleanup);
+exit(end.outcome, end.detail);

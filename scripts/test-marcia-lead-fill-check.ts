@@ -3,9 +3,11 @@
 // fixture can answer: the deployed Worker's Salesforce Lead read, against the real org.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-marcia-lead-fill-check.ts
+import { readFileSync } from "node:fs";
 import {
   LEAD_FILL_OUTCOMES,
   fillVerdict,
+  finalOutcome,
   leadFillClaims,
   leadIdProblem,
   leadProblem,
@@ -30,6 +32,9 @@ const LEAD = "00QUl00000JtyVGMAZ";
   const codes = Object.values(LEAD_FILL_OUTCOMES).map((o) => o.exit);
   eq(new Set(codes).size, codes.length, "every outcome exits on its own code");
   eq(LEAD_FILL_OUTCOMES.proven.exit, 0, "only the proof exits 0");
+  // A read that failed is never reported as a finding about what it would have read (L11).
+  assert(LEAD_FILL_OUTCOMES.slateUnreadable.exit !== LEAD_FILL_OUTCOMES.bookingsAnswerFirst.exit, "an unreadable bookings check is not Slate answering first");
+  assert(LEAD_FILL_OUTCOMES.rowUnreadable.exit !== LEAD_FILL_OUTCOMES.notFilled.exit && LEAD_FILL_OUTCOMES.rowUnreadable.exit !== LEAD_FILL_OUTCOMES.mcpRefused.exit, "an unreadable moved row is neither a missing fill nor an MCP refusal");
 }
 
 // --- the lead id ----------------------------------------------------------------------
@@ -108,6 +113,28 @@ assert(slateAnswersFirst(null, 1) !== null, "an active call would be the one mov
   assert(!shape.ok && shape.why.includes("401") && shape.why.includes("-32001"), "a protocol refusal is named by its status and code");
   const garbage = readToolAnswer(502, "<html>bad gateway</html>");
   assert(!garbage.ok && garbage.why.includes("not JSON"), "a body that is not JSON is said to be so");
+}
+
+// --- how a run ends: cleanup wins the code, the run's result stays in the message ----------
+{
+  eq(finalOutcome({ outcome: "proven" }, null), { outcome: "proven" }, "a clean cleanup leaves the run's own result");
+  eq(finalOutcome({ outcome: "notFilled", detail: "phone not filled" }, null).outcome, "notFilled", "a failed run with a clean cleanup exits as the failure");
+  const both = finalOutcome({ outcome: "mcpRefused", detail: "move: refused slot_taken (expected)" }, { outcome: "residue", detail: "booking b1 is confirmed; cancel it by hand" });
+  eq(both.outcome, "residue", "a call left behind wins the exit code");
+  assert(both.detail?.includes("b1") === true && both.detail.includes("slot_taken"), "and the message keeps what the run found before cleanup");
+  const provenThenUnread = finalOutcome({ outcome: "proven" }, { outcome: "cleanupUnverified", detail: "read booking b1" });
+  assert(provenThenUnread.outcome === "cleanupUnverified" && provenThenUnread.detail?.includes("had proven") === true, "a proof whose cleanup is unread says both");
+}
+
+// --- the live script's wiring: each unreadable read exits as itself ------------------------
+{
+  const src = readFileSync(new URL("./verify-marcia-lead-fill-live.ts", import.meta.url), "utf8");
+  const catchOfBookings = src.slice(src.indexOf("readKnownContact"), src.indexOf("if (first)"));
+  assert(catchOfBookings.includes('exit("slateUnreadable"') && !catchOfBookings.includes('exit("bookingsAnswerFirst"'), "an unreadable bookings check exits slateUnreadable, never as Slate answering first");
+  const rowRead = src.slice(src.indexOf('select("attendee_email, attendee_phone")'), src.indexOf("fillVerdict(row"));
+  assert(rowRead.includes('outcome: "rowUnreadable"'), "an unreadable moved row is tagged rowUnreadable");
+  assert(src.includes('?? "unexpected"') && !src.includes('?? "mcpRefused"'), "a throw no step tagged is unexpected, never an MCP refusal");
+  assert(src.includes("finalOutcome(outcome, cleanup)") && !/exit\("(residue|cleanupUnverified)"/.test(src), "cleanup ends through finalOutcome, so the run's result is never dropped");
 }
 
 // --- the shared preflight: credentials, then the canary's window --------------------------

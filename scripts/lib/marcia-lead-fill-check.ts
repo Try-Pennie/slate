@@ -22,6 +22,9 @@ export const LEAD_FILL_OUTCOMES = {
   notFilled: { exit: 9, says: "the move landed, but the booking does not hold the Lead's email and phone, so the fill did not come from Salesforce" },
   residue: { exit: 10, says: "cleanup left the test call active" },
   cleanupUnverified: { exit: 11, says: "cleanup could not read whether the test call is cancelled, so nothing is vouched for" },
+  unexpected: { exit: 14, says: "the run itself failed in a way no step expected, named" },
+  rowUnreadable: { exit: 13, says: "the move landed, but the moved booking could not be read back, so the fill is unmeasured" },
+  slateUnreadable: { exit: 12, says: "Slate's bookings for the lead could not be read, so whether they would answer first is unknown; nothing was booked" },
 } as const;
 export type LeadFillOutcome = keyof typeof LEAD_FILL_OUTCOMES;
 
@@ -133,6 +136,20 @@ export function fillVerdict(row: { attendee_email: string | null; attendee_phone
   if (!row.attendee_phone) problems.push("phone not filled");
   else if (!lead.phone || !samePhone(row.attendee_phone, lead.phone)) problems.push("phone filled with something other than the Lead's");
   return problems.length === 0 ? { ok: true } : { ok: false, why: problems.join("; ") };
+}
+
+/**
+ * How a run ends once cleanup has been judged. A cleanup problem wins the exit code,
+ * because a call left on a calendar is the urgent thing, but the run's own result is
+ * kept in the message, so a run that failed twice says both.
+ */
+export function finalOutcome(
+  run: { outcome: LeadFillOutcome; detail?: string },
+  cleanup: { outcome: "residue" | "cleanupUnverified"; detail: string } | null,
+): { outcome: LeadFillOutcome; detail?: string } {
+  if (!cleanup) return run;
+  const before = `${run.outcome === "proven" ? "before cleanup the run had proven the fill" : `before cleanup the run had failed: ${LEAD_FILL_OUTCOMES[run.outcome].says}`}${run.detail ? ` (${run.detail})` : ""}`;
+  return { outcome: cleanup.outcome, detail: `${cleanup.detail}; ${before}` };
 }
 
 /** One JSON-RPC tools/call body. */
