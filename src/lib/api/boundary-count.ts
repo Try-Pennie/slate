@@ -3,6 +3,9 @@ import { log } from "@/lib/log";
 import {
   BOUNDARY_CATCH_COUNTER,
   BOUNDARY_COUNT_WINDOW_SECONDS,
+  OPAQUE_SCRIPT_ERROR_ADDRESS_COUNTER,
+  OPAQUE_SCRIPT_ERROR_BURST_COUNTER,
+  OPAQUE_SCRIPT_ERROR_WINDOW_SECONDS,
   UNRECOGNISED_PAGE_COUNTER,
 } from "@/lib/rate-limit-core";
 
@@ -103,34 +106,160 @@ export async function countUnrecognisedPageReport(
 /** One atomic count under `prefix:signature` over `BOUNDARY_WINDOW_MS`. */
 async function countInWindow(prefix: string, signature: string): Promise<BoundaryCount> {
   const key = `${prefix}:${signature}`;
-  const db = supabaseAdmin();
+  const hit = await hitCounter(key, Math.round(BOUNDARY_WINDOW_MS / 1000), 1, "boundary count");
+  if (!hit.ok) return { repeated: true, count: null, measured: false };
+  // `within` is the FIRST catch in the window: inside the ceiling of one, so not
+  // yet a repeat, and no read back is needed for a figure nobody is told.
+  if (hit.within) return { repeated: false, count: 1, measured: true };
+  // The number is for the message alone. An unreadable count still pages, and the
+  // copy then omits the figure rather than inventing one.
+  return { repeated: true, count: await readCount(key), measured: true };
+}
+
+/** What one `rate_limit_hit` answered: whether the count is still inside `max`, or
+ *  that it could not answer at all. */
+type CounterHit = { ok: true; within: boolean } | { ok: false };
+
+/**
+ * One atomic increment of `key` in its fixed window, and whether the count is now
+ * at most `max`. The one place a window counter calls the RPC, so the boundary,
+ * unrecognised page and opaque script error counts cannot drift into three readings
+ * of it (L370). Never throws; a failure is logged under `tag=client-errors` and
+ * returned as `ok: false`, and each caller decides which way that falls.
+ */
+async function hitCounter(key: string, windowSeconds: number, max: number, what: string): Promise<CounterHit> {
   try {
-    const { data, error } = await db.rpc("rate_limit_hit", {
+    const { data, error } = await supabaseAdmin().rpc("rate_limit_hit", {
       p_key: key,
-      p_window_seconds: Math.round(BOUNDARY_WINDOW_MS / 1000),
-      p_max: 1,
+      p_window_seconds: windowSeconds,
+      p_max: max,
     });
     if (error) {
-      log.error("client-errors", { msg: "boundary count failed", key }, error);
-      return { repeated: true, count: null, measured: false };
+      log.error("client-errors", { msg: `${what} failed`, key }, error);
+      return { ok: false };
     }
-    // `data === true` is the FIRST catch in the window: within the ceiling of
-    // one, so not yet a repeat.
-    const repeated = data === false;
-    if (!repeated) return { repeated: false, count: 1, measured: true };
-    // error-ok: the number is for the message alone. An unreadable count still
-    // pages, and the copy then omits the figure rather than inventing one.
-    const { data: row } = await db
+    return { ok: true, within: data === true };
+  } catch (err) {
+    log.error("client-errors", { msg: `${what} threw`, key }, err);
+    return { ok: false };
+  }
+}
+
+/** The count a window counter holds now, or null when it cannot be read or is not
+ *  a number. Never a default: 0 or 1 would be figures nobody measured. Never throws. */
+async function readCount(key: string): Promise<number | null> {
+  try {
+    // error-ok: a figure for a message or a log line alone; null says it is unread.
+    const { data: row } = await supabaseAdmin()
       .from("rate_limits")
       .select("count")
       .eq("key", key)
       .maybeSingle();
-    const count = typeof (row as { count?: unknown } | null)?.count === "number"
-      ? ((row as { count: number }).count)
-      : null;
-    return { repeated: true, count, measured: true };
-  } catch (err) {
-    log.error("client-errors", { msg: "boundary count threw", key }, err);
-    return { repeated: true, count: null, measured: false };
+    const count = (row as { count?: unknown } | null)?.count;
+    return typeof count === "number" ? count : null;
+  } catch {
+    // swallow-ok: the caller already holds the decision this figure only decorates,
+    // and null is the honest "unread" the copy is written for.
+    return null;
   }
 }
+
+/**
+ * How many DISTINCT addresses on one surface must send an opaque cross origin
+ * script error inside `OPAQUE_BURST_WINDOW_MS` before anybody is paged (#3323).
+ *
+ * ## How it was sized
+ *
+ * One lead's browser cannot trip it, by construction rather than by margin: the
+ * count is of ADDRESSES, each counted once per window however often it reports. The
+ * beacon already sends a given message at most once per page load
+ * (`ClientErrorBeacon`), so a lead reloading or retrying sends one report per load,
+ * and every one of those after the first lands on the same address row and adds
+ * nothing. Counting reports instead could not have been made safe: the beacon's own
+ * limiter lets one address send 10 a minute and 60 an hour, so any report threshold
+ * one reloading browser could not reach would be too high to ever hear a real burst.
+ *
+ * The background is rare. These reports paged on 2026-10-05 and 2026-10-21, two in
+ * sixteen days, and the hour around the second held exactly that one report in the
+ * Worker logs. Five unrelated browsers, each with its own extension or translator,
+ * inside one fifteen minute window is not something that rate produces.
+ *
+ * What five in fifteen minutes does catch is the case worth waking for: something
+ * from another origin failing on every load of the page for some whole population of
+ * browsers (an in app browser's injected script, a widely installed extension), at
+ * one affected load every three minutes or more. Anything rarer is still logged and
+ * counted under `tag=client-errors`, so it can be found, just never paged.
+ *
+ * Several leads behind one shared address (a carrier's NAT) count once, which
+ * undercounts: the safe direction for a page that must not cry wolf (L36).
+ */
+export const OPAQUE_BURST_THRESHOLD = 5;
+
+/** The window the burst is counted over, and the page's own cooldown, so a burst
+ *  that goes on pages once per window. */
+export const OPAQUE_BURST_WINDOW_MS = OPAQUE_SCRIPT_ERROR_WINDOW_SECONDS * 1000;
+
+export interface OpaqueBurstCount {
+  /** Whether this report's address had not already reported on this surface in the
+   *  window, so it was added to the count. */
+  newAddress: boolean;
+  /** Distinct addresses this window, or null when that could not be read. */
+  addresses: number | null;
+  /** Whether the count has reached `OPAQUE_BURST_THRESHOLD`: what decides the page. */
+  burst: boolean;
+  /** False when the counter itself could not answer. */
+  measured: boolean;
+}
+
+/**
+ * Record one opaque cross origin script error from `address` on the surface
+ * `signature`, and say whether distinct addresses have reached the burst (#3323).
+ *
+ * Two atomic hits on the same counter as everything above: the address row (ceiling
+ * one, so its boolean says whether this address is new in the window), and only for
+ * a new address, the surface's count with a ceiling one under the threshold, so the
+ * RPC's own boolean, taken inside the increment, is the burst decision. Two reports
+ * racing cannot both miss it. The figure read back afterwards is for the log and the
+ * copy alone.
+ *
+ * The two rows keep separate fixed windows, so an address can stay counted a little
+ * past the burst window's reset and go uncounted in the next one. That undercounts,
+ * which is the safe direction here.
+ *
+ * ## Which way it fails
+ *
+ * CLOSED, meaning nobody is paged, the opposite of the boundary count and on purpose.
+ * The limiter in front of this route asks the same RPC and drops every report when it
+ * cannot answer, so a counter outage is mostly an outage that already silenced the
+ * beacon; and failing open would page on every single opaque report while it lasted,
+ * which is exactly the noise this count exists to end. The failure is logged at error.
+ * Never throws.
+ */
+export async function countOpaqueScriptError(signature: string, address: string): Promise<OpaqueBurstCount> {
+  const unmeasured: OpaqueBurstCount = { newAddress: false, addresses: null, burst: false, measured: false };
+  const windowSeconds = OPAQUE_SCRIPT_ERROR_WINDOW_SECONDS;
+  const countKey = `${OPAQUE_SCRIPT_ERROR_BURST_COUNTER.prefix}:${signature}`;
+
+  const seen = await hitCounter(
+    `${OPAQUE_SCRIPT_ERROR_ADDRESS_COUNTER.prefix}:${signature}:${address}`,
+    windowSeconds,
+    1,
+    "opaque script error address count",
+  );
+  if (!seen.ok) return unmeasured;
+  if (!seen.within) {
+    // A browser that already reported this window: not counted again, and never the
+    // report that makes a burst, since the burst fell on a NEW address if it fell.
+    return { newAddress: false, addresses: await readCount(countKey), burst: false, measured: true };
+  }
+
+  const counted = await hitCounter(countKey, windowSeconds, OPAQUE_BURST_THRESHOLD - 1, "opaque script error count");
+  if (!counted.ok) return unmeasured;
+  return {
+    newAddress: true,
+    addresses: await readCount(countKey),
+    burst: !counted.within,
+    measured: true,
+  };
+}
+

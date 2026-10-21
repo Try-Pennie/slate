@@ -5,13 +5,21 @@ import { sendThrottledAlert, sendThrottledInfo } from "@/lib/notify/dispatch";
 import {
   boundaryCatchAlert,
   embedOriginMismatchAlert,
+  opaqueScriptErrorBurstAlert,
   testBucketClientErrorInfo,
   unrecognisedPageReports,
 } from "@/lib/notify/misc-alert-copy";
 import { parseOriginMismatchMessage } from "@/lib/embed/parent-origin";
 import { resolveTestTraffic } from "@/lib/monitor/test-traffic";
 import { shortErrorReason } from "@/lib/notify/error-text";
-import { countBoundaryCatch, countUnrecognisedPageReport, BOUNDARY_WINDOW_MS } from "@/lib/api/boundary-count";
+import {
+  countBoundaryCatch,
+  countOpaqueScriptError,
+  countUnrecognisedPageReport,
+  BOUNDARY_WINDOW_MS,
+  OPAQUE_BURST_THRESHOLD,
+  OPAQUE_BURST_WINDOW_MS,
+} from "@/lib/api/boundary-count";
 
 /**
  * How long one page stays quiet after its boundary has been reported (#1974).
@@ -48,6 +56,7 @@ import {
   clientErrorSignature,
   clientErrorSurface,
   isHarmlessBrowserMessage,
+  isOpaqueScriptError,
 } from "@/lib/api/client-error-scrub";
 import { readJsonCapped, PUBLIC_JSON_MAX_BYTES } from "@/lib/http/read-json-capped";
 
@@ -174,6 +183,49 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       testBucketClientErrorInfo(report.page, report.bucketCode),
     ).catch((alertErr: unknown) => {
       log.error("client-errors", { msg: "test bucket info failed" }, alertErr);
+    });
+    return done();
+  }
+
+  // #3323: an OPAQUE cross origin script error ("Script error." with no source, no
+  // position and no stack) is the browser hiding an error from a script another site
+  // put on the page. One of them cannot be acted on, so it is logged and counted and
+  // never pages; only a burst across several addresses does, because that can mean
+  // the page is failing for a whole group of leads.
+  //
+  // Classified HERE rather than in the beacon: a forged report, or a lead still on an
+  // older bundle, reaches this route whatever the page does, so the route is the one
+  // place that sees every report. The beacon keeps sending these, because the burst
+  // can only be counted if they arrive. Judged after the test bucket check, so a
+  // partner's staging page never counts toward a page.
+  if (isOpaqueScriptError(report)) {
+    const signature = clientErrorSignature(report);
+    const seen = await countOpaqueScriptError(signature, clientIp(req.headers));
+    // The line every opaque report leaves, paging or not. The user agent is what
+    // says WHICH browsers a burst came from, which is the first thing to know; the
+    // address is a counter key only and never logged.
+    log.warn("client-errors", {
+      msg: "opaque cross origin script error",
+      page: report.page,
+      addresses: seen.addresses,
+      new_address: seen.newAddress,
+      burst: seen.burst,
+      measured: seen.measured,
+      user_agent: (req.headers.get("user-agent") ?? "").slice(0, 300) || null,
+    });
+    if (!seen.burst) return done();
+    // alert-key: opaque_script_errors:*
+    await sendThrottledAlert(
+      `opaque_script_errors:${clientErrorSurface(report.page)}`,
+      OPAQUE_BURST_WINDOW_MS,
+      opaqueScriptErrorBurstAlert({
+        surface: clientErrorSurface(report.page),
+        addresses: seen.addresses,
+        threshold: OPAQUE_BURST_THRESHOLD,
+        windowMinutes: Math.round(OPAQUE_BURST_WINDOW_MS / 60_000),
+      }),
+    ).catch((alertErr: unknown) => {
+      log.error("client-errors", { msg: "opaque script error alert failed", page: report.page }, alertErr);
     });
     return done();
   }

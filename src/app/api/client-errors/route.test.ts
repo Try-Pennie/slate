@@ -44,10 +44,21 @@ vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert, sendThrottledInfo 
 const countUnrecognisedPageReport = vi.hoisted(() =>
   vi.fn(async (): Promise<{ count: number | null; measured: boolean }> => ({ count: 3, measured: true })),
 );
+// #3323: the opaque script error count is driven for real, end to end, in
+// route.opaque.test.ts; nothing in this file sends an opaque report, so this
+// stand in refuses rather than answers if one ever reaches it.
+const countOpaqueScriptError = vi.hoisted(() =>
+  vi.fn(async () => {
+    throw new Error("route.test.ts sent an opaque report; that path is tested in route.opaque.test.ts");
+  }),
+);
 vi.mock("@/lib/api/boundary-count", () => ({
   countBoundaryCatch,
   countUnrecognisedPageReport,
+  countOpaqueScriptError,
   BOUNDARY_WINDOW_MS: 30 * 60_000,
+  OPAQUE_BURST_THRESHOLD: 5,
+  OPAQUE_BURST_WINDOW_MS: 15 * 60_000,
 }));
 vi.mock("@/lib/rate-limit", () => ({
   allowRequest,

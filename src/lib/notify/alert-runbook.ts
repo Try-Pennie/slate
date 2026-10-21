@@ -417,6 +417,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // content security policy; the procedure is to find the report in the logs and
   // decide whether a deploy caused it or the policy did its job.
   csp_violation: "an-unexpected-fault-was-reported",
+  // #3323: the same family. Browsers reported errors from a script another site put
+  // on the page; the procedure is to read those log lines, see which browsers they
+  // came from, and try the page in one of them.
+  opaque_script_errors: "an-unexpected-fault-was-reported",
 };
 
 /**

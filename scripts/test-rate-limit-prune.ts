@@ -135,8 +135,8 @@ eq(
 // 5. The window counters (#3176): their own group, aged from their own window.
 eq(
   [...counterPlan.prefixes].sort(),
-  ["boundary_count", "unrecognised_page_count"],
-  "the boundary catch and unrecognised page counters are pruned",
+  ["boundary_count", "opaque_script_error_address", "opaque_script_error_count", "unrecognised_page_count"],
+  "the boundary catch, unrecognised page and opaque script error counters are pruned",
 );
 eq(
   [...counterPlan.prefixes].sort(),

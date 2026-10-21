@@ -246,6 +246,38 @@ export function isHarmlessBrowserMessage(message: string): boolean {
 }
 
 /**
+ * The text a browser puts in place of the real message when an error was thrown by
+ * a script from ANOTHER origin (#3323). Every current engine uses the first; the
+ * second is the older wording, kept for the same reason as the ResizeObserver pair.
+ */
+export const OPAQUE_SCRIPT_ERROR_MESSAGES: readonly string[] = ["Script error.", "Script error"];
+
+/**
+ * Whether a report is an OPAQUE cross origin script error (#3323): the browser's
+ * sanitised stand in for an error from a script Slate did not serve (an extension,
+ * a translator, an in app browser's injection), with every detail withheld.
+ *
+ * All of these must hold, so anything carrying real detail stays on the paging path:
+ * a window `error` event (only those are sanitised this way), the message exactly one
+ * of `OPAQUE_SCRIPT_ERROR_MESSAGES`, no source, no stack, and line and column 0 or
+ * absent. Slate serves its own bundles same origin, so its own faults arrive with a
+ * real message and position and are never caught by this.
+ *
+ * Judged on the NORMALISED report, so it reads what the route holds whoever sent it.
+ */
+export function isOpaqueScriptError(report: ClientErrorReport): boolean {
+  const noPosition = (n: number | null) => n === null || n === 0;
+  return (
+    report.kind === "error" &&
+    OPAQUE_SCRIPT_ERROR_MESSAGES.includes(report.message.trim()) &&
+    report.source === null &&
+    report.stack === null &&
+    noPosition(report.line) &&
+    noPosition(report.col)
+  );
+}
+
+/**
  * The top level segments Slate serves a PAGE under, plus `root` for `/` (#2755).
  *
  * A fixed vocabulary, because the alert key is built from it and the page path it

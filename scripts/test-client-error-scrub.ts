@@ -17,6 +17,7 @@ import {
   stripUrlQueries,
   withoutUrlQuery,
   isHarmlessBrowserMessage,
+  isOpaqueScriptError,
   normalizeClientError,
   clientErrorSignature,
   clientErrorSurface,
@@ -334,6 +335,54 @@ import { assert, eq, finish } from "./lib/harness.ts";
   put("[slug]/page.tsx");
   eq(scanPageSurfaces(root).refusals.length, 1, "a dynamic top level segment is refused rather than listed");
   rmSync(root, { recursive: true, force: true });
+}
+
+// --- isOpaqueScriptError (#3323) ---
+// The browser's sanitised report of an error thrown by a script from another
+// origin: the fixed text "Script error.", no file, line and column 0, no error
+// object. Judged on the NORMALISED report, which is what the route holds, so the
+// fixtures go through `normalizeClientError` exactly as a posted body does.
+{
+  const opaque = (over: Record<string, unknown> = {}) =>
+    normalizeClientError({ kind: "error", message: "Script error.", page: "/book", line: 0, col: 0, ...over })!;
+
+  assert(isOpaqueScriptError(opaque()), "the exact sanitised report, line and column 0, is opaque");
+  assert(
+    isOpaqueScriptError(opaque({ line: undefined, col: undefined })),
+    "an opaque report with no position at all is opaque",
+  );
+  assert(
+    isOpaqueScriptError(opaque({ source: "", stack: null })),
+    "an empty file name (what the browser sends) is no source",
+  );
+  assert(isOpaqueScriptError(opaque({ message: "  Script error.  " })), "surrounding whitespace is not detail");
+  assert(isOpaqueScriptError(opaque({ message: "Script error" })), "the wording without a full stop is opaque too");
+
+  // CONTROLS: any real detail means somebody can act on it, so it is NOT opaque.
+  assert(
+    !isOpaqueScriptError(opaque({ stack: "Error: Script error.\n    at x (https://slate.trypennie.app/a.js:1:2)" })),
+    "Script error. WITH a stack is not opaque",
+  );
+  assert(
+    !isOpaqueScriptError(opaque({ source: "https://slate.trypennie.app/_next/static/chunks/a.js" })),
+    "Script error. WITH a source is not opaque",
+  );
+  assert(!isOpaqueScriptError(opaque({ line: 12 })), "Script error. with a real line is not opaque");
+  assert(!isOpaqueScriptError(opaque({ col: 3 })), "Script error. with a real column is not opaque");
+  assert(
+    !isOpaqueScriptError(opaque({ message: "Script error. while saving" })),
+    "a message that merely starts with the phrase is not opaque",
+  );
+  assert(!isOpaqueScriptError(opaque({ message: "script error." })), "matched exactly, case included");
+  assert(
+    !isOpaqueScriptError(opaque({ kind: "unhandledrejection" })),
+    "only a window error event is sanitised this way, so a rejection is not opaque",
+  );
+  assert(!isOpaqueScriptError(opaque({ kind: "boundary" })), "a boundary catch is never opaque");
+  assert(
+    !isOpaqueScriptError(opaque({ message: "Cannot read properties of undefined" })),
+    "an ordinary error is not opaque",
+  );
 }
 
 finish();
