@@ -336,7 +336,14 @@ function correctionLine(c: ParityCorrection | undefined): string | null {
  * somebody who has left is a person deciding which system is wrong.
  */
 export function buildScheduleParityAlert(j: ParityJudgement): string {
-  const head = `${j.drifted} of ${j.total} ${agentWord(j.total)} ${byCount(j.drifted, "differs", "differ")} between Slate and cal.com.`;
+  // Count, then scale, and no ratio between them. The sweep's total is everybody
+  // either roster names, departed users and staff included, so "12 of 160" read as
+  // a small drift among the bookable agents; and the compared count cannot be the
+  // denominator either, since a roster finding (somebody who left and still
+  // hosts) is about a person outside it.
+  const head =
+    `${j.drifted} ${agentWord(j.drifted)} ${byCount(j.drifted, "differs", "differ")} between Slate and cal.com. ` +
+    `${j.compared} bookable ${agentWord(j.compared)} ${byCount(j.compared, "was", "were")} compared.`;
   const lines = j.paging.map(
     (f) => `${f.count} ${pagingLabel(f.verdict, f.count)}${agentList(f)}`,
   );
