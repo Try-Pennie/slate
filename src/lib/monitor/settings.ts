@@ -697,8 +697,8 @@ export const MONITOR_DEFAULTS = {
     // a day; 23 hours lets the next day's last attempt ask again if it still cannot.
     load_bar_unread: 23 * 60 * 60_000,
     // Something refused under the enforced content security policy (#2575). Each
-    // refusal is a page that did not fully load for a real person, and every lead
-    // on a broken page reports the same thing, so hourly per directive: a broken
+    // refusal is one resource blocked for a real person, and every lead on a broken
+    // page reports the same thing, so hourly per directive: a broken
     // deploy pages once an hour rather than once a lead, and a second kind of
     // refusal still pages on its own key.
     csp_violation: 60 * 60_000,
