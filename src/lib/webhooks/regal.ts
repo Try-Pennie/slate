@@ -10,8 +10,21 @@ import { lastNameAfter } from "@/lib/attendee";
 /**
  * Builds the Regal event payload directly (replacing the Cal.com -> Regal
  * Pipedream transform). Derived timezone/day/time fields mirror the old
- * moment-based logic. NOTE: Regal journeys must be updated to match the
- * 'Slate Booking …' event names and `eventSource: 'slate'`.
+ * moment-based logic.
+ *
+ * EVERY NAME THIS FILE SENDS IS AN EXTERNAL CONTRACT (#2314): the event names,
+ * `eventSource`, each property key and the trait keys. Regal journeys trigger on
+ * the event name and branch on property keys, and Regal templates merge
+ * properties into what a lead reads. Nothing on either side fails when one
+ * changes: Slate records a successful delivery, Regal accepts the body, and the
+ * journey silently never fires or the template merges an empty string.
+ *
+ * So the whole wire body is pinned in `regal.test.ts` ("the Regal wire
+ * contract"), and a rename, a drop or an addition fails there until the pin is
+ * edited. Editing the pin is the moment to do the Regal half too, in the same
+ * change: find every journey and template that reads the old name (Regal's
+ * journey list, and the sweeps in #2308 and #2309), move them to the new one,
+ * and for a rename send both names until the Regal side has moved.
  */
 
 // Keyed on the BOOKING events only (#2085). An agent trait carries no event name
