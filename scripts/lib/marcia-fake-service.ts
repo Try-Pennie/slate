@@ -110,8 +110,9 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
   const deps: MarciaDeps = {
     nowMs: () => now,
     slotSecret: "a-gateway-secret-for-the-suite-only-0000000000",
-    // Ignores `from` on purpose, as the real cached read does (#3381): the whole stored
-    // window comes back from now, so the operations must apply `from` themselves.
+    // Ignores `from` on purpose. The real read judges its tier and offered days from it
+    // (#4014, pinned in `slot-cache.test.ts`), but the operations apply `from` to the
+    // offer themselves whatever the reader does, and this keeps that floor under test.
     readSlots: async (code, _from, allowTest) => {
       const b = BUCKETS[code];
       if (!b || (b.is_test && !allowTest)) return null;
