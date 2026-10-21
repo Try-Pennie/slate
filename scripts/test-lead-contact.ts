@@ -1,5 +1,7 @@
-// #3541: the Salesforce Lead's name, email and phone, read for a Marcia booking whose
-// token carried none (Dan, 2026-10-20), through the injected SOQL runner.
+// #3541: the Salesforce Lead's name, email and phone, read for a Marcia move (or a
+// book landing on the lead's held call) whose token and earlier bookings lack one
+// (Dan, 2026-10-20; a net new book is refused before any lookup), through the
+// injected SOQL runner.
 //
 //   - one query, by the id, asking a constant field list;
 //   - Name, FirstName, Email kept; Phone first, MobilePhone when Phone is empty,
