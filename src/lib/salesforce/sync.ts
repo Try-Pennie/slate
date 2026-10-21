@@ -21,6 +21,8 @@ import {
 } from "@/lib/salesforce/manager-link";
 import { planReap } from "@/lib/salesforce/reap";
 import { deactivateUsersByIds } from "@/lib/bookable/routable-write";
+import { coverReapDepartures, type ReapCoverageCounts } from "@/lib/salesforce/reap-coverage";
+import type { OffboardingSweepPlan } from "@/lib/offboarding/coverage-trigger";
 import {
   presenceFromRecords,
   readSalesforceStanding,
@@ -275,6 +277,13 @@ export interface SyncResult {
   updated: number;
   deactivated: number;
   /**
+   * What moving the departed advisors' calls came to (#1678), one count per advisor the
+   * reap's write departed: a sweep queued, nothing to move, or an enqueue that failed. A
+   * failure leaves the departure standing and is backstopped by the inactive agent
+   * monitor's page.
+   */
+  departureCoverage: ReapCoverageCounts;
+  /**
    * Reapable rows the reap REFUSED to act on, because their address answers to
    * more than one Salesforce record and nothing stored says which is theirs
    * (#2387).
@@ -441,6 +450,13 @@ export interface SyncDeps {
    * it gets a fresh one, which is right for a standalone run and for a test.
    */
   allowance: ActivationAllowance;
+  /**
+   * The offboarding coverage a departure owes (#1678): the lifecycle API's own
+   * `coverDeparture`, so a leaver the reap departs has their calls moved exactly as one
+   * the offboarding automation departs. Loaded on first use, so a sync that departs
+   * nobody never loads the booking service behind it.
+   */
+  coverDeparture: (plan: OffboardingSweepPlan) => Promise<"queued" | "none" | "failed">;
 }
 
 const defaultSyncDeps = (): SyncDeps => ({
@@ -448,6 +464,7 @@ const defaultSyncDeps = (): SyncDeps => ({
   recordAudit,
   nowIso: () => new Date().toISOString(),
   allowance: activationAllowance(),
+  coverDeparture: async (plan) => (await (await import("@/lib/offboarding/service")).coverDeparture(plan)).coverageSweep,
 });
 
 /** One planned flip, carried from the roster loop to the attempt after inserts. */
@@ -1218,7 +1235,14 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
   // It throws on a refused statement rather than reporting `deactivated: N` over a
   // write the database would not make. The reap re-selects its candidates every
   // hour, so the cost of throwing is one retry.
-  await deactivateUsersByIds(toDeactivate, new Date().toISOString());
+  const departed = await deactivateUsersByIds(toDeactivate, new Date().toISOString());
+  // #1678: and their remaining calls move now, by the same offboarding coverage the
+  // lifecycle API runs, rather than waiting up to an hour for the inactive agent monitor
+  // to page a person. Only the rows this write departed, each under its own stamp.
+  const departureCoverage = await coverReapDepartures(departed, deps.coverDeparture);
+  if (departed.length > 0) {
+    log.info("sf-sync", { msg: "departed advisors' calls handed to the coverage sweep", ...departureCoverage });
+  }
   if (reapPlan.refused.length) {
     // Said out loud, because a reap that acted on nobody and a reap that had
     // nothing to do are the same run from outside (L98). Slate user ids only, so a
@@ -1263,6 +1287,7 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     inserted: inserts.length,
     updated,
     deactivated: toDeactivate.length,
+    departureCoverage,
     deactivationsRefusedAmbiguous: reapPlan.refused.length,
     createdUntiered,
     tieredNotOnSales,

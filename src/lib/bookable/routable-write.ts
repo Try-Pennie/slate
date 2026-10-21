@@ -228,21 +228,26 @@ async function recordTrait(e: TraitEmission, deps: RoutableWriteDeps): Promise<v
  * It deliberately does NOT revoke sessions or enqueue a coverage sweep. Sessions
  * are converged after the reap by `offboarding/session-convergence.ts` (#2459),
  * from the end state, so a failed ban is retried rather than lost with the row
- * that no longer matches the reap; the coverage sweep is #1678. This is only the
+ * that no longer matches the reap. The coverage sweep is the caller's (#1678,
+ * `coverReapDepartures`), which is why this returns the rows THIS write departed,
+ * each with the stamp it now carries: a row somebody else departed first is left
+ * out by the compare and swap, so it is never swept from here. This is only the
  * write, and the Regal trait every write here carries (#2085).
  */
 export async function deactivateUsersByIds(
   userIds: string[],
   stampIso: string,
   deps: RoutableWriteDeps = defaultRoutableWriteDeps,
-): Promise<void> {
-  if (!userIds.length) return;
+): Promise<{ id: string; deactivatedAtIso: string }[]> {
+  if (!userIds.length) return [];
+  let changed: Awaited<ReturnType<typeof writeRoutableState>>;
   try {
-    await writeRoutableState({ kind: "depart", userIds, stampIso }, deps);
+    changed = await writeRoutableState({ kind: "depart", userIds, stampIso }, deps);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new Error(`reap deactivation failed for ${userIds.length} user(s): ${detail}`);
   }
+  return changed.flatMap((r) => (r.deactivated_at ? [{ id: r.id, deactivatedAtIso: r.deactivated_at }] : []));
 }
 
 /**
