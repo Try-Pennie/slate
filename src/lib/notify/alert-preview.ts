@@ -3883,6 +3883,27 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     ),
   },
   {
+    // The ordinary morning, at the counts of 2026-10-21: every bookable agent
+    // compared, some keeping their own hours, and staff and an outside host
+    // expected to differ. It read "95 of 160 compared" and called all 21 standing
+    // agents weekless; each group is now said for what it is.
+    key: "schedule_parity_drift",
+    state: "they agree again with own hours and expected hosts standing",
+    channel: "recovery",
+    text: buildScheduleParityAllClear(
+      classifyParitySweep({
+        total: 160,
+        compared: 95,
+        runUrl: "https://github.com/x/y",
+        findings: [
+          { verdict: "hours-set-by-agent", count: 10, agents: ["jsullivan@"] },
+          { verdict: "staff-not-bookable", count: 10, agents: ["cfrank@"] },
+          { verdict: "known-not-in-slate", count: 1, agents: ["ops@"] },
+        ],
+      }),
+    ),
+  },
+  {
     key: "migration_version_lag",
     state: "shipped code is ahead of the applied schema",
     channel: "alert",
