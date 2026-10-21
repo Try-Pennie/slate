@@ -574,6 +574,48 @@ named.
 
 ---
 
+## Two calls on one advisor sit inside the buffer
+
+Keys: `booking_buffer_breach`.
+
+**What fired it.** Two upcoming active calls on one advisor sit closer than the call
+type's buffers allow: the later one starts less than the larger of the earlier call's
+after buffer and the later call's before buffer after the earlier one ends, or the two
+overlap (#3040). Neither call carries `allow_double_book`, and neither is in a test
+bucket. The advisor goes straight from one lead to the next with no time to write up
+the first, and an overlap means one lead will be kept waiting.
+
+**What it is not.** Every offer and every confirm judges the buffered window, so a
+breach is not an ordinary booking. A forced reassign (the manager picker, the demotion
+move back, the contact owner reassign) stacks a call on a busy advisor on purpose and
+sets `allow_double_book`; those pairs are counted as `forced` in the monitor's result
+(`bufferBreach.forced` and `bufferBreach.forcedPairs` in the `/api/cron/monitor`
+response, and the `buffer breaches` log line) and never page.
+
+**Check a pair.** The page names both bookings by id and links each one.
+- Open both. Confirm they are on the same advisor, both active, and at the times the
+  page says.
+- Compare each booking's `created_at` with when the call type's buffer last changed
+  (`/admin/event-types`, and the `event_type.gap` row in `audit_log`). **The usual
+  cause is a buffer raised after the bookings existed**: the 57 pairs behind #3040 were
+  all booked while the buffers were 0 and 0, before a hand edit (which left no audit
+  row) made them 10 and 10. Nothing moves a booking when a buffer is raised, so every
+  pair made under the old value breaches the new one until it passes.
+- The other usual cause is a forced move that did not mark itself: a reassign or a hand
+  edit that put a call on a busy advisor without `allow_double_book`. The routing trace
+  on the booking page (`reassignments`) says whether the call was moved.
+- A pair that fits neither, created after the buffer last changed and never moved, is a
+  booking path that skipped the buffer: a code fault. Keep both ids and file it.
+
+**Fix or escalate.** Move one call of each pair to another time or another advisor
+from its booking page, or leave a pair the manager wants stacked and accept the daily
+reminder until it passes. The page clears by itself once a measured tick finds no
+breach. If it pages on the first tick after a buffer was raised, the whole list is the
+bookings made under the old value: decide with the sales manager whether to move them
+or let them pass.
+
+---
+
 ## The warehouse mirror or an erasure is in doubt
 
 Keys: `snowflake_healthcheck`, `snowflake_reconcile_drift`, `snowflake_erasure_residual`,

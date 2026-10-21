@@ -463,6 +463,12 @@ import {
   formatDemotedAgentBookingsRecovery,
 } from "@/lib/monitor/inactive-agent-bookings";
 import {
+  formatBufferBreachAlert,
+  formatBufferBreachRecovery,
+  judgeBufferBreaches,
+  type BufferedBooking,
+} from "@/lib/monitor/buffer-breach";
+import {
   formatFallbackClearedRecovery,
   formatOooProtectionAlert,
   formatOooProtectionRecovery,
@@ -1118,6 +1124,25 @@ const mismatchPage = (
   found: OooEventMismatch[],
   escalation: Parameters<typeof oooEventMismatchAlert>[3],
 ): string => oooEventMismatchAlert("Heather McLellen", found, "https://slate.trypennie.app", escalation);
+
+/** A 10 and 10 buffered call for the buffer breach previews (#3040). */
+function previewCall(id: string, advisorId: string, advisorName: string, startsAt: string, durationMin: number): BufferedBooking {
+  // parse-ok: a literal timestamp written in this file, never stored data.
+  const startsMs = Date.parse(startsAt);
+  return {
+    id,
+    advisorId,
+    advisorName,
+    startsMs,
+    endsMs: startsMs + durationMin * 60_000,
+    bufferBeforeMin: 10,
+    bufferAfterMin: 10,
+    inTestBucket: false,
+    allowDoubleBook: false,
+  };
+}
+
+const previewBookingUrl = (id: string) => `https://slate.trypennie.app/admin/bookings/${id}`;
 
 export const ALERT_PREVIEWS: AlertPreview[] = [
   // --- calendar sync and push watches ---------------------------------------
@@ -2544,6 +2569,42 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "every appointment rerouted or reassigned",
     channel: "recovery",
     text: formatDemotedAgentBookingsRecovery(),
+  },
+
+  // --- two calls on one advisor inside the call type's buffer (#3040) --------
+  // Three shapes: back to back under a 10 minute buffer (what production held), an
+  // outright overlap beside a short gap, and the all clear.
+  {
+    key: "booking_buffer_breach",
+    state: "one pair back to back",
+    channel: "alert",
+    text: formatBufferBreachAlert(
+      judgeBufferBreaches([
+        previewCall("3f1c9a2e-0b7d-4c55-9e61-2a8d4f0c7b11", "u1", "Dana Ruiz", "2026-10-23T16:00:00.000Z", 20),
+        previewCall("8b2e4d70-61af-4f3c-b0d2-95c7e1a3f604", "u1", "Dana Ruiz", "2026-10-23T16:20:00.000Z", 20),
+      ]).breaches,
+      previewBookingUrl,
+    ),
+  },
+  {
+    key: "booking_buffer_breach",
+    state: "an overlap and a short gap on two advisors",
+    channel: "alert",
+    text: formatBufferBreachAlert(
+      judgeBufferBreaches([
+        previewCall("35b17a5c-9d0e-4f21-8a6b-1c2d3e4f5a60", "u1", "Dana Ruiz", "2026-10-23T18:00:00.000Z", 20),
+        previewCall("3acd0bac-7e1f-4a32-9b4c-5d6e7f8a9b01", "u1", "Dana Ruiz", "2026-10-23T18:10:00.000Z", 20),
+        previewCall("d7489fff-2a3b-4c4d-8e5f-6a7b8c9d0e12", "u2", "Sam Okafor", "2026-10-24T14:00:00.000Z", 20),
+        previewCall("fb1949ee-3b4c-4d5e-9f6a-7b8c9d0e1f23", "u2", "Sam Okafor", "2026-10-24T14:25:00.000Z", 20),
+      ]).breaches,
+      previewBookingUrl,
+    ),
+  },
+  {
+    key: "booking_buffer_breach",
+    state: "every pair moved, cancelled or passed",
+    channel: "recovery",
+    text: formatBufferBreachRecovery(),
   },
 
   // --- approved time off that has stopped blocking anything (#1467) ----------

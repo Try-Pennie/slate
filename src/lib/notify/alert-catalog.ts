@@ -850,6 +850,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Customers hold appointments with an agent who has left the pool that no coverage sweep has picked up, until someone reassigns them; a call a sweep holds is left to coverage_needs_human. The monitor lane re-measures every 5 minutes.",
   },
   {
+    key: "booking_buffer_breach",
+    kind: "condition",
+    why: "Two upcoming calls on one advisor sit closer than the call type's buffer, and neither was stacked there on purpose (#3040). It stays true until one call of each pair is moved, cancelled or passes, and the monitor lane re-measures every 5 minutes.",
+  },
+  {
     key: "demoted_agent_bookings",
     kind: "condition",
     why: "A customer holds an appointment with an agent moved off the pool it needs, and the automatic reroute did not move it, until someone reassigns them; the monitor lane re-measures every 5 minutes.",

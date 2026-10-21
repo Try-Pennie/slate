@@ -25,6 +25,7 @@ export const ALERT_FAMILIES = [
   "a-booking-side-effect-did-not-complete",
   "time-off-cover-or-protection-is-in-doubt",
   "the-roster-or-routing-data-is-wrong",
+  "two-calls-on-one-advisor-sit-inside-the-buffer",
   "the-warehouse-mirror-or-an-erasure-is-in-doubt",
   "a-limit-or-a-guard-is-not-working",
   "the-audit-log-was-changed-after-it-was-written",
@@ -256,6 +257,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   coverage_needs_human: "time-off-cover-or-protection-is-in-doubt",
   inactive_agent_bookings: "time-off-cover-or-protection-is-in-doubt",
   demoted_agent_bookings: "time-off-cover-or-protection-is-in-doubt",
+  // #3040. Two calls on one advisor closer than the buffers: its own procedure, since
+  // the cause is either a forced move that was not marked or a buffer raised under
+  // bookings that already existed, and the remedy is moving one call of the pair.
+  booking_buffer_breach: "two-calls-on-one-advisor-sit-inside-the-buffer",
   ooo_protection_lost: "time-off-cover-or-protection-is-in-doubt",
   ooo_busy_block_fallback: "time-off-cover-or-protection-is-in-doubt",
   ooo_event_mismatch: "time-off-cover-or-protection-is-in-doubt",

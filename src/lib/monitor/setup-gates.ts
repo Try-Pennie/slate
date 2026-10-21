@@ -116,6 +116,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   regalCallsUnreadable: SetupGate;
   regalCallOutcomes: SetupGate;
   offeredNobodyFree: SetupGate;
+  bufferBreach: SetupGate;
 } {
   return {
     // The scan compares every bucket's cached slot count against a live recompute,
@@ -229,5 +230,11 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // judging times no lead is being shown. The pools and the candidate reads it does
     // itself, inside its own step.
     offeredNobodyFree: gate(readiness, ["slotHealth", "businessHours"]),
+    // #3040: two active calls on one advisor closer than the buffers. It judges the
+    // bookings from now to the booking horizon, so the horizon IS its window: a
+    // guessed shorter one would post an all clear over pairs it never read, and a
+    // guessed longer one would page about calls past what the booker offers. The
+    // bookings, event types and buckets it reads itself, inside its own step.
+    bufferBreach: gate(readiness, ["horizonDays"]),
   };
 }

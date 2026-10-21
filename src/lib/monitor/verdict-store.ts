@@ -24,6 +24,7 @@ import {
   LANE_WATCHDOG_VERDICT_LANE,
   TIER_STAFFING_VERDICT_LANE,
   OFFERED_NOBODY_FREE_VERDICT_LANE,
+  BUFFER_BREACH_VERDICT_LANE,
   BELOW_LEAD_TIER_VERDICT_LANE,
   CROSS_SYSTEM_BOOKINGS_VERDICT_LANE,
   BURST_COUNTER_VERDICT_LANE,
@@ -112,6 +113,7 @@ const STAMP: Record<WorkerStampedVerdictLane, () => Promise<void>> = {
   [BUSY_MINUTES_VERDICT_LANE]: () => recordHeartbeat("verdict:busy-minutes"),
   [BUSY_DRIFT_VERDICT_LANE]: () => recordHeartbeat("verdict:busy-drift"),
   [OFFERED_NOBODY_FREE_VERDICT_LANE]: () => recordHeartbeat("verdict:offered-nobody-free"),
+  [BUFFER_BREACH_VERDICT_LANE]: () => recordHeartbeat("verdict:buffer-breach"),
   [CRON_BUDGET_VERDICT_LANE]: () => recordHeartbeat("verdict:cron-budget"),
 };
 

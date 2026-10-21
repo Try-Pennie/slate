@@ -14,6 +14,7 @@ import {
   existingAlertStateKeys,
 } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
+import { CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
 import {
   runRegalCallCheck,
   REGAL_CALL_ALERT_PREFIX,
@@ -140,6 +141,8 @@ import {
   type CrossSystemBookingsResult,
 } from "@/lib/monitor/cross-system-bookings";
 import { loadSlateUpcomingBookings } from "@/lib/monitor/cross-system-bookings-store";
+import { BUFFER_BREACH_KEY, runBufferBreachCheck, type BufferBreachResult } from "@/lib/monitor/buffer-breach";
+import { loadBookingsForBufferCheck } from "@/lib/monitor/buffer-breach-store";
 import { runPilotOfferSampleLive } from "@/lib/monitor/pilot-offers-live";
 import { runPilotSettingsSampleLive } from "@/lib/monitor/pilot-settings-samples-live";
 import { runTierVolumeChecks } from "@/lib/monitor/tier-volume";
@@ -251,6 +254,8 @@ import {
   busyDriftReachedVerdict,
   OFFERED_NOBODY_FREE_VERDICT_LANE,
   offeredNobodyFreeReachedVerdict,
+  BUFFER_BREACH_VERDICT_LANE,
+  bufferBreachReachedVerdict,
   OFFSITE_ORIGIN_VERDICT_LANE,
   offsiteOriginReachedVerdict,
   AUTH_SIGN_IN_VERDICT_LANE,
@@ -3290,6 +3295,48 @@ export async function GET(req: NextRequest) {
       }),
     );
 
+    // --- Two active calls on one advisor closer than the call type's buffers (#3040).
+    // Every offer and confirm judges the buffered window, so this measures the RESULT:
+    // a forced reassign (allow_double_book) stacks calls on purpose and is counted as
+    // `forced` in the result and the log line, never paged; anything else pages on
+    // booking_buffer_breach naming the pairs. A failed read throws, so the step fails
+    // and returns null rather than reading as no breaches; the all clear hangs only
+    // off a measured read. Gated on the horizon, which is the window it judges. ---
+    const bufferBreach = await steps.run<BufferBreachResult | null>("buffer_breach", null, async () => {
+      if (!gates.bufferBreach.run) {
+        log.warn("monitor", { msg: "buffer breach check skipped", why: gates.bufferBreach.why });
+        return null;
+      }
+      return runBufferBreachCheck({
+        load: () =>
+          loadBookingsForBufferCheck(
+            db,
+            new Date(now).toISOString(),
+            new Date(now + (horizonDays as number) * 24 * 60 * 60_000).toISOString(),
+          ),
+        // alert-key: booking_buffer_breach
+        // alert-text-ok: our own copy from buffer-breach.ts, built from booking ids,
+        // advisor names and times; no error text can reach it.
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
+        // alert-key: booking_buffer_breach
+        // all-clear-proof: scripts/test-buffer-breach.ts - a failed read throws out of
+        // the check and settles nothing, and only a measured read with no breach resolves.
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: CONDITION_REPEAT_MS,
+        bookingUrl: (id) => `${appUrl()}${bookingDetailHref(id)}`,
+      }).then((result) => {
+        log.info("monitor", {
+          msg: "buffer breaches",
+          key: BUFFER_BREACH_KEY,
+          examined: result.examined,
+          unassigned: result.unassigned,
+          breaches: result.breaches,
+          forced: result.forced,
+        });
+        return result;
+      });
+    });
+
     // --- Appointments a coverage sweep GAVE UP on (#1242). The complement of the
     // check above: that one measures agents out of the pool, this one measures the
     // sweep's own terminal outcomes, so it covers every origin (admin panel, an
@@ -4765,6 +4812,8 @@ export async function GET(req: NextRequest) {
       recordDetectorVerdict(AVAILABILITY_TRUTH_VERDICT_LANE, truthReachedVerdict(availabilityTruth)),
       // #3381: only a tick that judged at least one served time stamps.
       recordDetectorVerdict(OFFERED_NOBODY_FREE_VERDICT_LANE, offeredNobodyFreeReachedVerdict(offeredNobodyFree)),
+      // #3040: only a tick that judged at least one booking with an assigned advisor stamps.
+      recordDetectorVerdict(BUFFER_BREACH_VERDICT_LANE, bufferBreachReachedVerdict(bufferBreach)),
       recordDetectorVerdict(FAILURE_RATE_VERDICT_LANE, failureRateReachedVerdict(failureRate)),
       recordDetectorVerdict(LOW_VOLUME_VERDICT_LANE, lowVolumeReachedVerdict(volume)),
       recordDetectorVerdict(
@@ -4885,6 +4934,10 @@ export async function GET(req: NextRequest) {
       ciHealth,
       inactiveBookings,
       demotedBookings,
+      // null when the step failed or its gate stood it down, never a zero: "could not
+      // read the bookings" must not read as "no advisor holds calls too close" (#3040).
+      // `forced` counts pairs a forced reassign stacked on purpose, which never page.
+      bufferBreach,
       strandedCoverage,
       // null when the step failed, never a clear-looking zero: this check's whole
       // subject is a gap nothing else records, so "could not look" must not read as
