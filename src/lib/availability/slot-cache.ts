@@ -792,6 +792,15 @@ export interface AvailabilityRoutingMeta {
  * parts are not split, so no wait is counted under two names. The business hours
  * read runs beside the cache and row reads (#3713), so the `hours` span overlaps
  * theirs: the parts are waits, not a partition of `slots`.
+ *
+ * `lookFromMs` (#4014) is for a caller asking for times from a LATER day than now,
+ * which today is only Marcia's find_times with a `from` date. When given, nothing
+ * before it is served, and both the tier pick and the offered open days are judged
+ * from it (from now when it is already past), so "next Friday" is answered with the
+ * tier that is open on Friday and the N open days from Friday. The cache, the stored
+ * rows and their key are untouched: every read still returns the whole stored
+ * horizon from now (#3381), and only this choice moves. The booker and every other
+ * caller pass none and are judged from now exactly as before.
  */
 export async function getBucketSlotsWithFallback(
   code: string,
@@ -800,6 +809,7 @@ export async function getBucketSlotsWithFallback(
   // Injected so the window can be driven at a fixed instant; the route passes its own.
   nowMs = Date.now(),
   timing?: SpanTimer,
+  opts: { lookFromMs?: number } = {},
 ): Promise<(ResolvedBucketSlots & { routing: AvailabilityRoutingMeta }) | null> {
   const timed = spanOrRun(timing);
   const requested = await getCachedBucketSlots(code, from, HORIZON_DAYS, timing);
@@ -834,12 +844,20 @@ export async function getBucketSlotsWithFallback(
   // window is imposed: the stored rows already hold the horizon the settings ask
   // for, which is exactly what was served before this existed, so an unreadable
   // week or setting degrades to the old behaviour rather than to no times at all.
+  // #4014: the window is counted from the day a caller asked to look from, never
+  // from a day already past.
+  const floorMs = opts.lookFromMs ?? null;
+  const anchorMs = floorMs !== null && floorMs > nowMs ? floorMs : nowMs;
   const offeredWin = await timed(SERVER_TIMING_NAMES.hours, () =>
-    offeredWindow(nowMs, requested.eventType.min_notice_min),
+    offeredWindow(anchorMs, requested.eventType.min_notice_min),
   );
   const windowEndMs = offeredWin?.endMs ?? null;
+  // An unreadable stamp is never served to a caller with a floor, as it is never
+  // inside a window.
+  const fromFloor = (slots: string[]) =>
+    floorMs === null ? slots : slots.filter((s) => (parseStampMs(s) ?? -Infinity) >= floorMs);
   const inWindow = (slots: string[]) =>
-    windowEndMs === null ? slots : slots.filter((s) => (parseStampMs(s) ?? Infinity) < windowEndMs);
+    windowEndMs === null ? fromFloor(slots) : fromFloor(slots).filter((s) => (parseStampMs(s) ?? Infinity) < windowEndMs);
 
   // Pre-seed the seen map with the already-fetched requested bucket so neither
   // pass ever fetches it again, and the second pass reads no bucket twice.
@@ -879,7 +897,7 @@ export async function getBucketSlotsWithFallback(
   // next day anybody allowed has free when day four is full too, rather than no
   // times at all. `window_extended` is what the route alerts on: somebody should
   // look whenever this happens.
-  const beyond = await walk((slots) => slots);
+  const beyond = await walk(fromFloor);
   if (beyond) return served(beyond, true) ?? withRouting({ ...requested, slots: [] }, 0);
   return withRouting({ ...requested, slots: [] }, 0);
 }
