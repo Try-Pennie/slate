@@ -25,9 +25,9 @@
 //
 // So the control now aims at the bound that IS exact, the per address HOURLY cap,
 // and reads WHICH ceiling refused from the deployment's own echo rather than
-// inferring it from a 429. Both ceilings answer 429 through one refusal and the
-// per key one is checked FIRST, so a verdict that assumed a 429 was the address
-// one would credit a ceiling that was never reached (L70).
+// inferring it from a 429. Both ceilings answer 429 through one refusal and a
+// per key refusal wins over the address one (#3124), so a verdict that assumed a
+// 429 was the address one would credit a ceiling whose verdict was not the answer (L70).
 //
 // Run: node --experimental-strip-types scripts/test-loadtest-ceiling-control.ts
 import { readFileSync } from "node:fs";
@@ -95,7 +95,7 @@ const EXACT = 200;
   eq(ceilingControlBudget(0), 1, "a zero bound still sends something rather than nothing");
 }
 
-// --- the pace stays under the per KEY ceiling, which is checked FIRST -------------
+// --- the pace stays under the per KEY ceiling, whose refusal wins -----------------
 {
   assert(
     CEILING_CONTROL_KEY_SHARE < 1,
@@ -105,7 +105,7 @@ const EXACT = 200;
   assert(
     pace < BOOKING_API_WRITE_LIMITER.perMinute,
     `the pace (${pace}) stays under the per key ceiling (${BOOKING_API_WRITE_LIMITER.perMinute}), ` +
-      "which returns before the per address one is even reached",
+      "whose refusal wins over the per address one's (#3124)",
   );
   assert(
     pace > DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES[0]!.max / 60,
