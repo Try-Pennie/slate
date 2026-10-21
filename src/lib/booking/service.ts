@@ -3103,6 +3103,34 @@ export async function existingCallForLanding(
 const KNOWN_CONTACT_ROWS = 5;
 
 /**
+ * What this person's own bookings hold, newest first per field, in one world: the
+ * ONE read behind the landing prefill (#2208) and Marcia's contact fill (#3541), so
+ * the two cannot key a lead's details two ways. `salesforceIds` are spellings of ONE
+ * lead (Marcia passes its 15 and 18 character forms, the landing page the one it
+ * was given), never a list of leads. THROWS on a failed read; each caller decides
+ * what a failure means for it.
+ */
+export async function readKnownContact(salesforceIds: readonly string[], world: NamedWorld, context: string): Promise<KnownContact | null> {
+  const ids = [...new Set(salesforceIds.map((id) => id.trim()).filter((id) => id.length > 0))];
+  if (ids.length === 0) return null;
+  const rows = unwrap(
+    await supabaseAdmin()
+      .from("bookings")
+      .select(
+        "id, created_at, attendee_name, attendee_first_name, attendee_email, attendee_phone, buckets!inner(is_test)",
+      )
+      .eq("buckets.is_test", world.isTest)
+      // in-chunk-ok: the spellings of one lead's id, two at most, never a paged list.
+      .in("salesforce_id", ids)
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(KNOWN_CONTACT_ROWS),
+    context,
+  ) as KnownContactRow[] | null;
+  return knownContactFromBookings(rows ?? []);
+}
+
+/**
  * What Slate already holds about the lead a landing link identifies (#2208).
  *
  * The same id `existingCallForLanding` recognises them by, asked of the same table
@@ -3127,20 +3155,7 @@ export async function knownContactForLanding(
   const salesforceId = identity.salesforceId?.trim();
   if (!salesforceId) return null;
   try {
-    const rows = unwrap(
-      await supabaseAdmin()
-        .from("bookings")
-        .select(
-          "id, created_at, attendee_name, attendee_first_name, attendee_email, attendee_phone, buckets!inner(is_test)",
-        )
-        .eq("buckets.is_test", world.isTest)
-        .eq("salesforce_id", salesforceId)
-        .order("created_at", { ascending: false })
-        .order("id", { ascending: false })
-        .limit(KNOWN_CONTACT_ROWS),
-      "landing known-contact lookup",
-    ) as KnownContactRow[] | null;
-    return knownContactFromBookings(rows ?? []);
+    return await readKnownContact([salesforceId], world, "landing known-contact lookup");
   } catch (err) {
     log.warn(
       "booking",

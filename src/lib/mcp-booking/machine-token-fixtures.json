@@ -163,30 +163,50 @@
     {
       "name": "missing name",
       "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJtYXJjaWEiLCJhdWQiOiJzbGF0ZS1ib29raW5nIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsIm5vbmNlIjoiZml4dHVyZS1hdHRlbXB0LTAwMDAwMDAwMDEiLCJzYWxlc2ZvcmNlX2lkIjoiMDBRMDAwMDAwMDAwMDAwQUFBIiwiYnVja2V0X2NvZGUiOiI0MTEiLCJlbWFpbCI6ImZpeHR1cmUubGVhZEBleGFtcGxlLmNvbSIsInBob25lIjoiKzE1NTU1NTUwMTAwIiwidGltZV96b25lIjoiQW1lcmljYS9DaGljYWdvIiwidGVzdCI6ZmFsc2V9.2kjQuaGxYp9dLFDHxfPV2Mtj4t7I8XYr9_ThsLCMQrs",
-      "expect": "token_claim_missing",
-      "claim": "name",
-      "shapeExpect": "token_claim_missing"
+      "expect": "ok",
+      "shapeExpect": "ok"
+    },
+    {
+      "name": "empty name",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJtYXJjaWEiLCJhdWQiOiJzbGF0ZS1ib29raW5nIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsIm5vbmNlIjoiZml4dHVyZS1hdHRlbXB0LTAwMDAwMDAwMDEiLCJzYWxlc2ZvcmNlX2lkIjoiMDBRMDAwMDAwMDAwMDAwQUFBIiwiYnVja2V0X2NvZGUiOiI0MTEiLCJuYW1lIjoiIiwiZW1haWwiOiJmaXh0dXJlLmxlYWRAZXhhbXBsZS5jb20iLCJwaG9uZSI6IisxNTU1NTU1MDEwMCIsInRpbWVfem9uZSI6IkFtZXJpY2EvQ2hpY2FnbyIsInRlc3QiOmZhbHNlfQ.46mY6JBJILi5Ur_U2dMGr0Fa76G_nowg5jrpWRBwlbY",
+      "expect": "ok",
+      "shapeExpect": "ok"
     },
     {
       "name": "missing email",
       "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJtYXJjaWEiLCJhdWQiOiJzbGF0ZS1ib29raW5nIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsIm5vbmNlIjoiZml4dHVyZS1hdHRlbXB0LTAwMDAwMDAwMDEiLCJzYWxlc2ZvcmNlX2lkIjoiMDBRMDAwMDAwMDAwMDAwQUFBIiwiYnVja2V0X2NvZGUiOiI0MTEiLCJuYW1lIjoiRml4dHVyZSBMZWFkIiwicGhvbmUiOiIrMTU1NTU1NTAxMDAiLCJ0aW1lX3pvbmUiOiJBbWVyaWNhL0NoaWNhZ28iLCJ0ZXN0IjpmYWxzZX0.9helpX50oMEJO1GB9pmRyCwk-UJlS8KNKO1Fx2K_P80",
-      "expect": "token_claim_missing",
-      "claim": "email",
-      "shapeExpect": "token_claim_missing"
+      "expect": "ok",
+      "shapeExpect": "ok"
+    },
+    {
+      "name": "empty email",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJtYXJjaWEiLCJhdWQiOiJzbGF0ZS1ib29raW5nIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsIm5vbmNlIjoiZml4dHVyZS1hdHRlbXB0LTAwMDAwMDAwMDEiLCJzYWxlc2ZvcmNlX2lkIjoiMDBRMDAwMDAwMDAwMDAwQUFBIiwiYnVja2V0X2NvZGUiOiI0MTEiLCJuYW1lIjoiRml4dHVyZSBMZWFkIiwiZW1haWwiOiIiLCJwaG9uZSI6IisxNTU1NTU1MDEwMCIsInRpbWVfem9uZSI6IkFtZXJpY2EvQ2hpY2FnbyIsInRlc3QiOmZhbHNlfQ.4v5pBV-Zz-YYB4lUx4bhDpDESAwu64AoGe76O6fU-MM",
+      "expect": "ok",
+      "shapeExpect": "ok"
     },
     {
       "name": "missing phone",
       "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJtYXJjaWEiLCJhdWQiOiJzbGF0ZS1ib29raW5nIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsIm5vbmNlIjoiZml4dHVyZS1hdHRlbXB0LTAwMDAwMDAwMDEiLCJzYWxlc2ZvcmNlX2lkIjoiMDBRMDAwMDAwMDAwMDAwQUFBIiwiYnVja2V0X2NvZGUiOiI0MTEiLCJuYW1lIjoiRml4dHVyZSBMZWFkIiwiZW1haWwiOiJmaXh0dXJlLmxlYWRAZXhhbXBsZS5jb20iLCJ0aW1lX3pvbmUiOiJBbWVyaWNhL0NoaWNhZ28iLCJ0ZXN0IjpmYWxzZX0.NVJxmS3bV7qM0n_Z684ozsYTGL4v6A3C_G3nEyuBQvI",
-      "expect": "token_claim_missing",
-      "claim": "phone",
-      "shapeExpect": "token_claim_missing"
+      "expect": "ok",
+      "shapeExpect": "ok"
+    },
+    {
+      "name": "empty phone",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJtYXJjaWEiLCJhdWQiOiJzbGF0ZS1ib29raW5nIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsIm5vbmNlIjoiZml4dHVyZS1hdHRlbXB0LTAwMDAwMDAwMDEiLCJzYWxlc2ZvcmNlX2lkIjoiMDBRMDAwMDAwMDAwMDAwQUFBIiwiYnVja2V0X2NvZGUiOiI0MTEiLCJuYW1lIjoiRml4dHVyZSBMZWFkIiwiZW1haWwiOiJmaXh0dXJlLmxlYWRAZXhhbXBsZS5jb20iLCJwaG9uZSI6IiIsInRpbWVfem9uZSI6IkFtZXJpY2EvQ2hpY2FnbyIsInRlc3QiOmZhbHNlfQ.0dLOXJju4D06e0ryn3OLpQOx4eJcuGIrR7-JVDVGglA",
+      "expect": "ok",
+      "shapeExpect": "ok"
     },
     {
       "name": "missing time_zone",
       "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJtYXJjaWEiLCJhdWQiOiJzbGF0ZS1ib29raW5nIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsIm5vbmNlIjoiZml4dHVyZS1hdHRlbXB0LTAwMDAwMDAwMDEiLCJzYWxlc2ZvcmNlX2lkIjoiMDBRMDAwMDAwMDAwMDAwQUFBIiwiYnVja2V0X2NvZGUiOiI0MTEiLCJuYW1lIjoiRml4dHVyZSBMZWFkIiwiZW1haWwiOiJmaXh0dXJlLmxlYWRAZXhhbXBsZS5jb20iLCJwaG9uZSI6IisxNTU1NTU1MDEwMCIsInRlc3QiOmZhbHNlfQ.AeIW-iotDV8-HcXk5ejsDsBYZoV_Ml3bVySKGfrdLpg",
-      "expect": "token_claim_missing",
-      "claim": "time_zone",
-      "shapeExpect": "token_claim_missing"
+      "expect": "ok",
+      "shapeExpect": "ok"
+    },
+    {
+      "name": "empty time_zone",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJtYXJjaWEiLCJhdWQiOiJzbGF0ZS1ib29raW5nIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsIm5vbmNlIjoiZml4dHVyZS1hdHRlbXB0LTAwMDAwMDAwMDEiLCJzYWxlc2ZvcmNlX2lkIjoiMDBRMDAwMDAwMDAwMDAwQUFBIiwiYnVja2V0X2NvZGUiOiI0MTEiLCJuYW1lIjoiRml4dHVyZSBMZWFkIiwiZW1haWwiOiJmaXh0dXJlLmxlYWRAZXhhbXBsZS5jb20iLCJwaG9uZSI6IisxNTU1NTU1MDEwMCIsInRpbWVfem9uZSI6IiIsInRlc3QiOmZhbHNlfQ.y6BBdXEJjq_VrFya1pTiaGolqVUwzZEZ9jWR7_uQijU",
+      "expect": "ok",
+      "shapeExpect": "ok"
     },
     {
       "name": "missing test",
@@ -194,6 +214,27 @@
       "expect": "token_claim_missing",
       "claim": "test",
       "shapeExpect": "token_claim_missing"
+    },
+    {
+      "name": "a name of only spaces",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJtYXJjaWEiLCJhdWQiOiJzbGF0ZS1ib29raW5nIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsIm5vbmNlIjoiZml4dHVyZS1hdHRlbXB0LTAwMDAwMDAwMDEiLCJzYWxlc2ZvcmNlX2lkIjoiMDBRMDAwMDAwMDAwMDAwQUFBIiwiYnVja2V0X2NvZGUiOiI0MTEiLCJuYW1lIjoiICAgIiwiZW1haWwiOiJmaXh0dXJlLmxlYWRAZXhhbXBsZS5jb20iLCJwaG9uZSI6IisxNTU1NTU1MDEwMCIsInRpbWVfem9uZSI6IkFtZXJpY2EvQ2hpY2FnbyIsInRlc3QiOmZhbHNlfQ.3RFUiNOCj_6GBg2tpb84gMfhN_3glJmP3jmtE0tdNVk",
+      "expect": "token_claim_invalid",
+      "claim": "name",
+      "shapeExpect": "token_claim_invalid"
+    },
+    {
+      "name": "an email with no @",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJtYXJjaWEiLCJhdWQiOiJzbGF0ZS1ib29raW5nIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsIm5vbmNlIjoiZml4dHVyZS1hdHRlbXB0LTAwMDAwMDAwMDEiLCJzYWxlc2ZvcmNlX2lkIjoiMDBRMDAwMDAwMDAwMDAwQUFBIiwiYnVja2V0X2NvZGUiOiI0MTEiLCJuYW1lIjoiRml4dHVyZSBMZWFkIiwiZW1haWwiOiJub3QgYW4gZW1haWwgYWRkcmVzcyIsInBob25lIjoiKzE1NTU1NTUwMTAwIiwidGltZV96b25lIjoiQW1lcmljYS9DaGljYWdvIiwidGVzdCI6ZmFsc2V9.mtO0e-6xf-sRl1h2BYzgy4cX05fOMZY5tDwRi4aVeY8",
+      "expect": "token_claim_invalid",
+      "claim": "email",
+      "shapeExpect": "token_claim_invalid"
+    },
+    {
+      "name": "a phone sent as a number",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJtYXJjaWEiLCJhdWQiOiJzbGF0ZS1ib29raW5nIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsIm5vbmNlIjoiZml4dHVyZS1hdHRlbXB0LTAwMDAwMDAwMDEiLCJzYWxlc2ZvcmNlX2lkIjoiMDBRMDAwMDAwMDAwMDAwQUFBIiwiYnVja2V0X2NvZGUiOiI0MTEiLCJuYW1lIjoiRml4dHVyZSBMZWFkIiwiZW1haWwiOiJmaXh0dXJlLmxlYWRAZXhhbXBsZS5jb20iLCJwaG9uZSI6MTU1NTU1NTAxMDAsInRpbWVfem9uZSI6IkFtZXJpY2EvQ2hpY2FnbyIsInRlc3QiOmZhbHNlfQ.4LfuYBXQEA2Lwfsbpu9M32MMa_xmhdgDCa5Ru6YvdyM",
+      "expect": "token_claim_invalid",
+      "claim": "phone",
+      "shapeExpect": "token_claim_invalid"
     }
   ]
 }

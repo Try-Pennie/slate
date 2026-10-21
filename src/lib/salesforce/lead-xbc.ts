@@ -23,6 +23,31 @@ export function leadIdKey(id: string): string {
   return id.slice(0, 15);
 }
 
+const ID_CHECKSUM_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+
+/**
+ * Both spellings of a Salesforce id, for a lookup that must find a row stored under
+ * either (#3541). `short` is `leadIdKey`; `long` is it plus the case checksum
+ * Salesforce defines: per five character block, one bit per uppercase letter (the
+ * first character the lowest bit), indexing `ID_CHECKSUM_ALPHABET`. An 18 character
+ * id is kept AS GIVEN, since that is the spelling a row written with it holds; only a
+ * 15 character one has its long form computed.
+ */
+export function leadIdSpellings(id: string): { short: string; long: string } {
+  const short = leadIdKey(id);
+  if (id.length === 18) return { short, long: id };
+  let suffix = "";
+  for (let block = 0; block < 3; block++) {
+    let bits = 0;
+    for (let i = 0; i < 5; i++) {
+      const c = short[block * 5 + i] ?? "";
+      if (c >= "A" && c <= "Z") bits |= 1 << i;
+    }
+    suffix += ID_CHECKSUM_ALPHABET[bits];
+  }
+  return { short, long: short + suffix };
+}
+
 /** A Salesforce LEAD id: the `00Q` key prefix, 15 or 18 characters. */
 export function isLeadId(id: string): boolean {
   return /^00Q[a-zA-Z0-9]{12}(?:[a-zA-Z0-9]{3})?$/.test(id);
