@@ -9,7 +9,13 @@
 // Every value is invented. The lead is nobody, the key is public on purpose and the
 // verifier refuses it in any real deployment (`usableTokenKeys`).
 import { FIXTURE_TOKEN_KEY, signMachineToken } from "../../src/lib/mcp-booking/machine-token.ts";
-import { bytesToBase64Url, MACHINE_TOKEN_CLAIMS, type MachineTokenClaim, type MachineTokenCode } from "../../src/lib/mcp-booking/token-shape.ts";
+import {
+  bytesToBase64Url,
+  MACHINE_TOKEN_CLAIMS,
+  MACHINE_TOKEN_OPTIONAL_CLAIMS,
+  type MachineTokenClaim,
+  type MachineTokenCode,
+} from "../../src/lib/mcp-booking/token-shape.ts";
 
 /** The instant every case is judged at, inside the good token's life. */
 export const FIXTURE_IAT = 1_790_000_000;
@@ -80,8 +86,27 @@ export async function buildFixtureFile(): Promise<FixtureFile> {
     { name: "not base64url", token: `${h}.${p}.not*base64`, expect: "token_malformed", shapeExpect: "token_malformed" },
     { name: "empty", token: "", expect: "token_malformed", shapeExpect: "token_malformed" },
   ];
+  const optional: ReadonlySet<MachineTokenClaim> = new Set(MACHINE_TOKEN_OPTIONAL_CLAIMS);
   for (const claim of MACHINE_TOKEN_CLAIMS) {
-    cases.push({ name: `missing ${claim}`, token: await sign(without(claim)), expect: "token_claim_missing", claim, shapeExpect: "token_claim_missing" });
+    if (optional.has(claim)) {
+      // Regal, which feeds Marcia, may not hold the lead's contact details or zone
+      // (Dan, 2026-10-20), so a token without one, or with it empty, still verifies.
+      cases.push({ name: `missing ${claim}`, token: await sign(without(claim)), expect: "ok", shapeExpect: "ok" });
+      cases.push({ name: `empty ${claim}`, token: await sign({ ...FIXTURE_CLAIMS, [claim]: "" }), expect: "ok", shapeExpect: "ok" });
+    } else {
+      cases.push({ name: `missing ${claim}`, token: await sign(without(claim)), expect: "token_claim_missing", claim, shapeExpect: "token_claim_missing" });
+    }
+  }
+  // Present and not empty, an optional claim is held to the rule it always had: a
+  // signer sending a broken value is told which one, never quietly booked without
+  // it. The unknown time zone case above is the fourth.
+  const malformed: [MachineTokenClaim, unknown, string][] = [
+    ["name", "   ", "a name of only spaces"],
+    ["email", "not an email address", "an email with no @"],
+    ["phone", 15555550100, "a phone sent as a number"],
+  ];
+  for (const [claim, value, what] of malformed) {
+    cases.push({ name: what, token: await sign({ ...FIXTURE_CLAIMS, [claim]: value }), expect: "token_claim_invalid", claim, shapeExpect: "token_claim_invalid" });
   }
   return {
     note:
