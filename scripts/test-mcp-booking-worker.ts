@@ -87,6 +87,10 @@ const rpc = (body: unknown, token: string | null = tokenA, method = "POST") =>
   for (const field of ["salesforce_id", "email", "phone", "name\"", "bucket"]) {
     assert(!schemas.includes(field), `no tool argument names the lead (${field})`);
   }
+  // Every schema forbids extra arguments, so an argument the operation reads must be
+  // declared here or the model never sends it.
+  const findTimes = BOOKING_TOOLS.find((t) => t.name === "find_times")?.inputSchema.properties ?? {};
+  eq(Object.keys(findTimes).sort(), ["from", "near", "time_zone"], "find_times declares from, near and time_zone");
 }
 
 // --- tools/call -------------------------------------------------------------------------
