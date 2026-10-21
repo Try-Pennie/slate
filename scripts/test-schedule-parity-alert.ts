@@ -397,12 +397,95 @@ function sweep(over: Partial<ParitySweep> = {}): ParitySweep {
     ),
   );
   assert(/^1 agent was corrected from cal\.com automatically/m.test(clearOne), `the all clear says was too (${clearOne})`);
-  assert(/^1 still has no week to compare on one side, unchanged\.$/m.test(clearOne), `one standing agent has (${clearOne})`);
+  assert(/^1 has no week in cal\.com to compare\.$/m.test(clearOne), `one standing agent has (${clearOne})`);
 
   const clearMany = buildScheduleParityAllClear(
     classifyParitySweep(sweep({ findings: [{ verdict: "no-calcom-schedule", count: 2, agents: ["s@x"] }] })),
   );
-  assert(/^2 still have no week to compare on one side, unchanged\.$/m.test(clearMany), `many standing agents have (${clearMany})`);
+  assert(/^2 have no week in cal\.com to compare\.$/m.test(clearMany), `many standing agents have (${clearMany})`);
+}
+{
+  // The all clear of 2026-10-21, at its real counts. It said "95 of 160 agents
+  // compared" and "21 still have no week to compare on one side", and both misled:
+  // 160 is everybody either roster names (departed and staff included), every one
+  // of the 95 bookable agents had a week on both sides, and the 21 were three
+  // different things, none of them a missing week. So the denominator goes, and
+  // each standing verdict is said in its own words.
+  const clear = buildScheduleParityAllClear(
+    classifyParitySweep(
+      sweep({
+        total: 160,
+        compared: 95,
+        findings: [
+          { verdict: "hours-set-by-agent", count: 10, agents: ["a@x"] },
+          { verdict: "staff-not-bookable", count: 10, agents: ["m@x"] },
+          { verdict: "known-not-in-slate", count: 1, agents: ["k@x"] },
+        ],
+      }),
+    ),
+  );
+  eq(
+    clear,
+    [
+      "Both systems agree again: 95 agents compared, 85 identical.",
+      "10 keep hours they set themselves, which the import leaves alone.",
+      "Not compared, as expected: 10 managers or admins who host in cal.com, 1 cal.com host who is not in Slate.",
+    ].join("\n"),
+    "the 2026-10-21 all clear names each standing group for what it is",
+  );
+  assert(!/160/.test(clear), "it does not divide by everybody either roster names");
+
+  const nothingOwn = buildScheduleParityAllClear(classifyParitySweep(sweep({ compared: 95 })));
+  eq(nothingOwn, "Both systems agree again: 95 agents compared, no differences.", "a morning with nothing standing stays one line");
+
+  // At one, each count picks its own verb.
+  const one = buildScheduleParityAllClear(
+    classifyParitySweep(
+      sweep({
+        compared: 95,
+        findings: [
+          { verdict: "hours-set-by-agent", count: 1, agents: ["a@x"] },
+          { verdict: "staff-not-bookable", count: 1, agents: ["m@x"] },
+        ],
+      }),
+    ),
+  );
+  assert(/^1 keeps hours they set themselves, which the import leaves alone\.$/m.test(one), `one own week keeps (${one})`);
+  assert(/1 manager or admin who hosts in cal\.com\.$/m.test(one), `one staff host hosts (${one})`);
+
+  // An agent the sweep lost is said, not dropped: the all clear may only claim the
+  // ones it compared (L98).
+  const lost = buildScheduleParityAllClear(
+    classifyParitySweep(sweep({ compared: 93, findings: [{ verdict: "calcom-unreachable", count: 2, agents: ["u@x"] }] })),
+  );
+  assert(/^2 could not be read, so nothing is claimed about them\.$/m.test(lost), `unread agents are said (${lost})`);
+}
+{
+  // Every standing verdict has its own words in the all clear, at one and at many.
+  // Driven off the classification, so a standing verdict added tomorrow cannot fall
+  // into a lump with somebody else's reason, which is the 2026-10-21 defect.
+  const standing = Object.entries(PARITY_VERDICT_CLASS)
+    .filter(([, cls]) => cls === "standing")
+    .map(([v]) => v);
+  const said = new Map<string, string>();
+  for (const v of standing) {
+    const clear = buildScheduleParityAllClear(
+      classifyParitySweep(sweep({ findings: [{ verdict: v, count: 1, agents: ["s@x"] }] })),
+    );
+    const twin = said.get(clear);
+    assert(twin === undefined, `${v} reads differently from ${twin} (${clear})`);
+    said.set(clear, v);
+  }
+  for (const v of standing) {
+    for (const count of [1, 2]) {
+      const clear = buildScheduleParityAllClear(
+        classifyParitySweep(sweep({ findings: [{ verdict: v, count, agents: ["s@x"] }] })),
+      );
+      assert(!clear.includes(v), `${v} at ${count} is said in words, not its name (${clear})`);
+      assert(new RegExp(`(^|[:,] )${count} `, "m").test(clear), `${v} at ${count} is counted (${clear})`);
+      assert(!/undefined|NaN/.test(clear), `${v} at ${count} leaks nothing (${clear})`);
+    }
+  }
 }
 {
   // Every paging verdict reads correctly at one. Driven off the classification

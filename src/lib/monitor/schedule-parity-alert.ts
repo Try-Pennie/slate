@@ -96,6 +96,48 @@ export const PARITY_VERDICT_CLASS = {
 
 export type ParityVerdict = keyof typeof PARITY_VERDICT_CLASS;
 
+type StandingVerdict = {
+  [V in ParityVerdict]: (typeof PARITY_VERDICT_CLASS)[V] extends "standing" ? V : never;
+}[ParityVerdict];
+
+/**
+ * How each standing verdict is said in the all clear, and which line it joins.
+ *
+ * Every one has its own words because the all clear of 2026-10-21 summed them into
+ * "21 still have no week to compare on one side", which was true of none of the
+ * 21: ten were agents keeping their own hours, ten were staff who host in cal.com,
+ * and one was a host who is deliberately not in Slate. Keyed on the classification,
+ * so a standing verdict added tomorrow fails the build until it is given words.
+ *
+ * `own` is compared and differs on purpose, `missing` could not be compared for a
+ * reason worth fixing, and `expected` is somebody nobody should compare.
+ */
+const STANDING_WORDS: Record<StandingVerdict, { line: "own" | "missing" | "expected"; one: string; many: string }> = {
+  "staff-not-bookable": {
+    line: "expected",
+    one: "manager or admin who hosts in cal.com",
+    many: "managers or admins who host in cal.com",
+  },
+  "known-not-in-slate": {
+    line: "expected",
+    one: "cal.com host who is not in Slate",
+    many: "cal.com hosts who are not in Slate",
+  },
+  "not-bookable-by-design": {
+    line: "expected",
+    one: "cal.com host no pool could route to",
+    many: "cal.com hosts no pool could route to",
+  },
+  "no-slate-schedule": { line: "missing", one: "has no week in Slate to compare", many: "have no week in Slate to compare" },
+  "no-calcom-schedule": { line: "missing", one: "has no week in cal.com to compare", many: "have no week in cal.com to compare" },
+  "no-calcom-user": { line: "missing", one: "has no cal.com account to compare", many: "have no cal.com account to compare" },
+  "hours-set-by-agent": {
+    line: "own",
+    one: "keeps hours they set themselves, which the import leaves alone",
+    many: "keep hours they set themselves, which the import leaves alone",
+  },
+};
+
 /**
  * How each paging verdict is said to a person, in the vocabulary of the roster, at
  * one agent and at many. Both forms are written out because the verb is what
@@ -196,6 +238,9 @@ export interface ParityJudgement {
   drifted: number;
   /** Agents in a standing condition, counted so it is knowable and never paged. */
   standing: number;
+  /** The standing findings one by one, in `PARITY_VERDICT_CLASS` order, so the all
+   *  clear can say what each one is rather than one sum of unlike things. */
+  standingFindings: ParityFinding[];
   /** Agents nothing could be learned about. */
   unmeasured: number;
   /** Only the paging findings, worst first, in `PARITY_VERDICT_CLASS` order. */
@@ -219,15 +264,22 @@ const CLASS_ORDER = Object.keys(PARITY_VERDICT_CLASS);
  */
 export function classifyParitySweep(sweep: ParitySweep): ParityJudgement {
   const paging: ParityFinding[] = [];
+  const standingFindings: ParityFinding[] = [];
   let standing = 0;
   let unmeasured = 0;
   for (const f of sweep.findings) {
     const cls = PARITY_VERDICT_CLASS[f.verdict as ParityVerdict];
     if (cls === "paging") paging.push(f);
-    else if (cls === "standing") standing += f.count;
+    else if (cls === "standing") {
+      standing += f.count;
+      standingFindings.push(f);
+    }
     else if (cls === "unmeasured") unmeasured += f.count;
   }
-  paging.sort((a, b) => CLASS_ORDER.indexOf(a.verdict) - CLASS_ORDER.indexOf(b.verdict));
+  const byClassOrder = (a: ParityFinding, b: ParityFinding) =>
+    CLASS_ORDER.indexOf(a.verdict) - CLASS_ORDER.indexOf(b.verdict);
+  paging.sort(byClassOrder);
+  standingFindings.sort(byClassOrder);
   const drifted = paging.reduce((n, f) => n + f.count, 0);
   const action: ParityJudgement["action"] =
     sweep.compared <= 0 ? "unmeasured" : paging.length > 0 ? "page" : "all-clear";
@@ -237,6 +289,7 @@ export function classifyParitySweep(sweep: ParitySweep): ParityJudgement {
     compared: sweep.compared,
     drifted,
     standing,
+    standingFindings,
     unmeasured,
     paging,
     corrected: sweep.corrected,
@@ -316,19 +369,40 @@ export function buildScheduleParityAlert(j: ParityJudgement): string {
  * agents. `classifyParitySweep` is what enforces that; this states the number it
  * compared so a reader can tell a full sweep from a thin one at a glance, rather
  * than having to trust the word "all" (#1152).
+ *
+ * It does NOT state the sweep's total. That is everybody either roster names,
+ * departed users and staff included, so "95 of 160 compared" read as 59% coverage
+ * on a morning every bookable agent was compared. What was not compared is said
+ * instead, each group for what it is.
  */
 export function buildScheduleParityAllClear(j: ParityJudgement): string {
+  const said = j.standingFindings.flatMap((f) => {
+    const words = STANDING_WORDS[f.verdict as StandingVerdict];
+    return words ? [{ ...words, count: f.count }] : [];
+  });
+  const own = said.filter((w) => w.line === "own").reduce((n, w) => n + w.count, 0);
   const parts = [
-    `Both systems agree again: ${j.compared} of ${j.total} ${agentWord(j.total)} compared, no differences.`,
+    own > 0
+      ? `Both systems agree again: ${j.compared} ${agentWord(j.compared)} compared, ${Math.max(0, j.compared - own)} identical.`
+      : `Both systems agree again: ${j.compared} ${agentWord(j.compared)} compared, no differences.`,
   ];
   // A morning where the lane repaired twenty agents and a morning where nothing
   // had drifted are not the same event, and rendering them identically hides the
   // whole thing the lane does (L680).
   const corrected = correctionLine(j.corrected);
   if (corrected) parts.push(corrected);
-  if (j.standing > 0) {
-    parts.push(`${j.standing} still ${byCount(j.standing, "has", "have")} no week to compare on one side, unchanged.`);
+  for (const w of said) {
+    if (w.line !== "expected") parts.push(`${w.count} ${byCount(w.count, w.one, w.many)}.`);
   }
+  // The all clear claims only the agents it compared, so the ones it lost are
+  // said rather than left out of the count (L98).
+  if (j.unmeasured > 0) {
+    parts.push(`${j.unmeasured} could not be read, so nothing is claimed about them.`);
+  }
+  const expected = said
+    .filter((w) => w.line === "expected")
+    .map((w) => `${w.count} ${byCount(w.count, w.one, w.many)}`);
+  if (expected.length > 0) parts.push(`Not compared, as expected: ${expected.join(", ")}.`);
   return parts.join("\n");
 }
 
