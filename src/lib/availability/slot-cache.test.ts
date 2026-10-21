@@ -358,6 +358,67 @@ describe("getBucketSlotsWithFallback", () => {
       expect(result!.routing.window_extended).toBe(false);
       expect(result!.routing.offered_open_days).toBeNull();
     });
+
+    // #4014: Marcia's find_times asks for times from a later day ("next Friday"). The
+    // tier and the offered days are judged from that day for her, while the booker,
+    // which passes no lookFromMs, keeps judging from now.
+    describe("a caller looking from a later day (#4014)", () => {
+      // Friday 2026-06-12 00:00 New York.
+      const FRI_START = Date.parse("2026-06-12T04:00:00.000Z");
+      const SAT = "2026-06-13T14:00:00.000Z";
+      const SUN = "2026-06-14T14:00:00.000Z";
+      const NEXT_MON = "2026-06-15T14:00:00.000Z";
+
+      it("picks a lower tier open on that day when the lead's own tier has times only before it", async () => {
+        mockResolveBucketSlots.mockImplementation(async (code: string) => {
+          if (code === "511") return makeBucketSlots("511", [MON]);
+          if (code === "411") return makeBucketSlots("411", [FRI]);
+          return makeBucketSlots(code, []);
+        });
+
+        const later = await getBucketSlotsWithFallback("511", FROM_ISO, false, NOW, undefined, { lookFromMs: FRI_START });
+        expect(later!.bucket.code).toBe("411");
+        expect(later!.slots).toEqual([FRI]);
+        expect(later!.routing.window_extended).toBe(false);
+
+        // The booker, which passes no lookFromMs, still judges from now.
+        const booker = await getBucketSlotsWithFallback("511", FROM_ISO, false, NOW);
+        expect(booker!.bucket.code).toBe("511");
+        expect(booker!.slots).toEqual([MON]);
+      });
+
+      it("counts the offered open days from that day, not from now", async () => {
+        mockResolveBucketSlots.mockResolvedValue(makeBucketSlots("411", [MON, FRI, SAT, SUN, NEXT_MON]));
+
+        const later = await getBucketSlotsWithFallback("411", FROM_ISO, false, NOW, undefined, { lookFromMs: FRI_START });
+        expect(later!.slots).toEqual([FRI, SAT, SUN]);
+        expect(later!.routing.window_extended).toBe(false);
+
+        const booker = await getBucketSlotsWithFallback("411", FROM_ISO, false, NOW);
+        expect(booker!.slots).toEqual([MON]);
+      });
+
+      it("serves nothing before that day, even as the last resort", async () => {
+        // Every tier is full from Friday for three days; the fourth day opens on the
+        // lead's own tier, and Monday's earlier time is still not offered.
+        mockResolveBucketSlots.mockImplementation(async (code: string) =>
+          code === "411" ? makeBucketSlots("411", [MON, NEXT_MON]) : makeBucketSlots(code, []),
+        );
+
+        const later = await getBucketSlotsWithFallback("411", FROM_ISO, false, NOW, undefined, { lookFromMs: FRI_START });
+        expect(later!.slots).toEqual([NEXT_MON]);
+        expect(later!.routing.window_extended).toBe(true);
+      });
+
+      it("judges from now when the day asked for is already past", async () => {
+        mockResolveBucketSlots.mockResolvedValue(makeBucketSlots("411", [MON, WED, THU]));
+
+        const result = await getBucketSlotsWithFallback("411", FROM_ISO, false, NOW, undefined, {
+          lookFromMs: NOW - 2 * 24 * 60 * 60 * 1000,
+        });
+        expect(result!.slots).toEqual([MON, WED]);
+      });
+    });
   });
 
   it("skips an is_test bucket in the cascade so a real lower tier wins", async () => {
