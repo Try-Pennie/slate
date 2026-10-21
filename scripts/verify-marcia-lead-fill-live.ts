@@ -32,7 +32,7 @@
 // Lead contact fill".
 import { readFileSync } from "node:fs";
 import { loadEnvFiles } from "./smoke-env.ts";
-import { runMeetsCanary } from "./lib/reroute-live-check.ts";
+import { liveTestWorldPreflight } from "./lib/live-test-world-preflight.ts";
 import {
   BOOKING_MCP_URL,
   LEAD_FILL_OUTCOMES,
@@ -79,9 +79,9 @@ if (process.env.MARCIA_TOKEN_KEY_FILE) {
 const keyRead = tokenKeyFrom(keyFile, process.env.MARCIA_TOKEN_KEY_A);
 if ("problem" in keyRead) exit("notConfigured", keyRead.problem);
 const KEY = keyRead.key;
-if (!process.env.SUPABASE_SECRET_KEY || !process.env.NEXT_PUBLIC_SUPABASE_URL) exit("notConfigured", "no Supabase credentials in .env.local or .dev.vars");
 // The partner test bucket is smoketest@'s, whom the smoke canary also books.
-if (runMeetsCanary(Date.now())) exit("canaryWindow", "start again between eight and twenty one minutes past :00 or :30");
+const preflight = liveTestWorldPreflight(process.env, Date.now());
+if (preflight) exit(preflight.outcome, preflight.detail);
 
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { unwrap } = await import("@/lib/db/result");

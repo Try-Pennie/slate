@@ -1,4 +1,4 @@
-// #4006: the pure decisions behind `pnpm verify:marcia-lead-fill`, pinned offline
+// #4006: the pure decisions behind `scripts/verify-marcia-lead-fill-live.ts`, pinned offline
 // (`scripts/lib/marcia-lead-fill-check.ts`), so the live run is spent only on what no
 // fixture can answer: the deployed Worker's Salesforce Lead read, against the real org.
 //
@@ -19,6 +19,7 @@ import {
 import { FIXTURE_TOKEN_KEY, signMachineToken, verifyMachineToken } from "../src/lib/mcp-booking/machine-token.ts";
 import { PARTNER_BUCKET_CODE } from "../src/lib/embed/public-test-bucket.ts";
 import { bookingBucketFor } from "../src/lib/mcp-booking/operations.ts";
+import { liveTestWorldPreflight } from "./lib/live-test-world-preflight.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const NOW = Date.parse("2026-10-21T15:12:00.000Z");
@@ -107,6 +108,15 @@ assert(slateAnswersFirst(null, 1) !== null, "an active call would be the one mov
   assert(!shape.ok && shape.why.includes("401") && shape.why.includes("-32001"), "a protocol refusal is named by its status and code");
   const garbage = readToolAnswer(502, "<html>bad gateway</html>");
   assert(!garbage.ok && garbage.why.includes("not JSON"), "a body that is not JSON is said to be so");
+}
+
+// --- the shared preflight: credentials, then the canary's window --------------------------
+{
+  const creds = { SUPABASE_SECRET_KEY: "x", NEXT_PUBLIC_SUPABASE_URL: "https://x.example" };
+  eq(liveTestWorldPreflight({}, Date.parse("2026-10-21T15:12:00Z"))?.outcome, "notConfigured", "no Supabase credentials refuses first");
+  eq(liveTestWorldPreflight(creds, Date.parse("2026-10-21T15:12:00Z")), null, "twelve past the hour, clear of the canary, goes ahead");
+  eq(liveTestWorldPreflight(creds, Date.parse("2026-10-21T15:02:00Z"))?.outcome, "canaryWindow", "two past the hour meets the canary");
+  eq(liveTestWorldPreflight(creds, Date.parse("2026-10-21T15:24:00Z"))?.outcome, "canaryWindow", "a start whose run would reach the next window is refused too");
 }
 
 finish();

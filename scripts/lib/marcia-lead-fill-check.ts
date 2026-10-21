@@ -1,4 +1,4 @@
-// #4006: the pure decisions behind `pnpm verify:marcia-lead-fill`, pinned offline by
+// #4006: the pure decisions behind `scripts/verify-marcia-lead-fill-live.ts`, pinned offline by
 // `scripts/test-marcia-lead-fill-check.ts`, so a live run is spent only on what a
 // fixture cannot answer: whether the deployed Worker's Salesforce Lead read fills a
 // move's missing email and phone from the real org, inside its 2.5 second cap.
