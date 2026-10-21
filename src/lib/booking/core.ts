@@ -414,15 +414,15 @@ export interface SelectionOutcome {
    */
   anyUnverified: boolean;
   /** How many candidates were sent to the live check, across every wave (#3272).
-   *  Set by `selectAgent`; the coverage selection beside it does not count. */
+   *  Set by `selectAgent`. */
   checked?: number;
 }
 
-/** A wave's live check, as both selections make it (#3495). */
+/** A wave's live check, as `selectAgent` makes it (#3495). */
 type WaveVerify = (emails: string[], ids: ReadonlyMap<string, string>) => Promise<VerifyResult>;
 
 /**
- * One wave of `selectAgent` and `selectReassignTarget`: its advisors' emails, in
+ * One wave of `selectAgent`: its advisors' emails, in
  * round-robin order with the emailless dropped, then one live check handed each email's
  * advisor id (#3495), so the check reads their calendars by id. An empty wave makes no
  * check.
@@ -477,54 +477,6 @@ export async function selectAgent(
     }
   }
   return { assignment: null, anyUnverified, checked };
-}
-
-/**
- * Coverage-reassign target selection (#972): pick the first candidate who is
- * GENUINELY free at the booking's original time AND under their daily cap,
- * walking `candidates` in round-robin order and excluding `excludeUserId` (the
- * out agent). Shares the wave-batched verify shape of `selectAgent`, with two
- * deliberate differences:
- *
- *  - Freeness is the LIVE verify-on-book path (`verifyFree`), never the
- *    `busy_blocks` cache. The reassign swap rides `allow_double_book`, so a
- *    stale-cache "free" would silently double-book the covering agent, exactly
- *    when calendars are churning (the red-team's critical catch).
- *  - `isUnderCap` is consulted ONLY for a candidate already confirmed free, in
- *    round-robin order, so a busy agent never costs a cap read and a
- *    free-but-over-cap agent is passed over for the next free+under-cap one.
- *
- * A null assignment means unplaceable at this time. `anyUnverified` is true only
- * when nobody was placeable AND at least one candidate could not be verified (a
- * read error / outage), so the bulk engine can tell a genuine no-coverage miss
- * (report it) from an outage (retry the item next tick), mirroring `selectAgent`.
- * Over-cap is a definite exclusion, never an outage, so it never sets the flag.
- * Injected deps keep this pure and testable without DB/Google.
- */
-export async function selectReassignTarget(
-  candidates: string[],
-  excludeUserId: string | null,
-  loadEmails: (userIds: string[]) => Promise<Map<string, string>>,
-  /** As `selectAgent`'s: each wave's emails and the advisor id each was read from (#3495). */
-  verifyFree: WaveVerify,
-  isUnderCap: (userId: string) => Promise<boolean>,
-  batchSize: number,
-): Promise<SelectionOutcome> {
-  const eligible = candidates.filter((id) => id !== excludeUserId);
-  let anyUnverified = false;
-  for (let i = 0; i < eligible.length; i += batchSize) {
-    const checkedWave = await checkWave(eligible.slice(i, i + batchSize), loadEmails, verifyFree);
-    anyUnverified ||= checkedWave.unverified;
-    const { wave, free } = checkedWave;
-    for (const candidate of wave) {
-      // Cap is checked only for a confirmed-free candidate, in order, so the
-      // first free+under-cap agent wins and a busy agent costs no cap read.
-      if (free.has(candidate.email) && (await isUnderCap(candidate.userId))) {
-        return { assignment: candidate, anyUnverified };
-      }
-    }
-  }
-  return { assignment: null, anyUnverified };
 }
 
 /** Busy interval as returned by Google freeBusy (ISO start/end). */

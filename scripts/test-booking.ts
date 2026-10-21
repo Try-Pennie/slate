@@ -9,7 +9,6 @@ import {
   withPhoneLine,
   idempotencyKeyFor,
   selectAgent,
-  selectReassignTarget,
 } from "../src/lib/booking/core.ts";
 import { TEST_MODE_COPY } from "../src/lib/booking/booker-copy.ts";
 import { assert, finish } from "./lib/harness.ts";
@@ -184,113 +183,6 @@ async function run() {
 }
 
 await run();
-
-// --- selectReassignTarget (coverage reassign, #972) ---
-// Picks the first GENUINELY-free + under-cap candidate in round-robin order,
-// excluding the out agent. Freeness is the live verify-on-book path (verifyFree),
-// NOT the busy_blocks cache, because the reassign swap rides allow_double_book:
-// a stale-cache "free" would silently double-book the covering agent. The cap
-// predicate is checked ONLY for free candidates (so a busy agent never costs a
-// cap read) and a free-but-over-cap agent is passed over. Null means unplaceable.
-// `isUnderCap` fake: any userId in `overCap` is at its daily cap; records calls.
-function capChecker(overCap: Set<string> = new Set()) {
-  const calls: string[] = [];
-  return {
-    fn: async (userId: string) => {
-      calls.push(userId);
-      return !overCap.has(userId);
-    },
-    calls: () => calls,
-  };
-}
-
-async function runReassignTarget() {
-  const WAVE = 50;
-  // First free + under-cap candidate wins.
-  let v = batchVerifier(new Set(["a@x", "b@x"]));
-  let cap = capChecker();
-  let r = await selectReassignTarget(["a", "b"], null, loadEmails, v.fn, cap.fn, WAVE);
-  assert(r.assignment?.userId === "a", "first free + under-cap candidate wins");
-  // #3495: like `selectAgent`, the wave carries the advisor id each email was read from.
-  {
-    const seen: (Record<string, string> | null)[] = [];
-    await selectReassignTarget(["a", "b"], null, loadEmails, async (emails: string[], ids?: ReadonlyMap<string, string>) => {
-      seen.push(ids ? Object.fromEntries(ids) : null);
-      return { free: new Set(emails), unverified: new Set<string>() };
-    }, capChecker().fn, WAVE);
-    assert(JSON.stringify(seen[0]) === JSON.stringify({ "a@x": "a", "b@x": "b" }), `the reassign wave is handed each email's advisor id (got ${JSON.stringify(seen[0])})`);
-  }
-  assert(cap.calls().length === 1, "cap checked only until the first free+under-cap agent is found");
-
-  // The out agent is excluded even when free + under-cap (next candidate wins).
-  v = batchVerifier(new Set(["a@x", "b@x"]));
-  cap = capChecker();
-  r = await selectReassignTarget(["a", "b"], "a", loadEmails, v.fn, cap.fn, WAVE);
-  assert(r.assignment?.userId === "b", "the out agent is excluded from the candidate set");
-  assert(!cap.calls().includes("a"), "the excluded out agent is never cap-checked");
-  assert(
-    JSON.stringify(v.waves()[0]) === JSON.stringify(["b@x"]),
-    "the excluded out agent is never sent to verifyFree",
-  );
-
-  // A free-but-over-cap candidate is passed over for the next free + under-cap one.
-  v = batchVerifier(new Set(["a@x", "b@x"]));
-  cap = capChecker(new Set(["a"]));
-  r = await selectReassignTarget(["a", "b"], null, loadEmails, v.fn, cap.fn, WAVE);
-  assert(r.assignment?.userId === "b", "a free-but-over-cap candidate is skipped for a free+under-cap one");
-
-  // Round-robin order is respected among free + under-cap candidates.
-  v = batchVerifier(new Set(["a@x", "b@x"]));
-  cap = capChecker();
-  r = await selectReassignTarget(["b", "a"], null, loadEmails, v.fn, cap.fn, WAVE);
-  assert(r.assignment?.userId === "b", "returns first free+under-cap in candidate order");
-
-  // A busy candidate never costs a cap read (cap is checked only for free ones).
-  v = batchVerifier(new Set(["b@x"]));
-  cap = capChecker();
-  r = await selectReassignTarget(["a", "b"], null, loadEmails, v.fn, cap.fn, WAVE);
-  assert(r.assignment?.userId === "b", "walks past a busy candidate to the next free one");
-  assert(JSON.stringify(cap.calls()) === JSON.stringify(["b"]), "a busy candidate is never cap-checked");
-
-  // Unplaceable: every candidate is busy → null, and NOT flagged as an outage.
-  v = batchVerifier(new Set());
-  cap = capChecker();
-  r = await selectReassignTarget(["a", "b"], null, loadEmails, v.fn, cap.fn, WAVE);
-  assert(r.assignment === null, "all-busy yields an unplaceable (null) target");
-  assert(r.anyUnverified === false, "an all-busy unplaceable is NOT an outage");
-
-  // Unplaceable: every candidate is free but over cap → null, definite (no outage).
-  v = batchVerifier(new Set(["a@x", "b@x"]));
-  cap = capChecker(new Set(["a", "b"]));
-  r = await selectReassignTarget(["a", "b"], null, loadEmails, v.fn, cap.fn, WAVE);
-  assert(r.assignment === null, "all free-but-over-cap yields an unplaceable (null) target");
-  assert(r.anyUnverified === false, "an all-over-cap unplaceable is a definite miss, not an outage");
-
-  // Outage: nobody free AND a candidate couldn't be verified → anyUnverified true.
-  v = batchVerifier(new Set(), new Set(["a@x"]));
-  cap = capChecker();
-  r = await selectReassignTarget(["a", "b"], null, loadEmails, v.fn, cap.fn, WAVE);
-  assert(r.assignment === null, "couldn't-verify-anyone still yields a null target");
-  assert(r.anyUnverified === true, "an unverifiable candidate flags anyUnverified for the caller to retry");
-
-  // Empty candidate set → null with no verify and no cap reads.
-  v = batchVerifier(new Set(["a@x"]));
-  cap = capChecker();
-  r = await selectReassignTarget([], null, loadEmails, v.fn, cap.fn, WAVE);
-  assert(
-    r.assignment === null && v.waveCount() === 0 && cap.calls().length === 0,
-    "empty candidate set yields null with no verify or cap reads",
-  );
-
-  // Wave batching: a free+under-cap agent in the first wave → later waves unread.
-  v = batchVerifier(new Set(["a@x", "b@x"]));
-  cap = capChecker();
-  r = await selectReassignTarget(["a", "b", "a", "b"], null, loadEmails, v.fn, cap.fn, 2);
-  assert(r.assignment?.userId === "a", "first wave's free+under-cap agent wins");
-  assert(v.waveCount() === 1, "stops after the first wave that has a free+under-cap agent");
-}
-
-await runReassignTarget();
 
 // --- eventDescription (#64: invite carries the manage link) ---
 const desc = eventDescription("+12035615295", "https://slate.trypennie.app/booking/manage/tok123");
