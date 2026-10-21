@@ -17,7 +17,7 @@ import {
   RerouteRefusedError,
   type RerouteDeps,
 } from "../src/lib/booking/reroute.ts";
-import type { RerouteTarget } from "../src/lib/booking/orchestration.ts";
+import type { CurrentAgentUnavailable, RerouteTarget } from "../src/lib/booking/orchestration.ts";
 import type { Booking, Bucket, EventType } from "../src/lib/db/types.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { HIDDEN_TEST_BUCKET_CODES, PUBLIC_TEST_BUCKET_CODES } from "../src/lib/embed/public-test-bucket.ts";
@@ -68,6 +68,9 @@ interface Opts {
   liveHold?: { holdId: string; agentUserId: string; targetBucketId: string; requestedBucketId: string; rungsDropped: number; expiresAt: string } | null;
   /** The bucket the booking is stored in; default 100, a real one. */
   storedIn?: string;
+  /** #3487: why the current advisor cannot take the call at confirm, or none. */
+  unavailable?: CurrentAgentUnavailable;
+  unavailableThrows?: boolean;
 }
 
 function fake(o: Opts = {}) {
@@ -82,6 +85,7 @@ function fake(o: Opts = {}) {
     reassign: [] as { email: string; reason: { code: string; detail: string | null }; reroute: unknown }[],
     keep: [] as Record<string, unknown>[],
     events: [] as Record<string, unknown>[],
+    unavailable: [] as string[],
   };
   const targets = [...(o.targets ?? [])];
   const booking = o.booking === null ? null : ({ ...baseBooking, ...(o.booking ?? {}) } as Booking);
@@ -139,6 +143,11 @@ function fake(o: Opts = {}) {
     },
     insertBookingEvent: async (row) => {
       calls.events.push(row as unknown as Record<string, unknown>);
+    },
+    currentAdvisorUnavailable: async (_b, kept) => {
+      calls.unavailable.push(kept.bucket.code);
+      if (o.unavailableThrows) throw new Error("ooo_requests read failed: connection reset");
+      return o.unavailable ?? null;
     },
     readLiveHold: async () => {
       if (o.liveHold !== undefined) return o.liveHold;
@@ -214,6 +223,31 @@ async function main() {
     });
     const p = await startReroute(deps, { bookingId: "K1", bucketCode: "512", actor });
     eq(p.kind, "none", "nobody to keep and nobody free reads as none, never a keep of nobody");
+  }
+
+  // --- #3487: nobody else free and the current advisor out is no keep ---
+  {
+    const { deps, calls } = fake({
+      targets: [{ outcome: "none-current-unavailable", reason: "time_off", bucket: bucketFor("512"), eventType, rungsDropped: 0 }],
+    });
+    const p = await startReroute(deps, { bookingId: "K1", bucketCode: "512", actor });
+    eq(p.kind, "none", "an out advisor with nobody else free is nobody free, never a keep");
+    if (p.kind === "none") {
+      eq(p.current?.reason, "time_off", "carrying why the current advisor cannot take it");
+      eq(p.current?.advisor.name, "Taylor Brooks", "and naming them");
+      eq(p.requested.code, "512", "and the bucket asked for");
+    }
+    eq(calls.place.length, 0, "nobody is held");
+    eq(calls.release, ["K1"], "and an earlier hold is let go");
+  }
+  {
+    // Excluding the current advisor still reads as the plain "nobody else is free".
+    const { deps } = fake({
+      targets: [{ outcome: "none-current-unavailable", reason: "time_off", bucket: bucketFor("512"), eventType, rungsDropped: 0 }],
+    });
+    const p = await startReroute(deps, { bookingId: "K1", bucketCode: "512", actor, excludeCurrent: true });
+    eq(p.kind, "none", "with the current advisor excluded, nobody else free is none");
+    eq(p.kind === "none" ? (p.current ?? null) : "keep", null, "the plain none, since the admin asked to move off them anyway");
   }
 
   // --- start with the current advisor excluded: look for someone else (#3596) ---
@@ -546,6 +580,42 @@ async function main() {
     eq(ev.from_agent_user_id, "CUR", "the advisor before");
     eq(ev.to_agent_user_id, "CUR", "and after are the same");
   }
+  // --- #3487: a confirm never commits a keep onto an advisor who cannot take the call ---
+  for (const [reason, code] of [
+    ["time_off", "current_on_time_off"],
+    ["not_free", "current_not_free"],
+    ["no_schedule", "current_no_schedule"],
+  ] as const) {
+    const { deps, calls } = fake({ unavailable: reason });
+    let refused: string | null = null;
+    try {
+      await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: "412", requestedBucketCode: "512", note: null, actor });
+    } catch (e) {
+      refused = e instanceof RerouteRefusedError ? e.code : `threw ${String(e)}`;
+    }
+    eq(refused, code, `a keep confirm onto an advisor whose answer is ${reason} is refused by name`);
+    eq(calls.unavailable, ["412"], `${reason}: judged in the bucket they would be kept in`);
+    eq(calls.keep.length, 0, `${reason}: before any swap`);
+    eq(calls.events.length, 0, `${reason}: and writes no history`);
+  }
+  {
+    const { deps, calls } = fake({ unavailableThrows: true });
+    let thrown: unknown = null;
+    try {
+      await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: "512", note: null, actor });
+    } catch (e) {
+      thrown = e;
+    }
+    assert(thrown instanceof Error && !(thrown instanceof RerouteRefusedError), "an unreadable answer about the advisor throws, never reads as a keep");
+    eq(calls.keep.length, 0, "and nothing is swapped on a guess");
+  }
+  {
+    const { deps, calls } = fake({});
+    const out = await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: "512", note: null, actor });
+    eq(out.kind, "kept", "control: an advisor who can take the call is kept");
+    eq(calls.unavailable, ["512"], "after the check ran");
+  }
+
   // --- keep in a LOWER tier records what was asked for and how far it dropped ---
   {
     const { deps, calls } = fake({});

@@ -22,7 +22,7 @@
 import type { Booking, Bucket, EventType } from "../db/types.ts";
 import type { PlaceRerouteHoldRefusal, ClaimRerouteHoldRefusal, RerouteSwapRefusal } from "../db/reroute-hold-refusals.ts";
 import type { PlaceRerouteHoldArgs, PlaceRerouteHoldResult } from "./reroute-hold-store.ts";
-import type { RerouteTarget } from "./orchestration.ts";
+import type { CurrentAgentUnavailable, RerouteTarget } from "./orchestration.ts";
 import type { BookingActor, BookingEventInsert, VerifyResult } from "./core.ts";
 import { bookingEventFrom, bufferedWindow } from "./core.ts";
 import { tierKeyOf, tierLadder } from "../routing/tiers.ts";
@@ -42,6 +42,9 @@ export type RerouteRefusal =
   | "no_calendar_event"
   | "kept_off_ladder"
   | "across_worlds"
+  | "current_on_time_off"
+  | "current_not_free"
+  | "current_no_schedule"
   | PlaceRerouteHoldRefusal
   | ClaimRerouteHoldRefusal
   | RerouteSwapRefusal;
@@ -126,7 +129,16 @@ export type RerouteProposal =
       requested: RerouteBucket;
       rungsDropped: number;
     }
-  | { kind: "none"; requested: RerouteBucket };
+  | {
+      kind: "none";
+      requested: RerouteBucket;
+      /**
+       * #3487: the current advisor was there to keep but cannot take the call (time
+       * off, no schedule, not free), so nobody at all is free and there is no keep.
+       * Absent when nobody holds the booking or they were the one excluded.
+       */
+      current?: { advisor: RerouteAdvisor; reason: CurrentAgentUnavailable };
+    };
 
 /** What a confirm did. */
 export type RerouteOutcome =
@@ -219,6 +231,15 @@ export interface RerouteDeps {
     holdId: null;
   }): Promise<{ refused: RerouteSwapRefusal | null; updated: boolean }>;
   insertBookingEvent(row: BookingEventInsert): Promise<void>;
+  /**
+   * #3487: why the booking's current advisor cannot take its time in `kept`, or null
+   * when they can, by `currentAgentUnavailableReason`. Throws on a failed read, so a
+   * keep is never committed on an answer nobody could read.
+   */
+  currentAdvisorUnavailable(
+    booking: Booking,
+    kept: { bucket: Bucket; eventType: EventType },
+  ): Promise<CurrentAgentUnavailable | null>;
   readLiveHold(bookingId: string): Promise<LiveHoldRecord | null>;
   now(): number;
 }
@@ -305,6 +326,15 @@ async function searchAndHold(
   // was free: report that as "none" rather than a keep of the very advisor the admin
   // asked to move off.
   if (excludeUserIds.includes(booking.assigned_user_id)) return { kind: "none", requested: req };
+  // #3487: nobody else is free and the current advisor cannot take it either. Said
+  // as that, never as a keep of the advisor who is out.
+  if (target.outcome === "none-current-unavailable") {
+    return {
+      kind: "none",
+      requested: req,
+      current: { advisor: await advisorView(deps, booking.assigned_user_id), reason: target.reason },
+    };
+  }
   return {
     kind: "keep",
     lastResort: target.outcome === "keep-last-resort",
@@ -471,6 +501,13 @@ async function moveOnClaimedHold(
   return { kind: "moved", advisor, bucket: bucketView(target), already: false };
 }
 
+/** The refusal a keep confirm answers for each reason its advisor cannot take the call. */
+const UNAVAILABLE_REFUSAL: Record<CurrentAgentUnavailable, RerouteRefusal> = {
+  time_off: "current_on_time_off",
+  not_free: "current_not_free",
+  no_schedule: "current_no_schedule",
+};
+
 async function confirmKeep(
   deps: RerouteDeps,
   input: { bookingId: string; bucketCode: string | null; requestedBucketCode?: string | null; actor: BookingActor },
@@ -493,6 +530,12 @@ async function confirmKeep(
   if (rungs < 0) throw new RerouteRefusedError("kept_off_ladder");
   if (!booking.assigned_user_id || !booking.agent_email) throw new RerouteRefusedError("no_current_advisor");
   if (!booking.gcal_event_id) throw new RerouteRefusedError("no_calendar_event");
+  // #3487: a keep confirm names only buckets, so it can arrive for an advisor who has
+  // since gone on time off, or from a panel the search never offered a keep on. The
+  // advisor is judged again here, in the bucket they would be kept in, by the rule
+  // the search uses, so no confirm commits a keep onto somebody who cannot take it.
+  const unavailable = await deps.currentAdvisorUnavailable(booking, kept);
+  if (unavailable) throw new RerouteRefusedError(UNAVAILABLE_REFUSAL[unavailable]);
   const { refused, updated } = await deps.keepSwap({
     bookingId: booking.id,
     userId: booking.assigned_user_id,
