@@ -14,9 +14,9 @@ export const dynamic = "force-dynamic";
  * Where a browser posts a Content Security Policy violation (#2565).
  *
  * The policy is ENFORCED since #2575, so a violation is no longer information
- * about what a policy WOULD break: something was refused for a real person, and
- * part of their page did not load. Dan decided on 2026-10-02 that this sends a
- * THROTTLED PAGE on the alert channel, keyed on the violated directive mapped onto
+ * about what a policy WOULD break: a resource was refused for a real person. Dan
+ * decided on 2026-10-02 that this sends a THROTTLED PAGE on the alert channel, unless
+ * `cspViolationPage` names a reason it does not, keyed on the violated directive mapped onto
  * the policy's own directive list (`cspViolationPage`), so a burst of one refusal
  * is one page per cooldown and no caller can mint a key.
  *
@@ -39,7 +39,8 @@ export const dynamic = "force-dynamic";
  *    #2564 took that token out of the warehouse; an endpoint the whole internet
  *    can post to must not walk it into the logs instead.
  *  - It does not page a report only report, a browser extension's own refusal, or a
- *    passive third-party font refusal (#3417, `injected-passive`), none of which is
+ *    passive third-party font refusal (#3417, `injected-passive`), or the Google
+ *    product logo an add-on injects under `img-src` (#3699), none of which is
  *    Slate's page failing somebody. All are still logged.
  */
 export async function POST(req: NextRequest): Promise<NextResponse> {
