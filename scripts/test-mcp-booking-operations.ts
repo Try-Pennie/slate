@@ -93,8 +93,8 @@ const changesToday = (fake: ReturnType<typeof makeMarciaFake>) =>
 }
 
 // --- find_times honours `from` (live 2026-10-21: "from tomorrow" was offered today) -------
-// The real slot read ignores `from` (#3381) and returns the bucket's whole window from
-// now, so the rule has to live where the offer is made. NOW is 07:00 CDT on 1 June.
+// The fake slot read ignores `from` (the real one judges its tier and days from it,
+// #4014), so this pins the floor the offer itself applies. NOW is 07:00 CDT on 1 June.
 {
   const TWO_DAYS = [
     "2026-06-01T13:00:00.000Z", // 1 June 08:00 CDT
@@ -225,7 +225,12 @@ const changesToday = (fake: ReturnType<typeof makeMarciaFake>) =>
   const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS });
   const c = claims();
   const slot = await firstSlot(fake, c);
-  const a = await runMarciaOperation("book", { slot_id: slot, salesforce_id: "00Q999999999999ZZZ", email: "someone@else.example" }, c, fake.deps);
+  // A model naming another lead in an argument reaches nobody: no tool takes a lead,
+  // so the argument is refused by name (#4013) and nothing is booked for anyone.
+  const named = await runMarciaOperation("book", { slot_id: slot, salesforce_id: "00Q999999999999ZZZ", email: "someone@else.example" }, c, fake.deps);
+  eq(named.ok ? null : [named.code, named.invalid_argument], ["args_invalid", "salesforce_id"], "a lead id passed as an argument is refused by name, never read");
+  eq(fake.bookings.length, 0, "and nothing is booked");
+  const a = await runMarciaOperation("book", { slot_id: slot }, c, fake.deps);
   assert(a.ok && okData(a)?.outcome === "created", "book creates a booking");
   eq(fake.bookings.length, 1, "exactly one booking");
   eq(fake.bookings[0]?.salesforceId, c.salesforce_id, "the lead is the token's, whatever an argument names");

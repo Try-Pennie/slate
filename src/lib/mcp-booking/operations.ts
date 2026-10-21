@@ -60,8 +60,8 @@ import { attemptKey, type MarciaWriteOperation } from "./attempt.ts";
 import { issueSlotId, readSlotId } from "./slot-id.ts";
 import { contactValueValid, type MarciaLeadClaims } from "./token-shape.ts";
 
-import type { MarciaOperation } from "./operation-names.ts";
-export { MARCIA_OPERATIONS, isMarciaOperation, type MarciaOperation } from "./operation-names.ts";
+import { MARCIA_OPERATION_ARGS, type MarciaOperation } from "./operation-names.ts";
+export { MARCIA_OPERATIONS, MARCIA_OPERATION_ARGS, isMarciaOperation, type MarciaOperation } from "./operation-names.ts";
 
 /** At most this many times are offered at once (decision 17). */
 export const MAX_OFFERED_TIMES = 5;
@@ -169,6 +169,10 @@ export type MarciaAnswer =
       time_zone_note?: string;
       /** For lead_contact_missing: which of name, email and phone the token lacked. Never a value. */
       missing_fields?: ("name" | "email" | "phone")[];
+      /** For args_invalid: the argument refused, by name (#4013). Never its value. */
+      invalid_argument?: string;
+      /** For args_invalid: what is wrong with it, in words the model can act on. */
+      argument_problem?: string;
     };
 
 /** What an alert about a failure may carry: ids, the class and the code. Never the token or the lead's contact data (L658). */
@@ -364,7 +368,13 @@ interface Ctx {
 async function refuse(
   ctx: Ctx,
   code: MarciaRefusalCode,
-  extra: { alternatives?: OfferedTime[]; zone?: Zone; missingFields?: ("name" | "email" | "phone")[]; cause?: unknown } = {},
+  extra: {
+    alternatives?: OfferedTime[];
+    zone?: Zone;
+    missingFields?: ("name" | "email" | "phone")[];
+    argument?: ArgumentProblem;
+    cause?: unknown;
+  } = {},
 ): Promise<MarciaAnswer> {
   const spec = MARCIA_REFUSALS[code];
   // Every failed WRITE alerts, expected or not (decision 11). A read alerts only on
@@ -391,8 +401,33 @@ async function refuse(
     message: MESSAGES[code],
     ...(extra.alternatives ? { alternatives: extra.alternatives, ...(extra.zone ? zoneNote(extra.zone) : {}) } : {}),
     ...(extra.missingFields ? { missing_fields: extra.missingFields } : {}),
+    ...(extra.argument ? { invalid_argument: extra.argument.name, argument_problem: extra.argument.problem } : {}),
   };
 }
+
+/** An argument refused `args_invalid`, by name, with what is wrong in words. */
+interface ArgumentProblem {
+  name: string;
+  problem: string;
+}
+
+/** The refusal for an argument that is not what its operation takes. */
+const badArgument = (ctx: Ctx, name: string, problem: string) => refuse(ctx, "args_invalid", { argument: { name, problem } });
+
+/**
+ * The first argument this operation does not take, or null (#4013). Every tool
+ * declares `additionalProperties: false`, but nothing enforced it, so an argument a
+ * model invented (or one meant for another tool) was dropped and the call went
+ * ahead as though the lead had not asked for it. Refused by name instead.
+ */
+function undeclaredArgument(op: MarciaOperation, args: Record<string, unknown>): ArgumentProblem | null {
+  const takes: readonly string[] = MARCIA_OPERATION_ARGS[op];
+  const name = Object.keys(args).find((k) => args[k] !== undefined && !takes.includes(k));
+  if (name === undefined) return null;
+  return { name, problem: `${name} is not an argument ${op} takes. It takes ${takes.join(", ")}; call again without ${name}.` };
+}
+
+const ZONE_PROBLEM = "time_zone must be an IANA time zone, e.g. America/Denver.";
 
 /**
  * Who a lookup, a by id read or a cancel is about. The service matches EVERY id it is
@@ -579,7 +614,7 @@ function nearestOnDay(open: string[], target: DateTime, zone: string): string[] 
 
 async function findTimes(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAnswer> {
   const z = zoneFor(args, ctx.claims);
-  if (!z) return refuse(ctx, "args_invalid");
+  if (!z) return badArgument(ctx, "time_zone", ZONE_PROBLEM);
   const zone = z.zone;
   let fromIso = new Date(ctx.deps.nowMs()).toISOString();
   // The day `near` is read on: the from date in the lead's zone, else today there. A
@@ -587,14 +622,14 @@ async function findTimes(ctx: Ctx, args: Record<string, unknown>): Promise<Marci
   let day = DateTime.fromMillis(ctx.deps.nowMs(), { zone });
   if (args.from !== undefined) {
     const from = typeof args.from === "string" ? DateTime.fromISO(args.from, { zone }) : null;
-    if (!from || !from.isValid) return refuse(ctx, "args_invalid");
+    if (!from || !from.isValid) return badArgument(ctx, "from", "from must be a date, YYYY-MM-DD in the lead's zone.");
     day = DateTime.max(from, day);
     fromIso = day.toUTC().toISO() ?? fromIso;
   }
   let pick = (open: string[]) => open.slice(0, MAX_OFFERED_TIMES);
   if (args.near !== undefined) {
     const target = nearInstant(day, args.near);
-    if (!target) return refuse(ctx, "args_invalid");
+    if (!target) return badArgument(ctx, "near", "near must be a time of day, HH:MM on a 24 hour clock, e.g. 15:00 for 3pm.");
     pick = (open) => nearestOnDay(open, target, zone);
   }
   try {
@@ -613,7 +648,7 @@ async function findTimes(ctx: Ctx, args: Record<string, unknown>): Promise<Marci
 
 async function bookOrMove(ctx: Ctx, args: Record<string, unknown>, op: "book" | "move"): Promise<MarciaAnswer> {
   const z = zoneFor(args, ctx.claims);
-  if (!z) return refuse(ctx, "args_invalid");
+  if (!z) return badArgument(ctx, "time_zone", ZONE_PROBLEM);
   const zone = z.zone;
   const attempt = attemptKey(op, ctx.claims);
   // A retry of an attempt that already wrote is a replay, recognised FIRST: it answers
@@ -703,7 +738,7 @@ async function bookOrMove(ctx: Ctx, args: Record<string, unknown>, op: "book" | 
 
 async function lookup(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAnswer> {
   const z = zoneFor(args, ctx.claims);
-  if (!z) return refuse(ctx, "args_invalid");
+  if (!z) return badArgument(ctx, "time_zone", ZONE_PROBLEM);
   const zone = z.zone;
   try {
     const bookings = await ctx.deps.lookup(identityOf(ctx));
@@ -716,8 +751,18 @@ async function lookup(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAn
 /** The cancel reason rules of decision 17, applied to a code Slate's own validator accepted. */
 async function cancel(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAnswer> {
   const z = zoneFor(args, ctx.claims);
-  if (!z) return refuse(ctx, "args_invalid");
+  if (!z) return badArgument(ctx, "time_zone", ZONE_PROBLEM);
   const zone = z.zone;
+  // #4013: an argument of the wrong type was read as absent; it is refused by name.
+  if (args.reason_detail !== undefined && args.reason_detail !== null && typeof args.reason_detail !== "string") {
+    return badArgument(ctx, "reason_detail", "reason_detail must be text.");
+  }
+  if (args.booking_id !== undefined && args.booking_id !== null && typeof args.booking_id !== "string") {
+    return badArgument(ctx, "booking_id", "booking_id must be a booking_id exactly as lookup returned it.");
+  }
+  if (args.declined_slot_ids !== undefined && args.declined_slot_ids !== null && !(Array.isArray(args.declined_slot_ids) && args.declined_slot_ids.every((id) => typeof id === "string"))) {
+    return badArgument(ctx, "declined_slot_ids", "declined_slot_ids must be a list of slot_ids exactly as find_times returned them.");
+  }
   const attempt = attemptKey("cancel", ctx.claims);
   // A retry of a cancel that already landed answers as the first call did, FIRST,
   // before any rule is judged again: no second write, no lookup that would now find
@@ -749,6 +794,15 @@ async function cancel(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAn
   // Opt outs never reach Slate through Marcia (decision 17), and no system only code
   // may be recorded by a caller: those are Slate's own words.
   if (reasons.find((r) => r.code === validated.reason.code)?.systemOnly) return refuse(ctx, "reason_not_allowed");
+  // #4013: a detail is recorded only with `other`, and declined times are read only
+  // for a schedule conflict. Sent with any other reason, each would be dropped while
+  // the cancel went ahead, so the lead's words or the offer would vanish unsaid.
+  if (detail !== null && detail.trim() !== "" && validated.reason.code !== "other") {
+    return badArgument(ctx, "reason_detail", `reason_detail is recorded only with reason_code other. Call again without reason_detail, or with reason_code other.`);
+  }
+  if (Array.isArray(args.declined_slot_ids) && args.declined_slot_ids.length > 0 && validated.reason.code !== "schedule_conflict") {
+    return badArgument(ctx, "declined_slot_ids", "declined_slot_ids is read only with reason_code schedule_conflict. Call again without declined_slot_ids.");
+  }
   if (validated.reason.code === "schedule_conflict") {
     // A conflict cancels only after a move was OFFERED and declined. The proof that it
     // was offered is a slot id Slate issued to this lead; the model cannot make one.
@@ -794,6 +848,8 @@ export async function runMarciaOperation(op: MarciaOperation, rawArgs: unknown, 
   const ctx: Ctx = { op, claims, deps, bucketCode: bookingBucketFor(claims), lead: leadIdSpellings(claims.salesforce_id) };
   const args = argsOf(rawArgs);
   if (!args) return refuse(ctx, "args_invalid");
+  const undeclared = undeclaredArgument(op, args);
+  if (undeclared) return refuse(ctx, "args_invalid", { argument: undeclared });
   try {
     switch (op) {
       case "find_times":
