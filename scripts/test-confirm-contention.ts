@@ -1456,15 +1456,63 @@ async function main() {
   }
 
   // --- #3257: a double submit through the booking API still gets its booking ---
+  //
+  // #4019: and the second is told `deduped`, since the booking already existed when it
+  // was answered. It used to be told `created` when it was answered from the first
+  // call's verdict in the line, and `deduped` when it ran the person decision itself,
+  // so the same resubmit got two labels depending on timing, and a caller told
+  // `created` for a booking it already holds may treat it as a new one.
   {
     const same = lead(7);
     const { runs, bySlot } = await burst({ inputs: [same, same], pool: ["a"], queue: "real", serviceMs: SLOW_MS });
-    assert(
-      runs.every((r) => r.outcome === "created"),
-      `api double submit: both submits get the booking (got ${runs.map((r) => r.outcome).join(",")})`,
-    );
+    assert(runs[0].outcome === "created", `api double submit: the first submit is booked (got ${runs[0].outcome})`);
+    assert(runs[1].outcome === "deduped", `api double submit: the second is answered deduped (got ${runs[1].outcome})`);
     assert(bySlot.size === 1, "api double submit: one booking row");
-    assert(Boolean(runs[0].result && runs[1].result), "api double submit: both answered with a booking");
+    assert(
+      Boolean(runs[0].result && runs[1].result) && runs[0].result?.booking.id === runs[1].result?.booking.id,
+      "api double submit: both answered with the same booking",
+    );
+    const second = runs[1].result as { manageUrl?: string; raceOutcome?: unknown } | undefined;
+    assert(
+      second?.manageUrl === (runs[0].result as { manageUrl?: string } | undefined)?.manageUrl,
+      "api double submit: the second carries the booking's manage link",
+    );
+    assert(second?.raceOutcome === undefined, "api double submit: the second records no race row");
+  }
+
+  // --- #4019: a resubmit AFTER the first call answered, the production canary's case ---
+  //
+  // The canary sends an identical request once the first has returned. When the first
+  // booked the ladder's last advisor its full verdict settles the line, and the line
+  // remembers that verdict for `CONFIRM_LINE_SETTLED_MEMORY_MS` (#3570), so a resubmit
+  // inside that window is answered from the first call's booking without running
+  // anything. Past the window it runs the person decision. Both must say `deduped`.
+  for (const [label, gapMs] of [
+    ["inside the settled memory", 1_000],
+    ["after the settled memory", CONFIRM_LINE_SETTLED_MEMORY_MS + 1_000],
+  ] as const) {
+    const same = lead(7);
+    const firstAnswersBy = 500;
+    const { runs, bySlot } = await burst({
+      inputs: [same, same],
+      pool: ["a"],
+      queue: "real",
+      arriveAtMs: [0, firstAnswersBy + gapMs],
+    });
+    const tag = `api resubmit ${label}`;
+    assert(
+      runs[0].outcome === "created" && runs[0].answeredMs! < firstAnswersBy,
+      `${tag}: the first call is booked and answered before the resubmit is sent (got ${runs[0].outcome} in ${runs[0].answeredMs}ms)`,
+    );
+    assert(runs[1].outcome === "deduped", `${tag}: the resubmit is answered deduped (got ${runs[1].outcome})`);
+    assert(bySlot.size === 1, `${tag}: one booking row`);
+    assert(runs[0].result?.booking.id === runs[1].result?.booking.id, `${tag}: the resubmit names the first call's booking`);
+    const second = runs[1].result as { manageUrl?: string; raceOutcome?: unknown } | undefined;
+    assert(
+      second?.manageUrl === (runs[0].result as { manageUrl?: string } | undefined)?.manageUrl,
+      `${tag}: the resubmit carries the booking's manage link`,
+    );
+    assert(second?.raceOutcome === undefined, `${tag}: the resubmit records no race row`);
   }
 
   // --- #3257: where the line can be entered before any read ---------------------

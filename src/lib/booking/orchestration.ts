@@ -7488,9 +7488,13 @@ export async function bookViaApi(
     deps,
     { key, stableKey: stableKeyFor(input), bucketCode: input.bucketCode, startIso: input.startIso, person: personIdentityOf(input) },
     (held) => bookViaApiDecided(input, deps, held),
-    // A double submit waiting behind its own first call gets that booking, as a
-    // replay: no race row, since the call that made it already counted one.
-    (taker): ApiBookingResult => ({ outcome: "created", booking: taker.result.booking, manageUrl: taker.result.manageUrl }),
+    // A double submit answered from its own first call's verdict gets that booking:
+    // waiting behind it in line, or arriving inside the line's memory of the verdict
+    // after it answered (#3570). It made nothing, so it says `deduped`, as the person
+    // decision answers the same resubmit once the line has forgotten (#4019): told
+    // `created`, a caller may treat a booking it already holds as a new one. No race
+    // row, since the call that made it already counted one.
+    (taker): ApiBookingResult => ({ outcome: "deduped", booking: taker.result.booking, manageUrl: taker.result.manageUrl }),
     // #3257: a resubmit of a call the lead already holds (a retry, a double send)
     // is answered from the person decision without waiting behind a confirm that
     // is still booking, as it was before the line existed.
