@@ -11,6 +11,7 @@
 import { poolLabelForCode } from "../availability/pool-label.ts";
 import { bucketSpecForXbc } from "../xbc.ts";
 import type { RerouteOutcome, RerouteProposal } from "./reroute.ts";
+import type { CurrentAgentUnavailable } from "./orchestration.ts";
 
 /** The three backend choices a manager picks from, in their on screen order (R5). */
 export const MANAGER_BACKENDS = [
@@ -121,12 +122,28 @@ function heading(requestedCode: string, bucketCode: string, showCodes: boolean):
   return tiers > 0 ? `${tiersDownPhrase(tiers)}, in ${where}` : `In ${where}`;
 }
 
+/** Why the current advisor cannot take the call, as the result says it (#3487). */
+const UNAVAILABLE_WORDS: Record<CurrentAgentUnavailable, string> = {
+  time_off: "is on time off for this call",
+  not_free: "is not free for this call",
+  no_schedule: "has no schedule in Slate",
+};
+
+/** What to do when nobody can be kept or found: the booking's own Reassign (#3487). */
+const REASSIGN_INSTEAD = "Reassign it to an advisor by name.";
+
 /** What a search found (R8 to R11). */
 export function proposalCopy(p: RerouteProposal, showCodes: boolean): RerouteCopy {
   if (p.kind === "none") {
+    // #3487: the current advisor was there but cannot take the call, so the result
+    // says why and points at the booking's own Reassign, which can pick anyone, over
+    // their cap if need be. Never that they stay.
+    const where = bucketWords(p.requested.code, showCodes);
     return {
       heading: "Nobody is free",
-      body: `Nobody in ${bucketWords(p.requested.code, showCodes)} or any tier below is free at this time. Nothing has changed.`,
+      body: p.current
+        ? `${p.current.advisor.name} ${UNAVAILABLE_WORDS[p.current.reason]}, and nobody else in ${where} or any tier below is free. Nothing has changed. ${REASSIGN_INSTEAD}`
+        : `Nobody in ${where} or any tier below is free at this time. Nothing has changed.`,
       held: false,
       note: false,
       primary: null,
