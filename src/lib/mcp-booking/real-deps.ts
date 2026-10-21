@@ -107,7 +107,7 @@ export function realMarciaDeps(): MarciaDeps {
       // alert-key: marcia_booking_failed:*
       await sendThrottledAlert(marciaFailureKey(fields), MARCIA_FAILURE_COOLDOWN_MS, marciaFailureAlert(fields));
     },
-    knownContact: (salesforceId, isTest) => readKnownContact(salesforceId, { isTest }, "marcia known contact"),
+    knownContact: (salesforceIds, isTest) => readKnownContact(salesforceIds, { isTest }, "marcia known contact"),
     leadContact: async (salesforceId) => {
       // A refusal and a timeout both reach the operation as a throw, so the one place
       // that reports a failed lookup (`contactLookupFailed`) sees both.

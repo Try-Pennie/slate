@@ -28,6 +28,7 @@ import type { AuditEntry } from "../../src/lib/audit.ts";
 import type { ReasonOption } from "../../src/lib/booking/core.ts";
 import { CANCEL_REASONS } from "../../src/lib/booking/core.ts";
 import type { LeadContact, MarciaDeps, MarciaFailure } from "../../src/lib/mcp-booking/operations.ts";
+import { bookingMatchesLookupIds, lookupStrongIds } from "../../src/lib/booking/lookup-identity.ts";
 import type { BookingStatus } from "../../src/lib/db/types.ts";
 import { PARTNER_BUCKET_CODE } from "../../src/lib/embed/public-test-bucket.ts";
 
@@ -36,6 +37,8 @@ export interface FakeBooking {
   org_id: string;
   bucketCode: string;
   salesforceId: string;
+  /** The row's `external_id`, which a lookup id may match as well (#2657). */
+  externalId: string | null;
   startsAt: string;
   status: BookingStatus;
   key: string;
@@ -73,7 +76,11 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
   const alerts: MarciaFailure[] = [];
   const outcomes: { outcome: string; bucketCode: string; errorCode: string | null }[] = [];
   const missed: string[] = [];
-  const contactReads: { source: "bookings" | "salesforce"; salesforceId: string; isTest: boolean | null }[] = [];
+  const contactReads: { source: "bookings" | "salesforce"; salesforceIds: string[]; isTest: boolean | null }[] = [];
+  // Ownership as the real lookup, by id, move and cancel judge it: every supplied id,
+  // against EITHER of the row's id columns (`lookup-identity.ts`, the real functions).
+  const owns = (x: FakeBooking, identity: { externalId?: string | null; salesforceId?: string | null }) =>
+    bookingMatchesLookupIds({ external_id: x.externalId, salesforce_id: x.salesforceId }, lookupStrongIds({ externalId: identity.externalId ?? null, salesforceId: identity.salesforceId ?? null }));
   const contactFailures: { source: "bookings" | "salesforce"; err: unknown }[] = [];
   const answerContact = async (a: FakeContactAnswer | undefined): Promise<LeadContact | null> => {
     if (a instanceof Error) throw a;
@@ -86,7 +93,7 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
   const toView = (b: FakeBooking): ApiBookingView =>
     ({
       id: b.id,
-      externalId: b.salesforceId,
+      externalId: b.externalId,
       salesforceId: b.salesforceId,
       startsAt: b.startsAt,
       endsAt: b.startsAt,
@@ -116,11 +123,12 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
       const result = (x: FakeBooking, outcome: ApiBookingResult["outcome"]): ApiBookingResult =>
         ({
           outcome,
-          booking: { id: x.id, org_id: x.org_id, starts_at: x.startsAt, ends_at: x.startsAt, status: x.status, agent_name: "Advisor A", external_id: x.salesforceId, salesforce_id: x.salesforceId },
+          booking: { id: x.id, org_id: x.org_id, starts_at: x.startsAt, ends_at: x.startsAt, status: x.status, agent_name: "Advisor A", external_id: x.externalId, salesforce_id: x.salesforceId },
           manageUrl: `https://slate.example/booking/${x.id}`,
         }) as unknown as ApiBookingResult;
       if (replay) return result(replay, "created");
-      const mine = bookings.find((x) => active(x) && x.salesforceId === input.salesforceId);
+      // The person decision fetches and grades by the same strong ids (`personIdentityOf`).
+      const mine = bookings.find((x) => active(x) && owns(x, input));
       if (mine) {
         if (!input.confirmReschedule) return result(mine, "confirm_required");
         if (mine.startsAt === input.startIso) return result(mine, "deduped");
@@ -140,6 +148,7 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
         org_id: b.org,
         bucketCode: input.bucketCode,
         salesforceId: input.salesforceId ?? "",
+        externalId: input.externalId ?? null,
         startsAt: input.startIso,
         status: "confirmed",
         key,
@@ -152,15 +161,15 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
       return result(row, "created");
     },
     cancel: async ({ bookingId, identity }) => {
-      const b = bookings.find((x) => x.id === bookingId && active(x) && x.salesforceId === identity.salesforceId);
+      const b = bookings.find((x) => x.id === bookingId && active(x) && owns(x, identity));
       if (!b) throw new BookingNotFoundError();
       b.status = "cancelled";
       events.set(b.eventId, "deleted");
       return toView(b);
     },
-    lookup: async ({ salesforceId }) => bookings.filter((x) => active(x) && x.salesforceId === salesforceId).map(toView),
+    lookup: async (identity) => bookings.filter((x) => active(x) && owns(x, identity)).map(toView),
     bookingById: async ({ bookingId, identity, status }) => {
-      const b = bookings.find((x) => x.id === bookingId && x.salesforceId === identity.salesforceId);
+      const b = bookings.find((x) => x.id === bookingId && owns(x, identity));
       if (!b || (status && b.status !== status)) throw new BookingNotFoundError();
       return toView(b);
     },
@@ -194,12 +203,12 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
     alert: async (f) => {
       alerts.push(f);
     },
-    knownContact: async (salesforceId, isTest) => {
-      contactReads.push({ source: "bookings", salesforceId, isTest });
+    knownContact: async (salesforceIds, isTest) => {
+      contactReads.push({ source: "bookings", salesforceIds: [...salesforceIds], isTest });
       return answerContact(opts.knownContact);
     },
     leadContact: async (salesforceId) => {
-      contactReads.push({ source: "salesforce", salesforceId, isTest: null });
+      contactReads.push({ source: "salesforce", salesforceIds: [salesforceId], isTest: null });
       return answerContact(opts.leadContact);
     },
     contactLookupFailed: (source, err) => {
@@ -217,6 +226,23 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
     missed,
     contactReads,
     contactFailures,
+    /** A booking some OTHER channel wrote (the embed, the #250 API), with its own id spellings. */
+    seedBooking(b: { salesforceId: string; externalId: string | null; startsAt: string }) {
+      bookings.push({
+        id: `seed${++seq}`,
+        org_id: "org1",
+        bucketCode: "411",
+        salesforceId: b.salesforceId,
+        externalId: b.externalId,
+        startsAt: b.startsAt,
+        status: "confirmed",
+        key: `seed-key-${seq}`,
+        eventId: `seed-event-${seq}`,
+        source: null,
+        timezone: "America/Chicago",
+        attendee: {},
+      });
+    },
     advance(ms: number) {
       now += ms;
     },

@@ -400,7 +400,7 @@ const sfLead = { name: "Salesforce Lead Name", firstName: "Salesforce", email: "
   assert(a.ok && okData(a)?.outcome === "created", "a token with no name, email or phone still books");
   eq(fake.bookings[0]?.attendee, {}, "with no attendee field at all, never an empty string");
   eq(fake.contactReads.map((r) => r.source), ["bookings", "salesforce"], "having asked the earlier bookings, then Salesforce");
-  eq(fake.contactReads[0]?.salesforceId, bare.salesforce_id, "about the token's lead");
+  assert(fake.contactReads[0]?.salesforceIds.includes(bare.salesforce_id) === true, "about the token's lead");
 }
 {
   // Absent email filled from a prior booking; the token's name and phone win over it.
@@ -460,7 +460,7 @@ const sfLead = { name: "Salesforce Lead Name", firstName: "Salesforce", email: "
   const t = withoutClaims(claims({ test: true }), "name", "email", "phone");
   const a = await bookOnce(fake, t);
   assert(a.ok, "a test token with no contact books");
-  eq(fake.contactReads, [{ source: "bookings", salesforceId: t.salesforce_id, isTest: true }], "it asks the test world's bookings only, never Salesforce");
+  eq(fake.contactReads.map((r) => [r.source, r.isTest]), [["bookings", true]], "it asks the test world's bookings only, never Salesforce");
   eq(fake.bookings[0]?.attendee, {}, "and books with nothing filled");
 }
 {
@@ -481,6 +481,40 @@ const sfLead = { name: "Salesforce Lead Name", firstName: "Salesforce", email: "
   const text = JSON.stringify(fake.alerts.map(({ cause: _c, ...rest }) => rest));
   assert(fake.alerts.length === 1, "the taken time alerted");
   assert(![earlier.email, earlier.phone, earlier.name, sfLead.email, sfLead.phone, sfLead.name].some((v) => text.includes(v)), "and carries no looked up name, email or phone");
+}
+
+// --- a lead id in either spelling finds the same bookings --------------------------------------------
+// A booking stores whichever spelling its channel sent (15 or 18 characters), and the
+// token accepts either, so a token signed with one finds, moves and cancels a booking
+// stored with the other, and the contact fill asks for both.
+{
+  const ID15 = "00Q5f00000AbCdE";
+  // Blocks 00Q5f (Q: 4, E), 00000 (A), AbCdE (A, C, E: 1 + 4 + 16 = 21, V).
+  const ID18 = "00Q5f00000AbCdEEAV";
+  for (const [stored, signed] of [
+    [ID18, ID15],
+    [ID15, ID18],
+  ] as const) {
+    const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: null });
+    // The embed's shape: the lead id in salesforce_id alone.
+    fake.seedBooking({ salesforceId: stored, externalId: null, startsAt: SLOTS[1]! });
+    const c = () => claims({ salesforce_id: signed });
+    const what = `stored as ${stored.length}, signed as ${signed.length}`;
+    const looked = await runMarciaOperation("lookup", {}, c(), fake.deps);
+    eq(((okData(looked)?.bookings as unknown[]) ?? []).length, 1, `${what}: lookup finds the booking`);
+    // No email signed, so this call also runs the contact fill.
+    const noEmail = withoutClaims(c(), "email");
+    const again = await runMarciaOperation("book", { slot_id: await firstSlot(fake, noEmail) }, noEmail, fake.deps);
+    eq(again.ok ? null : again.code, "lead_has_booking", `${what}: a book sees the lead already holds it`);
+    const times = ((okData(await runMarciaOperation("find_times", {}, c(), fake.deps))?.times as Times) ?? []);
+    const moved = await runMarciaOperation("move", { slot_id: times.find((t) => t.starts_at === SLOTS[3])!.slot_id }, c(), fake.deps);
+    eq(okData(moved)?.outcome, "rescheduled", `${what}: move moves it`);
+    eq([fake.bookings.length, fake.bookings[0]?.startsAt], [1, SLOTS[3]], `${what}: the same booking, at the new time, and no second one`);
+    const cancelled = await runMarciaOperation("cancel", { reason_code: "no_longer_interested" }, c(), fake.deps);
+    eq(okData(cancelled)?.outcome, "cancelled", `${what}: cancel cancels it`);
+    eq(fake.bookings[0]?.status, "cancelled", `${what}: and the booking is cancelled`);
+    eq([...(fake.contactReads[0]?.salesforceIds ?? [])].sort(), [ID15, ID18].sort(), `${what}: the contact fill asks the bookings for both spellings`);
+  }
 }
 
 // --- every refusal is classified once ------------------------------------------------------------

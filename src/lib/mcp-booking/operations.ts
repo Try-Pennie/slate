@@ -50,6 +50,7 @@ import { BookingNotFoundError, SlotUnavailableError, type ApiBookingInput, type 
 import { isBookingWriteFailure } from "@/lib/booking/gated-write";
 import { withinLeadCallingWindow } from "@/lib/booking/lead-calling-window";
 import { PARTNER_BUCKET_CODE } from "@/lib/embed/public-test-bucket";
+import { leadIdSpellings } from "@/lib/salesforce/lead-xbc";
 import type { BookingStatus } from "@/lib/db/types";
 import { marciaAuditEntry, type MarciaAuditAction } from "./audit-entry.ts";
 import { attemptKey, type MarciaWriteOperation } from "./attempt.ts";
@@ -213,9 +214,10 @@ export interface MarciaDeps {
   /**
    * What the lead's earlier Slate bookings hold, newest first per field, in the
    * token's world only (a test token never reads a real lead's details), or null
-   * when they hold nothing. May throw; a throw is reported and booked past.
+   * when they hold nothing. Asked with both spellings of the lead id. May throw; a
+   * throw is reported and booked past.
    */
-  knownContact(salesforceId: string, isTest: boolean): Promise<LeadContact | null>;
+  knownContact(salesforceIds: readonly string[], isTest: boolean): Promise<LeadContact | null>;
   /**
    * What the Salesforce Lead with this id holds, or null when Salesforce returns no
    * such lead. Asked only for a real token. May throw (a refusal or the deadline);
@@ -334,6 +336,14 @@ interface Ctx {
   claims: MarciaLeadClaims;
   deps: MarciaDeps;
   bucketCode: string;
+  /**
+   * The token's lead id in BOTH spellings (`leadIdSpellings`). A booking stores
+   * whichever spelling its channel sent, and the token accepts either, so every
+   * lookup asks with both, and Slate's own records (slot ids, the audit trail and
+   * the per lead cap it counts, a new booking's `salesforce_id`) use `long`, so one
+   * lead is one key whichever spelling Marcia signed.
+   */
+  lead: { short: string; long: string };
 }
 
 async function refuse(ctx: Ctx, code: MarciaRefusalCode, extra: { alternatives?: OfferedTime[]; zone?: Zone; cause?: unknown } = {}): Promise<MarciaAnswer> {
@@ -346,7 +356,7 @@ async function refuse(ctx: Ctx, code: MarciaRefusalCode, extra: { alternatives?:
         operation: ctx.op,
         code,
         class: spec.class,
-        salesforceId: ctx.claims.salesforce_id,
+        salesforceId: ctx.lead.long,
         bucketCode: ctx.bucketCode,
         test: ctx.claims.test,
         cause: extra.cause,
@@ -364,7 +374,12 @@ async function refuse(ctx: Ctx, code: MarciaRefusalCode, extra: { alternatives?:
   };
 }
 
-const identityOf = (claims: MarciaLeadClaims) => ({ externalId: claims.salesforce_id, salesforceId: claims.salesforce_id });
+/**
+ * Who a lookup, a by id read or a cancel is about. The service matches EVERY id it is
+ * given against either id column (`lookupStrongIds`, #2657), so passing one spelling
+ * in each field finds a booking stored under either.
+ */
+const identityOf = (ctx: Ctx) => ({ externalId: ctx.lead.short, salesforceId: ctx.lead.long });
 
 async function offeredTimes(ctx: Ctx, zone: string, fromIso: string, pick: (slots: string[]) => string[]): Promise<{ times: OfferedTime[]; computedAt: string | null } | null> {
   const now = ctx.deps.nowMs();
@@ -375,7 +390,7 @@ async function offeredTimes(ctx: Ctx, zone: string, fromIso: string, pick: (slot
   const times: OfferedTime[] = [];
   for (const startIso of pick(open)) {
     times.push({
-      slot_id: await issueSlotId({ startIso, bucketCode: ctx.bucketCode, salesforceId: ctx.claims.salesforce_id }, ctx.deps.slotSecret, now),
+      slot_id: await issueSlotId({ startIso, bucketCode: ctx.bucketCode, salesforceId: ctx.lead.long }, ctx.deps.slotSecret, now),
       starts_at: startIso,
       label: formatTime(startIso, zone),
     });
@@ -403,7 +418,7 @@ async function alternativesTo(ctx: Ctx, zone: string, takenIso: string): Promise
 async function capRefusal(ctx: Ctx): Promise<MarciaRefusalCode | null> {
   let n: number;
   try {
-    n = await ctx.deps.recentChanges(ctx.claims.salesforce_id, ctx.deps.nowMs() - DAY_MS);
+    n = await ctx.deps.recentChanges(ctx.lead.long, ctx.deps.nowMs() - DAY_MS);
   } catch {
     return "cap_unreadable";
   }
@@ -420,7 +435,7 @@ async function auditWrite(ctx: Ctx, action: MarciaAuditAction, bookingId: string
   try {
     const facts = await ctx.deps.bookingFacts(bookingId);
     await ctx.deps.audit(
-      marciaAuditEntry({ action, booking: { id: bookingId, org_id: facts.orgId }, salesforceId: ctx.claims.salesforce_id, isTest: facts.isTest, attempt }),
+      marciaAuditEntry({ action, booking: { id: bookingId, org_id: facts.orgId }, salesforceId: ctx.lead.long, isTest: facts.isTest, attempt }),
       attempt,
     );
   } catch (err) {
@@ -473,9 +488,9 @@ async function attendeeFor(ctx: Ctx): Promise<ApiBookingInput["attendee"]> {
       }
     }
   };
-  const id = ctx.claims.salesforce_id;
-  if (missing().length > 0) await lookUp("bookings", () => ctx.deps.knownContact(id, ctx.claims.test));
-  if (missing().length > 0 && !ctx.claims.test) await lookUp("salesforce", () => ctx.deps.leadContact(id));
+  const { short, long } = ctx.lead;
+  if (missing().length > 0) await lookUp("bookings", () => ctx.deps.knownContact([short, long], ctx.claims.test));
+  if (missing().length > 0 && !ctx.claims.test) await lookUp("salesforce", () => ctx.deps.leadContact(long));
   // A fixed key order, and no key for a field nobody holds: the booking API leaves a
   // field nobody sent out, and "" would be stored and matched as though it were one.
   return {
@@ -526,19 +541,19 @@ async function bookOrMove(ctx: Ctx, args: Record<string, unknown>, op: "book" | 
   }
   if (replayOf) {
     try {
-      const done = await ctx.deps.bookingById({ bookingId: replayOf, identity: identityOf(ctx.claims), status: null });
+      const done = await ctx.deps.bookingById({ bookingId: replayOf, identity: identityOf(ctx), status: null });
       return { ok: true, operation: op, status: 200, data: { outcome: op === "book" ? "created" : "rescheduled", replay: true, booking: view(done, zone), ...zoneNote(z) } };
     } catch (err) {
       return refuse(ctx, codeForBookingError(err), { cause: err });
     }
   }
-  const slot = await readSlotId(args.slot_id, ctx.claims.salesforce_id, ctx.deps.slotSecret, ctx.deps.nowMs());
+  const slot = await readSlotId(args.slot_id, ctx.lead.long, ctx.deps.slotSecret, ctx.deps.nowMs());
   if (!slot.ok || slot.bucketCode !== ctx.bucketCode) return refuse(ctx, "slot_invalid");
   if (op === "move") {
     // A move moves a call the lead HOLDS. With none, `confirmReschedule` would quietly
     // create one, and the answer would say "moved" about a booking that never existed.
     try {
-      const held = await ctx.deps.lookup({ externalId: ctx.claims.salesforce_id, salesforceId: ctx.claims.salesforce_id });
+      const held = await ctx.deps.lookup(identityOf(ctx));
       if (held.length === 0) return refuse(ctx, "no_booking");
     } catch (err) {
       return refuse(ctx, codeForBookingError(err), { cause: err });
@@ -550,10 +565,12 @@ async function bookOrMove(ctx: Ctx, args: Record<string, unknown>, op: "book" | 
     bucketCode: ctx.bucketCode,
     startIso: slot.startIso,
     timezone: zone,
-    salesforceId: ctx.claims.salesforce_id,
+    // The two spellings again, so the person decision behind book and move finds a
+    // booking stored under either; a new booking stores the long one as its lead id.
+    salesforceId: ctx.lead.long,
     attendee: await attendeeFor(ctx),
     prefill: {},
-    externalId: ctx.claims.salesforce_id,
+    externalId: ctx.lead.short,
     confirmReschedule: op === "move",
     allowTestBuckets: ctx.claims.test,
     idempotencyKey: attempt,
@@ -595,7 +612,7 @@ async function lookup(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAn
   if (!z) return refuse(ctx, "args_invalid");
   const zone = z.zone;
   try {
-    const bookings = await ctx.deps.lookup({ externalId: ctx.claims.salesforce_id, salesforceId: ctx.claims.salesforce_id });
+    const bookings = await ctx.deps.lookup(identityOf(ctx));
     return { ok: true, operation: "lookup", status: 200, data: { bookings: bookings.map((b) => view(b, zone)), ...zoneNote(z) } };
   } catch (err) {
     return refuse(ctx, codeForBookingError(err), { cause: err });
@@ -619,7 +636,7 @@ async function cancel(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAn
   }
   if (already) {
     try {
-      const done = await ctx.deps.bookingById({ bookingId: already, identity: identityOf(ctx.claims), status: null });
+      const done = await ctx.deps.bookingById({ bookingId: already, identity: identityOf(ctx), status: null });
       return { ok: true, operation: "cancel", status: 200, data: { outcome: "already_cancelled", booking: view(done, zone), ...zoneNote(z) } };
     } catch (err) {
       return refuse(ctx, codeForBookingError(err), { cause: err });
@@ -644,7 +661,7 @@ async function cancel(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAn
     const offered = Array.isArray(args.declined_slot_ids) ? args.declined_slot_ids : [];
     let proven = false;
     for (const id of offered.slice(0, 10)) {
-      const r = await readSlotId(id, ctx.claims.salesforce_id, ctx.deps.slotSecret, ctx.deps.nowMs());
+      const r = await readSlotId(id, ctx.lead.long, ctx.deps.slotSecret, ctx.deps.nowMs());
       if (r.ok) proven = true;
     }
     if (!proven) return refuse(ctx, "move_not_offered");
@@ -652,7 +669,7 @@ async function cancel(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAn
   let bookingId = typeof args.booking_id === "string" && args.booking_id ? args.booking_id : null;
   try {
     if (!bookingId) {
-      const active = await ctx.deps.lookup({ externalId: ctx.claims.salesforce_id, salesforceId: ctx.claims.salesforce_id });
+      const active = await ctx.deps.lookup(identityOf(ctx));
       if (active.length === 0) return refuse(ctx, "no_booking");
       if (active.length > 1) return refuse(ctx, "booking_ambiguous");
       bookingId = active[0]!.id;
@@ -663,7 +680,7 @@ async function cancel(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAn
   const capped = await capRefusal(ctx);
   if (capped) return refuse(ctx, capped);
   try {
-    const cancelled = await ctx.deps.cancel({ bookingId, identity: identityOf(ctx.claims), reason: validated.reason });
+    const cancelled = await ctx.deps.cancel({ bookingId, identity: identityOf(ctx), reason: validated.reason });
     await auditWrite(ctx, "booking.cancelled", cancelled.id, attempt);
     return { ok: true, operation: "cancel", status: 200, data: { outcome: "cancelled", booking: view(cancelled, zone), ...zoneNote(z) } };
   } catch (err) {
@@ -671,7 +688,7 @@ async function cancel(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAn
     // Read the booking in any status: cancelled means this attempt already acted,
     // and it answers as it did the first time, with no second write.
     if (err instanceof BookingNotFoundError) {
-      const already = await ctx.deps.bookingById({ bookingId, identity: identityOf(ctx.claims), status: "cancelled" }).catch(() => null);
+      const already = await ctx.deps.bookingById({ bookingId, identity: identityOf(ctx), status: "cancelled" }).catch(() => null);
       if (already) return { ok: true, operation: "cancel", status: 200, data: { outcome: "already_cancelled", booking: view(already, zone), ...zoneNote(z) } };
     }
     return refuse(ctx, codeForBookingError(err), { cause: err });
@@ -680,7 +697,7 @@ async function cancel(ctx: Ctx, args: Record<string, unknown>): Promise<MarciaAn
 
 /** Run one operation for one verified lead. Never throws: every ending is an answer. */
 export async function runMarciaOperation(op: MarciaOperation, rawArgs: unknown, claims: MarciaLeadClaims, deps: MarciaDeps): Promise<MarciaAnswer> {
-  const ctx: Ctx = { op, claims, deps, bucketCode: bookingBucketFor(claims) };
+  const ctx: Ctx = { op, claims, deps, bucketCode: bookingBucketFor(claims), lead: leadIdSpellings(claims.salesforce_id) };
   const args = argsOf(rawArgs);
   if (!args) return refuse(ctx, "args_invalid");
   try {
