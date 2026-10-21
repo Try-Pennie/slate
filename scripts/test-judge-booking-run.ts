@@ -2846,7 +2846,7 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   assert(/cold n=2, 2 marked/.test(text), `the cold confirms are the Worker's first requests, and how many carried marks (got: ${text})`);
   assert(/route p50 600ms/.test(text), `a cold confirm's route span is reported (got: ${text})`);
   assert(/warm n=20, 20 marked/.test(text), `and the warm ones (got: ${text})`);
-  assert(/auth p50 100ms p95 100ms/.test(text), `with each span's median and p95, through the judge's own percentile (got: ${text})`);
+  assert(/auth \(key and address side by side\) p50 100ms p95 100ms/.test(text), `with each span's median and p95, through the judge's own percentile (got: ${text})`);
   // #3418: the cold n IS the first request count, so the line no longer prints it a
   // second time in other words; a confirm on neither side is named instead.
   assert(!/invocation index were their isolate's first request/.test(text), `the first request count is not printed twice (got: ${text})`);

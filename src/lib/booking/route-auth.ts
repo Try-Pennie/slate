@@ -181,6 +181,7 @@ export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCa
   /**
    * #3529: told as each ceiling answers (`AuthStep`), so the load test's marks can split
    * the auth wait by the call it waited on. Never changes what is asked, or in what order.
+   * Since #3124 the key's steps and the address's interleave, each path in its own order.
    */
   onStep?: (step: AuthStep) => void,
 ): Promise<AuthOutcome<C>> {
@@ -228,43 +229,80 @@ export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCa
       value: run.unreadable,
     });
   }
-  const keyBudget = "Rate limit exceeded for this API key.";
-  // Per CALLER (#2645): edge per-minute burst window first (no DB round-trip), then
-  // the hourly cap. Keyed on who the key belongs to, not which slot matched, so a
-  // caller mid rotation does not get two budgets and one partner cannot spend
-  // another's.
-  const keyEdgeOk = readPath
-    ? await bookingApiReadWithinLimit(auth.caller)
-    : await bookingApiWriteWithinLimit(auth.caller);
-  onStep?.("key_edge");
-  if (!keyEdgeOk || !(await exactCeilingWithinLimit({ kind: "opaque", key: `key:${auth.caller}` }, hourlyKeyRules, run.scope))) {
-    return refuse("throttled_key", keyBudget, 429, readPath, req.headers, auth.keyId);
+  // #3124: the per caller path and the per address path run SIDE BY SIDE, each in its own
+  // order (edge limiter first, then its exact hourly ceiling), and the answer is decided
+  // once both have finished. Each exact ceiling can wait up to its deadline
+  // (`EXACT_CEILING_DEADLINE_MS`, 1s, #3894) before failing open, and asked one after the
+  // other a lead could wait two of them: load run 39510932720 failed its confirm startup
+  // bar on a cold confirm that spent 748ms on the key's ceiling and then the address's
+  // full 1000ms. Side by side a lead waits at most one deadline for the pair (plus the
+  // slower path's edge limiter), which is the wait #3894 decided on.
+  //
+  // What that changes in COUNTING, accepted with the change: every hit counts when
+  // it is checked, a refused one included (`exactCeilingWithinLimit`, and the edge
+  // limiters alike), and there is no refund. Asked in sequence, a request the key path
+  // refused never reached the address counters; asked side by side, it does. So a host
+  // sending past its caller's limits is counted against its own address for every request
+  // it sent, not only the ones its key let through, and may meet the address ceiling (and
+  // its block alert) a little sooner. That is the address ceiling's own purpose, bounding
+  // what one machine sends (#597), and the key refused those requests anyway. Unchanged:
+  // a refused edge limiter still never spends its own path's hourly ceiling, and a request
+  // the address refuses was already counted against the key.
+  //
+  // Per CALLER (#2645): keyed on who the key belongs to, not which slot matched, so a
+  // caller mid rotation does not get two budgets and one partner cannot spend another's.
+  const keyPath = (async (): Promise<boolean> => {
+    const edgeOk = readPath
+      ? await bookingApiReadWithinLimit(auth.caller)
+      : await bookingApiWriteWithinLimit(auth.caller);
+    onStep?.("key_edge");
+    if (!edgeOk) return false;
+    const ok = await exactCeilingWithinLimit({ kind: "opaque", key: `key:${auth.caller}` }, hourlyKeyRules, run.scope);
+    onStep?.("key_ceiling");
+    return ok;
+  })();
+  // #597: a coarse per-IP backstop beside the per-key ceiling, in its own counter. The key
+  // ceiling bounds total volume; this bounds any ONE machine, so a leaked key cannot spend
+  // the whole budget from a single host. Per-minute at the edge, and the hourly one exact
+  // in the edge counter too (#3416). A null `hourlyIpRules` asks no address at all.
+  const ipRules = hourlyIpRules;
+  const ipPath =
+    ipRules === null
+      ? Promise.resolve(true)
+      : (async (): Promise<boolean> => {
+          const ip = clientIp(req.headers);
+          const edgeOk = await bookingApiIpWithinLimit(ip);
+          onStep?.("ip_edge");
+          if (!edgeOk) return false;
+          const ok = await exactCeilingWithinLimit(
+            // #1557: an address we cannot read declines to judge here, and the per KEY
+            // ceiling (an id that came from authentication) still bounds the caller.
+            { kind: "address", ip, keyPrefix: "ip:", policy: BOOKING_API_IP_LIMITER },
+            ipRules,
+            run.scope,
+          );
+          onStep?.("ip_ceiling");
+          return ok;
+        })();
+  // Settled rather than `Promise.all`, so the precedence below holds for a throw as well
+  // as a refusal: the key path decides first, exactly as when it was asked first. A key
+  // refusal answers `throttled_key` whatever the address said (or threw), a key that threw
+  // throws, and only an allowed key hears from the address.
+  const [keyVerdict, ipVerdict] = await Promise.allSettled([keyPath, ipPath]);
+  if (keyVerdict.status === "rejected") throw keyVerdict.reason;
+  if (!keyVerdict.value) {
+    return refuse("throttled_key", "Rate limit exceeded for this API key.", 429, readPath, req.headers, auth.keyId);
   }
-  onStep?.("key_ceiling");
-  // #597: a coarse per-IP backstop on top of the per-key ceiling, in its own counter.
-  // The key ceiling bounds total volume; this bounds any ONE machine, so a leaked key
-  // cannot spend the whole budget from a single host. Per-minute at the edge, and the
-  // hourly one exact in the edge counter too (#3416).
-  if (hourlyIpRules) {
-    const ip = clientIp(req.headers);
-    const ipEdgeOk = await bookingApiIpWithinLimit(ip);
-    onStep?.("ip_edge");
-    if (!ipEdgeOk || !(await exactCeilingWithinLimit(
-        // #1557: an address we cannot read declines to judge here, and the per KEY ceiling
-        // above (an id that came from authentication) still bounds the caller.
-        { kind: "address", ip, keyPrefix: "ip:", policy: BOOKING_API_IP_LIMITER },
-        hourlyIpRules,
-        run.scope,
-      ))) {
-      return refuse(
-        "throttled_ip",
-        "Rate limit exceeded for this client.",
-        429,
-        readPath,
-        req.headers,
-        auth.keyId,
-      );
-    }
+  if (ipVerdict.status === "rejected") throw ipVerdict.reason;
+  if (!ipVerdict.value) {
+    return refuse(
+      "throttled_ip",
+      "Rate limit exceeded for this client.",
+      429,
+      readPath,
+      req.headers,
+      auth.keyId,
+    );
   }
   // #2717: keep "this caller's key works, from this host" as a fact the readiness
   // gate and the admin console can read. Deferred past the response and throttled to

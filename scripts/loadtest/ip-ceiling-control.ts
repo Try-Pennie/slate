@@ -83,7 +83,7 @@ if (EXACT_BOUND === null) {
   process.exit(1);
 }
 const BUDGET = ceilingControlBudget(EXACT_BOUND);
-/** Held under the per KEY ceiling, which is checked first and short circuits this one. */
+/** Held under the per KEY ceiling, whose refusal wins over this one's (#3124). */
 const PER_MINUTE = ceilingControlPerMinute(BOOKING_API_WRITE_LIMITER.perMinute);
 
 /** How many go out together. Small, because the pacing is what decides the rate. */
@@ -118,8 +118,8 @@ async function attempt(n: number, code: string, startIso: string): Promise<Ceili
     // The two things the deployment says about its own decision (#2243, #2339):
     // the address the ceiling was keyed on, and WHICH ceiling refused. Both are
     // the premise the control rests on, and nothing measured either until they
-    // were echoed. A 429 alone says only that something refused, and the per key
-    // ceiling is checked first.
+    // were echoed. A 429 alone says only that something refused, and a per key
+    // refusal wins over the per address one (#3124).
     return {
       status: res.status,
       seenIp: res.headers.get(SEEN_IP_HEADER),

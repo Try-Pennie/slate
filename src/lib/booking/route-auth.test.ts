@@ -392,13 +392,18 @@ describe("authorizeBookingApi asks whether a refused key is a retired one (#2879
     const run = () =>
       authorizeBookingApi(req("Bearer goodsecret"), DIRECT_BOOKING_API_HOURLY_RATE_RULES, DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES, false, FULL_API_CALLERS, undefined, onStep);
     expect((await run()).ok).toBe(true);
-    expect(log).toEqual(["key edge", "step:key_edge", "key ceiling", "step:key_ceiling", "ip edge", "step:ip_edge", "ip ceiling"]);
+    // #3124: the two paths run side by side, so only each path's OWN order is fixed: its
+    // edge limiter, its step, its exact ceiling, its step. Every step is stamped.
+    const keyOrder = log.filter((l) => l.includes("key"));
+    const ipOrder = log.filter((l) => l.includes("ip"));
+    expect(keyOrder).toEqual(["key edge", "step:key_edge", "key ceiling", "step:key_ceiling"]);
+    expect(ipOrder).toEqual(["ip edge", "step:ip_edge", "ip ceiling", "step:ip_ceiling"]);
 
-    // A refusal part way stamps only the steps that answered.
+    // A refusal on its edge limiter stamps that path's edge and asks nothing more of it.
     log.length = 0;
-    rateLimit.exactCeilingWithinLimit.mockImplementation(async () => (log.push("key ceiling"), false));
+    rateLimit.bookingApiWriteWithinLimit.mockImplementation(async () => (log.push("key edge"), false));
     expect((await run()).ok).toBe(false);
-    expect(log).toEqual(["key edge", "step:key_edge", "key ceiling"]);
+    expect(log.filter((l) => l.includes("key"))).toEqual(["key edge", "step:key_edge"]);
   });
 
   it("asks nothing for a request with no credential, a good key, or no key configured", async () => {
@@ -407,6 +412,116 @@ describe("authorizeBookingApi asks whether a refused key is a retired one (#2879
     env.bookingApiKeyFor.mockImplementation(() => "");
     await authorizeBookingApi(req("Bearer oldsharedkey"));
     expect(retired.watchRetiredKey).not.toHaveBeenCalled();
+  });
+});
+
+// #3124: the per caller and the per address checks run side by side, so a lead whose
+// confirm meets a stall on both exact ceilings waits one deadline for the pair, not two
+// (#3894 set that deadline at 1s on the premise of one wait). Load run 39510932720 failed
+// its confirm startup bar on exactly the sequential sum: 748ms on the key's ceiling, then
+// the address's full 1000ms. The ANSWER is decided as before: a key refusal wins.
+describe("authorizeBookingApi asks the key and address ceilings side by side (#3124)", () => {
+  const STALL_MS = 950;
+  const isKey = (who: unknown) => (who as { kind: string }).kind === "opaque";
+  const run = (ipRules: typeof DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES | null = DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES, r = req("Bearer goodsecret")) =>
+    authorizeBookingApi(r, DIRECT_BOOKING_API_HOURLY_RATE_RULES, ipRules, false, FULL_API_CALLERS);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    regalKey.primary.mockReturnValue("goodsecret");
+    regalKey.secondary.mockReturnValue("");
+    env.bookingApiKeyFor.mockImplementation(regalKeyFor);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
+  });
+
+  it("answers in one deadline when both exact ceilings stall near it, not two", async () => {
+    // The stall is a timer on vitest's clock, never a real wait (L524).
+    vi.useFakeTimers();
+    try {
+      rateLimit.exactCeilingWithinLimit.mockImplementation(
+        () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), STALL_MS)),
+      );
+      let settled = false;
+      const out = run().then((o) => ((settled = true), o));
+      await vi.advanceTimersByTimeAsync(STALL_MS);
+      expect(settled).toBe(true);
+      expect((await out).ok).toBe(true);
+      expect(rateLimit.exactCeilingWithinLimit).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Every combination of the two exact ceilings' verdicts, so the precedence is pinned
+  // where both are asked rather than inferred from the order they used to be asked in.
+  it.each([
+    { key: true, ip: true, want: "ok" },
+    { key: false, ip: true, want: "throttled_key" },
+    { key: false, ip: false, want: "throttled_key" },
+    { key: true, ip: false, want: "throttled_ip" },
+  ])("key ceiling $key and address ceiling $ip answers $want", async ({ key, ip, want }) => {
+    rateLimit.exactCeilingWithinLimit.mockImplementation(async (who: unknown) => (isKey(who) ? key : ip));
+    const out = await run();
+    expect(out.ok ? "ok" : out.reason).toBe(want);
+    // One refusal counted, under the reason answered, never one per ceiling that said no.
+    expect(recordedOutcomes()).toEqual(want === "ok" ? [] : [want === "throttled_key" ? "refused_ceiling_key" : "refused_ceiling_ip"]);
+    if (!out.ok) expect(out.response.status).toBe(429);
+  });
+
+  it("asks the address even when the key refuses, which is the counting change #3124 accepts", async () => {
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(false);
+    const out = await run();
+    expect(out.ok ? "ok" : out.reason).toBe("throttled_key");
+    expect(rateLimit.bookingApiIpWithinLimit).toHaveBeenCalledWith("203.0.113.7");
+    // Each path keeps its own order: a refused edge never spends its own exact ceiling.
+    expect(rateLimit.exactCeilingWithinLimit.mock.calls.map(([who]) => isKey(who))).toEqual([false]);
+  });
+
+  it("asks no address at all when the route opts out of the address ceiling", async () => {
+    const out = await run(null);
+    expect(out.ok).toBe(true);
+    expect(rateLimit.bookingApiIpWithinLimit).not.toHaveBeenCalled();
+    expect(rateLimit.exactCeilingWithinLimit.mock.calls.map(([who]) => isKey(who))).toEqual([true]);
+  });
+
+  it("hands an unreadable address to the address checks to decline, and the key still decides (#1557)", async () => {
+    const noAddress = new Request("https://slate.trypennie.app/api/bookings", {
+      method: "POST",
+      headers: { authorization: "Bearer goodsecret" },
+    }) as unknown as Parameters<typeof authorizeBookingApi>[0];
+    rateLimit.exactCeilingWithinLimit.mockImplementation(async (who: unknown) => !isKey(who));
+    const out = await run(DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES, noAddress);
+    expect(out.ok ? "ok" : out.reason).toBe("throttled_key");
+    expect(rateLimit.bookingApiIpWithinLimit).toHaveBeenCalledWith("unknown");
+    expect(rateLimit.exactCeilingWithinLimit).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "address", ip: "unknown" }),
+      DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+      null,
+    );
+  });
+
+  it("keeps a key refusal's answer when the address path throws, and throws a key failure as before", async () => {
+    rateLimit.exactCeilingWithinLimit.mockImplementation(async (who: unknown) => {
+      if (isKey(who)) return false;
+      throw new Error("address counter broke");
+    });
+    const refused = await run();
+    expect(refused.ok ? "ok" : refused.reason).toBe("throttled_key");
+
+    rateLimit.exactCeilingWithinLimit.mockImplementation(async (who: unknown) => {
+      if (isKey(who)) throw new Error("key counter broke");
+      return false;
+    });
+    await expect(run()).rejects.toThrow("key counter broke");
+
+    rateLimit.exactCeilingWithinLimit.mockImplementation(async (who: unknown) => {
+      if (isKey(who)) return true;
+      throw new Error("address counter broke");
+    });
+    await expect(run()).rejects.toThrow("address counter broke");
   });
 });
 

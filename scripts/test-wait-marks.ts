@@ -52,43 +52,77 @@ function clock(start: number) {
   eq(f.wait_out_of_order, undefined, "and nothing out of order");
 }
 
-// --- #3529: the auth span split by the ceiling call it waited on ------------------
+// --- #3529, #3124: the auth span split by the ceiling call it waited on ------------
 // Load run 37785947346 failed its startup bar on one confirm whose auth span was 2.7s,
 // spent in waits before each rate limit object call that the span could not tell
-// apart. Each step inside the span is stamped, and the steps add up to the span.
+// apart, so each step inside the span is stamped. Since #3124 the per key and the per
+// address checks run side by side, so the split is per PATH: each path's two steps add
+// up to that path's own wait, and the auth span is the longer path, never their sum.
 {
-  eq([...AUTH_STEPS], ["key_edge", "key_ceiling", "ip_edge"], "the steps inside auth, in the order the authorizer asks them");
+  eq([...AUTH_STEPS], ["key_edge", "key_ceiling", "ip_edge", "ip_ceiling"], "the steps inside auth, each path's edge limiter then its exact ceiling");
   const c = clock(1_000);
   const m = makeWaitMarks(c.now, 1_000);
   m.mark("handler");
+  // Both paths start at the handler; their answers interleave.
+  c.to(1_020); m.mark("ip_edge");
   c.to(1_030); m.mark("key_edge");
   c.to(1_700); m.mark("key_ceiling");
-  c.to(2_600); m.mark("ip_edge");
-  c.to(2_700); m.mark("authed");
+  c.to(2_000); m.mark("ip_ceiling");
+  c.to(2_000); m.mark("authed");
   const f = m.fields();
   eq(f.wait_auth_key_edge_ms, 30, "the handler to the per key edge limiter answering");
-  eq(f.wait_auth_key_ceiling_ms, 670, "to the per key exact ceiling answering");
-  eq(f.wait_auth_ip_edge_ms, 900, "to the per address edge limiter answering");
-  eq(f.wait_auth_ip_ceiling_ms, 100, "to the per address exact ceiling answering, which is authed");
-  eq(
-    Number(f.wait_auth_key_edge_ms) + Number(f.wait_auth_key_ceiling_ms) + Number(f.wait_auth_ip_edge_ms) + Number(f.wait_auth_ip_ceiling_ms),
-    f.wait_auth_ms,
-    "the steps sum to the auth span, so none is counted twice (L466)",
+  eq(f.wait_auth_key_ceiling_ms, 670, "then to the per key exact ceiling answering");
+  eq(f.wait_auth_ip_edge_ms, 20, "the handler to the per address edge limiter answering, measured from its own start");
+  eq(f.wait_auth_ip_ceiling_ms, 980, "then to the per address exact ceiling answering");
+  eq(f.wait_auth_ms, 1_000, "the auth span is the longer path, the address one here");
+  eq(Number(f.wait_auth_ip_edge_ms) + Number(f.wait_auth_ip_ceiling_ms), f.wait_auth_ms, "the longer path's steps make up the span");
+  assert(
+    Number(f.wait_auth_key_edge_ms) + Number(f.wait_auth_key_ceiling_ms) <= Number(f.wait_auth_ms),
+    "and the shorter path's steps sit inside it, since the two overlap",
   );
+  eq(f.wait_out_of_order, undefined, "interleaved steps are not out of order: only each path has an order");
   assert(!String(f.wait_missing ?? "").includes("key_edge"), "a step is never reported as a missing point of the main sequence");
 }
 {
-  // A route with no per address ceiling (or an older deployment) stamps no steps: the
-  // auth span is reported as before, and no step span is invented from it.
+  // A route with no per address ceiling stamps only the key path: its split is reported,
+  // and no address span is invented, nor named missing.
+  const c = clock(0);
+  const m = makeWaitMarks(c.now, 0);
+  m.mark("handler");
+  c.to(10); m.mark("key_edge");
+  c.to(150); m.mark("key_ceiling");
+  c.to(150); m.mark("authed");
+  const f = m.fields();
+  eq(f.wait_auth_key_edge_ms, 10, "the key path stands alone");
+  eq(f.wait_auth_key_ceiling_ms, 140, "both of its steps");
+  eq(f.wait_auth_ip_edge_ms, undefined, "no address span without the address path");
+  eq(f.wait_auth_ip_ceiling_ms, undefined, "on either step");
+}
+{
+  // A path with a step missing (an older deployment, or a refusal part way) is withheld
+  // whole rather than reported in part, and the auth span stands without it.
   const c = clock(0);
   const m = makeWaitMarks(c.now, 0);
   m.mark("handler");
   c.to(50); m.mark("key_edge");
+  c.to(60); m.mark("ip_edge");
+  c.to(90); m.mark("ip_ceiling");
   c.to(200); m.mark("authed");
   const f = m.fields();
   eq(f.wait_auth_ms, 200, "the auth span stands without the steps");
-  eq(f.wait_auth_key_edge_ms, undefined, "and a split with a step missing is withheld whole rather than reported in part");
+  eq(f.wait_auth_key_edge_ms, undefined, "a path with a step missing is withheld whole rather than reported in part");
+  eq(f.wait_auth_ip_edge_ms, 60, "while the other path, stamped whole, is reported");
   eq(f.wait_missing, "line_start,line_turn,decided,profile", "a missing step is not counted among the missing points");
+}
+{
+  // A refusal never reaches `authed`, so no path is split from a request that answered no.
+  const c = clock(0);
+  const m = makeWaitMarks(c.now, 0);
+  m.mark("handler");
+  c.to(10); m.mark("key_edge");
+  c.to(20); m.mark("key_ceiling");
+  const f = m.fields();
+  eq(f.wait_auth_key_edge_ms, undefined, "no split without the auth span it belongs to");
 }
 
 // --- a point that never happened is NAMED, never scored as zero ----------------
