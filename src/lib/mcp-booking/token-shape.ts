@@ -9,9 +9,18 @@
  *
  * The format is a compact JWS with `alg` HS256 (a JWT): three base64url segments,
  * `header.payload.signature`, the signature an HMAC SHA-256 over
- * `header.payload` under one of Slate's two key slots. Every claim below is
- * REQUIRED (L688): a token missing any one is refused by name, so a signer that
- * stops sending the test flag cannot be read as a real lead.
+ * `header.payload` under one of Slate's two key slots. The protocol claims, the
+ * lead id, the bucket and the test flag are REQUIRED (L688): a token missing any
+ * one is refused by name, so a signer that stops sending the test flag cannot be
+ * read as a real lead.
+ *
+ * The lead's `name`, `email`, `phone` and `time_zone` are OPTIONAL (Dan,
+ * 2026-10-20): Regal, which feeds Marcia, may not hold them for every lead, and a
+ * lead Slate can still route and book should not be turned away for a missing
+ * address. Absent, null or "" all mean absent, and the parsed claims then carry no
+ * such key, so no reader books an empty string. Present and not empty, each is
+ * still held to its rule below and refused by name when broken. What the booking
+ * path does without them is in `operations.ts`.
  *
  * Two readers, one rule set, ONE file (L19, L263):
  *  - the MCP Worker (`worker/mcp-booking`) runs `parseMachineTokenShape` with no
@@ -36,7 +45,7 @@ export const MACHINE_TOKEN_MAX_LIFE_SEC = 15 * 60;
 /** How far a token's issue time may sit in our future, for clock drift. */
 export const MACHINE_TOKEN_CLOCK_SKEW_SEC = 60;
 
-/** The claims a lead token carries, every one required. */
+/** The claims a lead token carries: the contact four optional, every other one required. */
 export interface MarciaLeadClaims {
   iss: typeof MACHINE_TOKEN_ISSUER;
   aud: typeof MACHINE_TOKEN_AUDIENCE;
@@ -50,11 +59,12 @@ export interface MarciaLeadClaims {
   salesforce_id: string;
   /** The routing bucket code the lead belongs to. */
   bucket_code: string;
-  name: string;
-  email: string;
-  phone: string;
+  /** Optional, as are the three below it: Regal may not hold them (Dan, 2026-10-20). */
+  name?: string;
+  email?: string;
+  phone?: string;
   /** The lead's default IANA time zone; the only thing a tool argument may override. */
-  time_zone: string;
+  time_zone?: string;
   /** Set by Marcia's code, never by the model: true routes to a test bucket. */
   test: boolean;
 }
@@ -74,6 +84,11 @@ export const MACHINE_TOKEN_CLAIMS = [
   "test",
 ] as const satisfies readonly (keyof MarciaLeadClaims)[];
 export type MachineTokenClaim = (typeof MACHINE_TOKEN_CLAIMS)[number];
+
+/** The claims a token may leave out, or send as null or "" (Dan, 2026-10-20). */
+export const MACHINE_TOKEN_OPTIONAL_CLAIMS = ["name", "email", "phone", "time_zone"] as const satisfies readonly MachineTokenClaim[];
+export type OptionalMachineTokenClaim = (typeof MACHINE_TOKEN_OPTIONAL_CLAIMS)[number];
+const OPTIONAL: ReadonlySet<MachineTokenClaim> = new Set(MACHINE_TOKEN_OPTIONAL_CLAIMS);
 
 /**
  * Why a token was refused. Each is its own code because each sends a different
@@ -180,6 +195,15 @@ const CLAIM_VALID: Record<MachineTokenClaim, (v: unknown) => boolean> = {
 };
 
 /**
+ * Whether a name, email or phone found ELSEWHERE (the lead's earlier booking, the
+ * Salesforce Lead) passes the same rule the token's own claim would. One rule set,
+ * so a value Slate fills in is never one it would have refused from Marcia.
+ */
+export function contactValueValid(claim: "name" | "email" | "phone", v: unknown): v is string {
+  return CLAIM_VALID[claim](v);
+}
+
+/**
  * Split, decode and check every claim, WITHOUT the signature. Never throws.
  *
  * Passing this proves nothing about who made the token: anybody can write a token
@@ -200,13 +224,20 @@ export function parseMachineTokenShape(token: unknown, nowMs: number): ShapeResu
   if (header.alg !== MACHINE_TOKEN_ALG || (header.typ !== undefined && header.typ !== "JWT")) {
     return { ok: false, refusal: { code: "token_unsupported_alg" } };
   }
+  const kept: Record<string, unknown> = { ...payload };
   for (const claim of MACHINE_TOKEN_CLAIMS) {
-    if (!(claim in payload) || payload[claim] === null || payload[claim] === undefined) {
+    const v = payload[claim];
+    if (!(claim in payload) || v === null || v === undefined || (OPTIONAL.has(claim) && v === "")) {
+      if (OPTIONAL.has(claim)) {
+        // Absent, null and "" are one answer, and the claims carry no key for it.
+        delete kept[claim];
+        continue;
+      }
       return { ok: false, refusal: { code: "token_claim_missing", claim } };
     }
-    if (!CLAIM_VALID[claim](payload[claim])) return { ok: false, refusal: { code: "token_claim_invalid", claim } };
+    if (!CLAIM_VALID[claim](v)) return { ok: false, refusal: { code: "token_claim_invalid", claim } };
   }
-  const claims = payload as unknown as MarciaLeadClaims;
+  const claims = kept as unknown as MarciaLeadClaims;
   const nowSec = Math.floor(nowMs / 1000);
   if (claims.exp <= claims.iat) return { ok: false, refusal: { code: "token_claim_invalid", claim: "exp" } };
   if (claims.exp - claims.iat > MACHINE_TOKEN_MAX_LIFE_SEC) return { ok: false, refusal: { code: "token_life_too_long" } };
@@ -223,7 +254,7 @@ export function describeTokenRefusal(r: MachineTokenRefusal): string {
     case "token_unsupported_alg":
       return "The lead token is not signed with HS256.";
     case "token_claim_missing":
-      return `The lead token has no ${r.claim} claim, and every claim is required.`;
+      return `The lead token has no ${r.claim} claim, and that claim is required.`;
     case "token_claim_invalid":
       return `The lead token's ${r.claim} claim is not valid.`;
     case "token_expired":

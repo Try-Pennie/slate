@@ -334,14 +334,261 @@ for (const testBucket of [false, true]) {
   eq(fake.alerts.length, before + 1, "an unexpected read failure alerts");
 }
 
+// --- a token with no time zone (Dan, 2026-10-20) ---------------------------------------------------
+// Regal may not hold the lead's zone. Times are then judged and written in Eastern,
+// and every answer SAYS so, so the model can confirm the zone with the lead.
+const withoutClaims = (c: MarciaLeadClaims, ...drop: ("name" | "email" | "phone" | "time_zone")[]): MarciaLeadClaims => {
+  const out = { ...c };
+  for (const k of drop) delete out[k];
+  return out;
+};
+{
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS });
+  const noZone = withoutClaims(claims(), "time_zone");
+  const a = await runMarciaOperation("find_times", {}, noZone, fake.deps);
+  assert(a.ok, "find_times answers with no zone signed");
+  eq(okData(a)?.time_zone, "America/New_York", "it uses Eastern");
+  eq(((okData(a)?.times as Times) ?? [])[0]?.label, "Tuesday, June 2 at 10:00am EDT", "and writes the times in it");
+  const note = okData(a)?.time_zone_note;
+  assert(typeof note === "string" && note.includes("America/New_York") && /confirm/i.test(note), "and says so in the answer, asking the model to confirm the zone with the lead");
+  const passed = await runMarciaOperation("find_times", { time_zone: "America/Chicago" }, noZone, fake.deps);
+  eq(((okData(passed)?.times as Times) ?? [])[0]?.label, "Tuesday, June 2 at 9:00am CDT", "a zone the model passes is used instead");
+  assert(passed.ok && !("time_zone_note" in passed.data), "and then nothing is said about a guess");
+  const signed = await runMarciaOperation("find_times", {}, claims(), fake.deps);
+  assert(signed.ok && !("time_zone_note" in signed.data), "nor when the token signed a zone");
+
+  const slot = ((okData(a)?.times as Times) ?? [])[0]!.slot_id;
+  const booked = await runMarciaOperation("book", { slot_id: slot }, noZone, fake.deps);
+  assert(booked.ok && okData(booked)?.outcome === "created", "book books with no zone signed");
+  eq(fake.bookings[0]?.timezone, "America/New_York", "in Eastern");
+  eq((okData(booked)?.booking as { label: string })?.label, "Tuesday, June 2 at 10:00am EDT", "its answer writes the time in Eastern");
+  assert(typeof okData(booked)?.time_zone_note === "string", "and says it assumed the zone");
+  const moveTo = ((okData(a)?.times as Times) ?? [])[1]!.slot_id;
+  const moved = await runMarciaOperation("move", { slot_id: moveTo }, withoutClaims(claims(), "time_zone"), fake.deps);
+  assert(moved.ok && okData(moved)?.outcome === "rescheduled", "move moves with no zone signed");
+  eq(fake.bookings[0]?.timezone, "America/New_York", "in Eastern");
+  assert(typeof okData(moved)?.time_zone_note === "string", "and says it assumed the zone");
+  const looked = await runMarciaOperation("lookup", {}, withoutClaims(claims(), "time_zone"), fake.deps);
+  assert(looked.ok && typeof looked.data.time_zone_note === "string", "lookup says so too, since its times are written in the same zone");
+}
+
+{
+  // A taken time's alternatives are written in the assumed zone, and the refusal says so.
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, takenByOthers: new Set([SLOTS[3]!]) });
+  const c = withoutClaims(claims(), "time_zone");
+  const slot = await issueSlotId({ startIso: SLOTS[3]!, bucketCode: "411", salesforceId: c.salesforce_id }, fake.deps.slotSecret, NOW);
+  const a = await runMarciaOperation("book", { slot_id: slot }, c, fake.deps);
+  assert(!a.ok && a.code === "slot_taken" && (a.alternatives ?? []).every((t) => t.label.endsWith("EDT")), "a taken time's alternatives are in Eastern");
+  assert(!a.ok && typeof a.time_zone_note === "string", "and the refusal says the zone was assumed");
+}
+
+// --- name, email and phone: required for a net new booking, optional otherwise -----------------------
+// Dan, 2026-10-21: a NET NEW booking (a book while the lead holds no active call in
+// that world) needs all three on the token, and is refused naming which are missing.
+// Everywhere else they are optional: move, and a book that lands on the call the lead
+// already holds, fill each missing field from what Slate knows about the salesforce_id
+// (the lead's earlier Slate bookings, then the Salesforce Lead). The token's own value
+// always wins, a failed lookup never refuses, and nothing looked up is logged.
+{
+  for (const missing of [["email"], ["name", "phone"], ["name", "email", "phone"]] as const) {
+    const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: earlierContact(), leadContact: sfLeadContact() });
+    const c = withoutClaims(claims(), ...missing);
+    const a = await runMarciaOperation("book", { slot_id: await firstSlot(fake, c) }, c, fake.deps);
+    const what = missing.join(" and ");
+    assert(!a.ok && a.code === "lead_contact_missing", `a net new book with no ${what} is refused lead_contact_missing`);
+    eq(!a.ok ? a.missing_fields : null, [...missing], `naming exactly the missing ${what}, so Marcia can ask the lead`);
+    eq(fake.bookings.length, 0, `and books nothing (${what})`);
+    eq(fake.contactReads.length, 0, `judged on the token alone, with no lookup (${what})`);
+    const text = JSON.stringify(a);
+    assert(![c.name, c.email, c.phone].some((v) => typeof v === "string" && text.includes(v)), `and its answer echoes no value the token did carry (${what})`);
+  }
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS });
+  const a = await runMarciaOperation("book", { slot_id: await firstSlot(fake) }, claims(), fake.deps);
+  assert(a.ok && okData(a)?.outcome === "created", "a net new book with all three books");
+  eq(MARCIA_REFUSALS.lead_contact_missing.class, "expected", "a missing contact field is an expected refusal: Marcia asks the lead");
+}
+
+/** Seed the call the lead already holds, then move it: the path the fill serves. */
+const moveOnce = async (fake: ReturnType<typeof makeMarciaFake>, c: MarciaLeadClaims) => {
+  fake.seedBooking({ salesforceId: c.salesforce_id, externalId: c.salesforce_id, startsAt: SLOTS[1]!, bucketCode: c.test ? PARTNER_BUCKET_CODE : "411" });
+  return runMarciaOperation("move", { slot_id: await firstSlot(fake, c) }, c, fake.deps);
+};
+function earlierContact() {
+  return { name: "Earlier Booking Name", firstName: "Earlier", email: "earlier.booking@example.com", phone: "+15555550122" };
+}
+function sfLeadContact() {
+  return { name: "Salesforce Lead Name", firstName: "Salesforce", email: "salesforce.lead@example.com", phone: "+15555550133" };
+}
+const earlier = earlierContact();
+const sfLead = sfLeadContact();
+{
+  // Nothing anywhere: a move with all three missing still moves, with the fields left
+  // out rather than "".
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS });
+  const bare = withoutClaims(claims(), "name", "email", "phone");
+  const a = await moveOnce(fake, bare);
+  assert(a.ok && okData(a)?.outcome === "rescheduled", "a move with no name, email or phone still moves");
+  eq(fake.bookings[0]?.attendee, {}, "with no attendee field at all, never an empty string");
+  eq(fake.contactReads.map((r) => r.source), ["bookings", "salesforce"], "having asked the earlier bookings, then Salesforce");
+  assert(fake.contactReads[0]?.salesforceIds.includes(bare.salesforce_id) === true, "about the token's lead");
+}
+{
+  // Absent email filled from a prior booking; the token's name and phone win over it.
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: earlier, leadContact: sfLead });
+  const c = withoutClaims(claims(), "email");
+  const a = await moveOnce(fake, c);
+  assert(a.ok, "a move with no email moves");
+  eq(fake.bookings[0]?.attendee, { name: c.name, email: earlier.email, phone: c.phone }, "the email comes from the earlier booking, the name and phone from the token");
+  eq(fake.contactReads.map((r) => r.source), ["bookings"], "and Salesforce is not asked once nothing is missing");
+}
+{
+  // Absent from both the token and the bookings: filled from the Salesforce Lead.
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: null, leadContact: sfLead });
+  const a = await moveOnce(fake, withoutClaims(claims(), "name", "email", "phone"));
+  assert(a.ok, "a move whose earlier bookings hold no details moves");
+  eq(fake.bookings[0]?.attendee, { name: sfLead.name, firstName: sfLead.firstName, email: sfLead.email, phone: sfLead.phone }, "with the name, first name, email and phone from the Salesforce Lead");
+}
+{
+  // Per field: what the bookings hold is used, and only the rest is asked of Salesforce.
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: { name: null, firstName: null, email: earlier.email, phone: null }, leadContact: sfLead });
+  await moveOnce(fake, withoutClaims(claims(), "name", "email", "phone"));
+  eq(fake.bookings[0]?.attendee, { name: sfLead.name, firstName: sfLead.firstName, email: earlier.email, phone: sfLead.phone }, "each field from the first source holding it, bookings before Salesforce");
+}
+{
+  // Both lookups fail: moves anyway, logs each failure by source, pages nobody.
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: new Error("bookings read failed"), leadContact: new Error("SF query failed: 503") });
+  const a = await moveOnce(fake, withoutClaims(claims(), "name", "email", "phone"));
+  assert(a.ok && okData(a)?.outcome === "rescheduled", "a failed contact lookup is not a refusal: it moves");
+  eq(fake.bookings[0]?.attendee, {}, "with what it has");
+  eq(fake.contactFailures.map((f) => f.source), ["bookings", "salesforce"], "and reports each failed lookup by its source");
+  eq(fake.alerts.length, 0, "without paging anybody");
+}
+{
+  // A lookup that answers in a throw from the very first read still reaches Salesforce.
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: new Error("bookings read failed"), leadContact: sfLead });
+  await moveOnce(fake, withoutClaims(claims(), "email"));
+  eq(fake.bookings[0]?.attendee?.email, sfLead.email, "a failed bookings read falls through to Salesforce");
+}
+{
+  // The token's values always win, and with all three present nothing is looked up.
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: earlier, leadContact: sfLead });
+  const c = claims();
+  await moveOnce(fake, c);
+  eq(fake.bookings[0]?.attendee, { name: c.name, email: c.email, phone: c.phone }, "a token value always wins over a looked up one");
+  eq(fake.contactReads.length, 0, "and a token carrying all three costs no lookup");
+}
+{
+  // A looked up value the token rule would refuse is not used.
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: null, leadContact: { name: "   ", firstName: null, email: "no at sign", phone: "+15555550133" } });
+  await moveOnce(fake, withoutClaims(claims(), "name", "email", "phone"));
+  eq(fake.bookings[0]?.attendee, { phone: "+15555550133" }, "a looked up blank name or broken email is left out, as the token's would have been refused");
+}
+{
+  // A test token fills like a real one (Dan, 2026-10-21): the test world's bookings
+  // first, then the Salesforce Lead.
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: null, leadContact: sfLead });
+  const t = withoutClaims(claims({ test: true }), "name", "email", "phone");
+  const a = await moveOnce(fake, t);
+  assert(a.ok, "a test token with no contact moves");
+  eq(fake.contactReads.map((r) => [r.source, r.isTest]), [["bookings", true], ["salesforce", null]], "it asks the test world's bookings, then the Salesforce Lead");
+  eq(fake.bookings[0]?.attendee, { name: sfLead.name, firstName: sfLead.firstName, email: sfLead.email, phone: sfLead.phone }, "and fills from the Lead");
+}
+{
+  // A book that lands on the call the lead already holds is not net new, so missing
+  // fields do not refuse it: it is answered about that call (the fake asks the lead
+  // to confirm, `confirm_required`, which Marcia hears as lead_has_booking).
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: earlier });
+  const c = withoutClaims(claims(), "name", "email", "phone");
+  fake.seedBooking({ salesforceId: c.salesforce_id, externalId: c.salesforce_id, startsAt: SLOTS[1]! });
+  const a = await runMarciaOperation("book", { slot_id: await firstSlot(fake, c) }, c, fake.deps);
+  eq(a.ok ? "ok" : a.code, "lead_has_booking", "a book while the lead holds a call, with no name, email or phone, is answered about that call, never lead_contact_missing");
+  eq(fake.bookings.length, 1, "and adds no booking");
+  eq(fake.contactReads.map((r) => r.source), ["bookings"], "having filled from the held call's details");
+  // A real token's test world call does not make a real book anything but net new.
+  const other = makeMarciaFake({ nowMs: NOW, slots: SLOTS });
+  other.seedBooking({ salesforceId: c.salesforce_id, externalId: c.salesforce_id, startsAt: SLOTS[2]!, bucketCode: PARTNER_BUCKET_CODE });
+  const b = await runMarciaOperation("book", { slot_id: await firstSlot(other, c) }, c, other.deps);
+  eq(b.ok ? null : b.code, "lead_contact_missing", "a call held only in the test world leaves a real book net new");
+}
+{
+  // Nothing looked up reaches an alert: a failed write after a fill carries ids only.
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: earlier, leadContact: sfLead });
+  const c = withoutClaims(claims(), "name", "email", "phone");
+  await moveOnce(fake, c);
+  await runMarciaOperation("move", { slot_id: "garbage" }, withoutClaims(claims(), "name", "email", "phone"), fake.deps);
+  const stranger = withoutClaims(claims({ salesforce_id: "00Q111111111111BBB" }), "email");
+  await runMarciaOperation("book", { slot_id: await firstSlot(fake, stranger) }, stranger, fake.deps);
+  const text = JSON.stringify(fake.alerts.map(({ cause: _c, ...rest }) => rest));
+  assert(fake.alerts.length === 2, "the bad slot and the refused net new book each alerted");
+  assert(![earlier.email, earlier.phone, earlier.name, sfLead.email, sfLead.phone, sfLead.name].some((v) => text.includes(v)), "and carry no looked up name, email or phone");
+}
+
+// --- a lead id in either spelling finds the same bookings --------------------------------------------
+// A booking stores whichever spelling its channel sent (15 or 18 characters), and the
+// token accepts either, so a token signed with one finds, moves and cancels a booking
+// stored with the other, and the contact fill asks for both.
+{
+  const ID15 = "00Q5f00000AbCdE";
+  // Blocks 00Q5f (Q: 4, E), 00000 (A), AbCdE (A, C, E: 1 + 4 + 16 = 21, V).
+  const ID18 = "00Q5f00000AbCdEEAV";
+  for (const [stored, signed] of [
+    [ID18, ID15],
+    [ID15, ID18],
+  ] as const) {
+    const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS, knownContact: null });
+    // The embed's shape: the lead id in salesforce_id alone.
+    fake.seedBooking({ salesforceId: stored, externalId: null, startsAt: SLOTS[1]! });
+    const c = () => claims({ salesforce_id: signed });
+    const what = `stored as ${stored.length}, signed as ${signed.length}`;
+    const looked = await runMarciaOperation("lookup", {}, c(), fake.deps);
+    eq(((okData(looked)?.bookings as unknown[]) ?? []).length, 1, `${what}: lookup finds the booking`);
+    // No email signed, so this call also runs the contact fill.
+    const noEmail = withoutClaims(c(), "email");
+    const again = await runMarciaOperation("book", { slot_id: await firstSlot(fake, noEmail) }, noEmail, fake.deps);
+    eq(again.ok ? null : again.code, "lead_has_booking", `${what}: a book sees the lead already holds it`);
+    const times = ((okData(await runMarciaOperation("find_times", {}, c(), fake.deps))?.times as Times) ?? []);
+    const moved = await runMarciaOperation("move", { slot_id: times.find((t) => t.starts_at === SLOTS[3])!.slot_id }, c(), fake.deps);
+    eq(okData(moved)?.outcome, "rescheduled", `${what}: move moves it`);
+    eq([fake.bookings.length, fake.bookings[0]?.startsAt], [1, SLOTS[3]], `${what}: the same booking, at the new time, and no second one`);
+    const cancelled = await runMarciaOperation("cancel", { reason_code: "no_longer_interested" }, c(), fake.deps);
+    eq(okData(cancelled)?.outcome, "cancelled", `${what}: cancel cancels it`);
+    eq(fake.bookings[0]?.status, "cancelled", `${what}: and the booking is cancelled`);
+    eq([...(fake.contactReads[0]?.salesforceIds ?? [])].sort(), [ID15, ID18].sort(), `${what}: the contact fill asks the bookings for both spellings`);
+    eq([fake.bookings[0]?.salesforceId, fake.bookings[0]?.externalId], [stored, null], `${what}: and the booking keeps the ids it was written with`);
+  }
+  {
+    // The held call read that picks the spelling cannot be read: book refuses rather
+    // than risk booking a second call for a lead whose first it could not see.
+    const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS });
+    const c = claims({ salesforce_id: ID15 });
+    const slot = await firstSlot(fake, c);
+    fake.deps.lookup = async () => {
+      throw new Error("bookings read failed");
+    };
+    const a = await runMarciaOperation("book", { slot_id: slot }, c, fake.deps);
+    assert(!a.ok && a.class === "unexpected", "a book whose held call read fails is refused as unexpected");
+    eq(fake.bookings.length, 0, "and books nothing");
+    assert(fake.alerts.some((f) => f.operation === "book"), "and alerts, as every failed write does");
+  }
+  // A NEW booking stores exactly the spelling the token carried, in both id columns,
+  // as every other channel stores its caller's: webhook consumers may key on it.
+  for (const signed of [ID15, ID18]) {
+    const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS });
+    const c = claims({ salesforce_id: signed });
+    const a = await runMarciaOperation("book", { slot_id: await firstSlot(fake, c) }, c, fake.deps);
+    assert(a.ok && okData(a)?.outcome === "created", `a ${signed.length} character token books`);
+    eq([fake.bookings[0]?.salesforceId, fake.bookings[0]?.externalId], [signed, signed], `and stores its ${signed.length} character id as both salesforce_id and external_id`);
+  }
+}
+
 // --- every refusal is classified once ------------------------------------------------------------
 {
   const classes = new Set(Object.values(MARCIA_REFUSALS).map((r) => r.class));
   eq([...classes].sort(), ["expected", "unexpected"], "every refusal is one of two classes");
   eq(
     Object.entries(MARCIA_REFUSALS).filter(([, r]) => r.class === "expected").map(([c]) => c).sort(),
-    ["lead_daily_cap", "lead_has_booking", "move_not_offered", "slot_taken"],
-    "the expected refusals are the plan's three plus the told-to-move answer",
+    ["lead_contact_missing", "lead_daily_cap", "lead_has_booking", "move_not_offered", "slot_taken"],
+    "the expected refusals are the plan's three, the told-to-move answer and the ask-the-lead one",
   );
 }
 

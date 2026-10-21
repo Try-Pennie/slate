@@ -19,7 +19,7 @@ import {
   usableTokenKeys,
   verifyMachineToken,
 } from "../src/lib/mcp-booking/machine-token.ts";
-import { MACHINE_TOKEN_CLAIMS, parseMachineTokenShape } from "../src/lib/mcp-booking/token-shape.ts";
+import { MACHINE_TOKEN_CLAIMS, MACHINE_TOKEN_OPTIONAL_CLAIMS, parseMachineTokenShape } from "../src/lib/mcp-booking/token-shape.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const committed = JSON.parse(
@@ -79,6 +79,46 @@ for (const c of committed.cases) {
   const token = await signMachineToken(noTest, FIXTURE_TOKEN_KEY);
   const v = await verifyMachineToken(token, [FIXTURE_TOKEN_KEY], FIXTURE_VERIFY_AT_MS);
   eq(v.ok ? null : v.refusal, { code: "token_claim_missing", claim: "test" }, "a correctly signed token without the test claim is refused, naming the claim");
+}
+
+// --- which claims are required (Dan, 2026-10-20) --------------------------------------
+{
+  // Regal may not hold the lead's name, email, phone or zone, so those four are
+  // optional; the lead id, the bucket and the protocol claims are not.
+  eq(
+    MACHINE_TOKEN_CLAIMS.filter((c) => !(MACHINE_TOKEN_OPTIONAL_CLAIMS as readonly string[]).includes(c)),
+    ["iss", "aud", "iat", "exp", "nonce", "salesforce_id", "bucket_code", "test"],
+    "exactly these claims are required",
+  );
+  eq([...MACHINE_TOKEN_OPTIONAL_CLAIMS].sort(), ["email", "name", "phone", "time_zone"], "and exactly these four may be absent");
+
+  // Absent, null and empty all reach the operations as ABSENT, never as "", so no
+  // reader books an empty string as an address or judges times in a zone named "".
+  const { name: _n, email: _e, phone: _p, time_zone: _z, ...bare } = FIXTURE_CLAIMS;
+  const signedBare = await verifyMachineToken(await signMachineToken(bare, FIXTURE_TOKEN_KEY), [FIXTURE_TOKEN_KEY], FIXTURE_VERIFY_AT_MS);
+  assert(signedBare.ok, "a token carrying none of the four verifies");
+  const signedEmpty = await verifyMachineToken(
+    await signMachineToken({ ...FIXTURE_CLAIMS, name: "", email: "", phone: null, time_zone: "" }, FIXTURE_TOKEN_KEY),
+    [FIXTURE_TOKEN_KEY],
+    FIXTURE_VERIFY_AT_MS,
+  );
+  assert(signedEmpty.ok, "a token carrying the four empty or null verifies");
+  for (const v of [signedBare, signedEmpty]) {
+    if (!v.ok) continue;
+    eq(
+      MACHINE_TOKEN_OPTIONAL_CLAIMS.map((c) => (c in v.claims ? c : null)).filter(Boolean),
+      [],
+      "an absent or empty optional claim is not in the verified claims at all",
+    );
+    eq(v.claims.salesforce_id, FIXTURE_CLAIMS.salesforce_id, "and the required ones come through untouched");
+  }
+  // The required ones stay required even beside the relaxed four.
+  const { bucket_code: _b, ...noBucket } = bare;
+  const nb = await verifyMachineToken(await signMachineToken(noBucket, FIXTURE_TOKEN_KEY), [FIXTURE_TOKEN_KEY], FIXTURE_VERIFY_AT_MS);
+  eq(nb.ok ? null : nb.refusal, { code: "token_claim_missing", claim: "bucket_code" }, "a token without a bucket is still refused by name");
+  const { test: _t2, ...bareNoTest } = bare;
+  const nt = parseMachineTokenShape(await signMachineToken(bareNoTest, FIXTURE_TOKEN_KEY), FIXTURE_VERIFY_AT_MS);
+  eq(nt.ok ? null : nt.refusal, { code: "token_claim_missing", claim: "test" }, "and so is one without the test flag, by the shape parser the MCP Worker runs too");
 }
 
 // --- rotation: either slot verifies, a foreign key does not -------------------------

@@ -772,7 +772,10 @@ their own keys.
   (#3543) are Marcia's booking MCP endpoint, which is not deployed yet. Every failed
   Marcia write pages, expected refusals included (plan decision 11): the key names the
   operation and the code, and the text says whether it was refused as designed
-  (`slot_taken`, `move_not_offered`, `lead_daily_cap`, `lead_has_booking`) or failed.
+  (`slot_taken`, `move_not_offered`, `lead_daily_cap`, `lead_has_booking`,
+  `lead_contact_missing`) or failed. `lead_contact_missing` is a net new booking whose
+  token lacked the lead's name, email or phone: Marcia is told which and asks the lead;
+  a run of them means Regal is not passing those fields to Marcia's signer.
   One kind pages once per 15 minutes; the rest are in the log under `tag=mcp-booking`,
   with the full error. A run of `marcia_token_refused:*` means Marcia's signer and
   Slate disagree about the token: check her signer against

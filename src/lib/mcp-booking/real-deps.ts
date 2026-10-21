@@ -9,7 +9,9 @@
 import { getBucketSlotsWithFallback } from "@/lib/availability/slot-cache";
 import { recordAudit, AUDIT_WRITE_FAILED_KEY, AUDIT_WRITE_FAILED_COOLDOWN_MS } from "@/lib/audit";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
-import { bookViaApi, cancelDirectBooking, getPersonBookingById, lookupPersonBookings } from "@/lib/booking/service";
+import { bookViaApi, cancelDirectBooking, getPersonBookingById, lookupPersonBookings, readKnownContact } from "@/lib/booking/service";
+import { readWithinDeadline } from "@/lib/read-within-deadline";
+import { readLeadContactLive } from "@/lib/salesforce/lead-contact";
 import { unwrap, unwrapCount } from "@/lib/db/result";
 import { mcpBookingGatewaySecret } from "@/lib/env";
 import { log } from "@/lib/log";
@@ -22,6 +24,14 @@ import { MARCIA_FAILURE_COOLDOWN_MS, marciaFailureAlert, marciaFailureKey } from
 import type { MarciaDeps } from "./operations.ts";
 
 const MARCIA_CHANGE_ACTIONS = ["booking.rescheduled", "booking.cancelled"];
+
+/**
+ * How long a book or move waits for the Salesforce Lead's details before booking
+ * without them. The lead is on a live call while the model waits on this tool, and
+ * a slow Salesforce must cost them a missing invite address, never the booking.
+ * The same bound the lead facing calling number read uses (`CALLING_NUMBER_DEADLINE_MS`).
+ */
+const LEAD_CONTACT_DEADLINE_MS = 2_500;
 
 export function realMarciaDeps(): MarciaDeps {
   return {
@@ -96,6 +106,23 @@ export function realMarciaDeps(): MarciaDeps {
       );
       // alert-key: marcia_booking_failed:*
       await sendThrottledAlert(marciaFailureKey(fields), MARCIA_FAILURE_COOLDOWN_MS, marciaFailureAlert(fields));
+    },
+    knownContact: (salesforceIds, isTest) => readKnownContact(salesforceIds, { isTest }, "marcia known contact"),
+    leadContact: async (salesforceId) => {
+      // A refusal and a timeout both reach the operation as a throw, so the one place
+      // that reports a failed lookup (`contactLookupFailed`) sees both.
+      let failed = false;
+      let failure: unknown;
+      const found = await readWithinDeadline(() => readLeadContactLive(salesforceId), LEAD_CONTACT_DEADLINE_MS, (err) => {
+        failed = true;
+        failure = err;
+      });
+      if (failed) throw failure instanceof Error ? failure : new Error("the Salesforce Lead read failed");
+      return found;
+    },
+    contactLookupFailed: (source, err) => {
+      // The source and the error, never a value: the lead's details stay out of the logs.
+      log.warn("mcp-booking", { msg: "a lead contact lookup failed, so the booking goes ahead without what it would have filled", source }, err);
     },
   };
 }
