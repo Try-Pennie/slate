@@ -35,6 +35,7 @@ const EVENT_NAMES: Record<BookingWebhookEvent, string> = {
   "booking.rescheduled": "Slate Booking Rescheduled",
   "booking.cancelled": "Slate Booking Cancelled",
   "booking.reassigned": "Slate Booking Reassigned",
+  "booking.contact_updated": "Slate Booking Contact Updated",
 };
 
 // Collapse a zone's two seasonal abbreviations to one label, matching the old
@@ -126,7 +127,8 @@ function nameParts(full: string | null, answeredFirst?: string | null): { first?
 type OptInTrait =
   | Record<string, never>
   | { voiceOptIn?: { subscribed: boolean }; smsOptIn?: { subscribed: boolean } }
-  | { emailOptIn: { subscribed: boolean } };
+  | { emailOptIn: { subscribed: boolean } }
+  | { isPrimary: true };
 
 interface RegalEvent {
   name: string;
@@ -147,7 +149,9 @@ interface RegalEvent {
  * contract at cutover and never trigger the routed "Slate Booking ..." journeys.
  * The name, the three action literals and the property names were read off
  * journey 304 itself. cal.com's personal link sent nothing on a reassign, so it
- * has no entry: `regalSendsNothingFor` keeps it away from Regal entirely.
+ * has no entry: `regalSendsNothingFor` keeps it away from Regal entirely. Nor does
+ * a contact update (#1512): journey 304 has no action for one, and inventing one
+ * would send an event no journey expects.
  */
 const CLIENT_SYNC_EVENT = "Client Sync Action";
 const CLIENT_SYNC_ACTIONS: Partial<Record<BookingWebhookEvent, string>> = {
@@ -165,22 +169,34 @@ export function regalSendsNothingFor(event: BookingWebhookEvent, p: Pick<Booking
   return p.booking_kind === "agent_link" && CLIENT_SYNC_ACTIONS[event] === undefined;
 }
 
+/**
+ * What the traits say about the phone on this event.
+ *
+ * A create asserts the landing page's consent on the number given there. A contact
+ * update (#1512) names the corrected number PRIMARY, because Regal applies an
+ * event's traits to the contact profile and journey triggered calls and texts go
+ * only to the primary phone, and it asserts NO opt in: a number typed on the manage
+ * page is not the one the landing page's consent covered (docs/pii.md). Every other
+ * event names the number for identity only.
+ */
+function phoneTrait(event: BookingWebhookEvent): OptInTrait {
+  if (event === "booking.created") return { voiceOptIn: { subscribed: true }, smsOptIn: { subscribed: true } };
+  if (event === "booking.contact_updated") return { isPrimary: true };
+  return {};
+}
+
 /** The contact identity envelope every booking event carries, so the profile matches. */
-function contactTraits(p: BookingEventPayload, isCreated: boolean): RegalEvent["traits"] {
+function contactTraits(p: BookingEventPayload, event: BookingWebhookEvent): RegalEvent["traits"] {
   const traits: RegalEvent["traits"] = {};
   const { first, last } = nameParts(p.attendee.name, p.attendee.first_name);
   if (first) traits.firstName = first;
   if (last) traits.lastName = last;
   if (p.attendee.phone) {
-    traits.phones = {
-      [p.attendee.phone]: isCreated
-        ? { voiceOptIn: { subscribed: true }, smsOptIn: { subscribed: true } }
-        : {},
-    };
+    traits.phones = { [p.attendee.phone]: phoneTrait(event) };
   }
   if (p.attendee.email) {
     traits.emails = {
-      [p.attendee.email]: isCreated ? { emailOptIn: { subscribed: true } } : {},
+      [p.attendee.email]: event === "booking.created" ? { emailOptIn: { subscribed: true } } : {},
     };
   }
   return traits;
@@ -203,7 +219,7 @@ function buildClientSyncEvent(event: BookingWebhookEvent, p: BookingEventPayload
       scheduled_at: new Date(startMs).toISOString(),
       agent_email: p.agent.email,
     },
-    traits: contactTraits(p, event === "booking.created"),
+    traits: contactTraits(p, event),
   };
 }
 
@@ -229,7 +245,6 @@ export function buildRegalEvent(
     rungs_dropped: 0,
   };
   const agentName = p.agent.name ?? "Unknown";
-  const isCreated = event === "booking.created";
 
   const regal: RegalEvent = {
     name: EVENT_NAMES[event],
@@ -277,7 +292,7 @@ export function buildRegalEvent(
       slateBookedTier: routing.booked_tier,
       slateRungsDropped: routing.rungs_dropped,
     },
-    traits: contactTraits(p, isCreated),
+    traits: contactTraits(p, event),
   };
 
   // #2659: the two join keys the landing page put on the booking URL, under the
@@ -315,6 +330,14 @@ export function buildRegalEvent(
     regal.properties.reassignReason = p.reason?.code ?? null;
     regal.properties.reassignReasonDetail = p.reason?.detail ?? null;
     regal.properties.reassignedBy = p.reason?.initiator ?? null;
+  }
+  if (event === "booking.contact_updated") {
+    // #1512: both numbers, so a journey or template can say what changed and a CRM
+    // matching on phone can find the record it is updating. `?? null` for the old
+    // one, as for previousAgentEmail above: a replayed payload written without it
+    // must say "not known" rather than drop the key (L167).
+    regal.properties.previousPhone = p.previous_attendee_phone ?? null;
+    regal.properties.correctedPhone = p.attendee.phone;
   }
   if (event === "booking.cancelled") {
     // #326: real reason/initiator now flow through (was hardcoded null).

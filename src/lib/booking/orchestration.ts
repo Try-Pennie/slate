@@ -3677,6 +3677,8 @@ interface WebhookExtras {
   bookingEventId?: string | null;
   /** The advisor a reassign moved the booking away from (#2368). */
   previousAgentEmail?: string | null;
+  /** The number a phone correction replaced (#1512). */
+  previousPhone?: string | null;
 }
 
 function webhookPayload(
@@ -3686,6 +3688,7 @@ function webhookPayload(
   eventType: EventType,
   reason: BookingReasonMeta | null,
   previousAgentEmail: string | null,
+  previousPhone?: string | null,
 ): BookingEventPayload {
   return {
     booking_id: booking.id,
@@ -3715,6 +3718,8 @@ function webhookPayload(
     manage_url: manageUrl(deps, booking.manage_token),
     reason,
     previous_agent_email: previousAgentEmail,
+    // #1512: only on a phone correction, the one event that has a number it replaced.
+    ...(previousPhone !== undefined ? { previous_attendee_phone: previousPhone } : {}),
     // #2073: null for an agent link booking, which nothing routed. A summary built
     // from its null trace would read as a routed booking with no fallback.
     routing: booking.kind === "agent_link" ? null : routingMetaFromTrace(booking.routing_trace),
@@ -3751,7 +3756,7 @@ async function fire(
   await deps.emitWebhook(
     booking.org_id,
     event,
-    webhookPayload(deps, booking, bucket, eventType, reason, extras.previousAgentEmail ?? null),
+    webhookPayload(deps, booking, bucket, eventType, reason, extras.previousAgentEmail ?? null, extras.previousPhone),
     webhookDedupeKey(event, { bookingId: booking.id, bookingEventId }),
     bucket.is_test,
     // #884: set only on user-facing requests, so the confirm/cancel/reschedule
@@ -9116,19 +9121,39 @@ export interface UpdatePhoneResult {
    * failure for the lead: their number really is corrected.
    */
   staleInvite?: { agentEmail: string; bookingId: string };
+  /**
+   * Set when the number IS saved and `booking.contact_updated` could not be
+   * recorded (#1512), so nothing will retry it and Regal still holds the old
+   * number. Returned for the service layer to page, like `staleInvite`, and never
+   * a failure for the lead: their number really is corrected.
+   */
+  downstreamUntold?: { bookingId: string };
 }
 
 /** One page per booking per day: a lead retyping the same number must not repage. */
 export const STALE_PHONE_INVITE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
+/** The same for an untold correction (#1512): one booking, one page a day. */
+export const PHONE_CORRECTION_UNSENT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The manage page's own phone control (#1341), and the ONE caller that tells
+ * downstream about the correction (#1512): the booker's move also writes contact
+ * details, and its correction already rides the `booking.rescheduled` it emits.
+ */
 export async function updateBookingPhone(
   token: string,
   rawPhone: string,
   deps: BookingDeps,
 ): Promise<UpdatePhoneResult> {
-  const res = await updateBookingContact(token, { phone: rawPhone }, deps);
+  const res = await updateBookingContact(token, { phone: rawPhone }, deps, { announcePhoneCorrection: true });
   return res.ok
-    ? { ok: true, phone: res.phone, ...(res.staleInvite ? { staleInvite: res.staleInvite } : {}) }
+    ? {
+        ok: true,
+        phone: res.phone,
+        ...(res.staleInvite ? { staleInvite: res.staleInvite } : {}),
+        ...(res.downstreamUntold ? { downstreamUntold: res.downstreamUntold } : {}),
+      }
     : { ok: false, error: res.error };
 }
 
@@ -9146,6 +9171,7 @@ export type UpdateContactResult =
       phone: string;
       changed: ContactChange;
       staleInvite?: { agentEmail: string; bookingId: string };
+      downstreamUntold?: { bookingId: string };
     }
   | { ok: false; error: string };
 
@@ -9185,6 +9211,7 @@ export async function updateBookingContact(
   token: string,
   contact: { name?: string; firstName?: string; email?: string; phone?: string },
   deps: BookingDeps,
+  opts: { announcePhoneCorrection?: boolean } = {},
 ): Promise<UpdateContactResult> {
   // Only the fields this caller actually sent are judged. Handing the validator a
   // field nobody supplied would refuse the write for a value nobody typed, and its
@@ -9209,8 +9236,9 @@ export async function updateBookingContact(
 
   const found = await deps.loadBookingContext(token);
   if (!found) return { ok: false, error: MANAGE_PHONE_NOT_FOUND };
-  // No bucket: the invite is edited in place, so its test line (#2660) stays as written.
-  const { booking, eventType } = found;
+  // The invite is edited in place, so its test line (#2660) stays as written; the
+  // bucket is read only for the correction's webhook (#1512).
+  const { booking, bucket, eventType } = found;
   // A call that has happened or been called off has no details left to correct,
   // and offering one would say we had not noticed. The page already hides the
   // control in those states; this is the same rule on the server, because a
@@ -9286,8 +9314,10 @@ export async function updateBookingContact(
   if (changed.name) booking.attendee_name = nextName ?? null;
   booking.attendee_first_name = nextFirstName;
   if (changed.email) booking.attendee_email = nextEmail ?? null;
+  const previousPhone = prior.attendee_phone;
   if (changed.phone) booking.attendee_phone = stored;
 
+  let staleInvite: { agentEmail: string; bookingId: string } | undefined;
   // The invite carries the joined name, never the first name, so a first name that
   // moved on its own leaves it exactly as it is and nothing is sent to rewrite it.
   if (booking.gcal_event_id && booking.agent_email && !contactUnchanged(changed)) {
@@ -9375,15 +9405,51 @@ export async function updateBookingContact(
       }
     }
     if (descriptionStale || patchFailed) {
-      return {
-        ok: true,
-        phone: stored,
-        changed,
-        staleInvite: { agentEmail: booking.agent_email, bookingId: booking.id },
-      };
+      staleInvite = { agentEmail: booking.agent_email, bookingId: booking.id };
     }
   }
-  return { ok: true, phone: stored, changed };
+  const downstreamUntold =
+    opts.announcePhoneCorrection && changed.phone
+      ? await announcePhoneCorrection(deps, booking, bucket, eventType, previousPhone)
+      : undefined;
+  return {
+    ok: true,
+    phone: stored,
+    changed,
+    ...(staleInvite ? { staleInvite } : {}),
+    ...(downstreamUntold ? { downstreamUntold } : {}),
+  };
+}
+
+/**
+ * Tell downstream a lead corrected their number with no reschedule beside it
+ * (#1512), after the row is written and the invite has been tried.
+ *
+ * Through `fire`, so the payload is the one every booking event carries, built
+ * from the row as it now stands, and a test bucket's correction is recorded but
+ * never posted (#459). No dedupe key: each correction is its own event, and a key
+ * built from the booking would drop the second one a lead makes.
+ *
+ * A failure is CONTAINED and REPORTED, never thrown: the number is saved, and
+ * telling the lead otherwise would push them to retype a number we hold (L12),
+ * whose retry then moves nothing and so would announce nothing either. Nothing
+ * else will retry an event whose delivery row was never written, so the caller
+ * pages instead.
+ */
+async function announcePhoneCorrection(
+  deps: BookingDeps,
+  booking: Booking,
+  bucket: Bucket,
+  eventType: EventType,
+  previousPhone: string | null,
+): Promise<{ bookingId: string } | undefined> {
+  try {
+    await fire(deps, "booking.contact_updated", booking, bucket, eventType, null, { previousPhone });
+    return undefined;
+  } catch (err) {
+    log.error("manage-contact", { msg: "phone correction not recorded for downstream", booking_id: booking.id }, err);
+    return { bookingId: booking.id };
+  }
 }
 
 export async function getBookingByToken(

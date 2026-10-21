@@ -237,6 +237,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   reschedule_invite_stranded: "a-booking-side-effect-did-not-complete",
   reschedule_lock_outage: "a-booking-side-effect-did-not-complete",
   stale_phone_invite: "a-booking-side-effect-did-not-complete",
+  phone_correction_unsent: "a-booking-side-effect-did-not-complete",
   booking_invite_moved: "a-booking-side-effect-did-not-complete",
   booking_invite_resized: "a-booking-side-effect-did-not-complete",
   booking_invite_check_failed: "a-booking-side-effect-did-not-complete",

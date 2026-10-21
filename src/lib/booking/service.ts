@@ -200,6 +200,7 @@ import { isLoadtest } from "@/lib/loadtest-guard";
 import {
   bookingEventInsertAlert,
   stalePhoneInviteAlert,
+  phoneCorrectionUnsentAlert,
   busyBlockWriteThroughAlert,
   creationOrphanAlert,
   outboxDrainRecovery,
@@ -3229,7 +3230,9 @@ export async function updateBookingPhone(
   token: string,
   phone: string,
 ): Promise<orchestration.UpdatePhoneResult> {
-  const res = await orchestration.updateBookingPhone(token, phone, realDeps());
+  // #1512: a lead's own request, so the correction's webhook POST goes after the
+  // response, as every other lead facing send does (#884).
+  const res = await orchestration.updateBookingPhone(token, phone, realDeps(deferWebhookSend));
   if (res.staleInvite) {
     // alert-key: stale_phone_invite:*
     await sendThrottledAlert(
@@ -3237,6 +3240,16 @@ export async function updateBookingPhone(
       orchestration.STALE_PHONE_INVITE_COOLDOWN_MS,
       stalePhoneInviteAlert(res.staleInvite.agentEmail, res.staleInvite.bookingId),
     ).catch(logAlertSendFailure(`stale_phone_invite:${res.staleInvite.bookingId}`));
+  }
+  if (res.downstreamUntold) {
+    // #1512: the number is saved and the event telling Regal was never recorded,
+    // so nothing retries it. An incident, like the stale invite above.
+    // alert-key: phone_correction_unsent:*
+    await sendThrottledAlert(
+      `phone_correction_unsent:${res.downstreamUntold.bookingId}`,
+      orchestration.PHONE_CORRECTION_UNSENT_COOLDOWN_MS,
+      phoneCorrectionUnsentAlert(res.downstreamUntold.bookingId),
+    ).catch(logAlertSendFailure(`phone_correction_unsent:${res.downstreamUntold.bookingId}`));
   }
   return res;
 }

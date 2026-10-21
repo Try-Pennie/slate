@@ -34,6 +34,13 @@ export type WebhookEvent =
    */
   | "booking.reassigned"
   /**
+   * A lead corrected the number their advisor will call, from the manage page,
+   * with NO reschedule beside it (#1512). A correction made with a reschedule
+   * rides that `booking.rescheduled` instead (#2164, Dan's call 2026-09-10), so
+   * this is emitted only by the manage page's own phone control (#1341).
+   */
+  | "booking.contact_updated"
+  /**
    * Whether Slate can route a lead to an agent changed (#2085). Not a booking at
    * all, so its payload and its Regal body are a different family: a traits only
    * body keyed on the agent's email, with no event name. Sent only when the

@@ -552,6 +552,7 @@ import {
   reservationRollbackAlert,
   verifyReadFailedAlert,
   stalePhoneInviteAlert,
+  phoneCorrectionUnsentAlert,
 } from "@/lib/booking/alert-copy";
 import { shortFailureReason } from "@/lib/notify/error-text";
 import {
@@ -6126,6 +6127,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: digestUnroutedUnreachableRecovery() },
   { key: "stale_phone_invite:*", state: "a corrected number the invite did not take", channel: "alert",
     text: stalePhoneInviteAlert("dana.whitfield@trypennie.com", "b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431") },
+  { key: "phone_correction_unsent:*", state: "a corrected number Regal was never told about", channel: "alert",
+    text: phoneCorrectionUnsentAlert("b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431") },
   // #3919: a booking's invite moved by its advisor in Google Calendar.
   { key: "booking_invite_moved:*", state: "a second move, left, advisor and manager both messaged", channel: "alert",
     text: inviteMoveLeftAlert(INVITE_MOVE_FACTS, "second-move", { advisor: true, manager: "told" }) },

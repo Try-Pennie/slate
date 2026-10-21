@@ -260,6 +260,7 @@ describe("the Regal wire contract (#2314)", () => {
       prefill: { [PARTNER_KEYS.submissionId]: "a0G5x00000AbCdEQAU", [PARTNER_KEYS.regalProfileId]: "rp_01HZY3" },
       reason: { code: "found_better_time", detail: null, initiator: "customer" },
       previous_agent_email: "previous@trypennie.com",
+      previous_attendee_phone: "+12155550100",
     };
   }
 
@@ -338,6 +339,16 @@ describe("the Regal wire contract (#2314)", () => {
         "reassignedBy",
       ],
     },
+    "booking.contact_updated": {
+      name: "Slate Booking Contact Updated",
+      properties: [
+        ...ROUTED_BASE,
+        ...PARTNER_JOIN_KEYS,
+        // #1512: the number the lead replaced and the one they gave instead.
+        "previousPhone",
+        "correctedPhone",
+      ],
+    },
   };
   const BOOKING_EVENTS = Object.keys(PINNED) as BookingWebhookEvent[];
   const withoutJoinKeys = (event: BookingWebhookEvent): string[] =>
@@ -386,7 +397,7 @@ describe("the Regal wire contract (#2314)", () => {
       emails: { "jane@example.com": { emailOptIn: { subscribed: true } } },
     });
 
-    for (const event of BOOKING_EVENTS.filter((e) => e !== "booking.created")) {
+    for (const event of BOOKING_EVENTS.filter((e) => e !== "booking.created" && e !== "booking.contact_updated")) {
       expect(wireBody(event, fullPayload()).traits).toEqual({
         firstName: "Jane",
         lastName: "Doe",
@@ -396,8 +407,36 @@ describe("the Regal wire contract (#2314)", () => {
     }
   });
 
+  // #1512: Regal applies an event's traits to the contact profile, and journey
+  // triggered calls and texts go only to the PRIMARY phone, so the corrected number
+  // is named primary. It carries NO opt in: Slate asserts the landing page's consent
+  // on the number given there (docs/pii.md), and a number typed on the manage page
+  // is not that number.
+  it("names the corrected number primary on a contact update, with no opt in asserted", () => {
+    expect(wireBody("booking.contact_updated", fullPayload()).traits).toEqual({
+      firstName: "Jane",
+      lastName: "Doe",
+      phones: { "+15551234567": { isPrimary: true } },
+      emails: { "jane@example.com": {} },
+    });
+    const props = wireBody("booking.contact_updated", fullPayload()).properties as Record<string, unknown>;
+    expect(props.previousPhone).toBe("+12155550100");
+    expect(props.correctedPhone).toBe("+15551234567");
+  });
+
+  // Failure path: a stored payload replayed from before the field existed says it
+  // does not know the old number (null), rather than dropping the key (L167).
+  it("reports an unknown previous number as null on a replayed contact update", () => {
+    const legacy: Partial<BookingEventPayload> = fullPayload();
+    delete legacy.previous_attendee_phone;
+    const props = wireBody("booking.contact_updated", legacy as BookingEventPayload).properties as Record<string, unknown>;
+
+    expect(props).toHaveProperty("previousPhone", null);
+  });
+
   // #2073: an advisor's own link keeps cal.com's "Client Sync Action" contract,
-  // read off live journey 304, and its reassign reaches Regal not at all.
+  // read off live journey 304, and its reassign and contact update (#1512), which
+  // journey 304 has no action for, reach Regal not at all.
   const CLIENT_SYNC_ACTION: Partial<Record<BookingWebhookEvent, string>> = {
     "booking.created": "BOOKING_CREATED",
     "booking.rescheduled": "BOOKING_RESCHEDULED",
