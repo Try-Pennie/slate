@@ -70,13 +70,14 @@ export const ALTERNATIVES_ON_TAKEN = 2;
 /**
  * Moves plus cancels one lead may make through Marcia in a rolling day.
  *
- * Plan decision 17 says "about 3 moves plus cancels per lead per day", and the kit's
- * phase 4.1 lists the per lead cap as an expected refusal. The number is the plan's,
- * NOT measured against production: the read that would have calibrated it (#3543's
- * comment of 2026-10-16) was not run, so treat it as a starting value to re-derive
- * from the real distribution before cutover (L172).
+ * Plan decision 17 said "about 3 moves plus cancels per lead per day", and the kit's
+ * phase 4.1 lists the per lead cap as an expected refusal. Dan set it to 7 on
+ * 2026-10-21 because 3 refused a live test lead after three moves in one afternoon
+ * ("3 might not be enough"). Neither number is measured against production: the read
+ * that would have calibrated it (#3543's comment of 2026-10-16) was not run, so treat
+ * 7 as a starting value to re-derive from the real distribution before cutover (L172).
  */
-export const MARCIA_LEAD_DAILY_CHANGE_CAP = 3;
+export const MARCIA_LEAD_DAILY_CHANGE_CAP = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**

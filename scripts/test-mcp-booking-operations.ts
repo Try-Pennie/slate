@@ -65,6 +65,16 @@ async function firstSlot(fake: ReturnType<typeof makeMarciaFake>, c = claims()):
   return ((okData(a)?.times as Times) ?? [])[0]!.slot_id;
 }
 
+// Moves the lead's call to the first time offered NOW. The offer leaves out the time the
+// lead holds, so every call is a real move, however many the cap allows.
+async function moveToNextOfferedTime(fake: ReturnType<typeof makeMarciaFake>): Promise<MarciaAnswer> {
+  return runMarciaOperation("move", { slot_id: await firstSlot(fake) }, claims(), fake.deps);
+}
+
+// The changes one lead has made in the rolling day, read through the fake's own count.
+const changesToday = (fake: ReturnType<typeof makeMarciaFake>) =>
+  fake.deps.recentChanges(claims().salesforce_id, fake.deps.nowMs() - 24 * 60 * 60 * 1000);
+
 // --- find_times ------------------------------------------------------------------
 {
   const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS });
@@ -364,17 +374,18 @@ async function rebookFourTimes(keyFrom: "input" | "lead-and-slot") {
 }
 
 {
-  // A retry of a write that was the lead's LAST allowed change is a replay, not a fourth
-  // change: it is not refused by the cap its own first call used up.
+  // A retry of a write that was the lead's LAST allowed change is a replay, not one change
+  // past the cap: it is not refused by the cap its own first call used up.
   const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS });
   const c = claims();
-  const times = ((okData(await runMarciaOperation("find_times", {}, c, fake.deps))?.times as Times) ?? []);
-  await runMarciaOperation("book", { slot_id: times[0]!.slot_id }, c, fake.deps);
-  await runMarciaOperation("move", { slot_id: times[1]!.slot_id }, claims(), fake.deps);
-  await runMarciaOperation("move", { slot_id: times[2]!.slot_id }, claims(), fake.deps);
+  await runMarciaOperation("book", { slot_id: await firstSlot(fake, c) }, c, fake.deps);
+  for (let i = 1; i < MARCIA_LEAD_DAILY_CHANGE_CAP; i++) {
+    eq(okData(await moveToNextOfferedTime(fake))?.outcome, "rescheduled", `move ${i} before the last allowed change goes through`);
+  }
   const last = claims();
-  const third = await runMarciaOperation("cancel", { reason_code: "no_longer_interested" }, last, fake.deps);
-  eq(okData(third)?.outcome, "cancelled", "the third change of the day goes through");
+  const lastAllowed = await runMarciaOperation("cancel", { reason_code: "no_longer_interested" }, last, fake.deps);
+  eq(okData(lastAllowed)?.outcome, "cancelled", "the last change the cap allows goes through");
+  eq(await changesToday(fake), MARCIA_LEAD_DAILY_CHANGE_CAP, "so the retry below arrives with the cap used up");
   const alertsBefore = fake.alerts.length;
   const retried = await runMarciaOperation("cancel", { reason_code: "no_longer_interested" }, last, fake.deps);
   eq(okData(retried)?.outcome, "already_cancelled", "its retry, naming no booking, answers already cancelled rather than no booking or the cap");
@@ -384,15 +395,18 @@ async function rebookFourTimes(keyFrom: "input" | "lead-and-slot") {
 
 // --- the per lead daily cap ----------------------------------------------------------------
 {
+  // Dan set the cap to 7 on 2026-10-21, after 3 refused a live test lead three moves into
+  // one afternoon. Pinned here so a change to it is a decision, never an accident.
+  eq(MARCIA_LEAD_DAILY_CHANGE_CAP, 7, "a lead may make 7 moves plus cancels in a rolling day");
   const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS });
   const c = claims();
-  const times = ((okData(await runMarciaOperation("find_times", {}, c, fake.deps))?.times as Times) ?? []);
-  await runMarciaOperation("book", { slot_id: times[0]!.slot_id }, c, fake.deps);
+  await runMarciaOperation("book", { slot_id: await firstSlot(fake, c) }, c, fake.deps);
   for (let i = 1; i <= MARCIA_LEAD_DAILY_CHANGE_CAP; i++) {
-    const m = await runMarciaOperation("move", { slot_id: times[i]!.slot_id }, claims(), fake.deps);
+    const m = await moveToNextOfferedTime(fake);
     eq(okData(m)?.outcome, "rescheduled", `move ${i} of ${MARCIA_LEAD_DAILY_CHANGE_CAP} goes through`);
   }
-  const over = await runMarciaOperation("move", { slot_id: times[4]!.slot_id }, claims(), fake.deps);
+  eq(await changesToday(fake), MARCIA_LEAD_DAILY_CHANGE_CAP, "every allowed change was counted");
+  const over = await moveToNextOfferedTime(fake);
   assert(!over.ok && over.code === "lead_daily_cap" && over.class === "expected", "the next change is refused by the daily cap, as expected");
   const cancelOver = await runMarciaOperation("cancel", { reason_code: "no_longer_interested" }, claims(), fake.deps);
   eq(cancelOver.ok ? null : cancelOver.code, "lead_daily_cap", "a cancel counts toward the same cap");
