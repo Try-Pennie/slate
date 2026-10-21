@@ -27,6 +27,7 @@ import { isDefinitiveFailure } from "@/lib/google/sync-health";
 import type { ThrottledNotify } from "@/lib/monitor/alert-deps";
 import { twilioUndoesBookable } from "@/lib/twilio/roster-plan";
 import type { Attributes } from "@/lib/db/types";
+import { heldOutSince } from "@/lib/bookable/refused-pool-exit";
 
 /**
  * Keyed per agent (`bookable_blocked:<userId>`) so a single agent stuck with a
@@ -152,6 +153,52 @@ export interface BookableDeps {
    * or, worse, one that cannot drive the boundary at all (L524).
    */
   now: () => number;
+  /**
+   * #3700: when this row's pending mark was written by the calendar refused pool
+   * exit (`refused-pool-exit.ts`), the moment it was, which starts the episode the
+   * blocked note is said once for; null for anybody else. Optional because the
+   * answer only QUIETS a note: absent, or throwing, every refusal notes on the
+   * ordinary cooldown, which is the loud direction to be wrong in.
+   */
+  heldOutSince?: (userId: string, pendingSince: string | null) => Promise<number | null>;
+}
+
+/**
+ * Post the note for a refused activation (#3700 for the held out branch).
+ *
+ * Ordinarily it is `bookable_blocked:<id>` on `BOOKABLE_BLOCKED_COOLDOWN_MS`, so a
+ * hire stuck on an unprovisioned account is reminded on each hourly retry.
+ *
+ * An advisor the calendar refused pool exit took out is different: the pool exit's
+ * own note already said who, why and what fixes it, and the hourly retry is
+ * expected to be refused for as long as the account stays broken. So for them the
+ * note is said ONCE per episode per reason. The key carries the reason, so a new
+ * reason is a new key and posts at once; the cooldown is the time since the episode
+ * began, so the dispatcher's own rule (due when the last post is at least a cooldown
+ * old) reads as "due when this key has not posted since the pool exit took them
+ * out". A later episode, after a return and a second removal, starts later than any
+ * post of the first, so it posts again. Never shorter than the ordinary cooldown.
+ */
+async function noteBlocked(
+  user: BookableRow,
+  key: string,
+  reason: BlockedReason,
+  message: string,
+  deps: BookableDeps,
+): Promise<void> {
+  let since: number | null = null;
+  if (deps.heldOutSince) {
+    try {
+      since = await deps.heldOutSince(user.id, user.bookable_pending_since);
+    } catch (err) {
+      log.warn("bookable-api", { msg: "held out check failed; noting on the ordinary cooldown", user_id: user.id }, err);
+    }
+  }
+  if (since === null) {
+    await deps.notify(key, BOOKABLE_BLOCKED_COOLDOWN_MS, message);
+    return;
+  }
+  await deps.notify(`${key}:${reason}`, Math.max(BOOKABLE_BLOCKED_COOLDOWN_MS, deps.now() - since), message);
 }
 
 /**
@@ -174,6 +221,8 @@ export const defaultBookableDeps: BookableDeps = {
   onboardIntoPool: (userId, opts) => onboardIntoPool(userId, undefined, opts),
   importHours: (user, remainingMs) => importHoursOnActivation(user, defaultActivationHoursDeps(remainingMs)),
   now: () => Date.now(),
+  // #3700: reads the pool exit's audit row for the row's current pending mark.
+  heldOutSince,
 };
 
 /**
@@ -374,7 +423,7 @@ async function applyBookableToRow(
 
     const block = await checkActivationGate(user!.email, user!.id, deps);
     if (block) {
-      await deps.notify(block.key, BOOKABLE_BLOCKED_COOLDOWN_MS, block.message);
+      await noteBlocked(user!, block.key, block.reason, block.message, deps);
       log.warn("bookable-api", { msg: "activation blocked", user_id: user!.id, reason: block.reason });
       return { status: "blocked", userId: user!.id, reason: block.reason };
     }
@@ -385,10 +434,12 @@ async function applyBookableToRow(
     // calls on a run that already cannot finish is not, and the reachability probe
     // is the one step whose own retry can double its cost.
     if (!inBudget()) {
-      await deps.notify(
+      await noteBlocked(
+        user!,
         `bookable_blocked:${user!.id}`,
-        BOOKABLE_BLOCKED_COOLDOWN_MS,
+        "activation_timed_out",
         bookableTimedOutAlert(user!.email, ACTIVATION_BUDGET_MS),
+        deps,
       );
       log.warn("bookable-api", {
         msg: "activation blocked",
@@ -443,7 +494,7 @@ async function applyBookableToRow(
           : refusal === "calendar_contended"
             ? bookableContendedAlert(user!.email, entry?.contended ?? 0)
             : bookableUnhydratedAlert(user!.email, entry?.hydrated ?? 0, entry?.calendars ?? 0);
-      await deps.notify(`bookable_blocked:${user!.id}`, BOOKABLE_BLOCKED_COOLDOWN_MS, message);
+      await noteBlocked(user!, `bookable_blocked:${user!.id}`, reason, message, deps);
       log.warn("bookable-api", {
         msg: "activation blocked",
         user_id: user!.id,

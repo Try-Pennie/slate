@@ -53,6 +53,7 @@ So the policy is:
 - [GET /api/availability (public cached read)](#get-apiavailability)
 - [GET /api/availability/next (the next open days)](#get-apiavailabilitynext)
 - [POST /api/routing (public routing resolve)](#post-apirouting)
+- [GET /api/embed/config (the embed's own settings)](#get-apiembedconfig)
 - [POST /api/call-me-now (the inline booker's Call me now)](#post-apicall-me-now)
 - [POST /api/bookings/reassign (key-authed contact-owner reassign)](#post-apibookingsreassign)
 - [POST /api/bookings/cancel-duplicate (key-authed duplicate cancel)](#post-apibookingscancel-duplicate)
@@ -88,7 +89,7 @@ names which one it requires.
 | Supabase session (staff) | session cookie | Supabase Auth | every `/api/admin/*` route |
 | Manage token | in the URL path | per-booking `manage_token` | `POST /api/bookings/[token]/cancel`, `POST /api/bookings/[token]/reschedule`, `POST /api/bookings/[token]/phone`, `GET /api/bookings/[token]/ics` |
 | Smoke key | `Authorization: Bearer <key>` | `BOOKING_API_KEY_CANARY` only, which every canary lane and the load test send (#2822, #2854); a partner's key is refused | `GET /api/smoke/version`, `POST /api/smoke/heartbeat`, `POST /api/smoke/failure`, `POST /api/smoke/burst-counter`, `POST /api/smoke/confirm-line`, `POST /api/smoke/demotion-drill`, `POST /api/smoke/schedule-parity` |
-| None (public) | n/a | n/a | `GET /api/availability`, `GET /api/availability/next`, `POST /api/routing`, `POST /api/call-me-now`, `POST /api/client-errors`, `POST /api/csp-report`, `GET /api/health`, `GET /api/health/availability`, `GET /api/auth/callback` |
+| None (public) | n/a | n/a | `GET /api/availability`, `GET /api/availability/next`, `GET /api/embed/config`, `POST /api/routing`, `POST /api/call-me-now`, `POST /api/client-errors`, `POST /api/csp-report`, `GET /api/health`, `GET /api/health/availability`, `GET /api/auth/callback` |
 
 Every Bearer credential is compared in constant time (`src/lib/bearer-auth.ts`).
 For the booking API, two keys are accepted at once (primary plus secondary) so
@@ -458,6 +459,26 @@ Missing or blank `xbc`: `400 { "error": "xbc is required" }`.
 Unknown bucket: `404 { "error": "unknown bucket" }`. The internal XBC routing
 descriptor (the bucket name) is intentionally withheld because this endpoint is
 unauthenticated (sibling of #259).
+
+---
+
+## GET /api/embed/config
+
+Source: `src/app/api/embed/config/route.ts` (#3706). The embed's own settings,
+asked by `public/widget.js` from the host page when the host calls `prerender`.
+
+**Auth:** public (no auth, no credentials). The answer is one org wide boolean
+about no lead, advisor or booking, so it carries `Access-Control-Allow-Origin: *`
+and `Cache-Control: public, max-age=15`. The database read behind it is cached
+per isolate for 15 seconds (`src/lib/embed/prerender-switch-core.ts`).
+
+**Request:** `GET /api/embed/config`
+
+**Response** (`200`, always): `{ "prerender": true }` when the admin Embedding
+page's switch is on, `{ "prerender": false }` otherwise. A failed or slow read
+answers `false` and is logged (`tag=embed-config`), never an error status.
+widget.js builds the hidden booker frame only on `true` within two seconds; every
+other outcome leaves the click to build it, as before.
 
 ---
 

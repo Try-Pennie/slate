@@ -460,6 +460,11 @@ export interface BookingSettings {
    *  debounce, move the agent's lost-pool bookings. NOT NULL DEFAULT false: off until an
    *  admin turns it on, and the whole demotion lifecycle is inert while off. */
   demotion_reroute_enabled: boolean;
+  /** #3706, migration 0195: the prerender switch. True lets widget.js build the booker
+   *  frame, hidden, when a host page calls prerender at page load. NOT NULL DEFAULT
+   *  false: a prerender is a no op until an admin turns it on. Read through
+   *  `src/lib/embed/prerender-switch.ts`. */
+  embed_prerender_enabled: boolean;
   updated_at: string;
   updated_by: string | null;
 }

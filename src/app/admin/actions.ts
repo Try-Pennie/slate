@@ -3409,6 +3409,54 @@ export async function setFrameLock(form: FormData): Promise<void> {
 }
 
 /**
+ * Turn building the booker at page load on or off (#3706). Admin only.
+ *
+ * Built the way `setFrameLock` above is, for the same reasons: one column on
+ * `booking_settings` id=1 through a column scoped upsert, the STATE the form wants rather
+ * than a toggle (L60), the write consulted before anything reports a save (#2379), and
+ * an audit entry carrying which way it went (L529). `GET /api/embed/config` reads the
+ * column through a per isolate cache, so a flip reaches partner pages within
+ * `EMBED_PRERENDER_LANDS_SECONDS`, with no deploy, in both directions.
+ *
+ * Anything that is not an explicit "true" turns it OFF, which is how the embed has always
+ * run: the booker loads when a lead taps.
+ */
+export async function setEmbedPrerender(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const on = String(form.get("on") ?? "") === "true";
+
+  const { error } = await supabaseAdmin().from("booking_settings").upsert(
+    {
+      id: 1,
+      embed_prerender_enabled: on,
+      updated_at: new Date().toISOString(),
+      updated_by: admin.id,
+    },
+    { onConflict: "id" },
+  );
+  if (error) {
+    redirect(
+      `/admin/embedding${refusedQuery(
+        writeRefused(
+          on ? "The change to load the booker with the page" : "The change to load the booker on the tap",
+          error,
+        ),
+      )}`,
+    );
+  }
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "booking.settings",
+    details: { embed_prerender_enabled: on },
+  });
+
+  revalidatePath("/admin/embedding");
+  redirect(`/admin/embedding${savedQuery(on ? "prerender-on" : "prerender-off")}`);
+}
+
+/**
  * Turn the shared confirm line on or off (#3325). Admin only.
  *
  * Built the way `setFrameLock` above is, for the same reasons: one column on

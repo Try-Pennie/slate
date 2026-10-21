@@ -8,6 +8,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
 const env = vi.hoisted(() => ({ consoleHiddenFor: vi.fn(() => false) }));
 const guard = vi.hoisted(() => ({ readFrameLockSetting: vi.fn(async (): Promise<boolean | null> => false) }));
+// #3706: the prerender switch's admin read, drawn on this page beside the lock.
+const prerender = vi.hoisted(() => ({ readEmbedPrerenderSetting: vi.fn(async (): Promise<boolean | null> => false) }));
 const range = vi.hoisted(() =>
   vi.fn(async (): Promise<{ data: unknown[] | null; error: { message: string } | null }> => ({ data: [], error: null })),
 );
@@ -35,7 +37,8 @@ vi.mock("@/lib/env", async (importOriginal) => ({
 }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/lib/embed/frame-guard", () => guard);
-vi.mock("@/app/admin/actions", () => ({ setFrameLock: vi.fn() }));
+vi.mock("@/lib/embed/prerender-switch", () => prerender);
+vi.mock("@/app/admin/actions", () => ({ setFrameLock: vi.fn(), setEmbedPrerender: vi.fn() }));
 vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
 
 import EmbeddingPage from "./page";
@@ -47,6 +50,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   auth.currentUser.mockResolvedValue(ADMIN);
   guard.readFrameLockSetting.mockResolvedValue(false);
+  prerender.readEmbedPrerenderSetting.mockResolvedValue(false);
   range.mockResolvedValue({ data: [], error: null });
 });
 
@@ -127,5 +131,30 @@ describe("EmbeddingPage", () => {
     guard.readFrameLockSetting.mockResolvedValueOnce(true);
     render(await page());
     expect(screen.getByRole("button", { name: "Unlock framing" })).toBeTruthy();
+  });
+
+  // #3706: the stored value is what the page draws, read back on every render.
+  it("draws the prerender switch from the stored value, in each of its three states", async () => {
+    const section = (c: HTMLElement) => c.querySelector("[data-section='prerender']");
+    prerender.readEmbedPrerenderSetting.mockResolvedValueOnce(true);
+    const on = render(await page());
+    expect(section(on.container)?.querySelector("[data-state='on']")).toBeTruthy();
+    on.unmount();
+
+    prerender.readEmbedPrerenderSetting.mockResolvedValueOnce(false);
+    const off = render(await page());
+    expect(section(off.container)?.querySelector("[data-state='off']")).toBeTruthy();
+    off.unmount();
+
+    prerender.readEmbedPrerenderSetting.mockResolvedValueOnce(null);
+    const unread = render(await page());
+    expect(section(unread.container)?.querySelector("[data-state='unreadable']")).toBeTruthy();
+  });
+
+  it("keeps the prerender switch from anyone but an admin", async () => {
+    auth.currentUser.mockResolvedValueOnce({ ...ADMIN, role: "manager" });
+    const { container } = render(await page());
+    expect(container.querySelector("[data-section='prerender']")).toBeNull();
+    expect(prerender.readEmbedPrerenderSetting).not.toHaveBeenCalled();
   });
 });

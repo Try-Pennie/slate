@@ -76,7 +76,9 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
    - `Cal.ns["<ns>"]("ui", { theme, brandColor, layout, ... })`
    - `Cal.ns["<ns>"]("prerender", { calLink, type: "modal", ... })` - builds
      that namespace's frame, hidden, at the call, the way cal.com's prerender
-     does (#3706), and warms its bucket's times. Without it Slate warms the
+     does (#3706), and warms its bucket's times, but ONLY when Slate's own
+     admin switch says so (`GET /api/embed/config` answers `{ prerender: true }`
+     within two seconds; anything else is a no op). Without it Slate warms the
      availability read at render (#251) and builds the frame on the trigger's
      first hover, focus or touch (#2679). Either way the frame is then KEPT
      (see "One frame per namespace", "Pre built on intent" and "Pre built by
@@ -280,6 +282,19 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
      which comes about a second before its click. Times read at page load are
      not re-read on the show (cal.com's `backgroundSlotsFetch` does that); a time
      taken in between is a lost race at confirm.
+
+     **Slate decides, not the host (Dan, 2026-10-20).** The host calls prerender
+     unconditionally; widget.js asks `GET <origin>/api/embed/config` once per
+     origin per page load (no credentials, readable from any origin, cached 15
+     seconds) and builds only on `{ prerender: true }` within
+     `PRERENDER_CONFIG_WAIT_MS` (2 seconds). False, an error, a status that is
+     not ok, another body shape, or a late answer resolve to no prerender, never
+     a rejection or anything a lead sees, and the click builds as before. The
+     switch is `booking_settings.embed_prerender_enabled` (migration 0195), on
+     the admin Embedding page; the server reads it through a 15 second per
+     isolate cache and answers false on any failed read
+     (`src/lib/embed/prerender-switch-core.ts`). The hover pre build ignores the
+     switch entirely.
 
 5. **`widget.js` stays vanilla / dependency-free.** Single IIFE served as plain
    `/widget.js`, no build step (~6KB). Do NOT import React, Tailwind, `globals.css`,

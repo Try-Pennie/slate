@@ -87,6 +87,12 @@ vi.mock("@/lib/google/sync-coalesce", () => ({ CRON_LOCK_TTL_MS: 1000, SYNC_TICK
 vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/notify/alerts", () => alerts);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
+// #3700: the refused advisor pool exit is its own module, pinned in
+// src/lib/bookable/refused-pool-exit.test.ts; here only the hand off is.
+const poolExit = vi.hoisted(() => ({
+  takeRefusedAdvisorsOutOfPool: vi.fn(async (): Promise<{ removed: string[] } | null> => ({ removed: [] })),
+}));
+vi.mock("@/lib/bookable/refused-pool-exit", () => poolExit);
 
 import { GET } from "./route";
 
@@ -170,6 +176,53 @@ describe("the sync lane lease (#3120)", () => {
     await GET(req());
     const calls = sync.runIncrementalSync.mock.calls as unknown as [string, unknown, unknown][];
     expect(calls.map((c) => c[2])).toEqual([undefined, undefined]);
+  });
+});
+
+// #3700: an advisor Google has refused for the whole period leaves the pool. The lane
+// hands over exactly the advisors whose sync failed on THIS tick, so the judgement is
+// always about a read a minute old, and a failure in that step never fails the tick.
+describe("the refused advisor pool exit (#3700)", () => {
+  const threeAgents = [
+    { userId: "u1", hasCalendars: true },
+    { userId: "u2", hasCalendars: true },
+    { userId: "u3", hasCalendars: true },
+  ];
+  const runTasks = async (agents: unknown[], _c: number, task: (a: unknown) => Promise<{ userId: string }>) => {
+    const results = [];
+    for (const a of agents) results.push(await task(a));
+    return { results, processed: results.length, truncated: false };
+  };
+
+  it("hands over only the advisors whose sync failed this tick", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    sync.loadSyncAgents.mockResolvedValueOnce(threeAgents as never);
+    pace.mapWithConcurrency.mockImplementationOnce(runTasks as never);
+    sync.runIncrementalSync.mockImplementation((async (userId: string) => {
+      if (userId === "u2") throw new Error("403 notACalendarUser");
+      return { events: 0, truncated: false, goneSkipped: 0 };
+    }) as never);
+    // The failure streak's first bump: under the limit, so the sync page stays quiet.
+    admin.supabaseAdmin.mockReturnValueOnce({
+      from: () => ({ delete: () => ({ eq: async () => ({}) }) }),
+      rpc: async () => ({ data: true, error: null }),
+    } as never);
+    try {
+      await GET(req());
+      expect(poolExit.takeRefusedAdvisorsOutOfPool).toHaveBeenCalledWith(["u2"]);
+    } finally {
+      // clearAllMocks keeps implementations, so the throwing one must not outlive this test.
+      sync.runIncrementalSync.mockReset();
+      sync.runIncrementalSync.mockResolvedValue({ events: 0, truncated: false, goneSkipped: 0 });
+    }
+  });
+
+  it("a step that throws still finishes the tick and stamps the heartbeat", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    poolExit.takeRefusedAdvisorsOutOfPool.mockRejectedValueOnce(new Error("db down"));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("sync");
   });
 });
 

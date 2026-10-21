@@ -13,6 +13,8 @@ import {
   type FrameOriginSummary,
 } from "@/lib/embed/frame-policy";
 import { FrameLockSwitch } from "@/components/admin/FrameLockSwitch";
+import { readEmbedPrerenderSetting } from "@/lib/embed/prerender-switch";
+import { EmbedPrerenderSwitch } from "@/components/admin/EmbedPrerenderSwitch";
 import ViewerTime from "@/components/ViewerTime";
 import { FRAME_DAY_ZONE } from "@/lib/embed/frame-observe";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
@@ -79,8 +81,10 @@ export default async function EmbeddingPage({
   if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
 
   const db = supabaseAdmin();
-  const [locked, rowsRead] = await Promise.all([
+  const [locked, prerenderOn, rowsRead] = await Promise.all([
     readFrameLockSetting(),
+    // #3706: fresh, never the endpoint's cache, and null when unreadable.
+    readEmbedPrerenderSetting(),
     // Up to 200 sites a day for 14 days can pass one page, so this pages. A failed
     // read is its own state, never an empty table, which would read as nobody framing
     // the booker (L10).
@@ -125,6 +129,11 @@ export default async function EmbeddingPage({
         <p className={`mt-4 ${proseCls} text-xs text-fg-muted`}>
           Allow list: {FRAME_ANCESTOR_ALLOW_LIST.join(", ")}.
         </p>
+      </section>
+
+      <section className={cardCls} data-section="prerender">
+        <h2 className="mb-3 text-sm font-semibold">Booker on page load</h2>
+        <EmbedPrerenderSwitch on={prerenderOn} />
       </section>
 
       <section className={cardCls}>

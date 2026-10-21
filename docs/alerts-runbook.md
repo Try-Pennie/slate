@@ -277,7 +277,26 @@ that the budget is small.
 
 Keys: `sync_failures`, `watch_lapse`, `bookable_blocked:*`, `bookable_unverified:*`,
 `verify_on_book_outage`, `verify_on_book_calendars_read`, `hydration_all_failing`,
-`pending_event_deletions_refused`, `google_calendar_breaker_open`, `owner_alert_skips`.
+`pending_event_deletions_refused`, `google_calendar_breaker_open`, `owner_alert_skips`,
+`refused_advisor_left_pool:*`.
+
+**`refused_advisor_left_pool:*`** (#3700) says Slate has already taken one advisor out
+of the pool, because Google refused every calendar they hold, `gone` or
+`not-provisioned`, for over an hour (`REFUSED_POOL_EXIT_AFTER_MS` in
+`src/lib/bookable/refused-pool-exit.ts`) on several reads. The sync lane decides it, on
+a tick where that advisor's read failed again. Archiving an account in the Workspace,
+which offboarding does, is the usual cause. The advisor is not departed: `bookable` is
+false and `bookable_pending_since` is stamped, so the hourly roster run retries their
+activation and the activation gate refuses them until every calendar reads. That
+refusal posts `bookable_blocked:*` once for the episode, not on every hourly retry,
+and again only when the reason changes: the retry knows the episode by the pool exit's
+audit row (`via: calendar-refused`, `pending_since` equal to the row's current mark).
+`agents_awaiting_activation` names them once past its four hour grace and then
+reminds daily, as any condition does. If they have left, nothing is needed: the Salesforce reap departs them and
+the retries stop. If they have not, restore the account (the branches below), and they
+come back on the next hourly run. To keep them out for good, press "Stop trying to make
+them bookable" on their profile, which clears the mark. If the note says a pool now has nobody bookable, check
+`/admin/tiers` for where those leads go.
 
 **`owner_alert_skips`** (#2436) says more than a fifth of the last week's owner alerts
 (the "previously pitched" event on the owning advisor's calendar, #2371) were skipped
@@ -322,7 +341,8 @@ carries it (`gone`, `not-provisioned`, `transient`):
 
 **Fix or escalate.** One agent, `gone` or `not-provisioned`: a person action, and
 `bookable` should go false until it is done, or the rotation spends its budget retrying
-a hopeless account. Everyone at once: the delegation. Never branch on `kind === "gone"`
+a hopeless account. Since #3700 Slate does that itself after an hour
+(`refused_advisor_left_pool:*` above), so turning them off by hand only saves that hour. Everyone at once: the delegation. Never branch on `kind === "gone"`
 in code (see `AGENTS.md`).
 
 ---
