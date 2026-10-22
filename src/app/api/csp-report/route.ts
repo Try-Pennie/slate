@@ -40,7 +40,8 @@ export const dynamic = "force-dynamic";
  *    can post to must not walk it into the logs instead.
  *  - It does not page a report only report, a browser extension's own refusal, or a
  *    passive third-party font refusal (#3417, `injected-passive`), or the Google
- *    product logo an add-on injects under `img-src` (#3699), none of which is
+ *    product logo an add-on injects under `img-src` (#3699), also when Chrome credits
+ *    it to a Slate page script that happened to be running (#4063), none of which is
  *    Slate's page failing somebody. All are still logged.
  */
 export async function POST(req: NextRequest): Promise<NextResponse> {

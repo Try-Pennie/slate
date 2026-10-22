@@ -837,8 +837,11 @@ make the page quiet. If it is something Slate never loads, the policy did its jo
 the question is how it got onto the page. A browser extension's own refusals, report
 only reports, a third-party font with no named source (#3417) and the Google product
 logo an add-on draws beside a phone number (`img-src`, host `fonts.gstatic.com`, path
-under `/s/i/productlogos/`, no named source, #3699) are logged with `paged=false` and
-never page. Every other refused image still pages.
+under `/s/i/productlogos/`, #3699) are logged with `paged=false` and never page. That
+logo is logged with no named source, and also when the named source is a Slate page
+script (the page's own origin, under `/_next/static/`, #4063): Chrome credits a load to
+whatever script is running when it fires, so a named source does not prove Slate asked
+for it. Every other refused image, and the logo credited to any other source, still pages.
 
 **`opaque_script_errors:*` (#3323).** Browsers at several different addresses (five or
 more in fifteen minutes, `OPAQUE_BURST_THRESHOLD` in `src/lib/api/boundary-count.ts`)
