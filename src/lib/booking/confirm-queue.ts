@@ -60,9 +60,10 @@ export const CONFIRM_QUEUE_RESERVE_MS = 2_000;
 /**
  * The longest a follower waits for the confirm ahead of it (#3257).
  *
- * Sized from two numbers that cannot both be met. A production confirm answers at
- * 7.4 to 8.0 seconds at the median (#3221, invocation wall time for POST /booking,
- * live Google), so a wait shorter than that sends every follower off on its own
+ * Sized from two numbers that cannot both be met. A production confirm answered at
+ * 7.4 to 8.0 seconds at the median on 2026-10-04 (#3221, invocation wall time for
+ * POST /booking, live Google). It takes about 1.6s now (#3490), but 8 seconds is
+ * still the slow confirm the line must survive, so a wait shorter than that sends every follower off on its own
  * while the leader is still working, which is the stampede the line exists to stop;
  * the first version waited 6 seconds and did exactly that. And the confirm budget is
  * 12 seconds (`BOOKING_CONFIRM_BUDGET_MS`), so a follower that waited 8 seconds has
@@ -278,8 +279,8 @@ export type LeaderVerdict<T> =
  *
  * Ordinary traffic for a popular time in a big pool must not wait in line: two
  * leads booking 9:00 in a pool of twenty can both be served at once, and on the
- * 2026-10-04 measurements a confirm that waited for one ahead of it at production
- * speed (7.4 to 8.0s) ran out of budget, while one that ran beside it picked the
+ * 2026-10-04 measurements a confirm that waited for one ahead of it at that day's
+ * production speed (7.4 to 8.0s) ran out of budget, while one that ran beside it picked the
  * same top advisor, lost the insert race and ran out of budget reassigning. So a
  * leader CLAIMS the advisor it is about to book, and as soon as it has claimed one
  * while another unclaimed advisor remains, it hands the line on: the next confirm
