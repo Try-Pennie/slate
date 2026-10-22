@@ -44,7 +44,7 @@
  *    browser, because jsdom has no layout, does not scroll and does not gate focus
  *    on visibility.
  *
- * And a fourth that is not a render fault at all but must never pass silently:
+ * And one more that is not a render fault at all but must never pass silently:
  *  - `console-errors`: the page drew, and the browser reported errors while doing
  *    it. A browser test that does not read the console throws away a diagnosis
  *    the browser already made (L219).

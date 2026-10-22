@@ -148,9 +148,11 @@ export async function probeTimezonePanel(frame: FrameLocator): Promise<PanelObse
     if (!first.opened) return { found: true, probeError: null, ...notProbed };
 
     await trigger.press("ArrowDown", { timeout: PANEL_TIMEOUT_MS });
-    // The highlight moves on the next render; wait for the attribute to change.
+    // The highlight moves on the next render; wait for the attribute to be PRESENT
+    // and different. Present too, or a list opened with no highlight (no attribute
+    // at all) would satisfy the wait at once, before the highlight had rendered.
     await frame
-      .locator(`${BOOKER_TZ}:not([aria-activedescendant="${first.activeId ?? ""}"])`)
+      .locator(`${BOOKER_TZ}[aria-activedescendant]:not([aria-activedescendant="${first.activeId ?? ""}"])`)
       .waitFor({ state: "attached", timeout: PANEL_TIMEOUT_MS })
       .catch(() => {});
     const second = await trigger.evaluate(measure);
