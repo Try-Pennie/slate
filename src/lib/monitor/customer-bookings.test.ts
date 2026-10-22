@@ -71,7 +71,7 @@ function fakeDb(
     parentOrigin?: string | null;
     referrer_origin?: string | null;
   }[],
-  opts: { error?: string } = {},
+  opts: { error?: string; errorOnPageFrom?: number } = {},
 ) {
   const filters: { col: string; val: unknown }[] = [];
   const ors: ((r: { source?: string | null; code?: string }) => boolean)[] = [];
@@ -93,8 +93,8 @@ function fakeDb(
     // #2974: the count is read as rows, paged, so each one's host page can be judged.
     range: (from: number, to: number) =>
       Promise.resolve(
-        opts.error
-          ? { data: null, error: { message: opts.error } }
+        opts.error || (opts.errorOnPageFrom !== undefined && from >= opts.errorOnPageFrom)
+          ? { data: null, error: { message: opts.error ?? "read timeout" } }
           : {
               data: kept()
                 .slice(from, to + 1)
@@ -230,6 +230,26 @@ describe("countCustomerBookingsSince", () => {
       { ...customer("2026-08-05T10:04:00.000Z"), parentOrigin: "https://www.trypennie.com" },
     ]);
     expect(await countCustomerBookingsSince(db, SINCE, "1")).toBe(3);
+  });
+
+  // #2974: the count is read as rows, so a lookback longer than one PostgREST page
+  // (the measurement's seven days hold about 1,300 Low bookings) must be read whole.
+  it("pages past PostgREST's 1,000 rows rather than counting the first page", async () => {
+    const rows = Array.from({ length: 2_345 }, (_, i) =>
+      customer(new Date(Date.parse(SINCE) + i * 1000).toISOString()),
+    );
+    const { db } = fakeDb(rows);
+    expect(await countCustomerBookingsSince(db, SINCE, "1")).toBe(2_345);
+  });
+
+  it("returns null when a LATER page fails, never the count of the pages it got", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rows = Array.from({ length: 1_500 }, (_, i) =>
+      customer(new Date(Date.parse(SINCE) + i * 1000).toISOString()),
+    );
+    const { db } = fakeDb(rows, { errorOnPageFrom: 1000 });
+    expect(await countCustomerBookingsSince(db, SINCE, "1")).toBeNull();
+    log.mockRestore();
   });
 
   it("still honours the window it was asked for", async () => {
