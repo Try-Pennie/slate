@@ -1,4 +1,4 @@
-import type { SelectionOutcome } from "@/lib/booking/core";
+import type { CoveragePlacement, CoverageSelection, GapOnlyReason } from "@/lib/booking/coverage-target";
 import type { Booking, BulkReassignItem, BulkReassignItemStatus, BulkReassignJob } from "@/lib/db/types";
 import { AttendeeEmailRefusedError, ATTENDEE_EMAIL_REFUSED_STAFF } from "@/lib/booking/attendee-email-refused";
 import type { AuditEntry } from "@/lib/audit";
@@ -86,9 +86,13 @@ export interface BulkReassignDeps {
   /** The booking's current status + assignment, or null if it no longer exists. */
   loadBooking(bookingId: string): Promise<BookingSnapshot | null>;
   /** Live-verified covering-agent selection for this booking (see coverage-target.ts). */
-  selectTarget(booking: BookingSnapshot, job: BulkReassignJob): Promise<SelectionOutcome>;
-  /** Reassign the booking onto `targetEmail` (adminReassignBooking); throws on failure. */
-  reassign(bookingId: string, targetEmail: string, job: BulkReassignJob): Promise<void>;
+  selectTarget(booking: BookingSnapshot, job: BulkReassignJob): Promise<CoverageSelection>;
+  /**
+   * Reassign the booking onto `targetEmail` (adminReassignBooking); throws on failure.
+   * `placement`, when the pick was on a lower rung of the tier ladder (#3485), is the
+   * bucket the call moves into, through Reroute's hold and swap (`coverage-cascade.ts`).
+   */
+  reassign(bookingId: string, targetEmail: string, job: BulkReassignJob, placement?: CoveragePlacement): Promise<void>;
   /**
    * Take this item for processing WHILE IT IS STILL PENDING, answering whether it
    * still was (#1665).
@@ -169,10 +173,14 @@ export function demotionRerouteAudit(job: BulkReassignJob, bookingId: string, to
  *    is the crash-resume guard: if a prior tick committed the swap but died
  *    before marking the item, or someone reassigned the booking externally, the
  *    item is settled from the assignment, never double-moved.
- *  - Otherwise select a live-free, under-cap covering agent and reassign:
- *    a placed move → `moved`; a genuinely-full slot → `unplaceable` (stays on the
- *    out agent for the manual force-override in #974); a verify outage or a
- *    reassign error → retried (`pending`) until `MAX_ITEM_ATTEMPTS`, then `failed`.
+ *  - Otherwise select a covering advisor by the booker's own rule (Reroute's search:
+ *    the cached round robin, then the live verify, then the approved time off check,
+ *    walking the tier ladder, see coverage-target.ts) and reassign, a pick on a lower
+ *    rung moving into that rung's bucket through Reroute's hold and swap
+ *    (coverage-cascade.ts): a placed move → `moved`; a genuinely-full slot →
+ *    `unplaceable` (stays on the out agent for the manual force-override in #974); a
+ *    verify outage or a reassign error → retried (`pending`) until
+ *    `MAX_ITEM_ATTEMPTS`, then `failed`.
  *
  * Does not persist; the drain commits the returned outcome so the write and the
  * attempt increment are one step.
@@ -219,7 +227,7 @@ export async function processBulkReassignItem(
   const selection = await deps.selectTarget(booking, job);
   if (selection.assignment) {
     try {
-      await deps.reassign(item.booking_id, selection.assignment.email, job);
+      await deps.reassign(item.booking_id, selection.assignment.email, job, selection.placement);
     } catch (err) {
       // #3373: Google will never invite this lead's address, so no retry can move
       // the booking: failed at once, saying why, rather than retried to the cap and
@@ -255,8 +263,30 @@ export async function processBulkReassignItem(
     // cap" named a gate that never applied and pointed the reader at the wrong fix.
     // "Available" is the one thing always true when a slot is genuinely full: free,
     // within any cap, on shift, and not on time off.
-    detail: "No other advisor was available to take this appointment at its original time.",
+    detail: unplaceableDetail(selection.gapOnly),
   };
+}
+
+/**
+ * The unplaceable record (#3485). Says availability, and adds the gap only when the
+ * selection MEASURED it as the reason: advisors free for the call itself but not for the
+ * minutes kept clear around it, which is what a person placing it by hand needs to know,
+ * since doing so puts the call back to back with another. Pure.
+ */
+export function unplaceableDetail(gapOnly?: GapOnlyReason): string {
+  const base = "No other advisor was available to take this appointment at its original time.";
+  if (!gapOnly || gapOnly.advisors <= 0) return base;
+  const { advisors, beforeMin, afterMin } = gapOnly;
+  const gap =
+    beforeMin === afterMin
+      ? `the ${afterMin} minutes kept clear before and after it`
+      : beforeMin === 0
+        ? `the ${afterMin} minutes kept clear after it`
+        : afterMin === 0
+          ? `the ${beforeMin} minutes kept clear before it`
+          : `the ${beforeMin} minutes kept clear before it and the ${afterMin} after it`;
+  const who = advisors === 1 ? "1 advisor was" : `${advisors} advisors were`;
+  return `${base} ${who} free for the call itself, but not for ${gap}.`;
 }
 
 /**

@@ -354,7 +354,7 @@ Keys: `outbox_drain_stuck`, `outbox_all_handed_off`, `reservation_drain_stuck`,
 `reservation_created_owed`, `booking_event_insert`, `busy_block_write_through`, `reconcile_busy_blocks`,
 `reconcile_missing_busy_blocks`, `creation_orphan_events`,
 `reassign_intent_dropped`, `reschedule_pin_dropped`, `reschedule_invite_stranded:*`, `reschedule_lock_outage`,
-`stale_phone_invite:*`, `webhook_dead:*`, `webhook_event_no_subscriber`,
+`stale_phone_invite:*`, `phone_correction_unsent:*`, `webhook_dead:*`, `webhook_event_no_subscriber`,
 `handoff_channel_unset`, `handoff_undelivered`, `bookable_trait_unrecorded:*`,
 `booking_follow_up_left_to_drain`, `booking_invite_moved:*`, `booking_invite_resized:*`,
 `booking_invite_check_failed:*`, `booking_invite_launch_sweep`.
@@ -409,6 +409,13 @@ which is what makes this family different from the ones above.
   read every candidate and found none owed; a sweep whose read fails neither pages nor
   clears, and its error is in the Worker log under `tag=booking`. The full sequence is
   in `docs/dr-runbook.md`, "How long a reservation is kept".
+
+- For `phone_correction_unsent:*` (#1512): a lead corrected their number on the manage
+  page and the `booking.contact_updated` delivery was never recorded, so nothing retries
+  it. The booking and the advisor's invite already hold the new number; Regal's contact
+  profile still has the old one as primary. Read the number off the booking and set it
+  primary on the lead's Regal profile. The Worker log line under `tag=manage-contact`
+  ("phone correction not recorded for downstream") carries the underlying error.
 
 - For `bookable_trait_unrecorded:*` (#2085): an agent's bookable state changed and the
   delivery telling Regal was never recorded, so nothing retries it and **no customer is

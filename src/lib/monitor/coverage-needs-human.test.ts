@@ -44,6 +44,7 @@ import {
   type SweepCause,
 } from "./coverage-needs-human";
 import { LANE_STALE_BOUNDS_MS } from "./health";
+import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 
 const COOLDOWN_MS = 60 * 60_000;
 
@@ -879,5 +880,83 @@ describe("the coverage alert is readable without a booking-id wall", () => {
     const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 8 })]);
     expect(text).toContain("8 appointments");
     expect(text).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/); // no uuid anywhere
+  });
+});
+
+// #3485 Part 2: the page says what happens next and how soon, and names the control that
+// actually fixes it. The panel's own button starts the automatic move that just failed, so
+// the page sends the reader to each call's Place by hand instead (#3485 comment, 2026-10-12).
+describe("the coverage alert says how soon and what happens next (#3485)", () => {
+  const ET = "America/New_York";
+  const etWhen = (iso: string) => `${formatSlotDay(iso, ET)} at ${formatSlotTime(iso, ET)} ET`;
+
+  it("says when the first stranded call starts, in ET, across every advisor", () => {
+    const text = formatCoverageNeedsHumanAlert([
+      holder({ userId: "u1", unplaceable: 2, firstStartsAt: "2026-10-13T18:30:00Z" }),
+      holder({ userId: "u2", email: "sam@example.com", unplaceable: 1, firstStartsAt: "2026-10-13T16:00:00Z" }),
+    ]);
+    expect(text).toContain(`The first starts ${etWhen("2026-10-13T16:00:00Z")}.`);
+    expect(text).not.toContain(etWhen("2026-10-13T18:30:00Z"));
+  });
+
+  it("says one call's start as its own, and says nothing when no start is known", () => {
+    expect(formatCoverageNeedsHumanAlert([holder({ unplaceable: 1, firstStartsAt: "2026-10-13T16:00:00Z" })])).toContain(
+      `It starts ${etWhen("2026-10-13T16:00:00Z")}.`,
+    );
+    const unknown = formatCoverageNeedsHumanAlert([holder({ unplaceable: 1 })]);
+    expect(unknown).not.toMatch(/starts .* ET/);
+    expect(unknown).not.toMatch(/undefined|null|NaN|Invalid/);
+  });
+
+  it("says Slate keeps trying until the call starts, but only when no one was free", () => {
+    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 2 })]);
+    expect(text).toMatch(/keeps trying to move them about once an hour until they start/i);
+    expect(formatCoverageNeedsHumanAlert([holder({ unplaceable: 1 })])).toMatch(
+      /keeps trying to move it about once an hour until it starts/i,
+    );
+    // A move that kept failing is not retried by the hourly lane, so it is never promised.
+    expect(formatCoverageNeedsHumanAlert([holder({ unplaceable: 0, failed: 2 })])).not.toMatch(/once an hour/i);
+  });
+
+  it("names Place by hand on each call as the fix, not the panel's automatic move", () => {
+    const text = formatCoverageNeedsHumanAlert([holder({ unplaceable: 2 })]);
+    expect(text).toContain("Place by hand");
+    expect(text).toContain(COVERAGE_PANEL_NAME);
+  });
+});
+
+describe("the coverage all clear uses one word for the person (#3485)", () => {
+  it("says advisor, never agent", () => {
+    const text = formatCoverageNeedsHumanRecovery();
+    expect(text).toMatch(/advisor/);
+    expect(text).not.toMatch(/\bagent\b/);
+  });
+});
+
+describe("strandedHoldersFromItems carries each call's start to its holder (#3485)", () => {
+  it("keeps the earliest start of an advisor's stranded calls", () => {
+    const holders = strandedHoldersFromItems(
+      [
+        item({ bookingId: "b1", startsAt: "2026-10-13T18:30:00Z" }),
+        item({ bookingId: "b2", startsAt: "2026-10-13T16:00:00Z" }),
+        item({ bookingId: "b3" }),
+      ],
+      [{ id: "u1", name: "Dana Ruiz", email: "dana@example.com" }],
+    );
+    expect(holders[0]?.firstStartsAt).toBe("2026-10-13T16:00:00Z");
+  });
+
+  it("countStranded hands each appointment its start", () => {
+    const read: StrandedItemRead = {
+      bookingId: "b1",
+      status: "unplaceable",
+      settledAt: "2026-10-13T12:00:00Z",
+      sweep: { outUserId: "u1", status: "done", updatedAt: "2026-10-13T12:00:00Z", fromRedistribute: false },
+      startsAt: "2026-10-13T16:00:00Z",
+      assignedUserId: "u1",
+      assignedAgentInPool: false,
+    };
+    const { appointments } = countStranded([read], Date.parse("2026-10-13T15:30:00Z"), 60 * 60_000);
+    expect(appointments[0]?.startsAt).toBe("2026-10-13T16:00:00Z");
   });
 });
