@@ -149,6 +149,23 @@ export function bookedOnDay(member: MemberAvailability, day: DateTime): number {
   return member.dayCounts?.get(day.plus({ hours: 12 }).setZone(member.timezone).toISODate() ?? "") ?? 0;
 }
 
+/** A daily cap limits how many calls a day can take, which one slot list cannot show: it offers
+ *  every start while under the cap. So the packed calls stop at whatever the cap leaves. */
+function cappedCalls(picked: string[], eventType: Pick<CapacityEventType, "daily_cap">, already: number): string[] {
+  const cap = eventType.daily_cap;
+  return cap === null ? picked : picked.slice(0, Math.max(0, cap - already));
+}
+
+/**
+ * Where each call the day's capacity counts starts, as seen at `input.nowMs`: the shift with
+ * approved time off taken out and an empty calendar, packed. `advisorDay`'s capacity is this list's
+ * length; the booking pace readings fingerprint the list itself (#4102), so a change to hours or
+ * time off is seen even when the count comes out the same.
+ */
+export function capacityStarts(input: AdvisorDayInput): string[] {
+  return cappedCalls(callsThatFit(daySlots(input, dayTimeOff(input), input.nowMs), input.eventType), input.eventType, 0);
+}
+
 /** One advisor's day, every number from the booker's own slot rules. */
 export function advisorDay(input: AdvisorDayInput): AdvisorDay {
   const { member, day, eventType, nowMs } = input;
@@ -160,13 +177,8 @@ export function advisorDay(input: AdvisorDayInput): AdvisorDay {
   // "Ignoring the clock": the day as it looked from before it began.
   const beforeDay = fromMs - 86_400_000;
 
-  // A daily cap limits how many calls a day can take, which one slot list cannot show: it offers
-  // every start while under the cap. So the packed calls stop at whatever the cap leaves.
-  const cap = eventType.daily_cap;
-  const bookedToday = bookedOnDay(member, day);
-  const capped = (picked: string[], already: number) => (cap === null ? picked : picked.slice(0, Math.max(0, cap - already)));
-  const open = capped(callsThatFit(slots([...member.busy, ...off], nowMs, member.dayCounts ?? new Map()), eventType), bookedToday);
-  const capacity = capped(callsThatFit(slots(off, nowMs), eventType), 0);
+  const open = cappedCalls(callsThatFit(slots([...member.busy, ...off], nowMs, member.dayCounts ?? new Map()), eventType), eventType, bookedOnDay(member, day));
+  const capacity = capacityStarts(input);
   const remainingShift = callsThatFit(slots([], nowMs), eventType);
   const wholeShift = slots([], beforeDay);
   const wholeWithOff = slots(off, beforeDay);

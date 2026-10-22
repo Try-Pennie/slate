@@ -12,6 +12,8 @@ import type {
   CalcomOverrideRemoval,
   BookingInviteChange,
   CapacityHistoryCursor,
+  CapacityFillLast,
+  CapacityFillReading,
   CapacityHistoryDay,
   AgentCalendar,
   AgentLink,
@@ -170,6 +172,10 @@ export interface Database {
         ]
       >;
       capacity_history_cursor: Table<CapacityHistoryCursor>;
+      /** #4102 (migration 0198): a booking pace reading per org, half hour and page day. */
+      capacity_fill_readings: Table<CapacityFillReading>;
+      /** #4102 (migration 0198): each page day's last snapshot, what the next reading compares with. */
+      capacity_fill_last: Table<CapacityFillLast>;
       webhook_endpoints: Table<WebhookEndpoint>;
       webhook_deliveries: Table<WebhookDelivery>;
       alert_state: Table<AlertState>;
@@ -268,6 +274,13 @@ export interface Database {
       /** #3940 (migration 0191): one capacity-history tick's rows merged in (open times as a
        *  set union, unsynced sticky) and the org's cursor moved forward, in one transaction.
        *  Returns the rows written. */
+      /** #4102 (migration 0198): one run's booking pace readings and snapshots, written only
+       *  when the org's latest snapshot is still p_prev_read_at and p_read_at is later. Returns
+       *  whether it wrote. */
+      record_capacity_fill: {
+        Args: { p_org: string; p_read_at: string; p_prev_read_at: string | null; p_rows: unknown; p_last: unknown };
+        Returns: boolean;
+      };
       record_capacity_history: {
         Args: { p_org: string; p_rows: unknown; p_through: string };
         Returns: number;
