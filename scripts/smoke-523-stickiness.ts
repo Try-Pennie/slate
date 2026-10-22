@@ -22,7 +22,12 @@ import { DateTime } from "luxon";
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
 import { smokeAttendee } from "./lib/smoke-identity.ts";
-import { cancelSmokeBooking, createRefusal, teardownCheckMessage } from "./lib/smoke-own-booking.ts";
+import {
+  cancelSmokeBooking,
+  createCheckMessage,
+  createRefusal,
+  teardownCheckMessage,
+} from "./lib/smoke-own-booking.ts";
 
 // Keys load from .env.local / .dev.vars if not already in the environment.
 loadEnvFiles([".env.local", ".dev.vars"]);
@@ -102,10 +107,7 @@ async function main(): Promise<void> {
     // #4060: only a 200 `created` is this run's booking; any other answer carries one
     // this run did not make, so stop rather than reschedule and cancel it.
     const refused = createRefusal(created);
-    check(
-      refused === null,
-      `create -> 200 created (${refused ?? `got ${created.status}`}${refused !== null && created.body.error ? ` err=${created.body.error}` : ""})`,
-    );
+    check(refused === null, createCheckMessage(created, refused));
     if (refused !== null) return;
     bookingId = String((created.body.booking as Json | undefined)?.id ?? "");
     token = tokenFrom((created.body.booking as Json | undefined)?.manageUrl ?? created.body.manageUrl);

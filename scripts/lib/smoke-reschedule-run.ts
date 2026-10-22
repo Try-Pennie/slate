@@ -14,6 +14,7 @@
 import { tokenFrom, type Json } from "../smoke-lib.ts";
 import {
   cancelSmokeBooking,
+  createCheckMessage,
   createRefusal,
   teardownCheckMessage,
   type SmokePost,
@@ -77,7 +78,7 @@ export async function runRescheduleSmoke(deps: RescheduleSmokeDeps): Promise<"ra
       true,
     );
     const refused = createRefusal(created);
-    check(refused === null, `create -> 200 created (${refused ?? `got ${created.status}`})`);
+    check(refused === null, createCheckMessage(created, refused));
     // #4060: stop here. The booking in a non created answer is not this run's.
     if (refused !== null) return "ran";
     const booking = created.body.booking as Json | undefined;

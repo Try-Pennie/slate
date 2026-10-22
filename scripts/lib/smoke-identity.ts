@@ -19,9 +19,12 @@
 //
 // The address stays a plus-alias of the real smoketest@trypennie.com mailbox, so
 // Google's invite/cancel mail delivers there rather than bouncing onto the organizer
-// (#396). Pure given an explicit nonce, so it is node-testable with no clock; the
-// DEFAULT nonce combines Date.now() with a per-process counter, so two calls in the
-// same millisecond still produce distinct identities.
+// (#396). The email and external id are pure given an explicit nonce, so they are
+// node-testable with no clock; the DEFAULT nonce combines Date.now() with a
+// per-process counter, so two calls in the same millisecond still produce distinct
+// identities. The phone is NOT a function of the nonce: it comes from the process
+// start time plus that counter (see RUN_BASE), so every call gets a different phone,
+// even two calls given the same nonce. Call it once per identity and reuse the result.
 
 /**
  * A smoke attendee phone: `+1 <areaCode> 555 <last 4 digits of serial>`.

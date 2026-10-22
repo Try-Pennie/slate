@@ -38,6 +38,12 @@ export function createRefusal(created: { status: number; body: Json }): string |
   return parts.join(" ");
 }
 
+/** The create check's line, carrying the refusal and the server's error when refused. */
+export function createCheckMessage(created: { status: number; body: Json }, refused: string | null): string {
+  const err = refused !== null && created.body.error ? ` err=${String(created.body.error)}` : "";
+  return `create -> 200 created (${refused ?? `got ${created.status}`}${err})`;
+}
+
 /** Cancel attempts at teardown, the first included. */
 const CANCEL_ATTEMPTS = 3;
 

@@ -31,7 +31,12 @@ import { buildResumeReservation, type PersistedBookingRow } from "./create-resum
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
 import { smokeAttendee } from "./lib/smoke-identity.ts";
-import { cancelSmokeBooking, createRefusal, teardownCheckMessage } from "./lib/smoke-own-booking.ts";
+import {
+  cancelSmokeBooking,
+  createCheckMessage,
+  createRefusal,
+  teardownCheckMessage,
+} from "./lib/smoke-own-booking.ts";
 
 // --- config -----------------------------------------------------------------
 
@@ -145,10 +150,7 @@ async function main(): Promise<void> {
     // #4060: only a 200 `created` is this run's booking; any other answer carries one
     // this run did not make, so stop rather than resume and cancel it.
     const refused = createRefusal(created);
-    check(
-      refused === null,
-      `create -> 200 created (${refused ?? `got ${created.status}`}${refused !== null && created.body.error ? ` err=${created.body.error}` : ""})`,
-    );
+    check(refused === null, createCheckMessage(created, refused));
     if (refused !== null) return;
     const b = created.body.booking as Json | undefined;
     bookingId = String(b?.id ?? "");
