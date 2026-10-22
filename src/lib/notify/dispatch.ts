@@ -21,6 +21,7 @@ import {
   type RepeatChange,
 } from "@/lib/notify/repeat-policy";
 import { foldFor, foldMarkKey, judgeFold, type FoldRead } from "@/lib/notify/alert-folds";
+import { withSeverityLead, type AlertVoice } from "@/lib/notify/severity-lead";
 
 /**
  * Post a Slack message at most once per cooldown for a given key, using the
@@ -343,7 +344,22 @@ export async function sendThrottledAlert(
   text: string,
   opts: SendOptions = {},
 ): Promise<void> {
-  const outcome = await sendThrottledAlertUnrecorded(key, cooldownMs, text, opts);
+  await sendThrottled(key, cooldownMs, text, opts, "page");
+}
+
+/**
+ * The one throttled send behind both senders. `voice` is which of them was called,
+ * which decides only the lead line the post opens with (#1825): a whisper reads as
+ * needing nothing even when the info channel falls back to the alerts channel.
+ */
+async function sendThrottled(
+  key: string,
+  cooldownMs: number,
+  text: string,
+  opts: SendOptions,
+  voice: AlertVoice,
+): Promise<void> {
+  const outcome = await sendThrottledAlertUnrecorded(key, cooldownMs, text, opts, voice);
   // Noted only once the send RETURNED (#3133 follow-up, see alert-recording.ts): a
   // page sent, held back by its cooldown or dropped by an unconfigured Slack is the
   // owner's word on the matter; a send that threw is nobody's.
@@ -525,6 +541,7 @@ async function sendThrottledAlertUnrecorded(
   cooldownMs: number,
   text: string,
   opts: SendOptions,
+  voice: AlertVoice,
 ): Promise<SendOutcome> {
   const { channel, news } = opts;
   // Refused BEFORE anything is posted (2026-09-24). A missing cooldown compares
@@ -625,7 +642,10 @@ async function sendThrottledAlertUnrecorded(
     return "sent";
   }
 
-  const result = await postSlack({ text: posted, ...(channel ? { channel } : {}) });
+  // #1825: the severity lead goes on here, at the transport, after the subjects and
+  // the reminder line were worked out from the text alone, so the lead never reads
+  // to the repeat rule as part of what the condition says.
+  const result = await postSlack({ text: withSeverityLead(posted, key, voice), ...(channel ? { channel } : {}) });
   // Fail loud (#1035): a not-ok send used to be invisible AND burned the full
   // cooldown, silently muting this alert for 15-60+ min. Surface it in the logs
   // (the paging channel can't page about itself) and stamp only a short retry
@@ -882,7 +902,7 @@ export async function resolveAlert(
   const claim = await claimRow(firingKey(key), seen, claimIso, { reclaimIfDeleted: false });
   if (claim === "lost") return false;
 
-  const result = await postSlack({ text, ...(channel ? { channel } : {}) });
+  const result = await postSlack({ text: withSeverityLead(text, key, "recovery"), ...(channel ? { channel } : {}) });
   if (!result.ok) {
     log.warn("slack-alert", {
       msg: "recovery notice send failed",
@@ -976,7 +996,7 @@ export async function sendThrottledInfo(
   // unconfigured Slack does. A throw (the channel read, or the send) notes nothing.
   // `repeat` (#3801) only matters for a CONDITION that whispers on the info channel;
   // an info key keeps its own throttle whatever it is given.
-  if (channel) await sendThrottledAlert(key, cooldownMs, text, { ...repeat, channel });
+  if (channel) await sendThrottled(key, cooldownMs, text, { ...repeat, channel }, "info");
   noteAlertKey(key);
 }
 
