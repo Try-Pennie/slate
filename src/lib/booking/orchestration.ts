@@ -49,10 +49,18 @@ import {
   findPersonMatch,
   decidePersonBooking,
   type PersonIdentity,
+  type NamedWorld,
   type PersonWorld,
   type PersonMatch,
   type MatchStrength,
+  personStrongIds,
 } from "./person-dedupe.ts";
+import {
+  leadIdFromEarlierBookings,
+  withLeadIdFrom,
+  type EarlierLeadBookingRow,
+  type LeadIdFrom,
+} from "./lead-id-from-bookings.ts";
 import {
   bookingLeadId,
   bookingMatchesLookupIds,
@@ -1991,6 +1999,15 @@ export interface BookingDeps {
    */
   /** Scoped to one WORLD (#2660): the test bookings or the real ones, never both. */
   findActiveBookingsForPerson(identity: PersonIdentity, world: PersonWorld): Promise<Booking[]>;
+  /**
+   * #3739: earlier bookings in ANY status that carry a lead id and hold BOTH this
+   * email and this phone, in one world, for an advisor link confirm whose link
+   * carried no Lead id. Throws on a failed read; the confirm books without an id.
+   */
+  earlierLeadBookings(
+    contact: { email: string; phone: string },
+    world: NamedWorld,
+  ): Promise<EarlierLeadBookingRow[]>;
   /**
    * Active bookings whose `external_id` OR `salesforce_id` is any of `ids`, for
    * the lookup API (#2657). Separate from the dedupe fetch above on purpose: that
@@ -5179,6 +5196,66 @@ async function createBookingWithVerdict(
 }
 
 /**
+ * #3739: an advisor link confirm, with the Lead id it is saved under and where that
+ * id came from (`lead-id-from-bookings.ts`).
+ *
+ * A link carrying an id keeps it, recorded as `link`, and reads nothing. A bare link
+ * takes the one Lead id the lead's earlier bookings agree on, matched on BOTH email
+ * and phone in the bucket's world, recorded as `earlier-booking`. Two different ids
+ * save none and are logged. A failed read is logged and books with no id: a lead is
+ * never refused because a reporting join key could not be found, and nothing
+ * downstream reads the missing id as a fact about them (it is the state every bare
+ * link booking was in before this).
+ *
+ * Salesforce is deliberately NOT asked by email when Slate holds no earlier booking:
+ * that would put a second external call on the confirm path of every bare link
+ * booking for a lead Slate has never booked, against a reporting gap the advisor's
+ * own link can close at the source. Decided on #3739.
+ */
+async function withAgentLinkLeadId(
+  input: CreateBookingInput,
+  advisorId: string,
+  isTest: boolean,
+  deps: Pick<BookingDeps, "earlierLeadBookings">,
+): Promise<CreateBookingInput> {
+  const own = (from: LeadIdFrom | null, extra: Partial<CreateBookingInput> = {}): CreateBookingInput => ({
+    ...input,
+    ...extra,
+    prefill: withLeadIdFrom(input.prefill, from),
+  });
+  if (personStrongIds(personIdentityOf(input)).length > 0) return own("link");
+  const email = input.attendee.email?.trim();
+  const phone = input.attendee.phone?.trim();
+  if (!email || !phone) return own(null);
+  let rows: EarlierLeadBookingRow[];
+  try {
+    rows = await deps.earlierLeadBookings({ email, phone }, { isTest });
+  } catch (err) {
+    log.warn("agent-link", { msg: "earlier bookings unreadable, booking with no Lead id", advisor_id: advisorId }, err);
+    return own(null);
+  }
+  const inferred = leadIdFromEarlierBookings({ email, phone }, advisorId, rows);
+  if (inferred.kind === "conflict") {
+    log.warn("agent-link", {
+      msg: "earlier bookings name different Leads, booking with no Lead id",
+      advisor_id: advisorId,
+      lead_id_count: inferred.leadIdCount,
+      booking_ids: inferred.bookingIds.join(","),
+    });
+    return own(null);
+  }
+  if (inferred.kind === "none") return own(null);
+  log.info("agent-link", {
+    msg: "Lead id taken from an earlier booking",
+    advisor_id: advisorId,
+    salesforce_id: inferred.leadId,
+    same_advisor: inferred.sameAdvisor,
+    booking_ids: inferred.bookingIds.join(","),
+  });
+  return own("earlier-booking", { salesforceId: inferred.leadId });
+}
+
+/**
  * Everything a confirm checks and reads before the create proper. `held` is the
  * turn it already holds, or "late" for a confirm that could not join the line
  * before routing (a booker link Salesforce routes), which joins it here once its
@@ -5246,7 +5323,7 @@ async function createChecked(
   // before any write, and the route answers 503.
   // #2073: a named link does not route, so it never asks Salesforce for a code.
   const agentLinkUserId = requestedInput.agentLinkUserId;
-  const { input, codeSource } =
+  const { input: routedInput, codeSource } =
     agentLinkUserId !== undefined
       ? { input: { ...requestedInput, requestedCode: undefined }, codeSource: undefined }
       : await profile.time("lead-code", () => routeOnLeadCode(requestedInput, deps));
@@ -5258,12 +5335,12 @@ async function createChecked(
   // nothing behind. The in-flight resume below sits after this: a reservation
   // for an outside start can only predate the gate, and the reservation drain
   // completes it on its own, so refusing the retry loses nothing.
-  assertWithinLeadCallingWindow(input.startIso, input.timezone);
+  assertWithinLeadCallingWindow(routedInput.startIso, routedInput.timezone);
 
-  const known = opts.requested?.code === input.bucketCode ? opts.requested.resolved : null;
+  const known = opts.requested?.code === routedInput.bucketCode ? opts.requested.resolved : null;
   const resolved =
     known ??
-    (await profile.time("resolve-bucket", () => deps.resolveBucketByCode(input.bucketCode)));
+    (await profile.time("resolve-bucket", () => deps.resolveBucketByCode(routedInput.bucketCode)));
   if (!resolved) throw new UnknownBucketError();
   const { bucket, eventType } = resolved;
 
@@ -5273,7 +5350,15 @@ async function createChecked(
   // for the PUBLIC test bucket (#2660). To a real lead
   // a hidden one must look like the bucket doesn't exist (same error as an
   // unknown code, no hint that a hidden bucket is there).
-  if (bucket.is_test && !input.allowTestBuckets) throw new UnknownBucketError();
+  if (bucket.is_test && !routedInput.allowTestBuckets) throw new UnknownBucketError();
+
+  // #3739: the Lead id an advisor link booking is saved under. After the bucket,
+  // whose world the read is asked in, and before anything is written, so the row
+  // carries it from the start. The provenance key is the server's on every confirm.
+  const input =
+    agentLinkUserId !== undefined
+      ? await profile.time("lead-id-from-bookings", () => withAgentLinkLeadId(routedInput, agentLinkUserId, bucket.is_test, deps))
+      : { ...routedInput, prefill: withLeadIdFrom(routedInput.prefill, null) };
 
   // #3221: confirms for one slot take turns within this isolate. Before this a
   // hundred at once each ran the whole path below with a hundredth of the
