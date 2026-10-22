@@ -31,7 +31,8 @@ const NETWORK_WORDS: Record<string, string> = {
 /** One short line for a thrown error: words for a network failure, else its text. */
 export function crashReason(err: unknown): string {
   const code = (err as { cause?: { code?: unknown } } | null)?.cause?.code;
-  if (typeof code === "string" && NETWORK_WORDS[code]) return NETWORK_WORDS[code];
+  // An own key only: a code spelled like an inherited key ("constructor") is not one.
+  if (typeof code === "string" && Object.hasOwn(NETWORK_WORDS, code)) return NETWORK_WORDS[code]!;
   const reason = shortErrorReason(err);
   return typeof code === "string" && /^[A-Z_]+$/.test(code) ? `${reason} (${code})` : reason;
 }

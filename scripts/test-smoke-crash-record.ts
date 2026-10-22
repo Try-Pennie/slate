@@ -187,6 +187,9 @@ eq(crashReason(net("ECONNRESET")), "the connection was reset", "ECONNRESET in wo
 eq(crashReason(net("ECONNREFUSED")), "the connection was refused", "ECONNREFUSED in words");
 eq(crashReason(net("ENOTFOUND")), "the host name did not resolve", "ENOTFOUND in words");
 eq(crashReason(net("EWHATEVER")), "fetch failed (EWHATEVER)", "an unknown code keeps the code");
+// An inherited object key is not a known code: the reason is still a string.
+eq(crashReason(net("constructor")), "fetch failed", "a code named like an inherited key is not looked up");
+eq(typeof crashReason(net("toString")), "string", "the reason is always a string");
 eq(crashReason(new Error("boom\n    at frame (file.ts:1:1)")), "boom at frame (file.ts:1:1)", "a stack is one line");
 assert(!crashReason(new Error("x".repeat(500))).includes("x".repeat(300)), "a long message is cut short");
 
