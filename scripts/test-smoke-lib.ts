@@ -75,12 +75,12 @@ assert(tokenFrom(null) === "", "tokenFrom is safe on null");
 
 // --- createChecker: isolated pass/fail counting ---
 {
-  const { check, failed } = createChecker();
+  const { check, failed } = createChecker({ name: "The test smoke" });
   check(true, "a pass");
   assert(failed() === 0, "createChecker: a passing check leaves the count at 0");
   check(false, "a fail");
   assert(failed() === 1, "createChecker: a failing check increments the count");
-  const other = createChecker();
+  const other = createChecker({ name: "The test smoke" });
   assert(other.failed() === 0, "createChecker: each checker is independent");
 }
 

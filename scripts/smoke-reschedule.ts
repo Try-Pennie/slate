@@ -29,7 +29,7 @@ const KEY = process.env.BOOKING_API_KEY_CANARY ?? "";
 //   and wiring it would let an unset repo variable aim the run at bucket "")
 const BUCKET = envOr(process.env.SMOKE_BUCKET, "SMOKE");
 
-const { check, failed } = createChecker();
+const { check, failed } = createChecker({ name: RESCHEDULE_SMOKE_NAME });
 
 async function main(): Promise<void> {
   if (!KEY) {

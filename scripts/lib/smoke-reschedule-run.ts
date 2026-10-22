@@ -20,6 +20,7 @@ import {
   type SmokePost,
 } from "./smoke-own-booking.ts";
 import { rescheduleSmokeIdentity } from "./smoke-reschedule-identity.ts";
+import { SMOKE_NAMES } from "./smoke-failure-log.ts";
 
 export type { SmokePost };
 
@@ -38,7 +39,7 @@ export interface RescheduleSmokeDeps {
 const REASON = "schedule_conflict";
 
 /** How the reschedule smoke names itself in the crash record and the alert (#4062). */
-export const RESCHEDULE_SMOKE_NAME = "The reschedule smoke";
+export const RESCHEDULE_SMOKE_NAME = SMOKE_NAMES.reschedule;
 
 /**
  * The script's exit code: 1 when the run crashed, the bucket could not host it or any

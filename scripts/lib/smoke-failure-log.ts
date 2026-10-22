@@ -71,12 +71,36 @@ export function recordFailure(
  * can say only what was recorded.
  */
 const PASS_MARK = "[pass]";
+
+/**
+ * How each smoke names itself in its pass marks, its crash line and the alert: one
+ * list, so a crash is matched to the passes of the SAME smoke. Several smokes write
+ * one file in the canary, and a crash may claim only its own passes (L11).
+ */
+export const SMOKE_NAMES = {
+  booking: "The booking smoke",
+  reschedule: "The reschedule smoke",
+  stickiness: "The stickiness repro",
+  createResume: "The create resume smoke",
+  embedRender: "The embed render check",
+  latency: "The latency check",
+} as const;
 const CRASH_MARK = "[crash] ";
 
-/** Record one passing check. A no-op without a path; never throws. */
-export function recordPass(io: FailureLogIo, path: string | null): boolean {
+/**
+ * Record one passing check, tagged with the smoke that ran it (`where`, a name from
+ * SMOKE_NAMES), so a later crash of that smoke counts only its own passes. A no-op
+ * without a path; never throws.
+ */
+export function recordPass(io: FailureLogIo, path: string | null, where: string): boolean {
   if (!path) return false;
-  return appendLine(io, path, PASS_MARK);
+  const w = smokeName(where);
+  return appendLine(io, path, w ? `${PASS_MARK} ${w}` : PASS_MARK);
+}
+
+/** One spelling of a smoke's name for its pass marks and its crash line alike. */
+function smokeName(where: string): string {
+  return flatten(where).replace(/:/g, "");
 }
 
 /**
@@ -86,7 +110,7 @@ export function recordPass(io: FailureLogIo, path: string | null): boolean {
  */
 export function recordCrash(io: FailureLogIo, path: string | null, where: string, reason: string): boolean {
   if (!path) return false;
-  const w = flatten(where).replace(/:/g, "");
+  const w = smokeName(where);
   const r = flatten(reason);
   if (!w || !r) return false;
   return appendLine(io, path, `${CRASH_MARK}${w}: ${r}`);
@@ -145,21 +169,27 @@ export function readFailures(io: FailureLogIo, path: string | null): FailureLog 
   const lines: string[] = [];
   const crashes: CrashRecord[] = [];
   let passed = 0;
+  // Passes per smoke: a crash is credited only with the passes of the smoke that
+  // crashed, never with another smoke's that wrote the same file before it (L11).
+  const passedBy = new Map<string, number>();
   for (const raw_line of raw.split("\n")) {
     const l = raw_line.trim();
     if (!l) continue;
-    if (l === PASS_MARK) {
+    if (l === PASS_MARK || l.startsWith(`${PASS_MARK} `)) {
       passed += 1;
+      const who = l.slice(PASS_MARK.length).trim();
+      if (who) passedBy.set(who, (passedBy.get(who) ?? 0) + 1);
       continue;
     }
     if (l.startsWith(CRASH_MARK)) {
       const body = l.slice(CRASH_MARK.length);
       const at = body.indexOf(": ");
-      crashes.push(
-        at > 0
-          ? { where: body.slice(0, at), reason: body.slice(at + 2), passedBefore: passed }
-          : { where: "A smoke", reason: body, passedBefore: passed },
-      );
+      const where = at > 0 ? body.slice(0, at) : "A smoke";
+      crashes.push({
+        where,
+        reason: at > 0 ? body.slice(at + 2) : body,
+        passedBefore: passedBy.get(where) ?? 0,
+      });
       continue;
     }
     lines.push(l);

@@ -22,6 +22,7 @@ import {
   recordCrash,
   recordFailure,
   recordPass,
+  SMOKE_NAMES,
   type FailureLog,
   type FailureLogIo,
 } from "./lib/smoke-failure-log.ts";
@@ -54,10 +55,10 @@ const sentence = (text: string) => text.split("\n")[0]!.replace(/^Booking canary
 // --- recording: passes and a crash cross the file, and read back as a crash ---
 const io = fakeIo();
 const P = "smoke-failures.txt";
-assert(recordPass(io, P), "a pass is recorded");
-for (let i = 0; i < 3; i++) recordPass(io, P);
+assert(recordPass(io, P, SMOKE_NAMES.reschedule), "a pass is recorded");
+for (let i = 0; i < 3; i++) recordPass(io, P, SMOKE_NAMES.reschedule);
 assert(recordCrash(io, P, "The reschedule smoke", "the connection timed out"), "a crash is recorded");
-eq(recordPass(io, null), false, "with no path, recording a pass is a no-op");
+eq(recordPass(io, null, SMOKE_NAMES.reschedule), false, "with no path, recording a pass is a no-op");
 eq(recordCrash(io, null, "x", "y"), false, "with no path, recording a crash is a no-op");
 const crashed = readFailures(io, P);
 eq(crashed.kind, "crashed", "4 passes then a crash read back as crashed, never as none");
@@ -75,11 +76,38 @@ if (crashed.kind === "crashed") {
   const log = readFailures(io2, P);
   eq(log.kind === "crashed" ? log.crashes.length : -1, 1, "a multi line reason is one crash");
 }
+// Two smokes write one file in the canary: the booking smoke passes 30 checks, then
+// the reschedule smoke passes 4 and crashes. The crash may claim only ITS OWN passes
+// (L11): "after 30 checks passed" would credit it with checks another smoke ran.
+{
+  const shared = fakeIo();
+  for (let i = 0; i < 30; i++) recordPass(shared, P, SMOKE_NAMES.booking);
+  for (let i = 0; i < 4; i++) recordPass(shared, P, SMOKE_NAMES.reschedule);
+  recordCrash(shared, P, SMOKE_NAMES.reschedule, "the connection timed out");
+  const log = readFailures(shared, P);
+  eq(log.kind, "crashed", "two smokes on one file, then a crash, read as crashed");
+  if (log.kind === "crashed") {
+    eq(log.crashes[0]?.passedBefore, 4, "the crash counts only the passes of the smoke that crashed");
+    eq(log.passed, 34, "while the file's total still counts every pass");
+  }
+  eq(
+    sentence(buildSmokeFailureMessage({ mode: "full", runUrl, failures: log })),
+    "The reschedule smoke crashed after 4 checks passed: the connection timed out.",
+    "the alert says 4, not 34",
+  );
+  // A smoke that crashed before any pass of its own says so, whatever others passed.
+  const other = fakeIo();
+  for (let i = 0; i < 30; i++) recordPass(other, P, SMOKE_NAMES.booking);
+  recordCrash(other, P, SMOKE_NAMES.reschedule, "the connection was reset");
+  const log2 = readFailures(other, P);
+  eq(log2.kind === "crashed" ? log2.crashes[0]?.passedBefore : -1, 0, "another smoke's passes are not this crash's");
+}
+
 // Passes only: the run stopped with no failure and no crash recorded.
 {
   const io3 = fakeIo();
-  recordPass(io3, P);
-  recordPass(io3, P);
+  recordPass(io3, P, SMOKE_NAMES.reschedule);
+  recordPass(io3, P, SMOKE_NAMES.reschedule);
   const log = readFailures(io3, P);
   eq(log.kind, "stopped", "passes alone read as stopped");
   eq(log.kind === "stopped" ? log.passed : -1, 2, "with the passes counted");
@@ -87,7 +115,7 @@ if (crashed.kind === "crashed") {
 // Failures beside passes and a crash: still failures, carrying both.
 {
   const io4 = fakeIo();
-  recordPass(io4, P);
+  recordPass(io4, P, SMOKE_NAMES.reschedule);
   recordFailure(io4, P, "FAIL: create -> 200 created (got 409 confirm_required)");
   recordCrash(io4, P, "The reschedule smoke", "the connection was reset");
   const log = readFailures(io4, P);
@@ -197,7 +225,7 @@ assert(!crashReason(new Error("x".repeat(500))).includes("x".repeat(300)), "a lo
 {
   const log = fakeIo();
   const env = { SMOKE_FAILURE_FILE: P };
-  const { check, failed } = createChecker({ io: log, env });
+  const { check, failed } = createChecker({ name: RESCHEDULE_SMOKE_NAME, io: log, env });
   const slots = Array.from({ length: 19 }, (_, i) => new Date(Date.UTC(2026, 9, 21, 23, i * 10)).toISOString());
   let calls = 0;
   const post: SmokePost = async (path, body) => {
@@ -256,6 +284,14 @@ for (const f of writers) {
   assert(/\brecordFailure\(/.test(src), `${f} writes the failure log (so the list is not stale)`);
   assert(RECORDS_PASS.test(src), `${f} records a pass when its check passes`);
 }
+// A pass and a crash match only when both carry the SAME name, so every script takes
+// its name from SMOKE_NAMES and never spells one out, where two spellings could drift.
+const LITERAL_NAME = /\b(recordSmokeCrash|recordPass|createChecker)\([^)]*["'`]The /;
+assert(LITERAL_NAME.test('recordSmokeCrash("The booking smoke", e);'), "control: a literal smoke name is caught");
+for (const f of [...writers, "smoke-reschedule.ts", "smoke-523-stickiness.ts", "smoke-create-resume.ts"]) {
+  const src = readFileSync(join(ROOT, "scripts", f), "utf8");
+  assert(!LITERAL_NAME.test(src), `${f} names its smoke from SMOKE_NAMES, never a literal`);
+}
 {
   // And no other smoke script writes the log directly, so the list above is complete.
   const { readdirSync } = await import("node:fs");
@@ -267,9 +303,9 @@ for (const f of writers) {
 // createChecker's pass, driven rather than read: one passing check is one [pass] mark.
 {
   const log = fakeIo();
-  const { check } = createChecker({ io: log, env: { SMOKE_FAILURE_FILE: P } });
+  const { check } = createChecker({ name: SMOKE_NAMES.reschedule, io: log, env: { SMOKE_FAILURE_FILE: P } });
   check(true, "a passing check");
-  eq(log.files[P], "[pass]\n", "createChecker records a passing check as one pass mark");
+  eq(log.files[P], "[pass] The reschedule smoke\n", "createChecker records a passing check as one pass mark, tagged with its smoke");
 }
 
 finish();

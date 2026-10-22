@@ -96,6 +96,7 @@ import {
   nodeSmokeFailureIo,
   recordFailure,
   recordPass,
+  SMOKE_NAMES,
 } from "./lib/smoke-failure-log.ts";
 import { recordSmokeCrash } from "./lib/smoke-crash.ts";
 import { responseDetail, type SmokeResponse } from "./lib/smoke-response-detail.ts";
@@ -160,7 +161,7 @@ function check(cond: boolean, msg: string, res?: SmokeResponse) {
   } else {
     // #4062: a pass is recorded too, so a crash after passing checks is never read
     // as a run that stopped before the checks began.
-    recordPass(nodeSmokeFailureIo, failureLog);
+    recordPass(nodeSmokeFailureIo, failureLog, SMOKE_NAMES.booking);
   }
 }
 function skip(msg: string) {
@@ -883,6 +884,6 @@ async function main() {
 // with a short reason, after the cleanup in main's finally has run.
 main().catch((e) => {
   console.error("smoke crashed:", e);
-  recordSmokeCrash("The booking smoke", e);
+  recordSmokeCrash(SMOKE_NAMES.booking, e);
   process.exit(1);
 });

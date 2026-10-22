@@ -57,7 +57,7 @@ import {
   type PanelObservation,
 } from "./lib/embed-render-check.ts";
 import { probeTimezonePanel } from "./lib/booker-panel-probe.ts";
-import { failureLogPath, recordFailure, recordPass } from "./lib/smoke-failure-log.ts";
+import { failureLogPath, recordFailure, recordPass, SMOKE_NAMES } from "./lib/smoke-failure-log.ts";
 import { recordSmokeCrash } from "./lib/smoke-crash.ts";
 
 const base = (process.env.SLATE_BASE_URL || "https://slate.trypennie.app").replace(/\/$/, "");
@@ -209,7 +209,7 @@ async function main(): Promise<number> {
     }
     const verdict = judgeEmbedRender(seen);
     if (verdict.outcome === "rendered") {
-      recordPass(io, failureLog); // #4062: a pass is part of the record too
+      recordPass(io, failureLog, SMOKE_NAMES.embedRender); // #4062: a pass is part of the record too
       console.log(
         `embed render: ok (booker chrome mounted, ${seen.frameText.trim().length} characters drawn, timezone list opened, focused and walked)`,
       );
@@ -235,7 +235,7 @@ async function main(): Promise<number> {
 process.exit(
   await main().catch((e: unknown) => {
     console.error("embed render crashed:", e);
-    recordSmokeCrash("The embed render check", e);
+    recordSmokeCrash(SMOKE_NAMES.embedRender, e);
     return 1;
   }),
 );

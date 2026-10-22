@@ -52,7 +52,7 @@ import {
   AVAILABILITY_P50_BUDGET_MS,
   type LatencySample,
 } from "./lib/latency-slo.ts";
-import { failureLogPath, recordFailure, recordPass } from "./lib/smoke-failure-log.ts";
+import { failureLogPath, recordFailure, recordPass, SMOKE_NAMES } from "./lib/smoke-failure-log.ts";
 
 const base = (process.env.SLATE_BASE_URL || "https://slate.trypennie.app").replace(/\/$/, "");
 // env-ok: SMOKE_BUCKET (a local override; CI wants the seeded SMOKE bucket)
@@ -175,7 +175,7 @@ if (decision.page && decision.message) {
 
 // #4062: a measured read inside the budget is a passing check, recorded so the alert
 // can count it. Not measuring records nothing, since nothing was checked.
-if (decision.measured) recordPass(io, failureLog);
+if (decision.measured) recordPass(io, failureLog, SMOKE_NAMES.latency);
 
 // Not measuring is not a failure: a canary that could not reach the endpoint at all
 // already fails on the availability check itself, and failing twice for one cause is

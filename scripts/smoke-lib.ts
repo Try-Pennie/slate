@@ -191,13 +191,18 @@ export function evaluateSlotAvailability(
 
 /**
  * A pass/fail checker with isolated counting. Each smoke script does:
- *   const { check, failed } = createChecker();
+ *   const { check, failed } = createChecker({ name: SMOKE_NAMES.reschedule });
  *   ...
  *   process.exit(failed() ? 1 : 0);
+ *
+ * `name` is the smoke's own (from SMOKE_NAMES), required so each pass is tagged with
+ * it and a crash of this smoke counts only its own passes (#4062).
  */
-export function createChecker(
-  opts: { io?: FailureLogIo; env?: Record<string, string | undefined> } = {},
-): {
+export function createChecker(opts: {
+  name: string;
+  io?: FailureLogIo;
+  env?: Record<string, string | undefined>;
+}): {
   check: (cond: boolean, msg: string) => void;
   failed: () => number;
 } {
@@ -213,7 +218,7 @@ export function createChecker(
     check(cond: boolean, msg: string): void {
       if (cond) {
         console.log("ok:", msg);
-        recordPass(io, failureLog);
+        recordPass(io, failureLog, opts.name);
       } else {
         console.error("FAIL:", msg);
         failures += 1;
