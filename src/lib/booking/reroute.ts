@@ -124,6 +124,12 @@ export type RerouteProposal =
       kind: "keep";
       /** True when nobody else anywhere could take the time (Dan: "I want to be aware"). */
       lastResort: boolean;
+      /**
+       * #4079: "Look for a different advisor" excluded this advisor and nobody else on
+       * any tier is free, so the result goes back to their keep (Dan, 2026-10-22, "Keep
+       * only"). Required, so an ordinary keep says false rather than leaving it absent.
+       */
+      nobodyElse: boolean;
       advisor: RerouteAdvisor;
       bucket: RerouteBucket;
       requested: RerouteBucket;
@@ -321,14 +327,15 @@ async function searchAndHold(
   // anywhere, is "none": correcting the bucket of an unassigned call onto nobody
   // is not a keep (#3244 Done when: "refused, nobody at all").
   if (!booking.assigned_user_id) return { kind: "none", requested: req };
-  // "Look for a different advisor" excluded the current one (#3596). A keep lands on
-  // the current advisor, so when they are the excluded one a keep means nobody ELSE
-  // was free: report that as "none" rather than a keep of the very advisor the admin
-  // asked to move off.
-  if (excludeUserIds.includes(booking.assigned_user_id)) return { kind: "none", requested: req };
+  // "Look for a different advisor" excluded the current one (#3596). The search keeps
+  // them only once nobody else on any tier is free (#4056), so their keep means nobody
+  // ELSE was: the result goes back to that keep, saying so (#4079).
+  const nobodyElse = excludeUserIds.includes(booking.assigned_user_id);
   // #3487: nobody else is free and the current advisor cannot take it either. Said
-  // as that, never as a keep of the advisor who is out.
+  // as that, never as a keep of the advisor who is out. With them excluded it stays
+  // the plain none, since the admin asked to move off them anyway.
   if (target.outcome === "none-current-unavailable") {
+    if (nobodyElse) return { kind: "none", requested: req };
     return {
       kind: "none",
       requested: req,
@@ -338,6 +345,7 @@ async function searchAndHold(
   return {
     kind: "keep",
     lastResort: target.outcome === "keep-last-resort",
+    nobodyElse,
     advisor: await advisorView(deps, booking.assigned_user_id),
     bucket: bucketView(target.bucket),
     requested: req,
@@ -350,7 +358,8 @@ async function searchAndHold(
  *
  * `excludeCurrent` is "look for a different advisor" (#3596): the search leaves out the
  * booking's current advisor, so a keep they would otherwise win becomes a move to the
- * next eligible advisor, or `none` when nobody else is free. The excluded id is resolved
+ * next eligible advisor, or, when nobody else is free, their keep marked `nobodyElse`
+ * (#4079), or `none` when they cannot take the call either. The excluded id is resolved
  * from the stored booking, never taken from the caller, so a request cannot name an
  * arbitrary exclusion.
  */

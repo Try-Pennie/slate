@@ -353,9 +353,10 @@ export default function ReroutePanel({
                 )}
                 {/* On a keep, the current advisor can technically take the call but you
                     may want it moved off them (#3596). Re-run excluding them, which
-                    becomes a move to the next eligible advisor or an honest "nobody
-                    else is free". */}
-                {shown?.kind === "proposal" && proposal?.kind === "keep" && (
+                    becomes a move to the next eligible advisor or, when nobody else is
+                    free, their keep again (#4079), where asking again would find the
+                    same nobody, so it is not offered there. */}
+                {shown?.kind === "proposal" && proposal?.kind === "keep" && !proposal.nobodyElse && (
                   <button type="button" onClick={findDifferent} disabled={busy} className={SECONDARY_CLS}>
                     Look for a different advisor
                   </button>

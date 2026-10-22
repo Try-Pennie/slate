@@ -19,8 +19,9 @@ const MOVE = {
   kind: "move", holdId: "11111111-2222-4333-8444-555555555555", expiresAt: "x", secondsRemaining: 272,
   advisor: advisor("Morgan Reyes"), bucket: bucket("412"), requested: bucket("512"), rungsDropped: 1,
 };
-const KEEP = { kind: "keep", lastResort: true, advisor: advisor("Taylor Brooks"), bucket: bucket("512"), requested: bucket("512"), rungsDropped: 0 };
+const KEEP = { kind: "keep", lastResort: true, nobodyElse: false, advisor: advisor("Taylor Brooks"), bucket: bucket("512"), requested: bucket("512"), rungsDropped: 0 };
 const NONE = { kind: "none", requested: bucket("512") };
+const KEEP_NOBODY_ELSE = { ...KEEP, lastResort: false, nobodyElse: true };
 
 type Responder = (body: Record<string, unknown> | null) => { status?: number; body: unknown };
 function mockFetch(routes: { current?: unknown; find?: Responder; confirm?: Responder; release?: Responder }) {
@@ -138,14 +139,45 @@ describe("ReroutePanel, as an admin (codes)", () => {
     ]);
   });
 
-  it("says nobody else is free when the kept advisor was the only one (#3596)", async () => {
+  it("goes back to the keep when nobody else is free, and confirms it (#4079)", async () => {
     const user = userEvent.setup();
-    mockFetch({ find: (body) => ({ body: body?.excludeCurrent ? NONE : KEEP }) });
+    const fn = mockFetch({
+      find: (body) => ({ body: body?.excludeCurrent ? KEEP_NOBODY_ELSE : KEEP }),
+      confirm: () => ({ body: { kind: "kept", bucket: bucket("512") } }),
+    });
     render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("Taylor Brooks stays");
     await user.click(screen.getByRole("button", { name: "Look for a different advisor" }));
-    await screen.findByText("Nobody is free");
+    await screen.findByText("Nobody else is free");
+    expect(screen.getByText("Taylor Brooks can keep this call. Nobody else in 512 or any tier below is free.")).toBeTruthy();
+    expect(screen.getByLabelText("Note")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+    // Keep only: reassigning stays on the booking's own Reassign button, and asking
+    // for a different advisor again would find the same nobody.
+    expect(screen.queryByRole("button", { name: "Reassign to another advisor" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Look for a different advisor" })).toBeNull();
+    await user.type(screen.getByLabelText("Note"), "Lead asked for someone new");
+    await user.click(screen.getByRole("button", { name: "Change the bucket to 512" }));
+    await screen.findByText("Corrected");
+    expect(sent(fn, "/reroute/confirm")).toEqual([
+      { holdId: null, bucketCode: "512", requestedBucketCode: "512", note: "Lead asked for someone new" },
+    ]);
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("says why when the kept advisor can no longer take the call at confirm (#4079)", async () => {
+    const user = userEvent.setup();
+    mockFetch({
+      find: () => ({ body: KEEP_NOBODY_ELSE }),
+      confirm: () => ({ status: 409, body: { error: "The advisor is on time off for this call, so they cannot keep it. Find an advisor again." } }),
+    });
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("Nobody else is free");
+    await user.click(screen.getByRole("button", { name: "Change the bucket to 512" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("The advisor is on time off for this call, so they cannot keep it. Find an advisor again.");
+    expect(onChanged).not.toHaveBeenCalled();
   });
 
   it("an advisor on time off with nobody else free is never a keep (#3487)", async () => {
@@ -182,7 +214,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
     expect(sent(fn, "/reroute/hold", "DELETE")).toEqual([]);
   });
 
-  it("offers Reassign when nobody else is free with the current advisor left out (#4043)", async () => {
+  it("offers Reassign when the current advisor is left out and nobody at all is free (#4043)", async () => {
     const user = userEvent.setup();
     mockFetch({ find: (body) => ({ body: body?.excludeCurrent ? NONE : KEEP }) });
     render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);

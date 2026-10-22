@@ -260,13 +260,24 @@ async function main() {
     eq(p.kind, "move", "a different eligible advisor is a move");
     if (p.kind === "move") eq(p.advisor.name, "Casey Lin", "naming the next advisor, not the one excluded");
   }
-  {
-    // The current advisor was the only eligible person: excluding them is an honest
-    // "none", distinct from the keep, never a keep of the advisor we just excluded.
-    const { deps, calls } = fake({ targets: [{ outcome: "keep-last-resort", bucket: bucketFor("512"), eventType, rungsDropped: 0 }] });
+  // #4079 (Dan, 2026-10-22, "Keep only"): nobody else on any tier is free, and the
+  // current advisor can still take the call, so the result goes back to their keep,
+  // marked as nobody else being free. The search keeps them only after everyone else
+  // on every rung (#4056), so any keep of an excluded advisor means exactly that.
+  for (const outcome of ["keep-in-requested", "keep-cascaded", "keep-last-resort"] as const) {
+    const rungs = outcome === "keep-cascaded" ? 1 : 0;
+    const { deps, calls } = fake({ targets: [{ outcome, bucket: bucketFor(rungs ? "412" : "512"), eventType, rungsDropped: rungs }] });
     const p = await startReroute(deps, { bookingId: "K1", bucketCode: "512", actor, excludeCurrent: true });
-    eq(calls.findExcludes[0], ["CUR"], "the current advisor is still excluded");
-    eq(p.kind, "none", "and with nobody else free the result is none, not a keep of the excluded advisor");
+    eq(calls.findExcludes[0], ["CUR"], `${outcome}: the current advisor is still excluded from the search`);
+    eq(p.kind === "keep" ? [p.kind, p.nobodyElse, p.advisor.name, p.bucket.code, p.rungsDropped] : [p.kind],
+      ["keep", true, "Taylor Brooks", rungs ? "412" : "512", rungs],
+      `${outcome}: nobody else free is a keep of the current advisor, saying nobody else was`);
+    eq(calls.place.length, 0, `${outcome}: nobody is held`);
+  }
+  for (const outcome of ["keep-in-requested", "keep-last-resort"] as const) {
+    const { deps } = fake({ targets: [{ outcome, bucket: bucketFor("512"), eventType, rungsDropped: 0 }] });
+    const p = await startReroute(deps, { bookingId: "K1", bucketCode: "512", actor });
+    eq(p.kind === "keep" ? p.nobodyElse : null, false, `${outcome}: an ordinary keep never says nobody else was asked`);
   }
   {
     // Without the flag nothing is excluded, exactly as before.

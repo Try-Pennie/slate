@@ -139,6 +139,47 @@ async function run() {
     assert(!calls.verify.flat().includes("A@x.com"), "and is never verified at all");
   }
 
+  // --- #4056: "Look for a different advisor" excludes the CURRENT advisor ----------------
+  // A keep of an excluded current advisor is never the first answer: everyone else on
+  // every rung is searched first, and the keep comes back only when nobody else is free.
+  {
+    const { deps } = fake({ buckets: ["212"], membership: { "212": { member: true } }, candidates: { "212": ["CUR", "A"] }, free: new Set(["A@x.com"]) });
+    const r = await findRerouteTarget(deps, booking, requested("212"), { excludeUserIds: ["CUR"] });
+    eq(`${r.outcome}|${r.outcome === "move-in-requested" ? r.userId : ""}`, "move-in-requested|A",
+      "an excluded current advisor who fits is passed over for somebody else free in the bucket asked for");
+    // Control: the same search without the exclusion keeps them.
+    const { deps: d2 } = fake({ buckets: ["212"], membership: { "212": { member: true } }, candidates: { "212": ["CUR", "A"] }, free: new Set(["A@x.com"]) });
+    eq((await findRerouteTarget(d2, booking, requested("212"))).outcome, "keep-in-requested", "control: not excluded, they are kept");
+  }
+  {
+    const { deps } = fake({
+      buckets: ["212", "112"], membership: { "212": { member: true }, "112": { member: true } },
+      candidates: { "212": ["A"], "112": ["B"] }, free: new Set(["B@x.com"]),
+    });
+    const r = await findRerouteTarget(deps, booking, requested("212"), { excludeUserIds: ["CUR"] });
+    eq(`${r.outcome}|${r.bucket.code}|${r.outcome === "move-cascaded" ? r.userId : ""}`, "move-cascaded|112|B",
+      "every rung is searched for somebody else before the excluded advisor is kept on any of them");
+  }
+  {
+    const { deps } = fake({ buckets: ["212", "112"], membership: { "212": { member: true }, "112": { member: true } }, candidates: { "212": ["A"], "112": ["B"] } });
+    const r = await findRerouteTarget(deps, booking, requested("212"), { excludeUserIds: ["CUR"] });
+    eq(`${r.outcome}|${r.bucket.code}|${r.rungsDropped}`, "keep-in-requested|212|0",
+      "nobody else free on any rung: the excluded advisor is kept on the first rung they fit");
+  }
+  {
+    const { deps } = fake({ buckets: ["212", "112"], membership: { "112": { member: true } }, candidates: { "212": ["A"], "112": ["B"] } });
+    const r = await findRerouteTarget(deps, booking, requested("212"), { excludeUserIds: ["CUR"] });
+    eq(`${r.outcome}|${r.bucket.code}|${r.rungsDropped}`, "keep-cascaded|112|1", "and that rung may be a lower one");
+  }
+  {
+    const { deps } = fake({ buckets: ["212"], candidates: { "212": ["A"] } });
+    eq((await findRerouteTarget(deps, booking, requested("212"), { excludeUserIds: ["CUR"] })).outcome, "keep-last-resort",
+      "an excluded advisor who fits no rung but can take the call is the last resort, as without the exclusion");
+    const { deps: d2 } = fake({ buckets: ["212"], candidates: { "212": ["A"] }, onTimeOff: true });
+    eq((await findRerouteTarget(d2, booking, requested("212"), { excludeUserIds: ["CUR"] })).outcome, "none-current-unavailable",
+      "and one who cannot take it is still nobody to keep");
+  }
+
   // --- 2. otherwise anyone else free in it -------------------------------------------------
   {
     const { deps, calls } = fake({ buckets: ["212"], membership: { "212": { member: false } }, candidates: { "212": ["CUR", "A", "B"] }, free: new Set(["B@x.com", "CUR@x.com"]) });

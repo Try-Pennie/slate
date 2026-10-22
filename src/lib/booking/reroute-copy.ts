@@ -170,6 +170,20 @@ export function proposalCopy(p: RerouteProposal, showCodes: boolean): RerouteCop
     };
   }
   const corrected = `Change the ${showCodes ? "bucket" : "pool"} to ${bucketWords(p.bucket.code, showCodes)}`;
+  // #4079 (Dan, 2026-10-22, "Keep only"; docs/design/reroute-nobody-else-free.html):
+  // asked for a different advisor, nobody else on any tier is free, so the result
+  // goes back to the keep. Reassigning stays on the booking's own Reassign button.
+  if (p.nobodyElse) {
+    return {
+      heading: "Nobody else is free",
+      body: `${p.advisor.name} can keep this call. Nobody else in ${requested} or any tier below is free.`,
+      held: false,
+      note: true,
+      primary: corrected,
+      cancel: true,
+      reassign: null,
+    };
+  }
   if (p.lastResort) {
     return {
       heading: `${p.advisor.name} stays`,
