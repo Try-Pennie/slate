@@ -278,6 +278,12 @@ export interface Database {
         Args: { p_org: string; p_read_at: string; p_prev_read_at: string | null; p_rows: unknown; p_last: unknown };
         Returns: boolean;
       };
+      /** #4103 (migration 0199): the pattern's cells from readings since p_since, as one jsonb
+       *  array of { day_position, slot_of_day, weekday, avg_taken, samples }. */
+      capacity_fill_pattern: {
+        Args: { p_org: string; p_since: string };
+        Returns: unknown;
+      };
       /** #3940 (migration 0191): one capacity-history tick's rows merged in (open times as a
        *  set union, unsynced sticky) and the org's cursor moved forward, in one transaction.
        *  Returns the rows written. */

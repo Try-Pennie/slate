@@ -14,7 +14,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
     from: () => {
       const q: Record<string, unknown> = {};
-      for (const m of ["select", "eq", "in", "order", "limit"]) {
+      for (const m of ["select", "eq", "in", "gte", "order", "limit"]) {
         q[m] = (col: string, v: unknown) => {
           if (m !== "select") db.filters.push([`${m}:${col}`, v]);
           return q;
@@ -31,7 +31,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   }),
 }));
 
-import { parseFillSnapshot, readFillLast, writeFill } from "./capacity-fill-store";
+import { FILL_HISTORY_PER_DAY, parseFillSnapshot, readFillHistory, readFillLast, readFillPattern, writeFill } from "./capacity-fill-store";
 
 beforeEach(() => {
   db.latest = { data: null, error: null };
@@ -91,5 +91,79 @@ describe("writeFill", () => {
     await expect(writeFill("org-1", w)).rejects.toThrow();
     db.rpc = { data: null, error: null };
     await expect(writeFill("org-1", w)).rejects.toThrow(/no answer/);
+  });
+});
+
+describe("readFillHistory (#4103)", () => {
+  it("reads the page days' readings since the instant, scoped to the org, grouped by day", async () => {
+    db.rows = {
+      data: [
+        { day: "2026-10-20", read_at: "2026-10-20T15:30:00+00:00", prev_read_at: "2026-10-20T15:00:00+00:00", taken: 3 },
+        { day: "2026-10-20", read_at: "2026-10-20T16:00:00+00:00", prev_read_at: "2026-10-20T15:30:00+00:00", taken: null },
+        { day: "2026-10-21", read_at: "2026-10-20T16:00:00+00:00", prev_read_at: null, taken: "1.5" },
+      ],
+      error: null,
+    };
+    const r = await readFillHistory("org-1", ["2026-10-20", "2026-10-21"], Date.parse("2026-10-20T13:00:00Z"));
+    expect(r.get("2026-10-20")).toEqual([
+      { read_at: "2026-10-20T15:30:00.000Z", prev_read_at: "2026-10-20T15:00:00.000Z", taken: 3 },
+      { read_at: "2026-10-20T16:00:00.000Z", prev_read_at: "2026-10-20T15:30:00.000Z", taken: null },
+    ]);
+    expect(r.get("2026-10-21")).toEqual([{ read_at: "2026-10-20T16:00:00.000Z", prev_read_at: null, taken: 1.5 }]);
+    expect(db.filters).toContainEqual(["eq:org_id", "org-1"]);
+    expect(db.filters).toContainEqual(["gte:read_at", "2026-10-20T13:00:00.000Z"]);
+    expect(db.filters).toContainEqual(["limit:" + 2 * FILL_HISTORY_PER_DAY, undefined]);
+  });
+
+  it("throws on a failed read, never answering no readings", async () => {
+    db.rows = { data: null, error: { message: "boom" } };
+    await expect(readFillHistory("org-1", ["2026-10-20"], 0)).rejects.toThrow();
+  });
+
+  it("throws when the read filled its limit, since some readings may be missing", async () => {
+    db.rows = {
+      data: Array.from({ length: FILL_HISTORY_PER_DAY }, (_, i) => ({ day: "2026-10-20", read_at: new Date(Date.UTC(2026, 9, 20, 10, i)).toISOString(), prev_read_at: null, taken: 1 })),
+      error: null,
+    };
+    await expect(readFillHistory("org-1", ["2026-10-20"], 0)).rejects.toThrow(/limit/);
+  });
+
+  it("throws on an unreadable taken or instant rather than dropping the reading", async () => {
+    db.rows = { data: [{ day: "2026-10-20", read_at: "2026-10-20T16:00:00Z", prev_read_at: null, taken: "lots" }], error: null };
+    await expect(readFillHistory("org-1", ["2026-10-20"], 0)).rejects.toThrow(/taken/);
+    db.rows = { data: [{ day: "2026-10-20", read_at: "soon", prev_read_at: null, taken: 1 }], error: null };
+    await expect(readFillHistory("org-1", ["2026-10-20"], 0)).rejects.toThrow(/read_at/);
+  });
+});
+
+describe("readFillPattern (#4103)", () => {
+  it("asks for the org's cells since the instant and reads them", async () => {
+    db.rpc = {
+      data: [
+        { day_position: 1, slot_of_day: 20, weekday: null, avg_taken: 4.5, samples: 12 },
+        { day_position: 1, slot_of_day: 20, weekday: 3, avg_taken: "5", samples: 6 },
+      ],
+      error: null,
+    };
+    const cells = await readFillPattern("org-1", Date.parse("2026-09-08T16:00:00Z"));
+    expect(db.rpcArgs).toEqual({ p_org: "org-1", p_since: "2026-09-08T16:00:00.000Z" });
+    expect(cells).toEqual([
+      { dayPosition: 1, slotOfDay: 20, weekday: null, avgTaken: 4.5, samples: 12 },
+      { dayPosition: 1, slotOfDay: 20, weekday: 3, avgTaken: 5, samples: 6 },
+    ]);
+  });
+
+  it("answers no cells before any history", async () => {
+    db.rpc = { data: [], error: null };
+    expect(await readFillPattern("org-1", 0)).toEqual([]);
+  });
+
+  it("throws on a failed read, a missing answer or a malformed cell, never answering no pattern", async () => {
+    db.rpc = { data: null, error: { message: "boom" } };
+    await expect(readFillPattern("org-1", 0)).rejects.toThrow();
+    db.rpc = { data: null, error: null };
+    await expect(readFillPattern("org-1", 0)).rejects.toThrow(/no answer/);
+    db.rpc = { data: [{ day_position: 1, slot_of_day: 99, weekday: null, avg_taken: 1, samples: 1 }], error: null };
+    await expect(readFillPattern("org-1", 0)).rejects.toThrow(/cell/);
   });
 });

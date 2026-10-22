@@ -1,4 +1,4 @@
-// #4102: record_capacity_fill, proved in a REAL Postgres.
+// #4102 and #4103: record_capacity_fill and capacity_fill_pattern, proved in a REAL Postgres.
 //
 // The half hourly booking pace readings depend on what the database does with a run's write:
 // the first run of a half hour writes, a second run of the same half hour writes nothing even
@@ -113,10 +113,44 @@ try {
   eq(sql("select string_agg(wrote::text, ',' order by wrote) from race_result;"), "false,true", "exactly one concurrent run is told it wrote");
   eq(sql(`select count(*) from capacity_fill_readings where org_id = '${ORG}' and read_at = '${ts("17:00")}';`), "1", "and the half hour holds one set of readings");
 
+  // --- #4103: the pace and estimates are stored, and only in a shape the card can read --------------
+  const paced = reading("2026-10-20", {
+    slot_of_day: 27, prev_read_at: ts("17:00"), taken: 2, taken_reason: null, comparable_share: 1,
+    pace_state: "pace", pace_per_hour: 6.5, pace_back_at: null,
+    estimate_line_state: "at", estimate_line_at: ts("21:00"), estimate_pattern_state: "no-pace", estimate_pattern_at: null,
+    estimate_method: "line", estimate_cells_fallen_back: 3,
+  });
+  eq(record(ts("17:30"), ts("17:00"), [paced], [{ day: "2026-10-20", snapshot: {} }]), "t", "a reading carrying its pace writes");
+  eq(
+    sql(`select concat_ws('|', pace_state, pace_per_hour, estimate_line_state, to_char(estimate_line_at at time zone 'UTC', 'HH24:MI'), estimate_pattern_state, estimate_method, estimate_cells_fallen_back) from capacity_fill_readings where org_id = '${ORG}' and read_at = '${ts("17:30")}';`),
+    "pace|6.5|at|21:00|no-pace|line|3",
+    "and every pace and estimate column is stored as sent",
+  );
+  const refusedRow = (over: Record<string, unknown>) =>
+    sqlError(`select record_capacity_fill('${ORG}', ${stamp(ts("18:00"))}, ${stamp(ts("17:30"))}, ${lit([{ ...paced, ...over }])}, '[]'::jsonb);`) ?? "";
+  assert(/capacity_fill_readings_pace_back_at/.test(refusedRow({ pace_state: "readings-missed", pace_per_hour: null })), "readings missed without its return time is refused");
+  assert(/capacity_fill_readings_pace_back_at/.test(refusedRow({ pace_back_at: ts("19:00") })), "a return time on a measured pace is refused");
+  assert(/capacity_fill_readings_estimate_line_at/.test(refusedRow({ estimate_line_at: null })), "an estimate at a time with no time is refused");
+  assert(/capacity_fill_readings_pace_state/.test(refusedRow({ pace_state: "fast" })), "a pace state the card cannot read is refused");
+  assert(/capacity_fill_readings_estimate_method/.test(refusedRow({ estimate_method: "guess" })), "a method the card cannot read is refused");
+
+  // --- the pattern averages only readings measured over one half hour -------------------------------
+  // After a gap, 17:30 to 18:30 took 5 calls in an hour: never a half hour cell's 5.
+  eq(record(ts("18:30"), ts("17:30"), [reading("2026-10-20", { slot_of_day: 29, prev_read_at: ts("17:30"), taken: 5, taken_reason: null, comparable_share: 1 })], [{ day: "2026-10-20", snapshot: {} }]), "t", "a reading after a gap writes");
+  const cells = JSON.parse(sql(`select capacity_fill_pattern('${ORG}', '2026-10-01T00:00:00Z');`)) as { day_position: number; slot_of_day: number; weekday: number | null; avg_taken: number; samples: number }[];
+  eq(
+    cells.map((c) => `${c.day_position}/${c.slot_of_day}/${c.weekday ?? "all"}=${c.avg_taken}x${c.samples}`).sort(),
+    ["0/25/2=1.25x1", "0/25/all=1.25x1", "0/27/2=2x1", "0/27/all=2x1"],
+    "one cell per day position and half hour, all days and per weekday, from half hour readings only",
+  );
+  eq(sql(`select capacity_fill_pattern('${ORG}', '2026-10-20T16:30:00Z')::text;`).includes('"slot_of_day": 25'), false, "readings before the since instant are left out");
+  eq(sql(`select capacity_fill_pattern('${ORG2}', '2026-10-01T00:00:00Z')::text;`), "[]", "another org's readings never reach this org's pattern, and none is an empty array");
+
   // --- only the server may write or read --------------------------------------------------------
   eq(sql("select string_agg(relname || '=' || relrowsecurity::text, ',' order by relname) from pg_class where relname in ('capacity_fill_readings', 'capacity_fill_last');"), "capacity_fill_last=true,capacity_fill_readings=true", "RLS is on for both tables");
   for (const role of ["anon", "authenticated"]) {
     assert(/permission denied for function record_capacity_fill/.test(sqlError(`select record_capacity_fill('${ORG}', now(), null, '[]'::jsonb, '[]'::jsonb);`, role) ?? ""), `${role} cannot run record_capacity_fill`);
+    assert(/permission denied for function capacity_fill_pattern/.test(sqlError(`select capacity_fill_pattern('${ORG}', now());`, role) ?? ""), `${role} cannot run capacity_fill_pattern`);
     eq(sql("select count(*) from capacity_fill_readings;", role), "0", `${role} reads no readings`);
     eq(sql("select count(*) from capacity_fill_last;", role), "0", `${role} reads no snapshots`);
   }

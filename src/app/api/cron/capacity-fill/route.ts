@@ -7,7 +7,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { runFillTick, type FillTickResult } from "@/lib/admin/capacity-fill";
-import { readFillLast, writeFill } from "@/lib/admin/capacity-fill-store";
+import { readFillLast, writeFill, readFillHistory, readFillPattern } from "@/lib/admin/capacity-fill-store";
 import { loadCapacityPeople, loadCapacityRules } from "@/lib/admin/team-capacity-load";
 import { readOfferedOpenDays } from "@/lib/booking/days-offered-load";
 import { log } from "@/lib/log";
@@ -45,6 +45,8 @@ export async function GET(req: NextRequest) {
         readOfferedDays: readOfferedOpenDays,
         readLast: (days) => readFillLast(orgId, days),
         loadPeople: (rules, days) => loadCapacityPeople(orgId, rules, days),
+        readHistory: (days, sinceMs) => readFillHistory(orgId, days, sinceMs),
+        readPattern: (sinceMs) => readFillPattern(orgId, sinceMs),
         write: (w) => writeFill(orgId, w),
       });
       results.push({ org: orgId, ...r });

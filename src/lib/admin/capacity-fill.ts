@@ -33,6 +33,12 @@ import type { BusinessHoursRules } from "../availability/compute.ts";
 import { BUSY_PRUNE_KEEP_PAST_HOURS } from "../busy/prune-core.ts";
 import { cyrb53 } from "../cyrb53.ts";
 import { capacityDays } from "./capacity-days.ts";
+import { fillPace, PACE_HISTORY_MS, PATTERN_LOOKBACK_MS } from "./capacity-fill-pace.ts";
+import type { PaceReading, PatternCell } from "./capacity-pace.ts";
+// The stamp's half hour and weekday live in their own file so the pace (capacity-fill-pace.ts)
+// can share the one helper without importing this file back.
+import { officeSlot } from "./office-slot.ts";
+export { officeSlot };
 import type { CapacityPeople, CapacityRead } from "./team-capacity-load.ts";
 import { advisorDay, capacityStarts, dayTotals, type AdvisorDayInput, type CapacityEventType } from "./team-capacity.ts";
 
@@ -60,15 +66,6 @@ export function fillReadAt(nowMs: number): number {
   return Math.floor(nowMs / FILL_SLOT_MS) * FILL_SLOT_MS;
 }
 
-/**
- * The half hour of the office's day (0 to 47) and its weekday (Luxon, 1 = Monday) at `readAtMs`.
- * The one place either is worked out, so no zone arithmetic happens anywhere else, SQL included.
- * On the night the clocks go back an hour repeats, and both of its readings share a half hour.
- */
-export function officeSlot(readAtMs: number, zone: string): { slotOfDay: number; weekday: number } {
-  const local = DateTime.fromMillis(readAtMs, { zone });
-  return { slotOfDay: Math.floor((local.hour * 60 + local.minute) / 30), weekday: local.weekday };
-}
 
 /**
  * A short fingerprint of where the capacity's calls start (cyrb53), so a change to hours or time off
@@ -125,6 +122,16 @@ export interface FillReadingRow {
   excluded_not_syncing: number;
   excluded_left_pool: number;
   excluded_capacity_changed: number;
+  /** The day's pace and both estimates (#4103), filled by `fillPace` before the write. */
+  pace_state?: string;
+  pace_per_hour?: number | null;
+  pace_back_at?: string | null;
+  estimate_line_state?: string;
+  estimate_line_at?: string | null;
+  estimate_pattern_state?: string;
+  estimate_pattern_at?: string | null;
+  estimate_method?: "line" | "pattern";
+  estimate_cells_fallen_back?: number;
 }
 
 export interface FillReadingsInput {
@@ -255,6 +262,10 @@ export interface FillTickDeps<R extends FillRules = FillRules> {
   /** The org's latest snapshot instant, and the last snapshot of each of `days`. Throws rather than answering empty. */
   readLast(days: string[]): Promise<{ latestReadAtMs: number | null; byDay: Map<string, FillLast> }>;
   loadPeople(rules: R, days: string[]): Promise<CapacityRead<CapacityPeople>>;
+  /** Each of `days`' stored readings since `sinceMs`, for its pace. Throws rather than answering empty. */
+  readHistory(days: string[], sinceMs: number): Promise<Map<string, PaceReading[]>>;
+  /** The pattern's cells from readings since `sinceMs`. Throws rather than answering empty. */
+  readPattern(sinceMs: number): Promise<PatternCell[]>;
   /** Returns whether it wrote: false when another run has already moved the snapshots on. */
   write(w: FillWrite): Promise<boolean>;
 }
@@ -303,7 +314,7 @@ export async function runFillTick<R extends FillRules>(deps: FillTickDeps<R>): P
     if (people.reason === "no-advisors") return result("no-advisors", days);
     throw new Error(`capacity fill could not read ${people.reason}`, { cause: people.err });
   }
-  const { rows, last: snapshots } = fillReadings({
+  const measured = fillReadings({
     readAtMs,
     windowDays: days,
     bookerDays: window.bookerDays,
@@ -312,6 +323,21 @@ export async function runFillTick<R extends FillRules>(deps: FillTickDeps<R>): P
     people: people.value,
     last: last.byDay,
   });
+  // The pace and both estimates go on the same rows (#4103). Either read failing fails the run: a
+  // row saved without them would read on every card as a day with no pace yet (L10).
+  const history = await deps.readHistory(days, readAtMs - PACE_HISTORY_MS);
+  const pattern = await deps.readPattern(readAtMs - PATTERN_LOOKBACK_MS);
+  const rows = fillPace({
+    readAtMs,
+    rows: measured.rows,
+    history,
+    pattern,
+    people: people.value,
+    hours: rules.value.hours,
+    eventType: rules.value.eventType,
+    offeredDays: offered,
+  });
+  const snapshots = measured.last;
   const wrote = await deps.write({ readAtMs, prevReadAtMs: last.latestReadAtMs, rows, last: snapshots });
   return result(wrote ? "recorded" : "lost-race", days, wrote, rows);
 }
