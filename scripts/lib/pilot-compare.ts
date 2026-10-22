@@ -290,6 +290,12 @@ export interface SlateBookingRow {
    * of the split and leaves the cohort, on both sides.
    */
   inlineCard: boolean;
+  /**
+   * Made from a development host on a real bucket (#2974): a host page recorded that
+   * is not the production site, judged by `isTestSourceBooking` when the report reads
+   * it. Test traffic, so the BOOKING leaves the count, and the readout says how many.
+   */
+  testSource: boolean;
   createdAt: string;
   startsAt: string;
   status: string;
@@ -614,6 +620,8 @@ export interface Matched {
     afterSpan: number;
     /** Applications left out because they booked through the inline card (#3718). */
     inlineCardApps: number;
+    /** Slate bookings left out as test traffic from a development host (#2974). */
+    testSourceBookings: number;
     beganBeforeWindow: number;
     unresolved: number;
     otherEventTypes: Record<string, number>;
@@ -697,6 +705,7 @@ export function matchBookings(input: {
   const cal = calcomChains(input.calcom);
   const counts: Matched["counts"] = {
     slateBookings: input.slate.length,
+    testSourceBookings: 0,
     slateWithoutId: 0,
     calcomChains: cal.chains.length,
     byId: 0,
@@ -744,7 +753,13 @@ export function matchBookings(input: {
     app.chains.push(chain);
   };
 
-  for (const chain of [...slateChains(input.slate), ...cal.chains]) {
+  // #2974: test traffic from a development host is no lead's booking. Only the booking
+  // leaves: a developer booking under a real application's id says nothing about
+  // whether that application booked, so the application is judged on its other bookings.
+  const leadSlate = input.slate.filter((r) => !r.testSource);
+  counts.testSourceBookings = input.slate.length - leadSlate.length;
+
+  for (const chain of [...slateChains(leadSlate), ...cal.chains]) {
     if (!Number.isFinite(chain.createdMs) || (chain.finalStartMs !== null && !Number.isFinite(chain.finalStartMs))) {
       counts.unreadable++;
       continue;
@@ -1439,6 +1454,9 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
   if (matched.noTier > 0) left.push(`${plural(matched.noTier, "application")} with no XBC`);
   if (c.inlineCardApps > 0) {
     left.push(`${plural(c.inlineCardApps, "application")} that booked through a landing page's inline card, which always offers Slate (#3718)`);
+  }
+  if (c.testSourceBookings > 0) {
+    left.push(`${plural(c.testSourceBookings, "Slate booking")} made from a development host, which is test traffic (#2974)`);
   }
   if (c.slateWithoutId > 0) left.push(`${plural(c.slateWithoutId, "Slate booking")} carrying no application id (API bookings)`);
   if (c.unmatched > 0) left.push(`${plural(c.unmatched, "cal.com booking")} matching no application by email and phone`);

@@ -113,6 +113,7 @@ const { readPilotSettings } = await import("@/lib/salesforce/pilot-settings");
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { selectAllPages } = await import("@/lib/supabase/paginate");
 const { partnerKeysFrom } = await import("@/lib/booking/partner-keys");
+const { isTestSourceBooking } = await import("@/lib/monitor/offsite-origin");
 const { calcomBookingsCreated, calcomListedBookingByUid } = await import("@/lib/calcom/client");
 
 interface SubmissionRecord {
@@ -164,10 +165,11 @@ try {
     status: string;
     agent_email: string | null;
     source: string | null;
+    referrer_origin: string | null;
   }>("pilot compare bookings", "id", () =>
     db
       .from("bookings")
-      .select("id, prefill, created_at, starts_at, status, agent_email, source, buckets!inner(is_test)")
+      .select("id, prefill, created_at, starts_at, status, agent_email, source, referrer_origin, buckets!inner(is_test)")
       .eq("buckets.is_test", false)
       .eq("kind", "routed")
       .gte("created_at", new Date(window.startMs).toISOString())
@@ -178,6 +180,9 @@ try {
     submissionId: partnerKeysFrom(r.prefill).submissionId,
     // #3718: the inline card's link always carries `layout=inline`, kept in `prefill`.
     inlineCard: r.prefill?.layout === "inline",
+    // #2974: test traffic from a development host, by the one shared predicate.
+    // `classifyOrigin` reads a non string parentOrigin as none, so the stored jsonb passes as is.
+    testSource: isTestSourceBooking({ prefill: r.prefill as Record<string, string> | null, referrer_origin: r.referrer_origin }),
     createdAt: r.created_at,
     startsAt: r.starts_at,
     status: r.status,

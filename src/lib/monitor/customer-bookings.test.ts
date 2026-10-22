@@ -61,13 +61,51 @@ function orPredicate(expr: string): (r: { source?: string | null }) => boolean {
  * is_test filter counts the canary rows and fails the test.
  */
 function fakeDb(
-  rows: { created_at: string; is_test: boolean; kind?: string; source?: string | null; code?: string }[],
+  rows: {
+    created_at: string;
+    is_test: boolean;
+    kind?: string;
+    source?: string | null;
+    code?: string;
+    /** #2974: the recorded host page, a framed production booking unless the row says otherwise. */
+    parentOrigin?: string | null;
+    referrer_origin?: string | null;
+  }[],
   opts: { error?: string } = {},
 ) {
   const filters: { col: string; val: unknown }[] = [];
   const ors: ((r: { source?: string | null; code?: string }) => boolean)[] = [];
+  const kept = () => {
+    const testFilter = filters.find((f) => f.col === "buckets.is_test");
+    const kindFilter = filters.find((f) => f.col === "kind");
+    const since = filters.find((f) => f.col === "created_at")?.val as string | undefined;
+    return rows.filter(
+      (r) =>
+        ors.every((o) => o(r)) &&
+        (since === undefined || r.created_at >= since) &&
+        (testFilter === undefined || r.is_test === testFilter.val) &&
+        (kindFilter === undefined || (r.kind ?? "routed") === kindFilter.val),
+    );
+  };
   const chain = {
-    select: (_cols: string, _opts: { count: string; head: boolean }) => chain,
+    select: (_cols: string, _opts?: { count: string; head: boolean }) => chain,
+    order: () => chain,
+    // #2974: the count is read as rows, paged, so each one's host page can be judged.
+    range: (from: number, to: number) =>
+      Promise.resolve(
+        opts.error
+          ? { data: null, error: { message: opts.error } }
+          : {
+              data: kept()
+                .slice(from, to + 1)
+                .map((r, i) => ({
+                  id: `bk${from + i}`,
+                  parent_origin: r.parentOrigin === undefined ? "https://trypennie.com" : r.parentOrigin,
+                  referrer_origin: r.referrer_origin ?? null,
+                })),
+              error: null,
+            },
+      ),
     or: (expr: string) => (ors.push(orPredicate(expr)), chain),
     like: (col: string, pattern: string) => (ors.push(likePredicate(col, pattern)), chain),
     eq: (col: string, val: unknown) => {
@@ -180,6 +218,20 @@ describe("countCustomerBookingsSince", () => {
     expect(await countCustomerBookingsSince(db, SINCE, "5")).toBe(0);
   });
 
+  // #2974: a booking on a real bucket made from a development host is test traffic,
+  // judged by the one predicate every consumer reads (`isTestSourceBooking`).
+  it("does not count bookings made from a development host, by either recorded origin", async () => {
+    const { db } = fakeDb([
+      customer("2026-08-05T10:00:00.000Z"),
+      { ...customer("2026-08-05T10:01:00.000Z"), parentOrigin: "http://localhost:3000" },
+      { ...customer("2026-08-05T10:02:00.000Z"), parentOrigin: null, referrer_origin: "https://dev.trypennie.com" },
+      // Controls: no host recorded, and the production site's other spelling, still count.
+      { ...customer("2026-08-05T10:03:00.000Z"), parentOrigin: null },
+      { ...customer("2026-08-05T10:04:00.000Z"), parentOrigin: "https://www.trypennie.com" },
+    ]);
+    expect(await countCustomerBookingsSince(db, SINCE, "1")).toBe(3);
+  });
+
   it("still honours the window it was asked for", async () => {
     const { db } = fakeDb([
       customer("2026-08-05T08:00:00.000Z"), // before SINCE
@@ -232,10 +284,20 @@ function sourceDb(rows: SourceFakeRow[], opts: { error?: string } = {}) {
       or: (expr: string) => (ors.push(orPredicate(expr)), chain),
       like: (col: string, pattern: string) => (ors.push(likePredicate(col, pattern)), chain),
       order: (col: string, o: { ascending: boolean }) => {
-        if (col !== "created_at" || !o.ascending) throw new Error(`fake: unhandled order(${col})`);
+        if ((col !== "created_at" && col !== "id") || !o.ascending) throw new Error(`fake: unhandled order(${col})`);
         return chain;
       },
       limit: (n: number) => ((limit = n), chain),
+      // #2974: the volume count pages its rows (`selectAllPages`).
+      range: (from: number, to: number) => {
+        limit = to + 1;
+        return new Promise((resolve) =>
+          chain.then((v) => {
+            const r = v as { data: unknown[] | null; error: unknown };
+            resolve({ data: r.data ? r.data.slice(from) : null, error: r.error });
+          }),
+        );
+      },
       then: (res: (v: unknown) => unknown) => {
         if (opts.error) return Promise.resolve(res({ data: null, count: null, error: { message: opts.error } }));
         const kept = rows.filter((r) => ors.every((o) => o(r))).filter((r) =>
@@ -254,7 +316,7 @@ function sourceDb(rows: SourceFakeRow[], opts: { error?: string } = {}) {
         kept.sort((a, b) => a.created_at.localeCompare(b.created_at));
         const page = kept.slice(0, limit);
         return Promise.resolve(
-          res({ data: page.map((r) => ({ created_at: r.created_at, source: r.source, ...originCols(r) })), count: kept.length, error: null }),
+          res({ data: page.map((r, i) => ({ id: `bk${i}`, created_at: r.created_at, source: r.source, ...originCols(r) })), count: kept.length, error: null }),
         );
       },
     };
@@ -284,7 +346,18 @@ describe("listCustomerBookingSourcesSince", () => {
       { created_at: "2026-08-05T10:07:00.000Z", is_test: false, source: "not-given", parentOrigin: "http://localhost:3000" },
       { created_at: "2026-08-05T10:08:00.000Z", is_test: false, source: "not-given" },
     ]);
-    expect((await listCustomerBookingSourcesSince(db, SINCE, "1")).map((r) => r.hostless)).toEqual([true, false, false, false]);
+    // #2974: the localhost booking is test traffic and leaves the list altogether.
+    expect((await listCustomerBookingSourcesSince(db, SINCE, "1")).map((r) => r.hostless)).toEqual([true, false, false]);
+  });
+
+  it("leaves out a booking made from a development host (#2974)", async () => {
+    const { db } = sourceDb([
+      { created_at: "2026-08-05T10:05:00.000Z", is_test: false, source: "offerhub", parentOrigin: "http://localhost:3000" },
+      { created_at: "2026-08-05T10:06:00.000Z", is_test: false, source: "offerhub" },
+    ]);
+    expect((await listCustomerBookingSourcesSince(db, SINCE, "1")).map((r) => r.createdMs)).toEqual([
+      Date.parse("2026-08-05T10:06:00.000Z"),
+    ]);
   });
 
   it("throws on a read error, never answering with an empty list", async () => {
@@ -345,6 +418,29 @@ describe("firstTierBookingsSince (#2874)", () => {
     });
   });
 
+  it("never starts a tier on a booking made from a development host (#2974)", async () => {
+    const { db } = sourceDb([
+      { created_at: "2026-09-26T09:00:00.000Z", is_test: false, source: "booking", code: "211", parentOrigin: "https://dev.trypennie.com" },
+      { created_at: "2026-09-27T09:00:00.000Z", is_test: false, source: "booking", code: "311", parentOrigin: "http://localhost:3000" },
+      { created_at: "2026-09-28T09:00:00.000Z", is_test: false, source: "booking", code: "312" },
+    ]);
+    const first = await firstTierBookingsSince(db, "2026-09-25T04:00:00.000Z");
+    expect(first["2"]).toBeNull();
+    expect(first["3"]).toBe(Date.parse("2026-09-28T09:00:00.000Z"));
+  });
+
+  it("refuses rather than answering 'nobody booked' when a full scan was all development host traffic", async () => {
+    const rows = Array.from({ length: 50 }, (_, i) => ({
+      created_at: new Date(Date.parse("2026-09-26T09:00:00.000Z") + i * 60_000).toISOString(),
+      is_test: false,
+      source: "booking",
+      code: "211",
+      parentOrigin: "http://localhost:3000",
+    }));
+    const { db } = sourceDb(rows);
+    await expect(firstTierBookingsSince(db, "2026-09-25T04:00:00.000Z")).rejects.toThrow(/all test traffic/);
+  });
+
   it("throws on a failed read, never answering that no tier is carried", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const { db } = sourceDb([], { error: "read timeout" });
@@ -361,6 +457,13 @@ describe("customerBookingFromSourcesSince", () => {
     ]);
     expect(await customerBookingFromSourcesSince(db, ["offerhub", "booking-portal"], SINCE, "1")).toBe(false);
     expect(await customerBookingFromSourcesSince(db, ["booking"], SINCE, "1")).toBe(true);
+  });
+
+  it("does not read a development host's booking as the page having recorded one (#2974)", async () => {
+    const { db } = sourceDb([
+      { created_at: "2026-08-05T10:00:00.000Z", is_test: false, source: "offerhub", parentOrigin: "http://localhost:3000" },
+    ]);
+    expect(await customerBookingFromSourcesSince(db, ["offerhub"], SINCE, "1")).toBe(false);
   });
 
   it("throws on a read error, so a failure is never 'this page has recorded nothing'", async () => {
@@ -442,12 +545,14 @@ describe("measurePageSources", () => {
       row("offerhub"),
       row("not-given"),
       { ...row("not-given"), parentOrigin: null, referrer_origin: "https://www.trypennie.com" },
+      // #2974: a development host's booking is test traffic, so it is neither real
+      // traffic nor an unsourced page booking.
       { ...row("not-given"), parentOrigin: "http://localhost:3000" },
     ]);
     const m = await measurePageSources(db, NOW);
-    expect(m.unsourced).toBe(3);
+    expect(m.unsourced).toBe(2);
     expect(m.hostless).toBe(0);
-    expect(m.realBookings).toBe(4);
+    expect(m.realBookings).toBe(3);
   });
 
   it("refuses rather than undercounting when the unsourced read comes back full", async () => {
