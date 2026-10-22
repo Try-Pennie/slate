@@ -71,6 +71,71 @@ async function run() {
     );
   }
 
+  // --- #3739: a bare advisor link takes the Lead id from the lead's earlier booking ---
+  {
+    const LEAD = "00Q8c00001AbCdEFGH";
+    const bare: CreateBookingInput = { ...named, salesforceId: null, prefill: { source: "agent-direct" } };
+    const earlier = {
+      id: "earlier1",
+      created_at: "2026-10-04T12:00:00Z",
+      salesforce_id: LEAD,
+      external_id: null,
+      attendee_email: "K@x.com",
+      attendee_phone: "+12035615295",
+      assigned_user_id: "b",
+    };
+    {
+      const { deps, calls } = makeDeps({ candidates: ["b"], freeEmails: new Set(["b@x.com"]), earlierLeadBookings: [earlier] });
+      await createBooking(bare, deps);
+      const row = calls.insertBooking[0];
+      assert(row.salesforce_id === LEAD, `a bare link booking is saved under the Lead id its earlier booking carries (got ${row.salesforce_id})`);
+      assert(row.prefill?.leadIdFrom === "earlier-booking", "the row records that the id was inferred from an earlier booking");
+      assert(
+        calls.earlierLeadBookings.length === 1 && calls.earlierLeadBookings[0].isTest === false,
+        "the earlier bookings are read once, in the bucket's own world",
+      );
+      const created = calls.webhooks.filter((w) => w.event === "booking.created");
+      assert(created.length === 1, "the booking still fires its one created webhook");
+    }
+    {
+      // Two earlier bookings naming different Leads: none is saved.
+      const { deps, calls } = makeDeps({
+        candidates: ["b"],
+        freeEmails: new Set(["b@x.com"]),
+        earlierLeadBookings: [earlier, { ...earlier, id: "earlier2", salesforce_id: "00Q8c00001ZyXwVUTS" }],
+      });
+      const res = await createBooking(bare, deps);
+      const row = calls.insertBooking[0];
+      assert(row.salesforce_id === null, "two earlier bookings with different Lead ids save none, never a guess");
+      assert(!("leadIdFrom" in (row.prefill ?? {})), "nothing is recorded as inferred when nothing was");
+      assert(res.booking.assigned_user_id === "b", "the lead is still booked");
+    }
+    {
+      // The earlier bookings read fails: the lead is booked, with no id.
+      const { deps, calls } = makeDeps({ candidates: ["b"], freeEmails: new Set(["b@x.com"]), earlierLeadBookingsThrows: true });
+      const res = await createBooking(bare, deps);
+      assert(res.booking.assigned_user_id === "b", "a failed earlier bookings read never refuses the lead");
+      assert(calls.insertBooking[0].salesforce_id === null, "a failed read books with no id rather than a guessed one");
+    }
+    {
+      // An id on the link wins, and the earlier bookings are never asked.
+      const { deps, calls } = makeDeps({ candidates: ["b"], freeEmails: new Set(["b@x.com"]), earlierLeadBookings: [earlier] });
+      await createBooking({ ...bare, salesforceId: "00Q8c00001LinkIdAAA", prefill: { source: "agent-direct", leadIdFrom: "earlier-booking" } }, deps);
+      const row = calls.insertBooking[0];
+      assert(row.salesforce_id === "00Q8c00001LinkIdAAA", "the link's own id is saved as carried");
+      assert(row.prefill?.leadIdFrom === "link", "a posted provenance is replaced by the server's: the id came from the link");
+      assert(calls.earlierLeadBookings.length === 0, "a link carrying an id never reads earlier bookings");
+    }
+    {
+      // A routed confirm never infers, and a posted provenance is dropped.
+      const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]), earlierLeadBookings: [earlier] });
+      await createBooking({ ...input, salesforceId: null, prefill: { xbc: "411", leadIdFrom: "earlier-booking" } }, deps);
+      const row = calls.insertBooking[0];
+      assert(row.salesforce_id === null && calls.earlierLeadBookings.length === 0, "a routed booking never takes an id from earlier bookings");
+      assert(!("leadIdFrom" in (row.prefill ?? {})), "a client cannot forge the provenance key on a routed booking");
+    }
+  }
+
   // --- a routed booking is recorded as routed ---------------------------------
   {
     const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });

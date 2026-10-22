@@ -75,6 +75,9 @@ export const ON_DATABASE: ReadonlySet<string> = new Set([
   // every rung's candidate inputs; a rung judged from it reads nothing of its own.
   "readLadderInputs",
   "findActiveBookingsForPerson",
+  // #3739: an advisor link confirm with no Lead id on its link reads the lead's
+  // earlier bookings once; a routed confirm never does.
+  "earlierLeadBookings",
   "resolveBucketByCode",
   "findBookingByIdempotencyKey",
   // #3847: the reservation resume's read by key in any status (a drain path, and a
