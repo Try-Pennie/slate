@@ -894,7 +894,7 @@ format per endpoint is built by `src/lib/webhooks/wire.ts`.
 | `booking.rescheduled` | A booking's TIME moves: in place, or across buckets |
 | `booking.cancelled` | A booking is cancelled |
 | `booking.reassigned` | A booking moves to another advisor at the same time (#2368): the machine contact-owner move, an admin reassign, the bulk redistribute, the offboarding coverage sweep |
-| `booking.contact_updated` | A lead corrects their phone number on the manage page with no reschedule beside it (#1512). A correction made with a reschedule rides that `booking.rescheduled` instead. Not yet subscribed by the live Regal endpoint (#4031) |
+| `booking.contact_updated` | A lead corrects their phone number on the manage page with no reschedule beside it (#1512). A correction made with a reschedule rides that `booking.rescheduled` instead, carrying `previous_attendee_phone`. Subscribed by the live Regal endpoint since #4031 |
 
 A reassign used to arrive as `booking.rescheduled`, so every consumer listening
 for a time change fired on a booking whose time had not moved. It is its own
@@ -921,7 +921,8 @@ coverage move without reading the booking.
   "reason": { "code": "…", "detail": "…", "initiator": "customer" }, // null on created/completed
   "previous_agent_email": null,                 // the advisor a reassign moved the booking away from (#2368);
                                                 // null on every other event, and null when it is not known
-  "previous_attendee_phone": "…",               // booking.contact_updated only (#1512): the number the
+  "previous_attendee_phone": "…",               // booking.contact_updated (#1512), and a booking.rescheduled
+                                                // whose move corrected the number (#4031): the number the
                                                 // correction replaced; absent on every other event
   "routing": {                                  // tier-fallback signal (#492)
     "empty_pool_fallback": false,

@@ -206,6 +206,50 @@ async function run() {
     assert(res.contactChanged === null, "nothing moved, so nothing is claimed");
   }
 
+  // --- the move tells Regal the number was CORRECTED (#4031) ---------------------
+  //
+  // A corrected number rides `booking.rescheduled` (#2164), and Regal names a number
+  // primary and subscribed only when the event says it was corrected (Dan,
+  // 2026-10-21: a number a lead types counts as consent). So the payload carries the
+  // number the move replaced, taken off the outbox row, which a drain re-run reads
+  // too. Without it Regal adds the new number and keeps ringing the old primary one.
+  {
+    const { deps, calls } = world();
+    await rescheduleBooking(
+      TOKEN, NEW_START, reason, "customer", deps, Date.parse("2026-09-10T12:00:00.000Z"),
+      undefined, { phone: "2155559999" },
+    );
+    const moved = calls.webhooks.filter((w) => w.event === "booking.rescheduled");
+    assert(moved.length === 1, `one rescheduled event went out (got ${moved.length})`);
+    assert(
+      moved[0]?.previousPhone === "+12155550100",
+      `and it carries the number the move replaced (got ${String(moved[0]?.previousPhone)})`,
+    );
+    const outbox = calls.commitReschedule[0]?.outbox?.payload as { previousAttendeePhone?: unknown } | undefined;
+    assert(
+      outbox?.previousAttendeePhone === "+12155550100",
+      `recorded on the outbox row, so a drain re-run of the notify step says the same (got ${String(outbox?.previousAttendeePhone)})`,
+    );
+  }
+
+  {
+    // The control: a move that corrected only the email, or changed only the time,
+    // replaced no number, so its payload names none and Regal asserts nothing (L1).
+    for (const contact of [{ email: "new@example.com" }, { phone: "(215) 555-0100" }, undefined]) {
+      const { deps, calls } = world();
+      await rescheduleBooking(
+        TOKEN, NEW_START, reason, "customer", deps, Date.parse("2026-09-10T12:00:00.000Z"),
+        undefined, contact,
+      );
+      const moved = calls.webhooks.filter((w) => w.event === "booking.rescheduled");
+      assert(moved.length === 1, `one rescheduled event went out for ${JSON.stringify(contact)}`);
+      assert(
+        moved[0]?.previousPhone === undefined,
+        `and it names no replaced number for ${JSON.stringify(contact)} (got ${String(moved[0]?.previousPhone)})`,
+      );
+    }
+  }
+
   {
     // Every other caller of the reschedule (the emailed manage link, the admin
     // move, the API) passes nothing, and must be untouched by this.

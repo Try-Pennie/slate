@@ -3802,7 +3802,8 @@ function webhookPayload(
     manage_url: manageUrl(deps, booking.manage_token),
     reason,
     previous_agent_email: previousAgentEmail,
-    // #1512: only on a phone correction, the one event that has a number it replaced.
+    // #1512, #4031: only on a phone correction (a contact update, or a move that
+    // corrected the number), the events that have a number they replaced.
     ...(previousPhone !== undefined ? { previous_attendee_phone: previousPhone } : {}),
     // #2073: null for an agent link booking, which nothing routed. A summary built
     // from its null trace would read as a routed booking with no fallback.
@@ -4204,7 +4205,13 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
       bucket,
       eventType,
       reasonMeta(reason, initiator),
-      { bookingEventId: eventId },
+      // #4031: a number the move corrected rides this event (#2164), so the payload
+      // names the one it replaced and Regal makes the new one primary and subscribed.
+      // Absent on a row with no correction, and on one enqueued before this existed.
+      {
+        bookingEventId: eventId,
+        ...(p.previousAttendeePhone !== undefined ? { previousPhone: p.previousAttendeePhone } : {}),
+      },
     );
   },
 
@@ -8133,10 +8140,14 @@ export async function rescheduleBooking(
   // them, and moving the call while silently dropping them is the one outcome
   // this was opened to end (L12).
   let contactChanged: ContactChange | null = null;
+  // #4031: the number this correction replaced, so the move's webhook can tell Regal
+  // the new one is a correction. Undefined when the move did not change the phone.
+  let correction: MoveCorrection = {};
   if (contact) {
     const res = await updateBookingContact(token, contact, deps);
     if (!res.ok) throw new ContactRefusedError(res.error);
     contactChanged = contactUnchanged(res.changed) ? null : res.changed;
+    if (res.changed.phone) correction = { previousPhone: res.previousPhone ?? null };
   }
   // #538: fold the in-place guard's working-hours read into the context load so
   // it costs no extra round-trip on the hot reschedule path.
@@ -8206,7 +8217,7 @@ export async function rescheduleBooking(
   let applied = false;
   try {
     const result = await applyReschedule(
-      deps, token, ctx, startIso, endIso, reason, initiator, claim, nowMs, actor, opts?.seat ?? null,
+      deps, token, ctx, startIso, endIso, reason, initiator, claim, nowMs, actor, opts?.seat ?? null, correction,
     );
     applied = true;
     return { ...result, contactChanged, isTest: ctx.bucket.is_test };
@@ -8237,6 +8248,8 @@ async function applyReschedule(
   actor?: BookingActor,
   /** #3257: this move's claim in the new time's confirm line, or none. */
   seat: SharedSeat | null = null,
+  /** #4031: what the move's own contact write corrected, carried to its webhook. */
+  correction: MoveCorrection = {},
 ): Promise<BookingResult> {
   const { booking, bucket, eventType } = ctx;
   const currentEmail = booking.agent_email;
@@ -8511,6 +8524,8 @@ async function applyReschedule(
       fromAgentUserId,
       actorUserId: actor?.userId,
       actingAsUserId: actor?.actingAsUserId,
+      // #4031: only when the move replaced the number, so its absence means "not corrected".
+      ...(correction.previousPhone !== undefined ? { previousAttendeePhone: correction.previousPhone } : {}),
     },
   };
   const committed = await deps.commitReschedule(
@@ -9335,6 +9350,14 @@ export async function updateBookingPhone(
     : { ok: false, error: res.error };
 }
 
+/**
+ * What a move's own contact write corrected (#4031), handed to the move so its
+ * webhook can say so. `previousPhone` is present only when the number changed.
+ */
+interface MoveCorrection {
+  previousPhone?: string | null;
+}
+
 /** Which of the lead's own details a write actually moved. */
 export interface ContactChange {
   name: boolean;
@@ -9348,6 +9371,8 @@ export type UpdateContactResult =
       /** The stored number, whether or not this write moved it. */
       phone: string;
       changed: ContactChange;
+      /** The number this write replaced, present only when it moved the number (#4031). */
+      previousPhone?: string | null;
       staleInvite?: { agentEmail: string; bookingId: string };
       downstreamUntold?: { bookingId: string };
     }
@@ -9594,6 +9619,7 @@ export async function updateBookingContact(
     ok: true,
     phone: stored,
     changed,
+    ...(changed.phone ? { previousPhone } : {}),
     ...(staleInvite ? { staleInvite } : {}),
     ...(downstreamUntold ? { downstreamUntold } : {}),
   };

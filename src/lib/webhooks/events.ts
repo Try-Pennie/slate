@@ -96,12 +96,7 @@ export function isAgentEvent(event: WebhookEvent): event is AgentWebhookEvent {
  * deliberately inert path needs the issue that activates it filed in the same
  * change (L65), which is what the issue reference is for.
  */
-export const DELIBERATELY_UNSUBSCRIBED: Partial<Record<WebhookEvent, string>> = {
-  "booking.contact_updated":
-    "#4031: the live Regal endpoint is subscribed once Regal is ready for it and Dan " +
-    "has decided whether a manage page number carries opt in (#1512 built the Slate side). " +
-    "Until then a lead's phone correction is emitted with no subscriber and reaches nobody.",
-};
+export const DELIBERATELY_UNSUBSCRIBED: Partial<Record<WebhookEvent, string>> = {};
 
 /** The reason an event is deliberately unsubscribed, or null when it is not. */
 export function deliberatelyUnsubscribedReason(event: string): string | null {

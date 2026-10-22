@@ -86,20 +86,30 @@ event above, this one IS removed on a cancel and moved on a reschedule.
 `reassigned`, `contact_updated`) POSTs a payload carrying `attendee.name`,
 `attendee.email`, `attendee.phone`, the `prefill` blob, and the `manage_url`
 (`src/lib/webhooks/types.ts`). A `contact_updated` (#1512) also carries the number
-the lead replaced, `previous_attendee_phone`. For the Regal format, contact data is additionally
+the lead replaced, `previous_attendee_phone`, and so does a `rescheduled` whose move
+corrected the number (#2164, #4031). For the Regal format, contact data is additionally
 sent as **traits** keyed by the phone number and email address
 (`src/lib/webhooks/regal.ts`).
 
 **The consent assertion, and where consent actually comes from.** On
 `booking.created`, Slate sends `voiceOptIn`, `smsOptIn` and `emailOptIn` as
-`subscribed: true`. A `booking.contact_updated` asserts NO opt in on the corrected
-number (it is sent `isPrimary: true` only), because the landing page's consent
-covered the number given there, not one typed later on the manage page (#1512). **Slate does not collect that consent and holds no record of
+`subscribed: true`. A CORRECTED number is sent `isPrimary: true` with `voiceOptIn`
+and `smsOptIn` as `subscribed: true`: on every `booking.contact_updated` (#1512), and
+on a `booking.rescheduled` whose move also corrected the number (#2164), which the
+payload says by carrying `previous_attendee_phone`. Primary because Regal's journey
+triggered calls and texts go only to the primary phone; subscribed because they go
+only to a phone carrying opt in. The rule is Dan's decision, recorded on #4031 on
+2026-10-21: "a phone number a lead types on the manage page counts as consent." The
+email on those events carries no opt in. Until that decision the corrected number was
+sent primary with NO opt in, on the view that the landing page's consent covered only
+the number given there. **Slate does not collect consent and holds no record of
 it.** There is no consent checkbox and no consent sentence anywhere on the booker:
 `src/lib/booking/booker-copy.ts` holds every sentence a lead reads and contains
 none, and `pnpm preview:booker` prints the lot. Consent is captured upstream on the
 Pennie landing page that sends the lead to Slate, and Slate asserts it on that basis
-with nothing in its own data to evidence it.
+with nothing in its own data to evidence it. For a corrected number the basis is the
+lead having typed it, by the decision above, and Slate records only the correction
+itself (the booking row and its `webhook_deliveries` row), not any agreement.
 
 **The policy links exist, and they are not the same thing as consent.** #1041 put
 Pennie's Privacy policy and Terms of service on the lead facing surfaces that stand

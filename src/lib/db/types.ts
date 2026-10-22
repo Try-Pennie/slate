@@ -1138,6 +1138,14 @@ export interface OutboxPayload {
    *  on a plain reassign, which changes no bucket. */
   fromBucketId?: string | null;
   toBucketId?: string | null;
+  /**
+   * The number a reschedule's own contact correction replaced (#2164, #4031),
+   * present only when the move really changed the lead's phone. The NOTIFY step puts
+   * it on the `booking.rescheduled` payload, which is what tells Regal to name the
+   * new number primary and subscribed. Carried here because the booking row already
+   * holds the new number by the time that step (or a drain re-run of it) reads it.
+   */
+  previousAttendeePhone?: string | null;
 }
 
 /**
