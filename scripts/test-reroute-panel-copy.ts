@@ -107,25 +107,38 @@ eq(proposalCopy(move("312", 2), true).heading, "Two tiers down, in 312", "R9: tw
   const c = proposalCopy(out("time_off"), true);
   eq(c.heading, "Nobody is free", "an out advisor with nobody else free reads as nobody free");
   eq(c.body,
-    "Taylor Brooks is on time off for this call, and nobody else in 512 or any tier below is free. Nothing has changed. Reassign it to an advisor by name.",
-    "naming the time off, that nothing changed, and the booking's own reassign, which can pick anyone");
+    "Taylor Brooks is on time off for this call, and nobody else in 512 or any tier below is free. Nothing has changed.",
+    "naming the time off and that nothing changed");
+  // #4043: the way forward is a button, so no sentence also says to reassign (L605).
+  eq(c.reassign, "Reassign to another advisor", "the result offers the booking's own Reassign");
+  assert(!/Reassign/.test(c.body), "the body never repeats the button");
   eq(c.primary, null, "no confirm: there is nothing to keep");
   eq(c.note, false, "no note");
   eq(c.held, false, "nothing is held");
   assert(!/stays|Change the/.test(`${c.heading} ${c.body}`), "never says the advisor stays or offers a bucket change");
   eq(proposalCopy(out("not_free"), false).body,
-    "Taylor Brooks is not free for this call, and nobody else in Ultra High or any tier below is free. Nothing has changed. Reassign it to an advisor by name.",
+    "Taylor Brooks is not free for this call, and nobody else in Ultra High or any tier below is free. Nothing has changed.",
     "not free, in a manager's pool words");
   eq(proposalCopy(out("no_schedule"), true).body,
-    "Taylor Brooks has no schedule in Slate, and nobody else in 512 or any tier below is free. Nothing has changed. Reassign it to an advisor by name.",
+    "Taylor Brooks has no schedule in Slate, and nobody else in 512 or any tier below is free. Nothing has changed.",
     "no schedule");
 }
 {
   const c = proposalCopy({ kind: "none", requested: bucket("512") }, true);
   eq(c.heading, "Nobody is free", "R11: nobody");
   eq(c.body, "Nobody in 512 or any tier below is free at this time. Nothing has changed.", "R11: and nothing changed");
-  eq(c.primary, null, "R11: no button");
+  eq(c.primary, null, "R11: no confirm");
   eq(c.note, false, "R11: no note");
+  // #4043: nobody is free on any tier, so naming an advisor is the only way forward.
+  eq(c.reassign, "Reassign to another advisor", "the plain nobody result offers Reassign too");
+}
+{
+  // #4043: only a nobody result offers Reassign; a move or a keep has its own confirm.
+  eq(proposalCopy(move("412", 1), true).reassign, null, "a move offers no Reassign");
+  eq(outcomeCopy({ kind: "kept", bucket: bucket("512") }, true, null).reassign, null, "a finished keep offers no Reassign");
+  eq(outcomeCopy({ kind: "expired" }, true, "Morgan Reyes").reassign, null, "a hold that ran out offers no Reassign");
+  eq(outcomeCopy({ kind: "taken", previous: advisor("Morgan Reyes"), proposal: { kind: "none", requested: bucket("512") } }, true, null).reassign,
+    "Reassign to another advisor", "a search again that finds nobody offers Reassign");
 }
 
 // --- R12, R13 and what a confirm did ---
