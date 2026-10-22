@@ -2106,6 +2106,28 @@ numbers in the file (the rows' weights must add up to the count). List again, na
 `--slice-minutes`, rather than using a short listing's value. Under 100 single call confirms
 it warns that the p95 is a handful of rows.
 
+**Measured 2026-10-22 (#3490).** Over 2026-10-19 03:00 to 2026-10-22 14:00 UTC, the first
+three and a half days carrying the fields: 2,782 confirms counted, 2,590 rows listed standing
+for 2,824 (Cloudflare sampled 19 of the 83 hours), 156 dry runs left out.
+
+| | per call p50 | per call p95 | max | single call confirms |
+|---|---|---|---|---|
+| read | 215ms | 468ms | 6,629ms | 2,128 |
+| write | 582ms | 862ms | 2,716ms | 2,047 |
+| mint (not delayed) | 135ms | 206ms | 247ms | 117 |
+
+```
+google_delay: read=215/468,write=582/862
+```
+
+The weighting held: the 64 hours Cloudflare kept in full read `read=216/471,write=578/882`
+alone and the 19 sampled hours `read=215/455,write=596/821`, within 7 percent of each other.
+That is the value `MEASURED_PRODUCTION_GOOGLE_DELAY` holds and the contention model's
+production profile takes its p95s from (`scripts/lib/confirm-load-model.ts`). The window was
+listed an hour at a time and stitched, because the observability API answered an occasional
+query 403 and one refusal fails a whole multi day listing; six hours listed short at 60
+minute slices and were listed again at 15.
+
 Record in the pair's notes the window, the value used, the listed and counted numbers, and
 that the stand in delays free/busy and event calls only, never token mints, which caused
 most of the slow confirms of 2026-10-12 to 18 (the mint figure the report prints is the

@@ -203,8 +203,10 @@ async function burst(opts: {
   heldElsewhere?: Booking[];
   /** #3257: the FIRST read of who already sits at the instant fails. */
   failFirstSeatedRead?: boolean;
-  /** #3257: how long Google takes to say whether an advisor is free, the slow
-   *  part of a production confirm (7.4 to 8.0s at the median, #3221). */
+  /** #3257: how long Google takes to say whether an advisor is free. The slow
+   *  scenarios use 3s, the assumed split of the 7.4 to 8.0s a production confirm
+   *  took on 2026-10-04 (#3221); measured 2026-10-22 it is 215ms at the median and
+   *  468ms at the p95 (#3490, `MEASURED_PRODUCTION_GOOGLE_DELAY`). */
   slowGoogleMs?: number;
   /** How long Google takes to write the advisor's calendar event, the other slow
    *  part, which runs after the advisor is chosen. */
@@ -1674,15 +1676,16 @@ async function main() {
     );
   }
 
-  // --- #3257 review: a leader as slow as production (Google takes 8s) -----------
+  // --- #3257 review: a slow leader (Google takes 8s) ----------------------------
   //
-  // A production confirm answers at 7.4 to 8.0s at the median (#3221). With a
-  // fixed 6 second wait every follower gave up first and ran its own chain, which
-  // is the stampede again. Followers now wait for the verdict up to their budget
-  // less the reserve, so they are answered from it.
+  // A production confirm answered at 7.4 to 8.0s at the median on 2026-10-04
+  // (#3221); it takes about 1.6s now (#3490), and 8s is the slow case the line must
+  // still survive. With a fixed 6 second wait every follower gave up first and ran
+  // its own chain, which is the stampede again. Followers now wait for the verdict
+  // up to their budget less the reserve, so they are answered from it.
   //
-  // #3338: the eight seconds are split as the rest of this suite splits production
-  // speed, a 3s live check and a 5s calendar write. With all eight in the live
+  // #3338: the eight seconds are split as the rest of this suite splits a slow
+  // confirm, a 3s live check and a 5s calendar write. With all eight in the live
   // check, the leader would reach its commit chain with under 4s left after a Google
   // call that took 8s, and a confirm no longer starts a chain it cannot finish
   // (`commit-cost.ts`); that case is the "slower leader" one below.
@@ -1739,7 +1742,7 @@ async function main() {
   // --- #3257 review: ORDINARY traffic for a popular time is not serialised -----
   //
   // Five leads pick 9:00 in a pool of twenty, arriving 1, 2 or 3 seconds apart, at
-  // production speed (a 3s live check and a 5s calendar write, 8s in all). Each
+  // the slow speed (a 3s live check and a 5s calendar write, 8s in all). Each
   // must be booked as fast as the first, on its own advisor, with no insert race
   // lost. Measured before this (the scratch measurement in the PR): on main, and on
   // this branch before the hand on, only the FIRST was booked and the other four
@@ -1779,7 +1782,7 @@ async function main() {
     assert(bySlot.size === 5 && raceLosses === 0, `ordinary, together: five advisors, no race lost (got ${bySlot.size}, ${raceLosses})`);
   }
 
-  // --- #3257 review: a crowd at production speed still yields the right winners -
+  // --- #3257 review: a crowd at the slow speed still yields the right winners ---
   //
   // A hundred at once for the time, at 8 seconds a confirm (a 3s live check and a
   // 5s calendar write). A pool of two books two and refuses the other 98.
@@ -1793,9 +1796,9 @@ async function main() {
     });
     assert(
       tally.created === 2 && tally.SLOT_TAKEN === BURST - 2,
-      `production crowd, pool of 2: two booked, the rest told SLOT_TAKEN (got ${JSON.stringify(tally)})`,
+      `slow crowd, pool of 2: two booked, the rest told SLOT_TAKEN (got ${JSON.stringify(tally)})`,
     );
-    assert(bySlot.size === 2, "production crowd, pool of 2: one booking per advisor, never a double");
+    assert(bySlot.size === 2, "slow crowd, pool of 2: one booking per advisor, never a double");
     // The second booking was made from a pool thinned of the first one's claim. Before
     // #3529 it could not call the slot full (the first might have failed), so one confirm
     // led and read for itself to find nobody left. Now its verdict is full `unlessFreed`:
@@ -1803,11 +1806,11 @@ async function main() {
     // 98 are answered from it and none reads. (When a claim does end unbooked, one confirm
     // reads again: test-confirm-queue.ts, "unless freed control".)
     const readers = runs.filter((r) => r.outcome !== "created" && r.calls.some((c) => !LOOKAHEAD_READS.has(c.name)));
-    assert(readers.length === 0, `production crowd, pool of 2: the refused confirms only look ahead, none reads (got ${readers.length})`);
-    assert(quiet(runs.filter((r) => r.outcome !== "created" && !readers.includes(r))), "production crowd, pool of 2: the rest stay inside the lookahead bound");
+    assert(readers.length === 0, `slow crowd, pool of 2: the refused confirms only look ahead, none reads (got ${readers.length})`);
+    assert(quiet(runs.filter((r) => r.outcome !== "created" && !readers.includes(r))), "slow crowd, pool of 2: the rest stay inside the lookahead bound");
     assert(
       readers.every((r) => r.calls.every((c) => c.name !== "verifyFree" && c.name !== "createEvent")),
-      "production crowd, pool of 2: that one never asks Google",
+      "slow crowd, pool of 2: that one never asks Google",
     );
   }
 
@@ -1825,14 +1828,14 @@ async function main() {
       slowGoogleMs: 3_000,
       slowEventMs: 5_000,
     });
-    assert(tally.created === 20, `production crowd, pool of 20: all twenty advisors are booked (got ${JSON.stringify(tally)})`);
-    assert(bySlot.size === 20 && raceLosses === 0, `production crowd, pool of 20: one booking each, no race lost (got ${bySlot.size}, ${raceLosses})`);
+    assert(tally.created === 20, `slow crowd, pool of 20: all twenty advisors are booked (got ${JSON.stringify(tally)})`);
+    assert(bySlot.size === 20 && raceLosses === 0, `slow crowd, pool of 20: one booking each, no race lost (got ${bySlot.size}, ${raceLosses})`);
     const others = runs.filter((r) => r.outcome !== "created");
     assert(
       others.every((r) => r.outcome === "SLOT_TAKEN" || r.outcome === "503"),
-      `production crowd, pool of 20: the rest are told taken or to retry, nothing else (got ${JSON.stringify(tally)})`,
+      `slow crowd, pool of 20: the rest are told taken or to retry, nothing else (got ${JSON.stringify(tally)})`,
     );
-    assert(quiet(others), "production crowd, pool of 20: none of the rest reads beyond the bounded lookahead");
+    assert(quiet(others), "slow crowd, pool of 20: none of the rest reads beyond the bounded lookahead");
   }
 
   // --- #3257 review: two confirms that lose a race at once move apart ---------
@@ -1901,8 +1904,8 @@ async function main() {
   // only at 12.0s, after rolling back its lost attempt, looking for a next advisor
   // and recording the refusal. Its 41 followers ran out of their wait first and
   // were answered 503. The same shape here: the pool's only advisor is held by a
-  // booking the candidate read has not caught up with, the leader runs at
-  // production speed (a 3.5s live check, a 5s calendar write), and its rollback
+  // booking the candidate read has not caught up with, the leader runs at the
+  // slow speed (a 3.5s live check, a 5s calendar write), and its rollback
   // takes 1.8s, inside the 2s cleanup allowance it runs under. Before the fix the
   // followers' 10 second wait ended before the leader reported and every one of
   // them was answered 503; now every one is told the time is taken before the
@@ -1969,7 +1972,7 @@ async function main() {
   // --- #3257 review: a REPLAY is answered at once, not behind a slow leader ----
   //
   // Lead 7 booked this time on a a moment ago and their client retries the
-  // submit. Meanwhile lead 0 is booking the last free advisor, b, at production
+  // submit. Meanwhile lead 0 is booking the last free advisor, b, at the slow
   // speed. On main the retry was answered from its idempotency key straight away;
   // queued behind lead 0 it waited about eight seconds. It must be answered at
   // once with the booking it already has, on both paths: the booker by its
@@ -2023,7 +2026,7 @@ async function main() {
   // --- #3257 review: a lead MOVING their call does not hold up a new booking ----
   //
   // Lead 9 holds 14:00 with p5 and asks the booking API for 13:00, which moves
-  // their call in place (a live busy read and an event move, 8s at production
+  // their call in place (a live busy read and an event move, 8s at the slow
   // speed). Lead 0, unrelated, wants 13:00 in the same pool of twenty and arrives
   // half a second later. Lead 9's move takes one advisor at 13:00, so it claims
   // p5 and hands the line on rather than holding it for the whole move: lead 0 is
@@ -2205,7 +2208,7 @@ async function main() {
     }
   }
 
-  // The defect, at production speed: a second wave of leads arrives five seconds
+  // The defect, at the slow speed: a second wave of leads arrives five seconds
   // after the first, so the confirm ahead of them finishes inside their budget.
   // Every advisor on the rung below must be booked, by leads who were told before
   // this that the time was taken.
@@ -2252,7 +2255,7 @@ async function main() {
     }
   }
 
-  // The same crowd arriving all at once at production speed. The confirm ahead
+  // The same crowd arriving all at once at the slow speed. The confirm ahead
   // holds the line for its whole eight seconds (it is booking the top rung's last
   // advisor, #3257), so those behind it cannot all walk down inside their budget.
   // Dan's rule for that (2026-10-06): they are told to retry, never that the time
@@ -2645,7 +2648,7 @@ async function main() {
   }
 
 
-  // The same race at production speed: the attempt that lost took about eight of
+  // The same race at the slow speed: the attempt that lost took about eight of
   // the twelve seconds, so the loser has too little left to walk down and is told
   // to retry, never that the time is taken while the rung below has somebody free.
   {
