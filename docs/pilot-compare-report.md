@@ -49,6 +49,10 @@ memory, and never printed.
   with every booking it made, cal.com ones included. Dropping only the booking would
   leave a cal.com side application reading as one that never booked. The readout
   says how many applications it left out this way.
+- **Development host bookings are test traffic** (#2974). A Slate booking on a real
+  bucket whose recorded host page is not the production site (a localhost page,
+  dev.trypennie.com), judged by `isTestSourceBooking` (`src/lib/monitor/offsite-origin.ts`),
+  is left out as a booking, never as its application, and the readout counts them.
 - **Reschedules collapse** on both systems. cal.com marks the old half `cancelled`
   with `rescheduledToUid` set, so that is a reschedule; a chain is made when its
   first link was made and judged at its last link's start. Slate reschedules in
