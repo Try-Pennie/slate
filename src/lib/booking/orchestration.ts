@@ -9680,7 +9680,9 @@ export async function updateBookingContact(
 
 /**
  * Tell downstream a lead corrected their number with no reschedule beside it
- * (#1512), after the row is written and the invite has been tried.
+ * (#1512), after the row is written and the invite has been tried. Also used for a
+ * correction a move wrote and then did not carry, because the move failed or moved
+ * nothing (`tellUncarriedCorrection`, #4031).
  *
  * Through `fire`, so the payload is the one every booking event carries, built
  * from the row as it now stands, and a test bucket's correction is recorded but
