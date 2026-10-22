@@ -203,8 +203,10 @@ async function burst(opts: {
   heldElsewhere?: Booking[];
   /** #3257: the FIRST read of who already sits at the instant fails. */
   failFirstSeatedRead?: boolean;
-  /** #3257: how long Google takes to say whether an advisor is free, the slow
-   *  part of a production confirm (7.4 to 8.0s at the median, #3221). */
+  /** #3257: how long Google takes to say whether an advisor is free. The slow
+   *  scenarios use 3s, the assumed split of the 7.4 to 8.0s a production confirm
+   *  took on 2026-10-04 (#3221); measured 2026-10-22 it is 215ms at the median and
+   *  468ms at the p95 (#3490, `MEASURED_PRODUCTION_GOOGLE_DELAY`). */
   slowGoogleMs?: number;
   /** How long Google takes to write the advisor's calendar event, the other slow
    *  part, which runs after the advisor is chosen. */
@@ -1674,15 +1676,16 @@ async function main() {
     );
   }
 
-  // --- #3257 review: a leader as slow as production (Google takes 8s) -----------
+  // --- #3257 review: a slow leader (Google takes 8s) ----------------------------
   //
-  // A production confirm answers at 7.4 to 8.0s at the median (#3221). With a
-  // fixed 6 second wait every follower gave up first and ran its own chain, which
-  // is the stampede again. Followers now wait for the verdict up to their budget
-  // less the reserve, so they are answered from it.
+  // A production confirm answered at 7.4 to 8.0s at the median on 2026-10-04
+  // (#3221); it takes about 1.6s now (#3490), and 8s is the slow case the line must
+  // still survive. With a fixed 6 second wait every follower gave up first and ran
+  // its own chain, which is the stampede again. Followers now wait for the verdict
+  // up to their budget less the reserve, so they are answered from it.
   //
-  // #3338: the eight seconds are split as the rest of this suite splits production
-  // speed, a 3s live check and a 5s calendar write. With all eight in the live
+  // #3338: the eight seconds are split as the rest of this suite splits a slow
+  // confirm, a 3s live check and a 5s calendar write. With all eight in the live
   // check, the leader would reach its commit chain with under 4s left after a Google
   // call that took 8s, and a confirm no longer starts a chain it cannot finish
   // (`commit-cost.ts`); that case is the "slower leader" one below.
@@ -1739,7 +1742,7 @@ async function main() {
   // --- #3257 review: ORDINARY traffic for a popular time is not serialised -----
   //
   // Five leads pick 9:00 in a pool of twenty, arriving 1, 2 or 3 seconds apart, at
-  // production speed (a 3s live check and a 5s calendar write, 8s in all). Each
+  // the slow speed (a 3s live check and a 5s calendar write, 8s in all). Each
   // must be booked as fast as the first, on its own advisor, with no insert race
   // lost. Measured before this (the scratch measurement in the PR): on main, and on
   // this branch before the hand on, only the FIRST was booked and the other four
@@ -1779,7 +1782,7 @@ async function main() {
     assert(bySlot.size === 5 && raceLosses === 0, `ordinary, together: five advisors, no race lost (got ${bySlot.size}, ${raceLosses})`);
   }
 
-  // --- #3257 review: a crowd at production speed still yields the right winners -
+  // --- #3257 review: a crowd at the slow speed still yields the right winners ---
   //
   // A hundred at once for the time, at 8 seconds a confirm (a 3s live check and a
   // 5s calendar write). A pool of two books two and refuses the other 98.
@@ -1901,8 +1904,8 @@ async function main() {
   // only at 12.0s, after rolling back its lost attempt, looking for a next advisor
   // and recording the refusal. Its 41 followers ran out of their wait first and
   // were answered 503. The same shape here: the pool's only advisor is held by a
-  // booking the candidate read has not caught up with, the leader runs at
-  // production speed (a 3.5s live check, a 5s calendar write), and its rollback
+  // booking the candidate read has not caught up with, the leader runs at the
+  // slow speed (a 3.5s live check, a 5s calendar write), and its rollback
   // takes 1.8s, inside the 2s cleanup allowance it runs under. Before the fix the
   // followers' 10 second wait ended before the leader reported and every one of
   // them was answered 503; now every one is told the time is taken before the
@@ -2205,7 +2208,7 @@ async function main() {
     }
   }
 
-  // The defect, at production speed: a second wave of leads arrives five seconds
+  // The defect, at the slow speed: a second wave of leads arrives five seconds
   // after the first, so the confirm ahead of them finishes inside their budget.
   // Every advisor on the rung below must be booked, by leads who were told before
   // this that the time was taken.
@@ -2252,7 +2255,7 @@ async function main() {
     }
   }
 
-  // The same crowd arriving all at once at production speed. The confirm ahead
+  // The same crowd arriving all at once at the slow speed. The confirm ahead
   // holds the line for its whole eight seconds (it is booking the top rung's last
   // advisor, #3257), so those behind it cannot all walk down inside their budget.
   // Dan's rule for that (2026-10-06): they are told to retry, never that the time
@@ -2645,7 +2648,7 @@ async function main() {
   }
 
 
-  // The same race at production speed: the attempt that lost took about eight of
+  // The same race at the slow speed: the attempt that lost took about eight of
   // the twelve seconds, so the loser has too little left to walk down and is told
   // to retry, never that the time is taken while the rung below has somebody free.
   {

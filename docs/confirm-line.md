@@ -110,8 +110,9 @@ The honest limit, as #3338 left it: each step down cost the next confirm its rea
 before the line, and the confirm booking a rung's last advisor held the line for its
 whole confirm (it may yet fail and free that advisor, #3257). Since #3489 a confirm
 that can walk hands the line on at once when it claims a rung's last advisor and a
-rung is below (the section below). At production speed (about eight seconds a
-confirm, most of it Google) a crowd arriving together behind the top rung's last
+rung is below (the section below). At a slow confirm's speed (about eight seconds,
+most of it Google, as production ran on 2026-10-04; about 1.6s at the median since,
+#3490) a crowd arriving together behind the top rung's last
 advisor still cannot all book inside its 12 second budget, so the rest are told to
 retry rather than "taken"; a lead arriving a few seconds behind the first books below.
 Counted on /admin/routing beside the tier drops (`routing_trace.dropped_behind`).
@@ -532,7 +533,7 @@ client against the real host through a transport that can fail each message, or
 swap the host for a deploy), `test-confirm-contention.ts` (fifty isolates: per
 isolate lines leave dozens told to retry, one shared line answers the whole crowd;
 since #3338 a crowd behind a rung's last advisor walking the ladder, on both lines,
-at production speed, with the one hop a spent ladder costs measured; and #3460's
+at the slow speed (8s a confirm, #3221), with the one hop a spent ladder costs measured; and #3460's
 burst on sibling codes across warm, cold and stale servers, which elects
 three leaders keyed as main keys it and one once every server fetches the snapshot),
 `test-pool-grouping.ts` (the snapshot, every refusal, the directory through the real

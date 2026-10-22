@@ -15,7 +15,9 @@
 //      sleep is never called, whatever the setting says;
 //   4. every Google call a lead waits on (the ones cut off at GOOGLE_CONFIRM_TIMEOUT_MS)
 //      takes the delay in its stand in branch, with the kind that matches it, derived from
-//      calendar.ts rather than listed, so the next such call is covered by construction.
+//      calendar.ts rather than listed, so the next such call is covered by construction;
+//   5. the value measured off production is ONE recorded string, the one the contention
+//      model's production profile is built from and the one the runbook says to dispatch.
 //
 // Nothing here waits for real: the sleep, the draw and the budget are all injected (L524).
 //
@@ -34,6 +36,11 @@ import { loadtestGoogleDelay } from "../src/lib/google/loadtest-stub.ts";
 import { calendarExports } from "./lib/scan-loadtest-stub-coverage.ts";
 import { GOOGLE_TIMING_GROUPS } from "../src/lib/booking/confirm-profile.ts";
 import { awaitGoogleDelay, googleDelayVerdict } from "./loadtest/preflight-checks.ts";
+import {
+  MEASURED_PRODUCTION_GOOGLE_DELAY,
+  PRODUCTION_PROFILE,
+  STACK_PRODUCTION_PROFILE,
+} from "./lib/confirm-load-model.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- the grammar -----------------------------------------------------------------------------
@@ -273,6 +280,26 @@ import { assert, eq, finish } from "./lib/harness.ts";
   const dwd = readFileSync("src/lib/google/dwd.ts", "utf8");
   const mint = /const MINT_LABEL = "([^"]+)"/.exec(dwd)?.[1];
   eq(GOOGLE_TIMING_GROUPS.find((g) => g.kind === "mint")?.labels, mint ? [mint] : ["(MINT_LABEL not found in dwd.ts)"], "the mint field counts the label dwd.ts mints under");
+}
+
+// --- one measured value, read by the model and the runbook (#3490) -------------------------
+// The contention model assumed a 3s live check and a 5s write for weeks after production had
+// moved to a fraction of that, because the figure lived as a literal nobody re-measured. The
+// measurement is now one string: the model's production profile takes its p95s, and the
+// runbook names the same string, so a re-measure changes both or this fails.
+{
+  const measured = parseGoogleDelay(MEASURED_PRODUCTION_GOOGLE_DELAY);
+  assert(measured.unknown === null, `the measured value parses (${MEASURED_PRODUCTION_GOOGLE_DELAY})`);
+  assert(measured.read !== null && measured.write !== null, "the measured value names both a read and a write");
+  for (const profile of [PRODUCTION_PROFILE, STACK_PRODUCTION_PROFILE]) {
+    eq(profile.googleCheckMs, measured.read?.p95Ms, `${profile.name}: the live check is the measured read p95`);
+    eq(profile.googleWriteMs, measured.write?.p95Ms, `${profile.name}: the calendar write is the measured write p95`);
+  }
+  const runbook = readFileSync("scripts/loadtest/RUNBOOK.md", "utf8");
+  assert(
+    runbook.includes(`google_delay: ${MEASURED_PRODUCTION_GOOGLE_DELAY}`),
+    `the runbook records the measured value the model uses (google_delay: ${MEASURED_PRODUCTION_GOOGLE_DELAY})`,
+  );
 }
 
 finish();
