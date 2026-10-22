@@ -401,6 +401,14 @@ export interface Database {
           p_hold_id?: string | null;
           /** Merged into the consumed hold's stored result. */
           p_result?: Record<string, unknown> | null;
+          /*
+           * #1677, migration 0196: the sixteen argument form also takes the state the
+           * reassign was decided on, both or neither, and refuses with `booking_moved`
+           * under the row lock when the booking no longer has it. Sent only with all
+           * fourteen above.
+           */
+          p_expected_user_id?: string;
+          p_expected_starts_at?: string;
         };
         Returns: {
           prev_gcal_event_id: string | null;

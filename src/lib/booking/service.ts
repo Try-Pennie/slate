@@ -4,6 +4,7 @@ import {
   releaseReroute,
   currentReroute,
   agentHeldFrom,
+  RerouteRefusedError,
   type RerouteDeps,
   type RerouteOutcome,
   type RerouteProposal,
@@ -112,6 +113,7 @@ import {
   buildBulkReassignProgress,
   drainBulkReassign,
   drainOneJob,
+  BookingMovedMidMoveError,
   type BulkReassignDeps,
   type BulkReassignDrainSummary,
   type BulkReassignProgress,
@@ -1918,16 +1920,20 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       gcalClientId,
       routingTrace,
       reroute,
+      expect,
     }) => {
       // #3249: a reroute move takes the bucket aware form (migration 0166), which
       // consumes the claimed hold in the same transaction. Its seven extra
       // arguments are ALL OR NONE (the overloads are told apart by name), and its
-      // refusal word comes back rather than raising.
-      if (reroute) return rerouteSwap({
+      // refusal word comes back rather than raising. #1677: so does a reassign that
+      // carries the state it was decided on, through the sixteen argument form
+      // (migration 0196); with no bucket that form is the plain reassign below.
+      if (reroute || expect) return rerouteSwap({
         bookingId, userId, agentName, agentEmail, gcalEventId, gcalClientId,
-        routingTrace, bucketId: reroute.bucketId, requestedBucketId: reroute.requestedBucketId,
-        requestedTier: reroute.requestedTier, bookedTier: reroute.bookedTier,
-        rungsDropped: reroute.rungsDropped, holdId: reroute.holdId,
+        routingTrace, bucketId: reroute?.bucketId ?? null, requestedBucketId: reroute?.requestedBucketId ?? null,
+        requestedTier: reroute?.requestedTier ?? null, bookedTier: reroute?.bookedTier ?? null,
+        rungsDropped: reroute?.rungsDropped ?? null, holdId: reroute?.holdId ?? null,
+        expect: expect ?? null,
       });
       // Atomic swap-and-return-previous (#449). Unlike the best-effort cache
       // writes, this IS the durable anchor of the reassign, so a failure must
@@ -3610,12 +3616,15 @@ export function adminReassignBooking(
   reason: ValidatedReason,
   actor: BookingActor,
   overrideCap = false,
+  /** #1677: commit only if the booking is still in this state; the coverage sweep's. */
+  expect?: orchestration.ReassignExpectation,
 ): Promise<BookingResult & { overCap: boolean }> {
   return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(deferWebhookSend), {
     overrideCap,
     actor,
     initiator: "admin",
     allowNonBookable: true,
+    ...(expect ? { expect } : {}),
   });
 }
 
@@ -3632,14 +3641,25 @@ async function rerouteSwap(args: {
   gcalEventId: string;
   gcalClientId: string | null;
   routingTrace: RoutingTrace | null;
-  bucketId: string;
-  requestedBucketId: string;
+  /** Null with every bucket argument below is the plain reassign, for a call that only
+   *  carries `expect` (#1677). */
+  bucketId: string | null;
+  requestedBucketId: string | null;
   requestedTier: string | null;
   bookedTier: string | null;
-  rungsDropped: number;
+  rungsDropped: number | null;
   holdId: string | null;
+  /** #1677: the state the reassign was decided on, checked under the swap's row lock by
+   *  the sixteen argument form (migration 0196). Absent, the fourteen argument form. */
+  expect?: { assignedUserId: string; startsAt: string } | null;
 }): Promise<{ prevGcalEventId: string | null; prevAgentEmail: string | null; updated: boolean; refused: RerouteSwapRefusal | null }> {
+  // The two forms are told apart by their argument NAMES, so the expectation is sent as
+  // both arguments or neither.
+  const expected = args.expect
+    ? { p_expected_user_id: args.expect.assignedUserId, p_expected_starts_at: args.expect.startsAt }
+    : {};
   const { data, error } = await supabaseAdmin().rpc("reassign_booking_swap", {
+    ...expected,
     p_booking_id: args.bookingId,
     p_user_id: args.userId,
     p_agent_name: args.agentName,
@@ -3823,11 +3843,14 @@ export function systemReassignBooking(
   bookingId: string,
   agentEmail: string,
   reason: ValidatedReason,
+  /** #1677: commit only if the booking is still in this state (`ReassignOptions.expect`). */
+  expect?: orchestration.ReassignExpectation,
 ): Promise<BookingResult & { overCap: boolean }> {
   return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(deferWebhookSend), {
     overrideCap: false,
     initiator: "system",
     allowNonBookable: true,
+    ...(expect ? { expect } : {}),
   });
 }
 
@@ -3890,6 +3913,8 @@ async function coverageMoveAcrossBuckets(
   reason: ValidatedReason,
   sweepActor: ReturnType<typeof coverageSweepActor>,
   placement: CoveragePlacement,
+  /** #1677: commit only if the booking is still in this state. */
+  expect?: orchestration.ReassignExpectation,
 ): Promise<void> {
   const base = realDeps(deferWebhookSend);
   const ctx = await base.loadBookingById(bookingId);
@@ -3916,6 +3941,7 @@ async function coverageMoveAcrossBuckets(
           overrideCap: false,
           allowNonBookable: true,
           reroute: swap,
+          ...(expect ? { expect } : {}),
         });
       },
       releaseHold: (id) => releaseRerouteHold(id, holds),
@@ -3950,7 +3976,7 @@ function realBulkReassignDeps(): BulkReassignDeps {
         realCoverageTargetDeps(),
       );
     },
-    reassign: async (bookingId, targetEmail, job, placement) => {
+    reassign: async (bookingId, targetEmail, job, placement, expect) => {
       // Who the move is recorded as. Throws for a job that has neither an actor nor
       // a recorded reason for having none, which is the same refusal as before:
       // #1241 added the offboarding case, it did not widen the guard (see
@@ -3977,19 +4003,27 @@ function realBulkReassignDeps(): BulkReassignDeps {
       // and staff sweeps differ ONLY in who the move is recorded as: everything that
       // decides which bookings move, and where they land, is shared, so an offboarding
       // sweep and an admin's sweep can never cover an agent differently.
-      if (placement) {
-        await coverageMoveAcrossBuckets(bookingId, targetEmail, reason, sweepActor, placement);
-        return;
+      //
+      // #1677: every branch commits only if the booking is still where the selection saw
+      // it (`expect`); a refusal for that reaches the engine as `BookingMovedMidMoveError`.
+      try {
+        if (placement) {
+          await coverageMoveAcrossBuckets(bookingId, targetEmail, reason, sweepActor, placement, expect);
+          return;
+        }
+        if (sweepActor.kind === "system") {
+          await systemReassignBooking(bookingId, targetEmail, reason, expect);
+          return;
+        }
+        const actor: BookingActor = {
+          userId: sweepActor.userId,
+          actingAsUserId: sweepActor.actingAsUserId,
+        };
+        await adminReassignBooking(bookingId, targetEmail, reason, actor, false, expect);
+      } catch (err) {
+        if (err instanceof RerouteRefusedError && err.code === "booking_moved") throw new BookingMovedMidMoveError();
+        throw err;
       }
-      if (sweepActor.kind === "system") {
-        await systemReassignBooking(bookingId, targetEmail, reason);
-        return;
-      }
-      const actor: BookingActor = {
-        userId: sweepActor.userId,
-        actingAsUserId: sweepActor.actingAsUserId,
-      };
-      await adminReassignBooking(bookingId, targetEmail, reason, actor, false);
     },
     claimItem: claimBulkReassignItem,
     recordAudit,
