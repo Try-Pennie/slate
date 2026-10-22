@@ -21,6 +21,13 @@
 import { DateTime } from "luxon";
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
+import { smokeAttendee } from "./lib/smoke-identity.ts";
+import {
+  cancelSmokeBooking,
+  createCheckMessage,
+  createRefusal,
+  teardownCheckMessage,
+} from "./lib/smoke-own-booking.ts";
 
 // Keys load from .env.local / .dev.vars if not already in the environment.
 loadEnvFiles([".env.local", ".dev.vars"]);
@@ -65,9 +72,12 @@ async function main(): Promise<void> {
   }
   console.log(`setup: SMOKE now has both agents${addedMembership ? " (added smoketest2@)" : " (smoketest2@ already present)"}`);
 
-  const externalId = `smoke-523-${Date.now()}`;
-  const email = "smoketest+523@trypennie.com";
+  // #4060: a per run identity (email, external id AND phone). A fixed email or
+  // phone weak matches any booking an earlier smoke run left active, so this create
+  // would come back 409 carrying that booking instead of a new one.
+  const { externalId, email, phone } = smokeAttendee("523");
   let token = "";
+  let bookingId = "";
   try {
     // Pick a slot comfortably mid-shift so +30 min stays within 9-5 ET and free.
     const open = await slots(BUCKET);
@@ -87,14 +97,19 @@ async function main(): Promise<void> {
         bucketCode: BUCKET,
         start: s0,
         timezone: "America/New_York",
-        attendee: { name: "523 Repro", email, phone: "+12025550123" },
+        attendee: { name: "523 Repro", email, phone },
         externalId,
         confirmReschedule: false,
         dryRun: false,
       },
       true,
     );
-    check(created.status === 200, `create -> 200 (got ${created.status}${created.status !== 200 ? ` err=${created.body.error}` : ""})`);
+    // #4060: only a 200 `created` is this run's booking; any other answer carries one
+    // this run did not make, so stop rather than reschedule and cancel it.
+    const refused = createRefusal(created);
+    check(refused === null, createCheckMessage(created, refused));
+    if (refused !== null) return;
+    bookingId = String((created.body.booking as Json | undefined)?.id ?? "");
     token = tokenFrom((created.body.booking as Json | undefined)?.manageUrl ?? created.body.manageUrl);
     check(!!token, "create returns a manage token");
     if (!token) return;
@@ -129,8 +144,8 @@ async function main(): Promise<void> {
   } finally {
     // 4. Teardown: cancel the booking, then revert SMOKE to a single agent.
     if (token) {
-      const cancelled = await jpost(`/api/bookings/${token}/cancel`, { reason: "no_longer_interested" });
-      check(cancelled.status === 200, `teardown: booking cancelled (got ${cancelled.status})`);
+      const cancelled = await cancelSmokeBooking(jpost, token);
+      check(cancelled.ok, teardownCheckMessage(bookingId, cancelled));
     }
     if (addedMembership) {
       const del = await db
@@ -146,7 +161,13 @@ async function main(): Promise<void> {
   process.exit(failed() === 0 ? 0 : 1);
 }
 
-main().catch((e) => {
-  console.error("repro crashed:", e);
-  process.exit(1);
-});
+// An early `return` from main (a refused create, no token) skips the exit at its
+// end, and node would then exit 0 with a failed check recorded. Exit here by the
+// failure count, so every path out of main reports what it recorded.
+main().then(
+  () => process.exit(failed() === 0 ? 0 : 1),
+  (e) => {
+    console.error("repro crashed:", e);
+    process.exit(1);
+  },
+);

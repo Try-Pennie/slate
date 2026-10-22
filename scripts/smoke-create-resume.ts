@@ -30,6 +30,13 @@
 import { buildResumeReservation, type PersistedBookingRow } from "./create-resume-reservation.ts";
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
+import { smokeAttendee } from "./lib/smoke-identity.ts";
+import {
+  cancelSmokeBooking,
+  createCheckMessage,
+  createRefusal,
+  teardownCheckMessage,
+} from "./lib/smoke-own-booking.ts";
 
 // --- config -----------------------------------------------------------------
 
@@ -117,8 +124,10 @@ async function main(): Promise<void> {
   if (open.length < 1) process.exit(1);
   const start = open[0];
 
-  const externalId = `smoke-resume-${start}`;
-  const email = "smoketest+resume@trypennie.com";
+  // #4060: a per run identity (email, external id AND phone). The fixed
+  // `smoketest+resume@` and +12025550123 weak matched any booking an earlier run of
+  // this or the reschedule smoke left active, turning this create into a 409.
+  const { externalId, email, phone } = smokeAttendee("resume");
   let token = "";
   let bookingId = "";
   let idempotencyKey = "";
@@ -131,14 +140,18 @@ async function main(): Promise<void> {
         bucketCode: BUCKET,
         start,
         timezone: "America/New_York",
-        attendee: { name: "Resume Smoke", email, phone: "+12025550123" },
+        attendee: { name: "Resume Smoke", email, phone },
         externalId,
         confirmReschedule: false,
         dryRun: false,
       },
       true,
     );
-    check(created.status === 200, `create -> 200 (got ${created.status}${created.status !== 200 ? ` err=${created.body.error}` : ""})`);
+    // #4060: only a 200 `created` is this run's booking; any other answer carries one
+    // this run did not make, so stop rather than resume and cancel it.
+    const refused = createRefusal(created);
+    check(refused === null, createCheckMessage(created, refused));
+    if (refused !== null) return;
     const b = created.body.booking as Json | undefined;
     bookingId = String(b?.id ?? "");
     token = tokenFrom(b?.manageUrl);
@@ -212,8 +225,8 @@ async function main(): Promise<void> {
   } finally {
     // 8. Teardown: cancel the booking, then drop any reservation the drain left.
     if (token) {
-      const cancelled = await jpost(`/api/bookings/${token}/cancel`, { reason: "no_longer_interested" });
-      check(cancelled.status === 200, `teardown: booking cancelled (got ${cancelled.status})`);
+      const cancelled = await cancelSmokeBooking(jpost, token);
+      check(cancelled.ok, teardownCheckMessage(bookingId, cancelled));
     }
     if (idempotencyKey) {
       const deleted = await pgDelete(
@@ -227,7 +240,13 @@ async function main(): Promise<void> {
   process.exit(failed() === 0 ? 0 : 1);
 }
 
-main().catch((e) => {
-  console.error("smoke crashed:", e);
-  process.exit(1);
-});
+// An early `return` from main (a refused create, no booking id) skips the exit at
+// its end, and node would then exit 0 with a failed check recorded. Exit here by the
+// failure count, so every path out of main reports what it recorded.
+main().then(
+  () => process.exit(failed() === 0 ? 0 : 1),
+  (e) => {
+    console.error("smoke crashed:", e);
+    process.exit(1);
+  },
+);
