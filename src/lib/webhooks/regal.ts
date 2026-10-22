@@ -126,9 +126,8 @@ function nameParts(full: string | null, answeredFirst?: string | null): { first?
 
 type OptInTrait =
   | Record<string, never>
-  | { voiceOptIn?: { subscribed: boolean }; smsOptIn?: { subscribed: boolean } }
-  | { emailOptIn: { subscribed: boolean } }
-  | { isPrimary: true };
+  | { isPrimary?: true; voiceOptIn?: { subscribed: boolean }; smsOptIn?: { subscribed: boolean } }
+  | { emailOptIn: { subscribed: boolean } };
 
 interface RegalEvent {
   name: string;
@@ -171,18 +170,32 @@ export function regalSendsNothingFor(event: BookingWebhookEvent, p: Pick<Booking
 }
 
 /**
+ * Whether this event carries a number the lead CORRECTED (#4031): every contact
+ * update (#1512), and a reschedule whose move also replaced the number (#2164),
+ * which the payload says by naming the number it replaced. A reschedule payload
+ * without that key (a time only move, or one stored before the key existed) is not
+ * a correction.
+ */
+function correctsPhone(event: BookingWebhookEvent, p: BookingEventPayload): boolean {
+  if (event === "booking.contact_updated") return true;
+  return event === "booking.rescheduled" && p.previous_attendee_phone !== undefined;
+}
+
+/**
  * What the traits say about the phone on this event.
  *
- * A create asserts the landing page's consent on the number given there. A contact
- * update (#1512) names the corrected number PRIMARY, because Regal applies an
- * event's traits to the contact profile and journey triggered calls and texts go
- * only to the primary phone, and it asserts NO opt in: a number typed on the manage
- * page is not the one the landing page's consent covered (docs/pii.md). Every other
- * event names the number for identity only.
+ * A create asserts the landing page's consent on the number given there. A
+ * corrected number (`correctsPhone`) is named PRIMARY and subscribed for voice and
+ * SMS: Regal applies an event's traits to the contact profile, and journey triggered
+ * calls and texts go only to the primary phone and only when it carries opt in. A
+ * number a lead types on the manage page counts as consent (Dan, 2026-10-21, #4031,
+ * docs/pii.md). Every other event names the number for identity only.
  */
-function phoneTrait(event: BookingWebhookEvent): OptInTrait {
+function phoneTrait(event: BookingWebhookEvent, p: BookingEventPayload): OptInTrait {
   if (event === "booking.created") return { voiceOptIn: { subscribed: true }, smsOptIn: { subscribed: true } };
-  if (event === "booking.contact_updated") return { isPrimary: true };
+  if (correctsPhone(event, p)) {
+    return { isPrimary: true, voiceOptIn: { subscribed: true }, smsOptIn: { subscribed: true } };
+  }
   return {};
 }
 
@@ -193,7 +206,7 @@ function contactTraits(p: BookingEventPayload, event: BookingWebhookEvent): Rega
   if (first) traits.firstName = first;
   if (last) traits.lastName = last;
   if (p.attendee.phone) {
-    traits.phones = { [p.attendee.phone]: phoneTrait(event) };
+    traits.phones = { [p.attendee.phone]: phoneTrait(event, p) };
   }
   if (p.attendee.email) {
     traits.emails = {

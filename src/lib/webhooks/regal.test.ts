@@ -389,7 +389,7 @@ describe("the Regal wire contract (#2314)", () => {
     expect(sortedKeys(body.properties)).toEqual(withoutJoinKeys(event));
   });
 
-  it("sends the identity traits with opt ins on a create only", () => {
+  it("sends the landing page opt ins on a create, and identity only on a cancel or reassign", () => {
     expect(wireBody("booking.created", fullPayload()).traits).toEqual({
       firstName: "Jane",
       lastName: "Doe",
@@ -397,7 +397,9 @@ describe("the Regal wire contract (#2314)", () => {
       emails: { "jane@example.com": { emailOptIn: { subscribed: true } } },
     });
 
-    for (const event of BOOKING_EVENTS.filter((e) => e !== "booking.created" && e !== "booking.contact_updated")) {
+    // A cancel and a reassign name the number for identity only, even when the
+    // payload somehow carries a replaced number: only a correction asserts anything.
+    for (const event of ["booking.cancelled", "booking.reassigned"] as const) {
       expect(wireBody(event, fullPayload()).traits).toEqual({
         firstName: "Jane",
         lastName: "Doe",
@@ -407,16 +409,19 @@ describe("the Regal wire contract (#2314)", () => {
     }
   });
 
-  // #1512: Regal applies an event's traits to the contact profile, and journey
-  // triggered calls and texts go only to the PRIMARY phone, so the corrected number
-  // is named primary. It carries NO opt in: Slate asserts the landing page's consent
-  // on the number given there (docs/pii.md), and a number typed on the manage page
-  // is not that number.
-  it("names the corrected number primary on a contact update, with no opt in asserted", () => {
+  // #1512, #4031: Regal applies an event's traits to the contact profile, and journey
+  // triggered calls and texts go only to the PRIMARY phone and only when that phone
+  // carries opt in. So the corrected number is named primary AND subscribed: a number
+  // a lead types on the manage page counts as consent (Dan, 2026-10-21, docs/pii.md).
+  const CORRECTED_PHONE = {
+    "+15551234567": { isPrimary: true, voiceOptIn: { subscribed: true }, smsOptIn: { subscribed: true } },
+  };
+
+  it("names the corrected number primary and subscribed on a contact update", () => {
     expect(wireBody("booking.contact_updated", fullPayload()).traits).toEqual({
       firstName: "Jane",
       lastName: "Doe",
-      phones: { "+15551234567": { isPrimary: true } },
+      phones: CORRECTED_PHONE,
       emails: { "jane@example.com": {} },
     });
     const props = wireBody("booking.contact_updated", fullPayload()).properties as Record<string, unknown>;
@@ -424,14 +429,50 @@ describe("the Regal wire contract (#2314)", () => {
     expect(props.correctedPhone).toBe("+15551234567");
   });
 
+  // #2164, #4031: a number corrected together with a reschedule rides
+  // `booking.rescheduled`, so that event names it primary and subscribed too, and
+  // only when the move really replaced a number (the payload carries the one it
+  // replaced). Otherwise Regal keeps ringing the old primary number.
+  it("names the number primary and subscribed on a reschedule that corrected it", () => {
+    expect(wireBody("booking.rescheduled", fullPayload()).traits).toEqual({
+      firstName: "Jane",
+      lastName: "Doe",
+      phones: CORRECTED_PHONE,
+      emails: { "jane@example.com": {} },
+    });
+  });
+
+  // The control: a move that changed only the time, and a stored payload replayed
+  // from before the field existed, assert nothing about the number.
+  it("names the number for identity only on a reschedule that did not correct it", () => {
+    const timeOnly: Partial<BookingEventPayload> = fullPayload();
+    delete timeOnly.previous_attendee_phone;
+    expect(wireBody("booking.rescheduled", timeOnly as BookingEventPayload).traits).toEqual({
+      firstName: "Jane",
+      lastName: "Doe",
+      phones: { "+15551234567": {} },
+      emails: { "jane@example.com": {} },
+    });
+  });
+
+  // An advisor link booking's reschedule goes out as Client Sync Action with the same
+  // traits, so its corrected number is primary and subscribed there as well.
+  it("names a corrected number primary and subscribed on an agent link reschedule", () => {
+    const p: BookingEventPayload = { ...fullPayload(), booking_kind: "agent_link", routing: null };
+    expect((wireBody("booking.rescheduled", p).traits as { phones: unknown }).phones).toEqual(CORRECTED_PHONE);
+  });
+
   // Failure path: a stored payload replayed from before the field existed says it
   // does not know the old number (null), rather than dropping the key (L167).
   it("reports an unknown previous number as null on a replayed contact update", () => {
     const legacy: Partial<BookingEventPayload> = fullPayload();
     delete legacy.previous_attendee_phone;
-    const props = wireBody("booking.contact_updated", legacy as BookingEventPayload).properties as Record<string, unknown>;
+    const body = wireBody("booking.contact_updated", legacy as BookingEventPayload);
+    const props = body.properties as Record<string, unknown>;
 
     expect(props).toHaveProperty("previousPhone", null);
+    // The event itself IS the correction, so the number is still primary and subscribed.
+    expect((body.traits as { phones: unknown }).phones).toEqual(CORRECTED_PHONE);
   });
 
   // #2073: an advisor's own link keeps cal.com's "Client Sync Action" contract,

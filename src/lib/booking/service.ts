@@ -3039,7 +3039,8 @@ async function rescheduleWithLog(
     const res = await timeStage(lineFacts?.profile, "reschedule", () =>
       orchestration.rescheduleBooking(
         token, newStartIso, reason, initiator, realDeps(deferWebhookSend, lineFacts), Date.now(), actor, contact,
-        { leadZone },
+        // #4031: a correction the move did not carry, and could not tell either.
+        { leadZone, onCorrectionUntold: pagePhoneCorrectionUnsent },
       ),
     );
     logRescheduleSuccess(res.booking.id, initiator, res.rescheduleDecline);
@@ -3299,17 +3300,22 @@ export async function updateBookingPhone(
       stalePhoneInviteAlert(res.staleInvite.agentEmail, res.staleInvite.bookingId),
     ).catch(logAlertSendFailure(`stale_phone_invite:${res.staleInvite.bookingId}`));
   }
-  if (res.downstreamUntold) {
-    // #1512: the number is saved and the event telling Regal was never recorded,
-    // so nothing retries it. An incident, like the stale invite above.
-    // alert-key: phone_correction_unsent:*
-    await sendThrottledAlert(
-      `phone_correction_unsent:${res.downstreamUntold.bookingId}`,
-      orchestration.PHONE_CORRECTION_UNSENT_COOLDOWN_MS,
-      phoneCorrectionUnsentAlert(res.downstreamUntold.bookingId),
-    ).catch(logAlertSendFailure(`phone_correction_unsent:${res.downstreamUntold.bookingId}`));
-  }
+  if (res.downstreamUntold) await pagePhoneCorrectionUnsent(res.downstreamUntold.bookingId);
   return res;
+}
+
+/**
+ * #1512: the number is saved and the event telling Regal was never recorded, so
+ * nothing retries it. An incident, like the stale invite. Shared by the manage
+ * page's correction and a move's uncarried one (#4031), so both page alike.
+ */
+async function pagePhoneCorrectionUnsent(bookingId: string): Promise<void> {
+  // alert-key: phone_correction_unsent:*
+  await sendThrottledAlert(
+    `phone_correction_unsent:${bookingId}`,
+    orchestration.PHONE_CORRECTION_UNSENT_COOLDOWN_MS,
+    phoneCorrectionUnsentAlert(bookingId),
+  ).catch(logAlertSendFailure(`phone_correction_unsent:${bookingId}`));
 }
 
 /**

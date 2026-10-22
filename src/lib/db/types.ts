@@ -37,7 +37,8 @@ export type WebhookEvent =
    * A lead corrected the number their advisor will call, from the manage page,
    * with NO reschedule beside it (#1512). A correction made with a reschedule
    * rides that `booking.rescheduled` instead (#2164, Dan's call 2026-09-10), so
-   * this is emitted only by the manage page's own phone control (#1341).
+   * this is emitted by the manage page's own phone control (#1341), and by a move
+   * whose correction was saved but which then failed or moved nothing (#4031).
    */
   | "booking.contact_updated"
   /**
@@ -1138,6 +1139,14 @@ export interface OutboxPayload {
    *  on a plain reassign, which changes no bucket. */
   fromBucketId?: string | null;
   toBucketId?: string | null;
+  /**
+   * The number a reschedule's own contact correction replaced (#2164, #4031),
+   * present only when the move really changed the lead's phone. The NOTIFY step puts
+   * it on the `booking.rescheduled` payload, which is what tells Regal to name the
+   * new number primary and subscribed. Carried here because the booking row already
+   * holds the new number by the time that step (or a drain re-run of it) reads it.
+   */
+  previousAttendeePhone?: string | null;
 }
 
 /**

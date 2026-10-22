@@ -74,10 +74,13 @@ export interface BookingEventPayload {
   previous_agent_email: string | null;
   /**
    * The number a phone correction replaced (#1512). Set on
-   * `booking.contact_updated` only, where `attendee.phone` already holds the new
-   * one, so a CRM matching on phone can find the record it is updating. Optional
-   * because no other event carries it and a stored payload written before it
-   * existed has no key; a reader treats absent as "not known".
+   * `booking.contact_updated`, where `attendee.phone` already holds the new
+   * one, so a CRM matching on phone can find the record it is updating. Also set on
+   * a `booking.rescheduled` whose move corrected the number (#2164, #4031), and
+   * ONLY then: its presence there is what says the number is a correction, which
+   * Regal is told by naming it primary and subscribed. Optional because no other
+   * event carries it and a stored payload written before it existed has no key; a
+   * reader treats absent as "not known" (on a reschedule, "not corrected").
    */
   previous_attendee_phone?: string | null;
   /**
