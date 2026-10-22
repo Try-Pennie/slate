@@ -53,19 +53,71 @@ export function recordFailure(
   if (!path) return false;
   // One line per failure, so the reader is a plain line split. A message containing
   // a newline would otherwise read as two failures.
-  const flat = message.replace(/\s*\n\s*/g, " ").trim();
+  const flat = flatten(message);
   if (!flat) return false;
+  // A failure can never be read back as one of the marks below.
+  return appendLine(io, path, flat.startsWith("[") ? `FAIL: ${flat}` : flat);
+}
+
+/**
+ * #4062: the two marks beside the failed checks. On 2026-10-21 (run 39694932888) the
+ * reschedule smoke passed 4 checks and then crashed on a connect timeout, and the
+ * alert said the run "stopped before the checks began", because the file held only
+ * FAILURES and the crash handler wrote nothing. An empty file could not tell "never
+ * started" from "crashed after passing checks". Now a passing check appends
+ * `[pass]` and a crash appends `[crash] <which smoke>: <short reason>`, so the alert
+ * can say only what was recorded.
+ */
+const PASS_MARK = "[pass]";
+const CRASH_MARK = "[crash] ";
+
+/** Record one passing check. A no-op without a path; never throws. */
+export function recordPass(io: FailureLogIo, path: string | null): boolean {
+  if (!path) return false;
+  return appendLine(io, path, PASS_MARK);
+}
+
+/**
+ * Record that a smoke crashed. `where` names the smoke in words ("The reschedule
+ * smoke"); `reason` is already short (crashReason in scripts/lib/smoke-crash.ts),
+ * never a raw error, since it lands in Slack. A no-op without a path; never throws.
+ */
+export function recordCrash(io: FailureLogIo, path: string | null, where: string, reason: string): boolean {
+  if (!path) return false;
+  const w = flatten(where).replace(/:/g, "");
+  const r = flatten(reason);
+  if (!w || !r) return false;
+  return appendLine(io, path, `${CRASH_MARK}${w}: ${r}`);
+}
+
+function flatten(text: string): string {
+  return text.replace(/\s*\n\s*/g, " ").trim();
+}
+
+function appendLine(io: FailureLogIo, path: string, line: string): boolean {
   try {
-    io.append(path, `${flat}\n`);
+    io.append(path, `${line}\n`);
     return true;
   } catch {
     return false;
   }
 }
 
+/** A crash as recorded, with how many checks had passed before it. */
+export interface CrashRecord {
+  where: string;
+  reason: string;
+  passedBefore: number;
+}
+
 export type FailureLog =
-  | { kind: "failures"; lines: string[] }
-  /** The log exists but holds nothing, or does not exist: the run died first. */
+  /** At least one check failed. A crash beside them, if any, is carried too. */
+  | { kind: "failures"; lines: string[]; passed?: number; crashes?: CrashRecord[] }
+  /** No check failed, and a smoke crashed (#4062). */
+  | { kind: "crashed"; passed: number; crashes: CrashRecord[] }
+  /** Checks passed, none failed, nothing crashed, and yet the run failed (#4062). */
+  | { kind: "stopped"; passed: number }
+  /** The log exists but holds nothing, or does not exist: nothing was recorded. */
   | { kind: "none" }
   /** Configured, present, and unreadable: distinct from empty (L11). */
   | { kind: "unreadable"; reason: string };
@@ -87,11 +139,32 @@ export function readFailures(io: FailureLogIo, path: string | null): FailureLog 
     return { kind: "unreadable", reason: err instanceof Error ? err.message : String(err) };
   }
   if (raw === null) return { kind: "none" };
-  const lines = raw
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-  return lines.length > 0 ? { kind: "failures", lines } : { kind: "none" };
+  const lines: string[] = [];
+  const crashes: CrashRecord[] = [];
+  let passed = 0;
+  for (const raw_line of raw.split("\n")) {
+    const l = raw_line.trim();
+    if (!l) continue;
+    if (l === PASS_MARK) {
+      passed += 1;
+      continue;
+    }
+    if (l.startsWith(CRASH_MARK)) {
+      const body = l.slice(CRASH_MARK.length);
+      const at = body.indexOf(": ");
+      crashes.push(
+        at > 0
+          ? { where: body.slice(0, at), reason: body.slice(at + 2), passedBefore: passed }
+          : { where: "A smoke", reason: body, passedBefore: passed },
+      );
+      continue;
+    }
+    lines.push(l);
+  }
+  if (lines.length > 0) return { kind: "failures", lines, passed, crashes };
+  if (crashes.length > 0) return { kind: "crashed", passed, crashes };
+  if (passed > 0) return { kind: "stopped", passed };
+  return { kind: "none" };
 }
 
 /**

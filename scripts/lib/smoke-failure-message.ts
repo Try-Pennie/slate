@@ -7,7 +7,27 @@
 // which is why it lives here and imports nothing but a type: the alerter runs with
 // NO dependency install (AGENTS.md, "An alerting workflow carries no dependency
 // install"), and `scripts/test-dependency-free-scripts.ts` walks this file too.
-import type { FailureLog } from "./smoke-failure-log.ts";
+import type { CrashRecord, FailureLog } from "./smoke-failure-log.ts";
+
+/** "4 checks", "1 check". */
+function checks(n: number): string {
+  return n === 1 ? "1 check" : `${n} checks`;
+}
+
+/**
+ * #4062: the crash sentence, from what was recorded and nothing more. The first crash
+ * says how many checks had passed before it; any other is named after it.
+ */
+function crashSentence(crashes: CrashRecord[], leadIsAlso: boolean): string {
+  return crashes
+    .map((c, i) => {
+      const reason = c.reason.replace(/[.\s]+$/, "");
+      if (leadIsAlso || i > 0) return `${c.where} also crashed: ${reason}.`;
+      const when = c.passedBefore > 0 ? `after ${checks(c.passedBefore)} passed` : "before any check passed";
+      return `${c.where} crashed ${when}: ${reason}.`;
+    })
+    .join(" ");
+}
 
 export interface SmokeFailureContext {
   /** Which pass ran: "full" (real bookings) or "dry" (side effect free tick). */
@@ -59,7 +79,13 @@ export function buildSmokeFailureMessage(ctx: SmokeFailureContext): string {
     const more = rest > 0 ? `\n(and ${rest} more in the run)` : "";
     const count =
       ctx.failures.lines.length === 1 ? "1 check failed" : `${ctx.failures.lines.length} checks failed`;
-    return [`${head} ${count}:`, named.join("\n") + more, ctx.runUrl].join("\n");
+    const crashes = ctx.failures.crashes ?? [];
+    return [
+      `${head} ${count}:`,
+      named.join("\n") + more,
+      ...(crashes.length > 0 ? [crashSentence(crashes, true)] : []),
+      ctx.runUrl,
+    ].join("\n");
   }
   if (ctx.failures.kind === "unreadable") {
     return [
@@ -67,13 +93,21 @@ export function buildSmokeFailureMessage(ctx: SmokeFailureContext): string {
       ctx.runUrl,
     ].join("\n");
   }
-  // No check reported at all. That is not "nothing failed": it means the run died
-  // before any check ran, which is what an unparseable base URL or a missing key
-  // looks like, and it points somewhere different from a failed check.
-  return [
-    `${head} No check reported a result, so the run stopped before the checks began: look for a crash, a missing key, or a misconfigured base URL rather than a booking regression.`,
-    ctx.runUrl,
-  ].join("\n");
+  // #4062: each of the remaining states says only what the log holds. On 2026-10-21
+  // an empty log was read as "the run stopped before the checks began" when 4 checks
+  // had passed and then the run crashed; passes and the crash are recorded now.
+  if (ctx.failures.kind === "crashed") {
+    return [`${head} ${crashSentence(ctx.failures.crashes, false)}`, ctx.runUrl].join("\n");
+  }
+  if (ctx.failures.kind === "stopped") {
+    return [
+      `${head} ${checks(ctx.failures.passed)} passed, then the run stopped without recording a failure or a crash. Open the run log.`,
+      ctx.runUrl,
+    ].join("\n");
+  }
+  // Nothing at all: no pass, no failure, no crash. Said as exactly that, without
+  // guessing which of a killed job, a missing key or a broken setup it was.
+  return [`${head} No check reported a result and no crash was recorded. Open the run log.`, ctx.runUrl].join("\n");
 }
 
 /**
@@ -85,7 +119,14 @@ export function buildSmokeFailureMessage(ctx: SmokeFailureContext): string {
  * since either is a different problem from a failed check.
  */
 export function smokeFailureChecks(failures: FailureLog): string[] {
-  if (failures.kind === "failures") return failures.lines.map(checkText).filter((l) => l !== "");
+  // #4062: a crash is a subject naming the smoke, never its reason, so the same crash
+  // on a different socket error is the same subject.
+  const crashed = (crashes: CrashRecord[] | undefined) => (crashes ?? []).map((c) => `${c.where.toLowerCase()} crashed`);
+  if (failures.kind === "failures") {
+    return [...failures.lines.map(checkText).filter((l) => l !== ""), ...crashed(failures.crashes)];
+  }
   if (failures.kind === "unreadable") return ["the failed checks could not be read"];
+  if (failures.kind === "crashed") return crashed(failures.crashes);
+  if (failures.kind === "stopped") return ["the run stopped without a record"];
   return ["no check reported a result"];
 }

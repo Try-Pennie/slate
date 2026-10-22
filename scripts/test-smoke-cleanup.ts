@@ -124,7 +124,7 @@ async function main(): Promise<void> {
     const named = api.failures.filter((f) => f.includes("b1") && /left active/.test(f));
     eq(named.length, 1, `booking b1 is named as left active exactly once (got: ${api.failures.join(" | ")})`);
     assert(
-      api.failures.some((f) => f.includes("ext-1") && /could not list/.test(f) && f.includes("ECONNRESET")),
+      api.failures.some((f) => f.includes("ext-1") && /could not list/.test(f) && f.includes("the connection was reset")),
       `the failed sweep read is a failed check naming the identity (got: ${api.failures.join(" | ")})`,
     );
   }

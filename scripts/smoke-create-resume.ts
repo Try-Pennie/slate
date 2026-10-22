@@ -31,6 +31,7 @@ import { buildResumeReservation, type PersistedBookingRow } from "./create-resum
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
 import { smokeAttendee } from "./lib/smoke-identity.ts";
+import { recordSmokeCrash } from "./lib/smoke-crash.ts";
 import {
   cancelSmokeBooking,
   createCheckMessage,
@@ -247,6 +248,7 @@ main().then(
   () => process.exit(failed() === 0 ? 0 : 1),
   (e) => {
     console.error("smoke crashed:", e);
+    recordSmokeCrash("The create resume smoke", e); // #4062
     process.exit(1);
   },
 );

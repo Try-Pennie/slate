@@ -37,13 +37,15 @@ export interface RescheduleSmokeDeps {
 
 const REASON = "schedule_conflict";
 
+/** How the reschedule smoke names itself in the crash record and the alert (#4062). */
+export const RESCHEDULE_SMOKE_NAME = "The reschedule smoke";
+
 /**
- * The script's exit code for a run that returned: 1 when the bucket could not host it
- * or any check failed, 0 only when every check passed. A crash exits 1 from the
- * script's own catch.
+ * The script's exit code: 1 when the run crashed, the bucket could not host it or any
+ * check failed, 0 only when every check passed.
  */
-export function rescheduleSmokeExitCode(outcome: "ran" | "too_few_slots", failures: number): 0 | 1 {
-  return outcome === "too_few_slots" || failures > 0 ? 1 : 0;
+export function rescheduleSmokeExitCode(outcome: "ran" | "too_few_slots" | "crashed", failures: number): 0 | 1 {
+  return outcome !== "ran" || failures > 0 ? 1 : 0;
 }
 
 /**

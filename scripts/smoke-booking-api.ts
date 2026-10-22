@@ -95,7 +95,9 @@ import {
   failureLogPath,
   nodeSmokeFailureIo,
   recordFailure,
+  recordPass,
 } from "./lib/smoke-failure-log.ts";
+import { recordSmokeCrash } from "./lib/smoke-crash.ts";
 import { responseDetail, type SmokeResponse } from "./lib/smoke-response-detail.ts";
 import {
   evaluateStaticAssetTransport,
@@ -155,6 +157,10 @@ function check(cond: boolean, msg: string, res?: SmokeResponse) {
   if (!cond) {
     failures++;
     recordFailure(nodeSmokeFailureIo, failureLog, line);
+  } else {
+    // #4062: a pass is recorded too, so a crash after passing checks is never read
+    // as a run that stopped before the checks began.
+    recordPass(nodeSmokeFailureIo, failureLog);
   }
 }
 function skip(msg: string) {
@@ -872,4 +878,11 @@ async function main() {
   printSummaryAndExit();
 }
 
-void main();
+// #4062: a rejected main used to be dropped (`void main()`), so node died on an
+// unhandled rejection and the failure log held nothing about it. Record the crash
+// with a short reason, after the cleanup in main's finally has run.
+main().catch((e) => {
+  console.error("smoke crashed:", e);
+  recordSmokeCrash("The booking smoke", e);
+  process.exit(1);
+});
