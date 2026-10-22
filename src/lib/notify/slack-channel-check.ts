@@ -28,6 +28,8 @@
  * correct channel is refused and nobody can save anything. So it is a third
  * outcome that SAYS SO, and the panel repeats it.
  */
+import { WHERE_TO_FIND_CHANNEL_ID } from "@/lib/notify/slack-channel-input";
+
 export type ChannelCheck =
   /** Slack confirmed it, and the bot can post there. */
   | { state: "ok"; name: string | null }
@@ -46,7 +48,9 @@ export function channelCheckMessage(check: ChannelCheck, channel: string): strin
     case "ok":
       return check.name ? `Checked: ${channel} is #${check.name}.` : `Checked: ${channel} exists.`;
     case "not-found":
-      return `Slack has no channel ${channel}. Check the id: an alert sent to a channel that does not exist goes nowhere and nothing can tell you.`;
+      // #2438: says where the right id is, since "check the id" alone sends the
+      // reader to look without saying where (L111).
+      return `Slack has no channel ${channel}. Check the id: an alert sent to a channel that does not exist goes nowhere and nothing can tell you. ${WHERE_TO_FIND_CHANNEL_ID}`;
     case "not-invited":
       return `Slate is not in ${check.name ? `#${check.name}` : channel}. Invite the Slate app to that channel, then save again.`;
     case "cannot-check":
@@ -103,6 +107,23 @@ export function readChannelReply(reply: {
  *  ask successfully rather than that the channel has no name. */
 export function checkedName(check: ChannelCheck): string | null {
   return check.state === "ok" || check.state === "not-invited" ? check.name : null;
+}
+
+/**
+ * The names Slack gave for each checked id, for the channel fields (#2438).
+ *
+ * A private channel is never in the list the picker reads, so without this a
+ * stored private channel showed as its bare id. The panel already asks Slack
+ * about every stored channel, and those answers carry the name, so the fields
+ * read them rather than asking again. An id with no named answer is left out.
+ */
+export function channelNames(checks: ReadonlyMap<string, ChannelCheck>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [id, check] of checks) {
+    const name = checkedName(check);
+    if (name) out[id] = name;
+  }
+  return out;
 }
 
 /** Whether the outcome still needs a sentence of its own beneath the line.

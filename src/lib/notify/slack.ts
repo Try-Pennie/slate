@@ -3,6 +3,7 @@ import { log } from "@/lib/log";
 import { isLoadtest, loadtestRefusal } from "@/lib/loadtest-guard";
 import { defaultAlertsChannel } from "@/lib/notify/channels";
 import { fetchWithinBudget } from "@/lib/call-budget";
+import type { SlackChannelListing, SlackChannelOption } from "@/lib/notify/slack-channel-input";
 
 // Slack normally answers in well under a second; cap every call so a slow or
 // unreachable Slack can never wedge the flow awaiting it (a booking/OOO submit,
@@ -120,32 +121,39 @@ async function slackApi(
 }
 
 /**
- * The channels this workspace has, for the picker (#1957).
+ * The channels this workspace has, for the picker (#1957) and for turning a
+ * typed channel NAME into its id at save time (#2438).
  *
  * The issue's title is the whole point: a person picks a channel by NAME and
  * Slate stores the id. Before this the field took an id typed from memory and
  * accepted anything.
  *
- * Paginated, and deliberately BOUNDED rather than exhaustive. The list feeds a
- * `datalist`, which suggests without restricting: the field still takes any id
- * typed into it, so a channel past the bound (or a private one, which needs
- * `groups:read`) is reachable by typing it and is then checked by
- * `fetchSlackChannel` like any other. Measured 2026-09-06 the workspace has 13
- * public channels, one page.
+ * Paginated, and deliberately BOUNDED rather than exhaustive. The picker suggests
+ * without restricting: the field still takes any id pasted into it, so a channel
+ * past the bound (or a private one, which needs `groups:read`) is reachable by
+ * its id and is then checked by `fetchSlackChannel` like any other. Measured
+ * 2026-09-06 the workspace has 13 public channels, one page.
  *
- * Never throws, and an unreadable list is an EMPTY list of suggestions rather
- * than a broken page: the field it decorates works without it.
+ * Never throws. An unreadable list SAYS so (`readable: false`) rather than
+ * answering an empty one (#2438): the save reads this to resolve a typed name,
+ * and an empty list standing for "could not read" would refuse a real channel
+ * as one that does not exist. A list cut short by a failed later page or by the
+ * bound says so too (`complete: false`), and keeps what it read.
  */
-export async function listSlackChannels(): Promise<{ id: string; name: string; isMember: boolean }[]> {
-  const out: { id: string; name: string; isMember: boolean }[] = [];
+export async function listSlackChannels(): Promise<SlackChannelListing> {
+  const out: SlackChannelOption[] = [];
   let cursor = "";
+  let complete = false;
   for (let page = 0; page < 5; page++) {
     const reply = await slackApi(
       "conversations.list",
       { limit: 200, exclude_archived: true, types: "public_channel", ...(cursor ? { cursor } : {}) },
       "form",
     );
-    if (!reply.ok) break;
+    if (!reply.ok) {
+      if (page === 0) return { readable: false, why: reply.error ?? "Slack did not answer" };
+      break;
+    }
     for (const c of (reply.data?.channels ?? []) as { id?: string; name?: string; is_member?: boolean }[]) {
       if (typeof c.id === "string" && typeof c.name === "string") {
         out.push({ id: c.id, name: c.name, isMember: c.is_member === true });
@@ -153,13 +161,17 @@ export async function listSlackChannels(): Promise<{ id: string; name: string; i
     }
     const meta = reply.data?.response_metadata as { next_cursor?: string } | undefined;
     cursor = typeof meta?.next_cursor === "string" ? meta.next_cursor : "";
-    if (!cursor) break;
+    if (!cursor) {
+      complete = true;
+      break;
+    }
   }
   // A channel the bot is IN comes first: those are the ones an alert can
   // actually reach, and the rest need an invite before they will work.
-  return out.sort(
+  const channels = out.sort(
     (a, b) => Number(b.isMember) - Number(a.isMember) || a.name.localeCompare(b.name),
   );
+  return { readable: true, channels, complete };
 }
 
 /**

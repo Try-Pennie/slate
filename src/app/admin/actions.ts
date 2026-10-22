@@ -11,12 +11,17 @@ import {
   type LoadedVersion,
 } from "@/lib/admin/edit-version";
 import { HOURS_CHANGED_SQLSTATE } from "@/lib/calcom/import-write";
-import { fetchSlackChannel } from "@/lib/notify/slack";
+import { fetchSlackChannel, listSlackChannels } from "@/lib/notify/slack";
 import {
   channelCheckMessage,
   readChannelReply,
   refusesSave,
 } from "@/lib/notify/slack-channel-check";
+import {
+  channelInputMessage,
+  looksLikeChannelId,
+  resolveChannelInput,
+} from "@/lib/notify/slack-channel-input";
 import { cookies } from "next/headers";
 import { refreshOnePhoto, runAdvisorPhotoLane } from "@/lib/advisor-photos/lane";
 import { photoOutcome, photoOutcomeQuery } from "@/lib/advisor-photos/copy";
@@ -1120,6 +1125,41 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
     redirect(`/admin/alerts${refusedQuery(parsed.errors.join(" "))}`);
   }
 
+  const channelFields = [
+    ["Alerts channel", "alerts_channel"],
+    ["Info channel", "info_channel"],
+    // #2367: checked the same way. A handoff channel that does not exist sends every
+    // handoff nowhere, and the lane's own page about it only fires half an hour later.
+    ["Handoff channel", "handoff_channel"],
+  ] as const;
+
+  // #2438: A NAME BECOMES ITS ID, before anything is checked or stored.
+  //
+  // The picker submits the id of a channel picked from its list, but a name typed
+  // and saved without picking still arrives as a name, and a name sent to
+  // `conversations.info` came back "Slack has no channel <name>": true, and naming
+  // the wrong mistake. So a value that is not an id is looked up in the same list
+  // the picker shows, and one matching nothing is refused with what was wrong with
+  // it and where an id is found. The rule is `resolveChannelInput`, which the
+  // picker also runs, so the field never accepts what this refuses (L99).
+  //
+  // The list is read only when some field holds a name: an id needs no list, and a
+  // save of three ids costs no extra call to Slack.
+  const needsChannelList = channelFields.some(([, key]) => {
+    const v = parsed.config[key];
+    return v !== null && !looksLikeChannelId(v);
+  });
+  const channelList = needsChannelList ? await listSlackChannels() : null;
+  for (const [label, key] of channelFields) {
+    const typed = parsed.config[key];
+    if (typed === null) continue;
+    const resolved = resolveChannelInput(typed, channelList);
+    if (!resolved.ok) {
+      redirect(`/admin/alerts${refusedQuery(`${label}: ${channelInputMessage(resolved)}`)}`);
+    }
+    parsed.config[key] = resolved.value;
+  }
+
   // #1957: CHECK A CHANNEL BEFORE STORING IT.
   //
   // The field accepted any string, and a typo sent every alert nowhere. The send
@@ -1138,13 +1178,8 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
   // PANEL says it could not check, on every render rather than once in a notice
   // that clears: being unable to check is a standing condition of the Slack app,
   // not an event that happened during this save (L126).
-  for (const [label, channel] of [
-    ["Alerts channel", parsed.config.alerts_channel],
-    ["Info channel", parsed.config.info_channel],
-    // #2367: checked the same way. A handoff channel that does not exist sends every
-    // handoff nowhere, and the lane's own page about it only fires half an hour later.
-    ["Handoff channel", parsed.config.handoff_channel],
-  ] as [string, string | null][]) {
+  for (const [label, key] of channelFields) {
+    const channel = parsed.config[key];
     // A blank field is not a channel to check: it MEANS fall back to the env or
     // to the alerts channel, and `parseMonitorSettingsForm` already turned it
     // into null. Asking Slack about "" would refuse every save that clears one.

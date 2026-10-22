@@ -62,7 +62,11 @@ import { floorTable } from "@/lib/admin/volume-floor-table";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
-import { SlackDestinations, SLACK_CHANNEL_LIST_ID } from "@/components/admin/SlackDestinations";
+import { SlackDestinations, checkChannels } from "@/components/admin/SlackDestinations";
+import { SlackChannelField } from "@/components/admin/SlackChannelField";
+import { listSlackChannels } from "@/lib/notify/slack";
+import { channelNames } from "@/lib/notify/slack-channel-check";
+import { effectiveChannels } from "@/lib/notify/channel-effective";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { lastChangedLine, shortStamp } from "@/lib/admin/last-changed";
@@ -341,6 +345,20 @@ export default async function AlertSettingsPage({
   const armed = lowVolumeArmed;
   const envAlerts = process.env.SLACK_ALERTS_CHANNEL ?? "";
   const envInfo = process.env.SLACK_INFO_CHANNEL ?? "";
+  // #2438: started here and NOT awaited, so the form draws at once and the Slack
+  // reads stream in. Both never reject. The checks cover every stored channel,
+  // the handoff one included, and serve the panel (where alerts land) and the
+  // fields (the name of a stored channel the list cannot hold, which is how a
+  // private channel still reads as #name). The list is read once for all three
+  // fields.
+  const effective = effectiveChannels(config, { alertsEnv: envAlerts, infoEnv: envInfo });
+  const channelChecks = checkChannels([
+    effective.alerts.channel,
+    effective.info.channel,
+    config?.handoff_channel ?? "",
+  ]);
+  const storedChannelNames = channelChecks.then(channelNames);
+  const slackChannelList = listSlackChannels();
 
   return (
     <>
@@ -732,7 +750,12 @@ export default async function AlertSettingsPage({
               <p className="mb-4 text-xs text-fg-muted">Reading the current destinations...</p>
             }
           >
-            <SlackDestinations config={config} envAlerts={envAlerts} envInfo={envInfo} />
+            <SlackDestinations
+              config={config}
+              envAlerts={envAlerts}
+              envInfo={envInfo}
+              checks={channelChecks}
+            />
           </Suspense>
           <div className="space-y-4">
             <div>
@@ -742,17 +765,19 @@ export default async function AlertSettingsPage({
               <label className={labelCls} htmlFor="alerts_channel">
                 Alerts channel (urgent)
               </label>
-              <input
+              {/* #2438: Slate's own picker, not a native datalist. It shows the
+                  channel by name and posts its id. */}
+              <SlackChannelField
                 id="alerts_channel"
                 name="alerts_channel"
-                type="text"
-                list={SLACK_CHANNEL_LIST_ID}
                 defaultValue={config?.alerts_channel ?? ""}
+                listing={slackChannelList}
+                names={storedChannelNames}
                 // #1957: no bare id here either. The panel above already names
                 // the deployment's default channel, and the id repeated in grey
                 // was the last place on this page that made a person look one up.
                 placeholder={envAlerts ? "blank uses the default above" : "pick a channel or paste an id"}
-                className={`${inputCls} w-72`}
+                className="w-72"
               />
             </div>
             <div>
@@ -760,14 +785,14 @@ export default async function AlertSettingsPage({
               <label className={labelCls} htmlFor="info_channel">
                 Info channel (quiet)
               </label>
-              <input
+              <SlackChannelField
                 id="info_channel"
                 name="info_channel"
-                type="text"
-                list={SLACK_CHANNEL_LIST_ID}
                 defaultValue={config?.info_channel ?? ""}
+                listing={slackChannelList}
+                names={storedChannelNames}
                 placeholder={envInfo ? `default ${envInfo}` : "falls back to alerts channel"}
-                className={`${inputCls} w-72`}
+                className="w-72"
               />
             </div>
             <div>
@@ -776,16 +801,16 @@ export default async function AlertSettingsPage({
               <label className={labelCls} htmlFor="handoff_channel">
                 Handoff channel (sales)
               </label>
-              <input
+              <SlackChannelField
                 id="handoff_channel"
                 name="handoff_channel"
-                type="text"
-                list={SLACK_CHANNEL_LIST_ID}
                 defaultValue={config?.handoff_channel ?? ""}
+                listing={slackChannelList}
+                names={storedChannelNames}
                 // #2367: no fallback to either channel above, deliberately. A booking
                 // handoff posted where sales does not read reaches nobody who can act.
                 placeholder="pick the channel sales reads"
-                className={`${inputCls} w-72`}
+                className="w-72"
               />
             </div>
             {/* Migration 0188: the owner reassign notice (#2372) posts only to the
