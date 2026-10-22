@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import AdminBookingActions from "@/components/AdminBookingActions";
 import {
@@ -658,6 +658,33 @@ describe("AdminBookingActions reroute (#3250)", () => {
     expect(screen.queryByRole("combobox", { name: "Correct bucket" })).toBeNull();
     expect(screen.getByRole("combobox", { name: "Debt level" })).toBeTruthy();
     expect(screen.getAllByRole("radio")).toHaveLength(3);
+  });
+
+  it("opens the booking's own Reassign picker from a nobody result, with focus inside it (#4043)", async () => {
+    const user = userEvent.setup();
+    const OUT = {
+      kind: "none",
+      requested: { id: "b512", code: "512", name: "n512" },
+      current: { advisor: { userId: "u1", name: "Taylor Brooks", email: "t@x.com" }, reason: "time_off" },
+    };
+    const fn = mockFetch();
+    const base = fn.getMockImplementation()!;
+    fn.mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (u.endsWith("/reroute") && init?.method === "POST") return { ok: true, status: 200, json: async () => OUT } as Response;
+      if (u.endsWith("/reroute")) return { ok: true, status: 200, json: async () => ({ proposal: null }) } as Response;
+      return base(url, init);
+    });
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="100" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} currentAgentId="u1" />);
+    await user.click(screen.getByRole("button", { name: "Reroute" }));
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await user.click(await screen.findByRole("button", { name: "Reassign to another advisor" }));
+    // The same picker the booking's own Reassign opens: its reason, then its agents.
+    // The button that was pressed is gone, so focus moves to the picker's first choice.
+    const group = screen.getByRole("group", { name: "Why are you reassigning?" });
+    expect(document.activeElement).toBe(within(group).getAllByRole("radio")[0]);
+    expect(await screen.findByRole("button", { name: "Bea Agent" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Find an advisor" })).toBeNull();
   });
 
   it("leaves Reroute when another action is chosen", async () => {
