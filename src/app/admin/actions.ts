@@ -14,9 +14,11 @@ import { HOURS_CHANGED_SQLSTATE } from "@/lib/calcom/import-write";
 import { fetchSlackChannel, listSlackChannels } from "@/lib/notify/slack";
 import {
   channelCheckMessage,
+  channelNames,
   readChannelReply,
   refusesSave,
 } from "@/lib/notify/slack-channel-check";
+import { checkChannels } from "@/lib/notify/slack-channel-names";
 import {
   channelInputMessage,
   looksLikeChannelId,
@@ -1091,6 +1093,30 @@ export async function setWorkingHours(form: FormData): Promise<void> {
 }
 
 /**
+ * The names Slack gives for the channels STORED on /admin/alerts, by id (#2438).
+ *
+ * The same set the page hands the channel fields, so a name the field accepts is
+ * one this save accepts (L99). A failed read is NO names, never a guess: the
+ * typed name then stays unmatched and the save refuses it, which is the safe side,
+ * since the alternative is storing a name nothing has resolved.
+ */
+async function storedChannelNames(): Promise<Record<string, string>> {
+  const { data, error } = await supabaseAdmin()
+    .from("monitor_alert_config")
+    .select("alerts_channel, info_channel, handoff_channel")
+    .eq("id", 1)
+    .maybeSingle();
+  if (error) {
+    log.warn("admin-actions", { msg: "stored channels could not be read to resolve a typed name" }, error);
+    return {};
+  }
+  const row = (data ?? {}) as Partial<Record<"alerts_channel" | "info_channel" | "handoff_channel", string | null>>;
+  const ids = [row.alerts_channel, row.info_channel, row.handoff_channel].filter((c): c is string => !!c);
+  if (ids.length === 0) return {};
+  return channelNames(await checkChannels(ids), ids);
+}
+
+/**
  * Saves the UI-tunable monitor alert settings (#571). Blank fields revert to
  * fallback (explicit null, never 0); out-of-range values are refused. Each row is
  * written as one complete object so clearing one field can't wipe a sibling.
@@ -1150,10 +1176,18 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
     return v !== null && !looksLikeChannelId(v);
   });
   const channelList = needsChannelList ? await listSlackChannels() : null;
+  // A private channel is never in that list, but one already STORED was named by
+  // Slack when asked about its id, and the field displays that name, so typing it
+  // back must save (#2438 review). Asked only when a name misses the list.
+  let storedNames: Record<string, string> | null = null;
   for (const [label, key] of channelFields) {
     const typed = parsed.config[key];
     if (typed === null) continue;
-    const resolved = resolveChannelInput(typed, channelList);
+    let resolved = resolveChannelInput(typed, channelList);
+    if (!resolved.ok) {
+      storedNames ??= await storedChannelNames();
+      resolved = resolveChannelInput(typed, channelList, storedNames);
+    }
     if (!resolved.ok) {
       redirect(`/admin/alerts${refusedQuery(`${label}: ${channelInputMessage(resolved)}`)}`);
     }

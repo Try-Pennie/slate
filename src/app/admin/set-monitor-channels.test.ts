@@ -26,7 +26,19 @@ const redirect = vi.hoisted(() =>
   }),
 );
 const upsert = vi.hoisted(() => vi.fn(async () => ({ error: null })));
-const from = vi.hoisted(() => vi.fn(() => ({ upsert })));
+// #2438: the stored channel row, read only when a typed name is not in the list.
+const stored = vi.hoisted(() => ({
+  row: null as Record<string, string | null> | null,
+  error: null as { message: string } | null,
+}));
+const from = vi.hoisted(() =>
+  vi.fn(() => ({
+    upsert,
+    select: () => ({
+      eq: () => ({ maybeSingle: async () => ({ data: stored.row, error: stored.error }) }),
+    }),
+  })),
+);
 const slack = vi.hoisted(() => ({
   asked: [] as string[],
   reply: { ok: true, data: { channel: { name: "alerts", is_member: true } } } as {
@@ -88,6 +100,8 @@ function form(entries: Record<string, string>): FormData {
 beforeEach(() => {
   vi.clearAllMocks();
   slack.asked = [];
+  stored.row = null;
+  stored.error = null;
   listing.listed = 0;
   listing.reply = {
     readable: true,
@@ -252,9 +266,9 @@ describe("setMonitorSettings channel check", () => {
     expect(recordAudit).not.toHaveBeenCalled();
     expect(channels.clearChannelCache).not.toHaveBeenCalled();
     const msg = decodeURIComponent(String(redirect.mock.calls[0][0]));
-    expect(msg).toMatch(/^\/admin\/alerts\?error=Handoff channel: Slate cannot find a public channel called #stauspage/);
-    expect(msg).toMatch(/bottom of the About tab/);
-    expect(msg).not.toMatch(/Slack has no channel/);
+    expect(msg).toBe(
+      "/admin/alerts?error=Handoff channel: No channel called #stauspage. Pick one from the list or paste its channel ID.",
+    );
   });
 
   // THE LIST CANNOT BE READ: a name cannot be looked up, and the refusal says THAT
@@ -266,8 +280,61 @@ describe("setMonitorSettings channel check", () => {
     );
     expect(upsert).not.toHaveBeenCalled();
     const msg = decodeURIComponent(String(redirect.mock.calls[0][0]));
-    expect(msg).toMatch(/Alerts channel: Slate could not read Slack's channel list/);
-    expect(msg).toMatch(/Paste the channel ID/);
+    expect(msg).toBe(
+      "/admin/alerts?error=Alerts channel: Slate could not read Slack's channel list to find #statuspage. Paste its channel ID instead.",
+    );
+  });
+
+  // #2438 review: A PRIVATE CHANNEL ALREADY STORED is never in the public list, and
+  // its name is known only from Slack's answer about its id. Typing that name (the
+  // one the field itself displays) saves the id.
+  it("stores a typed name of a private channel that is already stored, as its id", async () => {
+    listing.reply = {
+      readable: true,
+      complete: true,
+      channels: [{ id: "C08A3BYMB29", name: "statuspage", isMember: true }],
+    };
+    // The Slack double gives one answer for every id, so only the private channel
+    // is stored here; otherwise every stored id would carry its name.
+    stored.row = { alerts_channel: null, info_channel: "C09F4L6PLQP", handoff_channel: null };
+    slack.reply = { ok: true, data: { channel: { name: "dan-systems-test", is_member: true } } };
+    await expect(setMonitorSettings(form({ handoff_channel: "#dan-systems-test" }))).rejects.toThrow(
+      /NEXT_REDIRECT:.*ok=alerts/,
+    );
+    const configWrite = upsert.mock.calls
+      .map((c) => (c as unknown[])[0])
+      .find((p) => !Array.isArray(p)) as Record<string, unknown> | undefined;
+    expect(configWrite?.handoff_channel).toBe("C09F4L6PLQP");
+  });
+
+  it("still refuses a name matching neither the list nor a stored channel", async () => {
+    listing.reply = {
+      readable: true,
+      complete: true,
+      channels: [{ id: "C08A3BYMB29", name: "statuspage", isMember: true }],
+    };
+    stored.row = { alerts_channel: null, info_channel: "C09F4L6PLQP", handoff_channel: null };
+    slack.reply = { ok: true, data: { channel: { name: "dan-systems-test", is_member: true } } };
+    await expect(setMonitorSettings(form({ handoff_channel: "elsewhere" }))).rejects.toThrow(
+      /NEXT_REDIRECT:.*error=/,
+    );
+    expect(upsert).not.toHaveBeenCalled();
+    expect(decodeURIComponent(String(redirect.mock.calls[0][0]))).toMatch(/No channel called #elsewhere\./);
+  });
+
+  // FAILURE PATH: the stored channels cannot be read. The typed name is refused as
+  // unmatched, never stored as typed and never guessed.
+  it("refuses the name when the stored channels cannot be read", async () => {
+    listing.reply = {
+      readable: true,
+      complete: true,
+      channels: [{ id: "C08A3BYMB29", name: "statuspage", isMember: true }],
+    };
+    stored.error = { message: "read timeout" };
+    await expect(setMonitorSettings(form({ handoff_channel: "dan-systems-test" }))).rejects.toThrow(
+      /NEXT_REDIRECT:.*error=/,
+    );
+    expect(upsert).not.toHaveBeenCalled();
   });
 
   // The list is read ONCE for a save with several names in it.

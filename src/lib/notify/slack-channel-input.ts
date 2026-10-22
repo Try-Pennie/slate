@@ -67,45 +67,63 @@ export function channelLabel(c: SlackChannelOption): string {
 }
 
 /**
- * Where a channel ID is found in Slack, as the steps a person takes. Slack shows
- * it at the bottom of the channel's About tab, which opens from the channel name.
+ * The way out of every channel refusal, one short instruction (Dan's plain error
+ * copy rule: one line of what went wrong, one short instruction, never a
+ * paragraph). Shared so the field, the save and the panel say it the same way.
  */
-export const WHERE_TO_FIND_CHANNEL_ID =
-  "To find an ID in Slack, open the channel, click its name at the top, and copy the Channel ID from the bottom of the About tab.";
+export const CHANNEL_WAY_OUT = "Pick one from the list or paste its channel ID.";
 
+/**
+ * What a typed value means.
+ *
+ * `names` are the names Slack gave for the STORED channels when they were checked
+ * by id (`channelNames`). A private channel is never in the public list, so this
+ * is the only way its name can be typed back, and it is the name the field itself
+ * displays (#2438 review). The list wins where both hold a name, so one name never
+ * means two channels.
+ */
 export function resolveChannelInput(
   raw: string,
   listing: SlackChannelListing | null,
+  names: Readonly<Record<string, string>> = {},
 ): ChannelResolution {
   const typed = raw.trim();
   if (typed === "") return { ok: true, value: null };
+  const name = asName(typed);
 
   if (listing?.readable) {
     const byId = listing.channels.find((c) => c.id === typed);
     if (byId) return { ok: true, value: byId.id };
-    const name = asName(typed);
     const byName = listing.channels.find((c) => c.name.toLowerCase() === name);
     if (byName) return { ok: true, value: byName.id };
   }
+  const stored = Object.entries(names).find(([, n]) => n.toLowerCase() === name);
+  if (stored) return { ok: true, value: stored[0] };
   // An ID the list does not hold is still a real candidate: a private channel is
   // never in the list Slate reads, and that is why the field is typeable at all.
   // The save asks Slack about it directly (`conversations.info`).
   if (looksLikeChannelId(typed)) return { ok: true, value: typed };
 
-  const name = typed.replace(/^#+/, "").trim();
-  if (!listing?.readable) return { ok: false, reason: "listing-unreadable", name };
-  return { ok: false, reason: "no-match", name, complete: listing.complete };
+  const shown = typed.replace(/^#+/, "").trim();
+  if (!listing?.readable) return { ok: false, reason: "listing-unreadable", name: shown };
+  return { ok: false, reason: "no-match", name: shown, complete: listing.complete };
 }
 
-/** The sentence a refused value gets, naming what was wrong with it and the way out. */
+/** The note under a picked channel Slate is not in: the save would refuse it. */
+export function notInChannelNote(c: SlackChannelOption): string {
+  return `Slate is not in ${channelLabel(c)}. Invite the Slate app before saving.`;
+}
+
+/** The sentence a refused value gets: what was wrong, then the way out. */
 export function channelInputMessage(
   refusal: Extract<ChannelResolution, { ok: false }>,
 ): string {
   if (refusal.reason === "listing-unreadable") {
-    return `Slate could not read Slack's channel list, so it cannot look up #${refusal.name} by name. Paste the channel ID instead. ${WHERE_TO_FIND_CHANNEL_ID}`;
+    return `Slate could not read Slack's channel list to find #${refusal.name}. Paste its channel ID instead.`;
   }
-  const partial = refusal.complete ? "" : " Slate could read only part of Slack's channel list.";
-  return `Slate cannot find a public channel called #${refusal.name}.${partial} Pick one from the list, or paste the channel ID, which is the only way to reach a private channel. ${WHERE_TO_FIND_CHANNEL_ID}`;
+  // A partial list may only claim the part it read (L11).
+  const where = refusal.complete ? "" : " in the part of Slack's list Slate could read";
+  return `No channel called #${refusal.name}${where}. ${CHANNEL_WAY_OUT}`;
 }
 
 /**

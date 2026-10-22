@@ -10,6 +10,7 @@ import {
   channelLabel,
   channelText,
   filterChannels,
+  notInChannelNote,
   resolveChannelInput,
   type SlackChannelListing,
   type SlackChannelOption,
@@ -154,14 +155,16 @@ export function SlackChannelField({
   );
 
   /** What the settled value resolves to against the list (null list while loading). */
-  const settled = resolveChannelInput(committed, list);
+  // `known` too: the name of a stored private channel, which the box displays, has
+  // to be typeable back (#2438 review). The save resolves with the same names.
+  const settled = resolveChannelInput(committed, list, known);
   const settledId = settled.ok ? (settled.value ?? "") : "";
   const settledChannel = channels.find((c) => c.id === settledId) ?? null;
   const shown = dirty ? text : settledId ? channelText(settledId, channels, known) : committed;
 
   // What the form posts. Derived from what is in the box NOW, so a Save pressed
   // straight after typing posts the ID for a typed name, not the name.
-  const live = dirty ? resolveChannelInput(text, list) : settled;
+  const live = dirty ? resolveChannelInput(text, list, known) : settled;
   const posted = live.ok ? (live.value ?? "") : (dirty ? text : committed).trim();
 
   /**
@@ -210,7 +213,7 @@ export function SlackChannelField({
   /** Settle what is typed: a name or an ID resolves, anything else stands as typed. */
   function settle() {
     if (dirty) {
-      const r = resolveChannelInput(text, list);
+      const r = resolveChannelInput(text, list, known);
       setCommitted(r.ok ? (r.value ?? "") : text.trim());
       setDirty(false);
     }
@@ -346,8 +349,7 @@ export function SlackChannelField({
         </p>
       ) : settledChannel && !settledChannel.isMember ? (
         <p className={`mt-1 text-xs text-fg-muted ${proseCls}`}>
-          Invite the Slate app to {channelLabel(settledChannel)} before saving. Slate is not in it
-          yet, so the save would be refused.
+          {notInChannelNote(settledChannel)}
         </p>
       ) : null}
     </div>

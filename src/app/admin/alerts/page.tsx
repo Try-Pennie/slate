@@ -62,7 +62,8 @@ import { floorTable } from "@/lib/admin/volume-floor-table";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
-import { SlackDestinations, checkChannels } from "@/components/admin/SlackDestinations";
+import { SlackDestinations } from "@/components/admin/SlackDestinations";
+import { checkChannels } from "@/lib/notify/slack-channel-names";
 import { SlackChannelField } from "@/components/admin/SlackChannelField";
 import { listSlackChannels } from "@/lib/notify/slack";
 import { channelNames } from "@/lib/notify/slack-channel-check";
@@ -357,7 +358,12 @@ export default async function AlertSettingsPage({
     effective.info.channel,
     config?.handoff_channel ?? "",
   ]);
-  const storedChannelNames = channelChecks.then(channelNames);
+  // Only the STORED channels' names, the same set the save looks a typed name up
+  // in, so the field never takes a name the save would refuse (L99).
+  const storedIds = [config?.alerts_channel, config?.info_channel, config?.handoff_channel].filter(
+    (c): c is string => !!c,
+  );
+  const storedChannelNames = channelChecks.then((checks) => channelNames(checks, storedIds));
   const slackChannelList = listSlackChannels();
 
   return (

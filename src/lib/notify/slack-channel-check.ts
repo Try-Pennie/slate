@@ -28,7 +28,7 @@
  * correct channel is refused and nobody can save anything. So it is a third
  * outcome that SAYS SO, and the panel repeats it.
  */
-import { WHERE_TO_FIND_CHANNEL_ID } from "@/lib/notify/slack-channel-input";
+import { CHANNEL_WAY_OUT } from "@/lib/notify/slack-channel-input";
 
 export type ChannelCheck =
   /** Slack confirmed it, and the bot can post there. */
@@ -48,9 +48,9 @@ export function channelCheckMessage(check: ChannelCheck, channel: string): strin
     case "ok":
       return check.name ? `Checked: ${channel} is #${check.name}.` : `Checked: ${channel} exists.`;
     case "not-found":
-      // #2438: says where the right id is, since "check the id" alone sends the
-      // reader to look without saying where (L111).
-      return `Slack has no channel ${channel}. Check the id: an alert sent to a channel that does not exist goes nowhere and nothing can tell you. ${WHERE_TO_FIND_CHANNEL_ID}`;
+      // #2438: one line of what went wrong and the field's own way out, the shape
+      // of every channel refusal (Dan's plain error copy rule).
+      return `Slack has no channel ${channel}. ${CHANNEL_WAY_OUT}`;
     case "not-invited":
       return `Slate is not in ${check.name ? `#${check.name}` : channel}. Invite the Slate app to that channel, then save again.`;
     case "cannot-check":
@@ -116,10 +116,17 @@ export function checkedName(check: ChannelCheck): string | null {
  * stored private channel showed as its bare id. The panel already asks Slack
  * about every stored channel, and those answers carry the name, so the fields
  * read them rather than asking again. An id with no named answer is left out.
+ *
+ * `only` limits it to those ids. The fields pass the STORED channels, the same set
+ * the save can name, so a typed name the field accepts is one the save accepts.
  */
-export function channelNames(checks: ReadonlyMap<string, ChannelCheck>): Record<string, string> {
+export function channelNames(
+  checks: ReadonlyMap<string, ChannelCheck>,
+  only?: readonly string[],
+): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [id, check] of checks) {
+    if (only && !only.includes(id)) continue;
     const name = checkedName(check);
     if (name) out[id] = name;
   }

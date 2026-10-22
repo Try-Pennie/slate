@@ -20,7 +20,6 @@ import {
   filterChannels,
   looksLikeChannelId,
   resolveChannelInput,
-  WHERE_TO_FIND_CHANNEL_ID,
   type SlackChannelListing,
   type SlackChannelOption,
 } from "../src/lib/notify/slack-channel-input.ts";
@@ -130,37 +129,72 @@ eq(
 );
 
 // --- the sentences --------------------------------------------------------------
+// Dan's rule for a failure (feedback-plain-error-copy, settled for this field on
+// 2026-10-22): one plain line saying what went wrong, one short instruction, never
+// a paragraph. Pinned word for word, so a sentence growing back is a red test.
 if (!noMatch.ok) {
-  const m = channelInputMessage(noMatch);
-  assert(m.includes("#stauspage"), `the refusal names what was typed (${m})`);
-  assert(/cannot find a public channel/.test(m), "it says the NAME was not found, not that a channel does not exist");
-  assert(/private/.test(m), "it says a private channel is only reachable by its ID");
-  assert(m.includes(WHERE_TO_FIND_CHANNEL_ID), "it says where an ID is found");
-  assert(!/part of/.test(m), "a complete list does not claim to be partial");
+  eq(
+    channelInputMessage(noMatch),
+    "No channel called #stauspage. Pick one from the list or paste its channel ID.",
+    "a misspelt name gets one line of what was wrong and one short instruction",
+  );
 } else {
   assert(false, "the misspelt name was refused");
 }
 if (!partialMiss.ok) {
-  assert(
-    /only part of/.test(channelInputMessage(partialMiss)),
-    "a miss against a partial list says the list was partial",
+  eq(
+    channelInputMessage(partialMiss),
+    "No channel called #elsewhere in the part of Slack's list Slate could read. Pick one from the list or paste its channel ID.",
+    "a miss against a partial list claims only the part it read (L11)",
   );
 } else {
   assert(false, "the partial miss was refused");
 }
 if (!blind.ok) {
-  const m = channelInputMessage(blind);
-  assert(/could not read Slack's channel list/.test(m), `the unreadable refusal names the real cause (${m})`);
-  assert(m.includes("#statuspage"), "and what was typed");
-  assert(m.includes(WHERE_TO_FIND_CHANNEL_ID), "and where an ID is found");
+  eq(
+    channelInputMessage(blind),
+    "Slate could not read Slack's channel list to find #statuspage. Paste its channel ID instead.",
+    "an unreadable list names that cause, not a missing channel",
+  );
 } else {
   assert(false, "the blind name was refused");
 }
-assert(
-  /open the channel/.test(WHERE_TO_FIND_CHANNEL_ID) &&
-    /About/.test(WHERE_TO_FIND_CHANNEL_ID) &&
-    /bottom/.test(WHERE_TO_FIND_CHANNEL_ID),
-  "the remedy walks Slack's own route to an ID: the channel, its name, About, the bottom",
+for (const r of [noMatch, partialMiss, blind]) {
+  if (r.ok) continue;
+  const m = channelInputMessage(r);
+  eq(m.split(". ").length, 2, `two sentences, never a paragraph (${m})`);
+}
+
+// --- #2438 review: a private channel the page already named ----------------------
+// A stored private channel is never in the list, but Slack named it when the page
+// checked the stored channels. Typing that name saves its id, in the field and at
+// the save, since both pass the same names in.
+const storedNames = { C09F4L6PLQP: "dan-systems-test" };
+const publicOnly: SlackChannelListing = { readable: true, channels: [statuspage, random], complete: true };
+eq(
+  resolveChannelInput("dan-systems-test", publicOnly, storedNames),
+  { ok: true, value: "C09F4L6PLQP" },
+  "a typed name of a checked stored channel resolves to its id",
+);
+eq(
+  resolveChannelInput("#Dan-Systems-Test", publicOnly, storedNames),
+  { ok: true, value: "C09F4L6PLQP" },
+  "with its hash and in any case",
+);
+eq(
+  resolveChannelInput("dan-systems-test", unreadable, storedNames),
+  { ok: true, value: "C09F4L6PLQP" },
+  "even when the public list cannot be read, since the name came from Slack another way",
+);
+eq(
+  resolveChannelInput("statuspage", publicOnly, { C0OTHER0001: "statuspage" }),
+  { ok: true, value: "C08A3BYMB29" },
+  "the public list wins over a stored name, so one name never means two channels",
+);
+eq(
+  resolveChannelInput("nowhere", publicOnly, storedNames),
+  { ok: false, reason: "no-match", name: "nowhere", complete: true },
+  "a name matching neither the list nor a checked stored channel is still refused",
 );
 
 // --- what the box shows ---------------------------------------------------------

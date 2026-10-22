@@ -238,11 +238,58 @@ describe("SlackChannelField (#2438)", () => {
     await user.type(box(), "stauspage");
     await user.tab();
     const alert = screen.getByRole("alert");
-    expect(alert.textContent).toMatch(/Slate cannot find a public channel called #stauspage/);
-    expect(alert.textContent).toMatch(/bottom of the About tab/);
+    // One plain line and one short instruction (Dan's plain error copy rule).
+    expect(alert.textContent).toBe(
+      "No channel called #stauspage. Pick one from the list or paste its channel ID.",
+    );
     expect(box().getAttribute("aria-invalid")).toBe("true");
     expect(box().getAttribute("aria-describedby")).toBe(alert.id);
     expect((container.querySelector("form") as HTMLFormElement).checkValidity()).toBe(false);
+  });
+
+  // #2438 review: the field DISPLAYS #dan-systems-test (a private channel, named by
+  // Slack when the page checked the stored channels), so typing that same name
+  // must take it rather than refuse it as unknown.
+  it("takes a typed name of a stored private channel the page has named", async () => {
+    const user = userEvent.setup();
+    const { container } = renderField({
+      listing: Promise.resolve({ readable: true, complete: true, channels: [statuspage, random] }),
+      names: Promise.resolve({ C09F4L6PLQP: "dan-systems-test" }),
+    });
+    await settleListing();
+    await user.click(box());
+    await user.type(box(), "#dan-systems-test");
+    expect(submitted()).toBe("C09F4L6PLQP");
+    await user.tab();
+    expect(box().value).toBe("#dan-systems-test");
+    expect(submitted()).toBe("C09F4L6PLQP");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect((container.querySelector("form") as HTMLFormElement).checkValidity()).toBe(true);
+  });
+
+  // React's own warnings (a key, a controlled input switching, a ref) are console
+  // errors, and in the dev server they become the overlay's "Issue" badge. None
+  // may come from this field, through a whole pick and a refusal.
+  it("logs no console error through a pick, a refusal and a clear", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const user = userEvent.setup();
+      renderField({ defaultValue: "C09F4L6PLQP", names: Promise.resolve({ C09F4L6PLQP: "dan-systems-test" }) });
+      await settleListing();
+      await user.click(box());
+      await user.type(box(), "sta");
+      await user.keyboard("{ArrowDown}{Enter}");
+      await user.click(box());
+      await user.clear(box());
+      await user.type(box(), "stauspage");
+      await user.tab();
+      await user.click(box());
+      await user.clear(box());
+      await user.tab();
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("lifts the refusal once the name is corrected", async () => {
@@ -293,7 +340,9 @@ describe("SlackChannelField (#2438)", () => {
     await user.clear(box());
     await user.type(box(), "statuspage");
     await user.tab();
-    expect(screen.getByRole("alert").textContent).toMatch(/cannot look up #statuspage by name/);
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Slate could not read Slack's channel list to find #statuspage. Paste its channel ID instead.",
+    );
     // Not blocked here: the save reads the list again and decides.
     expect((container.querySelector("form") as HTMLFormElement).checkValidity()).toBe(true);
   });
@@ -324,7 +373,8 @@ describe("SlackChannelField (#2438)", () => {
     await user.click(box());
     await user.type(box(), "random");
     await user.click(within(screen.getByRole("listbox")).getByRole("option", { name: /#random/ }));
-    expect(screen.getByText(/Invite the Slate app to #random before saving/)).toBeTruthy();
+    // Same plain shape as the refusals: what is wrong, then one short instruction.
+    expect(screen.getByText("Slate is not in #random. Invite the Slate app before saving.")).toBeTruthy();
   });
 
   // #1994: a save killed by a deploy puts back what was typed, through the field's

@@ -29,7 +29,6 @@ import {
   type ChannelOrigin,
 } from "../src/lib/notify/channel-effective.ts";
 import { resolveChannels } from "../src/lib/notify/channels.ts";
-import { WHERE_TO_FIND_CHANNEL_ID } from "../src/lib/notify/slack-channel-input.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // ---------------------------------------------------------------- the mapping
@@ -71,15 +70,12 @@ import { assert, eq, finish } from "./lib/harness.ts";
     channelCheckMessage(notFound, "C123") !== channelCheckMessage(notIn, "C123"),
     "the two refusals say different things",
   );
-  assert(
-    /check the id/i.test(channelCheckMessage(notFound, "C123")),
-    "the typo case names the id as the thing to look at",
-  );
-  // #2438: and says where the right one is found, or "check the id" sends the
-  // reader to look without saying where (L111).
-  assert(
-    channelCheckMessage(notFound, "C123").includes(WHERE_TO_FIND_CHANNEL_ID),
-    "the typo case says where an id is found in Slack",
+  // #2438: one plain line of what went wrong and one short instruction, the same
+  // shape as the field's own refusals (Dan's plain error copy rule).
+  eq(
+    channelCheckMessage(notFound, "C123"),
+    "Slack has no channel C123. Pick one from the list or paste its channel ID.",
+    "the typo case names the id and the way out, in two short sentences",
   );
   assert(
     /invite/i.test(channelCheckMessage(notIn, "C123")),
@@ -154,6 +150,20 @@ import { assert, eq, finish } from "./lib/harness.ts";
     "only checks Slack answered with a name give one",
   );
   eq(channelNames(new Map()), {}, "no checks, no names");
+  // The fields resolve typed names against STORED channels only, the same set the
+  // save can name, so the field never accepts a name the save would refuse (L99).
+  // The panel's checks also cover the deployment's default channels, which are not.
+  eq(
+    channelNames(
+      new Map<string, ChannelCheck>([
+        ["C09F4L6PLQP", { state: "ok", name: "dan-systems-test" }],
+        ["C0ENVDEF01", { state: "ok", name: "env-default" }],
+      ]),
+      ["C09F4L6PLQP", "", "C0NOTCHKD1"],
+    ),
+    { C09F4L6PLQP: "dan-systems-test" },
+    "limited to the ids asked for",
+  );
 }
 
 // THE FOLLOW UP SENTENCE. A named, confirmed channel needs none: naming it is

@@ -30,7 +30,8 @@ vi.mock("@/lib/notify/slack", () => ({
   },
 }));
 
-import { SlackDestinations, checkChannels } from "./SlackDestinations";
+import { SlackDestinations } from "./SlackDestinations";
+import { checkChannels } from "@/lib/notify/slack-channel-names";
 
 const props = (
   config: { alerts_channel: string | null; info_channel: string | null } | null,
