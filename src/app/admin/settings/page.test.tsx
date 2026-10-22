@@ -565,14 +565,10 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
 
   it("control: with every Low lead on Slate, shows the pages' floors and no pilot line", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    const counts = [40, 0];
-    db.results.bookings = {
-      data: [{ id: "b1" }],
-      error: null,
-      get count() {
-        return counts.shift() ?? 0;
-      },
-    } as unknown as { data: unknown; error: unknown };
+    // #2974: the real booking count is read as rows, so the fake answers every bookings
+    // read with 40 sourced page bookings framed by the production site.
+    const sourced = { id: "b1", source: "offerhub", parent_origin: "https://trypennie.com", referrer_origin: null };
+    db.results.bookings = { data: Array.from({ length: 40 }, () => sourced), error: null } as { data: unknown; error: unknown };
     db.results.business_hours = { data: [], error: null };
     db.results.business_hours_exceptions = { data: [], error: null };
     render(await AlertSettingsPage(props));
@@ -618,10 +614,13 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
   it("sets aside hand made bookings with no host page, and says how many", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     const byHand = { id: "b1", source: "not-given", parent_origin: null, referrer_origin: null };
-    db.results.bookings = { data: Array.from({ length: 4 }, () => byHand), error: null, count: 44 } as {
-      data: unknown;
-      error: unknown;
-    };
+    // #2974: the real booking count is read as rows: 40 sourced page bookings beside the
+    // 4 made by hand, and every bookings read is answered alike.
+    const sourced = { id: "b2", source: "offerhub", parent_origin: "https://trypennie.com", referrer_origin: null };
+    db.results.bookings = {
+      data: [...Array.from({ length: 40 }, () => sourced), ...Array.from({ length: 4 }, () => byHand)],
+      error: null,
+    } as { data: unknown; error: unknown };
     db.results.business_hours = { data: [], error: null };
     db.results.business_hours_exceptions = { data: [], error: null };
     render(await AlertSettingsPage(props));
@@ -634,15 +633,10 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
 
   it("control: every real booking sourced shows the pages' floors", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    // A count of 40 for the real bookings and of 0 for the unsourced, in read order.
-    const counts = [40, 0];
-    db.results.bookings = {
-      data: [{ id: "b1" }],
-      error: null,
-      get count() {
-        return counts.shift() ?? 0;
-      },
-    } as unknown as { data: unknown; error: unknown };
+    // #2974: the real booking count is read as rows, so the fake answers every bookings
+    // read with 40 sourced page bookings framed by the production site.
+    const sourced = { id: "b1", source: "offerhub", parent_origin: "https://trypennie.com", referrer_origin: null };
+    db.results.bookings = { data: Array.from({ length: 40 }, () => sourced), error: null } as { data: unknown; error: unknown };
     db.results.business_hours = { data: [], error: null };
     db.results.business_hours_exceptions = { data: [], error: null };
     render(await AlertSettingsPage(props));

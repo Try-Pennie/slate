@@ -42,6 +42,9 @@ export interface CoverageSelection extends SelectionOutcome {
   placement?: CoveragePlacement;
   /** Set only on an unplaceable outcome whose measured reason is the gap; absent otherwise. */
   gapOnly?: GapOnlyReason;
+  /** #1677: the booking start the assignment was checked free for, so the move commits
+   *  only while the booking still starts then. Set with every assignment. */
+  verifiedStartsAt?: string;
 }
 
 /** The side effects coverage target selection needs; `service.ts` wires the real ones. */
@@ -156,10 +159,12 @@ export async function selectCoverageReassignTarget(
     }
     if (!away.has(target.userId)) {
       const assignment = { userId: target.userId, email: target.email };
-      if (!cascaded) return { assignment, anyUnverified: false };
+      const verifiedStartsAt = booking.starts_at;
+      if (!cascaded) return { assignment, anyUnverified: false, verifiedStartsAt };
       return {
         assignment,
         anyUnverified: false,
+        verifiedStartsAt,
         placement: {
           bucket: target.bucket,
           eventType: target.eventType,

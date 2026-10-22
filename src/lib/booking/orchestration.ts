@@ -1726,6 +1726,10 @@ export interface BookingDeps {
     /** #3249: a reroute move. Present, the bucket aware swap runs and consumes the
      *  claimed hold in the same transaction; absent, the plain reassign. */
     reroute?: RerouteSwapArgs;
+    /** #1677: the state the caller verified. Present, the swap refuses with
+     *  `booking_moved` under its row lock when the booking no longer has it
+     *  (migration 0196); absent, it checks nothing. */
+    expect?: ReassignExpectation;
   }): Promise<{
     prevGcalEventId: string | null;
     prevAgentEmail: string | null;
@@ -8692,6 +8696,29 @@ export interface ReassignOptions {
   /** #3249: this reassign is a reroute move into a corrected bucket, carrying the
    *  hold the confirm claimed. The swap consumes it; see `reroute.ts`. */
   reroute?: RerouteSwapArgs;
+  /**
+   * #1677: move the booking only if it is still where the caller saw it. The coverage
+   * drain spends seconds choosing an advisor for a booking's time, and an admin's own
+   * reassign, a second sweep or the lead's reschedule can land in that time. Refused as
+   * `booking_moved` (a `RerouteRefusedError`) before any calendar event when the booking
+   * loaded here already differs, and by the swap under its row lock when the change
+   * lands after that. Absent, nothing is checked, as for every other reassign.
+   */
+  expect?: ReassignExpectation;
+}
+
+/** The booking's state a reassign was decided on (#1677): its advisor and its start. */
+export interface ReassignExpectation {
+  assignedUserId: string;
+  startsAt: string;
+}
+
+/** Whether a booking still has the state a reassign was decided on (#1677). */
+export function bookingStillAsExpected(
+  booking: Pick<Booking, "assigned_user_id" | "starts_at">,
+  expect: ReassignExpectation,
+): boolean {
+  return booking.assigned_user_id === expect.assignedUserId && Date.parse(booking.starts_at) === Date.parse(expect.startsAt);
 }
 
 export async function reassignBooking(
@@ -8701,13 +8728,15 @@ export async function reassignBooking(
   deps: BookingDeps,
   opts: ReassignOptions = {},
 ): Promise<BookingResult & { overCap: boolean }> {
-  const { overrideCap = false, actor, initiator = "system", allowNonBookable = false, reroute } = opts;
+  const { overrideCap = false, actor, initiator = "system", allowNonBookable = false, reroute, expect } = opts;
   const ctx = await deps.loadBookingById(bookingId);
   if (!ctx) throw new BookingNotFoundError();
   const { booking, bucket, eventType } = ctx;
   if (booking.status === "cancelled" || booking.status === "completed") {
     throw new BookingNotChangeableError();
   }
+  // #1677: already changed since the caller decided, so nothing is created anywhere.
+  if (expect && !bookingStillAsExpected(booking, expect)) throw new RerouteRefusedError("booking_moved");
 
   const agent = await deps.getAgentByEmail(agentEmail);
   if (!agent || !agent.email || (!agent.bookable && !allowNonBookable)) {
@@ -8864,6 +8893,7 @@ export async function reassignBooking(
       gcalClientId,
       routingTrace: baseTrace,
       ...(reroute ? { reroute } : {}),
+      ...(expect ? { expect } : {}),
     });
   } catch (err) {
     // The swap (durable anchor) failed: queue the event we optimistically created

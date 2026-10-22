@@ -58,7 +58,8 @@ export const LEARNING = {
 
 export interface SlateBookingRow {
   createdAtMs: number;
-  /** True for a booking on a test bucket, which is never traffic. */
+  /** True for a booking on a test bucket, or one made from a development host on a
+   *  real bucket (#2974, `isTestSourceBooking`), which is never traffic. */
   isTest: boolean;
   /**
    * The debt tier of the bucket that took it (#2874), or null for a bucket whose

@@ -44,6 +44,26 @@ export const MAX_ITEM_ATTEMPTS = 5;
 /** The minimal booking shape the engine's idempotency decisions need. */
 export type BookingSnapshot = Pick<Booking, "id" | "status" | "assigned_user_id">;
 
+/**
+ * The booking changed between the sweep choosing a covering advisor and the move
+ * committing (#1677): an admin's own reassign, a second sweep over the same advisor, or
+ * the lead's reschedule. The reassign refused rather than overwrite it (migration 0196),
+ * so nothing moved. Thrown by the live `reassign` dep; defined here, with no imports
+ * behind it, so the engine can tell it apart without loading the booking service.
+ */
+export class BookingMovedMidMoveError extends Error {
+  constructor() {
+    super("The appointment changed while it was being moved.");
+    this.name = "BookingMovedMidMoveError";
+  }
+}
+
+/** What the move was decided on (#1677): the advisor it leaves and the start checked. */
+export interface MoveExpectation {
+  assignedUserId: string;
+  startsAt: string;
+}
+
 /** The decided next state for one item; the drain persists it via `commitItemOutcome`. */
 export interface ItemOutcome {
   status: BulkReassignItemStatus;
@@ -92,7 +112,15 @@ export interface BulkReassignDeps {
    * `placement`, when the pick was on a lower rung of the tier ladder (#3485), is the
    * bucket the call moves into, through Reroute's hold and swap (`coverage-cascade.ts`).
    */
-  reassign(bookingId: string, targetEmail: string, job: BulkReassignJob, placement?: CoveragePlacement): Promise<void>;
+  reassign(
+    bookingId: string,
+    targetEmail: string,
+    job: BulkReassignJob,
+    placement?: CoveragePlacement,
+    /** #1677: commit only if the booking is still with the out agent at the start the
+     *  selection checked; throws `BookingMovedMidMoveError` otherwise. */
+    expect?: MoveExpectation,
+  ): Promise<void>;
   /**
    * Take this item for processing WHILE IT IS STILL PENDING, answering whether it
    * still was (#1665).
@@ -226,9 +254,20 @@ export async function processBulkReassignItem(
 
   const selection = await deps.selectTarget(booking, job);
   if (selection.assignment) {
+    // #1677: the per item claim (#1665) covers the ITEM changing mid tick; this covers the
+    // BOOKING. The move commits only if the booking is still with the out agent at the
+    // start the selection checked, whoever else changed it in the seconds in between.
+    const expect: MoveExpectation | undefined = selection.verifiedStartsAt
+      ? { assignedUserId: job.out_user_id, startsAt: selection.verifiedStartsAt }
+      : undefined;
     try {
-      await deps.reassign(item.booking_id, selection.assignment.email, job, selection.placement);
+      await deps.reassign(item.booking_id, selection.assignment.email, job, selection.placement, expect);
     } catch (err) {
+      // Not a failed move: nothing moved, and the next tick reads the booking afresh,
+      // settling it moved if somebody else placed it, or choosing again at a new time.
+      if (err instanceof BookingMovedMidMoveError) {
+        return retryOrFail(item.attempts, "The appointment changed while it was being moved; it will be looked at again.");
+      }
       // #3373: Google will never invite this lead's address, so no retry can move
       // the booking: failed at once, saying why, rather than retried to the cap and
       // then shown as "Reassign failed: Enter a valid email address", a sentence

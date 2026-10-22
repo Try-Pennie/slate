@@ -11,7 +11,8 @@ import {
   UNSOURCED_VALUES,
   type PageSourceMeasure,
 } from "@/lib/monitor/page-volume";
-import { isHostlessBooking } from "@/lib/monitor/offsite-origin";
+import { isHostlessBooking, isTestSourceBooking } from "@/lib/monitor/offsite-origin";
+import { selectAllPages } from "@/lib/supabase/paginate";
 import { LOW_TIER, VOLUME_TIERS, recordOfTiers, tierCodePattern, type VolumeTier } from "@/lib/monitor/volume-tiers";
 
 /**
@@ -33,12 +34,53 @@ interface OriginRow {
   parent_origin: string | null;
 }
 
-/** Whether a row recorded no host page, through the one predicate (#2960). */
-function rowIsHostless(r: OriginRow): boolean {
-  return isHostlessBooking({
+/** A row's two recorded origins in the shape the off site predicates read. */
+function originFacts(r: OriginRow) {
+  return {
     prefill: r.parent_origin == null ? null : { parentOrigin: r.parent_origin },
     referrer_origin: r.referrer_origin,
-  });
+  };
+}
+
+/** Whether a row recorded no host page, through the one predicate (#2960). */
+function rowIsHostless(r: OriginRow): boolean {
+  return isHostlessBooking(originFacts(r));
+}
+
+/**
+ * Whether a row is TEST traffic made from a development host on a real bucket
+ * (#2974): a localhost page, dev.trypennie.com, any host recorded that is not the
+ * production site. Judged by `isTestSourceBooking`, the one predicate the off site
+ * page, the below tier check, the cross system reconciliation and the failure rate
+ * tally already read (L261), so every volume read here leaves out exactly the
+ * bookings those leave out.
+ *
+ * Excluded HERE, where the bookings are read, never stamped where they are written
+ * (L559): the predicate is derived from `PRODUCTION_ORIGINS`, so a production host
+ * added to that list later reclassifies every past booking at once, where a stamp
+ * would have frozen the mistake into the row. And a misclassified real page is not
+ * hidden: every booking this leaves out was paged about, once and by name, by the
+ * off site check (`booking_offsite_origin`), whose text asks whether it was a test.
+ */
+function rowIsTestSource(r: OriginRow): boolean {
+  return isTestSourceBooking(originFacts(r));
+}
+
+/**
+ * How many rows an existence read looks through for one that is not test traffic
+ * (#2974). Development host bookings are rare (13 on real buckets ever, the last on
+ * 2026-09-29), so a full page of them is not an answer: it refuses instead.
+ */
+const FIRST_REAL_SCAN = 50;
+
+/** The first row that is not test traffic, refusing when a full scan held none. */
+function firstRealRow<T extends OriginRow>(rows: T[], what: string): T | null {
+  const real = rows.find((r) => !rowIsTestSource(r));
+  if (real) return real;
+  if (rows.length >= FIRST_REAL_SCAN) {
+    throw new Error(`${what}: the first ${FIRST_REAL_SCAN} bookings were all test traffic from development hosts`);
+  }
+  return null;
 }
 
 /**
@@ -53,8 +95,13 @@ function rowIsHostless(r: OriginRow): boolean {
  * `bookings` has no is_test column, so test-ness is a property of the BUCKET, which
  * is why this is an inner join with an embedded filter rather than a plain column
  * predicate. Verified against the live API before it was written: the same window
- * returns 8 unfiltered and 0 filtered, with `head: true` and an exact count, so
- * this still costs one subrequest on a budget four cron lanes share.
+ * returns 8 unfiltered and 0 filtered.
+ *
+ * #2974: the bookings are read as rows (an id and the two recorded origins each)
+ * rather than as a head count, so test traffic from a development host on a real
+ * bucket is left out by the shared predicate (`rowIsTestSource`). The alarm's
+ * windows (30 and 120 minutes) are one page; subrequests are not a constraint
+ * since Cloudflare lifted the cap (docs/cloudflare-platform-notes.md).
  *
  * Returns null when the read FAILED, never 0 (#1158, and the wider rule in
  * AGENTS.md): zero is the value that pages, so an errored query must present as
@@ -69,28 +116,41 @@ export async function countCustomerBookingsSince(
   sinceIso: string,
   tier: VolumeTier,
 ): Promise<number | null> {
-  // cap-safe: a head-only exact count returns no rows.
-  const { count, error } = await db
-    .from("bookings")
-    .select(`*, ${BUCKET_EMBED}`, { count: "exact", head: true })
-    .eq("buckets.is_test", false)
-    // #2073: routed bookings only. A booking through an agent's own link is a
-    // later call with a lead the funnel already sent, so counting it would hold
-    // the alarm quiet while customers stopped arriving.
-    .eq("kind", "routed")
-    // #2876: page traffic only (`isPageTraffic`). A booking API call names its
-    // caller and came from no landing page, and the floors were fitted to page
-    // traffic, so a steady API stream would hold the count above its floor while
-    // every page was dark. Null (a booking from before #2072) is kept explicitly,
-    // because `not in` alone drops a null.
-    .or(pageTrafficFilter())
-    .like("buckets.code", tierCodePattern(tier))
-    .gte("created_at", sinceIso);
-  if (error) {
-    log.error("monitor", { msg: "booking volume count read failed", since: sinceIso, tier }, error);
+  // #2974: read as ROWS, not a head count, so each booking's host page is judged by
+  // the shared predicate in code; a SQL copy of it would be a second rule that can
+  // drift from the first. Paged, so a long lookback (the measurement's seven days, about
+  // 1,300 Low bookings) is read whole rather than truncated at one page.
+  //
+  // #2073: routed bookings only. A booking through an agent's own link is a later call
+  // with a lead the funnel already sent, so counting it would hold the alarm quiet while
+  // customers stopped arriving.
+  //
+  // #2876: page traffic only (`isPageTraffic`). A booking API call names its caller and
+  // came from no landing page, and the floors were fitted to page traffic, so a steady
+  // API stream would hold the count above its floor while every page was dark. Null (a
+  // booking from before #2072) is kept explicitly, because `not in` alone drops a null.
+  //
+  // The chain is kept short on purpose: the test data guard reads the 14 lines from
+  // `.from(` for the count, and must see `rows.length` there (scripts/test-test-data-counts.ts).
+  const rows = await selectAllPages<OriginRow>("booking volume count", "id", () =>
+    db
+      .from("bookings")
+      .select(`id, ${ORIGIN_COLUMNS}, ${BUCKET_EMBED}`)
+      .eq("buckets.is_test", false)
+      .eq("kind", "routed")
+      .or(pageTrafficFilter())
+      .like("buckets.code", tierCodePattern(tier))
+      .gte("created_at", sinceIso),
+  ).catch((err: unknown) => {
+    log.error("monitor", { msg: "booking volume count read failed", since: sinceIso, tier }, err instanceof Error ? err : undefined);
     return null;
+  });
+  if (rows === null) return null;
+  const testSource = rows.filter(rowIsTestSource).length;
+  if (testSource > 0) {
+    log.info("monitor", { msg: "booking volume count left out test traffic from development hosts", since: sinceIso, tier, test_source: testSource });
   }
-  return count ?? 0;
+  return rows.length - testSource;
 }
 
 /**
@@ -135,11 +195,14 @@ export async function listCustomerBookingSourcesSince(
   if (rows.length >= SOURCE_READ_LIMIT) {
     throw new Error(`page volume: the bookings list came back truncated at ${SOURCE_READ_LIMIT} rows`);
   }
-  return rows.map((r) => {
-    const createdMs = parseStampMs(r.created_at);
-    if (createdMs === null) throw new Error("page volume: a booking's created_at is unreadable");
-    return { createdMs, source: r.source, hostless: rowIsHostless(r) };
-  });
+  // #2974: test traffic from a development host is no page's booking.
+  return rows
+    .filter((r) => !rowIsTestSource(r))
+    .map((r) => {
+      const createdMs = parseStampMs(r.created_at);
+      if (createdMs === null) throw new Error("page volume: a booking's created_at is unreadable");
+      return { createdMs, source: r.source, hostless: rowIsHostless(r) };
+    });
 }
 
 /**
@@ -154,22 +217,23 @@ export async function customerBookingFromSourcesSince(
   sinceIso: string,
   tier: VolumeTier,
 ): Promise<boolean> {
-  // cap-safe: at most one row, it is an existence check.
+  // cap-safe: at most FIRST_REAL_SCAN rows, it is an existence check that looks past
+  // test traffic from a development host (#2974).
   const { data, error } = await db
     .from("bookings")
-    .select(`id, ${BUCKET_EMBED}`)
+    .select(`id, ${ORIGIN_COLUMNS}, ${BUCKET_EMBED}`)
     .eq("buckets.is_test", false)
     // #2073: routed bookings only, as the count above.
     .eq("kind", "routed")
     .like("buckets.code", tierCodePattern(tier))
     .in("source", [...sources])
     .gte("created_at", sinceIso)
-    .limit(1);
+    .limit(FIRST_REAL_SCAN);
   if (error) {
     log.error("monitor", { msg: "page source lookup failed", since: sinceIso }, error);
     throw new Error("page volume: could not read whether the page has recorded a booking");
   }
-  return (data ?? []).length > 0;
+  return firstRealRow((data ?? []) as OriginRow[], "page volume") !== null;
 }
 
 /**
@@ -190,22 +254,23 @@ export async function firstTierBookingsSince(
 ): Promise<Record<VolumeTier, number | null>> {
   const out: [VolumeTier, number | null][] = [];
   for (const tier of VOLUME_TIERS) {
-    // cap-safe: at most one row, the earliest.
+    // cap-safe: at most FIRST_REAL_SCAN rows, the earliest, looking past test traffic
+    // from a development host (#2974).
     const { data, error } = await db
       .from("bookings")
-      .select(`created_at, ${BUCKET_EMBED}`)
+      .select(`created_at, ${ORIGIN_COLUMNS}, ${BUCKET_EMBED}`)
       .eq("buckets.is_test", false)
       .eq("kind", "routed")
       .or(pageTrafficFilter())
       .like("buckets.code", tierCodePattern(tier))
       .gte("created_at", sinceIso)
       .order("created_at", { ascending: true })
-      .limit(1);
+      .limit(FIRST_REAL_SCAN);
     if (error) {
       log.error("monitor", { msg: "first tier booking read failed", tier, since: sinceIso }, error);
       throw new Error(`volume tiers: could not read tier ${tier}'s first booking`);
     }
-    const row = ((data ?? []) as { created_at: string }[])[0];
+    const row = firstRealRow((data ?? []) as ({ created_at: string } & OriginRow)[], `volume tiers: tier ${tier}`);
     if (!row) {
       out.push([tier, null]);
       continue;
@@ -257,15 +322,17 @@ export async function measurePageSources(
     log.error("monitor", { msg: "unsourced booking read failed", since: sinceIso }, error);
     throw new Error("page sources: the unsourced bookings could not be read");
   }
-  const noPage = ((data ?? []) as ({ source: string | null } & OriginRow)[]).map((r) => ({
-    source: r.source,
-    hostless: rowIsHostless(r),
-  }));
+  const read = (data ?? []) as ({ source: string | null } & OriginRow)[];
   // A short list would undercount the unsourced, which is the answer that shows the
   // floors as coverage, so a full page refuses rather than answers.
-  if (noPage.length >= SOURCE_READ_LIMIT) {
+  if (read.length >= SOURCE_READ_LIMIT) {
     throw new Error(`page sources: the unsourced bookings came back truncated at ${SOURCE_READ_LIMIT} rows`);
   }
+  // #2974: test traffic from a development host is left out here as the count above
+  // leaves it out, so the share is quoted over one population.
+  const noPage = read
+    .filter((r) => !rowIsTestSource(r))
+    .map((r) => ({ source: r.source, hostless: rowIsHostless(r) }));
   const unsourced = noPage.filter(isUnsourced).length;
   const hostless = noPage.filter(isHostlessUnsourced).length;
   // The count the share is quoted against leaves the set aside bookings out, as the
