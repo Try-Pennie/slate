@@ -125,6 +125,14 @@ for (const f of smokeScripts) {
       /\bcancelSmokeBooking\(/.test(src) && !/\/cancel`,\s*\{\s*reason/.test(src),
       `${f} cancels through cancelSmokeBooking, not a one shot post`,
     );
+    // A refused create returns early, so the script's exit must not depend on main
+    // reaching its last line: a script exits by its failure count wherever main ends.
+    if (!f.startsWith("lib/")) {
+      assert(
+        /main\(\)\.then\(\s*\(\) => process\.exit\(failed\(\) === 0 \? 0 : 1\)/.test(src),
+        `${f} exits by its failure count however main returns`,
+      );
+    }
   }
 }
 // Positive controls (L1): each spelling the incident and the old code used.

@@ -161,7 +161,13 @@ async function main(): Promise<void> {
   process.exit(failed() === 0 ? 0 : 1);
 }
 
-main().catch((e) => {
-  console.error("repro crashed:", e);
-  process.exit(1);
-});
+// An early `return` from main (a refused create, no token) skips the exit at its
+// end, and node would then exit 0 with a failed check recorded. Exit here by the
+// failure count, so every path out of main reports what it recorded.
+main().then(
+  () => process.exit(failed() === 0 ? 0 : 1),
+  (e) => {
+    console.error("repro crashed:", e);
+    process.exit(1);
+  },
+);

@@ -240,7 +240,13 @@ async function main(): Promise<void> {
   process.exit(failed() === 0 ? 0 : 1);
 }
 
-main().catch((e) => {
-  console.error("smoke crashed:", e);
-  process.exit(1);
-});
+// An early `return` from main (a refused create, no booking id) skips the exit at
+// its end, and node would then exit 0 with a failed check recorded. Exit here by the
+// failure count, so every path out of main reports what it recorded.
+main().then(
+  () => process.exit(failed() === 0 ? 0 : 1),
+  (e) => {
+    console.error("smoke crashed:", e);
+    process.exit(1);
+  },
+);
