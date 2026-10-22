@@ -20,13 +20,23 @@
 // and `smoketest+resched-<n>@` is the shape the orphan sweep already recognises
 // (scripts/test-cleanup-smoke-events.ts).
 //
+// The phone is per run as well (#4060). It was fixed at +12025550123, and person
+// dedupe matches on phone alone (a weak match), so on 2026-10-21 a booking a crashed
+// run left active turned the next run's create into `409 confirm_required` with the
+// OLD booking, which that run then rescheduled and cancelled as its own. The phone is
+// built by the shared `smokePhone`, from the same nonce, in the 202 area code the
+// booking canary (215) never uses.
+//
 // Pure, so it is node-testable with an injected nonce (no clock, no network).
+import { smokePhone } from "./smoke-identity.ts";
+
 export function rescheduleSmokeIdentity(
   slotIso: string,
-  nonce: number | string,
-): { externalId: string; email: string } {
+  nonce: number,
+): { externalId: string; email: string; phone: string } {
   return {
     externalId: `smoke-resched-${slotIso}-${nonce}`,
     email: `smoketest+resched-${nonce}@trypennie.com`,
+    phone: smokePhone(nonce, "202"),
   };
 }
