@@ -44,7 +44,7 @@ const advisorDay = (d: string) => ({
 });
 function report(windowDays: string[]) {
   return {
-    measurable: true as const, nowMs: Date.now(), zone: Z, windowDays, days: windowDays,
+    measurable: true as const, nowMs: Date.now(), zone: Z, windowDays, bookerDays: windowDays, days: windowDays,
     eventType: { duration_min: 20, slot_interval_min: 10, min_notice_min: 5, buffer_before_min: 10, buffer_after_min: 10, daily_cap: null },
     advisors: [{ id: "u1", name: "Avery Calder", email: "avery@x.test", timezone: Z, unsynced: false, days: windowDays.map(advisorDay) }],
   };

@@ -12,7 +12,11 @@
 //   3. under the line it sends the all clear, and only then;
 //   4. a failed read (the report, the line, a throw) posts nothing and clears nothing;
 //      a failed tier read still measures the roster and says the tiers are unknown;
-//   5. a failed post or all clear never throws out of the check.
+//   5. a failed post or all clear never throws out of the check;
+//   6. the days judged are the booker's (#4064): after the 6 PM cutoff that is
+//      tomorrow and the next open day, never today, although Team capacity's page
+//      still leads with today (#3949); before it, today and tomorrow; and the
+//      notice and its all clear link to the Team capacity page.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-roster-fill.ts
 import {
@@ -25,11 +29,14 @@ import {
   type RosterFillReading,
 } from "../src/lib/monitor/roster-fill.ts";
 import type { TeamCapacityReport } from "../src/lib/admin/team-capacity-load.ts";
-import type { AdvisorDay, TeamCapacityAdvisor } from "../src/lib/admin/team-capacity.ts";
+import { capacityDays, type AdvisorDay, type TeamCapacityAdvisor } from "../src/lib/admin/team-capacity.ts";
+import { offeredWindowFor } from "../src/lib/availability/offered-window.ts";
 import type { AlertRepeat } from "../src/lib/notify/repeat-policy.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const DAYS = ["2026-10-22", "2026-10-23", "2026-10-24"];
+const BASE = "https://slate.example";
+const TEAM_CAPACITY_LINK = `<${BASE}/admin/team-capacity|Team capacity>`;
 
 function day(iso: string, open: number, capacity: number, out = false): AdvisorDay {
   return {
@@ -47,23 +54,25 @@ function day(iso: string, open: number, capacity: number, out = false): AdvisorD
   };
 }
 
-function advisor(id: string, perDay: [number, number, boolean?][], unsynced = false): TeamCapacityAdvisor {
+function advisor(id: string, perDay: [number, number, boolean?][], unsynced = false, isos = DAYS): TeamCapacityAdvisor {
   return {
     id,
     name: id,
     email: `${id}@example.com`,
     timezone: "America/New_York",
     unsynced,
-    days: perDay.map(([open, capacity, out], i) => day(DAYS[i]!, open, capacity, out ?? false)),
+    days: perDay.map(([open, capacity, out], i) => day(isos[i]!, open, capacity, out ?? false)),
   };
 }
 
-function report(advisors: TeamCapacityAdvisor[], windowDays = DAYS): TeamCapacityReport {
+/** A report over DAYS whose booker's days are `bookerDays`; the page's are always DAYS. */
+function report(advisors: TeamCapacityAdvisor[], bookerDays = DAYS): TeamCapacityReport {
   return {
     measurable: true,
     nowMs: Date.parse("2026-10-22T13:00:00.000Z"), // parse-ok: a literal
     zone: "America/New_York",
-    windowDays,
+    windowDays: DAYS,
+    bookerDays,
     days: DAYS,
     eventType: { duration_min: 20, slot_interval_min: 10, min_notice_min: 120, buffer_before_min: 10, buffer_after_min: 10, daily_cap: null },
     advisors,
@@ -125,6 +134,54 @@ const noTiers = judgeRosterFill({ report: report(ROSTER), linePct: 80, tierAgent
 assert(noTiers.status === "measured" && noTiers.over && noTiers.tiers === null, "a failed tier read still measures the roster");
 const oneDay = judgeRosterFill({ report: report(ROSTER, ["2026-10-23"]), linePct: 80, tierAgents: TIERS });
 assert(oneDay.status === "measured" && oneDay.days.length === 1, "a window of one day judges that day alone");
+const notHeld = judgeRosterFill({ report: report(ROSTER, ["2026-10-23", "2026-10-26"]), linePct: 80, tierAgents: TIERS });
+assert(notHeld.status === "unmeasured" && /every judged day/.test(notHeld.why), "a booker's day the report does not hold is unmeasured, never skipped");
+
+// 6: which days are judged, through the same rule the page's days come from, at an
+// injected clock. The office is open 8 AM to 8 PM Monday to Friday and the call needs
+// 120 minutes' notice, as production holds; the booker offers four open days.
+const OFFICE = {
+  zone: "America/New_York",
+  rules: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, start_minute: 8 * 60, end_minute: 20 * 60 })),
+  exceptions: [],
+};
+const NOTICE_MIN = 120;
+const OFFERED = 4;
+/** The page's days and the days the notice judges, with one busy advisor on every page day. */
+function judgedAt(nowIso: string): { page: string[]; judged: string[] } {
+  const nowMs = Date.parse(nowIso); // parse-ok: a literal
+  const d = capacityDays(OFFICE, nowMs, NOTICE_MIN, OFFERED);
+  if (d === null) return { page: [], judged: [] };
+  const busy = advisor("busy", d.windowDays.map((): [number, number] => [1, 10]), false, d.windowDays);
+  const base = report([busy]) as Extract<TeamCapacityReport, { measurable: true }>;
+  const r: TeamCapacityReport = { ...base, nowMs, windowDays: d.windowDays, bookerDays: d.bookerDays, days: d.windowDays };
+  const reading = judgeRosterFill({ report: r, linePct: 85, tierAgents: null });
+  return { page: d.windowDays, judged: reading.status === "measured" ? reading.days : [] };
+}
+{
+  // Wed 21 Oct, 11:53 PM in New York: the night the notice named Wednesday (#4064).
+  const late = judgedAt("2026-10-22T03:53:00.000Z");
+  eq(late.judged, ["2026-10-22", "2026-10-23"], "at 11:53 PM on a Wednesday the notice judges Thursday and Friday, never Wednesday");
+  eq(late.page[0], "2026-10-21", "while Team capacity's page still leads with today after the cutoff (#3949)");
+  // Thu 22 Oct, 11:53 PM: the next open day after Friday is Monday.
+  eq(judgedAt("2026-10-23T03:53:00.000Z").judged, ["2026-10-23", "2026-10-26"], "at 11:53 PM on a Thursday it judges Friday and the next open day, Monday");
+  // Wed 21 Oct, 2 PM: before the cutoff today is one of the booker's days.
+  eq(judgedAt("2026-10-21T18:00:00.000Z").judged, ["2026-10-21", "2026-10-22"], "at 2 PM it judges today and tomorrow");
+  // The cutoff itself: the booker stops counting today AT 6:00 PM (minute >= 18 * 60), so the notice does too.
+  const cutoffMs = Date.parse("2026-10-21T22:00:00.000Z"); // parse-ok: a literal
+  eq(judgedAt("2026-10-21T22:00:00.000Z").judged, ["2026-10-22", "2026-10-23"], "at exactly 6:00 PM it judges tomorrow and the day after");
+  eq(
+    judgedAt("2026-10-21T22:00:00.000Z").judged,
+    offeredWindowFor(OFFICE, cutoffMs, NOTICE_MIN, OFFERED)?.days.slice(0, 2),
+    "at the cutoff the booker's own rule decides",
+  );
+  // A minute before it the booker still offers today, so it is still judged.
+  eq(judgedAt("2026-10-21T21:59:00.000Z").judged, ["2026-10-21", "2026-10-22"], "at 5:59 PM it still judges today and tomorrow, as the booker still offers today");
+  // Sunday evening: the office is shut today, so neither list holds it.
+  const sunday = judgedAt("2026-10-25T23:10:00.000Z");
+  eq(sunday.judged, ["2026-10-26", "2026-10-27"], "on a Sunday evening it judges Monday and Tuesday");
+  eq(sunday.page[0], "2026-10-26", "and the page does not add a shut today");
+}
 
 // 2 and 3: the copy.
 const fullRoster = [
@@ -134,20 +191,23 @@ const fullRoster = [
   advisor("broken", [[10, 10], [10, 10], [10, 10]], true),
 ];
 const filling = judgeRosterFill({ report: report(fullRoster), linePct: 85, tierAgents: TIERS }) as Extract<RosterFillReading, { status: "measured" }>;
-const alert = formatRosterFillAlert(filling);
+const alert = formatRosterFillAlert(filling, BASE);
 assert(alert.includes("91%"), `the alert names the share (${alert})`);
 assert(alert.includes("Thu Oct 22 and Fri Oct 23"), "the alert names the two days");
 assert(alert.includes("85%"), "the alert names the line it was judged against");
 assert(alert.includes("Team capacity"), "the alert says where the line is set");
+assert(alert.includes(TEAM_CAPACITY_LINK), `the alert links to the Team capacity page (${alert})`);
+assert(alert.split("Team capacity").length === 2, "and names Team capacity once, as the link");
 assert(alert.includes("55 of 60"), "the alert gives the counts behind the share");
 assert(/ad spend/i.test(alert), "the alert says what decision it is for");
 assert(alert.includes("Low 95%") && alert.indexOf("Low") < alert.indexOf("High"), "the alert names the fullest tiers, fullest first");
 assert(/1 advisor whose calendar is not syncing/.test(alert), "the alert says who is left out of the numbers");
 assert(!/^\W*slate/i.test(alert), "the alert does not open with Slate");
-const unknownTiers = formatRosterFillAlert({ ...filling, tiers: null });
+const unknownTiers = formatRosterFillAlert({ ...filling, tiers: null }, BASE);
 assert(/tiers could not be read/i.test(unknownTiers), "an unknown tier read is said, not left out");
-const recovery = formatRosterFillRecovery({ ...filling, bookedPct: 70, over: false, band: 0 });
+const recovery = formatRosterFillRecovery({ ...filling, bookedPct: 70, over: false, band: 0 }, BASE);
 assert(recovery.includes("70%") && recovery.includes("85%") && /cleared/.test(recovery), "the all clear names the share, the line, and that it cleared");
+assert(recovery.includes(TEAM_CAPACITY_LINK), `the all clear links to the Team capacity page (${recovery})`);
 
 // The check end to end, through fakes.
 type Sent = { key: string; text: string; repeat?: AlertRepeat };
@@ -166,6 +226,7 @@ async function tick(over: Partial<Parameters<typeof runRosterFillCheck>[0]>) {
       return true;
     },
     cooldownMs: 4 * 60 * 60_000,
+    appBaseUrl: BASE,
     ...over,
   });
   return { sent, resolved, result };
@@ -178,12 +239,14 @@ async function tick(over: Partial<Parameters<typeof runRosterFillCheck>[0]>) {
   eq(sent[0]?.repeat?.subjects?.length, 0, "with no subjects, so only a worse band reposts");
   eq(sent[0]?.repeat?.band, fillBand(91, 85), "with the band of the share");
   eq(resolved.length, 0, "and clears nothing");
+  assert(sent[0]?.text.includes(TEAM_CAPACITY_LINK) ?? false, "the posted notice carries the Team capacity link");
 }
 {
   const { sent, resolved } = await tick({ readLine: async () => 95 });
   eq(sent.length, 0, "under the line posts nothing");
   eq(resolved.length, 1, "and sends the all clear off the measured reading");
   eq(resolved[0]?.key, ROSTER_FILLING_KEY, "on the same key");
+  assert(resolved[0]?.text.includes(TEAM_CAPACITY_LINK) ?? false, "the posted all clear carries the Team capacity link");
 }
 {
   const { sent, resolved, result } = await tick({ loadReport: async () => ({ measurable: false, reason: "time-off" }) });
