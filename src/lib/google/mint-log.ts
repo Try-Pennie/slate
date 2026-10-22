@@ -6,9 +6,9 @@
  * (2026-10-05 on the reminder lane, 2026-10-13 on the confirm path) with nothing
  * recorded to say how long an ordinary mint takes. So every mint that actually
  * goes to Google writes one line on settling. Six days of them were read on
- * 2026-10-20 and kept every deadline as it was (the reading is on
- * `DELEGATED_TOKEN_TIMEOUT_MS`); the lines stay, so the next change to a deadline
- * is sized from a fresh reading rather than that one.
+ * 2026-10-20 and a full seven on 2026-10-22 (#3980), and both kept every deadline
+ * as it was (the reading is on `DELEGATED_TOKEN_TIMEOUT_MS`); the lines stay, so
+ * the next change to a deadline is sized from a fresh reading rather than that one.
  *
  * Only a real mint writes. A cache hit never reaches Google, so it measures
  * nothing about the token endpoint, and it is most of the calls: a token is good
@@ -40,7 +40,11 @@ export interface MintContext {
   deadlineMs: Deadline;
   /** What it actually had: its own deadline, or less when an enclosing budget had less left. */
   limitMs: Deadline;
-  /** The request it was made for (`requestLabel`), absent on the cron lanes. */
+  /**
+   * The request it was made for (`requestLabel`): "the booking confirm" on a lead's confirm,
+   * the calendar call's own `google <call>` label on the cron lanes, absent outside any budget
+   * (Gmail sends, the photo lane, an after response refresh).
+   */
   request?: string;
   /**
    * Why the shared token holder (#3512) did not answer instead, so a week of lines says
@@ -144,10 +148,12 @@ export async function timedMint<T>(
 /**
  * Which tier answered a token request (#3512): the isolate's own cache, the shared
  * holder, or a mint. One line per answer from the holder or a mint, and per answer from
- * the isolate only inside a request (`requestLabel`, the lead facing paths), so the share
- * of confirms that still wait on a mint is readable without a line for every cron lane
- * cache hit. `holder` says why a mint was needed, as on the mint line. Like that line it
- * names no address and no token.
+ * the isolate whenever a request label is in force (`requestLabel`). That is every
+ * budgeted Google call, so the sync lanes' isolate hits are logged too (about 370,000 in
+ * the week read for #3980); only a token read outside any budget (a Gmail send, the photo
+ * lane) writes no isolate line. The share of confirms that still wait on a mint is the `request="the booking
+ * confirm"` lines alone. `holder` says why a mint was needed, as on the mint line. Like
+ * that line it names no address and no token.
  *
  *   slate tag=google-token-read msg="token read" tier="holder" scope="calendar" ms=14
  *     request="the booking confirm"

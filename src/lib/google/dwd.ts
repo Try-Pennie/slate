@@ -61,19 +61,31 @@ const MINT_LABEL = "google token mint";
  * waits no longer than the enclosing call budget has left, so a mint on the
  * confirm path is held to what the lead can wait.
  *
- * Measured, and kept (#3298): every mint logged from 2026-10-14 16:00 to
- * 2026-10-20 18:00 UTC, the six days after the shared holder (#3512) took most
- * mints off the confirm path. No 8 second mint timed out: 801 confirm path mints
- * (median about 120ms, slowest 2.2s), 597 other calendar call mints (slowest
- * 2.7s), 26,642 Gmail mints (two over 4s, none over 8s) and 2,980 after response
- * refreshes (slowest 6.7s, four mints started together). The 15 second sync
- * lanes had 16 of 129,498 over 8s and one timeout, mostly several in the same
- * minute, so the tail follows how many mints run at once more than Google's own
- * speed. Nobody waits on either: a missed sync mint heals on the next minute's
- * run, and a reminder email that fails is retried on the next. Re-measure before
- * changing either number: count
- * `tag=google-token-mint` lines by `deadline_ms`, `request` and `duration_ms` band
- * in hourly or whole UTC day windows: one window across all six days, not on day
+ * Measured, and kept (#3298, #3980): every mint logged from 2026-10-15 15:00 to
+ * 2026-10-22 15:00 UTC, seven full days after the shared holder (#3512) took most
+ * mints off the confirm path (an earlier six day reading agreed). No 8 second mint
+ * timed out on any lane:
+ *   - a lead's confirm (`request="the booking confirm"`, new bookings and
+ *     reschedules): 302 mints, median 132ms, slowest 338ms, and only 3.0% of its
+ *     9,745 token reads needed a mint at all (79.5% the isolate, 17.5% the holder);
+ *   - the other calendar calls (`google freeBusy.many`, `events.get`, insert,
+ *     delete: the cron drains and the monitor lane, NOT the confirm, whose calls
+ *     all carry the confirm's label): 1,262 mints, slowest 3.3s;
+ *   - 2,977 Gmail mints, slowest 6.5s; 2,997 after response refreshes, slowest
+ *     6.7s (four started together).
+ * The 15 second sync lanes had 22 of 148,846 over 8s and one timeout, in bursts
+ * of several in one minute, so that tail follows how many mints run at once (the
+ * holder misses of #3979) more than Google's own speed. Nobody waits on any of
+ * these: a missed sync mint heals on the next minute's run, and a reminder email
+ * that fails is retried on the next. A shorter limit on the confirm cannot help a
+ * lead either, since a cut mint fails the confirm.
+ *
+ * Across that week every lane but the confirm's got slower in its tail (sync p99
+ * 218ms on the first day, 1.8s on the last; Gmail 287ms to 1.9s), still far
+ * inside its limit. Re-measure before changing either number: list
+ * `tag=google-token-mint` lines one hour at a time (`scripts/logs.ts --lines`),
+ * weight each by its `weight=` (Cloudflare samples busy hours), and group by
+ * `request` and `deadline_ms`; one window across several days, not on day
  * boundaries, counted 12% more lines than its own hours did.
  */
 export const DELEGATED_TOKEN_TIMEOUT_MS = 8000;
