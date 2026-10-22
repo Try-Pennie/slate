@@ -121,8 +121,18 @@ if (outboxActionAdd) {
 // committed swap, which the sweep then reads as a LOST reassign and alerts on. The
 // booking update and the intent stamp have to commit together or not at all.
 {
-  const fn =
-    sql.match(/create or replace function reassign_booking_swap[\s\S]*?\$\$;/gi)?.at(-1) ?? "";
+  // The newest definition that WRITES the booking is the body; the forms defined after it
+  // (#1677's sixteen argument form, migration 0196) are wrappers that check something and
+  // then call it, so they are held to delegating, never to a second copy of the write.
+  const defs = sql.match(/create or replace function reassign_booking_swap[\s\S]*?\$\$;/gi) ?? [];
+  const fn = defs.filter((d) => /update bookings/i.test(d)).at(-1) ?? "";
+  const after = defs.slice(defs.lastIndexOf(fn) + 1);
+  for (const w of after) {
+    assert(
+      /from reassign_booking_swap\s*\(/i.test(w) && !/update bookings/i.test(w),
+      "#1677: a reassign_booking_swap defined after the body delegates to it and writes no booking itself",
+    );
+  }
   assert(
     /update reassign_intents/i.test(fn),
     "#759: reassign_booking_swap records the intent inside the swap transaction",

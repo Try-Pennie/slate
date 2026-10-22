@@ -169,8 +169,8 @@ try {
   eq(sql("select count(*) from pg_policies where tablename = 'reroute_holds';"), "0", "and no policy, so it is default deny");
   eq(
     sql("select string_agg(pronargs::text, ',' order by pronargs) from pg_proc where proname = 'reassign_booking_swap';"),
-    "7,14",
-    "the seven argument swap the deployed code calls is kept beside the bucket aware one, so applying first breaks nothing",
+    "7,14,16",
+    "the seven and fourteen argument swaps the deployed code calls are kept beside #1677's sixteen argument one, so applying first breaks nothing",
   );
 
   // --- place: a hold on a new agent, at the booking's own buffered window -------------------
@@ -406,6 +406,44 @@ try {
     eq(swap(link, A, { hold: null }).refused, "agent_link", "an advisor link booking cannot be rerouted");
     cancel(K12);
     cancel(link);
+  }
+
+  // --- #1677: the sixteen argument swap commits only on the state the caller verified ------------
+  {
+    const expectSwap = (id: string, to: string, expUser: string | null, expStart: string | null) =>
+      sql(`select updated::text || '|' || coalesce(refused, '') from reassign_booking_swap(
+             p_booking_id => '${id}', p_user_id => '${to}', p_agent_name => 'T', p_agent_email => 't@example.com',
+             p_gcal_event_id => 'g-exp', p_routing_trace => '{}'::jsonb, p_gcal_client_id => 'client-exp',
+             p_bucket_id => null, p_requested_bucket_id => null, p_requested_tier => null, p_booked_tier => null,
+             p_rungs_dropped => null, p_hold_id => null, p_result => null,
+             p_expected_user_id => ${expUser ? `'${expUser}'` : "null"}, p_expected_starts_at => ${expStart ?? "null"});`);
+    const holder = (id: string) => sql(`select assigned_user_id::text from bookings where id = '${id}';`);
+
+    const KE1 = book(A, "11:00", "11:20");
+    eq(expectSwap(KE1, C, A, at("11:00")), "true|", "control: a booking still with the expected advisor at the expected start moves");
+    eq(holder(KE1), C, "and is now with the new advisor");
+
+    const KE2 = book(B, "11:30", "11:50"); // somebody else already moved it off A
+    eq(expectSwap(KE2, C, A, at("11:30")), "false|booking_moved", "a booking no longer with the expected advisor is refused as moved");
+    eq(holder(KE2), B, "and the advisor somebody else chose is kept");
+
+    const KE3 = book(A, "12:30", "12:50"); // the lead rescheduled it from 11:30
+    eq(expectSwap(KE3, C, A, at("11:30")), "false|booking_moved", "a booking at a different start is refused as moved");
+    eq(holder(KE3), A, "and nothing is written");
+
+    const KE4 = book(A, "13:00", "13:20", { status: "cancelled" });
+    eq(expectSwap(KE4, C, B, at("13:00")), "false|booking_inactive", "a cancelled booking is still refused as inactive, by the body");
+
+    const KE5 = book(B, "13:30", "13:50");
+    eq(expectSwap(KE5, C, null, null), "true|", "no expectation checks nothing: the plain reassign");
+    for (const id of [KE1, KE2, KE3, KE5]) cancel(id);
+    for (const role of ["anon", "authenticated"]) {
+      const err = sqlError(
+        `select * from reassign_booking_swap(p_booking_id => '${KE1}', p_user_id => '${B}', p_agent_name => 'B', p_agent_email => 'b', p_gcal_event_id => 'g', p_routing_trace => '{}'::jsonb, p_gcal_client_id => null, p_bucket_id => null, p_requested_bucket_id => null, p_requested_tier => null, p_booked_tier => null, p_rungs_dropped => null, p_hold_id => null, p_result => null, p_expected_user_id => null, p_expected_starts_at => null);`,
+        role,
+      );
+      assert(err !== null && /permission denied/.test(err), `${role} cannot execute the sixteen argument swap`);
+    }
   }
 
   // --- the seven argument swap is the plain reassign it always was -------------------------------

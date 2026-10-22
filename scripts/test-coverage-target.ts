@@ -195,6 +195,7 @@ async function run() {
     eq(s.calls[0]?.booking.assigned_user_id, null, "the search is asked about the booking as if nobody held it");
     eq(s.calls[0]?.exclude, ["OUT"], "with the out agent excluded");
     eq(s.timeOff[0]?.ids, ["B"], "the pick alone is checked for approved time off");
+    eq(r.verifiedStartsAt, START, "#1677: and carries the start it was checked free for, so the move commits only while that holds");
     eq([s.timeOff[0]?.startIso, s.timeOff[0]?.endIso], [START, END], "over the booking's own window");
   }
   for (const outcome of ["keep-in-requested", "keep-cascaded", "keep-last-resort"] as const) {
