@@ -181,6 +181,7 @@ import type {
   RescheduleClaim,
 } from "@/lib/booking/orchestration";
 import type { NamedWorld, PersonIdentity, PersonWorld } from "@/lib/booking/person-dedupe";
+import type { EarlierLeadBookingRow } from "@/lib/booking/lead-id-from-bookings";
 import { personStrongIds } from "@/lib/booking/person-dedupe";
 import { readLeadXbcLive, readSubmissionLeadIdLive } from "@/lib/salesforce/lead-xbc";
 import { timeSpentInThisRequest, type TimeSpent } from "@/lib/booking/time-spent";
@@ -819,6 +820,52 @@ export async function findActiveBookingsForPerson(
   );
   // The world did its work in the read; the callers grade a Booking (#2660).
   return rows.map(({ isTest: _world, ...booking }) => booking as unknown as Booking);
+}
+
+/**
+ * How many earlier bookings the advisor link Lead id read takes (#3739). Bounded,
+ * so the read can never come back as a truncated page read as the whole set; a
+ * lead with more than this many bookings under one email and phone is answered
+ * from the newest, and a conflict among those still saves none.
+ */
+const EARLIER_LEAD_BOOKING_ROWS = 20;
+
+/**
+ * Earlier bookings, in ANY status, that hold BOTH this email (case insensitively,
+ * escaped, #620) and this phone (as E.164) and carry a lead id, in one world
+ * (#2660): the read behind an advisor link booking's Lead id when its link carried
+ * none (#3739). Any status, because the bookings that carry the id are usually
+ * calls that already happened (completed) or were moved (cancelled): the only
+ * advisor link booking without an id when this was built had a cancelled and a
+ * completed one.
+ *
+ * Not served by an index: the person lookup indexes (0043) are partial on active
+ * rows. Measured 2026-10-21 at 25ms over 13,446 bookings, and it runs only on an
+ * advisor link confirm with no id on the link (3 advisor link bookings so far), so
+ * an index waits until that volume or the table justifies one. THROWS on a failed
+ * read; the confirm then books with no id.
+ */
+export async function earlierLeadBookings(
+  contact: { email: string; phone: string },
+  world: NamedWorld,
+): Promise<EarlierLeadBookingRow[]> {
+  const email = contact.email.trim();
+  const phone = toE164(contact.phone);
+  if (!email || !phone) return [];
+  const rows = unwrap(
+    await supabaseAdmin()
+      .from("bookings")
+      .select("id, created_at, salesforce_id, external_id, attendee_email, attendee_phone, assigned_user_id, buckets!inner(is_test)")
+      .eq("buckets.is_test", world.isTest)
+      .ilike("attendee_email", escapeLike(email))
+      .eq("attendee_phone", phone)
+      .or("salesforce_id.not.is.null,external_id.not.is.null")
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(EARLIER_LEAD_BOOKING_ROWS),
+    "advisor link earlier bookings",
+  ) as (EarlierLeadBookingRow & { buckets?: unknown })[] | null;
+  return (rows ?? []).map(({ buckets: _world, ...row }) => row);
 }
 
 /**
@@ -2733,6 +2780,7 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     findActiveBookingsForPerson,
     findActiveBookingsStartingAt,
     findActiveBookingsByStrongIds,
+    earlierLeadBookings,
 
     loadBookingById: async (bookingId) => {
       const db = supabaseAdmin();

@@ -214,6 +214,15 @@ vocabulary in the README's URL contract (for example `"prefill": { "source":
 `not-given`, and a value outside the vocabulary is still booked and recorded as
 `unrecognised`, so a caller that sends none is never refused for it.
 
+#### `prefill.leadIdFrom` is written by Slate, never by a caller (#3739)
+
+On a booking made through an advisor's own link (`kind = 'agent_link'`),
+`prefill.leadIdFrom` records where its Salesforce id came from: `link` when the
+link carried it, `earlier-booking` when the link carried none and Slate took it
+from the lead's earlier bookings (the same email AND the same phone, every one of
+them naming one Lead; two different Leads save none). Any value a caller sends
+under that key is dropped on every booking, so it cannot be forged.
+
 ### One active appointment per person (dedupe + auto-reschedule)
 
 Before creating, the API looks the person up across **active** bookings by

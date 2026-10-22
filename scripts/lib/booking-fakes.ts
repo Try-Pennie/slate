@@ -30,6 +30,7 @@ import type {
 } from "../../src/lib/db/types.ts";
 import { deterministicEventId, EventGone, eventDescription } from "../../src/lib/booking/core.ts";
 import type { PersonIdentity, PersonWorld } from "../../src/lib/booking/person-dedupe.ts";
+import type { EarlierLeadBookingRow } from "../../src/lib/booking/lead-id-from-bookings.ts";
 import { GoogleHttpError } from "../../src/lib/google/http-error.ts";
 import type { OwnerAlertEventBody } from "../../src/lib/booking/owner-alert.ts";
 import type { BookingEventPayload } from "../../src/lib/webhooks/types.ts";
@@ -158,6 +159,10 @@ export interface FakeOpts {
   alreadyCompleted?: Set<string>; // ids an overlapping tick already transitioned
   unverifiedEmails?: Set<string>; // emails verify-on-book couldn't check (outage)
   personBookings?: Booking[]; // findActiveBookingsForPerson result (#357)
+  /** #3739: the earlier bookings an advisor link confirm with no Lead id reads. */
+  earlierLeadBookings?: EarlierLeadBookingRow[];
+  /** #3739: that read fails. */
+  earlierLeadBookingsThrows?: boolean;
   /** #2638: what Salesforce holds as each lead's XBC__c. A key absent from the
    *  table is a lead Salesforce did not return. */
   leadXbc?: Record<string, string | null>;
@@ -478,6 +483,8 @@ export function makeDeps(opts: FakeOpts) {
     findActiveBookingsForPerson: [] as PersonIdentity[],
     /** The WORLD each person lookup was asked in (#2660), beside the identity. */
     personWorlds: [] as PersonWorld[],
+    /** #3739: each earlier bookings read an advisor link confirm made, and its world. */
+    earlierLeadBookings: [] as { email: string; phone: string; isTest: boolean }[],
     findActiveBookingsByStrongIds: [] as string[][],
     removePendingEventDeletion: [] as string[],
     bumpPendingEventDeletion: [] as { id: string; attempts: number }[],
@@ -1240,6 +1247,11 @@ export function makeDeps(opts: FakeOpts) {
       calls.reservationBumps.push({ id, attempts, lastError });
     },
     deleteExpiredReservations: async () => ({ deleted: 0, owed: [] }),
+    earlierLeadBookings: async (contact, world) => {
+      calls.earlierLeadBookings.push({ ...contact, isTest: world.isTest });
+      if (opts.earlierLeadBookingsThrows) throw new Error("bookings read down");
+      return opts.earlierLeadBookings ?? [];
+    },
     findActiveBookingsForPerson: async (identity, world) => {
       calls.findActiveBookingsForPerson.push(identity);
       calls.personWorlds.push(world);
