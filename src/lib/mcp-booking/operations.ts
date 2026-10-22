@@ -242,6 +242,19 @@ export interface MarciaDeps {
   leadContact(salesforceId: string): Promise<LeadContact | null>;
   /** A contact lookup failed: log which one, never a value. Must not throw. */
   contactLookupFailed(source: ContactSource, err: unknown): void;
+  /**
+   * What a book or move that had to look the lead's details up ended with: which
+   * fields each source filled, and which none did (#4006). Field NAMES only, never a
+   * value, so the log can say where a fill came from. Must not throw.
+   */
+  contactFilled(report: ContactFillReport): void;
+}
+
+/** Which of name, email and phone each source filled, and which stayed missing. Names only. */
+export interface ContactFillReport {
+  bookings: ("name" | "email" | "phone")[];
+  salesforce: ("name" | "email" | "phone")[];
+  missing: ("name" | "email" | "phone")[];
 }
 
 /** The bucket a token books into: the partner test bucket when test flagged (decision 20). */
@@ -550,18 +563,20 @@ async function attendeeFor(ctx: Ctx): Promise<ApiBookingInput["attendee"]> {
     if (typeof v === "string" && v !== "") found[f] = v;
   }
   const missing = () => CONTACT_FIELDS.filter((f) => found[f] === undefined);
-  const fill = (from: LeadContact | null) => {
+  const filledBy: Record<ContactSource, ContactField[]> = { bookings: [], salesforce: [] };
+  const fill = (source: ContactSource, from: LeadContact | null) => {
     if (!from) return;
     for (const f of missing()) {
       const v = from[f];
       if (!contactValueValid(f, v)) continue;
       found[f] = v;
+      filledBy[source].push(f);
       if (f === "name" && from.firstName) firstName = from.firstName;
     }
   };
   const lookUp = async (source: ContactSource, read: () => Promise<LeadContact | null>) => {
     try {
-      fill(await read());
+      fill(source, await read());
     } catch (err) {
       try {
         ctx.deps.contactLookupFailed(source, err);
@@ -571,8 +586,16 @@ async function attendeeFor(ctx: Ctx): Promise<ApiBookingInput["attendee"]> {
     }
   };
   const { short, long } = ctx.lead;
+  const lookedUp = missing().length > 0;
   if (missing().length > 0) await lookUp("bookings", () => ctx.deps.knownContact([short, long], ctx.claims.test));
   if (missing().length > 0) await lookUp("salesforce", () => ctx.deps.leadContact(long));
+  if (lookedUp) {
+    try {
+      ctx.deps.contactFilled({ bookings: filledBy.bookings, salesforce: filledBy.salesforce, missing: missing() });
+    } catch {
+      // Reporting is best effort: the booking goes ahead either way.
+    }
+  }
   // A fixed key order, and no key for a field nobody holds: the booking API leaves a
   // field nobody sent out, and "" would be stored and matched as though it were one.
   return {

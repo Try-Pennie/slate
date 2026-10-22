@@ -4,7 +4,7 @@ import { log } from "@/lib/log";
 import { startBulkReassign } from "@/lib/booking/service";
 import { planLifecycleChange, type LifecycleAction } from "@/lib/offboarding/plan";
 import { writeRoutableState } from "@/lib/bookable/routable-write";
-import { planOffboardingCoverageSweep } from "@/lib/offboarding/coverage-trigger";
+import { planOffboardingCoverageSweep, type OffboardingSweepPlan } from "@/lib/offboarding/coverage-trigger";
 import { clearInvitesForLeaver } from "@/lib/offboarding/clear-invites-io";
 import type { ClearInvitesResult } from "@/lib/offboarding/clear-invites";
 import {
@@ -399,7 +399,20 @@ async function withAutomaticCoverage(
   });
   if (!plan) return outcome.result;
   if (outcome.result.status === "not_found") return outcome.result;
+  return { ...outcome.result, ...(await coverDeparture(plan)) };
+}
 
+/**
+ * The coverage a departure owes (#1241): clear the departed advisor's invites, then
+ * enqueue the offboarding sweep keyed on (advisor, departure). ONE function for every
+ * path that departs an advisor with nobody to ask, the lifecycle API above and the hourly
+ * Salesforce reap (#1678, `coverReapDepartures`), so the two can never cover a leaver
+ * differently. Never throws: each half's failure is logged and reported, for the reasons
+ * `withAutomaticCoverage` gives.
+ */
+export async function coverDeparture(
+  plan: OffboardingSweepPlan,
+): Promise<{ invitesCleared: InvitesClearedResult; coverageSweep: CoverageSweepOutcome }> {
   // #3667: clear the invites FIRST. The automation archives the Google account 10
   // seconds after this call, and from then on Google refuses every delete, so the
   // lead would keep the departed advisor's invite beside the new one. The sweep's own
@@ -426,14 +439,14 @@ async function withAutomaticCoverage(
       user_id: plan.outUserId,
       queued: itemCount,
     });
-    return { ...outcome.result, invitesCleared, coverageSweep: itemCount > 0 ? "queued" : "none" };
+    return { invitesCleared, coverageSweep: itemCount > 0 ? "queued" : "none" };
   } catch (e) {
     log.error(
       "offboarding",
       { msg: "coverage sweep enqueue failed", user_id: plan.outUserId },
       e,
     );
-    return { ...outcome.result, invitesCleared, coverageSweep: "failed" };
+    return { invitesCleared, coverageSweep: "failed" };
   }
 }
 

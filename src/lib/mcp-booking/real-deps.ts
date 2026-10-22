@@ -129,5 +129,15 @@ export function realMarciaDeps(): MarciaDeps {
       // The source and the error, never a value: the lead's details stay out of the logs.
       log.warn("mcp-booking", { msg: "a lead contact lookup failed, so the booking goes ahead without what it would have filled", source }, err);
     },
+    contactFilled: (report) => {
+      // #4006: where each missing field came from, by field NAME, so a move's fill can
+      // be traced to the bookings or the Salesforce Lead without a value in the log.
+      log.info("mcp-booking", {
+        msg: "a lead's missing contact fields were looked up",
+        from_bookings: report.bookings.join(",") || null,
+        from_salesforce: report.salesforce.join(",") || null,
+        still_missing: report.missing.join(",") || null,
+      });
+    },
   };
 }

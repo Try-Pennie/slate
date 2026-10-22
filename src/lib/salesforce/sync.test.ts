@@ -245,6 +245,12 @@ const bookable = vi.hoisted(() => ({
 const audit = vi.hoisted(() => ({ recordAudit: vi.fn(async (_entry: Record<string, unknown>) => {}) }));
 vi.mock("@/lib/bookable/service", () => bookable);
 vi.mock("@/lib/audit", () => audit);
+// #1678: the default coverage of a departure is the offboarding service, which sits on
+// the whole booking service. A test that does not hand its own `coverDeparture` meets
+// this stand in, never Google or the bulk reassign tables.
+vi.mock("@/lib/offboarding/service", () => ({
+  coverDeparture: vi.fn(async () => ({ invitesCleared: { cleared: 0, failed: 0 }, coverageSweep: "none" })),
+}));
 
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
 import {
@@ -1438,6 +1444,56 @@ describe("roster rows Salesforce no longer confirms (#1833)", () => {
       (c) => c.op === "update" && (c.payload as { deactivated_at?: string }).deactivated_at,
     );
     expect(deactivation?.filters.find((f) => f[0] === "in" && f[1] === "id")?.[2]).toEqual(["u-left"]);
+  });
+
+  // #1678: the leaver's remaining calls are handed to the SAME offboarding coverage the
+  // lifecycle API runs, keyed on the stamp the reap's write stored, so a departure is
+  // covered when it is recorded rather than an hour later when the monitor pages.
+  it("hands a departed advisor's calls to the offboarding coverage, under the stored stamp", async () => {
+    store.seedUsers([
+      { id: "u-left", org_id: "org1", email: "left@x.com", role: "agent", bookable: true, deactivated_at: null, is_test: false },
+    ]);
+    store.config.reapable = [{ id: "u-left", email: "left@x.com" }];
+    sfWorld({ roster: [], present: [{ Email: "left@x.com", IsActive: false }] });
+    const coverDeparture = vi.fn(async () => "queued" as const);
+
+    const result = await syncSalesforceAgents({ coverDeparture });
+
+    expect(result.deactivated).toBe(1);
+    expect(coverDeparture).toHaveBeenCalledTimes(1);
+    const deactivation = store.calls.find(
+      (c) => c.op === "update" && (c.payload as { deactivated_at?: string }).deactivated_at,
+    );
+    const stamp = (deactivation?.payload as { deactivated_at: string }).deactivated_at;
+    expect(coverDeparture).toHaveBeenCalledWith({ outUserId: "u-left", deactivatedAtIso: stamp });
+    expect(result.departureCoverage).toEqual({ queued: 1, none: 0, failed: 0 });
+  });
+
+  it("keeps the departure and reports it when the coverage could not be enqueued", async () => {
+    store.seedUsers([
+      { id: "u-left", org_id: "org1", email: "left@x.com", role: "agent", bookable: true, deactivated_at: null, is_test: false },
+    ]);
+    store.config.reapable = [{ id: "u-left", email: "left@x.com" }];
+    sfWorld({ roster: [], present: [{ Email: "left@x.com", IsActive: false }] });
+    const coverDeparture = vi.fn(async () => {
+      throw new Error("bulk_reassign_jobs insert failed");
+    });
+
+    const result = await syncSalesforceAgents({ coverDeparture });
+
+    expect(result.deactivated).toBe(1);
+    expect(result.departureCoverage).toEqual({ queued: 0, none: 0, failed: 1 });
+  });
+
+  it("asks for no coverage when the reap departs nobody", async () => {
+    store.config.reapable = [{ id: "u-here", email: "here@x.com" }];
+    sfWorld({ roster: [], present: [{ Email: "here@x.com", IsActive: true }] });
+    const coverDeparture = vi.fn(async () => "queued" as const);
+
+    const result = await syncSalesforceAgents({ coverDeparture });
+
+    expect(coverDeparture).not.toHaveBeenCalled();
+    expect(result.departureCoverage).toEqual({ queued: 0, none: 0, failed: 0 });
   });
 
   // #2386. The reap stamped `deactivated_at` and left `bookable` true, which is
