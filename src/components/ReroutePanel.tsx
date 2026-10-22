@@ -47,6 +47,7 @@ export default function ReroutePanel({
   currentCode,
   showCodes,
   onChanged,
+  onReassign,
 }: {
   bookingId: string;
   /** The booking's stored bucket code; a manager's choice keeps the rest of it (R6). */
@@ -55,6 +56,12 @@ export default function ReroutePanel({
   showCodes: boolean;
   /** A move or keep landed: the page re-reads the booking. */
   onChanged: () => void;
+  /**
+   * Opens the booking's own Reassign picker (#4043), offered when nobody is free.
+   * Required, so the page that holds the picker decides, and no second picker is
+   * built here.
+   */
+  onReassign: () => void;
 }) {
   const ids = useId();
   const codes = useMemo(() => allXbcCodes(), []);
@@ -325,8 +332,15 @@ export default function ReroutePanel({
                 />
               </div>
             )}
-            {(copy.primary || copy.cancel) && (
+            {(copy.primary || copy.cancel || copy.reassign) && (
               <div className="mt-3 flex gap-2">
+                {/* #4043: nobody is free, so the way forward is the booking's own
+                    Reassign picker, which this hands over to rather than copying. */}
+                {copy.reassign && (
+                  <button type="button" onClick={onReassign} disabled={busy} className={SECONDARY_CLS}>
+                    {copy.reassign}
+                  </button>
+                )}
                 {copy.primary && (
                   <button
                     type="button"
