@@ -28,6 +28,8 @@
  * correct channel is refused and nobody can save anything. So it is a third
  * outcome that SAYS SO, and the panel repeats it.
  */
+import { CHANNEL_WAY_OUT } from "@/lib/notify/slack-channel-input";
+
 export type ChannelCheck =
   /** Slack confirmed it, and the bot can post there. */
   | { state: "ok"; name: string | null }
@@ -46,7 +48,9 @@ export function channelCheckMessage(check: ChannelCheck, channel: string): strin
     case "ok":
       return check.name ? `Checked: ${channel} is #${check.name}.` : `Checked: ${channel} exists.`;
     case "not-found":
-      return `Slack has no channel ${channel}. Check the id: an alert sent to a channel that does not exist goes nowhere and nothing can tell you.`;
+      // #2438: one line of what went wrong and the field's own way out, the shape
+      // of every channel refusal (Dan's plain error copy rule).
+      return `Slack has no channel ${channel}. ${CHANNEL_WAY_OUT}`;
     case "not-invited":
       return `Slate is not in ${check.name ? `#${check.name}` : channel}. Invite the Slate app to that channel, then save again.`;
     case "cannot-check":
@@ -103,6 +107,30 @@ export function readChannelReply(reply: {
  *  ask successfully rather than that the channel has no name. */
 export function checkedName(check: ChannelCheck): string | null {
   return check.state === "ok" || check.state === "not-invited" ? check.name : null;
+}
+
+/**
+ * The names Slack gave for each checked id, for the channel fields (#2438).
+ *
+ * A private channel is never in the list the picker reads, so without this a
+ * stored private channel showed as its bare id. The panel already asks Slack
+ * about every stored channel, and those answers carry the name, so the fields
+ * read them rather than asking again. An id with no named answer is left out.
+ *
+ * `only` limits it to those ids. The fields pass the STORED channels, the same set
+ * the save can name, so a typed name the field accepts is one the save accepts.
+ */
+export function channelNames(
+  checks: ReadonlyMap<string, ChannelCheck>,
+  only?: readonly string[],
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [id, check] of checks) {
+    if (only && !only.includes(id)) continue;
+    const name = checkedName(check);
+    if (name) out[id] = name;
+  }
+  return out;
 }
 
 /** Whether the outcome still needs a sentence of its own beneath the line.

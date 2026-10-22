@@ -11,9 +11,12 @@
 // an uninvited bot are different problems with different remedies (L11), and an
 // answer Slate cannot get at all is neither.
 //
-// Run: node --experimental-strip-types scripts/test-slack-channels.ts
+// Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
+//        scripts/test-slack-channels.ts
+// (the alias loader is needed since #2438: slack-channel-check.ts imports through `@/`)
 import {
   channelCheckMessage,
+  channelNames,
   checkedName,
   needsFollowUp,
   readChannelReply,
@@ -67,9 +70,12 @@ import { assert, eq, finish } from "./lib/harness.ts";
     channelCheckMessage(notFound, "C123") !== channelCheckMessage(notIn, "C123"),
     "the two refusals say different things",
   );
-  assert(
-    /check the id/i.test(channelCheckMessage(notFound, "C123")),
-    "the typo case names the id as the thing to look at",
+  // #2438: one plain line of what went wrong and one short instruction, the same
+  // shape as the field's own refusals (Dan's plain error copy rule).
+  eq(
+    channelCheckMessage(notFound, "C123"),
+    "Slack has no channel C123. Pick one from the list or paste its channel ID.",
+    "the typo case names the id and the way out, in two short sentences",
   );
   assert(
     /invite/i.test(channelCheckMessage(notIn, "C123")),
@@ -123,6 +129,41 @@ import { assert, eq, finish } from "./lib/harness.ts";
   eq(checkedName({ state: "ok", name: null }), null, "an answer with no name yields none");
   eq(checkedName({ state: "not-found" }), null, "a channel that does not exist has no name");
   eq(checkedName({ state: "cannot-check", why: "x" }), null, "nor does one nobody could ask about");
+}
+
+// #2438: THE NAMES THE CHANNEL FIELDS SHOW for stored ids, taken from the same
+// checks the panel already made. Only an answer that carried a name contributes,
+// so a field never shows a name Slack did not give.
+{
+  const names = channelNames(
+    new Map<string, ChannelCheck>([
+      ["C09F4L6PLQP", { state: "ok", name: "dan-systems-test" }],
+      ["C0OPS00001", { state: "not-invited", name: "ops" }],
+      ["C0GONE0001", { state: "not-found" }],
+      ["C0SCOPE001", { state: "cannot-check", why: "x" }],
+      ["C0NONAME01", { state: "ok", name: null }],
+    ]),
+  );
+  eq(
+    names,
+    { C09F4L6PLQP: "dan-systems-test", C0OPS00001: "ops" },
+    "only checks Slack answered with a name give one",
+  );
+  eq(channelNames(new Map()), {}, "no checks, no names");
+  // The fields resolve typed names against STORED channels only, the same set the
+  // save can name, so the field never accepts a name the save would refuse (L99).
+  // The panel's checks also cover the deployment's default channels, which are not.
+  eq(
+    channelNames(
+      new Map<string, ChannelCheck>([
+        ["C09F4L6PLQP", { state: "ok", name: "dan-systems-test" }],
+        ["C0ENVDEF01", { state: "ok", name: "env-default" }],
+      ]),
+      ["C09F4L6PLQP", "", "C0NOTCHKD1"],
+    ),
+    { C09F4L6PLQP: "dan-systems-test" },
+    "limited to the ids asked for",
+  );
 }
 
 // THE FOLLOW UP SENTENCE. A named, confirmed channel needs none: naming it is
