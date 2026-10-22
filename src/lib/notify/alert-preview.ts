@@ -189,6 +189,7 @@ import {
 } from "@/lib/monitor/roster-coverage";
 import { formatThinTierNotice } from "@/lib/monitor/thin-tier";
 import { formatPoolNearlyFullNotice } from "@/lib/monitor/bucket-fullness";
+import { fillBand, formatRosterFillAlert, formatRosterFillRecovery, type RosterFillReading } from "@/lib/monitor/roster-fill";
 import { formatBusyDriftAlert, formatBusyDriftRecovery } from "@/lib/monitor/busy-drift-sampler";
 import { formatScheduleGapNotice } from "@/lib/monitor/schedule-coverage";
 import { formatAttributeGapNotice } from "@/lib/monitor/attribute-coverage";
@@ -694,6 +695,25 @@ export const INVITE_MOVE_DM_PREVIEWS: InviteMoveDmPreview[] = [
   { to: "manager", state: "their advisor's move inside 30 minutes", text: managerLeftDm(INVITE_MOVE_FACTS, "near-start") },
   { to: "manager", state: "an advisor Slate holds only an address for", text: managerLeftDm({ ...INVITE_MOVE_FACTS, advisorName: null }, "second-move") },
 ];
+
+/** A roster 88% booked over two days, against the 85% line production holds (#2590). */
+const PREVIEW_ROSTER_FILL: Extract<RosterFillReading, { status: "measured" }> = {
+  status: "measured",
+  days: ["2026-10-22", "2026-10-23"],
+  linePct: 85,
+  open: 39,
+  capacity: 330,
+  bookedPct: 88,
+  notCounted: 0,
+  tiers: [
+    { tier: "1", label: "Low", open: 8, capacity: 120, bookedPct: 93 },
+    { tier: "3", label: "High", open: 9, capacity: 80, bookedPct: 88 },
+    { tier: "2", label: "Medium", open: 14, capacity: 90, bookedPct: 84 },
+    { tier: "5", label: "Ultra High", open: 8, capacity: 40, bookedPct: 80 },
+  ],
+  over: true,
+  band: fillBand(88, 85),
+};
 
 /** One rendered state of one alert. */
 export interface AlertPreview {
@@ -4443,6 +4463,25 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the ceilings are being enforced again",
     channel: "recovery",
     text: formatEdgeLimiterRecovery(),
+  },
+  // --- the whole roster filling up against the Team capacity line (#2590)
+  {
+    key: "roster_filling_up",
+    state: "88% booked over the next two days against an 85% line",
+    channel: "alert",
+    text: formatRosterFillAlert(PREVIEW_ROSTER_FILL),
+  },
+  {
+    key: "roster_filling_up",
+    state: "the tiers could not be read, two advisors not syncing",
+    channel: "alert",
+    text: formatRosterFillAlert({ ...PREVIEW_ROSTER_FILL, tiers: null, notCounted: 2 }),
+  },
+  {
+    key: "roster_filling_up",
+    state: "back under the line",
+    channel: "recovery",
+    text: formatRosterFillRecovery({ ...PREVIEW_ROSTER_FILL, open: 66, bookedPct: 80, over: false, band: 0 }),
   },
   // --- a debt tier nearly full over the days the booker shows (#1256, #3559, #3637)
   {

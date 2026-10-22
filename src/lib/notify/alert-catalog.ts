@@ -101,6 +101,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The warehouse self-check is failing; it passes again and the reconcile lane can see it.",
   },
   {
+    key: "roster_filling_up",
+    kind: "condition",
+    why:
+      "The roster's call capacity over the next two days leads can book is booked at or over the nearly full " +
+      "line set on Team capacity (#2590), the point to think about ad spend. It holds while the share stays " +
+      "there and ends when the capacity history lane measures it under the line again.",
+  },
+  {
     key: "db_saturation",
     kind: "condition",
     why: "The database's committed memory is critically high (#3588), which slows every booking and availability request; it falls back under the threshold and the monitor lane sees it on its next pass.",

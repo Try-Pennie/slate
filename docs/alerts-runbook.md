@@ -90,7 +90,7 @@ Keys: `empty_tier:*`, `bucket_slots_stale`, `availability_booked_solid`,
 `low_booking_volume`, `booking_failure_rate`, `booking_failure_burst_ended`,
 `booking_failure_volume`, `booking_budget:*`, `calendar_window_uncovered`,
 `booker_unstaffed:*`, `public_booking_stopped`, `booking_race_contention`,
-`booking_race_bound_hit`, `pool_nearly_full`, `busy_cache_drift`, `offered_nobody_free`,
+`booking_race_bound_hit`, `pool_nearly_full`, `roster_filling_up`, `busy_cache_drift`, `offered_nobody_free`,
 `smoke_canary_failed:*`, `booking_embed_ip_cap`, `booking_embed_contact_cap`,
 `booking_embed_honeypot`.
 
@@ -98,6 +98,18 @@ Keys: `empty_tier:*`, `bucket_slots_stale`, `availability_booked_solid`,
 times than they should, or none. The alerts are deliberately split by CAUSE, because
 "booked solid" is a staffing fact and "data anomaly" is a bug, and they call for
 opposite responses (#570).
+
+**`roster_filling_up` is good news with a decision attached, not a fault** (#2590). The
+whole roster's call capacity over the next two days leads can book is booked at or over
+the nearly full line an admin sets on Team capacity (`booking_settings.capacity_nearly_full_pct`,
+85 by default). The share is Team capacity's own (calls that still fit against what the
+shifts could hold, out and not syncing advisors left out), measured every half hour by the
+capacity history lane (`src/lib/monitor/roster-fill.ts`). What to do: open Team capacity
+to see which days and advisors are full, and decide with whoever runs ad spend whether to
+turn it down. It posts again only when the share climbs another five points, otherwise once
+a day, and clears on a measured reading under the line. To change when it fires, move the
+line on Team capacity. Silence can also mean the lane could not measure: look for
+`tag=capacity-history msg="roster fill"` with `status="unmeasured"`.
 
 **`smoke_canary_failed:*` is the booking canary failing against production** (#3801). The
 key is the pass, `dry` (every 30 minutes) or `full` (every 6 hours), and the message names
