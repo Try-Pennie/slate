@@ -29,7 +29,8 @@ import {
   type RosterFillReading,
 } from "../src/lib/monitor/roster-fill.ts";
 import type { TeamCapacityReport } from "../src/lib/admin/team-capacity-load.ts";
-import { capacityDays, type AdvisorDay, type TeamCapacityAdvisor } from "../src/lib/admin/team-capacity.ts";
+import type { AdvisorDay, TeamCapacityAdvisor } from "../src/lib/admin/team-capacity.ts";
+import { capacityDays } from "../src/lib/admin/capacity-days.ts";
 import { offeredWindowFor } from "../src/lib/availability/offered-window.ts";
 import type { AlertRepeat } from "../src/lib/notify/repeat-policy.ts";
 import { assert, eq, finish } from "./lib/harness.ts";

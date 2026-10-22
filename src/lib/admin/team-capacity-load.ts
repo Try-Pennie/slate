@@ -18,7 +18,8 @@ import type { MemberAvailability } from "@/lib/availability/compute";
 import type { BusinessHours } from "@/lib/booking/business-hours-load";
 import { approvedTimeOffIntervals } from "@/lib/ooo/approved-overlap";
 import { loadFailingAgents } from "@/lib/google/sync";
-import { capacityDays, teamCapacityReport, type CapacityEventType, type TeamCapacityAdvisor, type TimeOffInterval } from "./team-capacity";
+import { capacityDays } from "./capacity-days";
+import { teamCapacityReport, type CapacityEventType, type TeamCapacityAdvisor, type TimeOffInterval } from "./team-capacity";
 
 /** Which read failed. Each is said in its own words on the page, never as zeros (L10, L11). */
 export type TeamCapacityUnreadable =

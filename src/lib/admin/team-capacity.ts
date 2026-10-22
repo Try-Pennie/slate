@@ -27,30 +27,6 @@
  */
 import { DateTime } from "luxon";
 import { computeBucketSlots, type BusinessHoursRules, type MemberAvailability } from "../availability/compute.ts";
-import { offeredWindowFor } from "../availability/offered-window.ts";
-import { windowOnDate, type BusinessHoursException, type BusinessWindow } from "../booking/business-hours.ts";
-
-/**
- * The days Team capacity reports, and the days the booker offers a lead, from one walk.
- * `bookerDays` is `offeredWindowFor`'s own list. `windowDays` is the page's: after the 6 PM
- * cutoff the booker's days start tomorrow, but it still serves whatever today has left, so the
- * page keeps today ahead of them (#3949, Dan, 2026-10-19), on an open day only. Null when the
- * office's week holds no open day to count.
- */
-export function capacityDays(
-  hours: { zone: string; rules: BusinessWindow[]; exceptions: BusinessHoursException[] },
-  nowMs: number,
-  minNoticeMin: number,
-  offeredOpenDays: number,
-): { windowDays: string[]; bookerDays: string[] } | null {
-  const window = offeredWindowFor(hours, nowMs, minNoticeMin, offeredOpenDays);
-  if (!window || window.days.length === 0) return null;
-  const today = DateTime.fromMillis(nowMs, { zone: hours.zone });
-  const todayIso = today.toISODate()!;
-  const todayOpen = windowOnDate(hours, todayIso, today.weekday) !== null;
-  const windowDays = todayOpen && window.days[0] > todayIso ? [todayIso, ...window.days] : window.days;
-  return { windowDays, bookerDays: window.days };
-}
 
 /** The event type fields the slot grid is laid out from, as the booker reads them. */
 export interface CapacityEventType {
