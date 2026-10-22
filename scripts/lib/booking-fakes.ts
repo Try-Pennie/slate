@@ -197,6 +197,9 @@ export interface FakeOpts {
   reassignSwapThrows?: boolean; // reassign_booking_swap rejects (rpc/network error) (#449)
   /** #3249: the bucket aware swap refuses a reroute with this word. */
   reassignSwapRefused?: string;
+  /** #1677: a change landing on the booking row AFTER the reassign loaded it and
+   *  before its swap, as another writer would make it (a reassign, a reschedule). */
+  beforeReassignSwap?: (booking: Booking) => void;
   // Per-agent calendar busy intervals the single-agent free check sees (#523):
   // models a reschedule overlapping the booking's OWN still-present event.
   busyByEmail?: Map<string, { start: string; end: string }[]>;
@@ -399,6 +402,8 @@ export function makeDeps(opts: FakeOpts) {
     deletedReservations: [] as string[],
     latestByKeyLookups: [] as string[],
     reservationBumps: [] as { id: string; attempts: number; lastError: string }[],
+    /** #1677: the expected state each swap was handed, null when none. */
+    reassignSwapExpects: [] as ({ assignedUserId: string; startsAt: string } | null)[],
     reassignSwaps: [] as {
       bookingId: string;
       userId: string;
@@ -915,6 +920,7 @@ export function makeDeps(opts: FakeOpts) {
       gcalClientId,
       routingTrace,
       reroute,
+      expect,
     }) => {
       if (opts.reassignSwapThrows) throw new Error("rpc down");
       if (reroute && opts.reassignSwapRefused) {
@@ -922,6 +928,20 @@ export function makeDeps(opts: FakeOpts) {
       }
       const ctx = [opts.bookingById, opts.existing].find((c) => c?.booking?.id === bookingId);
       const prev = ctx?.booking;
+      if (prev) opts.beforeReassignSwap?.(prev);
+      calls.reassignSwapExpects.push(expect ?? null);
+      // #1677, migration 0196: the expected state is checked under the swap's row lock,
+      // and a booking that moved is refused, never overwritten. A terminal one is left to
+      // the body below, as in the real function.
+      if (
+        prev &&
+        expect &&
+        prev.status !== "cancelled" &&
+        prev.status !== "completed" &&
+        (prev.assigned_user_id !== expect.assignedUserId || Date.parse(prev.starts_at) !== Date.parse(expect.startsAt))
+      ) {
+        return { prevGcalEventId: null, prevAgentEmail: null, updated: false, refused: "booking_moved" as never };
+      }
       // Model a concurrent cancellation between load and swap, or a terminal row.
       if (!prev || opts.reassignSwapTerminal || prev.status === "cancelled" || prev.status === "completed") {
         return { prevGcalEventId: null, prevAgentEmail: null, updated: false };
