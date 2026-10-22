@@ -3,7 +3,8 @@
 //
 // The rules a wrong answer would hide behind a plausible time:
 //  - the pace counts only the KNOWN intervals of the last 3 hours, by how long each one ran, and is
-//    no pace at all under 2 known hours (launch, a new day joining, a gap), never a guess;
+//    never a guess: no pace yet under 3 hours of readings (launch, a new day joining), and readings
+//    missed, with when the pace comes back, under 2 known hours of the last 3 after that;
 //  - a pace at or under 0 is not filling, a state of its own, never a time;
 //  - the walk's shortcut (starts seen now, cut at t plus notice, packed) is the booker's rule: it
 //    equals `advisorDay` at nowMs = t, across a clock change too;
@@ -93,19 +94,31 @@ const show = (e: Estimate) => (e.state === "at" ? `at ${DateTime.fromMillis(e.at
   eq(pace(six, NOW), { state: "pace", perHour: 9, knownHours: 3 }, "six known half hours: 27 taken over 3 hours is 9 an hour");
   eq(pace([...six, rd(NOW + 30 * MIN, 30, 100)], NOW), { state: "pace", perHour: 9, knownHours: 3 }, "a reading after now is not counted");
 
-  // Fewer than 2 of the last 3 hours known: no pace, whatever the known half hours say.
-  eq(pace(halfHours([4, 5, 3, null, null, null]), NOW), { state: "no-pace-yet", knownHours: 1.5 }, "1.5 known hours is no pace yet");
+  // Readings going back 3 hours but fewer than 2 of them known: readings were missed, and the
+  // pace comes back once half hourly readings would make 2 known hours again.
+  eq(pace(halfHours([4, 5, 3, null, null, null]), NOW), { state: "readings-missed", knownHours: 1.5, backAtMs: NOW + 2 * HOUR }, "1.5 known hours, all early: readings missed, back by 2pm as the known ones age out");
+  eq(pace(halfHours([null, null, null, 4, 5, 3]), NOW), { state: "readings-missed", knownHours: 1.5, backAtMs: NOW + 30 * MIN }, "1.5 known hours, all recent: back by 12:30pm with one more reading");
+  eq(pace(halfHours([4, null, null, null, null, 3]), NOW), { state: "readings-missed", knownHours: 1, backAtMs: NOW + 90 * MIN }, "1 known hour split across the gap: back by 1:30pm");
+  eq(pace(halfHours([null, null, null, null, null, null]), NOW), { state: "readings-missed", knownHours: 0, backAtMs: NOW + 2 * HOUR }, "nothing known for 3 hours: back by 2pm, four readings on");
   eq(pace(halfHours([null, null, 4, 5, 3, 4]), NOW), { state: "pace", perHour: 8, knownHours: 2 }, "exactly 2 known hours is a pace: 16 over 2 hours");
-  // Launch, and each night a new day joins the window: only a first reading.
-  eq(pace([{ read_at: iso(NOW), prev_read_at: null, taken: null }], NOW), { state: "no-pace-yet", knownHours: 0 }, "a first reading alone is no pace yet");
+
+  // Fewer than 3 hours of readings in all: launch, and each night a new day joins the cards.
+  // No pace yet, even with 2 known hours: the pace shows after 3 hours of readings.
+  const first = (ms: number): PaceReading => ({ read_at: iso(ms), prev_read_at: null, taken: null });
+  eq(pace([first(NOW)], NOW), { state: "no-pace-yet", knownHours: 0 }, "a first reading alone is no pace yet");
   eq(pace([], NOW), { state: "no-pace-yet", knownHours: 0 }, "no readings is no pace yet");
+  eq(pace([first(NOW - 2 * HOUR), ...halfHours([4, 5, 3, 6])], NOW), { state: "no-pace-yet", knownHours: 2 }, "two hours of readings since launch, all known, is still no pace yet");
+  eq(pace([first(NOW - 150 * MIN), ...halfHours([4, null, null, 6, 4])], NOW), { state: "no-pace-yet", knownHours: 1.5 }, "two and a half hours of readings with a gap is no pace yet, not readings missed");
+  // The boundary: readings reaching back exactly 3 hours.
+  eq(pace([first(NOW - 3 * HOUR), ...halfHours([4, 5, 3, 6, 4, 5])], NOW), { state: "pace", perHour: 9, knownHours: 3 }, "three hours of readings since launch, all known, is a pace");
+  eq(pace([first(NOW - 3 * HOUR), ...halfHours([4, 5, 3, null, null, null])], NOW), { state: "readings-missed", knownHours: 1.5, backAtMs: NOW + 2 * HOUR }, "three hours of readings since launch with a gap is readings missed");
 
   // A gap: the lane missed two runs, so one reading measured an hour and a half. It counts for
   // the time it ran, not as one interval.
   eq(pace([rd(NOW - 90 * MIN, 90, 9), rd(NOW - 30 * MIN, 30, null), rd(NOW, 30, 3)], NOW), { state: "pace", perHour: 6, knownHours: 2 }, "an hour and a half reading after a gap counts 1.5 hours: 12 over 2 hours");
   // A reading that began before the window is left out whole, never shared out by guesswork.
   eq(pace([rd(NOW - 2 * HOUR, 90, 50), ...halfHours([2, 2, 2, 2])], NOW), { state: "pace", perHour: 4, knownHours: 2 }, "a reading reaching back past 3 hours is left out");
-  eq(pace([rd(NOW - 2 * HOUR, 90, 50), ...halfHours([2, 2, 2])], NOW), { state: "no-pace-yet", knownHours: 1.5 }, "and its hours do not count toward the 2");
+  eq(pace([rd(NOW - 2 * HOUR, 90, 50), ...halfHours([2, 2, 2])], NOW), { state: "readings-missed", knownHours: 1.5, backAtMs: NOW + 30 * MIN }, "and its hours do not count toward the 2");
 
   // At or under 0: not filling, with the number kept.
   eq(pace(halfHours([0, 0, 0, 0, 0, 0]), NOW), { state: "not-filling", perHour: 0, knownHours: 3 }, "a pace of exactly 0 is not filling");
@@ -259,12 +272,35 @@ const walkerOn = (m: MemberAvailability, iso: string, readAtMs: number, timeOff:
   const otherWeekday = est({ readAtMs: R, advisors: team, pattern: [cell(13, 10, 20), cell(14, 10, 20), cell(13, 1, 30, 3), cell(14, 1, 30, 3)] }, TUE);
   eq(show(otherWeekday.pattern), show(atState(at(TUE, "07:00"))), "Wednesday's cells are never used on a Tuesday");
 
-  // No pace yet: the straight line has nothing to go on, and a pattern needing it cannot finish.
-  const noPace: Pace = { state: "no-pace-yet", knownHours: 1 };
-  const patternOnly = est({ readAtMs: R, advisors: team, pace: noPace, pattern: [cell(13, 10, 10), cell(14, 10, 10)] }, TUE);
-  eq(patternOnly, { line: { state: "no-pace-yet" }, pattern: atState(at(TUE, "07:00")), shown: "pattern", cellsFallenBack: 0 }, "with no pace a fully covered pattern still gives its time");
-  const patternThin = est({ readAtMs: R, advisors: team, pace: noPace, pattern: [cell(13, 10, 10)] }, TUE);
-  eq([show(patternThin.line), show(patternThin.pattern), patternThin.shown, patternThin.cellsFallenBack], ["no-pace-yet", "no-pace-yet", "line", 1], "with no pace a thin cell leaves the pattern with no estimate");
+  // No pace (not yet, or readings missed): the straight line has nothing to go on, and a pattern
+  // needing it cannot finish. Which of the two it is stays on the pace.
+  const noPaces: [string, Pace][] = [
+    ["no pace yet", { state: "no-pace-yet", knownHours: 1 }],
+    ["readings missed", { state: "readings-missed", knownHours: 1, backAtMs: R + HOUR }],
+  ];
+  for (const [label, noPace] of noPaces) {
+    const patternOnly = est({ readAtMs: R, advisors: team, pace: noPace, pattern: [cell(13, 10, 10), cell(14, 10, 10)] }, TUE);
+    eq(patternOnly, { line: { state: "no-pace" }, pattern: atState(at(TUE, "07:00")), shown: "pattern", cellsFallenBack: 0 }, `${label}: a fully covered pattern still gives its time`);
+    const patternThin = est({ readAtMs: R, advisors: team, pace: noPace, pattern: [cell(13, 10, 10)] }, TUE);
+    eq([show(patternThin.line), show(patternThin.pattern), patternThin.shown, patternThin.cellsFallenBack], ["no-pace", "no-pace", "line", 1], `${label}: a thin cell leaves the pattern with no estimate`);
+  }
+}
+{
+  // A start that does not parse throws rather than dropping out of the walk as if it had passed (L50).
+  const R = at(TUE, "06:00");
+  const good = walkerOn(nineToSeven(), TUE, R);
+  for (const [label, broken] of [
+    ["an open start", { ...good, openStarts: [...good.openStarts, "not a time"] }],
+    ["a capacity start", { ...good, capacityStarts: ["not a time", ...good.capacityStarts] }],
+  ] as const) {
+    let threw = "";
+    try {
+      est({ readAtMs: R, advisors: [broken] }, TUE);
+    } catch (err) {
+      threw = err instanceof Error ? err.message : String(err);
+    }
+    eq(threw.includes("not a time"), true, `${label} that does not parse throws, naming it (${threw || "no throw"})`);
+  }
 }
 
 // --- the estimate equals a slow walk through advisorDay and dayTotals ------------------------------

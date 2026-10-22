@@ -7,8 +7,10 @@
  * Net calls taken over the KNOWN intervals of the last 3 hours, per hour. Each reading's taken is
  * already scaled to the counted team. An interval counts for the time it ran, so a reading after a
  * gap counts its hour and a half; one that began before the window is left out whole rather than
- * shared out by a guess. Under 2 known hours there is no pace: at launch, the night a new day joins
- * the window, and after a gap. At or under 0 the day is not filling, a state of its own.
+ * shared out by a guess. There is no pace yet under 3 hours of readings in all (launch, or the
+ * night a new day joins the cards). After that, under 2 known hours of the last 3 means readings
+ * were missed, said with the half hour the pace comes back if readings resume (Dan, 2026-10-22,
+ * #4101). At or under 0 the day is not filling, a state of its own.
  *
  * ## The estimate predicts the card's own percent
  *
@@ -66,24 +68,61 @@ export type Pace =
   | { state: "pace"; perHour: number; knownHours: number }
   /** At or under 0: nothing net is being taken. The number is kept for the record. */
   | { state: "not-filling"; perHour: number; knownHours: number }
-  /** Under 2 known hours of the last 3. */
-  | { state: "no-pace-yet"; knownHours: number };
+  /** Under 3 hours of readings in all: launch, or a new day joining the cards. */
+  | { state: "no-pace-yet"; knownHours: number }
+  /**
+   * Readings go back 3 hours, but under 2 of the last 3 are known. `backAtMs` is the earliest
+   * half hour at which 2 would be, if a known reading arrives every half hour from now.
+   */
+  | { state: "readings-missed"; knownHours: number; backAtMs: number };
 
-/** One day's pace at `nowMs`, from that day's readings. */
-export function pace(readings: PaceReading[], nowMs: number): Pace {
-  const windowStart = nowMs - PACE_WINDOW_MS;
+/** An instant read from a stored or computed string; one that does not parse throws (L50). */
+function instantMs(iso: string, what: string): number {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) throw new Error(`${what} is not a readable instant: "${iso}"`);
+  return ms;
+}
+
+/** Known time, and the calls taken in it, over the readings measured inside [fromMs, toMs]. */
+function knownWithin(readings: { fromMs: number | null; toMs: number; taken: number | null }[], fromMs: number, toMs: number): { knownMs: number; taken: number } {
   let knownMs = 0, taken = 0;
   for (const r of readings) {
-    if (r.taken === null || r.prev_read_at === null) continue;
-    const from = Date.parse(r.prev_read_at);
-    const to = Date.parse(r.read_at);
-    if (!Number.isFinite(from) || !Number.isFinite(to)) throw new Error(`a capacity fill reading has an unreadable instant: ${r.prev_read_at} to ${r.read_at}`);
-    if (from < windowStart || to > nowMs) continue;
-    knownMs += to - from;
+    // A reading that began before the window is left out whole, never shared out by a guess.
+    if (r.taken === null || r.fromMs === null || r.fromMs < fromMs || r.toMs > toMs) continue;
+    knownMs += r.toMs - r.fromMs;
     taken += r.taken;
   }
+  return { knownMs, taken };
+}
+
+/**
+ * One day's pace at `nowMs`, from that day's readings. Pass every reading of the day back to at
+ * least 3 hours before `nowMs`: the earliest one is what says whether 3 hours of readings exist.
+ */
+export function pace(readings: PaceReading[], nowMs: number): Pace {
+  const parsed = readings.map((r) => ({
+    fromMs: r.prev_read_at === null ? null : instantMs(r.prev_read_at, "a capacity fill reading's prev_read_at"),
+    toMs: instantMs(r.read_at, "a capacity fill reading's read_at"),
+    taken: r.taken,
+  }));
+  // The earliest instant the day was read at: a reading's own, or the one it was compared with.
+  let earliestMs = Infinity;
+  for (const r of parsed) if (r.toMs <= nowMs) earliestMs = Math.min(earliestMs, r.fromMs ?? r.toMs);
+
+  const { knownMs, taken } = knownWithin(parsed, nowMs - PACE_WINDOW_MS, nowMs);
   const knownHours = knownMs / 3_600_000;
-  if (knownMs < PACE_MIN_KNOWN_MS) return { state: "no-pace-yet", knownHours };
+  if (earliestMs > nowMs - PACE_WINDOW_MS) return { state: "no-pace-yet", knownHours };
+  if (knownMs < PACE_MIN_KNOWN_MS) {
+    // Each later half hour adds a known reading while the oldest known ones age out of the window.
+    // Four readings make 2 hours on their own, so the answer is never later than that.
+    for (let j = 1; j * WALK_STEP_MS <= PACE_MIN_KNOWN_MS; j++) {
+      const atMs = nowMs + j * WALK_STEP_MS;
+      if (knownWithin(parsed, atMs - PACE_WINDOW_MS, nowMs).knownMs + j * WALK_STEP_MS >= PACE_MIN_KNOWN_MS) {
+        return { state: "readings-missed", knownHours, backAtMs: atMs };
+      }
+    }
+    throw new Error("four half hourly readings must make 2 known hours");
+  }
   const perHour = taken / knownHours;
   return { state: perHour > 0 ? "pace" : "not-filling", perHour, knownHours };
 }
@@ -121,7 +160,7 @@ export function walkAdvisorOf(input: AdvisorDayInput, unsynced: boolean): WalkAd
 export function walkAdvisorAt(a: WalkAdvisor, eventType: CapacityEventType, atMs: number): { open: number; capacity: number } {
   const cutoff = atMs + eventType.min_notice_min * 60_000;
   const packed = (starts: string[], already: number) => {
-    const fit = callsThatFit(starts.filter((s) => Date.parse(s) >= cutoff), eventType).length;
+    const fit = callsThatFit(starts.filter((s) => instantMs(s, "an advisor's start") >= cutoff), eventType).length;
     return eventType.daily_cap === null ? fit : Math.min(fit, Math.max(0, eventType.daily_cap - already));
   };
   return { open: packed(a.openStarts, a.bookedOnDay), capacity: packed(a.capacityStarts, 0) };
@@ -167,8 +206,9 @@ export type Estimate =
   | { state: "at"; atMs: number }
   /** The walk reached the day's last bookable moment under 95%. */
   | { state: "wont-fill" }
-  /** No pace to walk with: the straight line always, the pattern when a cell needed it. */
-  | { state: "no-pace-yet" }
+  /** No pace to walk with (not yet, or readings missed: the pace says which): the straight
+   *  line always, the pattern when a cell needed it. */
+  | { state: "no-pace" }
   /** Nobody counted has a call on the day, so there is no percent to reach. */
   | { state: "no-capacity" };
 
@@ -195,7 +235,7 @@ export function estimate(input: EstimateInput): FillEstimates {
 
   // The day's last bookable moment: its latest start less the notice.
   let lastStartMs = -Infinity;
-  for (const a of counted) for (const s of a.capacityStarts) lastStartMs = Math.max(lastStartMs, Date.parse(s));
+  for (const a of counted) for (const s of a.capacityStarts) lastStartMs = Math.max(lastStartMs, instantMs(s, "an advisor's start"));
   const lastMs = lastStartMs - eventType.min_notice_min * 60_000;
 
   // The team's open and capacity at each step, shared by both walks.
@@ -210,13 +250,14 @@ export function estimate(input: EstimateInput): FillEstimates {
   }
   if (reached(steps[0], 0)) return { line: { state: "already" }, pattern: { state: "already" }, shown: "line", cellsFallenBack: 0 };
 
-  const linePerStep = input.pace.state === "no-pace-yet" ? null : (input.pace.perHour * WALK_STEP_MS) / 3_600_000;
+  const p = input.pace;
+  const linePerStep = p.state === "pace" || p.state === "not-filling" ? (p.perHour * WALK_STEP_MS) / 3_600_000 : null;
   const walk = (expectedAt: (stepMs: number) => number | null): Estimate => {
     let taken = 0;
     for (let k = 1; k < steps.length; k++) {
       // A reading stamps the half hour that ENDS at it, so the taken up to a step is its cell's.
       const expected = expectedAt(steps[k].atMs);
-      if (expected === null) return { state: "no-pace-yet" };
+      if (expected === null) return { state: "no-pace" };
       taken += expected;
       if (reached(steps[k], taken)) return { state: "at", atMs: steps[k].atMs };
     }
@@ -240,7 +281,7 @@ export function estimate(input: EstimateInput): FillEstimates {
   });
 
   return {
-    line: linePerStep === null ? { state: "no-pace-yet" } : walk(() => linePerStep),
+    line: linePerStep === null ? { state: "no-pace" } : walk(() => linePerStep),
     pattern,
     shown: used > 0 && fellBack.size === 0 ? "pattern" : "line",
     cellsFallenBack: fellBack.size,
