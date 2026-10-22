@@ -124,8 +124,11 @@ export function requestObserver(): CallObserver | undefined {
 /**
  * What the request in force here is (#3298): the label of the budget that OPENED
  * it, never a nested one's, so a token mint inside a Google call's own budget
- * still says it was for the booking confirm. None outside a request, which is
- * where the cron lanes run.
+ * still says it was for the booking confirm. Every Google calendar call opens its
+ * own budget, so a call made outside any request (the sync lanes, the cron drains,
+ * the monitor lane) carries ITS label, `google events.list` or `google
+ * freeBusy.many`; only "the booking confirm" means a lead's confirm (#3980). None
+ * outside any budget: a Gmail send, the photo lane, an after response refresh.
  */
 export function requestLabel(): string | undefined {
   return current()?.request.label;
