@@ -7,25 +7,20 @@
 //
 //  1. The attendee carries a per run PHONE (rescheduleSmokeIdentity), not the fixed
 //     +12025550123 that let a leftover booking weak match the next run.
-//  2. The create must be a 200 that CREATED a booking before its manage token is
-//     taken. A `409 confirm_required` carries ANOTHER booking's manage link (the one
-//     dedupe matched), and a 200 `rescheduled` is an existing booking moved; reading
-//     a token from either made the run reschedule and cancel a booking it never
-//     created, and then report ok.
-//  3. The teardown cancel is retried on a transient network error or a 503 (the
-//     gated write did not run, so a retry can succeed). Cancel is safe to repeat: a
-//     booking already cancelled answers 200. If it still does not land, the run
-//     records a failed check NAMING the booking left active, so the alert says which
-//     booking to cancel by hand instead of the next run finding it.
-import { shortErrorReason } from "@/lib/notify/error-text";
-import { isTransientNetworkError, tokenFrom, withRetry, type Json } from "../smoke-lib.ts";
+//  2. The create must answer 200 `created` before its manage token is taken
+//     (`createRefusal`, scripts/lib/smoke-own-booking.ts).
+//  3. The teardown cancel retries, and names the booking when it stays active
+//     (`cancelSmokeBooking`, same module).
+import { tokenFrom, type Json } from "../smoke-lib.ts";
+import {
+  cancelSmokeBooking,
+  createRefusal,
+  teardownCheckMessage,
+  type SmokePost,
+} from "./smoke-own-booking.ts";
 import { rescheduleSmokeIdentity } from "./smoke-reschedule-identity.ts";
 
-export type SmokePost = (
-  path: string,
-  body: Json,
-  auth?: boolean,
-) => Promise<{ status: number; body: Json }>;
+export type { SmokePost };
 
 export interface RescheduleSmokeDeps {
   bucket: string;
@@ -40,64 +35,6 @@ export interface RescheduleSmokeDeps {
 }
 
 const REASON = "schedule_conflict";
-/** Cancel attempts at teardown, the first included. */
-const CANCEL_ATTEMPTS = 3;
-
-/** A completed response worth another attempt: the cancel's gated write did not run. */
-class RetryableStatus extends Error {
-  readonly status: number;
-  constructor(status: number) {
-    super(`got ${status}`);
-    this.status = status;
-  }
-}
-
-/** A thrown error as one short line, keeping the socket code a fetch failure hides. */
-function thrownReason(err: unknown): string {
-  if (err instanceof RetryableStatus) return err.message;
-  const code = (err as { cause?: { code?: unknown } } | null)?.cause?.code;
-  const reason = shortErrorReason(err);
-  return typeof code === "string" && /^[A-Z_]+$/.test(code) ? `${reason} (${code})` : reason;
-}
-
-/**
- * Cancel the run's booking, retrying what a retry can fix. Never throws: a teardown
- * that throws replaces the error the run crashed on, and loses the booking's id.
- */
-export async function cancelSmokeBooking(
-  post: SmokePost,
-  token: string,
-  sleep?: (ms: number) => Promise<void>,
-): Promise<{ ok: true } | { ok: false; reason: string }> {
-  try {
-    const res = await withRetry(
-      async () => {
-        const r = await post(`/api/bookings/${token}/cancel`, { reason: "no_longer_interested" });
-        if (r.status === 503) throw new RetryableStatus(r.status);
-        return r;
-      },
-      {
-        attempts: CANCEL_ATTEMPTS,
-        retryable: (err) => err instanceof RetryableStatus || isTransientNetworkError(err),
-        sleep,
-      },
-    );
-    return res.status === 200 ? { ok: true } : { ok: false, reason: `got ${res.status}` };
-  } catch (err) {
-    return { ok: false, reason: thrownReason(err) };
-  }
-}
-
-/** Why a create response is not this run's own new booking, or null when it is. */
-function notCreatedReason(created: { status: number; body: Json }): string | null {
-  const outcome = created.body.outcome;
-  if (created.status === 200 && outcome === "created") return null;
-  const booking = created.body.booking as Json | undefined;
-  const parts = [`got ${created.status}`];
-  if (typeof outcome === "string") parts.push(outcome);
-  if (booking?.id) parts.push(`against booking ${String(booking.id)}`);
-  return parts.join(" ");
-}
 
 /**
  * Run the reschedule smoke once. Returns "too_few_slots" when the bucket cannot host
@@ -139,7 +76,7 @@ export async function runRescheduleSmoke(deps: RescheduleSmokeDeps): Promise<"ra
       },
       true,
     );
-    const refused = notCreatedReason(created);
+    const refused = createRefusal(created);
     check(refused === null, `create -> 200 created (${refused ?? `got ${created.status}`})`);
     // #4060: stop here. The booking in a non created answer is not this run's.
     if (refused !== null) return "ran";
@@ -182,12 +119,7 @@ export async function runRescheduleSmoke(deps: RescheduleSmokeDeps): Promise<"ra
     // 4. Teardown: cancel the booking (frees the slot + deletes the calendar event).
     if (token) {
       const cancelled = await cancelSmokeBooking(post, token, deps.sleep);
-      check(
-        cancelled.ok,
-        cancelled.ok
-          ? "teardown: booking cancelled"
-          : `teardown: booking ${bookingId || "(id unknown)"} left active, cancel it by hand (${cancelled.reason})`,
-      );
+      check(cancelled.ok, teardownCheckMessage(bookingId, cancelled));
     }
   }
   return "ran";

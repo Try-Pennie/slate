@@ -116,6 +116,16 @@ for (const f of smokeScripts) {
   );
   // A plus-alias written inline is the same fault for the email, in every script.
   assert(!INLINE_ALIAS.test(src), `${f} builds no inline smoketest+ alias`);
+  // The other half of #4060: a script that takes a manage token from a create must
+  // first refuse an answer that is not its own new booking, and must tear down
+  // through the retrying cancel, both from scripts/lib/smoke-own-booking.ts.
+  if (/\btokenFrom\(/.test(src) && f !== "smoke-lib.ts") {
+    assert(/\bcreateRefusal\(/.test(src), `${f} refuses a create that is not 200 created before taking its token`);
+    assert(
+      /\bcancelSmokeBooking\(/.test(src) && !/\/cancel`,\s*\{\s*reason/.test(src),
+      `${f} cancels through cancelSmokeBooking, not a one shot post`,
+    );
+  }
 }
 // Positive controls (L1): each spelling the incident and the old code used.
 assert(INLINE_PHONE.test('phone: "+12025550123"'), "scan catches the fixed reschedule phone");
@@ -123,6 +133,11 @@ assert(INLINE_PHONE.test('const phone = "+12155550100";'), "scan catches a fixed
 assert(INLINE_PHONE.test("const phone = `+1215555${String(Date.now()).slice(-4)}`;"), "scan catches an inline built phone");
 assert(INLINE_PHONE.test("const phone = `+1${area}5550100`;"), "scan catches an interpolated area code");
 assert(INLINE_PHONE.test('phone: "2155550100"'), "scan catches a bare ten digit phone");
+// Control for the one shot cancel pattern, in the exact spelling the scripts used.
+assert(
+  /\/cancel`,\s*\{\s*reason/.test('await jpost(`/api/bookings/${token}/cancel`, { reason: "no_longer_interested" });'),
+  "scan catches a one shot teardown cancel",
+);
 // Negative controls: the shapes that legitimately appear in these scripts.
 assert(!INLINE_PHONE.test('start: "2026-10-12T12:00:00.000Z"'), "scan ignores an ISO timestamp");
 assert(!INLINE_PHONE.test("phone: id.phone"), "scan ignores a phone taken from the helper");

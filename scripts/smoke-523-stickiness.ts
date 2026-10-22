@@ -22,6 +22,7 @@ import { DateTime } from "luxon";
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
 import { smokeAttendee } from "./lib/smoke-identity.ts";
+import { cancelSmokeBooking, createRefusal, teardownCheckMessage } from "./lib/smoke-own-booking.ts";
 
 // Keys load from .env.local / .dev.vars if not already in the environment.
 loadEnvFiles([".env.local", ".dev.vars"]);
@@ -71,6 +72,7 @@ async function main(): Promise<void> {
   // would come back 409 carrying that booking instead of a new one.
   const { externalId, email, phone } = smokeAttendee("523");
   let token = "";
+  let bookingId = "";
   try {
     // Pick a slot comfortably mid-shift so +30 min stays within 9-5 ET and free.
     const open = await slots(BUCKET);
@@ -97,7 +99,15 @@ async function main(): Promise<void> {
       },
       true,
     );
-    check(created.status === 200, `create -> 200 (got ${created.status}${created.status !== 200 ? ` err=${created.body.error}` : ""})`);
+    // #4060: only a 200 `created` is this run's booking; any other answer carries one
+    // this run did not make, so stop rather than reschedule and cancel it.
+    const refused = createRefusal(created);
+    check(
+      refused === null,
+      `create -> 200 created (${refused ?? `got ${created.status}`}${refused !== null && created.body.error ? ` err=${created.body.error}` : ""})`,
+    );
+    if (refused !== null) return;
+    bookingId = String((created.body.booking as Json | undefined)?.id ?? "");
     token = tokenFrom((created.body.booking as Json | undefined)?.manageUrl ?? created.body.manageUrl);
     check(!!token, "create returns a manage token");
     if (!token) return;
@@ -132,8 +142,8 @@ async function main(): Promise<void> {
   } finally {
     // 4. Teardown: cancel the booking, then revert SMOKE to a single agent.
     if (token) {
-      const cancelled = await jpost(`/api/bookings/${token}/cancel`, { reason: "no_longer_interested" });
-      check(cancelled.status === 200, `teardown: booking cancelled (got ${cancelled.status})`);
+      const cancelled = await cancelSmokeBooking(jpost, token);
+      check(cancelled.ok, teardownCheckMessage(bookingId, cancelled));
     }
     if (addedMembership) {
       const del = await db

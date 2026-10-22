@@ -31,6 +31,7 @@ import { buildResumeReservation, type PersistedBookingRow } from "./create-resum
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
 import { smokeAttendee } from "./lib/smoke-identity.ts";
+import { cancelSmokeBooking, createRefusal, teardownCheckMessage } from "./lib/smoke-own-booking.ts";
 
 // --- config -----------------------------------------------------------------
 
@@ -141,7 +142,14 @@ async function main(): Promise<void> {
       },
       true,
     );
-    check(created.status === 200, `create -> 200 (got ${created.status}${created.status !== 200 ? ` err=${created.body.error}` : ""})`);
+    // #4060: only a 200 `created` is this run's booking; any other answer carries one
+    // this run did not make, so stop rather than resume and cancel it.
+    const refused = createRefusal(created);
+    check(
+      refused === null,
+      `create -> 200 created (${refused ?? `got ${created.status}`}${refused !== null && created.body.error ? ` err=${created.body.error}` : ""})`,
+    );
+    if (refused !== null) return;
     const b = created.body.booking as Json | undefined;
     bookingId = String(b?.id ?? "");
     token = tokenFrom(b?.manageUrl);
@@ -215,8 +223,8 @@ async function main(): Promise<void> {
   } finally {
     // 8. Teardown: cancel the booking, then drop any reservation the drain left.
     if (token) {
-      const cancelled = await jpost(`/api/bookings/${token}/cancel`, { reason: "no_longer_interested" });
-      check(cancelled.status === 200, `teardown: booking cancelled (got ${cancelled.status})`);
+      const cancelled = await cancelSmokeBooking(jpost, token);
+      check(cancelled.ok, teardownCheckMessage(bookingId, cancelled));
     }
     if (idempotencyKey) {
       const deleted = await pgDelete(
