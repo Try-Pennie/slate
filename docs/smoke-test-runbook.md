@@ -159,10 +159,13 @@ handling of a real booking). Then:
 - **Teardown runs from a `finally` block, but cannot cancel without a network.**
   Each scenario cancels its own bookings, and a final sweep cancels every booking
   under every identity it booked. When the runner loses the network partway (run
-  39694932888, 2026-10-21), the cancel cannot land. The reschedule, #523 and
-  create resume smokes retry it (`scripts/lib/smoke-own-booking.ts`), then fail a
-  check reading `teardown: booking <id> left active, cancel it by hand`; the
-  booking API smoke's final sweep still swallows a failed cancel. Cancel that booking from its page, `/admin/bookings/<id>` (it is on the
+  39694932888, 2026-10-21), the cancel cannot land. Every booking smoke retries it
+  (`scripts/lib/smoke-own-booking.ts`; the booking API smoke through
+  `scripts/lib/smoke-cleanup.ts`), then fails a check reading `teardown: booking
+  <id> left active, cancel it by hand`, or `teardown: could not list bookings
+  under <externalId> to sweep` when it cannot even tell. Only a 200 `created`
+  answer's manage token is ever cancelled, so a dedupe onto someone else's booking
+  is never torn down by the canary. Cancel that booking from its page, `/admin/bookings/<id>` (it is on the
   SMOKE test bucket, so no lead is affected).
 - **Every smoke identity is unique per run, phone included** (#3581, #4060).
   Person dedupe matches on email OR phone alone, so a fixed one let a booking a

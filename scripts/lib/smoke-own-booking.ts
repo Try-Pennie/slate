@@ -57,7 +57,7 @@ class RetryableStatus extends Error {
 }
 
 /** A thrown error as one short line, keeping the socket code a fetch failure hides. */
-function thrownReason(err: unknown): string {
+export function thrownReason(err: unknown): string {
   if (err instanceof RetryableStatus) return err.message;
   const code = (err as { cause?: { code?: unknown } } | null)?.cause?.code;
   const reason = shortErrorReason(err);
