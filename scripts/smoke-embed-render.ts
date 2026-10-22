@@ -34,6 +34,13 @@
 // scripts/lib/embed-render-check.ts and are pinned offline by
 // scripts/test-embed-render-check.ts, so they are tested where no browser exists.
 //
+// #1869: once the booker has mounted it also opens ONE floating panel, the booker's
+// timezone list, from the keyboard, and asserts it is on screen, uncovered, holds
+// focus, walks with the arrow keys and shuts on Escape (`booker-panel-probe.ts`).
+// All four popups share one component (#1843), and the defects that component has
+// shipped are invisible to jsdom. It rides this 6 hourly full pass rather than the
+// 30 minute tick, for the billing reason #1006 gives. It commits nothing.
+//
 // Failures are recorded through the SAME failure log the booking smoke uses, so
 // the existing Slack alerter names this check alongside the others rather than
 // needing a second alerting path, which would be a second thing to keep working
@@ -45,7 +52,9 @@ import {
   isCspRefusal,
   judgeEmbedRender,
   type EmbedObservation,
+  type PanelObservation,
 } from "./lib/embed-render-check.ts";
+import { probeTimezonePanel } from "./lib/booker-panel-probe.ts";
 import { failureLogPath, recordFailure } from "./lib/smoke-failure-log.ts";
 
 const base = (process.env.SLATE_BASE_URL || "https://slate.trypennie.app").replace(/\/$/, "");
@@ -123,6 +132,7 @@ async function observe(browser: Browser): Promise<EmbedObservation | { driverErr
         frameText: "",
         consoleErrors,
         cspViolations,
+        panel: null,
       };
     }
 
@@ -141,6 +151,7 @@ async function observe(browser: Browser): Promise<EmbedObservation | { driverErr
     // blank booker inside a present modal would read as healthy.
     let frameText = "";
     let bookerMounted = false;
+    let panel: PanelObservation | null = null;
     try {
       const frame = page.frameLocator('iframe[title]');
       const body = frame.locator("body");
@@ -156,11 +167,14 @@ async function observe(browser: Browser): Promise<EmbedObservation | { driverErr
         .catch(() => {});
       bookerMounted = (await frame.locator(BOOKER_CHROME).count().catch(() => 0)) > 0;
       frameText = (await body.innerText().catch(() => "")) ?? "";
+      // #1869: only a mounted booker has the control; an unmounted one is judged
+      // on its own outcome, and a mounted one with no reading fails.
+      if (bookerMounted) panel = await probeTimezonePanel(frame);
     } catch {
       frameText = "";
     }
 
-    return { modalPresent, loadFailedShown, bookerMounted, frameText, consoleErrors, cspViolations };
+    return { modalPresent, loadFailedShown, bookerMounted, frameText, consoleErrors, cspViolations, panel };
   } catch (err) {
     return { driverError: String(err) };
   } finally {
@@ -193,7 +207,7 @@ async function main(): Promise<number> {
     const verdict = judgeEmbedRender(seen);
     if (verdict.outcome === "rendered") {
       console.log(
-        `embed render: ok (booker chrome mounted, ${seen.frameText.trim().length} characters drawn)`,
+        `embed render: ok (booker chrome mounted, ${seen.frameText.trim().length} characters drawn, timezone list opened, focused and walked)`,
       );
       return 0;
     }
