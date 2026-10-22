@@ -28,6 +28,8 @@ import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { loadAgentLinkName } from "@/lib/agent-link/store";
 import { agentLinkUrl } from "@/lib/agent-link/link";
 import BulkReassignCoverage from "@/components/BulkReassignCoverage";
+import { StrandedCallsCard, type StrandedCallsState } from "@/components/admin/StrandedCallsCard";
+import { loadAgentStrandedCalls } from "@/lib/booking/agent-stranded-calls";
 import { backendServiceOf, teamsOf } from "@/lib/admin/agent-display";
 import { debtTeamCoverage, debtTeamValueText } from "@/lib/admin/debt-team";
 import PoolExitConfirmButton from "@/components/PoolExitConfirmButton";
@@ -85,6 +87,22 @@ async function upcomingBookingCount(agentId: string): Promise<number | null> {
   } catch (err) {
     log.error("admin-agent", { msg: "upcoming booking count failed", user_id: agentId }, err);
     return null;
+  }
+}
+
+/**
+ * The calls the last coverage sweep could not place that are still with this agent
+ * (#3595), by the predicate the coverage needs human alert pages on.
+ *
+ * A failed read is its own state and never an empty list, which would say nothing is
+ * waiting when nothing was measured (L10). The profile page still renders around it.
+ */
+async function readStrandedCalls(agentId: string): Promise<StrandedCallsState> {
+  try {
+    return { kind: "read", ...(await loadAgentStrandedCalls(agentId, Date.now())) };
+  } catch (err) {
+    log.error("admin-agent", { msg: "stranded calls unreadable", user_id: agentId }, err);
+    return { kind: "unreadable" };
   }
 }
 
@@ -209,6 +227,11 @@ export default async function AgentProfilePage({
   // reads of the same question could disagree with each other on the same page.
   // Only needed when the controls actually render.
   const heldUpcoming = canManageThisAgent ? await upcomingBookingCount(agent.id) : null;
+
+  // #3595: the calls the last coverage sweep could not place that are still with
+  // this agent. Read for whoever may manage this agent, the same gate as the Move
+  // panel these calls came from, since placing one by hand is a reassign.
+  const strandedCalls = canManageThisAgent ? await readStrandedCalls(agent.id) : null;
 
   // #2073: the agent's own booking link, for admins only, by its readable name
   // since #3026. A failed read is its own state, never drawn as "no link yet".
@@ -398,6 +421,12 @@ export default async function AgentProfilePage({
             {photoNoticeFromRun.text}
           </div>
         )}
+
+        {/* #3595: calls nobody owns are the most urgent thing on this page, so they
+            sit straight under the agent's own card (Dan's design round, 2026-10-21),
+            outside the closed section below, which by design hides no signal. No
+            card at all when nothing waits. */}
+        {strandedCalls && <StrandedCallsCard state={strandedCalls} agentName={agent.name ?? agent.email} />}
 
         {/* Access: role + bookable + manager */}
         <section className={cardCls}>
