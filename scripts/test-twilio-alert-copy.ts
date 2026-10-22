@@ -17,9 +17,9 @@ import {
   twilioOrphanedMarkRecovery,
   demotionTriggerFailureAlert,
   demotionTriggerFailureRecovery,
-  demotionRerouteMovedInfo,
+  demotionRerouteOutcomeInfo,
 } from "@/lib/monitor/cron-alert-copy";
-import { alertEntry } from "@/lib/notify/alert-catalog";
+import { alertEntry, catalogEntryForSentKey } from "@/lib/notify/alert-catalog";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const NOT_CONFIGURED =
@@ -186,32 +186,51 @@ const REFUSED = "Twilio refused the credentials (401). The API key has to be Tas
   assert(/no action/i.test(rec), "the all clear says nothing is owed");
   assert(!/[0-9]/.test(rec), "and quotes no count");
 
-  for (const key of ["demotion_trigger_failures", "demotion_reroute_moved"]) {
-    const entry = alertEntry(key);
+  for (const key of ["demotion_trigger_failures", "demotion_reroute_moved:u1"]) {
+    const entry = catalogEntryForSentKey(key);
     assert(entry !== undefined, `${key} is classified in the alert catalog`);
   }
   eq(alertEntry("demotion_trigger_failures")?.kind, "condition", "the failure is a condition that ends");
-  eq(alertEntry("demotion_reroute_moved")?.kind, "info", "the moved line is a whisper, never a page");
+  eq(catalogEntryForSentKey("demotion_reroute_moved:u1")?.kind, "info", "the moved line is a whisper, never a page");
 }
 
-// --- #3615: the Slack line when a demotion sweep moves calls ------------------------
+// --- #3615: the Slack line once a demotion sweep has FINISHED -----------------------------
+//
+// It used to go out when the sweep was queued and say "is moving 1 call" for a call nobody was
+// free to take (evaldez1, 2026-10-21). It is now written from the settled counts, so it says what
+// happened, and "narrowed" rather than "demoted", since a narrowing is sometimes a correction.
 {
-  const change = { from: { debtTeam: ["ultra_high", "high"], backendService: [] }, to: { debtTeam: ["high"], backendService: [] } };
-  const one = demotionRerouteMovedInfo([
-    { email: "jlee@trypennie.com", bookings: 1, change, url: "https://slate.trypennie.app/admin/agents/u1" },
-  ]);
-  assert(/\b1 call\b/.test(one), `one call reads as singular (got: ${one})`);
-  assert(one.includes("jlee@trypennie.com"), "it names whose calls moved");
-  assert(one.includes("Debt tiers went from Ultra High and High to High."), "it says what changed, in the shared sentence");
-  assert(one.includes("https://slate.trypennie.app/admin/agents/u1"), "and links the agent's page, where the moves are");
+  const change = { from: { debtTeam: ["medium", "low"], backendService: ["achieve"] }, to: { debtTeam: ["medium"], backendService: ["achieve"] } };
+  const counts = { moved: 0, unplaceable: 0, failed: 0, skipped: 0, cancelled: 0 };
+  const url = "https://slate.trypennie.app/admin/agents/u1?job=j1";
+  const line = (c: Partial<typeof counts>, ch: typeof change | null = change) =>
+    demotionRerouteOutcomeInfo({ email: "evaldez1@trypennie.com", change: ch, counts: { ...counts, ...c }, url });
 
-  const two = demotionRerouteMovedInfo([
-    { email: "a@trypennie.com", bookings: 3, change, url: "https://x/a" },
-    { email: "b@trypennie.com", bookings: 2, change: null, url: "https://x/b" },
-  ]);
-  assert(/\b5 calls\b/.test(two) && /\b2 agents\b/.test(two), `the totals are summed (got: ${two})`);
-  assert(/not recorded/i.test(two), "an unrecorded change says so rather than inventing one");
-  assert(!/[\u2014\u2013]/.test(two), "no dash punctuation");
+  const stranded = line({ unplaceable: 1 });
+  assert(!/moving/i.test(stranded), `a call that did not move is never said to be moving (got: ${stranded})`);
+  assert(!/demot/i.test(stranded), "and the change is not called a demotion");
+  assert(/narrowed/.test(stranded) && stranded.includes("evaldez1@trypennie.com"), "it says whose tiers narrowed");
+  assert(stranded.includes("Debt tiers went from Medium and Low to Medium."), "and what changed, in the shared sentence");
+  assert(/None moved/.test(stranded), "it says nothing moved");
+  assert(/1 stayed with them because no other advisor was free/.test(stranded), "and why the call stayed");
+  assert(/every hour/.test(stranded), "and that Slate tries again");
+  assert(stranded.includes(url), "and links the sweep");
+
+  const one = line({ moved: 1 });
+  assert(/It moved to another advisor\./.test(one) && !/stayed/.test(one), `a single moved call says so plainly (got: ${one})`);
+
+  const all = line({ moved: 3 });
+  assert(/All 3 moved to other advisors\./.test(all), `every call moved reads as all (got: ${all})`);
+  assert(/\b3 calls\b/.test(all), "and counts the calls it needed to move");
+
+  const mixed = line({ moved: 2, unplaceable: 1, failed: 2, skipped: 1, cancelled: 1 });
+  assert(/2 of 7 moved to other advisors\./.test(mixed), `a partial result gives moved of total (got: ${mixed})`);
+  assert(/2 could not be moved because of an error/.test(mixed), "an errored move is said apart from a busy roster");
+  assert(/coverage page will ask a person to move them/.test(mixed), "and points at the page that asks a person, since this line is only an FYI");
+  assert(/2 no longer needed moving/.test(mixed), "and a cancelled call or a stopped sweep apart again");
+
+  assert(/not recorded/i.test(line({ moved: 1 }, null)), "an unrecorded change says so rather than inventing one");
+  assert(!/[\u2014\u2013]/.test(mixed + stranded), "no dash punctuation");
 }
 
 finish();

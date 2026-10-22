@@ -909,8 +909,12 @@ export async function loadActionableBookingContext(
  *  last in-flight item was being committed must not be relabelled 'done' by the
  *  tick that finished it: 'done' means every item reached an outcome, 'cancelled'
  *  means the reason for the sweep went away, and the admin panel and the #1242
- *  give-up page read the difference. */
-export async function markBulkReassignJobDoneIfDrained(jobId: string): Promise<void> {
+ *  give-up page read the difference.
+ *
+ *  Answers whether THIS call made the flip (#3615). The WHERE on 'active' means one call
+ *  ever does, so the drain reports a finished sweep exactly once; a failed read or write
+ *  answers false and is logged, as before. */
+export async function markBulkReassignJobDoneIfDrained(jobId: string): Promise<boolean> {
   const { count, error } = await supabaseAdmin()
     .from("bulk_reassign_items")
     // cap-safe: server-side count (head:true), no rows returned.
@@ -919,14 +923,17 @@ export async function markBulkReassignJobDoneIfDrained(jobId: string): Promise<v
     .eq("status", "pending");
   if (error) {
     log.error("bulk-reassign", { msg: "pending-count failed", job_id: jobId }, error);
-    return;
+    return false;
   }
-  if ((count ?? 0) === 0) {
-    const { error: upErr } = await supabaseAdmin()
-      .from("bulk_reassign_jobs")
-      .update({ status: "done", updated_at: new Date().toISOString() })
-      .eq("id", jobId)
-      .eq("status", "active");
-    if (upErr) log.error("bulk-reassign", { msg: "job-done update failed", job_id: jobId }, upErr);
+  if ((count ?? 0) !== 0) return false;
+  const { count: flipped, error: upErr } = await supabaseAdmin()
+    .from("bulk_reassign_jobs")
+    .update({ status: "done", updated_at: new Date().toISOString() }, { count: "exact" })
+    .eq("id", jobId)
+    .eq("status", "active");
+  if (upErr) {
+    log.error("bulk-reassign", { msg: "job-done update failed", job_id: jobId }, upErr);
+    return false;
   }
+  return flipped === 1;
 }

@@ -428,28 +428,17 @@ describe("GET /api/cron/agents", () => {
       expect(dispatch.sendThrottledAlert.mock.calls.map((c: unknown[]) => c[0])).not.toContain("twilio_write_failures");
     });
 
-    it("whispers the moves when a demotion sweep queued calls, linking each agent's page", async () => {
+    // A run only QUEUES the moves, so it says nothing about them: on 2026-10-21 the line it used
+    // to send here said "is moving 1 call" for a call nobody was free to take. The every minute
+    // drain says how they settled once the sweep finishes (scripts/test-demotion-outcome-report.ts).
+    it("says nothing about the moves when a demotion sweep queued calls", async () => {
       twilio.syncTwilioRedistribute.mockResolvedValueOnce({
         ...(await twilioResult()),
-        demotionSweeps: [
-          {
-            email: "jlee@trypennie.com",
-            userId: "u1",
-            jobId: "job9",
-            bookings: 2,
-            change: { from: { debtTeam: ["ultra_high", "high"], backendService: [] }, to: { debtTeam: ["high"], backendService: [] } },
-          },
-        ],
+        demotionSweeps: [{ email: "jlee@trypennie.com", userId: "u1", jobId: "job9", bookings: 2, change: null }],
       });
       await GET(req());
-      const call = dispatch.sendThrottledInfo.mock.calls.find((c: unknown[]) => c[0] === "demotion_reroute_moved");
-      expect(call).toBeTruthy();
-      expect(String(call?.[2])).toContain("jlee@trypennie.com");
-      // Opened ON the sweep, where its moved calls are listed with their move back.
-      expect(String(call?.[2])).toContain("/admin/agents/u1?job=job9");
-      // The real notifier REFUSES a cooldown that is not a positive number, before it posts,
-      // so a zero here is a line that is never sent while this mock happily records it.
-      expect(Number(call?.[1])).toBeGreaterThan(0);
+      const keys = dispatch.sendThrottledInfo.mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(keys.filter((k) => k.startsWith("demotion_reroute_moved"))).toEqual([]);
     });
 
     // Its own boundary: the Twilio half READ fine, so a failure while reporting the reroute must
@@ -461,22 +450,6 @@ describe("GET /api/cron/agents", () => {
       expect(await res.json()).toMatchObject({ twilio: { ok: true } });
       expect(streak.recordConsecutiveStreak).not.toHaveBeenCalledWith("twilio_sync_failures", expect.any(Number), 2);
       expect(verdict.recordDetectorVerdict).toHaveBeenCalledWith("verdict:twilio-roster", true);
-    });
-
-    it("still whispers the moves when the failure bookkeeping beside it throws", async () => {
-      twilio.syncTwilioRedistribute.mockResolvedValueOnce({
-        ...(await twilioResult()),
-        demotionEvalFailures: 1,
-        demotionSweeps: [{ email: "jlee@trypennie.com", userId: "u1", jobId: "job9", bookings: 2, change: null }],
-      });
-      streak.recordConsecutiveStreak.mockRejectedValueOnce(new Error("alert_state unreachable"));
-      await GET(req());
-      expect(dispatch.sendThrottledInfo.mock.calls.map((c: unknown[]) => c[0])).toContain("demotion_reroute_moved");
-    });
-
-    it("says nothing about moves on a run that queued none", async () => {
-      await GET(req());
-      expect(dispatch.sendThrottledInfo.mock.calls.map((c: unknown[]) => c[0])).not.toContain("demotion_reroute_moved");
     });
   });
 

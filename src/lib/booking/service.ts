@@ -133,6 +133,7 @@ import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { DEMOTION_SWEEP_REASON, type DemotionChange } from "@/lib/booking/demotion-plan";
 import { MOVE_BACK_REASON_DETAIL, moveBackDemotionReroute, type MoveBackOutcome } from "@/lib/booking/demotion-revert";
 import { loadDemotionMoves, markDemotionMoveReverted } from "@/lib/booking/demotion-revert-store";
+import { reportDemotionSweepOutcome } from "@/lib/booking/demotion-outcome-report";
 import {
   cancelCoverageSweepForRequest,
   claimBulkReassignItem,
@@ -4035,6 +4036,27 @@ function realBulkReassignDeps(): BulkReassignDeps {
     recordAudit,
     commitItemOutcome: commitBulkReassignItemOutcome,
     markJobDoneIfDrained: markBulkReassignJobDoneIfDrained,
+    jobFinished: (job) =>
+      reportDemotionSweepOutcome(job, {
+        loadItemStatuses: loadBulkReassignItems,
+        loadAdvisor: async (userId) => {
+          const row = unwrap(
+            await supabaseAdmin()
+              .from("users")
+              // cap-safe: single-row primary-key lookup.
+              .select("email, is_test")
+              .eq("id", userId)
+              .maybeSingle(),
+            "demotion-outcome-advisor",
+          ) as { email: string; is_test: boolean } | null;
+          return row ? { email: row.email, isTest: row.is_test } : null;
+        },
+        appUrl,
+        // A one minute cooldown, the shortest the notifier accepts (it refuses zero before
+        // posting): the key is per advisor and their sweeps are at least an hour apart.
+        // alert-key: demotion_reroute_moved:*
+        sendInfo: (key, text) => sendThrottledInfo(key, 60_000, text),
+      }),
   };
 }
 

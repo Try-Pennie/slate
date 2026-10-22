@@ -152,8 +152,16 @@ export interface BulkReassignDeps {
    * arrived first, because the booking really is with somebody else now.
    */
   commitItemOutcome(itemId: string, outcome: ItemOutcome, attempts: number): Promise<void>;
-  /** Flip the job to 'done' if it now has no pending items left. */
-  markJobDoneIfDrained(jobId: string): Promise<void>;
+  /** Flip the job to 'done' if it now has no pending items left, answering whether THIS call
+   *  made the flip. The flip is conditional on the job still being active, so exactly one
+   *  tick ever answers true for a job, which is what makes `jobFinished` say it once. */
+  markJobDoneIfDrained(jobId: string): Promise<boolean>;
+  /**
+   * Report a sweep this tick finished (#3615): the demotion line, written from how its calls
+   * settled. Called only after the done flip landed, so a throw cannot be retried into a second
+   * report; the drain logs it and carries on with the next job.
+   */
+  jobFinished(job: BulkReassignJob): Promise<void>;
 }
 
 /** A transient failure after this attempt: retry while attempts remain, else fail. */
@@ -357,7 +365,7 @@ export async function drainBulkReassign(
     cancelled: 0,
     unclaimed: 0,
   };
-  const touchedJobs = new Set<string>();
+  const touchedJobs = new Map<string, BulkReassignJob>();
   for (const { item, job } of pending) {
     if (!(await stillHeld())) break;
     // The row may have been stopped since this batch was read (#1665). Ask the
@@ -365,17 +373,22 @@ export async function drainBulkReassign(
     // snapshot that can be minutes old.
     if (!(await deps.claimItem(item.id))) {
       summary.unclaimed++;
-      touchedJobs.add(job.id);
+      touchedJobs.set(job.id, job);
       continue;
     }
     const outcome = await processBulkReassignItem(item, job, deps);
     await deps.commitItemOutcome(item.id, outcome, item.attempts + 1);
     summary.processed++;
     summary[outcome.status]++;
-    touchedJobs.add(job.id);
+    touchedJobs.set(job.id, job);
   }
-  for (const jobId of touchedJobs) {
-    await deps.markJobDoneIfDrained(jobId);
+  for (const [jobId, job] of touchedJobs) {
+    if (!(await deps.markJobDoneIfDrained(jobId))) continue;
+    try {
+      await deps.jobFinished(job);
+    } catch (err) {
+      log.error("bulk-reassign", { msg: "finished sweep could not be reported", job_id: jobId }, err);
+    }
   }
   return summary;
 }
