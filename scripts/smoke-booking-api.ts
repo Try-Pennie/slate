@@ -469,7 +469,7 @@ async function scenarioDryRun(slotsA: string[]) {
   const id = uniq("dryrun");
   // No reservation: a dry run creates nothing, so it cannot collide with anything
   // and must not consume a slot the booking scenarios need (#1491).
-  const res = await book({ bucket: BUCKET_A, start: slotsA[0], ...id, phone: "+12155550100", dryRun: true });
+  const res = await book({ bucket: BUCKET_A, start: slotsA[0], ...id, dryRun: true });
   check(res.status === 200 && res.body.dryRun === true, `dry run -> 200 dryRun:true (got ${res.status}/${res.body.dryRun})`, res);
   check(res.body.outcome === "created", `dry run -> would create (got ${res.body.outcome})`, res);
   check(!!res.body.wouldAssign?.email, `dry run names the agent who WOULD be assigned (${res.body.wouldAssign?.email ?? "none"})`, res);
@@ -487,7 +487,7 @@ async function scenarioMain(slotsA: string[], plan: SlotPlan) {
   const slotA = reserveSlot(plan, "scenario 1 (create/dedupe/reschedule)");
   if (!slotA) return;
   const slotB = laterSlot(slotsA, slotA);
-  const phone = "+12155550100";
+  const { phone } = id;
   if (!slotB) {
     check(false, "need a non-overlapping later slot to reschedule into");
     return;
@@ -522,7 +522,7 @@ async function scenarioCrossBucket(slotsA: string[], plan: SlotPlan) {
     return;
   }
   const id = uniq("xbucket");
-  const phone = "+12155550101";
+  const { phone } = id;
 
   // Book A FIRST, then read B's slots and choose relative to the instant A
   // actually landed on (#1489). The old code took slotsB[0] and assumed it
@@ -603,8 +603,10 @@ async function scenarioConfirm(slotsA: string[], plan: SlotPlan) {
     return;
   }
 
-  // Existing appointment for this email (phone P1, externalId E1).
-  const created = await book({ bucket: BUCKET_A, start: slotA, externalId: id1.externalId, email: id1.email, phone: "+12155550110" });
+  // Existing appointment for this email (phone P1, externalId E1). Both phones in
+  // this scenario come from the helper, so the pair is unique per run (#4060): a
+  // fixed pair would weak match a booking an earlier run left active.
+  const created = await book({ bucket: BUCKET_A, start: slotA, externalId: id1.externalId, email: id1.email, phone: id1.phone });
   trackForCleanup(created.body);
   recordBooked(plan, created.body);
   check(created.body.outcome === "created", `seed booking -> created (got ${created.body.outcome})`, created);
@@ -615,7 +617,8 @@ async function scenarioConfirm(slotsA: string[], plan: SlotPlan) {
     start: slotB,
     externalId: `${id1.externalId}-other`,
     email: id1.email,
-    phone: "+12155550999",
+    // A second helper phone: guaranteed different from P1 within the run.
+    phone: uniq("confirm-other").phone,
   };
   const asked = await book({ ...weak, confirmReschedule: false });
   check(asked.status === 409 && asked.body.outcome === "confirm_required", `weak match + new time -> 409 confirm_required (got ${asked.status}/${asked.body.outcome})`, asked);
@@ -632,9 +635,9 @@ async function scenarioLookupAndCancel(slotsA: string[], plan: SlotPlan) {
   const id = uniq("lookup");
   // Unique phone per run too (not just externalId/email): a fixed phone lets a
   // leftover active booking from an earlier run weak-match this seed and turn it
-  // into confirm_required, breaking the scenario. The 555-01xx range is reserved
-  // for test use; the run timestamp keeps each run's number distinct.
-  const phone = `+1215555${String(Date.now()).slice(-4)}`;
+  // into confirm_required, breaking the scenario. The helper builds it now, for
+  // every scenario (#4060), rather than this one alone.
+  const { phone } = id;
 
   // Book onto a FRESH slot, skipping past a transient conflict (SLOT_TAKEN /
   // NO_ELIGIBLE_AGENTS) left by a prior scenario's just-cancelled event that the
@@ -717,7 +720,7 @@ async function scenarioReassign(slotsA: string[], plan: SlotPlan) {
     return;
   }
   const id = uniq("reassign");
-  const phone = "+12155550120";
+  const { phone } = id;
 
   // Fresh slot, past scenarios 1/2/3 and scenario 4 (start 1): re-using slotsA[0]
   // here also 409'd on residue from a just-cancelled event (run 30010672602). The
@@ -783,7 +786,7 @@ async function scenarioRescheduleStickiness(slotsA: string[], plan: SlotPlan) {
   // original [0, +20] event — the exact #523 trigger.
   const target = new Date(Date.parse(slot) + 10 * 60_000).toISOString();
 
-  const created = await book({ bucket: BUCKET_A, start: slot, ...id, phone: "+12155550130" });
+  const created = await book({ bucket: BUCKET_A, start: slot, ...id });
   trackForCleanup(created.body);
   recordBooked(plan, created.body);
   check(created.body.outcome === "created", `book in ${BUCKET_A} -> created (got ${created.body.outcome})`, created);

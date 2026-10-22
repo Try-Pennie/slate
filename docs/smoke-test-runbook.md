@@ -156,9 +156,20 @@ handling of a real booking). Then:
 - **Skips are surfaced loudly.** A clean run with skipped scenarios prints
   "coverage incomplete". Set `SMOKE_STRICT=1` to make any skip a non-zero exit so
   a scheduled run requires full coverage.
-- **Teardown is guaranteed.** Each scenario cancels its own bookings, and a
-  final sweep cancels every booking under every identity it booked, running from a
-  `finally` block. A partway failure does not leak a live booking onto the fleet.
+- **Teardown runs from a `finally` block, but cannot cancel without a network.**
+  Each scenario cancels its own bookings, and a final sweep cancels every booking
+  under every identity it booked. When the runner loses the network partway (run
+  39694932888, 2026-10-21), the cancel cannot land: the reschedule smoke retries
+  it, then fails a check reading `teardown: booking <id> left active, cancel it by
+  hand`. Cancel that booking from its page, `/admin/bookings/<id>` (it is on the
+  SMOKE test bucket, so no lead is affected).
+- **Every smoke identity is unique per run, phone included** (#3581, #4060).
+  Person dedupe matches on email OR phone alone, so a fixed one let a booking a
+  crashed run left behind turn the next run's create into a 409 carrying the old
+  booking. Take the email, external id and phone from `smokeAttendee`
+  (`scripts/lib/smoke-identity.ts`); `scripts/test-smoke-identity-nonce.ts` fails on
+  one written inline. A create that does not answer 200 `created` stops the run
+  rather than handing it another booking's manage token.
 - **Override the target only on purpose.** `SMOKE_BUCKET`, `SMOKE_BUCKET_B`, and
   `SLATE_BASE_URL` let you point at a different bucket or deployment. Leave them at
   their defaults (`SMOKE`, `SMOKE2`, prod) so a run stays isolated to the test

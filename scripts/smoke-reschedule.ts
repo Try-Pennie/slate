@@ -8,13 +8,17 @@
 // It hits PRODUCTION (creates a real, then-cancelled booking on smoketest@'s
 // calendar; the attendee is a plus-alias of that same mailbox). Run it manually:
 //
-//   BOOKING_API_KEY_CANARY=<key> node --experimental-strip-types scripts/smoke-reschedule.ts
+//   BOOKING_API_KEY_CANARY=<key> node --experimental-strip-types \
+//     --import ./scripts/register-paths.mjs scripts/smoke-reschedule.ts
 //
 // Optional env: SLATE_BASE_URL (default prod), SMOKE_BUCKET (default SMOKE).
+//
+// The run itself lives in scripts/lib/smoke-reschedule-run.ts (#4060), with its
+// network and clock injected so a crash and the run after it are node-testable.
 
 import { envOr } from "./smoke-env.ts";
-import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
-import { rescheduleSmokeIdentity } from "./lib/smoke-reschedule-identity.ts";
+import { jpost, slots, createChecker } from "./smoke-lib.ts";
+import { runRescheduleSmoke } from "./lib/smoke-reschedule-run.ts";
 
 // envOr, not `??`: the canary wires SLATE_BASE_URL from a repo Actions variable and
 // `${{ vars.X }}` for an unset variable arrives as "" rather than undefined (#1494).
@@ -23,7 +27,6 @@ const KEY = process.env.BOOKING_API_KEY_CANARY ?? "";
 // env-ok: SMOKE_BUCKET (a local override only; CI wants the seeded SMOKE bucket,
 //   and wiring it would let an unset repo variable aim the run at bucket "")
 const BUCKET = envOr(process.env.SMOKE_BUCKET, "SMOKE");
-const REASON = "schedule_conflict";
 
 const { check, failed } = createChecker();
 
@@ -33,79 +36,8 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   console.log(`# reschedule smoke vs ${BASE} (bucket ${BUCKET})`);
-  const open = await slots(BUCKET);
-  // Need 4 WELL-SPACED future slots: SMOKE slots are 10 min apart but the
-  // appointment is longer, so adjacent slots overlap the booking's own time
-  // (the agent looks busy -> reassign -> no other agent). Space them 6 slots
-  // (~1h) apart so each reschedule target is genuinely free.
-  check(open.length >= 19, `SMOKE has >= 19 future slots (got ${open.length})`);
-  if (open.length < 19) process.exit(1);
-  const s0 = open[0], s1 = open[6], s2 = open[12], s3 = open[18];
-
-  // #3576: a per-run nonce so each run's idempotency key (and therefore its
-  // deterministic Google event id) is unique. A fixed identity on the day-stable
-  // earliest slot made every run of the day reuse one id, piling cancelled
-  // tombstones onto its chain until a run exhausted it (#3217) and paged a false
-  // 500. Stable WITHIN the run (one nonce), so create/reschedule/cancel agree.
-  const { externalId, email } = rescheduleSmokeIdentity(open[0], Date.now());
-  let token = "";
-
-  try {
-    // 1. Book a throwaway appointment in the test bucket.
-    const created = await jpost(
-      "/api/bookings",
-      {
-        bucketCode: BUCKET,
-        start: s0,
-        timezone: "America/New_York",
-        attendee: { name: "Resched Smoke", email, phone: "+12025550123" },
-        externalId,
-        confirmReschedule: false,
-        dryRun: false,
-      },
-      true,
-    );
-    check(created.status === 200, `create -> 200 (got ${created.status})`);
-    token = tokenFrom((created.body.booking as Json | undefined)?.manageUrl ?? created.body.manageUrl);
-    check(!!token, "create returns a manage token");
-    if (!token) return;
-
-    // 2. A normal reschedule to a different time must succeed (new code + real DB).
-    const moved = await jpost(`/api/bookings/${token}/reschedule`, { start: s1, reason: REASON });
-    check(moved.status === 200, `reschedule -> 200 (got ${moved.status}${moved.status !== 200 ? ` err=${moved.body.error}` : ""})`);
-    check(moved.body.startsAt === s1, `reschedule lands on the new time (${moved.body.startsAt} == ${s1})`);
-
-    // 3. Two DIFFERENT-target reschedules at once: exactly one wins, the other 409s.
-    const [a, b] = await Promise.all([
-      jpost(`/api/bookings/${token}/reschedule`, { start: s2, reason: REASON }),
-      jpost(`/api/bookings/${token}/reschedule`, { start: s3, reason: REASON }),
-    ]);
-    const statuses = [a.status, b.status].sort();
-    const oks = [a, b].filter((r) => r.status === 200);
-    const conflicts = [a, b].filter((r) => r.status === 409);
-    console.log(`  concurrent statuses: ${a.status}, ${b.status}`);
-    if (conflicts.length === 1) {
-      check(oks.length === 1 && conflicts.length === 1, "concurrent: exactly one wins, one conflicts (409)");
-      check(
-        /just changed/i.test(String(conflicts[0].body.error ?? "")),
-        `conflict carries the refresh message (got: ${conflicts[0].body.error})`,
-      );
-    } else {
-      // The two requests serialized (the winner released before the other claimed)
-      // — both are valid sequential reschedules. Not a failure, but flag it so the
-      // run is re-tried if we specifically wanted to exercise the conflict path.
-      console.log(
-        `  NOTE: both reschedules serialized (${statuses.join(",")}) — no overlap this run; re-run to exercise the conflict path.`,
-      );
-      check(oks.length === 2, "concurrent: serialized run still left the booking consistent (both 200)");
-    }
-  } finally {
-    // 4. Teardown: cancel the booking (frees the slot + deletes the calendar event).
-    if (token) {
-      const cancelled = await jpost(`/api/bookings/${token}/cancel`, { reason: "no_longer_interested" });
-      check(cancelled.status === 200, `teardown: booking cancelled (got ${cancelled.status})`);
-    }
-  }
+  const outcome = await runRescheduleSmoke({ bucket: BUCKET, nonce: Date.now(), post: jpost, slots, check });
+  if (outcome === "too_few_slots") process.exit(1);
 
   console.log(failed() === 0 ? "\nSMOKE PASSED" : `\n${failed()} CHECK(S) FAILED`);
   process.exit(failed() === 0 ? 0 : 1);

@@ -21,6 +21,7 @@
 import { DateTime } from "luxon";
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
+import { smokeAttendee } from "./lib/smoke-identity.ts";
 
 // Keys load from .env.local / .dev.vars if not already in the environment.
 loadEnvFiles([".env.local", ".dev.vars"]);
@@ -65,8 +66,10 @@ async function main(): Promise<void> {
   }
   console.log(`setup: SMOKE now has both agents${addedMembership ? " (added smoketest2@)" : " (smoketest2@ already present)"}`);
 
-  const externalId = `smoke-523-${Date.now()}`;
-  const email = "smoketest+523@trypennie.com";
+  // #4060: a per run identity (email, external id AND phone). A fixed email or
+  // phone weak matches any booking an earlier smoke run left active, so this create
+  // would come back 409 carrying that booking instead of a new one.
+  const { externalId, email, phone } = smokeAttendee("523");
   let token = "";
   try {
     // Pick a slot comfortably mid-shift so +30 min stays within 9-5 ET and free.
@@ -87,7 +90,7 @@ async function main(): Promise<void> {
         bucketCode: BUCKET,
         start: s0,
         timezone: "America/New_York",
-        attendee: { name: "523 Repro", email, phone: "+12025550123" },
+        attendee: { name: "523 Repro", email, phone },
         externalId,
         confirmReschedule: false,
         dryRun: false,

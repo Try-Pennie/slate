@@ -30,6 +30,7 @@
 import { buildResumeReservation, type PersistedBookingRow } from "./create-resume-reservation.ts";
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
+import { smokeAttendee } from "./lib/smoke-identity.ts";
 
 // --- config -----------------------------------------------------------------
 
@@ -117,8 +118,10 @@ async function main(): Promise<void> {
   if (open.length < 1) process.exit(1);
   const start = open[0];
 
-  const externalId = `smoke-resume-${start}`;
-  const email = "smoketest+resume@trypennie.com";
+  // #4060: a per run identity (email, external id AND phone). The fixed
+  // `smoketest+resume@` and +12025550123 weak matched any booking an earlier run of
+  // this or the reschedule smoke left active, turning this create into a 409.
+  const { externalId, email, phone } = smokeAttendee("resume");
   let token = "";
   let bookingId = "";
   let idempotencyKey = "";
@@ -131,7 +134,7 @@ async function main(): Promise<void> {
         bucketCode: BUCKET,
         start,
         timezone: "America/New_York",
-        attendee: { name: "Resume Smoke", email, phone: "+12025550123" },
+        attendee: { name: "Resume Smoke", email, phone },
         externalId,
         confirmReschedule: false,
         dryRun: false,
