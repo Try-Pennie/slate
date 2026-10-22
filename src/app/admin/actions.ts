@@ -648,9 +648,10 @@ function twilioParts(
       : null,
     // #3615: the PARTIAL sibling of the line above, a demotion sweep moving only the calls in
     // the pool an agent lost, then the reroute's own faults. An unreadable switch is said on its
-    // own, because it means nobody was checked at all.
+    // own, because it means nobody was checked at all. "Queued", because this run only queues
+    // the moves; the Slack line says how they settled once the sweep finishes.
     r.demotionSweeps.length
-      ? `${plural(r.demotionSweeps.reduce((n, c) => n + c.bookings, 0), "upcoming call")} being moved off ${plural(r.demotionSweeps.length, "agent")} Twilio demoted off a pool those calls need`
+      ? `${plural(r.demotionSweeps.reduce((n, c) => n + c.bookings, 0), "upcoming call")} queued to move off ${plural(r.demotionSweeps.length, "agent")} whose Twilio tiers no longer cover them`
       : null,
     r.demotionSwitchUnreadable
       ? "Slate could not read whether the automatic reroute is switched on and checked nobody, so press this again in a minute"

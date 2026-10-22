@@ -4,7 +4,7 @@
  * Lifted out of the route handlers so the alert preview renders the REAL copy by
  * calling these (L41: one place per sentence). All of these are CONDITIONS, so
  * each has a matching all-clear that a person reads in the same channel, except
- * `demotionRerouteMovedInfo`, an info line that never needed action (#3615).
+ * `demotionRerouteOutcomeInfo`, an info line that never needed action (#3615).
  */
 
 import { describeDemotionChange } from "@/lib/booking/demotion-copy";
@@ -173,23 +173,61 @@ export function demotionTriggerFailureRecovery(): string {
   );
 }
 
+/** How a finished demotion sweep's calls settled, by item status. */
+export interface DemotionOutcomeCounts {
+  moved: number;
+  /** Nobody else was free at that time; the hourly coverage retry tries again. */
+  unplaceable: number;
+  /** The move kept erroring; the coverage page asks a person to move it. */
+  failed: number;
+  /** The booking was cancelled or had already passed. */
+  skipped: number;
+  /** A person stopped the sweep. */
+  cancelled: number;
+}
+
 /**
- * The quiet line when demotion sweeps start moving calls (#3615). Nothing else tells a person a
- * reroute happened, so this is how somebody finds the moves to check them: whose calls, how many,
- * what changed in Twilio (the one shared sentence), and the agent's page.
+ * The quiet line once a demotion sweep has FINISHED (#3615): whose tiers narrowed, what changed
+ * in Twilio (the one shared sentence), how the calls settled, and the sweep's page.
+ *
+ * Written from the settled counts, never at enqueue: the line used to go out when the sweep was
+ * queued and said "is moving 1 call" for a call nobody was free to take (evaldez1, 2026-10-21).
+ * "Narrowed", not "demoted", because removing a tier is sometimes the correction of a mistake.
  */
-export function demotionRerouteMovedInfo(
-  sweeps: { email: string; bookings: number; change: DemotionChange | null; url: string }[],
-): string {
-  const total = sweeps.reduce((n, s) => n + s.bookings, 0);
-  const lines = sweeps.map(
-    (s) =>
-      `${s.email}, ${calls(s.bookings)}. ${describeDemotionChange(s.change) ?? "What changed in Twilio was not recorded."} ${s.url}`,
-  );
-  return (
-    `Twilio demoted ${agents(sweeps.length)} off a pool their booked calls need, so Slate is moving ` +
-    `${calls(total)} to other advisors.\n${lines.join("\n")}`
-  );
+export function demotionRerouteOutcomeInfo(input: {
+  email: string;
+  change: DemotionChange | null;
+  counts: DemotionOutcomeCounts;
+  url: string;
+}): string {
+  const { moved, unplaceable, failed, skipped, cancelled } = input.counts;
+  const total = moved + unplaceable + failed + skipped + cancelled;
+  const settled =
+    moved === 0
+      ? "None moved."
+      : moved === total
+        ? total === 1
+          ? "It moved to another advisor."
+          : `All ${total} moved to other advisors.`
+        : `${moved} of ${total} moved to other advisors.`;
+  const rest: string[] = [];
+  if (unplaceable > 0) {
+    rest.push(
+      `${unplaceable} stayed with them because no other advisor was free at that time, and Slate tries again every hour.`,
+    );
+  }
+  if (failed > 0) {
+    // The coverage page (`coverage_needs_human`) is what asks a person; this line is an FYI.
+    rest.push(`${failed} could not be moved because of an error, so the coverage page will ask a person to move ${failed === 1 ? "it" : "them"}.`);
+  }
+  if (skipped + cancelled > 0) rest.push(`${skipped + cancelled} no longer needed moving.`);
+  return [
+    `Twilio narrowed ${input.email}'s pools, so ${calls(total)} they held needed another advisor.`,
+    describeDemotionChange(input.change) ?? "What changed in Twilio was not recorded.",
+    settled,
+    ...rest,
+    input.url,
+  ].join(" ");
 }
 
 /** "1 call" / "4 calls". */
