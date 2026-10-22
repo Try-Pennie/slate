@@ -15,7 +15,7 @@
 //
 // Run: node --experimental-strip-types scripts/test-smoke-reschedule-run.ts
 import { assert, eq, finish } from "./lib/harness.ts";
-import { runRescheduleSmoke, type SmokePost } from "./lib/smoke-reschedule-run.ts";
+import { rescheduleSmokeExitCode, runRescheduleSmoke, type SmokePost } from "./lib/smoke-reschedule-run.ts";
 import type { Json } from "./smoke-lib.ts";
 
 type FakeBooking = {
@@ -265,6 +265,30 @@ async function main(): Promise<void> {
     assert(line.includes("booking-1") && line.includes("fetch failed"), `the reason is named (got: ${line})`);
     assert(!line.includes("\n") && !line.includes("    at "), "the reason carries no stack trace");
   }
+
+  // --- Too few slots: the run stops before booking, and the script exits 1 ---
+  {
+    const api = new FakeBookingApi();
+    const results: { ok: boolean; msg: string }[] = [];
+    const outcome = await runRescheduleSmoke({
+      bucket: "SMOKE",
+      nonce: 1_761_160_000_000,
+      post: api.post,
+      slots: async () => SLOTS.slice(0, 18),
+      check: (ok, msg) => results.push({ ok, msg }),
+      log: () => {},
+    });
+    eq(outcome, "too_few_slots", "18 slots -> too_few_slots");
+    eq(api.calls.length, 0, "nothing is booked when the bucket cannot host the run");
+    assert(results.some((r) => !r.ok && /19 future slots/.test(r.msg)), "the slot shortfall is a failed check");
+  }
+
+  // --- The script's exit code, for every way a run returns ---
+  eq(rescheduleSmokeExitCode("too_few_slots", 0), 1, "too few slots exits 1 even with no other failure");
+  eq(rescheduleSmokeExitCode("too_few_slots", 1), 1, "too few slots exits 1");
+  eq(rescheduleSmokeExitCode("ran", 0), 0, "a run with every check passing exits 0");
+  eq(rescheduleSmokeExitCode("ran", 1), 1, "a run with a failed check exits 1 (a refused create returns early)");
+  eq(rescheduleSmokeExitCode("ran", 4), 1, "a run with several failed checks exits 1");
 
   finish();
 }

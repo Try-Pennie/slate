@@ -18,7 +18,7 @@
 
 import { envOr } from "./smoke-env.ts";
 import { jpost, slots, createChecker } from "./smoke-lib.ts";
-import { runRescheduleSmoke } from "./lib/smoke-reschedule-run.ts";
+import { rescheduleSmokeExitCode, runRescheduleSmoke } from "./lib/smoke-reschedule-run.ts";
 
 // envOr, not `??`: the canary wires SLATE_BASE_URL from a repo Actions variable and
 // `${{ vars.X }}` for an unset variable arrives as "" rather than undefined (#1494).
@@ -37,10 +37,9 @@ async function main(): Promise<void> {
   }
   console.log(`# reschedule smoke vs ${BASE} (bucket ${BUCKET})`);
   const outcome = await runRescheduleSmoke({ bucket: BUCKET, nonce: Date.now(), post: jpost, slots, check });
-  if (outcome === "too_few_slots") process.exit(1);
-
-  console.log(failed() === 0 ? "\nSMOKE PASSED" : `\n${failed()} CHECK(S) FAILED`);
-  process.exit(failed() === 0 ? 0 : 1);
+  const code = rescheduleSmokeExitCode(outcome, failed());
+  if (outcome === "ran") console.log(code === 0 ? "\nSMOKE PASSED" : `\n${failed()} CHECK(S) FAILED`);
+  process.exit(code);
 }
 
 main().catch((e) => {

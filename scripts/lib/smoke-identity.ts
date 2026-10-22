@@ -29,12 +29,15 @@
 /**
  * A smoke attendee phone: `+1 <areaCode> 555 <last 4 digits of serial>`.
  *
- * The 555 exchange keeps every number out of ordinary subscriber ranges, so a smoke
- * booking never names a real person's phone. The four digit line gives 10,000
- * numbers per area code: the serial decides which one, and the caller decides how
- * that serial is unique (a per-process counter, or the run's own nonce). Callers in
- * different scripts that can run at once use different area codes, so their
- * numbers can never meet.
+ * The 555 exchange is where the fixed smoke phones already lived (+1 202 555 0123,
+ * +1 215 555 01xx). Only 555-0100 to 555-0199 is reserved as fictional; the rest of
+ * 555 is mostly unassigned, with a few service numbers (555-1212 is directory
+ * assistance), so a generated number is unlikely, not guaranteed, to reach a real
+ * line. Ten thousand lines per area code is what lets it be unique per run; the 100
+ * fictional ones would repeat within a day. The serial decides the line, and the
+ * caller decides how that serial is unique (a per-process counter, or the run's own
+ * nonce). Callers in different scripts that can run at once use different area
+ * codes, so their numbers can never meet.
  */
 export function smokePhone(serial: number, areaCode: string): string {
   const line = ((Math.trunc(serial) % 10_000) + 10_000) % 10_000;

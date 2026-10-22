@@ -38,6 +38,15 @@ export interface RescheduleSmokeDeps {
 const REASON = "schedule_conflict";
 
 /**
+ * The script's exit code for a run that returned: 1 when the bucket could not host it
+ * or any check failed, 0 only when every check passed. A crash exits 1 from the
+ * script's own catch.
+ */
+export function rescheduleSmokeExitCode(outcome: "ran" | "too_few_slots", failures: number): 0 | 1 {
+  return outcome === "too_few_slots" || failures > 0 ? 1 : 0;
+}
+
+/**
  * Run the reschedule smoke once. Returns "too_few_slots" when the bucket cannot host
  * the run (a failed check is already recorded); otherwise "ran". A thrown network
  * error propagates, after the teardown has had its chance to cancel.
