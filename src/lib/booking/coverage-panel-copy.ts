@@ -170,6 +170,40 @@ export function coverageProgressUnreadableNotice(): string {
 }
 
 /**
+ * The heading over the calls a move could not place (#2122), with their count.
+ *
+ * ONE spelling for the two surfaces that show those rows (#3595): the move's own
+ * progress view, and the standing list at the top of the agent page. The same rows
+ * under two different headings would read as two different sets (L118).
+ */
+export function coverageCouldNotPlaceHeading(count: number): string {
+  return `Couldn't place (${count})`;
+}
+
+/**
+ * The words before the time on the agent page's standing list (#3595), saying which
+ * move left these calls. The time itself is rendered in the viewer's zone by
+ * `ViewerTime`, so it is not part of this string.
+ *
+ * Several moves can strand calls on one agent (an approved time off, then a
+ * Redistribute), so with more than one the count is said and the time named is the
+ * latest, rather than one move's time standing for calls another move left.
+ */
+export function coverageStrandedMovesLead(moves: number): string {
+  return moves > 1 ? `Left by ${moves} moves, the latest on` : "Left by the move on";
+}
+
+/**
+ * The standing list could not be read (#3595). Its own state, never an empty list:
+ * an empty list is what a healthy agent shows, so a failed read drawn that way would
+ * tell the reader nothing is waiting when nothing was measured (L10, L11). One plain
+ * sentence and the one thing that can clear it.
+ */
+export function coverageStrandedUnreadableNotice(agentName: string): string {
+  return `Slate could not check whether a move left any calls with ${agentName} to place by hand. Reload the page to try again.`;
+}
+
+/**
  * What the range preview has to say, as one value rather than a number beside a
  * flag explaining how the number was obtained (L544).
  *

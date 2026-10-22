@@ -18,6 +18,9 @@ import {
   coverageMoveMayStart,
   coveragePreviewLine,
   coverageProgressUnreadableNotice,
+  coverageCouldNotPlaceHeading,
+  coverageStrandedMovesLead,
+  coverageStrandedUnreadableNotice,
 } from "../src/lib/booking/coverage-panel-copy.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -205,8 +208,32 @@ assert(
   "and the line beside the button says the move cannot start, rather than leaving a dead control",
 );
 
+// #3595: the agent page's standing list of calls the last move could not place.
+// The heading is the move's own list heading, from one function, so the two
+// surfaces showing the same rows cannot name them differently (L118).
+assert(coverageCouldNotPlaceHeading(6) === "Couldn't place (6)", "the heading carries the count");
+assert(
+  coverageStrandedMovesLead(1) === "Left by the move on",
+  "one move is named as the move, and the time follows it",
+);
+assert(
+  coverageStrandedMovesLead(2) === "Left by 2 moves, the latest on",
+  "several moves are counted, and the time named is the latest",
+);
+const strandedUnreadable = coverageStrandedUnreadableNotice("Robert Bekele");
+assert(
+  /could not check/i.test(strandedUnreadable) && strandedUnreadable.includes("Robert Bekele"),
+  "a failed read says it could not check, for whom, never that nothing is waiting",
+);
+assert(/reload/i.test(strandedUnreadable), "and names the one thing that can clear it");
+assert(!/nothing|none|no calls/i.test(strandedUnreadable), "an unread list claims no absence");
+
 // copy rules
 for (const [name, text] of [
+  ["could not place heading", coverageCouldNotPlaceHeading(3)],
+  ["stranded moves lead, one", coverageStrandedMovesLead(1)],
+  ["stranded moves lead, several", coverageStrandedMovesLead(4)],
+  ["stranded unreadable", strandedUnreadable],
   ["description", said],
   ["time off note", note],
   ["name", COVERAGE_PANEL_NAME],

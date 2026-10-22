@@ -6,6 +6,7 @@ import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 import { parseStampMs } from "@/lib/date/stamp";
 import type { BulkReassignJobStatus } from "@/lib/db/types";
 import { log } from "@/lib/log";
+import { hasLeftPool, type PoolStateRow } from "@/lib/bookable/left-pool";
 
 /**
  * Why the agent will not be there (#3485). The sweep that stranded a call records
@@ -163,6 +164,10 @@ export interface StrandedAppointment {
   cause?: SweepCause;
   /** The call's start (#3485), so the page can say how soon the first one is. */
   startsAt?: string;
+  /** The most recent attempt's reason (#3595), when the loader read it, for the agent page's row. */
+  detail?: string | null;
+  /** The sweep whose attempt that was (#3595), when the loader read it. */
+  sweepId?: string;
 }
 
 /**
@@ -175,7 +180,11 @@ export interface StrandedItemRead {
   status: StrandedStatus;
   /** The item's `updated_at`: when the sweep settled it. */
   settledAt: string;
+  /** The item's stored reason (#3595). Optional: only the agent page reads it. */
+  detail?: string | null;
   sweep: {
+    /** The sweep's id (#3595). Optional: only the agent page reads it. */
+    id?: string;
     /** The agent the sweep was moving appointments off. */
     outUserId: string;
     /** `active` until every item has an outcome; `done` or `cancelled` after. */
@@ -358,6 +367,9 @@ export function countStranded(
       // cause follows the most recent sweep that gave up on this call.
       cause: it.sweep.cause,
       ...(it.startsAt ? { startsAt: it.startsAt } : {}),
+      // #3595: carried through so the agent page shows the same attempt this keeps.
+      ...(it.detail !== undefined ? { detail: it.detail } : {}),
+      ...(it.sweep.id !== undefined ? { sweepId: it.sweep.id } : {}),
     };
     const prior = counted.get(it.bookingId);
     if (!prior) {
@@ -380,6 +392,90 @@ export function countStranded(
     waiting: [...held].filter((id) => !counted.has(id)).length,
     newestCountableMs: newest,
   };
+}
+
+/**
+ * Where one booking stands NOW, as the stranded reads need it: who holds it, whether
+ * that holder is back in the pool (#3597), and when it starts (#3485 part C).
+ *
+ * Shared by the coverage needs human page and the agent page's standing list
+ * (#3595), so the two judge "back in the pool" by one rule. A missing user row reads
+ * as NOT in the pool, the safe direction: the call stays stranded and reported. The
+ * rule itself is `hasLeftPool`, the one the sweep uses, so a departed agent is not
+ * mistaken for a covered one.
+ */
+export interface StrandedHolderNow {
+  userId: string | null;
+  inPool: boolean;
+  startsAt: string;
+}
+
+export function strandedHolderNow(b: {
+  assigned_user_id: string | null;
+  starts_at: string;
+  users: PoolStateRow | null;
+}): StrandedHolderNow {
+  return { userId: b.assigned_user_id, inPool: b.users != null && !hasLeftPool(b.users), startsAt: b.starts_at };
+}
+
+/** One actionable `bulk_reassign_items` row, as the stranded reads select it. */
+export interface StrandedItemRow {
+  booking_id: string;
+  status: string;
+  job_id: string;
+  updated_at: string;
+  detail?: string | null;
+}
+
+/** The sweep columns `countStranded` needs from `bulk_reassign_jobs`. */
+export interface StrandedSweepRow {
+  id: string;
+  out_user_id: string;
+  status: BulkReassignJobStatus;
+  updated_at: string;
+  redistribute_marked_at: string | null;
+}
+
+/**
+ * The give ups as `countStranded` reads them, assembled from the rows (#3595).
+ *
+ * ONE assembly for both readers of the predicate: the coverage needs human page and
+ * the agent page's standing list. Each item is joined to its sweep and to where its
+ * booking stands now; an item whose booking is not in `holderByBooking` (no longer
+ * active and upcoming) or whose sweep was not read is dropped, never guessed.
+ * `causeOf` is the page's own enrichment (#3485), absent for a reader that does not
+ * say why.
+ */
+export function strandedItemReads<J extends StrandedSweepRow>(
+  items: readonly StrandedItemRow[],
+  holderByBooking: ReadonlyMap<string, StrandedHolderNow>,
+  jobById: ReadonlyMap<string, J>,
+  causeOf?: (job: J) => SweepCause | undefined,
+): StrandedItemRead[] {
+  return items.flatMap((it) => {
+    const job = jobById.get(it.job_id);
+    const holder = holderByBooking.get(it.booking_id);
+    if (!job || !holder) return [];
+    return [
+      {
+        bookingId: it.booking_id,
+        status: it.status as StrandedStatus,
+        settledAt: it.updated_at,
+        ...(it.detail !== undefined ? { detail: it.detail } : {}),
+        sweep: {
+          id: job.id,
+          outUserId: job.out_user_id,
+          status: job.status,
+          updatedAt: job.updated_at,
+          fromRedistribute: job.redistribute_marked_at != null,
+          ...(causeOf ? { cause: causeOf(job) } : {}),
+        },
+        startsAt: holder.startsAt,
+        assignedUserId: holder.userId,
+        assignedAgentInPool: holder.inPool,
+      },
+    ];
+  });
 }
 
 /** Display context for an out agent, so the page names a person not a uuid. */

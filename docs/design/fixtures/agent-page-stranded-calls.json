@@ -1,0 +1,11 @@
+{
+  "sweepLine": "Left by the move on Sun, Oct 11, 7:57pm EDT",
+  "stranded": [
+    {"id": "b1", "name": "Marisol Ortega", "when": "Fri, Oct 23, 10:00am EDT", "detail": "No other advisor was free at this time"},
+    {"id": "b2", "name": "Devon Whitaker", "when": "Fri, Oct 23, 11:30am EDT", "detail": "No other advisor was free at this time"},
+    {"id": "b3", "name": "Priya Raman", "when": "Fri, Oct 23, 2:30pm EDT", "detail": "Every free advisor is at their daily limit"},
+    {"id": "b4", "name": "Gregory Ames", "when": "Sat, Oct 24, 9:30am EDT", "detail": "No other advisor was free at this time"},
+    {"id": "b5", "name": "Tanya Holloway", "when": "Sat, Oct 24, 1:00pm EDT", "detail": "The move failed partway; nothing changed for this call"},
+    {"id": "b6", "name": "Luis Carvalho", "when": "Tue, Oct 27, 4:00pm EDT", "detail": "No other advisor was free at this time"}
+  ]
+}
