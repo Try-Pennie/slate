@@ -392,7 +392,8 @@ describe("#3417 injected passive third-party refusal", () => {
 // #3699: the Google Voice logo a browser add-on draws beside a phone number paged
 // production four times in a week, the last at 2026-10-21T02:08:27Z on /book. It is the
 // one refused image logged rather than paged: host exactly fonts.gstatic.com, path under
-// /s/i/productlogos/, no named source. Every other refused image still pages.
+// /s/i/productlogos/, no named source (or a Slate page script, #4063, below). Every other
+// refused image still pages.
 describe("#3699 the Google product logo refused under img-src", () => {
   const VOICE_LOGO =
     "https://fonts.gstatic.com/s/i/productlogos/voice_2020q4/v7/web-24dp/logo_voice_2020q4_color_2x_web_24dp.png";
@@ -433,8 +434,59 @@ describe("#3699 the Google product logo refused under img-src", () => {
     expect(dispatch.sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual(["csp_violation:img-src"]);
   });
 
-  it("still pages the Voice logo when the report names a source", async () => {
-    await POST(req({ "csp-report": { ...LOGO_REPORT["csp-report"], "source-file": "https://slate.trypennie.app/_next/static/chunks/a.js" } }));
+  it("still pages the Voice logo when the report names a source on another origin", async () => {
+    await POST(req({ "csp-report": { ...LOGO_REPORT["csp-report"], "source-file": "https://evil.example/_next/static/chunks/a.js" } }));
+    expect(dispatch.sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual(["csp_violation:img-src"]);
+  });
+});
+
+// #4063: at 2026-10-22T02:47Z the same logo paged with Slate's own chunk named as the
+// source, because Chrome credits a load to whatever script is on the stack when it fires
+// (the embed's ResizeObserver forcing a layout), not to the code that added the image.
+// A Slate page script (the page's origin, under /_next/static/) no longer makes it page.
+describe("#4063 the Google product logo credited to a Slate page script", () => {
+  const VOICE_LOGO =
+    "https://fonts.gstatic.com/s/i/productlogos/voice_2020q4/v7/web-24dp/logo_voice_2020q4_color_2x_web_24dp.png";
+  const chromeReport = (over: Record<string, unknown> = {}) => [
+    {
+      type: "csp-violation",
+      body: {
+        documentURL: "https://slate.trypennie.app/book",
+        referrer: "https://trypennie.com/",
+        effectiveDirective: "img-src",
+        blockedURL: VOICE_LOGO,
+        sourceFile: "https://slate.trypennie.app/_next/static/chunks/1oy04_4tbw26c.js",
+        lineNumber: 1,
+        columnNumber: 15104,
+        disposition: "enforce",
+        ...over,
+      },
+    },
+  ];
+
+  it("logs the report of 2026-10-22 with not_paged=injected-passive, its source kept, and does NOT page", async () => {
+    const res = await POST(req(chromeReport(), "application/reports+json"));
+    expect(res.status).toBe(204);
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    expect(logged.warn).toHaveBeenCalledWith(
+      "csp-report",
+      expect.objectContaining({
+        directive: "img-src",
+        blocked: VOICE_LOGO,
+        source: "https://slate.trypennie.app/_next/static/chunks/1oy04_4tbw26c.js:1:15104",
+        paged: false,
+        not_paged: "injected-passive",
+      }),
+    );
+  });
+
+  it("still pages the logo when the source is a Slate script outside /_next/static/", async () => {
+    await POST(req(chromeReport({ sourceFile: "https://slate.trypennie.app/book" }), "application/reports+json"));
+    expect(dispatch.sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual(["csp_violation:img-src"]);
+  });
+
+  it("still pages another gstatic image whose source is a Slate chunk", async () => {
+    await POST(req(chromeReport({ blockedURL: "https://fonts.gstatic.com/s/i/other/logo.png" }), "application/reports+json"));
     expect(dispatch.sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual(["csp_violation:img-src"]);
   });
 });

