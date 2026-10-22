@@ -645,6 +645,27 @@ export function stalePhoneInviteAlert(agentEmail: string, bookingId: string): st
 }
 
 /**
+ * A lead corrected their phone number and the event telling downstream could not
+ * be recorded (#1512).
+ *
+ * The number IS saved on the booking and the advisor's invite, so the advisor
+ * dials the right digits. What did not move is Regal's contact profile, which
+ * still names the old number as primary, and nothing retries an event whose
+ * delivery row was never written. The repair is the one Regal itself documents:
+ * set the corrected number primary on the profile. Names the booking, never the
+ * numbers, and never the raw error, which lives in the logs.
+ */
+export function phoneCorrectionUnsentAlert(bookingId: string): string {
+  return (
+    `A lead corrected their phone number on their manage page and the update for Regal could ` +
+    `not be recorded, so nothing will retry it and Regal still has the old number as primary. ` +
+    `The booking and the advisor's invite are correct. Read the new number off the booking and ` +
+    `set it as the primary phone on the lead's Regal profile. Diagnose via tag=manage-contact ` +
+    `in the Worker logs; booking id ${bookingId}.`
+  );
+}
+
+/**
  * A lead just met a bucket with nobody in it (#2158, Dan's call 2026-09-09).
  *
  * Deliberately a second signal beside `empty_tier:*` rather than a

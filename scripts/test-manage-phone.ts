@@ -8,8 +8,8 @@
 // Three things have to hold, and the third is the one that is easy to ship
 // broken: the correction lands, an impossible number is refused by the SAME rule
 // the booker applies, and a save that did not commit is never reported as saved.
-import { updateBookingPhone } from "../src/lib/booking/orchestration.ts";
-import { stalePhoneInviteAlert } from "../src/lib/booking/alert-copy.ts";
+import { updateBookingContact, updateBookingPhone } from "../src/lib/booking/orchestration.ts";
+import { phoneCorrectionUnsentAlert, stalePhoneInviteAlert } from "../src/lib/booking/alert-copy.ts";
 import { validateAttendee } from "../src/lib/attendee.ts";
 import { US_ONLY_PHONE_NOTICE } from "../src/lib/booking/booker-copy.ts";
 import {
@@ -174,6 +174,95 @@ async function run() {
       res.staleInvite === undefined,
       "and nothing is reported stale about an invite that does not exist",
     );
+  }
+
+  // --- downstream is told about the correction (#1512) ---------------------------
+  //
+  // Regal and Cadence hold whatever number `booking.created` carried, so a dialer
+  // working from that record rings the number the lead just told us is wrong. A
+  // correction with a reschedule beside it rides `booking.rescheduled` (#2164, Dan's
+  // call 2026-09-10); this control alone is the case nothing was emitted for.
+  {
+    // The service hands a lead's request a send scheduler (Next after()); this one
+    // just runs the work, so the test can see it was handed over.
+    const { deps, calls } = world({ deferSend: (work) => void work() });
+    const res = await updateBookingPhone(TOKEN, "2155559999", deps);
+    assert(res.ok, "the correction lands");
+    const sent = calls.webhooks.filter((w) => w.event === "booking.contact_updated");
+    assert(sent.length === 1, `exactly one booking.contact_updated is emitted (got ${calls.webhooks.map((w) => w.event).join(",")})`);
+    assert(calls.webhooks.length === 1, "and nothing else: no reschedule is implied");
+    assert(sent[0].attendee.phone === "+12155559999", `it carries the NEW number (got ${sent[0].attendee.phone})`);
+    assert(sent[0].previousPhone === "+12155550100", `and the number it replaced (got ${sent[0].previousPhone})`);
+    assert(sent[0].dedupeKey === null, "at least once: every correction is its own event, so no dedupe key could be right");
+    assert(sent[0].deferred, "and the POST waits for after the response, like every user facing send");
+    assert(res.downstreamUntold === undefined, "and nothing is reported untold");
+  }
+
+  // The move's own use of the contact write (#2164) announces nothing itself: its
+  // correction rides the booking.rescheduled the move emits, so a second event here
+  // would tell Regal one change twice.
+  {
+    const { deps, calls } = world();
+    const res = await updateBookingContact(TOKEN, { phone: "2155559999" }, deps);
+    assert(res.ok, "the move's contact write lands");
+    assert(calls.webhooks.length === 0, "and emits nothing of its own");
+  }
+
+  // Retyping the number already held moves nothing, so nothing is said.
+  {
+    const { deps, calls } = world();
+    const res = await updateBookingPhone(TOKEN, "(215) 555-0100", deps);
+    assert(res.ok, "an unchanged number is accepted");
+    assert(calls.webhooks.length === 0, "and emits nothing, because nothing changed");
+  }
+
+  // A refused number and a failed write tell downstream nothing.
+  {
+    const { deps, calls } = world();
+    await updateBookingPhone(TOKEN, "215555", deps);
+    assert(calls.webhooks.length === 0, "a refused number emits nothing");
+  }
+  {
+    const { deps, calls } = world({ updateBookingPhoneThrows: true });
+    await updateBookingPhone(TOKEN, "2155559999", deps).catch(() => undefined);
+    assert(calls.webhooks.length === 0, "a write that did not land emits nothing");
+  }
+
+  // A stale invite does not stop downstream hearing: they are separate repairs.
+  {
+    const { deps, calls } = world({ updateEventDescriptionThrows: true });
+    const res = await updateBookingPhone(TOKEN, "2155559999", deps);
+    assert(!!res.staleInvite, "the invite is reported stale");
+    assert(
+      calls.webhooks.filter((w) => w.event === "booking.contact_updated").length === 1,
+      "and the correction is still emitted",
+    );
+  }
+
+  // #459: a test bucket's booking is recorded but never posted.
+  {
+    const booking = makeBooking({ id: "bk-1", manage_token: TOKEN, attendee_phone: "+12155550100", gcal_event_id: "gcal-1" });
+    const { deps, calls } = makeDeps({ existing: { booking, bucket: { ...bucket, is_test: true }, eventType } });
+    await updateBookingPhone(TOKEN, "2155559999", deps);
+    assert(calls.webhooks.length === 1 && calls.webhooks[0].suppressed, "a test bucket's correction is recorded suppressed");
+  }
+
+  // Failure path: the number IS saved when the emit fails, so the lead is told the
+  // truth, and the gap is REPORTED rather than swallowed: nothing retries an event
+  // whose delivery row was never written, and the dialer would ring the old number.
+  {
+    const { deps, calls } = world({ emitWebhookThrows: true });
+    const res = await updateBookingPhone(TOKEN, "2155559999", deps);
+    assert(res.ok, "the lead is told their number is saved, because it is");
+    assert(calls.updateBookingPhone.length === 1, "the row was written");
+    assert(
+      res.downstreamUntold?.bookingId === "bk-1",
+      `the untold correction is reported, naming the booking (got ${JSON.stringify(res.downstreamUntold)})`,
+    );
+    const text = phoneCorrectionUnsentAlert(res.downstreamUntold!.bookingId);
+    assert(/regal still has the old number/i.test(text), "the page says Regal still has the old number");
+    assert(/set it as the primary phone/i.test(text), "and names the repair, an action that changes Regal's record (L111)");
+    assert(!/\+1215|enqueue|fake refusal/i.test(text), "and carries neither a number nor the raw error");
   }
 
   // --- an unknown token, and a call that is over ---------------------------------

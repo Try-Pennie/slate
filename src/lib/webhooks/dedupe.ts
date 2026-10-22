@@ -17,6 +17,9 @@ import type { WebhookEvent } from "@/lib/db/types";
  *   there is nothing to version by), and the outbox row id is stable across the
  *   inline run and a drain resume of the same reassign, which is exactly the
  *   exactly-once property this key exists for.
+ * - `booking.contact_updated` (#1512): the caller passes no id, so the key is
+ *   null and every correction fires. A correction has no history row, and a key
+ *   built from the booking would drop a lead's second correction.
  * - A mutation whose history insert failed (no id available, a best-effort path
  *   that already logs + alerts) returns `null`: with a null key the partial
  *   unique index does not apply, so the webhook still fires (at-least-once). We

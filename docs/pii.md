@@ -83,15 +83,18 @@ event above, this one IS removed on a cancel and moved on a reschedule.
 ## 3. Regal and Cadence (webhooks)
 
 **What goes there.** Every booking event (`created`, `rescheduled`, `cancelled`,
-`completed`) POSTs a payload carrying `attendee.name`, `attendee.email`,
-`attendee.phone`, the `prefill` blob, and the `manage_url`
-(`src/lib/webhooks/types.ts`). For the Regal format, contact data is additionally
+`reassigned`, `contact_updated`) POSTs a payload carrying `attendee.name`,
+`attendee.email`, `attendee.phone`, the `prefill` blob, and the `manage_url`
+(`src/lib/webhooks/types.ts`). A `contact_updated` (#1512) also carries the number
+the lead replaced, `previous_attendee_phone`. For the Regal format, contact data is additionally
 sent as **traits** keyed by the phone number and email address
 (`src/lib/webhooks/regal.ts`).
 
 **The consent assertion, and where consent actually comes from.** On
 `booking.created`, Slate sends `voiceOptIn`, `smsOptIn` and `emailOptIn` as
-`subscribed: true`. **Slate does not collect that consent and holds no record of
+`subscribed: true`. A `booking.contact_updated` asserts NO opt in on the corrected
+number (it is sent `isPrimary: true` only), because the landing page's consent
+covered the number given there, not one typed later on the manage page (#1512). **Slate does not collect that consent and holds no record of
 it.** There is no consent checkbox and no consent sentence anywhere on the booker:
 `src/lib/booking/booker-copy.ts` holds every sentence a lead reads and contains
 none, and `pnpm preview:booker` prints the lot. Consent is captured upstream on the

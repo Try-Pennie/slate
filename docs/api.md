@@ -894,6 +894,7 @@ format per endpoint is built by `src/lib/webhooks/wire.ts`.
 | `booking.rescheduled` | A booking's TIME moves: in place, or across buckets |
 | `booking.cancelled` | A booking is cancelled |
 | `booking.reassigned` | A booking moves to another advisor at the same time (#2368): the machine contact-owner move, an admin reassign, the bulk redistribute, the offboarding coverage sweep |
+| `booking.contact_updated` | A lead corrects their phone number on the manage page with no reschedule beside it (#1512). A correction made with a reschedule rides that `booking.rescheduled` instead. Not yet subscribed by the live Regal endpoint (#4031) |
 
 A reassign used to arrive as `booking.rescheduled`, so every consumer listening
 for a time change fired on a booking whose time had not moved. It is its own
@@ -920,6 +921,8 @@ coverage move without reading the booking.
   "reason": { "code": "…", "detail": "…", "initiator": "customer" }, // null on created/completed
   "previous_agent_email": null,                 // the advisor a reassign moved the booking away from (#2368);
                                                 // null on every other event, and null when it is not known
+  "previous_attendee_phone": "…",               // booking.contact_updated only (#1512): the number the
+                                                // correction replaced; absent on every other event
   "routing": {                                  // tier-fallback signal (#492)
     "empty_pool_fallback": false,
     "tier_fallback": false,
@@ -935,10 +938,14 @@ coverage move without reading the booking.
 - `regal`: transformed into the Regal event shape (`name`, `properties`,
   `eventSource: "slate"`, `traits`) by `src/lib/webhooks/regal.ts`. Event names
   are `Slate Booking Created` / `Rescheduled` / `Cancelled` / `Reassigned` /
-  `Completed`. A `Slate Booking Reassigned` carries `assignedAgentEmail`,
+  `Contact Updated` (`Completed` was retired in #2915). A `Slate Booking Reassigned` carries `assignedAgentEmail`,
   `assignedAgentName`, `previousAgentEmail`, `reassignReason`,
   `reassignReasonDetail` and `reassignedBy`, and none of the reschedule
-  properties, because the time did not move. The
+  properties, because the time did not move. A `Slate Booking Contact Updated`
+  (#1512) carries `previousPhone` and `correctedPhone`, and its traits name the
+  corrected number `isPrimary: true` with no opt in, since Slate holds no consent
+  for a number typed on the manage page. Every name sent is pinned by
+  `src/lib/webhooks/regal.test.ts` ("the Regal wire contract", #2314). The
   API key is sent as the `Authorization` header; if the endpoint has no key,
   Slate refuses to send and records the delivery as failed rather than posting an
   unauthenticated event (#600). The `routing.tier_fallback` flag rides through as
