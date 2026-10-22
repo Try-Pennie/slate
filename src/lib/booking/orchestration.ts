@@ -7788,7 +7788,11 @@ async function bookViaApiArm(
         // #2310: judged in the zone the caller sent with this request, the
         // same zone its create arm is judged in.
         // #3257: a move into this time takes an advisor here, so it claims one.
-        { leadZone: input.timezone, seat: held?.seat ?? null },
+        // #4006: the attendee this request carries fills what the booking lacks,
+        // and never replaces what it holds. Marcia's move sends what it found in
+        // the lead's records for a field its token lacked; before this, a move kept
+        // only the booking's own attendee and dropped every filled field.
+        { leadZone: input.timezone, seat: held?.seat ?? null, fill: fillForGaps(decision.booking, input.attendee) },
       );
       return {
         outcome: "rescheduled",
@@ -7804,6 +7808,28 @@ async function bookViaApiArm(
         manageUrl: manageUrl(deps, decision.booking.manage_token),
       };
   }
+}
+
+/**
+ * #4006: the attendee fields a rebook carries for a field the booking it moves does
+ * not hold, or undefined when there is no gap, so an ordinary rebook of a complete
+ * booking pays no extra read. Judged on the row the person decision read; the write
+ * judges the gaps again on a fresh read (`updateBookingContact`, `fillOnly`).
+ */
+function fillForGaps(
+  booking: Booking,
+  attendee: CreateBookingInput["attendee"],
+): { name?: string; firstName?: string; email?: string; phone?: string } | undefined {
+  const gap = (held: string | null, given: string | undefined) =>
+    (held ?? "").trim() === "" && given !== undefined && given.trim() !== "";
+  const fill = {
+    ...(gap(booking.attendee_name, attendee.name)
+      ? { name: attendee.name, ...(attendee.firstName !== undefined ? { firstName: attendee.firstName } : {}) }
+      : {}),
+    ...(gap(booking.attendee_email, attendee.email) ? { email: attendee.email } : {}),
+    ...(gap(booking.attendee_phone, attendee.phone) ? { phone: attendee.phone } : {}),
+  };
+  return Object.keys(fill).length > 0 ? fill : undefined;
 }
 
 /** Active statuses a person can still cancel (#386). */
@@ -8113,6 +8139,17 @@ export async function rescheduleBooking(
      * The service pages, as it does for the manage page's own correction.
      */
     onCorrectionUntold?: (bookingId: string) => Promise<void>;
+    /**
+     * #4006: the lead's details from their own RECORDS rather than typed by them (a
+     * Marcia move fills what Slate found in earlier bookings or the Salesforce Lead;
+     * the direct API sends the attendee on every rebook). Written, before the move as
+     * `contact` is, only into a field the booking does NOT already hold, and never a
+     * CORRECTION: no number was replaced, so the move's `booking.rescheduled` names
+     * none and Regal gets a filled number for identity only, never primary or opted
+     * in (the #4031 consent rule covers a number the lead types). Ignored when
+     * `contact` is given, which is the lead speaking for themselves.
+     */
+    fill?: { name?: string; firstName?: string; email?: string; phone?: string };
   },
 ): Promise<BookingResult> {
   // #2310: a zone the caller supplied is judged BEFORE the contact write below,
@@ -8128,7 +8165,8 @@ export async function rescheduleBooking(
   // this shipped): then the booking's own zone is the lead's clock. Only an
   // outside start, or a move that carries details, pays the extra read.
   const suppliedOutside = suppliedZone !== null && !withinLeadCallingWindow(newStartIso, suppliedZone);
-  if (suppliedOutside || (suppliedZone === null && contact)) {
+  const fill = contact ? undefined : opts?.fill;
+  if (suppliedOutside || (suppliedZone === null && (contact || fill))) {
     const held = await deps.loadBookingContext(token);
     // A missing or finished booking is refused for THAT reason, by the same
     // helper the main path uses, before the window is judged (L11): "outside
@@ -8154,6 +8192,13 @@ export async function rescheduleBooking(
     if (!res.ok) throw new ContactRefusedError(res.error);
     contactChanged = contactUnchanged(res.changed) ? null : res.changed;
     if (res.changed.phone) correction = { previousPhone: res.previousPhone ?? null };
+  } else if (fill) {
+    // #4006: a fill only closes gaps, and is never a correction, so `correction`
+    // stays empty. A fill that writes nothing (every field held, every value
+    // unusable, an address Google refused) leaves the move to go ahead without it:
+    // a booking that cannot be found or moved is refused below for that reason.
+    const res = await updateBookingContact(token, fill, deps, { fillOnly: true });
+    if (res.ok && !contactUnchanged(res.changed)) contactChanged = res.changed;
   }
   // #4031: a correction this call wrote that the move then does not carry (the move
   // failed, or was no move at all) is told on its own, in `finally` so every early
@@ -9467,7 +9512,17 @@ export async function updateBookingContact(
   token: string,
   contact: { name?: string; firstName?: string; email?: string; phone?: string },
   deps: BookingDeps,
-  opts: { announcePhoneCorrection?: boolean } = {},
+  opts: {
+    announcePhoneCorrection?: boolean;
+    /**
+     * #4006: the details come from the lead's own RECORDS, not from the lead typing
+     * them (a Marcia move filling what the booking lacks from earlier bookings or
+     * the Salesforce Lead). Then only a field the booking does NOT already hold is
+     * written, never one it does, and a value this check would refuse is left out
+     * rather than refusing: nobody typed it, so there is nobody to ask to fix it.
+     */
+    fillOnly?: boolean;
+  } = {},
 ): Promise<UpdateContactResult> {
   // Only the fields this caller actually sent are judged. Handing the validator a
   // field nobody supplied would refuse the write for a value nobody typed, and its
@@ -9484,6 +9539,11 @@ export async function updateBookingContact(
   // In the order the form shows them, so a lead correcting two things at once is
   // told about the first one they would look at.
   const errors = validateAttendee(asked);
+  if (opts.fillOnly) {
+    for (const f of ["name", "email", "phone"] as const) {
+      if (asked[f] !== undefined && errors[f]) delete asked[f];
+    }
+  }
   const invalid =
     (asked.name !== undefined ? errors.name : undefined) ??
     (asked.email !== undefined ? errors.email : undefined) ??
@@ -9502,6 +9562,16 @@ export async function updateBookingContact(
   if (booking.status === "cancelled" || booking.status === "completed") {
     return { ok: false, error: MANAGE_PHONE_NOT_CHANGEABLE };
   }
+  // #4006: a fill writes only into a gap. Judged against the row read just now, so a
+  // value somebody wrote since the caller looked is kept. The first name travels only
+  // with the name it came beside, so a held name keeps its own first name too.
+  if (opts.fillOnly) {
+    const held = (v: string | null) => (v ?? "").trim() !== "";
+    if (held(booking.attendee_name)) delete asked.name;
+    if (held(booking.attendee_email)) delete asked.email;
+    if (held(booking.attendee_phone)) delete asked.phone;
+  }
+  const givenFirstName = opts.fillOnly && asked.name === undefined ? undefined : contact.firstName;
 
   // ONE shape for one number, and it is the shape the LOOKUP consumes (#2390).
   //
@@ -9544,7 +9614,7 @@ export async function updateBookingContact(
   // first name and never sends back an untouched split (`prefillNameFields`), so
   // what arrives here is an answer. One that disagrees with the name, or that is
   // absent, leaves the stored answer alone rather than clearing it.
-  const answeredFirstName = storedFirstName(nextName, contact.firstName);
+  const answeredFirstName = storedFirstName(nextName, givenFirstName);
   const firstNameMoved =
     !changed.name && answeredFirstName !== null && answeredFirstName !== booking.attendee_first_name;
   if (contactUnchanged(changed) && !firstNameMoved) return { ok: true, phone: stored, changed };

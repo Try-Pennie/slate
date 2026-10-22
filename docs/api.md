@@ -154,6 +154,12 @@ phone). The result is reported as an `outcome`:
 | Same person, different time, confident match | `rescheduled` | 200 |
 | Same person, different time, weak match (email or phone only) | `confirm_required` | 409 |
 
+A `rescheduled` move in place also writes the request's `attendee` into any of
+name, email or phone the booking does NOT already hold, and never replaces one it
+does (#4006); a value the booking's own check refuses is left out rather than
+refusing the move. Such a fill is not a correction, so the move's
+`booking.rescheduled` carries no `previous_attendee_phone` for it.
+
 A `confirm_required` makes no change and returns the existing booking; the caller
 confirms with the lead and retries with `confirmReschedule: true`. A `deduped`
 may carry a `bucketChangeDeclined` object when a requested bucket change could
