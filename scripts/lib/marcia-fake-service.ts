@@ -143,7 +143,17 @@ export function makeMarciaFake(opts: FakeServiceOpts) {
         mine.startsAt = input.startIso;
         mine.status = "rescheduled";
         mine.timezone = input.timezone;
-        mine.attendee = input.attendee;
+        // #4006: a move FILLS what the booking lacks and never replaces what it
+        // holds, as the real reschedule does (`fillForGaps`, `fillOnly`). This fake
+        // used to replace the whole attendee, which hid that the real move dropped
+        // it; `scripts/test-marcia-move-fills-contact.ts` pins the real path.
+        const held = mine.attendee;
+        const given = input.attendee;
+        mine.attendee = {
+          ...(held.name ? { name: held.name, ...(held.firstName ? { firstName: held.firstName } : {}) } : given.name ? { name: given.name, ...(given.firstName ? { firstName: given.firstName } : {}) } : {}),
+          ...(held.email ? { email: held.email } : given.email ? { email: given.email } : {}),
+          ...(held.phone ? { phone: held.phone } : given.phone ? { phone: given.phone } : {}),
+        };
         return result(mine, "rescheduled");
       }
       if (opts.takenByOthers?.has(input.startIso)) throw new SlotUnavailableError();

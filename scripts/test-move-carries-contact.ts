@@ -17,7 +17,8 @@
 // has to land BEFORE the move rather than after it: applied afterwards it would
 // reach neither, and both halves would go out against the details the lead came
 // back to replace.
-import { rescheduleBooking, updateBookingContact } from "../src/lib/booking/orchestration.ts";
+import { rescheduleBooking, updateBookingContact, type BookingDeps } from "../src/lib/booking/orchestration.ts";
+import { GoogleHttpError } from "../src/lib/google/http-error.ts";
 import { movedContactNote } from "../src/lib/booking/booker-copy.ts";
 import {
   createAsserter,
@@ -454,6 +455,113 @@ async function run() {
     const sent = calls.webhooks.find((w) => w.event === "booking.rescheduled");
     const attendee = sent?.attendee as { first_name?: string | null } | undefined;
     assert(attendee?.first_name === "Mary Jo", `the rescheduled payload carries the answered first name (got ${JSON.stringify(attendee)})`);
+  }
+
+  // --- a FILL closes gaps and is never a correction (#4006) ---------------------
+  //
+  // A Marcia move fills what the booking lacks from the lead's own records. Nobody
+  // typed those values, so the rules differ from a correction's: a held field is
+  // never replaced, an unusable value is left out rather than refusing the move,
+  // and a filled number replaced nothing, so the move names no replaced number.
+  // The end to end case, through Marcia's operation and the real `bookViaApi`, is
+  // `scripts/test-marcia-move-fills-contact.ts`.
+  const MOVED_AT = Date.parse("2026-09-10T12:00:00.000Z");
+  const sfFill = { name: "Found Name", firstName: "Found", email: "found@example.com", phone: "2155550133" };
+  {
+    const { deps, calls } = world({}, { attendee_email: null, attendee_phone: null });
+    const res = await rescheduleBooking(
+      TOKEN, NEW_START, reason, "system", deps, MOVED_AT, undefined, undefined, { fill: sfFill },
+    );
+    const patch = calls.updateBookingContact[0]?.patch;
+    assert(
+      calls.updateBookingContact.length === 1 &&
+        patch?.attendee_email === "found@example.com" &&
+        patch.attendee_phone === "+12155550133" &&
+        !("attendee_name" in patch) &&
+        !("attendee_first_name" in patch),
+      `fill: only the gaps are written, the held name and its first name untouched (got ${JSON.stringify(patch)})`,
+    );
+    assert(calls.commitReschedule.length === 1, "fill: and the call moves");
+    const moved = calls.webhooks.filter((w) => w.event === "booking.rescheduled");
+    assert(
+      moved.length === 1 && moved[0]?.attendee?.phone === "+12155550133" && moved[0]?.previousPhone === undefined,
+      `fill: the move carries the filled number and names NO replaced one, so Regal never reads it as a correction (got ${JSON.stringify(moved[0])})`,
+    );
+    const outbox = calls.commitReschedule[0]?.outbox?.payload as Record<string, unknown> | undefined;
+    assert(outbox !== undefined && !("previousAttendeePhone" in outbox), "fill: and the outbox row records no replaced number for a drain re-run");
+    assert(
+      calls.webhooks.every((w) => w.event !== "booking.contact_updated"),
+      "fill: and no separate contact update is sent",
+    );
+    assert(res.contactChanged?.email === true && res.contactChanged.phone === true, "fill: the result says what the fill wrote");
+  }
+  {
+    // A held value is kept even when the caller thought it was a gap: the fresh row
+    // decides, so a value written since the caller looked survives.
+    const { deps, calls } = world();
+    await rescheduleBooking(TOKEN, NEW_START, reason, "system", deps, MOVED_AT, undefined, undefined, { fill: sfFill });
+    assert(calls.updateBookingContact.length === 0, "fill: a booking holding every field gets no contact write");
+    assert(calls.updateEventContact.length === 0, "fill: and no invite rewrite");
+    const moved = calls.webhooks.find((w) => w.event === "booking.rescheduled");
+    assert(moved?.attendee?.email === "old@example.com", "fill: downstream hears the address the booking held");
+  }
+  {
+    // A value our own check refuses is left out, never a refusal of the move.
+    const { deps, calls } = world({}, { attendee_email: null, attendee_phone: null });
+    let thrown: unknown = null;
+    try {
+      await rescheduleBooking(
+        TOKEN, NEW_START, reason, "system", deps, MOVED_AT, undefined, undefined, { fill: { email: "not-an-address", phone: "2155550133" } },
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    assert(thrown === null, `fill: an unusable value does not refuse the move (got ${String(thrown)})`);
+    const patch = calls.updateBookingContact[0]?.patch;
+    assert(
+      patch?.attendee_phone === "+12155550133" && !("attendee_email" in patch),
+      `fill: the usable phone is written and the unusable email left out (got ${JSON.stringify(patch)})`,
+    );
+    assert(calls.commitReschedule.length === 1, "fill: and the call moves");
+  }
+  {
+    // Google refusing the filled address puts the row back and the move goes ahead:
+    // the lead never typed it, so there is nobody to ask to fix it.
+    const { deps, calls } = world({}, { attendee_email: null });
+    const d: BookingDeps = {
+      ...deps,
+      updateEventContact: async (email, id, patch) => {
+        calls.updateEventContact.push({ email, id, patch });
+        throw new GoogleHttpError(
+          'events.patch failed: 400 {"error":{"errors":[{"domain":"global","reason":"invalid","message":"Invalid attendee email."}],"code":400}}',
+          400,
+          "invalid",
+        );
+      },
+    };
+    let thrown: unknown = null;
+    try {
+      await rescheduleBooking(TOKEN, NEW_START, reason, "system", d, MOVED_AT, undefined, undefined, { fill: { email: "found@example.com" } });
+    } catch (err) {
+      thrown = err;
+    }
+    assert(thrown === null, `fill: a refused filled address does not refuse the move (got ${String(thrown)})`);
+    assert(calls.commitReschedule.length === 1, "fill: the call moves");
+    const moved = calls.webhooks.find((w) => w.event === "booking.rescheduled");
+    assert(moved?.attendee?.email == null, `fill: and downstream is not told an address the invite refused (got ${String(moved?.attendee?.email)})`);
+  }
+  {
+    // A typed correction wins: given both, the fill is ignored and the correction's
+    // own rules apply, so the held address IS replaced and the number is a correction.
+    const { deps, calls } = world();
+    await rescheduleBooking(
+      TOKEN, NEW_START, reason, "customer", deps, MOVED_AT, undefined, { phone: "2155559999" }, { fill: sfFill },
+    );
+    const moved = calls.webhooks.find((w) => w.event === "booking.rescheduled");
+    assert(
+      moved?.attendee?.phone === "+12155559999" && moved.previousPhone === "+12155550100" && moved.attendee.email === "old@example.com",
+      `fill: beside a typed correction only the correction is written (got ${JSON.stringify(moved)})`,
+    );
   }
 
   finish();

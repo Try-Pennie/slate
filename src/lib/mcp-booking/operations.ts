@@ -554,6 +554,11 @@ type ContactField = (typeof CONTACT_FIELDS)[number];
  * it would have refused from Marcia. A failed lookup is reported by its source and
  * booked past, never a refusal: the lead gets their call with what Slate has.
  * The first name travels only with the name it came beside.
+ *
+ * On a move the booking API writes these only into a field the BOOKING lacks, never
+ * over one it holds, the claim included (#4006, `fillForGaps` in orchestration): the
+ * claim's win is over a looked up value, not over the booking. A filled number is
+ * not a correction, so Regal receives it for identity only (docs/pii.md).
  */
 async function attendeeFor(ctx: Ctx): Promise<ApiBookingInput["attendee"]> {
   const found: Partial<Record<ContactField, string>> = {};

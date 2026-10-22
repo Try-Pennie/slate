@@ -102,7 +102,11 @@ only to a phone carrying opt in. The rule is Dan's decision, recorded on #4031 o
 2026-10-21: "a phone number a lead types on the manage page counts as consent." The
 email on those events carries no opt in. Until that decision the corrected number was
 sent primary with NO opt in, on the view that the landing page's consent covered only
-the number given there. **Slate does not collect consent and holds no record of
+the number given there. A number Slate FILLS into a booking that lacked one (a Marcia
+move filling from the lead's earlier bookings or the Salesforce Lead, #4006) is not a
+correction: the lead did not type it, so the decision above does not reach it, and it
+rides `booking.rescheduled` for identity only, never primary and never opted in.
+**Slate does not collect consent and holds no record of
 it.** There is no consent checkbox and no consent sentence anywhere on the booker:
 `src/lib/booking/booker-copy.ts` holds every sentence a lead reads and contains
 none, and `pnpm preview:booker` prints the lot. Consent is captured upstream on the
