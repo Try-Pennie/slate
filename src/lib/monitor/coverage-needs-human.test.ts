@@ -36,6 +36,8 @@ import {
   SWEEP_FINISH_WAIT_MS,
   decodeSweepCause,
   loadTimeOffWindows,
+  strandedHolderNow,
+  strandedItemReads,
   type StrandedAppointment,
   type StrandedHolder,
   type StrandedItemRead,
@@ -958,5 +960,83 @@ describe("strandedHoldersFromItems carries each call's start to its holder (#348
     };
     const { appointments } = countStranded([read], Date.parse("2026-10-13T15:30:00Z"), 60 * 60_000);
     expect(appointments[0]?.startsAt).toBe("2026-10-13T16:00:00Z");
+  });
+});
+
+// #3595: the assembly the coverage needs human page and the agent page's standing
+// list share, so both hand `countStranded` the same facts about each give up.
+describe("strandedHolderNow and strandedItemReads (#3595)", () => {
+  const out = { bookable: false, deactivated_at: null, bookable_pending_since: null };
+  const back = { bookable: true, deactivated_at: null, bookable_pending_since: null };
+  const job = {
+    id: "j1",
+    out_user_id: "agent-a",
+    status: "done" as const,
+    updated_at: "2026-10-12T00:02:00Z",
+    redistribute_marked_at: "2026-10-11T23:57:00Z",
+  };
+  const item = { booking_id: "b1", status: "unplaceable", job_id: "j1", updated_at: "2026-10-11T23:55:00Z" };
+
+  it("judges back in the pool by hasLeftPool, and a missing user row as not back", () => {
+    const at = { assigned_user_id: "agent-a", starts_at: "2026-10-23T14:00:00Z" };
+    expect(strandedHolderNow({ ...at, users: back }).inPool).toBe(true);
+    expect(strandedHolderNow({ ...at, users: out }).inPool).toBe(false);
+    expect(strandedHolderNow({ ...at, users: { ...back, deactivated_at: "2026-10-01T00:00:00Z" } }).inPool).toBe(false);
+    expect(strandedHolderNow({ ...at, users: null }).inPool).toBe(false);
+    // Owed an activation: on the way in, not gone.
+    expect(strandedHolderNow({ ...at, users: { ...out, bookable_pending_since: "2026-10-21T14:00:00Z" } }).inPool).toBe(true);
+  });
+
+  it("joins each item to its sweep and to where its booking stands now", () => {
+    const holders = new Map([["b1", { userId: "agent-a", inPool: false, startsAt: "2026-10-23T14:00:00Z" }]]);
+    const reads = strandedItemReads([{ ...item, detail: "nobody free" }], holders, new Map([["j1", job]]), () => ({
+      kind: "redistribute",
+    }) as SweepCause);
+    expect(reads).toEqual([
+      {
+        bookingId: "b1",
+        status: "unplaceable",
+        settledAt: "2026-10-11T23:55:00Z",
+        detail: "nobody free",
+        sweep: {
+          id: "j1",
+          outUserId: "agent-a",
+          status: "done",
+          updatedAt: "2026-10-12T00:02:00Z",
+          fromRedistribute: true,
+          cause: { kind: "redistribute" },
+        },
+        startsAt: "2026-10-23T14:00:00Z",
+        assignedUserId: "agent-a",
+        assignedAgentInPool: false,
+      },
+    ]);
+  });
+
+  it("drops an item whose booking is no longer active and upcoming, or whose sweep was not read", () => {
+    const holders = new Map([["b1", { userId: "agent-a", inPool: false, startsAt: "2026-10-23T14:00:00Z" }]]);
+    expect(strandedItemReads([{ ...item, booking_id: "gone" }], holders, new Map([["j1", job]]))).toEqual([]);
+    expect(strandedItemReads([{ ...item, job_id: "unread" }], holders, new Map([["j1", job]]))).toEqual([]);
+  });
+
+  it("carries the reason and the sweep through countStranded, keeping the latest attempt", () => {
+    const holders = new Map([["b1", { userId: "agent-a", inPool: false, startsAt: "2026-10-23T14:00:00Z" }]]);
+    const jobs = new Map([
+      ["j1", job],
+      ["j2", { ...job, id: "j2", updated_at: "2026-10-14T13:06:00Z" }],
+    ]);
+    const res = countStranded(
+      strandedItemReads(
+        [
+          { ...item, detail: "first" },
+          { ...item, job_id: "j2", updated_at: "2026-10-14T13:05:00Z", detail: "second" },
+        ],
+        holders,
+        jobs,
+      ),
+      Date.parse("2026-10-21T15:00:00Z"),
+    );
+    expect(res.appointments).toHaveLength(1);
+    expect(res.appointments[0]).toMatchObject({ detail: "second", sweepId: "j2" });
   });
 });

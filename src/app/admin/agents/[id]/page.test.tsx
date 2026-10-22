@@ -120,6 +120,20 @@ const agentLinkStore = vi.hoisted(() => ({
   loadAgentLinkName: vi.fn(async (_userId: string): Promise<string | null> => null),
 }));
 vi.mock("@/lib/agent-link/store", () => agentLinkStore);
+// #3595: the calls the last coverage sweep could not place. None unless a test says
+// otherwise; the loader's own rules are tested beside it.
+const strandedStore = vi.hoisted(() => ({
+  loadAgentStrandedCalls: vi.fn(
+    async (
+      _agentId: string,
+      _nowMs: number,
+    ): Promise<{
+      calls: { bookingId: string; status: "unplaceable" | "failed"; detail: string | null; startsAt: string | null; attendeeName: string | null }[];
+      moves: string[];
+    }> => ({ calls: [], moves: [] }),
+  ),
+}));
+vi.mock("@/lib/booking/agent-stranded-calls", () => strandedStore);
 
 import { btnDangerCls, btnSecondaryCls } from "@/components/ui/styles";
 import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
@@ -172,6 +186,7 @@ beforeEach(() => {
   dbState.orgError = null;
   dbState.rulesError = null;
   previewBulkReassign.mockResolvedValue(0);
+  strandedStore.loadAgentStrandedCalls.mockResolvedValue({ calls: [], moves: [] });
 });
 
 // #1649: #1629 turned four reads on this page into `unwrap` and touched no test.
@@ -1109,5 +1124,65 @@ describe("AgentProfilePage refuses a flip the Twilio sync would undo (#3028)", (
     );
     const said = screen.getAllByRole("status").map((el) => el.textContent ?? "");
     expect(said.some((t) => /nothing was changed/i.test(t) && /could not read/i.test(t))).toBe(true);
+  });
+});
+
+// #3595: the calls the last coverage sweep could not place, at the top of the page
+// (Dan's design round, 2026-10-21). Somebody arriving from the coverage alert has to
+// find them without opening the closed section, which by design hides no signal.
+describe("AgentProfilePage lists the calls the last move could not place (#3595)", () => {
+  const stranded = {
+    calls: [
+      {
+        bookingId: "bk-1",
+        status: "unplaceable" as const,
+        detail: "No other advisor was free at this time",
+        startsAt: "2026-10-23T14:00:00Z",
+        attendeeName: "Marisol Ortega",
+      },
+    ],
+    moves: ["2026-10-11T23:57:00Z"],
+  };
+  const renderAs = async (role = "manager", agentRole = "agent") => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role, org_id: "o1" });
+    dbState.agent = agentOf(agentRole);
+    render(await AgentProfilePage(props));
+  };
+  const disclosure = () => document.querySelector("details") as HTMLDetailsElement;
+
+  it("puts them under the agent's own card, before Access and outside the closed section", async () => {
+    strandedStore.loadAgentStrandedCalls.mockResolvedValue(stranded);
+    await renderAs();
+    const heading = screen.getByText("Couldn't place (1)");
+    expect(disclosure().contains(heading)).toBe(false);
+    const access = screen.getByText("Access");
+    expect(heading.compareDocumentPosition(access) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const header = screen.getByRole("heading", { level: 1 });
+    expect(header.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Place by hand" }).getAttribute("href")).toBe("/admin/bookings/bk-1");
+    expect(strandedStore.loadAgentStrandedCalls).toHaveBeenCalledWith("x1", expect.any(Number));
+  });
+
+  it("shows no card when nothing waits, so a healthy agent's page reads as before", async () => {
+    await renderAs();
+    expect(screen.queryByText(/Couldn't place/)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("says the list could not be checked when the read fails, never that nothing waits", async () => {
+    strandedStore.loadAgentStrandedCalls.mockRejectedValue(new Error("bulk_reassign_items unreadable"));
+    await renderAs();
+    const alert = screen.getAllByRole("alert").find((el) => /could not check/i.test(el.textContent ?? ""));
+    expect(alert).toBeTruthy();
+    expect(disclosure().contains(alert!)).toBe(false);
+    // The rest of the page still renders around it.
+    expect(screen.getByText("Access")).toBeTruthy();
+  });
+
+  it("is not read for somebody who cannot manage this agent, matching the Move panel it feeds", async () => {
+    strandedStore.loadAgentStrandedCalls.mockResolvedValue(stranded);
+    await renderAs("manager", "admin");
+    expect(strandedStore.loadAgentStrandedCalls).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Couldn't place/)).toBeNull();
   });
 });

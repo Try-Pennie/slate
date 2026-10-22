@@ -424,14 +424,15 @@ import {
   decodeSweepCause,
   loadTimeOffWindows,
   runCoverageNeedsHumanCheck,
+  strandedHolderNow,
   strandedHoldersFromItems,
+  strandedItemReads,
   type CoverageOutAgent,
   type StrandedItemRead,
   type StrandedRead,
-  type StrandedStatus,
 } from "@/lib/monitor/coverage-needs-human";
 import { selectRetryableUnplaceable } from "@/lib/booking/coverage-retry";
-import { hasLeftPool, POOL_STATE_COLUMNS, type PoolStateRow } from "@/lib/bookable/left-pool";
+import { POOL_STATE_COLUMNS, type PoolStateRow } from "@/lib/bookable/left-pool";
 import { runOooProtectionCheck } from "@/lib/monitor/ooo-protection";
 import { primaryMirroredHorizons, runOooEventMismatchCheck } from "@/lib/monitor/ooo-event-mismatch";
 import { alertStateNoticeStore, slackMismatchMessenger } from "@/lib/monitor/ooo-mismatch-notices";
@@ -3423,12 +3424,9 @@ export async function GET(req: NextRequest) {
       // holder is back in the pool (#3597): a missing user row reads as NOT in the pool,
       // the safe direction (the call stays stranded and reported). And when it starts
       // (#3485 part C), for the paging lead window.
-      const holderByBooking = new Map(
-        bookingPages.flat().map((b) => [
-          b.id,
-          { userId: b.assigned_user_id, inPool: b.users != null && !hasLeftPool(b.users), startsAt: b.starts_at },
-        ]),
-      );
+      // #3595: built by the helper the agent page's standing list also uses, so both
+      // judge "back in the pool" by one rule.
+      const holderByBooking = new Map(bookingPages.flat().map((b) => [b.id, strandedHolderNow(b)]));
       const live = items.filter((it) => holderByBooking.has(it.booking_id));
       // Pending coverage items for an active, upcoming booking: candidate in-flight work.
       const livePending = pendingItems.filter((p) => holderByBooking.has(p.booking_id));
@@ -3545,32 +3543,12 @@ export async function GET(req: NextRequest) {
             err instanceof Error ? err : undefined,
           ),
       );
-      const reads: StrandedItemRead[] = live.flatMap((it) => {
-        const job = jobById.get(it.job_id);
-        return job
-          ? [
-              {
-                bookingId: it.booking_id,
-                status: it.status as StrandedStatus,
-                settledAt: it.updated_at,
-                sweep: {
-                  outUserId: job.out_user_id,
-                  status: job.status,
-                  updatedAt: job.updated_at,
-                  fromRedistribute: job.redistribute_marked_at != null,
-                  // #3485: why this agent will not be there, from the job's own columns.
-                  cause: decodeSweepCause(
-                    job,
-                    job.ooo_request_id ? oooById.get(job.ooo_request_id) ?? null : null,
-                  ),
-                },
-                startsAt: holderByBooking.get(it.booking_id)?.startsAt,
-                assignedUserId: holderByBooking.get(it.booking_id)?.userId ?? null,
-                assignedAgentInPool: holderByBooking.get(it.booking_id)?.inPool ?? false,
-              },
-            ]
-          : [];
-      });
+      // #3595: assembled by the helper the agent page's standing list also uses, so the
+      // page and the alert hand `countStranded` the same facts.
+      const reads: StrandedItemRead[] = strandedItemReads(live, holderByBooking, jobById, (job) =>
+        // #3485: why this agent will not be there, from the job's own columns.
+        decodeSweepCause(job, job.ooo_request_id ? oooById.get(job.ooo_request_id) ?? null : null),
+      );
       // #3485 part C: page only once a call is within the lead window; before that it is
       // held (waiting), the hourly bulk-reassign-retry lane re-attempts it.
       const counted = countStranded(reads, asOfMs, COVERAGE_PAGE_LEAD_MS);
