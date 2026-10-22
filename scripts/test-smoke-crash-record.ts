@@ -241,4 +241,32 @@ for (const f of [
   assert(!/^void main\(\);?$/m.test(src), `${f} does not drop a rejected main`);
 }
 
+// --- every script that writes the failure log records its passes too ---
+// A writer of failures that never records a pass makes its passing checks invisible,
+// and a crash after them reads as a crash before any check passed. Found from what
+// writes the log (recordFailure), not a hand list (L96), so a new writer is covered.
+const RECORDS_PASS = /\brecordPass\(/;
+assert(!RECORDS_PASS.test("recordFailure(io, failureLog, line);"), "control: a failure only writer is caught");
+const writers = ["smoke-booking-api.ts", "smoke-latency.ts", "smoke-embed-render.ts", "smoke-lib.ts"];
+for (const f of writers) {
+  const src = readFileSync(join(ROOT, "scripts", f), "utf8");
+  assert(/\brecordFailure\(/.test(src), `${f} writes the failure log (so the list is not stale)`);
+  assert(RECORDS_PASS.test(src), `${f} records a pass when its check passes`);
+}
+{
+  // And no other smoke script writes the log directly, so the list above is complete.
+  const { readdirSync } = await import("node:fs");
+  const others = readdirSync(join(ROOT, "scripts"))
+    .filter((f) => /^smoke-.*\.ts$/.test(f) && !writers.includes(f))
+    .filter((f) => /\brecordFailure\(/.test(readFileSync(join(ROOT, "scripts", f), "utf8")));
+  eq(others, [], "no other smoke script writes failures without being checked for passes");
+}
+// createChecker's pass, driven rather than read: one passing check is one [pass] mark.
+{
+  const log = fakeIo();
+  const { check } = createChecker({ io: log, env: { SMOKE_FAILURE_FILE: P } });
+  check(true, "a passing check");
+  eq(log.files[P], "[pass]\n", "createChecker records a passing check as one pass mark");
+}
+
 finish();
