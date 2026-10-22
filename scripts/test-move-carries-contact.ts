@@ -232,6 +232,77 @@ async function run() {
     );
   }
 
+  // --- a correction the move does NOT carry is still told (#4031) ---------------
+  //
+  // The number is written BEFORE the move is tried, so a move that then fails (a
+  // conflict, a refused slot) or turns out to be no move at all leaves it saved
+  // with no booking.rescheduled to carry it. The lead's retry types the same number,
+  // which moves nothing, so that retry's event could not say it either, and Regal
+  // would go on ringing the old primary number. So the correction goes out as the
+  // manage page's own booking.contact_updated instead.
+  {
+    const { deps, calls } = world();
+    deps.claimReschedule = async () => ({ outcome: "conflict" });
+    let thrown: unknown;
+    try {
+      await rescheduleBooking(
+        TOKEN, NEW_START, reason, "customer", deps, Date.parse("2026-09-10T12:00:00.000Z"),
+        undefined, { phone: "2155559999" },
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    assert(thrown instanceof Error && thrown.name === "RescheduleConflictError", `the move still fails as itself (got ${String(thrown)})`);
+    const told = calls.webhooks.filter((w) => w.event === "booking.contact_updated");
+    assert(told.length === 1, `a failed move's correction goes out as one contact update (got ${calls.webhooks.map((w) => w.event).join(",")})`);
+    assert(told[0]?.attendee.phone === "+12155559999", "carrying the new number");
+    assert(told[0]?.previousPhone === "+12155550100", "and the one it replaced");
+  }
+
+  {
+    // Failure path: the contact update cannot be recorded either. Nothing will retry
+    // it, so the caller is handed the booking to page about, as the manage page's own
+    // correction does, and the move's own error still reaches the lead untouched.
+    const { deps } = world({ emitWebhookThrows: true });
+    deps.claimReschedule = async () => ({ outcome: "conflict" });
+    const untold: string[] = [];
+    let thrown: unknown;
+    try {
+      await rescheduleBooking(
+        TOKEN, NEW_START, reason, "customer", deps, Date.parse("2026-09-10T12:00:00.000Z"),
+        undefined, { phone: "2155559999" },
+        { onCorrectionUntold: async (bookingId) => void untold.push(bookingId) },
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    assert(thrown instanceof Error && thrown.name === "RescheduleConflictError", `the move's own error is kept (got ${String(thrown)})`);
+    assert(untold.join(",") === "bk-1", `the untold correction is handed back to page about (got ${untold.join(",")})`);
+  }
+
+  {
+    // No move at all: the booking already sits at the time asked for.
+    const { deps, calls } = world({}, { starts_at: NEW_START });
+    await rescheduleBooking(
+      TOKEN, NEW_START, reason, "customer", deps, Date.parse("2026-09-10T12:00:00.000Z"),
+      undefined, { phone: "2155559999" },
+    );
+    const events = calls.webhooks.map((w) => w.event).join(",");
+    assert(events === "booking.contact_updated", `a correction beside no move is told as a contact update alone (got ${events})`);
+  }
+
+  {
+    // The control: a move that carries its correction says it ONCE, on its own
+    // booking.rescheduled, never a second time as a contact update (L1).
+    const { deps, calls } = world();
+    await rescheduleBooking(
+      TOKEN, NEW_START, reason, "customer", deps, Date.parse("2026-09-10T12:00:00.000Z"),
+      undefined, { phone: "2155559999" },
+    );
+    const events = calls.webhooks.map((w) => w.event).join(",");
+    assert(events === "booking.rescheduled", `a carried correction is told once, on the move (got ${events})`);
+  }
+
   {
     // The control: a move that corrected only the email, or changed only the time,
     // replaced no number, so its payload names none and Regal asserts nothing (L1).

@@ -8107,6 +8107,12 @@ export async function rescheduleBooking(
     leadZone?: string | null;
     /** #3257: the direct booking API's claim in this time's confirm line. */
     seat?: SharedSeat | null;
+    /**
+     * #4031: called with the booking when a phone correction the move did not carry
+     * could not be recorded as a contact update either, so nothing will retry it.
+     * The service pages, as it does for the manage page's own correction.
+     */
+    onCorrectionUntold?: (bookingId: string) => Promise<void>;
   },
 ): Promise<BookingResult> {
   // #2310: a zone the caller supplied is judged BEFORE the contact write below,
@@ -8149,89 +8155,99 @@ export async function rescheduleBooking(
     contactChanged = contactUnchanged(res.changed) ? null : res.changed;
     if (res.changed.phone) correction = { previousPhone: res.previousPhone ?? null };
   }
-  // #538: fold the in-place guard's working-hours read into the context load so
-  // it costs no extra round-trip on the hot reschedule path.
-  const ctx = await deps.loadBookingContext(token, { withWorkingHours: true });
-  assertReschedulable(ctx);
-  // #3401: whose call this is, for the line if the move then times out.
-  deps.noteLeadId?.(refusedLeadId({ salesforceId: ctx.booking.salesforce_id, externalId: ctx.booking.external_id }));
-  const { booking, eventType } = ctx;
-
-  const { startIso, endIso } = bookingWindow(
-    newStartIso,
-    eventType.duration_min,
-  );
-
-  // Idempotency guard 1 — sequential duplicate / no-op reschedule: if the
-  // booking already sits at the requested instant (e.g. a double-click whose
-  // first call already landed), there's nothing to move. Still ensure the
-  // reason event is recorded — a first attempt that moved the booking but died
-  // before recording it would otherwise lose the (mandatory) reason (#326).
-  // Non-holder early return (never claimed -> never releases).
-  if (Date.parse(booking.starts_at) === Date.parse(startIso)) {
-    if (!(await deps.hasBookingEvent(booking.id, "rescheduled", startIso, booking.reschedule_seq))) {
-      await deps.insertBookingEvent(
-        bookingEventFrom({
-          bookingId: booking.id,
-          action: "rescheduled",
-          initiator,
-          reason,
-          fromStartsIso: booking.starts_at,
-          toStartsIso: startIso,
-          fromAgentUserId: booking.assigned_user_id,
-          toAgentUserId: booking.assigned_user_id,
-          actorUserId: actor?.userId,
-          actingAsUserId: actor?.actingAsUserId,
-          rescheduleSeq: booking.reschedule_seq,
-          nowMs: Date.now(),
-        }),
-      );
-    }
-    // Atomically clean up a lock row a commit-then-crash may have left for THIS
-    // now-committed target: one conditional delete (booking_id AND target) instead
-    // of read-then-delete (#480). A concurrent different-target holder re-pinned to
-    // its own target, so its live lease is never clobbered, and there is no
-    // read->delete window for such a re-pin to slip into.
-    await deps.releaseRescheduleIfTarget(booking.id, startIso);
-    return { booking, manageUrl: manageUrl(deps, token), contactChanged, isTest: ctx.bucket.is_test };
-  }
-
-  // #2310: with no zone supplied (an admin move), the lead's clock is the zone
-  // the booking was made in. Judged after guard 1, so a no-op onto the time the
-  // booking already holds is never refused, and before the lease, so a refusal
-  // claims nothing.
-  if (suppliedZone === null) assertWithinLeadCallingWindow(startIso, booking.timezone);
-
-  // Idempotency guard 2 — claim the per-booking lease (#439). The discriminated
-  // outcome drives everything: a non-holder (idempotent/noop/conflict) returns or
-  // throws WITHOUT touching the finally; only a holder (won/resume/
-  // fresh-after-abandon) enters the try/finally, so the release rule holds.
-  const claim = await deps.claimReschedule(booking.id, startIso);
-  if (claim.outcome === "idempotent" || claim.outcome === "noop") {
-    return { booking, manageUrl: manageUrl(deps, token), contactChanged, isTest: ctx.bucket.is_test };
-  }
-  if (claim.outcome === "conflict") {
-    throw new RescheduleConflictError();
-  }
-
-  let applied = false;
+  // #4031: a correction this call wrote that the move then does not carry (the move
+  // failed, or was no move at all) is told on its own, in `finally` so every early
+  // return and every throw reaches it. The lead's retry types the same number, which
+  // moves nothing and so could never tell Regal either.
   try {
-    const result = await applyReschedule(
-      deps, token, ctx, startIso, endIso, reason, initiator, claim, nowMs, actor, opts?.seat ?? null, correction,
+    // #538: fold the in-place guard's working-hours read into the context load so
+    // it costs no extra round-trip on the hot reschedule path.
+    const ctx = await deps.loadBookingContext(token, { withWorkingHours: true });
+    assertReschedulable(ctx);
+    // #3401: whose call this is, for the line if the move then times out.
+    deps.noteLeadId?.(refusedLeadId({ salesforceId: ctx.booking.salesforce_id, externalId: ctx.booking.external_id }));
+    const { booking, eventType } = ctx;
+
+    const { startIso, endIso } = bookingWindow(
+      newStartIso,
+      eventType.duration_min,
     );
-    applied = true;
-    return { ...result, contactChanged, isTest: ctx.bucket.is_test };
+
+    // Idempotency guard 1, sequential duplicate / no-op reschedule: if the
+    // booking already sits at the requested instant (e.g. a double-click whose
+    // first call already landed), there's nothing to move. Still ensure the
+    // reason event is recorded: a first attempt that moved the booking but died
+    // before recording it would otherwise lose the (mandatory) reason (#326).
+    // Non-holder early return (never claimed -> never releases).
+    if (Date.parse(booking.starts_at) === Date.parse(startIso)) {
+      if (!(await deps.hasBookingEvent(booking.id, "rescheduled", startIso, booking.reschedule_seq))) {
+        await deps.insertBookingEvent(
+          bookingEventFrom({
+            bookingId: booking.id,
+            action: "rescheduled",
+            initiator,
+            reason,
+            fromStartsIso: booking.starts_at,
+            toStartsIso: startIso,
+            fromAgentUserId: booking.assigned_user_id,
+            toAgentUserId: booking.assigned_user_id,
+            actorUserId: actor?.userId,
+            actingAsUserId: actor?.actingAsUserId,
+            rescheduleSeq: booking.reschedule_seq,
+            nowMs: Date.now(),
+          }),
+        );
+      }
+      // Atomically clean up a lock row a commit-then-crash may have left for THIS
+      // now-committed target: one conditional delete (booking_id AND target) instead
+      // of read-then-delete (#480). A concurrent different-target holder re-pinned to
+      // its own target, so its live lease is never clobbered, and there is no
+      // read->delete window for such a re-pin to slip into.
+      await deps.releaseRescheduleIfTarget(booking.id, startIso);
+      return { booking, manageUrl: manageUrl(deps, token), contactChanged, isTest: ctx.bucket.is_test };
+    }
+
+    // #2310: with no zone supplied (an admin move), the lead's clock is the zone
+    // the booking was made in. Judged after guard 1, so a no-op onto the time the
+    // booking already holds is never refused, and before the lease, so a refusal
+    // claims nothing.
+    if (suppliedZone === null) assertWithinLeadCallingWindow(startIso, booking.timezone);
+
+    // Idempotency guard 2, claim the per-booking lease (#439). The discriminated
+    // outcome drives everything: a non-holder (idempotent/noop/conflict) returns or
+    // throws WITHOUT touching the finally; only a holder (won/resume/
+    // fresh-after-abandon) enters the try/finally, so the release rule holds.
+    const claim = await deps.claimReschedule(booking.id, startIso);
+    if (claim.outcome === "idempotent" || claim.outcome === "noop") {
+      return { booking, manageUrl: manageUrl(deps, token), contactChanged, isTest: ctx.bucket.is_test };
+    }
+    if (claim.outcome === "conflict") {
+      throw new RescheduleConflictError();
+    }
+
+    let applied = false;
+    try {
+      const result = await applyReschedule(
+        deps, token, ctx, startIso, endIso, reason, initiator, claim, nowMs, actor, opts?.seat ?? null, correction,
+      );
+      applied = true;
+      return { ...result, contactChanged, isTest: ctx.bucket.is_test };
+    } finally {
+      // #3215: after a FAILURE, under the cleanup allowance. A reschedule that failed
+      // because the confirm budget ran out would otherwise have its release refused
+      // at 0ms too, and the lead's retry would meet its own lock until the lease
+      // expired. Only then: the allowance is opened once per request and shared, so
+      // a release after a success must not spend it before the route needs it. The
+      // one cleanup that does not share it is a lost race's rollback in the middle of
+      // a confirm (#3439, `withinLostRaceCleanup`), which gets its own while the
+      // confirm budget can hold it, and so never opens the shared one early either.
+      if (applied) await deps.releaseReschedule(booking.id);
+      else await withinOwedCleanup(() => deps.releaseReschedule(booking.id));
+    }
   } finally {
-    // #3215: after a FAILURE, under the cleanup allowance. A reschedule that failed
-    // because the confirm budget ran out would otherwise have its release refused
-    // at 0ms too, and the lead's retry would meet its own lock until the lease
-    // expired. Only then: the allowance is opened once per request and shared, so
-    // a release after a success must not spend it before the route needs it. The
-    // one cleanup that does not share it is a lost race's rollback in the middle of
-    // a confirm (#3439, `withinLostRaceCleanup`), which gets its own while the
-    // confirm budget can hold it, and so never opens the shared one early either.
-    if (applied) await deps.releaseReschedule(booking.id);
-    else await withinOwedCleanup(() => deps.releaseReschedule(booking.id));
+    if (correction.previousPhone !== undefined && !correction.carried) {
+      await tellUncarriedCorrection(deps, token, correction.previousPhone, opts?.onCorrectionUntold);
+    }
   }
 }
 
@@ -8555,6 +8571,10 @@ async function applyReschedule(
   // nothing: either a real conflict (thrown below) or an earlier attempt that already
   // committed this exact pin, whose own commit wrote the row the drain will run.
   const outboxId = committed;
+  // #4031: this attempt's outbox row holds the correction, so its booking.rescheduled
+  // tells Regal. An earlier attempt's row (the branch below) holds only what THAT
+  // attempt corrected, so this one's is still told separately.
+  if (committed) correction.carried = true;
   if (!committed) {
     // 0 rows: the booking is no longer the one we started moving. Two cases:
     //  - a crash-resume whose prior attempt already committed THIS exact pin
@@ -9330,9 +9350,11 @@ export const STALE_PHONE_INVITE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 export const PHONE_CORRECTION_UNSENT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 /**
- * The manage page's own phone control (#1341), and the ONE caller that tells
- * downstream about the correction (#1512): the booker's move also writes contact
- * details, and its correction already rides the `booking.rescheduled` it emits.
+ * The manage page's own phone control (#1341), which tells downstream about the
+ * correction (#1512). The booker's move also writes contact details, and its
+ * correction rides the `booking.rescheduled` it emits; only a move that then fails
+ * or moves nothing tells its saved correction as a contact update instead
+ * (`tellUncarriedCorrection`, #4031).
  */
 export async function updateBookingPhone(
   token: string,
@@ -9356,6 +9378,37 @@ export async function updateBookingPhone(
  */
 interface MoveCorrection {
   previousPhone?: string | null;
+  /**
+   * Set by the move once its OWN commit has recorded the correction on the outbox
+   * row, so its booking.rescheduled will carry it. Unset means the correction still
+   * has to be told some other way (`tellUncarriedCorrection`).
+   */
+  carried?: boolean;
+}
+
+/**
+ * Tell downstream about a phone correction the move did not carry (#4031), as the
+ * manage page's own `booking.contact_updated`, from the row as it now stands.
+ * Contained: it runs while a move's own error may be on its way out, and must never
+ * replace that error. Nothing retries a contact update that was never recorded, so
+ * that outcome is handed to `onUntold` for the service to page, as the manage page's
+ * `downstreamUntold` is. A booking that cannot even be read is logged: there is no
+ * booking to name in a page.
+ */
+async function tellUncarriedCorrection(
+  deps: BookingDeps,
+  token: string,
+  previousPhone: string | null,
+  onUntold?: (bookingId: string) => Promise<void>,
+): Promise<void> {
+  try {
+    const ctx = await deps.loadBookingContext(token);
+    if (!ctx) return;
+    const untold = await announcePhoneCorrection(deps, ctx.booking, ctx.bucket, ctx.eventType, previousPhone);
+    if (untold) await onUntold?.(untold.bookingId);
+  } catch (err) {
+    log.error("manage-contact", { msg: "a move's phone correction not recorded for downstream" }, err);
+  }
 }
 
 /** Which of the lead's own details a write actually moved. */

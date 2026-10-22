@@ -389,7 +389,7 @@ describe("the Regal wire contract (#2314)", () => {
     expect(sortedKeys(body.properties)).toEqual(withoutJoinKeys(event));
   });
 
-  it("sends the identity traits with opt ins on a create only", () => {
+  it("sends the landing page opt ins on a create, and identity only on a cancel or reassign", () => {
     expect(wireBody("booking.created", fullPayload()).traits).toEqual({
       firstName: "Jane",
       lastName: "Doe",

@@ -37,7 +37,8 @@ export type WebhookEvent =
    * A lead corrected the number their advisor will call, from the manage page,
    * with NO reschedule beside it (#1512). A correction made with a reschedule
    * rides that `booking.rescheduled` instead (#2164, Dan's call 2026-09-10), so
-   * this is emitted only by the manage page's own phone control (#1341).
+   * this is emitted by the manage page's own phone control (#1341), and by a move
+   * whose correction was saved but which then failed or moved nothing (#4031).
    */
   | "booking.contact_updated"
   /**

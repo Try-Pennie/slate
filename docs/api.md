@@ -894,7 +894,7 @@ format per endpoint is built by `src/lib/webhooks/wire.ts`.
 | `booking.rescheduled` | A booking's TIME moves: in place, or across buckets |
 | `booking.cancelled` | A booking is cancelled |
 | `booking.reassigned` | A booking moves to another advisor at the same time (#2368): the machine contact-owner move, an admin reassign, the bulk redistribute, the offboarding coverage sweep |
-| `booking.contact_updated` | A lead corrects their phone number on the manage page with no reschedule beside it (#1512). A correction made with a reschedule rides that `booking.rescheduled` instead, carrying `previous_attendee_phone`. Subscribed by the live Regal endpoint since #4031 |
+| `booking.contact_updated` | A lead corrects their phone number on the manage page with no reschedule beside it (#1512). A correction made with a reschedule rides that `booking.rescheduled` instead, carrying `previous_attendee_phone`; if that move then fails or moves nothing, the saved correction goes out as this event (#4031). Subscribed by the live Regal endpoint since #4031 |
 
 A reassign used to arrive as `booking.rescheduled`, so every consumer listening
 for a time change fired on a booking whose time had not moved. It is its own
