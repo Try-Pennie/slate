@@ -4,8 +4,8 @@
 // timings left out production's live check and calendar write. (The 3s and 5s once quoted
 // here were the contention model's assumed figures, never a measurement; the values now come
 // from the `google_*` fields on every `confirm answered` line, #3490.) This suite holds the
-// four things that make the delay usable and safe, plus the confirm line's Google fields
-// counting the same calls the delay stands in for:
+// four things that make the delay usable and safe, a fifth that keeps its value measured,
+// plus the confirm line's Google fields counting the same calls the delay stands in for:
 //
 //   1. the setting's grammar, strict, with off as the default and a typo reported rather
 //      than half applied;
