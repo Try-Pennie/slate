@@ -103,6 +103,12 @@ export interface RerouteCopy {
   primary: string | null;
   /** Whether it offers Cancel. */
   cancel: boolean;
+  /**
+   * The label of the button that opens the booking's own Reassign picker, or null
+   * for none (#4043). Only a nobody result offers it: nobody is free on any tier, so
+   * naming an advisor, over their cap if need be, is the one way forward.
+   */
+  reassign: string | null;
 }
 
 /**
@@ -129,25 +135,26 @@ const UNAVAILABLE_WORDS: Record<CurrentAgentUnavailable, string> = {
   no_schedule: "has no schedule in Slate",
 };
 
-/** What to do when nobody can be kept or found: the booking's own Reassign (#3487). */
-const REASSIGN_INSTEAD = "Reassign it to an advisor by name.";
+/** The button a nobody result offers: the booking's own Reassign (#3487, #4043). */
+const REASSIGN_LABEL = "Reassign to another advisor";
 
 /** What a search found (R8 to R11). */
 export function proposalCopy(p: RerouteProposal, showCodes: boolean): RerouteCopy {
   if (p.kind === "none") {
     // #3487: the current advisor was there but cannot take the call, so the result
-    // says why and points at the booking's own Reassign, which can pick anyone, over
-    // their cap if need be. Never that they stay.
+    // says why. Never that they stay. #4043: the way forward is the Reassign button
+    // under it, so no sentence also says to reassign (L605).
     const where = bucketWords(p.requested.code, showCodes);
     return {
       heading: "Nobody is free",
       body: p.current
-        ? `${p.current.advisor.name} ${UNAVAILABLE_WORDS[p.current.reason]}, and nobody else in ${where} or any tier below is free. Nothing has changed. ${REASSIGN_INSTEAD}`
+        ? `${p.current.advisor.name} ${UNAVAILABLE_WORDS[p.current.reason]}, and nobody else in ${where} or any tier below is free. Nothing has changed.`
         : `Nobody in ${where} or any tier below is free at this time. Nothing has changed.`,
       held: false,
       note: false,
       primary: null,
       cancel: false,
+      reassign: REASSIGN_LABEL,
     };
   }
   const requested = bucketWords(p.requested.code, showCodes);
@@ -159,6 +166,7 @@ export function proposalCopy(p: RerouteProposal, showCodes: boolean): RerouteCop
       note: true,
       primary: `Move to ${p.advisor.name}`,
       cancel: true,
+      reassign: null,
     };
   }
   const corrected = `Change the ${showCodes ? "bucket" : "pool"} to ${bucketWords(p.bucket.code, showCodes)}`;
@@ -170,6 +178,7 @@ export function proposalCopy(p: RerouteProposal, showCodes: boolean): RerouteCop
       note: true,
       primary: corrected,
       cancel: true,
+      reassign: null,
     };
   }
   return {
@@ -182,6 +191,7 @@ export function proposalCopy(p: RerouteProposal, showCodes: boolean): RerouteCop
     note: true,
     primary: corrected,
     cancel: true,
+    reassign: null,
   };
 }
 
@@ -190,7 +200,7 @@ export function proposalCopy(p: RerouteProposal, showCodes: boolean): RerouteCop
  * page (L608). `heldAdvisor` names who was held, for the hold that ran out.
  */
 export function outcomeCopy(o: RerouteOutcome, showCodes: boolean, heldAdvisor: string | null): RerouteCopy {
-  const quiet = { held: false, note: false, primary: null, cancel: false };
+  const quiet = { held: false, note: false, primary: null, cancel: false, reassign: null };
   if (o.kind === "expired") {
     return {
       heading: "The hold ran out",
@@ -199,6 +209,7 @@ export function outcomeCopy(o: RerouteOutcome, showCodes: boolean, heldAdvisor: 
       note: false,
       primary: "Find an advisor",
       cancel: true,
+      reassign: null,
     };
   }
   if (o.kind === "taken") {

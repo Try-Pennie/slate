@@ -70,13 +70,14 @@ function holdReply(fn: ReturnType<typeof mockFetch>, suffix: string, method: str
 }
 
 const onChanged = vi.fn();
+const onReassign = vi.fn();
 beforeEach(() => vi.clearAllMocks());
 
 describe("ReroutePanel, as an admin (codes)", () => {
   it("finds an advisor for the code chosen and shows the drop first", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({});
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("combobox", { name: "Correct bucket" }));
     await user.click(screen.getByRole("option", { name: "512" }));
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
@@ -89,7 +90,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("lists all sixty codes", async () => {
     const user = userEvent.setup();
     mockFetch({});
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("combobox", { name: "Correct bucket" }));
     expect(screen.getAllByRole("option")).toHaveLength(60);
   });
@@ -97,7 +98,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("confirms the move with the hold and the note, then says what it did", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({ confirm: () => ({ body: { kind: "moved", advisor: advisor("Morgan Reyes"), bucket: bucket("412") } }) });
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("One tier down, in 412");
     await user.type(screen.getByRole("textbox", { name: "Note" }), "lead is Ultra High");
@@ -110,7 +111,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("confirms a keep with the bucket and the bucket asked for", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({ find: () => ({ body: KEEP }), confirm: () => ({ body: { kind: "kept", bucket: bucket("512") } }) });
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("Taylor Brooks stays");
     expect(screen.queryByText(/Held for/)).toBeNull();
@@ -124,7 +125,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("looks for a different advisor from a keep, excluding the current one (#3596)", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({ find: (body) => ({ body: body?.excludeCurrent ? MOVE : KEEP }) });
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("combobox", { name: "Correct bucket" }));
     await user.click(screen.getByRole("option", { name: "512" }));
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
@@ -140,7 +141,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("says nobody else is free when the kept advisor was the only one (#3596)", async () => {
     const user = userEvent.setup();
     mockFetch({ find: (body) => ({ body: body?.excludeCurrent ? NONE : KEEP }) });
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("Taylor Brooks stays");
     await user.click(screen.getByRole("button", { name: "Look for a different advisor" }));
@@ -151,12 +152,12 @@ describe("ReroutePanel, as an admin (codes)", () => {
     const user = userEvent.setup();
     const OUT = { ...NONE, current: { advisor: advisor("Taylor Brooks"), reason: "time_off" } };
     const fn = mockFetch({ find: () => ({ body: OUT }) });
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("Nobody is free");
     expect(
       screen.getByText(
-        "Taylor Brooks is on time off for this call, and nobody else in 512 or any tier below is free. Nothing has changed. Reassign it to an advisor by name.",
+        "Taylor Brooks is on time off for this call, and nobody else in 512 or any tier below is free. Nothing has changed.",
       ),
     ).toBeTruthy();
     expect(screen.queryByText(/stays/)).toBeNull();
@@ -165,10 +166,48 @@ describe("ReroutePanel, as an admin (codes)", () => {
     expect(sent(fn, "/reroute/confirm")).toEqual([]);
   });
 
+  it("offers the booking's own Reassign on a nobody result, and opens it (#4043)", async () => {
+    const user = userEvent.setup();
+    const OUT = { ...NONE, current: { advisor: advisor("Taylor Brooks"), reason: "time_off" } };
+    const fn = mockFetch({ find: () => ({ body: OUT }) });
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("Nobody is free");
+    const reassign = screen.getByRole("button", { name: "Reassign to another advisor" });
+    // The panel's secondary button, the same as Find an advisor beside it.
+    expect(reassign.className).toBe(screen.getByRole("button", { name: "Find an advisor" }).className);
+    await user.click(reassign);
+    expect(onReassign).toHaveBeenCalledTimes(1);
+    expect(sent(fn, "/reroute/confirm")).toEqual([]);
+    expect(sent(fn, "/reroute/hold", "DELETE")).toEqual([]);
+  });
+
+  it("offers Reassign when nobody else is free with the current advisor left out (#4043)", async () => {
+    const user = userEvent.setup();
+    mockFetch({ find: (body) => ({ body: body?.excludeCurrent ? NONE : KEEP }) });
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("Taylor Brooks stays");
+    expect(screen.queryByRole("button", { name: "Reassign to another advisor" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Look for a different advisor" }));
+    await screen.findByText("Nobody is free");
+    await user.click(screen.getByRole("button", { name: "Reassign to another advisor" }));
+    expect(onReassign).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers no Reassign on a move result (#4043)", async () => {
+    const user = userEvent.setup();
+    mockFetch({});
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("One tier down, in 412");
+    expect(screen.queryByRole("button", { name: "Reassign to another advisor" })).toBeNull();
+  });
+
   it("offers no different-advisor button on a move result (#3596)", async () => {
     const user = userEvent.setup();
     mockFetch({});
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("One tier down, in 412");
     expect(screen.queryByRole("button", { name: "Look for a different advisor" })).toBeNull();
@@ -177,7 +216,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("cancelling a move releases the hold", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({});
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("One tier down, in 412");
     await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -188,7 +227,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("releases a held advisor when the panel is closed, never leaving them blocked", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({});
-    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("One tier down, in 412");
     // Sent as the panel closes, with no await, which the "nothing held" test relies on.
@@ -199,7 +238,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("keeps the hold when the panel closes mid confirm, which the server settles", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({ confirm: () => ({ body: { kind: "moved", advisor: advisor("Morgan Reyes"), bucket: bucket("412") } }) });
-    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("One tier down, in 412");
     const finish = holdReply(fn, "/reroute/confirm", "POST");
@@ -215,7 +254,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("releases the advisor a search held after the panel had already closed", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({});
-    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     const finish = holdReply(fn, "/reroute", "POST");
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await waitFor(() => expect(sent(fn, "/reroute")).toHaveLength(1));
@@ -228,7 +267,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
     const user = userEvent.setup();
     const NEXT = { ...MOVE, holdId: "22222222-3333-4444-8555-666666666666", advisor: advisor("Avery Lin") };
     const fn = mockFetch({ confirm: () => ({ body: { kind: "taken", previous: advisor("Morgan Reyes"), proposal: NEXT } }) });
-    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("One tier down, in 412");
     const finish = holdReply(fn, "/reroute/confirm", "POST");
@@ -243,7 +282,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("releases nothing on close when nothing is held", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({ find: () => ({ body: KEEP }) });
-    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("Taylor Brooks stays");
     // A release is sent as the panel closes, before any await, so it would be here now.
@@ -255,7 +294,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
     const OLD = { ...MOVE, holdId: "33333333-4444-4555-8666-777777777777", advisor: advisor("Old Hold") };
     const fn = mockFetch({ current: OLD });
     const finishRestore = holdReply(fn, "/reroute", "GET");
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await settle(finishRestore);
     expect(screen.getByText("Old Hold is free. Nobody in 512 is.")).toBeTruthy();
   });
@@ -263,7 +302,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("clears a result, releasing its hold, when the bucket chosen changes after the search", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({});
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("One tier down, in 412");
     await user.click(screen.getByRole("combobox", { name: "Correct bucket" }));
@@ -278,7 +317,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
     // new search placed its hold would free the new one and strand its Move button.
     const user = userEvent.setup();
     const fn = mockFetch({});
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("One tier down, in 412");
     const finishRelease = holdReply(fn, "/reroute/hold", "DELETE");
@@ -292,7 +331,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("keeps the result and its hold when the same bucket is picked again", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({});
-    render(<ReroutePanel bookingId="bk1" currentCode="512" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="512" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("One tier down, in 412");
     await user.click(screen.getByRole("combobox", { name: "Correct bucket" }));
@@ -304,7 +343,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("says the server answered, with its status, when a refusal carries no message", async () => {
     const user = userEvent.setup();
     mockFetch({ find: () => ({ status: 502, body: {} }) });
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     expect((await screen.findByRole("alert")).textContent).toBe("Slate could not finish that (error 502). Please try again.");
   });
@@ -314,7 +353,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
     const OLD = { ...MOVE, holdId: "33333333-4444-4555-8666-777777777777", advisor: advisor("Old Hold") };
     const fn = mockFetch({ current: OLD });
     const finishRestore = holdReply(fn, "/reroute", "GET");
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("Morgan Reyes is free. Nobody in 512 is.");
     // Settled the same way the control above proves shows a landed restore.
@@ -325,7 +364,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
 
   it("restores a live hold after a reload", async () => {
     mockFetch({ current: MOVE });
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await screen.findByText("One tier down, in 412");
     expect(screen.getByRole("button", { name: "Move to Morgan Reyes" })).toBeTruthy();
   });
@@ -335,7 +374,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
     mockFetch({
       confirm: () => ({ body: { kind: "taken", previous: advisor("Morgan Reyes"), proposal: { ...MOVE, advisor: advisor("Casey Lin") } } }),
     });
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("One tier down, in 412");
     await user.click(screen.getByRole("button", { name: "Move to Morgan Reyes" }));
@@ -347,7 +386,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("names the advisor whose hold ran out, and offers to search again", async () => {
     const user = userEvent.setup();
     mockFetch({ confirm: () => ({ body: { kind: "expired" } }) });
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("One tier down, in 412");
     await user.click(screen.getByRole("button", { name: "Move to Morgan Reyes" }));
@@ -359,7 +398,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("shows the route's own sentence when a request is refused", async () => {
     const user = userEvent.setup();
     mockFetch({ find: () => ({ status: 409, body: { error: "This lead booked a specific advisor by link, so there is no bucket to correct.", code: "agent_link" } }) });
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     expect((await screen.findByRole("alert")).textContent).toMatch(/specific advisor by link/);
   });
@@ -379,7 +418,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
           init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
         });
       }) as unknown as typeof fetch;
-      render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+      render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
       fireEvent.click(screen.getByRole("button", { name: "Find an advisor" }));
       await act(async () => {
         await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
@@ -397,7 +436,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
       if ((init?.method ?? "GET") === "GET") return { ok: true, status: 200, json: async () => ({ proposal: null }) } as Response;
       throw new TypeError("Failed to fetch");
     }) as unknown as typeof fetch;
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     expect((await screen.findByRole("alert")).textContent).toBe(REROUTE_UNREACHABLE);
   });
@@ -405,7 +444,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
   it("says a move was already made when a repeated confirm finds the first one landed", async () => {
     const user = userEvent.setup();
     mockFetch({ confirm: () => ({ body: { kind: "moved", advisor: advisor("Morgan Reyes"), bucket: bucket("412"), already: true } }) });
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await user.click(await screen.findByRole("button", { name: "Move to Morgan Reyes" }));
     await screen.findByText("Already moved");
@@ -420,7 +459,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
       if ((init?.method ?? "GET") === "GET") return { ok: true, status: 200, json: async () => ({ proposal: null }) } as Response;
       throw new TypeError("Failed to fetch");
     }) as unknown as typeof fetch;
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     expect((await screen.findByRole("alert")).textContent).toMatch(/try again/i);
   });
@@ -430,7 +469,7 @@ describe("ReroutePanel, as a manager (pools)", () => {
   it("picks a backend, then a debt level, and keeps the rest of the booking's code", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({});
-    render(<ReroutePanel bookingId="bk1" currentCode="112" showCodes={false} onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="112" showCodes={false} onChanged={onChanged} onReassign={onReassign} />);
     expect(screen.queryByRole("combobox", { name: "Correct bucket" })).toBeNull();
     const backends = screen.getAllByRole("radio").map((r) => r.closest("label")?.textContent);
     expect(backends).toEqual(["Beyond", "Achieve", "Either"]);
@@ -446,7 +485,7 @@ describe("ReroutePanel, as a manager (pools)", () => {
   it("reads pools, never codes, in the result", async () => {
     const user = userEvent.setup();
     mockFetch({});
-    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes={false} onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes={false} onChanged={onChanged} onReassign={onReassign} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("One tier down, in Very High");
     expect(screen.getByText("Morgan Reyes is free. Nobody in Ultra High is.")).toBeTruthy();
@@ -454,7 +493,7 @@ describe("ReroutePanel, as a manager (pools)", () => {
 
   it("starts from the booking's own backend and debt level", () => {
     mockFetch({});
-    render(<ReroutePanel bookingId="bk1" currentCode="332" showCodes={false} onChanged={onChanged} />);
+    render(<ReroutePanel bookingId="bk1" currentCode="332" showCodes={false} onChanged={onChanged} onReassign={onReassign} />);
     expect((screen.getByRole("radio", { name: "Achieve" }) as HTMLInputElement).checked).toBe(true);
     expect(screen.getByRole("combobox", { name: "Debt level" }).textContent).toMatch(/High/);
   });
