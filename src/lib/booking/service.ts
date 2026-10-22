@@ -3911,9 +3911,11 @@ function realBulkReassignDeps(): BulkReassignDeps {
       // Cap is NOT overridden: the covering agent was selected under their daily
       // cap. The manual force-override (#974) is the only path that overrides.
       //
-      // The two branches differ ONLY in who the move is recorded as. Everything
-      // that decides which bookings move, and where they land, is shared, so an
-      // offboarding sweep and an admin's sweep can never cover an agent differently.
+      // A pick on a lower rung (#3485) moves across buckets through Reroute's hold and
+      // swap; a pick in the call's own bucket is a plain reassign. Within each, system
+      // and staff sweeps differ ONLY in who the move is recorded as: everything that
+      // decides which bookings move, and where they land, is shared, so an offboarding
+      // sweep and an admin's sweep can never cover an agent differently.
       if (placement) {
         await coverageMoveAcrossBuckets(bookingId, targetEmail, reason, sweepActor, placement);
         return;
