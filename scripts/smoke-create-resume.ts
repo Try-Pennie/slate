@@ -31,6 +31,8 @@ import { buildResumeReservation, type PersistedBookingRow } from "./create-resum
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
 import { smokeAttendee } from "./lib/smoke-identity.ts";
+import { recordSmokeCrash } from "./lib/smoke-crash.ts";
+import { SMOKE_NAMES } from "./lib/smoke-failure-log.ts";
 import {
   cancelSmokeBooking,
   createCheckMessage,
@@ -51,7 +53,7 @@ const SB_KEY = process.env.SUPABASE_SECRET_KEY ?? "";
 const CRON = process.env.CRON_SECRET ?? "";
 const BUCKET = process.env.SMOKE_BUCKET ?? "SMOKE";
 
-const { check, failed } = createChecker();
+const { check, failed } = createChecker({ name: SMOKE_NAMES.createResume });
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -247,6 +249,7 @@ main().then(
   () => process.exit(failed() === 0 ? 0 : 1),
   (e) => {
     console.error("smoke crashed:", e);
+    recordSmokeCrash(SMOKE_NAMES.createResume, e); // #4062
     process.exit(1);
   },
 );

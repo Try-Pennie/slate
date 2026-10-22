@@ -18,8 +18,8 @@
 //     a teardown that throws replaces the error the run crashed on.
 //     `teardownCheckMessage` then names the booking when it was left active, so the
 //     failure log, and the alert built from it, say which booking to cancel by hand.
-import { shortErrorReason } from "@/lib/notify/error-text";
 import { isTransientNetworkError, withRetry, type Json } from "../smoke-lib.ts";
+import { crashReason } from "./smoke-crash.ts";
 
 export type SmokePost = (
   path: string,
@@ -56,12 +56,10 @@ class RetryableStatus extends Error {
   }
 }
 
-/** A thrown error as one short line, keeping the socket code a fetch failure hides. */
+/** A thrown error as one short line: the same words a crash record uses (#4062). */
 export function thrownReason(err: unknown): string {
   if (err instanceof RetryableStatus) return err.message;
-  const code = (err as { cause?: { code?: unknown } } | null)?.cause?.code;
-  const reason = shortErrorReason(err);
-  return typeof code === "string" && /^[A-Z_]+$/.test(code) ? `${reason} (${code})` : reason;
+  return crashReason(err);
 }
 
 export type CancelResult = { ok: true } | { ok: false; reason: string };

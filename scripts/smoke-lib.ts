@@ -12,6 +12,8 @@ import {
   failureLogPath,
   nodeSmokeFailureIo,
   recordFailure,
+  recordPass,
+  type FailureLogIo,
 } from "./lib/smoke-failure-log.ts";
 
 export type Json = Record<string, unknown>;
@@ -189,26 +191,38 @@ export function evaluateSlotAvailability(
 
 /**
  * A pass/fail checker with isolated counting. Each smoke script does:
- *   const { check, failed } = createChecker();
+ *   const { check, failed } = createChecker({ name: SMOKE_NAMES.reschedule });
  *   ...
  *   process.exit(failed() ? 1 : 0);
+ *
+ * `name` is the smoke's own (from SMOKE_NAMES), required so each pass is tagged with
+ * it and a crash of this smoke counts only its own passes (#4062).
  */
-export function createChecker(): {
+export function createChecker(opts: {
+  name: string;
+  io?: FailureLogIo;
+  env?: Record<string, string | undefined>;
+}): {
   check: (cond: boolean, msg: string) => void;
   failed: () => number;
 } {
   let failures = 0;
+  const io = opts.io ?? nodeSmokeFailureIo;
   // #1492: record each failure as it happens, so the canary's Slack alert can name
   // WHICH checks failed rather than one sentence covering every possible cause. A
   // no-op unless the workflow set SMOKE_FAILURE_FILE, so a hand run is unchanged.
-  const failureLog = failureLogPath(process.env);
+  // #4062: a pass is recorded too, so a crash after passing checks is never read as a
+  // run that stopped before the checks began.
+  const failureLog = failureLogPath(opts.env ?? process.env);
   return {
     check(cond: boolean, msg: string): void {
-      if (cond) console.log("ok:", msg);
-      else {
+      if (cond) {
+        console.log("ok:", msg);
+        recordPass(io, failureLog, opts.name);
+      } else {
         console.error("FAIL:", msg);
         failures += 1;
-        recordFailure(nodeSmokeFailureIo, failureLog, msg);
+        recordFailure(io, failureLog, msg);
       }
     },
     failed: () => failures,

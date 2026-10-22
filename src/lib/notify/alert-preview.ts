@@ -4100,12 +4100,53 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   {
     key: "smoke_canary_failed:*",
-    state: "the full pass stopped before any check reported",
+    state: "the full pass recorded nothing at all",
     channel: "alert",
     text: buildSmokeFailureMessage({
       mode: "full",
       runUrl: "https://github.com/Try-Pennie/slate/actions/runs/35200000091",
       failures: { kind: "none" },
+    }),
+  },
+  // #4062: a crash is recorded, with the checks that passed before it, so the alert
+  // no longer claims a run that crashed midway never started (run 39694932888).
+  {
+    key: "smoke_canary_failed:*",
+    state: "the full pass crashed after some checks passed",
+    channel: "alert",
+    text: buildSmokeFailureMessage({
+      mode: "full",
+      runUrl: "https://github.com/Try-Pennie/slate/actions/runs/35200000092",
+      failures: {
+        kind: "crashed",
+        passed: 4,
+        crashes: [{ where: "The reschedule smoke", reason: "the connection timed out", passedBefore: 4 }],
+      },
+    }),
+  },
+  {
+    key: "smoke_canary_failed:*",
+    state: "the full pass crashed and left a booking behind",
+    channel: "alert",
+    text: buildSmokeFailureMessage({
+      mode: "full",
+      runUrl: "https://github.com/Try-Pennie/slate/actions/runs/35200000093",
+      failures: {
+        kind: "failures",
+        lines: ["teardown: booking 98c0e697 left active, cancel it by hand (the connection timed out)"],
+        passed: 5,
+        crashes: [{ where: "The reschedule smoke", reason: "the connection timed out", passedBefore: 5 }],
+      },
+    }),
+  },
+  {
+    key: "smoke_canary_failed:*",
+    state: "the full pass stopped after passing checks, recording no failure",
+    channel: "alert",
+    text: buildSmokeFailureMessage({
+      mode: "full",
+      runUrl: "https://github.com/Try-Pennie/slate/actions/runs/35200000094",
+      failures: { kind: "stopped", passed: 12 },
     }),
   },
   {

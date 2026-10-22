@@ -22,6 +22,8 @@ import { DateTime } from "luxon";
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.ts";
 import { smokeAttendee } from "./lib/smoke-identity.ts";
+import { recordSmokeCrash } from "./lib/smoke-crash.ts";
+import { SMOKE_NAMES } from "./lib/smoke-failure-log.ts";
 import {
   cancelSmokeBooking,
   createCheckMessage,
@@ -40,7 +42,7 @@ const BUCKET = "SMOKE";
 const SMOKE_BUCKET_ID = "44004a29-da8a-47fe-9ebc-6a95bccd1bfc";
 const SMOKETEST2_ID = "c0000000-0000-4000-8000-000000000002";
 
-const { check, failed } = createChecker();
+const { check, failed } = createChecker({ name: SMOKE_NAMES.stickiness });
 
 async function main(): Promise<void> {
   if (!KEY) {
@@ -168,6 +170,7 @@ main().then(
   () => process.exit(failed() === 0 ? 0 : 1),
   (e) => {
     console.error("repro crashed:", e);
+    recordSmokeCrash(SMOKE_NAMES.stickiness, e); // #4062
     process.exit(1);
   },
 );

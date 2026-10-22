@@ -1,6 +1,8 @@
 // The canary's browser check: does the EMBEDDED booker actually draw (#1006)?
 //
-// Run: SLATE_BASE_URL=... node --experimental-strip-types scripts/smoke-embed-render.ts
+// Run: SLATE_BASE_URL=... node --experimental-strip-types --import ./scripts/register-paths.mjs \
+//   scripts/smoke-embed-render.ts
+// (the alias hook is required: its crash record imports the app's error text, #4062)
 //
 // The uptime canary proves the server responds; nothing proved the front end
 // draws. cal.com is watched by a Checkly browser check that loads the embedded
@@ -55,7 +57,8 @@ import {
   type PanelObservation,
 } from "./lib/embed-render-check.ts";
 import { probeTimezonePanel } from "./lib/booker-panel-probe.ts";
-import { failureLogPath, recordFailure } from "./lib/smoke-failure-log.ts";
+import { failureLogPath, recordFailure, recordPass, SMOKE_NAMES } from "./lib/smoke-failure-log.ts";
+import { recordSmokeCrash } from "./lib/smoke-crash.ts";
 
 const base = (process.env.SLATE_BASE_URL || "https://slate.trypennie.app").replace(/\/$/, "");
 // A REAL bucket, deliberately NOT the hidden SMOKE one the other canary steps use.
@@ -206,6 +209,7 @@ async function main(): Promise<number> {
     }
     const verdict = judgeEmbedRender(seen);
     if (verdict.outcome === "rendered") {
+      recordPass(io, failureLog, SMOKE_NAMES.embedRender); // #4062: a pass is part of the record too
       console.log(
         `embed render: ok (booker chrome mounted, ${seen.frameText.trim().length} characters drawn, timezone list opened, focused and walked)`,
       );
@@ -226,4 +230,12 @@ async function main(): Promise<number> {
   }
 }
 
-process.exit(await main());
+// #4062: a throw main did not catch is recorded as a crash, with a short reason,
+// rather than dying on an unhandled rejection with nothing in the failure log.
+process.exit(
+  await main().catch((e: unknown) => {
+    console.error("embed render crashed:", e);
+    recordSmokeCrash(SMOKE_NAMES.embedRender, e);
+    return 1;
+  }),
+);

@@ -18,7 +18,8 @@
 
 import { envOr } from "./smoke-env.ts";
 import { jpost, slots, createChecker } from "./smoke-lib.ts";
-import { rescheduleSmokeExitCode, runRescheduleSmoke } from "./lib/smoke-reschedule-run.ts";
+import { RESCHEDULE_SMOKE_NAME, rescheduleSmokeExitCode, runRescheduleSmoke } from "./lib/smoke-reschedule-run.ts";
+import { recordSmokeCrash } from "./lib/smoke-crash.ts";
 
 // envOr, not `??`: the canary wires SLATE_BASE_URL from a repo Actions variable and
 // `${{ vars.X }}` for an unset variable arrives as "" rather than undefined (#1494).
@@ -28,7 +29,7 @@ const KEY = process.env.BOOKING_API_KEY_CANARY ?? "";
 //   and wiring it would let an unset repo variable aim the run at bucket "")
 const BUCKET = envOr(process.env.SMOKE_BUCKET, "SMOKE");
 
-const { check, failed } = createChecker();
+const { check, failed } = createChecker({ name: RESCHEDULE_SMOKE_NAME });
 
 async function main(): Promise<void> {
   if (!KEY) {
@@ -42,7 +43,10 @@ async function main(): Promise<void> {
   process.exit(code);
 }
 
+// #4062: the crash is recorded, with a short reason, so the alert says the smoke
+// crashed after the checks that passed instead of claiming it never started.
 main().catch((e) => {
   console.error("smoke crashed:", e);
-  process.exit(1);
+  recordSmokeCrash(RESCHEDULE_SMOKE_NAME, e);
+  process.exit(rescheduleSmokeExitCode("crashed", failed()));
 });
