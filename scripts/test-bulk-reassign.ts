@@ -7,6 +7,7 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-bulk-reassign.ts
 import {
   BULK_REASSIGN_ITEMS_PER_TICK,
+  BookingMovedMidMoveError,
   MAX_ITEM_ATTEMPTS,
   buildBulkReassignProgress,
   drainOneJob,
@@ -84,6 +85,44 @@ async function run() {
   let o: ItemOutcome = await processBulkReassignItem(item(), job, deps);
   assert(o.status === "moved" && o.targetUserId === "cov", "a placeable booking is moved onto the covering agent");
   assert(log.includes("reassign:bk1"), "the move calls reassign for the booking");
+
+  // #1677: the move is handed the state it was decided on, the out agent and the start the
+  // selection checked, so the swap commits only if the booking still has it.
+  {
+    const seen: unknown[] = [];
+    const d = fakeDeps({
+      selectTarget: async () => ({
+        assignment: { userId: "cov", email: "cov@x.com" },
+        anyUnverified: false,
+        verifiedStartsAt: "2026-07-22T15:00:00.000Z",
+      }),
+      reassign: async (_id, _email, _job, _placement, expect) => void seen.push(expect),
+    });
+    await processBulkReassignItem(item(), job, d.deps);
+    assert(
+      JSON.stringify(seen[0]) === JSON.stringify({ assignedUserId: "out", startsAt: "2026-07-22T15:00:00.000Z" }),
+      `the reassign is handed the out agent and the verified start (got ${JSON.stringify(seen[0])})`,
+    );
+  }
+  // A change landing between the selection and the swap (an admin's own reassign, a second
+  // sweep, the lead's reschedule) is not overwritten and is not a failure: the item is left
+  // pending, saying why, and the next tick reads the booking afresh.
+  {
+    const d = fakeDeps({
+      selectTarget: async () => ({ assignment: { userId: "cov", email: "cov@x.com" }, anyUnverified: false, verifiedStartsAt: "2026-07-22T15:00:00.000Z" }),
+      reassign: async () => {
+        throw new BookingMovedMidMoveError();
+      },
+    });
+    const out = await processBulkReassignItem(item(), job, d.deps);
+    assert(out.status === "pending", `a booking that moved mid move stays pending for the next tick (got ${out.status})`);
+    assert(out.targetUserId === null, "and records no target, since nothing moved");
+    assert(/changed while it was being moved/i.test(out.detail ?? ""), `and says why (got ${out.detail})`);
+    // A refusal that never clears is not a booking that moved once: the next tick re-reads
+    // the booking, so a move refused every time is a fault, and it still ends at the cap.
+    const capped = await processBulkReassignItem(item({ attempts: MAX_ITEM_ATTEMPTS - 1 }), job, d.deps);
+    assert(capped.status === "failed", "a move refused as moved on every attempt still fails at the attempt cap");
+  }
 
   // #3485 Part 1: a pick on a lower rung of the tier ladder is handed to the reassign with
   // its placement, so the move lands in that rung's bucket; a pick in the booking's own
