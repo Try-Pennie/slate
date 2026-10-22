@@ -85,6 +85,26 @@ async function run() {
   assert(o.status === "moved" && o.targetUserId === "cov", "a placeable booking is moved onto the covering agent");
   assert(log.includes("reassign:bk1"), "the move calls reassign for the booking");
 
+  // #3485 Part 1: a pick on a lower rung of the tier ladder is handed to the reassign with
+  // its placement, so the move lands in that rung's bucket; a pick in the booking's own
+  // bucket is handed none, so it stays a plain reassign.
+  {
+    const placement = { bucket: { id: "b111", code: "111" }, eventType: { id: "et1" }, rungsDropped: 1 } as never;
+    const seen: unknown[] = [];
+    const cascaded = fakeDeps({
+      selectTarget: async () => ({ assignment: { userId: "low", email: "low@x.com" }, anyUnverified: false, placement }),
+      reassign: async (_id, _email, _job, p) => {
+        seen.push(p);
+      },
+    });
+    const out = await processBulkReassignItem(item(), job, cascaded.deps);
+    assert(out.status === "moved" && out.targetUserId === "low", "a pick on a lower rung is moved like any other");
+    assert(seen.length === 1 && seen[0] === placement, "and the reassign is handed its placement");
+    const plain: unknown[] = [];
+    await processBulkReassignItem(item(), job, fakeDeps({ reassign: async (_id, _email, _job, p) => void plain.push(p) }).deps);
+    assert(plain.length === 1 && plain[0] === undefined, "a pick in the booking's own bucket is handed no placement");
+  }
+
   // Idempotent: booking already off the out agent (crash-resume / external move)
   // → treated as moved, and reassign is NEVER called again (no double-move).
   ({ deps, log } = fakeDeps({
@@ -125,6 +145,29 @@ async function run() {
     /no other advisor was available/i.test(o.detail ?? ""),
     "the unplaceable detail says no other advisor was available",
   );
+  assert(!/gap|kept clear/i.test(o.detail ?? ""), "and blames no gap it did not measure");
+
+  // #3485: when the measured reason is the gap kept clear around the call, the detail says
+  // so, with the count, because placing it by hand then means a call back to back.
+  {
+    const gap = fakeDeps({
+      selectTarget: async () => ({ assignment: null, anyUnverified: false, gapOnly: { advisors: 3, beforeMin: 10, afterMin: 10 } }),
+    });
+    const out = await processBulkReassignItem(item(), job, gap.deps);
+    assert(out.status === "unplaceable", "a call blocked only by the gap is still unplaceable");
+    assert(
+      out.detail ===
+        "No other advisor was available to take this appointment at its original time. 3 advisors were free for the call itself, but not for the 10 minutes kept clear before and after it.",
+      `and the detail names the gap and the count (got ${out.detail})`,
+    );
+    const one = await processBulkReassignItem(item(), job, fakeDeps({
+      selectTarget: async () => ({ assignment: null, anyUnverified: false, gapOnly: { advisors: 1, beforeMin: 0, afterMin: 10 } }),
+    }).deps);
+    assert(
+      /1 advisor was free for the call itself, but not for the 10 minutes kept clear after it\.$/.test(one.detail ?? ""),
+      `one advisor and a gap on one side read correctly (got ${one.detail})`,
+    );
+  }
 
   // Verify outage (nobody placeable, but a candidate couldn't be checked) → stays
   // pending for retry while attempts remain, then fails once retries are exhausted.

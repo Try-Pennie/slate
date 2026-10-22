@@ -2,6 +2,7 @@ import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failure";
 import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { formatWhenLine } from "@/lib/ooo/core";
+import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 import { parseStampMs } from "@/lib/date/stamp";
 import type { BulkReassignJobStatus } from "@/lib/db/types";
 import { log } from "@/lib/log";
@@ -160,6 +161,8 @@ export interface StrandedAppointment {
   status: StrandedStatus;
   /** Why the out agent will not be there (#3485), from the sweep that stranded it. */
   cause?: SweepCause;
+  /** The call's start (#3485), so the page can say how soon the first one is. */
+  startsAt?: string;
 }
 
 /**
@@ -354,6 +357,7 @@ export function countStranded(
       // alert, can say why. The dedupe below keeps the latest attempt's appt, so the
       // cause follows the most recent sweep that gave up on this call.
       cause: it.sweep.cause,
+      ...(it.startsAt ? { startsAt: it.startsAt } : {}),
     };
     const prior = counted.get(it.bookingId);
     if (!prior) {
@@ -402,6 +406,8 @@ export interface StrandedHolder {
    * free-text reason.
    */
   cause?: SweepCause;
+  /** The earliest readable start among this agent's stranded calls (#3485); absent when none is known. */
+  firstStartsAt?: string;
 }
 
 /**
@@ -459,6 +465,8 @@ export function strandedHoldersFromItems(
     }
     if (it.status === "failed") h.failed++;
     else h.unplaceable++;
+    const first = earlierStart(h.firstStartsAt, it.startsAt);
+    if (first) h.firstStartsAt = first;
   }
   const total = (h: StrandedHolder) => h.unplaceable + h.failed;
   return [...holders.values()].sort(
@@ -466,9 +474,21 @@ export function strandedHoldersFromItems(
   );
 }
 
+/** The earlier of two starts that parse; an unreadable one never wins (#3485). */
+function earlierStart(a: string | undefined, b: string | undefined): string | undefined {
+  const aMs = a ? parseStampMs(a) : null;
+  const bMs = b ? parseStampMs(b) : null;
+  if (aMs === null) return bMs === null ? undefined : b;
+  if (bMs === null) return a;
+  return bMs < aMs ? b : a;
+}
+
 // Match the other monitor notices' list cap so a broad gap stays one readable
 // Slack post rather than a wall of names.
 const NAME_CAP = 8;
+
+/** The page's times are Eastern, as every other monitor notice's are. */
+const ALERT_ZONE = "America/New_York";
 
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 
@@ -579,11 +599,31 @@ export function formatCoverageNeedsHumanAlert(holders: StrandedHolder[], appBase
       : totalUnplaceable === 0
         ? `${plural(total, "appointment", "appointments")} could not be moved to another advisor, because the move kept failing.`
         : `${plural(total, "appointment", "appointments")} could not be moved to another advisor: ${totalUnplaceable} because no one else was free, and ${totalFailed} because the move kept failing.`;
+  // How soon (#3485 Part 2): the earliest call's start, since that is what decides how fast
+  // somebody has to act. One time, never a list, so the page stays readable on a phone.
+  const first = holders.reduce<string | undefined>((at, h) => earlierStart(at, h.firstStartsAt), undefined);
+  const when = first
+    ? ` ${one ? "It starts" : "The first starts"} ${formatSlotDay(first, ALERT_ZONE)} at ${formatSlotTime(first, ALERT_ZONE)} ET.`
+    : "";
+  // What happens next: the hourly retry re-arms only the calls no one was free for
+  // (`coverage-retry.ts`), never a move that kept failing, so only those are promised it.
+  const oneRetried = totalUnplaceable === 1;
+  const retried =
+    totalUnplaceable === 0
+      ? ""
+      : totalFailed === 0
+        ? ` Slate keeps trying to move ${one ? "it" : "them"} about once an hour until ${one ? "it starts" : "they start"}.`
+        : ` Slate keeps trying to move the ${totalUnplaceable} no one was free for about once an hour until ${oneRetried ? "it starts" : "they start"}.`;
+  // The fix is each call's own Place by hand, listed in the panel. The panel's own button
+  // starts the automatic move that just failed (#3485 comment, 2026-10-12).
   return (
     `${headline} ` +
     `${one ? "It is" : "They are"} still with ` +
-    `${oneAgent ? "an advisor who will not be there" : "advisors who will not be there"}, so ` +
-    `${one ? "it" : "each"} must be moved by hand from the advisor's page in Admin, under ${COVERAGE_PANEL_NAME}:\n` +
+    `${oneAgent ? "an advisor who will not be there" : "advisors who will not be there"}.` +
+    when +
+    retried +
+    `\nTo place ${one ? "it" : "them"} now, open the advisor's page in Admin and use Place by hand on ` +
+    `${one ? "the call" : "each call"} under ${COVERAGE_PANEL_NAME}:\n` +
     lines.join("\n") +
     more
   );
@@ -598,7 +638,7 @@ export function formatCoverageNeedsHumanAlert(holders: StrandedHolder[], appBase
 export function formatCoverageNeedsHumanRecovery(): string {
   return (
     `Every appointment a coverage sweep could not move has since been placed or has passed. ` +
-    `No customer is left holding an appointment with an agent who will not be there, so no ` +
+    `No customer is left holding an appointment with an advisor who will not be there, so no ` +
     `action is needed.`
   );
 }
