@@ -52,6 +52,7 @@ const EVENT_FAMILY: {
   "booking.rescheduled": "booking",
   "booking.cancelled": "booking",
   "booking.reassigned": "booking",
+  "booking.contact_updated": "booking",
   "agent.bookable_changed": "agent",
 };
 
@@ -96,7 +97,10 @@ export function isAgentEvent(event: WebhookEvent): event is AgentWebhookEvent {
  * change (L65), which is what the issue reference is for.
  */
 export const DELIBERATELY_UNSUBSCRIBED: Partial<Record<WebhookEvent, string>> = {
-  // (empty: every event Slate emits is subscribed by the live endpoint)
+  "booking.contact_updated":
+    "#4031: the live Regal endpoint is subscribed once Regal is ready for it and Dan " +
+    "has decided whether a manage page number carries opt in (#1512 built the Slate side). " +
+    "Until then a lead's phone correction is emitted with no subscriber and reaches nobody.",
 };
 
 /** The reason an event is deliberately unsubscribed, or null when it is not. */

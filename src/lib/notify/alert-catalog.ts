@@ -775,6 +775,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "One correction's invite patch failed and nothing re-reads that event, so there is no healthy state to observe; the booking itself is already correct.",
   },
   {
+    key: "phone_correction_unsent:*",
+    kind: "incident",
+    suffix: "booking",
+    why:
+      "One correction's booking.contact_updated could not be recorded, so nothing retries it; the " +
+      "booking itself is correct and no later run re-reads that correction, so there is no healthy " +
+      "state to observe (#1512).",
+  },
+  {
     key: "bookable_trait_unrecorded:*",
     kind: "incident",
     suffix: "bounded",

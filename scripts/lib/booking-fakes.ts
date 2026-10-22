@@ -223,6 +223,8 @@ export interface FakeOpts {
   updateEventDescriptionThrows?: boolean;
   /** #1341: the phone write itself fails, which must never read as saved. */
   updateBookingPhoneThrows?: boolean;
+  /** #1512: enqueueing a webhook's deliveries fails, as `emitWebhook` throws on a refused enqueue. */
+  emitWebhookThrows?: boolean;
   // #480: a concurrent different-target holder re-pins the lease at the exact
   // instant Guard-1 runs its commit-then-crash cleanup delete. Fired at the
   // ENTRY of the cleanup-delete method, modelling the documented read->delete
@@ -429,6 +431,8 @@ export function makeDeps(opts: FakeOpts) {
       bookingKind: string | undefined;
       /** #2073: the routing summary the payload carries; null when nothing was routed. */
       routing: unknown;
+      /** #1512: the number a phone correction replaced. */
+      previousPhone: string | null | undefined;
     }[],
     bookingEvents: [] as {
       booking_id: string;
@@ -1254,6 +1258,7 @@ export function makeDeps(opts: FakeOpts) {
       return (opts.pastDue ?? []).map((c) => c.booking.id);
     },
     emitWebhook: async (_orgId, event, payload, dedupeKey, suppressed = false, deferSend) => {
+      if (opts.emitWebhookThrows) throw new Error("webhook enqueue failed: fake refusal");
       calls.webhooks.push({
         event,
         reason: payload.reason,
@@ -1269,6 +1274,7 @@ export function makeDeps(opts: FakeOpts) {
         previousAgentEmail: payload.previous_agent_email,
         bookingKind: (payload as { booking_kind?: string }).booking_kind,
         routing: (payload as { routing?: unknown }).routing,
+        previousPhone: payload.previous_attendee_phone,
       });
     },
     newManageToken: () => "tok-fixed",

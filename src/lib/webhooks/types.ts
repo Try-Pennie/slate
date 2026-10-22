@@ -73,6 +73,14 @@ export interface BookingEventPayload {
    */
   previous_agent_email: string | null;
   /**
+   * The number a phone correction replaced (#1512). Set on
+   * `booking.contact_updated` only, where `attendee.phone` already holds the new
+   * one, so a CRM matching on phone can find the record it is updating. Optional
+   * because no other event carries it and a stored payload written before it
+   * existed has no key; a reader treats absent as "not known".
+   */
+  previous_attendee_phone?: string | null;
+  /**
    * How the booking routed. NULL for an agent link booking (#2073): nothing was
    * routed, so there is no outcome to report, and a summary of all falses would
    * claim a routed booking that dropped no tier.
