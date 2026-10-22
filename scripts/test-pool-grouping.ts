@@ -353,6 +353,8 @@ async function directoryTests() {
     functionText("src/lib/routing/tiers.ts", "rungExcludesLow"),
     functionText("src/lib/routing/tiers.ts", "isTopTierCode"),
     functionText("src/lib/booking/line-key.ts", "fingerprint"),
+    // The hash the fingerprint is made of, in its own file since #4102 shared it.
+    fileSource("cyrb53.ts", read("src/lib/cyrb53.ts")),
     functionText("src/lib/booking/line-key.ts", "ladderGroupRead"),
     functionText("src/lib/booking/pool-grouping.ts", "groupingEntriesOf"),
   ];
@@ -368,9 +370,12 @@ async function directoryTests() {
   // Format 1's source hash was re-pinned twice, before it ever shipped: when the sources
   // moved from a brace count to the compiler's printed text, and again when they moved
   // from that printed text to the source's own tokens (review of #3470, L552). Its
-  // fixture hash, the derivation's actual output, did not move either time.
+  // fixture hash, the derivation's actual output, did not move either time. A third time
+  // when the hash moved into src/lib/cyrb53.ts to be shared with the booking pace readings
+  // (#4102): same output for 20,001 keys compared against the old copy, and the fixture
+  // hash again unchanged.
   const PINNED: Record<number, { sources: string; fixture: string }> = {
-    1: { sources: "9f7ba83cae0ba4aa", fixture: "b1c70a4b91b48a81" },
+    1: { sources: "1eda1fa8e92f529a", fixture: "b1c70a4b91b48a81" },
   };
   const pin = PINNED[POOL_GROUPING_FORMAT];
   assert(pin !== undefined, `pin: format ${POOL_GROUPING_FORMAT} has pinned values`);

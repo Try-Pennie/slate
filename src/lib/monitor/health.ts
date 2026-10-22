@@ -61,6 +61,7 @@ export const LANE_NAMES = [
   "booking-reminders",
   "reroute-hold-sweep",
   "capacity-history",
+  "capacity-fill",
 ] as const;
 
 export type LaneName = (typeof LANE_NAMES)[number];
@@ -97,6 +98,9 @@ export const LANE_STALE_BOUNDS_MS: Record<LaneName, number> = {
   // bound because a stopped lane leaves a hole in the history nothing can fill later (past
   // busy time is pruned), and the page would show those days with nobody's room saved.
   "capacity-history": 90 * MIN,
+  // #4102: booking pace readings, every half hour. 90 minutes is three cadences. A stopped lane
+  // leaves readings missing that nothing can fill later, and the pace (#4103) reads its gap.
+  "capacity-fill": 90 * MIN,
 };
 
 /**
@@ -128,6 +132,7 @@ export const LANE_NOTES: Record<LaneName, { does: string; cadence: string }> = {
   "hydrate-calendars": { does: "fills in cached busy time for agents whose window is running out", cadence: "every 15 minutes" },
   "reroute-hold-sweep": { does: "puts an advisor's time back on offer once a bucket correction hold expires", cadence: "every minute" },
   "capacity-history": { does: "saves each advisor's unbooked calls as they pass, for Team capacity's past days", cadence: "every 30 minutes" },
+  "capacity-fill": { does: "saves each coming day's calls open and how many were booked since the last reading, for its booking pace", cadence: "every 30 minutes" },
 };
 
 /**
