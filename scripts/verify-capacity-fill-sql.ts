@@ -11,7 +11,7 @@
 // It writes nothing outside that container, which it removes on the way out. Not named
 // test-*.ts: it needs Docker. No Docker is exit 2, never a pass (L98).
 //
-// Run: pnpm verify:capacity-fill-sql
+// Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-capacity-fill-sql.ts
 import { join } from "node:path";
 import { replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
