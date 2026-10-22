@@ -12,6 +12,38 @@ import { log } from "@/lib/log";
  */
 const MAX_TIME_OFF_RESEARCHES = 3;
 
+/**
+ * Where a move that dropped down the tier ladder lands (#3485 Part 1): the lower rung's
+ * bucket and event type, and how many rungs were dropped. Absent for a move in the
+ * booking's own bucket, which stays a plain reassign.
+ */
+export interface CoveragePlacement {
+  bucket: Bucket;
+  eventType: EventType;
+  rungsDropped: number;
+  /** The advisor the move holds, the same one as the selection's assignment. */
+  advisorUserId: string;
+}
+
+/**
+ * Why nobody could take the call, when the measured reason is the gap kept clear around
+ * it (#3485): `advisors` in the booking's own pool looked free for the call itself, by the
+ * booker's own predicate over the calendar cache, but not once the event type's buffers
+ * were added. A cache reading, so an upper bound on who Google would also have found free.
+ */
+export interface GapOnlyReason {
+  advisors: number;
+  beforeMin: number;
+  afterMin: number;
+}
+
+/** A coverage pick, and where it lands when that is a lower rung's bucket. */
+export interface CoverageSelection extends SelectionOutcome {
+  placement?: CoveragePlacement;
+  /** Set only on an unplaceable outcome whose measured reason is the gap; absent otherwise. */
+  gapOnly?: GapOnlyReason;
+}
+
 /** The side effects coverage target selection needs; `service.ts` wires the real ones. */
 export interface CoverageTargetDeps {
   /**
@@ -33,6 +65,16 @@ export interface CoverageTargetDeps {
    * behaviour on a read error; the caller turns it into a retry rather than guessing.
    */
   userIdsOnApprovedTimeOff(userIds: string[], startIso: string, endIso: string): Promise<Set<string>>;
+  /**
+   * Who in the booking's own pool the round robin finds free at its time with the event
+   * type's buffers taken off, `excludeUserIds` left out: the call alone, never the gap
+   * around it. Cache only (no Google), and asked only once nobody could be placed.
+   */
+  freeForBareCall(
+    booking: Booking,
+    requested: { bucket: Bucket; eventType: EventType },
+    excludeUserIds: readonly string[],
+  ): Promise<string[]>;
 }
 
 /**
@@ -63,9 +105,12 @@ export interface CoverageTargetDeps {
  * is #1219 again. `ooo_requests` does not depend on Google having accepted anything, so a
  * pick on approved time off is excluded and the search runs again.
  *
- * Only the booking's OWN bucket is placed into here. A target the search found on a lower
- * rung of the tier ladder is reported as nobody in this pool: moving a call into another
- * bucket rides the Reroute swap and its hold, which is #3485's change, not this one.
+ * The search walks the tier ladder as the booker does (#3485 Part 1), so a call nobody in
+ * its own pool can take goes to the first lower rung with somebody free, exactly where a
+ * new lead at that time would have gone. Such a pick carries its `placement`, because a
+ * move into another bucket rides Reroute's hold and bucket aware swap
+ * (`coverage-cascade.ts`). A named advisor link (`agent_link`) never drops a rung: the
+ * lead chose that advisor's link, and the swap refuses to move one across buckets.
  *
  * `anyUnverified` is true when the answer could not be known: a live verify outage, an
  * unreadable time off check, or any other failed read. The bulk engine retries those and
@@ -75,7 +120,7 @@ export interface CoverageTargetDeps {
 export async function selectCoverageReassignTarget(
   ctx: { booking: Booking; bucket: Bucket; eventType: EventType },
   deps: CoverageTargetDeps,
-): Promise<SelectionOutcome> {
+): Promise<CoverageSelection> {
   const { booking, bucket, eventType } = ctx;
   const { startIso, endIso } = bookingWindow(booking.starts_at, eventType.duration_min);
   const unassigned: Booking = { ...booking, assigned_user_id: null };
@@ -93,11 +138,13 @@ export async function selectCoverageReassignTarget(
       }
       return { assignment: null, anyUnverified: true };
     }
-    if (target.outcome !== "move-in-requested") {
-      // Keep outcomes need somebody to keep and the booking was searched unassigned, so
-      // they mean nobody anywhere; a cascaded move means nobody in the booking's own pool.
-      return { assignment: null, anyUnverified: false };
+    // Keep outcomes need somebody to keep and the booking was searched unassigned, so they
+    // mean nobody anywhere on the ladder.
+    if (target.outcome !== "move-in-requested" && target.outcome !== "move-cascaded") {
+      return nobodyFree(deps, unassigned, { bucket, eventType }, exclude);
     }
+    const cascaded = target.outcome === "move-cascaded";
+    if (cascaded && booking.kind === "agent_link") return nobodyFree(deps, unassigned, { bucket, eventType }, exclude);
     let away: Set<string>;
     try {
       away = await deps.userIdsOnApprovedTimeOff([target.userId], startIso, endIso);
@@ -108,7 +155,18 @@ export async function selectCoverageReassignTarget(
       return { assignment: null, anyUnverified: true };
     }
     if (!away.has(target.userId)) {
-      return { assignment: { userId: target.userId, email: target.email }, anyUnverified: false };
+      const assignment = { userId: target.userId, email: target.email };
+      if (!cascaded) return { assignment, anyUnverified: false };
+      return {
+        assignment,
+        anyUnverified: false,
+        placement: {
+          bucket: target.bucket,
+          eventType: target.eventType,
+          rungsDropped: target.rungsDropped,
+          advisorUserId: target.userId,
+        },
+      };
     }
     exclude.push(target.userId);
   }
@@ -118,4 +176,30 @@ export async function selectCoverageReassignTarget(
     excluded: exclude.length,
   });
   return { assignment: null, anyUnverified: true };
+}
+
+/**
+ * The unplaceable outcome, carrying the gap as its reason when that is what was measured
+ * (#3485): somebody in the booking's own pool was free for the call itself. Only a reason,
+ * never a placement: a call back to back with another is still refused, as the booker
+ * refuses it, until a policy says otherwise. A count that cannot be read leaves the reason
+ * unmeasured rather than claiming nobody was free for the call (L11).
+ */
+async function nobodyFree(
+  deps: CoverageTargetDeps,
+  booking: Booking,
+  requested: { bucket: Bucket; eventType: EventType },
+  exclude: readonly string[],
+): Promise<CoverageSelection> {
+  const { buffer_before_min: beforeMin, buffer_after_min: afterMin } = requested.eventType;
+  if (beforeMin === 0 && afterMin === 0) return { assignment: null, anyUnverified: false };
+  try {
+    const free = await deps.freeForBareCall(booking, requested, exclude);
+    const advisors = free.filter((id) => !exclude.includes(id)).length;
+    if (advisors === 0) return { assignment: null, anyUnverified: false };
+    return { assignment: null, anyUnverified: false, gapOnly: { advisors, beforeMin, afterMin } };
+  } catch (err) {
+    log.warn("coverage-target", { msg: "could not count who was free for the call alone; the reason is left unmeasured", booking_id: booking.id }, err);
+    return { assignment: null, anyUnverified: false };
+  }
 }

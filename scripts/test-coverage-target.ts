@@ -96,15 +96,30 @@ function liveSearch(members: MemberAvailability[], nowMs: number) {
   const coverage: CoverageTargetDeps = {
     findTarget: (b, requested, excludeUserIds) => findRerouteTarget(deps, b, requested, { excludeUserIds }),
     userIdsOnApprovedTimeOff: async () => new Set(),
+    // The same predicate with the buffers taken off: who looks free for the call alone.
+    freeForBareCall: async (_b, requested, excludeUserIds) =>
+      freeMembersAtExactWindow(
+        members,
+        {
+          durationMin: requested.eventType.duration_min, bufferBeforeMin: 0, bufferAfterMin: 0,
+          minNoticeMin: 0, dailyCap: requested.eventType.daily_cap, businessHours: OPEN, nowMs,
+        },
+        at(START),
+      ).filter((id) => !excludeUserIds.includes(id)),
   };
   return { coverage, verified };
 }
 
 /** A recorded fake search, for the cases that are about the wrapper rather than the rule. */
-function scripted(answers: (RerouteTarget | Error)[], away: (ids: string[]) => Promise<Set<string>> = async () => new Set()) {
+function scripted(
+  answers: (RerouteTarget | Error)[],
+  away: (ids: string[]) => Promise<Set<string>> = async () => new Set(),
+  bare: () => Promise<string[]> = async () => [],
+) {
   const calls: { booking: Booking; exclude: string[] }[] = [];
   const timeOff: { ids: string[]; startIso: string; endIso: string }[] = [];
   const deps: CoverageTargetDeps = {
+    freeForBareCall: () => bare(),
     findTarget: async (b, _r, exclude) => {
       calls.push({ booking: b, exclude: [...exclude] });
       const next = answers.shift();
@@ -136,6 +151,24 @@ async function run() {
     eq(r.assignment, null, "at sweep time nobody can take the call by the booker's rule, so it is unplaceable");
     eq(r.anyUnverified, false, "and that is a full slot, not an outage");
     assert(!verified.flat().includes("OFF@x.com"), "an advisor off shift is never offered, even with an empty calendar");
+    eq(r.gapOnly, undefined, "nobody was free for the call itself either, so no gap is blamed");
+  }
+  {
+    // The 2026-10-12 shape (#3485 comment): advisors free for the call itself, but not for
+    // the 10 minutes kept clear around it. The sweep still refuses them, as the booker
+    // does, and says that the gap is what blocked.
+    const gapped = [member("G1", [call("2026-10-05T15:40:00.000Z")]), member("G2", [call("2026-10-05T16:20:00.000Z")]), member("OUT", [])];
+    const { coverage } = liveSearch(gapped, SWEPT_AT);
+    const r = await selectCoverageReassignTarget({ booking, bucket, eventType }, coverage);
+    eq(r.assignment, null, "a call back to back with another is never placed automatically");
+    eq(r.gapOnly, { advisors: 2, beforeMin: 10, afterMin: 10 }, "and the selection says how many were free but for the gap, never counting the out agent");
+  }
+  {
+    const s = scripted([{ outcome: "keep-last-resort", bucket, eventType, rungsDropped: 0 }], undefined, async () => {
+      throw new Error("busy_blocks read failed");
+    });
+    const r = await selectCoverageReassignTarget({ booking, bucket, eventType }, s.deps);
+    eq([r.assignment, r.anyUnverified, r.gapOnly], [null, false, undefined], "an unreadable gap count leaves the reason unmeasured, never changing the outcome");
   }
   {
     // After the two cancellations: EC's 16:30 call starts exactly where the buffered window
@@ -170,9 +203,27 @@ async function run() {
     eq([r.assignment, r.anyUnverified], [null, false], `${outcome} means nobody else anywhere: unplaceable, never a keep`);
   }
   {
-    const s = scripted([move("C", "move-cascaded")]);
+    // #3485 Part 1: the sweep walks the tier ladder as the booker does. A target on a lower
+    // rung is a move into that rung's bucket, carried as the placement the reassign needs.
+    const lower = { ...bucket, id: "b111", code: "111" } as unknown as Bucket;
+    const s = scripted([{ ...move("C", "move-cascaded"), bucket: lower }]);
     const r = await selectCoverageReassignTarget({ booking, bucket, eventType }, s.deps);
-    eq([r.assignment, r.anyUnverified], [null, false], "a target on a lower rung is nobody in this pool, never a move across buckets here");
+    eq(r.assignment?.userId, "C", "a target on a lower rung is placed");
+    eq([r.placement?.bucket.code, r.placement?.rungsDropped], ["111", 1], "into that rung's bucket, with the drop");
+    eq(s.timeOff[0]?.ids, ["C"], "after the same approved time off check");
+  }
+  {
+    const s = scripted([move("B")]);
+    const r = await selectCoverageReassignTarget({ booking, bucket, eventType }, s.deps);
+    eq(r.placement, undefined, "a move in the booking's own bucket carries no placement: it stays a plain reassign");
+  }
+  {
+    // A named advisor link is never moved across buckets: the swap refuses it, and the lead
+    // chose that advisor's link, not a tier.
+    const linked = { ...booking, kind: "agent_link" } as unknown as Booking;
+    const s = scripted([move("C", "move-cascaded")]);
+    const r = await selectCoverageReassignTarget({ booking: linked, bucket, eventType }, s.deps);
+    eq([r.assignment, r.anyUnverified], [null, false], "a named link call whose only cover is a lower tier is unplaceable, never moved across buckets");
   }
 
   // --- Failure paths: an answer that could not be known retries, never strands ----------

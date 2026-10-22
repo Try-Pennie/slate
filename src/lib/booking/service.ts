@@ -116,7 +116,12 @@ import {
   type BulkReassignDrainSummary,
   type BulkReassignProgress,
 } from "@/lib/booking/bulk-reassign";
-import { selectCoverageReassignTarget, type CoverageTargetDeps } from "@/lib/booking/coverage-target";
+import {
+  selectCoverageReassignTarget,
+  type CoveragePlacement,
+  type CoverageTargetDeps,
+} from "@/lib/booking/coverage-target";
+import { moveCoverageAcrossBuckets } from "@/lib/booking/coverage-cascade";
 import { retryUnplaceableCoverage, type CoverageRetrySummary } from "@/lib/booking/coverage-retry";
 import { coverageSweepActor, coverageSweepReason } from "@/lib/booking/coverage-sweep-actor";
 import type { CoverageSweepCancelReport } from "@/lib/booking/coverage-sweep-cancel";
@@ -3799,7 +3804,87 @@ function realCoverageTargetDeps(): CoverageTargetDeps {
     findTarget: (booking, requested, excludeUserIds) =>
       orchestration.findRerouteTarget(searchDeps, booking, requested, { excludeUserIds }),
     userIdsOnApprovedTimeOff,
+    // #3485: the booker's own round robin at the fixed time with the buffers taken off, so
+    // the reason a call is unplaceable can say when the gap was what blocked. A preview read
+    // (no unfair ordering page), cache only.
+    freeForBareCall: async (booking, requested, excludeUserIds) => {
+      const bare = { ...requested.eventType, buffer_before_min: 0, buffer_after_min: 0 };
+      const { candidates } = await base.roundRobinCandidates(
+        requested.bucket,
+        bare,
+        Date.parse(booking.starts_at),
+        true,
+        undefined,
+        false,
+        { fixedTime: true, forBookingId: booking.id },
+      );
+      return candidates.filter((id) => !excludeUserIds.includes(id));
+    },
   };
+}
+
+/**
+ * A coverage move onto an advisor found on a LOWER rung of the tier ladder (#3485 Part 1):
+ * the call moves into that rung's bucket through Reroute's own hold and bucket aware swap
+ * (`moveCoverageAcrossBuckets`), recorded as the sweep's actor exactly as the plain move
+ * beside it is, with the cap honoured.
+ *
+ * The hold lives only for the seconds the move takes, so placing and releasing it does not
+ * refresh the advisor's pools: that refresh changes only the times the booker OFFERS (a
+ * held advisor is refused at booking by the hold's own busy block and trigger, migrations
+ * 0166 and 0167), it cost about four seconds a pool when awaited (#3307), and the drain
+ * shares its invocation with the other every minute lanes. The move's own write through
+ * and the every minute recompute bring the offer up to date.
+ */
+async function coverageMoveAcrossBuckets(
+  bookingId: string,
+  targetEmail: string,
+  reason: ValidatedReason,
+  sweepActor: ReturnType<typeof coverageSweepActor>,
+  placement: CoveragePlacement,
+): Promise<void> {
+  const base = realDeps(deferWebhookSend);
+  const ctx = await base.loadBookingById(bookingId);
+  if (!ctx) throw new orchestration.BookingNotFoundError();
+  const holds = { ...rerouteHoldStoreDeps("coverage", "inline"), refreshPools: async () => {} };
+  const who =
+    sweepActor.kind === "system"
+      ? { initiator: "system" as const }
+      : { initiator: "admin" as const, actor: { userId: sweepActor.userId, actingAsUserId: sweepActor.actingAsUserId } };
+  await moveCoverageAcrossBuckets(
+    {
+      placeHold: (args) => placeRerouteHold(args, holds),
+      claimHold: async (orgId, id, holdId) =>
+        readClaimedRerouteHold(
+          unwrap(
+            await supabaseAdmin().rpc("claim_reroute_hold", { p_org_id: orgId, p_booking_id: id, p_hold_id: holdId }),
+            "claim_reroute_hold",
+          ),
+          id,
+        ),
+      reassign: async (id, email, swap) => {
+        await orchestration.reassignBooking(id, email, reason, base, {
+          ...who,
+          overrideCap: false,
+          allowNonBookable: true,
+          reroute: swap,
+        });
+      },
+      releaseHold: (id) => releaseRerouteHold(id, holds),
+      onReleaseFailed: (id, err) => {
+        log.error("bulk-reassign", { msg: "could not release a coverage move's hold after it failed; it stays until its lease ends", booking_id: id }, err);
+      },
+    },
+    {
+      booking: ctx.booking,
+      agentUserId: placement.advisorUserId,
+      agentEmail: targetEmail,
+      from: ctx.bucket,
+      to: placement.bucket,
+      rungsDropped: placement.rungsDropped,
+      createdBy: sweepActor.kind === "system" ? null : sweepActor.userId,
+    },
+  );
 }
 
 /** The live bulk-reassign engine deps (#973): the store reads/writes plus the
@@ -3817,7 +3902,7 @@ function realBulkReassignDeps(): BulkReassignDeps {
         realCoverageTargetDeps(),
       );
     },
-    reassign: async (bookingId, targetEmail, job) => {
+    reassign: async (bookingId, targetEmail, job, placement) => {
       // Who the move is recorded as. Throws for a job that has neither an actor nor
       // a recorded reason for having none, which is the same refusal as before:
       // #1241 added the offboarding case, it did not widen the guard (see
@@ -3839,9 +3924,15 @@ function realBulkReassignDeps(): BulkReassignDeps {
       // Cap is NOT overridden: the covering agent was selected under their daily
       // cap. The manual force-override (#974) is the only path that overrides.
       //
-      // The two branches differ ONLY in who the move is recorded as. Everything
-      // that decides which bookings move, and where they land, is shared, so an
-      // offboarding sweep and an admin's sweep can never cover an agent differently.
+      // A pick on a lower rung (#3485) moves across buckets through Reroute's hold and
+      // swap; a pick in the call's own bucket is a plain reassign. Within each, system
+      // and staff sweeps differ ONLY in who the move is recorded as: everything that
+      // decides which bookings move, and where they land, is shared, so an offboarding
+      // sweep and an admin's sweep can never cover an agent differently.
+      if (placement) {
+        await coverageMoveAcrossBuckets(bookingId, targetEmail, reason, sweepActor, placement);
+        return;
+      }
       if (sweepActor.kind === "system") {
         await systemReassignBooking(bookingId, targetEmail, reason);
         return;

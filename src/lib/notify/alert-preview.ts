@@ -2741,6 +2741,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
           email: "dana.ruiz@example.com",
           unplaceable: 1,
           failed: 0,
+          firstStartsAt: "2026-10-13T16:00:00Z",
           cause: {
             kind: "time-off",
             timeOff: {
@@ -2768,6 +2769,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
           email: "dana.ruiz@example.com",
           unplaceable: 4,
           failed: 2,
+          firstStartsAt: "2026-10-13T16:30:00Z",
           cause: {
             kind: "time-off",
             timeOff: {
@@ -2778,7 +2780,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
             },
           },
         },
-        { userId: "u2", name: "Sam Okafor", email: "sam.okafor@example.com", unplaceable: 0, failed: 1, cause: { kind: "offboarded" } },
+        { userId: "u2", name: "Sam Okafor", email: "sam.okafor@example.com", unplaceable: 0, failed: 1, cause: { kind: "offboarded" }, firstStartsAt: "2026-10-13T16:10:00Z" },
         { userId: "u3", name: null, email: "kim.ito@example.com", unplaceable: 1, failed: 0 },
       ],
       "https://slate.example.com",
