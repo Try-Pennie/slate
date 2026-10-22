@@ -17,16 +17,21 @@ const slack = vi.hoisted(() => ({
     data?: Record<string, unknown>;
   },
   options: [] as { id: string; name: string; isMember: boolean }[],
+  listed: 0,
 }));
 vi.mock("@/lib/notify/slack", () => ({
   fetchSlackChannel: async (channel: string) => {
     slack.asked.push(channel);
     return slack.reply;
   },
-  listSlackChannels: async () => slack.options,
+  listSlackChannels: async () => {
+    slack.listed++;
+    return { readable: true, channels: slack.options, complete: true };
+  },
 }));
 
 import { SlackDestinations } from "./SlackDestinations";
+import { checkChannels } from "@/lib/notify/slack-channel-names";
 
 const props = (
   config: { alerts_channel: string | null; info_channel: string | null } | null,
@@ -39,6 +44,7 @@ describe("SlackDestinations", () => {
     slack.asked = [];
     slack.reply = { ok: true, data: { channel: { name: "alerts", is_member: true } } };
     slack.options = [];
+    slack.listed = 0;
   });
 
   it("names the stored channel and confirms it", async () => {
@@ -72,29 +78,38 @@ describe("SlackDestinations", () => {
     expect(slack.asked.sort()).toEqual(["C-A", "C-B"]);
   });
 
-  // THE PICKER. A channel is chosen by name, and the value it puts in the field
-  // is the id Slate stores.
-  it("offers the workspace channels by name, carrying the id as the value", async () => {
-    slack.options = [
-      { id: "C1", name: "alerts", isMember: true },
-      { id: "C2", name: "random", isMember: false },
-    ];
+  // #2438: THE PICKER IS NOT HERE ANY MORE. The channel list belongs to each
+  // field (`SlackChannelField`), and the native datalist this panel used to draw
+  // for them is gone, so the panel no longer reads the channel list at all.
+  it("draws no datalist and reads no channel list", async () => {
+    slack.options = [{ id: "C1", name: "alerts", isMember: true }];
     const { container } = render(await SlackDestinations(props(null, "C-ENV", "")));
-    const opts = [...container.querySelectorAll("datalist option")];
-    expect(opts.map((o) => o.getAttribute("value"))).toEqual(["C1", "C2"]);
-    expect(opts[0].getAttribute("label")).toBe("#alerts");
-    // A channel the bot is not in is offered, and says so: it is a legitimate
-    // choice that needs an invite first, not one to hide.
-    expect(opts[1].getAttribute("label")).toMatch(/#random.*not in it/);
+    expect(container.querySelector("datalist")).toBeNull();
+    expect(slack.listed).toBe(0);
+    expect(screen.getByText(/Urgent alerts post to/)).toBeTruthy();
   });
 
-  // AN UNREADABLE LIST IS NO SUGGESTIONS, never a broken panel. The field it
-  // decorates still takes a typed id, and that id is still checked at save.
-  it("draws the destinations even with no channel list", async () => {
-    slack.options = [];
-    const { container } = render(await SlackDestinations(props(null, "C-ENV", "")));
-    expect(container.querySelectorAll("datalist option").length).toBe(0);
-    expect(screen.getByText(/Urgent alerts post to/)).toBeTruthy();
+  // #2438: the page starts the checks once, so the channel fields can show a
+  // stored private channel by the name Slack gave. The panel reads THOSE checks
+  // rather than asking Slack a second time.
+  it("uses the checks the page started instead of asking Slack again", async () => {
+    const checks = Promise.resolve(
+      new Map([["C-STORED", { state: "ok" as const, name: "dan-systems-test" }]]),
+    );
+    render(
+      await SlackDestinations({
+        ...props({ alerts_channel: "C-STORED", info_channel: null }),
+        checks,
+      }),
+    );
+    expect(slack.asked).toEqual([]);
+    expect(screen.getByText(/Urgent alerts post to #dan-systems-test \(C-STORED\)/)).toBeTruthy();
+  });
+
+  it("checks every stored channel once, the handoff channel included", async () => {
+    const m = await checkChannels(["C-A", "C-A", "", "C-B"]);
+    expect(slack.asked.sort()).toEqual(["C-A", "C-B"]);
+    expect([...m.keys()].sort()).toEqual(["C-A", "C-B"]);
   });
 
   // NOTHING CONFIGURED. Not a neutral default: no alert reaches Slack at all.

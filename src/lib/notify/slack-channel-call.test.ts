@@ -71,6 +71,12 @@ describe("fetchSlackChannel", () => {
 });
 
 describe("listSlackChannels", () => {
+  const channelsOf = async () => {
+    const out = await listSlackChannels();
+    if (!out.readable) throw new Error(`expected a readable list, got ${out.why}`);
+    return out;
+  };
+
   // ORDER IS INFORMATION. A channel Slate is already in is one an alert can
   // reach today; the rest need an invite first, so they come after.
   it("puts the channels Slate is in first, then by name", async () => {
@@ -84,40 +90,53 @@ describe("listSlackChannels", () => {
         ],
       },
     ];
-    expect((await listSlackChannels()).map((c) => c.name)).toEqual(["zebra", "alpha", "beta"]);
+    expect((await channelsOf()).channels.map((c) => c.name)).toEqual(["zebra", "alpha", "beta"]);
   });
 
-  it("follows the cursor across pages", async () => {
+  it("follows the cursor across pages, and says the list is whole", async () => {
     replies = [
       { ok: true, channels: [{ id: "C1", name: "a", is_member: true }], response_metadata: { next_cursor: "PAGE2" } },
       { ok: true, channels: [{ id: "C2", name: "b", is_member: true }] },
     ];
-    expect((await listSlackChannels()).map((c) => c.id)).toEqual(["C1", "C2"]);
+    const out = await channelsOf();
+    expect(out.channels.map((c) => c.id)).toEqual(["C1", "C2"]);
+    expect(out.complete).toBe(true);
     expect(calls[1]).toMatch(/cursor=PAGE2/);
   });
 
-  // AN UNREADABLE LIST IS NO SUGGESTIONS, not a throw and not a half list. The
-  // field it decorates still takes a typed id, and that id is still checked at
-  // save time, so nothing here is load bearing.
-  it("answers with nothing when Slack refuses", async () => {
+  // #2438: AN UNREADABLE LIST SAYS SO. It used to answer an empty list, which a
+  // save resolving a typed NAME cannot tell from a workspace with no channel by
+  // that name, so it would refuse a real channel claiming it does not exist.
+  it("says it could not read the list when Slack refuses", async () => {
     replies = [{ ok: false, error: "missing_scope" }];
-    expect(await listSlackChannels()).toEqual([]);
+    expect(await listSlackChannels()).toEqual({ readable: false, why: "missing_scope" });
+  });
+
+  it("keeps the pages it read when a later one fails, and says the list is partial", async () => {
+    replies = [
+      { ok: true, channels: [{ id: "C1", name: "a", is_member: true }], response_metadata: { next_cursor: "PAGE2" } },
+      { ok: false, error: "ratelimited" },
+    ];
+    const out = await channelsOf();
+    expect(out.channels.map((c) => c.id)).toEqual(["C1"]);
+    expect(out.complete).toBe(false);
   });
 
   it("drops a malformed entry rather than inventing an id or a name", async () => {
     replies = [{ ok: true, channels: [{ id: "C1" }, { name: "nameless" }, { id: "C2", name: "ok" }] }];
-    expect((await listSlackChannels()).map((c) => c.id)).toEqual(["C2"]);
+    expect((await channelsOf()).channels.map((c) => c.id)).toEqual(["C2"]);
   });
 
   // A CURSOR THAT NEVER ENDS must not loop forever on a page render.
-  it("stops after a bounded number of pages", async () => {
+  it("stops after a bounded number of pages, and says the list is partial", async () => {
     replies = Array.from({ length: 9 }, (_, i) => ({
       ok: true,
       channels: [{ id: `C${i}`, name: `c${i}`, is_member: true }],
       response_metadata: { next_cursor: "MORE" },
     }));
-    const out = await listSlackChannels();
+    const out = await channelsOf();
     expect(calls.length).toBe(5);
-    expect(out.length).toBe(5);
+    expect(out.channels.length).toBe(5);
+    expect(out.complete).toBe(false);
   });
 });
