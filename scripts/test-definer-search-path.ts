@@ -316,6 +316,9 @@ const EXPECTED_PINNED = [
   "rate_limit_refund",
   "reason_usage_counts",
   "reassign_booking_swap",
+  // #4102: one booking pace reading per page day and the snapshots moved on, in plain SQL;
+  // hashtextextended is a pg_catalog built in.
+  "record_capacity_fill",
   // #3940: merges one capacity history tick and moves its cursor, in plain SQL.
   "record_capacity_history",
   // #3137: adds one batch of framed booker loads. Security definer, pinned; now() and the

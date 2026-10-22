@@ -235,6 +235,47 @@ export interface CapacityHistoryDay {
   updated_at: string;
 }
 
+/**
+ * #4102 (migration 0198): one booking pace reading, per org, half hour and page day. Written only
+ * through `record_capacity_fill`; the rules are `src/lib/admin/capacity-fill.ts`.
+ */
+export interface CapacityFillReading {
+  org_id: string;
+  read_at: string;
+  day: string;
+  day_position: number | null;
+  slot_of_day: number;
+  weekday: number;
+  prev_read_at: string | null;
+  /** numeric: PostgREST returns it as a number. Null with `taken_reason`. */
+  taken: number | null;
+  taken_reason: "first-reading" | "too-long-since" | "too-few-comparable" | "no-capacity" | null;
+  open: number;
+  capacity: number;
+  comparable_share: number | null;
+  excluded_not_syncing: number;
+  excluded_left_pool: number;
+  excluded_capacity_changed: number;
+  /** #4103 writes these; nullable and unwritten by #4102. */
+  pace_per_hour: number | null;
+  pace_state: string | null;
+  estimate_line_at: string | null;
+  estimate_line_state: string | null;
+  estimate_pattern_at: string | null;
+  estimate_pattern_state: string | null;
+  estimate_method: string | null;
+  estimate_cells_fallen_back: number | null;
+  created_at: string;
+}
+
+/** #4102 (migration 0198): a page day's last booking pace snapshot, moved only forward. */
+export interface CapacityFillLast {
+  org_id: string;
+  day: string;
+  read_at: string;
+  snapshot: Record<string, { open: number; capacity: number; fp: string }>;
+}
+
 /** #3940 (migration 0191): how far the capacity-history lane has recorded, per org. */
 export interface CapacityHistoryCursor {
   org_id: string;

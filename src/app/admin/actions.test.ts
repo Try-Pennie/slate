@@ -1129,8 +1129,10 @@ describe("setMonitorSettings save path (#582)", () => {
     const base: Record<string, string> = {
       floor_30: "5",
       floor_120: "20",
-      alerts_channel: "#alerts",
-      info_channel: "#info",
+      // Ids, as the picker submits (#2438). A NAME here would be resolved against
+      // Slack's channel list, which this file does not stand up, and refused.
+      alerts_channel: "C0ALERTS01",
+      info_channel: "C0INFO0001",
     };
     for (const k of ALERT_KEYS) base[`cooldown_${k}`] = "30";
     return form({ ...base, ...overrides });

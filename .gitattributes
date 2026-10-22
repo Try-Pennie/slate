@@ -4,3 +4,6 @@
 docs/design/team-capacity.html linguist-generated=true
 docs/design/agent-page-stranded-calls.html linguist-generated=true
 docs/design/reroute-nobody-else-free.html linguist-generated=true
+# Marked ahead of the file itself (#2438): the 418 KB page lands in a follow up change, which the
+# push review can then leave out as generated on both sides of its diff.
+docs/design/slack-channel-picker.html linguist-generated=true
