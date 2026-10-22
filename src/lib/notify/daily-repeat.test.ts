@@ -13,7 +13,11 @@ const slackOk = vi.hoisted(() => ({ value: true }));
 vi.mock("@/lib/notify/slack", () => ({
   slackConfigured: () => true,
   postSlack: async (msg: { text: string }) => {
-    posted.push(msg.text);
+    // #1825: every post opens with its severity lead. These cases are about what the
+    // condition SAYS, so the lead is checked present and then set aside.
+    const body = withoutSeverityLead(msg.text);
+    if (body === null) throw new Error(`post without a severity lead: ${msg.text}`);
+    posted.push(body);
     return slackOk.value ? { ok: true } : { ok: false, error: "slack down" };
   },
 }));
@@ -84,6 +88,7 @@ import {
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
 import { POST as smokeFailurePost } from "@/app/api/smoke/failure/route";
 import { CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
+import { withoutSeverityLead } from "@/lib/notify/severity-lead";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;

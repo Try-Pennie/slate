@@ -13,7 +13,10 @@ const posted = vi.hoisted(() => [] as string[]);
 vi.mock("@/lib/notify/slack", () => ({
   slackConfigured: () => true,
   postSlack: async (msg: { text: string }) => {
-    posted.push(msg.text);
+    // #1825: every post opens with its severity lead; these cases read what follows it.
+    const body = withoutSeverityLead(msg.text);
+    if (body === null) throw new Error(`post without a severity lead: ${msg.text}`);
+    posted.push(body);
     return { ok: true };
   },
 }));
@@ -28,6 +31,7 @@ vi.mock("@/lib/supabase/admin", async () =>
   (await import("@/lib/notify/alert-state-fake.test-support")).fakeSupabaseAdminModule(),
 );
 import { alertStateRows as rows } from "@/lib/notify/alert-state-fake.test-support";
+import { withoutSeverityLead } from "@/lib/notify/severity-lead";
 
 import {
   countStranded,

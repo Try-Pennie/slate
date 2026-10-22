@@ -230,6 +230,7 @@ import {
 import { slackInfoChannel } from "@/lib/env";
 import { signatureSubjects } from "@/lib/notify/repeat-policy";
 import { clearChannelCache } from "@/lib/notify/channels";
+import { SEVERITY_LEADS } from "@/lib/notify/severity-lead";
 
 const ENV = process.env;
 beforeEach(() => {
@@ -282,7 +283,7 @@ describe("sendThrottledInfo", () => {
     await sendThrottledInfo("k", 1000, "thin tier covered");
     expect(slack.postSlack).toHaveBeenCalledTimes(1);
     expect(slack.postSlack.mock.calls[0][0]).toMatchObject({
-      text: "thin tier covered",
+      text: `${SEVERITY_LEADS.whisper}\nthin tier covered`,
       channel: "#quiet",
     });
   });
@@ -292,6 +293,49 @@ describe("sendThrottledInfo", () => {
     delete process.env.SLACK_ALERTS_CHANNEL;
     await sendThrottledInfo("k", 1000, "thin tier covered");
     expect(slack.postSlack).not.toHaveBeenCalled();
+  });
+});
+
+// #1825: a page and a whisper landed in one channel looking identical. Every post
+// the dispatcher makes now opens with a lead line naming its severity, so the two
+// read differently whatever channel they reach. Asserted at the transport, since
+// that is what the reader sees.
+describe("severity lead on every post (#1825)", () => {
+  const firstLine = (call: number) => slack.postSlack.mock.calls[call][0].text.split("\n")[0];
+
+  it("a page opens with the needs attention lead and keeps its text below", async () => {
+    process.env.SLACK_ALERTS_CHANNEL = "#alerts";
+    await sendThrottledAlert("sync_failures", 1000, "2 agents failing");
+    expect(slack.postSlack.mock.calls[0][0].text).toBe(`${SEVERITY_LEADS.attention}\n2 agents failing`);
+  });
+
+  it("an urgent condition opens with the urgent lead", async () => {
+    process.env.SLACK_ALERTS_CHANNEL = "#alerts";
+    await sendThrottledAlert("empty_tier:low", 1000, "Low tier offers nothing");
+    expect(firstLine(0)).toBe(SEVERITY_LEADS.urgent);
+  });
+
+  it("a whisper opens with the no action lead, even when the info channel falls back to the alerts channel", async () => {
+    delete process.env.SLACK_INFO_CHANNEL;
+    process.env.SLACK_ALERTS_CHANNEL = "#alerts";
+    await sendThrottledAlert("sync_failures", 1000, "page");
+    await sendThrottledInfo("thin_tier", 1000, "thin tier");
+    expect(slack.postSlack.mock.calls[1][0].channel).toBe("#alerts");
+    expect(firstLine(1)).toBe(SEVERITY_LEADS.whisper);
+    expect(firstLine(0)).not.toBe(firstLine(1));
+  });
+
+  it("an all clear opens with the resolved lead", async () => {
+    process.env.SLACK_ALERTS_CHANNEL = "#alerts";
+    await sendThrottledAlert("sync_failures", 1000, "broken");
+    await resolveAlert("sync_failures", "fixed");
+    expect(slack.postSlack.mock.calls[1][0].text).toBe(`${SEVERITY_LEADS.resolved}\nfixed`);
+  });
+
+  it("the lead is not part of what the repeat rule compares, so it never reads as a change", async () => {
+    process.env.SLACK_ALERTS_CHANNEL = "#alerts";
+    await sendThrottledAlert("sync_failures", 1000, "same fact");
+    expect(extras.get("sync_failures")?.subjects).toEqual(signatureSubjects("same fact"));
   });
 });
 
@@ -445,7 +489,7 @@ describe("a page that carries news (#3303)", () => {
       asOfMs: Date.now() - 1_000,
     } });
     expect(slack.postSlack).toHaveBeenCalledTimes(1);
-    expect(slack.postSlack.mock.calls[0][0]).toMatchObject({ text: "4 appointments" });
+    expect(slack.postSlack.mock.calls[0][0]).toMatchObject({ text: `${SEVERITY_LEADS.attention}\n4 appointments` });
   });
 
   it("stays throttled when nothing is newer than the last delivered page", async () => {
@@ -586,7 +630,7 @@ describe("resolveAlert recovery notice (#1133)", () => {
 
     expect(sent).toBe(true);
     expect(slack.postSlack).toHaveBeenCalledTimes(1);
-    expect(slack.postSlack.mock.calls[0][0]).toMatchObject({ text: "all better" });
+    expect(slack.postSlack.mock.calls[0][0]).toMatchObject({ text: `${SEVERITY_LEADS.resolved}\nall better` });
     expect(rows.has(firingKey("sync_failures"))).toBe(false);
     // The cooldown row goes too, so a genuinely NEW incident pages immediately
     // instead of being muted for the remainder of the old cooldown.

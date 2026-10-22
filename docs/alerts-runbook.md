@@ -1014,6 +1014,18 @@ every session (#2393). `AGENTS.md` keeps the rule and points here; this is the
 full text as it stood, with the reasoning, the incidents and the measurements
 behind it.
 
+### Every post opens with a severity lead (#1825)
+
+The dispatcher puts one line in front of everything it posts, so a page and a whisper
+never look alike, even with the info channel falling back to the alerts channel (it does
+whenever no info channel is set on `/admin/alerts` or in `SLACK_INFO_CHANNEL`). The rule
+is `severityOf` in `src/lib/notify/severity-lead.ts`: an all-clear opens with
+**Resolved.**, a `sendThrottledInfo` whisper or an info key with _FYI, no action needed
+now._ (italic), an urgent condition (`URGENT_CONDITION_KEYS`) with **URGENT: leads are
+affected now.**, and every other page with **Needs attention.** A copy builder never
+writes its own lead, and `pnpm preview:alerts` prints each state under the lead it ships
+with.
+
 ### Condition vs incident: which alerts get an all-clear (#1151)
 
 Every alert key Slate can send is classified in **`src/lib/notify/alert-catalog.ts`**
