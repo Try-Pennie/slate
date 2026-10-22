@@ -17,6 +17,7 @@ import {
   embedHostPage,
   judgeEmbedRender,
   type EmbedObservation,
+  type PanelObservation,
   isCspRefusal,
 } from "./lib/embed-render-check.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -31,6 +32,22 @@ function seen(over: Partial<EmbedObservation> = {}): EmbedObservation {
       "Loan Consultation. Pick a time that works for you. Nobody is available before then.",
     consoleErrors: [],
     cspViolations: [],
+    panel: healthyPanel(),
+    ...over,
+  };
+}
+
+/** #1869: the timezone list opened, drawn, uncovered, focused, walkable and shut. */
+function healthyPanel(over: Partial<PanelObservation> = {}): PanelObservation {
+  return {
+    found: true,
+    opened: true,
+    onScreen: true,
+    unobscured: true,
+    focusInside: true,
+    walks: true,
+    closesOnEscape: true,
+    probeError: null,
     ...over,
   };
 }
@@ -193,6 +210,63 @@ eq(
 }
 
 // ---------------------------------------------------------------------------
+// #1869: the floating panels. All four popups share one component (#1843), so the
+// booker's timezone list stands for the row menu, the account menu and the date
+// picker too. Each way it can fail in a real browser and pass in jsdom is its own
+// sentence, because each names a different repair (L11).
+// ---------------------------------------------------------------------------
+
+eq(judgeEmbedRender(seen()).outcome, "rendered", "a timezone list that opens, draws, takes focus and walks passes");
+{
+  const cases: [Partial<PanelObservation>, RegExp, string][] = [
+    [{ found: false }, /could not find the booker's timezone control/, "a missing control"],
+    [{ opened: false }, /did not open/, "a list that never opened"],
+    [{ onScreen: false }, /not drawn on screen/, "a list drawn off screen or with no size"],
+    [{ unobscured: false }, /painted over/, "a list painted over by something else"],
+    [{ focusInside: false }, /focus/, "a list opened with focus left outside it"],
+    [{ walks: false }, /arrow key/, "a list the keyboard cannot walk"],
+    [{ closesOnEscape: false }, /Escape/, "a list Escape does not close"],
+  ];
+  for (const [over, said, what] of cases) {
+    const v = judgeEmbedRender(seen({ panel: healthyPanel(over) }));
+    eq(v.outcome, "panel-broken", `${what} is a broken panel, not a render`);
+    assert(said.test(v.reason), `${what} says which way it failed (got: ${v.reason})`);
+  }
+}
+{
+  // The probe itself failing is still a failure, named as the probe's own fault.
+  const v = judgeEmbedRender(seen({ panel: healthyPanel({ probeError: "Timeout 5000ms exceeded" }) }));
+  eq(v.outcome, "panel-broken", "a probe that could not run fails loudly rather than passing");
+  assert(v.reason.includes("Timeout 5000ms exceeded"), "and quotes what stopped it");
+}
+// A mounted booker the panel was never opened on cannot pass: a probe skipped by a
+// later edit would otherwise read as a panel that works (L98).
+eq(judgeEmbedRender(seen({ panel: null })).outcome, "panel-broken", "a mounted booker with no panel reading is not a pass");
+// An unmounted booker is judged as before: the panel question cannot be asked.
+eq(
+  judgeEmbedRender(seen({ bookerMounted: false, frameText: "", panel: null })).outcome,
+  "frame-blank",
+  "a blank booker is still a blank booker, not a broken panel",
+);
+// A CSP refusal can be the CAUSE of a broken panel, so it is named first.
+eq(
+  judgeEmbedRender(
+    seen({
+      panel: healthyPanel({ opened: false }),
+      cspViolations: ["Refused to load the script because it violates the following Content Security Policy directive"],
+    }),
+  ).outcome,
+  "csp-violations",
+  "a policy refusal outranks the broken panel it may explain",
+);
+// And a broken panel outranks a console error: it is the control that does not work.
+eq(
+  judgeEmbedRender(seen({ panel: healthyPanel({ walks: false }), consoleErrors: ["boom"] })).outcome,
+  "panel-broken",
+  "a broken panel outranks an unrelated console error",
+);
+
+// ---------------------------------------------------------------------------
 // Every outcome says something, and says it in Slate's voice
 // ---------------------------------------------------------------------------
 
@@ -204,6 +278,7 @@ const byOutcome = new Map(
     seen({ bookerMounted: false, frameText: "This booking link is not available." }),
     seen({ consoleErrors: ["boom"] }),
     seen({ cspViolations: ["Refused to load the script because it violates the following Content Security Policy directive"] }),
+    seen({ panel: healthyPanel({ walks: false }) }),
     seen(),
   ].map((o) => {
     const v = judgeEmbedRender(o);
