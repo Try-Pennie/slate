@@ -157,6 +157,14 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // other trigger. Its cursor catches up a missed tick, so the cadence sets only how soon a passed
   // call is saved. It stamps its own heartbeat, bounded in LANE_STALE_BOUNDS_MS.
   "23,53 * * * *": "/api/cron/capacity-history",
+  // Booking pace readings (#4102): each page day's calls open and how many were taken since the
+  // last reading, read at the half hour it falls in. Its OWN expression: minutes 13 and 43 share a
+  // moment with no other trigger. Not 8 and 38 (the issue's first choice): those leave no clear
+  // gradual deploy window for 22.5 minutes, past the 20 minute bound scripts/test-gradual-deploy.ts
+  // holds the deploy job's timeout to; 13 and 43 keep the worst wait at today's 19.5. A missed run
+  // is measured by the next over the longer interval. It stamps its own heartbeat, bounded in
+  // LANE_STALE_BOUNDS_MS.
+  "13,43 * * * *": "/api/cron/capacity-fill",
 };
 
 /** Every route a cron expression drives (empty array when unmapped). */

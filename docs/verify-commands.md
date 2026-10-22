@@ -2311,3 +2311,33 @@ No Docker is exit 2, UNMEASURED. It runs in the DB replay workflow with the othe
 `verify-*-sql.ts` suites. Seen failing on a planted control, 0185 with its index
 removed: six assertions failed, every plan a sequential scan.
 
+# Proving the booking pace readings are written once (`scripts/verify-capacity-fill-sql.ts`)
+
+#4102: the capacity-fill lane saves a reading per page day every half hour through
+`record_capacity_fill` (migration 0198). What makes a rerun harmless is decided by
+Postgres, not the lane: the function writes only when the org's latest snapshot is still
+the one the run read (`p_prev_read_at`) and the run's half hour is later than it, under a
+per org transaction lock; readings insert on conflict do nothing; snapshots move only
+forward. The offline suite (`scripts/test-capacity-fill.ts`) drives a fake of exactly
+that, which agrees with whatever it is told (L52).
+
+This suite replays every migration into the `supabase/postgres` image and drives the
+function: the first run writes; a rerun of the same half hour with other numbers writes
+nothing and leaves every row as it was; a run that read an older snapshot writes nothing;
+the next half hour writes and moves only the days it carries, including a day whose
+snapshot was older than the org's latest; another org is untouched; a reading written
+without its snapshots is never rewritten; a reading with neither taken nor a reason, both,
+or off the half hour is refused; two concurrent runs leave one set of readings with
+exactly one told it wrote; RLS is on and neither `anon` nor `authenticated` can run the
+function or read a row.
+
+```
+node --experimental-strip-types scripts/verify-capacity-fill-sql.ts
+```
+
+No Docker is exit 2, UNMEASURED. It runs in the DB replay workflow with the other
+`verify-*-sql.ts` suites. Seen failing on six planted breakages of 0198, one at a time:
+no lock (both racers told they wrote), no snapshot check, no later half hour check,
+readings overwritten, the latest snapshot read across orgs, and EXECUTE left to the
+browser roles.
+
