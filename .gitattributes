@@ -3,3 +3,4 @@
 # embedded data (claude-config#1364). The decision record inside stays readable in any browser.
 docs/design/team-capacity.html linguist-generated=true
 docs/design/agent-page-stranded-calls.html linguist-generated=true
+docs/design/reroute-nobody-else-free.html linguist-generated=true
