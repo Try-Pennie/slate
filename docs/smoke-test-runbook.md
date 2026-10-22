@@ -185,7 +185,11 @@ so a booking regression is caught without anyone remembering to run it:
   half past. Between 9pm and 8am ET a full pass failure pages only on the second
   in a row (`src/lib/monitor/smoke-canary-failure.ts`). The embed render check
   still runs on every sixth full pass, since an embed regression arrives with a
-  deploy. It sets `SMOKE_SKIP_EVENT_CLEANUP=1` because the
+  deploy. Once the booker draws it also opens the booker's timezone list from the
+  keyboard (#1869, `scripts/lib/booker-panel-probe.ts`) and fails as `panel-broken`
+  unless the list is on screen, uncovered, holds focus, walks with the arrow keys
+  and shuts on Escape: the one browser assertion on the floating panel every popup
+  shares (#1843). It commits nothing. The full pass sets `SMOKE_SKIP_EVENT_CLEANUP=1` because the
   runner has no Google service-account creds; the API-driven cancels still tear
   down every booking server-side, only the belt-and-suspenders orphan-event sweep
   is skipped.

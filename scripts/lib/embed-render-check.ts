@@ -36,6 +36,14 @@
  *    which means the iframe never loaded. A different repair from a blank frame:
  *    the origin is unreachable or blocked rather than the app being broken.
  *
+ * And one about a CONTROL rather than the render (#1869):
+ *  - `panel-broken`: the booker drew, and its timezone list, the shared floating
+ *    panel every popup in the app uses (#1843), did not open on screen, uncovered,
+ *    with focus in it and walkable by the keyboard. Three such defects shipped
+ *    through thousands of green tests on 2026-09-03 and were found only in a real
+ *    browser, because jsdom has no layout, does not scroll and does not gate focus
+ *    on visibility.
+ *
  * And a fourth that is not a render fault at all but must never pass silently:
  *  - `console-errors`: the page drew, and the browser reported errors while doing
  *    it. A browser test that does not read the console throws away a diagnosis
@@ -51,6 +59,7 @@ export const EMBED_RENDER_OUTCOMES = [
   "link-refused",
   "load-failed",
   "csp-violations",
+  "panel-broken",
   "console-errors",
 ] as const;
 
@@ -105,6 +114,76 @@ export interface EmbedObservation {
    * actually refused, and on the booker that can be the thing that draws it.
    */
   cspViolations: string[];
+  /**
+   * #1869: what opening the booker's timezone list showed, or null when it was not
+   * opened. Asked only of a booker that mounted; a mounted booker with no reading
+   * fails, so a probe dropped by a later edit cannot read as a panel that works.
+   */
+  panel: PanelObservation | null;
+}
+
+/**
+ * The booker's timezone list, opened from the keyboard in the real browser (#1869).
+ *
+ * The list is a `combobox` owning a `listbox` (SelectField): DOM focus stays on the
+ * trigger and `aria-activedescendant` names the highlighted row, so "focus is in
+ * the list" means the trigger (or something inside the list) holds focus and any
+ * row it names is inside the open list. Each field is one thing a person would notice,
+ * so each failure names its own repair (L11).
+ */
+export interface PanelObservation {
+  /** The timezone control the probe opens (`#booker-tz`) exists in the booker. */
+  found: boolean;
+  /** ArrowDown on the focused control opened it: `aria-expanded` is true and the
+   *  list it controls is in the document and not hidden. */
+  opened: boolean;
+  /** The list has a size, is `visibility: visible` (AnchoredPanel starts hidden and
+   *  shows itself once placed), and lies inside the frame's viewport. */
+  onScreen: boolean;
+  /** The topmost element at points across the list is the list itself, so nothing
+   *  (a sticky header, the modal's own chrome) is painted over it. */
+  unobscured: boolean;
+  /** Focus is in the list as the combobox pattern defines it (above). */
+  focusInside: boolean;
+  /** ArrowDown moved the highlight to another row inside the list, scrolled into
+   *  the list's visible area and not covered. */
+  walks: boolean;
+  /** Escape closed the list and left focus on the control. */
+  closesOnEscape: boolean;
+  /** The probe could not run to the end, and why. A probe fault is still a fail. */
+  probeError: string | null;
+}
+
+/**
+ * The first way the panel failed, in the order a person meets them, or null when
+ * it worked. Each sentence names the repair rather than the symptom.
+ */
+export function panelFault(p: PanelObservation): string | null {
+  if (!p.found) {
+    return "The check could not find the booker's timezone control (#booker-tz), so it could not open the list. If the control was renamed, the check needs the new id; if it was removed, the booker lost its timezone choice.";
+  }
+  if (p.probeError !== null) {
+    return `The check could not finish opening and walking the timezone list, so the panel was NOT proven to work: ${p.probeError}`;
+  }
+  if (!p.opened) {
+    return "Pressing the down arrow on the booker's timezone control did not open its list. A lead using the keyboard cannot change their timezone.";
+  }
+  if (!p.onScreen) {
+    return "The timezone list opened but is not drawn on screen: it has no size, stayed hidden, or sits outside the frame. Check AnchoredPanel's placement (src/components/ui/AnchoredPanel.tsx).";
+  }
+  if (!p.unobscured) {
+    return "The timezone list opened and something else is painted over it, so the rows a lead clicks are hidden. Check the panel's stacking (anchoredPanelZ) against the booker's sticky and modal chrome.";
+  }
+  if (!p.focusInside) {
+    return "The timezone list opened with focus left outside it: the control does not hold focus or does not name a row in the open list, so it cannot be walked from the keyboard or announced.";
+  }
+  if (!p.walks) {
+    return "The timezone list opened, and the down arrow key did not move to another visible row in it. A keyboard user cannot choose a timezone.";
+  }
+  if (!p.closesOnEscape) {
+    return "The timezone list did not close on Escape with focus back on its control, so a keyboard user is left inside an open panel.";
+  }
+  return null;
 }
 
 /** The booker's own refusal, quoted so the reader sees which one it was. */
@@ -200,6 +279,16 @@ export function judgeEmbedRender(o: EmbedObservation): EmbedVerdict {
         `Read tag=csp-report in the Worker logs. ` +
         `First refusal: ${first}`,
     };
+  }
+  // #1869: below a CSP refusal, which can be what broke the panel and names that
+  // repair, and above console errors, because a control that does not work is the
+  // more specific finding than an error logged somewhere on the page.
+  const panel =
+    o.panel === null
+      ? "The booker drew, and the check never opened its timezone list, so the floating panel was NOT proven to work. The probe was skipped; that is a fault in the check."
+      : panelFault(o.panel);
+  if (panel !== null) {
+    return { outcome: "panel-broken", reason: panel };
   }
   if (o.consoleErrors.length > 0) {
     const first = o.consoleErrors[0];
