@@ -74,7 +74,8 @@
 // works without exporting them by hand (and without `source`, which dies on an
 // unmatched quote anywhere in the file).
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
-import { evaluateSlotAvailability, slots, withRetry } from "./smoke-lib.ts";
+import { evaluateSlotAvailability, jpost, slots, withRetry } from "./smoke-lib.ts";
+import { createSmokeCleanup } from "./lib/smoke-cleanup.ts";
 import { sweepQuietly } from "./lib/smoke-event-cleanup.ts";
 import {
   judgePublicTestBucketGate,
@@ -227,7 +228,7 @@ async function book(args: {
 }): Promise<{ status: number; body: BookBody }> {
   // Record the identity up front (even for a dry run or a call that errors) so
   // the guaranteed teardown (#396) can sweep it regardless of what came back.
-  if (!args.dryRun) identitiesToClean.add(args.externalId);
+  if (!args.dryRun) cleaner.trackIdentity(args.externalId);
   const res = await fetch(`${BASE}/api/bookings`, {
     method: "POST",
     headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
@@ -260,36 +261,23 @@ async function reassign(bookingId: string, agentEmail: string): Promise<{ status
   return { status: res.status, body: (await res.json().catch(() => ({}))) as ReassignBody };
 }
 
-const tokensToClean: string[] = [];
-// Every identity (externalId) we book under, swept on teardown (#396).
-const identitiesToClean = new Set<string>();
-function trackForCleanup(body: BookBody) {
-  const m = (body.booking?.manageUrl ?? "").match(/\/booking\/manage\/([^/?#]+)/);
-  if (m) tokensToClean.push(m[1]);
+// Teardown (#396, #4060): cancel every manage token this run tracked, then sweep
+// every identity (externalId) it booked under, from the finally block too. Only a 200
+// `created` answer is tracked, so a 409 that hands back somebody else's booking is
+// never cancelled here, and a booking still active after both passes is a failed
+// check naming its id rather than a swallowed error (scripts/lib/smoke-cleanup.ts).
+const cleaner = createSmokeCleanup({
+  post: jpost,
+  list: (externalId) => req("GET", `/api/bookings?externalId=${encodeURIComponent(externalId)}`),
+  remove: (externalId, bookingId) =>
+    req("DELETE", `/api/bookings?externalId=${encodeURIComponent(externalId)}&bookingId=${bookingId}`),
+  check,
+});
+function trackForCleanup(res: { status: number; body: BookBody }) {
+  cleaner.track(res);
 }
 async function cleanup() {
-  // Primary: cancel tracked manage tokens.
-  for (const token of [...new Set(tokensToClean)]) {
-    await fetch(`${BASE}/api/bookings/${token}/cancel`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reason: "no_longer_interested" }),
-    }).catch(() => {});
-  }
-  tokensToClean.length = 0;
-
-  // Guaranteed teardown (#396): sweep every identity we booked under and cancel
-  // any still-active booking by id — including ones we never tracked (e.g. a
-  // response whose manageUrl we couldn't parse). This runs from the finally
-  // block too, so a partway failure never leaks a live booking onto the fleet.
-  for (const externalId of identitiesToClean) {
-    const list = await req("GET", `/api/bookings?externalId=${encodeURIComponent(externalId)}`).catch(() => null);
-    for (const b of list?.body.bookings ?? []) {
-      if (!b.id) continue;
-      await req("DELETE", `/api/bookings?externalId=${encodeURIComponent(externalId)}&bookingId=${b.id}`).catch(() => {});
-    }
-  }
-  identitiesToClean.clear();
+  await cleaner.run();
 
   // #524: cancel above deletes the booking's Google event on the happy path, but
   // per #166 a cancel can orphan it, leaving a busy block that flakes the next
@@ -469,7 +457,7 @@ async function scenarioDryRun(slotsA: string[]) {
   const id = uniq("dryrun");
   // No reservation: a dry run creates nothing, so it cannot collide with anything
   // and must not consume a slot the booking scenarios need (#1491).
-  const res = await book({ bucket: BUCKET_A, start: slotsA[0], ...id, phone: "+12155550100", dryRun: true });
+  const res = await book({ bucket: BUCKET_A, start: slotsA[0], ...id, dryRun: true });
   check(res.status === 200 && res.body.dryRun === true, `dry run -> 200 dryRun:true (got ${res.status}/${res.body.dryRun})`, res);
   check(res.body.outcome === "created", `dry run -> would create (got ${res.body.outcome})`, res);
   check(!!res.body.wouldAssign?.email, `dry run names the agent who WOULD be assigned (${res.body.wouldAssign?.email ?? "none"})`, res);
@@ -487,14 +475,14 @@ async function scenarioMain(slotsA: string[], plan: SlotPlan) {
   const slotA = reserveSlot(plan, "scenario 1 (create/dedupe/reschedule)");
   if (!slotA) return;
   const slotB = laterSlot(slotsA, slotA);
-  const phone = "+12155550100";
+  const { phone } = id;
   if (!slotB) {
     check(false, "need a non-overlapping later slot to reschedule into");
     return;
   }
 
   const created = await book({ bucket: BUCKET_A, start: slotA, ...id, phone });
-  trackForCleanup(created.body);
+  trackForCleanup(created);
   recordBooked(plan, created.body);
   check(created.status === 200 && created.body.outcome === "created", `book -> created (got ${created.status}/${created.body.outcome})`, created);
 
@@ -509,7 +497,7 @@ async function scenarioMain(slotsA: string[], plan: SlotPlan) {
   );
 
   const moved = await book({ bucket: BUCKET_A, start: slotB, ...id, phone });
-  trackForCleanup(moved.body);
+  trackForCleanup(moved);
   check(moved.body.outcome === "rescheduled", `different time -> rescheduled (got ${moved.body.outcome})`, moved);
   check(moved.body.booking?.id === created.body.booking?.id, "same-bucket reschedule keeps the same booking id", moved);
 }
@@ -522,7 +510,7 @@ async function scenarioCrossBucket(slotsA: string[], plan: SlotPlan) {
     return;
   }
   const id = uniq("xbucket");
-  const phone = "+12155550101";
+  const { phone } = id;
 
   // Book A FIRST, then read B's slots and choose relative to the instant A
   // actually landed on (#1489). The old code took slotsB[0] and assumed it
@@ -549,7 +537,7 @@ async function scenarioCrossBucket(slotsA: string[], plan: SlotPlan) {
   );
   // The retry may have moved it, so record where it LANDED, not what was asked for.
   recordBooked(plan, inA.body);
-  trackForCleanup(inA.body);
+  trackForCleanup(inA);
   check(inA.body.outcome === "created", `book in bucket ${BUCKET_A} -> created (got ${inA.body.outcome})`, inA);
   const startA = inA.body.booking?.startsAt;
   if (!startA) {
@@ -572,7 +560,7 @@ async function scenarioCrossBucket(slotsA: string[], plan: SlotPlan) {
   }
 
   const inB = await book({ bucket: BUCKET_B, start: pick.start, ...id, phone });
-  trackForCleanup(inB.body);
+  trackForCleanup(inB);
   // Both instants are named, so a future failure says whether the two collided
   // (a fixture problem) or the move itself broke. Diagnosing #1489 needed a
   // production query precisely because "got deduped" named neither.
@@ -603,9 +591,11 @@ async function scenarioConfirm(slotsA: string[], plan: SlotPlan) {
     return;
   }
 
-  // Existing appointment for this email (phone P1, externalId E1).
-  const created = await book({ bucket: BUCKET_A, start: slotA, externalId: id1.externalId, email: id1.email, phone: "+12155550110" });
-  trackForCleanup(created.body);
+  // Existing appointment for this email (phone P1, externalId E1). Both phones in
+  // this scenario come from the helper, so the pair is unique per run (#4060): a
+  // fixed pair would weak match a booking an earlier run left active.
+  const created = await book({ bucket: BUCKET_A, start: slotA, externalId: id1.externalId, email: id1.email, phone: id1.phone });
+  trackForCleanup(created);
   recordBooked(plan, created.body);
   check(created.body.outcome === "created", `seed booking -> created (got ${created.body.outcome})`, created);
 
@@ -615,14 +605,15 @@ async function scenarioConfirm(slotsA: string[], plan: SlotPlan) {
     start: slotB,
     externalId: `${id1.externalId}-other`,
     email: id1.email,
-    phone: "+12155550999",
+    // A second helper phone: guaranteed different from P1 within the run.
+    phone: uniq("confirm-other").phone,
   };
   const asked = await book({ ...weak, confirmReschedule: false });
   check(asked.status === 409 && asked.body.outcome === "confirm_required", `weak match + new time -> 409 confirm_required (got ${asked.status}/${asked.body.outcome})`, asked);
   check(asked.body.booking?.id === created.body.booking?.id, "confirm_required returns the EXISTING booking (no new one created)", asked);
 
   const confirmed = await book({ ...weak, confirmReschedule: true });
-  trackForCleanup(confirmed.body);
+  trackForCleanup(confirmed);
   check(confirmed.body.outcome === "rescheduled", `same call with confirmReschedule:true -> rescheduled (got ${confirmed.body.outcome})`, confirmed);
 }
 
@@ -632,9 +623,9 @@ async function scenarioLookupAndCancel(slotsA: string[], plan: SlotPlan) {
   const id = uniq("lookup");
   // Unique phone per run too (not just externalId/email): a fixed phone lets a
   // leftover active booking from an earlier run weak-match this seed and turn it
-  // into confirm_required, breaking the scenario. The 555-01xx range is reserved
-  // for test use; the run timestamp keeps each run's number distinct.
-  const phone = `+1215555${String(Date.now()).slice(-4)}`;
+  // into confirm_required, breaking the scenario. The helper builds it now, for
+  // every scenario (#4060), rather than this one alone.
+  const { phone } = id;
 
   // Book onto a FRESH slot, skipping past a transient conflict (SLOT_TAKEN /
   // NO_ELIGIBLE_AGENTS) left by a prior scenario's just-cancelled event that the
@@ -662,7 +653,7 @@ async function scenarioLookupAndCancel(slotsA: string[], plan: SlotPlan) {
   // Fallback cleanup: DELETE-by-id below is the primary cleanup, but if it fails
   // (e.g. the endpoint isn't deployed yet) track the seed so the final cleanup()
   // still cancels it instead of leaking an active booking into the next run.
-  trackForCleanup(created.body);
+  trackForCleanup(created);
 
   // GET list — the booked person has at least one active booking.
   const listRes = await req("GET", `/api/bookings?externalId=${encodeURIComponent(id.externalId)}`);
@@ -717,7 +708,7 @@ async function scenarioReassign(slotsA: string[], plan: SlotPlan) {
     return;
   }
   const id = uniq("reassign");
-  const phone = "+12155550120";
+  const { phone } = id;
 
   // Fresh slot, past scenarios 1/2/3 and scenario 4 (start 1): re-using slotsA[0]
   // here also 409'd on residue from a just-cancelled event (run 30010672602). The
@@ -733,7 +724,7 @@ async function scenarioReassign(slotsA: string[], plan: SlotPlan) {
     noteRetry("scenario 6"),
   );
   recordBooked(plan, created.body);
-  trackForCleanup(created.body);
+  trackForCleanup(created);
   check(created.body.outcome === "created", `book in ${BUCKET_A} -> created (got ${created.body.outcome})`, created);
   const bookingId = created.body.booking?.id;
   if (!bookingId) {
@@ -783,8 +774,8 @@ async function scenarioRescheduleStickiness(slotsA: string[], plan: SlotPlan) {
   // original [0, +20] event — the exact #523 trigger.
   const target = new Date(Date.parse(slot) + 10 * 60_000).toISOString();
 
-  const created = await book({ bucket: BUCKET_A, start: slot, ...id, phone: "+12155550130" });
-  trackForCleanup(created.body);
+  const created = await book({ bucket: BUCKET_A, start: slot, ...id });
+  trackForCleanup(created);
   recordBooked(plan, created.body);
   check(created.body.outcome === "created", `book in ${BUCKET_A} -> created (got ${created.body.outcome})`, created);
   const bookingId = created.body.booking?.id;
