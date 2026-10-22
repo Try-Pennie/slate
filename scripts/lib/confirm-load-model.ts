@@ -31,6 +31,7 @@
 // Not named test-*.ts: the runner globs that pattern as a suite, so this file is a
 // library the suite imports (shared fakes never live in a suite).
 import type { CallCost } from "./confirm-contention-sim.ts";
+import { parseGoogleDelay } from "../../src/lib/google/loadtest-google-delay.ts";
 
 /**
  * A dependency that never reaches the database: Google (whose time each profile sets on
@@ -464,17 +465,38 @@ export const LOAD_RUN_PROFILE: LoadProfile = {
 };
 
 /**
- * Production: the same database and line, and Google as the rest of this suite takes
- * it, a 3 second live check and a 5 second calendar write (#3221 measured 7.4 to 8.0s
- * for a production confirm at the median). Whether production's database answers a
- * burst as the micro load test branch did is not known (both are micro, max_connections
- * 60), so this is the load run's database with production's Google, and no more.
+ * Production's Google time per call, as the load test's `google_delay` value (#3490):
+ * the p50 and p95 of the live check (`read`) and the calendar write (`write`) over the
+ * `confirm answered` lines of 2026-10-19 03:00 to 2026-10-22 14:00 UTC (2,782 confirms,
+ * weighted where Cloudflare sampled), read by `scripts/loadtest/google-timings.ts`. The
+ * hours Cloudflare kept in full read 216/471 and 578/882 on their own, so the sampled
+ * hours did not skew it. Re-measure it by the runbook ("The Google delay"); the runbook
+ * records the same string (`scripts/test-loadtest-google-delay.ts`).
+ */
+export const MEASURED_PRODUCTION_GOOGLE_DELAY = "read=215/468,write=582/862";
+
+function measuredGoogleP95(kind: "read" | "write"): number {
+  const value = parseGoogleDelay(MEASURED_PRODUCTION_GOOGLE_DELAY)[kind];
+  if (!value) throw new Error(`MEASURED_PRODUCTION_GOOGLE_DELAY carries no usable ${kind} (${MEASURED_PRODUCTION_GOOGLE_DELAY})`);
+  return value.p95Ms;
+}
+
+/**
+ * Production: the same database and line, and Google at its measured p95
+ * (`MEASURED_PRODUCTION_GOOGLE_DELAY`). The model gives every call one fixed time, and
+ * a slower Google is the side that crowds the line, so the p95 rather than the median.
+ * Until #3490 this was a 3 second check and a 5 second write, the assumed split of the
+ * 7.4 to 8.0s a whole confirm took on 2026-10-04 (#3221); confirms now take about 1.6s
+ * at the median. The suite's slow Google scenarios keep 3s and 5s as a slow case.
+ * Whether production's database answers a burst as the micro load test branch did is
+ * not known (both are micro, max_connections 60), so this is the load run's database
+ * with production's Google, and no more.
  */
 export const PRODUCTION_PROFILE: LoadProfile = {
   ...LOAD_RUN_PROFILE,
   name: "production",
-  googleCheckMs: 3_000,
-  googleWriteMs: 5_000,
+  googleCheckMs: measuredGoogleP95("read"),
+  googleWriteMs: measuredGoogleP95("write"),
 };
 
 /** The load run's profile with the stack's database cost (`STACK_DATABASE`). */
