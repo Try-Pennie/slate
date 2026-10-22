@@ -12,7 +12,7 @@ const SINCE = "2026-08-05T09:00:00.000Z";
  * learner reports.
  */
 function stampDb(
-  rows: { created_at: string; is_test: boolean; source?: string | null; code?: string }[],
+  rows: { created_at: string; is_test: boolean; source?: string | null; code?: string; parentOrigin?: string | null; referrer_origin?: string | null }[],
   opts: { errorOnPage?: number } = {},
 ) {
   const pages: [number, number][] = [];
@@ -42,7 +42,13 @@ function stampDb(
           .filter((r) => f.or === undefined || isPageTraffic(r.source ?? null))
           .sort((a, b) => a.created_at.localeCompare(b.created_at))
           .slice(from, to + 1)
-          .map((r) => ({ created_at: r.created_at, buckets: { is_test: r.is_test, code: r.code ?? "111" } }));
+          .map((r) => ({
+            created_at: r.created_at,
+            // #2974: the recorded host page, a framed production booking unless the row says otherwise.
+            parent_origin: r.parentOrigin === undefined ? "https://trypennie.com" : r.parentOrigin,
+            referrer_origin: r.referrer_origin ?? null,
+            buckets: { is_test: r.is_test, code: r.code ?? "111" },
+          }));
         return Promise.resolve(
           opts.errorOnPage === index ? { data: null, error: { message: "read timeout" } } : { data: kept, error: null },
         );
@@ -95,6 +101,19 @@ describe("listBookingStampsBetween", () => {
       { createdAtMs: Date.parse("2026-08-05T10:02:00.000Z"), isTest: false, tier: "1" },
       { createdAtMs: Date.parse("2026-08-05T10:03:00.000Z"), isTest: false, tier: "1" },
     ]);
+  });
+
+  // #2974: a booking on a real bucket made from a development host (a localhost page,
+  // dev.trypennie.com) is test traffic, judged by the one predicate every consumer reads
+  // (`isTestSourceBooking`), so the floors are never learned from a developer's tests.
+  it("flags a booking made from a development host as test, through the shared predicate", async () => {
+    const { db } = stampDb([
+      { created_at: "2026-08-05T10:00:00.000Z", is_test: false, parentOrigin: "http://localhost:3000" },
+      { created_at: "2026-08-05T10:01:00.000Z", is_test: false, parentOrigin: null, referrer_origin: "https://dev.trypennie.com" },
+      { created_at: "2026-08-05T10:02:00.000Z", is_test: false },
+      { created_at: "2026-08-05T10:03:00.000Z", is_test: false, parentOrigin: null },
+    ]);
+    expect((await listBookingStampsBetween(db, SINCE, UNTIL)).map((r) => r.isTest)).toEqual([true, true, false, false]);
   });
 
   it("pages past PostgREST's 1,000 rows rather than learning from the first page", async () => {

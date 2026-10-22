@@ -99,6 +99,7 @@ function slateRow(a: Application, over: Partial<SlateBookingRow> = {}): SlateBoo
     id: `b-${a.id}`,
     submissionId: a.id,
     inlineCard: false,
+    testSource: false,
     createdAt: iso(Date.parse(a.createdAt) + H),
     startsAt: iso(Date.parse(a.createdAt) + D),
     status: "confirmed",
@@ -1019,6 +1020,47 @@ const TO = WINDOW_START + 22 * D;
   assert(
     out.lines.some((l) => /2 applications that booked through a landing page's inline card/.test(l)),
     "the readout says how many it left out, so the exclusion is visible",
+  );
+}
+
+// #2974: a Slate booking made from a development host (a localhost page,
+// dev.trypennie.com) on a real bucket is test traffic, judged by the shared predicate
+// when the report reads it. It is left out as a BOOKING (the application it names is
+// judged as if it never booked on Slate), and the readout counts it, so a real page
+// misclassified as a development host is visible rather than silently dropped.
+{
+  const w = windowAt();
+  const tested = app("slate");
+  const plain = app("slate");
+  const m = matchBookings({
+    window: w,
+    applications: [tested, plain],
+    contactApplications: [],
+    slate: [slateRow(tested, { testSource: true }), slateRow(plain)],
+    calcom: [],
+  });
+  eq(m.counts.testSourceBookings, 1, "a development host's booking is counted as left out");
+  eq(m.counts.byId, 1, "and is never tied to its application");
+  const testedApp = m.apps.find((a) => a.key === tested.id.slice(0, 15));
+  eq(testedApp?.chains.length ?? -1, 0, "its application reads as one that did not book on Slate");
+  // A development host booking through the inline card is test traffic first: it never
+  // takes its application out of the cohort as an inline card booking would.
+  const viaDevCard = app("slate");
+  const m3 = matchBookings({
+    window: w,
+    applications: [viaDevCard, plain],
+    contactApplications: [],
+    slate: [slateRow(viaDevCard, { testSource: true, inlineCard: true }), slateRow(plain)],
+    calcom: [],
+  });
+  eq([m3.counts.testSourceBookings, m3.counts.inlineCardApps], [1, 0], "a development host booking never removes its application as an inline card one");
+  assert(m3.apps.some((a) => a.key === viaDevCard.id.slice(0, 15)), "and that application stays in the cohort");
+  const c = cohort(60, { slate: [0.5, 0.6], calcom: [0.5, 0.6] });
+  c.slate.push(slateRow(c.apps[0], { id: "dev-host", testSource: true }));
+  const out = run(c);
+  assert(
+    out.lines.some((l) => /1 Slate booking made from a development host/.test(l)),
+    "the readout says how many development host bookings it left out",
   );
 }
 

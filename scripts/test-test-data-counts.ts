@@ -191,7 +191,15 @@ eq(
     sabotaged.includes("is_test"),
     "and the prose still mentions it, so this control also proves a comment cannot excuse the read",
   );
-  assert(sabotaged.includes('count: "exact"'), "sanity: and kept the count, so the read is still a measurement");
+  // #2974: the volume count is read as rows and counted in code (`rows.length`), so a
+  // development host's booking can be judged by the shared predicate; it is still a
+  // count, and the control below proves the scanner still catches THAT read.
+  assert(/\brows\.length\b/.test(sabotaged), "sanity: and kept the count, so the read is still a measurement");
+  const countFromLine = sabotaged.split("\n").findIndex((l) => l.includes('.from("bookings")')) + 1;
+  assert(
+    scanTestDataCounts(sabotaged, file).some((f) => f.line === countFromLine),
+    "the volume count's own read is among those caught, not only its neighbours",
+  );
   assert(
     scanTestDataCounts(sabotaged, file).length > 0,
     "stripping the real test filter IS caught, so the clean sweep means something",

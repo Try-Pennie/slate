@@ -155,7 +155,11 @@ export function isOffsiteOrigin(
 /**
  * Was this booking made from a KNOWN TEST SOURCE? (#2737) The one answer, shared by
  * the off site page above and by every check that must not count a test booking
- * made in a real bucket as a lead (L261).
+ * made in a real bucket as a lead (L261). Since #2974 that is every one: the below
+ * tier check, the cross system reconciliation, the failure rate tally (through
+ * `bookingHostClass`), every volume read in customer-bookings.ts, the floor learner
+ * and `report:pilot-compare`. Applied where bookings are READ, never stamped where they
+ * are written (L559), so a change to `PRODUCTION_ORIGINS` reclassifies history too.
  *
  * Keyed on the recorded host page: the origin the host declared
  * (`prefill.parentOrigin`, set by widget.js from its own page) and, since #2728, the
