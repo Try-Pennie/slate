@@ -54,6 +54,8 @@ export class BulkReassignWorld {
   /** Every reassign the engine performed, in order. One entry per booking is the
    *  invariant the double-move assertions read. */
   readonly reassigns: { bookingId: string; targetEmail: string }[] = [];
+  /** Sweeps whose done flip a tick landed, in the order `jobFinished` heard them. */
+  readonly finishedJobs: string[] = [];
   /** Commits the store REFUSED because the row had moved on underneath. */
   readonly refusedCommits: { itemId: string; status: BulkReassignItemStatus }[] = [];
   /** Claims the store REFUSED because the row was no longer pending. */
@@ -232,8 +234,14 @@ export class BulkReassignWorld {
       markJobDoneIfDrained: async (jobId) => {
         const job = this.jobs.get(jobId);
         // WHERE status = 'active': a cancelled sweep is never relabelled 'done'.
-        if (!job || job.status !== "active") return;
-        if (this.pendingCount(jobId) === 0) job.status = "done";
+        if (!job || job.status !== "active") return false;
+        if (this.pendingCount(jobId) !== 0) return false;
+        job.status = "done";
+        return true;
+      },
+
+      jobFinished: async (job) => {
+        this.finishedJobs.push(job.id);
       },
     };
   }

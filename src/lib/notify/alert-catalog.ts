@@ -1315,13 +1315,17 @@ export const ALERT_CATALOG: AlertEntry[] = [
 
   // --- Info: never needed action, so never announces recovery ---------------
   {
-    key: "demotion_reroute_moved",
+    key: "demotion_reroute_moved:*",
     kind: "info",
+    // The suffix is the narrowed advisor's user id, so the family is bounded by the roster. Per
+    // advisor because the line goes out from the every minute drain as each sweep finishes, and
+    // two sweeps finishing a tick apart under ONE key would lose the second to the throttle.
+    suffix: "bounded",
     why:
-      "A demotion sweep started moving an advisor's booked calls to other advisors (#3615). " +
-      "Nothing is broken, so nobody is woken; it is said at all because nothing else tells a " +
-      "person a reroute happened, and the moves can only be checked by somebody who knows. " +
-      "There is no all-clear: the move is an event, not a state that ends.",
+      "A demotion sweep finished moving an advisor's booked calls (#3615), and this says how " +
+      "they settled. Nothing is broken, so nobody is woken; it is said at all because nothing " +
+      "else tells a person a reroute happened, and the moves can only be checked by somebody " +
+      "who knows. There is no all-clear: the move is an event, not a state that ends.",
   },
   {
     key: "client_error_test_bucket",

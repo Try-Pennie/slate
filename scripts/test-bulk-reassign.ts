@@ -71,7 +71,9 @@ function fakeDeps(over: Partial<BulkReassignDeps> = {}) {
     },
     markJobDoneIfDrained: async (jobId) => {
       log.push(`done?:${jobId}`);
+      return false;
     },
+    jobFinished: async () => {},
     ...over,
   };
   return { deps: base, log };
@@ -336,7 +338,8 @@ async function run() {
     },
     claimItem: async () => true,
     commitItemOutcome: async () => {},
-    markJobDoneIfDrained: async () => {},
+    markJobDoneIfDrained: async () => false,
+    jobFinished: async () => {},
   };
   const first = await drainBulkReassign(rerunDeps);
   const second = await drainBulkReassign(rerunDeps);
@@ -628,6 +631,68 @@ async function run() {
 }
 
 await run();
+
+// --- the tick that FINISHES a sweep is the one that reports it ---------------------------------
+//
+// The demotion Slack line used to go out when the sweep was QUEUED, so it said "is moving 1 call"
+// for a call nobody was free to take (evaldez1, 2026-10-21). It now goes out once the sweep has
+// settled, which is the tick whose done flip lands. A tick whose flip lands nothing (the sweep
+// still has pending items, or another tick already finished it) reports nothing, so a retried
+// tick can never say it twice.
+{
+  const jobA: BulkReassignJob = { ...job, id: "jobA" };
+  const jobB: BulkReassignJob = { ...job, id: "jobB" };
+  const finished: string[] = [];
+  const flips = new Map([["jobA", true], ["jobB", false]]);
+  const f = fakeDeps({
+    loadPendingItems: async () => [
+      { item: item({ id: "a1", job_id: "jobA", booking_id: "bkA" }), job: jobA },
+      { item: item({ id: "b1", job_id: "jobB", booking_id: "bkB" }), job: jobB },
+    ],
+    markJobDoneIfDrained: async (jobId) => flips.get(jobId) ?? false,
+    jobFinished: async (j) => {
+      finished.push(j.id);
+    },
+  });
+  await drainBulkReassign(f.deps);
+  assert(finished.length === 1 && finished[0] === "jobA", `only the sweep this tick finished is reported (got ${finished.join(",")})`);
+
+  flips.set("jobA", false);
+  finished.length = 0;
+  await drainBulkReassign(f.deps);
+  assert(finished.length === 0, "a tick that finishes nothing reports nothing, so a retry never repeats the line");
+}
+
+// A report that throws is logged and never stops the tick finishing the NEXT sweep: the done flip
+// has already landed, so the throw cannot be retried into a second report either.
+{
+  const jobA: BulkReassignJob = { ...job, id: "jobA" };
+  const jobB: BulkReassignJob = { ...job, id: "jobB" };
+  const flipped: string[] = [];
+  const finished: string[] = [];
+  const f = fakeDeps({
+    loadPendingItems: async () => [
+      { item: item({ id: "a1", job_id: "jobA", booking_id: "bkA" }), job: jobA },
+      { item: item({ id: "b1", job_id: "jobB", booking_id: "bkB" }), job: jobB },
+    ],
+    markJobDoneIfDrained: async (jobId) => {
+      flipped.push(jobId);
+      return true;
+    },
+    jobFinished: async (j) => {
+      if (j.id === "jobA") throw new Error("slack down");
+      finished.push(j.id);
+    },
+  });
+  let threw = false;
+  try {
+    await drainBulkReassign(f.deps);
+  } catch {
+    threw = true;
+  }
+  assert(!threw, "a failed report does not fail the tick");
+  assert(flipped.join(",") === "jobA,jobB" && finished.join(",") === "jobB", "and the next sweep is still finished and reported");
+}
 
 // --- #3615: draining ONE sweep, for the reroute drill -----------------------------------------
 //

@@ -1778,7 +1778,9 @@ describe("syncSalesforceNow (#491, #2071)", () => {
 
   // #3615: a demotion sweep moves only the calls in the pool somebody lost, and the reroute's own
   // faults (including a switch that could not be read) are said on the page, not only in Slack.
-  it("says how many calls are moving off agents Twilio demoted", async () => {
+  // It says QUEUED, never "being moved": the run only queues the moves, and on 2026-10-21 the
+  // Slack line in the same tense said a call was moving that nobody was free to take.
+  it("says how many calls are queued to move off agents whose Twilio tiers narrowed", async () => {
     rosterSync.runRosterSync.mockResolvedValueOnce(
       syncOutcome(
         { updated: 0 },
@@ -1796,7 +1798,8 @@ describe("syncSalesforceNow (#491, #2071)", () => {
     } catch (e) {
       redirected = decodeURIComponent(String((e as Error).message));
     }
-    expect(redirected).toContain("3 upcoming calls being moved off 2 agents Twilio demoted off a pool those calls need");
+    expect(redirected).toContain("3 upcoming calls queued to move off 2 agents whose Twilio tiers no longer cover them");
+    expect(redirected).not.toMatch(/demoted|being moved off 2/);
   });
 
   it("names a reroute that could not finish, and a switch that could not be read", async () => {
