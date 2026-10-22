@@ -49,20 +49,22 @@ const tick = () => new Promise((r) => setImmediate(r));
 async function main() {
   // --- the budget relation the wait is sized against (#3257) ------------------
   //
-  // A production confirm answers at 7.4 to 8.0s at the median (#3221), so a wait
+  // A production confirm answered at 7.4 to 8.0s at the median on 2026-10-04
+  // (#3221). It takes about 1.6s now (#3490), but 8s is still the slow confirm the
+  // line must survive (each Google call may run to its 8s deadline), so a wait
   // shorter than that sends every follower off on its own while the leader is
   // still working: the stampede the line exists to stop. A follower that waited
   // that long cannot also run a chain of its own inside the 12s budget, so the two
   // constraints cannot both hold; the wait is the budget less a reserve, and a
   // follower that waits it out answers from the reserve instead of starting work.
-  const LEADER_ANSWER_P50_MS = 8_000;
+  const SLOW_LEADER_ANSWER_MS = 8_000;
   assert(
     CONFIRM_QUEUE_WAIT_MS + CONFIRM_QUEUE_RESERVE_MS === BOOKING_CONFIRM_BUDGET_MS,
     `the wait is the confirm budget less the reserve (${CONFIRM_QUEUE_WAIT_MS} + ${CONFIRM_QUEUE_RESERVE_MS} vs ${BOOKING_CONFIRM_BUDGET_MS})`,
   );
   assert(
-    CONFIRM_QUEUE_WAIT_MS > LEADER_ANSWER_P50_MS,
-    `a follower outwaits a production leader at the median (${CONFIRM_QUEUE_WAIT_MS}ms vs ${LEADER_ANSWER_P50_MS}ms)`,
+    CONFIRM_QUEUE_WAIT_MS > SLOW_LEADER_ANSWER_MS,
+    `a follower outwaits a slow leader (${CONFIRM_QUEUE_WAIT_MS}ms vs ${SLOW_LEADER_ANSWER_MS}ms)`,
   );
   assert(CONFIRM_QUEUE_RESERVE_MS >= 1_000, "the reserve leaves room for a holder's short chain and the answer");
   assert(confirmLineWaitMs(null) === CONFIRM_QUEUE_WAIT_MS, "outside a budget the follower waits the full bound");
