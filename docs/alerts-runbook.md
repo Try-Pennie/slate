@@ -22,8 +22,9 @@ a procedure here, and no procedure exists for nothing.
    `GET /api/health` (200 or a 503 naming the stale lane) and
    `GET /api/health/availability` (200, or 503 when the booker is offering nothing).
 4. **Ask whether it is a reminder** (#3801). A condition that has not changed is said
-   again once a day (hourly for one costing leads right now), and the repeat opens with
-   "Reminder: still true after ...". Anything without that line is new: a new subject
+   again once a day (hourly for one costing leads right now), and the repeat carries
+   "Reminder: still true after ..." on the line under the severity lead (#1825).
+   Anything without that line is new: a new subject
    (an appointment, an agent, a pool, a lane) or a measured value that got worse.
 5. **Look for an all-clear.** Conditions send one when they clear
    (`docs/../src/lib/notify/alert-catalog.ts` classifies each key), so a page from an
