@@ -722,6 +722,14 @@ export function matchBookings(input: {
     unreadable,
   };
 
+  // #2974: test traffic from a development host is no lead's booking, so it leaves
+  // FIRST, before anything else reads the Slate bookings (the inline card exclusion
+  // included). Only the booking leaves: a developer booking under a real application's
+  // id says nothing about whether that application booked, so the application is
+  // judged on its other bookings.
+  const leadSlate = input.slate.filter((r) => !r.testSource);
+  counts.testSourceBookings = input.slate.length - leadSlate.length;
+
   // #3718: an application that booked through a landing page's inline card always got
   // Slate, so it is not part of the split. The WHOLE application leaves, on whichever
   // side its hash put it, before any booking is tied to it: dropping only its Slate
@@ -730,7 +738,7 @@ export function matchBookings(input: {
   // the window, too recently, or in another tier) keeps its bookings counted as
   // outside the cohort, like any other.
   const viaInlineCard = new Set(
-    input.slate
+    leadSlate
       .filter((r) => r.inlineCard && r.submissionId !== null)
       .map((r) => leadKey(r.submissionId as string))
       .filter((key) => cohort.delete(key)),
@@ -752,12 +760,6 @@ export function matchBookings(input: {
     }
     app.chains.push(chain);
   };
-
-  // #2974: test traffic from a development host is no lead's booking. Only the booking
-  // leaves: a developer booking under a real application's id says nothing about
-  // whether that application booked, so the application is judged on its other bookings.
-  const leadSlate = input.slate.filter((r) => !r.testSource);
-  counts.testSourceBookings = input.slate.length - leadSlate.length;
 
   for (const chain of [...slateChains(leadSlate), ...cal.chains]) {
     if (!Number.isFinite(chain.createdMs) || (chain.finalStartMs !== null && !Number.isFinite(chain.finalStartMs))) {

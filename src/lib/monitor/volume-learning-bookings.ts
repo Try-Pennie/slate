@@ -13,8 +13,10 @@ import { isTestSourceBooking } from "./offsite-origin.ts";
 // every filter from that file without this read standing in for one.
 
 /**
- * Every booking created in [sinceIso, untilIso), each flagged when its bucket is a
- * test bucket, for relearning the low volume floors from Slate's own traffic (#2739).
+ * Every booking created in [sinceIso, untilIso), each flagged as test when its bucket
+ * is a test bucket or, since #2974, when it was made from a development host on a real
+ * bucket (`isTestSourceBooking`), for relearning the low volume floors from Slate's own
+ * traffic (#2739).
  *
  * The same inner join on the bucket as the counts in customer-bookings.ts, so the learner is fitted
  * to exactly the population the alarm later counts. Test bookings are READ and
