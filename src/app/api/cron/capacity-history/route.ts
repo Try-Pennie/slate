@@ -14,6 +14,7 @@ import { loadTierAgentIds } from "@/lib/monitor/tier-staffing-load";
 import { runRosterFillCheck } from "@/lib/monitor/roster-fill";
 import { resolveAlert, sendThrottledAlert } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
+import { appUrl } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -91,6 +92,7 @@ export async function GET(req: NextRequest) {
         // and a read that throws each clear nothing.
         resolve: resolveAlert,
         cooldownMs: ROSTER_FILL_COOLDOWN_MS,
+        appBaseUrl: appUrl(),
         log: (fields) => log.info("capacity-history", { msg: "roster fill", ...fields }),
       });
     } else {
