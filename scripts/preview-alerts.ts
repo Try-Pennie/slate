@@ -12,6 +12,17 @@ import {
   OWNER_NOTICE_PREVIEWS,
   previewsByKey,
 } from "../src/lib/notify/alert-preview.ts";
+import { withSeverityLead, type AlertVoice } from "../src/lib/notify/severity-lead.ts";
+
+// #1825: every state is printed as POSTED, under the severity lead the dispatcher
+// puts on it, so a page and a whisper read as differently here as in Slack.
+const VOICE: Record<"alert" | "info" | "recovery", AlertVoice> = {
+  alert: "page",
+  info: "info",
+  recovery: "recovery",
+};
+// A family's preview key ends in `:*`; the lead is chosen for a member of it.
+const sentKey = (key: string): string => (key.endsWith(":*") ? `${key.slice(0, -1)}preview` : key);
 
 const KIND_LABEL: Record<string, string> = {
   condition: "CONDITION (pages, and must say when it clears)",
@@ -29,7 +40,8 @@ for (const group of previewsByKey()) {
   for (const s of group.states) {
     states++;
     console.log(`\n  -- ${s.channel.toUpperCase()}: ${s.state}`);
-    for (const line of s.text.split("\n")) console.log(`     ${line}`);
+    const posted = withSeverityLead(s.text, sentKey(group.key), VOICE[s.channel]);
+    for (const line of posted.split("\n")) console.log(`     ${line}`);
   }
 }
 console.log(`\n${"=".repeat(78)}`);
