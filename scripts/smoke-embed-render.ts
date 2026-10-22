@@ -1,6 +1,8 @@
 // The canary's browser check: does the EMBEDDED booker actually draw (#1006)?
 //
-// Run: SLATE_BASE_URL=... node --experimental-strip-types scripts/smoke-embed-render.ts
+// Run: SLATE_BASE_URL=... node --experimental-strip-types --import ./scripts/register-paths.mjs \
+//   scripts/smoke-embed-render.ts
+// (the alias hook is required: its crash record imports the app's error text, #4062)
 //
 // The uptime canary proves the server responds; nothing proved the front end
 // draws. cal.com is watched by a Checkly browser check that loads the embedded

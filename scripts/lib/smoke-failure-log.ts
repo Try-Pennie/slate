@@ -21,9 +21,11 @@ import { appendFileSync, readFileSync } from "node:fs";
  *     finishes: on 2026-08-14 it threw on an unparseable URL before a single booking
  *     check ran. A log written at exit would have been empty for exactly the failure
  *     that most needed explaining.
- *  2. **An empty or absent log is its own outcome**, not "no failures". It means the
- *     run died before any check reported, which is a different message from a check
- *     that failed. Collapsing the two is the defect this issue is about.
+ *  2. **An empty or absent log is its own outcome**, not "no failures". It means
+ *     nothing was recorded at all, which is a different message from a check that
+ *     failed. Collapsing the two is the defect this issue is about. Since #4062 the
+ *     log also holds passes and crashes, so a run that crashed after passing checks
+ *     reads as `crashed`, never as an empty log.
  */
 
 export interface FailureLogIo {
@@ -123,12 +125,13 @@ export type FailureLog =
   | { kind: "unreadable"; reason: string };
 
 /**
- * Read the recorded failures.
+ * Read what the run recorded: failed checks, passes and crashes.
  *
- * `none` and `unreadable` are deliberately separate. "The run died before any check
- * reported" and "we could not read what it recorded" lead a reader to different
- * places, and rendering both as no failures is how a message ends up claiming more
- * than it measured.
+ * Each state says only what the log holds (L11): `failures` (a check failed, with
+ * any crash beside it), `crashed` (no check failed, a smoke crashed), `stopped`
+ * (checks passed and nothing else was recorded), `none` (nothing was recorded) and
+ * `unreadable` (we could not read what it recorded). Rendering any two of them alike
+ * is how a message ends up claiming more than it measured.
  */
 export function readFailures(io: FailureLogIo, path: string | null): FailureLog {
   if (!path) return { kind: "none" };
