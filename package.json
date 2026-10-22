@@ -79,8 +79,8 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
-    "@cloudflare/workers-types": "^5.20260930.1",
-    "@opennextjs/cloudflare": "^1.20.7",
+    "@cloudflare/workers-types": "^5.20261006.1",
+    "@opennextjs/cloudflare": "^1.20.12",
     "@playwright/test": "1.63.0",
     "@tailwindcss/postcss": "^4",
     "@testing-library/react": "^16.3.3",
@@ -103,7 +103,7 @@
     "tailwindcss": "^4",
     "typescript": "^6",
     "vitest": "^3.2.6",
-    "wrangler": "^4.144.0"
+    "wrangler": "^4.148.0"
   },
   "pnpm": {
     "overrides": {
