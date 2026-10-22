@@ -7,7 +7,7 @@ import { CalendarMonth } from "@/components/ui/CalendarMonth";
 import { cardCls } from "@/components/ui/styles";
 import { SaveForm } from "@/components/ui/SaveForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { fullLine, nearlyFullSentence } from "@/lib/admin/team-capacity-copy";
+import { KEY_WORDS, OPEN_WORD, fullLine, nearlyFullSentence } from "@/lib/admin/team-capacity-copy";
 import type { CapacityRow, TeamCapacityView as View } from "@/lib/admin/team-capacity-view";
 import "@/app/admin/team-capacity/team-capacity.css";
 
@@ -75,14 +75,19 @@ export function TeamCapacityView({
                   </span>
                 )}
               </div>
-              {c.out > 0 && (
+              {c.pace.map((line) => (
+                <div key={line} className="tpace" data-tc="pace">
+                  {line}
+                </div>
+              ))}
+              {c.outLine && (
                 <div className="tout" data-tc="out-count">
-                  {`${c.out} out`}
+                  {c.outLine}
                 </div>
               )}
-              {c.notCounted > 0 && (
-                <div className="tout" data-tc="not-counted">
-                  {`${c.notCounted} not counted`}
+              {c.notSyncingLine && (
+                <div className="tout" data-tc="not-syncing">
+                  {c.notSyncingLine}
                 </div>
               )}
             </div>
@@ -98,6 +103,13 @@ export function TeamCapacityView({
                 Change
               </button>
             )}
+          </div>
+        )}
+        {/* One line for the whole page when the pace cannot be shown, never one per card (#4101). */}
+        {view.paceNotice && (
+          <div className="ctl pace-notice" data-tc="pace-notice">
+            <span className="text-error font-semibold">{view.paceNotice.lead}</span>
+            {view.paceNotice.rest && <span className="text-fg-muted">{view.paceNotice.rest}</span>}
           </div>
         )}
       </div>
@@ -130,6 +142,7 @@ export function TeamCapacityView({
                   return i >= 0;
                 }}
               />
+              <TimelineKey isToday={day.iso === todayIso} />
             </div>
             {day.note && (
               <p className="beyond-note" data-tc="day-note">
@@ -155,7 +168,9 @@ export function TeamCapacityView({
                   </span>
                 )}
               </div>
-              <span className="ax-r">Open</span>
+              <span className="ax-r" data-tc="open-heading">
+                {OPEN_WORD}
+              </span>
             </div>
             <div className="rows">
               {day.nowPos !== null && (
@@ -173,6 +188,29 @@ export function TeamCapacityView({
 }
 
 const pct = (n: number) => `${n}%`;
+
+/**
+ * The timeline's key (#4101, decision 14): each of its marks at a small size, at the end of the tab
+ * row and pushed right. Past, the hatching over hours already gone, is on today's tab only.
+ */
+function TimelineKey({ isToday }: { isToday: boolean }) {
+  const entries: [keyof typeof KEY_WORDS, string][] = [
+    ["busy", "sw-busy"],
+    ["open", "sw-open"],
+    ["off", "sw-off"],
+    ...(isToday ? ([["past", "sw-past"]] as [keyof typeof KEY_WORDS, string][]) : []),
+  ];
+  return (
+    <div className="tc-key" role="group" aria-label="Key" data-tc="key">
+      {entries.map(([key, cls]) => (
+        <span key={key} className="key-i" data-tc="key-item">
+          <span className={`key-sw ${cls}`} data-tc="key-swatch" data-key={key} aria-hidden="true" />
+          <span className="key-l">{KEY_WORDS[key]}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
 
 function AdvisorRow({ row: r }: { row: CapacityRow }) {
   return (

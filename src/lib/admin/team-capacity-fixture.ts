@@ -15,6 +15,10 @@
 import type { AdvisorDay, CapacityEventType, TeamCapacityAdvisor } from "./team-capacity";
 import type { TeamCapacityReport } from "./team-capacity-load";
 import { pickableDays } from "./team-capacity-view";
+import type { PaceRead, PaceRow } from "./team-capacity-pace";
+
+/** A day's stored pace reading, as the fixture writes it: the row less its day and read_at. */
+export type FixturePaceReading = Omit<PaceRow, "day" | "read_at">;
 
 export interface FixtureDay {
   iso: string;
@@ -37,6 +41,12 @@ export interface FixtureFrame {
   calendarOpen?: boolean;
   changeOpen?: boolean;
   failed?: boolean;
+  /** This frame's own pace readings, replacing the fixture's by day index (#4101). */
+  pace?: Record<string, FixturePaceReading>;
+  /** When this frame's readings were taken, in place of the fixture's. */
+  paceReadAt?: string;
+  /** The pace read fails on this frame. */
+  paceFailed?: boolean;
 }
 
 export interface DesignFixtureFile {
@@ -44,6 +54,8 @@ export interface DesignFixtureFile {
   examples: { unsynced: string; timeOff: { advisor: string; dayIndex: number; start: string; end: string } };
   /** The date picker's world: the office's closed weekday, and the first day history saved. */
   picker: { closedWeekday: number; savedFrom: string; aheadDays: number };
+  /** Each day's latest booking pace reading, one per snapshot day, read at `readAt` (#4101). */
+  pace: { readAt: string; days: FixturePaceReading[] };
   frames: Record<string, FixtureFrame>;
   snapshot: {
     takenAt: string;
@@ -67,6 +79,8 @@ export interface FixtureView {
   unsynced: string[];
   /** The days the date picker offers. */
   pickable: string[];
+  /** The booking pace read, as the live page would have it. */
+  pace: PaceRead;
 }
 
 function stampMs(iso: string): number {
@@ -128,7 +142,16 @@ export function fixtureView(fixture: DesignFixtureFile, frameId: string): Fixtur
     changeOpen: !!frame.changeOpen,
     unsynced,
     pickable: fixturePickable(fixture),
+    pace: fixturePace(fixture, frame),
   };
+}
+
+/** The frame's pace readings as the read returns them: every snapshot day, read at one instant. */
+function fixturePace(fixture: DesignFixtureFile, frame: FixtureFrame): PaceRead {
+  if (frame.paceFailed) return { ok: false, err: new Error("the design frame pretends the pace read failed") };
+  const readAt = frame.paceReadAt ?? fixture.pace.readAt;
+  const rows = fixture.snapshot.days.map((day, i): PaceRow => ({ ...(frame.pace?.[String(i)] ?? fixture.pace.days[i]), day, read_at: readAt }));
+  return { ok: true, rows };
 }
 
 /** Every day from the fixture's first saved day to the day before it was taken counts as saved. */

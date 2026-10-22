@@ -1,6 +1,7 @@
 // The decision checks for the Team capacity design (docs/design/team-capacity.html), one entry per
-// decision its decision map verifies by a check (D1 to D28 but D25, which has no on screen form and
-// is marked "verify": "elsewhere" in the map). Each runs in the browser against ONE rendered frame,
+// decision its decision map verifies by a check (D1 to D41 but D25, which has no on screen form and
+// is marked "verify": "elsewhere" in the map). D29 to D41 are the booking pace (#4101): the pace
+// lines on the cards, the one line under them when the pace cannot be read, and the timeline's key. Each runs in the browser against ONE rendered frame,
 // either a design frame or the built page rendering the same fixture, and reads only what both
 // sides share: the data-tc hooks, visible text, roles and computed colours. Never a styling class,
 // since the build draws with Tailwind and the design does not.
@@ -19,6 +20,40 @@
   var pass = function (detail) { return { ok: true, detail: detail || "" }; };
   var fail = function (detail) { return { ok: false, detail: detail }; };
   var before = function (a, b) { return !!(a && b && (a.compareDocumentPosition(b) & 4)); };
+  // A token's colour as the frame computes it, for comparing with what an element draws.
+  var token = function (doc, name, prop) {
+    var probe = doc.createElement("div");
+    probe.style[prop || "color"] = "var(" + name + ")";
+    doc.body.append(probe);
+    var v = doc.defaultView.getComputedStyle(probe)[prop || "color"];
+    probe.remove();
+    return v;
+  };
+  // A day card's pace lines, by the card's place: 0 is Today, 1 Tomorrow, 2 Wednesday, 3 Thursday.
+  var DAY = ["Today", "Tomorrow", "Wednesday", "Thursday"];
+  var paceLines = function (doc, i) {
+    var c = q(doc, "day-card")[i];
+    return c ? Array.prototype.slice.call(c.querySelectorAll('[data-tc="pace"]')).map(text) : null;
+  };
+  var paceIs = function (doc, i, want) {
+    var got = paceLines(doc, i);
+    if (!got) return fail("no " + DAY[i] + " card");
+    return got.join(" | ") === want.join(" | ") ? pass() : fail(DAY[i] + "'s card reads '" + got.join(" | ") + "', expected '" + want.join(" | ") + "'");
+  };
+  // The second pace line of a card, the estimate.
+  var estimateIs = function (doc, i, want) {
+    var got = paceLines(doc, i);
+    if (!got) return fail("no " + DAY[i] + " card");
+    return got.length === 2 && got[1] === want ? pass() : fail(DAY[i] + "'s card reads '" + got.join(" | ") + "', expected the estimate '" + want + "'");
+  };
+  // The one line under the cards when the pace cannot be read, and that no card keeps a pace line.
+  var oneNotice = function (doc) {
+    var n = q(doc, "pace-notice");
+    if (n.length !== 1) return { err: n.length + " pace notices, expected one" };
+    if (!before(one(doc, "nearly-full-line"), n[0]) || !before(n[0], one(doc, "day-tab"))) return { err: "the notice is not under the nearly full line, above the timeline" };
+    if (one(doc, "pace")) return { err: "a card still shows a pace line" };
+    return { node: n[0] };
+  };
 
   // One frame's numbers, after its illustrations: what fixtureView
   // (src/lib/admin/team-capacity-fixture.ts) hands the page for the same frame.
@@ -101,11 +136,16 @@
       return n === view(ctx).offeredOpenDays ? pass() : fail(n + " day cards, the window is " + view(ctx).offeredOpenDays);
     } },
     { id: "D5", frames: ["f1"], check: function (doc) {
-      var c = q(doc, "day-card")[0];
-      if (!c) return fail("no day cards");
-      var order = ["calls-open", "full-bar", "pct", "out-count"].map(function (t) { return c.querySelector('[data-tc="' + t + '"]'); });
-      if (order.some(function (n) { return !n; })) return fail("a card is missing calls open, its bar, its percent or its out count");
-      for (var i = 1; i < order.length; i++) if (!before(order[i - 1], order[i])) return fail("card order is not calls open, bar, percent, out");
+      var cards = q(doc, "day-card");
+      if (!cards.length) return fail("no day cards");
+      for (var k = 0; k < cards.length; k++) {
+        var c = cards[k];
+        var order = ["calls-open", "full-bar", "pct", "pace", "out-count"].map(function (t) { return c.querySelector('[data-tc="' + t + '"]'); });
+        if (order.some(function (n) { return !n; })) return fail("card " + (k + 1) + " is missing calls open, its bar, its percent, its pace or its time off line");
+        for (var i = 1; i < order.length; i++) if (!before(order[i - 1], order[i])) return fail("card " + (k + 1) + " is not in the order calls open, bar, percent, pace, time off");
+        var m = /^(\d+) (advisor|advisors) off$/.exec(text(order[4]));
+        if (!m || (m[1] === "1") !== (m[2] === "advisor")) return fail("card " + (k + 1) + "'s time off line reads '" + text(order[4]) + "'");
+      }
       return pass();
     } },
     { id: "D6", frames: ALL, check: function (doc, ctx) {
@@ -214,7 +254,8 @@
       if (!row || !row.querySelector('[data-state="not-syncing"]')) return fail("the not syncing lane is not marked");
       if (!/Calendar not syncing/.test(text(row))) return fail("the lane does not say Calendar not syncing");
       var c0 = q(doc, "day-card")[0];
-      return c0 && text(c0.querySelector('[data-tc="not-counted"]')) === "1 not counted" ? pass() : fail("the card does not say 1 not counted");
+      var line = c0 && c0.querySelector('[data-tc="not-syncing"]');
+      return text(line) === "1 calendar not syncing" ? pass() : fail("today's card says '" + text(line) + "', not 1 calendar not syncing");
     } },
     { id: "D20", frames: ["f3"], check: function (doc) {
       if (!one(doc, "now")) return fail("no Now line");
@@ -262,6 +303,99 @@
       var probe = doc.createElement("div"); probe.style.background = token; doc.body.append(probe);
       var want = doc.defaultView.getComputedStyle(probe).backgroundColor; probe.remove();
       return rgb(doc, card, "backgroundColor") === want ? pass() : fail("an unflagged card is " + rgb(doc, card, "backgroundColor") + ", the surface token is " + want);
+    } },
+    { id: "D29", frames: ["f1", "f2", "f11"], check: function (doc) {
+      var muted = token(doc, "--fg-muted");
+      var two = q(doc, "day-card").filter(function (c) { return c.querySelectorAll('[data-tc="pace"]').length === 2; });
+      if (!two.length) return fail("no card shows two pace lines");
+      for (var k = 0; k < two.length; k++) {
+        var lines = Array.prototype.slice.call(two[k].querySelectorAll('[data-tc="pace"]'));
+        if (!/^Filling at [\d,]+ an hour$/.test(text(lines[0]))) return fail("the first pace line reads '" + text(lines[0]) + "', not the pace");
+        if (!before(two[k].querySelector('[data-tc="pct"]'), lines[0])) return fail("the pace lines are not under the percent");
+        for (var j = 0; j < lines.length; j++) if (rgb(doc, lines[j], "color") !== muted) return fail("'" + text(lines[j]) + "' is " + rgb(doc, lines[j], "color") + ", not the muted text " + muted);
+      }
+      return pass();
+    } },
+    { id: "D30", frames: ["f1", "f11"], check: function (doc, ctx) {
+      return ctx.frame === "f1" ? estimateIs(doc, 3, "Won't fill at this pace") : estimateIs(doc, 2, "Full by 9:30pm at this pace");
+    } },
+    { id: "D31", frames: ["f1"], check: function (doc) {
+      return estimateIs(doc, 2, "Full by 9:30am Tue at this pace");
+    } },
+    { id: "D32", frames: ["f11", "f12"], check: function (doc, ctx) {
+      return ctx.frame === "f11" ? estimateIs(doc, 3, "Full by 7pm Tue") : estimateIs(doc, 2, "Won't fill");
+    } },
+    { id: "D33", frames: ["f1"], check: function (doc) {
+      var pct = q(doc, "day-card")[1] && q(doc, "day-card")[1].querySelector('[data-tc="pct"]');
+      var m = /^(\d+)% full/.exec(text(pct));
+      if (!m || Number(m[1]) < 95) return fail("Tomorrow's card is not at 95% or more: '" + text(pct) + "'");
+      return paceIs(doc, 1, ["Filling at 9 an hour"]);
+    } },
+    { id: "D34", frames: ["f1"], check: function (doc) {
+      return paceIs(doc, 0, ["Not filling right now"]);
+    } },
+    { id: "D35", frames: ["f12"], check: function (doc) {
+      return paceIs(doc, 3, ["Pace shows after 3 hours of readings"]);
+    } },
+    { id: "D36", frames: ["f11"], check: function (doc) {
+      return paceIs(doc, 1, ["Readings missed, pace back by 6:30pm"]);
+    } },
+    { id: "D37", frames: ["f1"], check: function (doc) {
+      var border = token(doc, "--border");
+      var withTwo = q(doc, "day-card").find(function (c) { return c.querySelectorAll('[data-tc="pace"]').length === 2; });
+      if (!withTwo) return fail("no card shows two pace lines");
+      var lines = withTwo.querySelectorAll('[data-tc="pace"]');
+      var cs = function (n, p) { return doc.defaultView.getComputedStyle(n)[p]; };
+      if (cs(lines[0], "marginTop") !== "12px") return fail("the first pace line is " + cs(lines[0], "marginTop") + " below the percent, not 12px");
+      if (cs(lines[1], "marginTop") !== "2px") return fail("the second pace line is " + cs(lines[1], "marginTop") + " below the first, not 2px");
+      var off = withTwo.querySelector('[data-tc="out-count"]');
+      if (!off) return fail("the card has no time off line");
+      var got = [cs(off, "marginTop"), cs(off, "borderTopWidth"), cs(off, "borderTopStyle"), cs(off, "borderTopColor"), cs(off, "paddingTop")];
+      var want = ["12px", "1px", "solid", border, "10px"];
+      return got.join(" ") === want.join(" ") ? pass() : fail("above the time off line: " + got.join(" ") + ", expected " + want.join(" "));
+    } },
+    { id: "D38", frames: ["f13"], check: function (doc) {
+      var r = oneNotice(doc);
+      if (r.err) return fail(r.err);
+      var parts = r.node.children;
+      if (parts.length !== 2 || text(parts[0]) !== "Couldn't load how fast the days are filling." || text(parts[1]) !== "Try reloading in a minute.") return fail("the notice reads '" + text(r.node) + "'");
+      if (rgb(doc, parts[0], "color") !== token(doc, "--error")) return fail("the notice is " + rgb(doc, parts[0], "color") + ", not the error colour");
+      return rgb(doc, parts[1], "color") === token(doc, "--fg-muted") ? pass() : fail("Try reloading is not muted");
+    } },
+    { id: "D39", frames: ["f14"], check: function (doc) {
+      var r = oneNotice(doc);
+      if (r.err) return fail(r.err);
+      if (text(r.node) !== "Couldn't update how fast the days are filling since 1:30pm.") return fail("the notice reads '" + text(r.node) + "'");
+      var words = r.node.firstElementChild || r.node;
+      return rgb(doc, words, "color") === token(doc, "--error") ? pass() : fail("the notice is " + rgb(doc, words, "color") + ", not the error colour");
+    } },
+    { id: "D40", frames: ["f1", "f2", "f3"], check: function (doc, ctx) {
+      var key = one(doc, "key");
+      if (!key) return fail("no key");
+      var row = key.parentElement;
+      var btn = Array.prototype.find.call(row.querySelectorAll("button"), function (b) { return text(b) === "Pick a date"; });
+      if (!btn || !before(btn, key)) return fail("the key does not follow Pick a date in the tab row");
+      var rowRight = row.getBoundingClientRect().right - parseFloat(doc.defaultView.getComputedStyle(row).paddingRight);
+      if (Math.abs(key.getBoundingClientRect().right - rowRight) > 1) return fail("the key is not pushed to the right of the tab row");
+      var labels = q(doc, "key-item").map(text);
+      var want = ctx.frame === "f3" ? ["Busy", "Open", "Not working", "Past"] : ["Busy", "Open", "Not working"];
+      if (labels.join("|") !== want.join("|")) return fail("the key reads " + labels.join(", "));
+      var muted = token(doc, "--fg-muted");
+      if (q(doc, "key-item").some(function (n) { return rgb(doc, n, "color") !== muted; })) return fail("the key is not in the muted text");
+      var sw = function (k) { return key.querySelector('[data-tc="key-swatch"][data-key="' + k + '"]'); };
+      var taken = rgb(doc, one(doc, "taken"), "backgroundColor");
+      if (!sw("busy") || rgb(doc, sw("busy"), "backgroundColor") !== taken) return fail("Busy's mark is not the timeline's used up fill");
+      var open = sw("open");
+      if (!open || rgb(doc, open, "backgroundColor") !== token(doc, "--surface", "backgroundColor") || rgb(doc, open, "boxShadow").indexOf(taken) < 0) return fail("Open's mark is not the white outlined box");
+      if (!sw("off") || !/repeating-linear-gradient/.test(rgb(doc, sw("off"), "backgroundImage"))) return fail("Not working's mark is not striped");
+      if (ctx.frame === "f3" && (!sw("past") || !/repeating-linear-gradient/.test(rgb(doc, sw("past"), "backgroundImage")))) return fail("Past's mark is not hatched");
+      return pass();
+    } },
+    { id: "D41", frames: ["f1"], check: function (doc) {
+      if (q(doc, "key-item").map(text).indexOf("Open") < 0) return fail("the key does not name the white box Open");
+      if (text(one(doc, "open-heading")) !== "Open") return fail("the timeline's column reads '" + text(one(doc, "open-heading")) + "'");
+      var bad = q(doc, "day-card").find(function (c) { return !/ calls? open/.test(text(c)); });
+      return bad ? fail("a card does not say calls open") : pass();
     } }
   ];
 })();

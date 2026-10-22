@@ -9,6 +9,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 import { axisPos, pickableDays, teamCapacityView, type CapacityDaySource } from "../src/lib/admin/team-capacity-view.ts";
 import { designFixturesEnabled, fixtureView, type DesignFixtureFile } from "../src/lib/admin/team-capacity-fixture.ts";
 import type { AdvisorDay, TeamCapacityAdvisor } from "../src/lib/admin/team-capacity.ts";
+import { judgePace, type PaceView } from "../src/lib/admin/team-capacity-pace.ts";
 
 const Z = "America/New_York";
 const fixture = JSON.parse(readFileSync(new URL("../docs/design/fixtures/team-capacity.json", import.meta.url), "utf8")) as DesignFixtureFile;
@@ -31,8 +32,9 @@ const advisor = (name: string, over: Partial<TeamCapacityAdvisor> = {}): TeamCap
   id: name, name, email: `${name.toLowerCase()}@x.test`, timezone: Z, unsynced: false, days: [], ...over,
 });
 const source = (iso: string, kind: CapacityDaySource["kind"], advisors: { advisor: TeamCapacityAdvisor; day: AdvisorDay }[]): CapacityDaySource => ({ iso, kind, advisors });
-const view = (days: CapacityDaySource[], todayIso = "2026-10-19", nowIso = "2026-10-19T19:30:00.000Z") =>
-  teamCapacityView({ zone: Z, todayIso, nowMs: Date.parse(nowIso), durationMin: 20, nearlyFullPct: 85, days });
+const NO_READINGS: PaceView = { kind: "fresh", byDay: new Map() };
+const view = (days: CapacityDaySource[], todayIso = "2026-10-19", nowIso = "2026-10-19T19:30:00.000Z", pace: PaceView = NO_READINGS) =>
+  teamCapacityView({ zone: Z, todayIso, nowMs: Date.parse(nowIso), durationMin: 20, nearlyFullPct: 85, days, pace });
 
 // --- the axis ---------------------------------------------------------------------------
 eq(axisPos("2026-10-20T12:00:00.000Z", Z), 0, "8am in New York is the axis start");
@@ -105,23 +107,74 @@ eq(axisPos("2026-11-03T13:00:00.000Z", Z), 0, "8am after the clocks change is st
   eq(v.days[1].rows[1].tag, "Calendar not syncing", "a day saved while a calendar was not syncing says so");
 }
 
-// --- the design's own frame, end to end -----------------------------------------------------------
+// --- the booking pace on the cards, and the one line under them (#4104, #4101) ----------------------
 {
-  const f = fixtureView(fixture, "f1");
-  if (!f.report.measurable) throw new Error("f1 is measurable");
+  const read = (over: Record<string, unknown>) => ({
+    day: "2026-10-20", read_at: "2026-10-19T19:00:00.000Z", pace_state: "pace", pace_per_hour: 6, pace_back_at: null,
+    estimate_method: "line", estimate_line_state: "at", estimate_line_at: "2026-10-20T01:30:00.000Z", estimate_pattern_state: null, estimate_pattern_at: null, ...over,
+  });
+  const days = [
+    source("2026-10-20", "window", [{ advisor: advisor("Avery"), day: day({ open: 5 }) }, { advisor: advisor("Blake", { unsynced: true }), day: day() }, { advisor: advisor("Casey"), day: day({ out: true }) }]),
+    source("2026-10-21", "window", [{ advisor: advisor("Avery"), day: day({ iso: "2026-10-21", open: 0, openTimes: [] }) }]),
+    source("2026-10-28", "beyond", [{ advisor: advisor("Avery"), day: day({ iso: "2026-10-28" }) }]),
+  ];
+  const now = Date.parse("2026-10-19T19:30:00.000Z");
+  const fresh = judgePace({ ok: true, rows: [read({}), read({ day: "2026-10-21", pace_per_hour: 3 })] }, now);
+  const v = view(days, "2026-10-19", "2026-10-19T19:30:00.000Z", fresh);
+  eq(v.cards[0].pace, ["Filling at 6 an hour", "Full by 9:30pm at this pace"], "each card shows its own day's pace and estimate");
+  eq(v.cards[1].pace, ["Filling at 3 an hour"], "a full card shows the pace alone");
+  eq(v.paceNotice, null, "fresh readings need no line under the cards");
+  eq([v.cards[0].outLine, v.cards[0].notSyncingLine], ["1 advisor off", "1 calendar not syncing"], "time off and not syncing in the settled words");
+  eq([v.cards[1].outLine, v.cards[1].notSyncingLine], [null, null], "and nothing when there is none");
+
+  const stale = view(days, "2026-10-19", "2026-10-19T19:30:00.000Z", judgePace({ ok: true, rows: [read({ read_at: "2026-10-19T17:30:00.000Z" })] }, now));
+  assert(stale.cards.every((c) => c.pace.length === 0), "out of date: the cards drop their pace lines");
+  eq(stale.paceNotice, { lead: "Couldn't update how fast the days are filling since 1:30pm.", rest: null }, "and one line says since when");
+
+  const failed = view(days, "2026-10-19", "2026-10-19T19:30:00.000Z", judgePace({ ok: false, err: new Error("down") }, now));
+  assert(failed.cards.every((c) => c.pace.length === 0), "a failed read: the cards drop their pace lines");
+  eq(failed.paceNotice, { lead: "Couldn't load how fast the days are filling.", rest: "Try reloading in a minute." }, "and one line says so, never one per card");
+  eq(failed.cards.map((c) => c.open), v.cards.map((c) => c.open), "and the rest of the page is unchanged");
+}
+
+// --- the design's own frames, end to end -----------------------------------------------------------
+const frameViewOf = (id: string) => {
+  const f = fixtureView(fixture, id);
+  if (!f.report.measurable) throw new Error(`${id} is measurable`);
   const r = f.report;
-  const v = teamCapacityView({
+  return teamCapacityView({
     zone: r.zone,
     todayIso: r.windowDays[0],
     nowMs: r.nowMs,
     durationMin: r.eventType.duration_min,
     nearlyFullPct: f.nearlyFullPct,
     days: r.days.map((iso, i) => source(iso, "window", r.advisors.map((a) => ({ advisor: a, day: a.days[i] })))),
+    pace: judgePace(f.pace, r.nowMs),
   });
+};
+{
+  const v = frameViewOf("f1");
   eq(v.cards.length, fixture.snapshot.offeredOpenDays, "one card per offered day");
   eq(v.days[1].rows.length, fixture.snapshot.advisors.length, "every advisor has a row");
   const names = v.days[1].rows.map((x) => x.name);
   eq(names, [...names].sort((a, b) => a.localeCompare(b)), "in name order");
+  // The pace each frame draws, as the design's checks expect it (D29 to D39).
+  eq(v.cards.map((c) => c.pace), [
+    ["Not filling right now"],
+    ["Filling at 9 an hour"],
+    ["Filling at 6 an hour", "Full by 9:30am Tue at this pace"],
+    ["Filling at 11 an hour", "Won't fill at this pace"],
+  ], "f1: not filling, at 95% already, a time on another day, and won't fill");
+  eq(frameViewOf("f11").cards.map((c) => c.pace), [
+    ["Not filling right now"],
+    ["Readings missed, pace back by 6:30pm"],
+    ["Filling at 18 an hour", "Full by 9:30pm at this pace"],
+    ["Filling at 11 an hour", "Full by 7pm Tue"],
+  ], "f11: readings missed, a time later today, and the pattern");
+  eq(frameViewOf("f12").cards.slice(2).map((c) => c.pace), [["Filling at 6 an hour", "Won't fill"], ["Pace shows after 3 hours of readings"]], "f12: the pattern that won't fill, and no pace yet");
+  eq(frameViewOf("f13").paceNotice, { lead: "Couldn't load how fast the days are filling.", rest: "Try reloading in a minute." }, "f13: the pace can't load");
+  eq(frameViewOf("f14").paceNotice, { lead: "Couldn't update how fast the days are filling since 1:30pm.", rest: null }, "f14: the pace is out of date");
+  assert(frameViewOf("f14").cards.every((c) => c.pace.length === 0), "f14: no card keeps a pace line");
 }
 
 // --- the days the picker offers -----------------------------------------------------------------

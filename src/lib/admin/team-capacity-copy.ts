@@ -25,7 +25,8 @@ export function pickedDayLabel(iso: string, zone: string): { top: string; sub: s
 }
 
 export function callsOpenUnit(open: number): string {
-  return open === 1 ? " call open" : " calls open";
+  const word = OPEN_WORD.toLowerCase();
+  return open === 1 ? ` call ${word}` : ` calls ${word}`;
 }
 
 export function nearlyFullSentence(pct: number): string {
@@ -46,6 +47,64 @@ export function pastDaySummary(fullPct: number | null, open: number): string {
 export function fullLine(fullPct: number | null): string {
   return fullPct === null ? NOBODY_COUNTED : `${fullPct}% full`;
 }
+
+/** A card's time off line: advisors on approved time off the whole day (#4101, decision 9). */
+export function advisorsOffLine(n: number): string {
+  return `${n} ${n === 1 ? "advisor" : "advisors"} off`;
+}
+
+/** A card's not syncing line: advisors left out because their calendar stopped syncing (#4101, decision 10). */
+export function calendarsNotSyncingLine(n: number): string {
+  return `${n} ${n === 1 ? "calendar" : "calendars"} not syncing`;
+}
+
+/**
+ * A time of day in the office's zone, 9:30pm or 9pm, with its weekday after it when it is not
+ * today (#4101, decision 3): Full by 9:30am Tue.
+ */
+export function clockWords(ms: number, zone: string, todayIso: string): string {
+  const t = DateTime.fromMillis(ms, { zone });
+  const time = t.toFormat(t.minute === 0 ? "ha" : "h:mma").toLowerCase();
+  return t.toISODate() === todayIso ? time : `${time} ${t.toFormat("ccc")}`;
+}
+
+/** The pace line: calls taken an hour, whole, and never 0 for a day that is filling (#4101, decision 1). */
+export function paceRateLine(perHour: number): string {
+  return `Filling at ${Math.max(1, Math.round(perHour)).toLocaleString("en-US")} an hour`;
+}
+
+/**
+ * The estimate line (#4101, decisions 2 and 4). Full means 95% of the card's capacity. The straight
+ * line says it is this pace; the pattern, read from how days usually fill, carries no qualifier.
+ */
+export function estimateLine(method: "line" | "pattern", est: { atMs: number } | "wont-fill", zone: string, todayIso: string): string {
+  const tail = method === "line" ? " at this pace" : "";
+  return est === "wont-fill" ? `Won't fill${tail}` : `Full by ${clockWords(est.atMs, zone, todayIso)}${tail}`;
+}
+
+/** A pace at or under 0, in place of both lines (#4101, decision 6). */
+export const NOT_FILLING = "Not filling right now";
+/** No pace yet: launch, or a new day joining the cards (#4101, decision 7). */
+export const NO_PACE_YET = "Pace shows after 3 hours of readings";
+/** After a gap in the readings, with the half hour the pace returns (#4101, decision 8). */
+export function readingsMissedLine(backAtMs: number, zone: string, todayIso: string): string {
+  return `Readings missed, pace back by ${clockWords(backAtMs, zone, todayIso)}`;
+}
+
+/** The one line under the cards when the readings could not be read (#4101, decision 12). */
+export const PACE_UNREADABLE_COPY = { heading: "Couldn't load how fast the days are filling.", body: "Try reloading in a minute." };
+/** The one line under the cards when the latest reading is out of date (#4101, decision 13). */
+export function paceStaleSentence(sinceMs: number, zone: string, todayIso: string): string {
+  return `Couldn't update how fast the days are filling since ${clockWords(sinceMs, zone, todayIso)}.`;
+}
+
+/**
+ * One word for a call that still fits, Open, across the key, the timeline's column and the cards'
+ * calls open (#4101, decision 15). The key names each of the timeline's marks (decision 14); Past
+ * is on today's tab only.
+ */
+export const OPEN_WORD = "Open";
+export const KEY_WORDS = { busy: "Busy", open: OPEN_WORD, off: "Not working", past: "Past" } as const;
 
 export const OUT_WORDS = "Out, approved time off";
 export function noShiftWords(isToday: boolean): string {
