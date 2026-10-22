@@ -23,8 +23,18 @@
  * Calls that still fit against the calls the shifts could hold, from
  * `teamCapacityReport` through `dayTotals`, the same function the page totals a day
  * with: advisors out for the day and advisors whose calendar is not syncing count on
- * neither side. Added up over the first two days leads can book (`windowDays`, the
- * booker's own window), so the notice speaks to the next two business days.
+ * neither side. Added up over the first two days the booker offers a lead
+ * (`bookerDays`, `offeredWindowFor`'s own list), so the notice speaks to the next two
+ * days leads can book.
+ *
+ * ## The booker's days, not the page's (#4064)
+ *
+ * After the 6 PM cutoff the booker stops counting today, but Team capacity's page keeps
+ * today in front of its days (`windowDays`, #3949) because today's leftover times are
+ * still served. Judged on the page's days, the notice at 11:53 PM on Wed 2026-10-21 read
+ * "Wed Oct 21 and Thu Oct 22", a day that was over. So before 6 PM it judges today and
+ * tomorrow, and from 6 PM tomorrow and the next open day; the page is unchanged. The
+ * notice and its all clear link to the page, so the reader lands on those days.
  *
  * ## A condition, repeating only when it gets worse
  *
@@ -114,7 +124,7 @@ export function judgeRosterFill(input: {
   const { report, linePct } = input;
   if (!report.measurable) return { status: "unmeasured", why: `team capacity: ${report.reason}` };
   if (linePct === null || !Number.isFinite(linePct)) return { status: "unmeasured", why: "the nearly full line could not be read" };
-  const days = report.windowDays.slice(0, ROSTER_FILL_WINDOW_DAYS);
+  const days = report.bookerDays.slice(0, ROSTER_FILL_WINDOW_DAYS);
   const dayIndexes = days.map((iso) => report.days.indexOf(iso));
   if (days.length === 0) return { status: "unmeasured", why: "no day leads can book" };
   if (dayIndexes.some((i) => i < 0)) return { status: "unmeasured", why: "the report does not hold every judged day" };
@@ -159,8 +169,13 @@ function windowPhrase(days: string[]): string {
   return days.length === 1 ? `the next day leads can book (${dayList(days)})` : `the next ${days.length} days leads can book (${dayList(days)})`;
 }
 
+/** Team capacity, as a Slack link to the page the line is set on and the days are drawn on. */
+function teamCapacityLink(appBaseUrl: string): string {
+  return `<${appBaseUrl}/admin/team-capacity|Team capacity>`;
+}
+
 /** The page: the share, the counts, the days, the line, the decision it is for, and the fullest tiers. */
-export function formatRosterFillAlert(r: Measured): string {
+export function formatRosterFillAlert(r: Measured, appBaseUrl: string): string {
   const taken = r.capacity - r.open;
   const tiers =
     r.tiers === null
@@ -174,7 +189,7 @@ export function formatRosterFillAlert(r: Measured): string {
       : `${r.notCounted} advisor${r.notCounted === 1 ? "" : "s"} whose calendar is not syncing ${r.notCounted === 1 ? "is" : "are"} left out of these numbers.`;
   return [
     `Calendars are filling up: ${r.bookedPct}% of the roster's call capacity over ${windowPhrase(r.days)} is already taken ` +
-      `(${taken} of ${r.capacity} calls, ${r.open} still open), at or over the ${r.linePct}% nearly full line set on Team capacity. ` +
+      `(${taken} of ${r.capacity} calls, ${r.open} still open), at or over the ${r.linePct}% nearly full line set on ${teamCapacityLink(appBaseUrl)}. ` +
       `This is the point to consider turning ad spend down.`,
     tiers,
     left,
@@ -184,10 +199,10 @@ export function formatRosterFillAlert(r: Measured): string {
 }
 
 /** The all clear, off a measured reading under the line. */
-export function formatRosterFillRecovery(r: Measured): string {
+export function formatRosterFillRecovery(r: Measured, appBaseUrl: string): string {
   return (
     `Calendars have room again: ${r.bookedPct}% of the roster's call capacity over ${windowPhrase(r.days)} is taken, ` +
-    `under the ${r.linePct}% nearly full line set on Team capacity, so the earlier notice about calendars filling up is cleared.`
+    `under the ${r.linePct}% nearly full line set on ${teamCapacityLink(appBaseUrl)}, so the earlier notice about calendars filling up is cleared.`
   );
 }
 
@@ -203,6 +218,8 @@ export async function runRosterFillCheck(deps: {
   notify: ThrottledNotify<unknown>;
   resolve: AlertResolve<unknown>;
   cooldownMs: number;
+  /** Slate's own address (`appUrl()`), for the Team capacity link. */
+  appBaseUrl: string;
   log?: (fields: Record<string, unknown>) => void;
 }): Promise<RosterFillReading> {
   const why = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -228,9 +245,9 @@ export async function runRosterFillCheck(deps: {
   }
   try {
     if (result.over) {
-      await deps.notify(ROSTER_FILLING_KEY, deps.cooldownMs, formatRosterFillAlert(result), { subjects: [], band: result.band });
+      await deps.notify(ROSTER_FILLING_KEY, deps.cooldownMs, formatRosterFillAlert(result, deps.appBaseUrl), { subjects: [], band: result.band });
     } else {
-      await deps.resolve(ROSTER_FILLING_KEY, formatRosterFillRecovery(result));
+      await deps.resolve(ROSTER_FILLING_KEY, formatRosterFillRecovery(result, deps.appBaseUrl));
     }
   } catch (err) {
     deps.log?.({ status: result.over ? "notify-failed" : "resolve-failed", why: why(err) });

@@ -696,6 +696,9 @@ export const INVITE_MOVE_DM_PREVIEWS: InviteMoveDmPreview[] = [
   { to: "manager", state: "an advisor Slate holds only an address for", text: managerLeftDm({ ...INVITE_MOVE_FACTS, advisorName: null }, "second-move") },
 ];
 
+/** Slate's production address, for copy that links to a page. */
+const PREVIEW_APP_URL = "https://slate.trypennie.app";
+
 /** A roster 88% booked over two days, against the 85% line production holds (#2590). */
 const PREVIEW_ROSTER_FILL: Extract<RosterFillReading, { status: "measured" }> = {
   status: "measured",
@@ -4469,19 +4472,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "roster_filling_up",
     state: "88% booked over the next two days against an 85% line",
     channel: "alert",
-    text: formatRosterFillAlert(PREVIEW_ROSTER_FILL),
+    text: formatRosterFillAlert(PREVIEW_ROSTER_FILL, PREVIEW_APP_URL),
   },
   {
     key: "roster_filling_up",
     state: "the tiers could not be read, two advisors not syncing",
     channel: "alert",
-    text: formatRosterFillAlert({ ...PREVIEW_ROSTER_FILL, tiers: null, notCounted: 2 }),
+    text: formatRosterFillAlert({ ...PREVIEW_ROSTER_FILL, tiers: null, notCounted: 2 }, PREVIEW_APP_URL),
   },
   {
     key: "roster_filling_up",
     state: "back under the line",
     channel: "recovery",
-    text: formatRosterFillRecovery({ ...PREVIEW_ROSTER_FILL, open: 66, bookedPct: 80, over: false, band: 0 }),
+    text: formatRosterFillRecovery({ ...PREVIEW_ROSTER_FILL, open: 66, bookedPct: 80, over: false, band: 0 }, PREVIEW_APP_URL),
   },
   // --- a debt tier nearly full over the days the booker shows (#1256, #3559, #3637)
   {

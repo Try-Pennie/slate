@@ -111,12 +111,14 @@ export function fixtureView(fixture: DesignFixtureFile, frameId: string): Fixtur
     };
   });
 
+  // A snapshot records only the page's days; the booker's are the same list here, since only
+  // the calendars filling up notice reads them and nothing judges it on a design fixture.
   const windowDays = snap.days;
   const days = frame.pick ? [...windowDays, frame.pick] : windowDays;
   const eventType: CapacityEventType = { ...snap.eventType, daily_cap: snap.eventType.daily_cap ?? null };
   const report: TeamCapacityReport = frame.failed
     ? { measurable: false, reason: "calendars" }
-    : { measurable: true, nowMs: stampMs(snap.takenAt), zone: snap.zone, windowDays, days, eventType, advisors };
+    : { measurable: true, nowMs: stampMs(snap.takenAt), zone: snap.zone, windowDays, bookerDays: windowDays, days, eventType, advisors };
   return {
     report,
     nearlyFullPct: fixture.nearlyFullPct,

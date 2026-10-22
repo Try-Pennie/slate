@@ -92,6 +92,7 @@ describe("loadTeamCapacity", () => {
     expect(r.measurable).toBe(true);
     if (!r.measurable) return;
     expect(r.windowDays).toEqual(["2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22"]);
+    expect(r.bookerDays).toEqual(r.windowDays);
     expect(r.advisors.map((a) => a.name)).toEqual(["Avery Calder", "Blake Abbott"]);
     expect(r.advisors[0].days).toHaveLength(4);
   });
@@ -101,12 +102,16 @@ describe("loadTeamCapacity", () => {
     // remaining times are still served, so the page still shows today.
     const r = await loadTeamCapacity({ orgId: "org", now: new Date("2026-10-19T23:10:00Z") });
     expect(r.measurable && r.windowDays).toEqual(["2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23"]);
+    // The booker's own days leave today out, and the report still holds each of them (#4064).
+    expect(r.measurable && r.bookerDays).toEqual(["2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23"]);
+    expect(r.measurable && r.bookerDays.every((d) => r.days.includes(d))).toBe(true);
   });
 
   it("does not add today after the cutoff on a day the office is shut", async () => {
     // Sunday 25 October, 7:10 PM: the office's week here holds no Sunday.
     const r = await loadTeamCapacity({ orgId: "org", now: new Date("2026-10-25T23:10:00Z") });
     expect(r.measurable && r.windowDays).toEqual(["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29"]);
+    expect(r.measurable && r.bookerDays).toEqual(["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29"]);
   });
 
   it("adds a picked day after the window's", async () => {
