@@ -71,8 +71,9 @@ export function buildSmokeFailureMessage(ctx: SmokeFailureContext): string {
 
   // The whole point of #1492: say WHICH checks failed, so the reader can tell a
   // fixture collision from a booking outage without a code read and a production
-  // query. The three states are genuinely different situations and get different
-  // second lines, never one sentence covering every cause.
+  // query. Each recorded state (failures, unreadable, crashed, stopped, none) is a
+  // genuinely different situation and gets its own second line, never one sentence
+  // covering every cause.
   if (ctx.failures.kind === "failures") {
     const named = ctx.failures.lines.slice(0, NAMED_FAILURE_CAP).map(failureLine);
     const rest = ctx.failures.lines.length - named.length;
