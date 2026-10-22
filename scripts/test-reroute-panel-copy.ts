@@ -70,7 +70,7 @@ eq(proposalCopy(move("312", 2), true).heading, "Two tiers down, in 312", "R9: tw
   eq(c.heading, "In 532", "a sideways rung in the same debt tier claims no tier dropped");
   eq(c.body, "Morgan Reyes is free. Nobody in 522 is.", "and still says nobody in the bucket asked for was free");
   eq(proposalCopy({ ...move("432", 4), requested: bucket("522") }, true).heading, "One tier down, in 432", "a rung one debt tier lower is one tier down, whatever its position");
-  const keep: RerouteProposal = { kind: "keep", lastResort: false, advisor: advisor("Taylor Brooks"), bucket: bucket("512"), requested: bucket("522"), rungsDropped: 2 };
+  const keep: RerouteProposal = { kind: "keep", lastResort: false, nobodyElse: false, advisor: advisor("Taylor Brooks"), bucket: bucket("512"), requested: bucket("522"), rungsDropped: 2 };
   eq(proposalCopy(keep, true).heading, "In 512", "a cascaded keep on a sideways rung too");
   eq(proposalCopy(keep, true).body, "Taylor Brooks can keep this call. Nobody in 522 is free.", "naming the bucket asked for");
 }
@@ -80,7 +80,7 @@ eq(proposalCopy(move("312", 2), true).heading, "Two tiers down, in 312", "R9: tw
   eq(c.body, "Morgan Reyes is free. Nobody in Ultra High is.", "R15: and in the body");
 }
 {
-  const p: RerouteProposal = { kind: "keep", lastResort: true, advisor: advisor("Taylor Brooks"), bucket: bucket("512"), requested: bucket("512"), rungsDropped: 0 };
+  const p: RerouteProposal = { kind: "keep", lastResort: true, nobodyElse: false, advisor: advisor("Taylor Brooks"), bucket: bucket("512"), requested: bucket("512"), rungsDropped: 0 };
   const c = proposalCopy(p, true);
   eq(c.heading, "Taylor Brooks stays", "R10: the current advisor stays");
   eq(c.body, "Nobody else in 512 or any tier below is free. The bucket changes to 512 and the advisor does not.", "R10: why, and what changes");
@@ -88,17 +88,41 @@ eq(proposalCopy(move("312", 2), true).heading, "Two tiers down, in 312", "R9: tw
   eq(c.held, false, "R10: nothing is held for a keep");
 }
 {
-  const p: RerouteProposal = { kind: "keep", lastResort: false, advisor: advisor("Taylor Brooks"), bucket: bucket("412"), requested: bucket("512"), rungsDropped: 1 };
+  const p: RerouteProposal = { kind: "keep", lastResort: false, nobodyElse: false, advisor: advisor("Taylor Brooks"), bucket: bucket("412"), requested: bucket("512"), rungsDropped: 1 };
   const c = proposalCopy(p, true);
   eq(c.heading, "One tier down, in 412", "a cascaded keep leads with the drop too");
   eq(c.body, "Taylor Brooks can keep this call. Nobody in 512 is free.", "and says the advisor keeps it");
   eq(c.primary, "Change the bucket to 412", "correcting to where they were kept");
 }
 {
-  const p: RerouteProposal = { kind: "keep", lastResort: false, advisor: advisor("Taylor Brooks"), bucket: bucket("512"), requested: bucket("512"), rungsDropped: 0 };
+  const p: RerouteProposal = { kind: "keep", lastResort: false, nobodyElse: false, advisor: advisor("Taylor Brooks"), bucket: bucket("512"), requested: bucket("512"), rungsDropped: 0 };
   const c = proposalCopy(p, true);
   eq(c.heading, "In 512", "a keep in the bucket asked for");
   eq(c.body, "Taylor Brooks can keep this call.", "the advisor is eligible there");
+}
+{
+  // #4079 (Dan, 2026-10-22, "Keep only"): "Look for a different advisor" found nobody
+  // else on any tier, and the current advisor can still take the call. The result
+  // goes back to the keep, with no Reassign: that stays on the booking's own button.
+  const nobodyElse = (code: string, rungs: number): RerouteProposal => ({
+    kind: "keep", lastResort: false, nobodyElse: true, advisor: advisor("Taylor Brooks"),
+    bucket: bucket(code), requested: bucket("512"), rungsDropped: rungs,
+  });
+  const c = proposalCopy(nobodyElse("512", 0), true);
+  eq(c.heading, "Nobody else is free", "the heading says nobody else, not nobody");
+  eq(c.body, "Taylor Brooks can keep this call. Nobody else in 512 or any tier below is free.", "who keeps it, and that nobody else could");
+  eq(c.note, true, "with the note");
+  eq(c.primary, "Change the bucket to 512", "the ordinary keep's own confirm");
+  eq(c.cancel, true, "and Cancel");
+  eq(c.reassign, null, "and no Reassign on this result");
+  eq(c.held, false, "nothing is held");
+  eq(proposalCopy(nobodyElse("412", 1), true).primary, "Change the bucket to 412", "a keep a tier down corrects to where they are kept");
+  eq(proposalCopy(nobodyElse("412", 1), true).heading, "Nobody else is free", "and still leads with nobody else being free");
+  eq(proposalCopy({ ...nobodyElse("512", 0), lastResort: true }, true).heading, "Nobody else is free",
+    "a last resort keep of an excluded advisor reads the same");
+  const m = proposalCopy(nobodyElse("512", 0), false);
+  eq(m.body, "Taylor Brooks can keep this call. Nobody else in Ultra High or any tier below is free.", "in a manager's pool words");
+  eq(m.primary, "Change the pool to Ultra High", "and the manager's confirm");
 }
 {
   // #3487: the advisor is out and nobody else is free. Never "stays", never a bucket change.

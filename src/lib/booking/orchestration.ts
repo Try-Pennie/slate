@@ -3181,7 +3181,9 @@ export async function currentAgentUnavailableIn(
  * `walkTierLadder`, in Dan's order: at each rung, keep the current advisor if they
  * fit, otherwise the first advisor in round robin order verified free; nobody on
  * any rung keeps the current advisor as the last resort, unless they cannot take
- * the call either (#3487), which is `none-current-unavailable`.
+ * the call either (#3487), which is `none-current-unavailable`. A current advisor
+ * in `excludeUserIds` ("look for a different advisor") is kept only after nobody
+ * else on any rung is free (#4056), so every keep of theirs then means that.
  *
  * The window is the booking's STORED start and end, never recomputed. A verify
  * outage throws `VerifyUnavailableError` (retriable) rather than cascading past an
@@ -3199,9 +3201,15 @@ export async function findRerouteTarget(
   const startIso = new Date(booking.starts_at).toISOString();
   const endIso = new Date(booking.ends_at).toISOString();
   const allowTest = requested.bucket.is_test;
+  // #4056: "Look for a different advisor" excludes the CURRENT advisor. Their keep is
+  // then never the first answer: everyone else on every rung is searched first, and
+  // the first rung they fit is kept only when nobody else anywhere is free (#4079).
+  const currentExcluded = !!current && (opts.excludeUserIds ?? []).includes(current);
 
   // The current advisor's picture on the requested rung, kept for the last resort.
   let requestedPicture: CurrentAgentPicture | null = null;
+  // The first rung an EXCLUDED current advisor fits, held back until the ladder ends.
+  let excludedKeep: { bucket: Bucket; eventType: EventType; rungsDropped: number } | null = null;
   type Hit =
     | { keep: true; bucket: Bucket; eventType: EventType }
     | { keep: false; bucket: Bucket; eventType: EventType; userId: string; email: string; candidates: string[] };
@@ -3215,7 +3223,10 @@ export async function findRerouteTarget(
       const picture = await deps.loadCurrentAgentPicture(resolved.bucket, resolved.eventType, booking);
       if (i === 0) requestedPicture = picture;
       if (currentAgentFitsRung(picture, current, resolved.eventType, booking, excludeLow, deps.now())) {
-        return { hit: true, value: { keep: true, bucket: resolved.bucket, eventType: resolved.eventType } };
+        if (!currentExcluded) {
+          return { hit: true, value: { keep: true, bucket: resolved.bucket, eventType: resolved.eventType } };
+        }
+        excludedKeep ??= { bucket: resolved.bucket, eventType: resolved.eventType, rungsDropped: i };
       }
     }
     try {
@@ -3242,6 +3253,12 @@ export async function findRerouteTarget(
   });
 
   if (!winner) {
+    // #4056: nobody else on any rung is free, so the excluded advisor comes back on
+    // the first rung they fit, exactly the keep the search without the exclusion finds.
+    if (excludedKeep) {
+      const { bucket, eventType, rungsDropped } = excludedKeep;
+      return { outcome: rungsDropped === 0 ? "keep-in-requested" : "keep-cascaded", bucket, eventType, rungsDropped };
+    }
     // #3487: the last resort keeps an advisor who can still take the call. One who
     // cannot (time off, off shift, not free) is not kept: there is nobody to keep.
     // Judged on the requested rung, whose event type the kept call would carry.
