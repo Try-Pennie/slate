@@ -1796,9 +1796,9 @@ async function main() {
     });
     assert(
       tally.created === 2 && tally.SLOT_TAKEN === BURST - 2,
-      `production crowd, pool of 2: two booked, the rest told SLOT_TAKEN (got ${JSON.stringify(tally)})`,
+      `slow crowd, pool of 2: two booked, the rest told SLOT_TAKEN (got ${JSON.stringify(tally)})`,
     );
-    assert(bySlot.size === 2, "production crowd, pool of 2: one booking per advisor, never a double");
+    assert(bySlot.size === 2, "slow crowd, pool of 2: one booking per advisor, never a double");
     // The second booking was made from a pool thinned of the first one's claim. Before
     // #3529 it could not call the slot full (the first might have failed), so one confirm
     // led and read for itself to find nobody left. Now its verdict is full `unlessFreed`:
@@ -1806,11 +1806,11 @@ async function main() {
     // 98 are answered from it and none reads. (When a claim does end unbooked, one confirm
     // reads again: test-confirm-queue.ts, "unless freed control".)
     const readers = runs.filter((r) => r.outcome !== "created" && r.calls.some((c) => !LOOKAHEAD_READS.has(c.name)));
-    assert(readers.length === 0, `production crowd, pool of 2: the refused confirms only look ahead, none reads (got ${readers.length})`);
-    assert(quiet(runs.filter((r) => r.outcome !== "created" && !readers.includes(r))), "production crowd, pool of 2: the rest stay inside the lookahead bound");
+    assert(readers.length === 0, `slow crowd, pool of 2: the refused confirms only look ahead, none reads (got ${readers.length})`);
+    assert(quiet(runs.filter((r) => r.outcome !== "created" && !readers.includes(r))), "slow crowd, pool of 2: the rest stay inside the lookahead bound");
     assert(
       readers.every((r) => r.calls.every((c) => c.name !== "verifyFree" && c.name !== "createEvent")),
-      "production crowd, pool of 2: that one never asks Google",
+      "slow crowd, pool of 2: that one never asks Google",
     );
   }
 
@@ -1828,14 +1828,14 @@ async function main() {
       slowGoogleMs: 3_000,
       slowEventMs: 5_000,
     });
-    assert(tally.created === 20, `production crowd, pool of 20: all twenty advisors are booked (got ${JSON.stringify(tally)})`);
-    assert(bySlot.size === 20 && raceLosses === 0, `production crowd, pool of 20: one booking each, no race lost (got ${bySlot.size}, ${raceLosses})`);
+    assert(tally.created === 20, `slow crowd, pool of 20: all twenty advisors are booked (got ${JSON.stringify(tally)})`);
+    assert(bySlot.size === 20 && raceLosses === 0, `slow crowd, pool of 20: one booking each, no race lost (got ${bySlot.size}, ${raceLosses})`);
     const others = runs.filter((r) => r.outcome !== "created");
     assert(
       others.every((r) => r.outcome === "SLOT_TAKEN" || r.outcome === "503"),
-      `production crowd, pool of 20: the rest are told taken or to retry, nothing else (got ${JSON.stringify(tally)})`,
+      `slow crowd, pool of 20: the rest are told taken or to retry, nothing else (got ${JSON.stringify(tally)})`,
     );
-    assert(quiet(others), "production crowd, pool of 20: none of the rest reads beyond the bounded lookahead");
+    assert(quiet(others), "slow crowd, pool of 20: none of the rest reads beyond the bounded lookahead");
   }
 
   // --- #3257 review: two confirms that lose a race at once move apart ---------
@@ -1972,7 +1972,7 @@ async function main() {
   // --- #3257 review: a REPLAY is answered at once, not behind a slow leader ----
   //
   // Lead 7 booked this time on a a moment ago and their client retries the
-  // submit. Meanwhile lead 0 is booking the last free advisor, b, at production
+  // submit. Meanwhile lead 0 is booking the last free advisor, b, at the slow
   // speed. On main the retry was answered from its idempotency key straight away;
   // queued behind lead 0 it waited about eight seconds. It must be answered at
   // once with the booking it already has, on both paths: the booker by its
@@ -2026,7 +2026,7 @@ async function main() {
   // --- #3257 review: a lead MOVING their call does not hold up a new booking ----
   //
   // Lead 9 holds 14:00 with p5 and asks the booking API for 13:00, which moves
-  // their call in place (a live busy read and an event move, 8s at production
+  // their call in place (a live busy read and an event move, 8s at the slow
   // speed). Lead 0, unrelated, wants 13:00 in the same pool of twenty and arrives
   // half a second later. Lead 9's move takes one advisor at 13:00, so it claims
   // p5 and hands the line on rather than holding it for the whole move: lead 0 is

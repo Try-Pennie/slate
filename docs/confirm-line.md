@@ -126,8 +126,8 @@ reservation the drain later finishes into a booking for a lead told it failed
 chains that committed inside their budget (reservation write to the insert's
 answer) and are under 14 seconds old, and never less than the confirm's own slowest
 Google call. The age bound is what stops one slow chain holding an isolate's later
-confirms out for good, since a refused confirm records nothing (L465). In the simulation, a crowd of 100 at production
-speed: 1 booked, 99 told to retry, 0 told taken, 0 reservations or events left.
+confirms out for good, since a refused confirm records nothing (L465). In the simulation, a crowd of 100 at a slow
+confirm's speed (8s): 1 booked, 99 told to retry, 0 told taken, 0 reservations or events left.
 
 ## Releasing the crowd, walking past claims, and parking (#3489)
 
