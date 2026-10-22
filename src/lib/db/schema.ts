@@ -271,9 +271,6 @@ export interface Database {
         Args: { p_org: string; p_from: string };
         Returns: string[];
       };
-      /** #3940 (migration 0191): one capacity-history tick's rows merged in (open times as a
-       *  set union, unsynced sticky) and the org's cursor moved forward, in one transaction.
-       *  Returns the rows written. */
       /** #4102 (migration 0198): one run's booking pace readings and snapshots, written only
        *  when the org's latest snapshot is still p_prev_read_at and p_read_at is later. Returns
        *  whether it wrote. */
@@ -281,6 +278,9 @@ export interface Database {
         Args: { p_org: string; p_read_at: string; p_prev_read_at: string | null; p_rows: unknown; p_last: unknown };
         Returns: boolean;
       };
+      /** #3940 (migration 0191): one capacity-history tick's rows merged in (open times as a
+       *  set union, unsynced sticky) and the org's cursor moved forward, in one transaction.
+       *  Returns the rows written. */
       record_capacity_history: {
         Args: { p_org: string; p_rows: unknown; p_through: string };
         Returns: number;

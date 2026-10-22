@@ -75,6 +75,8 @@ for (const env of [undefined, "loadtest"] as const) {
     "src/lib/booking/confirm-queue.ts",
     "src/lib/booking/pool-grouping.ts",
     "src/lib/booking/line-key.ts",
+    // #4102: the ladder key's hash, shared with the booking pace readings. No imports of its own.
+    "src/lib/cyrb53.ts",
     "src/lib/routing/tiers.ts",
     "src/lib/xbc.ts",
     "src/lib/read-within-deadline.ts",

@@ -31,6 +31,7 @@
 import { DateTime } from "luxon";
 import type { BusinessHoursRules } from "../availability/compute.ts";
 import { BUSY_PRUNE_KEEP_PAST_HOURS } from "../busy/prune-core.ts";
+import { cyrb53 } from "../cyrb53.ts";
 import { capacityDays } from "./capacity-days.ts";
 import type { CapacityPeople, CapacityRead } from "./team-capacity-load.ts";
 import { advisorDay, capacityStarts, dayTotals, type AdvisorDayInput, type CapacityEventType } from "./team-capacity.ts";
@@ -74,17 +75,8 @@ export function officeSlot(readAtMs: number, zone: string): { slotOfDay: number;
  * is seen even when the count comes out the same, without storing every start.
  */
 export function capacityFingerprint(starts: string[]): string {
-  const text = starts.join(",");
-  let h1 = 0xdeadbeef ^ starts.length;
-  let h2 = 0x41c6ce57 ^ starts.length;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+  // Seeded with the count, so an empty day and a day of one call never share a name.
+  return cyrb53(starts.join(","), starts.length);
 }
 
 /** One counted advisor as a reading saw them: what the next reading compares with. */
