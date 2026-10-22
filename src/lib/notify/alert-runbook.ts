@@ -119,6 +119,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #1256: a pool close to offering nothing today; the same family as the booked
   // solid page that owns the moment it does.
   pool_nearly_full: "the-booker-is-offering-nothing-or-too-little",
+  // #2590: the same question as the nearly full whisper, for the whole roster at once.
+  roster_filling_up: "the-booker-is-offering-nothing-or-too-little",
   tier_fallback_deep: "the-booker-is-offering-nothing-or-too-little",
   // #2158: this one IS the booker offering nothing, and to a real person, so it
   // sits with the family whose first check is the availability health endpoint.

@@ -8,7 +8,11 @@ import { unwrap } from "@/lib/db/result";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { runHistoryTick, type HistoryTickResult } from "@/lib/admin/capacity-history";
 import { readHistoryCursor, readSavedCalls, writeHistory } from "@/lib/admin/capacity-history-store";
-import { loadCapacityPeople, loadCapacityRules } from "@/lib/admin/team-capacity-load";
+import { loadCapacityPeople, loadCapacityRules, loadTeamCapacity } from "@/lib/admin/team-capacity-load";
+import { readNearlyFullPct } from "@/lib/booking/settings";
+import { loadTierAgentIds } from "@/lib/monitor/tier-staffing-load";
+import { runRosterFillCheck } from "@/lib/monitor/roster-fill";
+import { resolveAlert, sendThrottledAlert } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -23,6 +27,13 @@ export const dynamic = "force-dynamic";
  * tick lapses it and the watchdog pages (LANE_STALE_BOUNDS_MS).
  */
 const LOCK_TTL_MS = 5 * 60_000;
+
+/**
+ * The roster filling up notice's cooldown (#2590). A condition, so the dispatcher repeats an
+ * unchanged one once a day whatever this says and posts a worse band at once (#3801); this only
+ * bounds a retry after a failed post.
+ */
+const ROSTER_FILL_COOLDOWN_MS = 4 * 60 * 60_000;
 
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
@@ -61,6 +72,30 @@ export async function GET(req: NextRequest) {
       });
     }
     await recordHeartbeat("capacity-history");
+    // #2590: calendars filling up across the roster, judged against the Team capacity line.
+    // After the heartbeat, because it is not what the heartbeat vouches for, and it never throws:
+    // a reading it could not take posts nothing and clears nothing, and says so in the log.
+    // The notice is about the whole roster under one key, which holds while Slate serves one
+    // organisation; with more it is skipped by name rather than judged across them.
+    const [onlyOrg] = orgs;
+    if (orgs.length === 1 && onlyOrg) {
+      await runRosterFillCheck({
+        loadReport: () => loadTeamCapacity({ orgId: onlyOrg.id, now: new Date(nowMs) }),
+        readLine: readNearlyFullPct,
+        loadTierAgents: loadTierAgentIds,
+        // alert-key: roster_filling_up
+        // alert-text-ok: our own copy from roster-fill.ts, never a raw error.
+        notify: sendThrottledAlert,
+        // alert-key: roster_filling_up
+        // all-clear-proof: scripts/test-roster-fill.ts - an unreadable report, an unreadable line,
+        // and a read that throws each clear nothing.
+        resolve: resolveAlert,
+        cooldownMs: ROSTER_FILL_COOLDOWN_MS,
+        log: (fields) => log.info("capacity-history", { msg: "roster fill", ...fields }),
+      });
+    } else {
+      log.error("capacity-history", { msg: "roster fill skipped", orgs: orgs.length }, new Error("roster fill judges one organisation"));
+    }
     return NextResponse.json({ results });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -13,7 +13,14 @@ vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 vi.mock("@/lib/admin/capacity-history", () => history);
 vi.mock("@/lib/admin/capacity-history-store", () => ({ readHistoryCursor: vi.fn(), readSavedCalls: vi.fn(), writeHistory: vi.fn() }));
-vi.mock("@/lib/admin/team-capacity-load", () => ({ loadCapacityRules: vi.fn(), loadCapacityPeople: vi.fn() }));
+vi.mock("@/lib/admin/team-capacity-load", () => ({ loadCapacityRules: vi.fn(), loadCapacityPeople: vi.fn(), loadTeamCapacity: vi.fn() }));
+// #2590: the roster filling up check rides on this lane. Its rules are driven natively by
+// scripts/test-roster-fill.ts; here only when it runs, and that it waits for the heartbeat.
+const rosterFill = vi.hoisted(() => ({ runRosterFillCheck: vi.fn(async () => ({ status: "unmeasured", why: "test" })) }));
+vi.mock("@/lib/monitor/roster-fill", () => rosterFill);
+vi.mock("@/lib/booking/settings", () => ({ readNearlyFullPct: vi.fn() }));
+vi.mock("@/lib/monitor/tier-staffing-load", () => ({ loadTierAgentIds: vi.fn() }));
+vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert: vi.fn(), resolveAlert: vi.fn() }));
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
@@ -66,6 +73,30 @@ describe("GET /api/cron/capacity-history", () => {
     const res = await GET(req());
     expect(res.status).toBe(500);
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("judges the roster filling up once the heartbeat is stamped, for the one organisation", async () => {
+    history.runHistoryTick.mockResolvedValue(ok);
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(rosterFill.runRosterFillCheck).toHaveBeenCalledTimes(1);
+    expect(heartbeat.recordHeartbeat.mock.invocationCallOrder[0]).toBeLessThan(
+      rosterFill.runRosterFillCheck.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("does not judge the roster filling up when the history tick failed", async () => {
+    history.runHistoryTick.mockRejectedValueOnce(new Error("capacity history could not read calendars"));
+    await GET(req());
+    expect(rosterFill.runRosterFillCheck).not.toHaveBeenCalled();
+  });
+
+  it("skips the roster filling up check by name with more than one organisation", async () => {
+    orgs.rows = [{ id: "org-1" }, { id: "org-2" }];
+    history.runHistoryTick.mockResolvedValue(ok);
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(rosterFill.runRosterFillCheck).not.toHaveBeenCalled();
   });
 
   it("stands down for an overlapping run", async () => {
