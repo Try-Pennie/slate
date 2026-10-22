@@ -2966,7 +2966,7 @@ async function assignAgent(
  * Confirms running side by side for one time would otherwise all take the same
  * top advisor, since the round robin orders every one of them alike, and all but
  * one would lose the insert race and pay a second free check and calendar event to
- * be reassigned, which at production speed outruns the budget. So the advisors
+ * be reassigned, which at a slow confirm's speed (8s, #3221) outruns the budget. So the advisors
  * other confirms in flight have claimed are left out, and this confirm claims the
  * first of the rest before the slow live check. When another unclaimed advisor is
  * left after it, the line is handed on now, so the next confirm starts at once.

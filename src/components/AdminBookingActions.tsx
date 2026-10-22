@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { DateTime } from "luxon";
 
@@ -129,6 +129,16 @@ export default function AdminBookingActions({
   // #565: a chosen target who is out of the bookable rotation gets the same
   // two-step confirm as the at-cap case (was a single unguarded click).
   const [rotationWarn, setRotationWarn] = useState<{ email: string; name: string } | null>(null);
+  // #4043: Reroute's nobody result hands over to this Reassign picker, and the
+  // button pressed goes with the Reroute panel, so focus moves to the picker's
+  // first reason rather than falling to the page.
+  const focusReassign = useRef(false);
+  const firstReassignReason = options.reassign[0]?.code;
+  useEffect(() => {
+    if (!focusReassign.current || mode !== "reassign") return;
+    focusReassign.current = false;
+    document.getElementById(`admin-reassign-${bookingId}-${firstReassignReason}`)?.focus();
+  }, [mode, bookingId, firstReassignReason]);
 
   // Only confirmed/rescheduled bookings can be changed. The page drops the whole
   // card in that case (#1943), so this is a backstop rather than the surface a
@@ -284,7 +294,16 @@ export default function AdminBookingActions({
     return (
       <div>
         {actionRow("reroute")}
-        <ReroutePanel bookingId={bookingId} currentCode={bucketCode} showCodes={showCodes} onChanged={() => router.refresh()} />
+        <ReroutePanel
+          bookingId={bookingId}
+          currentCode={bucketCode}
+          showCodes={showCodes}
+          onChanged={() => router.refresh()}
+          onReassign={() => {
+            focusReassign.current = true;
+            openReassign();
+          }}
+        />
       </div>
     );
   }
