@@ -1,10 +1,10 @@
-// The Slack line for a FINISHED demotion sweep (#3615): which sweeps say it, under which key, and
-// from which counts. It used to go out when the sweep was queued and said "is moving 1 call" for
-// a call nobody was free to take (evaldez1, 2026-10-21); the drain now calls this once per sweep,
-// from the tick whose done flip landed.
+// How a FINISHED demotion sweep (#3615) is recorded: which sweeps record it, and from which counts.
+// It was a Slack whisper until 2026-10-23, when Dan turned it off ("you can log it but I don't need
+// a slack message"): it never asked anybody to act, so it is now one log line and no post.
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-demotion-outcome-report.ts
 import { reportDemotionSweepOutcome, type DemotionOutcomeReportDeps } from "../src/lib/booking/demotion-outcome-report.ts";
 import type { BulkReassignItemStatus, BulkReassignJob } from "../src/lib/db/types.ts";
+import type { LogFields } from "../src/lib/log.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const change = { from: { debtTeam: ["medium", "low"], backendService: ["achieve"] }, to: { debtTeam: ["medium"], backendService: ["achieve"] } };
@@ -17,80 +17,73 @@ const demotionJob = {
 } as unknown as BulkReassignJob;
 
 function deps(statuses: BulkReassignItemStatus[], over: Partial<DemotionOutcomeReportDeps> = {}) {
-  const sent: { key: string; text: string }[] = [];
+  const logged: LogFields[] = [];
   const reads: string[] = [];
   const d: DemotionOutcomeReportDeps = {
     loadItemStatuses: async (jobId) => {
       reads.push(`items:${jobId}`);
       return statuses.map((status) => ({ status }));
     },
-    loadAdvisor: async (userId) => {
-      reads.push(`advisor:${userId}`);
-      return { email: "evaldez1@trypennie.com", isTest: false };
-    },
-    appUrl: () => "https://slate.trypennie.app",
-    sendInfo: async (key, text) => {
-      sent.push({ key, text });
+    log: (fields) => {
+      logged.push(fields);
     },
     ...over,
   };
-  return { d, sent, reads };
+  return { d, logged, reads };
 }
 
-// A demotion sweep says how its calls settled, under its advisor's own key.
+// The module no longer offers a Slack sender at all, so nothing here can post.
 {
-  const { d, sent } = deps(["unplaceable"]);
+  const { d } = deps(["moved"]);
+  assert(!("sendInfo" in d), "the reporter takes no Slack sender");
+}
+
+// A demotion sweep logs how its calls settled, once, naming the advisor and the sweep by id.
+{
+  const { d, logged } = deps(["unplaceable"]);
   await reportDemotionSweepOutcome(demotionJob, d);
-  eq(sent.length, 1, "a finished demotion sweep sends one line");
-  eq(sent[0]?.key, "demotion_reroute_moved:u1", "keyed by the advisor, so another advisor's sweep a tick later is not throttled away");
-  assert(/None moved/.test(sent[0]?.text ?? "") && !/moving/.test(sent[0]?.text ?? ""), `it reports the settled counts (got: ${sent[0]?.text})`);
-  assert((sent[0]?.text ?? "").includes("https://slate.trypennie.app/admin/agents/u1?job=job1"), "and links the sweep on the advisor's page");
-  assert((sent[0]?.text ?? "").includes("Medium and Low to Medium"), "and what changed, read from the job's record");
-}
-
-// Every other sweep (time off, offboarding, Redistribute, an admin's) says nothing here, and reads nothing.
-{
-  const { d, sent, reads } = deps(["moved"]);
-  await reportDemotionSweepOutcome({ ...demotionJob, demotion_marked_at: null } as BulkReassignJob, d);
-  eq(sent.length + reads.length, 0, "a sweep that is not a demotion sends nothing and reads nothing");
-}
-
-// The daily reroute drill sweeps a test advisor every day through this same drain, so a test
-// advisor's sweep says nothing: the drill reports its own verdict.
-{
-  const { d, sent } = deps(["moved"], { loadAdvisor: async () => ({ email: "smoketest@trypennie.com", isTest: true }) });
-  await reportDemotionSweepOutcome(demotionJob, d);
-  eq(sent.length, 0, "a test advisor's sweep (the daily drill) posts nothing");
+  eq(logged.length, 1, "a finished demotion sweep logs one line");
+  eq(logged[0]?.out_user_id, "u1", "naming the advisor by id");
+  eq(logged[0]?.job_id, "job1", "and the sweep by id");
+  eq(logged[0]?.moved, 0, "with the moved count");
+  eq(logged[0]?.unplaceable, 1, "and the calls nobody was free to take");
+  eq(logged[0]?.from_tiers, "medium,low", "and what changed, read from the job's record");
+  eq(logged[0]?.to_tiers, "medium", "both sides of it");
 }
 
 // The counts come from every item of the sweep, not only the ones the last tick touched.
 {
-  const { d, sent } = deps(["moved", "moved", "unplaceable"]);
+  const { d, logged } = deps(["moved", "moved", "unplaceable"]);
   await reportDemotionSweepOutcome(demotionJob, d);
-  assert(/2 of 3 moved/.test(sent[0]?.text ?? ""), `mixed outcomes are counted from the items (got: ${sent[0]?.text})`);
+  eq(logged[0]?.total, 3, "every item is counted");
+  eq(logged[0]?.moved, 2, "mixed outcomes are counted from the items");
 }
 
-// A read that fails throws rather than sending a line built from nothing: an empty item list
-// would read as "None moved" and an unknown advisor as nobody. The drain logs the throw.
+// Every other sweep (time off, offboarding, Redistribute, an admin's) records nothing here, and reads nothing.
 {
-  const { d, sent } = deps([], { loadItemStatuses: async () => { throw new Error("db down"); } });
-  let threw = false;
-  try {
-    await reportDemotionSweepOutcome(demotionJob, d);
-  } catch {
-    threw = true;
-  }
-  assert(threw && sent.length === 0, "a failed item read throws and sends nothing");
+  const { d, logged, reads } = deps(["moved"]);
+  await reportDemotionSweepOutcome({ ...demotionJob, demotion_marked_at: null } as BulkReassignJob, d);
+  eq(logged.length + reads.length, 0, "a sweep that is not a demotion logs nothing and reads nothing");
 }
+
+// A change the job never recorded is logged as unknown, never as an empty tier list.
 {
-  const { d, sent } = deps(["moved"], { loadAdvisor: async () => null });
+  const { d, logged } = deps(["moved"]);
+  await reportDemotionSweepOutcome({ ...demotionJob, demotion_change: null } as BulkReassignJob, d);
+  eq(logged[0]?.from_tiers, null, "an unrecorded change logs its tiers as unknown");
+}
+
+// A read that fails throws rather than logging counts built from nothing: an empty item list
+// would read as nothing moved. The drain logs the throw.
+{
+  const { d, logged } = deps([], { loadItemStatuses: async () => { throw new Error("db down"); } });
   let threw = false;
   try {
     await reportDemotionSweepOutcome(demotionJob, d);
   } catch {
     threw = true;
   }
-  assert(threw && sent.length === 0, "an advisor who cannot be found throws and sends nothing");
+  assert(threw && logged.length === 0, "a failed item read throws and logs no counts");
 }
 
 finish();

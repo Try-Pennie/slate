@@ -414,7 +414,6 @@ import {
   twilioOrphanedMarkRecovery,
   demotionTriggerFailureAlert,
   demotionTriggerFailureRecovery,
-  demotionRerouteOutcomeInfo,
   agentSyncRecovery,
   salesforceManagerAmbiguousAlert,
   salesforceManagerAmbiguousRecovery,
@@ -6134,27 +6133,6 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: demotionTriggerFailureAlert({ switchUnreadable: true, evals: 1, sweeps: 2, writes: 3 }) },
   { key: "demotion_trigger_failures", state: "the reroute is running cleanly again", channel: "recovery",
     text: demotionTriggerFailureRecovery() },
-  { key: "demotion_reroute_moved:*", state: "nobody else was free, the call stayed", channel: "info",
-    text: demotionRerouteOutcomeInfo({
-      email: "advisor@trypennie.com",
-      change: { from: { debtTeam: ["medium", "low"], backendService: ["achieve"] }, to: { debtTeam: ["medium"], backendService: ["achieve"] } },
-      counts: { moved: 0, unplaceable: 1, failed: 0, skipped: 0, cancelled: 0 },
-      url: "https://slate.trypennie.app/admin/agents/3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b?job=0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d",
-    }) },
-  { key: "demotion_reroute_moved:*", state: "every call moved", channel: "info",
-    text: demotionRerouteOutcomeInfo({
-      email: "advisor@trypennie.com",
-      change: { from: { debtTeam: ["ultra_high", "high"], backendService: [] }, to: { debtTeam: ["high"], backendService: [] } },
-      counts: { moved: 3, unplaceable: 0, failed: 0, skipped: 0, cancelled: 0 },
-      url: "https://slate.trypennie.app/admin/agents/3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b?job=0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d",
-    }) },
-  { key: "demotion_reroute_moved:*", state: "mixed, change not recorded", channel: "info",
-    text: demotionRerouteOutcomeInfo({
-      email: "advisor@trypennie.com",
-      change: null,
-      counts: { moved: 2, unplaceable: 1, failed: 1, skipped: 1, cancelled: 0 },
-      url: "https://slate.trypennie.app/admin/agents/3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b?job=0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d",
-    }) },
   // Each shape alone, then all three together, because the sentence is assembled
   // from parts and a reader has to be able to see each one read on its own.
   { key: "salesforce_user_id_conflicts", state: "one stored id disagrees", channel: "alert",
