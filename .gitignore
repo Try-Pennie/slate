@@ -22,18 +22,12 @@
 
 # misc
 .DS_Store
-*.pem
 
 # debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
-
-# env files (can opt-in for committing if needed)
-.env*
-# ...but keep the committed placeholder template discoverable
-!.env.example
 
 # vercel
 .vercel
@@ -45,12 +39,22 @@ next-env.d.ts
 # Cloudflare / OpenNext
 .open-next/
 .wrangler/
-.dev.vars
 
-# extra secrets safety
-.cf-secrets.json
-*-key.json
-service-account*.json
+# >>> secret-bearing files
+# Every pattern here ends in `*`, so a COPY of the file is ignored with it: a
+# backup (.bak, .orig, ~, " copy") is the first thing anyone makes before
+# editing one, and it carries the same secrets (#3650). Add a new secret file
+# here, never in another section: scripts/test-repo-hygiene.ts reads this block
+# and fails on a pattern without the trailing `*` or a copy git would track.
+.env*
+.dev.vars*
+.cf-secrets.json*
+*.pem*
+*-key.json*
+service-account*.json*
+# ...but keep the committed placeholder template discoverable
+!.env.example
+# <<< secret-bearing files
 
 # local browser-profile artifacts
 /.playwright-mcp/
