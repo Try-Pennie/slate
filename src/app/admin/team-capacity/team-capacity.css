@@ -11,6 +11,11 @@
 .tc-scope .totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 
 .tc-scope .tcard { background: var(--surface); border-radius: var(--radius-md, 10px); box-shadow: var(--shadow-xs); padding: 16px 18px; color: var(--fg); }
+/* The time off lines and their rule sit at the bottom of every card, so they line up across a row
+   whatever number of pace lines each card has: whatever is just above the first one takes the spare
+   height, and the line keeps its own 12px margin (Dan, 2026-10-23, #4101 decision 19, #4145). */
+.tc-scope .tcard { display: flex; flex-direction: column; }
+.tc-scope .tcard > :not(.tout):has(+ .tout) { margin-bottom: auto; }
 
 :root[data-theme="dark"] .tc-scope .tcard { border: 1px solid var(--border); box-shadow: none; }
 

@@ -53,15 +53,6 @@ export function parseSmokeReport(body: unknown): { ok: true; report: SmokeReport
 }
 
 /**
- * Slack reads `<!channel>`, `<!here>` and `<!subteam...>` in message text as a mention
- * of everybody. The text comes from a caller holding the canary key, so it is not
- * trusted to page a whole channel: the marker is broken so it renders as text.
- */
-export function withoutBroadcastMentions(text: string): string {
-  return text.replace(/<!/g, "< !");
-}
-
-/**
  * The subjects of a canary failure: its checks with every number stripped, so a slow
  * read reported at 4,210ms and then at 4,380ms is the same failing check, and only a
  * check that was not failing at the last post is a change.

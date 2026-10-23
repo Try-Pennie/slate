@@ -20,6 +20,7 @@
  */
 
 import { proofAlertText } from "./run-summary-file.ts";
+import { DRILL_LEASE_WAIT_MS, minutesOf, waitForTestAdvisors } from "./test-advisor-lease-wait.ts";
 
 /** Every way the command can end, on its own code (L11). */
 export const REROUTE_DRILL_EXIT = {
@@ -70,6 +71,9 @@ export const REROUTE_DRILL_EXIT = {
   errored: 22,
   /** The drill measured the pipeline (a pass or a definite failure) and THEN could not clean up. */
   cleanupFailedAfterVerdict: 23,
+  /** #4180: the smoke canary held the shared test advisors past the drill's whole wait, so the
+   *  drill never started. NOT MEASURED, and never the did-not-move a collision used to cause. */
+  testAdvisorsHeld: 24,
 } as const;
 
 export type RerouteDrillExit = (typeof REROUTE_DRILL_EXIT)[keyof typeof REROUTE_DRILL_EXIT];
@@ -78,6 +82,7 @@ export type RerouteDrillExit = (typeof REROUTE_DRILL_EXIT)[keyof typeof REROUTE_
 export const REASON_EXIT: Record<string, RerouteDrillExit> = {
   passed: REROUTE_DRILL_EXIT.passed,
   busy: REROUTE_DRILL_EXIT.busy,
+  "test-advisors-held": REROUTE_DRILL_EXIT.testAdvisorsHeld,
   "not-seeded": REROUTE_DRILL_EXIT.notSeeded,
   "no-free-slot": REROUTE_DRILL_EXIT.noFreeSlot,
   "booking-refused": REROUTE_DRILL_EXIT.bookingRefused,
@@ -178,7 +183,40 @@ export const RUN_JUDGEMENT: Record<RerouteDrillExit, RunJudgement> = {
     headline:
       "The reroute drill judged the pipeline and then could not clean up after itself, so a test call may still be booked or a test advisor may still be missing the drill tier. What it judged is below.",
   },
+  // #4180: not a fault of the reroute pipeline, which was never asked. Said in the same blind
+  // wording as a drill that could not start for any other reason, so nobody reads it as broken.
+  [REROUTE_DRILL_EXIT.testAdvisorsHeld]: {
+    concluded: false,
+    headline: `Another run (usually the smoke canary) held the two smoke test advisors for the reroute drill's whole ${minutesOf(DRILL_LEASE_WAIT_MS)} minute wait, so the drill did not start and the reroute pipeline was not exercised today. This is not a reroute fault.`,
+  },
 };
+
+/**
+ * Ask the deployment to run the drill, asking again while the smoke canary holds the shared test
+ * advisors (#4180), up to the drill's bound. `ask` sends one request and reads its reply into an
+ * exit; every exit but the held lease ends the wait at once, since nothing else is fixed by
+ * waiting. Past the bound the drill is NOT MEASURED, on its own exit.
+ */
+export async function askDrillWhenAdvisorsFree(
+  ask: () => Promise<{ exit: RerouteDrillExit; detail: string }>,
+  deps: { now(): number; sleep(ms: number): Promise<void>; boundMs?: number; intervalMs?: number },
+): Promise<{ exit: RerouteDrillExit; detail: string }> {
+  const boundMs = deps.boundMs ?? DRILL_LEASE_WAIT_MS;
+  const waited = await waitForTestAdvisors(
+    async () => {
+      const reply = await ask();
+      return reply.exit === REROUTE_DRILL_EXIT.testAdvisorsHeld ? { busy: true as const } : { busy: false as const, value: reply };
+    },
+    { now: deps.now, sleep: deps.sleep, boundMs, intervalMs: deps.intervalMs },
+  );
+  if (waited.kind === "answered") return waited.value;
+  return {
+    exit: REROUTE_DRILL_EXIT.testAdvisorsHeld,
+    detail:
+      `The smoke test advisors were still held by another run after ${minutesOf(boundMs)} minutes (${waited.tries} asks), ` +
+      "so the drill did not start and today's run is not measured.",
+  };
+}
 
 const SILENCE = "This repeats once a day until a run passes, and a run that passes says nothing.";
 

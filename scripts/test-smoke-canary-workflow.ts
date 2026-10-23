@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { LATENCY_RECHECK_DELAY_MS } from "./lib/latency-slo.ts";
+import { TEST_ADVISOR_LEASE_EXIT } from "./lib/test-advisor-lease-client.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const wf = readFileSync(join(ROOT, ".github", "workflows", "smoke-canary.yml"), "utf8");
@@ -294,6 +295,70 @@ assert(/\/api\/smoke\/heartbeat/.test(wf), "stamps the smoke-canary heartbeat en
   assert(
     Number.isFinite(timeout) && timeout * 60_000 > LATENCY_RECHECK_DELAY_MS + 5 * 60_000,
     `the job timeout (${timeout} min) leaves room for the latency recheck pause on top of a normal run`,
+  );
+}
+
+// --- #4180: the full pass books only while it holds the smoke test advisors' lease ---
+{
+  // The daily reroute drill books on the same two test advisors. On 2026-10-23 they overlapped
+  // and both failed, so the full pass takes one server side lease first, and a run that could
+  // not get it is NOT MEASURED: it books nothing, stamps nothing, clears nothing, and pages
+  // nobody. (A shared concurrency group was rejected: a third queued run cancels the pending one.)
+  const stepAt = (name: string): string => {
+    const at = wf.indexOf(`- name: ${name}`);
+    assert(at !== -1, `the step "${name}" is where this expects it`);
+    const next = wf.indexOf("\n      - name:", at + 1);
+    return next === -1 ? wf.slice(at) : wf.slice(at, next);
+  };
+  const codeOf = (step: string) =>
+    step
+      .split("\n")
+      .filter((l) => !/^\s*#/.test(l))
+      .join("\n");
+  const take = codeOf(stepAt("Take the smoke test advisors' lease (full pass only)"));
+  assert(/id:\s*lease/.test(take), "the lease step has an id the booking steps read");
+  assert(/scripts\/smoke-test-advisor-lease\.ts take/.test(take), "and runs the lease client's take");
+  assert(/steps\.mode\.outputs\.full == '1'/.test(take), "on the full pass only: the dry tick books nothing, so it cannot collide");
+  assert(/SMOKE_FAILURE_FILE/.test(take), "and a lease it could not ask for is recorded for the alerter to name");
+  // The not measured exit becomes `held=0` and a clean step, never a failure.
+  const mapped = /-eq\s+(\d+)/.exec(take)?.[1];
+  eq(Number(mapped), TEST_ADVISOR_LEASE_EXIT.notMeasured, "the step treats exactly the not measured exit as not a failure");
+  assert(/held=0/.test(take), "and records that it holds nothing");
+
+  const leaseAt = wf.indexOf("Take the smoke test advisors' lease");
+  for (const name of ["Booking smoke (full strict pass)", "Reschedule smoke (full pass only)"]) {
+    const step = codeOf(stepAt(name));
+    assert(wf.indexOf(`- name: ${name}`) > leaseAt, `${name} comes after the lease is taken`);
+    assert(/steps\.lease\.outputs\.held == '1'/.test(step), `${name} books only while the lease is held`);
+  }
+  {
+    // Overlay control: a booking step without the gate is caught by the same predicate (L1).
+    const full = codeOf(stepAt("Booking smoke (full strict pass)"));
+    assert(
+      !/steps\.lease\.outputs\.held == '1'/.test(full.replace(" && steps.lease.outputs.held == '1'", "")),
+      "overlay control: a booking step that dropped the lease gate is caught",
+    );
+  }
+
+  const release = codeOf(stepAt("Release the smoke test advisors' lease"));
+  assert(/scripts\/smoke-test-advisor-lease\.ts release/.test(release), "the release step runs the lease client's release");
+  assert(/always\(\)/.test(release), "whatever the booking steps did, so a failed pass never holds the drill off until the TTL");
+  assert(/steps\.lease\.outputs\.held == '1'/.test(release), "and only when this run holds the lease");
+  assert(/steps\.lease\.outputs\.token/.test(release), "handing back the token it was given");
+  assert(/continue-on-error:\s*true/.test(release), "and a release that fails cannot turn a clean run red (the TTL frees it)");
+  assert(
+    wf.indexOf("- name: Release the smoke test advisors' lease") > wf.indexOf("- name: Reschedule smoke (full pass only)"),
+    "released after the last booking step",
+  );
+
+  // A not measured full pass stamps neither heartbeat and reports no clean run.
+  const NOT_MEASURED_GUARD = "(steps.mode.outputs.full == '0' || steps.lease.outputs.held == '1')";
+  for (const name of ["Stamp canary heartbeat (success only)", "Report a clean canary run"]) {
+    assert(codeOf(stepAt(name)).includes(NOT_MEASURED_GUARD), `${name} skips a full pass that never got the lease`);
+  }
+  assert(
+    /steps\.lease\.outputs\.held == '1'/.test(codeOf(stepAt("Stamp full-pass canary heartbeat (full pass success only)"))),
+    "the full pass heartbeat stamps only a pass that held the lease and booked",
   );
 }
 
