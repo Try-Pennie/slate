@@ -65,6 +65,17 @@ its fix. If the page says shipping was NEVER confirmed, the usual cause is a tai
 not redeployed since the receipt shipped (`npx wrangler deploy -c wrangler.log-tail.jsonc`).
 
 **First checks.**
+- For a Worker lane (`cron_lane_stale:<lane>`), read the dispatcher's `lane timings`
+  lines across the gap: `scripts/logs.ts "tag=cron" --lines --from <iso> --to <iso>`
+  (#4168). They show the three causes seen since each lane became its own placed
+  invocation (#3693): a gradual deploy landing mid run cancels it (the invocation
+  ends `canceled`; compare the deploy time with the gap), and the next tick then
+  skips while the cancelled run's lock has not expired; `<lane>_placement` far from
+  the database with `lanes_near_db=0`, which made a 21 s monitor run take 77 s on
+  2026-10-23; and `<lane>_ms` longer than the cadence, a lane that overran. A CPU kill
+  (`exceededCpu`) is no longer the usual cause. The page names the lane's real lock,
+  or none, from `LANE_RUNS` in `src/lib/monitor/health.ts` (#3468); a sub step lane
+  such as `reroute-hold-sweep` is timed as the lane it runs inside.
 - The Cloudflare dashboard's cron triggers: did the schedule fire at all?
 - `npx wrangler tail`, attach, and wait one cadence. A lane that is running logs a
   cycle line every tick.

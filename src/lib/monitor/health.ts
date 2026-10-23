@@ -136,6 +136,46 @@ export const LANE_NOTES: Record<LaneName, { does: string; cadence: string }> = {
 };
 
 /**
+ * Where each lane runs, and the lock it takes there, or none (#3468).
+ *
+ * `route` is the cron route the lane's work happens in, which is also the name its
+ * fields carry on the dispatcher's `lane timings` line (`laneFieldName`). A sub step
+ * lane such as `reroute-hold-sweep` runs inside another lane's route and is timed as
+ * that lane. `lock` is the name the route passes to `acquireLock` or `acquireLease`,
+ * or null when the lane takes none of its own.
+ *
+ * Recorded rather than built from the lane name, which the stale lane page used to do:
+ * it named `cron_bulk-reassign` (the route takes `cron_bulk_reassign`) and locks for
+ * lanes that take none, and a reader who finds no such row reads it as "the lock is
+ * fine". `scripts/test-lane-lock-registry.ts` reads each route and holds the two
+ * together in both directions.
+ */
+export const LANE_RUNS: Record<LaneName, { route: string; lock: string | null }> = {
+  sync: { route: "/api/cron/sync", lock: "cron_sync" },
+  recompute: { route: "/api/cron/recompute", lock: "cron_recompute" },
+  outbox: { route: "/api/cron/outbox", lock: "cron_outbox" },
+  selfheal: { route: "/api/cron/selfheal", lock: "cron_selfheal" },
+  complete: { route: "/api/cron/complete", lock: "cron_complete" },
+  watch: { route: "/api/cron/watch", lock: "cron_watch" },
+  monitor: { route: "/api/cron/monitor", lock: "cron_monitor" },
+  "bulk-reassign": { route: "/api/cron/bulk-reassign", lock: "cron_bulk_reassign" },
+  "hydrate-calendars": { route: "/api/cron/hydrate-calendars", lock: "cron_hydrate_calendars" },
+  "booking-reminders": { route: "/api/cron/booking-reminders", lock: null },
+  "reroute-hold-sweep": { route: "/api/cron/selfheal", lock: null },
+  "capacity-history": { route: "/api/cron/capacity-history", lock: "cron_capacity_history" },
+  "capacity-fill": { route: "/api/cron/capacity-fill", lock: "cron_capacity_fill" },
+};
+
+/** The registry entry for a lane the watchdog names by string, or a route of its own
+ *  and no lock for one the registry does not know, so nothing is invented. */
+export function laneRun(lane: string): { route: string; lock: string | null } {
+  return (LANE_RUNS as Record<string, { route: string; lock: string | null }>)[lane] ?? {
+    route: `/api/cron/${lane}`,
+    lock: null,
+  };
+}
+
+/**
  * One lane, as a sentence: what it does, how often, and when it counts as late.
  *
  * The cadence is capitalised on the way in rather than stored capitalised,

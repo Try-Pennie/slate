@@ -4703,6 +4703,41 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       unreadable: true,
     }),
   },
+  // #4168, #3468: the lock is the one the lane's route takes, which is not always
+  // `cron_<lane>`, and a lane that takes none names none.
+  {
+    key: "cron_lane_stale:*",
+    state: "the monitor lane, quiet across a deploy",
+    channel: "alert",
+    text: coreLaneAlertText({
+      lane: "monitor",
+      ageMs: 22 * 60_000,
+      maxStaleMs: LANE_STALE_BOUNDS_MS.monitor,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "a lane whose lock is not named after it",
+    channel: "alert",
+    text: coreLaneAlertText({
+      lane: "bulk-reassign",
+      ageMs: 25 * 60_000,
+      maxStaleMs: LANE_STALE_BOUNDS_MS["bulk-reassign"],
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "a sub step lane with no lock of its own",
+    channel: "alert",
+    text: coreLaneAlertText({
+      lane: "reroute-hold-sweep",
+      ageMs: 14 * 60_000,
+      maxStaleMs: LANE_STALE_BOUNDS_MS["reroute-hold-sweep"],
+      unreadable: false,
+    }),
+  },
   {
     key: "cron_lane_stale:*",
     state: "a core lane recovered",

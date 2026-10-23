@@ -10,7 +10,8 @@
  * #1123 already had to unpick one shared message that pointed responders at the
  * wrong lane and lock.
  */
-import { describeGap, laneQuietClause, type StaleLane } from "@/lib/monitor/health";
+import { describeGap, laneQuietClause, laneRun, type StaleLane } from "@/lib/monitor/health";
+import { laneFieldName } from "@/lib/monitor/lane-timing";
 import {
   AVAILABILITY_TRUTH_VERDICT_LANE,
   FAILURE_RATE_VERDICT_LANE,
@@ -51,25 +52,40 @@ import {
 const minutes = (ms: number) => Math.round(ms / 60_000);
 
 /**
- * A Worker cron lane that has gone quiet. The usual cause is a mid-run CPU kill
- * on the shared invocation (#760), so the message sends the reader straight at
- * the two things worth looking at.
+ * A Worker cron lane that has gone quiet (#4168, #3468).
+ *
+ * Since #3693 every lane runs as its own placed fetch, so a CPU kill on a shared
+ * invocation (#760) is no longer how lanes go quiet. What was seen on 2026-10-23 was a
+ * gradual deploy cancelling a run mid flight, the next tick skipping on the cancelled
+ * run's lock, and a run far from the database taking 77 s instead of 21 s. All three
+ * are on the dispatcher's `lane timings` line, so the page sends the reader there, by
+ * the fields that lane carries (a sub step lane is timed as the lane it runs inside).
+ *
+ * The lock is the one `LANE_RUNS` records for the lane, never built from its name, and
+ * the clause is left out for a lane that takes none.
  */
 export function coreLaneAlertText(lane: StaleLane): string {
+  const run = laneRun(lane.lane);
+  const field = laneFieldName(run.route);
+  const host = field === laneFieldName(lane.lane) ? "" : ` It runs inside the ${field} lane.`;
+  const lock = run.lock
+    ? ` A cancelled run holds the ${run.lock} lock until it expires, so the next run skips.`
+    : "";
   return (
     `The ${lane.lane} cron lane ${laneQuietClause({
       ageMs: lane.ageMs,
       boundMin: minutes(lane.maxStaleMs),
       unreadable: lane.unreadable,
-    })}. Its work is not happening. A mid-run CPU kill on the shared cron ` +
-    `invocation is the usual cause (#760): check the Worker's outcome for ` +
-    `exceededCpu, and the cron_${lane.lane} lock.`
+    })}. Its work is not happening.${host} Read the lane timings across the gap ` +
+    `(scripts/logs.ts "tag=cron" --lines): a deploy landing mid run cancels it, ` +
+    `${field}_placement far from the database (lanes_near_db=0) slows it, and ` +
+    `${field}_ms longer than its cadence means it overran.${lock}`
   );
 }
 
 /** All-clear for a Worker cron lane. Carries no remediation: the page sent the
- *  reader to check for a CPU kill and a stuck lock, and repeating that here would
- *  send them after a fault that is over. */
+ *  reader to the lane timings and a held lock, and repeating that here would send
+ *  them after a fault that is over. */
 export function laneRecoveryText(lane: string): string {
   return (
     `The ${lane} cron lane is running again. It has stamped a heartbeat inside ` +
