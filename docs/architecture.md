@@ -278,7 +278,7 @@ the lane whose headroom already pages (#2021).
 
 The lane now groups before it dispatches (`groupByPool`, `poolsDueForRecompute`,
 `recomputePool`), computes once per pool, and writes **every code in that pool its
-own row**. Two things about that are load bearing:
+own row**. Three things about that are load bearing:
 
 - **`bucket_slots` still holds one row per code and each row keeps its OWN bucket
   identity.** The stored payload is read back for the routing trace's effective
