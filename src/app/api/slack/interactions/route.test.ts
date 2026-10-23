@@ -54,6 +54,7 @@ const slack = vi.hoisted(() => ({
   getSlackUserEmail: vi.fn(async () => "mgr@x.com"),
   dmSlackUserByEmail: vi.fn(async () => {}),
   openSlackModal: vi.fn(async () => {}),
+  replyToSlackResponseUrl: vi.fn(async () => {}),
 }));
 vi.mock("@/lib/notify/slack", () => slack);
 
@@ -214,7 +215,7 @@ describe("POST /api/slack/interactions", () => {
     expect(res.status).toBe(200);
     await flushDeferred();
     expect(ooo.approveOoo).not.toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledWith("https://hooks.slack/resp", expect.anything());
+    expect(slack.replyToSlackResponseUrl).toHaveBeenCalledWith("https://hooks.slack/resp", expect.any(String));
   });
 });
 
@@ -330,7 +331,7 @@ describe("a deactivated actor cannot moderate from Slack (#2378)", () => {
     await flushDeferred();
     expect(ooo.approveOoo).not.toHaveBeenCalled();
     // They are told, rather than the click silently looking like it worked.
-    expect(fetch).toHaveBeenCalledWith("https://hooks.slack/resp", expect.anything());
+    expect(slack.replyToSlackResponseUrl).toHaveBeenCalledWith("https://hooks.slack/resp", expect.any(String));
   });
 
   it("does not decline when the clicking manager has been deactivated", async () => {

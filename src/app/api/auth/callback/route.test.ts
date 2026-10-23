@@ -26,7 +26,7 @@ import {
 const provision = vi.hoisted(() => ({ provisionUser: vi.fn() }));
 const google = vi.hoisted(() => ({ ensureWatches: vi.fn(async () => "ok") }));
 const env = vi.hoisted(() => ({ googleHostedDomain: vi.fn((): string => "trypennie.com") }));
-const signOut = vi.hoisted(() => vi.fn(async () => {}));
+const signOut = vi.hoisted(() => vi.fn(async (_opts?: unknown) => {}));
 const exchangeCodeForSession = vi.hoisted(() => vi.fn());
 const server = vi.hoisted(() => ({
   supabaseServer: async () => ({ auth: { exchangeCodeForSession, signOut } }),
@@ -42,7 +42,14 @@ const logger = vi.hoisted(() => ({
   },
 }));
 
+// #3526: the one alert this handler sends, for a sign in refused as a different
+// Google account.
+const dispatch = vi.hoisted(() => ({
+  sendThrottledAlert: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
+}));
+
 vi.mock("@/lib/provision", () => provision);
+vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/google/sync", () => google);
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/supabase/server", () => server);
@@ -50,6 +57,8 @@ vi.mock("@/lib/log", () => logger);
 
 import { GET } from "./route";
 import { ME_TABS } from "@/lib/me/nav";
+import { GoogleAccountMismatchError, SeveralGoogleAccountsError } from "@/lib/auth/google-identity";
+import { SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR } from "@/lib/auth/google-identity-copy";
 
 const SESSION = {
   session: {
@@ -57,9 +66,29 @@ const SESSION = {
       id: "auth-1",
       email: "agent@trypennie.com",
       user_metadata: { email_verified: true, full_name: "An Agent" },
+      identities: [{ provider: "google", identity_data: { sub: "sub-1" } }],
     },
   },
 };
+
+/** A session for one test, with its own identities and metadata (#3526). */
+function sessionWithIdentities(
+  identities: { provider: string; identity_data?: Record<string, unknown> }[],
+  meta: Record<string, unknown> = {},
+) {
+  return {
+    data: {
+      session: {
+        user: {
+          ...SESSION.session.user,
+          user_metadata: { ...SESSION.session.user.user_metadata, ...meta },
+          identities,
+        },
+      },
+    },
+    error: null,
+  };
+}
 
 // The handler reads only `req.nextUrl`, and a real NextRequest is not
 // constructible outside a server runtime, so hand it the URL it asks for.
@@ -73,6 +102,7 @@ beforeEach(() => {
   env.googleHostedDomain.mockReset();
   env.googleHostedDomain.mockReturnValue("trypennie.com");
   provision.provisionUser.mockReset();
+  dispatch.sendThrottledAlert.mockReset();
   signOut.mockReset();
   logged.errors.length = 0;
   exchangeCodeForSession.mockResolvedValue({ data: SESSION, error: null });
@@ -138,7 +168,10 @@ describe("auth callback when provisioning refuses (#1648)", () => {
 // #3083: the domain gate fails CLOSED, in both of the ways it used to fail open.
 describe("auth callback domain gate (#3083)", () => {
   function sessionWith(meta: Record<string, unknown>, email = "agent@trypennie.com") {
-    return { data: { session: { user: { id: "auth-1", email, user_metadata: meta } } }, error: null };
+    return {
+      data: { session: { user: { id: "auth-1", email, user_metadata: meta, identities: SESSION.session.user.identities } } },
+      error: null,
+    };
   }
 
   it("refuses a sign-in whose email_verified claim is absent", async () => {
@@ -187,6 +220,148 @@ describe("auth callback domain gate (#3083)", () => {
 
     expect(res.headers.get("location")).toBe(`https://slate.trypennie.app${ME_TABS[0].href}`);
     expect(provision.provisionUser).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #3526: a sign in whose Google account is not the one the Slate account was set
+// up with is a different person on a reused address. Provisioning refuses it; this
+// handler is where the person is told, the session goes, and somebody is alerted.
+describe("auth callback when the Google account is not the one on record (#3526)", () => {
+  const mismatch = () =>
+    new GoogleAccountMismatchError({
+      userId: "user-9",
+      email: "agent@trypennie.com",
+      reason: "different-account",
+    });
+
+  it("sends the person back to sign in with its own message, and clears the session", async () => {
+    provision.provisionUser.mockRejectedValue(mismatch());
+    // Not reset between tests in this file, so earlier sign ins have called it.
+    google.ensureWatches.mockClear();
+
+    const res = await GET(request());
+
+    expect(res.headers.get("location")).toBe(
+      "https://slate.trypennie.app/login?error=google_account_changed",
+    );
+    expect(signOut).toHaveBeenCalledTimes(1);
+    // Only this sign in's session: a global sign out would also end the real
+    // owner's sessions on an auth user GoTrue linked by address.
+    expect(signOut).toHaveBeenCalledWith({ scope: "local" });
+    expect(google.ensureWatches).not.toHaveBeenCalled();
+    expect(res.cookies.get(SESSION_STARTED_COOKIE)).toBeUndefined();
+  });
+
+  it("alerts on the account's own key, naming the address", async () => {
+    provision.provisionUser.mockRejectedValue(mismatch());
+
+    await GET(request());
+
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+    const [key, cooldownMs, text] = dispatch.sendThrottledAlert.mock.calls[0]!;
+    expect(key).toBe("sign_in_google_account_mismatch:user-9");
+    expect(cooldownMs).toBeGreaterThan(0);
+    expect(text).toContain("agent@trypennie.com");
+  });
+
+  it("still refuses and redirects when the alert itself cannot be sent", async () => {
+    provision.provisionUser.mockRejectedValue(mismatch());
+    dispatch.sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
+
+    const res = await GET(request());
+
+    expect(res.headers.get("location")).toBe(
+      "https://slate.trypennie.app/login?error=google_account_changed",
+    );
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(logged.errors).toContain("auth-callback different google account alert failed");
+  });
+
+  // `user_metadata` is writable by whoever holds the session and is not refreshed
+  // when GoTrue links a second identity, so the account id comes from the Google
+  // identities GoTrue keeps for the auth user, every one of them.
+  it("takes the account id from the Google identities, never from user_metadata", async () => {
+    provision.provisionUser.mockResolvedValue({ id: "user-1", role: "agent", theme_preference: "system" });
+    exchangeCodeForSession.mockResolvedValue(
+      sessionWithIdentities(
+        [
+          { provider: "google", identity_data: { sub: "ident-sub" } },
+          { provider: "email", identity_data: { sub: "email-sub" } },
+        ],
+        { sub: "meta-sub", provider_id: "meta-sub" },
+      ),
+    );
+
+    await GET(request());
+
+    expect(provision.provisionUser).toHaveBeenCalledWith(
+      expect.objectContaining({ googleSubs: ["ident-sub"] }),
+    );
+  });
+
+  it("hands provisioning every Google identity, so two on one auth user can be refused", async () => {
+    provision.provisionUser.mockResolvedValue({ id: "user-1", role: "agent", theme_preference: "system" });
+    exchangeCodeForSession.mockResolvedValue(
+      sessionWithIdentities([
+        { provider: "google", identity_data: { sub: "sub-a" } },
+        { provider: "google", identity_data: { sub: "sub-b" } },
+      ]),
+    );
+
+    await GET(request());
+
+    expect(provision.provisionUser).toHaveBeenCalledWith(
+      expect.objectContaining({ googleSubs: ["sub-a", "sub-b"] }),
+    );
+  });
+
+  it("refuses a session with no Google identity before provisioning anything", async () => {
+    exchangeCodeForSession.mockResolvedValue(sessionWithIdentities([], { sub: "meta-sub" }));
+
+    const res = await GET(request());
+
+    expect(provision.provisionUser).not.toHaveBeenCalled();
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(signOut).toHaveBeenCalledWith({ scope: "local" });
+    expect(res.headers.get("location")).toBe("https://slate.trypennie.app/login?error=sign_in_unavailable");
+    expect(logged.errors).toContain("auth-callback sign in carried no google identity");
+  });
+
+  // Two Google accounts on one sign in can never succeed by trying again, so the
+  // person is told so in its own words, whether or not a Slate account exists yet.
+  it("tells a sign in with two Google accounts and no account yet its own message, not a retry", async () => {
+    provision.provisionUser.mockRejectedValue(new SeveralGoogleAccountsError());
+
+    const res = await GET(request());
+
+    expect(res.headers.get("location")).toBe(
+      `https://slate.trypennie.app/login?error=${SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR}`,
+    );
+    expect(signOut).toHaveBeenCalledWith({ scope: "local" });
+    expect(logged.errors).toContain("auth-callback refused several google accounts on a new sign in");
+  });
+
+  // On an existing account it is the takeover shape, so Pennie is still alerted on
+  // that account's key, and the person still gets the two accounts message.
+  it("alerts on an existing account refused for two Google accounts, with the same message", async () => {
+    provision.provisionUser.mockRejectedValue(
+      new GoogleAccountMismatchError({ userId: "user-9", email: "agent@trypennie.com", reason: "several-accounts" }),
+    );
+
+    const res = await GET(request());
+
+    expect(res.headers.get("location")).toBe(
+      `https://slate.trypennie.app/login?error=${SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR}`,
+    );
+    expect(dispatch.sendThrottledAlert.mock.calls[0]?.[0]).toBe("sign_in_google_account_mismatch:user-9");
+  });
+
+  it("sends no such alert for any other refusal", async () => {
+    provision.provisionUser.mockRejectedValue(new Error("refused"));
+
+    await GET(request());
+
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
   });
 });
 

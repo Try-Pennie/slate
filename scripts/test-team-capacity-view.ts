@@ -159,7 +159,8 @@ eq(axisPos("2026-11-03T13:00:00.000Z", Z), 0, "8am after the clocks change is st
   const fresh = judgePace({ ok: true, rows: [read({}), read({ day: "2026-10-21", pace_per_hour: 3 })] }, now);
   const v = view(days, "2026-10-19", "2026-10-19T19:30:00.000Z", fresh);
   eq(v.cards[0].pace, ["Filling at 6 an hour", "Full by 9:30pm at this pace"], "each card shows its own day's pace and estimate");
-  eq(v.cards[1].pace, ["Filling at 3 an hour"], "a full card shows the pace alone");
+  // Decision 5 (95% or more shows the pace alone) is held by the 96% card in the #4145 block below.
+  eq(v.cards[1].pace, [], "a card with no calls open shows no pace line (#4101 decision 18, 2026-10-23)");
   eq(v.paceNotice, null, "fresh readings need no line under the cards");
   eq([v.cards[0].outLine, v.cards[0].notSyncingLine], ["1 advisor off", "1 calendar not syncing"], "time off and not syncing in the settled words");
   eq([v.cards[1].outLine, v.cards[1].notSyncingLine], [null, null], "and nothing when there is none");
@@ -172,6 +173,19 @@ eq(axisPos("2026-11-03T13:00:00.000Z", Z), 0, "8am after the clocks change is st
   assert(failed.cards.every((c) => c.pace.length === 0), "a failed read: the cards drop their pace lines");
   eq(failed.paceNotice, { lead: "Couldn't load how fast the days are filling.", rest: "Try reloading in a minute." }, "and one line says so, never one per card");
   eq(failed.cards.map((c) => c.open), v.cards.map((c) => c.open), "and the rest of the page is unchanged");
+}
+
+// --- a day with no calls open and some capacity shows no pace (#4145, #4101 decision 18) ------------
+{
+  const reading = (state: "pace" | "not-filling") => judgePace({ ok: true, rows: ["2026-10-20", "2026-10-21"].map((d) => ({ day: d, read_at: "2026-10-19T19:00:00.000Z", pace_state: state, pace_per_hour: state === "pace" ? 20 : 0, pace_back_at: null, estimate_method: "line", estimate_line_state: "already", estimate_line_at: null, estimate_pattern_state: "already", estimate_pattern_at: null })) }, Date.parse("2026-10-19T19:30:00.000Z"));
+  const full = day({ open: 0, capacity: 10, openTimes: [] });
+  const nearly = day({ iso: "2026-10-21", open: 1, capacity: 25, openTimes: ["2026-10-21T14:00:00.000Z"] });
+  const days = [source("2026-10-20", "window", [{ advisor: advisor("Avery"), day: full }]), source("2026-10-21", "window", [{ advisor: advisor("Avery"), day: nearly }])];
+  for (const state of ["pace", "not-filling"] as const) {
+    const [fullCard, nearlyCard] = view(days, "2026-10-19", "2026-10-19T19:30:00.000Z", reading(state)).cards;
+    eq([fullCard.flag, fullCard.pace], ["full", []], `a full day shows the Full tag and no pace line, its reading ${state}`);
+    eq(nearlyCard.pace.length, 1, `a day at 96% with a call open still shows its pace line alone (${state})`);
+  }
 }
 
 // --- the design's own frames, end to end -----------------------------------------------------------

@@ -301,8 +301,10 @@ import {
   postWorkflowDispatch,
 } from "@/lib/monitor/canary-trigger";
 import {
+  fetchMainTip,
   fetchRecentRuns,
   fetchRunJobs,
+  fetchTipRuns,
   runCiHealthCheck,
 } from "@/lib/monitor/github-ci-health";
 import { BUILD_COMMIT } from "@/lib/build-info";
@@ -4640,10 +4642,12 @@ export async function GET(req: NextRequest) {
     // report on Actions being unavailable: the run that would carry the report is
     // the run that did not happen. This lane keeps running when GitHub does not.
     //
-    // Cost on the invocation four cron lanes share: ONE subrequest per five minute
-    // tick, plus a second one only when the newest completed run failed, which is
-    // the only case that needs its jobs read. Quiet no-op until GITHUB_CANARY_TOKEN
-    // is set, like the gap filler above it. Never throws.
+    // Cost on the invocation four cron lanes share: TWO subrequests per five minute
+    // tick (the runs listing, and main's tip, which #3648 reads from the branch so
+    // "live" is judged against the commit main really points at), plus one more only
+    // when the newest completed run failed, and one more only when the served commit
+    // is not the tip and the listing does not hold the tip's run. Quiet no-op until
+    // GITHUB_CANARY_TOKEN is set, like the gap filler above it. Never throws.
     const ciHealth = await steps.run("ci_health", null, () =>
       runCiHealthCheck({
         nowMs: now,
@@ -4651,6 +4655,8 @@ export async function GET(req: NextRequest) {
         token: canaryToken,
         readRuns: (token) => fetchRecentRuns(token),
         readJobs: (token, runId) => fetchRunJobs(token, runId),
+        readMainTip: (token) => fetchMainTip(token),
+        readTipRuns: (token, sha) => fetchTipRuns(token, sha),
         cooldownMs: {
           deploy: cooldownMs.main_not_deployed,
           refusal: cooldownMs.ci_runs_refused,
