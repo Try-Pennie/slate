@@ -1578,5 +1578,21 @@ assert(
 // the wrong tree or lost its pattern rather than finding a clean one (L98).
 assert(rosePairsMeasured >= 4, `the rose pairing sweep measured ${rosePairsMeasured} pairs in src (expects at least 4)`);
 
+// --- #4104: the booking pace on Team capacity (design #4101) -------------------------------------
+//
+// The pace lines and the time off lines are muted text on a day card, which is the plain surface,
+// the warm nearly full tint or the rose full tint; the one line under the cards when the pace
+// cannot be read is the error colour, then muted, on the page itself. Text, so 4.5:1 each.
+for (const [theme, read] of [
+  ["light", r],
+  ["dark", rDark],
+] as [string, (n: string) => RGB][]) {
+  for (const card of ["--surface", "--tc-flag-card", "--tc-full-card"]) {
+    atLeast(read("--fg-muted"), read(card), 4.5, `a pace line on the ${card} day card (${theme})`);
+  }
+  atLeast(read("--error"), read("--bg"), 4.5, `the pace notice, error colour on the page (${theme})`);
+  atLeast(read("--fg-muted"), read("--bg"), 4.5, `the pace notice's muted half on the page (${theme})`);
+}
+
 
 finish();

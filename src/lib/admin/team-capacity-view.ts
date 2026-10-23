@@ -22,7 +22,12 @@ import {
   pastDaySummary,
   pickedDayLabel,
   zoneShort,
+  advisorsOffLine,
+  calendarsNotSyncingLine,
+  paceStaleSentence,
+  PACE_UNREADABLE_COPY,
 } from "./team-capacity-copy";
+import { cardPaceLines, type PaceView } from "./team-capacity-pace";
 
 /** A left and width along the axis, in percent. */
 export interface Span {
@@ -41,6 +46,12 @@ export interface CapacityCard {
   flag: "full" | "nearly-full" | null;
   out: number;
   notCounted: number;
+  /** How fast the day is filling, pace first (#4101); none while the line under the cards stands in. */
+  pace: string[];
+  /** The time off line, `6 advisors off`, or null with nobody off. */
+  outLine: string | null;
+  /** The not syncing line, `1 calendar not syncing`, or null with every calendar syncing. */
+  notSyncingLine: string | null;
 }
 
 export interface CapacityTab {
@@ -100,6 +111,8 @@ export interface TeamCapacityViewInput {
   nowMs: number;
   durationMin: number;
   nearlyFullPct: number;
+  /** The booking pace readings, judged (`judgePace`). */
+  pace: PaceView;
   /** The window's days, then the picked day when there is one. */
   days: CapacityDaySource[];
 }
@@ -108,6 +121,11 @@ export interface TeamCapacityView {
   cards: CapacityCard[];
   tabs: CapacityTab[];
   days: CapacityDayView[];
+  /**
+   * The one line under the cards when the pace cannot be shown (#4101, decisions 12 and 13): the
+   * lead in the error colour, then the muted rest. Null while the cards show it themselves.
+   */
+  paceNotice: { lead: string; rest: string | null } | null;
   /** Ticks for each day, keyed by index: today hides the ones under the Now label. */
   ticks: CapacityTick[][];
 }
@@ -145,6 +163,9 @@ export function teamCapacityView(input: TeamCapacityViewInput): TeamCapacityView
       flag: dayFlag(t, nearlyFullPct),
       out: t.out,
       notCounted: t.notCounted,
+      pace: input.pace.kind === "fresh" ? cardPaceLines(input.pace.byDay.get(source.iso), t.fullPct, zone, todayIso) : [],
+      outLine: t.out > 0 ? advisorsOffLine(t.out) : null,
+      notSyncingLine: t.notCounted > 0 ? calendarsNotSyncingLine(t.notCounted) : null,
     };
   });
 
@@ -217,7 +238,13 @@ export function teamCapacityView(input: TeamCapacityViewInput): TeamCapacityView
   const ticks = days.map((d) =>
     d.nowPos === null ? baseTicks : baseTicks.map((t) => ({ ...t, hidden: Math.abs(t.left - d.nowPos!) < 4.5 })),
   );
-  return { cards, tabs, days, ticks };
+  const paceNotice =
+    input.pace.kind === "failed"
+      ? { lead: PACE_UNREADABLE_COPY.heading, rest: PACE_UNREADABLE_COPY.body }
+      : input.pace.kind === "stale"
+        ? { lead: paceStaleSentence(input.pace.sinceMs, zone, todayIso), rest: null }
+        : null;
+  return { cards, tabs, days, paceNotice, ticks };
 }
 
 export interface PickableInput {

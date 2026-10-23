@@ -17,6 +17,18 @@ import {
   pickedDayLabel,
   UNMEASURABLE_COPY,
   zoneShort,
+  advisorsOffLine,
+  calendarsNotSyncingLine,
+  callsOpenUnit,
+  clockWords,
+  estimateLine,
+  KEY_WORDS,
+  NO_PACE_YET,
+  NOT_FILLING,
+  PACE_UNREADABLE_COPY,
+  paceRateLine,
+  paceStaleSentence,
+  readingsMissedLine,
 } from "../src/lib/admin/team-capacity-copy.ts";
 
 const Z = "America/New_York";
@@ -57,6 +69,28 @@ for (const [reason, copy] of Object.entries(UNMEASURABLE_COPY)) {
   assert(!DASHES.test(copy.heading + copy.body), `${reason} has no dashes`);
 }
 eq(UNMEASURABLE_COPY.calendars, { heading: "Couldn't load advisor calendars", body: "Try reloading in a minute." }, "the failed read wording Dan settled");
+
+// --- the booking pace words, settled in #4101 ------------------------------------------------------
+eq([advisorsOffLine(1), advisorsOffLine(6)], ["1 advisor off", "6 advisors off"], "time off, replacing 6 out (decision 9)");
+eq([calendarsNotSyncingLine(1), calendarsNotSyncingLine(2)], ["1 calendar not syncing", "2 calendars not syncing"], "not syncing, replacing 1 not counted (decision 10)");
+eq(clockWords(Date.parse("2026-10-20T01:30:00Z"), Z, "2026-10-19"), "9:30pm", "later today is bare (decision 3)");
+eq(clockWords(Date.parse("2026-10-20T13:30:00Z"), Z, "2026-10-19"), "9:30am Tue", "another day carries its weekday after the time");
+eq(clockWords(Date.parse("2026-10-19T16:00:00Z"), Z, "2026-10-19"), "12pm", "noon on the hour drops its minutes");
+eq(clockWords(Date.parse("2026-10-20T04:00:00Z"), Z, "2026-10-19"), "12am Tue", "and so does midnight, which is the next day");
+eq(paceRateLine(18.3), "Filling at 18 an hour", "the pace line (decision 1)");
+eq(estimateLine("line", { atMs: Date.parse("2026-10-20T01:30:00Z") }, Z, "2026-10-19"), "Full by 9:30pm at this pace", "the straight line (decision 2)");
+eq(estimateLine("line", "wont-fill", Z, "2026-10-19"), "Won't fill at this pace", "won't get there");
+eq(estimateLine("pattern", { atMs: Date.parse("2026-10-20T01:30:00Z") }, Z, "2026-10-19"), "Full by 9:30pm", "the pattern, no qualifier (decision 4)");
+eq(estimateLine("pattern", "wont-fill", Z, "2026-10-19"), "Won't fill", "the pattern that won't get there");
+eq(readingsMissedLine(Date.parse("2026-10-19T22:30:00Z"), Z, "2026-10-19"), "Readings missed, pace back by 6:30pm", "after a gap (decision 8)");
+eq(paceStaleSentence(Date.parse("2026-10-19T17:30:00Z"), Z, "2026-10-19"), "Couldn't update how fast the days are filling since 1:30pm.", "out of date (decision 13)");
+eq(PACE_UNREADABLE_COPY, { heading: "Couldn't load how fast the days are filling.", body: "Try reloading in a minute." }, "can't load (decision 12)");
+eq([NOT_FILLING, NO_PACE_YET], ["Not filling right now", "Pace shows after 3 hours of readings"], "not filling and no pace yet (decisions 6 and 7)");
+eq(KEY_WORDS, { busy: "Busy", open: "Open", off: "Not working", past: "Past" }, "the key's words (decision 14)");
+eq([KEY_WORDS.open, callsOpenUnit(2).trim()], ["Open", "calls open"], "one word for a call that still fits (decision 15)");
+for (const words of [NOT_FILLING, NO_PACE_YET, PACE_UNREADABLE_COPY.heading, PACE_UNREADABLE_COPY.body, ...Object.values(KEY_WORDS)]) {
+  assert(!DASHES.test(words), `"${words}" has no dashes`);
+}
 
 // --- the default line is the column's own default ------------------------------------------------
 {

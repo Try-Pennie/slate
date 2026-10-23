@@ -22,6 +22,8 @@ import { EVERY_SAVED_DAY_FROM } from "@/lib/admin/capacity-history";
 import { HISTORY_UNREADABLE_COPY, LINE_UNREADABLE_COPY, UNMEASURABLE_COPY } from "@/lib/admin/team-capacity-copy";
 import { pickableDays, teamCapacityView, type CapacityDaySource } from "@/lib/admin/team-capacity-view";
 import { designFixturesEnabled, fixtureView, type DesignFixtureFile } from "@/lib/admin/team-capacity-fixture";
+import { judgePace, type PaceRead } from "@/lib/admin/team-capacity-pace";
+import { readPaceRows } from "@/lib/admin/team-capacity-pace-load";
 import type { TeamCapacityAdvisor } from "@/lib/admin/team-capacity";
 
 export const metadata = { title: "Team capacity" };
@@ -95,7 +97,7 @@ export default async function TeamCapacityPage({
         {theme}
         {header}
         <TeamCapacityView
-          view={teamCapacityView({ zone: r.zone, todayIso: r.windowDays[0], nowMs: r.nowMs, durationMin: r.eventType.duration_min, nearlyFullPct: f.nearlyFullPct, days: sources })}
+          view={teamCapacityView({ zone: r.zone, todayIso: r.windowDays[0], nowMs: r.nowMs, durationMin: r.eventType.duration_min, nearlyFullPct: f.nearlyFullPct, days: sources, pace: judgePace(f.pace, r.nowMs) })}
           zone={r.zone}
           todayIso={r.windowDays[0]}
           initialIndex={f.dayIndex}
@@ -115,7 +117,7 @@ export default async function TeamCapacityPage({
   const picked = sp.day && /^\d{4}-\d{2}-\d{2}$/.test(sp.day) && DateTime.fromISO(sp.day).isValid ? sp.day : null;
   const pickedPast = picked !== null && picked < todayIso ? picked : null;
 
-  const [report, nearlyFullPct, hours, savedDays, pastAdvisors] = await Promise.all([
+  const [report, nearlyFullPct, hours, savedDays, pastAdvisors, paceRead] = await Promise.all([
     loadTeamCapacity({ orgId: me.org_id, now: new Date(nowMs), extraDay: pickedPast ? null : picked }),
     readNearlyFullPct(),
     loadBusinessHours().catch((err: unknown) => {
@@ -132,6 +134,8 @@ export default async function TeamCapacityPage({
           return null;
         })
       : Promise.resolve(null),
+    // The booking pace (#4104): a failure is one line under the cards, never the whole page.
+    readPaceRows(me.org_id).catch((err: unknown): PaceRead => ({ ok: false, err })),
   ]);
   if (!report.measurable) return refused(UNMEASURABLE_COPY[report.reason]);
   if (nearlyFullPct === null) return refused(LINE_UNREADABLE_COPY);
@@ -160,6 +164,9 @@ export default async function TeamCapacityPage({
   const tomorrowIso = DateTime.fromISO(todayIso, { zone: report.zone }).plus({ days: 1 }).toISODate()!;
   const tomorrowIndex = sources.findIndex((s) => s.iso === tomorrowIso);
   const initialIndex = pickedIndex >= 0 ? pickedIndex : tomorrowIndex >= 0 ? tomorrowIndex : 0;
+  // A failed read, or a row the page cannot read, is said under the cards (decision 12) and logged.
+  const pace = judgePace(paceRead, nowMs);
+  if (pace.kind === "failed") log.error("team-capacity", { msg: "booking pace read failed" }, pace.err);
 
   return (
     <>
@@ -168,7 +175,7 @@ export default async function TeamCapacityPage({
         // Every load from the server starts the screen afresh: a picked date opens on that day
         // rather than keeping the one selected before, and a saved line closes its form.
         key={`${sources.map((s) => s.iso).join(",")}|${initialIndex}|${nowMs}`}
-        view={teamCapacityView({ zone: report.zone, todayIso, nowMs, durationMin: report.eventType.duration_min, nearlyFullPct, days: sources })}
+        view={teamCapacityView({ zone: report.zone, todayIso, nowMs, durationMin: report.eventType.duration_min, nearlyFullPct, days: sources, pace })}
         zone={report.zone}
         todayIso={todayIso}
         initialIndex={initialIndex}

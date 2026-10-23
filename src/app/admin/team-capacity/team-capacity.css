@@ -111,3 +111,30 @@
 .tc-scope .cnt { text-align: right; font-weight: 600; padding-right: 8px; font-variant-numeric: tabular-nums; }
 
 .tc-scope .cnt.n0 { font-weight: 400; color: var(--fg-muted); }
+
+/* #4101: the pace lines, grouped 12px under the percent and 2px apart; then 12px, a rule and 10px
+   above the time off and not syncing lines. */
+
+.tc-scope .tpace { color: var(--fg-muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+
+.tc-scope .tpct + .tpace { margin-top: 12px; }
+
+.tc-scope .tpace + .tpace { margin-top: 2px; }
+
+.tc-scope .tpace + .tout, .tc-scope .tpct + .tout { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+
+/* #4101: the timeline key, at the end of the tab row, pushed right. */
+
+.tc-scope .tc-key { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; font-size: 12.5px; color: var(--fg-muted); margin-left: auto; }
+
+.tc-scope .key-i { display: inline-flex; align-items: center; gap: 6px; }
+
+.tc-scope .key-sw { display: inline-block; width: 22px; height: 12px; border-radius: 2px; }
+
+.tc-scope .sw-busy { background: var(--tc-taken); }
+
+.tc-scope .sw-open { background: var(--surface); box-shadow: inset 0 0 0 1.5px var(--tc-taken); }
+
+.tc-scope .sw-off { background: repeating-linear-gradient(135deg, var(--tc-hatch) 0 2px, transparent 2px 6px); }
+
+.tc-scope .sw-past { background: repeating-linear-gradient(135deg, var(--tc-past) 0 2px, var(--surface) 2px 6px); }

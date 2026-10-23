@@ -15,6 +15,8 @@ const load = vi.hoisted(() => ({ loadTeamCapacity: vi.fn() }));
 const settings = vi.hoisted(() => ({ readNearlyFullPct: vi.fn(async (): Promise<number | null> => 85) }));
 const hours = vi.hoisted(() => ({ loadBusinessHours: vi.fn() }));
 const store = vi.hoisted(() => ({ readSavedDays: vi.fn(), loadCapacityHistoryDay: vi.fn() }));
+const paceLoad = vi.hoisted(() => ({ readPaceRows: vi.fn() }));
+const logger = vi.hoisted(() => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 vi.mock("@/lib/auth", () => auth);
 vi.mock("next/navigation", () => ({ redirect, useRouter: () => ({ push: vi.fn() }) }));
@@ -25,7 +27,8 @@ vi.mock("@/lib/booking/settings", () => settings);
 vi.mock("@/lib/booking/business-hours-load", () => hours);
 vi.mock("@/lib/admin/capacity-history-store", () => store);
 vi.mock("@/app/admin/actions", () => ({ setNearlyFullPct: vi.fn() }));
-vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+vi.mock("@/lib/log", () => logger);
+vi.mock("@/lib/admin/team-capacity-pace-load", () => paceLoad);
 
 import TeamCapacityPage from "./page";
 
@@ -64,6 +67,72 @@ beforeEach(() => {
   hours.loadBusinessHours.mockResolvedValue({ zone: Z, rules: [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_minute: 480, end_minute: 1200 })), exceptions: [], source: "stored" });
   store.readSavedDays.mockResolvedValue([]);
   store.loadCapacityHistoryDay.mockResolvedValue([]);
+  paceLoad.readPaceRows.mockResolvedValue({ ok: true, rows: [] });
+});
+
+/**
+ * A reading of `day` taken `agoMin` minutes ago, filling at 6 an hour, full an hour after it. One
+ * run's rows share one read_at, as the lane writes them, so a run is built from one instant: rows
+ * built a millisecond apart would read as two runs, of which only the newest counts.
+ */
+const paceRun = (days: string[], agoMin = 4) => {
+  const readAt = DateTime.now().minus({ minutes: agoMin });
+  return days.map((day) => paceRow(day, readAt));
+};
+const paceRow = (day: string, readAt: DateTime) => {
+  return {
+    day, read_at: readAt.toISO(), pace_state: "pace", pace_per_hour: 6, pace_back_at: null,
+    estimate_method: "line", estimate_line_state: "at", estimate_line_at: readAt.plus({ hours: 1 }).toISO(), estimate_pattern_state: null, estimate_pattern_at: null,
+  };
+};
+const paceLines = (card: number) => [...document.querySelectorAll('[data-tc="day-card"]')[card].querySelectorAll('[data-tc="pace"]')].map((n) => n.textContent);
+const notices = () => [...document.querySelectorAll('[data-tc="pace-notice"]')].map((n) => n.textContent);
+
+describe("/admin/team-capacity, the booking pace (#4104)", () => {
+  it("reads the pace for the viewer's own organisation and shows it on each card", async () => {
+    paceLoad.readPaceRows.mockResolvedValue({ ok: true, rows: paceRun([iso(0), iso(1), iso(2), iso(3)]) });
+    await renderPage();
+    expect(paceLoad.readPaceRows).toHaveBeenCalledWith("org-1");
+    expect(paceLines(1)[0]).toBe("Filling at 6 an hour");
+    expect(paceLines(1)[1]).toMatch(/^Full by \d{1,2}(:\d\d)?[ap]m( \w{3})? at this pace$/);
+    expect(notices()).toEqual([]);
+  });
+
+  it("says once, under the cards, when the pace could not be read, and still shows the rest", async () => {
+    const err = new Error("down");
+    paceLoad.readPaceRows.mockResolvedValue({ ok: false, err });
+    await renderPage();
+    expect(notices()).toEqual(["Couldn't load how fast the days are filling.Try reloading in a minute."]);
+    expect(document.querySelector('[data-tc="pace"]')).toBeNull();
+    expect(document.querySelectorAll('[data-tc="day-card"]').length).toBe(4);
+    expect(document.querySelectorAll('[data-tc="lane-row"]').length).toBe(1);
+    expect(logger.log.error).toHaveBeenCalledWith("team-capacity", expect.objectContaining({ msg: "booking pace read failed" }), err);
+  });
+
+  it("says since when, once, when the latest reading is out of date", async () => {
+    paceLoad.readPaceRows.mockResolvedValue({ ok: true, rows: paceRun([iso(1)], 120) });
+    await renderPage();
+    expect(notices()).toHaveLength(1);
+    expect(notices()[0]).toMatch(/^Couldn't update how fast the days are filling since \d{1,2}(:\d\d)?[ap]m( \w{3})?\.$/);
+    expect(document.querySelector('[data-tc="pace"]')).toBeNull();
+  });
+
+  it("keys the timeline's marks at the end of the tab row, with Past on today's tab only", async () => {
+    await renderPage();
+    const key = () => [...document.querySelectorAll('[data-tc="key-item"]')].map((n) => n.textContent);
+    const group = screen.getByRole("group", { name: "Key" });
+    expect(group.parentElement?.lastElementChild).toBe(group);
+    expect(key()).toEqual(["Busy", "Open", "Not working"]);
+    (document.querySelector('[data-tc="day-tab"]') as HTMLButtonElement).click();
+    await screen.findByText("Past");
+    expect(key()).toEqual(["Busy", "Open", "Not working", "Past"]);
+    expect(document.querySelector('[data-tc="open-heading"]')?.textContent).toBe("Open");
+  });
+
+  it("says the pace is coming on every card before the first readings", async () => {
+    await renderPage();
+    expect([0, 1, 2, 3].map((i) => paceLines(i))).toEqual(Array(4).fill(["Pace shows after 3 hours of readings"]));
+  });
 });
 
 describe("/admin/team-capacity", () => {
