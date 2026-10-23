@@ -19,6 +19,11 @@ export function useFetchList<T>(
   /** Extra request headers (#2666: the public test bucket's pass). Keep the
    *  object's identity stable across renders: it is part of the fetch's deps. */
   headers?: Record<string, string>,
+  /** A JSON body, sent as a POST (#3399), for a list whose request carries a
+   *  person's details: those never go in the address, which Cloudflare logs in
+   *  full before any of our code runs. Part of the request's identity, so a new
+   *  body is a new fetch. */
+  jsonBody?: string,
 ): {
   items: T[];
   loading: boolean;
@@ -52,7 +57,7 @@ export function useFetchList<T>(
   // empty while inactive. `loading` is derived from it (not set in an effect),
   // so the very first render after activation already shows the loading state —
   // no one-frame flash of the empty copy before the effect runs.
-  const key = active && url ? `${url}#${nonce}` : "";
+  const key = active && url ? `${url}#${jsonBody ?? ""}#${nonce}` : "";
 
   useEffect(() => {
     if (!key || !url) return;
@@ -67,7 +72,15 @@ export function useFetchList<T>(
         const res = await fetch(url, {
           cache: "no-store",
           signal: controller.signal,
-          ...(headers ? { headers } : {}),
+          ...(jsonBody !== undefined
+            ? {
+                method: "POST",
+                body: jsonBody,
+                headers: { "content-type": "application/json", ...(headers ?? {}) },
+              }
+            : headers
+              ? { headers }
+              : {}),
         });
         if (cancelled) return;
         if (res.ok) {
@@ -91,7 +104,7 @@ export function useFetchList<T>(
       cancelled = true;
       controller.abort();
     };
-  }, [key, url, extract, headers]);
+  }, [key, url, extract, headers, jsonBody]);
 
   const settled = key !== "" && state.key === key;
   const retry = useCallback(() => setNonce((n) => n + 1), []);
