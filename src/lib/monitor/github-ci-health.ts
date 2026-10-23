@@ -246,9 +246,11 @@ export function parseMainTip(payload: unknown): MainTip | null {
 /**
  * Is main's tip live?
  *
- * The comparison is against the newest PUSH run on main, which is the run that
- * belongs to the tip. A run still in progress, or one younger than the grace, is
- * in flight rather than a finding: every ordinary merge passes through that state.
+ * `newestMainRun` must be the deploying run FOR main's tip, found by the tip's sha
+ * (`judgeDeployAgainstTip`, #3648), never merely the newest push run on main: a merge
+ * GitHub never ran leaves the previous merge's run newest, and judging that one read as
+ * live. A run still in progress, or one younger than the grace, is in flight rather
+ * than a finding: every ordinary merge passes through that state.
  */
 export function judgeDeployedTip(args: {
   servedCommit: string;
