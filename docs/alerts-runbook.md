@@ -744,7 +744,10 @@ address can be given to somebody new. So once an account has signed in, Slate ke
 Google's permanent id for that Google account (`users.google_sub`, which Google never
 reuses) and refuses any later sign in with that address from a DIFFERENT Google
 account (#3526). This page means one such sign in was refused. Nobody was signed in,
-and nothing on the account was changed. The person was told to ask a Slate admin.
+and nothing on the account was changed. The person was sent back to the sign in page,
+which has no sentence for this refusal yet (adding one is a screen change held for a
+design decision, #3526), so they see no message and are likely to try again or ask
+somebody.
 
 The rule is `judgeGoogleIdentity` (`src/lib/auth/google-identity.ts`), applied in
 `src/lib/provision.ts` before anything is written to the row. An account with no

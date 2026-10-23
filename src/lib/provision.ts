@@ -138,18 +138,22 @@ async function resolveOrCreateUser(
     const avatarChanged = Boolean(input.avatarUrl) && linked.avatar_url !== input.avatarUrl;
     // A row linked before the account id was compared, or one an admin unlinked
     // for a rehire, records it now, or it would never be guarded. A compare and
-    // swap on `google_sub is null`, so two different accounts signing in at the
-    // same instant cannot both record themselves: the loser's write matches
-    // nothing and its second pass reads the winner's id and refuses.
+    // swap on the stored value this pass read, so two different accounts signing
+    // in at the same instant cannot both record themselves: the loser's write
+    // matches nothing and its second pass reads the winner's id and refuses.
     if (judgeGoogleIdentity(linked.google_sub, input.googleSub).kind === "record" && input.googleSub) {
-      const { data: recorded, error } = await db
+      const record = db
         .from("users")
         .update({
           google_sub: input.googleSub,
           ...(avatarChanged ? { avatar_url: input.avatarUrl } : {}),
         })
-        .eq("id", linked.id)
-        .is("google_sub", null)
+        .eq("id", linked.id);
+      const { data: recorded, error } = await (linked.google_sub == null
+        ? record.is("google_sub", null)
+        : // A blank stored value, which the judge reads as no id: match it as read.
+          record.eq("google_sub", linked.google_sub)
+      )
         .select("*")
         .maybeSingle();
       // error-ok: a failed record signs them in as the row their own auth user is
@@ -221,7 +225,7 @@ async function resolveOrCreateUser(
     // on the row the check above judged: if another sign in recorded a different
     // account in between, this matches nothing and the second pass refuses.
     const updated = unwrap(
-      await (byEmail.google_sub ? link.eq("google_sub", byEmail.google_sub) : link.is("google_sub", null))
+      await (byEmail.google_sub == null ? link.is("google_sub", null) : link.eq("google_sub", byEmail.google_sub))
         .select("*")
         .maybeSingle(),
       `link user by email (${pass})`,

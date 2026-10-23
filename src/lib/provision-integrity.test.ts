@@ -444,6 +444,19 @@ describe("provisionUser and Google's permanent account id (#3526)", () => {
     expect(s.users.rows[0].google_sub).toBe("sub-1");
   });
 
+  // The judge reads a blank stored id as no id at all, so the compare and swap has
+  // to match the value it READ, not `is null`, or such a row matches nothing on
+  // both passes and that person can never sign in.
+  it.each([
+    ["found by email", null],
+    ["already linked", "auth-1"],
+  ])("records the account id on a row %s whose stored id is blank", async (_branch, authUserId) => {
+    const s = seededStore({ id: "user-9", email: input.email, auth_user_id: authUserId, google_sub: "" });
+
+    expect((await provisionUser(input)).id).toBe("user-9");
+    expect(s.users.rows[0].google_sub).toBe("sub-1");
+  });
+
   it("lets only the first of two different accounts racing for one unrecorded row have it", async () => {
     // Both are held at the read by email, so both see a row with no account id.
     // The record is a compare and swap, so the second write matches nothing and
