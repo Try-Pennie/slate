@@ -7,6 +7,8 @@ import AxeBuilder from "@axe-core/playwright";
 import { createServerClient } from "@supabase/ssr";
 import { E2E_APP_ORIGIN, isLoopbackHost, type LocalStack } from "./env.ts";
 import { localAdminClient, type Seeded } from "./seed.ts";
+import pg from "pg";
+import { attachGoogleIdentity } from "./google-identity.ts";
 
 function readJsonEnv<T>(name: string): T {
   const raw = process.env[name];
@@ -208,6 +210,18 @@ export async function signIn(page: Page, email: string): Promise<URL> {
   const verifier = jar.filter((c) => c.name.includes("code-verifier"));
   if (verifier.length === 0) throw new Error("no PKCE verifier cookie was written, so the callback could not exchange");
   await page.context().addCookies(verifier.map((c) => ({ ...c, url: E2E_APP_ORIGIN })));
+
+  // #3526: the link made an auth user with only an email identity, and Slate refuses
+  // a session holding no Google identity. Give it the one Google identity a real
+  // sign in would carry, before the callback reads it (`e2e/google-identity.ts`).
+  // The outsider spec is refused by the domain gate before this matters.
+  const pgClient = new pg.Client({ connectionString: stack.dbUrl });
+  await pgClient.connect();
+  try {
+    await attachGoogleIdentity((sql, params) => pgClient.query(sql, params), email);
+  } finally {
+    await pgClient.end();
+  }
 
   const link = await latestMagicLink(email, asked);
   await page.goto(link);

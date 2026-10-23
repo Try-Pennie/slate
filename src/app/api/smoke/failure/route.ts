@@ -14,7 +14,6 @@ import {
   parseSmokeReport,
   smokeCanaryFailedKey,
   smokeFailureSubjects,
-  withoutBroadcastMentions,
   type SmokeMode,
 } from "@/lib/monitor/smoke-canary-failure";
 import { log } from "@/lib/log";
@@ -80,8 +79,9 @@ export async function POST(req: NextRequest) {
     let outcome: SendOutcome = "skipped";
     // alert-key: smoke_canary_failed:*
     // alert-text-ok: the message the canary's own alerter built from its failure log,
-    // bounded and stripped of channel mentions, never a raw error.
-    await sendThrottledAlert(smokeCanaryFailedKey(report.mode), CONDITION_REPEAT_MS, withoutBroadcastMentions(report.text), {
+    // bounded, never a raw error. A mention in it is made inert where every message is
+    // sent (src/lib/notify/slack.ts, #3528), not here.
+    await sendThrottledAlert(smokeCanaryFailedKey(report.mode), CONDITION_REPEAT_MS, report.text, {
       subjects: smokeFailureSubjects(report.checks),
       onOutcome: (o) => {
         outcome = o;

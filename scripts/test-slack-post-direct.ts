@@ -47,6 +47,18 @@ function fakeFetch(
   eq(headers.Authorization, "Bearer xoxb-test", "the bot token is sent as a bearer token");
 }
 
+// --- #3528: what a person wrote is escaped at this send point too -------------
+{
+  // These posts carry commit subjects and canary text, written by people. This poster is
+  // the second of the two places Slate posts to Slack, so it applies the same rule as the
+  // app's (scripts/lib/slack-mrkdwn.ts). It writes no links, so none is kept.
+  const { impl, calls } = fakeFetch({ body: { ok: true } });
+  const post = makeSlackPoster({ token: "xoxb-test", fetchImpl: impl });
+  await post({ text: "Fix <!channel> & <https://evil.example|this>", channel: "C123" });
+  const sent = JSON.parse(String(calls[0]!.init.body)) as { text: string };
+  eq(sent.text, "Fix &lt;!channel&gt; &amp; &lt;https://evil.example|this&gt;", "a mention or link someone wrote reaches Slack as text");
+}
+
 // --- the failures, which are the point ------------------------------------
 {
   // Slack answers HTTP 200 with ok:false for a bad channel, a revoked token, a rate

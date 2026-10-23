@@ -1,5 +1,6 @@
 import { CLIENT_ERROR_KEY_PREFIX } from "@/lib/api/client-error-scrub";
 import type { BlockedResource } from "@/lib/csp";
+import type { GoogleMismatchReason } from "@/lib/auth/google-identity";
 
 /**
  * The remaining alert wording, lifted out of its send sites (#1153).
@@ -539,6 +540,42 @@ export function bookableTraitUnrecordedAlert(email: string, slateBookable: boole
     `Diagnose via tag=bookable-trait in the Worker logs.`
   );
 }
+
+/**
+ * A sign in refused because its Google account is not the one the Slate account
+ * belongs to (#3526).
+ *
+ * An incident: the refusal has already happened and nothing was handed over, so
+ * there is no state to clear. The reader's question is who the person was, and
+ * only somebody at Pennie can answer it, so the copy names the two ordinary
+ * answers and the action for each. Never an account id, which nobody reading this
+ * can use, and never an error: nothing failed.
+ */
+export function googleAccountMismatchAlert(email: string, reason: GoogleMismatchReason): string {
+  return `${GOOGLE_MISMATCH_BODY[reason](email)} ${GOOGLE_MISMATCH_DIAGNOSE}`;
+}
+
+/** Where the detail is, the same for every reason (refused at sign in or on a later request). */
+const GOOGLE_MISMATCH_DIAGNOSE =
+  `Diagnose via msg="refused a different google account" (tag=auth-callback or tag=auth) in the Worker logs.`;
+
+/** What happened and what to do, per reason, since each sends the reader somewhere else (L11). */
+const GOOGLE_MISMATCH_BODY: Record<GoogleMismatchReason, (email: string) => string> = {
+  "several-accounts": (email) =>
+    `A sign in as ${email} was refused because two Google accounts are attached to it, ` +
+    `which is what happens when someone new signs in with that address on top of its owner's sign in. ` +
+    `Nobody was let in. Find out who the second account belongs to before anyone links a new account.`,
+  "no-account-id": (email) =>
+    `A sign in as ${email} was refused because Supabase did not say which Google account it was. ` +
+    `Nobody was let in. If this repeats for other people, sign in itself is broken.`,
+  "different-account": (email) =>
+    `Somebody signed in as ${email} with a different Google account from the one that Slate account belongs to, ` +
+    `so they were refused and given nothing. ` +
+    `If that person is coming back on a new Google account, an admin can let them in with ` +
+    `Link a new Google account under Account status on their page in Slate. ` +
+    `If the address now belongs to someone new, do not link it, because linking gives them the old account's role and bookings; ` +
+    `ask whoever looks after Slate to set them up.`,
+};
 
 /** What one advisor's taken out of the pool note says (#3700). */
 export interface RefusedAdvisorLeftPool {
