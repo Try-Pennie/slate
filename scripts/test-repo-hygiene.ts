@@ -3,7 +3,9 @@
 // gitignored so a `git add -A` can't sweep local artifacts onto main (#583; a
 // prior slip did exactly that). The guard also asserts the tracked screenshot
 // store under .claude/ is NOT ignored, so an over-broad pattern can't silently
-// orphan committed evidence.
+// orphan committed evidence. And (#3650) every secret-bearing file, and every
+// copy of one (.bak, .orig, ~, " copy"), is gitignored, read from the one block
+// of .gitignore that holds them.
 // Run: node --experimental-strip-types scripts/test-repo-hygiene.ts
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
@@ -65,10 +67,19 @@ const gitignore = readFileSync(join(import.meta.dirname, "..", ".gitignore"), "u
 const start = gitignore.indexOf(SECRET_BLOCK_START);
 const end = gitignore.indexOf(SECRET_BLOCK_END);
 assert(start !== -1 && end > start, ".gitignore holds the secret-bearing files block between its two markers");
-const secretPatterns = gitignore
+const secretLines = gitignore
   .slice(start + 1, end)
   .map((l) => l.trim())
-  .filter((l) => l !== "" && !l.startsWith("#") && !l.startsWith("!"));
+  .filter((l) => l !== "" && !l.startsWith("#"));
+const secretPatterns = secretLines.filter((l) => !l.startsWith("!"));
+// A negation re-admits whatever it names, so a broad one (`!.env*`) would un-ignore
+// the secrets and their copies while every sample below still passed. The template
+// is the one exception, named exactly.
+const negations = secretLines.filter((l) => l.startsWith("!"));
+assert(
+  negations.length === 1 && negations[0] === "!.env.example",
+  `the secret block re-admits only !.env.example (found: ${negations.join(", ") || "none"})`,
+);
 assert(secretPatterns.length >= 6, `the secret block lists its patterns (found ${secretPatterns.length})`);
 const COPY_SUFFIXES = [".bak", ".orig", "~", ".old", ".swp", " copy", " 2"];
 for (const pattern of secretPatterns) {
