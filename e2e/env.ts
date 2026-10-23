@@ -10,8 +10,9 @@
  *   1. the ENVIRONMENT the server is started with is built here from nothing,
  *      never copied from the shell, so a developer's exported `SLACK_BOT_TOKEN` or
  *      a CI secret cannot ride along; and the runner refuses to build at all while
- *      a `.env*` file sits in the checkout, because Next loads those on its own and
- *      `.env.local` points at the live project (the dev server memory, 2026-08-17);
+ *      a `.env*` or `.dev.vars*` file sits in the checkout, because Next loads the
+ *      `.env*` files on its own and `.env.local` points at the live project (the
+ *      dev server memory, 2026-08-17; the rule is shared with `pnpm cf:preview`, #3694);
  *   2. `SLATE_LOADTEST=true`, which is the app's own switch for "every outside
  *      system is synthetic": Google answers from `src/lib/google/loadtest-stub.ts`,
  *      webhooks short circuit, and Slack, Salesforce, cal.com and Twilio REFUSE
