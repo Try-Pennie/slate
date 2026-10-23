@@ -218,7 +218,7 @@ vi.mock("@/lib/supabase/admin", () => ({
 }));
 
 import { provisionUser } from "./provision";
-import { GoogleAccountMismatchError } from "@/lib/auth/google-identity";
+import { GoogleAccountMismatchError, SeveralGoogleAccountsError } from "@/lib/auth/google-identity";
 
 const input = {
   authUserId: "auth-1",
@@ -447,7 +447,11 @@ describe("provisionUser and Google's permanent account id (#3526)", () => {
     store.current = s.client;
 
     await expect(provisionUser({ ...input, googleSubs: [] })).rejects.toThrow();
-    await expect(provisionUser({ ...input, googleSubs: ["sub-a", "sub-b"] })).rejects.toThrow();
+    // Its own type, so the callback can tell the person something other than "try
+    // again", which can never work for two accounts on one sign in.
+    await expect(provisionUser({ ...input, googleSubs: ["sub-a", "sub-b"] })).rejects.toBeInstanceOf(
+      SeveralGoogleAccountsError,
+    );
     expect(s.users.rows).toHaveLength(0);
   });
 

@@ -107,6 +107,19 @@ export class GoogleAccountMismatchError extends Error {
   }
 }
 
+/**
+ * A sign in refused because it carries two or more Google accounts and no Slate
+ * account exists for it yet, so there is no row to name in an alert. Its own type
+ * so the callback tells the person something other than "try again", which can
+ * never work: the two accounts stay attached to that sign in until an admin acts.
+ */
+export class SeveralGoogleAccountsError extends Error {
+  constructor() {
+    super("this sign in carries more than one Google account and no Slate account exists for it");
+    this.name = "SeveralGoogleAccountsError";
+  }
+}
+
 /** The alert family, one key per Slate account, which the roster bounds. */
 export const GOOGLE_ACCOUNT_MISMATCH_ALERT_PREFIX = "sign_in_google_account_mismatch";
 

@@ -20,6 +20,16 @@ export const GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR = "google_account_changed";
 export const GOOGLE_ACCOUNT_CHANGED_MESSAGE =
   "This Google account isn't the one this Slate account belongs to, so we couldn't sign you in. If you've been given a new Google account, ask a Slate admin to link it for you.";
 
+/** The code the sign in callback bounces back with for two Google accounts on one sign in. */
+export const SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR = "several_google_accounts";
+
+/**
+ * More than one Google account is attached to the sign in. Not a retry, which can
+ * never work: the accounts stay attached until an admin removes the old sign in.
+ */
+export const SEVERAL_GOOGLE_ACCOUNTS_MESSAGE =
+  "More than one Google account is attached to this sign in, so we couldn't sign you in. Please ask a Slate admin to sort it out for you.";
+
 /** The admin control on the advisor's page. */
 export const GOOGLE_RELINK_COPY = {
   /**

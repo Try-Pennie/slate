@@ -3,7 +3,11 @@ import { isUniqueViolation, unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import { normalizeEmail } from "@/lib/auth/email";
 import { DeactivatedAccountError, isDeactivated } from "@/lib/auth/active-session";
-import { GoogleAccountMismatchError, judgeGoogleIdentity } from "@/lib/auth/google-identity";
+import {
+  GoogleAccountMismatchError,
+  SeveralGoogleAccountsError,
+  judgeGoogleIdentity,
+} from "@/lib/auth/google-identity";
 import type { Organization, User } from "@/lib/db/types";
 
 const DEFAULT_ORG_NAME = "Pennie";
@@ -268,6 +272,10 @@ async function resolveOrCreateUser(
   // auth user, is refused rather than creating a row nothing can later verify.
   const sole = judgeGoogleIdentity(null, input.googleSubs);
   if (sole.kind !== "record") {
+    // Two accounts can never succeed by trying again, so it is told apart (L111).
+    if (sole.kind === "different-person" && sole.reason === "several-accounts") {
+      throw new SeveralGoogleAccountsError();
+    }
     throw new Error("a new account needs exactly one Google account on the sign in");
   }
   const { data: created, error } = await db

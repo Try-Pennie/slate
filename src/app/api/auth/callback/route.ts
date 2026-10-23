@@ -2,8 +2,15 @@ import { NextResponse, type NextRequest } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { provisionUser } from "@/lib/provision";
 import { DeactivatedAccountError } from "@/lib/auth/active-session";
-import { GoogleAccountMismatchError, googleAccountIdsOf } from "@/lib/auth/google-identity";
-import { GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR } from "@/lib/auth/google-identity-copy";
+import {
+  GoogleAccountMismatchError,
+  SeveralGoogleAccountsError,
+  googleAccountIdsOf,
+} from "@/lib/auth/google-identity";
+import {
+  GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR,
+  SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR,
+} from "@/lib/auth/google-identity-copy";
 import { reportGoogleAccountRefusal } from "@/lib/auth/google-account-refusal";
 import {
   SESSION_SEEN_COOKIE,
@@ -126,7 +133,19 @@ export async function GET(req: NextRequest) {
       // also end the real owner's sessions.
       await supabase.auth.signOut({ scope: "local" });
       await reportGoogleAccountRefusal(err, "auth-callback", user.id);
-      return NextResponse.redirect(`${origin}/login?error=${GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR}`);
+      // Two accounts on one sign in gets its own sentence: "link your new account"
+      // is the wrong advice when the old one is still attached too.
+      const code =
+        err.reason === "several-accounts" ? SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR : GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR;
+      return NextResponse.redirect(`${origin}/login?error=${code}`);
+    }
+    // The same refusal with no Slate account yet, so there is no account to name in
+    // an alert; logged as an error, since two Google accounts on one auth user with
+    // no row is not a shape an ordinary sign in makes.
+    if (err instanceof SeveralGoogleAccountsError) {
+      log.error("auth-callback", { msg: "refused several google accounts on a new sign in", auth_user_id: user.id });
+      await supabase.auth.signOut({ scope: "local" });
+      return NextResponse.redirect(`${origin}/login?error=${SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR}`);
     }
     log.error("auth-callback", { msg: "provisioning refused", auth_user_id: user.id }, err);
     await supabase.auth.signOut();

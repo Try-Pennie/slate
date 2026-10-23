@@ -6,6 +6,8 @@ import { sessionRefusalLoginError } from "@/lib/auth/session-age";
 import {
   GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR,
   GOOGLE_ACCOUNT_CHANGED_MESSAGE,
+  SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR,
+  SEVERAL_GOOGLE_ACCOUNTS_MESSAGE,
 } from "@/lib/auth/google-identity-copy";
 
 // #626: signing in hands off to Google via a full-page redirect that can't be
@@ -222,6 +224,16 @@ describe("LoginPage sign-in error copy", () => {
     expect(alert).toBe(GOOGLE_ACCOUNT_CHANGED_MESSAGE);
     expect(alert).toMatch(/admin/i);
     expect(alert).not.toMatch(/try again|sign in again|sub\b|identifier/i);
+  });
+
+  it("explains two Google accounts on one sign in as something an admin sorts out, not a retry", () => {
+    params.current = new URLSearchParams(`error=${SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR}`);
+    render(<LoginPage />);
+
+    const alert = screen.getByRole("alert").textContent ?? "";
+    expect(alert).toBe(SEVERAL_GOOGLE_ACCOUNTS_MESSAGE);
+    expect(alert).toMatch(/admin/i);
+    expect(alert).not.toMatch(/try again|sign in again|try signing in/i);
   });
 
   // The code arrives in the address, so anybody can send a link carrying any value.

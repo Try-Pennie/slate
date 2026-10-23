@@ -13,6 +13,8 @@ import {
 import {
   GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR,
   GOOGLE_ACCOUNT_CHANGED_MESSAGE,
+  SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR,
+  SEVERAL_GOOGLE_ACCOUNTS_MESSAGE,
 } from "@/lib/auth/google-identity-copy";
 
 // Sign-in failures the callback can bounce back with. Kept plain and
@@ -36,6 +38,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   // a retry either, for the same reason, and the wording lives with the rest of
   // that feature's copy.
   [GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR]: GOOGLE_ACCOUNT_CHANGED_MESSAGE,
+  // #3526: two Google accounts attached to one sign in. Not a retry either: they
+  // stay attached until an admin removes the old sign in.
+  [SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR]: SEVERAL_GOOGLE_ACCOUNTS_MESSAGE,
   // #3083: the deploy is missing its sign-in domain, so the callback refuses
   // everyone rather than letting any Google account in. Nothing the person does
   // can fix it, so it points at the people who can.

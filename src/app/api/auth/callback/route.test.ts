@@ -57,7 +57,8 @@ vi.mock("@/lib/log", () => logger);
 
 import { GET } from "./route";
 import { ME_TABS } from "@/lib/me/nav";
-import { GoogleAccountMismatchError } from "@/lib/auth/google-identity";
+import { GoogleAccountMismatchError, SeveralGoogleAccountsError } from "@/lib/auth/google-identity";
+import { SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR } from "@/lib/auth/google-identity-copy";
 
 const SESSION = {
   session: {
@@ -324,6 +325,35 @@ describe("auth callback when the Google account is not the one on record (#3526)
     expect(signOut).toHaveBeenCalledWith({ scope: "local" });
     expect(res.headers.get("location")).toBe("https://slate.trypennie.app/login?error=sign_in_unavailable");
     expect(logged.errors).toContain("auth-callback sign in carried no google identity");
+  });
+
+  // Two Google accounts on one sign in can never succeed by trying again, so the
+  // person is told so in its own words, whether or not a Slate account exists yet.
+  it("tells a sign in with two Google accounts and no account yet its own message, not a retry", async () => {
+    provision.provisionUser.mockRejectedValue(new SeveralGoogleAccountsError());
+
+    const res = await GET(request());
+
+    expect(res.headers.get("location")).toBe(
+      `https://slate.trypennie.app/login?error=${SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR}`,
+    );
+    expect(signOut).toHaveBeenCalledWith({ scope: "local" });
+    expect(logged.errors).toContain("auth-callback refused several google accounts on a new sign in");
+  });
+
+  // On an existing account it is the takeover shape, so Pennie is still alerted on
+  // that account's key, and the person still gets the two accounts message.
+  it("alerts on an existing account refused for two Google accounts, with the same message", async () => {
+    provision.provisionUser.mockRejectedValue(
+      new GoogleAccountMismatchError({ userId: "user-9", email: "agent@trypennie.com", reason: "several-accounts" }),
+    );
+
+    const res = await GET(request());
+
+    expect(res.headers.get("location")).toBe(
+      `https://slate.trypennie.app/login?error=${SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR}`,
+    );
+    expect(dispatch.sendThrottledAlert.mock.calls[0]?.[0]).toBe("sign_in_google_account_mismatch:user-9");
   });
 
   it("sends no such alert for any other refusal", async () => {
