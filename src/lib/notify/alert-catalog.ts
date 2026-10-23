@@ -801,6 +801,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "change to that agent records its own trait and the backfill repairs this one (#2085).",
   },
   {
+    key: "sign_in_google_account_mismatch:*",
+    kind: "incident",
+    suffix: "bounded",
+    why:
+      "One sign in was refused because its Google account is not the one the Slate account belongs to, " +
+      "and nothing was handed over, so the event is over when the page is sent. There is no healthy " +
+      "state to observe: the next sign in by the right account simply works, and an admin relinking a " +
+      "rehire (Link a new Google account, on their page) is a decision, not a recovery (#3526).",
+  },
+  {
     key: "webhook_dead:*",
     kind: "condition",
     suffix: "bounded",
