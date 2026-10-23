@@ -3,6 +3,16 @@ import { supabaseServer } from "@/lib/supabase/server";
 import { provisionUser } from "@/lib/provision";
 import { DeactivatedAccountError } from "@/lib/auth/active-session";
 import {
+  GoogleAccountMismatchError,
+  SeveralGoogleAccountsError,
+  googleAccountIdsOf,
+} from "@/lib/auth/google-identity";
+import {
+  GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR,
+  SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR,
+} from "@/lib/auth/google-identity-copy";
+import { reportGoogleAccountRefusal } from "@/lib/auth/google-account-refusal";
+import {
   SESSION_SEEN_COOKIE,
   SESSION_STARTED_COOKIE,
   sessionStampCookieOptions,
@@ -79,13 +89,27 @@ export async function GET(req: NextRequest) {
   // it would put them on an internal page with no Slate row behind it, where every
   // request resolves the session by auth_user_id and finds nothing. The detail is
   // kept server-side in the logs, keyed on the auth user rather than the email.
+  //
+  // #3526: the Google account ids come from the identities GoTrue keeps for this
+  // auth user, never from `user_metadata`, which whoever holds the session can
+  // rewrite and which GoTrue does not refresh when it links a second identity. A
+  // sign in with none at all cannot say who it is, which is a fault in the sign in
+  // path rather than anything the person did, so it is refused before anything is
+  // written and told as sign in being unavailable.
+  const googleSubs = googleAccountIdsOf(user);
+  if (googleSubs.length === 0) {
+    log.error("auth-callback", { msg: "sign in carried no google identity", auth_user_id: user.id });
+    // Local: only this sign in's session, never the auth user's others.
+    await supabase.auth.signOut({ scope: "local" });
+    return NextResponse.redirect(`${origin}/login?error=sign_in_unavailable`);
+  }
   let slateUser;
   try {
     slateUser = await provisionUser({
       authUserId: user.id,
       email,
       name: (meta.full_name as string) ?? (meta.name as string) ?? null,
-      googleSub: (meta.sub as string) ?? (meta.provider_id as string) ?? null,
+      googleSubs,
       avatarUrl: (meta.avatar_url as string) ?? (meta.picture as string) ?? null,
     });
   } catch (err) {
@@ -97,6 +121,31 @@ export async function GET(req: NextRequest) {
       log.warn("auth-callback", { msg: "refused a deactivated account", auth_user_id: user.id });
       await supabase.auth.signOut();
       return NextResponse.redirect(`${origin}/login?error=account_deactivated`);
+    }
+    // #3526: the Google account is not the one this Slate account belongs to, so
+    // this is a different person on that address (or the same person on a new
+    // account). Settled like a deactivation, so it gets its own message rather
+    // than a retry, and Pennie is told: an address handed to somebody new without
+    // the departure recorded is how the old row's role and bookings would have
+    // been handed over, and only a person can tell a rehire from a mistake.
+    if (err instanceof GoogleAccountMismatchError) {
+      // Local: on an auth user GoTrue linked by address, a global sign out would
+      // also end the real owner's sessions.
+      await supabase.auth.signOut({ scope: "local" });
+      await reportGoogleAccountRefusal(err, "auth-callback", user.id);
+      // Two accounts on one sign in gets its own sentence: "link your new account"
+      // is the wrong advice when the old one is still attached too.
+      const code =
+        err.reason === "several-accounts" ? SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR : GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR;
+      return NextResponse.redirect(`${origin}/login?error=${code}`);
+    }
+    // The same refusal with no Slate account yet, so there is no account to name in
+    // an alert; logged as an error, since two Google accounts on one auth user with
+    // no row is not a shape an ordinary sign in makes.
+    if (err instanceof SeveralGoogleAccountsError) {
+      log.error("auth-callback", { msg: "refused several google accounts on a new sign in", auth_user_id: user.id });
+      await supabase.auth.signOut({ scope: "local" });
+      return NextResponse.redirect(`${origin}/login?error=${SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR}`);
     }
     log.error("auth-callback", { msg: "provisioning refused", auth_user_id: user.id }, err);
     await supabase.auth.signOut();

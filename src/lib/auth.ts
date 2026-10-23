@@ -9,6 +9,13 @@ import {
 import { devPreviewUser } from "@/lib/auth/dev-preview";
 import { impersonationSigningSecret } from "@/lib/env";
 import { gateSessionRow } from "@/lib/auth/active-session";
+import {
+  GoogleAccountMismatchError,
+  googleAccountIdsOf,
+  judgeGoogleIdentity,
+  type GoogleMismatchReason,
+} from "@/lib/auth/google-identity";
+import { reportGoogleAccountRefusal } from "@/lib/auth/google-account-refusal";
 import { SESSION_SEEN_COOKIE, SESSION_STARTED_COOKIE, judgeSessionAge } from "@/lib/auth/session-age";
 import { NotAuthorizedError } from "@/lib/auth/http";
 import { log } from "@/lib/log";
@@ -70,7 +77,21 @@ export async function realCurrentUser(): Promise<User | null> {
     .maybeSingle();
 
   const gate = gateSessionRow(data as User | null, error);
-  if (gate.admit) return gate.user;
+  if (gate.admit) {
+    // #3526: the Google account check, on every request, the way the deactivation
+    // gate is. The sign in callback makes the same check, but a session does not
+    // have to come through the callback: whoever holds a sign in code can exchange
+    // it with Supabase directly and set the cookies, and every request would then
+    // resolve their auth user to this row. The accounts are read from the
+    // identities GoTrue returns for the auth user, which the session holder cannot
+    // write, and every Google identity counts, so an auth user GoTrue linked a
+    // newcomer's account onto is refused even though the old account is there too.
+    // Read only: an unarmed row (no account recorded) records it at its next sign in.
+    const verdict = judgeGoogleIdentity(gate.user.google_sub, googleAccountIdsOf(user));
+    if (verdict.kind !== "different-person") return gate.user;
+    await refuseSessionAsSomebodyElse(supabase, gate.user, verdict.reason, user.id);
+    return null;
+  }
   if (gate.reason === "deactivated") {
     log.warn("auth", { msg: "refused a deactivated session", auth_user_id: user.id });
   } else if (gate.reason === "unreadable") {
@@ -80,6 +101,39 @@ export async function realCurrentUser(): Promise<User | null> {
     log.warn("auth", { msg: "session row unreadable, refusing", auth_user_id: user.id }, error);
   }
   return null;
+}
+
+/**
+ * End a session judged to be somebody other than the row's owner, and say so
+ * (#3526). Only THIS session is ended (`scope: "local"`): a global sign out would
+ * also end every session on the auth user, and on an auth user GoTrue linked by
+ * address that includes the real owner's. The sign out can fail where cookies are
+ * read only (a server component render); refusing the row is what protects it, and
+ * that already happened by returning null, so a failed sign out is logged and the
+ * next request is refused again.
+ */
+async function refuseSessionAsSomebodyElse(
+  supabase: Awaited<ReturnType<typeof supabaseServer>>,
+  row: User,
+  reason: GoogleMismatchReason,
+  authUserId: string,
+): Promise<void> {
+  // Two ways it can fail, and both are logged: supabase-js RETURNS `{ error }` for a
+  // sign out the server refused, and the cookie write THROWS where cookies are read
+  // only. Either way the refusal stands, and the next request is refused again.
+  let failure: unknown = null;
+  try {
+    const { error } = await supabase.auth.signOut({ scope: "local" });
+    failure = error;
+  } catch (err) {
+    failure = err;
+  }
+  if (failure) log.warn("auth", { msg: "could not end a refused session", auth_user_id: authUserId }, failure);
+  await reportGoogleAccountRefusal(
+    new GoogleAccountMismatchError({ userId: row.id, email: row.email, reason }),
+    "auth",
+    authUserId,
+  );
 }
 
 /**
