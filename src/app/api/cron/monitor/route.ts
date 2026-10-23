@@ -299,6 +299,7 @@ import { loadCalcomRetiredCached } from "@/lib/calcom/retirement";
 import {
   runCanaryGapFills,
   postWorkflowDispatch,
+  countActiveWorkflowRuns,
 } from "@/lib/monitor/canary-trigger";
 import {
   fetchRecentRuns,
@@ -4619,6 +4620,8 @@ export async function GET(req: NextRequest) {
         // behaviour.
         acquireLock: async (name, ttl) => (await acquireLock(name, ttl)) !== null,
         dispatch: (pass) => postWorkflowDispatch(canaryToken, pass),
+        // #4009: wait on a run GitHub already holds rather than dispatching behind it.
+        activeRuns: (pass) => countActiveWorkflowRuns(canaryToken, pass),
         // #2875: a cal.com lane is not re fired once cal.com is marked retired.
         // The same cached read the watchdog step above made, so no second query.
         calcomRetired: () => loadCalcomRetiredCached(now),

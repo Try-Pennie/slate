@@ -22,8 +22,10 @@ name: Smoke canary
 # false-paged. So it is now a BACKUP: the Worker's monitor cron lane reliably fills
 # the gap by firing this workflow (workflow_dispatch, dry pass) via GitHub's API
 # when the heartbeat goes stale (src/lib/monitor/canary-trigger.ts, needs the
-# GITHUB_CANARY_TOKEN Worker secret). The concurrency group below dedupes any
-# overlap between the two triggers.
+# GITHUB_CANARY_TOKEN Worker secret). The concurrency group below does NOT dedupe:
+# GitHub cancels a run pending in the group in favour of the newest, whichever mode
+# each is. So the gap-filler first asks GitHub whether a run of this workflow is
+# already queued or running, and waits on it rather than dispatching (#4009).
 #
 # Needs repo secrets BOOKING_API_KEY_CANARY and REASSIGN_API_KEY (the Worker's keys, added
 # to Actions), and the existing SLACK_BOT_TOKEN secret + SLACK_ALERTS_CHANNEL var.
