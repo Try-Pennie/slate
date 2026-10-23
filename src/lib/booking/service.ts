@@ -4156,7 +4156,12 @@ export function drainBulkReassignJob(
         // than moving calls beside it, and the drain renews and stops on `stillHeld` (#3120).
         const lease = await acquireLease(BULK_REASSIGN_LANE_LOCK, CRON_LOCK_TTL_MS);
         return lease
-          ? { release: () => releaseLock(BULK_REASSIGN_LANE_LOCK, lease.token()), stillHeld: () => lease.stillHeld() }
+          ? {
+              release: async () => {
+                await releaseLock(BULK_REASSIGN_LANE_LOCK, lease.token());
+              },
+              stillHeld: () => lease.stillHeld(),
+            }
           : null;
       },
       drain: async (stillHeld) => {
