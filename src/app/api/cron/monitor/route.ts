@@ -289,8 +289,8 @@ import {
   monitorStepRecoveryText,
   stepFailingAlertKey,
   MONITOR_STEP_ALERT_COOLDOWN_MS,
-  MONITOR_STEP_FAILING_TICKS,
-  MONITOR_STEP_REARM_TICKS,
+  stepFailingRuns,
+  stepRearmRuns,
 } from "@/lib/monitor/step-failure";
 import { recordConsecutiveStreak } from "@/lib/notify/streak";
 import { shortErrorReason } from "@/lib/notify/error-text";
@@ -1076,8 +1076,8 @@ export async function GET(req: NextRequest) {
     // lead can reach now raises the live key; one past the horizon raises the
     // upcoming key, which says there is still time. Each clears off its own range.
     // Armed by `roster_coverage_armed` (#1456). ---
-    const rosterCoverage = await steps.run("roster_coverage", null, async () => {
-      if (!gates.rosterCoverage.run || !businessHours) return null;
+    const rosterCoverage = await steps.run("roster_coverage", null, async (step) => {
+      if (!gates.rosterCoverage.run || !businessHours) return step.unmeasured(null);
       const agents = await loadCoverageAgents(db);
       return runRosterCoverageCheck({
         coverage: coverageForRange({ hours: businessHours, agents, horizonDays, nowMs: now }),
@@ -1226,8 +1226,8 @@ export async function GET(req: NextRequest) {
     // The roster read is inside this boundary rather than a shared setup read,
     // because nothing else needs it: a throw here fails this step alone, stamps no
     // verdict, and the freshness watch is what says so. ---
-    const tierStaffing = await steps.run("tier_staffing", null, async () => {
-      if (!gates.tierStaffing.run) return null;
+    const tierStaffing = await steps.run("tier_staffing", null, async (step) => {
+      if (!gates.tierStaffing.run) return step.unmeasured(null);
       const tierAgentIds = await loadTierAgentIds();
       // Non-null inside here: the gate refuses to run without the week or the
       // slot rows. A tier whose window cannot be worked out (no cached row, an
@@ -1341,9 +1341,9 @@ export async function GET(req: NextRequest) {
     // would make every bucket read as zero and page the whole ladder, and clearing
     // an alert off a tick that measured nothing is the #1152 defect: a run that
     // could not read its signal must conclude nothing, in either direction.
-    const scan = await steps.run("avail_scan", null, async () =>
+    const scan = await steps.run("avail_scan", null, async (step) =>
       !gates.availabilityScan.run
-        ? null
+        ? step.unmeasured(null)
         : runAvailabilityScan({
           nowMs: now,
           freshWindowMs: FRESH_WINDOW_MS,
@@ -1437,7 +1437,7 @@ export async function GET(req: NextRequest) {
     // rather than paging a false zero. ---
     const volume: LowVolumeResult = !gates.lowVolume.run
       ? UNMEASURED_VOLUME
-      : await steps.run("volume", UNMEASURED_VOLUME, () =>
+      : await steps.run("volume", UNMEASURED_VOLUME, (step) =>
       runLowVolumeCheck({
         nowMs: now,
         // Non-null by the gate above: the check does not run without this read.
@@ -1477,7 +1477,7 @@ export async function GET(req: NextRequest) {
         // NOTHING about volume.
         resolveRecovered: (recovered) => resolveRecovered(recovered),
         log: (fields) => log.info("monitor", { msg: "booking volume", ...fields }),
-      }),
+      }).then((r) => (r.status === "outside-hours" ? step.unmeasured(r) : r)),
     );
 
     // --- The volume alarm's verdict gap (#2049): an hour of OPEN business time
@@ -1487,7 +1487,7 @@ export async function GET(req: NextRequest) {
     // while the org is open, so the healthy tick costs nothing. ---
     const volumeVerdictGap: VolumeVerdictGapResult | null = !gates.lowVolume.run
       ? null
-      : await steps.run("volume_verdict_gap", null, () =>
+      : await steps.run("volume_verdict_gap", null, (step) =>
       runVolumeVerdictGapCheck({
         nowMs: now,
         // Non-null by the gate above, as for the check itself.
@@ -1505,7 +1505,7 @@ export async function GET(req: NextRequest) {
         // count of minutes and a stamp; no error text can reach it.
         notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
         log: (fields) => log.info("monitor", { msg: "volume verdict gap", ...fields }),
-      }),
+      }).then((r) => (r.status === "closed" ? step.unmeasured(r) : r)),
     );
     if (volumeVerdictGap?.status === "gap") {
       log.warn("monitor", { msg: "volume verdict gap paged", open_minutes: volumeVerdictGap.openMinutes });
@@ -1519,7 +1519,7 @@ export async function GET(req: NextRequest) {
     // key. Same hours gate, arming switch and cooldown as Low. A tier carried and not
     // yet learned is not in the list, and /admin/alerts says it is not judged.
     if (gates.lowVolume.run) {
-      await steps.run("tier_volume", null, () =>
+      await steps.run("tier_volume", null, (step) =>
         runTierVolumeChecks({
           nowMs: now,
           // Non-null by the gate above: the check does not run without this read.
@@ -1552,7 +1552,10 @@ export async function GET(req: NextRequest) {
           resolveRecovered: (recovered) => resolveRecovered(recovered),
           log: (fields) => log.info("monitor", { msg: "tier booking volume", ...fields }),
           logError: (fields, err) => log.error("monitor", fields, err instanceof Error ? err : undefined),
-        }),
+        }).then((byTier) =>
+          // No tier judged (the org is closed, or none is learned yet) measured nothing.
+          Object.values(byTier).every((r) => r?.status === "outside-hours") ? step.unmeasured(byTier) : byTier,
+        ),
       );
     }
 
@@ -1563,7 +1566,7 @@ export async function GET(req: NextRequest) {
     // tier alarm is itself low the pages hold rather than repeat it. ---
     const pageVolume: PageVolumeResult = !gates.lowVolume.run
       ? UNMEASURED_PAGE_VOLUME
-      : await steps.run("page_volume", UNMEASURED_PAGE_VOLUME, () =>
+      : await steps.run("page_volume", UNMEASURED_PAGE_VOLUME, (step) =>
       runPageVolumeCheck({
         nowMs: now,
         // Non-null by the gate above: the check does not run without this read.
@@ -1595,7 +1598,7 @@ export async function GET(req: NextRequest) {
         // each clear NOTHING about that page.
         resolveRecovered: (recovered) => resolveRecovered(recovered),
         log: (fields) => log.info("monitor", { msg: "page booking volume", ...fields }),
-      }),
+      }).then((r) => (r.status === "outside-hours" ? step.unmeasured(r) : r)),
     );
     if (pageVolume.status === "not-judged" && pageVolume.pilot.state === "unreadable") {
       log.warn("monitor", { msg: "page volume not judged", pilot: pageVolume.pilot.state });
@@ -1706,11 +1709,11 @@ export async function GET(req: NextRequest) {
     >(
       "failure_rate",
       { status: "errored" },
-      async () =>
+      async (step) =>
         // #2773: its arming switch comes from the settings, so with none readable
         // and none known it stands down rather than run disarmed by default.
         !gates.failureRate.run
-          ? { status: "skipped", why: gates.failureRate.why }
+          ? step.unmeasured({ status: "skipped", why: gates.failureRate.why })
           : runBookingFailureRateCheck({
           nowMs: now,
           loadState: loadRateState,
@@ -2160,13 +2163,13 @@ export async function GET(req: NextRequest) {
     const availabilityTruth = await steps.run<TruthResult | { status: "errored" }>(
       "avail_truth",
       { status: "errored" },
-      async () =>
+      async (step) =>
         // The probe needs one setup read, the horizon, because that is the window it
         // asks the slot cache for. It deliberately does NOT need the bucket list, the
         // shift gate or the org's week, so none of those failing may silence it: that
         // coupling is what #1395 removed.
         !gates.availabilityTruth.run
-          ? { status: "skipped", why: gates.availabilityTruth.why }
+          ? step.unmeasured({ status: "skipped", why: gates.availabilityTruth.why })
           : runAvailabilityTruthCheck({
           nowMs: now,
           thresholds: TRUTH_THRESHOLDS,
@@ -2214,9 +2217,9 @@ export async function GET(req: NextRequest) {
     if (!gates.offeredNobodyFree.run) {
       log.warn("monitor", { msg: "offered nobody free skipped", why: gates.offeredNobodyFree.why });
     }
-    const offeredNobodyFree = await steps.run<OfferedNobodyFreeResult | null>("offered_nobody_free", null, async () =>
+    const offeredNobodyFree = await steps.run<OfferedNobodyFreeResult | null>("offered_nobody_free", null, async (step) =>
       !gates.offeredNobodyFree.run
-        ? null
+        ? step.unmeasured(null)
         : runOfferedNobodyFreeCheck({
         nowMs: now,
         rows: slotRows!,
@@ -2277,10 +2280,10 @@ export async function GET(req: NextRequest) {
     // of whose codes the scan just paged as booked solid is left to that page;
     // with the scan's answer unknown or cut short, a tier with nothing open is
     // held back for the same reason. ---
-    await steps.run("pool_fullness", null, async () => {
+    await steps.run("pool_fullness", null, async (step) => {
       if (!gates.poolFullness.run) {
         log.warn("monitor", { msg: "nearly full pool check skipped", why: gates.poolFullness.why });
-        return null;
+        return step.unmeasured(null);
       }
       const hours = businessHours!;
       return runPoolFullnessCheck({
@@ -2470,9 +2473,9 @@ export async function GET(req: NextRequest) {
     // measures and logs either way, and clears nothing on a read that failed. ---
     // #2773: its arming switch comes from the settings, so with none readable and
     // none known it stands down rather than run disarmed by default.
-    const awaitingActivation = await steps.run("awaiting_activation", null, async () =>
+    const awaitingActivation = await steps.run("awaiting_activation", null, async (step) =>
       !gates.awaitingActivation.run
-        ? null
+        ? step.unmeasured(null)
         : runAwaitingActivationCheck({
         load: () =>
           selectAllPages<AwaitingActivationRow>("monitor awaiting-activation roster", "id", () =>
@@ -2618,8 +2621,8 @@ export async function GET(req: NextRequest) {
     // buckets are real. Disarmed until somebody has watched it on real traffic
     // (migration 0136); it measures and logs either way, and a failed read on
     // either side clears nothing and stamps no verdict. ---
-    const belowLeadTier = await steps.run<BelowLeadTierResult | null>("below_lead_tier", null, async () => {
-      if (!gates.belowLeadTier.run) return null;
+    const belowLeadTier = await steps.run<BelowLeadTierResult | null>("below_lead_tier", null, async (step) => {
+      if (!gates.belowLeadTier.run) return step.unmeasured(null);
       const realBuckets = buckets!.filter((b) => !b.is_test);
       let session: Promise<{ token: string; instanceUrl: string }> | null = null;
       // #3665: each code's minimum notice, indexed once per tick rather than scanned
@@ -2728,7 +2731,7 @@ export async function GET(req: NextRequest) {
     // cal.com cannot hold this awaited step. Not gated on the shared setup reads:
     // it reads its own buckets, so a failed shared read cannot blind it. A failed
     // or partial read on either side clears nothing and stamps no verdict. ---
-    const crossSystemBookings = await steps.run<CrossSystemBookingsResult | null>("cross_system_bookings", null, () =>
+    const crossSystemBookings = await steps.run<CrossSystemBookingsResult | null>("cross_system_bookings", null, (step) =>
       runCrossSystemBookingsCheck({
         nowMs: now,
         clock: Date.now,
@@ -2765,7 +2768,10 @@ export async function GET(req: NextRequest) {
         } else if (result.status !== "not-due") {
           log.info("monitor", { msg: "cross system bookings skipped", why: result.status });
         }
-        return result;
+        // #3955: eleven ticks an hour this check is not due and reads nothing. Recorded
+        // as healthy runs they broke every failure streak it built, so a check throwing
+        // on every hourly run never paged; it is counted in its own runs instead.
+        return result.status === "not-due" ? step.unmeasured(result) : result;
       }),
     );
 
@@ -2777,10 +2783,10 @@ export async function GET(req: NextRequest) {
     // unreadable rather than as zero off site. Once per booking: keys already
     // stamped in alert_state are skipped, and the cooldown outlasts the lookback.
     // Gated on the shared bucket list, which is what says which buckets are real. ---
-    const offsiteOrigin = await steps.run("offsite_origin", null, async () => {
+    const offsiteOrigin = await steps.run("offsite_origin", null, async (step) => {
       if (!gates.offsiteOrigin.run) {
         log.warn("monitor", { msg: "offsite origin skipped", why: gates.offsiteOrigin.why });
-        return null;
+        return step.unmeasured(null);
       }
       return runOffsiteOriginCheck({
         loadBookings: () =>
@@ -2840,9 +2846,9 @@ export async function GET(req: NextRequest) {
       );
     // #2773: armed by the settings, so it stands down with none readable and none
     // known, rather than run disarmed by default.
-    const regalCalls = await steps.run("regal_calls", null, async () =>
+    const regalCalls = await steps.run("regal_calls", null, async (step) =>
       !gates.regalCalls.run
-        ? null
+        ? step.unmeasured(null)
         : runRegalCallCheck({
         loadCandidates: (sinceIso) =>
           selectAllPages<RegalCandidate>("monitor regal call candidates", "id", () =>
@@ -2903,9 +2909,9 @@ export async function GET(req: NextRequest) {
     // be read. The quiet one needs the org's week to know which day was the last
     // whole one, so it is gated on it; the unreadable one is not. Same switch as
     // the detector above, so both are gated on the settings too (#2773). ---
-    const regalQuiet = await steps.run("regal_calls_quiet", null, async () =>
+    const regalQuiet = await steps.run("regal_calls_quiet", null, async (step) =>
       !gates.regalCallsQuiet.run || !businessHours
-        ? null
+        ? step.unmeasured(null)
         : runRegalFeedQuietCheck({
             hours: { zone: businessHours.zone, rules: businessHours.rules, exceptions: businessHours.exceptions },
             loadCounts: loadRegalCounts,
@@ -2931,9 +2937,9 @@ export async function GET(req: NextRequest) {
         ...(regalQuiet.status === "unmeasured" ? { why: regalQuiet.why } : {}),
       });
     }
-    const regalUnreadable = await steps.run("regal_calls_unreadable", null, async () =>
+    const regalUnreadable = await steps.run("regal_calls_unreadable", null, async (step) =>
       !gates.regalCallsUnreadable.run
-        ? null
+        ? step.unmeasured(null)
         : runRegalFeedUnreadableCheck({
         loadCounts: loadRegalCounts,
         armed: settings!.regalCallsArmed,
@@ -2962,9 +2968,9 @@ export async function GET(req: NextRequest) {
     // judged), outcome rows from a server side count, both over the last two hours.
     // Under 80% on two consecutive checks pages; only a measured healthy ratio
     // clears; a window with no calls decides nothing. Same Regal arming switch. ---
-    const regalOutcomes = await steps.run("regal_call_outcomes", null, async () =>
+    const regalOutcomes = await steps.run("regal_call_outcomes", null, async (step) =>
       !gates.regalCallOutcomes.run
-        ? null
+        ? step.unmeasured(null)
         : runRegalCallOutcomesCheck({
             loadReasonCounts: loadRegalCounts,
             // Human rows only, the population the received side counts (#2950).
@@ -3303,10 +3309,10 @@ export async function GET(req: NextRequest) {
     // booking_buffer_breach naming the pairs. A failed read throws, so the step fails
     // and returns null rather than reading as no breaches; the all clear hangs only
     // off a measured read. Gated on the horizon, which is the window it judges. ---
-    const bufferBreach = await steps.run<BufferBreachResult | null>("buffer_breach", null, async () => {
+    const bufferBreach = await steps.run<BufferBreachResult | null>("buffer_breach", null, async (step) => {
       if (!gates.bufferBreach.run) {
         log.warn("monitor", { msg: "buffer breach check skipped", why: gates.bufferBreach.why });
-        return null;
+        return step.unmeasured(null);
       }
       return runBufferBreachCheck({
         load: () =>
@@ -4004,10 +4010,10 @@ export async function GET(req: NextRequest) {
     const calendarWindow = await steps.run<CalendarWindowResult | null>(
       "calendar_window",
       null,
-      async () => {
+      async (step) => {
         if (!gates.calendarWindow.run) {
           log.warn("monitor", { msg: "calendar window check skipped", why: gates.calendarWindow.why });
-          return null;
+          return step.unmeasured(null);
         }
         return runCalendarWindowCheck({
           loadRows: loadCalendarWindowRows,
@@ -4053,10 +4059,10 @@ export async function GET(req: NextRequest) {
     // Ticks for the rotation to visit every agent, set by the sampler step from the
     // roster it read; the report step needs it to know how often an agent recurs.
     let busyDriftRotationTicks = 1;
-    const busyDrift = await steps.run<BusyDriftResult | null>("busy_drift", null, async () => {
+    const busyDrift = await steps.run<BusyDriftResult | null>("busy_drift", null, async (step) => {
       if (!gates.busyDrift.run) {
         log.warn("monitor", { msg: "busy drift sampler skipped", why: gates.busyDrift.why });
-        return null;
+        return step.unmeasured(null);
       }
       const { data: pool, error: poolErr } = await db
         // test-data-ok: the smoke agents are the only bookable agents before
@@ -4114,7 +4120,7 @@ export async function GET(req: NextRequest) {
     // take the sample's result (and its verdict stamp) down with it. Cost: one
     // streak RPC per drifting agent (at most two per tick in the calibration week)
     // or one for the clean run, plus a resolve once per full rotation.
-    const busyDriftReport = await steps.run("busy_drift_report", null, () =>
+    const busyDriftReport = await steps.run("busy_drift_report", null, (step) =>
       reportBusyDrift({
         result: busyDrift,
         rotationTicks: busyDriftRotationTicks,
@@ -4129,7 +4135,7 @@ export async function GET(req: NextRequest) {
         // unreadable or empty tick never resolves, nor a clean tick that could not
         // read every sampled agent.
         resolve: resolveAlert,
-      }),
+      }).then((report) => (report.verdict === "unmeasured" ? step.unmeasured(report) : report)),
     );
     log.info("busy-drift", {
       msg: "report",
@@ -4744,7 +4750,7 @@ export async function GET(req: NextRequest) {
         MONITOR_STEP_ALERT_COOLDOWN_MS,
         monitorStepFailingAlert({
           step,
-          ticks: MONITOR_STEP_FAILING_TICKS,
+          ticks: stepFailingRuns(step),
           reason: stepFailureReasons.get(step) ?? null,
           gated: checksGatedByStep(step),
         }),
@@ -4759,7 +4765,7 @@ export async function GET(req: NextRequest) {
       // measured nothing and appears in neither list.
       const stepAllClears = stepVerdict.recovered.map((step) => ({
         key: stepFailingAlertKey(step),
-        text: monitorStepRecoveryText(step, MONITOR_STEP_REARM_TICKS),
+        text: monitorStepRecoveryText(step, stepRearmRuns(step)),
       }));
       // alert-key: monitor_step_failing:*
       // all-clear-proof: scripts/test-monitor-step-failure.ts - a step absent from
