@@ -21,6 +21,7 @@
  */
 
 import { parseStampMs } from "../date/stamp.ts";
+import { tierOfBucketCode } from "../monitor/volume-tiers.ts";
 
 export interface RoutingResponse {
   /** cal.com's id for the response, as text, when it carried one (#3124). A paged read
@@ -136,9 +137,18 @@ export function extractCode(response: unknown): string | null {
   return null;
 }
 
-/** The debt tier digit of a code ("1" is Low), or null for anything unreadable. */
+/**
+ * The debt tier digit of a code ("1" is Low), or null for anything that is not a
+ * whole XBC code.
+ *
+ * Read WHOLE, through the same reader Slate's own bookings are tiered by (#3671,
+ * L1023). The code is text from outside Slate, and reading it by its first digit
+ * counted `22`, `1320` or `1abc` as a tier with full confidence, while the live
+ * booker refuses every one of them and the comparison this feeds tiers Slate's side
+ * strictly, so the two sides counted different things.
+ */
 export function tierOf(code: string | null): string | null {
-  return code && /^[1-5]/.test(code) ? code[0]! : null;
+  return tierOfBucketCode(code);
 }
 
 type Tier = "1" | "2" | "3" | "4" | "5";
