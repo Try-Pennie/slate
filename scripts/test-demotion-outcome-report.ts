@@ -36,7 +36,9 @@ function deps(statuses: BulkReassignItemStatus[], over: Partial<DemotionOutcomeR
 // The reporter cannot post: it imports nothing that sends to Slack.
 {
   const source = readFileSync(new URL("../src/lib/booking/demotion-outcome-report.ts", import.meta.url), "utf8");
-  assert(!/from "@\/lib\/notify\//.test(source), "the reporter imports nothing from the Slack notifier");
+  // Any module path naming the notifier, however it is quoted, imported or written (alias,
+  // relative, dynamic), since the module itself has no other reason to name it.
+  assert(!/["'`][^"'`]*\bnotify(\/|["'`])/.test(source), "the reporter names nothing from the Slack notifier");
 }
 
 // A demotion sweep logs how its calls settled, once, naming the advisor and the sweep by id.
