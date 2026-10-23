@@ -25,6 +25,7 @@
  * Pure, so `scripts/test-e2e-isolation.ts` can drive every refusal without a stack.
  */
 import { PRODUCTION_SUPABASE_REF } from "../src/lib/loadtest-guard.ts";
+import { liveEnvFiles } from "../scripts/lib/live-env-files.ts";
 
 /**
  * Where the app under test listens. Matches `e2e/supabase.config.toml` site_url.
@@ -104,16 +105,18 @@ export function localStackRefusal(stack: LocalStack): string | null {
 }
 
 /**
- * The names a `.env*` file may carry that Next loads by itself. Any of them in
- * the checkout refuses the run (see layer 1 above). `.env.example` is a committed
- * template Next never reads.
+ * A checkout holding any file of live settings refuses the run (see layer 1
+ * above): every `.env*` file Next loads by itself, and `.dev.vars*`. Which files
+ * count is one rule, `liveEnvFiles`, shared with `pnpm cf:preview` (#3694), so the
+ * two refusals cannot drift apart. `.env.example` is a committed template nothing
+ * reads.
  */
 export function envFileRefusal(fileNames: readonly string[]): string | null {
-  const loaded = fileNames.filter((f) => /^\.env(\..+)?$/.test(f) && f !== ".env.example");
+  const loaded = liveEnvFiles(fileNames);
   if (loaded.length === 0) return null;
   return (
-    `Refusing to build: ${loaded.join(", ")} would be loaded by Next and can point the build at ` +
-    `live systems. Run the browser checks from a checkout without them (a git worktree has none).`
+    `Refusing to build: ${loaded.join(", ")} hold live settings the build could load and use to reach ` +
+    `real systems. Run the browser checks from a checkout without them (a git worktree has none).`
   );
 }
 

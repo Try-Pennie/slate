@@ -1,7 +1,8 @@
 /**
  * `pnpm test:e2e`: the browser checks, end to end (#3079, #3100).
  *
- *   1. refuse a checkout carrying a `.env*` file Next would load;
+ *   1. refuse a checkout carrying a `.env*` or `.dev.vars*` file (the rule is
+ *      shared with `pnpm cf:preview`, `scripts/lib/live-env-files.ts`);
  *   2. start a throwaway local Supabase from the committed migrations;
  *   3. seed it (`e2e/seed.ts`);
  *   4. `next build` and `next start` with an environment built from nothing

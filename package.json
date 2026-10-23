@@ -14,7 +14,7 @@
     "test:coverage": "node scripts/coverage.mjs",
     "cleanup:smoke-events": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/cleanup-smoke-events.ts",
     "cf:build": "opennextjs-cloudflare build && node --experimental-strip-types scripts/check-bundle-env.ts",
-    "cf:preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "cf:preview": "node --experimental-strip-types scripts/cf-preview-guard.ts && opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "cf:deploy": "pnpm cf:build && opennextjs-cloudflare deploy",
     "cf:deploy:verified": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/deploy-verified.ts",
     "cf:deploy:gradual": "node --experimental-strip-types scripts/deploy-gradual.ts",
