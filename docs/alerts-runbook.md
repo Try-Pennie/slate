@@ -883,6 +883,11 @@ main's tip, and reads whether the newest completed run's jobs executed anything.
   so the last merge of a burst can sit undeployed indefinitely. A run that reported
   SUCCESS and is still not being served is a different fault: look at the deploy job
   inside that run before re-running anything.
+- A `main_not_deployed` that links a COMMIT rather than a run means GitHub never
+  started a CI run for main's tip (#3648), so nothing built it and no workflow will
+  say so. Check githubstatus.com for an Actions incident, then push an empty commit to
+  main to start a run. Main's tip is read from the branch itself, so a merge with no
+  run can no longer read as live because the merge before it is being served.
 - `ci_runs_refused` means the jobs concluded failed having executed zero steps, so
   there is no log to open. Read the annotation on any job in the linked run, which is
   shown on neither `gh pr checks` nor the checks list on the pull request. A failed
