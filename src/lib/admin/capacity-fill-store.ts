@@ -1,10 +1,12 @@
 /**
- * The database side of the booking pace readings (#4102): each day's last snapshot, and a run's one
- * write. The rules are capacity-fill.ts.
+ * The database side of the booking pace readings (#4102): each day's last snapshot, the day's recent
+ * readings and the pattern's cells its pace and estimates are worked out from (#4103), and a run's
+ * one write. The rules are capacity-fill.ts and capacity-pace.ts.
  *
  * Every read throws on failure rather than answering empty: no snapshot would make every day a
- * first reading and hide the interval, and a snapshot read short would compare against a smaller
- * team than the one counted.
+ * first reading and hide the interval, a snapshot read short would compare against a smaller team
+ * than the one counted, no recent readings would say "no pace yet" on every card, and no pattern
+ * would quietly fall back to the straight line.
  */
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
