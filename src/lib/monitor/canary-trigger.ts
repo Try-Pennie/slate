@@ -423,7 +423,8 @@ export async function triggerCanaryGapFill(
   // GitHub's schedule is keeping the heartbeat fresh: nothing to do.
   if (now - heartbeatMs <= staleMs) return { dispatched: false, reason: "fresh" };
 
-  // Stale: GitHub dropped a run. Fill the gap if we can.
+  // Stale: GitHub either dropped a run or is still holding one (asked below). Fill
+  // the gap if it was dropped.
   if (!token) {
     info(
       `canary gap-fill: the ${label} heartbeat is stale but GITHUB_CANARY_TOKEN is not set, so cannot trigger`,
