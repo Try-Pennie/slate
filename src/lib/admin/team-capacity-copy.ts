@@ -93,8 +93,12 @@ export function estimateLine(method: "line" | "pattern", est: { atMs: number } |
   return est === "wont-fill" ? `Won't fill${tail}` : `Full by ${clockWords(est.atMs, zone, todayIso)}${tail}`;
 }
 
-/** A pace at or under 0, in place of both lines (#4101, decision 6). */
-export const NOT_FILLING = "Not filling right now";
+/**
+ * A pace at or under 0, in place of both lines (#4101, decision 6), in the words a day gets when
+ * its estimate lands after its last call (decision 21, #4190). Never a cause: the readings see a
+ * call open up, not who freed it.
+ */
+export const NOT_FILLING = "Won't fill at this pace";
 /** No pace yet: launch, or a new day joining the cards (#4101, decision 7). */
 export const NO_PACE_YET = "Pace shows after 3 hours of readings";
 /** After a gap in the readings, with the half hour the pace returns (#4101, decision 8). */

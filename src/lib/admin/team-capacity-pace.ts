@@ -29,7 +29,8 @@ export const PACE_ESTIMATE_PCT = 95;
 
 /** The columns the page reads, as capacity_fill_readings stores them. */
 export const PACE_COLUMNS =
-  "day, read_at, pace_state, pace_per_hour, pace_back_at, estimate_method, estimate_line_state, estimate_line_at, estimate_pattern_state, estimate_pattern_at";
+  "day, read_at, pace_state, pace_per_hour, pace_back_at, estimate_method, estimate_line_state, estimate_line_at, estimate_pattern_state, estimate_pattern_at, " +
+  "estimate_last_method, estimate_last_line_state, estimate_last_line_at, estimate_last_pattern_state, estimate_last_pattern_at";
 
 /** One stored reading, as read. `pace_back_at` is the half hour a missed pace returns (#4103). */
 export interface PaceRow {
@@ -45,6 +46,12 @@ export interface PaceRow {
   estimate_line_at: string | null;
   estimate_pattern_state: string | null;
   estimate_pattern_at: string | null;
+  /** From 95%, when the last open call is taken (#4190); null under 95% and before 0201. */
+  estimate_last_method: string | null;
+  estimate_last_line_state: string | null;
+  estimate_last_line_at: string | null;
+  estimate_last_pattern_state: string | null;
+  estimate_last_pattern_at: string | null;
 }
 
 /** The read: its rows, or that it failed. */
@@ -52,13 +59,23 @@ export type PaceRead = { ok: true; rows: PaceRow[] } | { ok: false; err?: unknow
 
 export type PaceEstimate =
   | { state: "at"; atMs: number }
-  /** The walk reached the day's last bookable moment under 95%. */
+  /** The walk reached the day's last bookable moment short of its target. */
   | { state: "wont-fill" }
-  /** Already at 95%, no rate to walk with, or nobody counted: no estimate line. */
+  /** Already at the target, no rate to walk with, or nobody counted: no estimate line. */
   | { state: "none" };
 
+/** An estimate with the method that made it, null when the reading has no method. */
+export type ShownEstimate = { method: "line" | "pattern"; estimate: PaceEstimate } | null;
+
 export type DayPace =
-  | { state: "pace"; perHour: number; method: "line" | "pattern" | null; estimate: PaceEstimate }
+  | {
+      state: "pace";
+      perHour: number;
+      /** To 95% full. */
+      fullBy: ShownEstimate;
+      /** From 95%, to no call open (#4190, decision 20); null on a reading without one. */
+      lastCall: ShownEstimate;
+    }
   | { state: "not-filling" }
   | { state: "no-pace-yet" }
   | { state: "readings-missed"; backAtMs: number };
@@ -96,11 +113,17 @@ function dayPaceOf(r: PaceRow): DayPace {
   if (r.pace_state === "readings-missed") return { state: "readings-missed", backAtMs: instant(r.pace_back_at, `${what}'s return time`) };
   const perHour = r.pace_per_hour === null ? NaN : Number(r.pace_per_hour);
   if (!Number.isFinite(perHour)) throw new Error(`${what} has no readable pace: "${r.pace_per_hour}"`);
-  if (r.estimate_method !== null && r.estimate_method !== "line" && r.estimate_method !== "pattern") {
-    throw new Error(`${what} has an unknown method "${r.estimate_method}"`);
-  }
-  const method = r.estimate_method;
-  return { state: "pace", perHour, method, estimate: method === "line" ? line : method === "pattern" ? pattern : { state: "none" } };
+  const fullBy = shown(r.estimate_method, line, pattern, `${what}'s method`);
+  const lastLine = estimateOf(r.estimate_last_line_state, r.estimate_last_line_at, `${what}'s last call straight line`);
+  const lastPattern = estimateOf(r.estimate_last_pattern_state, r.estimate_last_pattern_at, `${what}'s last call pattern`);
+  const lastCall = shown(r.estimate_last_method, lastLine, lastPattern, `${what}'s last call method`);
+  return { state: "pace", perHour, fullBy, lastCall };
+}
+
+function shown(method: string | null, line: PaceEstimate, pattern: PaceEstimate, what: string): ShownEstimate {
+  if (method === null) return null;
+  if (method !== "line" && method !== "pattern") throw new Error(`${what} is unknown: "${method}"`);
+  return { method, estimate: method === "line" ? line : pattern };
 }
 
 /**
@@ -129,16 +152,19 @@ export function judgePace(read: PaceRead, nowMs: number, staleMs: number = LANE_
 }
 
 /**
- * A card's pace lines, pace first (decision 1). A day at 95% or more, or with no percent, shows the
- * pace alone (decision 5); not filling, no pace yet and readings missed each stand in for both
- * lines (decisions 6 to 8).
+ * A card's pace lines, pace first (decision 1). Under 95% the estimate is when the day reaches 95%;
+ * from 95% it is when its last open call is taken (#4190, decision 20), and a day with no percent
+ * shows the pace alone. Not filling, no pace yet and readings missed each stand in for both lines
+ * (decisions 6 to 8; not filling reads Won't fill at this pace, decision 21).
  */
 export function cardPaceLines(day: DayPace | undefined, fullPct: number | null, zone: string, todayIso: string): string[] {
   if (!day || day.state === "no-pace-yet") return [NO_PACE_YET];
   if (day.state === "not-filling") return [NOT_FILLING];
   if (day.state === "readings-missed") return [readingsMissedLine(day.backAtMs, zone, todayIso)];
   const out = [paceRateLine(day.perHour)];
-  if (fullPct === null || fullPct >= PACE_ESTIMATE_PCT || day.method === null || day.estimate.state === "none") return out;
-  out.push(estimateLine(day.method, day.estimate.state === "at" ? { atMs: day.estimate.atMs } : "wont-fill", zone, todayIso));
+  if (fullPct === null) return out;
+  const shownEst = fullPct >= PACE_ESTIMATE_PCT ? day.lastCall : day.fullBy;
+  if (shownEst === null || shownEst.estimate.state === "none") return out;
+  out.push(estimateLine(shownEst.method, shownEst.estimate.state === "at" ? { atMs: shownEst.estimate.atMs } : "wont-fill", zone, todayIso));
   return out;
 }

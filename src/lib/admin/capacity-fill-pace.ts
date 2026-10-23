@@ -17,6 +17,12 @@
  * and the day's position among the booker's days as `capacityDays` gives them THEN. Tomorrow seen
  * tonight is the booker's second day; walked into tomorrow morning it is the first.
  *
+ * ## The last call
+ *
+ * A day already at 95% also gets the walk to no call open (#4190, decision 20), stored in its own
+ * columns so the 95% estimates #4105 checks stay as they were. A day under 95% stores none: its
+ * card's Full by is the 95% one.
+ *
  * Pure (luxon and the pure cores), so the test drives it node natively.
  */
 import { DateTime } from "luxon";
@@ -77,16 +83,21 @@ export function fillPace(input: FillPaceInput): FillReadingRow[] {
       if (!member) throw new Error(`the availability read returned no row for advisor ${u.id}`);
       return walkAdvisorOf({ member, timeOff: people.timeOff.get(u.id) ?? [], day, eventType, hours, nowMs: readAtMs }, people.failingEmails.has(u.email));
     });
-    const est = estimate({
+    const walkInput = {
       readAtMs,
       advisors,
       eventType,
       pace: p,
       pattern: input.pattern,
-      cellAt: (stepMs) => fillCellAt(stepMs, row.day, hours, eventType, input.offeredDays),
-    });
+      cellAt: (stepMs: number) => fillCellAt(stepMs, row.day, hours, eventType, input.offeredDays),
+    };
+    const est = estimate(walkInput);
     const line = stateOf(est.line);
     const pattern = stateOf(est.pattern);
+    // estimate() answers already for both methods together, so one says the day is at 95%.
+    const last = est.line.state === "already" ? estimate({ ...walkInput, target: "last-call" }) : null;
+    const lastLine = last && stateOf(last.line);
+    const lastPattern = last && stateOf(last.pattern);
     return {
       ...row,
       pace_state: p.state,
@@ -98,6 +109,11 @@ export function fillPace(input: FillPaceInput): FillReadingRow[] {
       estimate_pattern_at: pattern.at,
       estimate_method: est.shown,
       estimate_cells_fallen_back: est.cellsFallenBack,
+      estimate_last_line_state: lastLine?.state ?? null,
+      estimate_last_line_at: lastLine?.at ?? null,
+      estimate_last_pattern_state: lastPattern?.state ?? null,
+      estimate_last_pattern_at: lastPattern?.at ?? null,
+      estimate_last_method: last?.shown ?? null,
     };
   });
 }
