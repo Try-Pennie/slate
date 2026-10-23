@@ -210,6 +210,20 @@ so a booking regression is caught without anyone remembering to run it:
   is skipped.
 - **On demand**: `workflow_dispatch` runs either pass (pick `dry` or `full`).
 
+**The full pass shares its two test advisors with the daily reroute drill** (#4180). Both book on
+smoketest@ and smoketest2@, and when they overlapped on 2026-10-23 both failed. So the full pass
+takes one server side lease over the advisors (`scripts/smoke-test-advisor-lease.ts take`, through
+`POST /api/smoke/test-advisor-lease`) before its booking steps and hands it back right after the
+reschedule smoke, whatever happened (`release`, idempotent, `continue-on-error`). The drill's
+endpoint takes the same lease. While the drill holds it the canary asks again every 15 seconds for
+up to 6 minutes, longer than the drill's longest run. Still held at the bound is exit 7, **not
+measured**: the pass books nothing, stamps neither heartbeat, reports no clean run and pages nobody;
+the gap filler re-runs a full pass and the 3h `smoke-canary-full` bound pages if it keeps
+happening. A lease left by a run that died lapses after 10 minutes. The dry tick does not take the
+lease: its one booking call is a dry run, and one drill call can occupy at most one of SMOKE's two
+advisors, so it cannot collide. A hand run of the full smoke does not take it either, so do not run
+one while the drill runs (10:50 UTC daily, often late).
+
 Two ways it stays honest:
 
 - **Alert on failure.** Any failed step (a real regression, a bad key, a missing
