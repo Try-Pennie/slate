@@ -745,8 +745,10 @@ Google's permanent id for that Google account (`users.google_sub`, which Google 
 reuses) and refuses any later sign in with that address from a DIFFERENT Google
 account (#3526). This page means one such sign in, or one live session, was refused.
 Nobody was let in, and nothing on the account was changed. A person refused at sign
-in was sent back to the sign in page, which told them this Google account is not the
-one their Slate account belongs to and to ask a Slate admin to link a new one.
+in was sent back to the sign in page. For a different account it told them this
+Google account is not the one their Slate account belongs to and to ask a Slate admin
+to link a new one; for two accounts on one sign in (`several-accounts`) it told them
+more than one Google account is attached and to ask a Slate admin to sort it out.
 
 The rule is `judgeGoogleIdentity` (`src/lib/auth/google-identity.ts`). It runs at sign
 in (`src/lib/provision.ts`, before anything is written to the row) AND on every request
