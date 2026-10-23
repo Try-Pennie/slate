@@ -23,9 +23,12 @@ const deleteBusyBlocksByIds = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
     from: (table: string) => {
+      // #4165: the just-cancelled read is the bookings query filtered on updated_at.
+      // Every booking here was cancelled long ago, so it answers with none.
+      let graceRead = false;
       const rowsFor = () => {
         if (table === "busy_blocks") return { data: state.busyBlocks, error: null };
-        if (table === "bookings") return { data: state.bookings, error: null };
+        if (table === "bookings") return { data: graceRead ? [] : state.bookings, error: null };
         if (table === "booking_outbox") {
           return state.outboxError
             ? { data: null, error: state.outboxError }
@@ -38,13 +41,20 @@ vi.mock("@/lib/supabase/admin", () => ({
         eq: () => b,
         gte: () => b,
         in: () => b,
+        gt: () => {
+          graceRead = true;
+          return b;
+        },
         order: () => b,
         range: () => b,
         delete: () => ({
-          in: (_col: string, ids: string[]) => {
-            deleteBusyBlocksByIds(ids);
-            return Promise.resolve({ error: null });
-          },
+          // #4165: the delete answers with the rows it removed; all of them are present.
+          in: (_col: string, ids: string[]) => ({
+            select: () => {
+              deleteBusyBlocksByIds(ids);
+              return Promise.resolve({ data: ids.map((id) => ({ id })), error: null });
+            },
+          }),
         }),
         then: (resolve: (v: unknown) => unknown) => Promise.resolve(rowsFor()).then(resolve),
       };
