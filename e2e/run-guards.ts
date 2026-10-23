@@ -22,7 +22,8 @@
  *      still running, never only that something answered on the port.
  */
 import { connect } from "node:net";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 // ---------------------------------------------------------------- the run lock
 
@@ -44,53 +45,55 @@ export function processIsAlive(pid: number): boolean {
   }
 }
 
-function readOwner(path: string): RunLockOwner | null {
+const CLAIM = /^(\d+)\.json$/;
+
+function checkoutOf(path: string): string {
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<RunLockOwner>;
-    if (typeof parsed.pid !== "number" || !Number.isInteger(parsed.pid) || parsed.pid <= 0) return null;
-    return { pid: parsed.pid, checkout: typeof parsed.checkout === "string" ? parsed.checkout : "an unknown checkout" };
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { checkout?: unknown };
+    return typeof parsed.checkout === "string" ? parsed.checkout : "an unknown checkout";
   } catch {
-    return null;
+    return "an unknown checkout";
   }
 }
 
 /**
- * Take the machine's browser run lock, created exclusively so two runs starting
- * together cannot both win. A lock whose holder is no longer running (a run killed
- * before its `finally`), or that cannot be read, is stale and taken over once; losing
- * that takeover to another run is a refusal like any other.
+ * Take the machine's browser run lock, held in `dir` as one claim file per run, named
+ * by its pid. A run writes its own claim FIRST and only then reads the others, so of
+ * two runs starting together the later reader always sees the earlier one's claim:
+ * both can be refused (each run again), but both can never proceed. Nothing ever
+ * removes a LIVE run's claim but that run: a claim whose pid is not running (a run
+ * killed before its `finally`) is deleted by whoever finds it, which takes nothing
+ * from anybody alive. The pid comes from the file NAME, so a claim read mid write is
+ * still judged by its holder.
  */
 export function acquireRunLock(
-  path: string,
+  dir: string,
   owner: RunLockOwner,
   deps: { isAlive: (pid: number) => boolean } = { isAlive: processIsAlive },
 ): RunLock {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      writeFileSync(path, JSON.stringify(owner), { flag: "wx" });
-      return {
-        ok: true,
-        release: () => {
-          // Only our own lock: a run that outlived its lock (taken over as stale)
-          // must not remove the lock of the run that took it.
-          if (readOwner(path)?.pid === owner.pid) rmSync(path, { force: true });
-        },
-      };
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  mkdirSync(dir, { recursive: true });
+  const mine = join(dir, `${owner.pid}.json`);
+  writeFileSync(mine, JSON.stringify(owner));
+  const release = () => rmSync(mine, { force: true });
+  for (const name of readdirSync(dir)) {
+    const pid = Number(CLAIM.exec(name)?.[1] ?? NaN);
+    if (!Number.isInteger(pid) || pid <= 0 || pid === owner.pid) continue;
+    const claim = join(dir, name);
+    if (!deps.isAlive(pid)) {
+      rmSync(claim, { force: true });
+      continue;
     }
-    const holder = readOwner(path);
-    if (holder && deps.isAlive(holder.pid)) {
-      return {
-        ok: false,
-        refusal:
-          `Another browser run is in progress (pid ${holder.pid}, from ${holder.checkout}). ` +
-          "Runs share this machine's local Supabase and port, so they take turns: wait for it to finish, then run again.",
-      };
-    }
-    rmSync(path, { force: true });
+    const checkout = checkoutOf(claim);
+    release();
+    return {
+      ok: false,
+      refusal:
+        `Another browser run is in progress (pid ${pid}, from ${checkout}). ` +
+        "Runs share this machine's local Supabase and port, so they take turns: wait for it to finish, then run again. " +
+        `If no such run exists, delete ${claim}.`,
+    };
   }
-  return { ok: false, refusal: `Another browser run took the lock at ${path} while this one was clearing a stale one. Run again once it finishes.` };
+  return { ok: true, release };
 }
 
 // ---------------------------------------------------------------- the port

@@ -144,7 +144,7 @@ function waitForServer(server: ChildProcess, output: () => string): Promise<void
 }
 
 /** One browser run per machine at a time: they share the local Supabase and the port (#4018). */
-const RUN_LOCK = join(tmpdir(), "slate-e2e-run.lock");
+const RUN_LOCK = join(tmpdir(), "slate-e2e-run-lock");
 
 function stopServer(server: ChildProcess | null): void {
   if (!server?.pid || server.exitCode !== null) return;

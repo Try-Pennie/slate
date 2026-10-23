@@ -16,7 +16,7 @@
 //
 // Run: node --experimental-strip-types scripts/test-e2e-run-guards.ts
 import { createServer, type Server } from "node:net";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -26,40 +26,59 @@ import { acquireRunLock, portHolders, portInUseRefusal, waitForOwnServer } from 
 const READY = ` ${String.fromCodePoint(0x2713)} Ready in 412ms\n`;
 
 const dir = mkdtempSync(join(tmpdir(), "slate_e2e_guards_"));
-const lockPath = join(dir, "run.lock");
+const lockDir = join(dir, "locks");
+const claims = () => readdirSync(lockDir).sort();
 
 // ---- the run lock -----------------------------------------------------------------
 {
-  const alive = new Set<number>([111, 222]);
+  const alive = new Set<number>([111, 222, 333]);
   const isAlive = (pid: number) => alive.has(pid);
 
-  const a = acquireRunLock(lockPath, { pid: 111, checkout: "/work/checkout_a" }, { isAlive });
+  const a = acquireRunLock(lockDir, { pid: 111, checkout: "/work/checkout_a" }, { isAlive });
   assert(a.ok, "the first run takes the lock");
 
-  const b = acquireRunLock(lockPath, { pid: 222, checkout: "/work/checkout_b" }, { isAlive });
+  const b = acquireRunLock(lockDir, { pid: 222, checkout: "/work/checkout_b" }, { isAlive });
   assert(!b.ok, "a second run is refused while the first run's process is alive");
   if (!b.ok) {
     assert(b.refusal.includes("/work/checkout_a") && b.refusal.includes("111"), `the refusal names the holder's checkout and pid: ${b.refusal}`);
   }
+  eq(claims(), ["111.json"], "a refused run leaves no claim behind, and the holder's claim stays");
 
-  // The holder died without releasing (killed, crashed): its lock is stale.
+  // The holder died without releasing (killed, crashed): its claim is stale.
   alive.delete(111);
-  const c = acquireRunLock(lockPath, { pid: 222, checkout: "/work/checkout_b" }, { isAlive });
+  const c = acquireRunLock(lockDir, { pid: 222, checkout: "/work/checkout_b" }, { isAlive });
   assert(c.ok, "a lock whose holder is no longer running is taken over");
+  eq(claims(), ["222.json"], "the dead holder's claim is cleared and the new holder's written");
 
-  // The dead run's release must not remove the lock the live run now holds.
+  // THE RACE a single shared lock file lost (lessons review at 150ba84): two runs both
+  // finding the same dead holder, the second deleting the first one's NEW lock. Here a
+  // live run's claim is only ever removed by that run, so the dead run's late release,
+  // and a third run arriving, both leave it standing.
   if (a.ok) a.release();
-  assert(JSON.parse(readFileSync(lockPath, "utf8")).pid === 222, "a superseded holder's release leaves the new holder's lock in place");
-  if (c.ok) c.release();
-  const d = acquireRunLock(lockPath, { pid: 333, checkout: "/work/checkout_c" }, { isAlive });
-  assert(d.ok, "the holder's own release frees the lock");
-  if (d.ok) d.release();
+  const d = acquireRunLock(lockDir, { pid: 333, checkout: "/work/checkout_c" }, { isAlive });
+  assert(!d.ok, "a run arriving while the new holder is alive is refused, not handed a stale takeover");
+  eq(claims(), ["222.json"], "nobody but its holder removed the live claim");
 
-  // An unreadable lock file (a write cut off part way) proves no live holder.
-  writeFileSync(lockPath, "{not json");
-  const e = acquireRunLock(lockPath, { pid: 444, checkout: "/work/checkout_d" }, { isAlive });
-  assert(e.ok, "an unreadable lock file is treated as stale, not as held for ever");
-  if (e.ok) e.release();
+  // Two runs starting together: one has written its claim but not yet looked. The one
+  // that looks now sees it and is refused; the first then finds nothing and proceeds.
+  if (c.ok) c.release();
+  writeFileSync(join(lockDir, "333.json"), JSON.stringify({ pid: 333, checkout: "/work/checkout_c" }));
+  alive.add(444);
+  const e = acquireRunLock(lockDir, { pid: 444, checkout: "/work/checkout_d" }, { isAlive });
+  assert(!e.ok, "a run that sees another's claim written first is refused");
+  const f = acquireRunLock(lockDir, { pid: 333, checkout: "/work/checkout_c" }, { isAlive });
+  assert(f.ok, "and the run that claimed first proceeds");
+  if (f.ok) f.release();
+
+  // A claim read mid write is still judged by the pid in its name.
+  writeFileSync(join(lockDir, "444.json"), "{not js");
+  const g = acquireRunLock(lockDir, { pid: 555, checkout: "/work/checkout_e" }, { isAlive });
+  assert(!g.ok, "a half written claim of a live run still holds the lock");
+  alive.delete(444);
+  const h = acquireRunLock(lockDir, { pid: 555, checkout: "/work/checkout_e" }, { isAlive });
+  assert(h.ok, "and is cleared once its run is gone");
+  if (h.ok) h.release();
+  eq(claims(), [], "every holder's release removes its own claim");
 }
 
 // ---- the port --------------------------------------------------------------------

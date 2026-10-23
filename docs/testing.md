@@ -143,6 +143,7 @@ Playwright. Run it from a worktree: **the runner refuses a checkout holding any
 `.env*` file Next would load, or a `.dev.vars*` file**, because `.env.local` points
 at production. `pnpm cf:preview` refuses the same checkout by the same rule
 (`scripts/lib/live-env-files.ts`, #3694).
+
 **One run per machine at a time** (#4018): runs share the local Supabase and port
 3100, so a second worktree's run is refused naming the one in progress, a server
 already on the port (a killed run's leftover, a dev server) is refused, and the run
