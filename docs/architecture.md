@@ -300,11 +300,22 @@ own row**. Three things about that are load bearing:
   of its own start and that read (`readEligibleCached` records it with the entry,
   `trackEligibleReads` hands the compute the oldest), and the #1048 gate lets a
   row a live path wrote after the read stand. Every live path reads eligibility
-  during the compute and stamps from its start, as before. An older stamp brings a
-  pool due sooner (the grid in `bucketDueAtMs` sees a stamp before the pool's grid
-  point as belonging to the previous window), so each moved stamp is logged as
-  `pool stamped from its eligibility read` with its `lag_ms`: count those when the
-  recompute headroom alert moves.
+  during the compute and stamps from its start, as before. The row ALSO records when
+  its compute started (`compute_started_at`, migration 0201), and the two times
+  answer different questions (`src/lib/availability/slot-row-times.ts`):
+  - the stamp is the data's age: the write gate, the empty bucket check, the
+    `x-slots-computed-at` header, the offer race judge and the below tier notice
+    check read it;
+  - the start schedules the lane: the due set, the stale alarm and the admin "Last
+    computed" column read it through `scheduleAnchorMs`, because judged by the
+    stamp a pool moved back past its grid point in `bucketDueAtMs` came due again a
+    tick later (16% to 80% more computes, simulated in
+    `scripts/test-recompute-due-from-start.ts`). The anchor takes the start only
+    when the stamp can explain it (at most one eligibility cache lifetime earlier,
+    which `readEligibleCached` enforces), so a stamp back dated to the epoch still
+    forces the row due.
+  Each moved stamp is logged as `pool stamped from its eligibility read` with its
+  `lag_ms`. A database without the column is read and written for the stamp alone.
 
 Anything that starts feeding the compute must be added to `PoolInput`
 (`src/lib/availability/pool-key.ts`) in the same change, or the lane will serve

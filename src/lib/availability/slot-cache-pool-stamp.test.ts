@@ -16,7 +16,9 @@ const precompute = vi.hoisted(() => ({
       slots: ["2026-10-23T15:00:00.000Z"],
     }),
   ),
-  storeBucketSlotsRow: vi.fn(async (_code: string, _val: unknown, _atMs: number, _by: string) => "written" as const),
+  storeBucketSlotsRow: vi.fn(
+    async (_code: string, _val: unknown, _atMs: number, _by: string, _startedAtMs?: number) => "written" as const,
+  ),
   writeBucketSlotsRow: vi.fn(),
   recomputeBucketSlots: vi.fn(),
   readBucketSlotsRow: vi.fn(),
@@ -65,9 +67,10 @@ describe("recomputePoolSlotsForToday stamps from the eligibility read (#3388)", 
     await recomputePoolSlotsForToday(POOL, "lane", read, 4);
 
     expect(read).toHaveBeenCalledTimes(1);
-    expect(precompute.storeBucketSlotsRow.mock.calls.map((c) => [c[0], c[2]])).toEqual([
-      ["100", NOW - 50_000],
-      ["101", NOW - 50_000],
+    // The stamp is the read; the start goes beside it for the lane's scheduling.
+    expect(precompute.storeBucketSlotsRow.mock.calls.map((c) => [c[0], c[2], c[4]])).toEqual([
+      ["100", NOW - 50_000, NOW],
+      ["101", NOW - 50_000, NOW],
     ]);
     expect(log.info).toHaveBeenCalledWith("slot-cache", {
       msg: "pool stamped from its eligibility read",
@@ -81,7 +84,10 @@ describe("recomputePoolSlotsForToday stamps from the eligibility read (#3388)", 
 
     // The compute was handed no resolver, so it reads eligibility live.
     expect(precompute.computeBucketSlotsForWindow.mock.calls[0]![3]).toBeUndefined();
-    expect(precompute.storeBucketSlotsRow.mock.calls.map((c) => c[2])).toEqual([NOW, NOW]);
+    expect(precompute.storeBucketSlotsRow.mock.calls.map((c) => [c[2], c[4]])).toEqual([
+      [NOW, NOW],
+      [NOW, NOW],
+    ]);
     expect(log.info).not.toHaveBeenCalledWith("slot-cache", expect.objectContaining({ msg: "pool stamped from its eligibility read" }));
   });
 

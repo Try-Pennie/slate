@@ -240,7 +240,8 @@ export async function recomputePoolSlotsForToday(
     compute: (code) =>
       computeBucketSlotsForWindow(code, fromIso, toIso, reads?.resolve, horizon),
     eligibilityReadAtMs: () => reads?.oldestReadAtMs() ?? null,
-    writeRow: (code, val, computedAtMs) => storeBucketSlotsRow(code, val, computedAtMs, writtenBy),
+    writeRow: (code, val, computedAtMs, startedAtMs) =>
+      storeBucketSlotsRow(code, val, computedAtMs, writtenBy, startedAtMs),
     // The L1 key is on the fixed HORIZON_DAYS namespace, the same one the read
     // path looks up, so read and invalidate always agree.
     invalidate: (code) => invalidateBucketSlots(code),

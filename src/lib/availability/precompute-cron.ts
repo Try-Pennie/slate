@@ -1,4 +1,5 @@
 import { log } from "@/lib/log";
+import { scheduleAnchorMs } from "./slot-row-times.ts";
 /**
  * Pure ordering/staleness helpers for the cron backstop (Phase 3). The cron
  * recomputes buckets changed this tick FIRST, then rotates through the
@@ -9,7 +10,20 @@ import { log } from "@/lib/log";
 
 export interface KnownRow {
   code: string;
+  /** The row's stamp (`computed_at`): how old the data it was computed from is. */
   computedAtMs: number;
+  /**
+   * When the compute that wrote the row began (`compute_started_at`, #3388). Every
+   * helper here that asks whether the lane is keeping up reads the row through
+   * `anchorMs`, which takes this when the stamp can explain it. Absent or null (a row
+   * from before migration 0201, or the column not there yet) means the stamp.
+   */
+  startedAtMs?: number | null;
+}
+
+/** The instant this row is scheduled and judged stale from (`scheduleAnchorMs`). */
+function anchorMs(k: KnownRow): number {
+  return scheduleAnchorMs(k.computedAtMs, k.startedAtMs);
 }
 
 /**
@@ -23,7 +37,7 @@ export function orderBucketsForRecompute(
   known: KnownRow[],
   allCodes: string[],
 ): string[] {
-  const computedAt = new Map(known.map((k) => [k.code, k.computedAtMs]));
+  const computedAt = new Map(known.map((k) => [k.code, anchorMs(k)]));
   const seen = new Set(touched);
   const rest = allCodes
     .filter((c) => !seen.has(c))
@@ -31,14 +45,22 @@ export function orderBucketsForRecompute(
   return [...touched, ...rest];
 }
 
-/** Buckets that are never-computed or older than `staleMs` (for the alert). */
+/**
+ * Buckets that are never-computed or older than `staleMs` (for the alert).
+ *
+ * Judged from the same anchor as the due set (#3388): the alarm asks whether the
+ * LANE has fallen behind, and its margin over the freshness window (#1248) only
+ * holds when both are measured from one instant. A stamp moved back by a cached
+ * read is at most one cache lifetime older than the start, and the alarm is not
+ * the reader of data age.
+ */
 export function staleBuckets(
   known: KnownRow[],
   allCodes: string[],
   nowMs: number,
   staleMs: number,
 ): string[] {
-  const computedAt = new Map(known.map((k) => [k.code, k.computedAtMs]));
+  const computedAt = new Map(known.map((k) => [k.code, anchorMs(k)]));
   return allCodes.filter((c) => {
     const at = computedAt.get(c);
     return at === undefined || nowMs - at > staleMs;
@@ -235,7 +257,9 @@ export function bucketsDueForRecompute(
   freshMs: number,
   jitterFraction: number = RECOMPUTE_JITTER_FRACTION,
 ): string[] {
-  const computedAt = new Map(known.map((k) => [k.code, k.computedAtMs]));
+  // From when each row's compute STARTED (#3388), not its stamp: a stamp moved back
+  // past the bucket's grid point would bring it due again a tick later.
+  const computedAt = new Map(known.map((k) => [k.code, anchorMs(k)]));
   return allCodes
     .filter((c) => {
       const at = computedAt.get(c);

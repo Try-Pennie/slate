@@ -103,7 +103,10 @@ export async function readEligibleCached(
       const hit = await cache.match(keyRequest(bucket.id));
       if (hit) {
         const entry = parseEntry(await hit.text());
-        if (entry) return entry;
+        // Past its lifetime is a miss even if the platform served it (#3388): the
+        // lane's rows may sit at most one lifetime before their compute's start, and
+        // the scheduling anchor (`scheduleAnchorMs`) relies on that bound.
+        if (entry && nowMs() - entry.readAtMs <= ELIGIBLE_TTL_SECONDS * 1000) return entry;
       }
     } catch {
       // Best-effort: a cache read error is not fatal; fall through to live.

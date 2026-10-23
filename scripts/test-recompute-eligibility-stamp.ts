@@ -20,6 +20,13 @@
 import { readEligibleCached, trackEligibleReads } from "../src/lib/availability/eligible-cache.ts";
 import { recomputePool, type PooledBucket } from "../src/lib/availability/pool-recompute.ts";
 import { writeSlotRow } from "../src/lib/availability/slot-row-write.ts";
+import {
+  readKnownSlotRows,
+  resetStartedColumnProbe,
+  startedColumnAbsent,
+  COMPUTE_STARTED_COLUMN,
+} from "../src/lib/availability/slot-row-times.ts";
+import { ELIGIBLE_TTL_SECONDS } from "../src/lib/availability/eligible-cache-key.ts";
 import type { Bucket } from "../src/lib/db/types.ts";
 import type { BucketSlots, EligibleAgents } from "../src/lib/availability/service.ts";
 import { fakeBucketSlotsTable, type SlotRow } from "./lib/fake-bucket-slots-table.ts";
@@ -97,7 +104,13 @@ function computeWith(resolve: (b: Bucket) => Promise<EligibleAgents>) {
  * path writes the row at `liveWriteAtMs`, and the lane recomputes at T0 through the
  * cache. Returns the row left standing and what the lane's write reported.
  */
-async function laneAfterLiveWrite(cachedReadAtMs: number, liveWriteAtMs: number) {
+async function laneAfterLiveWrite(
+  cachedReadAtMs: number,
+  liveWriteAtMs: number,
+  /** Columns the table lacks: the database before migration 0201 is applied. */
+  withoutColumns: string[] = [],
+) {
+  resetStartedColumnProbe();
   const cache = installCache();
   try {
     const clock = { t: cachedReadAtMs };
@@ -108,7 +121,7 @@ async function laneAfterLiveWrite(cachedReadAtMs: number, liveWriteAtMs: number)
     await readEligibleCached(bucket("100"), { resolver: async () => stale, nowMs });
 
     // 2. a2 leaves the pool, and a live path refreshes the row from live eligibility.
-    const { db, rows } = fakeBucketSlotsTable([] as SlotRow[]);
+    const { db, rows } = fakeBucketSlotsTable([] as SlotRow[], { withoutColumns });
     const live = { slots: ["slot-for-a1"] };
     eq(await writeSlotRow(db, "100", live, liveWriteAtMs, "push"), "written", "the live refresh stores its row");
 
@@ -130,13 +143,13 @@ async function laneAfterLiveWrite(cachedReadAtMs: number, liveWriteAtMs: number)
       nowMs,
       compute: computeWith(reads.resolve),
       eligibilityReadAtMs: reads.oldestReadAtMs,
-      writeRow: async (code, val, computedAtMs) => {
-        outcome = await writeSlotRow(db, code, val, computedAtMs, "lane");
+      writeRow: async (code, val, computedAtMs, startedAtMs) => {
+        outcome = await writeSlotRow(db, code, val, computedAtMs, "lane", startedAtMs);
         return outcome as "written";
       },
       invalidate: async () => {},
     });
-    return { row: rows[0]!, outcome, liveReads, stampLagMs: pooled.stampLagMs };
+    return { row: rows[0]!, outcome, liveReads, stampLagMs: pooled.stampLagMs, db };
   } finally {
     cache.restore();
   }
@@ -155,6 +168,7 @@ async function laneAfterLiveWrite(cachedReadAtMs: number, liveWriteAtMs: number)
     "the live row built without a2 is NOT overwritten by the cached list that still has a2",
   );
   eq(row.computed_at, iso(T0 - 20_000), "and keeps the live refresh's own stamp");
+  eq(row.compute_started_at, iso(T0 - 20_000), "and its own start, which for a live path is the stamp");
 }
 
 // --- The control: a cached list read AFTER the live write still wins ---
@@ -169,6 +183,98 @@ async function laneAfterLiveWrite(cachedReadAtMs: number, liveWriteAtMs: number)
     "carrying what that list said",
   );
   eq(row.computed_at, iso(T0 - 10_000), "stamped from when its list was read, not from the compute's start");
+  eq(row.compute_started_at, iso(T0), "and records when the compute started, which the lane schedules from");
+}
+
+// --- Before migration 0201: the same writes land, with the stamp alone ---
+
+{
+  const { row, outcome } = await laneAfterLiveWrite(T0 - 50_000, T0 - 20_000, [COMPUTE_STARTED_COLUMN]);
+  eq(outcome, "kept-newer", "with no start column the gate still keeps the newer live row");
+  eq((row.payload as { slots: string[] }).slots, ["slot-for-a1"], "untouched");
+  eq(row.compute_started_at, undefined, "and nothing tried to store a start");
+}
+
+{
+  const { row, outcome, db } = await laneAfterLiveWrite(T0 - 10_000, T0 - 20_000, [COMPUTE_STARTED_COLUMN]);
+  eq(outcome, "written", "with no start column a newer lane row still lands, rather than every write failing");
+  eq(row.computed_at, iso(T0 - 10_000), "stamped from its read");
+  assert(startedColumnAbsent(), "and the isolate remembers the column is missing");
+  const known = await readKnownSlotRows(db);
+  eq(known, [{ code: "100", computedAtMs: T0 - 10_000, startedAtMs: null }], "a read of the rows falls back to the stamp alone");
+}
+
+{
+  // The read on its own, in an isolate that has not met the missing column yet.
+  resetStartedColumnProbe();
+  const { db } = fakeBucketSlotsTable(
+    [{ bucket_code: "100", payload: {}, computed_at: iso(T0 - 10_000), invalidated_at: null }],
+    { withoutColumns: [COMPUTE_STARTED_COLUMN] },
+  );
+  eq(
+    await readKnownSlotRows(db),
+    [{ code: "100", computedAtMs: T0 - 10_000, startedAtMs: null }],
+    "the first read to meet the missing column retries for the stamp alone",
+  );
+}
+
+{
+  resetStartedColumnProbe();
+  const { db } = fakeBucketSlotsTable([
+    { bucket_code: "100", payload: {}, computed_at: iso(T0 - 10_000), invalidated_at: null, compute_started_at: iso(T0) },
+    { bucket_code: "101", payload: {}, computed_at: "not a time", invalidated_at: null, compute_started_at: "nor this" },
+  ]);
+  eq(
+    await readKnownSlotRows(db),
+    [
+      { code: "100", computedAtMs: T0 - 10_000, startedAtMs: T0 },
+      { code: "101", computedAtMs: 0, startedAtMs: null },
+    ],
+    "with the column, both times are read; unreadable ones fail closed (#1169)",
+  );
+  assert(!startedColumnAbsent(), "and a table that has the column is never marked as missing it");
+}
+
+{
+  // An unrelated error must not be mistaken for the missing column and retried.
+  resetStartedColumnProbe();
+  const db = {
+    from: () => ({ select: async () => ({ data: null, error: { code: "42703", message: "column bucket_slots.other does not exist" } }) }),
+  } as never;
+  let threw = false;
+  try {
+    await readKnownSlotRows(db);
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a different undefined column is a failed read, never an empty one");
+  assert(!startedColumnAbsent(), "and does not mark the start column missing");
+}
+
+// --- A cached list past the cache's lifetime is never used ---
+
+{
+  const cache = installCache();
+  try {
+    const clock = { t: T0 };
+    const nowMs = () => clock.t;
+    await readEligibleCached(bucket("100"), { resolver: async () => ({ ids: ["old"], fallbackApplied: false }), nowMs });
+    clock.t = T0 + ELIGIBLE_TTL_SECONDS * 1000;
+    const atLimit = await readEligibleCached(bucket("100"), {
+      resolver: async () => ({ ids: ["fresh"], fallbackApplied: false }),
+      nowMs,
+    });
+    eq(atLimit.agents.ids, ["old"], "an entry exactly one lifetime old is still served");
+    clock.t += 1;
+    const past = await readEligibleCached(bucket("100"), {
+      resolver: async () => ({ ids: ["fresh"], fallbackApplied: false }),
+      nowMs,
+    });
+    eq(past.agents.ids, ["fresh"], "one older than its lifetime is a miss, even when the platform served it");
+    eq(past.readAtMs, clock.t, "and is read live");
+  } finally {
+    cache.restore();
+  }
 }
 
 // --- A cache miss reads live during the compute, so the stamp is the start, as today ---

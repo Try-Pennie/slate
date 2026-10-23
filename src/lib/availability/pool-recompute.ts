@@ -4,6 +4,7 @@ import type { BucketSlots } from "./service";
 import { groupByPool, type PoolInput } from "./pool-key";
 import { bucketsDueForRecompute, type KnownRow } from "./precompute-cron";
 import type { SlotRowWriteOutcome } from "./slot-row-write";
+import { scheduleAnchorMs } from "./slot-row-times.ts";
 
 /**
  * Compute a POOL's availability once and store it under every bucket code in
@@ -51,8 +52,15 @@ export interface PoolRecomputeDeps {
   /** Store one code's row, stamped from when the COMPUTE began (#1048), or from when
    *  its eligibility list was read if that was earlier (#3388). Answers what
    *  the write did, because a database REFUSAL is an answer rather than a throw
-   *  (#3119): `failed` lands the code in `failed[]` exactly as a throw does. */
-  writeRow(code: string, val: BucketSlots, computedAtMs: number): Promise<SlotRowWriteOutcome>;
+   *  (#3119): `failed` lands the code in `failed[]` exactly as a throw does.
+   *  `startedAtMs` is when the compute began, stored beside the stamp so the lane
+   *  schedules the pool from it rather than from a stamp a cached read moved back. */
+  writeRow(
+    code: string,
+    val: BucketSlots,
+    computedAtMs: number,
+    startedAtMs: number,
+  ): Promise<SlotRowWriteOutcome>;
   /** Drop one code's L1 cache entry so the next read serves the fresh row. */
   invalidate(code: string): Promise<void>;
 }
@@ -122,7 +130,7 @@ export async function recomputePool(
     try {
       // `kept-newer` is a success: a fresher row already stands for this code. So is
       // `invalidated` (#3118): a save landed mid compute and the row stays due.
-      const outcome = await deps.writeRow(member.code, forMember, computedAtMs);
+      const outcome = await deps.writeRow(member.code, forMember, computedAtMs, startedMs);
       if (outcome === "failed") failed.push(member.code);
       else written.push(member.code);
     } catch {
@@ -178,7 +186,10 @@ export function poolsDueForRecompute(
   freshMs: number,
   jitterFraction?: number,
 ): PooledBucket[][] {
-  const computedAt = new Map(known.map((k) => [k.code, k.computedAtMs]));
+  // Each member's ANCHOR (#3388): when its compute started, where the stamp can
+  // explain it. The pool row built here carries that instant as its only time, so
+  // `bucketsDueForRecompute` reads it as it stands.
+  const computedAt = new Map(known.map((k) => [k.code, scheduleAnchorMs(k.computedAtMs, k.startedAtMs)]));
   const keys: string[] = [];
   const poolRows: KnownRow[] = [];
   for (const [key, members] of pools) {
