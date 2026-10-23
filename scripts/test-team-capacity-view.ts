@@ -161,7 +161,9 @@ eq(axisPos("2026-11-03T13:00:00.000Z", Z), 0, "8am after the clocks change is st
   const fresh = judgePace({ ok: true, rows: [read({}), read({ day: "2026-10-21", pace_per_hour: 3 })] }, now);
   const v = view(days, "2026-10-19", "2026-10-19T19:30:00.000Z", fresh);
   eq(v.cards[0].pace, ["Filling at 6 an hour", "Full by 9:30pm at this pace"], "each card shows its own day's pace and estimate");
-  // Decision 5 (95% or more shows the pace alone) is held by the 96% card in the #4145 block below.
+  // From 95% a card shows the last call estimate (decision 20, #4190), held in
+  // scripts/test-team-capacity-pace.ts; the 96% card in the #4145 block below has none
+  // stored, so it shows its pace alone.
   eq(v.cards[1].pace, [], "a card with no calls open shows no pace line (#4101 decision 18, 2026-10-23)");
   eq(v.paceNotice, null, "fresh readings need no line under the cards");
   eq([v.cards[0].outLine, v.cards[0].notSyncingLine], ["1 advisor off", "1 calendar not syncing"], "time off and not syncing in the settled words");
