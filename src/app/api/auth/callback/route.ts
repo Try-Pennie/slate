@@ -2,14 +2,9 @@ import { NextResponse, type NextRequest } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { provisionUser } from "@/lib/provision";
 import { DeactivatedAccountError } from "@/lib/auth/active-session";
-import {
-  GOOGLE_ACCOUNT_MISMATCH_COOLDOWN_MS,
-  GoogleAccountMismatchError,
-  googleAccountMismatchAlertKey,
-} from "@/lib/auth/google-identity";
+import { GoogleAccountMismatchError, googleAccountIdsOf } from "@/lib/auth/google-identity";
 import { GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR } from "@/lib/auth/google-identity-copy";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import { googleAccountMismatchAlert } from "@/lib/notify/misc-alert-copy";
+import { reportGoogleAccountRefusal } from "@/lib/auth/google-account-refusal";
 import {
   SESSION_SEEN_COOKIE,
   SESSION_STARTED_COOKIE,
@@ -87,13 +82,26 @@ export async function GET(req: NextRequest) {
   // it would put them on an internal page with no Slate row behind it, where every
   // request resolves the session by auth_user_id and finds nothing. The detail is
   // kept server-side in the logs, keyed on the auth user rather than the email.
+  //
+  // #3526: the Google account ids come from the identities GoTrue keeps for this
+  // auth user, never from `user_metadata`, which whoever holds the session can
+  // rewrite and which GoTrue does not refresh when it links a second identity. A
+  // sign in with none at all cannot say who it is, which is a fault in the sign in
+  // path rather than anything the person did, so it is refused before anything is
+  // written and told as sign in being unavailable.
+  const googleSubs = googleAccountIdsOf(user);
+  if (googleSubs.length === 0) {
+    log.error("auth-callback", { msg: "sign in carried no google identity", auth_user_id: user.id });
+    await supabase.auth.signOut();
+    return NextResponse.redirect(`${origin}/login?error=sign_in_unavailable`);
+  }
   let slateUser;
   try {
     slateUser = await provisionUser({
       authUserId: user.id,
       email,
       name: (meta.full_name as string) ?? (meta.name as string) ?? null,
-      googleSub: (meta.sub as string) ?? (meta.provider_id as string) ?? null,
+      googleSubs,
       avatarUrl: (meta.avatar_url as string) ?? (meta.picture as string) ?? null,
     });
   } catch (err) {
@@ -113,25 +121,8 @@ export async function GET(req: NextRequest) {
     // the departure recorded is how the old row's role and bookings would have
     // been handed over, and only a person can tell a rehire from a mistake.
     if (err instanceof GoogleAccountMismatchError) {
-      log.warn("auth-callback", {
-        msg: "refused a different google account",
-        auth_user_id: user.id,
-        user_id: err.userId,
-        reason: err.reason,
-      });
       await supabase.auth.signOut();
-      try {
-        // alert-key: sign_in_google_account_mismatch:*
-        await sendThrottledAlert(
-          googleAccountMismatchAlertKey(err.userId),
-          GOOGLE_ACCOUNT_MISMATCH_COOLDOWN_MS,
-          googleAccountMismatchAlert(err.email, err.reason),
-        );
-      } catch (alertErr) {
-        // The refusal stands whether or not Slack heard about it: the person is
-        // already signed out and the warn above names the account.
-        log.error("auth-callback", { msg: "different google account alert failed", user_id: err.userId }, alertErr);
-      }
+      await reportGoogleAccountRefusal(err, "auth-callback", user.id);
       return NextResponse.redirect(`${origin}/login?error=${GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR}`);
     }
     log.error("auth-callback", { msg: "provisioning refused", auth_user_id: user.id }, err);

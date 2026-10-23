@@ -938,7 +938,8 @@ export default async function AgentProfilePage({
               consequential, so it lives here at the bottom of the closed section
               (L609), behind the shared destructive confirm that names what
               happens next (L180). */}
-          {isAdmin && canManageThisAgent && agent.google_sub ? (
+          {/* Never on your own page: relinking deletes the sign in it acts on. */}
+          {isAdmin && canManageThisAgent && !isSelf && agent.google_sub ? (
             <div className="mt-4 border-t border-border pt-4">
               <p className={`text-xs text-fg-muted ${proseCls}`}>
                 {GOOGLE_RELINK_COPY.explanation(agent.name ?? agent.email)}

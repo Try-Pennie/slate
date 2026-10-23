@@ -1216,6 +1216,14 @@ describe("linking a new Google account (#3526)", () => {
     expect(screen.queryByRole("button", { name: GOOGLE_RELINK_COPY.openLabel })).toBeNull();
   });
 
+  it("is not offered on an admin's own page, since it would delete their own sign in", async () => {
+    cleanup();
+    auth.currentUser.mockResolvedValueOnce({ id: "x1", role: "admin", org_id: "o1" });
+    dbState.agent = { ...agentOf("admin"), google_sub: "sub-old" };
+    render(await AgentProfilePage({ ...props, searchParams: Promise.resolve({}) }));
+    expect(screen.queryByRole("button", { name: GOOGLE_RELINK_COPY.openLabel })).toBeNull();
+  });
+
   it("is not offered to a manager, matching the action's admin only check", async () => {
     await renderAs("manager");
     expect(screen.queryByRole("button", { name: GOOGLE_RELINK_COPY.openLabel })).toBeNull();

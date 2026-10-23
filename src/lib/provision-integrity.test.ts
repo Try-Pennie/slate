@@ -224,7 +224,7 @@ const input = {
   authUserId: "auth-1",
   email: "agent@trypennie.com",
   name: "An Agent",
-  googleSub: "sub-1",
+  googleSubs: ["sub-1"],
   avatarUrl: null,
 };
 
@@ -422,10 +422,33 @@ describe("provisionUser and Google's permanent account id (#3526)", () => {
   it("refuses a sign in that carries no account id at all once the row has one", async () => {
     const s = seededStore({ id: "user-9", email: input.email, auth_user_id: null, google_sub: "sub-old" });
 
-    await expect(provisionUser({ ...input, googleSub: null })).rejects.toMatchObject({
+    await expect(provisionUser({ ...input, googleSubs: [] })).rejects.toMatchObject({
       reason: "no-account-id",
     });
     expect(s.users.rows[0].auth_user_id).toBeNull();
+  });
+
+  // Two Google accounts on one auth user is what GoTrue's linking by address makes
+  // of a newcomer signing in over the old owner's auth user. Neither may have the
+  // row, even one that has not recorded an account yet, and no new row is made.
+  it("refuses a sign in carrying two Google accounts, recording neither", async () => {
+    const s = seededStore({ id: "user-9", email: input.email, auth_user_id: "auth-1", google_sub: null });
+
+    await expect(provisionUser({ ...input, googleSubs: ["sub-a", "sub-b"] })).rejects.toMatchObject({
+      reason: "several-accounts",
+    });
+    expect(s.users.rows).toHaveLength(1);
+    expect(s.users.rows[0].google_sub).toBeNull();
+  });
+
+  it("creates no new row for a sign in that does not carry exactly one Google account", async () => {
+    const s = makeStore();
+    seedDefaultOrg(s);
+    store.current = s.client;
+
+    await expect(provisionUser({ ...input, googleSubs: [] })).rejects.toThrow();
+    await expect(provisionUser({ ...input, googleSubs: ["sub-a", "sub-b"] })).rejects.toThrow();
+    expect(s.users.rows).toHaveLength(0);
   });
 
   it("records the account id on a row found by email that has none yet", async () => {
@@ -477,8 +500,8 @@ describe("provisionUser and Google's permanent account id (#3526)", () => {
     );
 
     const results = await Promise.allSettled([
-      provisionUser({ ...input, authUserId: "auth-a", googleSub: "sub-a" }),
-      provisionUser({ ...input, authUserId: "auth-b", googleSub: "sub-b" }),
+      provisionUser({ ...input, authUserId: "auth-a", googleSubs: ["sub-a"] }),
+      provisionUser({ ...input, authUserId: "auth-b", googleSubs: ["sub-b"] }),
     ]);
 
     const won = results.filter((r) => r.status === "fulfilled");

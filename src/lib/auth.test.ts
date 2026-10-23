@@ -35,15 +35,42 @@ const builder = vi.hoisted(() => {
   b.maybeSingle = maybeSingle;
   return b;
 });
-const authUser = vi.hoisted(() => ({ id: "auth-1" as string | null }));
+/** A Google identity as GoTrue returns it on the auth user (#3526). */
+type FakeIdentity = { provider: string; identity_data?: Record<string, unknown> };
+const googleIdentity = (sub: string): FakeIdentity => ({ provider: "google", identity_data: { sub } });
+const authUser = vi.hoisted(() => ({
+  id: "auth-1" as string | null,
+  // Every staff auth user in production holds one Google identity (read
+  // 2026-10-23), so that is the default every suite below runs with.
+  identities: [{ provider: "google", identity_data: { sub: "sub-1" } }] as {
+    provider: string;
+    identity_data?: Record<string, unknown>;
+  }[],
+  userMetadata: {} as Record<string, unknown>,
+}));
 const cookieValue = vi.hoisted(() => ({ v: undefined as string | undefined }));
+const signOut = vi.hoisted(() => vi.fn(async (_opts?: unknown) => ({ error: null })));
+// #3526: the refusal alert, the same one the sign in callback sends.
+const dispatch = vi.hoisted(() => ({
+  sendThrottledAlert: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
+}));
 
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({ from: () => builder }),
 }));
+vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: async () => ({
-    auth: { getUser: async () => ({ data: { user: authUser.id ? { id: authUser.id } : null } }) },
+    auth: {
+      getUser: async () => ({
+        data: {
+          user: authUser.id
+            ? { id: authUser.id, identities: authUser.identities, user_metadata: authUser.userMetadata }
+            : null,
+        },
+      }),
+      signOut,
+    },
   }),
 }));
 vi.mock("@/lib/auth/dev-preview", () => ({ devPreviewUser: async () => null }));
@@ -374,6 +401,89 @@ describe("a deactivated session is refused (#2378)", () => {
 
     signedInAs(user("mgr-1", "manager"));
     expect((await requireManager()).id).toBe("mgr-1");
+  });
+});
+
+// #3526: the sign in callback checks the Google account, but a session does not have
+// to come through the callback. Somebody given a reused address can exchange the
+// sign in code with Supabase themselves and set the cookies, and every request then
+// resolved their auth user to the old row with no account check at all. So the check
+// runs where a session BECOMES a row, on every request, the way the deactivation
+// gate does, and it reads the Google identities GoTrue returns for the auth user,
+// which the session holder cannot write (unlike `user_metadata`).
+describe("a session whose Google account is not the row's is refused (#3526)", () => {
+  beforeEach(() => {
+    authUser.identities = [googleIdentity("sub-1")];
+    authUser.userMetadata = {};
+    signOut.mockClear();
+    dispatch.sendThrottledAlert.mockClear();
+  });
+  afterEach(() => {
+    authUser.identities = [googleIdentity("sub-1")];
+    authUser.userMetadata = {};
+  });
+
+  it("refuses a session that reached the old row without the callback, ends it, and alerts", async () => {
+    // The newcomer's Google account, auto linked to (or exchanged onto) the auth
+    // user the old row is linked to.
+    signedInAs(user("admin-1", "admin", { google_sub: "sub-old" }));
+    authUser.identities = [googleIdentity("sub-new")];
+
+    expect(await realCurrentUser()).toBeNull();
+    await expect(requireAdmin()).rejects.toThrow("Not authorized");
+    // Only THIS session is ended, never every session on the auth user.
+    expect(signOut).toHaveBeenCalledWith({ scope: "local" });
+    const [key, , text] = dispatch.sendThrottledAlert.mock.calls[0]!;
+    expect(key).toBe("sign_in_google_account_mismatch:admin-1");
+    expect(text).toContain("admin-1@trypennie.com");
+  });
+
+  it("admits the session when its one Google account is the row's", async () => {
+    signedInAs(user("admin-1", "admin", { google_sub: "sub-1" }));
+    expect((await realCurrentUser())?.id).toBe("admin-1");
+    expect(signOut).not.toHaveBeenCalled();
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("refuses an auth user holding a second Google account beside the row's", async () => {
+    signedInAs(user("admin-1", "admin", { google_sub: "sub-1" }));
+    authUser.identities = [googleIdentity("sub-1"), googleIdentity("sub-intruder")];
+    expect(await realCurrentUser()).toBeNull();
+  });
+
+  // A row that has never recorded an account is not armed yet, but an auth user
+  // holding TWO Google accounts is exactly the auto linked takeover, so it is refused
+  // even there rather than letting either one have the row.
+  it("refuses two Google accounts on a row with no account recorded, and admits one", async () => {
+    signedInAs(user("admin-1", "admin", { google_sub: null }));
+    authUser.identities = [googleIdentity("sub-a"), googleIdentity("sub-b")];
+    expect(await realCurrentUser()).toBeNull();
+
+    signedInAs(user("admin-1", "admin", { google_sub: null }));
+    authUser.identities = [googleIdentity("sub-a")];
+    expect((await realCurrentUser())?.id).toBe("admin-1");
+  });
+
+  it("refuses a session with no Google identity at all once the row has an account", async () => {
+    signedInAs(user("admin-1", "admin", { google_sub: "sub-1" }));
+    authUser.identities = [{ provider: "email", identity_data: { sub: "sub-1" } }];
+    expect(await realCurrentUser()).toBeNull();
+  });
+
+  // user_metadata is writable by whoever holds the session (`updateUser`), so a
+  // matching `sub` there proves nothing: only the identity counts.
+  it("ignores an account id written into user_metadata", async () => {
+    signedInAs(user("admin-1", "admin", { google_sub: "sub-1" }));
+    authUser.identities = [googleIdentity("sub-intruder")];
+    authUser.userMetadata = { sub: "sub-1", provider_id: "sub-1" };
+    expect(await realCurrentUser()).toBeNull();
+  });
+
+  it("still refuses when the alert itself cannot be sent", async () => {
+    signedInAs(user("admin-1", "admin", { google_sub: "sub-old" }));
+    authUser.identities = [googleIdentity("sub-new")];
+    dispatch.sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
+    expect(await realCurrentUser()).toBeNull();
   });
 });
 

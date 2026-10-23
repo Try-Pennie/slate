@@ -6293,6 +6293,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: googleAccountMismatchAlert("dana.whitfield@trypennie.com", "different-account") },
   { key: "sign_in_google_account_mismatch:*", state: "a sign in carrying no Google account id", channel: "alert",
     text: googleAccountMismatchAlert("ariel.nwosu@trypennie.com", "no-account-id") },
+  { key: "sign_in_google_account_mismatch:*", state: "two Google accounts on one sign in", channel: "alert",
+    text: googleAccountMismatchAlert("dana.whitfield@trypennie.com", "several-accounts") },
   // #3700. The constant is imported rather than spelled, so the preview cannot claim
   // a period the sync lane does not wait.
   { key: "refused_advisor_left_pool:*", state: "an archived account, other advisors still in its pools", channel: "alert",

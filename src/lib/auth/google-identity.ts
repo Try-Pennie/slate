@@ -9,42 +9,78 @@
  * holds one it is the thing that says who the row belongs to, and the address is
  * only how the row was found.
  *
- * THREE OUTCOMES. A row with no stored id is recorded on this sign in, which is
- * what happened before this existed, so every row arms itself on its next sign
- * in rather than needing a backfill. A row whose id matches is the same person. A
- * row whose id differs is somebody else, and so is a sign in that carries no id
- * at all once the row has one: "I cannot tell who this is" must not be enough to
- * hand over an account that has said who it belongs to (fail closed, as every
- * other provisioning refusal does).
+ * THREE OUTCOMES. A row with no stored id records the one Google account on this
+ * sign in, which is what happened before this existed, so every row arms itself
+ * on its next sign in rather than needing a backfill. A row whose id matches is
+ * the same person. Anything else is somebody else: a different account; no Google
+ * account at all ("I cannot tell who this is" must not be enough to hand over an
+ * account, fail closed as every other provisioning refusal does); or two Google
+ * accounts on one auth user, which is what GoTrue's linking by address makes of a
+ * newcomer signing in over the old owner's auth user, refused even on an unarmed row.
+ *
+ * WHERE IT RUNS. At sign in (`provision.ts`) and on every request
+ * (`realCurrentUser` in `src/lib/auth.ts`), because a session can reach a row
+ * without the sign in callback ever running (security review of #4169).
  *
  * A legitimate rehire on a NEW Google account is refused by the same rule, and an
- * admin lets them in by forgetting the stored id (`relinkGoogleAccount` in
- * `src/app/admin/actions.ts`, the "Link a new Google account" control on their
- * page), after which their next sign in records the new one.
+ * admin lets them in with "Link a new Google account" on their page
+ * (`relinkGoogleAccount` in `src/app/admin/actions.ts`), which forgets the stored
+ * id and deletes the old auth user, after which their next sign in records the new
+ * account on a fresh one.
  */
 
 export type GoogleIdentityVerdict =
   | { kind: "same-person" }
-  | { kind: "record" }
+  | { kind: "record"; sub: string }
   | { kind: "different-person"; reason: GoogleMismatchReason };
 
 /**
- * Why a sign in was judged to be somebody else. Two causes with two different
+ * Why a sign in was judged to be somebody else. Three causes with three different
  * investigations behind them (L11): a different account is an address reused or a
  * person on a new account; no account id at all is Google or Supabase not handing
- * one over, which is a fault in the sign in path itself.
+ * one over, which is a fault in the sign in path itself; two accounts on one auth
+ * user is what GoTrue's linking by address makes of a newcomer signing in over the
+ * old owner's auth user.
  */
-export type GoogleMismatchReason = "different-account" | "no-account-id";
+export type GoogleMismatchReason = "different-account" | "no-account-id" | "several-accounts";
 
+/**
+ * WHICH accounts are offered comes from the Google identities GoTrue keeps for the
+ * auth user (`googleAccountIdsOf`), never from `user_metadata`: whoever holds a
+ * session can rewrite their own metadata with `updateUser`, and GoTrue does not
+ * refresh it when it links a second identity. Every Google identity counts, so an
+ * auth user holding two cannot pass by having one of them match.
+ */
 export function judgeGoogleIdentity(
   stored: string | null | undefined,
-  signingIn: string | null | undefined,
+  offered: readonly string[],
 ): GoogleIdentityVerdict {
   const kept = stored?.trim() ? stored : null;
-  const offered = signingIn?.trim() ? signingIn : null;
-  if (kept === null) return { kind: "record" };
-  if (offered === null) return { kind: "different-person", reason: "no-account-id" };
-  return offered === kept ? { kind: "same-person" } : { kind: "different-person", reason: "different-account" };
+  const accounts = [...new Set(offered.filter((s) => s.trim() !== ""))];
+  if (accounts.length === 0) return { kind: "different-person", reason: "no-account-id" };
+  if (accounts.length > 1) return { kind: "different-person", reason: "several-accounts" };
+  const [only] = accounts as [string];
+  if (kept === null) return { kind: "record", sub: only };
+  return only === kept ? { kind: "same-person" } : { kind: "different-person", reason: "different-account" };
+}
+
+/** The shape of a Supabase auth user this module reads, and nothing more. */
+export interface AuthUserIdentities {
+  identities?: readonly { provider?: string; identity_data?: Record<string, unknown> | null }[] | null;
+}
+
+/**
+ * Every Google account id on an auth user, read from its identities, which GoTrue
+ * writes and the session holder cannot. `user_metadata` is deliberately not read.
+ */
+export function googleAccountIdsOf(user: AuthUserIdentities): string[] {
+  const ids: string[] = [];
+  for (const identity of user.identities ?? []) {
+    if (identity.provider !== "google") continue;
+    const sub = identity.identity_data?.sub;
+    if (typeof sub === "string" && sub.trim() !== "") ids.push(sub);
+  }
+  return ids;
 }
 
 /**

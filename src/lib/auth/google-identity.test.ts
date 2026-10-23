@@ -1,37 +1,78 @@
 import { describe, it, expect } from "vitest";
-import { GoogleAccountMismatchError, googleAccountMismatchAlertKey, judgeGoogleIdentity } from "./google-identity";
+import {
+  GoogleAccountMismatchError,
+  googleAccountMismatchAlertKey,
+  googleAccountIdsOf,
+  judgeGoogleIdentity,
+} from "./google-identity";
 import { GOOGLE_ACCOUNT_CHANGED_MESSAGE } from "./google-identity-copy";
 
-// #3526: the one rule deciding whether a sign in is the person a Slate row
-// belongs to. Provisioning applies it (src/lib/provision-integrity.test.ts drives
-// it end to end); these pin each verdict, including the edges a stored value can
-// arrive with.
+// #3526: the one rule deciding whether a sign in, or a session on any later
+// request, is the person a Slate row belongs to. Provisioning applies it at sign in
+// (src/lib/provision-integrity.test.ts) and `realCurrentUser` on every request
+// (src/lib/auth.test.ts); these pin each verdict and the edges.
 describe("judgeGoogleIdentity", () => {
-  it("is the same person when the account ids match", () => {
-    expect(judgeGoogleIdentity("sub-1", "sub-1")).toEqual({ kind: "same-person" });
+  it("is the same person when the one Google account matches", () => {
+    expect(judgeGoogleIdentity("sub-1", ["sub-1"])).toEqual({ kind: "same-person" });
   });
 
-  it("is somebody else when the account ids differ", () => {
-    expect(judgeGoogleIdentity("sub-old", "sub-new")).toEqual({
+  it("is somebody else when the Google account differs", () => {
+    expect(judgeGoogleIdentity("sub-old", ["sub-new"])).toEqual({
       kind: "different-person",
       reason: "different-account",
     });
   });
 
-  it("records the account id on a row that has none, which is how every row arms itself", () => {
-    expect(judgeGoogleIdentity(null, "sub-1")).toEqual({ kind: "record" });
-    expect(judgeGoogleIdentity(undefined, "sub-1")).toEqual({ kind: "record" });
+  it("records the account on a row that has none, which is how every row arms itself", () => {
+    expect(judgeGoogleIdentity(null, ["sub-1"])).toEqual({ kind: "record", sub: "sub-1" });
+    expect(judgeGoogleIdentity(undefined, ["sub-1"])).toEqual({ kind: "record", sub: "sub-1" });
     // A blank stored value is no id at all, never an id that matches nothing.
-    expect(judgeGoogleIdentity("  ", "sub-1")).toEqual({ kind: "record" });
+    expect(judgeGoogleIdentity("  ", ["sub-1"])).toEqual({ kind: "record", sub: "sub-1" });
   });
 
-  it("refuses a sign in carrying no account id once the row has one (fail closed)", () => {
-    for (const offered of [null, undefined, ""]) {
-      expect(judgeGoogleIdentity("sub-1", offered)).toEqual({
+  it("refuses a session carrying no Google account, whatever the row holds (fail closed)", () => {
+    for (const stored of ["sub-1", null]) {
+      expect(judgeGoogleIdentity(stored, [])).toEqual({ kind: "different-person", reason: "no-account-id" });
+      expect(judgeGoogleIdentity(stored, ["", "  "])).toEqual({
         kind: "different-person",
         reason: "no-account-id",
       });
     }
+  });
+
+  // Two Google accounts on one auth user is the shape of a takeover through
+  // GoTrue's linking by address, so it is refused even on a row with nothing stored.
+  it("refuses two different Google accounts on one auth user, armed or not", () => {
+    for (const stored of ["sub-1", null]) {
+      expect(judgeGoogleIdentity(stored, ["sub-1", "sub-2"])).toEqual({
+        kind: "different-person",
+        reason: "several-accounts",
+      });
+    }
+    // The same account listed twice is one account.
+    expect(judgeGoogleIdentity("sub-1", ["sub-1", "sub-1"])).toEqual({ kind: "same-person" });
+  });
+});
+
+describe("googleAccountIdsOf", () => {
+  it("reads every Google identity's sub and ignores other providers and user_metadata", () => {
+    // A whole auth user as Supabase returns it, metadata included.
+    const user = {
+      user_metadata: { sub: "meta-sub", provider_id: "meta-sub" },
+      identities: [
+        { provider: "google", identity_data: { sub: "g-1" } },
+        { provider: "email", identity_data: { sub: "e-1" } },
+        { provider: "google", identity_data: { sub: "g-2" } },
+      ],
+    };
+    expect(googleAccountIdsOf(user)).toEqual(["g-1", "g-2"]);
+  });
+
+  it("answers no accounts for a user with no identities, or a Google identity with no sub", () => {
+    expect(googleAccountIdsOf({})).toEqual([]);
+    expect(googleAccountIdsOf({ identities: null })).toEqual([]);
+    expect(googleAccountIdsOf({ identities: [{ provider: "google", identity_data: { sub: 42 } }] })).toEqual([]);
+    expect(googleAccountIdsOf({ identities: [{ provider: "google" }] })).toEqual([]);
   });
 });
 

@@ -65,9 +65,29 @@ const SESSION = {
       id: "auth-1",
       email: "agent@trypennie.com",
       user_metadata: { email_verified: true, full_name: "An Agent" },
+      identities: [{ provider: "google", identity_data: { sub: "sub-1" } }],
     },
   },
 };
+
+/** A session for one test, with its own identities and metadata (#3526). */
+function sessionWithIdentities(
+  identities: { provider: string; identity_data?: Record<string, unknown> }[],
+  meta: Record<string, unknown> = {},
+) {
+  return {
+    data: {
+      session: {
+        user: {
+          ...SESSION.session.user,
+          user_metadata: { ...SESSION.session.user.user_metadata, ...meta },
+          identities,
+        },
+      },
+    },
+    error: null,
+  };
+}
 
 // The handler reads only `req.nextUrl`, and a real NextRequest is not
 // constructible outside a server runtime, so hand it the URL it asks for.
@@ -147,7 +167,10 @@ describe("auth callback when provisioning refuses (#1648)", () => {
 // #3083: the domain gate fails CLOSED, in both of the ways it used to fail open.
 describe("auth callback domain gate (#3083)", () => {
   function sessionWith(meta: Record<string, unknown>, email = "agent@trypennie.com") {
-    return { data: { session: { user: { id: "auth-1", email, user_metadata: meta } } }, error: null };
+    return {
+      data: { session: { user: { id: "auth-1", email, user_metadata: meta, identities: SESSION.session.user.identities } } },
+      error: null,
+    };
   }
 
   it("refuses a sign-in whose email_verified claim is absent", async () => {
@@ -248,6 +271,55 @@ describe("auth callback when the Google account is not the one on record (#3526)
     );
     expect(signOut).toHaveBeenCalledTimes(1);
     expect(logged.errors).toContain("auth-callback different google account alert failed");
+  });
+
+  // `user_metadata` is writable by whoever holds the session and is not refreshed
+  // when GoTrue links a second identity, so the account id comes from the Google
+  // identities GoTrue keeps for the auth user, every one of them.
+  it("takes the account id from the Google identities, never from user_metadata", async () => {
+    provision.provisionUser.mockResolvedValue({ id: "user-1", role: "agent", theme_preference: "system" });
+    exchangeCodeForSession.mockResolvedValue(
+      sessionWithIdentities(
+        [
+          { provider: "google", identity_data: { sub: "ident-sub" } },
+          { provider: "email", identity_data: { sub: "email-sub" } },
+        ],
+        { sub: "meta-sub", provider_id: "meta-sub" },
+      ),
+    );
+
+    await GET(request());
+
+    expect(provision.provisionUser).toHaveBeenCalledWith(
+      expect.objectContaining({ googleSubs: ["ident-sub"] }),
+    );
+  });
+
+  it("hands provisioning every Google identity, so two on one auth user can be refused", async () => {
+    provision.provisionUser.mockResolvedValue({ id: "user-1", role: "agent", theme_preference: "system" });
+    exchangeCodeForSession.mockResolvedValue(
+      sessionWithIdentities([
+        { provider: "google", identity_data: { sub: "sub-a" } },
+        { provider: "google", identity_data: { sub: "sub-b" } },
+      ]),
+    );
+
+    await GET(request());
+
+    expect(provision.provisionUser).toHaveBeenCalledWith(
+      expect.objectContaining({ googleSubs: ["sub-a", "sub-b"] }),
+    );
+  });
+
+  it("refuses a session with no Google identity before provisioning anything", async () => {
+    exchangeCodeForSession.mockResolvedValue(sessionWithIdentities([], { sub: "meta-sub" }));
+
+    const res = await GET(request());
+
+    expect(provision.provisionUser).not.toHaveBeenCalled();
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(res.headers.get("location")).toBe("https://slate.trypennie.app/login?error=sign_in_unavailable");
+    expect(logged.errors).toContain("auth-callback sign in carried no google identity");
   });
 
   it("sends no such alert for any other refusal", async () => {

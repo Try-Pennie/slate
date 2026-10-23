@@ -69,7 +69,12 @@ interface ProvisionInput {
   authUserId: string;
   email: string;
   name: string | null;
-  googleSub: string | null;
+  /**
+   * #3526: every Google account id on the signing in auth user, read from the
+   * identities GoTrue keeps (`googleAccountIdsOf`), never from `user_metadata`,
+   * which the session holder can rewrite. A sign in must carry exactly one.
+   */
+  googleSubs: readonly string[];
   avatarUrl: string | null;
 }
 
@@ -99,16 +104,23 @@ type Resolution =
 /**
  * #3526: is this sign in the person the row belongs to? Judged BEFORE any write
  * to the row, on both branches that find one, so a refused sign in leaves the old
- * row exactly as it was. Null means go ahead; the verdict's `record` half is the
- * caller's to act on, because each branch writes it in its own statement.
+ * row exactly as it was. Otherwise it says which account id to record, or null
+ * when the row already holds this one; each branch writes it in its own statement.
  */
-function refuseIfSomebodyElse(row: User, input: ProvisionInput): Resolution | null {
-  const verdict = judgeGoogleIdentity(row.google_sub, input.googleSub);
-  if (verdict.kind !== "different-person") return null;
-  return {
-    kind: "different-person",
-    error: new GoogleAccountMismatchError({ userId: row.id, email: row.email, reason: verdict.reason }),
-  };
+function judgeRow(
+  row: User,
+  input: ProvisionInput,
+): { refused: Resolution } | { record: string | null } {
+  const verdict = judgeGoogleIdentity(row.google_sub, input.googleSubs);
+  if (verdict.kind === "different-person") {
+    return {
+      refused: {
+        kind: "different-person",
+        error: new GoogleAccountMismatchError({ userId: row.id, email: row.email, reason: verdict.reason }),
+      },
+    };
+  }
+  return { record: verdict.kind === "record" ? verdict.sub : null };
 }
 
 async function resolveOrCreateUser(
@@ -133,19 +145,19 @@ async function resolveOrCreateUser(
     // Supabase links a new Google identity to an existing auth user with the same
     // verified address, so somebody on a reused address can arrive here already
     // "linked", holding the auth user the previous owner signed in with.
-    const refused = refuseIfSomebodyElse(linked, input);
-    if (refused) return refused;
+    const judgedLinked = judgeRow(linked, input);
+    if ("refused" in judgedLinked) return judgedLinked.refused;
     const avatarChanged = Boolean(input.avatarUrl) && linked.avatar_url !== input.avatarUrl;
     // A row linked before the account id was compared, or one an admin unlinked
     // for a rehire, records it now, or it would never be guarded. A compare and
     // swap on the stored value this pass read, so two different accounts signing
     // in at the same instant cannot both record themselves: the loser's write
     // matches nothing and its second pass reads the winner's id and refuses.
-    if (judgeGoogleIdentity(linked.google_sub, input.googleSub).kind === "record" && input.googleSub) {
+    if (judgedLinked.record) {
       const record = db
         .from("users")
         .update({
-          google_sub: input.googleSub,
+          google_sub: judgedLinked.record,
           ...(avatarChanged ? { avatar_url: input.avatarUrl } : {}),
         })
         .eq("id", linked.id);
@@ -208,13 +220,15 @@ async function resolveOrCreateUser(
     // #3526: the address found the row; the Google account says whose it is. A
     // different account is a different person on a reused address, refused here
     // before anything is written, so the old row is never relinked to them.
-    const refused = refuseIfSomebodyElse(byEmail, input);
-    if (refused) return refused;
+    const judgedByEmail = judgeRow(byEmail, input);
+    if ("refused" in judgedByEmail) return judgedByEmail.refused;
     const link = db
       .from("users")
       .update({
         auth_user_id: input.authUserId,
-        google_sub: input.googleSub,
+        // The account being recorded, or the one the row already holds, which the
+        // judge has just found to be this sign in's.
+        google_sub: judgedByEmail.record ?? byEmail.google_sub,
         avatar_url: input.avatarUrl,
         // Backfill a display name only when the row has none (e.g. a pre-seeded
         // admin); never clobber a Salesforce-provided name.
@@ -248,6 +262,14 @@ async function resolveOrCreateUser(
   // privilege escalation. Admins are seeded deliberately by promoting an existing
   // user (role management) or, to bootstrap from scratch, a direct DB write —
   // there is no login-time bootstrap path.
+  //
+  // #3526: a new row is created holding exactly one Google account, the one this
+  // sign in carries, so it is armed from its first sign in. None, or two on one
+  // auth user, is refused rather than creating a row nothing can later verify.
+  const sole = judgeGoogleIdentity(null, input.googleSubs);
+  if (sole.kind !== "record") {
+    throw new Error("a new account needs exactly one Google account on the sign in");
+  }
   const { data: created, error } = await db
     .from("users")
     .insert({
@@ -257,7 +279,7 @@ async function resolveOrCreateUser(
       // created is the row the next login will find.
       email,
       name: input.name,
-      google_sub: input.googleSub,
+      google_sub: sole.sub,
       avatar_url: input.avatarUrl,
       role: "agent",
       // Never bookable on arrival (#1266). Adding an account must not put someone

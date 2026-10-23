@@ -224,6 +224,17 @@ describe("LoginPage sign-in error copy", () => {
     expect(alert).not.toMatch(/try again|sign in again|sub\b|identifier/i);
   });
 
+  // The code arrives in the address, so anybody can send a link carrying any value.
+  // A lookup that walks the prototype found an OBJECT for these and React threw.
+  it.each(["__proto__", "constructor", "toString", "hasOwnProperty"])(
+    "renders no banner, and does not crash, for the crafted code %s",
+    (code) => {
+      params.current = new URLSearchParams(`error=${code}`);
+      expect(() => render(<LoginPage />)).not.toThrow();
+      expect(screen.queryByRole("alert")).toBeNull();
+    },
+  );
+
   it("renders no banner for a code it has no copy for", () => {
     params.current = new URLSearchParams("error=not_a_real_code");
     render(<LoginPage />);

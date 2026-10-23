@@ -139,7 +139,7 @@ const input = {
   authUserId: "auth-1",
   email: "newperson@trypennie.com",
   name: "New Person",
-  googleSub: "sub-1",
+  googleSubs: ["sub-1"],
   avatarUrl: null,
 };
 
@@ -336,7 +336,7 @@ describe("provisionUser refuses a deactivated account (#2378)", () => {
       adminExists: true,
       // A linked row carries the account id it signed in with (#3526), so this
       // sign in writes nothing and the row read is the row returned.
-      linked: { id: "linked-1", email: input.email, deactivated_at: null, google_sub: input.googleSub },
+      linked: { id: "linked-1", email: input.email, deactivated_at: null, google_sub: "sub-1" },
     });
     expect((await provisionUser(input)).id).toBe("linked-1");
 

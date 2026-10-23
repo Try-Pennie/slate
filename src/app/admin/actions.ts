@@ -2164,14 +2164,30 @@ export async function clearPendingBookableFlip(form: FormData): Promise<void> {
  * Sign in refuses a Google account other than the one a Slate account holds,
  * because an address handed to somebody new would otherwise hand them the old
  * account. A rehire on a NEW Google account meets the same refusal, and this is
- * how an admin lets them through. Only `google_sub` moves: the role, bookings and
- * calendar stay with the account, which is the point of relinking rather than
- * recreating.
+ * how an admin lets them through. The role, bookings and calendar stay with the
+ * account, which is the point of relinking rather than recreating.
+ *
+ * IT ALSO DELETES THE OLD SUPABASE AUTH USER (security review of #4169). GoTrue
+ * links a new Google identity onto an existing auth user with the same address, so
+ * forgetting the stored id alone would leave the rehire's next sign in landing on
+ * the OLD auth user holding BOTH accounts, which the per request check refuses as
+ * two accounts. GoTrue's admin API has no call that removes one identity from a
+ * user (`unlinkIdentity` acts only on the caller's own session), so the auth user
+ * goes, through the same `supabaseAdmin().auth.admin` client the offboarding ban
+ * uses. Deleting it ends every session on it, and `users.auth_user_id` is set null
+ * by its foreign key (`on delete set null`, migration 0006). The next sign in makes
+ * a fresh auth user with one Google identity, which provisioning finds by email.
+ *
+ * ORDER: the auth user goes FIRST and the row second. A failed delete changes
+ * nothing and the admin can press again; a failed row write after a delete leaves
+ * the row still holding the account id, so the control is still offered and the
+ * retry finds no auth user to delete and finishes.
  *
  * A compare and swap on the id it read, so a press that races a sign in (or a
  * second press) writes nothing twice and records nothing it did not do. Every
  * outcome comes back to the page as a sentence (`?error=` or the saved notice),
  * never a throw, which production would replace with the generic error page.
+ * Never on your own account: it would delete the sign in you are using.
  */
 export async function relinkGoogleAccount(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
@@ -2179,13 +2195,14 @@ export async function relinkGoogleAccount(form: FormData): Promise<void> {
   const admin = await requireAdmin();
   const back = `/admin/agents/${userId}`;
   const db = supabaseAdmin();
+  if (admin.id === userId) redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.self)}`);
 
-  let row: { role: Role; google_sub: string | null } | null;
+  let row: { role: Role; google_sub: string | null; auth_user_id: string | null } | null;
   try {
     row = unwrap(
       await db
         .from("users")
-        .select("role, google_sub")
+        .select("role, google_sub, auth_user_id")
         .eq("id", userId)
         .eq("org_id", admin.org_id)
         .maybeSingle(),
@@ -2204,9 +2221,22 @@ export async function relinkGoogleAccount(form: FormData): Promise<void> {
   const stored = row.google_sub;
   if (stored == null) redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.nothingLinked)}`);
 
+  const oldAuthUserId = row.auth_user_id;
+  if (oldAuthUserId) {
+    const { error: deleteError } = await db.auth.admin.deleteUser(oldAuthUserId);
+    // 404 is an auth user already gone (a retry after a delete that landed, or a
+    // race with another press), which is the state this step exists to reach.
+    if (deleteError && deleteError.status !== 404) {
+      log.error("admin", { msg: "relink could not delete the old auth user", user_id: userId }, deleteError);
+      redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.signInNotRemoved)}`);
+    }
+  }
+
   const { data, error } = await db
     .from("users")
-    .update({ google_sub: null })
+    // `auth_user_id` is already null through the foreign key once the auth user is
+    // deleted; written here too so the row says so whatever the database did.
+    .update({ google_sub: null, auth_user_id: null })
     .eq("id", userId)
     .eq("org_id", admin.org_id)
     .eq("google_sub", stored)
@@ -2224,7 +2254,7 @@ export async function relinkGoogleAccount(form: FormData): Promise<void> {
     actorId: admin.id,
     action: "agent.google_relinked",
     targetUserId: userId,
-    details: { google_account: { from: "linked", to: "unlinked" } },
+    details: { google_account: { from: "linked", to: "unlinked" }, old_sign_in_removed: Boolean(oldAuthUserId) },
   });
   redirect(`${back}${savedQuery("agent-google-relinked")}`);
 }

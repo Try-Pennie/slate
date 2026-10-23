@@ -35,7 +35,7 @@ export const GOOGLE_RELINK_COPY = {
    * handed to whoever signs in next with that address, which is the whole risk.
    */
   consequence: (name: string, email: string) =>
-    `Slate forgets the Google account ${name} has been signing in with. The next Google account that signs in as ${email} gets this Slate account, with its role and bookings, so only do this when you know who that will be.`,
+    `Slate forgets the Google account ${name} has been signing in with and signs it out everywhere. The next Google account that signs in as ${email} gets this Slate account, with its role and bookings, so only do this when you know who that will be.`,
   dismissLabel: "Keep their current account",
   confirmLabel: "Forget the old account",
   pendingLabel: "Forgetting the old account",
@@ -52,4 +52,9 @@ export const GOOGLE_RELINK_REFUSED = {
   notPermitted: "Nothing was changed: changing this person's settings needs a role above theirs.",
   missing: "That person could not be found, so nothing was changed.",
   unreadable: "Nothing was changed: Slate could not read this person's record just now. Try again shortly.",
+  // Relinking deletes the sign in the account runs on, so on your own account it
+  // would sign you out for good.
+  self: "Nothing was changed: you cannot link a new Google account to your own Slate account. Ask another admin.",
+  signInNotRemoved:
+    "Nothing was changed: Slate could not remove their old sign in just now, so the old Google account is still linked. Try again shortly.",
 } as const;

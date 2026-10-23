@@ -70,7 +70,9 @@ function ErrorBanner({ message }: { message: string }) {
 
 function LoginError() {
   const error = useSearchParams().get("error");
-  const message = error ? ERROR_MESSAGES[error] : null;
+  // Own keys only: the code comes from the address, so `?error=__proto__` or
+  // `?error=constructor` would otherwise find an inherited OBJECT and crash the page.
+  const message = error && Object.hasOwn(ERROR_MESSAGES, error) ? ERROR_MESSAGES[error] : null;
   if (!message) return null;
   return <ErrorBanner message={message} />;
 }
