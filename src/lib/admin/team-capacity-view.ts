@@ -61,7 +61,7 @@ export interface CapacityCard {
   flag: "full" | "nearly-full" | null;
   out: number;
   notCounted: number;
-  /** How fast the day is filling, pace first (#4101); none while the line under the cards stands in. */
+  /** How fast the day is filling, pace first (#4101); none while the line under the cards stands in, and none on a day flagged Full (#4101 decision 18). */
   pace: string[];
   /** The time off line, `6 advisors off`, or null with nobody off. */
   outLine: string | null;

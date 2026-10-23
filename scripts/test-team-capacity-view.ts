@@ -175,7 +175,6 @@ eq(axisPos("2026-11-03T13:00:00.000Z", Z), 0, "8am after the clocks change is st
   eq(failed.cards.map((c) => c.open), v.cards.map((c) => c.open), "and the rest of the page is unchanged");
 }
 
-// --- the design's own frames, end to end -----------------------------------------------------------
 // --- a day with no calls open and some capacity shows no pace (#4145, #4101 decision 18) ------------
 {
   const reading = (state: "pace" | "not-filling") => judgePace({ ok: true, rows: ["2026-10-20", "2026-10-21"].map((d) => ({ day: d, read_at: "2026-10-19T19:00:00.000Z", pace_state: state, pace_per_hour: state === "pace" ? 20 : 0, pace_back_at: null, estimate_method: "line", estimate_line_state: "already", estimate_line_at: null, estimate_pattern_state: "already", estimate_pattern_at: null })) }, Date.parse("2026-10-19T19:30:00.000Z"));
@@ -189,6 +188,7 @@ eq(axisPos("2026-11-03T13:00:00.000Z", Z), 0, "8am after the clocks change is st
   }
 }
 
+// --- the design's own frames, end to end -----------------------------------------------------------
 const frameViewOf = (id: string) => {
   const f = fixtureView(fixture, id);
   if (!f.report.measurable) throw new Error(`${id} is measurable`);
