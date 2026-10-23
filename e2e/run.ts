@@ -2,7 +2,9 @@
  * `pnpm test:e2e`: the browser checks, end to end (#3079, #3100).
  *
  *   1. refuse a checkout carrying a `.env*` or `.dev.vars*` file (the rule is
- *      shared with `pnpm cf:preview`, `scripts/lib/live-env-files.ts`);
+ *      shared with `pnpm cf:preview`, `scripts/lib/live-env-files.ts`), a second
+ *      run while another checkout's is in progress, and anything already
+ *      listening on the app's port (`e2e/run-guards.ts`, #4018);
  *   2. start a throwaway local Supabase from the committed migrations;
  *   3. seed it (`e2e/seed.ts`);
  *   4. `next build` and `next start` with an environment built from nothing
@@ -34,6 +36,7 @@ import {
 } from "./env.ts";
 import { seedStack } from "./seed.ts";
 import { egressVerdict } from "./egress-verdict.ts";
+import { acquireRunLock, portHolders, portInUseRefusal, waitForOwnServer } from "./run-guards.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const WORKDIR = join(tmpdir(), "slate-e2e-supabase");
@@ -120,20 +123,28 @@ function build(env: Record<string, string>): void {
   if (res.status !== 0) throw new Error(`next build failed (${res.status})`);
 }
 
-async function waitForServer(server: ChildProcess): Promise<void> {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    if (server.exitCode !== null) throw new Error(`next start exited early (${server.exitCode})`);
-    try {
-      const res = await fetch(`${E2E_APP_ORIGIN}/login`, { redirect: "manual" });
-      if (res.status < 500) return;
-    } catch {
-      // Not listening yet.
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error(`the app did not answer on ${E2E_APP_ORIGIN} within 60s`);
+/** Ready only once OUR server says it is listening and is still running (#4018). */
+function waitForServer(server: ChildProcess, output: () => string): Promise<void> {
+  return waitForOwnServer({
+    exitCode: () => server.exitCode,
+    output,
+    answers: async () => {
+      try {
+        const res = await fetch(`${E2E_APP_ORIGIN}/login`, { redirect: "manual", signal: AbortSignal.timeout(5_000) });
+        return res.status < 500;
+      } catch {
+        return false; // Not answering yet.
+      }
+    },
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    timeoutMs: 60_000,
+    origin: E2E_APP_ORIGIN,
+  });
 }
+
+/** One browser run per machine at a time: they share the local Supabase and the port (#4018). */
+const RUN_LOCK = join(tmpdir(), "slate-e2e-run.lock");
 
 function stopServer(server: ChildProcess | null): void {
   if (!server?.pid || server.exitCode !== null) return;
@@ -165,6 +176,21 @@ function readEgressLog(): { log: string | null; logProblem?: string } {
 async function main(): Promise<number> {
   const refusal = envFileRefusal(readdirSync(ROOT));
   if (refusal) throw new Error(refusal);
+
+  // Before the stack is touched: a second run would stop or reset the first one's.
+  const lock = acquireRunLock(RUN_LOCK, { pid: process.pid, checkout: ROOT });
+  if (!lock.ok) throw new Error(lock.refusal);
+  try {
+    return await runLocked();
+  } finally {
+    lock.release();
+  }
+}
+
+async function runLocked(): Promise<number> {
+  // A server already on the port would answer for ours (#4018, L797).
+  const portRefusal = portInUseRefusal(E2E_APP_PORT, await portHolders(E2E_APP_PORT));
+  if (portRefusal) throw new Error(portRefusal);
 
   rmSync(ARTIFACTS, { recursive: true, force: true });
   mkdirSync(ARTIFACTS, { recursive: true });
@@ -200,7 +226,7 @@ async function main(): Promise<number> {
     server = started;
     started.stdout?.on("data", (d) => serverLog.push(String(d)));
     started.stderr?.on("data", (d) => serverLog.push(String(d)));
-    await waitForServer(started);
+    await waitForServer(started, () => serverLog.join(""));
 
     const extra = process.argv.slice(2).filter((a) => a !== "--");
     const pw = spawnSync(
