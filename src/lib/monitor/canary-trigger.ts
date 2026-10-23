@@ -1,4 +1,5 @@
 import { isCalcomLane } from "@/lib/calcom/retirement";
+import { GITHUB_API_TIMEOUT_MS } from "@/lib/monitor/github-ci-health";
 
 /**
  * Reliable trigger for the booking smoke canary (#525 follow-up).
@@ -273,6 +274,8 @@ export async function postWorkflowDispatch(
       body: JSON.stringify(
         target.inputs === null ? { ref: "main" } : { ref: "main", inputs: target.inputs },
       ),
+      // #3972: a hung GitHub is a reported dispatch error, never a stalled monitor lane.
+      signal: AbortSignal.timeout(GITHUB_API_TIMEOUT_MS),
     },
   );
   return { ok: res.ok, status: res.status };

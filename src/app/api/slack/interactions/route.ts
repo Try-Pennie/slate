@@ -72,6 +72,9 @@ function requestLink(requestId: string): string {
   return `<${appUrl()}/admin/ooo?request=${requestId}|Open it in Slate>`;
 }
 
+/** How long an ephemeral reply may wait, well inside `after()`'s 30 seconds (#3972). */
+const SLACK_REPLY_TIMEOUT_MS = 5_000;
+
 /** Post an ephemeral note back to the interaction's response_url (best-effort). */
 async function replyEphemeral(responseUrl: string, text: string): Promise<void> {
   try {
@@ -79,6 +82,9 @@ async function replyEphemeral(responseUrl: string, text: string): Promise<void> 
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ response_type: "ephemeral", text }),
+      // #3972: this runs in `after()`, cancelled 30s after the response; a hung
+      // reply must give up well inside that rather than be killed mid await.
+      signal: AbortSignal.timeout(SLACK_REPLY_TIMEOUT_MS),
     });
   } catch {
     /* best-effort */

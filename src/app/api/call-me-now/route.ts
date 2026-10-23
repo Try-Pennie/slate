@@ -128,6 +128,7 @@ export async function POST(req: NextRequest) {
       sendblueLineState(line, {
         keyId: sendblueApiKeyId(),
         secret: sendblueApiSecretKey(),
+        // deadline-ok: sendblueLineState races it against SENDBLUE_STATE_DEADLINE_MS
         fetchImpl: fetch,
         onUnread: unread("not judged by Sendblue, saved line kept"),
       }),
@@ -136,6 +137,7 @@ export async function POST(req: NextRequest) {
         // The submission id only when it is shaped like one: the contact check proves
         // nothing about it, so a malformed value is never handed to the service.
         { phone: out.leadPhone, submissionId: submissionIdOf(body.submissionId) },
+        // deadline-ok: readTextingLine races it against TEXTING_LINE_DEADLINE_MS
         { baseUrl: automationsApiUrl(), fetchImpl: fetch, onUnread: unread("not given by the service") },
       ),
     onUnread: unread("unread, no Text us"),
