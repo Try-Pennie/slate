@@ -6,8 +6,9 @@ import { refusedFromQuery, refusedQuery, savedQuery } from "@/lib/admin/save-out
 import {
   CHANGED_SINCE_OPENED,
   PAGE_OUT_OF_DATE,
-  loadedStampOfExistingRow,
+  loadedFieldsFrom,
   loadedVersionFrom,
+  type LoadedFieldValue,
   type LoadedVersion,
 } from "@/lib/admin/edit-version";
 import { HOURS_CHANGED_SQLSTATE } from "@/lib/calcom/import-write";
@@ -121,7 +122,11 @@ import {
 } from "@/lib/booking/settings";
 import { parseDaysOfferedForm } from "@/lib/booking/days-offered";
 import { markAllBucketSlotsStale } from "@/lib/availability/precompute";
-import { updateEventType, type EventTypePatch } from "@/lib/availability/event-type-store";
+import {
+  updateEventType,
+  type EventTypeField,
+  type EventTypePatch,
+} from "@/lib/availability/event-type-store";
 import { log } from "@/lib/log";
 import { coverageForWeek } from "@/lib/booking/business-hours-coverage";
 import { parseExceptionForm, countBookingsOnDate } from "@/lib/booking/business-hours-form";
@@ -1578,27 +1583,28 @@ const GAP_REFUSAL = `The gap between calls has to be a whole number of minutes f
  * The one save every event type editor makes, and the refusals that can come back
  * from it, each sent to the page the form is on (#3122).
  *
- * Returns only when the write landed. A database error, a row somebody else saved
- * after the page was opened (the write is guarded on the `updated_at` the form
- * loaded), and an id that matched nothing this org owns each redirect with their
- * own sentence, because they send the person to do three different things. Zero
- * rows is never a success: saying otherwise would be a lie about somebody else's
- * data as much as about theirs.
+ * Returns only when the write landed. A database error, a field being saved that
+ * somebody else changed after the page was opened (judged by that field's value
+ * as the form loaded it, never by the row's `updated_at`, which a save of any
+ * other field moves: #3798), and an id that matched nothing this org owns each
+ * redirect with their own sentence, because they send the person to do three
+ * different things. Zero rows is never a success: saying otherwise would be a lie
+ * about somebody else's data as much as about theirs.
  */
-async function saveEventTypeOrRefuse(opts: {
+async function saveEventTypeOrRefuse<K extends EventTypeField>(opts: {
   page: string;
   orgId: string;
   eventTypeId: string;
-  patch: EventTypePatch;
-  loadedUpdatedAt: string;
+  patch: Required<Pick<EventTypePatch, K>>;
+  loaded: NoInfer<Record<K, LoadedFieldValue>>;
   /** What the person was saving, for the failure sentence and the log. */
   what: string;
 }): Promise<void> {
-  const saved = await updateEventType({
+  const saved = await updateEventType<K>({
     eventTypeId: opts.eventTypeId,
     orgId: opts.orgId,
     patch: opts.patch,
-    loadedUpdatedAt: opts.loadedUpdatedAt,
+    loaded: opts.loaded,
   });
   if (saved.error) {
     log.error("admin", { msg: "event type save failed", what: opts.what, event_type_id: opts.eventTypeId }, saved.error);
@@ -1633,7 +1639,7 @@ export async function setEventTypeGap(form: FormData): Promise<void> {
   if (gap === null) {
     redirect(`${page}${refusedQuery(GAP_REFUSAL)}`);
   }
-  const loaded = loadedStampOfExistingRow(form);
+  const loaded = loadedFieldsFrom(form, ["buffer_before_min", "buffer_after_min"] as const);
   if (loaded === null) redirect(`${page}${refusedQuery(PAGE_OUT_OF_DATE)}`);
 
   // The current value, so the trail records what it was as well as what it became.
@@ -1656,7 +1662,7 @@ export async function setEventTypeGap(form: FormData): Promise<void> {
     orgId: admin.org_id,
     eventTypeId,
     patch,
-    loadedUpdatedAt: loaded,
+    loaded,
     what: "gap between calls",
   });
 
@@ -1713,7 +1719,7 @@ export async function setEventTypeNotice(form: FormData): Promise<void> {
   if (notice === null) {
     redirect(`${page}${refusedQuery(NOTICE_REFUSAL)}`);
   }
-  const loaded = loadedStampOfExistingRow(form);
+  const loaded = loadedFieldsFrom(form, ["min_notice_min"] as const);
   if (loaded === null) redirect(`${page}${refusedQuery(PAGE_OUT_OF_DATE)}`);
 
   // The current value, so the trail records what it was as well as what it became.
@@ -1731,7 +1737,7 @@ export async function setEventTypeNotice(form: FormData): Promise<void> {
   }
 
   const patch = { min_notice_min: notice };
-  await saveEventTypeOrRefuse({ page, orgId: admin.org_id, eventTypeId, patch, loadedUpdatedAt: loaded, what: "notice" });
+  await saveEventTypeOrRefuse({ page, orgId: admin.org_id, eventTypeId, patch, loaded, what: "notice" });
 
   await recordAudit({
     orgId: admin.org_id,
@@ -1777,7 +1783,7 @@ export async function setEventDescription(form: FormData): Promise<void> {
   if (parsed.errors.length) {
     redirect(`/admin/booker-copy${refusedQuery(parsed.errors.join(" "))}`);
   }
-  const loaded = loadedStampOfExistingRow(form);
+  const loaded = loadedFieldsFrom(form, ["description"] as const);
   if (loaded === null) redirect(`/admin/booker-copy${refusedQuery(PAGE_OUT_OF_DATE)}`);
 
   // #1435: one helper owns the write AND the refresh of what the booker serves,
@@ -1790,7 +1796,7 @@ export async function setEventDescription(form: FormData): Promise<void> {
     orgId: admin.org_id,
     eventTypeId,
     patch: { description: parsed.description },
-    loadedUpdatedAt: loaded,
+    loaded,
     what: "description",
   });
 
