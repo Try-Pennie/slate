@@ -614,6 +614,27 @@ exits on its own code, listed in `scripts/lib/reroute-drill-run-outcome.ts`:
 | 21 | the drill could not cancel its call or restore its advisor, before it judged anything |
 | 22 | a step threw |
 | 23 | the drill judged the pipeline and THEN could not clean up; what it judged is in the message |
+| 24 | **not measured**: the smoke canary held the two test advisors for the whole 12 minute wait, so the drill never started (#4180) |
+
+### It shares its two test advisors with the smoke canary (#4180)
+
+The smoke canary's hourly full pass books on the same two advisors. On 2026-10-23 at 15:34 UTC
+the two overlapped and BOTH failed: the drill's sweep found the other advisor busy with the
+canary's bookings (exit 16) and the canary's sub event reschedule got a 409. So both hold one
+server side lease over the advisors (`smoke_test_advisors` in `sync_locks`, through `acquireLease`,
+terms in `src/lib/booking/test-advisor-lease-terms.ts`): the drill's endpoint for the drill's run,
+the canary through `/api/smoke/test-advisor-lease` around its booking steps.
+
+The server never waits. While the canary holds the lease the endpoint answers
+`test-advisors-held` without starting, and the command asks again every 15 seconds for up to 12
+minutes, which is past the lease's 10 minute TTL, so even a canary that died holding it has lost
+it inside the wait. Still held at the bound is exit 24: the reporter says the pipeline was not
+exercised today and that this is not a reroute fault, and nothing is stamped. The client half is
+pinned by `scripts/test-test-advisor-lease-wait.ts`, the lease itself (a crashed holder's claim
+lapses, release is idempotent, the two endpoints exclude each other) by
+`src/lib/booking/test-advisor-lease.test.ts`. A shared GitHub concurrency group was rejected: a
+third queued run cancels the pending one even with `cancel-in-progress: false` (L1020), and the
+canary queues often, so the day's drill could be dropped without a word.
 
 Its decision logic is pinned offline by `scripts/test-demotion-drill.ts`, which runs the drill over
 a fake world built from the real decision functions and shows every failure reason can occur.
@@ -622,14 +643,15 @@ a fake world built from the real decision functions and shows every failure reas
 
 `.github/workflows/burst-counter.yml` runs it every day after the confirm line proof, with its own
 summary file (`reroute-drill-summary.json`), its own bare node reporter
-(`scripts/notify-reroute-drill.ts`) and its own stamp. The job's timeout is 20 minutes so a slow
-drill is never cut off mid cleanup.
+(`scripts/notify-reroute-drill.ts`) and its own stamp. The job's timeout is 30 minutes so a slow
+drill, after its wait for the canary, is never cut off mid cleanup.
 
 **It stamps `verdict:reroute-drill`**, at the burst counter's 52 hours for the same derived
 reasons (`scripts/test-reroute-drill-schedule.ts` re-derives it from the workflow file). **Only a
 run that exercised the pipeline may stamp it**: exits 0, 12 to 20 and 23 conclude, and every bad one of
 those is posted to Slack. A drill that could not start, or could not clean up, does not stamp; its
-message still says so daily, and the lapsing stamp pages as a blind detector.
+message still says so daily, and the lapsing stamp pages as a blind detector. Exit 24 (the canary
+held the advisors past the wait) is one of those: posted once as not measured, never as broken.
 
 # Proving an approved time off blocks (`pnpm verify:ooo-protection`)
 
