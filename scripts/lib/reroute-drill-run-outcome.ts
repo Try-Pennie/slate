@@ -11,7 +11,8 @@
  *   busy, a key refused) measured nothing, and stamping it would report the drill concluding while
  *   it was blind (#1394, L98). Every ending where the pipeline itself answered concludes, the bad
  *   ones included: a sweep that did not move the call is a definite reading.
- * - **What to SAY.** A pass says nothing (L36). Everything else is reported with the drill's own
+ * - **What to SAY.** A pass says nothing (L36), and neither does a drill the smoke canary kept off
+ *   the test advisors (exit 24, Dan 2026-10-23). Everything else is reported with the drill's own
  *   sentence rather than a second copy of its wording here (L41).
  *
  * Bare node safe: imports only from scripts/, because the reporter that uses it runs with no

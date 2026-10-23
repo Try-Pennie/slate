@@ -3,7 +3,8 @@
 // The `verdict:reroute-drill` stamp may be written only on a run that EXERCISED the reroute
 // pipeline, whichever way it went: a drill that could not start (not seeded, no free time, busy)
 // measured nothing, and stamping it would report the drill concluding while it was blind (L98,
-// #1394). Every ending speaks except a pass (L36), and in the drill's own words.
+// #1394). Every ending speaks except a pass (L36) and the canary-held skip (exit 24), and in the
+// drill's own words.
 import {
   REROUTE_DRILL_EXIT,
   REASON_EXIT,
