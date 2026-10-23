@@ -329,6 +329,9 @@ const EXPECTED_PINNED = [
   // #3137: adds one batch of framed booker loads. Security definer, pinned; now() and the
   // date arithmetic are pg_catalog built ins.
   "record_frame_origins",
+  // #3592: the reconcile-missing sweep's conditional re-create. Security INVOKER, plain
+  // SQL; now() is a pg_catalog built in.
+  "recreate_missing_busy_blocks",
   "regal_call_reason_counts",
   // #1293: replaces a schedule's weekly rules in one transaction, so a failure
   // cannot leave an agent with no working hours (and therefore no availability).

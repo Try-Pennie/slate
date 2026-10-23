@@ -37,6 +37,11 @@ const state = vi.hoisted(() => ({
   blocks: [] as { booking_id: string; source: string }[],
   /** What the sweep wrote to busy_blocks. */
   upserted: [] as { booking_id: string; user_id: string }[],
+  /** #3592: every call of the conditional insert RPC, and an error to answer each with. */
+  rpcCalls: [] as { name: string; args: { p_booking_ids: string[]; p_created_before: string } }[],
+  rpcErrors: [] as ({ message: string } | null)[],
+  /** Bookings whose own block landed after the sweep's block read, before the insert. */
+  landedBeforeInsert: [] as string[],
 }));
 
 /** One `column.[not.]op.literal` term, judged as Postgres would. Throws on any
@@ -60,6 +65,25 @@ function evalTerm(user: PoolUser, term: string): boolean {
  *  so a loader that forgot `!inner` keeps every row here too. */
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
+    // #3592: `recreate_missing_busy_blocks`, modelled on migration 0204's WHERE: the
+    // booking is in the fixture (active, upcoming, assigned), settled before the grace
+    // cutoff it is handed, on an advisor still in the pool, and has no block yet. The
+    // real statement is proved in Postgres by pnpm verify:recreate-missing-busy-blocks-sql.
+    rpc: (name: string, args: { p_booking_ids: string[]; p_created_before: string }) => {
+      state.rpcCalls.push({ name, args });
+      const error = state.rpcErrors.shift() ?? null;
+      if (error) return Promise.resolve({ data: null, error });
+      if (name !== "recreate_missing_busy_blocks") throw new Error(`fake db: unexpected rpc ${name}`);
+      const inPool = (u: PoolUser) => u.deactivated_at === null && (u.bookable || u.bookable_pending_since !== null);
+      const rows = state.rows
+        .filter((r) => args.p_booking_ids.includes(r.id))
+        .filter((r) => r.created_at < args.p_created_before && inPool(r.users))
+        .filter((r) => !state.blocks.some((b) => b.booking_id === r.id) && !state.landedBeforeInsert.includes(r.id))
+        .map((r) => ({ booking_id: r.id, user_id: r.assigned_user_id }));
+      state.upserted.push(...rows);
+      for (const r of rows) state.blocks.push({ booking_id: r.booking_id, source: "slate" });
+      return Promise.resolve({ data: rows, error: null });
+    },
     from: (table: string) => {
       if (table === "busy_blocks") {
         let ids: string[] = [];
@@ -141,7 +165,7 @@ vi.mock("@/lib/availability/slot-cache", async (importOriginal) => ({
 
 import { loadActiveUpcomingBookings, reconcileMissingBusyBlocks } from "./service";
 import { RECONCILE_MISSING_GRACE_MS } from "./orchestration";
-import { reconcileRecreatedAlert, reconcileFreedAlert } from "./alert-copy";
+import { reconcileRecreatedAlert, reconcileFreedAlert, busyBlockWriteThroughAlert } from "./alert-copy";
 
 const NOW = new Date("2026-07-13T15:00:00.000Z");
 const DEPARTED_AT = "2026-07-13T14:43:27.000Z";
@@ -169,6 +193,9 @@ beforeEach(() => {
   state.error = null;
   state.blocks = [];
   state.upserted = [];
+  state.rpcCalls = [];
+  state.rpcErrors = [];
+  state.landedBeforeInsert = [];
 });
 
 afterEach(() => {
@@ -282,6 +309,71 @@ describe("reconcileMissingBusyBlocks", () => {
     expect(state.upserted).toEqual([]);
     expect(pools.refreshPoolsForAgents).not.toHaveBeenCalled();
     expect(notify.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+});
+
+// #3592: the re-create is one conditional statement, and what it says it inserted is
+// what the sweep counts, recomputes and pages about.
+describe("reconcileMissingBusyBlocks through recreate_missing_busy_blocks (#3592)", () => {
+  it("hands the statement the missing candidates and the #778 grace cutoff, from the one constant", async () => {
+    state.rows = [booking("missed", DAYS_AGO)];
+
+    await reconcileMissingBusyBlocks(200);
+
+    expect(state.rpcCalls).toEqual([
+      {
+        name: "recreate_missing_busy_blocks",
+        args: {
+          p_booking_ids: ["missed"],
+          p_created_before: new Date(NOW.getTime() - RECONCILE_MISSING_GRACE_MS).toISOString(),
+        },
+      },
+    ]);
+  });
+
+  it("counts and pages only the rows the statement inserted", async () => {
+    // Both looked block-less to the sweep's reads, but `landed`'s own write through
+    // arrived before the insert (ON CONFLICT DO NOTHING), so only `missed` is real.
+    state.rows = [booking("missed", DAYS_AGO), booking("landed", DAYS_AGO)];
+    state.landedBeforeInsert = ["landed"];
+
+    const res = await reconcileMissingBusyBlocks(200);
+
+    expect(res.recreated).toBe(1);
+    expect(res.bookingIds).toEqual(["missed"]);
+    expect(pools.refreshPoolsForAgents).toHaveBeenCalledWith(["u-missed"], "reconcile-missing");
+    const [, , text] = notify.sendThrottledAlert.mock.calls[0] as unknown as [string, number, string];
+    expect(text).toBe(reconcileRecreatedAlert(1, ["missed"], false));
+  });
+
+  it("retries a refused statement once, and a retry that lands pages nobody about the blip", async () => {
+    state.rows = [booking("missed", DAYS_AGO)];
+    state.rpcErrors = [{ message: "connection reset" }];
+
+    const res = await reconcileMissingBusyBlocks(200);
+
+    expect(state.rpcCalls).toHaveLength(2);
+    expect(res.recreated).toBe(1);
+    const keys = notify.sendThrottledAlert.mock.calls.map((c) => (c as unknown as [string])[0]);
+    expect(keys).toEqual(["reconcile_missing_busy_blocks"]);
+  });
+
+  it("a statement refused twice aborts the sweep: the write failure pages, no re-create is claimed", async () => {
+    // Failure path. The old insert logged, paged and returned, and the sweep then
+    // reported every candidate as re-created and paged "a write-through INSERT had been
+    // missed" about blocks that were never written. Now it pages the write failure it
+    // always paged, then throws, which the self heal lane reads as "could not tell".
+    state.rows = [booking("missed", DAYS_AGO)];
+    state.rpcErrors = [{ message: "statement timeout" }, { message: "statement timeout" }];
+
+    await expect(reconcileMissingBusyBlocks(200)).rejects.toThrow(/statement timeout/);
+
+    expect(state.upserted).toEqual([]);
+    expect(pools.refreshPoolsForAgents).not.toHaveBeenCalled();
+    expect(notify.sendThrottledAlert).toHaveBeenCalledTimes(1);
+    const [key, , text] = notify.sendThrottledAlert.mock.calls[0] as unknown as [string, number, string];
+    expect(key).toBe("busy_block_write_through");
+    expect(text).toBe(busyBlockWriteThroughAlert("insert", "booking missed", "statement timeout"));
   });
 });
 

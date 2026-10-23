@@ -192,7 +192,7 @@ credentials, what each writes, and which detectors stamp a verdict heartbeat).
 | `verify:table-drift` | production holds no table that no migration created |
 | `verify:reroute-live` | every reroute outcome end to end on production's test advisors, leaving nothing behind (#3251) |
 | `verify:advisor-photos`, `verify:advisor-photos-sql` | the photo refresh (#3027) against live Google with no writes, and migration 0156 in a real Postgres; why every face goes through `resolveAdvisorPhoto` |
-| `verify:agent-link-names`, `verify:replace-user-schedule-guard`, `verify:auth-domain-hook`, `verify:audit-chain-sql`, `verify:migration-replay-sql`, `verify:reroute-holds-sql` | in Docker: 0155's link names (lowest free, never reused); 0157's import refusing a mid run edit; auth hook; audit chain; all migrations from empty, RLS per role (#3099); 0166's reroute hold refusing a booking on a held advisor as a lost race (#3247) |
+| `verify:agent-link-names`, `verify:replace-user-schedule-guard`, `verify:auth-domain-hook`, `verify:audit-chain-sql`, `verify:migration-replay-sql`, `verify:reroute-holds-sql`, `verify:recreate-missing-busy-blocks-sql` | in Docker: 0155's link names (lowest free, never reused); 0157's import refusing a mid run edit; auth hook; audit chain; all migrations from empty, RLS per role (#3099); 0166's reroute hold refusing a booking on a held advisor as a lost race (#3247); 0204's busy block re-create skipping a booking whose cancel is in flight (#3592) |
 
 The reports `report:pilot-split` and `report:pilot-compare` follow the same rules
 (`docs/pilot-split-report.md`, `docs/pilot-compare-report.md`).
