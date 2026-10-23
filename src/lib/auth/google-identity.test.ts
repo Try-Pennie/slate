@@ -45,8 +45,8 @@ describe("GoogleAccountMismatchError", () => {
   });
 });
 
-// The sentence is waiting for the sign in page to draw it (a screen change held
-// for a design decision), so its rules are pinned here on the copy itself.
+// The sign in page draws this sentence (src/app/login/page.test.tsx checks it is
+// shown for the code); its wording rules are pinned here on the copy itself.
 describe("the refused person's sentence", () => {
   it("names who can change the answer and is never worded as a retry", () => {
     expect(GOOGLE_ACCOUNT_CHANGED_MESSAGE).toMatch(/admin/i);
