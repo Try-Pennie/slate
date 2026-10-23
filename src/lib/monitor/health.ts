@@ -29,10 +29,10 @@ const MIN = 60_000;
  * is a Worker cron lane doing app-critical work (draining coverage reassignments
  * moves real bookings and their calendar events), which is the line the Slack-only
  * maps draw: the canary is not a Worker lane at all, and the mirror lanes feed
- * analytics rather than the app. In the usual failure mode, a CPU kill on the shared
- * 5-min invocation, its three co-scheduled siblings already 503, so this adds a page
- * only when bulk-reassign alone dies (its own lock stuck, or its own route erroring),
- * where work really is not happening.
+ * analytics rather than the app. Since #3693 each lane runs as its own placed
+ * invocation, so a lane goes quiet on its own (a deploy cancelling its run, a run far
+ * from the database, its own lock held, its own route erroring) rather than with its
+ * co-scheduled siblings, and this bound is what says so for bulk-reassign (#4168).
  *
  * The hourly `agents` lane is intentionally NOT covered: at a 60-min cadence a
  * heartbeat bound is noisy, and a stalled roster sync is already surfaced by its
