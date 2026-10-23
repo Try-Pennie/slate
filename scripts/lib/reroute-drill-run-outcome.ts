@@ -183,12 +183,10 @@ export const RUN_JUDGEMENT: Record<RerouteDrillExit, RunJudgement> = {
     headline:
       "The reroute drill judged the pipeline and then could not clean up after itself, so a test call may still be booked or a test advisor may still be missing the drill tier. What it judged is below.",
   },
-  // #4180: not a fault of the reroute pipeline, which was never asked. Said in the same blind
-  // wording as a drill that could not start for any other reason, so nobody reads it as broken.
-  [REROUTE_DRILL_EXIT.testAdvisorsHeld]: {
-    concluded: false,
-    headline: `Another run (usually the smoke canary) held the two smoke test advisors for the reroute drill's whole ${minutesOf(DRILL_LEASE_WAIT_MS)} minute wait, so the drill did not start and the reroute pipeline was not exercised today. This is not a reroute fault.`,
-  },
+  // #4180: not a fault of the reroute pipeline, which was never asked. Silent by Dan's choice
+  // (2026-10-23): a day the canary kept the drill off the test advisors is not news, and it stamps
+  // nothing, so a run of such days still pages through the verdict's stale bound.
+  [REROUTE_DRILL_EXIT.testAdvisorsHeld]: { concluded: false, headline: null },
 };
 
 /**
