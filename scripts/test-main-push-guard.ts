@@ -16,6 +16,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 import {
   BYPASS_MARKER,
   classifyPush,
+  commitSubject,
   buildViolationMessage,
   prNumbersInSubject,
   type PushContext,
@@ -56,7 +57,10 @@ const mentionedInBody = {
 assert(!classifyPush(mentionedInBody).ok, "a red merge whose body only mentions the marker is still flagged");
 const bodyOnlyDirect = { ...directPush, commitMessage: `Hotfix main\n\n${BYPASS_MARKER}` };
 assert(!classifyPush(bodyOnlyDirect).ok, "a direct push with the marker only in its body is not a bypass");
-const subjectMarked = { ...directPush, commitMessage: `Hotfix main ${BYPASS_MARKER}\n\nWhy: the booker is down.` };
+eq(commitSubject(`Hotfix main\n\n${BYPASS_MARKER}`), "Hotfix main", "commitSubject keeps the first line only");
+eq(commitSubject("One line, no body"), "One line, no body", "commitSubject of a one line message is the whole message");
+eq(commitSubject(""), "", "commitSubject of an empty message is empty, never a throw");
+const subjectMarked ={ ...directPush, commitMessage: `Hotfix main ${BYPASS_MARKER}\n\nWhy: the booker is down.` };
 assert(classifyPush(subjectMarked).ok, "the marker in the subject still allows a deliberate direct push");
 
 // An open (not merged) PR associated with the commit is NOT a legitimate merge.
