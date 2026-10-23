@@ -215,7 +215,7 @@ export function prNumbersInSubject(commitMessage: string): number[] {
 
 export function buildViolationMessage(ctx: PushContext, verdict: Verdict): string {
   const shortSha = ctx.headSha ? ctx.headSha.slice(0, 7) : "unknown";
-  const firstLine = (ctx.commitMessage || "").split("\n")[0] || "(no message)";
+  const firstLine = commitSubject(ctx.commitMessage) || "(no message)";
   // The unverified case gets its own opening line and its own instruction. Telling
   // someone to review and revert a commit, when the only thing that happened is
   // that GitHub did not answer, is advice that cannot fix the state they are in

@@ -60,7 +60,7 @@ assert(!classifyPush(bodyOnlyDirect).ok, "a direct push with the marker only in 
 eq(commitSubject(`Hotfix main\n\n${BYPASS_MARKER}`), "Hotfix main", "commitSubject keeps the first line only");
 eq(commitSubject("One line, no body"), "One line, no body", "commitSubject of a one line message is the whole message");
 eq(commitSubject(""), "", "commitSubject of an empty message is empty, never a throw");
-const subjectMarked ={ ...directPush, commitMessage: `Hotfix main ${BYPASS_MARKER}\n\nWhy: the booker is down.` };
+const subjectMarked = { ...directPush, commitMessage: `Hotfix main ${BYPASS_MARKER}\n\nWhy: the booker is down.` };
 assert(classifyPush(subjectMarked).ok, "the marker in the subject still allows a deliberate direct push");
 
 // An open (not merged) PR associated with the commit is NOT a legitimate merge.
@@ -70,6 +70,11 @@ assert(!classifyPush(openOnly).ok, "violation: an associated but unmerged PR doe
 // The alert names the actor and the short sha so a human can act fast.
 const msg = buildViolationMessage(directPush, classifyPush(directPush));
 assert(/someone/.test(msg) && /abcdef1/.test(msg), "violation message names the actor and short sha");
+// It quotes the subject, never the body, through the same commitSubject the verdict reads.
+const bodied = { ...directPush, commitMessage: "Hotfix the booker\n\nA long body line" };
+const bodiedMsg = buildViolationMessage(bodied, classifyPush(bodied));
+assert(/Hotfix the booker/.test(bodiedMsg) && !/A long body line/.test(bodiedMsg), "the alert quotes the subject only");
+assert(/\(no message\)/.test(buildViolationMessage({ ...directPush, commitMessage: "" }, classifyPush(directPush))), "an empty message reads as (no message)");
 
 // --- runner (with a fake poster) -----------------------------------------
 function fakePoster(result: { ok: boolean; error?: string }) {
