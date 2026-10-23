@@ -55,6 +55,13 @@ const client: NagClient = {
     // both succeed.
     gh(["api", "-X", "PATCH", `repos/${repo}/issues/${issue}`, "-f", "state=closed", "-f", "state_reason=not_planned", "--silent"]);
   },
+  textOf(issue) {
+    // Every comment, paginated: the open issue carried 201 comments on 2026-10-23, and
+    // a first page alone would miss pushes listed after it.
+    const body = gh(["api", `repos/${repo}/issues/${issue}`, "--jq", ".body // \"\""]);
+    const comments = gh(["api", "--paginate", `repos/${repo}/issues/${issue}/comments?per_page=100`, "--jq", ".[].body"]);
+    return [body, comments];
+  },
 };
 
 const out = runNag(client, { repo, sha, before });

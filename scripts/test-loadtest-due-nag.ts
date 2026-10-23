@@ -24,6 +24,8 @@ import {
   anotherPushComment,
   issueNumberFromUrl,
   issuesTitledFromListing,
+  openingBody,
+  pushesNamedIn,
   runNag,
   type NagClient,
   type Push,
@@ -144,6 +146,11 @@ function fakeGitHub(seed: Issue[] = []) {
       if (!i) throw new Error(`no issue #${n}`);
       i.open = false;
     },
+    textOf(n) {
+      const i = issues.find((x) => x.number === n);
+      if (!i) throw new Error(`no issue #${n}`);
+      return [i.body, ...i.comments];
+    },
   };
   return { client, issues, hooks };
 }
@@ -179,9 +186,10 @@ const namedIn = (issues: Issue[], sha: string) =>
 {
   // The state on 2026-10-22: #3213 open and #4089 opened beside it. The next push
   // names itself on #3213 and closes #4089, saying so on both.
+  const dupBody = openingBody(push("57fae5e0"));
   const gh = fakeGitHub([
     { number: 3213, title: LOADTEST_DUE_TITLE, open: true, body: "first", comments: [] },
-    { number: 4089, title: LOADTEST_DUE_TITLE, open: true, body: "57fae5e0", comments: [] },
+    { number: 4089, title: LOADTEST_DUE_TITLE, open: true, body: dupBody, comments: [anotherPushComment(push("c0464eda"))] },
   ]);
   const out = runNag(gh.client, push("ddd444"));
   eq(out, { kept: 3213, opened: null, closed: [4089] }, "the lowest is kept and the duplicate closed");
@@ -189,6 +197,11 @@ const namedIn = (issues: Issue[], sha: string) =>
   assert(gh.issues[1].comments.some((c) => c.includes("#3213")), "the duplicate says where the rule went");
   assert(gh.issues[0].comments.some((c) => c.includes("#4089")), "the kept issue points at the closed duplicate");
   assert(namedIn(gh.issues, "ddd444").includes(3213), "the push is named on the kept issue");
+  // The runbook closes the kept issue once a run covers every push LISTED ON IT, so
+  // the duplicate's pushes are carried over rather than left on a closed issue.
+  for (const sha of ["57fae5e0", "c0464eda"]) {
+    assert(namedIn(gh.issues, sha).includes(3213), `the duplicate's push ${sha} is listed on the kept issue`);
+  }
 }
 {
   // Two runs racing, now that the group no longer serialises them. Run B lists in the
@@ -199,11 +212,7 @@ const namedIn = (issues: Issue[], sha: string) =>
   eq(openOnes(gh.issues).length, 1, "two racing runs leave one issue open");
   const kept = openOnes(gh.issues)[0].number;
   for (const sha of ["aaaaaa", "bbbbbb"]) {
-    const where = namedIn(gh.issues, sha);
-    assert(
-      where.includes(kept) || gh.issues.some((i) => where.includes(i.number) && gh.issues.find((k) => k.number === kept)!.comments.some((c) => c.includes(`#${i.number}`))),
-      `push ${sha} is reachable from the kept issue`,
-    );
+    assert(namedIn(gh.issues, sha).includes(kept), `push ${sha} is listed on the kept issue`);
   }
 }
 {
@@ -213,6 +222,10 @@ const namedIn = (issues: Issue[], sha: string) =>
   gh.hooks.beforeCreate = () => runNag(gh.client, push("dddddd"));
   runNag(gh.client, push("cccccc"));
   eq(openOnes(gh.issues).length, 1, "the other interleaving also leaves one issue open");
+  const kept = openOnes(gh.issues)[0].number;
+  for (const sha of ["cccccc", "dddddd"]) {
+    assert(namedIn(gh.issues, sha).includes(kept), `push ${sha} is listed on the kept issue`);
+  }
 }
 {
   // A listing that fails is not "nothing open": it throws and opens nothing.
@@ -260,6 +273,11 @@ try {
   notList = true;
 }
 assert(notList, "an error body is refused rather than read as no issues");
+eq(
+  pushesNamedIn([openingBody(push("57fae5e0")), anotherPushComment(push("c0464eda")), "a person's note mentioning abc"]),
+  [`57fae5e0 (${"https://github.com/Try-Pennie/slate/compare/57fae5e0-before...57fae5e0"})`, `c0464eda (${"https://github.com/Try-Pennie/slate/compare/c0464eda-before...c0464eda"})`],
+  "the pushes are read back from the body and comments the nag wrote, and nothing else",
+);
 eq(issueNumberFromUrl("https://github.com/Try-Pennie/slate/issues/4089\n"), 4089, "the opened number is read from the URL");
 eq(issueNumberFromUrl("could not create issue"), null, "and nothing is read from anything else");
 

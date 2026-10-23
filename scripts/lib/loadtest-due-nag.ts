@@ -28,6 +28,8 @@ export interface NagClient {
   comment(issue: number, body: string): void;
   /** Closes an issue; closing one already closed is not an error. */
   close(issue: number): void;
+  /** An issue's body and then EVERY comment on it. Throws when it cannot say. */
+  textOf(issue: number): string[];
 }
 
 export type NagOutcome = {
@@ -60,12 +62,35 @@ export function anotherPushComment(p: Push): string {
 }
 
 export function duplicateClosingComment(kept: number): string {
-  return `Closed as a duplicate of #${kept}, which tracks the same load run. The pushes named here are covered there too.`;
+  return `Closed as a duplicate of #${kept}, which tracks the same load run. The pushes named here are listed there too.`;
 }
 
-export function duplicatesNote(closed: number[]): string {
-  const list = closed.map((n) => `#${n}`).join(", ");
-  return `${list} tracked the same load run and ${closed.length === 1 ? "is" : "are"} closed as ${closed.length === 1 ? "a duplicate" : "duplicates"} of this one. The pushes named there are covered here too.`;
+/**
+ * Every push the nag has named in these texts, as `<sha> (<compare link>)`, in order
+ * and once each. Reads only the shape `openingBody` and `anotherPushComment` write, so
+ * a person's note on the issue is never mistaken for a push.
+ */
+export function pushesNamedIn(texts: string[]): string[] {
+  const out: string[] = [];
+  const shape = /(?:^Push: |Another push changed the confirm path or a cron lane: )(\S+) \((https:\/\/github\.com\/[^\s)]+\/compare\/[^\s)]+)\)/gm;
+  for (const text of texts) {
+    for (const m of text.matchAll(shape)) {
+      const entry = `${m[1]} (${m[2]})`;
+      if (!out.includes(entry)) out.push(entry);
+    }
+  }
+  return out;
+}
+
+/**
+ * The note on the kept issue for one closed duplicate. The runbook closes the kept
+ * issue only once a run covers every push LISTED ON IT, so the duplicate's pushes are
+ * listed here rather than left on an issue nobody reads again.
+ */
+export function duplicateNote(dup: number, carried: string[]): string {
+  const head = `#${dup} tracked the same load run and is closed as a duplicate of this one.`;
+  if (carried.length === 0) return `${head} Every push it named is already listed here.`;
+  return `${head} The pushes it named, which the next run covers too:\n${carried.map((c) => `- ${c}`).join("\n")}`;
 }
 
 export function runNag(client: NagClient, push: Push): NagOutcome {
@@ -84,11 +109,18 @@ export function runNag(client: NagClient, push: Push): NagOutcome {
   // The issue this run opened names its push in the body; anywhere else, say it.
   if (kept !== opened) client.comment(kept, anotherPushComment(push));
   const closed = sorted.slice(1);
-  for (const dup of closed) {
-    client.comment(dup, duplicateClosingComment(kept));
-    client.close(dup);
+  if (closed.length > 0) {
+    // Each duplicate is read before it is touched, so a failed read leaves it open
+    // with its pushes still listed on it.
+    const alreadyListed = pushesNamedIn(client.textOf(kept));
+    for (const dup of closed) {
+      const carried = pushesNamedIn(client.textOf(dup)).filter((p) => !alreadyListed.includes(p));
+      client.comment(kept, duplicateNote(dup, carried));
+      alreadyListed.push(...carried);
+      client.comment(dup, duplicateClosingComment(kept));
+      client.close(dup);
+    }
   }
-  if (closed.length > 0) client.comment(kept, duplicatesNote(closed));
   return { kept, opened, closed };
 }
 
