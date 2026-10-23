@@ -7,6 +7,8 @@ import { parseStampMs } from "@/lib/date/stamp";
 import type { BulkReassignJobStatus } from "@/lib/db/types";
 import { log } from "@/lib/log";
 import { hasLeftPool, type PoolStateRow } from "@/lib/bookable/left-pool";
+// The send point's own label rule (#3528), from the one copy the posters share.
+import { slackLinkLabel } from "../../../scripts/lib/slack-mrkdwn";
 
 /**
  * Why the agent will not be there (#3485). The sweep that stranded a call records
@@ -595,21 +597,17 @@ const whoIs = (h: StrandedHolder): string => {
 };
 
 /**
- * Escape a Slack link LABEL (#3485). An agent name is DB text, so a stray `<`, `>`,
- * `&` or `|` would break the `<url|label>` link or the message around it: `>` ends the
- * link, `|` is the url/label separator. Slack escapes the first three as entities; `|`
- * has no entity, so it becomes a slash.
- */
-const slackLabel = (s: string): string =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\|/g, "/");
-
-/**
  * The holder, linked to their page in Admin when a base url is known (#3485), which
  * is where the Move-bookings panel that fixes this lives, so the reader acts in one
  * tap. A bare holder (no base url) renders as before.
+ *
+ * The name is DB text. Its `&`, `<` and `>` are escaped once, where the message is
+ * sent (src/lib/notify/slack.ts, #3528); escaping them here too showed a name with
+ * `&` as `&amp;`. `slackLinkLabel` handles only what no escape can carry inside a link
+ * label: `|` and `>` (#3485).
  */
 const whoLink = (h: StrandedHolder, appBaseUrl?: string): string =>
-  appBaseUrl ? `<${appBaseUrl}/admin/agents/${h.userId}|${slackLabel(whoIs(h))}>` : whoIs(h);
+  appBaseUrl ? `<${appBaseUrl}/admin/agents/${h.userId}|${slackLinkLabel(whoIs(h))}>` : whoIs(h);
 
 /**
  * Why the agent will not be there, as a short NOUN phrase for the holder line (#3485), or

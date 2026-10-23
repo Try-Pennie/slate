@@ -43,6 +43,8 @@ export { DRILL_TIER };
 export const DRILL_REASONS = [
   "passed",
   "busy",
+  // #4180: answered by the endpoint, never by the drill: the smoke canary held the test advisors.
+  "test-advisors-held",
   "not-seeded",
   "no-free-slot",
   "booking-refused",

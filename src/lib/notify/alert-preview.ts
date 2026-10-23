@@ -4031,6 +4031,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       runUrl: "https://github.com/Try-Pennie/slate/actions/runs/35200000003",
     }),
   },
+  // #3648: a merge GitHub never started a CI run for, so there is no run to link.
+  {
+    key: "main_not_deployed",
+    state: "GitHub never started a CI run for main's tip",
+    channel: "alert",
+    text: formatDeployNotLiveAlert({
+      reason: "no-run",
+      tipSha: "56f16b8b1c2d3e4f5061728394a5b6c7d8e9f001",
+      servedCommit: "d5ca0d1e4f60",
+      behindMs: 50 * 60_000,
+      runUrl: null,
+    }),
+  },
   {
     key: "main_not_deployed",
     state: "the tip is live again",
