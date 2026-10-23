@@ -29,7 +29,7 @@ import {
   type StoredTierShare,
 } from "../src/lib/monitor/carried-share.ts";
 import { FLOOR_FIT, type FloorCell, type VolumeBaseline } from "../src/lib/monitor/volume-floors.ts";
-import { ROUTING_API_VERSION, bookedByTier, readRoutingResponses, type RoutingResponse } from "../src/lib/calcom/routing-responses.ts";
+import { ROUTING_API_VERSION, bookedByTier, readRoutingResponses, tierOf, type RoutingResponse } from "../src/lib/calcom/routing-responses.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const HOUR = 60 * 60_000;
@@ -218,6 +218,34 @@ assert(!isStoredCarriedShare(null), "nothing does not");
     threw = true;
   }
   assert(threw, "an unreadable stamp refuses the count rather than dropping a booking cal.com took");
+}
+
+// --- #3671 (L1023): a lead's code is read WHOLE, never by its first digit ---
+// The code is text from outside Slate (the landing page's query string, through
+// cal.com, which stores `22` as the number 22). Read by its first digit, a two digit
+// code, a four digit one or a code with a suffix counted as a tier with full
+// confidence, while Slate's live booker refuses every one of them and Slate's own
+// bookings are tiered by the strict reader (`tierOfBucketCode`).
+{
+  eq(tierOf("111"), "1", "a Low code is tier 1");
+  eq(tierOf(" 532 "), "5", "surrounding space is ignored, as the strict reader ignores it");
+  for (const code of ["22", "2", "1320", "1abc", "611", "141", "113", "", null]) {
+    eq(tierOf(code), null, `${JSON.stringify(code)} is not a code, so it belongs to no tier`);
+  }
+  const at = new Date(monday9 + HOUR).toISOString();
+  eq(
+    bookedByTier(
+      [
+        { formName: "A", createdAt: at, code: "211", booked: true },
+        { formName: "A", createdAt: at, code: "22", booked: true },
+        { formName: "A", createdAt: at, code: "2111", booked: true },
+      ],
+      monday9,
+      monday9 + DAY,
+    ),
+    { "1": 0, "2": 1, "3": 0, "4": 0, "5": 0 },
+    "only the whole code counts toward a tier",
+  );
 }
 
 // --- the reader owns the cal.com API version, so every caller counts the same way ---
