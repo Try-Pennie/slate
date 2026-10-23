@@ -32,8 +32,12 @@ for (const [name, src] of [["admin", admin], ["global", global]] as const) {
   assert(/^"use client";/m.test(src), `the ${name} boundary is a client component`);
 }
 
-// `retry` is Next 16's name for the prop, and the earlier `reset` is not a type
-// error at runtime: it is a button that silently does nothing.
+// Next 16 hands a boundary BOTH `retry` and `reset`. `reset` only clears the
+// boundary and redraws from the payload the browser already holds, so a failed
+// server read throws again and the button looks dead; `retry` asks the server
+// first. This scan is the cheap half and cannot see `onClick={reset}`; the proof is
+// `src/app/error-boundaries-retry.test.tsx`, which mounts every boundary inside
+// Next's own ErrorBoundary and presses Try again (#3425).
 for (const [name, src] of [["admin", admin], ["global", global]] as const) {
   assert(/\bretry\b/.test(src), `the ${name} boundary takes Next 16's retry prop`);
   assert(!/\breset\(\)/.test(src), `the ${name} boundary does not call the old reset name`);

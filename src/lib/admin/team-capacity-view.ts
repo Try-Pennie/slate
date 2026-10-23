@@ -61,7 +61,7 @@ export interface CapacityCard {
   flag: "full" | "nearly-full" | null;
   out: number;
   notCounted: number;
-  /** How fast the day is filling, pace first (#4101); none while the line under the cards stands in. */
+  /** How fast the day is filling, pace first (#4101); none while the line under the cards stands in, and none on a day flagged Full (#4101 decision 18). */
   pace: string[];
   /** The time off line, `6 advisors off`, or null with nobody off. */
   outLine: string | null;
@@ -235,6 +235,7 @@ export function teamCapacityView(input: TeamCapacityViewInput): TeamCapacityView
         notSyncingLine: null,
       };
     }
+    const flag = dayFlag(t, nearlyFullPct);
     return {
       iso: source.iso,
       kind,
@@ -245,10 +246,11 @@ export function teamCapacityView(input: TeamCapacityViewInput): TeamCapacityView
       open: t.open,
       unit: callsOpenUnit(t.open),
       fullPct: t.fullPct,
-      flag: dayFlag(t, nearlyFullPct),
+      flag,
       out: t.out,
       notCounted: t.notCounted,
-      pace: input.pace.kind === "fresh" ? cardPaceLines(input.pace.byDay.get(source.iso), t.fullPct, zone, todayIso) : [],
+      // A full day has nothing left to fill, so no pace line beside its Full tag (Dan, 2026-10-23, #4101 decision 18).
+      pace: flag === "full" || input.pace.kind !== "fresh" ? [] : cardPaceLines(input.pace.byDay.get(source.iso), t.fullPct, zone, todayIso),
       outLine: t.out > 0 ? advisorsOffLine(t.out) : null,
       notSyncingLine: t.notCounted > 0 ? calendarsNotSyncingLine(t.notCounted) : null,
     };
