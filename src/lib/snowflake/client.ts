@@ -209,11 +209,13 @@ const RETRY_DELAYS_MS = [1_000, 4_000];
 /**
  * #3972: each request's own bound, so a hung Snowflake ends as a thrown attempt (which
  * the ladder above resubmits under the same requestId) rather than a lane held until
- * the platform kills it with no failure recorded. The SQL API answers a submit within
- * about 45 seconds, with a 202 and a handle when the statement is still running, so
- * the submit's bound sits past that; a status poll answers at once.
+ * the platform kills it with no failure recorded. The SQL API answers a submit with a
+ * 202 and a handle once a statement runs past about 45 seconds, and `executeStatement`
+ * caps the statement itself at 60 (`timeout: 60` in the body), so the submit's bound
+ * sits a margin past BOTH and only ever cuts a request Snowflake has stopped answering;
+ * a status poll answers at once.
  */
-export const SNOWFLAKE_SUBMIT_TIMEOUT_MS = 60_000;
+export const SNOWFLAKE_SUBMIT_TIMEOUT_MS = 75_000;
 export const SNOWFLAKE_POLL_TIMEOUT_MS = 15_000;
 
 /**

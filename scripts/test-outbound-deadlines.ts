@@ -16,8 +16,10 @@
 // unless `// deadline-ok: <why>` names what bounds it instead.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-outbound-deadlines.ts
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { SNOWFLAKE_SUBMIT_TIMEOUT_MS } from "../src/lib/snowflake/client.ts";
 import { outboundWithoutDeadline, scanTree } from "./lib/scan-outbound-deadlines.ts";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -51,6 +53,15 @@ const passed: [string, string][] = [
 for (const [label, src] of passed) {
   eq(outboundWithoutDeadline("src/lib/x.ts", src).length, 0, `lets through ${label}`);
 }
+
+// ---- a bound must sit past the wait the other side is allowed ---------------------
+// Snowflake holds a submit for as long as the statement's own `timeout` (60s in
+// `executeStatement`'s body) before answering, so a client bound at or under it would
+// cut statements that are working (lessons review at da82c68).
+const snowflakeSource = readFileSync(join(ROOT, "src/lib/snowflake/client.ts"), "utf8");
+const statementTimeoutS = Number(/\btimeout:\s*(\d+),/.exec(snowflakeSource)?.[1] ?? NaN);
+assert(Number.isFinite(statementTimeoutS), `read the statement timeout Snowflake is sent (${statementTimeoutS}s)`);
+assert(SNOWFLAKE_SUBMIT_TIMEOUT_MS > statementTimeoutS * 1000, `the submit bound (${SNOWFLAKE_SUBMIT_TIMEOUT_MS}ms) is past the statement's own ${statementTimeoutS}s`);
 
 // ---- the tree --------------------------------------------------------------------
 const { findings, filesScanned, callsSeen } = scanTree(ROOT);
