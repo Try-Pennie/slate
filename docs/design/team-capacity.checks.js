@@ -1,8 +1,9 @@
 // The decision checks for the Team capacity design (docs/design/team-capacity.html), one entry per
-// decision its decision map verifies by a check (D1 to D44 but D25, which has no on screen form and
+// decision its decision map verifies by a check (D1 to D47 but D25, which has no on screen form and
 // is marked "verify": "elsewhere" in the map, as D45 is). D29 to D41 are the booking pace (#4101): the pace
 // lines on the cards, the one line under them when the pace cannot be read, and the timeline's key.
-// D42 to D44 are today after every shift has ended and a day nobody works (#4127). Each runs in the browser against ONE rendered frame,
+// D42 to D44 are today after every shift has ended and a day nobody works (#4127). D46 is a full day
+// showing no pace line and D47 the time off lines lining up across the cards (#4145, #4101 decisions 18 and 19). Each runs in the browser against ONE rendered frame,
 // either a design frame or the built page rendering the same fixture, and reads only what both
 // sides share: the data-tc hooks, visible text, roles and computed colours. Never a styling class,
 // since the build draws with Tailwind and the design does not.
@@ -427,6 +428,21 @@
       if (text(result) !== "No one on shift" || !before(n, result)) return fail("the line under it reads '" + text(result) + "'");
       var extra = ["full-bar", "pct", "pace", "out-count", "not-syncing", "flag"].filter(function (tc) { return c.querySelector('[data-tc="' + tc + '"]'); });
       return extra.length ? fail("Wednesday's card still shows " + extra.join(", ")) : pass();
+    } },
+    { id: "D46", frames: ["f6"], check: function (doc) {
+      var first = q(doc, "day-card")[0];
+      if (!first) return fail("no day cards");
+      if (text(first.querySelector('[data-tc="flag"]')) !== "Full") return fail("today's card carries no Full chip");
+      var lines = first.querySelectorAll('[data-tc="pace"]');
+      return lines.length === 0 ? pass() : fail("today's full card shows " + lines.length + " pace line(s): '" + text(lines[0]) + "'");
+    } },
+    { id: "D47", frames: ["f1"], check: function (doc) {
+      var tops = q(doc, "day-card").map(function (card) {
+        var first = card.querySelector('[data-tc="out-count"], [data-tc="not-syncing"]');
+        return first ? Math.round(first.getBoundingClientRect().top) : null;
+      }).filter(function (t) { return t !== null; });
+      if (tops.length < 2) return fail("fewer than two cards have a time off line to line up");
+      return tops.every(function (t) { return t === tops[0]; }) ? pass() : fail("the time off lines start at " + tops.join(", ") + "px");
     } },
     { id: "D41", frames: ["f1"], check: function (doc) {
       if (q(doc, "key-item").map(text).indexOf("Open") < 0) return fail("the key does not name the white box Open");

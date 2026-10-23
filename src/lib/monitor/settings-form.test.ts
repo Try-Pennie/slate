@@ -100,6 +100,26 @@ describe("parseMonitorSettingsForm", () => {
     expect(parseMonitorSettingsForm({ ...blank, ownerReassignNoticeOn: "" }).config.owner_reassign_notice_on).toBe(false);
   });
 
+  // #3766 (lesson L769): the notice posts ONLY to the handoff channel, which has no
+  // fallback. Switched on with that channel blank, every notice is withheld, the save
+  // still reads as saved, and the first sign is a weekly count. So the save refuses
+  // the pair, naming the field that fixes it, at the moment the switch goes on.
+  it("refuses turning the owner reassign notice on with no handoff channel", () => {
+    const out = parseMonitorSettingsForm({ ...blank, ownerReassignNoticeOn: "on", handoffChannel: "   " });
+    expect(out.errors).toHaveLength(1);
+    expect(out.errors[0]).toMatch(/handoff channel/i);
+  });
+
+  it("accepts the owner reassign notice on when a handoff channel is set", () => {
+    const out = parseMonitorSettingsForm({ ...blank, ownerReassignNoticeOn: "on", handoffChannel: "C-SALES" });
+    expect(out.errors).toEqual([]);
+    expect(out.config.owner_reassign_notice_on).toBe(true);
+  });
+
+  it("leaves a blank handoff channel alone while the notice is off", () => {
+    expect(parseMonitorSettingsForm({ ...blank, handoffChannel: "" }).errors).toEqual([]);
+  });
+
   it("trims channels and stores null for blank", () => {
     const out = parseMonitorSettingsForm({ ...blank, alertsChannel: "  #alerts  ", infoChannel: "" });
     expect(out.config.alerts_channel).toBe("#alerts");

@@ -630,10 +630,11 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   //          pages for a cause nobody can fix, which is how a channel stops being read.
   //   +3h    the worst GitHub scheduling LATENESS this repo has measured, so the run
   //          after a dropped one being merely late is not a second page.
-  //   +20m   the job's own `timeout-minutes` (20 since #3615 added the reroute drill to
-  //          the same job), because the stamp lands at the END of a run rather than at its start.
+  //   +30m   the job's own `timeout-minutes` (20 since #3615 added the reroute drill to
+  //          the same job, 30 since #4180 let the drill wait for the smoke canary), because
+  //          the stamp lands at the END of a run rather than at its start.
   //
-  // That is 51h20m, and 52 clears it by under an hour. `scripts/test-burst-counter-schedule.ts`
+  // That is 51h30m, and 52 clears it by under an hour. `scripts/test-burst-counter-schedule.ts`
   // re-derives all of it FROM the workflow file, so editing the cron or the timeout
   // without revisiting this fails the build, and it also refuses a bound with days of
   // slack in it: a bound that cannot be wrong is one that notices nothing.
@@ -660,14 +661,14 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // The daily proof that the shared confirm line answers (#3340). It runs as its own step
   // of the burst counter's workflow, so it shares that workflow's cron and timeout and the
   // same arithmetic: 24h of cadence, doubled so one dropped run does not page, plus the 3h
-  // worst lateness measured here, plus the job's 20 minute timeout (#3615). That is 51h20m, and
-  // 52 clears it by under an hour. `scripts/test-confirm-line-schedule.ts` re-derives it FROM
+  // worst lateness measured here, plus the job's 30 minute timeout (#3615, #4180). That is 51h30m,
+  // and 52 clears it by under an hour. `scripts/test-confirm-line-schedule.ts` re-derives it FROM
   // the workflow file.
   "verdict:confirm-line": 52 * 60 * MIN,
   // The daily reroute drill (#3615), its own steps of the same workflow, so the same arithmetic:
   // 24h of cadence, doubled so one dropped run does not page, plus the 3h worst lateness measured
-  // here, plus the job's 20 minute timeout (raised from 10 to leave the drill room). That is
-  // 51h20m, and 52 clears it. `scripts/test-reroute-drill-schedule.ts` re-derives it FROM the
+  // here, plus the job's 30 minute timeout (raised from 10 to leave the drill room, then to 30 for
+  // its wait on the smoke canary, #4180). That is 51h30m, and 52 clears it. `scripts/test-reroute-drill-schedule.ts` re-derives it FROM the
   // workflow file.
   "verdict:reroute-drill": 52 * 60 * MIN,
   // The smoke canary's latency reading (#1700), stamped by the 30 minute canary
