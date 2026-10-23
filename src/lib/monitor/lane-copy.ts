@@ -214,9 +214,10 @@ const TIME_OFF_SUBJECT: Record<string, { what: string; cost: string; look: strin
 /**
  * A time off lane that has gone quiet (#2543).
  *
- * Deliberately not the core lane wording: these fire once a day rather than once a
- * minute, so a CPU kill on the shared invocation is not the usual cause and sending
- * the reader to look for one would send them after a fault that is not there. The
+ * Deliberately not the core lane wording: these fire once a day rather than every few
+ * minutes, so the core page's causes (a deploy cancelling a run, a slow placed run, a
+ * held lane lock) are not where their faults live, and sending the reader to the lane
+ * timings would send them after a fault that is not there. The
  * bound is quoted in hours or days rather than minutes, because "has not run for
  * 4,380 minutes" is arithmetic shown to somebody reading a phone.
  */

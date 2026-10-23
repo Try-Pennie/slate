@@ -901,7 +901,8 @@ export const LANE_WATCHDOG_UNJUDGED: LaneWatchdogOutcome = { judged: false, stal
  *
  * PURE, so it is node-testable (scripts/test-stale-lanes.ts). Where
  * computeHealthStatus reports only the single worst lane (it drives one 200/503),
- * an alert wants EVERY quiet lane, since a CPU kill takes out several at once.
+ * an alert wants EVERY quiet lane, since one cause (a deploy cancelling a tick, a
+ * Cloudflare incident) can take out several at once.
  */
 export function findStaleLanes(
   lastRanAtMsByLane: Record<string, number | null | undefined>,
