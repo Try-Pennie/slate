@@ -231,6 +231,9 @@ const ciTick = (runNumber: () => number) => () =>
     token: "t",
     readRuns: async () => [refusedRun(runNumber())],
     readJobs: async () => [{ name: "build", conclusion: "failure", stepCount: 0 }],
+    // An unstamped build ("dev") judges no deploy, so the tip is never read (#3648).
+    readMainTip: async () => null,
+    readTipRuns: async () => null,
     cooldownMs: { deploy: MONITOR_DEFAULTS.cooldownMs.main_not_deployed, refusal: MONITOR_DEFAULTS.cooldownMs.ci_runs_refused },
     notify: sendThrottledAlert,
     resolve: resolveAlert,

@@ -22,6 +22,7 @@ import {
   formatDeployNotLiveAlert,
   judgeCiStart,
   judgeDeployedTip,
+  parseMainTip,
   parseWorkflowJobs,
   parseWorkflowRuns,
   runCiHealthCheck,
@@ -301,6 +302,11 @@ function harness(over: Partial<Parameters<typeof runCiHealthCheck>[0]> = {}) {
     token: "t",
     readRuns: async () => [run({ conclusion: "cancelled" })],
     readJobs: async () => [],
+    // #3648: main's tip, read from the branch rather than inferred from the newest run.
+    readMainTip: async () => ({ sha: TIP, committedAtMs: NOW - 60 * 60_000 }),
+    // The targeted read of the tip's own run, for when the listing does not hold it.
+    // Unreadable by default, so a case that needs it says what it answers.
+    readTipRuns: async () => null,
     cooldownMs: { deploy: 1, refusal: 1 },
     notify: async (key: string, _ms: number, text: string) => {
       alerts.push({ key, text });
@@ -528,6 +534,151 @@ function harness(over: Partial<Parameters<typeof runCiHealthCheck>[0]> = {}) {
     ],
   });
   eq(parsed[0]!.path, ".github/workflows/ci.yml", "the workflow file survives parsing");
+}
+
+// --- #3648 (L760): live is judged against main's ACTUAL tip -------------------------
+//
+// The check used to take main's tip to be whatever commit the newest deploying run on
+// main was for. A merge whose run GitHub never created (an Actions incident dropping
+// push events) leaves the PREVIOUS merge's run newest, and that run's commit is the one
+// being served, so the check read "live" and cleared the page: a merged fix not
+// running, with this check saying it was. The expected commit now comes from the
+// branch, and only that commit's own run can explain why it is not live.
+{
+  // The defect: the tip's run never registered. The newest deploying run is the
+  // previous merge's, which is exactly what is being served.
+  const h = harness({
+    servedCommit: PREV.slice(0, 12),
+    readRuns: async () => [run({ id: 30, headSha: PREV, conclusion: "success" })],
+    readMainTip: async () => ({ sha: TIP, committedAtMs: NOW - 60 * 60_000 }),
+    readTipRuns: async () => [],
+  });
+  const res = await runCiHealthCheck(h.deps);
+  eq(res.deploy, "not-live", "a tip with no run, past the grace, is not live, whatever the previous run says");
+  eq(res.deployReason, "no-run", "and is named as having no run");
+  const page = h.alerts.find((a) => a.key === DEPLOY_ALERT_KEY);
+  assert(page !== undefined, "it pages, because no workflow ran to report anything");
+  assert(
+    page !== undefined && page.text.includes(TIP.slice(0, 12)) && page.text.includes(PREV.slice(0, 12)),
+    "naming the tip and the commit being served",
+  );
+  assert(
+    page !== undefined && page.text.includes(`/commit/${TIP}`) && !page.text.includes("actions/runs/30"),
+    "and linking the commit, never the previous merge's run, which says nothing about this one",
+  );
+  assert(!h.resolved.some((r) => r.key === DEPLOY_ALERT_KEY), "and it does NOT announce main as live");
+}
+{
+  // The control: a merge seconds old whose run has not registered yet is every merge.
+  const h = harness({
+    servedCommit: PREV.slice(0, 12),
+    readRuns: async () => [run({ id: 31, headSha: PREV, conclusion: "success" })],
+    readMainTip: async () => ({ sha: TIP, committedAtMs: NOW - 2 * 60_000 }),
+    readTipRuns: async () => [],
+  });
+  const res = await runCiHealthCheck(h.deps);
+  eq(res.deploy, "in-flight", "a tip inside the grace with no run yet is in flight");
+  eq(h.alerts.filter((a) => a.key === DEPLOY_ALERT_KEY).length, 0, "and pages nothing");
+  assert(!h.resolved.some((r) => r.key === DEPLOY_ALERT_KEY), "and clears nothing: the tip is not live yet");
+}
+{
+  // The tip's run fell out of the listing (a busy day of pull request runs) but exists:
+  // the targeted read finds it, and its own ending decides.
+  const h = harness({
+    servedCommit: PREV.slice(0, 12),
+    readRuns: async () => [run({ id: 32, headSha: PREV, conclusion: "success" })],
+    readMainTip: async () => ({ sha: TIP, committedAtMs: NOW - 60 * 60_000 }),
+    readTipRuns: async () => [run({ id: 33, headSha: TIP, conclusion: "cancelled" })],
+  });
+  const res = await runCiHealthCheck(h.deps);
+  eq(res.deployReason, "cancelled", "the tip's own run, read directly, names the ending");
+  assert(
+    h.alerts.some((a) => a.key === DEPLOY_ALERT_KEY && a.text.includes("actions/runs/33")),
+    "and the page links that run",
+  );
+}
+{
+  // An unreadable targeted read is not an absent run (L215): nothing is said.
+  const h = harness({
+    servedCommit: PREV.slice(0, 12),
+    readRuns: async () => [run({ id: 34, headSha: PREV, conclusion: "success" })],
+    readMainTip: async () => ({ sha: TIP, committedAtMs: NOW - 60 * 60_000 }),
+    readTipRuns: async () => null,
+  });
+  const res = await runCiHealthCheck(h.deps);
+  eq(res.deploy, "unmeasured", "a tip run that could not be looked up measures nothing");
+  eq(h.alerts.filter((a) => a.key === DEPLOY_ALERT_KEY).length + h.resolved.filter((r) => r.key === DEPLOY_ALERT_KEY).length, 0, "and says nothing either way");
+}
+{
+  // An unreadable tip is unmeasured, even when the served commit matches the newest
+  // run: that match is the very reading this change stops trusting on its own.
+  const h = harness({
+    servedCommit: PREV.slice(0, 12),
+    readRuns: async () => [run({ id: 35, headSha: PREV, conclusion: "success" })],
+    readMainTip: async () => null,
+  });
+  const res = await runCiHealthCheck(h.deps);
+  eq(res.deploy, "unmeasured", "without main's tip, nothing is measured");
+  assert(!h.resolved.some((r) => r.key === DEPLOY_ALERT_KEY), "and nothing is cleared");
+}
+{
+  const h = harness({
+    readMainTip: async () => {
+      throw new Error("network");
+    },
+  });
+  const res = await runCiHealthCheck(h.deps);
+  eq(res.deploy, "unmeasured", "a throwing tip read is contained, not propagated onto the lane");
+}
+{
+  // Serving the tip is live, whether or not its run is in the listing.
+  const h = harness({
+    servedCommit: TIP.slice(0, 12),
+    readRuns: async () => [run({ id: 36, headSha: PREV, conclusion: "success" })],
+    readMainTip: async () => ({ sha: TIP, committedAtMs: NOW - 60 * 60_000 }),
+  });
+  const res = await runCiHealthCheck(h.deps);
+  eq(res.deploy, "live", "the served commit IS main's tip");
+  assert(h.resolved.some((r) => r.key === DEPLOY_ALERT_KEY), "and that clears the page");
+}
+{
+  const text = formatDeployNotLiveAlert({
+    reason: "no-run",
+    tipSha: TIP,
+    servedCommit: PREV.slice(0, 12),
+    behindMs: 50 * 60_000,
+    runUrl: null,
+  });
+  assert(/no CI run|never started a CI run/i.test(text), `the no run page says no run exists (got ${text})`);
+  assert(/githubstatus|Actions incident/i.test(text), "and sends the reader to the likely cause");
+  assert(text.includes(`https://github.com/Try-Pennie/slate/commit/${TIP}`), "and links the commit, since there is no run to link");
+  assert(!/undefined|NaN|\[object|null/.test(text), "and leaks nothing");
+}
+{
+  // The tip read parses GitHub's commit payload, and refuses one it cannot read.
+  eq(
+    JSON.stringify(parseMainTip({ sha: TIP, commit: { committer: { date: "2026-09-16T10:00:00Z" } } })),
+    JSON.stringify({ sha: TIP, committedAtMs: Date.UTC(2026, 8, 16, 10, 0, 0) }),
+    "a commit payload gives the sha and when it landed",
+  );
+  eq(parseMainTip({ sha: "", commit: {} }), null, "a payload with no sha is unreadable, never an empty tip");
+  eq(parseMainTip(null), null, "and so is no payload");
+  eq(
+    JSON.stringify(parseMainTip({ sha: TIP, commit: {} })),
+    JSON.stringify({ sha: TIP, committedAtMs: null }),
+    "a missing date keeps the sha and says the time is unknown",
+  );
+}
+{
+  // An unreadable landing time cannot say whether the grace has passed (L50).
+  const h = harness({
+    servedCommit: PREV.slice(0, 12),
+    readRuns: async () => [run({ id: 37, headSha: PREV, conclusion: "success" })],
+    readMainTip: async () => ({ sha: TIP, committedAtMs: null }),
+    readTipRuns: async () => [],
+  });
+  const res = await runCiHealthCheck(h.deps);
+  eq(res.deploy, "unmeasured", "a tip with no run and an unreadable landing time is unmeasured, not paged");
 }
 
 finish();
