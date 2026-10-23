@@ -38,6 +38,17 @@ export const BEYOND_WINDOW_NOTE = "Leads can't book this day yet, so it will fil
 /** A day nobody could be counted on (everyone out, off shift or not syncing): never "0% full". */
 export const NOBODY_COUNTED = "Nobody counted";
 
+/** Today's card once every shift has ended (#4127): in place of the calls open number. */
+export const DONE_FOR_TODAY = "Done for today";
+
+/** Under Done for today: the calls the finished day left unused, from the saved history (#4127). */
+export function unbookedLine(open: number): string {
+  return `${open.toLocaleString("en-US")} ${open === 1 ? "call" : "calls"} went unbooked`;
+}
+
+/** A day everyone is out or has no shift (#4127): said once, with no time off line beside it. */
+export const NO_ONE_ON_SHIFT = "No one on shift";
+
 export function pastDaySummary(fullPct: number | null, open: number): string {
   if (fullPct === null) return "Nobody was counted this day.";
   return `Ended ${fullPct}% full, with room left for ${open.toLocaleString("en-US")} more ${open === 1 ? "call" : "calls"}.`;

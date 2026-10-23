@@ -14,6 +14,7 @@
  */
 import type { AdvisorDay, CapacityEventType, TeamCapacityAdvisor } from "./team-capacity";
 import type { TeamCapacityReport } from "./team-capacity-load";
+import { dayTotals } from "./team-capacity";
 import { pickableDays } from "./team-capacity-view";
 import type { PaceRead, PaceRow } from "./team-capacity-pace";
 
@@ -36,7 +37,13 @@ export interface FixtureFrame {
   theme: "light" | "dark";
   day?: number;
   examples?: boolean;
-  illustrate?: "today-full";
+  /**
+   * today-full empties today's open calls; today-ended runs every shift today out, as at 10 PM;
+   * nobody-on-shift leaves Wednesday with everyone out or with no shift (#4127).
+   */
+  illustrate?: "today-full" | "today-ended" | "nobody-on-shift";
+  /** Today's saved history once every shift has ended: the team's unused calls and capacity (#4127). */
+  todayHistory?: { open: number; capacity: number };
   pick?: string;
   calendarOpen?: boolean;
   changeOpen?: boolean;
@@ -81,6 +88,8 @@ export interface FixtureView {
   pickable: string[];
   /** The booking pace read, as the live page would have it. */
   pace: PaceRead;
+  /** Today's saved totals for a finished today, as the page reads them from history (#4127). */
+  todayEnded?: { open: number; fullPct: number | null };
 }
 
 function stampMs(iso: string): number {
@@ -112,6 +121,12 @@ export function fixtureView(fixture: DesignFixtureFile, frameId: string): Fixtur
       });
     }
     if (frame.illustrate === "today-full") days = days.map((d, i) => (i === 0 ? { ...d, open: 0, openTimes: [] } : d));
+    // Every shift today over: nothing ahead, though the day's shift is still known (#4127).
+    if (frame.illustrate === "today-ended") days = days.map((d, i) => (i === 0 ? { ...d, open: 0, capacity: 0, openTimes: [], shiftStart: null, shiftEnd: null } : d));
+    // Wednesday with nobody working: everyone not out has no shift that day (#4127).
+    if (frame.illustrate === "nobody-on-shift") {
+      days = days.map((d, i) => (i === 2 && !d.out ? { ...d, open: 0, capacity: 0, openTimes: [], noShift: true, shiftStart: null, shiftEnd: null, fullShiftStart: null, fullShiftEnd: null } : d));
+    }
     // A picked date shows the window's last day under the picked date: nothing was stored for
     // other days when the design was drawn.
     if (frame.pick) days = [...days, { ...days[days.length - 1], iso: frame.pick }];
@@ -143,6 +158,8 @@ export function fixtureView(fixture: DesignFixtureFile, frameId: string): Fixtur
     unsynced,
     pickable: fixturePickable(fixture),
     pace: fixturePace(fixture, frame),
+    // The page works today's percent out of its saved history the way it does every day's.
+    todayEnded: frame.todayHistory ? (({ open, fullPct }) => ({ open, fullPct }))(dayTotals([{ unsynced: false, days: [{ ...frame.todayHistory, out: false }] }], 0)) : undefined,
   };
 }
 

@@ -96,6 +96,43 @@ eq(axisPos("2026-11-03T13:00:00.000Z", Z), 0, "8am after the clocks change is st
   eq(v.days[1].note, "Nobody was counted this day.", "nor does a past day's summary");
 }
 
+// --- today after every shift has ended, and a day nobody works (#4127) --------------------------
+{
+  const over = day({ iso: "2026-10-19", shiftStart: null, shiftEnd: null, capacity: 0, open: 0, openTimes: [], fullShiftStart: "2026-10-19T12:00:00.000Z", fullShiftEnd: "2026-10-19T21:00:00.000Z" });
+  const noShift = day({ fullShiftStart: null, fullShiftEnd: null, shiftStart: null, shiftEnd: null, capacity: 0, open: 0, openTimes: [], noShift: true });
+  const notFilling = judgePace({ ok: true, rows: ["2026-10-19", "2026-10-20"].map((d) => ({ day: d, read_at: "2026-10-20T01:30:00.000Z", pace_state: "not-filling", pace_per_hour: 0, pace_back_at: null, estimate_method: null, estimate_line_state: null, estimate_line_at: null, estimate_pattern_state: null, estimate_pattern_at: null })) }, Date.parse("2026-10-20T02:00:00.000Z"));
+  const days = [
+    source("2026-10-19", "window", [{ advisor: advisor("Avery"), day: over }, { advisor: advisor("Blake"), day: { ...over, out: true } }]),
+    source("2026-10-20", "window", [{ advisor: advisor("Avery"), day: noShift }, { advisor: advisor("Blake"), day: day({ out: true }) }]),
+  ];
+  const at10pm = (ended: { open: number; fullPct: number | null } | null) =>
+    teamCapacityView({ zone: Z, todayIso: "2026-10-19", nowMs: Date.parse("2026-10-20T02:00:00.000Z"), durationMin: 20, nearlyFullPct: 85, days, pace: notFilling, todayEnded: ended });
+
+  const v = at10pm({ open: 58, fullPct: 91 });
+  const today = v.cards[0];
+  eq(today.kind, "ended", "today with every shift over is a finished day, never nobody counted");
+  eq([today.headline, today.resultLine, today.fullPct], ["Done for today", "58 calls went unbooked", 91], "it says so, then the calls that went unbooked, then how full it ended");
+  eq(today.flag, null, "a finished day never takes the nearly full colour (Dan, 2026-10-22)");
+  eq(today.pace, [], "nor a pace line: nothing is left to fill (#4101 decision 17)");
+  eq(today.outLine, "1 advisor off", "its time off line stays");
+
+  const unread = at10pm(null).cards[0];
+  eq([unread.kind, unread.headline, unread.resultLine, unread.fullPct], ["ended", "Done for today", null, null], "history unreadable: Done for today alone, never a guessed figure");
+  eq(at10pm({ open: 0, fullPct: null }).cards[0].resultLine, null, "history holding nothing for today: no figures either");
+  eq(at10pm({ open: 1, fullPct: 99 }).cards[0].resultLine, "1 call went unbooked", "one call in the singular");
+
+  const tomorrow = v.cards[1];
+  eq(tomorrow.kind, "no-shift", "a day everyone is out or off shift is its own state");
+  eq([tomorrow.open, tomorrow.unit, tomorrow.resultLine, tomorrow.fullPct], [0, " calls open", "No one on shift", null], "0 calls open, then No one on shift, with no percent");
+  eq([tomorrow.outLine, tomorrow.pace, tomorrow.flag], [null, [], null], "and no time off line, no pace line and no flag (Dan, 2026-10-22)");
+
+  const unsyncedOnly = view([source("2026-10-20", "window", [{ advisor: advisor("Avery", { unsynced: true }), day: day() }, { advisor: advisor("Blake"), day: noShift }])]).cards[0];
+  eq([unsyncedOnly.kind, unsyncedOnly.resultLine], ["nobody-counted", null], "only unsynced calendars left: still Nobody counted, the open question on #4127");
+
+  const midday = view([source("2026-10-19", "window", [{ advisor: advisor("Avery"), day: day({ iso: "2026-10-19" }) }, { advisor: advisor("Blake"), day: over }])]).cards[0];
+  eq([midday.kind, midday.headline, midday.resultLine], ["open", null, null], "while one shift still runs, today is an ordinary card");
+}
+
 // --- a saved past day -------------------------------------------------------------------------
 {
   const v = view([
@@ -150,6 +187,7 @@ const frameViewOf = (id: string) => {
     nearlyFullPct: f.nearlyFullPct,
     days: r.days.map((iso, i) => source(iso, "window", r.advisors.map((a) => ({ advisor: a, day: a.days[i] })))),
     pace: judgePace(f.pace, r.nowMs),
+    todayEnded: f.todayEnded,
   });
 };
 {
@@ -172,6 +210,10 @@ const frameViewOf = (id: string) => {
     ["Filling at 11 an hour", "Full by 7pm Tue"],
   ], "f11: readings missed, a time later today, and the pattern");
   eq(frameViewOf("f12").cards.slice(2).map((c) => c.pace), [["Filling at 6 an hour", "Won't fill"], ["Pace shows after 3 hours of readings"]], "f12: the pattern that won't fill, and no pace yet");
+  const f15 = frameViewOf("f15");
+  eq([f15.cards[0].headline, f15.cards[0].resultLine, f15.cards[0].fullPct, f15.cards[0].pace], ["Done for today", "58 calls went unbooked", 91, []], "f15: today after every shift has ended");
+  const f16 = frameViewOf("f16");
+  eq([f16.cards[2].kind, f16.cards[2].resultLine, f16.cards[2].pace, f16.cards[2].outLine], ["no-shift", "No one on shift", [], null], "f16: Wednesday with nobody on shift");
   eq(frameViewOf("f13").paceNotice, { lead: "Couldn't load how fast the days are filling.", rest: "Try reloading in a minute." }, "f13: the pace can't load");
   eq(frameViewOf("f14").paceNotice, { lead: "Couldn't update how fast the days are filling since 1:30pm.", rest: null }, "f14: the pace is out of date");
   assert(frameViewOf("f14").cards.every((c) => c.pace.length === 0), "f14: no card keeps a pace line");

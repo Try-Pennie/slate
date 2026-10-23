@@ -20,11 +20,11 @@ import { loadTeamCapacity, type TeamCapacityReport } from "@/lib/admin/team-capa
 import { loadCapacityHistoryDay, readSavedDays } from "@/lib/admin/capacity-history-store";
 import { EVERY_SAVED_DAY_FROM } from "@/lib/admin/capacity-history";
 import { HISTORY_UNREADABLE_COPY, LINE_UNREADABLE_COPY, UNMEASURABLE_COPY } from "@/lib/admin/team-capacity-copy";
-import { pickableDays, teamCapacityView, type CapacityDaySource } from "@/lib/admin/team-capacity-view";
+import { pickableDays, teamCapacityView, todayHasEnded, type CapacityDaySource } from "@/lib/admin/team-capacity-view";
 import { designFixturesEnabled, fixtureView, type DesignFixtureFile } from "@/lib/admin/team-capacity-fixture";
 import { judgePace, type PaceRead } from "@/lib/admin/team-capacity-pace";
 import { readPaceRows } from "@/lib/admin/team-capacity-pace-load";
-import type { TeamCapacityAdvisor } from "@/lib/admin/team-capacity";
+import { dayTotals, type TeamCapacityAdvisor } from "@/lib/admin/team-capacity";
 
 export const metadata = { title: "Team capacity" };
 
@@ -97,7 +97,7 @@ export default async function TeamCapacityPage({
         {theme}
         {header}
         <TeamCapacityView
-          view={teamCapacityView({ zone: r.zone, todayIso: r.windowDays[0], nowMs: r.nowMs, durationMin: r.eventType.duration_min, nearlyFullPct: f.nearlyFullPct, days: sources, pace: judgePace(f.pace, r.nowMs) })}
+          view={teamCapacityView({ zone: r.zone, todayIso: r.windowDays[0], nowMs: r.nowMs, durationMin: r.eventType.duration_min, nearlyFullPct: f.nearlyFullPct, days: sources, pace: judgePace(f.pace, r.nowMs), todayEnded: f.todayEnded })}
           zone={r.zone}
           todayIso={r.windowDays[0]}
           initialIndex={f.dayIndex}
@@ -154,6 +154,20 @@ export default async function TeamCapacityPage({
   // a day history holds only part of (the first) or that the office was shut.
   const pastOffered = pickedPast !== null && pickable.includes(pickedPast) && pastAdvisors !== null && pastAdvisors.length > 0;
   const sources = daySources(report, pickedPast, pastOffered ? pastAdvisors : null);
+  // Once every shift today is over, the Today card says how the day ended, from the saved history
+  // (#4127). Read only then. A failed read is logged and the card says Done for today alone.
+  const todayEnded = todayHasEnded(sources.find((s) => s.iso === todayIso), todayIso)
+    ? await loadCapacityHistoryDay(me.org_id, todayIso).then(
+        (advisors) => {
+          const t = dayTotals(advisors.map((a) => ({ unsynced: a.unsynced, days: [a.days[0]] })), 0);
+          return { open: t.open, fullPct: t.fullPct };
+        },
+        (err: unknown) => {
+          log.error("team-capacity", { msg: "today's history read failed", day: todayIso }, err);
+          return null;
+        },
+      )
+    : undefined;
   // A day the picker would not offer (nothing saved, history's partly recorded first day, a day the
   // office was shut, or past the cached calendars) opens on the default day instead, and says
   // nothing: the picker never offered it.
@@ -175,7 +189,7 @@ export default async function TeamCapacityPage({
         // Every load from the server starts the screen afresh: a picked date opens on that day
         // rather than keeping the one selected before, and a saved line closes its form.
         key={`${sources.map((s) => s.iso).join(",")}|${initialIndex}|${nowMs}`}
-        view={teamCapacityView({ zone: report.zone, todayIso, nowMs, durationMin: report.eventType.duration_min, nearlyFullPct, days: sources, pace })}
+        view={teamCapacityView({ zone: report.zone, todayIso, nowMs, durationMin: report.eventType.duration_min, nearlyFullPct, days: sources, pace, todayEnded })}
         zone={report.zone}
         todayIso={todayIso}
         initialIndex={initialIndex}

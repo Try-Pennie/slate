@@ -61,20 +61,38 @@ export function TeamCapacityView({
                 <span className="tday-sub">{c.sub}</span>
               </div>
               <div className="tnum">
-                <span className="tbig" data-tc="calls-open">{String(c.open)}</span>
-                <span className="tunit">{c.unit}</span>
-              </div>
-              <div className="tbar">
-                <span className="tfill" data-tc="full-bar" style={{ width: `${c.fullPct ?? 0}%` }} />
-              </div>
-              <div className="tpct" data-tc="pct">
-                {fullLine(c.fullPct)}
-                {c.flag && (
-                  <span className="chip" data-tc="flag">
-                    {c.flag === "full" ? "Full" : "Nearly full"}
+                {c.headline ? (
+                  <span className="tbig tbig-word" data-tc="headline">
+                    {c.headline}
                   </span>
+                ) : (
+                  <>
+                    <span className="tbig" data-tc="calls-open">{String(c.open)}</span>
+                    <span className="tunit">{c.unit}</span>
+                  </>
                 )}
               </div>
+              {c.resultLine && (
+                <div className={c.kind === "no-shift" ? "tline tline-gap" : "tline"} data-tc="result">
+                  {c.resultLine}
+                </div>
+              )}
+              {/* A day nobody works has no bar, and a finished day only when its history was read (#4127). */}
+              {c.kind !== "no-shift" && !(c.kind === "ended" && c.fullPct === null) && (
+                <>
+                  <div className="tbar">
+                    <span className="tfill" data-tc="full-bar" style={{ width: `${c.fullPct ?? 0}%` }} />
+                  </div>
+                  <div className="tpct" data-tc="pct">
+                    {fullLine(c.fullPct)}
+                    {c.flag && (
+                      <span className="chip" data-tc="flag">
+                        {c.flag === "full" ? "Full" : "Nearly full"}
+                      </span>
+                    )}
+                  </div>
+                </>
+              )}
               {c.pace.map((line) => (
                 <div key={line} className="tpace" data-tc="pace">
                   {line}

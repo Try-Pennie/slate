@@ -26,6 +26,13 @@
 
 .tc-scope .tbig { font-size: 30px; font-weight: 600; }
 
+/* Words in place of the number (#4127): Done for today, sized to sit on the number's line. */
+.tc-scope .tbig-word { display: inline-block; font-size: 24px; line-height: 36px; }
+
+/* The line under the number or headline: the calls a finished day left unused, or No one on shift. */
+.tc-scope .tline { margin-top: 2px; font-variant-numeric: tabular-nums; }
+.tc-scope .tline-gap { margin-top: 8px; min-height: 22px; }
+
 .tc-scope .tbar { height: 8px; border-radius: 4px; background: var(--bg-alt); overflow: hidden; margin: 8px 0 6px; }
 
 .tc-scope .tfill { display: block; height: 100%; background: var(--tc-taken); }
@@ -121,7 +128,7 @@
 
 .tc-scope .tpace + .tpace { margin-top: 2px; }
 
-.tc-scope .tpace + .tout, .tc-scope .tpct + .tout { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.tc-scope .tpace + .tout, .tc-scope .tpct + .tout, .tc-scope .tnum + .tout { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 
 /* #4101: the timeline key, at the end of the tab row, pushed right. */
 

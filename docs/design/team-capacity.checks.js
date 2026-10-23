@@ -1,7 +1,8 @@
 // The decision checks for the Team capacity design (docs/design/team-capacity.html), one entry per
-// decision its decision map verifies by a check (D1 to D41 but D25, which has no on screen form and
-// is marked "verify": "elsewhere" in the map). D29 to D41 are the booking pace (#4101): the pace
-// lines on the cards, the one line under them when the pace cannot be read, and the timeline's key. Each runs in the browser against ONE rendered frame,
+// decision its decision map verifies by a check (D1 to D44 but D25, which has no on screen form and
+// is marked "verify": "elsewhere" in the map, as D45 is). D29 to D41 are the booking pace (#4101): the pace
+// lines on the cards, the one line under them when the pace cannot be read, and the timeline's key.
+// D42 to D44 are today after every shift has ended and a day nobody works (#4127). Each runs in the browser against ONE rendered frame,
 // either a design frame or the built page rendering the same fixture, and reads only what both
 // sides share: the data-tc hooks, visible text, roles and computed colours. Never a styling class,
 // since the build draws with Tailwind and the design does not.
@@ -77,6 +78,10 @@
           day.open = d.openTimes.filter(function (x) { var ms = stamp(x); return ms + callMs <= s0 || ms >= s1; }).length;
         }
         if (f.illustrate === "today-full" && i === 0) day.open = 0;
+        // Every shift today over (#4127): nothing ahead, so no capacity either.
+        if (f.illustrate === "today-ended" && i === 0) { day.open = 0; day.capacity = 0; }
+        // Wednesday with nobody working: everyone not out has no shift (#4127).
+        if (f.illustrate === "nobody-on-shift" && i === 2 && !day.out) { day.open = 0; day.capacity = 0; }
         return day;
       }) };
     });
@@ -390,6 +395,38 @@
       if (!sw("off") || !/repeating-linear-gradient/.test(rgb(doc, sw("off"), "backgroundImage"))) return fail("Not working's mark is not striped");
       if (ctx.frame === "f3" && (!sw("past") || !/repeating-linear-gradient/.test(rgb(doc, sw("past"), "backgroundImage")))) return fail("Past's mark is not hatched");
       return pass();
+    } },
+    { id: "D42", frames: ["f15"], check: function (doc, ctx) {
+      var c = q(doc, "day-card")[0];
+      if (!c) return fail("no Today card");
+      var h = ctx.fixture.frames.f15.todayHistory;
+      var pct = h.open === 0 ? 100 : Math.min(99, Math.floor((100 * (h.capacity - h.open)) / h.capacity));
+      var head = c.querySelector('[data-tc="headline"]'), result = c.querySelector('[data-tc="result"]');
+      var bar = c.querySelector('[data-tc="full-bar"]'), pctLine = c.querySelector('[data-tc="pct"]');
+      if (text(head) !== "Done for today") return fail("Today's headline reads '" + text(head) + "'");
+      if (c.querySelector('[data-tc="calls-open"]')) return fail("Today's card still shows a calls open number");
+      if (text(result) !== h.open + " calls went unbooked") return fail("the line under it reads '" + text(result) + "'");
+      if (!bar || text(pctLine) !== pct + "% full") return fail("the bar and percent read '" + text(pctLine) + "', expected " + pct + "% full");
+      return before(head, result) && before(result, bar) && before(bar, pctLine) ? pass() : fail("Done for today, the unbooked line, the bar and the percent are out of order");
+    } },
+    { id: "D43", frames: ["f15"], check: function (doc) {
+      var cards = q(doc, "day-card"), c = cards[0];
+      if (!c) return fail("no Today card");
+      if (c.querySelector('[data-tc="flag"]')) return fail("the finished day carries a chip");
+      if (c.querySelector('[data-tc="pace"]')) return fail("the finished day shows a pace line");
+      // Thursday, 36% full, is unflagged: the finished day must be the same plain surface.
+      var plain = cards.find(function (x, i) { return i > 0 && !x.querySelector('[data-tc="flag"]'); });
+      if (!plain) return fail("no unflagged card to compare with");
+      return rgb(doc, c, "backgroundColor") === rgb(doc, plain, "backgroundColor") ? pass() : fail("the finished day is tinted " + rgb(doc, c, "backgroundColor"));
+    } },
+    { id: "D44", frames: ["f16"], check: function (doc) {
+      var c = q(doc, "day-card")[2];
+      if (!c) return fail("no Wednesday card");
+      var n = c.querySelector('[data-tc="calls-open"]'), result = c.querySelector('[data-tc="result"]');
+      if (text(n) !== "0" || !/ calls open/.test(text(c))) return fail("Wednesday's card does not read 0 calls open");
+      if (text(result) !== "No one on shift" || !before(n, result)) return fail("the line under it reads '" + text(result) + "'");
+      var extra = ["full-bar", "pct", "pace", "out-count", "not-syncing", "flag"].filter(function (tc) { return c.querySelector('[data-tc="' + tc + '"]'); });
+      return extra.length ? fail("Wednesday's card still shows " + extra.join(", ")) : pass();
     } },
     { id: "D41", frames: ["f1"], check: function (doc) {
       if (q(doc, "key-item").map(text).indexOf("Open") < 0) return fail("the key does not name the white box Open");
