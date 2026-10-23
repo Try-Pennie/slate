@@ -2,6 +2,7 @@
 // It was a Slack whisper until 2026-10-23, when Dan turned it off ("you can log it but I don't need
 // a slack message"): it never asked anybody to act, so it is now one log line and no post.
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-demotion-outcome-report.ts
+import { readFileSync } from "node:fs";
 import { reportDemotionSweepOutcome, type DemotionOutcomeReportDeps } from "../src/lib/booking/demotion-outcome-report.ts";
 import type { BulkReassignItemStatus, BulkReassignJob } from "../src/lib/db/types.ts";
 import type { LogFields } from "../src/lib/log.ts";
@@ -32,10 +33,10 @@ function deps(statuses: BulkReassignItemStatus[], over: Partial<DemotionOutcomeR
   return { d, logged, reads };
 }
 
-// The module no longer offers a Slack sender at all, so nothing here can post.
+// The reporter cannot post: it imports nothing that sends to Slack.
 {
-  const { d } = deps(["moved"]);
-  assert(!("sendInfo" in d), "the reporter takes no Slack sender");
+  const source = readFileSync(new URL("../src/lib/booking/demotion-outcome-report.ts", import.meta.url), "utf8");
+  assert(!/from "@\/lib\/notify\//.test(source), "the reporter imports nothing from the Slack notifier");
 }
 
 // A demotion sweep logs how its calls settled, once, naming the advisor and the sweep by id.
