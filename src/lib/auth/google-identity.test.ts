@@ -86,8 +86,6 @@ describe("GoogleAccountMismatchError", () => {
   });
 });
 
-// The sign in page draws this sentence (src/app/login/page.test.tsx checks it is
-// shown for the code); its wording rules are pinned here on the copy itself.
 // The line above the relink button for someone with a sign in on record but no
 // Google account recorded: it may claim only what is true of them.
 describe("the relink line when no Google account is recorded", () => {
@@ -104,6 +102,8 @@ describe("the relink line when no Google account is recorded", () => {
   });
 });
 
+// The sign in page draws this sentence (src/app/login/page.test.tsx checks it is
+// shown for the code); its wording rules are pinned here on the copy itself.
 describe("the refused person's sentence", () => {
   it("names who can change the answer and is never worded as a retry", () => {
     expect(GOOGLE_ACCOUNT_CHANGED_MESSAGE).toMatch(/admin/i);
