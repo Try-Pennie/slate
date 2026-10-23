@@ -52,6 +52,7 @@ on:
       - "scripts/lib/migration-replay.ts"
       - "scripts/lib/run-alerter.ts"
       - "scripts/lib/slack-post.ts"
+      - "scripts/lib/slack-mrkdwn.ts"
       - "scripts/notify-db-replay-failure.ts"
       # #3495: the webhook enqueue suite reads the function's answer with the Worker's
       # own reader, and holds it to the fixture the reader is tested against.
