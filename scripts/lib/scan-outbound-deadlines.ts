@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { hasOptOut } from "./opt-out.ts";
 
 // Static detector for #3972 (L1028): an outbound call in server code with no timeout of
 // its own. Read `scripts/test-outbound-deadlines.ts` for why it matters.
@@ -19,7 +20,7 @@ import { join, relative } from "node:path";
 // Worker). Client modules (`"use client"`) and tests are not scanned: the platform
 // that kills at a deadline is the Worker.
 
-export const DEADLINE_OK = /\/\/\s*deadline-ok:\s*\S/;
+export const DEADLINE_OK = "deadline-ok:";
 
 export interface OutboundFinding {
   file: string;
@@ -62,15 +63,9 @@ function isValueUse(id: ts.Identifier): boolean {
   return false;
 }
 
-/** The opt out on the finding's line, or in the contiguous `//` block above it. */
+/** The opt out, with a reason, on the finding's line or in the comment block above it. */
 function optedOut(lines: string[], index: number): boolean {
-  if (DEADLINE_OK.test(lines[index] ?? "")) return true;
-  for (let i = index - 1; i >= 0; i--) {
-    const l = (lines[i] ?? "").trim();
-    if (!l.startsWith("//")) return false;
-    if (DEADLINE_OK.test(l)) return true;
-  }
-  return false;
+  return hasOptOut(lines, index, DEADLINE_OK);
 }
 
 export function outboundWithoutDeadline(file: string, source: string): OutboundFinding[] {
