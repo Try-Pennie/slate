@@ -7,7 +7,7 @@ const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => true) }));
 const locks = vi.hoisted(() => ({ acquireLock: vi.fn(async (): Promise<string | null> => "token"), releaseLock: vi.fn(async () => {}) }));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 const fill = vi.hoisted(() => ({ runFillTick: vi.fn() }));
-const store = vi.hoisted(() => ({ readFillLast: vi.fn(), writeFill: vi.fn() }));
+const store = vi.hoisted(() => ({ readFillLast: vi.fn(), writeFill: vi.fn(), readFillHistory: vi.fn(), readFillPattern: vi.fn() }));
 const orgs = vi.hoisted(() => ({ rows: [{ id: "org-1" }] as { id: string }[], error: null as { message: string } | null }));
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
@@ -50,6 +50,10 @@ describe("GET /api/cron/capacity-fill", () => {
       await deps.write({ readAtMs: 0, prevReadAtMs: null, rows: [], last: [] });
       expect(store.readFillLast).toHaveBeenLastCalledWith(org, ["2026-10-20"]);
       expect(store.writeFill).toHaveBeenLastCalledWith(org, expect.anything());
+      await deps.readHistory(["2026-10-20"], 5);
+      await deps.readPattern(7);
+      expect(store.readFillHistory).toHaveBeenLastCalledWith(org, ["2026-10-20"], 5);
+      expect(store.readFillPattern).toHaveBeenLastCalledWith(org, 7);
     }
     expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("capacity-fill");
     expect(locks.releaseLock).toHaveBeenCalled();

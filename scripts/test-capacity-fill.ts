@@ -32,6 +32,7 @@ import {
   type FillTickDeps,
   type FillWrite,
 } from "../src/lib/admin/capacity-fill.ts";
+import { PACE_HISTORY_MS, PATTERN_LOOKBACK_MS } from "../src/lib/admin/capacity-fill-pace.ts";
 
 const ZONE = "America/New_York";
 const MIN = 60_000;
@@ -244,12 +245,27 @@ const openAt = (m: MemberAvailability, nowMs: number, iso = TUE) =>
   const office = { hours, eventType: ev };
   let calendar = [member("u1")];
   const writes: FillWrite[] = [];
+  const historyAsked: number[] = [];
+  const patternAsked: number[] = [];
   const store = makeStore();
   const deps = (nowMs: number, over: Partial<FillTickDeps> = {}): FillTickDeps => ({
     nowMs,
     loadRules: async () => ({ ok: true, value: office }),
     readOfferedDays: async () => 2,
     readLast: async (days) => ({ latestReadAtMs: store.latest(), byDay: new Map([...store.last].filter(([d]) => days.includes(d))) }),
+    readHistory: async (days, sinceMs) => {
+      historyAsked.push(sinceMs);
+      const byDay = new Map<string, { read_at: string; prev_read_at: string | null; taken: number | null }[]>();
+      for (const r of store.readings.values()) {
+        if (!days.includes(r.day) || Date.parse(r.read_at) < sinceMs) continue;
+        byDay.set(r.day, [...(byDay.get(r.day) ?? []), { read_at: r.read_at, prev_read_at: r.prev_read_at, taken: r.taken }]);
+      }
+      return byDay;
+    },
+    readPattern: async (sinceMs) => {
+      patternAsked.push(sinceMs);
+      return [];
+    },
     loadPeople: async () => ({ ok: true, value: people(calendar) }),
     write: async (w) => {
       writes.push(w);
@@ -271,6 +287,10 @@ const openAt = (m: MemberAvailability, nowMs: number, iso = TUE) =>
   const noon = store.readings.get(`${at("12:00")}|${TUE}`)!;
   eq([noon.taken, noon.prev_read_at], [1, new Date(at("11:30")).toISOString()], "and measures the booking made since 11:30");
   eq(writes.at(-1)!.prevReadAtMs, at("11:30"), "against the snapshot it read");
+  // Each reading carries the day's pace and both estimates (#4103), from the readings before it.
+  eq([noon.pace_state, noon.estimate_line_state, noon.estimate_method], ["no-pace-yet", "no-pace", "line"], "the second reading of a day has no pace yet, said on the row");
+  eq(historyAsked.at(-1), at("12:00") - PACE_HISTORY_MS, "it read the day's readings from the last 3 hours");
+  eq(patternAsked.at(-1), at("12:00") - PATTERN_LOOKBACK_MS, "and the pattern from the last six weeks");
 
   // A rerun of the 12:00 half hour after the calendar changed again leaves every row as it was.
   const before = JSON.stringify([[...store.readings], [...store.last]]);
@@ -292,6 +312,8 @@ const openAt = (m: MemberAvailability, nowMs: number, iso = TUE) =>
     ["the days offered", { readOfferedDays: async () => null }],
     ["the days offered (throws)", { readOfferedDays: async () => { throw new Error("refused"); } }],
     ["the last readings", { readLast: async () => { throw new Error("refused"); } }],
+    ["the day's earlier readings", { readHistory: async () => { throw new Error("refused"); } }],
+    ["the pattern", { readPattern: async () => { throw new Error("refused"); } }],
     ["calendars", { loadPeople: async () => ({ ok: false, reason: "calendars", err: new Error("boom") }) }],
     ["time off", { loadPeople: async () => ({ ok: false, reason: "time-off", err: new Error("boom") }) }],
     ["calendar sync", { loadPeople: async () => ({ ok: false, reason: "calendar-sync" }) }],

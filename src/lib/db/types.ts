@@ -256,9 +256,11 @@ export interface CapacityFillReading {
   excluded_not_syncing: number;
   excluded_left_pool: number;
   excluded_capacity_changed: number;
-  /** #4103 writes these; nullable and unwritten by #4102. */
+  /** #4103 (migration 0199) writes these; null on a row saved before it. */
   pace_per_hour: number | null;
   pace_state: string | null;
+  /** The half hour a missed pace returns, when pace_state is readings-missed. */
+  pace_back_at: string | null;
   estimate_line_at: string | null;
   estimate_line_state: string | null;
   estimate_pattern_at: string | null;

@@ -2341,3 +2341,12 @@ no lock (both racers told they wrote), no snapshot check, no later half hour che
 readings overwritten, the latest snapshot read across orgs, and EXECUTE left to the
 browser roles.
 
+#4103 (migration 0199) adds the pace and estimate columns the day cards read, and
+`capacity_fill_pattern`. The suite also proves: every pace and estimate column is stored as
+sent; a readings missed pace without its return time, a return time on a measured pace, an
+estimate at a time with no time, and a state or method the card cannot read are each refused;
+the pattern holds one cell per day position and half hour, all days together and per weekday,
+from readings measured over exactly one half hour (a reading after a gap is left out), leaves
+out readings before its since instant and never reaches another org; neither browser role can
+run it. Seen failing with the half hour filter and the return time check taken out of 0199.
+
