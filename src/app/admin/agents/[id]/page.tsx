@@ -22,7 +22,10 @@ import {
   useDefaultHours,
   setUserLifecycle,
   refreshAdvisorPhotoFor,
+  relinkGoogleAccount,
 } from "@/app/admin/actions";
+import { DestructiveConfirm } from "@/components/ui/DestructiveConfirm";
+import { GOOGLE_RELINK_COPY } from "@/lib/auth/google-identity-copy";
 import { CopyLinkField } from "@/components/ui/CopyLinkField";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { loadAgentLinkName } from "@/lib/agent-link/store";
@@ -341,6 +344,12 @@ export default async function AgentProfilePage({
             The working hours outcome keeps its place inside its own card. */}
         {!query?.error && savedOutcome(query?.ok) === "agent-ooo-calendar" ? (
           <SettingsSaveNotice ok saved={savedSentence("agent-ooo-calendar") ?? ""} />
+        ) : null}
+        {/* #3526: the relink control sits inside the closed section at the bottom,
+            and a redirect lands the reader at the top, so its outcome is drawn
+            here beside the page's other outcomes. */}
+        {!query?.error && savedOutcome(query?.ok) === "agent-google-relinked" ? (
+          <SettingsSaveNotice ok saved={savedSentence("agent-google-relinked") ?? ""} />
         ) : null}
 
         {/* Identity band */}
@@ -920,6 +929,42 @@ export default async function AgentProfilePage({
             {active ? deactivateExplanation() : reactivateExplanation()}
           </p>
           <p className={`mt-2 text-xs text-fg-muted ${proseCls}`}>{notBookableContrast()}</p>
+          {/* #3526: sign in refuses a Google account other than the one this
+              account holds, so a reused address never hands the account to
+              somebody new. A rehire on a new Google account meets the same
+              refusal, and this is how an admin lets them through. Admins only,
+              matching the action's own check, and only while an account is on
+              record, since with none there is nothing to forget. Rare and
+              consequential, so it lives here at the bottom of the closed section
+              (L609), behind the shared destructive confirm that names what
+              happens next (L180). */}
+          {/* Never on your own page: relinking deletes the sign in it acts on. */}
+          {/* Offered while an account OR a sign in is on record: a row with no
+              account recorded whose sign in holds no Google account, or two, is
+              refused on every request, and this is its way out too. */}
+          {isAdmin && canManageThisAgent && !isSelf && (agent.google_sub || agent.auth_user_id) ? (
+            <div className="mt-4 border-t border-border pt-4">
+              <p className={`text-xs text-fg-muted ${proseCls}`}>
+                {agent.google_sub
+                  ? GOOGLE_RELINK_COPY.explanation(agent.name ?? agent.email)
+                  : GOOGLE_RELINK_COPY.signInOnlyExplanation(agent.name ?? agent.email)}
+              </p>
+              <div className="mt-3">
+                <DestructiveConfirm
+                  openLabel={GOOGLE_RELINK_COPY.openLabel}
+                  question={GOOGLE_RELINK_COPY.question(agent.name ?? agent.email)}
+                  consequence={GOOGLE_RELINK_COPY.consequence(agent.name ?? agent.email, agent.email)}
+                  dismissLabel={GOOGLE_RELINK_COPY.dismissLabel}
+                  confirmLabel={GOOGLE_RELINK_COPY.confirmLabel}
+                  pendingLabel={GOOGLE_RELINK_COPY.pendingLabel}
+                  action={relinkGoogleAccount}
+                  hidden={<input type="hidden" name="user_id" value={agent.id} />}
+                  openGroupClassName="flex"
+                  panelClassName="max-w-lg"
+                />
+              </div>
+            </div>
+          ) : null}
         </section>
           </div>
         </details>

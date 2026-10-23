@@ -84,6 +84,8 @@ for (const exit of [
   REROUTE_DRILL_EXIT.notConfigured,
   REROUTE_DRILL_EXIT.endpointMissing,
   REROUTE_DRILL_EXIT.busy,
+  // #4180: the smoke canary held the shared test advisors past the drill's wait.
+  REROUTE_DRILL_EXIT.testAdvisorsHeld,
   REROUTE_DRILL_EXIT.notSeeded,
   REROUTE_DRILL_EXIT.noFreeSlot,
   REROUTE_DRILL_EXIT.bookingRefused,

@@ -91,9 +91,17 @@ class FakeTable {
     return { data: { ...candidate }, error: null };
   }
 
-  update(id: unknown, payload: Row): { data: Row | null; error: PgError | null } {
-    const row = this.rows.find((r) => r.id === id);
+  /**
+   * An UPDATE honours every filter it was given, the way Postgres does, and not
+   * only the id (#3526). Provisioning records Google's account id with a compare
+   * and swap (`.is("google_sub", null)`), and a fake that matched on the id alone
+   * would let the second of two racing writers overwrite the first, which is
+   * exactly the behaviour the filter exists to refuse (L52).
+   */
+  update(filters: Row, payload: Row): { data: Row | null; error: PgError | null } {
+    const row = this.find(filters)[0];
     if (!row) return { data: null, error: null };
+    const id = row.id;
     const candidate: Row = { ...row, ...payload };
     const key = this.violated(candidate, id);
     if (key) {
@@ -105,8 +113,10 @@ class FakeTable {
   }
 
   find(filters: Row): Row[] {
+    // An absent column reads as null, as it would in a real row, so `.is(col, null)`
+    // matches a seeded row that never set it.
     return this.rows.filter((r) =>
-      Object.entries(filters).every(([c, v]) => r[c] === v),
+      Object.entries(filters).every(([c, v]) => (r[c] ?? null) === v),
     );
   }
 }
@@ -167,6 +177,10 @@ function makeStore(hooks: Hooks = {}) {
         filters[col] = val;
         return builder;
       },
+      is: (col: string, val: unknown) => {
+        filters[col] = val;
+        return builder;
+      },
       insert: (p: Row) => {
         mode = "insert";
         payload = p;
@@ -179,7 +193,7 @@ function makeStore(hooks: Hooks = {}) {
       },
       maybeSingle: async (): Promise<{ data: Row | null; error: PgError | null }> => {
         if (mode === "insert") return table.insert(payload);
-        if (mode === "update") return table.update(filters.id, payload);
+        if (mode === "update") return table.update(filters, payload);
         const failure = hooks.failRead?.(tableName, filters) ?? null;
         if (failure) return { data: null, error: failure };
         const matches = table.find(filters);
@@ -204,12 +218,13 @@ vi.mock("@/lib/supabase/admin", () => ({
 }));
 
 import { provisionUser } from "./provision";
+import { GoogleAccountMismatchError, SeveralGoogleAccountsError } from "@/lib/auth/google-identity";
 
 const input = {
   authUserId: "auth-1",
   email: "agent@trypennie.com",
   name: "An Agent",
-  googleSub: "sub-1",
+  googleSubs: ["sub-1"],
   avatarUrl: null,
 };
 
@@ -333,5 +348,174 @@ describe("provisionUser under two concurrent first logins (#1648)", () => {
 
     expect(s.organizations.conflicts).toEqual(["organizations_single_default_idx"]);
     expect(s.users.conflicts).toHaveLength(1);
+  });
+});
+
+// #3526: Slate used to key staff identity on the email address alone. Google's
+// `sub` is the account's permanent id and is never reused, while an address can
+// be handed to somebody new, so a reused address would have signed the new person
+// in as the old row: its role, its bookings, its calendar. Once a row has a
+// stored `sub`, a sign in carrying a DIFFERENT one is a different person and is
+// refused without any write. A row with none keeps the old behaviour and records
+// the `sub` it is first signed in with.
+describe("provisionUser and Google's permanent account id (#3526)", () => {
+  function seededStore(row: Row, hooks: Hooks = {}) {
+    const s = makeStore(hooks);
+    seedDefaultOrg(s);
+    s.users.rows.push({ org_id: "org-1", role: "admin", bookable: true, deactivated_at: null, ...row });
+    store.current = s.client;
+    return s;
+  }
+
+  it("links a sign in whose account id matches the one stored on the row it found by email", async () => {
+    const s = seededStore({ id: "user-9", email: input.email, auth_user_id: null, google_sub: "sub-1" });
+
+    const user = await provisionUser(input);
+
+    expect(user.id).toBe("user-9");
+    expect(s.users.rows[0].auth_user_id).toBe("auth-1");
+    expect(s.users.rows[0].google_sub).toBe("sub-1");
+  });
+
+  it("signs in an already linked row whose account id matches", async () => {
+    seededStore({ id: "user-9", email: input.email, auth_user_id: "auth-1", google_sub: "sub-1" });
+    expect((await provisionUser(input)).id).toBe("user-9");
+  });
+
+  it("refuses a different Google account on a row found by email, and writes nothing", async () => {
+    const s = seededStore({ id: "user-9", email: input.email, auth_user_id: "auth-old", google_sub: "sub-old" });
+
+    const refused = provisionUser(input);
+    await expect(refused).rejects.toBeInstanceOf(GoogleAccountMismatchError);
+    await expect(refused).rejects.toMatchObject({
+      userId: "user-9",
+      email: input.email,
+      reason: "different-account",
+    });
+
+    // The old row is untouched: not relinked to the new auth user, not given the
+    // new account id, and no second row was created for the newcomer either.
+    expect(s.users.rows).toHaveLength(1);
+    expect(s.users.rows[0].auth_user_id).toBe("auth-old");
+    expect(s.users.rows[0].google_sub).toBe("sub-old");
+  });
+
+  // Supabase links a new Google identity to an existing auth user with the same
+  // verified address, so the newcomer can arrive already LINKED by auth_user_id.
+  // The guard has to hold on that branch too, or it guards only half the path.
+  it("refuses a different Google account on a row already linked by auth_user_id", async () => {
+    const s = seededStore({
+      id: "user-9",
+      email: input.email,
+      auth_user_id: "auth-1",
+      google_sub: "sub-old",
+      avatar_url: "old.png",
+    });
+
+    await expect(provisionUser({ ...input, avatarUrl: "new.png" })).rejects.toBeInstanceOf(
+      GoogleAccountMismatchError,
+    );
+    expect(s.users.rows[0].google_sub).toBe("sub-old");
+    expect(s.users.rows[0].avatar_url).toBe("old.png");
+  });
+
+  it("refuses a sign in that carries no account id at all once the row has one", async () => {
+    const s = seededStore({ id: "user-9", email: input.email, auth_user_id: null, google_sub: "sub-old" });
+
+    await expect(provisionUser({ ...input, googleSubs: [] })).rejects.toMatchObject({
+      reason: "no-account-id",
+    });
+    expect(s.users.rows[0].auth_user_id).toBeNull();
+  });
+
+  // Two Google accounts on one auth user is what GoTrue's linking by address makes
+  // of a newcomer signing in over the old owner's auth user. Neither may have the
+  // row, even one that has not recorded an account yet, and no new row is made.
+  it("refuses a sign in carrying two Google accounts, recording neither", async () => {
+    const s = seededStore({ id: "user-9", email: input.email, auth_user_id: "auth-1", google_sub: null });
+
+    await expect(provisionUser({ ...input, googleSubs: ["sub-a", "sub-b"] })).rejects.toMatchObject({
+      reason: "several-accounts",
+    });
+    expect(s.users.rows).toHaveLength(1);
+    expect(s.users.rows[0].google_sub).toBeNull();
+  });
+
+  it("creates no new row for a sign in that does not carry exactly one Google account", async () => {
+    const s = makeStore();
+    seedDefaultOrg(s);
+    store.current = s.client;
+
+    await expect(provisionUser({ ...input, googleSubs: [] })).rejects.toThrow();
+    // Its own type, so the callback can tell the person something other than "try
+    // again", which can never work for two accounts on one sign in.
+    await expect(provisionUser({ ...input, googleSubs: ["sub-a", "sub-b"] })).rejects.toBeInstanceOf(
+      SeveralGoogleAccountsError,
+    );
+    expect(s.users.rows).toHaveLength(0);
+  });
+
+  it("records the account id on a row found by email that has none yet", async () => {
+    const s = seededStore({ id: "user-9", email: input.email, auth_user_id: null, google_sub: null });
+
+    expect((await provisionUser(input)).id).toBe("user-9");
+    expect(s.users.rows[0].google_sub).toBe("sub-1");
+  });
+
+  // A row linked before the account id was compared (or one an admin unlinked for a
+  // rehire) has to start being guarded on its next sign in, or it never is.
+  it("records the account id on an already linked row that has none yet", async () => {
+    const s = seededStore({ id: "user-9", email: input.email, auth_user_id: "auth-1", google_sub: null });
+
+    expect((await provisionUser(input)).id).toBe("user-9");
+    expect(s.users.rows[0].google_sub).toBe("sub-1");
+  });
+
+  // The judge reads a blank stored id as no id at all, so the compare and swap has
+  // to match the value it READ, not `is null`, or such a row matches nothing on
+  // both passes and that person can never sign in.
+  it.each([
+    ["found by email", null],
+    ["already linked", "auth-1"],
+  ])("records the account id on a row %s whose stored id is blank", async (_branch, authUserId) => {
+    const s = seededStore({ id: "user-9", email: input.email, auth_user_id: authUserId, google_sub: "" });
+
+    expect((await provisionUser(input)).id).toBe("user-9");
+    expect(s.users.rows[0].google_sub).toBe("sub-1");
+  });
+
+  it("lets only the first of two different accounts racing for one unrecorded row have it", async () => {
+    // Both are held at the read by email, so both see a row with no account id.
+    // The record is a compare and swap, so the second write matches nothing and
+    // its second pass reads the account id the first one stored.
+    const gate = barrier(2);
+    let held = 0;
+    const s = seededStore(
+      { id: "user-9", email: input.email, auth_user_id: null, google_sub: null },
+      {
+        hold: (table, filters) => {
+          if (table === "users" && "email" in filters && held < 2) {
+            held += 1;
+            return gate();
+          }
+          return null;
+        },
+      },
+    );
+
+    const results = await Promise.allSettled([
+      provisionUser({ ...input, authUserId: "auth-a", googleSubs: ["sub-a"] }),
+      provisionUser({ ...input, authUserId: "auth-b", googleSubs: ["sub-b"] }),
+    ]);
+
+    const won = results.filter((r) => r.status === "fulfilled");
+    const lost = results.filter((r) => r.status === "rejected");
+    expect(won).toHaveLength(1);
+    expect(lost).toHaveLength(1);
+    expect((lost[0] as PromiseRejectedResult).reason).toBeInstanceOf(GoogleAccountMismatchError);
+    expect(s.users.rows).toHaveLength(1);
+    const winner = s.users.rows[0];
+    const pair = `${String(winner.auth_user_id)}/${String(winner.google_sub)}`;
+    expect(["auth-a/sub-a", "auth-b/sub-b"]).toContain(pair);
   });
 });

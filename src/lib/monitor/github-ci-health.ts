@@ -1,8 +1,9 @@
 /**
  * Two things about GitHub Actions that nothing inside Slate could see (#2476, #2229).
  *
- * Both are read from ONE listing of recent workflow runs, and both are here rather
- * than in a workflow for the same reason: an Actions workflow cannot report on
+ * Both read ONE shared listing of recent workflow runs; the deploy judgement also reads
+ * main's tip from the branch and, when the listing lacks the tip's run, that run by sha
+ * (#3648). Both are here rather than in a workflow for the same reason: an Actions workflow cannot report on
  * Actions being unavailable, and the run that would carry the report is the run that
  * did not happen. The Worker's monitor lane is the only thing in this system that
  * keeps running when GitHub does not.
@@ -24,9 +25,11 @@
  * followed.
  *
  * The check is a direct comparison rather than an inference: this build knows the
- * commit it was stamped with (`BUILD_COMMIT`, #1037), and the listing says which
- * commit is main's tip. If they differ for longer than the grace, main is built and
- * not live.
+ * commit it was stamped with (`BUILD_COMMIT`, #1037), and the BRANCH says which
+ * commit is main's tip (#3648: it used to be inferred from the newest run, which a
+ * merge GitHub never ran left pointing at the previous merge, reading as live). If
+ * they differ for longer than the grace, main is not live, and the tip's own run, or
+ * its absence, says why.
  *
  * ## 2. A run GitHub REFUSED to start, told from one that ran and failed (#2229)
  *
@@ -195,29 +198,60 @@ export function sameCommit(served: string, headSha: string): boolean {
   return a.slice(0, n) === b.slice(0, n);
 }
 
+/**
+ * How main's tip came to be not live. `no-run` (#3648) is a tip GitHub never started a
+ * deploying run for, so there is no run to name and no workflow that will report it.
+ */
+export type NotLiveReason = "cancelled" | "succeeded" | "failed" | "unknown" | "no-run";
+
 export type DeployState =
   /** Nothing could be judged. Never pages, never clears. */
   | { state: "unmeasured"; why: string }
   /** The deployment is serving main's tip. */
   | { state: "live"; sha: string }
-  /** The tip's run is still going, or is inside the grace. Normal. */
-  | { state: "in-flight"; run: WorkflowRunSummary }
-  /** Main's tip is not live and its run has finished. */
+  /** The tip's run is still going, or is inside the grace (null: not registered yet). Normal. */
+  | { state: "in-flight"; run: WorkflowRunSummary | null }
+  /** Main's tip is not live and its run has finished, or never started. */
   | {
       state: "not-live";
       /** How the tip's run ended, which decides who is already being told. */
-      reason: "cancelled" | "succeeded" | "failed" | "unknown";
-      run: WorkflowRunSummary;
+      reason: NotLiveReason;
+      /** Main's tip, the commit that should be live. */
+      tipSha: string;
+      /** The tip's own deploying run; null only for `no-run`. */
+      run: WorkflowRunSummary | null;
       servedCommit: string;
       behindMs: number;
     };
 
+/** Main's tip as the branch reports it (#3648), the commit that is expected to be live. */
+export interface MainTip {
+  sha: string;
+  /** When that commit landed (its committer date), or null when unreadable. */
+  committedAtMs: number | null;
+}
+
+/**
+ * Read GitHub's `commits/main` payload. Null, never a default, for a payload with no
+ * usable sha: an empty tip would compare unequal to every commit and read as main never
+ * being live (the same reason `parseWorkflowRuns` drops such a row).
+ */
+export function parseMainTip(payload: unknown): MainTip | null {
+  const p = payload as { sha?: unknown; commit?: { committer?: { date?: unknown } } } | null;
+  const sha = typeof p?.sha === "string" ? p.sha.trim() : "";
+  if (!/^[0-9a-f]{7,40}$/i.test(sha)) return null;
+  const date = p?.commit?.committer?.date;
+  return { sha, committedAtMs: parseStampMs(typeof date === "string" ? date : null) };
+}
+
 /**
  * Is main's tip live?
  *
- * The comparison is against the newest PUSH run on main, which is the run that
- * belongs to the tip. A run still in progress, or one younger than the grace, is
- * in flight rather than a finding: every ordinary merge passes through that state.
+ * `newestMainRun` must be the deploying run FOR main's tip, found by the tip's sha
+ * (`judgeDeployAgainstTip`, #3648), never merely the newest push run on main: a merge
+ * GitHub never ran leaves the previous merge's run newest, and judging that one read as
+ * live. A run still in progress, or one younger than the grace, is in flight rather
+ * than a finding: every ordinary merge passes through that state.
  */
 export function judgeDeployedTip(args: {
   servedCommit: string;
@@ -252,7 +286,7 @@ export function judgeDeployedTip(args: {
   const behindMs = args.nowMs - run.createdAtMs;
   if (behindMs <= graceMs) return { state: "in-flight", run };
 
-  const reason: "cancelled" | "succeeded" | "failed" | "unknown" =
+  const reason: NotLiveReason =
     run.conclusion === "cancelled"
       ? "cancelled"
       : run.conclusion === "success"
@@ -260,7 +294,40 @@ export function judgeDeployedTip(args: {
         : run.conclusion === "failure" || run.conclusion === "startup_failure"
           ? "failed"
           : "unknown";
-  return { state: "not-live", reason, run, servedCommit: served.slice(0, 12), behindMs };
+  return { state: "not-live", reason, tipSha: run.headSha, run, servedCommit: served.slice(0, 12), behindMs };
+}
+
+/**
+ * Main's tip is not being served and GitHub holds no deploying run for it (#3648).
+ *
+ * Within the grace of the commit landing that is every merge, whose run has not
+ * registered yet. Past it, nothing built or deployed the commit and no workflow will
+ * say so, because the workflow is what did not happen. An unreadable landing time
+ * cannot say which side of the grace it is on, so it measures nothing (L50).
+ */
+export function judgeTipWithoutRun(args: {
+  servedCommit: string;
+  tip: MainTip;
+  nowMs: number;
+  graceMs?: number;
+}): DeployState {
+  const graceMs = args.graceMs ?? DEPLOY_GRACE_MS;
+  if (args.tip.committedAtMs === null) {
+    return {
+      state: "unmeasured",
+      why: "main's tip has no deploying run and its landing time cannot be read, so whether it is overdue is unknown",
+    };
+  }
+  const behindMs = args.nowMs - args.tip.committedAtMs;
+  if (behindMs <= graceMs) return { state: "in-flight", run: null };
+  return {
+    state: "not-live",
+    reason: "no-run",
+    tipSha: args.tip.sha,
+    run: null,
+    servedCommit: args.servedCommit.trim().slice(0, 12),
+    behindMs,
+  };
 }
 
 /**
@@ -369,7 +436,9 @@ function minutesWord(ms: number): string {
 }
 
 /** What each ending means for the reader, and what to do about it. */
-const NOT_LIVE_REASON: Record<"cancelled" | "succeeded" | "failed" | "unknown", string> = {
+const NOT_LIVE_REASON: Record<NotLiveReason, string> = {
+  "no-run":
+    "GitHub never started a CI run for it, so nothing built or deployed it, and no workflow will report that. Check githubstatus.com for an Actions incident; once Actions is working, push an empty commit to main to start a run.",
   cancelled:
     "Its run was cancelled, and a cancelled run never reaches the deploy job. Nothing has followed it, so nothing will carry it live on its own. Re-run the deploy job on that run, or push an empty commit to main.",
   succeeded:
@@ -381,16 +450,17 @@ const NOT_LIVE_REASON: Record<"cancelled" | "succeeded" | "failed" | "unknown", 
 };
 
 export function formatDeployNotLiveAlert(v: {
-  reason: "cancelled" | "succeeded" | "failed" | "unknown";
+  reason: NotLiveReason;
   tipSha: string;
   servedCommit: string;
   behindMs: number;
-  runUrl: string;
+  /** The tip's run; null when there is none (`no-run`), and the commit is linked instead. */
+  runUrl: string | null;
 }): string {
   return [
     `Main is merged and not live. The site is serving ${v.servedCommit} while main's tip is ${v.tipSha.slice(0, 12)}, ${minutesWord(v.behindMs)} after that commit landed.`,
     NOT_LIVE_REASON[v.reason],
-    `Run: ${v.runUrl}`,
+    v.runUrl ? `Run: ${v.runUrl}` : `Commit: https://github.com/${CI_REPO}/commit/${v.tipSha}`,
   ].join("\n");
 }
 
@@ -450,10 +520,10 @@ const GITHUB_HEADERS = (token: string) => ({
 /**
  * The newest runs across every workflow and branch, in one request.
  *
- * ONE listing answers both questions: the deploy comparison filters it to push runs
- * on main, and the refusal check reads the newest completed run whatever it is. A
- * second, narrower request per question would double this check's cost on an
- * invocation four cron lanes share, for nothing.
+ * Shared by both questions: the deploy comparison looks in it for the tip's own run
+ * (falling back to `fetchTipRuns` only when it is not there, #3648), and the refusal
+ * check reads the newest completed run whatever it is. A separate listing per question
+ * would double this check's cost on an invocation four cron lanes share, for nothing.
  */
 export async function fetchRecentRuns(
   token: string,
@@ -465,6 +535,33 @@ export async function fetchRecentRuns(
   );
   if (!res.ok) return null;
   return parseWorkflowRuns(await res.json());
+}
+
+/** Main's tip, read from the branch itself (#3648). Null on any failure. */
+export async function fetchMainTip(token: string): Promise<MainTip | null> {
+  const res = await fetch(`https://api.github.com/repos/${CI_REPO}/commits/main`, {
+    headers: GITHUB_HEADERS(token),
+  });
+  if (!res.ok) return null;
+  return parseMainTip(await res.json());
+}
+
+/**
+ * The deploying workflow's push runs for one commit (#3648), for when the shared
+ * listing does not hold the tip's run. Null, never an empty list, when the reply is not
+ * a runs payload: an empty list here means "GitHub has no run for this commit", which
+ * pages, so it must only ever come from a reply that said so (L215).
+ */
+export async function fetchTipRuns(token: string, sha: string): Promise<WorkflowRunSummary[] | null> {
+  const workflow = DEPLOY_WORKFLOW_PATH.split("/").pop();
+  const res = await fetch(
+    `https://api.github.com/repos/${CI_REPO}/actions/workflows/${workflow}/runs?event=push&branch=main&head_sha=${encodeURIComponent(sha)}&per_page=5`,
+    { headers: GITHUB_HEADERS(token) },
+  );
+  if (!res.ok) return null;
+  const payload = (await res.json()) as { workflow_runs?: unknown };
+  if (!Array.isArray(payload?.workflow_runs)) return null;
+  return parseWorkflowRuns(payload);
 }
 
 export async function fetchRunJobs(
@@ -493,12 +590,66 @@ export interface CiHealthDeps {
   token: string;
   readRuns: (token: string) => Promise<WorkflowRunSummary[] | null>;
   readJobs: (token: string, runId: number) => Promise<WorkflowJobSummary[] | null>;
+  /** Main's tip, the commit expected to be live (#3648). Null when unreadable. */
+  readMainTip: (token: string) => Promise<MainTip | null>;
+  /** The deploying runs for one commit; null when unreadable, [] when there are none. */
+  readTipRuns: (token: string, sha: string) => Promise<WorkflowRunSummary[] | null>;
   cooldownMs: { deploy: number; refusal: number };
   notify: ThrottledNotify<unknown>;
   resolve: AlertResolve<unknown>;
   log?: (msg: string, fields: Record<string, unknown>) => void;
   onError?: (msg: string, err?: unknown) => void;
   graceMs?: number;
+}
+
+/**
+ * Is main's tip live, judged against the commit main ACTUALLY points at (#3648, L760)?
+ *
+ * This used to take the tip to be the commit of the newest deploying run in the
+ * listing. A merge GitHub never started a run for left the previous merge's run newest,
+ * and that commit is the one being served, so the check said "live" and cleared the
+ * page while the merge sat unbuilt. Only the expected commit's OWN run may explain why
+ * it is not live; any other run says nothing about it.
+ *
+ * Never throws: a failed read is unmeasured, which pages nothing and clears nothing.
+ */
+async function judgeDeployAgainstTip(deps: CiHealthDeps, runs: WorkflowRunSummary[]): Promise<DeployState> {
+  const onError = deps.onError ?? (() => {});
+  if (deps.servedCommit.trim().length < 7) {
+    // Checked before any read: an unstamped build cannot be compared with anything.
+    return { state: "unmeasured", why: "this build carries no commit stamp, so it cannot say which commit it is serving" };
+  }
+  let tip: MainTip | null = null;
+  try {
+    tip = await deps.readMainTip(deps.token);
+  } catch (err) {
+    onError("ci-health: the main tip read threw", err);
+  }
+  if (tip === null) return { state: "unmeasured", why: "main's tip could not be read" };
+  if (sameCommit(deps.servedCommit, tip.sha)) return { state: "live", sha: tip.sha.slice(0, 12) };
+
+  // The DEPLOYING workflow's push run on main FOR THE TIP, never merely the newest push
+  // run on main: `main-push-guard.yml` fires on every push too, and an earlier merge's
+  // run says nothing about this one.
+  const isTipRun = (r: WorkflowRunSummary) =>
+    r.event === "push" && r.branch === "main" && r.path === DEPLOY_WORKFLOW_PATH && sameCommit(r.headSha, tip.sha);
+  let tipRun = runs.find(isTipRun) ?? null;
+  if (!tipRun) {
+    // Not in the shared listing: it may have scrolled out under pull request runs, so
+    // ask for it directly before concluding there is none.
+    let direct: WorkflowRunSummary[] | null = null;
+    try {
+      direct = await deps.readTipRuns(deps.token, tip.sha);
+    } catch (err) {
+      onError("ci-health: the tip run read threw", err);
+    }
+    if (direct === null) return { state: "unmeasured", why: "main's tip run could not be looked up" };
+    tipRun = direct.find(isTipRun) ?? null;
+  }
+  if (!tipRun) {
+    return judgeTipWithoutRun({ servedCommit: deps.servedCommit, tip, nowMs: deps.nowMs, graceMs: deps.graceMs });
+  }
+  return judgeDeployedTip({ servedCommit: deps.servedCommit, newestMainRun: tipRun, nowMs: deps.nowMs, graceMs: deps.graceMs });
 }
 
 export const DEPLOY_ALERT_KEY = "main_not_deployed";
@@ -531,19 +682,7 @@ export async function runCiHealthCheck(deps: CiHealthDeps): Promise<CiHealthResu
     return { deploy: "not-measured", deployReason: "runs listing unreadable", ciStart: "unmeasured" };
   }
 
-  // The DEPLOYING workflow's push run on main, never merely the newest push run on
-  // main: `main-push-guard.yml` fires on every one of those too, and its conclusion
-  // says nothing about whether the deploy happened.
-  const newestMainRun =
-    runs.find(
-      (r) => r.event === "push" && r.branch === "main" && r.path === DEPLOY_WORKFLOW_PATH,
-    ) ?? null;
-  const deploy = judgeDeployedTip({
-    servedCommit: deps.servedCommit,
-    newestMainRun,
-    nowMs: deps.nowMs,
-    graceMs: deps.graceMs,
-  });
+  const deploy = await judgeDeployAgainstTip(deps, runs);
 
   if (deployStatePages(deploy) && deploy.state === "not-live") {
     // alert-text-ok: our own copy from this file, never a raw error.
@@ -552,10 +691,10 @@ export async function runCiHealthCheck(deps: CiHealthDeps): Promise<CiHealthResu
       deps.cooldownMs.deploy,
       formatDeployNotLiveAlert({
         reason: deploy.reason,
-        tipSha: deploy.run.headSha,
+        tipSha: deploy.tipSha,
         servedCommit: deploy.servedCommit,
         behindMs: deploy.behindMs,
-        runUrl: deploy.run.htmlUrl,
+        runUrl: deploy.run?.htmlUrl ?? null,
       }),
     );
   } else if (deploy.state === "live") {

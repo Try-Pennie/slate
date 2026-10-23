@@ -18,7 +18,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const supabase = vi.hoisted(() => ({ supabaseAdmin: vi.fn() }));
 vi.mock("@/lib/supabase/admin", () => supabase);
 
-import { acquireLock, makeLockLease, renewLock, type RenewLockResult } from "@/lib/locks";
+import { acquireLock, makeLockLease, releaseLock, renewLock, type RenewLockResult } from "@/lib/locks";
 
 type Result = { data: unknown; error: { message: string } | null };
 
@@ -199,5 +199,47 @@ describe("makeLockLease (#3120)", () => {
     clock.ms += TTL;
     expect(await lease.stillHeld()).toBe(false);
     expect(lease.stopReason()).toBe("refused");
+  });
+});
+
+// #4180: a release says what it did, so the canary's lease endpoint can answer it, and it never
+// throws, so a release in a `finally` cannot replace the outcome it follows.
+describe("releaseLock (#4180)", () => {
+  function locksWhoseDeleteAnswers(result: Result | Error) {
+    const eqs: [string, string][] = [];
+    const builder: Record<string, unknown> = {
+      delete: () => builder,
+      eq: (col: string, val: string) => {
+        eqs.push([col, val]);
+        return builder;
+      },
+      select: async () => {
+        if (result instanceof Error) throw result;
+        return result;
+      },
+    };
+    return { db: { from: () => builder }, eqs };
+  }
+
+  it("answers released when our claim was deleted, narrowed to our own token", async () => {
+    const { db, eqs } = locksWhoseDeleteAnswers({ data: [{ key: "k" }], error: null });
+    supabase.supabaseAdmin.mockReturnValue(db);
+    expect(await releaseLock("k", "t1")).toBe("released");
+    expect(eqs).toEqual([
+      ["key", "k"],
+      ["claimed_at", "t1"],
+    ]);
+  });
+
+  it("answers not-held when no claim of ours remains, which is what a second release finds", async () => {
+    supabase.supabaseAdmin.mockReturnValue(locksWhoseDeleteAnswers({ data: [], error: null }).db);
+    expect(await releaseLock("k", "t1")).toBe("not-held");
+  });
+
+  it("answers refused, never throwing, when the delete could not run", async () => {
+    supabase.supabaseAdmin.mockReturnValue(locksWhoseDeleteAnswers({ data: null, error: { message: "statement timeout" } }).db);
+    expect(await releaseLock("k", "t1")).toBe("refused");
+    supabase.supabaseAdmin.mockReturnValue(locksWhoseDeleteAnswers(new Error("fetch failed")).db);
+    expect(await releaseLock("k", "t1")).toBe("refused");
   });
 });
