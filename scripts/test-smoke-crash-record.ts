@@ -278,7 +278,7 @@ for (const f of [
 // writes the log (recordFailure), not a hand list (L96), so a new writer is covered.
 const RECORDS_PASS = /\brecordPass\(/;
 assert(!RECORDS_PASS.test("recordFailure(io, failureLog, line);"), "control: a failure only writer is caught");
-const writers = ["smoke-booking-api.ts", "smoke-latency.ts", "smoke-embed-render.ts", "smoke-lib.ts"];
+const writers = ["smoke-booking-api.ts", "smoke-latency.ts", "smoke-embed-render.ts", "smoke-lib.ts", "smoke-test-advisor-lease.ts"];
 for (const f of writers) {
   const src = readFileSync(join(ROOT, "scripts", f), "utf8");
   assert(/\brecordFailure\(/.test(src), `${f} writes the failure log (so the list is not stale)`);
