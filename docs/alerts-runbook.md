@@ -935,6 +935,27 @@ leaving the daily run red: a run that is red
 every day stops being read. A run that says it could not finish an audit found
 nothing either way; re-run it.
 
+**A green audit is not proof for what the browser runs (#4113).** The audit reads the
+lockfile, and two things the browser loads are copies the lockfile does not decide.
+No page loads a script from a CDN: the policy in `src/lib/csp.ts` allows scripts from
+Slate itself only.
+
+- **React.** An App Router build sends the browser the React that Next vendors under
+  `next/dist/compiled` (a canary build), not `node_modules/react-dom`. On the
+  2026-10-02 build the lockfile held react-dom 19.2.8 while every client chunk ran
+  React 19.3.0-canary-cbb046ab-20260731. So bumping `react` or `react-dom` changes only
+  the copy the tests use, and the audit goes green anyway. A React advisory is fixed by
+  a `next` release that carries the patched React. Confirm it after `pnpm cf:build` by
+  reading the version out of the built chunks:
+  `grep -rhoE '\.version="[^"]+"' .open-next/assets/_next/static/chunks | sort | uniq -c`.
+  `scripts/test-browser-loaded-copies.ts` fails if Next stops vendoring React, which
+  is when this paragraph needs rewriting.
+- **The dotLottie player's wasm**, `public/brand/dotlottie-player.wasm`, is a copy of
+  the installed player's, served by Slate. After bumping `@lottiefiles/dotlottie-web`
+  (and `@lottiefiles/dotlottie-react`, which must agree), rebuild it with
+  `pnpm build:confirmation-mark`; `scripts/test-confirmation-mark-assets.ts` refuses a
+  served wasm that differs from the installed one.
+
 ---
 
 ## The database is running low on memory
