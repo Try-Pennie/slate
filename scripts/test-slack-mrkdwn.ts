@@ -16,7 +16,7 @@
 //
 // Run: node --experimental-strip-types scripts/test-slack-mrkdwn.ts
 import { assert, eq, finish } from "./lib/harness.ts";
-import { slackSafeBlocks, slackSafeMrkdwn } from "./lib/slack-mrkdwn.ts";
+import { slackLinkLabel, slackSafeBlocks, slackSafeMrkdwn } from "./lib/slack-mrkdwn.ts";
 
 const APP = "https://slate.trypennie.app";
 
@@ -55,6 +55,14 @@ for (const mention of ["<!channel>", "<!here>", "<!everyone>", "<!subteam^S0123|
 // --- ordinary text reads the same after Slack decodes it ----------------------
 eq(slackSafeMrkdwn("Q&A < 5 > 3", [APP]), "Q&amp;A &lt; 5 &gt; 3", "Slack's three characters are escaped and nothing else");
 eq(slackSafeMrkdwn("Plain *bold* _it_ :warning:", [APP]), "Plain *bold* _it_ :warning:", "formatting Slate writes on purpose is untouched");
+
+// --- a typed link label: no entities, only what no escape can carry ------------
+{
+  const label = slackLinkLabel("Sam & Co <A>|B");
+  eq(label, "Sam & Co <A›/B", "the label writes no entity; | and > become look-alikes");
+  const sent = slackSafeMrkdwn(`<${APP}/admin/agents/u1|${label}>`, [APP]);
+  eq(sent, `<${APP}/admin/agents/u1|Sam &amp; Co &lt;A›/B>`, "and the send point escapes it once inside a whole link");
+}
 
 // --- Block Kit: mrkdwn text is escaped, plain_text and ids are not ------------
 {

@@ -1142,6 +1142,8 @@ A name, a time off reason or a decline note can hold `<!channel>` or a
 anything: every message leaves through `src/lib/notify/slack.ts` (or, for the
 bare node workflows, `scripts/lib/slack-post.ts`), which escapes Slack's three
 characters and keeps only links to Slate itself (`scripts/lib/slack-mrkdwn.ts`).
-So never write a mention on purpose, write links only to the app, and never post
-to Slack from anywhere else: `scripts/test-slack-send-points.ts` fails on a file
-that does.
+So never write a mention on purpose, write links only to the app, never write an
+entity yourself (it arrives doubled, so `&` shows as `&amp;`), pass typed text used
+as a link label through `slackLinkLabel` (it swaps `|` and `>`, which no escape can
+carry inside a label), and never post to Slack from anywhere else:
+`scripts/test-slack-send-points.ts` fails on a file that does.

@@ -55,6 +55,18 @@ export function slackSafeMrkdwn(text: string, linkOrigins: readonly string[]): s
 }
 
 /**
+ * Typed text used as the LABEL of a `<url|label>` link a builder writes. Builders never
+ * write entities: the send point escapes `&`, `<` and `>` once, and an entity written
+ * here would arrive doubled (`&amp;amp;`, shown as `&amp;`). Two characters still need
+ * handling here, because no escape can carry them: `|` separates url from label, and a
+ * `>` is indistinguishable at the send point from the link's own end. Each becomes a
+ * look-alike, so the name stays readable and the link stays whole.
+ */
+export function slackLinkLabel(text: string): string {
+  return text.replace(/\|/g, "/").replace(/>/g, "›");
+}
+
+/**
  * Block Kit with every `mrkdwn` text object made safe the same way. `plain_text` is
  * shown by Slack exactly as written (no markup, no entity decoding), so it is left
  * alone, as are ids, values and urls. Returns a copy; the caller's blocks are unchanged.
