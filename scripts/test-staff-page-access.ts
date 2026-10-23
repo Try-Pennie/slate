@@ -121,6 +121,27 @@ assert(
   "a page that fetches the user but never refuses null is caught",
 );
 assert(
+  verdict(page(`  if (flag) await requireAdmin();\n  return <List />;`)) !== null,
+  "a guard inside a condition is caught: a signed out request steps round it",
+);
+assert(
+  verdict(page(`  try {\n    await requireAdmin();\n  } catch {}\n  return <List />;`)) !== null,
+  "a guard whose refusal is caught and swallowed is caught",
+);
+assert(
+  verdict(page(`  {\n    await load();\n    redirect("/admin");\n  }\n  return <List />;`)) !== null,
+  "a bare block that reads before it redirects is caught",
+);
+eq(
+  verdict(page(`  const me = await currentUser();\n  if (!me) {\n    note();\n    redirect("/login");\n  }\n  return <List />;`)),
+  null,
+  "a null branch that does sync work then redirects passes",
+);
+assert(
+  verdict(page(`  const me = await currentUser();\n  if (!me) {\n    note();\n  }\n  return <List />;`)) !== null,
+  "a null branch that never ends the render is caught",
+);
+assert(
   verdict(page(`  return <List />;`)) !== null,
   "a page that renders with no check at all is caught",
 );

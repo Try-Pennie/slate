@@ -76,12 +76,20 @@ function isAddressRead(expr: ts.Expression): boolean {
   return false;
 }
 
-/** The single awaited call this statement makes, when it makes exactly one and nothing else is awaited. */
-function soleAwaitedCall(stmt: ts.Statement): ts.CallExpression | null {
-  const awaits = awaitsIn(stmt);
-  if (awaits.length !== 1) return null;
-  const operand = awaits[0]!.expression;
-  return ts.isCallExpression(operand) ? operand : null;
+/**
+ * The call this statement awaits UNCONDITIONALLY: `await f()` as a statement of its
+ * own, or `const x = await f()`. Anything else returns null, so a guard inside an
+ * `if`, a `try` or a `Promise.all` never counts as the page's gate: a signed out
+ * request can step round each of those.
+ */
+function unconditionalAwaitedCall(stmt: ts.Statement): ts.CallExpression | null {
+  let awaited: ts.Expression | undefined;
+  if (ts.isExpressionStatement(stmt)) awaited = stmt.expression;
+  else if (ts.isVariableStatement(stmt) && stmt.declarationList.declarations.length === 1) {
+    awaited = stmt.declarationList.declarations[0]!.initializer;
+  }
+  if (!awaited || !ts.isAwaitExpression(awaited)) return null;
+  return ts.isCallExpression(awaited.expression) ? awaited.expression : null;
 }
 
 /** `const <name> = await currentUser()`, returning the bound name. */
@@ -97,14 +105,17 @@ function userReadBinding(stmt: ts.Statement): string | null {
   return name && (USER_READS as readonly string[]).includes(name) ? decl.name.text : null;
 }
 
-/** Whether `stmt` ends the render outright: `redirect(...)`, `notFound()` or `throw`. */
+/**
+ * Whether `stmt` ends the render outright: `redirect(...)`, `notFound()` or `throw`,
+ * as a statement of its own. A block is not judged here: at the top of a page body
+ * one would let work run before its end, so only `refusesNull` looks inside one.
+ */
 function endsRender(stmt: ts.Statement): boolean {
   if (ts.isThrowStatement(stmt)) return true;
   if (ts.isExpressionStatement(stmt) && ts.isCallExpression(stmt.expression)) {
     const name = calleeName(stmt.expression);
     return name !== null && ENDS_RENDER.includes(name);
   }
-  if (ts.isBlock(stmt)) return stmt.statements.some(endsRender);
   if (ts.isReturnStatement(stmt) && stmt.expression && ts.isCallExpression(stmt.expression)) {
     const name = calleeName(stmt.expression);
     return name !== null && ENDS_RENDER.includes(name);
@@ -121,7 +132,18 @@ function refusesNull(stmt: ts.Statement | undefined, name: string): boolean {
     cond.operator === ts.SyntaxKind.ExclamationToken &&
     ts.isIdentifier(cond.operand) &&
     cond.operand.text === name;
-  return negatesName && endsRender(stmt.thenStatement);
+  if (!negatesName) return false;
+  const then = stmt.thenStatement;
+  // Inside the null branch a block is fine as long as it reaches its end without
+  // first awaiting anything: `if (!me) { log(...); redirect("/login"); }`.
+  if (ts.isBlock(then)) {
+    for (const inner of then.statements) {
+      if (endsRender(inner)) return true;
+      if (awaitsIn(inner).length > 0) return false;
+    }
+    return false;
+  }
+  return endsRender(then);
 }
 
 function defaultExportBody(file: ts.SourceFile): ts.Block | null {
@@ -147,9 +169,9 @@ export function pageAccessProblem(page: PageSource): string | null {
     const stmt = stmts[i]!;
     const text = stmt.getText(file).replace(/\s+/g, " ").slice(0, 80);
 
-    const sole = soleAwaitedCall(stmt);
-    const soleName = sole ? calleeName(sole) : null;
-    if (soleName && (REQUIRE_GUARDS as readonly string[]).includes(soleName)) return null;
+    const guardCall = unconditionalAwaitedCall(stmt);
+    const guardName = guardCall ? calleeName(guardCall) : null;
+    if (guardName && (REQUIRE_GUARDS as readonly string[]).includes(guardName)) return null;
 
     const user = userReadBinding(stmt);
     if (user) {
