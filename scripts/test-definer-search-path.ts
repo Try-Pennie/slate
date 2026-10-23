@@ -277,9 +277,9 @@ const EXPECTED_PINNED = [
   // #2369: the half of that decision about the NAMED booking alone, its own function
   // because it is asked twice, once before any lock and once under it.
   "cancel_duplicate_named_refusal",
-  // #3936: the past days capacity history holds, for the page's date picker. Plain SQL.
   // #4103: the pattern's cells as one jsonb array, in plain SQL over stored columns.
   "capacity_fill_pattern",
+  // #3936: the past days capacity history holds, for the page's date picker. Plain SQL.
   "capacity_history_days",
   // #3247: the first step of a reroute confirm.
   "claim_reroute_hold",
