@@ -27,11 +27,9 @@
  *      call is routed by the split like any request, so the canary's fetch handler
  *      refuses a placed lane before the app (`placedLaneStandbyRefusal`) and the old
  *      version runs it in process instead.
- *   3. Durable Objects: each object is assigned ONE version per deployment by the same
- *      percentages, and requests to it use that version for the life of the deployment
- *      (developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/with-durable-objects/).
- *      BurstLimiter keeps its count in storage, so the one reset an object takes when its
- *      version changes loses nothing. A version that changes a Durable Object CLASS
+ *   3. Durable Objects: Slate's own Worker hosts none since #4025 (every object lives in
+ *      a small Worker of its own, OBJECT_WORKER_CONFIGS, deployed whole before the
+ *      uploads), so the split never runs two versions of an object. A version that changes a Durable Object CLASS
  *      LIFECYCLE (a migration) cannot be uploaded at all; the upload refuses, nothing
  *      has changed, and that release ships by hand (DEPLOY.md).
  *

@@ -79,11 +79,11 @@ import {
   type LaneTick,
 } from "./lane-run";
 
-// The shared per-address burst counter (#1536). A Durable Object is the only
-// primitive that can hold ONE count across isolates, which is what the native
-// rate limiter cannot do and why a parallel burst sailed through its ceiling.
-export { BurstLimiter } from "./burst-limiter";
-export { ConfirmLine } from "./confirm-line";
+// The burst limiter and the confirm line objects are NOT exported here (#4025). Each is
+// hosted by its own small Worker (worker/burst-limiter/index.ts, #3555, and
+// worker/confirm-line/index.ts, #3500), which Slate's bindings name by script name, and
+// Slate's `v3` migration deletes the classes this Worker used to host. Exporting either
+// again would make Cloudflare refuse that delete (scripts/test-retired-object-classes.ts).
 
 // Durable Object classes the generated worker exports must be re-exported
 // from the entry wrangler actually loads.

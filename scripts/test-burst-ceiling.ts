@@ -442,28 +442,29 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
 
 // --- the three places that must name this binding -----------------------------
 //
-// The binding is declared in wrangler.jsonc, created by a migration there, exported from the
-// worker entry wrangler actually loads, and looked up by name in the app. None of those four
-// can see the others, and each direction fails silently in its own way (L41): a rename in the
-// app makes the ceiling fail open for ever (loudly, but only once a request arrives), a class
-// missing from the migrations block makes the deploy itself fail, and an export missing from
-// the entry makes wrangler unable to find the class at all.
+// The binding is declared in wrangler.jsonc and looked up by name in the app; since #3555 the
+// class is created by a migration in, and exported from the entry of, its own small Worker
+// (wrangler.burst-limiter.jsonc), which the binding names by script name. Slate's own copy is
+// deleted (#4025). None of those places can see the others, and each direction fails silently
+// in its own way (L41): a rename in the app makes the ceiling fail open for ever (loudly, but
+// only once a request arrives), a class missing from the small Worker's migrations makes its
+// deploy fail, and an export missing from its entry makes wrangler unable to find the class.
 {
+  const stripLineComments = (raw: string) =>
+    raw
+      .split("\n")
+      .map((line) => {
+        const idx = line.indexOf("//");
+        if (idx === -1) return line;
+        if (line.slice(Math.max(0, idx - 1), idx + 1) === ":/") return line;
+        return line.slice(0, idx);
+      })
+      .join("\n");
   const raw = readFileSync(join(import.meta.dirname, "..", "wrangler.jsonc"), "utf8");
   // Strip line comments before parsing, so a name inside a COMMENT can never answer for a
   // binding that is not declared (L103). Same treatment as test-edge-limiter-bindings.ts.
-  const withoutComments = raw
-    .split("\n")
-    .map((line) => {
-      const idx = line.indexOf("//");
-      if (idx === -1) return line;
-      if (line.slice(Math.max(0, idx - 1), idx + 1) === ":/") return line;
-      return line.slice(0, idx);
-    })
-    .join("\n");
-  const config = JSON.parse(withoutComments) as {
-    durable_objects?: { bindings?: { name: string; class_name: string }[] };
-    migrations?: { tag: string; new_sqlite_classes?: string[]; new_classes?: string[] }[];
+  const config = JSON.parse(stripLineComments(raw)) as {
+    durable_objects?: { bindings?: { name: string; class_name: string; script_name?: string }[] };
   };
 
   const bound = config.durable_objects?.bindings ?? [];
@@ -475,27 +476,32 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
   eq(
     entry?.class_name,
     BURST_LIMITER_CLASS,
-    "and binds it to the class the worker entry exports",
+    "and binds it to the class the small Worker's entry exports",
   );
+  eq(entry?.script_name, "slate-burst-limiter", "served by the small burst limiter Worker, by script name");
 
-  const created = (config.migrations ?? []).flatMap((m) => [
+  const own = JSON.parse(
+    stripLineComments(readFileSync(join(import.meta.dirname, "..", "wrangler.burst-limiter.jsonc"), "utf8")),
+  ) as { name?: string; migrations?: { tag: string; new_sqlite_classes?: string[]; new_classes?: string[] }[] };
+  eq(own.name, entry?.script_name, "the small Worker's config deploys the Worker the binding names");
+  const created = (own.migrations ?? []).flatMap((m) => [
     ...(m.new_sqlite_classes ?? []),
     ...(m.new_classes ?? []),
   ]);
   assert(
     created.includes(BURST_LIMITER_CLASS),
-    `a migration creates ${BURST_LIMITER_CLASS}; a Durable Object class that is bound but never ` +
+    `the small Worker's migration creates ${BURST_LIMITER_CLASS}; a Durable Object class that is bound but never ` +
       "created fails the deploy rather than the request, which is the good direction but still " +
       "has to be true",
   );
 
-  const workerEntry = readFileSync(join(import.meta.dirname, "..", "worker", "index.ts"), "utf8")
+  const workerEntry = readFileSync(join(import.meta.dirname, "..", "worker", "burst-limiter", "index.ts"), "utf8")
     .split("\n")
     .filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("*"))
     .join("\n");
   assert(
-    workerEntry.includes(BURST_LIMITER_CLASS),
-    "the worker entry re-exports the class, because that is the module wrangler loads",
+    new RegExp(`export\\s*\\{\\s*${BURST_LIMITER_CLASS}\\s*\\}`).test(workerEntry),
+    "the small Worker's entry exports the class, because that is the module its wrangler config loads",
   );
 }
 

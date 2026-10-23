@@ -227,7 +227,7 @@ fails the read.
 | the line's rules, the only implementation | `src/lib/booking/confirm-queue.ts` (`makeConfirmQueue`) |
 | the async interface the confirm path uses, and the per isolate adapter | same file (`ConfirmLine`, `isolateLine`) |
 | the protocol the object runs | `src/lib/booking/confirm-line-object.ts` |
-| the object itself (a shell) | `worker/confirm-line.ts`, exported from `worker/index.ts` |
+| the object itself (a shell) | `worker/confirm-line.ts`, exported from `worker/confirm-line/index.ts`, the `slate-confirm-line` Worker (#3500); Slate's own copy of the class is deleted by its `v3` migration (#4025) |
 | the confirm path's client, every fallback named | `src/lib/booking/shared-confirm-line.ts` |
 | the wiring to the runtime | `src/lib/booking/confirm-line-live.ts` |
 | what pages, and what only logs | `src/lib/booking/confirm-line-alert.ts` |
@@ -541,8 +541,8 @@ object, where each get says it answered from, and the format pin), `test-pool-gr
 newest wins, the reader's bound counted from the line key, coalescing and backoff, and
 the same key both ways for sixty codes), `test-unawaited-line-calls.ts` (no unawaited seat call or turn report; the lead's ack
 is the one deliberate exception, see Timings),
-`test-confirm-line-binding.ts` (bound, created and exported in production and the load
-test, the deployed class logging a traced call, and serving the directory only on its
+`test-confirm-line-binding.ts` (bound in production and the load test, created and
+exported by the line Worker, the deployed class logging a traced call, and serving the directory only on its
 own path and, when the runtime names it, its own instance). #3560: the object suite
 holds which client versions an object serves, the client suite an older object's
 refusal (one enter, no re-entry, `version`, reported, from an enter, a lookahead or a

@@ -1,5 +1,7 @@
 // The shared confirm line is bound, created and exported, in production AND in the
-// load test Worker (#3325), judged as wrangler RESOLVES the config.
+// load test Worker (#3325), judged as wrangler RESOLVES the config. Since #3500 the
+// line Worker (wrangler.confirm-line.jsonc) creates and exports it, and since #4025
+// Slate's own copy of the class is deleted (scripts/test-retired-object-classes.ts).
 //
 // A binding without its migration names a class that is never created; a migration
 // without the export deploys a class the runtime cannot find; and a binding missing
@@ -31,7 +33,7 @@ interface Resolved {
   workers_dev?: boolean;
   routes?: unknown[];
   durable_objects?: { bindings?: { name?: string; class_name?: string; script_name?: string }[] } | null;
-  migrations?: { tag?: string; new_sqlite_classes?: string[] }[] | null;
+  migrations?: { tag?: string; new_sqlite_classes?: string[]; deleted_classes?: string[] }[] | null;
 }
 
 // #3500: the line object lives in its OWN small Worker, so waking an idle one no longer
@@ -46,10 +48,10 @@ for (const env of [undefined, "loadtest"] as const) {
   const binding = (cfg.durable_objects?.bindings ?? []).find((b) => b.name === CONFIRM_LINE_BINDING);
   assert(binding?.class_name === CONFIRM_LINE_CLASS, `${label}: ${CONFIRM_LINE_BINDING} is bound to ${CONFIRM_LINE_CLASS} (got ${JSON.stringify(binding ?? null)})`);
   eq(binding?.script_name, LINE_SCRIPT[label], `${label}: ${CONFIRM_LINE_BINDING} is served by the small line Worker, by script name`);
-  // The old class stays exported and declared in Slate until a later deleted_classes
-  // migration (#3500 step 3), so this deploy needs no migration of Slate's own.
-  const created = (cfg.migrations ?? []).some((m) => (m.new_sqlite_classes ?? []).includes(CONFIRM_LINE_CLASS));
-  assert(created, `${label}: Slate's migration history still declares ${CONFIRM_LINE_CLASS}, so no migration is pending`);
+  // #4025 (#3500 step 3): Slate's own copy of the class is deleted by a later migration,
+  // so the binding above, by script name, is the only way Slate reaches a line.
+  const deleted = (cfg.migrations ?? []).some((m) => (m.deleted_classes ?? []).includes(CONFIRM_LINE_CLASS));
+  assert(deleted, `${label}: Slate's migration history deletes its own ${CONFIRM_LINE_CLASS}, leaving the line Worker's the only one`);
 
   const line = unstable_readConfig({ config: "wrangler.confirm-line.jsonc", env }) as unknown as Resolved;
   eq(line.name, LINE_SCRIPT[label], `${label}: the line Worker is named for its environment`);
@@ -87,10 +89,13 @@ for (const env of [undefined, "loadtest"] as const) {
   assert(seen.has("src/lib/booking/confirm-queue.ts"), "the walk did reach the line's rules (positive control: it read the imports at all)");
 }
 
-const entry = readFileSync("worker/index.ts", "utf8");
+// The class ships from the line Worker's entry, the module that Worker's wrangler config
+// loads. Slate's own entry must NOT export it any more (#4025), which
+// test-retired-object-classes.ts holds.
+const entry = readFileSync("worker/confirm-line/index.ts", "utf8");
 assert(
-  new RegExp(`export\\s*\\{\\s*${CONFIRM_LINE_CLASS}\\s*\\}\\s*from\\s*"\\./confirm-line"`).test(entry),
-  `worker/index.ts exports ${CONFIRM_LINE_CLASS} from ./confirm-line`,
+  new RegExp(`export\\s*\\{\\s*${CONFIRM_LINE_CLASS}\\s*\\}\\s*from\\s*"\\.\\./confirm-line"`).test(entry),
+  `worker/confirm-line/index.ts exports ${CONFIRM_LINE_CLASS} from ../confirm-line`,
 );
 
 // #3354: the deployed shell reports a traced call, on the tag and message the load

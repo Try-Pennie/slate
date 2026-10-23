@@ -377,12 +377,15 @@ lead can meet both versions across page loads. Then it is one version at 100% ag
   inside it (the deploy waits, at most 12.5 minutes): only the every 1, 5, 10 and 15 minute
   lanes can lose a tick, and their next tick catches up. The release, promoted at the end,
   is the same build without the standby variable.
-- **Durable Objects** (`BURST_LIMITER`): Cloudflare assigns each object ONE version per
-  deployment by the same percentages, so about one in ten burst counters runs the canary's
-  `BurstLimiter` for the split, whichever version called it. An object is reset once when
-  its version changes; the count lives in storage, so nothing is lost. Keep the
-  BurstLimiter request shape compatible across one release, because old Worker code can
-  call a new object and the other way round. A change to a Durable Object CLASS (a
+- **Durable Objects**: Slate's own Worker hosts none since #4025 (its `v3` migration
+  deleted the `BurstLimiter` and `ConfirmLine` classes it hosted until 2026-10-09). Every
+  object it calls lives in a small Worker of its own (`BURST_LIMITER`, `CONFIRM_LINE`,
+  `TOKEN_HOLDER`, bound by script name), deployed whole before the uploads when it
+  changed (below), so the split
+  never runs two versions of an object. Old Worker code can still call a new object
+  during the split, so keep each object's request shape compatible across one release.
+  Once `v3` is applied, Cloudflare refuses a rollback to any version deployed before it.
+  A change to a Durable Object CLASS (a
   `migrations` entry) cannot ship gradually at all: the upload refuses (exit 25, nothing
   changed, recognised from the `command-failed` record wrangler writes), and that release
   ships by hand with `pnpm cf:deploy:verified`. Until it does, every later merge's deploy

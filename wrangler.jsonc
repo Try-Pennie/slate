@@ -266,9 +266,9 @@
 	"durable_objects": {
 		"bindings": [
 			// #3555: served by its own small Worker (wrangler.burst-limiter.jsonc), deployed
-			// before this one, so waking a counter does not load the whole app. (Every Slate
-			// deploy still redeploys it, which restarts the counters, #3561.) The class stays exported and its
-			// migration kept here until a deleted_classes migration retires it.
+			// before this one, so waking a counter does not load the whole app. (It is
+			// redeployed only when it changed, since a deploy restarts the counters, #3561.)
+			// Slate's own BurstLimiter class is retired by migration v3 below (#4025).
 			{
 				"name": "BURST_LIMITER",
 				"class_name": "BurstLimiter",
@@ -277,8 +277,8 @@
 			// #3325: the confirm line shared across isolates, one object per line group
 			// (src/lib/booking/confirm-line-object.ts). #3500: served by its own small
 			// Worker (wrangler.confirm-line.jsonc), deployed before this one, so waking an
-			// idle line does not load the whole app. The class is still exported and its
-			// migration kept here until a deleted_classes migration retires it.
+			// idle line does not load the whole app. Slate's own ConfirmLine class is retired
+			// by migration v3 below (#4025).
 			{
 				"name": "CONFIRM_LINE",
 				"class_name": "ConfirmLine",
@@ -296,6 +296,17 @@
 			}
 		]
 	},
+	// Slate's own Durable Object history. v1 and v2 created the two classes this Worker
+	// hosted until 2026-10-09, when each moved to its own small Worker (bindings above).
+	// v3 deletes both from Slate (#4025, #3500 step 3): it removes their namespaces here
+	// and whatever the old objects stored (short lived counters and line state), and
+	// leaves the small Workers' own namespaces untouched. An applied tag is never edited
+	// or removed (#3352), so v1 and v2 stay. A migration cannot ship gradually, so the
+	// release carrying v3 ships by hand with `pnpm cf:deploy:verified` (DEPLOY.md).
+	// Cloudflare refuses a rollback across a class change, so once v3 is applied no
+	// version deployed before it can be rolled back to, and the versions from before
+	// 2026-10-09, which still used these classes, are gone for good.
+	// scripts/test-retired-object-classes.ts pins the deletes, in both environments.
 	"migrations": [
 		{
 			"tag": "v1",
@@ -304,6 +315,10 @@
 		{
 			"tag": "v2",
 			"new_sqlite_classes": ["ConfirmLine"]
+		},
+		{
+			"tag": "v3",
+			"deleted_classes": ["BurstLimiter", "ConfirmLine"]
 		}
 	],
 	// #3693: the Worker's binding to ITSELF. Placement above moves only a fetch handler,
@@ -469,6 +484,9 @@
 					}
 				]
 			},
+			// The same history as production, v3 included (#4025): the load test Worker
+			// lives on between runs (#3310) and its next `wrangler deploy --env loadtest`
+			// applies the delete itself.
 			"migrations": [
 				{
 					"tag": "v1",
@@ -477,6 +495,10 @@
 				{
 					"tag": "v2",
 					"new_sqlite_classes": ["ConfirmLine"]
+				},
+				{
+					"tag": "v3",
+					"deleted_classes": ["BurstLimiter", "ConfirmLine"]
 				}
 			],
 			// #3693: the load test Worker's binding to ITSELF, never to production's
