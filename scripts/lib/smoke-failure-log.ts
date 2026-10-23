@@ -84,6 +84,8 @@ export const SMOKE_NAMES = {
   createResume: "The create resume smoke",
   embedRender: "The embed render check",
   latency: "The latency check",
+  /** #4180: the full pass taking the smoke test advisors' lease before it books. */
+  testAdvisorLease: "The test advisor lease",
 } as const;
 const CRASH_MARK = "[crash] ";
 
