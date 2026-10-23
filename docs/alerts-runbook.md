@@ -1134,3 +1134,14 @@ directly above the line.
 
 Prefer pointing at where the detail lives over pasting any of it:
 `Diagnose via booking_outbox.last_error; rows: ...` is the pattern to copy.
+
+### What a person typed is escaped where the message is sent (#3528)
+
+A name, a time off reason or a decline note can hold `<!channel>` or a
+`<url|label>` link, and Slack would act on either. Copy builders do NOT escape
+anything: every message leaves through `src/lib/notify/slack.ts` (or, for the
+bare node workflows, `scripts/lib/slack-post.ts`), which escapes Slack's three
+characters and keeps only links to Slate itself (`scripts/lib/slack-mrkdwn.ts`).
+So never write a mention on purpose, write links only to the app, and never post
+to Slack from anywhere else: `scripts/test-slack-send-points.ts` fails on a file
+that does.
