@@ -1,8 +1,9 @@
 /**
  * Two things about GitHub Actions that nothing inside Slate could see (#2476, #2229).
  *
- * Both are read from ONE listing of recent workflow runs, and both are here rather
- * than in a workflow for the same reason: an Actions workflow cannot report on
+ * Both read ONE shared listing of recent workflow runs; the deploy judgement also reads
+ * main's tip from the branch and, when the listing lacks the tip's run, that run by sha
+ * (#3648). Both are here rather than in a workflow for the same reason: an Actions workflow cannot report on
  * Actions being unavailable, and the run that would carry the report is the run that
  * did not happen. The Worker's monitor lane is the only thing in this system that
  * keeps running when GitHub does not.
@@ -519,10 +520,10 @@ const GITHUB_HEADERS = (token: string) => ({
 /**
  * The newest runs across every workflow and branch, in one request.
  *
- * ONE listing answers both questions: the deploy comparison filters it to push runs
- * on main, and the refusal check reads the newest completed run whatever it is. A
- * second, narrower request per question would double this check's cost on an
- * invocation four cron lanes share, for nothing.
+ * Shared by both questions: the deploy comparison looks in it for the tip's own run
+ * (falling back to `fetchTipRuns` only when it is not there, #3648), and the refusal
+ * check reads the newest completed run whatever it is. A separate listing per question
+ * would double this check's cost on an invocation four cron lanes share, for nothing.
  */
 export async function fetchRecentRuns(
   token: string,
