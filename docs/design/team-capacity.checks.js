@@ -435,6 +435,14 @@
       var lines = first.querySelectorAll('[data-tc="pace"]');
       return lines.length === 0 ? pass() : fail("today's full card shows " + lines.length + " pace line(s): '" + text(lines[0]) + "'");
     } },
+    { id: "D47", frames: ["f1"], check: function (doc) {
+      var tops = q(doc, "day-card").map(function (card) {
+        var first = card.querySelector('[data-tc="out-count"], [data-tc="not-syncing"]');
+        return first ? Math.round(first.getBoundingClientRect().top) : null;
+      }).filter(function (t) { return t !== null; });
+      if (tops.length < 2) return fail("fewer than two cards have a time off line to line up");
+      return tops.every(function (t) { return t === tops[0]; }) ? pass() : fail("the time off lines start at " + tops.join(", ") + "px");
+    } },
     { id: "D41", frames: ["f1"], check: function (doc) {
       if (q(doc, "key-item").map(text).indexOf("Open") < 0) return fail("the key does not name the white box Open");
       if (text(one(doc, "open-heading")) !== "Open") return fail("the timeline's column reads '" + text(one(doc, "open-heading")) + "'");
