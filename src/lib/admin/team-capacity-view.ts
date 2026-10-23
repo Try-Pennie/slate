@@ -24,6 +24,9 @@ import {
   zoneShort,
   advisorsOffLine,
   calendarsNotSyncingLine,
+  DONE_FOR_TODAY,
+  NO_ONE_ON_SHIFT,
+  unbookedLine,
   paceStaleSentence,
   PACE_UNREADABLE_COPY,
 } from "./team-capacity-copy";
@@ -35,8 +38,20 @@ export interface Span {
   width: number;
 }
 
+/**
+ * What a day card is (#4127): an ordinary day; today once every shift has ended; a day everyone
+ * is out or has no shift; or a day nobody can be counted on for any other reason (only calendars
+ * that are not syncing left, or time off filling every shift that is left).
+ */
+export type CapacityCardKind = "open" | "ended" | "no-shift" | "nobody-counted";
+
 export interface CapacityCard {
   iso: string;
+  kind: CapacityCardKind;
+  /** Words drawn in place of the calls open number: Done for today on a finished day. */
+  headline: string | null;
+  /** The line under the number or headline: the calls a finished day left unused, or No one on shift. */
+  resultLine: string | null;
   top: string;
   sub: string;
   open: number;
@@ -115,6 +130,11 @@ export interface TeamCapacityViewInput {
   pace: PaceView;
   /** The window's days, then the picked day when there is one. */
   days: CapacityDaySource[];
+  /**
+   * Today's totals from the saved history, read once every shift today has ended (#4127): the
+   * calls left unused and how full it ended. Null when that read failed; absent when not read.
+   */
+  todayEnded?: { open: number; fullPct: number | null } | null;
 }
 
 export interface TeamCapacityView {
@@ -145,6 +165,25 @@ function totalsFor(source: CapacityDaySource) {
   );
 }
 
+/**
+ * Which kind of card a window day is (#4127). Capacity counts only time still ahead, so on today a
+ * capacity of zero with someone counted who had a shift means every shift is over, not that nobody
+ * could be counted. Out and not syncing advisors are never counted.
+ */
+export function cardKind(source: CapacityDaySource, todayIso: string): CapacityCardKind {
+  const counted = source.advisors.filter((a) => !a.advisor.unsynced && !a.day.out);
+  if (counted.some((a) => a.day.capacity > 0)) return "open";
+  if (source.iso === todayIso && counted.some((a) => !a.day.noShift)) return "ended";
+  const unsynced = source.advisors.some((a) => a.advisor.unsynced);
+  if (!unsynced && counted.every((a) => a.day.noShift)) return "no-shift";
+  return "nobody-counted";
+}
+
+/** Whether today's card needs the saved history: every shift today is over (#4127). */
+export function todayHasEnded(source: CapacityDaySource | undefined, todayIso: string): boolean {
+  return source !== undefined && source.kind === "window" && cardKind(source, todayIso) === "ended";
+}
+
 export function teamCapacityView(input: TeamCapacityViewInput): TeamCapacityView {
   const { zone, todayIso, nearlyFullPct } = input;
   const callWidth = (100 * input.durationMin) / SPAN_MIN;
@@ -153,8 +192,54 @@ export function teamCapacityView(input: TeamCapacityViewInput): TeamCapacityView
   const cards: CapacityCard[] = window.map((source) => {
     const t = totalsFor(source);
     const l = dayLabel(source.iso, todayIso, zone);
+    const kind = cardKind(source, todayIso);
+    if (kind === "ended") {
+      // Figures only from a read that found the day: a failed or empty read says Done for today alone.
+      const ended = input.todayEnded && input.todayEnded.fullPct !== null ? input.todayEnded : null;
+      return {
+        iso: source.iso,
+        kind,
+        headline: DONE_FOR_TODAY,
+        resultLine: ended ? unbookedLine(ended.open) : null,
+        top: l.top,
+        sub: l.sub,
+        open: 0,
+        unit: "",
+        fullPct: ended ? ended.fullPct : null,
+        // A finished day can take no more calls, so it is never flagged, and has nothing left to fill.
+        flag: null,
+        out: t.out,
+        notCounted: t.notCounted,
+        pace: [],
+        outLine: t.out > 0 ? advisorsOffLine(t.out) : null,
+        notSyncingLine: t.notCounted > 0 ? calendarsNotSyncingLine(t.notCounted) : null,
+      };
+    }
+    if (kind === "no-shift") {
+      // Said once: no time off line beside it, no bar, no pace (Dan, 2026-10-22, #4101 decision 17).
+      return {
+        iso: source.iso,
+        kind,
+        headline: null,
+        resultLine: NO_ONE_ON_SHIFT,
+        top: l.top,
+        sub: l.sub,
+        open: 0,
+        unit: callsOpenUnit(0),
+        fullPct: null,
+        flag: null,
+        out: t.out,
+        notCounted: 0,
+        pace: [],
+        outLine: null,
+        notSyncingLine: null,
+      };
+    }
     return {
       iso: source.iso,
+      kind,
+      headline: null,
+      resultLine: null,
       top: l.top,
       sub: l.sub,
       open: t.open,
