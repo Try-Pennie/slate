@@ -5,7 +5,7 @@ import {
   googleAccountIdsOf,
   judgeGoogleIdentity,
 } from "./google-identity";
-import { GOOGLE_ACCOUNT_CHANGED_MESSAGE } from "./google-identity-copy";
+import { GOOGLE_ACCOUNT_CHANGED_MESSAGE, GOOGLE_RELINK_COPY } from "./google-identity-copy";
 
 // #3526: the one rule deciding whether a sign in, or a session on any later
 // request, is the person a Slate row belongs to. Provisioning applies it at sign in
@@ -88,6 +88,22 @@ describe("GoogleAccountMismatchError", () => {
 
 // The sign in page draws this sentence (src/app/login/page.test.tsx checks it is
 // shown for the code); its wording rules are pinned here on the copy itself.
+// The line above the relink button for someone with a sign in on record but no
+// Google account recorded: it may claim only what is true of them.
+describe("the relink line when no Google account is recorded", () => {
+  const line = GOOGLE_RELINK_COPY.signInOnlyExplanation("Morgan Manager");
+
+  it("names the person and says no Google account is recorded", () => {
+    expect(line).toContain("Morgan Manager");
+    expect(line).toMatch(/no Google account/i);
+  });
+
+  it("never speaks of an account they have been using, and stays short", () => {
+    expect(line).not.toMatch(/have been using|their account/i);
+    expect(line.length).toBeLessThan(GOOGLE_RELINK_COPY.explanation("Morgan Manager").length + 20);
+  });
+});
+
 describe("the refused person's sentence", () => {
   it("names who can change the answer and is never worded as a retry", () => {
     expect(GOOGLE_ACCOUNT_CHANGED_MESSAGE).toMatch(/admin/i);

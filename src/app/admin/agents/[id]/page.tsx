@@ -945,7 +945,9 @@ export default async function AgentProfilePage({
           {isAdmin && canManageThisAgent && !isSelf && (agent.google_sub || agent.auth_user_id) ? (
             <div className="mt-4 border-t border-border pt-4">
               <p className={`text-xs text-fg-muted ${proseCls}`}>
-                {GOOGLE_RELINK_COPY.explanation(agent.name ?? agent.email)}
+                {agent.google_sub
+                  ? GOOGLE_RELINK_COPY.explanation(agent.name ?? agent.email)
+                  : GOOGLE_RELINK_COPY.signInOnlyExplanation(agent.name ?? agent.email)}
               </p>
               <div className="mt-3">
                 <DestructiveConfirm

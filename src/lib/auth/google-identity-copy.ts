@@ -38,6 +38,13 @@ export const GOOGLE_RELINK_COPY = {
    */
   explanation: (name: string) =>
     `Slate only signs ${name} in with the Google account they have been using. If they come back on a new Google account, link it here so their next sign in is let through.`,
+  /**
+   * The same line for someone with a sign in on record but no Google account
+   * recorded yet, which is the case a sign in holding no Google account, or two,
+   * gets refused in. It claims only what is true of them.
+   */
+  signInOnlyExplanation: (name: string) =>
+    `No Google account is recorded for ${name} yet. If they cannot sign in, link a new one here.`,
   openLabel: "Link a new Google account",
   question: (name: string) => `Link a new Google account for ${name}?`,
   /**

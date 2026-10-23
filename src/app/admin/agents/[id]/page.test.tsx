@@ -1224,6 +1224,16 @@ describe("linking a new Google account (#3526)", () => {
     dbState.agent = { ...agentOf("agent"), google_sub: null, auth_user_id: "auth-stuck" };
     render(await AgentProfilePage({ ...props, searchParams: Promise.resolve({}) }));
     expect(screen.getByRole("button", { name: GOOGLE_RELINK_COPY.openLabel })).toBeTruthy();
+    // No Google account is recorded for them, so the line above the button cannot
+    // speak of "the Google account they have been using".
+    expect(screen.getByText(GOOGLE_RELINK_COPY.signInOnlyExplanation("x1"))).toBeTruthy();
+    expect(screen.queryByText(GOOGLE_RELINK_COPY.explanation("x1"))).toBeNull();
+  });
+
+  it("explains the control in terms of the account they use when one is recorded", async () => {
+    await renderAs("admin");
+    expect(screen.getByText(GOOGLE_RELINK_COPY.explanation("x1"))).toBeTruthy();
+    expect(screen.queryByText(GOOGLE_RELINK_COPY.signInOnlyExplanation("x1"))).toBeNull();
   });
 
   it("is not offered on an admin's own page, since it would delete their own sign in", async () => {

@@ -30,6 +30,11 @@ import { attachGoogleIdentity, e2eGoogleSub, GOOGLE_IDENTITY_INSERT } from "../e
   assert(/'google'/.test(GOOGLE_IDENTITY_INSERT), "the identity's provider is google");
   assert(/'sub'\s*,\s*\$1/.test(GOOGLE_IDENTITY_INSERT), "identity_data carries the sub the app reads");
   assert(/on\s+conflict\s*\(\s*provider_id\s*,\s*provider\s*\)\s+do\s+nothing/i.test(GOOGLE_IDENTITY_INSERT), "idempotent");
+  // The first real run failed every signed in spec with "could not determine data
+  // type of parameter $1": a parameter used in two places with no type is one
+  // Postgres refuses, which the fake below can never show. So every one is typed.
+  const untyped = GOOGLE_IDENTITY_INSERT.match(/\$\d+(?!::)/g) ?? [];
+  eq(untyped, [], "every parameter in the insert carries an explicit type");
 }
 
 type Call = { sql: string; params: unknown[] };

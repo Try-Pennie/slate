@@ -27,9 +27,9 @@ export function e2eGoogleSub(email: string): string {
  */
 export const GOOGLE_IDENTITY_INSERT = `
   insert into auth.identities (provider_id, user_id, identity_data, provider, last_sign_in_at, created_at, updated_at)
-  select $1, u.id, jsonb_build_object('sub', $1, 'email', u.email, 'email_verified', true), 'google', now(), now(), now()
+  select $1::text, u.id, jsonb_build_object('sub', $1::text, 'email', u.email, 'email_verified', true), 'google', now(), now(), now()
   from auth.users u
-  where lower(u.email) = lower($2)
+  where lower(u.email) = lower($2::text)
   on conflict (provider_id, provider) do nothing
 `;
 
@@ -38,7 +38,7 @@ const GOOGLE_IDENTITIES_READ = `
   select i.identity_data ->> 'sub' as sub
   from auth.identities i
   join auth.users u on u.id = i.user_id
-  where lower(u.email) = lower($1) and i.provider = 'google'
+  where lower(u.email) = lower($1::text) and i.provider = 'google'
 `;
 
 export type Query = (sql: string, params: unknown[]) => Promise<{ rows: { sub?: unknown }[] }>;
