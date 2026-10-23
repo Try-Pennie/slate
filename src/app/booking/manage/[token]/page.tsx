@@ -12,7 +12,8 @@ import {
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
 import { rescheduleTimesFrom } from "@/lib/booking/reschedule-times-url";
-import { rebookHref } from "@/lib/booking/book-link";
+import { manageHref, rebookHref } from "@/lib/booking/book-link";
+import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -42,6 +43,10 @@ export default async function ManagePage({
   // Same contract as /book: anything other than `theme=dark` renders light.
   const theme = sp.theme === "dark" ? ("dark" as const) : ("light" as const);
   const found = await getBookingByToken(token);
+  // #3672: the booking API moved this call to another bucket, which cancelled the
+  // booking this token names and made a new one under a new token. The lookup followed
+  // to it, so open THAT page: every action on it then acts on the call the lead has.
+  if (found?.followedToToken) redirect(manageHref({ manageToken: found.followedToToken, theme }));
   const reasonOptions = await loadReasonOptions();
   // #1338: the advisor is read LIVE from the assignee, never a copy captured when
   // the booking was made: coverage reassignment and bulk reassign both move a
