@@ -47,8 +47,8 @@ What follows from it:
   sends one credential free GET to `https://slate.trypennie.app/api/smoke/version`
   and logs its `cf-placement` as `public_probe` (or `no_header`, `unreadable`,
   `timeout`, `threw`, `skipped_loadtest`), with `public_probe_status`,
-  `public_probe_ms`, `public_probe_near_db` and any `public_probe_cf_error`
-  (`worker/public-probe.ts`). Read it with `scripts/logs.ts "tag=cron" --lines` one hour
+  `public_probe_ms`, `public_probe_near_db`, any `public_probe_cf_error`, and on
+  `threw` the reason in `public_probe_error` (`worker/public-probe.ts`). Read it with `scripts/logs.ts "tag=cron" --lines` one hour
   at a time and compare each tick's `<lane>_placement` with its `public_probe`.
 
 ## Placement is an explicit region hint, not Smart Placement (#3693)
