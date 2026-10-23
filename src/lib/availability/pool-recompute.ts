@@ -40,7 +40,16 @@ export interface PoolRecomputeDeps {
   /** The existing per code compute, run once for the pool's representative.
    *  Resolves to null when it could not answer. */
   compute(code: string): Promise<BucketSlots | null>;
-  /** Store one code's row, stamped from when the COMPUTE began (#1048). Answers what
+  /**
+   * When the eligibility list the compute used was READ, asked once the compute
+   * has answered (#3388). Null when nothing older than the compute's own start was
+   * used, which is every live path. Only the recompute lane reads eligibility
+   * through the 60 second cache, and a list read there 50 seconds ago is 50 seconds
+   * old whatever the clock said when the compute began (L751).
+   */
+  eligibilityReadAtMs?(): number | null;
+  /** Store one code's row, stamped from when the COMPUTE began (#1048), or from when
+   *  its eligibility list was read if that was earlier (#3388). Answers what
    *  the write did, because a database REFUSAL is an answer rather than a throw
    *  (#3119): `failed` lands the code in `failed[]` exactly as a throw does. */
   writeRow(code: string, val: BucketSlots, computedAtMs: number): Promise<SlotRowWriteOutcome>;
@@ -57,6 +66,11 @@ export interface PoolRecomputeOutcome {
    *  no individual code is to blame for that, and saying otherwise would send a
    *  reader looking for six write faults that did not happen (L11). */
   failed: string[];
+  /** How far before the compute's start its rows were stamped, because the
+   *  eligibility list it used was read earlier (#3388); null when they were stamped
+   *  at the start. Reported so the lane can log how often, and by how much, its rows
+   *  read older than the compute, which is what moves its due set. */
+  stampLagMs: number | null;
 }
 
 export async function recomputePool(
@@ -64,14 +78,14 @@ export async function recomputePool(
   deps: PoolRecomputeDeps,
 ): Promise<PoolRecomputeOutcome> {
   const representative = pool[0];
-  if (!representative) return { computedFor: null, written: [], failed: [] };
+  if (!representative) return { computedFor: null, written: [], failed: [], stampLagMs: null };
 
   // Before the compute reads anything (#1048), so every row this produces
   // describes the state the slots were computed FROM rather than the moment its
   // write happened to land. One instant for the whole pool: the rows really are
   // one answer, and stamping them separately would make a six row pool look like
   // six computes to anything reading freshness.
-  const computedAtMs = deps.nowMs();
+  const startedMs = deps.nowMs();
 
   let computed: BucketSlots | null = null;
   try {
@@ -86,7 +100,16 @@ export async function recomputePool(
   // (#277). Under pooling that degrade would land on all six codes at once, so
   // nothing is written and no cache entry is dropped: the last good answer
   // stands everywhere and the stale bucket alarm is what surfaces it.
-  if (!computed) return { computedFor: null, written: [], failed: [] };
+  if (!computed) return { computedFor: null, written: [], failed: [], stampLagMs: null };
+
+  // #3388: the rows describe the state they were computed FROM, and a cached
+  // eligibility list is part of that state as of when it was read. So the stamp is
+  // the earlier of the two. Without this the #1048 gate below judged a list read 50
+  // seconds ago as newer than a row a live path wrote 20 seconds ago, and the older
+  // answer won. A live path reports no read time and keeps its start, as before.
+  const readAtMs = deps.eligibilityReadAtMs?.() ?? null;
+  const computedAtMs =
+    readAtMs !== null && Number.isFinite(readAtMs) ? Math.min(startedMs, readAtMs) : startedMs;
 
   const written: string[] = [];
   const failed: string[] = [];
@@ -120,7 +143,8 @@ export async function recomputePool(
       );
   }
 
-  return { computedFor: representative.code, written, failed };
+  const stampLagMs = computedAtMs < startedMs ? startedMs - computedAtMs : null;
+  return { computedFor: representative.code, written, failed, stampLagMs };
 }
 
 /**

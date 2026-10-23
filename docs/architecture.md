@@ -294,6 +294,17 @@ own row**. Two things about that are load bearing:
   `scripts/test-pool-due.ts` drives three windows a minute at a time and catches
   exactly that: the naive version refreshes nine times where the correct one
   refreshes three.
+- **A pool's rows are stamped from the OLDEST input the compute used** (#3388).
+  The lane alone reads eligibility through the 60 second cache, and a cached list
+  is as old as its read. So `recomputePool` stamps `computed_at` with the earlier
+  of its own start and that read (`readEligibleCached` records it with the entry,
+  `trackEligibleReads` hands the compute the oldest), and the #1048 gate lets a
+  row a live path wrote after the read stand. Every live path reads eligibility
+  during the compute and stamps from its start, as before. An older stamp brings a
+  pool due sooner (the grid in `bucketDueAtMs` sees a stamp before the pool's grid
+  point as belonging to the previous window), so each moved stamp is logged as
+  `pool stamped from its eligibility read` with its `lag_ms`: count those when the
+  recompute headroom alert moves.
 
 Anything that starts feeding the compute must be added to `PoolInput`
 (`src/lib/availability/pool-key.ts`) in the same change, or the lane will serve
