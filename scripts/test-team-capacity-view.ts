@@ -33,6 +33,8 @@ const advisor = (name: string, over: Partial<TeamCapacityAdvisor> = {}): TeamCap
 });
 const source = (iso: string, kind: CapacityDaySource["kind"], advisors: { advisor: TeamCapacityAdvisor; day: AdvisorDay }[]): CapacityDaySource => ({ iso, kind, advisors });
 const NO_READINGS: PaceView = { kind: "fresh", byDay: new Map() };
+/** A reading with no last call estimate: under 95%, or saved before #4190. */
+const NO_LAST = { estimate_last_method: null, estimate_last_line_state: null, estimate_last_line_at: null, estimate_last_pattern_state: null, estimate_last_pattern_at: null };
 const view = (days: CapacityDaySource[], todayIso = "2026-10-19", nowIso = "2026-10-19T19:30:00.000Z", pace: PaceView = NO_READINGS) =>
   teamCapacityView({ zone: Z, todayIso, nowMs: Date.parse(nowIso), durationMin: 20, nearlyFullPct: 85, days, pace });
 
@@ -100,7 +102,7 @@ eq(axisPos("2026-11-03T13:00:00.000Z", Z), 0, "8am after the clocks change is st
 {
   const over = day({ iso: "2026-10-19", shiftStart: null, shiftEnd: null, capacity: 0, open: 0, openTimes: [], fullShiftStart: "2026-10-19T12:00:00.000Z", fullShiftEnd: "2026-10-19T21:00:00.000Z" });
   const noShift = day({ fullShiftStart: null, fullShiftEnd: null, shiftStart: null, shiftEnd: null, capacity: 0, open: 0, openTimes: [], noShift: true });
-  const notFilling = judgePace({ ok: true, rows: ["2026-10-19", "2026-10-20"].map((d) => ({ day: d, read_at: "2026-10-20T01:30:00.000Z", pace_state: "not-filling", pace_per_hour: 0, pace_back_at: null, estimate_method: null, estimate_line_state: null, estimate_line_at: null, estimate_pattern_state: null, estimate_pattern_at: null })) }, Date.parse("2026-10-20T02:00:00.000Z"));
+  const notFilling = judgePace({ ok: true, rows: ["2026-10-19", "2026-10-20"].map((d) => ({ day: d, read_at: "2026-10-20T01:30:00.000Z", pace_state: "not-filling", pace_per_hour: 0, pace_back_at: null, estimate_method: null, estimate_line_state: null, estimate_line_at: null, estimate_pattern_state: null, estimate_pattern_at: null, ...NO_LAST })) }, Date.parse("2026-10-20T02:00:00.000Z"));
   const days = [
     source("2026-10-19", "window", [{ advisor: advisor("Avery"), day: over }, { advisor: advisor("Blake"), day: { ...over, out: true } }]),
     source("2026-10-20", "window", [{ advisor: advisor("Avery"), day: noShift }, { advisor: advisor("Blake"), day: day({ out: true }) }]),
@@ -148,7 +150,7 @@ eq(axisPos("2026-11-03T13:00:00.000Z", Z), 0, "8am after the clocks change is st
 {
   const read = (over: Record<string, unknown>) => ({
     day: "2026-10-20", read_at: "2026-10-19T19:00:00.000Z", pace_state: "pace", pace_per_hour: 6, pace_back_at: null,
-    estimate_method: "line", estimate_line_state: "at", estimate_line_at: "2026-10-20T01:30:00.000Z", estimate_pattern_state: null, estimate_pattern_at: null, ...over,
+    estimate_method: "line", estimate_line_state: "at", estimate_line_at: "2026-10-20T01:30:00.000Z", estimate_pattern_state: null, estimate_pattern_at: null, ...NO_LAST, ...over,
   });
   const days = [
     source("2026-10-20", "window", [{ advisor: advisor("Avery"), day: day({ open: 5 }) }, { advisor: advisor("Blake", { unsynced: true }), day: day() }, { advisor: advisor("Casey"), day: day({ out: true }) }]),
@@ -177,7 +179,7 @@ eq(axisPos("2026-11-03T13:00:00.000Z", Z), 0, "8am after the clocks change is st
 
 // --- a day with no calls open and some capacity shows no pace (#4145, #4101 decision 18) ------------
 {
-  const reading = (state: "pace" | "not-filling") => judgePace({ ok: true, rows: ["2026-10-20", "2026-10-21"].map((d) => ({ day: d, read_at: "2026-10-19T19:00:00.000Z", pace_state: state, pace_per_hour: state === "pace" ? 20 : 0, pace_back_at: null, estimate_method: "line", estimate_line_state: "already", estimate_line_at: null, estimate_pattern_state: "already", estimate_pattern_at: null })) }, Date.parse("2026-10-19T19:30:00.000Z"));
+  const reading = (state: "pace" | "not-filling") => judgePace({ ok: true, rows: ["2026-10-20", "2026-10-21"].map((d) => ({ day: d, read_at: "2026-10-19T19:00:00.000Z", pace_state: state, pace_per_hour: state === "pace" ? 20 : 0, pace_back_at: null, estimate_method: "line", estimate_line_state: "already", estimate_line_at: null, estimate_pattern_state: "already", estimate_pattern_at: null, ...NO_LAST })) }, Date.parse("2026-10-19T19:30:00.000Z"));
   const full = day({ open: 0, capacity: 10, openTimes: [] });
   const nearly = day({ iso: "2026-10-21", open: 1, capacity: 25, openTimes: ["2026-10-21T14:00:00.000Z"] });
   const days = [source("2026-10-20", "window", [{ advisor: advisor("Avery"), day: full }]), source("2026-10-21", "window", [{ advisor: advisor("Avery"), day: nearly }])];
@@ -212,13 +214,13 @@ const frameViewOf = (id: string) => {
   eq(names, [...names].sort((a, b) => a.localeCompare(b)), "in name order");
   // The pace each frame draws, as the design's checks expect it (D29 to D39).
   eq(v.cards.map((c) => c.pace), [
-    ["Not filling right now"],
-    ["Filling at 9 an hour"],
+    ["Won't fill at this pace"],
+    ["Filling at 9 an hour", "Full by 10pm at this pace"],
     ["Filling at 6 an hour", "Full by 9:30am Tue at this pace"],
     ["Filling at 11 an hour", "Won't fill at this pace"],
-  ], "f1: not filling, at 95% already, a time on another day, and won't fill");
+  ], "f1: not filling, at 95% the last call (#4190), a time on another day, and won't fill");
   eq(frameViewOf("f11").cards.map((c) => c.pace), [
-    ["Not filling right now"],
+    ["Won't fill at this pace"],
     ["Readings missed, pace back by 6:30pm"],
     ["Filling at 18 an hour", "Full by 9:30pm at this pace"],
     ["Filling at 11 an hour", "Full by 7pm Tue"],
