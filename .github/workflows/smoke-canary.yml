@@ -17,6 +17,11 @@ name: Smoke canary
 # real regression, or a bad key / missing fixture) posts a Slack alert.
 # workflow_dispatch runs either pass on demand.
 #
+# #4180: the full pass books on the same two smoke test advisors as the daily reroute
+# drill (burst-counter.yml), so it holds one server side lease over them around its
+# booking steps, and a pass the drill kept waiting past six minutes is NOT MEASURED
+# (books nothing, stamps nothing, pages nobody). See the lease step below.
+#
 # GitHub's schedule below is best-effort and DROPS runs under load (observed 2-3h
 # gaps against the 30-min cadence), which aged the heartbeat past its 90m bound and
 # false-paged. So it is now a BACKUP: the Worker's monitor cron lane reliably fills
@@ -54,7 +59,9 @@ concurrency:
 
 jobs:
   canary:
-    timeout-minutes: 15  # measured max 139s
+    # Measured max 139s for a whole run. 20 rather than 15 since #4180, because a full pass may
+    # first wait up to six minutes for the reroute drill to hand back the smoke test advisors.
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -130,8 +137,42 @@ jobs:
           SMOKE_DRY_RUN_ONLY: "1"
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-booking-api.ts
 
-      - name: Booking smoke (full strict pass)
+      # #4180: the daily reroute drill books on the same two smoke test advisors as the full pass,
+      # and on 2026-10-23 the two overlapped and BOTH failed. So the full pass holds one server side
+      # lease over them (POST /api/smoke/test-advisor-lease) from here to the release step below,
+      # and the drill's endpoint takes the same lease. The dry tick books nothing (its booking call
+      # is a dry run, and one drill call can occupy at most one of SMOKE's two advisors), so it
+      # neither needs the lease nor can collide.
+      #
+      # The command asks again every 15 seconds while the drill holds it, for up to six minutes
+      # (longer than the drill's longest run). Still held at the bound is exit 7, NOT MEASURED:
+      # mapped here to `held=0` and a clean step, so the booking steps skip, neither heartbeat is
+      # stamped, no clean run is reported and nobody is paged. A full pass left unmeasured is
+      # caught the way a dropped one is: the gap filler re-runs it and the 3h smoke-canary-full
+      # bound pages. Every other non zero exit is a real fault (a refused key, no reply), recorded
+      # in the failure file and alerted like any failed step.
+      #
+      # Not a shared concurrency group with the drill: a third queued run cancels the pending one
+      # even with cancel-in-progress false (L1020), and this workflow queues often.
+      - name: Take the smoke test advisors' lease (full pass only)
+        id: lease
         if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
+        env:
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+          SMOKE_FAILURE_FILE: smoke-failures.txt
+        run: |
+          code=0
+          node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-test-advisor-lease.ts take || code=$?
+          if [ "$code" -eq 7 ]; then
+            echo "held=0" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Full pass not measured::The reroute drill held the smoke test advisors past the six minute wait, so this full pass booked nothing. The next full pass tries again."
+            exit 0
+          fi
+          exit "$code"
+
+      - name: Booking smoke (full strict pass)
+        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1' && steps.lease.outputs.held == '1'
         env:
           BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           REASSIGN_API_KEY: ${{ secrets.REASSIGN_API_KEY }}
@@ -145,12 +186,25 @@ jobs:
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-booking-api.ts
 
       - name: Reschedule smoke (full pass only)
-        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
+        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1' && steps.lease.outputs.held == '1'
         env:
           BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
           SMOKE_FAILURE_FILE: smoke-failures.txt
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-reschedule.ts
+
+      # #4180: hand the advisors back the moment the booking steps are done, whatever they did, so
+      # a failed pass never holds the drill off until the TTL. Idempotent on the server, and
+      # `continue-on-error` because a release that fails must not turn a clean run red: the lease
+      # lapses on its own after ten minutes, and the command leaves a warning on the run.
+      - name: Release the smoke test advisors' lease
+        if: always() && steps.pre.outputs.configured == '1' && steps.lease.outputs.held == '1'
+        continue-on-error: true
+        env:
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+          SMOKE_LEASE_TOKEN: ${{ steps.lease.outputs.token }}
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-test-advisor-lease.ts release
 
       # #1047: the canary proved the funnel works and said nothing about whether it
       # is fast. This times the cached availability read and fails past a stated
@@ -253,8 +307,10 @@ jobs:
         # script it was never written about.
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-embed-render.ts
 
+      # #4180: a full pass that never got the test advisors' lease ran none of its checks, so it
+      # stamps nothing (a measured run only); the dry tick half an hour later keeps this fresh.
       - name: Stamp canary heartbeat (success only)
-        if: success() && steps.pre.outputs.configured == '1'
+        if: success() && steps.pre.outputs.configured == '1' && (steps.mode.outputs.full == '0' || steps.lease.outputs.held == '1')
         env:
           BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
@@ -268,7 +324,7 @@ jobs:
       # so this is the only signal that the full book/reschedule/cancel proof is
       # still running; a dropped hourly run leaves this heartbeat to go stale and page.
       - name: Stamp full-pass canary heartbeat (full pass success only)
-        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
+        if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1' && steps.lease.outputs.held == '1'
         env:
           BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
@@ -279,12 +335,15 @@ jobs:
 
       # #3801: a run with nothing failing tells the Worker, so a failure it posted for
       # this pass clears with an all-clear (a clean full pass clears the dry tick's
-      # too). The exact negation of the alert step's condition below, so every run
+      # too). The negation of the alert step's condition below, so every MEASURED run
       # reports exactly one of the two. `continue-on-error` because a Worker that
       # cannot be reached must not turn a clean run red and fire the alert step about
       # a canary that passed; the all-clear is retried by the next clean run.
+      # A full pass that never got the test advisors' lease (#4180) measured nothing, so it
+      # reports neither: an all clear may hang only off a measured healthy run, and a pass that
+      # stood aside for the drill is not a failure.
       - name: Report a clean canary run
-        if: success() && steps.pre.outputs.configured == '1' && steps.latency.outcome != 'failure' && steps.embed.outcome != 'failure'
+        if: success() && steps.pre.outputs.configured == '1' && (steps.mode.outputs.full == '0' || steps.lease.outputs.held == '1') && steps.latency.outcome != 'failure' && steps.embed.outcome != 'failure'
         continue-on-error: true
         env:
           BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}

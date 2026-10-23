@@ -1,9 +1,11 @@
-import { slackBotToken } from "@/lib/env";
+import { appUrl, slackBotToken } from "@/lib/env";
 import { log } from "@/lib/log";
 import { isLoadtest, loadtestRefusal } from "@/lib/loadtest-guard";
 import { defaultAlertsChannel } from "@/lib/notify/channels";
 import { fetchWithinBudget } from "@/lib/call-budget";
 import type { SlackChannelListing, SlackChannelOption } from "@/lib/notify/slack-channel-input";
+// One copy of the rule for the app and the bare node posters (#3528); no imports of its own.
+import { slackSafeBlocks, slackSafeMrkdwn } from "../../../scripts/lib/slack-mrkdwn";
 
 // Slack normally answers in well under a second; cap every call so a slow or
 // unreachable Slack can never wedge the flow awaiting it (a booking/OOO submit,
@@ -89,6 +91,24 @@ export function slackConfigured(): boolean {
  */
 type SlackEncoding = "json" | "form";
 
+/**
+ * What a person typed is escaped HERE, where every message leaves Slate (#3528, L757),
+ * never at each sender. An agent's time off reason went into the manager's notice as
+ * typed, so a reason of `<!channel>` pinged the whole fallback channel; the one sender
+ * that guarded against it did so for itself alone. `slackSafeMrkdwn` escapes Slack's
+ * three characters and keeps only links to the app itself, which is every link Slate
+ * writes. Applied to a message's `text`, its `blocks` and a modal's `view`.
+ * `scripts/test-slack-send-points.ts` fails on any other file that posts to Slack.
+ */
+function safeMessage(body: Record<string, unknown>): Record<string, unknown> {
+  const origins = [appUrl()];
+  const out = { ...body };
+  if (typeof out.text === "string") out.text = slackSafeMrkdwn(out.text, origins);
+  if (out.blocks !== undefined) out.blocks = slackSafeBlocks(out.blocks, origins);
+  if (out.view !== undefined) out.view = slackSafeBlocks(out.view, origins);
+  return out;
+}
+
 async function slackApi(
   method: string,
   body: Record<string, unknown>,
@@ -111,7 +131,7 @@ async function slackApi(
           ? new URLSearchParams(
               Object.entries(body).map(([k, v]) => [k, String(v)]),
             ).toString()
-          : JSON.stringify(body),
+          : JSON.stringify(safeMessage(body)),
     });
     const data = (await res.json()) as { ok: boolean; error?: string };
     return { ok: data.ok, error: data.error, data };
@@ -310,13 +330,15 @@ export async function postSlack(
         "Content-Type": "application/json; charset=utf-8",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({
-        channel,
-        text: msg.text,
-        unfurl_links: false,
-        unfurl_media: false,
-        ...(msg.blocks ? { blocks: msg.blocks } : {}),
-      }),
+      body: JSON.stringify(
+        safeMessage({
+          channel,
+          text: msg.text,
+          unfurl_links: false,
+          unfurl_media: false,
+          ...(msg.blocks ? { blocks: msg.blocks } : {}),
+        }),
+      ),
     });
     const data = (await res.json()) as {
       ok: boolean;
@@ -327,5 +349,22 @@ export async function postSlack(
     return { ok: data.ok, error: data.error, channel: data.channel, ts: data.ts };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * An ephemeral reply to a Slack interaction, posted to its `response_url`
+ * (best-effort, never throws). Here rather than in the interactions route so that
+ * every message Slate sends passes through `safeMessage` (#3528).
+ */
+export async function replyToSlackResponseUrl(responseUrl: string, text: string): Promise<void> {
+  try {
+    await fetchWithTimeout(responseUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(safeMessage({ response_type: "ephemeral", text })),
+    });
+  } catch {
+    /* best-effort: the click already happened, and a lost note changes nothing it did */
   }
 }

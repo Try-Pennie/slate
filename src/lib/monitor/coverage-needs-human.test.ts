@@ -863,14 +863,17 @@ describe("the coverage alert links the advisor, with no booking-id wall (#3485, 
   });
 
   // A display name is DB text: a stray > ends the link and a stray | splits the label
-  // (review finding, 2026-10-11). The label must be escaped.
-  it("escapes the advisor label so a name with > or | cannot break the link", () => {
+  // (review finding, 2026-10-11). Both become look-alikes; `&`, `<` and `>` in general
+  // are escaped once at the send point (#3528), so no entity is written here, which
+  // coverage-needs-human-slack.test.ts checks through the real send path.
+  it("keeps a name with > or | from breaking the link, and writes no entity", () => {
     const text = formatCoverageNeedsHumanAlert(
-      [holder({ userId: "u1", name: "A>B|C", email: "a@example.com", unplaceable: 1 })],
+      [holder({ userId: "u1", name: "A>B|C & D", email: "a@example.com", unplaceable: 1 })],
       BASE,
     );
-    expect(text).toContain("A&gt;B/C");
+    expect(text).toContain("A›B/C & D");
     expect(text).not.toContain("A>B|C");
+    expect(text).not.toContain("&amp;");
   });
 });
 
