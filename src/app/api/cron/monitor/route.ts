@@ -1631,12 +1631,18 @@ export async function GET(req: NextRequest) {
           const row = unwrap(
             await db
               .from("monitor_alert_config")
-              .select("volume_ramp_end_on, volume_learning")
+              .select("volume_ramp_end_on, volume_learning, calcom_retired_at")
               .eq("id", 1)
               .maybeSingle(),
             "volume learning config",
-          ) as { volume_ramp_end_on: string | null; volume_learning: unknown } | null;
-          return { rampEndOn: row?.volume_ramp_end_on ?? null, learning: row?.volume_learning ?? null };
+          ) as { volume_ramp_end_on: string | null; volume_learning: unknown; calcom_retired_at: string | null } | null;
+          // #3896: when cal.com was marked retired, which retires the cal.com anchor
+          // under the learned floors ANCHOR_OVERLAP_WEEKS later.
+          return {
+            rampEndOn: row?.volume_ramp_end_on ?? null,
+            learning: row?.volume_learning ?? null,
+            calcomRetiredAt: row?.calcom_retired_at ?? null,
+          };
         },
         readFirstBookings: (sinceIso) => firstTierBookingsSince(db, sinceIso),
         readBookings: (sinceIso, untilIso) => listBookingStampsBetween(db, sinceIso, untilIso),

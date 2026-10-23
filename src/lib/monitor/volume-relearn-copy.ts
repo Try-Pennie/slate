@@ -15,7 +15,7 @@ import { DateTime } from "luxon";
 import { LEARNING, type LearnedFloors } from "./volume-learning.ts";
 import { parseStampMs } from "../date/stamp.ts";
 import { formatClockTime } from "../date/parse.ts";
-import { REFIT_OVERDUE_MS, baselineInForce, tierJudgedBaseline, type BaselineInForce } from "./volume-relearn.ts";
+import { ANCHOR_OVERLAP_WEEKS, REFIT_OVERDUE_MS, baselineInForce, tierJudgedBaseline, type BaselineInForce } from "./volume-relearn.ts";
 import { LOW_TIER, VOLUME_TIERS, tierLabel } from "./volume-tiers.ts";
 import { CARRIED_SHARE, REAL_ANCHOR_SOURCE, type AnchorSource } from "./carried-share.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
@@ -117,6 +117,53 @@ function underWords(state: BaselineInForce, measuredOn: string): string {
   return a && a.share < 1 ? `${base} thinned to the ${pct(a.share)} of ${tierLabel(state.tier)} bookings Slate carries` : base;
 }
 
+/**
+ * The cal.com anchor's retirement (#3896), said ONCE for every tier, Low included, as
+ * one sentence under the tier list (Dan's design round, 2026-10-23, "Once, under the
+ * tiers"; docs/design/alerts-learning-retirement.html). Before the cutoff it says
+ * when the measurement stops holding any floor up; after it, since when none has.
+ * Null while cal.com is not marked retired. The tier lines and Low's status never
+ * repeat it (L605). Retired is judged as the floors are, at the stored refit's own
+ * fit time, through `baselineInForce`, so the sentence and the floors agree.
+ */
+export function anchorRetirementSentence(input: {
+  rampEndOn: string | null;
+  learning: unknown;
+  calcomRetiredAt: string | null;
+}): string | null {
+  const state = baselineInForce(input, LOW_TIER);
+  const r = state.anchorRetirement;
+  if (!r) return null;
+  if (state.anchorRetired) {
+    return (
+      `No cal.com measurement has held any floor up since ${dayOf(r.retiresAt)}, ${ANCHOR_OVERLAP_WEEKS} weeks after ` +
+      `cal.com was marked retired, so every tier, Low included, follows Slate's own bookings.`
+    );
+  }
+  return (
+    `cal.com was marked retired on ${dayOf(r.calcomRetiredAt)}. From ${dayOf(r.retiresAt)}, ${ANCHOR_OVERLAP_WEEKS} weeks later, ` +
+    `its measurement stops holding any floor up, and every tier, Low included, follows Slate's own bookings.`
+  );
+}
+
+/**
+ * What the ramp end confirm says about the cal.com floor under Low's floors (#3896),
+ * from the same retirement state as `anchorRetirementSentence`, so it is true in every
+ * state: plainly while cal.com is live, with the day it ends once cal.com is marked
+ * retired, and null once the anchor has retired, when there is no such floor.
+ */
+export function rampEndLowFloorNote(input: {
+  rampEndOn: string | null;
+  learning: unknown;
+  calcomRetiredAt: string | null;
+}): string | null {
+  const state = baselineInForce(input, LOW_TIER);
+  const r = state.anchorRetirement;
+  if (!r) return "Low's never go below the cal.com floors.";
+  if (state.anchorRetired) return null;
+  return `Low's never go below the cal.com floors before ${dayOf(r.retiresAt)}.`;
+}
+
 /** Weeks since the ramp start, from a stored insufficient result. */
 function weeksSoFar(state: BaselineInForce): number {
   const r = state.entry?.result;
@@ -150,7 +197,9 @@ export function learningStatusCopy(state: BaselineInForce, nowMs: number): Learn
         `${plural(r.excludedRamp, "booking", "bookings")} from before the ramp started, at ${rampStartWords(state)}.`,
     );
     if (state.anchored) detail.push("No floor is below the cal.com measurement, thinned to the share of Low Slate carries.");
-    const shared = shareSentence(state);
+    // The share only says how the anchor is thinned, so with the anchor retired it says
+    // nothing; the retirement itself is said once under the tiers (#3896).
+    const shared = state.anchorRetired ? null : shareSentence(state);
     if (shared) detail.push(shared);
     // An unreadable stamp reads as overdue, the side that sends somebody to look.
     const fittedMs = parseStampMs(state.fittedAt);
@@ -228,7 +277,7 @@ function notLearnedCopy(state: Exclude<BaselineInForce, { kind: "learned" }>): L
  * absent (L678).
  */
 export function tierLearningLines(
-  input: { rampEndOn: string | null; learning: unknown },
+  input: { rampEndOn: string | null; learning: unknown; calcomRetiredAt: string | null },
   nowMs: number,
   anchors: AnchorSource = REAL_ANCHOR_SOURCE,
 ): string[] {
@@ -238,12 +287,17 @@ export function tierLearningLines(
     if (state.kind === "learned") {
       const fittedMs = parseStampMs(state.fittedAt);
       const overdue = fittedMs === null || nowMs - fittedMs > REFIT_OVERDUE_MS;
-      const held = state.share?.last.outcome === "held" ? ` ${shareSentence(state, anchors)}` : "";
+      // #3896: once the anchor has retired the line says nothing about cal.com at all;
+      // the one sentence under the tier list says since when, for every tier.
+      const held =
+        state.share?.last.outcome === "held" && !state.anchorRetired ? ` ${shareSentence(state, anchors)}` : "";
       const under = state.anchor
-        ? `none below ${underWords(state, state.anchor.measuredOn)}`
-        : "with no cal.com measurement under them";
+        ? `, none below ${underWords(state, state.anchor.measuredOn)}`
+        : state.anchorRetired
+          ? ""
+          : ", with no cal.com measurement under them";
       return (
-        `${label}: judged against floors learned from its own bookings since ${rampStartWords(state)}, ` +
+        `${label}: judged against floors learned from its own bookings since ${rampStartWords(state)}` +
         `${under}, last refit ${instant(state.fittedAt)}.` +
         (overdue ? " No refit has succeeded since then." : "") +
         held

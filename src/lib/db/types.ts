@@ -468,6 +468,11 @@ export interface MonitorAlertConfig {
    *  lane is retired. NOT NULL DEFAULT false; read through
    *  `src/lib/calcom/retirement.ts`, written only by `setCalcomRetired`. */
   calcom_retired: boolean;
+  /** #3896 (migration 0203): when `calcom_retired` last went from false to true, or
+   *  null while it is false. Stamped by the database trigger
+   *  `monitor_alert_config_stamp_calcom_retired`, never by application code; the low
+   *  volume anchor retires `ANCHOR_OVERLAP_WEEKS` after it. */
+  calcom_retired_at: string | null;
   /** Migration 0188: post the owner reassign notice (#2372) to the handoff
    *  channel. NOT NULL DEFAULT false; read through `loadOwnerReassignNoticeOn`,
    *  written by `setMonitorSettings`. */

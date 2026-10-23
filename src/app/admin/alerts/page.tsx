@@ -44,7 +44,12 @@ import { loadPutBackCounts, putBackSavedSentence, type PutBackCounts } from "@/l
 import { VolumeLearning, type PageCoverageView } from "@/components/admin/VolumeLearning";
 import { EARLIEST_RAMP_END, RAMP_END_FORM, baselineInForce, type BaselineInForce } from "@/lib/monitor/volume-relearn";
 import { LEARNING } from "@/lib/monitor/volume-learning";
-import { learningStatusCopy, tierLearningLines } from "@/lib/monitor/volume-relearn-copy";
+import {
+  anchorRetirementSentence,
+  learningStatusCopy,
+  rampEndLowFloorNote,
+  tierLearningLines,
+} from "@/lib/monitor/volume-relearn-copy";
 import { LOW_TIER } from "@/lib/monitor/volume-tiers";
 import {
   LOW_PAGES_ON_SLATE,
@@ -85,7 +90,7 @@ function learningStatusNow(state: BaselineInForce) {
 }
 
 /** The other tiers' lines (#2874), for the same reason: they say how old a refit is. */
-function tierLinesNow(input: { rampEndOn: string | null; learning: unknown }) {
+function tierLinesNow(input: { rampEndOn: string | null; learning: unknown; calcomRetiredAt: string | null }) {
   return tierLearningLines(input, Date.now());
 }
 
@@ -250,7 +255,12 @@ export default async function AlertSettingsPage({
   const floorPolicy = resolveFloors(config, envFloors());
   // #2739: which baseline that is, through the judge `resolveFloors` itself used, so
   // the words and the floors cannot disagree.
-  const learningInput = { rampEndOn: config?.volume_ramp_end_on ?? null, learning: config?.volume_learning ?? null };
+  const learningInput = {
+    rampEndOn: config?.volume_ramp_end_on ?? null,
+    learning: config?.volume_learning ?? null,
+    // #3896: the anchor under the learned floors retires a set time after this.
+    calcomRetiredAt: config?.calcom_retired_at ?? null,
+  };
   const learning = learningStatusNow(baselineInForce(learningInput, LOW_TIER));
   // #2874: every other tier's line, judged by the same judge the monitor reads.
   const tierLines = tierLinesNow(learningInput);
@@ -850,6 +860,8 @@ export default async function AlertSettingsPage({
           rampEndOn={config?.volume_ramp_end_on ?? null}
           detail={learning.detail}
           tiers={tierLines}
+          retirement={anchorRetirementSentence(learningInput)}
+          lowFloorNote={rampEndLowFloorNote(learningInput)}
           coverage={coverage}
           sourceNotice={sourceNotice}
           sourceSetAside={sourceSetAside}
