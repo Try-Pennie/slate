@@ -10,6 +10,10 @@ import {
   SESSION_TIME_BOX_DAYS,
   sessionRefusalLoginError,
 } from "@/lib/auth/session-age";
+import {
+  GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR,
+  GOOGLE_ACCOUNT_CHANGED_MESSAGE,
+} from "@/lib/auth/google-identity-copy";
 
 // Sign-in failures the callback can bounce back with. Kept plain and
 // non-technical; the domain case is the security gate from #589.
@@ -28,6 +32,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   // action that can change the answer, and says nothing about why.
   account_deactivated:
     "This Slate account is no longer active. Ask an admin to reactivate it if you still need access.",
+  // #3526: a Google account other than the one this Slate account belongs to. Not
+  // a retry either, for the same reason, and the wording lives with the rest of
+  // that feature's copy.
+  [GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR]: GOOGLE_ACCOUNT_CHANGED_MESSAGE,
   // #3083: the deploy is missing its sign-in domain, so the callback refuses
   // everyone rather than letting any Google account in. Nothing the person does
   // can fix it, so it points at the people who can.

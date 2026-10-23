@@ -138,6 +138,7 @@ vi.mock("@/lib/booking/agent-stranded-calls", () => strandedStore);
 import { btnDangerCls, btnSecondaryCls } from "@/components/ui/styles";
 import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { SAVE_OUTCOME_COPY } from "@/lib/admin/save-outcomes";
+import { GOOGLE_RELINK_COPY } from "@/lib/auth/google-identity-copy";
 import AgentProfilePage from "./page";
 
 const props = { params: Promise.resolve({ id: "x1" }) };
@@ -1184,5 +1185,48 @@ describe("AgentProfilePage lists the calls the last move could not place (#3595)
     await renderAs("manager", "admin");
     expect(strandedStore.loadAgentStrandedCalls).not.toHaveBeenCalled();
     expect(screen.queryByText(/Couldn't place/)).toBeNull();
+  });
+});
+
+// #3526: sign in refuses a Google account other than the one a person's Slate
+// account was set up with, so a rehire on a new Google account needs an admin to
+// let the new one in. The control is the smallest one that does it, on the
+// person's own page, and only where it can do something.
+describe("linking a new Google account (#3526)", () => {
+  const renderAs = async (viewer: "admin" | "manager", sub: string | null = "sub-old", query = {}) => {
+    // Renders from earlier tests stay mounted in this file, so a role query would
+    // find their notices too.
+    cleanup();
+    auth.currentUser.mockResolvedValueOnce({ id: "v1", role: viewer, org_id: "o1" });
+    dbState.agent = { ...agentOf("agent"), google_sub: sub };
+    render(await AgentProfilePage({ ...props, searchParams: Promise.resolve(query) }));
+  };
+
+  it("offers an admin the control when a Google account is on record, confirmed with its consequence", async () => {
+    await renderAs("admin");
+    await userEvent.click(screen.getByRole("button", { name: GOOGLE_RELINK_COPY.openLabel }));
+    // The confirm names what happens next, not a generic "are you sure".
+    const group = screen.getByRole("group", { name: GOOGLE_RELINK_COPY.question("x1") });
+    expect(group.textContent).toContain(GOOGLE_RELINK_COPY.consequence("x1", "x1@ex.com"));
+    expect(screen.getByRole("button", { name: GOOGLE_RELINK_COPY.confirmLabel })).toBeTruthy();
+  });
+
+  it("is not offered when no Google account is on record, since there is nothing to unlink", async () => {
+    await renderAs("admin", null);
+    expect(screen.queryByRole("button", { name: GOOGLE_RELINK_COPY.openLabel })).toBeNull();
+  });
+
+  it("is not offered to a manager, matching the action's admin only check", async () => {
+    await renderAs("manager");
+    expect(screen.queryByRole("button", { name: GOOGLE_RELINK_COPY.openLabel })).toBeNull();
+  });
+
+  it("says what changed when the relink comes back", async () => {
+    await renderAs("admin", null, { ok: "agent-google-relinked" });
+    // Other live regions on the page are empty; exactly one carries this outcome.
+    const said = screen
+      .getAllByRole("status")
+      .filter((el) => el.textContent === SAVE_OUTCOME_COPY["agent-google-relinked"]);
+    expect(said).toHaveLength(1);
   });
 });

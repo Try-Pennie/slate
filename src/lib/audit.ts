@@ -38,6 +38,10 @@ export const AUDIT_ACTIONS = [
   "agent.attributes",
   "agent.manager",
   "agent.ooo_calendar",
+  // #3526: an admin forgetting the Google account somebody signs in with, so the
+  // next account to sign in with their address gets their Slate account. The
+  // details say an account was unlinked, never the account id.
+  "agent.google_relinked",
   "ooo.submit",
   "ooo.approve",
   "ooo.reject",

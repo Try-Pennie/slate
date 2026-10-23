@@ -42,6 +42,7 @@ import { FRAME_LOCK_TTL_SECONDS } from "@/lib/embed/frame-lock";
 import { EMBED_PRERENDER_LANDS_SECONDS } from "@/lib/embed/prerender-switch-core";
 import { SHARED_LINE_SWITCH_TTL_SECONDS } from "@/lib/booking/shared-line-switch-core";
 import { DAYS_OFFERED_SAVED } from "@/lib/admin/days-offered-copy";
+import { GOOGLE_RELINK_SAVED } from "@/lib/auth/google-identity-copy";
 
 /**
  * Every outcome a form can report.
@@ -51,6 +52,7 @@ import { DAYS_OFFERED_SAVED } from "@/lib/admin/days-offered-copy";
  */
 export const SAVE_OUTCOMES = [
   "agent-attributes",
+  "agent-google-relinked",
   "agent-ooo-calendar",
   "alerts",
   "booker-copy",
@@ -93,6 +95,9 @@ export type SaveOutcome = (typeof SAVE_OUTCOMES)[number];
  */
 export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, string> = {
   "agent-attributes": "Routing attributes saved.",
+  // #3526: names what now happens, because the one thing the admin needs confirmed
+  // is that the next sign in with that address will be let through.
+  "agent-google-relinked": GOOGLE_RELINK_SAVED,
   "agent-ooo-calendar": "Time off calendar saved.",
   alerts: "Alert settings saved.",
   "booker-copy": "Booker copy saved.",

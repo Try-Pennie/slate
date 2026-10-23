@@ -745,9 +745,8 @@ Google's permanent id for that Google account (`users.google_sub`, which Google 
 reuses) and refuses any later sign in with that address from a DIFFERENT Google
 account (#3526). This page means one such sign in was refused. Nobody was signed in,
 and nothing on the account was changed. The person was sent back to the sign in page,
-which has no sentence for this refusal yet (adding one is a screen change held for a
-design decision, #3526), so they see no message and are likely to try again or ask
-somebody.
+which told them this Google account is not the one their Slate account belongs to and
+to ask a Slate admin to link a new one.
 
 The rule is `judgeGoogleIdentity` (`src/lib/auth/google-identity.ts`), applied in
 `src/lib/provision.ts` before anything is written to the row. An account with no
@@ -764,11 +763,12 @@ stored id yet is not checked; it records the id on its next sign in.
 
 **Fix or escalate.**
 - **The same person on a new Google account** (a rehire, or an account Pennie
-  recreated): the stored id has to be forgotten so their next sign in records the new
-  one. There is no control for it yet (an admin control on the advisor's page is
-  waiting on a design decision, #3526), so whoever looks after Slate sets
-  `users.google_sub` to null on that one row, by its id from the log line, and says
-  so in the incident thread, since a hand write leaves no audit entry.
+  recreated): an admin opens their page in Slate (`/admin/agents/<id>`, the id is in
+  the log line), opens the closed section at the bottom, and presses **Link a new
+  Google account** under Account status, then confirms. That forgets the old id
+  (audited as `agent.google_relinked`, never the id itself), and their next sign in
+  records the new one. The control shows only to an admin who outranks them, and only
+  while an account is on record.
 - **Someone new who was given a departed person's address**: do NOT link it. Linking
   hands them the old account's role, bookings and calendar, which is the thing this
   guard exists to stop. The departed person's account needs deactivating, and the new

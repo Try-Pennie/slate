@@ -17,10 +17,10 @@
  * hand over an account that has said who it belongs to (fail closed, as every
  * other provisioning refusal does).
  *
- * A legitimate rehire on a NEW Google account is refused by the same rule, and is
- * let in by forgetting the stored id, after which their next sign in records the
- * new one ("A sign in was refused as a different person" in
- * `docs/alerts-runbook.md` says how).
+ * A legitimate rehire on a NEW Google account is refused by the same rule, and an
+ * admin lets them in by forgetting the stored id (`relinkGoogleAccount` in
+ * `src/app/admin/actions.ts`, the "Link a new Google account" control on their
+ * page), after which their next sign in records the new one.
  */
 
 export type GoogleIdentityVerdict =

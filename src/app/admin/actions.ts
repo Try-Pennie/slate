@@ -91,6 +91,7 @@ import {
   type BookableResult,
 } from "@/lib/bookable/service";
 import { planClearPendingFlip } from "@/lib/bookable/plan";
+import { GOOGLE_RELINK_REFUSED } from "@/lib/auth/google-identity-copy";
 import { MISSING_TIMEZONE_HOURS, submittedTimezone } from "@/lib/submitted-timezone";
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { runRosterSync } from "@/lib/salesforce/run-roster-sync";
@@ -2154,6 +2155,78 @@ export async function clearPendingBookableFlip(form: FormData): Promise<void> {
     details: { bookable_pending_since: { from: plan.pendingSince, to: null }, bookable: row!.bookable },
   });
   redirect(`${back}?bookable=pending-cleared`);
+}
+
+/**
+ * Admin only: forget the Google account somebody signs in with (#3526), so the
+ * next Google account that signs in with their address records itself instead.
+ *
+ * Sign in refuses a Google account other than the one a Slate account holds,
+ * because an address handed to somebody new would otherwise hand them the old
+ * account. A rehire on a NEW Google account meets the same refusal, and this is
+ * how an admin lets them through. Only `google_sub` moves: the role, bookings and
+ * calendar stay with the account, which is the point of relinking rather than
+ * recreating.
+ *
+ * A compare and swap on the id it read, so a press that races a sign in (or a
+ * second press) writes nothing twice and records nothing it did not do. Every
+ * outcome comes back to the page as a sentence (`?error=` or the saved notice),
+ * never a throw, which production would replace with the generic error page.
+ */
+export async function relinkGoogleAccount(form: FormData): Promise<void> {
+  const userId = String(form.get("user_id") ?? "");
+  if (!userId) return;
+  const admin = await requireAdmin();
+  const back = `/admin/agents/${userId}`;
+  const db = supabaseAdmin();
+
+  let row: { role: Role; google_sub: string | null } | null;
+  try {
+    row = unwrap(
+      await db
+        .from("users")
+        .select("role, google_sub")
+        .eq("id", userId)
+        .eq("org_id", admin.org_id)
+        .maybeSingle(),
+      "relink google account target",
+    ) as typeof row;
+  } catch (err) {
+    log.error("admin", { msg: "relink target could not be read", user_id: userId }, err);
+    redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.unreadable)}`);
+  }
+  if (!row) return redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.missing)}`);
+  // The same escalation rule every agent control uses: an admin cannot act on a
+  // super admin, whatever the button on their screen offered.
+  if (!canManageUser(admin.role, row.role, admin.id === userId)) {
+    redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.notPermitted)}`);
+  }
+  const stored = row.google_sub;
+  if (stored == null) redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.nothingLinked)}`);
+
+  const { data, error } = await db
+    .from("users")
+    .update({ google_sub: null })
+    .eq("id", userId)
+    .eq("org_id", admin.org_id)
+    .eq("google_sub", stored)
+    .select("id");
+  if (error) {
+    redirect(`${back}${refusedQuery(writeRefused("Linking a new Google account", error))}`);
+  }
+  revalidatePath(back);
+  // Nothing matched the id that was read: another press got there first, so there
+  // is nothing of ours to record.
+  if (!data || data.length === 0) redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.nothingLinked)}`);
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "agent.google_relinked",
+    targetUserId: userId,
+    details: { google_account: { from: "linked", to: "unlinked" } },
+  });
+  redirect(`${back}${savedQuery("agent-google-relinked")}`);
 }
 
 /**

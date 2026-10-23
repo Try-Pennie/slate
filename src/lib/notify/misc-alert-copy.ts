@@ -563,7 +563,8 @@ export function googleAccountMismatchAlert(email: string, reason: GoogleMismatch
   return (
     `Somebody signed in as ${email} with a different Google account from the one that Slate account belongs to, ` +
     `so they were refused and given nothing. ` +
-    `If that person is coming back on a new Google account, ask whoever looks after Slate to link the new account to theirs. ` +
+    `If that person is coming back on a new Google account, an admin can let them in with ` +
+    `Link a new Google account under Account status on their page in Slate. ` +
     `If the address now belongs to someone new, do not link it, because linking gives them the old account's role and bookings; ` +
     `ask whoever looks after Slate to set them up. ` +
     `Diagnose via tag=auth-callback msg="refused a different google account" in the Worker logs.`
