@@ -160,12 +160,32 @@ export async function acquireLease(key: string, ttlMs: number): Promise<LockLeas
   return claim === null ? null : makeLockLease(key, claim, ttlMs);
 }
 
-/** Releases only our own claim - a post-TTL thief's newer claim survives. */
-export async function releaseLock(key: string, claimIso: string): Promise<void> {
-  // write-ok: the lock is released by its TTL regardless, so a refused delete costs one lane's wait and never a lost lock.
-  await supabaseAdmin()
-    .from("sync_locks")
-    .delete()
-    .eq("key", key)
-    .eq("claimed_at", claimIso);
+/**
+ * What one release did (#4180): freed our claim, found no claim of ours to free (released
+ * already, or taken over after the TTL), or could not run. Never throws, so a release in a
+ * `finally` cannot replace the outcome it follows.
+ */
+export type ReleaseLockResult = "released" | "not-held" | "refused";
+
+/** Releases only our own claim - a post-TTL thief's newer claim survives. Idempotent: a second
+ *  release of the same claim finds nothing and answers `not-held`. */
+export async function releaseLock(key: string, claimIso: string): Promise<ReleaseLockResult> {
+  // The lock is released by its TTL regardless, so a refused delete costs one lane's wait and
+  // never a lost lock. It is reported rather than thrown, for the callers that say what happened.
+  try {
+    const { data, error } = await supabaseAdmin()
+      .from("sync_locks")
+      .delete()
+      .eq("key", key)
+      .eq("claimed_at", claimIso)
+      .select("key");
+    if (error) {
+      log.warn("locks", { msg: "lock release could not run", key }, error);
+      return "refused";
+    }
+    return data?.length ? "released" : "not-held";
+  } catch (err) {
+    log.warn("locks", { msg: "lock release threw", key }, err);
+    return "refused";
+  }
 }
