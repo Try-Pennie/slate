@@ -46,6 +46,19 @@ const mergedRed = {
 };
 assert(!classifyPush(mergedRed).ok, "violation: a merged PR whose CI failed is flagged");
 
+// #4096 (L801): the marker is read from the SUBJECT only. A squash merge's body is every
+// commit message on the branch, so a branch that merely MENTIONS the marker (a change to
+// this guard or its docs, as #1069's own squash did) would otherwise exempt its red merge.
+const mentionedInBody = {
+  ...mergedRed,
+  commitMessage: `Explain the hotfix escape hatch (#42)\n\n* Document that a direct push carries ${BYPASS_MARKER}`,
+};
+assert(!classifyPush(mentionedInBody).ok, "a red merge whose body only mentions the marker is still flagged");
+const bodyOnlyDirect = { ...directPush, commitMessage: `Hotfix main\n\n${BYPASS_MARKER}` };
+assert(!classifyPush(bodyOnlyDirect).ok, "a direct push with the marker only in its body is not a bypass");
+const subjectMarked = { ...directPush, commitMessage: `Hotfix main ${BYPASS_MARKER}\n\nWhy: the booker is down.` };
+assert(classifyPush(subjectMarked).ok, "the marker in the subject still allows a deliberate direct push");
+
 // An open (not merged) PR associated with the commit is NOT a legitimate merge.
 const openOnly = { ...base, prs: [{ number: 42, merged: false, ciConclusion: "success" }] };
 assert(!classifyPush(openOnly).ok, "violation: an associated but unmerged PR does not count as a merge");

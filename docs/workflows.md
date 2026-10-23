@@ -21,7 +21,10 @@ merged PR whose CI passed (`scripts/check-main-push.ts` +
 Slack alert** so a human can revert. Because it runs *after* the push (and the
 deploy), it is a safety net, not prevention: that is the accepted residual risk
 until the org upgrades. A **deliberate** direct push (an admin hotfix) must carry
-`[allow-direct-push]` in its commit message to stay silent; otherwise it pages.
+`[allow-direct-push]` in its commit subject (the first line) to stay silent;
+otherwise it pages. The body is never read for it (#4096): a squash merge's body
+quotes every commit on its branch, so a branch that only mentions the marker would
+otherwise exempt its own red merge.
 
 ### The two things a workflow cannot report about itself (#2476, #2229)
 
