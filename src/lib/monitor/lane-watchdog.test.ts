@@ -1213,8 +1213,9 @@ describe("alertOnStaleLanes (#803)", () => {
       // No five-plus digit minute count anywhere in the copy.
       expect(text).not.toMatch(/\d{5,}\s*minutes/);
       // It still names the lane and points somewhere useful.
+      // Since #4168 that is the runbook section, which holds the lane's lock and fields.
       expect(text).toContain("outbox");
-      expect(text).toContain("cron_outbox");
+      expect(text).toContain("A lane or schedule has gone quiet");
     });
 
     it("a genuinely quiet lane still gets its real, measured age", async () => {

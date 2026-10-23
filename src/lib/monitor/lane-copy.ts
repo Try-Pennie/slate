@@ -11,7 +11,6 @@
  * wrong lane and lock.
  */
 import { describeGap, laneQuietClause, laneRun, type StaleLane } from "@/lib/monitor/health";
-import { laneFieldName } from "@/lib/monitor/lane-timing";
 import {
   AVAILABILITY_TRUTH_VERDICT_LANE,
   FAILURE_RATE_VERDICT_LANE,
@@ -51,41 +50,42 @@ import {
 /** Minutes, rounded, for the copy. */
 const minutes = (ms: number) => Math.round(ms / 60_000);
 
+/** The alerts runbook section the stale lane page sends its reader to. */
+export const STALE_LANE_RUNBOOK_SECTION = "A lane or schedule has gone quiet";
+
 /**
  * A Worker cron lane that has gone quiet (#4168, #3468).
  *
  * Since #3693 every lane runs as its own placed fetch, so a CPU kill on a shared
  * invocation (#760) is no longer how lanes go quiet. What was seen on 2026-10-23 was a
- * gradual deploy cancelling a run mid flight, the next tick skipping on the cancelled
- * run's lock, and a run far from the database taking 77 s instead of 21 s. All three
- * are on the dispatcher's `lane timings` line, so the page sends the reader there, by
- * the fields that lane carries (a sub step lane is timed as the lane it runs inside).
+ * gradual deploy cancelling a run part way, the next tick waiting on the cancelled
+ * run's lock, and a run far from the database taking 77 s instead of 21 s.
  *
- * The lock is the one `LANE_RUNS` records for the lane, never built from its name, and
- * the clause is left out for a lane that takes none.
+ * The page is read by a product manager on a phone, so it says those causes in plain
+ * words and names no log command, field or lock (Dan, 2026-10-23, "Plainer"). The
+ * runbook section it names holds that detail per lane, held to `LANE_RUNS` by
+ * scripts/test-stale-lane-copy.ts. The waiting clause comes only for a lane whose route
+ * takes a lock (`LANE_RUNS`), because without one the next run has nothing to wait on.
  */
 export function coreLaneAlertText(lane: StaleLane): string {
-  const run = laneRun(lane.lane);
-  const field = laneFieldName(run.route);
-  const host = field === laneFieldName(lane.lane) ? "" : ` It runs inside the ${field} lane.`;
-  const lock = run.lock
-    ? ` A cancelled run holds the ${run.lock} lock until it expires, so the next run skips.`
+  const waited = laneRun(lane.lane).lock
+    ? `, and the next run then waited for the first to time out`
     : "";
   return (
     `The ${lane.lane} cron lane ${laneQuietClause({
       ageMs: lane.ageMs,
       boundMin: minutes(lane.maxStaleMs),
       unreadable: lane.unreadable,
-    })}. Its work is not happening.${host} Read the lane timings across the gap ` +
-    `(scripts/logs.ts "tag=cron" --lines): a deploy landing mid run cancels it, ` +
-    `${field}_placement far from the database (lanes_near_db=0) slows it, and ` +
-    `${field}_ms longer than its cadence means it overran.${lock}`
+    })}. Its work is not happening. Usually a deploy cancelled a run part way, a run ` +
+    `went to a server far from the database and ran slowly, or a run took longer than ` +
+    `its schedule${waited}. The alerts runbook covers what to check for each lane, under ` +
+    `"${STALE_LANE_RUNBOOK_SECTION}".`
   );
 }
 
-/** All-clear for a Worker cron lane. Carries no remediation: the page sent the
- *  reader to the lane timings and a held lock, and repeating that here would send
- *  them after a fault that is over. */
+/** All-clear for a Worker cron lane. Carries no remediation: the page named the
+ *  usual causes and the runbook, and repeating that here would send the reader after
+ *  a fault that is over. */
 export function laneRecoveryText(lane: string): string {
   return (
     `The ${lane} cron lane is running again. It has stamped a heartbeat inside ` +
@@ -215,9 +215,9 @@ const TIME_OFF_SUBJECT: Record<string, { what: string; cost: string; look: strin
  * A time off lane that has gone quiet (#2543).
  *
  * Deliberately not the core lane wording: these fire once a day rather than every few
- * minutes, so the core page's causes (a deploy cancelling a run, a slow placed run, a
- * held lane lock) are not where their faults live, and sending the reader to the lane
- * timings would send them after a fault that is not there. The
+ * minutes, so the core page's causes (a deploy cancelling a run, a slow run far from
+ * the database, a run waiting on another) are not where their faults live, and naming
+ * them would send the reader after a fault that is not there. The
  * bound is quoted in hours or days rather than minutes, because "has not run for
  * 4,380 minutes" is arithmetic shown to somebody reading a phone.
  */

@@ -67,15 +67,28 @@ not redeployed since the receipt shipped (`npx wrangler deploy -c wrangler.log-t
 **First checks.**
 - For a Worker lane (`cron_lane_stale:<lane>`), read the dispatcher's `lane timings`
   lines across the gap: `scripts/logs.ts "tag=cron" --lines --from <iso> --to <iso>`
-  (#4168). They show the three causes seen since each lane became its own placed
-  invocation (#3693): a gradual deploy landing mid run cancels it (the invocation
-  ends `canceled`; compare the deploy time with the gap), and the next tick then
-  skips while the cancelled run's lock has not expired; `<lane>_placement` far from
-  the database with `lanes_near_db=0`, which made a 21 s monitor run take 77 s on
+  (#4168). They show the three causes the page names, seen since each lane became its
+  own placed invocation (#3693): a gradual deploy landing mid run cancels it (the
+  invocation ends `canceled`; compare the deploy time with the gap), and the next tick
+  then skips while the cancelled run's lock has not expired; `<lane>_placement` far
+  from the database with `lanes_near_db=0`, which made a 21 s monitor run take 77 s on
   2026-10-23; and `<lane>_ms` longer than the cadence, a lane that overran. A CPU kill
-  (`exceededCpu`) is no longer the usual cause. The page names the lane's real lock,
-  or none, from `LANE_RUNS` in `src/lib/monitor/health.ts` (#3468); a sub step lane
-  such as `reroute-hold-sweep` is timed as the lane it runs inside.
+  (`exceededCpu`) is no longer the usual cause. Each lane's fields and lock, from
+  `LANE_RUNS` in `src/lib/monitor/health.ts` (#3468; `scripts/test-stale-lane-copy.ts`
+  holds this list to it):
+  - `sync`: `sync_placement`, `sync_ms`; lock `cron_sync`.
+  - `recompute`: `recompute_placement`, `recompute_ms`; lock `cron_recompute`.
+  - `outbox`: `outbox_placement`, `outbox_ms`; lock `cron_outbox`.
+  - `selfheal`: `selfheal_placement`, `selfheal_ms`; lock `cron_selfheal`.
+  - `complete`: `complete_placement`, `complete_ms`; lock `cron_complete`.
+  - `watch`: `watch_placement`, `watch_ms`; lock `cron_watch`.
+  - `monitor`: `monitor_placement`, `monitor_ms`; lock `cron_monitor`.
+  - `bulk-reassign`: `bulk_reassign_placement`, `bulk_reassign_ms`; lock `cron_bulk_reassign`.
+  - `hydrate-calendars`: `hydrate_calendars_placement`, `hydrate_calendars_ms`; lock `cron_hydrate_calendars`.
+  - `booking-reminders`: `booking_reminders_placement`, `booking_reminders_ms`; takes no lock.
+  - `reroute-hold-sweep`: runs inside the selfheal lane, so `selfheal_placement`, `selfheal_ms`; takes no lock of its own.
+  - `capacity-history`: `capacity_history_placement`, `capacity_history_ms`; lock `cron_capacity_history`.
+  - `capacity-fill`: `capacity_fill_placement`, `capacity_fill_ms`; lock `cron_capacity_fill`.
 - The Cloudflare dashboard's cron triggers: did the schedule fire at all?
 - `npx wrangler tail`, attach, and wait one cadence. A lane that is running logs a
   cycle line every tick.

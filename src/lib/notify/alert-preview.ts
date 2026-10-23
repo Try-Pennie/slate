@@ -4703,8 +4703,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       unreadable: true,
     }),
   },
-  // #4168, #3468: the lock is the one the lane's route takes, which is not always
-  // `cron_<lane>`, and a lane that takes none names none.
+  // #4168, #3468: plain causes, and the next run waiting only for a lane whose route
+  // takes a lock (`LANE_RUNS`); a lane that takes none says nothing about waiting.
   {
     key: "cron_lane_stale:*",
     state: "the monitor lane, quiet across a deploy",
@@ -4718,7 +4718,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   {
     key: "cron_lane_stale:*",
-    state: "a lane whose lock is not named after it",
+    state: "bulk-reassign, whose next run waits on its lock",
     channel: "alert",
     text: coreLaneAlertText({
       lane: "bulk-reassign",
@@ -4729,7 +4729,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   {
     key: "cron_lane_stale:*",
-    state: "a sub step lane with no lock of its own",
+    state: "a sub step lane with no lock, so nothing waits",
     channel: "alert",
     text: coreLaneAlertText({
       lane: "reroute-hold-sweep",
