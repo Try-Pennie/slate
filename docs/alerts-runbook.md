@@ -735,6 +735,50 @@ written down with the reason, never done to make the page stop.
 
 ---
 
+## A sign in was refused as a different person
+
+Keys: `sign_in_google_account_mismatch:*` (one per Slate account).
+
+**What fired it.** Slate finds a staff member's account by email address, and an
+address can be given to somebody new. So once an account has signed in, Slate keeps
+Google's permanent id for that Google account (`users.google_sub`, which Google never
+reuses) and refuses any later sign in with that address from a DIFFERENT Google
+account (#3526). This page means one such sign in was refused. Nobody was signed in,
+and nothing on the account was changed. The person was told to ask a Slate admin.
+
+The rule is `judgeGoogleIdentity` (`src/lib/auth/google-identity.ts`), applied in
+`src/lib/provision.ts` before anything is written to the row. An account with no
+stored id yet is not checked; it records the id on its next sign in.
+
+**First checks.**
+- Find out who the person was. The page names the address; the Worker log line
+  (`tag=auth-callback msg="refused a different google account"`) carries the Slate
+  account id and the reason.
+- A reason of `no-account-id` means Google or Supabase handed over no account id at
+  all. One is odd; several for different people means sign in is broken for everybody
+  who has signed in before, which is an outage: read the callback's
+  `user_metadata` handling in `src/app/api/auth/callback/route.ts`.
+
+**Fix or escalate.**
+- **The same person on a new Google account** (a rehire, or an account Pennie
+  recreated): the stored id has to be forgotten so their next sign in records the new
+  one. There is no control for it yet (an admin control on the advisor's page is
+  waiting on a design decision, #3526), so whoever looks after Slate sets
+  `users.google_sub` to null on that one row, by its id from the log line, and says
+  so in the incident thread, since a hand write leaves no audit entry.
+- **Someone new who was given a departed person's address**: do NOT link it. Linking
+  hands them the old account's role, bookings and calendar, which is the thing this
+  guard exists to stop. The departed person's account needs deactivating, and the new
+  person needs an account of their own, which today means a code or data change:
+  escalate to whoever looks after Slate.
+- **Nobody Pennie recognises**: treat it as an attempt to use an address that is not
+  theirs and tell whoever runs Pennie's Google Workspace.
+
+This is an incident: it never sends an all clear, because the refusal is already over
+when the page is sent.
+
+---
+
 ## The booking API is refusing its caller
 
 Keys: `booking_api_ceiling`, `booking_api_credential`, `booking_api_list_read`,

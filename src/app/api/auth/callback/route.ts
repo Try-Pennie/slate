@@ -3,6 +3,14 @@ import { supabaseServer } from "@/lib/supabase/server";
 import { provisionUser } from "@/lib/provision";
 import { DeactivatedAccountError } from "@/lib/auth/active-session";
 import {
+  GOOGLE_ACCOUNT_MISMATCH_COOLDOWN_MS,
+  GoogleAccountMismatchError,
+  googleAccountMismatchAlertKey,
+} from "@/lib/auth/google-identity";
+import { GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR } from "@/lib/auth/google-identity-copy";
+import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { googleAccountMismatchAlert } from "@/lib/notify/misc-alert-copy";
+import {
   SESSION_SEEN_COOKIE,
   SESSION_STARTED_COOKIE,
   sessionStampCookieOptions,
@@ -97,6 +105,34 @@ export async function GET(req: NextRequest) {
       log.warn("auth-callback", { msg: "refused a deactivated account", auth_user_id: user.id });
       await supabase.auth.signOut();
       return NextResponse.redirect(`${origin}/login?error=account_deactivated`);
+    }
+    // #3526: the Google account is not the one this Slate account belongs to, so
+    // this is a different person on that address (or the same person on a new
+    // account). Settled like a deactivation, so it gets its own message rather
+    // than a retry, and Pennie is told: an address handed to somebody new without
+    // the departure recorded is how the old row's role and bookings would have
+    // been handed over, and only a person can tell a rehire from a mistake.
+    if (err instanceof GoogleAccountMismatchError) {
+      log.warn("auth-callback", {
+        msg: "refused a different google account",
+        auth_user_id: user.id,
+        user_id: err.userId,
+        reason: err.reason,
+      });
+      await supabase.auth.signOut();
+      try {
+        // alert-key: sign_in_google_account_mismatch:*
+        await sendThrottledAlert(
+          googleAccountMismatchAlertKey(err.userId),
+          GOOGLE_ACCOUNT_MISMATCH_COOLDOWN_MS,
+          googleAccountMismatchAlert(err.email, err.reason),
+        );
+      } catch (alertErr) {
+        // The refusal stands whether or not Slack heard about it: the person is
+        // already signed out and the warn above names the account.
+        log.error("auth-callback", { msg: "different google account alert failed", user_id: err.userId }, alertErr);
+      }
+      return NextResponse.redirect(`${origin}/login?error=${GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR}`);
     }
     log.error("auth-callback", { msg: "provisioning refused", auth_user_id: user.id }, err);
     await supabase.auth.signOut();

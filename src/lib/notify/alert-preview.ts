@@ -356,6 +356,7 @@ import {
   bookableTimedOutAlert,
   bookableContendedAlert,
   bookableTraitUnrecordedAlert,
+  googleAccountMismatchAlert,
   refusedAdvisorLeftPoolAlert,
   boundaryCatchAlert,
   embedOriginMismatchAlert,
@@ -6286,6 +6287,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: bookableTraitUnrecordedAlert("dana.whitfield@trypennie.com", false) },
   { key: "bookable_trait_unrecorded:*", state: "an agent made bookable and Regal not told", channel: "alert",
     text: bookableTraitUnrecordedAlert("ariel.nwosu@trypennie.com", true) },
+  // #3526. Each reason has its own wording, because the two send the reader to
+  // different places: a person to identify, or a sign in path to repair.
+  { key: "sign_in_google_account_mismatch:*", state: "a different Google account on a known address", channel: "alert",
+    text: googleAccountMismatchAlert("dana.whitfield@trypennie.com", "different-account") },
+  { key: "sign_in_google_account_mismatch:*", state: "a sign in carrying no Google account id", channel: "alert",
+    text: googleAccountMismatchAlert("ariel.nwosu@trypennie.com", "no-account-id") },
   // #3700. The constant is imported rather than spelled, so the preview cannot claim
   // a period the sync lane does not wait.
   { key: "refused_advisor_left_pool:*", state: "an archived account, other advisors still in its pools", channel: "alert",

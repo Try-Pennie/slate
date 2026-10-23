@@ -1,5 +1,6 @@
 import { CLIENT_ERROR_KEY_PREFIX } from "@/lib/api/client-error-scrub";
 import type { BlockedResource } from "@/lib/csp";
+import type { GoogleMismatchReason } from "@/lib/auth/google-identity";
 
 /**
  * The remaining alert wording, lifted out of its send sites (#1153).
@@ -537,6 +538,35 @@ export function bookableTraitUnrecordedAlert(email: string, slateBookable: boole
     `the change was saved, and recording the update for Regal failed, so nothing will retry it. ` +
     `Run pnpm backfill:bookable-trait to send every agent's current state. ` +
     `Diagnose via tag=bookable-trait in the Worker logs.`
+  );
+}
+
+/**
+ * A sign in refused because its Google account is not the one the Slate account
+ * belongs to (#3526).
+ *
+ * An incident: the refusal has already happened and nothing was handed over, so
+ * there is no state to clear. The reader's question is who the person was, and
+ * only somebody at Pennie can answer it, so the copy names the two ordinary
+ * answers and the action for each. Never an account id, which nobody reading this
+ * can use, and never an error: nothing failed.
+ */
+export function googleAccountMismatchAlert(email: string, reason: GoogleMismatchReason): string {
+  if (reason === "no-account-id") {
+    return (
+      `A sign in as ${email} was refused because Google did not say which account it was, ` +
+      `and that Slate account belongs to a known Google account. Nobody was signed in. ` +
+      `If this repeats for other people, sign in itself is broken. ` +
+      `Diagnose via tag=auth-callback msg="refused a different google account" in the Worker logs.`
+    );
+  }
+  return (
+    `Somebody signed in as ${email} with a different Google account from the one that Slate account belongs to, ` +
+    `so they were refused and given nothing. ` +
+    `If that person is coming back on a new Google account, ask whoever looks after Slate to link the new account to theirs. ` +
+    `If the address now belongs to someone new, do not link it, because linking gives them the old account's role and bookings; ` +
+    `ask whoever looks after Slate to set them up. ` +
+    `Diagnose via tag=auth-callback msg="refused a different google account" in the Worker logs.`
   );
 }
 
