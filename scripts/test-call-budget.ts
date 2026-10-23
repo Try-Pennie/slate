@@ -15,6 +15,7 @@ import {
   withinOwnCleanupBudget,
 } from "../src/lib/call-budget.ts";
 import { DeadlineExceededError, NO_DEADLINE } from "../src/lib/fetch-within-deadline.ts";
+import { forgetDependencyCalls, recentStall } from "../src/lib/dependency-stall.ts";
 import type { ScheduleTimer } from "../src/lib/read-within-deadline.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -467,6 +468,58 @@ await withinOwnCleanupBudget(
     ["b:google freeBusy", "a:supabase"],
     "observer: two requests interleaved in one isolate never see each other's calls",
   );
+  t = 0;
+}
+
+// #3784: where each call was answered from. Supabase sits behind Cloudflare, so its
+// answer carries a `cf-ray` whose suffix names the colo Supabase's edge served it at,
+// which is the colo this Worker ran in. The observer is told it with the call; a call
+// with no answer, or an answer with no ray (Google), names none. And this isolate
+// remembers a slow call, inside a request or not, for the Google breaker page.
+{
+  forgetDependencyCalls();
+  const timer: ScheduleTimer = () => () => {};
+  const seen: { label: string; colo: string | null | undefined }[] = [];
+  const observer = { call: (label: string, _from: number, _to: number, colo?: string | null) => seen.push({ label, colo }) };
+  const answer = (ms: number, headers: Record<string, string> = {}, fail = false) => async () => {
+    t += ms;
+    if (fail) throw new Error("connection reset");
+    return new Response("ok", { headers });
+  };
+  t = 10_000;
+  await withinCallBudget(
+    14_000,
+    "the booking confirm",
+    async () => {
+      await fetchWithinBudget(answer(20, { "cf-ray": "8f2c1a9b4d5e6f70-SEA" }), "https://x.test", {}, 15_000, "supabase", timer, now);
+      await fetchWithinBudget(answer(400), "https://x.test", {}, 8_000, "google freeBusy", timer, now);
+      await fetchWithinBudget(answer(2_600, {}, true), "https://x.test", {}, 15_000, "supabase", timer, now).catch(() => null);
+    },
+    now,
+    observer,
+  );
+  eq(
+    seen,
+    [
+      { label: "supabase", colo: "SEA" },
+      { label: "google freeBusy", colo: null },
+      { label: "supabase", colo: null },
+    ],
+    "observer: each call says where it was answered from, and a call with no answer names nowhere",
+  );
+  eq(
+    recentStall("supabase", now()),
+    { ms: 2_600, at: now(), colo: "SEA" },
+    "isolate: the slow Supabase call is remembered, with where this isolate's answers came from",
+  );
+  forgetDependencyCalls();
+  await fetchWithinBudget(answer(2_100, { "cf-ray": "8f2c1a9b4d5e6f70-SEA" }), "https://x.test", {}, 15_000, "supabase", timer, now);
+  eq(
+    recentStall("supabase", now()),
+    null,
+    "isolate: a slow call outside any budget (a cron lane's statement, up to 7.9s while healthy) is not read as a stall",
+  );
+  forgetDependencyCalls();
   t = 0;
 }
 

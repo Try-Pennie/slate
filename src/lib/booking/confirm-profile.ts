@@ -208,8 +208,17 @@ export interface ConfirmProfile {
   begin(stage: string): () => void;
   /** Run one rung of the tier ladder, charging its wall time to that rung. */
   rung<T>(code: string, fn: () => Promise<T>): Promise<T>;
-  /** Record one budgeted dependency call; the shape `call-budget.ts` reports in. */
-  call(label: string, startedAt: number, endedAt: number): void;
+  /**
+   * Record one budgeted dependency call; the shape `call-budget.ts` reports in.
+   * `colo` (#3784) is the colo the answer's `cf-ray` named, null when it named none.
+   */
+  call(label: string, startedAt: number, endedAt: number, colo?: string | null): void;
+  /**
+   * #3784: every colo `dependency`'s answers named, first seen first, each once.
+   * Empty when none did (no call, no answer, or a service not behind Cloudflare).
+   * On Supabase this is where the confirm RAN (`src/lib/http/cf-ray.ts`).
+   */
+  answeredFrom(dependency: string): string[];
   /**
    * This profile, as the observer a confirm budget reports its calls to, marked as
    * watching them, so the reading says how many there were, zero included. A route
@@ -256,6 +265,8 @@ export function makeConfirmProfile(opts: { now: () => number; startedAt?: number
   const stages: StageSpan[] = [];
   const rungs: { code: string; span: Span }[] = [];
   const calls: { label: string; span: Span }[] = [];
+  /** #3784: the colos each dependency's answers named, by its first word. A Map (L738). */
+  const colos = new Map<string, string[]>();
   let observed = false;
 
   const begin = (stage: string): (() => void) => {
@@ -289,9 +300,16 @@ export function makeConfirmProfile(opts: { now: () => number; startedAt?: number
         span.to = opts.now();
       }
     },
-    call(label: string, from: number, to: number): void {
+    call(label: string, from: number, to: number, colo?: string | null): void {
       observed = true;
       calls.push({ label, span: { from, to } });
+      if (!colo) return;
+      const dependency = label.split(" ")[0] || label;
+      const seen = colos.get(dependency) ?? [];
+      if (!seen.includes(colo)) colos.set(dependency, [...seen, colo]);
+    },
+    answeredFrom(dependency: string): string[] {
+      return [...(colos.get(dependency) ?? [])];
     },
     observeCalls(): ConfirmProfile {
       observed = true;

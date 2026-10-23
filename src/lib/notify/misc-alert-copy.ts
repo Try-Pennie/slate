@@ -1,6 +1,7 @@
 import { CLIENT_ERROR_KEY_PREFIX } from "@/lib/api/client-error-scrub";
 import type { BlockedResource } from "@/lib/csp";
 import type { GoogleMismatchReason } from "@/lib/auth/google-identity";
+import { durationText } from "@/lib/notify/error-text";
 
 /**
  * The remaining alert wording, lifted out of its send sites (#1153).
@@ -664,14 +665,47 @@ function heldFor(ms: number): string {
  * about: leads told to try again, and calendar sync not refreshing. `lastFailure`
  * is already short (`shortErrorReason`, or a status and the call's name).
  */
-export function googleBreakerOpenAlert(failures: number, lastFailure: string | null, openMs: number): string {
+export function googleBreakerOpenAlert(
+  failures: number,
+  lastFailure: string | null,
+  openMs: number,
+  /**
+   * #3784: a Supabase stall this isolate saw in the same minutes (`recentStall`), with
+   * the colo its answers came from, or null. Then both services were failing from one
+   * location, and the page suspects the location before either (L774).
+   */
+  supabaseStall: { ms: number; colo: string | null } | null = null,
+): string {
   const seconds = Math.round(openMs / 1000);
   const last = lastFailure ? ` (the last: ${lastFailure})` : "";
+  const opening = supabaseStall
+    ? breakerLocationFirst(failures, last, supabaseStall)
+    : `Google Calendar is not answering: ${failures} calls in a row failed${last}. `;
   return (
-    `Google Calendar is not answering: ${failures} calls in a row failed${last}. ` +
+    opening +
     `Slate is holding Google calls back and trying one every ${seconds} seconds. Until one succeeds, ` +
     "bookings ask the lead to try again in a moment and calendar sync is paused. " +
     "An all-clear follows when Google answers. Diagnose via tag=google-breaker in the Worker logs."
+  );
+}
+
+/**
+ * #3784: Google failing while Supabase stalled from the same isolate in the same
+ * minutes. Placement runs every fetch beside Oregon (#3730), so a degraded location
+ * there fails both at once; the page says so before it names either service.
+ */
+function breakerLocationFirst(failures: number, last: string, stall: { ms: number; colo: string | null }): string {
+  const from = stall.colo ? ` from ${stall.colo}` : "";
+  const head =
+    `Google Calendar calls are failing, ${failures} in a row${last}, and Supabase calls${from} stalled in the same minutes ` +
+    `(one took ${durationText(stall.ms)}). Two unrelated services rarely fail together, so`;
+  const health = "and only then look at either service's health";
+  if (stall.colo) {
+    return `${head} suspect the Cloudflare location these calls ran from (${stall.colo}) before either service. Check Supabase's edge logs, by request.cf.colo, for other slow requests from ${stall.colo}, ${health}. `;
+  }
+  return (
+    `${head} suspect the Cloudflare location these calls ran from before either service. The confirm answered log lines name it ` +
+    `as supabase_edge_colo; check Supabase's edge logs, by request.cf.colo, for other slow requests from there, ${health}. `
   );
 }
 
