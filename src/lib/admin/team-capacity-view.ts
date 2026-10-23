@@ -235,6 +235,7 @@ export function teamCapacityView(input: TeamCapacityViewInput): TeamCapacityView
         notSyncingLine: null,
       };
     }
+    const flag = dayFlag(t, nearlyFullPct);
     return {
       iso: source.iso,
       kind,
@@ -245,10 +246,11 @@ export function teamCapacityView(input: TeamCapacityViewInput): TeamCapacityView
       open: t.open,
       unit: callsOpenUnit(t.open),
       fullPct: t.fullPct,
-      flag: dayFlag(t, nearlyFullPct),
+      flag,
       out: t.out,
       notCounted: t.notCounted,
-      pace: input.pace.kind === "fresh" ? cardPaceLines(input.pace.byDay.get(source.iso), t.fullPct, zone, todayIso) : [],
+      // A full day has nothing left to fill, so no pace line beside its Full tag (Dan, 2026-10-23, #4101 decision 18).
+      pace: flag === "full" || input.pace.kind !== "fresh" ? [] : cardPaceLines(input.pace.byDay.get(source.iso), t.fullPct, zone, todayIso),
       outLine: t.out > 0 ? advisorsOffLine(t.out) : null,
       notSyncingLine: t.notCounted > 0 ? calendarsNotSyncingLine(t.notCounted) : null,
     };

@@ -428,6 +428,13 @@
       var extra = ["full-bar", "pct", "pace", "out-count", "not-syncing", "flag"].filter(function (tc) { return c.querySelector('[data-tc="' + tc + '"]'); });
       return extra.length ? fail("Wednesday's card still shows " + extra.join(", ")) : pass();
     } },
+    { id: "D46", frames: ["f6"], check: function (doc) {
+      var first = q(doc, "day-card")[0];
+      if (!first) return fail("no day cards");
+      if (text(first.querySelector('[data-tc="flag"]')) !== "Full") return fail("today's card carries no Full chip");
+      var lines = first.querySelectorAll('[data-tc="pace"]');
+      return lines.length === 0 ? pass() : fail("today's full card shows " + lines.length + " pace line(s): '" + text(lines[0]) + "'");
+    } },
     { id: "D41", frames: ["f1"], check: function (doc) {
       if (q(doc, "key-item").map(text).indexOf("Open") < 0) return fail("the key does not name the white box Open");
       if (text(one(doc, "open-heading")) !== "Open") return fail("the timeline's column reads '" + text(one(doc, "open-heading")) + "'");
