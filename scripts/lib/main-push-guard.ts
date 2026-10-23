@@ -3,7 +3,7 @@
 // script convention). The workflow gathers the GitHub context and the runner
 // (scripts/check-main-push.ts) turns a violation into a Slack alert + a red run.
 
-/** A commit-message marker that authorizes a deliberate direct push to main. */
+/** A commit-subject marker (the first line only) that authorizes a deliberate direct push to main. */
 export const BYPASS_MARKER = "[allow-direct-push]";
 
 export interface AssociatedPr {
@@ -73,6 +73,11 @@ export interface Verdict {
   unverified?: boolean;
 }
 
+/** The first line of a commit message, the only part this guard reads. */
+export function commitSubject(commitMessage: string): string {
+  return (commitMessage || "").split("\n")[0] ?? "";
+}
+
 /**
  * Decide whether a commit that landed on main arrived legitimately.
  *
@@ -99,11 +104,6 @@ export interface Verdict {
  * bypassing review. When a claim IS present the merge is established and the run
  * passes, saying that the primary read is down (#1519).
  */
-/** The first line of a commit message, the only part this guard reads. */
-export function commitSubject(commitMessage: string): string {
-  return (commitMessage || "").split("\n")[0] ?? "";
-}
-
 export function classifyPush(ctx: PushContext): Verdict {
   if (commitSubject(ctx.commitMessage).includes(BYPASS_MARKER)) {
     return { ok: true, reason: `bypass marker ${BYPASS_MARKER} present` };
