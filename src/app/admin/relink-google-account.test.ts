@@ -16,7 +16,13 @@ const auth = vi.hoisted(() => ({
   currentUser: vi.fn(),
   realCurrentUser: vi.fn(),
 }));
-const recordAudit = vi.hoisted(() => vi.fn(async (_entry: Record<string, unknown>) => {}));
+// Each entry also lands in `db.steps`, so a test can see WHEN the trail was written
+// relative to the deletion and the row write.
+const recordAudit = vi.hoisted(() =>
+  vi.fn(async (entry: Record<string, unknown>) => {
+    db.steps.push(`audit:${String(entry.action)}`);
+  }),
+);
 const revalidatePath = vi.hoisted(() => vi.fn());
 const redirect = vi.hoisted(() =>
   vi.fn((url: string) => {
@@ -73,6 +79,10 @@ vi.mock("@/lib/supabase/admin", () => ({
         db.steps.push("update-row");
         const chain = {
           eq: (col: string, v: unknown) => {
+            entry.filters.push([col, v]);
+            return chain;
+          },
+          is: (col: string, v: unknown) => {
             entry.filters.push([col, v]);
             return chain;
           },
@@ -138,7 +148,14 @@ describe("relinkGoogleAccount", () => {
     // The old auth user (and with it the old Google identity) is deleted FIRST, so
     // the rehire's next sign in lands on a fresh auth user holding only their new
     // account, and a failure there leaves the row untouched and the press retryable.
-    expect(db.steps).toEqual(["delete-auth:auth-old", "update-row"]);
+    // The deletion is recorded the moment it happens, before the row write that
+    // could still fail, so it is in the trail exactly once whatever follows.
+    expect(db.steps).toEqual([
+      "delete-auth:auth-old",
+      "audit:agent.sign_in_removed",
+      "update-row",
+      "audit:agent.google_relinked",
+    ]);
     // A compare and swap on the id it read, scoped to the admin's org.
     expect(db.updates[0].filters).toEqual(
       expect.arrayContaining([
@@ -148,15 +165,24 @@ describe("relinkGoogleAccount", () => {
       ]),
     );
     expect(db.readFilters).toEqual(expect.arrayContaining([["org_id", "o1"]]));
-    expect(recordAudit).toHaveBeenCalledTimes(1);
-    // The trail says an account was unlinked, never the account id itself.
+    expect(recordAudit).toHaveBeenCalledTimes(2);
+    // The trail says a sign in was removed and an account unlinked, never the
+    // account id or the auth user id itself.
+    expect(recordAudit).toHaveBeenCalledWith({
+      orgId: "o1",
+      actorId: "admin1",
+      action: "agent.sign_in_removed",
+      targetUserId: "u1",
+      details: { sign_in: { from: "present", to: "deleted" }, because: "relink google account" },
+    });
     expect(recordAudit).toHaveBeenCalledWith({
       orgId: "o1",
       actorId: "admin1",
       action: "agent.google_relinked",
       targetUserId: "u1",
-      details: { google_account: { from: "linked", to: "unlinked" }, old_sign_in_removed: true },
+      details: { google_account: { from: "linked", to: "unlinked" } },
     });
+    expect(JSON.stringify(recordAudit.mock.calls)).not.toContain("auth-old");
     expect(JSON.stringify(recordAudit.mock.calls)).not.toContain("sub-old");
     expect(revalidatePath).toHaveBeenCalledWith("/admin/agents/u1");
   });
@@ -171,19 +197,42 @@ describe("relinkGoogleAccount", () => {
   // A press that deleted the auth user and then failed on the row write leaves the
   // row still holding the account id, so the control is still offered; the retry
   // finds the auth user already gone and finishes the job.
-  it("carries on when the old auth user is already gone", async () => {
+  it("carries on when the old auth user is already gone, recording no deletion it did not make", async () => {
     db.deleteError = { message: "User not found", status: 404 };
     await expect(relinkGoogleAccount(form())).rejects.toThrow("?ok=agent-google-relinked");
     expect(db.updates).toHaveLength(1);
+    expect(db.steps).toEqual(["delete-auth:auth-old", "update-row", "audit:agent.google_relinked"]);
   });
 
   it("deletes no auth user when the row is linked to none", async () => {
     db.row = { id: "u1", role: "agent", google_sub: "sub-old", auth_user_id: null };
     await expect(relinkGoogleAccount(form())).rejects.toThrow("?ok=agent-google-relinked");
-    expect(db.steps).toEqual(["update-row"]);
-    expect(recordAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ details: { google_account: { from: "linked", to: "unlinked" }, old_sign_in_removed: false } }),
-    );
+    expect(db.steps).toEqual(["update-row", "audit:agent.google_relinked"]);
+  });
+
+  // The audit gap the re-review found: a delete that landed followed by a row write
+  // that failed used to leave the deletion unrecorded, and the retry then said no
+  // sign in was removed.
+  it("records the deletion even when the row write after it fails", async () => {
+    db.writeError = { message: "permission denied", code: "42501" };
+    expect(await refusal(relinkGoogleAccount(form()))).toContain("permission denied");
+    expect(db.steps).toEqual(["delete-auth:auth-old", "audit:agent.sign_in_removed", "update-row"]);
+  });
+
+  // A row with no account recorded whose auth user holds no Google identity, or
+  // two, is refused on every request; this is the admin's way out for it.
+  it("removes the sign in of a row with no account recorded but a sign in on record", async () => {
+    db.row = { id: "u1", role: "agent", google_sub: null, auth_user_id: "auth-stuck" };
+    await expect(relinkGoogleAccount(form())).rejects.toThrow("?ok=agent-google-relinked");
+    expect(db.steps).toEqual(["delete-auth:auth-stuck", "audit:agent.sign_in_removed", "update-row"]);
+    // The swap matches the row as read: still no account recorded.
+    expect(db.updates[0].filters).toEqual(expect.arrayContaining([["google_sub", null]]));
+  });
+
+  it("says nothing was linked when the row has neither an account nor a sign in", async () => {
+    db.row = { id: "u1", role: "agent", google_sub: null, auth_user_id: null };
+    expect(await refusal(relinkGoogleAccount(form()))).toBe(GOOGLE_RELINK_REFUSED.nothingLinked);
+    expect(db.steps).toEqual([]);
   });
 
   // Relinking yourself deletes the auth user your own session runs on.
@@ -215,10 +264,10 @@ describe("relinkGoogleAccount", () => {
     expect(recordAudit).not.toHaveBeenCalled();
   });
 
-  it("records nothing when the conditional write changed no row", async () => {
+  it("records no unlink when the conditional write changed no row (only the deletion it made)", async () => {
     db.changed = [];
     expect(await refusal(relinkGoogleAccount(form()))).toBe(GOOGLE_RELINK_REFUSED.nothingLinked);
-    expect(recordAudit).not.toHaveBeenCalled();
+    expect(db.steps).toEqual(["delete-auth:auth-old", "audit:agent.sign_in_removed", "update-row"]);
   });
 
   it("answers missing for a user outside the org or gone", async () => {
@@ -234,7 +283,8 @@ describe("relinkGoogleAccount", () => {
     expect(recordAudit).not.toHaveBeenCalled();
   });
 
-  it("shows a refused write on the page and records nothing", async () => {
+  it("shows a refused write on the page and records no unlink", async () => {
+    db.row = { id: "u1", role: "agent", google_sub: "sub-old", auth_user_id: null };
     db.writeError = { message: "permission denied", code: "42501" };
     expect(await refusal(relinkGoogleAccount(form()))).toContain("permission denied");
     expect(recordAudit).not.toHaveBeenCalled();

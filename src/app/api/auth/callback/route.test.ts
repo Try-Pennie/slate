@@ -26,7 +26,7 @@ import {
 const provision = vi.hoisted(() => ({ provisionUser: vi.fn() }));
 const google = vi.hoisted(() => ({ ensureWatches: vi.fn(async () => "ok") }));
 const env = vi.hoisted(() => ({ googleHostedDomain: vi.fn((): string => "trypennie.com") }));
-const signOut = vi.hoisted(() => vi.fn(async () => {}));
+const signOut = vi.hoisted(() => vi.fn(async (_opts?: unknown) => {}));
 const exchangeCodeForSession = vi.hoisted(() => vi.fn());
 const server = vi.hoisted(() => ({
   supabaseServer: async () => ({ auth: { exchangeCodeForSession, signOut } }),
@@ -244,6 +244,9 @@ describe("auth callback when the Google account is not the one on record (#3526)
       "https://slate.trypennie.app/login?error=google_account_changed",
     );
     expect(signOut).toHaveBeenCalledTimes(1);
+    // Only this sign in's session: a global sign out would also end the real
+    // owner's sessions on an auth user GoTrue linked by address.
+    expect(signOut).toHaveBeenCalledWith({ scope: "local" });
     expect(google.ensureWatches).not.toHaveBeenCalled();
     expect(res.cookies.get(SESSION_STARTED_COOKIE)).toBeUndefined();
   });
@@ -318,6 +321,7 @@ describe("auth callback when the Google account is not the one on record (#3526)
 
     expect(provision.provisionUser).not.toHaveBeenCalled();
     expect(signOut).toHaveBeenCalledTimes(1);
+    expect(signOut).toHaveBeenCalledWith({ scope: "local" });
     expect(res.headers.get("location")).toBe("https://slate.trypennie.app/login?error=sign_in_unavailable");
     expect(logged.errors).toContain("auth-callback sign in carried no google identity");
   });

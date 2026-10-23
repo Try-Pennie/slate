@@ -118,11 +118,17 @@ async function refuseSessionAsSomebodyElse(
   reason: GoogleMismatchReason,
   authUserId: string,
 ): Promise<void> {
+  // Two ways it can fail, and both are logged: supabase-js RETURNS `{ error }` for a
+  // sign out the server refused, and the cookie write THROWS where cookies are read
+  // only. Either way the refusal stands, and the next request is refused again.
+  let failure: unknown = null;
   try {
-    await supabase.auth.signOut({ scope: "local" });
+    const { error } = await supabase.auth.signOut({ scope: "local" });
+    failure = error;
   } catch (err) {
-    log.warn("auth", { msg: "could not end a refused session here", auth_user_id: authUserId }, err);
+    failure = err;
   }
+  if (failure) log.warn("auth", { msg: "could not end a refused session", auth_user_id: authUserId }, failure);
   await reportGoogleAccountRefusal(
     new GoogleAccountMismatchError({ userId: row.id, email: row.email, reason }),
     "auth",

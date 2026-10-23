@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Role, User } from "@/lib/db/types";
+import * as logModule from "@/lib/log";
 import {
   encodeImpersonationCookie,
   IMPERSONATE_TTL_MS,
@@ -477,6 +478,19 @@ describe("a session whose Google account is not the row's is refused (#3526)", (
     authUser.identities = [googleIdentity("sub-intruder")];
     authUser.userMetadata = { sub: "sub-1", provider_id: "sub-1" };
     expect(await realCurrentUser()).toBeNull();
+  });
+
+  // supabase-js reports a failed sign out as `{ error }` rather than throwing, so it
+  // has to be read, or a session that could not be ended leaves no trace.
+  it("logs a sign out that failed, and the refusal still stands", async () => {
+    const warn = vi.spyOn(logModule.log, "warn").mockImplementation(() => {});
+    signedInAs(user("admin-1", "admin", { google_sub: "sub-old" }));
+    authUser.identities = [googleIdentity("sub-new")];
+    signOut.mockResolvedValueOnce({ error: { message: "network down" } } as never);
+
+    expect(await realCurrentUser()).toBeNull();
+    expect(warn.mock.calls.some(([, fields]) => fields.msg === "could not end a refused session")).toBe(true);
+    warn.mockRestore();
   });
 
   it("still refuses when the alert itself cannot be sent", async () => {

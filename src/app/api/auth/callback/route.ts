@@ -92,7 +92,8 @@ export async function GET(req: NextRequest) {
   const googleSubs = googleAccountIdsOf(user);
   if (googleSubs.length === 0) {
     log.error("auth-callback", { msg: "sign in carried no google identity", auth_user_id: user.id });
-    await supabase.auth.signOut();
+    // Local: only this sign in's session, never the auth user's others.
+    await supabase.auth.signOut({ scope: "local" });
     return NextResponse.redirect(`${origin}/login?error=sign_in_unavailable`);
   }
   let slateUser;
@@ -121,7 +122,9 @@ export async function GET(req: NextRequest) {
     // the departure recorded is how the old row's role and bookings would have
     // been handed over, and only a person can tell a rehire from a mistake.
     if (err instanceof GoogleAccountMismatchError) {
-      await supabase.auth.signOut();
+      // Local: on an auth user GoTrue linked by address, a global sign out would
+      // also end the real owner's sessions.
+      await supabase.auth.signOut({ scope: "local" });
       await reportGoogleAccountRefusal(err, "auth-callback", user.id);
       return NextResponse.redirect(`${origin}/login?error=${GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR}`);
     }

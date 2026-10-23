@@ -939,7 +939,10 @@ export default async function AgentProfilePage({
               (L609), behind the shared destructive confirm that names what
               happens next (L180). */}
           {/* Never on your own page: relinking deletes the sign in it acts on. */}
-          {isAdmin && canManageThisAgent && !isSelf && agent.google_sub ? (
+          {/* Offered while an account OR a sign in is on record: a row with no
+              account recorded whose sign in holds no Google account, or two, is
+              refused on every request, and this is its way out too. */}
+          {isAdmin && canManageThisAgent && !isSelf && (agent.google_sub || agent.auth_user_id) ? (
             <div className="mt-4 border-t border-border pt-4">
               <p className={`text-xs text-fg-muted ${proseCls}`}>
                 {GOOGLE_RELINK_COPY.explanation(agent.name ?? agent.email)}

@@ -774,12 +774,14 @@ then: an auth user holding two Google accounts.
   recreated): an admin opens their page in Slate (`/admin/agents/<id>`, the id is in
   the log line), opens the closed section at the bottom, and presses **Link a new
   Google account** under Account status, then confirms. That deletes their old
-  Supabase sign in (ending every session on it) and forgets the old id (audited as
-  `agent.google_relinked`, never the id itself), and their next sign in creates a
-  fresh one holding only the new account, which is recorded. The control shows only
-  to an admin who outranks them, never on the admin's own page, and only while an
-  account is on record. If it says the old sign in could not be removed, nothing was
-  changed: press it again.
+  Supabase sign in (ending every session on it, audited as `agent.sign_in_removed`
+  the moment it lands) and forgets the old id (audited as `agent.google_relinked`,
+  never the id itself), and their next sign in creates a fresh one holding only the
+  new account, which is recorded. The control shows only to an admin who outranks
+  them, never on the admin's own page, and while an account OR a sign in is on
+  record, so a person refused as `several-accounts` or `no-account-id` before any
+  account was recorded has the same way out. If it says the old sign in could not be
+  removed, nothing was changed: press it again.
 - **Someone new who was given a departed person's address**: do NOT link it. Linking
   hands them the old account's role, bookings and calendar, which is the thing this
   guard exists to stop. The departed person's account needs deactivating, and the new

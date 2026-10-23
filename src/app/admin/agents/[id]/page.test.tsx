@@ -1216,6 +1216,16 @@ describe("linking a new Google account (#3526)", () => {
     expect(screen.queryByRole("button", { name: GOOGLE_RELINK_COPY.openLabel })).toBeNull();
   });
 
+  // A row with no account recorded can still be refused on every request (its sign
+  // in holds no Google account, or two), so the way out has to be on offer there too.
+  it("is offered when a sign in is on record even though no account is", async () => {
+    cleanup();
+    auth.currentUser.mockResolvedValueOnce({ id: "v1", role: "admin", org_id: "o1" });
+    dbState.agent = { ...agentOf("agent"), google_sub: null, auth_user_id: "auth-stuck" };
+    render(await AgentProfilePage({ ...props, searchParams: Promise.resolve({}) }));
+    expect(screen.getByRole("button", { name: GOOGLE_RELINK_COPY.openLabel })).toBeTruthy();
+  });
+
   it("is not offered on an admin's own page, since it would delete their own sign in", async () => {
     cleanup();
     auth.currentUser.mockResolvedValueOnce({ id: "x1", role: "admin", org_id: "o1" });

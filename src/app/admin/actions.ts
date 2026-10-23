@@ -2219,9 +2219,14 @@ export async function relinkGoogleAccount(form: FormData): Promise<void> {
     redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.notPermitted)}`);
   }
   const stored = row.google_sub;
-  if (stored == null) redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.nothingLinked)}`);
-
   const oldAuthUserId = row.auth_user_id;
+  // Something to undo: an account on record, or a sign in on record. A row with no
+  // account recorded but a sign in holding no Google account, or two, is refused on
+  // every request, and this is its way out too (re-review of #4169).
+  if (stored == null && !oldAuthUserId) {
+    redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.nothingLinked)}`);
+  }
+
   if (oldAuthUserId) {
     const { error: deleteError } = await db.auth.admin.deleteUser(oldAuthUserId);
     // 404 is an auth user already gone (a retry after a delete that landed, or a
@@ -2230,32 +2235,50 @@ export async function relinkGoogleAccount(form: FormData): Promise<void> {
       log.error("admin", { msg: "relink could not delete the old auth user", user_id: userId }, deleteError);
       redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.signInNotRemoved)}`);
     }
+    // Recorded the moment it lands and only when THIS press deleted it: the row
+    // write below can still fail, the deletion cannot be undone, and a retry finds
+    // no auth user to delete, so this is the one entry it will ever get.
+    if (!deleteError) {
+      await recordAudit({
+        orgId: admin.org_id,
+        actorId: admin.id,
+        action: "agent.sign_in_removed",
+        targetUserId: userId,
+        details: { sign_in: { from: "present", to: "deleted" }, because: "relink google account" },
+      });
+    }
   }
 
-  const { data, error } = await db
+  const unlink = db
     .from("users")
     // `auth_user_id` is already null through the foreign key once the auth user is
     // deleted; written here too so the row says so whatever the database did.
     .update({ google_sub: null, auth_user_id: null })
     .eq("id", userId)
-    .eq("org_id", admin.org_id)
-    .eq("google_sub", stored)
-    .select("id");
+    .eq("org_id", admin.org_id);
+  // A compare and swap on the account as read, null included.
+  const { data, error } = await (stored == null ? unlink.is("google_sub", null) : unlink.eq("google_sub", stored)).select(
+    "id",
+  );
   if (error) {
     redirect(`${back}${refusedQuery(writeRefused("Linking a new Google account", error))}`);
   }
   revalidatePath(back);
-  // Nothing matched the id that was read: another press got there first, so there
-  // is nothing of ours to record.
+  // Nothing matched the account that was read: another press got there first, so
+  // there is no unlink of ours to record.
   if (!data || data.length === 0) redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.nothingLinked)}`);
 
-  await recordAudit({
-    orgId: admin.org_id,
-    actorId: admin.id,
-    action: "agent.google_relinked",
-    targetUserId: userId,
-    details: { google_account: { from: "linked", to: "unlinked" }, old_sign_in_removed: Boolean(oldAuthUserId) },
-  });
+  // Only when an account was on record: with none, the deletion above was the
+  // whole of the change and its entry already says so.
+  if (stored != null) {
+    await recordAudit({
+      orgId: admin.org_id,
+      actorId: admin.id,
+      action: "agent.google_relinked",
+      targetUserId: userId,
+      details: { google_account: { from: "linked", to: "unlinked" } },
+    });
+  }
   redirect(`${back}${savedQuery("agent-google-relinked")}`);
 }
 
