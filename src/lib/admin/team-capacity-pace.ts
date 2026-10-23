@@ -46,7 +46,7 @@ export interface PaceRow {
   estimate_line_at: string | null;
   estimate_pattern_state: string | null;
   estimate_pattern_at: string | null;
-  /** From 95%, when the last open call is taken (#4190); null under 95% and before 0204. */
+  /** From 95%, when the last open call is taken (#4190); null under 95% and before 0201. */
   estimate_last_method: string | null;
   estimate_last_line_state: string | null;
   estimate_last_line_at: string | null;

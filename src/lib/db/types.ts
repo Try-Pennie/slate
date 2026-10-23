@@ -267,7 +267,7 @@ export interface CapacityFillReading {
   estimate_pattern_state: string | null;
   estimate_method: string | null;
   estimate_cells_fallen_back: number | null;
-  /** #4190 (migration 0204): from 95%, the walk to no call open; null under 95% and before it. */
+  /** #4190 (migration 0201): from 95%, the walk to no call open; null under 95% and before it. */
   estimate_last_line_state: string | null;
   estimate_last_line_at: string | null;
   estimate_last_pattern_state: string | null;
