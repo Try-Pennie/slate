@@ -398,7 +398,7 @@ function buildDeps(
 
     loadReconcilableBusyBlocks: async () => [],
     loadBookingStatuses: async () => new Map<string, BookingStatus>(),
-    deleteBusyBlocksByIds: async () => {},
+    deleteBusyBlocksByIds: async () => [],
 
     // --- Outbox (not used in createBooking path, provide stubs) ---
     enqueueOutbox: async () => randomUUID(),

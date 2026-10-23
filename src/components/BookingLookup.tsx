@@ -21,10 +21,14 @@ const extractBookings = (json: unknown): BookingSearchRow[] =>
 export default function BookingLookup() {
   const [input, setInput] = useState("");
   const [submitted, setSubmitted] = useState("");
+  // #3399: the term is a lead's email, name or phone, so it goes in the body and
+  // never the address, which Cloudflare logs in full on every request.
   const { items, loading, error, retry } = useFetchList(
-    submitted ? `/api/admin/bookings/search?q=${encodeURIComponent(submitted)}` : null,
+    submitted ? "/api/admin/bookings/search" : null,
     submitted !== "",
     extractBookings,
+    undefined,
+    JSON.stringify({ q: submitted }),
   );
 
   function onSubmit(e: FormEvent) {

@@ -10,6 +10,12 @@ import {
   SESSION_TIME_BOX_DAYS,
   sessionRefusalLoginError,
 } from "@/lib/auth/session-age";
+import {
+  GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR,
+  GOOGLE_ACCOUNT_CHANGED_MESSAGE,
+  SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR,
+  SEVERAL_GOOGLE_ACCOUNTS_MESSAGE,
+} from "@/lib/auth/google-identity-copy";
 
 // Sign-in failures the callback can bounce back with. Kept plain and
 // non-technical; the domain case is the security gate from #589.
@@ -28,6 +34,13 @@ const ERROR_MESSAGES: Record<string, string> = {
   // action that can change the answer, and says nothing about why.
   account_deactivated:
     "This Slate account is no longer active. Ask an admin to reactivate it if you still need access.",
+  // #3526: a Google account other than the one this Slate account belongs to. Not
+  // a retry either, for the same reason, and the wording lives with the rest of
+  // that feature's copy.
+  [GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR]: GOOGLE_ACCOUNT_CHANGED_MESSAGE,
+  // #3526: two Google accounts attached to one sign in. Not a retry either: they
+  // stay attached until an admin removes the old sign in.
+  [SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR]: SEVERAL_GOOGLE_ACCOUNTS_MESSAGE,
   // #3083: the deploy is missing its sign-in domain, so the callback refuses
   // everyone rather than letting any Google account in. Nothing the person does
   // can fix it, so it points at the people who can.
@@ -62,7 +75,9 @@ function ErrorBanner({ message }: { message: string }) {
 
 function LoginError() {
   const error = useSearchParams().get("error");
-  const message = error ? ERROR_MESSAGES[error] : null;
+  // Own keys only: the code comes from the address, so `?error=__proto__` or
+  // `?error=constructor` would otherwise find an inherited OBJECT and crash the page.
+  const message = error && Object.hasOwn(ERROR_MESSAGES, error) ? ERROR_MESSAGES[error] : null;
   if (!message) return null;
   return <ErrorBanner message={message} />;
 }
