@@ -39,6 +39,11 @@ LABEL=pennie-mac
 DOCKER_SOCK=$RUNNER_HOME/.colima/default/docker.sock
 PATH_FOR_JOBS=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
 DAEMON_DIR=/Library/LaunchDaemons
+# Every job checks free disk before it starts (the runner's job started hook) and
+# fails, saying why, below this many GB. The runners share Dan's work disk, and on
+# 2026-10-24 their first runs used about 10 GB in half an hour.
+MIN_FREE_GB=10
+DISK_GUARD=$RUNNER_HOME/runners/disk-guard.sh
 COLIMA_PLIST=$DAEMON_DIR/com.trypennie.ci-colima.plist
 
 die() { echo "FAILED: $*" >&2; exit 1; }
@@ -147,13 +152,30 @@ stage_docker() {
 # The pnpm store, Playwright's browsers and every other per user cache follow HOME.
 runner_home() { echo "$RUNNER_HOME/runners/$1/home"; }
 
+write_disk_guard() {
+  # Owned by root, so a job (running as cirunner) cannot edit its own check away.
+  mkdir -p "$RUNNER_HOME/runners"
+  cat >"$DISK_GUARD" <<GUARD
+#!/bin/bash
+free_kb=\$(df -k / | awk 'NR==2 {print \$4}')
+if [ -z "\$free_kb" ] || [ "\$free_kb" -lt $((MIN_FREE_GB * 1024 * 1024)) ]; then
+  echo "::error title=The Mac runner's disk is nearly full::\$((\${free_kb:-0} / 1024 / 1024)) GB free, under the $MIN_FREE_GB GB floor, so this job did not start. Free space on Dan's work MacBook, then re-run."
+  exit 1
+fi
+GUARD
+  chown root:wheel "$DISK_GUARD"
+  chmod 755 "$DISK_GUARD"
+}
+
 write_runner_settings() { # name
   local name=$1 dir=$RUNNER_HOME/runners/$1 home
   home=$(runner_home "$1")
+  write_disk_guard
   as_runner mkdir -p "$home"
   echo "$PATH_FOR_JOBS" | as_runner tee "$dir/.path" >/dev/null
   {
     echo "HOME=$home"
+    echo "ACTIONS_RUNNER_HOOK_JOB_STARTED=$DISK_GUARD"
     [ "$name" = "$DOCKER_RUNNER" ] && echo "DOCKER_HOST=unix://$DOCKER_SOCK"
     true
   } | as_runner tee "$dir/.env" >/dev/null
@@ -215,8 +237,14 @@ stage_status() {
   local p
   for p in "$COLIMA_PLIST" $(for n in "${RUNNERS[@]}"; do runner_plist "$n"; done); do
     if [ -f "$p" ]; then
-      launchctl print "system/$(basename "$p" .plist)" 2>/dev/null | grep -m1 -E "state =" | sed "s|^|$(basename "$p" .plist): |" \
-        || echo "$(basename "$p" .plist): installed, not loaded"
+      # Judged by grep's own exit, not the pipeline's last command, so an
+      # installed daemon launchd does not know about says so.
+      local state
+      if state=$(launchctl print "system/$(basename "$p" .plist)" 2>/dev/null | grep -m1 -E "state ="); then
+        echo "$(basename "$p" .plist):$state"
+      else
+        echo "$(basename "$p" .plist): installed, not loaded"
+      fi
     else
       echo "$(basename "$p" .plist): not installed"
     fi
