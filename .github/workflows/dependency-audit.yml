@@ -56,7 +56,7 @@ permissions:
 jobs:
   audit:
     timeout-minutes: 10  # new; two lockfile audits and one Slack post, no install
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The version comes from package.json's packageManager key (#3128).
