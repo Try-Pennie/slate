@@ -126,7 +126,8 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why:
       "A check on the monitor lane is throwing rather than reporting, so whatever it " +
       "watches is unwatched. It stays true until somebody deploys a fix, and the lane " +
-      "measures the step on every tick, so it ends when the step completes again (#2382).",
+      "measures the step on every run that does its work, so it ends when the step completes " +
+      "again (#2382). A run that stood down measured nothing and ends nothing (#3955).",
   },
   {
     key: "detector_unpark:*",

@@ -26,6 +26,22 @@ export interface StepOutcome {
   /** Milliseconds this step alone took, measured whether it succeeded or not. */
   ms: number;
   ok: boolean;
+  /**
+   * False when the step returned without doing its work this tick (#3955): its gate
+   * was shut, its hourly slot had not come round, its org was closed. It did not
+   * throw, and it did not show its work succeeding either, so the step failure
+   * streak counts it in NEITHER direction (L792). A throw is always measured.
+   */
+  measured: boolean;
+}
+
+/** What a step body is handed, to say what its run measured. */
+export interface StepContext {
+  /**
+   * Record this run as having measured nothing, and return `value` unchanged, so a
+   * step can write `return step.unmeasured(null)` where it stands down.
+   */
+  unmeasured: <V>(value: V) => V;
 }
 
 /** Fields for the lane's cycle log line. */
@@ -37,7 +53,7 @@ export interface StepRunner {
    * `fallback` when it threw. NEVER throws: a runner that could take the lane
    * down would defeat the containment it exists to provide.
    */
-  run: <T>(name: string, fallback: T, fn: () => Promise<T>) => Promise<T>;
+  run: <T>(name: string, fallback: T, fn: (step: StepContext) => Promise<T>) => Promise<T>;
   /** What each step did, in the order they ran. */
   outcomes: () => StepOutcome[];
   /** The cycle log line's cost and failure fields. */
@@ -60,7 +76,7 @@ export function createStepRunner(deps: {
   const skipped: string[] = [];
 
   return {
-    async run<T>(name: string, fallback: T, fn: () => Promise<T>): Promise<T> {
+    async run<T>(name: string, fallback: T, fn: (step: StepContext) => Promise<T>): Promise<T> {
       if (deps.stillHeld) {
         let held = false;
         try {
@@ -74,15 +90,22 @@ export function createStepRunner(deps: {
         }
       }
       const startedAt = deps.now();
+      let measured = true;
+      const step: StepContext = {
+        unmeasured: (value) => {
+          measured = false;
+          return value;
+        },
+      };
       try {
-        const out = await fn();
-        outcomes.push({ name, ms: deps.now() - startedAt, ok: true });
+        const out = await fn(step);
+        outcomes.push({ name, ms: deps.now() - startedAt, ok: true, measured });
         return out;
       } catch (err) {
         // Timed in the failure path too. The step that dies is often the FAST
         // one, so leaving it out of the timings would hide exactly the step
         // someone is looking for.
-        outcomes.push({ name, ms: deps.now() - startedAt, ok: false });
+        outcomes.push({ name, ms: deps.now() - startedAt, ok: false, measured: true });
         try {
           deps.onError(name, err);
         } catch {
@@ -102,6 +125,7 @@ export function createStepRunner(deps: {
       const seen = new Map<string, number>();
       let total = 0;
       const failed: string[] = [];
+      const unmeasured: string[] = [];
       for (const o of outcomes) {
         // Summed, not overwritten. Two steps sharing a name would otherwise
         // silently lose one of the two timings, so the measurement quietly stops
@@ -110,6 +134,7 @@ export function createStepRunner(deps: {
         seen.set(o.name, (seen.get(o.name) ?? 0) + 1);
         total += o.ms;
         if (!o.ok) failed.push(o.name);
+        else if (!o.measured) unmeasured.push(o.name);
       }
       const out: StepFields = {};
       for (const [name, value] of ms) out[`ms_${name}`] = value;
@@ -121,6 +146,9 @@ export function createStepRunner(deps: {
       // run this tick.
       if (failed.length > 0) out.failed = failed.join(",");
       if (skipped.length > 0) out.skipped_lease_lost = skipped.join(",");
+      // Named, so a step standing down every tick is visible on the cycle line rather
+      // than reading as one that ran and found nothing.
+      if (unmeasured.length > 0) out.unmeasured = unmeasured.join(",");
       const dups = [...seen.entries()].filter(([, n]) => n > 1).map(([n]) => n);
       if (dups.length > 0) out.duplicate_step_names = dups.join(",");
       return out;
