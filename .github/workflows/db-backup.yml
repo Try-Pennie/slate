@@ -156,7 +156,8 @@ jobs:
           echo "key=slate/db/$(date -u +%Y/%m/%d)/slate-db-$stamp.tar.gz" >> "$GITHUB_OUTPUT"
           echo "bytes=$(wc -c < "$archive" | tr -d " ")" >> "$GITHUB_OUTPUT"
 
-      # The AWS CLI on the runner image talks to R2 through its S3 compatible endpoint.
+      # The AWS CLI (on the ubuntu image, or from Homebrew on the Mac runner, which
+      # scripts/mac-runner/setup.sh checks) talks to R2 through its S3 compatible endpoint.
       # The two checksum settings keep the CLI to the integrity headers a request
       # strictly needs: newer AWS CLI versions add default ones that S3 compatible stores
       # have refused, and the read back below is what proves the object arrived whole.

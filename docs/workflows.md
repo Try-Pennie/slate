@@ -257,8 +257,11 @@ runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-la
 ```
 
 - **`pennie-mac`**: jobs run on the runners on Dan's work MacBook, installed by
-  `~/pennie-ci-runner/setup.sh` as a hidden `cirunner` user that cannot read Dan's
-  files. Jobs queue while that Mac is asleep or offline.
+  `scripts/mac-runner/setup.sh` as a hidden `cirunner` user that cannot read Dan's
+  files (his home folder must be `chmod 700`, since every local user is in `staff`;
+  the script refuses otherwise). It also refuses when a tool jobs assume from
+  GitHub's image (`aws`, `jq`, `gh` and others) is missing, and its `status` stage
+  reports both. Jobs queue while that Mac is asleep or offline.
 - **Anything else** (`github`, empty, deleted, a typo): GitHub's `ubuntu-latest`,
   as before. Switching back is that one org setting, with no code change.
 
