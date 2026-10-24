@@ -302,7 +302,7 @@ stage_remove() {
     as_runner /opt/homebrew/bin/colima delete --force >/dev/null 2>&1 || true
     dscl . -delete "/Users/$RUNNER_USER"
   fi
-  rm -rf "$RUNNER_HOME"
+  rm -rf "$RUNNER_HOME" "$(dirname "$DISK_GUARD")"
   echo "OK: removed. Delete the dan-macbook-mac-* runners on GitHub's org Runners page too."
 }
 
