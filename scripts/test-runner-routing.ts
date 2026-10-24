@@ -20,9 +20,14 @@ import { assert, eq, finish } from "./lib/harness.ts";
 const ROOT = join(import.meta.dirname, "..");
 const WORKFLOWS = join(ROOT, ".github/workflows");
 
-// loadtest.yml stays on GitHub's runners: it runs `setsid` and GNU `timeout`,
-// which a Mac has neither of, and it is dispatched by hand, so nothing waits on it.
-const STAYS_ON_GITHUB = new Set(["loadtest.yml"]);
+// These stay on GitHub's runners because they run GNU `timeout` (and `setsid`),
+// which a Mac has neither of: loadtest.yml is dispatched by hand, and clock-shift.yml
+// is a daily report, so nothing waits on either.
+const STAYS_ON_GITHUB = new Set(["loadtest.yml", "clock-shift.yml"]);
+
+// A command a Mac does not have fails a routed job as "command not found" rather
+// than running it. `timeout-minutes` is the job key, not the command.
+const LINUX_ONLY = /\b(setsid|sha256sum|apt-get|timeout)\s/;
 
 // A job needs Docker when it starts a local Supabase (the browser checks), dumps
 // the database (`supabase db dump` runs pg_dump in a container) or runs the
@@ -72,7 +77,10 @@ for (const file of files) {
     }
     // Comments are stripped first: the browser job's explanation sits above it,
     // inside the previous job's body as the parser cuts it.
-    const wantsDocker = NEEDS_DOCKER.test(job.body.replace(/^\s*#.*$/gm, ""));
+    const code = job.body.replace(/^\s*#.*$/gm, "");
+    const wantsDocker = NEEDS_DOCKER.test(code);
+    const linuxOnly = LINUX_ONLY.exec(code.replace(/timeout-minutes/g, ""));
+    assert(linuxOnly === null, `${where} runs ${linuxOnly?.[1]}, which a Mac does not have`);
     const expected = wantsDocker ? "pennie-mac-docker" : "pennie-mac";
     eq(resolve(runsOn, "pennie-mac"), expected, `${where} runs on ${expected} when the variable says pennie-mac`);
     eq(resolve(runsOn, ""), "ubuntu-latest", `${where} runs on GitHub when the variable is not set`);
@@ -80,10 +88,10 @@ for (const file of files) {
     if (wantsDocker) docker++;
   }
 }
-// Known answers from the tree on 2026-10-24: 28 jobs, three of them needing Docker
+// Known answers from the tree on 2026-10-24: 25 jobs, three of them needing Docker
 // (ci.yml browser, db-backup.yml backup, db-replay.yml replay). A count of zero
 // would mean the scan found nothing, not that nothing needed checking (L98).
-assert(routed >= 28, `routed ${routed} jobs; expected at least 28`);
+assert(routed >= 25, `routed ${routed} jobs; expected at least 25`);
 eq(docker, 3, "three jobs need Docker: the browser checks, the backup and the replay");
 
 // --- the security scan installs its tools on either machine ----------------------------

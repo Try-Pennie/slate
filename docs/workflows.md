@@ -265,7 +265,8 @@ runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-la
 Jobs that need Docker (the browser checks, the backup, the database replay) ask
 for `pennie-mac-docker` instead. Only one runner carries that label, because two of
 those jobs would each start a local Supabase on the same ports of one Docker host.
-`loadtest.yml` stays on `ubuntu-latest`: it uses `setsid` and GNU `timeout`.
+`loadtest.yml` and `clock-shift.yml` stay on `ubuntu-latest`: they use GNU `timeout`
+(and `setsid`), which a Mac lacks, and the test refuses a routed job using either.
 
 Mac specific steps carry `if: runner.os == 'macOS'` beside the unchanged Linux step
 (the security scan's gitleaks and semgrep installs), so neither path depends on the
