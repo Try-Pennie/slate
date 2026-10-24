@@ -301,7 +301,7 @@ own row**. Three things about that are load bearing:
   `trackEligibleReads` hands the compute the oldest), and the #1048 gate lets a
   row a live path wrote after the read stand. Every live path reads eligibility
   during the compute and stamps from its start, as before. The row ALSO records when
-  its compute started (`compute_started_at`, migration 0201), and the two times
+  its compute started (`compute_started_at`, migration 0202), and the two times
   answer different questions (`src/lib/availability/slot-row-times.ts`):
   - the stamp is the data's age: the write gate, the empty bucket check, the
     `x-slots-computed-at` header, the offer race judge and the below tier notice

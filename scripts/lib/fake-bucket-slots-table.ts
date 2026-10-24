@@ -20,7 +20,7 @@ export interface SlotRow {
   payload: unknown;
   computed_at: string;
   invalidated_at: string | null;
-  /** #3388, migration 0201. Optional so a fixture can leave it out. */
+  /** #3388, migration 0202. Optional so a fixture can leave it out. */
   compute_started_at?: string | null;
 }
 

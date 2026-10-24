@@ -16,7 +16,7 @@ export interface KnownRow {
    * When the compute that wrote the row began (`compute_started_at`, #3388). Every
    * helper here that asks whether the lane is keeping up reads the row through
    * `anchorMs`, which takes this when the stamp can explain it. Absent or null (a row
-   * from before migration 0201, or the column not there yet) means the stamp.
+   * from before migration 0202, or the column not there yet) means the stamp.
    */
   startedAtMs?: number | null;
 }

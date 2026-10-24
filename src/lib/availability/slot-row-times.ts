@@ -6,7 +6,7 @@
  *     when its cached eligibility list was read, if that was earlier. The write gate
  *     compares it, so a row built from fresher data always wins, and anything that
  *     measures how old the DATA is reads it.
- *   - `compute_started_at`, the START (migration 0201): when the compute that wrote
+ *   - `compute_started_at`, the START (migration 0202): when the compute that wrote
  *     the row began. Anything that judges whether the lane is keeping up, and so
  *     when a row is next DUE, reads it through `scheduleAnchorMs`. Judged by the
  *     stamp, a cached read moved a pool back past its grid point and the lane
@@ -45,7 +45,7 @@ export const MAX_STAMP_LAG_MS = ELIGIBLE_TTL_SECONDS * 1000;
  *     to force every row due and leaves the start alone (#216, #3118);
  *   - an unreadable stamp is read as 0 so it pages (#1169);
  *   - a writer that did not record a start leaves an older one behind;
- *   - no start at all: a row from before migration 0201, or the column missing.
+ *   - no start at all: a row from before migration 0202, or the column missing.
  */
 export function scheduleAnchorMs(computedAtMs: number, startedAtMs: number | null | undefined): number {
   if (startedAtMs === null || startedAtMs === undefined || !Number.isFinite(startedAtMs)) return computedAtMs;
@@ -53,7 +53,7 @@ export function scheduleAnchorMs(computedAtMs: number, startedAtMs: number | nul
   return lag >= 0 && lag <= MAX_STAMP_LAG_MS ? startedAtMs : computedAtMs;
 }
 
-/** Whether this isolate has found `bucket_slots` without migration 0201's column. */
+/** Whether this isolate has found `bucket_slots` without migration 0202's column. */
 let startedColumnMissing = false;
 
 export function startedColumnAbsent(): boolean {
@@ -94,7 +94,7 @@ export function isMissingStartedColumn(error: unknown): boolean {
  * miss in an isolate, statements go straight to `run(false)`.
  *
  * The first miss in an isolate is said once, naming `where`: code running ahead of
- * migration 0201 writes and reads the stamp alone, and the lane schedules from the
+ * migration 0202 writes and reads the stamp alone, and the lane schedules from the
  * stamp as it did before #3388. Any other error is returned untouched.
  */
 export async function withStartedColumn<R extends { error: unknown }>(
@@ -106,7 +106,7 @@ export async function withStartedColumn<R extends { error: unknown }>(
   if (!isMissingStartedColumn(first.error)) return first;
   if (markStartedColumnAbsent()) {
     log.warn("precompute", {
-      msg: `bucket_slots has no ${COMPUTE_STARTED_COLUMN} (0201 not applied); rows are scheduled from their stamp`,
+      msg: `bucket_slots has no ${COMPUTE_STARTED_COLUMN} (0202 not applied); rows are scheduled from their stamp`,
       where,
     });
   }
@@ -125,7 +125,7 @@ export interface KnownSlotRowTimes {
 /**
  * Every stored row's two times, for the due set and the stale alarm. Throws on a
  * read error, which is "could not tell", never "no rows". A database without
- * migration 0201's column is read for the stamp alone.
+ * migration 0202's column is read for the stamp alone.
  */
 export async function readKnownSlotRows(db: SlotRowDb): Promise<KnownSlotRowTimes[]> {
   const { data, error } = await withStartedColumn(

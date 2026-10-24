@@ -1129,9 +1129,9 @@ export interface BucketSlotsRow {
   computed_at: string;
   /** When a settings save last marked this row stale (#3118, migration 0161). */
   invalidated_at: string | null;
-  /** When the compute that wrote this row began (#3388, migration 0201). The lane
+  /** When the compute that wrote this row began (#3388, migration 0202). The lane
    *  schedules from it; `computed_at` can sit up to one eligibility cache lifetime
-   *  earlier. Null on rows written before 0201. */
+   *  earlier. Null on rows written before 0202. */
   compute_started_at: string | null;
 }
 

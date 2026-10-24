@@ -107,7 +107,7 @@ function computeWith(resolve: (b: Bucket) => Promise<EligibleAgents>) {
 async function laneAfterLiveWrite(
   cachedReadAtMs: number,
   liveWriteAtMs: number,
-  /** Columns the table lacks: the database before migration 0201 is applied. */
+  /** Columns the table lacks: the database before migration 0202 is applied. */
   withoutColumns: string[] = [],
 ) {
   resetStartedColumnProbe();
@@ -186,7 +186,7 @@ async function laneAfterLiveWrite(
   eq(row.compute_started_at, iso(T0), "and records when the compute started, which the lane schedules from");
 }
 
-// --- Before migration 0201: the same writes land, with the stamp alone ---
+// --- Before migration 0202: the same writes land, with the stamp alone ---
 
 {
   const { row, outcome } = await laneAfterLiveWrite(T0 - 50_000, T0 - 20_000, [COMPUTE_STARTED_COLUMN]);

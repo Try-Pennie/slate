@@ -9,7 +9,7 @@
 // the real due rule, cache hits added 16% to 80% more pool computes a tick.
 //
 // So the row also records when its compute started (`compute_started_at`, migration
-// 0201) and everything that judges DUE reads that. This drives the real
+// 0202) and everything that judges DUE reads that. This drives the real
 // `bucketsDueForRecompute` and `poolsDueForRecompute` over a day of ticks and fails
 // if cache hits cost a single extra compute.
 //

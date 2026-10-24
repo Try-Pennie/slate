@@ -76,7 +76,7 @@ export async function loadBucketSupply(
   try {
     // #3388: with when each row's compute started, which the "Last computed" column
     // and its freshness grade judge by (see `supplyComputedAtMs`). A database without
-    // migration 0201 is read for the stamp alone.
+    // migration 0202 is read for the stamp alone.
     const read = await withStartedColumn(
       (withStarted) =>
         db

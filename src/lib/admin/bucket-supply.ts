@@ -83,7 +83,7 @@ export interface CachedSlotRow {
     eventType?: Partial<SupplyEventType> | null;
   } | null;
   computed_at: string;
-  /** When the compute that wrote the row began (#3388, migration 0201); absent when
+  /** When the compute that wrote the row began (#3388, migration 0202); absent when
    *  the column is not there yet or the row predates it. */
   compute_started_at?: string | null;
 }
