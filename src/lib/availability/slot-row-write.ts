@@ -24,8 +24,10 @@ import { withStartedColumn } from "./slot-row-times.ts";
  *
  * Both halves are fixed together and neither works alone:
  *
- *   - `computed_at` is the instant the COMPUTE started, so it describes the data
- *     rather than the moment it arrived;
+ *   - `computed_at` is the oldest state the COMPUTE used (its start, or the
+ *     recompute lane's cached eligibility read when that is earlier, #3388), so it
+ *     describes the data rather than the moment it arrived; when the compute began
+ *     is kept apart in `compute_started_at`, which schedules the next one;
  *   - the write only overwrites a row OLDER than that stamp.
  *
  * The damage was always bounded (the 1 minute cron reconverges, and verify-on-book
