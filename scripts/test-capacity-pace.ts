@@ -202,6 +202,20 @@ const walkerOn = (m: MemberAvailability, iso: string, readAtMs: number, timeOff:
   eq(show(est({ readAtMs: R, advisors: [walkerOn(ninety, TUE, R)], pace: linePace(0) }, TUE).line), "wont-fill", "a day at 90% with nothing booking is not already");
 }
 {
+  // The last call (#4190, decision 20): from 95% the card's Full by is when no call is left open.
+  // One call left of 20 is 95%, so already for Full by, and taken at 2 an hour it goes at 6:30am.
+  const R = at(TUE, "06:00");
+  const almost = member("f", [rule(2, "09:00", "19:00")], [{ start: at(TUE, "09:00"), end: at(TUE, "18:30") }]);
+  const team = [walkerOn(almost, TUE, R), walkerOn(nineToSeven(), TUE, R, [], true)];
+  const last = est({ readAtMs: R, advisors: team, pace: linePace(2), target: "last-call" }, TUE);
+  eq(show(last.line), show(atState(at(TUE, "06:30"))), "the last open call is taken at 6:30am at 2 an hour");
+  eq(show(last.pattern), show(last.line), "the pattern, every cell fallen back, says the same");
+  eq(show(est({ readAtMs: R, advisors: team, pace: linePace(0), target: "last-call" }, TUE).line), "wont-fill", "nothing booking leaves the last call open to the day's last bookable moment");
+  const booked = member("f2", [rule(2, "09:00", "19:00")], [{ start: at(TUE, "09:00"), end: at(TUE, "19:00") }]);
+  eq(est({ readAtMs: R, advisors: [walkerOn(booked, TUE, R)], target: "last-call" }, TUE).line, { state: "already" }, "no call open now is already there");
+  eq(show(est({ readAtMs: R, advisors: team, pace: linePace(2) }, TUE).line), "already", "the default target is still Full by's 95%");
+}
+{
   // 95 is inclusive and judged by dayTotals' rounding: 20 calls, 19 taken is 95.
   const R = at(TUE, "06:00");
   const team = [walkerOn(nineToSeven(), TUE, R)];

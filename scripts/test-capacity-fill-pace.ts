@@ -102,6 +102,45 @@ const rowOf = (rows: FillReadingRow[], day: string) => {
   eq(rowOf(out, WED).pace_state, "no-pace-yet", "a day with no stored readings has no pace yet, judged on its own");
 }
 
+// --- the last call (#4190): stored from 95%, and only there -----------------------------------------
+{
+  // Wednesday all but booked: one advisor busy all day, one to 4:30pm, so one call of 32 is left
+  // and the day is past 95% at noon Tuesday.
+  const full: CapacityPeople = {
+    ...people(["v1", "v2"]),
+    members: [
+      { ...member("v1"), busy: [{ start: at("09:00", WED), end: at("17:00", WED) }] },
+      { ...member("v2"), busy: [{ start: at("09:00", WED), end: at("16:30", WED) }] },
+    ],
+  };
+  const rows = fillReadings({ readAtMs, windowDays: [TUE, WED], bookerDays: [TUE, WED], hours, eventType: ev, people: full, last: new Map() }).rows.map((r) => ({ ...r, prev_read_at: iso(readAtMs - HALF), taken: 2, taken_reason: null }));
+  const before = history([at("09:30"), at("10:00"), at("10:30"), at("11:00"), at("11:30")], 2);
+  const out = fillPace({ readAtMs, rows, history: new Map([[TUE, before], [WED, before]]), pattern: [], people: full, hours, eventType: ev, offeredDays: 2 });
+  const wed = rowOf(out, WED);
+  eq(wed.estimate_line_state, "already", `fixture: Wednesday is past 95% at noon Tuesday (${wed.open} open of ${wed.capacity})`);
+  const last = estimate({
+    readAtMs,
+    advisors: full.members.map((m) => walkAdvisorOf({ member: m, timeOff: [], day: DateTime.fromISO(WED, { zone: ZONE }).startOf("day"), eventType: ev, hours, nowMs: readAtMs }, false)),
+    eventType: ev,
+    pace: pace([...before, { read_at: iso(readAtMs), prev_read_at: iso(readAtMs - HALF), taken: 2 }], readAtMs),
+    pattern: [],
+    cellAt: (stepMs) => fillCellAt(stepMs, WED, hours, ev, 2),
+    target: "last-call",
+  });
+  eq(last.line.state, "at", "fixture: at 4 an hour the last call goes before Wednesday");
+  eq(
+    [wed.estimate_last_line_state, wed.estimate_last_line_at, wed.estimate_last_pattern_state, wed.estimate_last_pattern_at, wed.estimate_last_method],
+    [last.line.state, last.line.state === "at" ? iso(last.line.atMs) : null, last.pattern.state, last.pattern.state === "at" ? iso(last.pattern.atMs) : null, last.shown],
+    "a day past 95% stores the last call estimate exactly as estimate() gives it",
+  );
+  const tue = rowOf(out, TUE);
+  eq(
+    [tue.estimate_last_line_state, tue.estimate_last_line_at, tue.estimate_last_pattern_state, tue.estimate_last_pattern_at, tue.estimate_last_method],
+    [null, null, null, null, null],
+    "a day under 95% stores no last call estimate: its card says Full by for 95%",
+  );
+}
+
 // --- not yet, missed, and not filling --------------------------------------------------------------
 {
   const first = rowOf(run(), TUE);

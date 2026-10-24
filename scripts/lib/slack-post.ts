@@ -22,6 +22,11 @@
 // on the Cloudflare runtime and legitimately wants the tunable channel from the database.
 // This is the one caller that must survive without it.
 
+// #3528: the same escape the app's send point applies, from the one local copy. These
+// messages carry commit subjects and canary text people wrote, and write no links, so
+// no link origin is allowed.
+import { slackSafeMrkdwn } from "./slack-mrkdwn.ts";
+
 /** The bit of `fetch` this needs, so a test can hand it a fake with no network. */
 export type SlackFetch = (
   url: string,
@@ -73,7 +78,7 @@ export function makeSlackPoster(opts: {
           "Content-Type": "application/json; charset=utf-8",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ channel, text: msg.text }),
+        body: JSON.stringify({ channel, text: slackSafeMrkdwn(msg.text, []) }),
         signal: controller.signal,
       });
       if (res.status < 200 || res.status >= 300) {

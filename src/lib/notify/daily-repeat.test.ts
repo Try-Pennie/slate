@@ -231,6 +231,9 @@ const ciTick = (runNumber: () => number) => () =>
     token: "t",
     readRuns: async () => [refusedRun(runNumber())],
     readJobs: async () => [{ name: "build", conclusion: "failure", stepCount: 0 }],
+    // An unstamped build ("dev") judges no deploy, so the tip is never read (#3648).
+    readMainTip: async () => null,
+    readTipRuns: async () => null,
     cooldownMs: { deploy: MONITOR_DEFAULTS.cooldownMs.main_not_deployed, refusal: MONITOR_DEFAULTS.cooldownMs.ci_runs_refused },
     notify: sendThrottledAlert,
     resolve: resolveAlert,
@@ -362,10 +365,11 @@ describe("smoke canary workflow failure (#3801)", () => {
     expect(posted).toEqual([]);
   });
 
-  it("cannot mention a whole channel", async () => {
-    await report({ ...slowRead(4000), text: "<!channel> canary down" });
-    expect(posted[0]).not.toContain("<!channel>");
-  });
+  // "cannot mention a whole channel" moved with the rule it tested (#3528): a mention in
+  // ANY message is made inert where every message is sent, src/lib/notify/slack.ts,
+  // which this file replaces with a fake. src/lib/notify/slack-send-escape.test.ts
+  // drives that send point with `<!channel>`, and scripts/test-slack-send-points.ts
+  // holds every sender to it, the canary's route included.
 });
 
 // --- the rule's edges ----------------------------------------------------------

@@ -35,6 +35,8 @@ const ACTION_LABEL: Record<string, string> = {
   "agent.reactivate": "reactivated agent",
   "agent.manager": "set manager",
   "agent.ooo_calendar": "set time off calendar",
+  "agent.google_relinked": "unlinked an agent's Google account so a new one can sign in",
+  "agent.sign_in_removed": "removed an agent's old sign in",
   "ooo.submit": "requested time off",
   "ooo.approve": "approved time off",
   "ooo.reject": "declined time off",

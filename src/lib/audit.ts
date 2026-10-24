@@ -38,6 +38,14 @@ export const AUDIT_ACTIONS = [
   "agent.attributes",
   "agent.manager",
   "agent.ooo_calendar",
+  // #3526: an admin forgetting the Google account somebody signs in with, so the
+  // next account to sign in with their address gets their Slate account. The
+  // details say an account was unlinked, never the account id.
+  "agent.google_relinked",
+  // #3526: the Supabase sign in behind an account was deleted (today only by that
+  // relink). Its own entry, written the moment the deletion lands, because the row
+  // write after it can still fail and the deletion cannot be undone.
+  "agent.sign_in_removed",
   "ooo.submit",
   "ooo.approve",
   "ooo.reject",
