@@ -12,7 +12,7 @@
 #   sudo bash ~/pennie-ci-runner/setup.sh user      creates the cirunner user
 #   sudo bash ~/pennie-ci-runner/setup.sh docker    starts cirunner's Docker and proves it answers
 #   sudo bash ~/pennie-ci-runner/setup.sh runners   asks for the registration token, registers two runners
-#   sudo bash ~/pennie-ci-runner/setup.sh refresh   rewrites each runner's settings and restarts it (no token)
+#   sudo bash ~/pennie-ci-runner/setup.sh refresh   rewrites each runner's settings and restarts it between jobs (no token)
 #   sudo bash ~/pennie-ci-runner/setup.sh status    shows what is installed and running
 #   sudo bash ~/pennie-ci-runner/setup.sh stop      stops runners and Docker (they start again on the next "start")
 #   sudo bash ~/pennie-ci-runner/setup.sh start     starts them again
@@ -222,9 +222,16 @@ stage_refresh() {
   local name
   for name in "${RUNNERS[@]}"; do
     [ -f "$RUNNER_HOME/runners/$name/.runner" ] || die "$name is not registered; run the runners stage"
+    # Restarting the listener fails the job it is running, so wait for that job
+    # to finish. Runner.Worker is the process that runs a job, one per job.
+    local waited=0
+    while pgrep -u "$RUNNER_USER" -f "runners/$name/bin/Runner.Worker" >/dev/null; do
+      [ "$waited" -eq 0 ] && echo "$name is running a job; waiting for it to finish..."
+      [ "$waited" -ge 3600 ] && die "$name was still running a job after an hour; try again later"
+      sleep 10
+      waited=$((waited + 10))
+    done
     write_runner_settings "$name"
-    # A job running now finishes first: launchd stops the listener, which hands
-    # an in progress job back as failed, so only refresh between runs.
     load_daemon "$(runner_plist "$name")"
     echo "OK: $name now uses $(runner_home "$name") and was restarted"
   done

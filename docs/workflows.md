@@ -265,8 +265,8 @@ runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-la
   own HOME (shared, two jobs at once broke `pnpm/action-setup`), and a job started
   hook fails any job, saying why, while the disk has under 10 GB free
   (`scripts/test-mac-runner-disk-guard.ts`). `setup.sh refresh` applies a settings
-  change by restarting the runners, which fails a job running at that moment, so
-  run it between jobs.
+  change by restarting each runner, and first waits for the job it is running to
+  finish, since a restart fails that job.
 - **Anything else** (`github`, empty, deleted, a typo): GitHub's `ubuntu-latest`,
   as before. Switching back is that one org setting, with no code change.
 
