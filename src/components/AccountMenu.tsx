@@ -62,7 +62,10 @@ export function AccountMenu({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label="Account and settings"
+        // #3917 (L786): with no photo the button DRAWS the initials, and somebody
+        // driving by voice says what they see, so the name starts with them. Kept
+        // over a photo too, since only AdvisorAvatar knows whether the picture loaded.
+        aria-label={`${initials}, account and settings`}
         className="flex min-h-11 items-center gap-1.5 rounded-md px-1.5 text-fg-muted transition-colors hover:bg-[var(--bg-alt)] hover:text-fg"
       >
         <span className="relative">
