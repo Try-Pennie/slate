@@ -102,7 +102,7 @@ jobs:
   plan:
     # A few seconds of shell, billed as one minute.
     timeout-minutes: 2
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     outputs:
       shifts: ${{ steps.list.outputs.shifts }}
     steps:
@@ -118,7 +118,7 @@ jobs:
     # pass limit is what stops a slow suite, inside the job, so the steps that tell the
     # report how the pass ended still run.
     timeout-minutes: 25
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     strategy:
       # Every shift runs, whatever another one did. A shift that cancelled its siblings
       # would leave them unmeasured, and two date dependent suites found by different
@@ -193,7 +193,7 @@ jobs:
     if: always()
     # A checkout, a node setup, a download and one Slack post.
     timeout-minutes: 5
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # No cache and no install: the runner image's own node may predate the type

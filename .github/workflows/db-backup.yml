@@ -76,7 +76,7 @@ jobs:
     # twelve hour cadence of the two daily slots plus this timeout plus ten hours of
     # GitHub lateness (the lateness seen has been six to nine).
     timeout-minutes: 20
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac-docker' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Pins the node version the dump judge's type stripping flag needs, rather than
@@ -154,7 +154,7 @@ jobs:
           tar -czf "$archive" -C "${{ steps.dump.outputs.dir }}" .
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
           echo "key=slate/db/$(date -u +%Y/%m/%d)/slate-db-$stamp.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "bytes=$(stat -c %s "$archive")" >> "$GITHUB_OUTPUT"
+          echo "bytes=$(wc -c < "$archive" | tr -d " ")" >> "$GITHUB_OUTPUT"
 
       # The AWS CLI on the runner image talks to R2 through its S3 compatible endpoint.
       # The two checksum settings keep the CLI to the integrity headers a request
