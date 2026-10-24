@@ -4705,6 +4705,41 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       unreadable: true,
     }),
   },
+  // #4168, #3468: plain causes, and the next run waiting only for a lane whose route
+  // takes a lock (`LANE_RUNS`); a lane that takes none says nothing about waiting.
+  {
+    key: "cron_lane_stale:*",
+    state: "the monitor lane, quiet across a deploy",
+    channel: "alert",
+    text: coreLaneAlertText({
+      lane: "monitor",
+      ageMs: 22 * 60_000,
+      maxStaleMs: LANE_STALE_BOUNDS_MS.monitor,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "bulk-reassign, whose next run waits on its lock",
+    channel: "alert",
+    text: coreLaneAlertText({
+      lane: "bulk-reassign",
+      ageMs: 25 * 60_000,
+      maxStaleMs: LANE_STALE_BOUNDS_MS["bulk-reassign"],
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "a sub step lane with no lock, so nothing waits",
+    channel: "alert",
+    text: coreLaneAlertText({
+      lane: "reroute-hold-sweep",
+      ageMs: 14 * 60_000,
+      maxStaleMs: LANE_STALE_BOUNDS_MS["reroute-hold-sweep"],
+      unreadable: false,
+    }),
+  },
   {
     key: "cron_lane_stale:*",
     state: "a core lane recovered",
