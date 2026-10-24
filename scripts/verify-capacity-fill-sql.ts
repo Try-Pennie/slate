@@ -119,12 +119,20 @@ try {
     pace_state: "pace", pace_per_hour: 6.5, pace_back_at: null,
     estimate_line_state: "at", estimate_line_at: ts("21:00"), estimate_pattern_state: "no-pace", estimate_pattern_at: null,
     estimate_method: "line", estimate_cells_fallen_back: 3,
+    // #4190: from 95%, the walk to no call open, in its own columns.
+    estimate_last_line_state: "at", estimate_last_line_at: ts("22:00"), estimate_last_pattern_state: "wont-fill",
+    estimate_last_pattern_at: null, estimate_last_method: "pattern",
   });
   eq(record(ts("17:30"), ts("17:00"), [paced], [{ day: "2026-10-20", snapshot: {} }]), "t", "a reading carrying its pace writes");
   eq(
     sql(`select concat_ws('|', pace_state, pace_per_hour, estimate_line_state, to_char(estimate_line_at at time zone 'UTC', 'HH24:MI'), estimate_pattern_state, estimate_method, estimate_cells_fallen_back) from capacity_fill_readings where org_id = '${ORG}' and read_at = '${ts("17:30")}';`),
     "pace|6.5|at|21:00|no-pace|line|3",
     "and every pace and estimate column is stored as sent",
+  );
+  eq(
+    sql(`select concat_ws('|', estimate_last_line_state, to_char(estimate_last_line_at at time zone 'UTC', 'HH24:MI'), estimate_last_pattern_state, coalesce(estimate_last_pattern_at::text, 'none'), estimate_last_method) from capacity_fill_readings where org_id = '${ORG}' and read_at = '${ts("17:30")}';`),
+    "at|22:00|wont-fill|none|pattern",
+    "and the last call estimate is stored as sent (#4190)",
   );
   const refusedRow = (over: Record<string, unknown>) =>
     sqlError(`select record_capacity_fill('${ORG}', ${stamp(ts("18:00"))}, ${stamp(ts("17:30"))}, ${lit([{ ...paced, ...over }])}, '[]'::jsonb);`) ?? "";
@@ -133,6 +141,10 @@ try {
   assert(/capacity_fill_readings_estimate_line_at/.test(refusedRow({ estimate_line_at: null })), "an estimate at a time with no time is refused");
   assert(/capacity_fill_readings_pace_state/.test(refusedRow({ pace_state: "fast" })), "a pace state the card cannot read is refused");
   assert(/capacity_fill_readings_estimate_method/.test(refusedRow({ estimate_method: "guess" })), "a method the card cannot read is refused");
+  assert(/capacity_fill_readings_estimate_last_line_at/.test(refusedRow({ estimate_last_line_at: null })), "a last call estimate at a time with no time is refused");
+  assert(/capacity_fill_readings_estimate_last_method/.test(refusedRow({ estimate_last_method: "guess" })), "a last call method the card cannot read is refused");
+  assert(/capacity_fill_readings_estimate_last_together/.test(refusedRow({ estimate_last_method: null })), "a last call estimate missing its method is refused");
+  assert(/capacity_fill_readings_estimate_last_together/.test(refusedRow({ estimate_last_pattern_state: null })), "a last call estimate with one method only is refused");
 
   // --- the pattern averages only readings measured over one half hour -------------------------------
   // After a gap, 17:30 to 18:30 took 5 calls in an hour: never a half hour cell's 5.

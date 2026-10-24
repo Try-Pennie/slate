@@ -85,7 +85,7 @@ eq(estimateLine("pattern", "wont-fill", Z, "2026-10-19"), "Won't fill", "the pat
 eq(readingsMissedLine(Date.parse("2026-10-19T22:30:00Z"), Z, "2026-10-19"), "Readings missed, pace back by 6:30pm", "after a gap (decision 8)");
 eq(paceStaleSentence(Date.parse("2026-10-19T17:30:00Z"), Z, "2026-10-19"), "Couldn't update how fast the days are filling since 1:30pm.", "out of date (decision 13)");
 eq(PACE_UNREADABLE_COPY, { heading: "Couldn't load how fast the days are filling.", body: "Try reloading in a minute." }, "can't load (decision 12)");
-eq([NOT_FILLING, NO_PACE_YET], ["Not filling right now", "Pace shows after 3 hours of readings"], "not filling and no pace yet (decisions 6 and 7)");
+eq([NOT_FILLING, NO_PACE_YET], ["Won't fill at this pace", "Pace shows after 3 hours of readings"], "not filling and no pace yet (decisions 6, 7 and 21)");
 eq(KEY_WORDS, { busy: "Busy", open: "Open", off: "Not working", past: "Past" }, "the key's words (decision 14)");
 eq([KEY_WORDS.open, callsOpenUnit(2).trim()], ["Open", "calls open"], "one word for a call that still fits (decision 15)");
 for (const words of [NOT_FILLING, NO_PACE_YET, PACE_UNREADABLE_COPY.heading, PACE_UNREADABLE_COPY.body, ...Object.values(KEY_WORDS)]) {

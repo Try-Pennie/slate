@@ -56,6 +56,9 @@ function makeDb(opts: FakeOpts) {
         if (col === "role") roleCounted = true;
         return b;
       },
+      // #3526: the account id is recorded with a compare and swap on
+      // `google_sub is null`. A filter only, so it narrows nothing here.
+      is: () => b,
       in: (col: string) => {
         if (col === "role") roleCounted = true;
         return b;
@@ -136,7 +139,7 @@ const input = {
   authUserId: "auth-1",
   email: "newperson@trypennie.com",
   name: "New Person",
-  googleSub: "sub-1",
+  googleSubs: ["sub-1"],
   avatarUrl: null,
 };
 
@@ -331,7 +334,9 @@ describe("provisionUser refuses a deactivated account (#2378)", () => {
     db.current = makeDb({
       org: { id: "org-1" },
       adminExists: true,
-      linked: { id: "linked-1", email: input.email, deactivated_at: null },
+      // A linked row carries the account id it signed in with (#3526), so this
+      // sign in writes nothing and the row read is the row returned.
+      linked: { id: "linked-1", email: input.email, deactivated_at: null, google_sub: "sub-1" },
     });
     expect((await provisionUser(input)).id).toBe("linked-1");
 

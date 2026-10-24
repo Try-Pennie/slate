@@ -52,6 +52,7 @@ on:
       - "scripts/lib/migration-replay.ts"
       - "scripts/lib/run-alerter.ts"
       - "scripts/lib/slack-post.ts"
+      - "scripts/lib/slack-mrkdwn.ts"
       - "scripts/notify-db-replay-failure.ts"
       # #3495: the webhook enqueue suite reads the function's answer with the Worker's
       # own reader, and holds it to the fixture the reader is tested against.
@@ -105,7 +106,7 @@ jobs:
   replay:
     # Estimated 2 to 3 minutes; the slack is for a slow image pull.
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac-docker' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # No pnpm install: every suite imports only scripts/, node builtins and src/
