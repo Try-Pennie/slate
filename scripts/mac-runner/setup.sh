@@ -11,7 +11,7 @@
 #
 #   sudo bash ~/pennie-ci-runner/setup.sh user      creates the cirunner user
 #   sudo bash ~/pennie-ci-runner/setup.sh docker    starts cirunner's Docker and proves it answers
-#   sudo bash ~/pennie-ci-runner/setup.sh runners   asks for the registration token, registers two runners
+#   sudo bash ~/pennie-ci-runner/setup.sh runners   asks for the registration token, registers any runner not yet registered
 #   sudo bash ~/pennie-ci-runner/setup.sh refresh   rewrites each runner's settings and restarts it between jobs (no token)
 #   sudo bash ~/pennie-ci-runner/setup.sh status    shows what is installed and running
 #   sudo bash ~/pennie-ci-runner/setup.sh stop      stops runners and Docker (they start again on the next "start")
@@ -30,10 +30,11 @@ RUNNER_VERSION=2.338.1
 RUNNER_SHA256=52c3fb801b931fbd454979bae5ec3443ea3da2c4a1b4c44fa546fb630d61a0a9
 RUNNER_TARBALL=actions-runner-osx-arm64-$RUNNER_VERSION.tar.gz
 RUNNER_URL=https://github.com/actions/runner/releases/download/v$RUNNER_VERSION/$RUNNER_TARBALL
-# Two runners, not three: the disk had 33 GB free on 2026-10-24, and each runner
-# keeps its own checkouts of Slate, Bidspoke and PET. Only mac-1 can reach Docker,
-# so two Docker jobs (each starting a local Supabase on the same ports) never overlap.
-RUNNERS=(mac-1 mac-2)
+# Three runners: two queued seven runs deep within an hour of Slate switching over
+# (2026-10-24), and each one keeps its own checkouts and caches, about 5 GB, under
+# the disk floor below. Only mac-1 can reach Docker, so two Docker jobs (each
+# starting a local Supabase on the same ports) never overlap.
+RUNNERS=(mac-1 mac-2 mac-3)
 DOCKER_RUNNER=mac-1
 LABEL=pennie-mac
 DOCKER_SOCK=$RUNNER_HOME/.colima/default/docker.sock
@@ -204,6 +205,10 @@ stage_runners() {
   local name dir labels
   for name in "${RUNNERS[@]}"; do
     dir=$RUNNER_HOME/runners/$name
+    if [ -f "$dir/.runner" ]; then
+      echo "OK: dan-macbook-$name is already registered, left running"
+      continue
+    fi
     labels=$LABEL
     [ "$name" = "$DOCKER_RUNNER" ] && labels=$LABEL,$LABEL-docker
     as_runner mkdir -p "$dir"
@@ -224,7 +229,10 @@ stage_refresh() {
   user_exists || die "run the user stage first"
   local name
   for name in "${RUNNERS[@]}"; do
-    [ -f "$RUNNER_HOME/runners/$name/.runner" ] || die "$name is not registered; run the runners stage"
+    if [ ! -f "$RUNNER_HOME/runners/$name/.runner" ]; then
+      echo "SKIPPED: $name is not registered yet; the runners stage registers it with these settings"
+      continue
+    fi
     # Restarting the listener fails the job it is running, so wait for that job
     # to finish. Runner.Worker is the process that runs a job, one per job.
     local waited=0
