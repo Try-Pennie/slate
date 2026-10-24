@@ -72,7 +72,7 @@ jobs:
   # so the typecheck and lint still run on those PRs.
   static-checks:
     timeout-minutes: 10  # sum of the three former jobs' measured maxes (43s, 47s, 19s)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -213,7 +213,7 @@ jobs:
 
   node-tests:
     timeout-minutes: 15  # measured max 106s projected
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -240,7 +240,7 @@ jobs:
   # red run cannot say whether the rest of the suite passes.
   vitest:
     timeout-minutes: 15  # measured max 75s projected
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -263,7 +263,7 @@ jobs:
 
   build:
     timeout-minutes: 15  # measured max 78s
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -303,7 +303,7 @@ jobs:
     needs: [static-checks, node-tests, vitest, build, security-scan, browser]
     if: always()
     timeout-minutes: 5  # measured max 4s
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     steps:
       # The legs are read from `toJSON(needs)`, so a leg added to `needs` is judged
       # without anyone editing this step (L41), and each result carries its leg's
@@ -394,7 +394,7 @@ jobs:
   security-scan:
     if: github.event_name == 'pull_request'
     timeout-minutes: 15  # measured max 97s
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     steps:
       # Full history: the secret scan reads the commits a pull request ADDS, and
       # needs the base commit present to work out what that range is.
@@ -410,7 +410,7 @@ jobs:
     # (#2402). Measured 86s and 97s against deploys ending at 302s and 300s, runs
     # 35112495998 and 35115428061. Pinned by scripts/test-deploy-alert-latency.ts.
     timeout-minutes: 15  # measured max 97s
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     steps:
       # Full history: the secret scan reads the commits a push ADDS.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -449,7 +449,7 @@ jobs:
   browser:
     if: github.event_name == 'pull_request'
     timeout-minutes: 20  # measured 5m47s on CI (PR #3162); a cold image pull adds a few minutes
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac-docker' || 'ubuntu-latest' }}
     outputs:
       decision: ${{ steps.gate.outputs.decision }}
     steps:
@@ -554,7 +554,7 @@ jobs:
     needs: browser
     if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.browser.outputs.decision == 'run' }}
     timeout-minutes: 5  # a download and two comments
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     permissions:
       contents: read
       pull-requests: write
@@ -607,7 +607,7 @@ jobs:
     # and security-scan (under ci) is skipped on every push to main, so a bare
     # condition here skipped every deploy with ci green and nothing paging.
     if: ${{ !cancelled() && needs.ci.result == 'success' && needs.static-checks.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     # No concurrency group of its own, deliberately. Deploys are already serialised by
     # the workflow's group on main (never cancelled while running), and a PENDING main
     # run that a newer merge supersedes never deploys, which drops nothing: main is
