@@ -201,8 +201,10 @@ describe("SaveForm reloads instead, where that is the whole recovery (#1998)", (
     await press();
     await press();
 
+    // Waited for, like the refusal above: the boundary hears of the second
+    // press's error a few ticks after the click returns.
+    await waitFor(() => expect(caught).toContain(failure));
     expect(reload).toHaveBeenCalledTimes(1);
-    expect(caught).toContain(failure);
   });
 
   it("still draws the notice on a form that has something to say", async () => {
