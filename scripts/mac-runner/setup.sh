@@ -288,7 +288,10 @@ stage_start() {
   need_root
   load_daemon "$COLIMA_PLIST"
   local n
-  for n in "${RUNNERS[@]}"; do load_daemon "$(runner_plist "$n")"; done
+  for n in "${RUNNERS[@]}"; do
+    # A runner added to RUNNERS but not registered yet has no daemon to start.
+    if [ -f "$(runner_plist "$n")" ]; then load_daemon "$(runner_plist "$n")"; else echo "SKIPPED: $n is not registered yet"; fi
+  done
   echo "OK: started"
 }
 
