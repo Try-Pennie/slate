@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const service = vi.hoisted(() => ({
   rebookRowForToken: vi.fn(),
+  getBookingByToken: vi.fn(),
   existingCallForLanding: vi.fn(async (_identity: unknown, _world: unknown) => null),
   landingAttendee: vi.fn(async (_identity: unknown, link: unknown) => link),
 }));
@@ -30,6 +31,13 @@ vi.mock("@/components/StandaloneBookerShell", () => ({
   default: ({ children }: { children?: unknown }) => children ?? null,
 }));
 vi.mock("@/components/ClientErrorBeacon", () => ({ ClientErrorBeacon: () => null }));
+// Next's redirect throws to end the render; this one throws a readable marker.
+const redirect = vi.hoisted(() =>
+  vi.fn((url: string): never => {
+    throw new Error(`REDIRECT ${url}`);
+  }),
+);
+vi.mock("next/navigation", () => ({ redirect }));
 
 import RebookPage, { metadata } from "./page";
 import Booker from "@/components/Booker";
@@ -123,6 +131,38 @@ describe("/booking/manage/[token]/rebook (#2982)", () => {
     service.rebookRowForToken.mockResolvedValue({ kind: "found", row: ROW });
     expect(findByType(await render(), ClientErrorBeacon)?.page).toBe(REBOOK_ROUTE);
     expect(REBOOK_ROUTE).toBe("/booking/manage/[token]/rebook");
+  });
+
+  // #3672: the booking API moved the call to another bucket, which cancelled the
+  // booking this token names. A rebook from it would book the lead a SECOND call in
+  // the old bucket, so the old token opens the call that replaced it instead.
+  it("opens the manage page of the booking that replaced a moved one", async () => {
+    service.rebookRowForToken.mockResolvedValue({ kind: "replaced" });
+    service.getBookingByToken.mockResolvedValue({
+      booking: { id: "bk-new", status: "confirmed", manage_token: "tok-new" },
+      bucket: { code: "200" },
+      eventType: {},
+      followedToToken: "tok-new",
+    });
+    await expect(render({ xbc: "100", theme: "dark" })).rejects.toThrow("REDIRECT /booking/manage/tok-new?theme=dark");
+    expect(service.getBookingByToken).toHaveBeenCalledWith(TOKEN);
+    expect(service.landingAttendee).not.toHaveBeenCalled();
+  });
+
+  it("draws not found when the replacing booking cannot be opened, never a booker", async () => {
+    service.rebookRowForToken.mockResolvedValue({ kind: "replaced" });
+    service.getBookingByToken.mockResolvedValue(null);
+    const tree = await render();
+    expect(findByType(tree, ManageNotFound)).not.toBeNull();
+    expect(findByType(tree, Booker)).toBeNull();
+    expect(redirect).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: a booking cancelled any other way still rebooks, with no detour", async () => {
+    service.rebookRowForToken.mockResolvedValue({ kind: "found", row: ROW });
+    expect(findByType(await render(), Booker)).not.toBeNull();
+    expect(service.getBookingByToken).not.toHaveBeenCalled();
+    expect(redirect).not.toHaveBeenCalled();
   });
 
   it("keeps the page out of search and its URL out of every Referer but its own", () => {

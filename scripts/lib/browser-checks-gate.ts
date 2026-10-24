@@ -42,6 +42,8 @@ export const BROWSER_INPUT_PATTERNS: readonly string[] = [
   "scripts/browser-checks-gate.ts",
   "scripts/lib/browser-checks-gate.ts",
   "scripts/lib/migration-drift-gate.ts",
+  // e2e/env.ts reads the live settings rule from here (#3694).
+  "scripts/lib/live-env-files.ts",
 ];
 
 /** GitHub's filter glob, for the two wildcards the list uses. */

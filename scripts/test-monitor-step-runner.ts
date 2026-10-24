@@ -191,4 +191,32 @@ function fakeClock(steps: number[]) {
   eq(await r.run("a", "fb", async () => "v"), "fb", "a throwing fence skips the step rather than throwing");
 }
 
+// --- a step that ran but MEASURED nothing says so (#3955, L792) ---
+// A step whose gate is shut, whose hourly slot has not come round, or whose org is
+// closed returns without doing its work. It did not throw, and it did not show its
+// work succeeding either, so it must not be recorded as a healthy run: the step
+// failure streak would read it as recovery and clear a page about the work it skipped.
+{
+  const r = createStepRunner({ now: () => 0, onError: () => {} });
+  const skipped = await r.run("hourly", "fb", async (step) => step.unmeasured("not-due"));
+  const worked = await r.run("every_tick", "fb", async () => "done");
+  const threw = await r.run("gated_then_threw", "fb", async (step) => {
+    step.unmeasured(null);
+    throw new Error("boom");
+  });
+  eq(skipped, "not-due", "an unmeasured step still returns its own value");
+  eq(worked, "done", "a step that ignores the context runs as before");
+  eq(threw, "fb", "a step that marked itself unmeasured and then threw returns its fallback");
+  eq(
+    r.outcomes().map((o) => [o.name, o.ok, o.measured]),
+    [
+      ["hourly", true, false],
+      ["every_tick", true, true],
+      ["gated_then_threw", false, true],
+    ],
+    "an unmeasured run is recorded as such, and a throw is always a measured failure",
+  );
+  eq(r.fields().unmeasured, "hourly", "the cycle line names the steps that measured nothing this tick");
+}
+
 finish();

@@ -263,6 +263,15 @@ The decisions are in `scripts/lib/scan-bundle-env.ts`, driven by fixtures in
 `.open-next`: the gate runs the suite alongside the build that writes it, L461).
 The load run's own three layers are in `scripts/loadtest/RUNBOOK.md`.
 
+**`pnpm cf:preview` refuses to start in a checkout holding any `.env*` file (other
+than the committed `.env.example`) or `.dev.vars*` file (#3694).** It builds without
+the bundle check above and runs the Worker locally on the Workers runtime, which
+`mayWriteAlerts` treats as production, and wrangler also loads `.dev.vars`. In the
+main checkout that would send any alert it raised to the real Slack channel and
+write production's alert state. `scripts/cf-preview-guard.ts` runs first and names
+the files it found; run the preview from a git worktree. The rule for which files
+count is shared with the browser checks runner (`scripts/lib/live-env-files.ts`).
+
 Moved out of `AGENTS.md` on 2026-10-15, where every character was loaded into
 every session (#2393). `AGENTS.md` keeps the rule and points here; this is the
 full text as it stood, with the reasoning, the incidents and the measurements
