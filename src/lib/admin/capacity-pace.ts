@@ -21,6 +21,12 @@
  * The expected taken so far comes off the team's open (never below 0), and `dayTotals` judges the
  * percent, so there is no second formula. The first step at 95% or more is the time.
  *
+ * ## The last call
+ *
+ * From 95% the card's Full by is when no call is left open (Dan, 2026-10-23, #4190, decision 20):
+ * the same walk, judged by the open count reaching 0 rather than by the percent, because the
+ * percent rounds and would call a day with one call left 100%.
+ *
  * ## Both methods, every reading
  *
  * The straight line expects the pace every hour. The pattern expects each half hour's average
@@ -198,13 +204,17 @@ export interface EstimateInput {
    * stays in the one helper that stamps the readings.
    */
   cellAt: (stepMs: number) => CellKey;
+  /** What the walk reaches: 95% full (the default), or no call left open (#4190). */
+  target?: EstimateTarget;
 }
 
+export type EstimateTarget = "full-by" | "last-call";
+
 export type Estimate =
-  /** 95% or more now: the percent already says it, so no time. */
+  /** At the target now (95% or more, or no call open): the card already says it, so no time. */
   | { state: "already" }
   | { state: "at"; atMs: number }
-  /** The walk reached the day's last bookable moment under 95%. */
+  /** The walk reached the day's last bookable moment short of the target. */
   | { state: "wont-fill" }
   /** No pace to walk with (not yet, or readings missed: the pace says which): the straight
    *  line always, the pattern when a cell needed it. */
@@ -221,9 +231,10 @@ export interface FillEstimates {
   cellsFallenBack: number;
 }
 
-/** Whether the team's day is at FULL_BY_PCT or more with `taken` expected to come off its open. */
-function reached(team: { open: number; capacity: number }, taken: number): boolean {
+/** Whether the team's day reaches the target with `taken` expected to come off its open. */
+function reached(team: { open: number; capacity: number }, taken: number, target: EstimateTarget): boolean {
   const open = Math.max(0, team.open - Math.max(0, taken));
+  if (target === "last-call") return open === 0;
   const pct = dayTotals([{ unsynced: false, days: [{ open, capacity: team.capacity, out: false }] }], 0).fullPct;
   return pct !== null && pct >= FULL_BY_PCT;
 }
@@ -231,6 +242,7 @@ function reached(team: { open: number; capacity: number }, taken: number): boole
 /** Both estimates for one day at the reading. */
 export function estimate(input: EstimateInput): FillEstimates {
   const { readAtMs, eventType } = input;
+  const target = input.target ?? "full-by";
   const counted = input.advisors.filter((a) => !a.unsynced && !a.out);
 
   // The day's last bookable moment: its latest start less the notice.
@@ -248,7 +260,7 @@ export function estimate(input: EstimateInput): FillEstimates {
   if (steps.length === 0 || steps[0].capacity === 0) {
     return { line: { state: "no-capacity" }, pattern: { state: "no-capacity" }, shown: "line", cellsFallenBack: 0 };
   }
-  if (reached(steps[0], 0)) return { line: { state: "already" }, pattern: { state: "already" }, shown: "line", cellsFallenBack: 0 };
+  if (reached(steps[0], 0, target)) return { line: { state: "already" }, pattern: { state: "already" }, shown: "line", cellsFallenBack: 0 };
 
   const p = input.pace;
   const linePerStep = p.state === "pace" || p.state === "not-filling" ? (p.perHour * WALK_STEP_MS) / 3_600_000 : null;
@@ -259,7 +271,7 @@ export function estimate(input: EstimateInput): FillEstimates {
       const expected = expectedAt(steps[k].atMs);
       if (expected === null) return { state: "no-pace" };
       taken += expected;
-      if (reached(steps[k], taken)) return { state: "at", atMs: steps[k].atMs };
+      if (reached(steps[k], taken, target)) return { state: "at", atMs: steps[k].atMs };
     }
     return { state: "wont-fill" };
   };

@@ -33,14 +33,22 @@ function makeDeps(opts: {
   inflightCancels?: string[];
   /** ooo_requests ids that are still approved (#1464). */
   approvedOoo?: string[];
+  /** Bookings cancelled inside the grace window (#4165): their cancel may not have
+   *  queued its own block delete yet. */
+  justCancelled?: string[];
+  /** Block ids still in the table when the delete runs (#4165). Defaults to every
+   *  scanned row; a row missing here was deleted by somebody else after the scan. */
+  presentAtDelete?: string[];
 }) {
   const calls = {
     loadReconcilableBusyBlocks: [] as number[],
     loadBookingStatuses: [] as string[][],
     loadInflightCancelBookingIds: [] as string[][],
     loadApprovedOooRequestIds: [] as string[][],
+    loadJustCancelledBookingIds: [] as string[][],
     deleteBusyBlocksByIds: [] as string[][],
   };
+  const present = new Set(opts.presentAtDelete ?? opts.rows.map((r) => r.id));
   const deps = {
     loadReconcilableBusyBlocks: async (limit: number) => {
       calls.loadReconcilableBusyBlocks.push(limit);
@@ -64,8 +72,18 @@ function makeDeps(opts: {
       const approved = new Set(opts.approvedOoo ?? []);
       return new Set(ids.filter((id) => approved.has(id)));
     },
+    loadJustCancelledBookingIds: async (ids: string[]) => {
+      calls.loadJustCancelledBookingIds.push(ids);
+      const recent = new Set(opts.justCancelled ?? []);
+      return new Set(ids.filter((id) => recent.has(id)));
+    },
+    // Like the real `.delete().in("id", ids).select("id")`: answers with the rows it
+    // actually removed, which excludes any already gone.
     deleteBusyBlocksByIds: async (ids: string[]) => {
       calls.deleteBusyBlocksByIds.push(ids);
+      const removed = ids.filter((id) => present.has(id));
+      for (const id of removed) present.delete(id);
+      return removed;
     },
   } as unknown as BookingDeps;
   return { deps, calls };
@@ -267,6 +285,91 @@ async function run() {
     assert(res.freedCancelled === 1, "#1464: counts the cancelled-booking miss separately");
     assert(res.freedOrphans === 1, "#1464: counts the unowned orphan separately");
     assert(res.freed === 2, "#1464: the two counts add up to the total freed");
+  }
+
+  // #4165, window 1: the cancel finished between this sweep's block read and its
+  // status read. The block was already gone when the delete ran, so nothing was
+  // freed, and nothing may be reported: a count of candidates paged "a write-through
+  // delete was missed" about a cancel that had deleted its own block.
+  {
+    const rows: Row[] = [
+      block("b-raced", "u1", "bk-raced"), // deleted by the cancel after the scan
+      block("b-stuck", "u2", "bk-stuck"), // genuinely survived its cancel
+    ];
+    const { deps, calls } = makeDeps({
+      rows,
+      statuses: { "bk-raced": "cancelled", "bk-stuck": "cancelled" },
+      presentAtDelete: ["b-stuck"],
+    });
+    const res = await reconcileCancelledBusyBlocks(deps, 500);
+    assert(
+      (calls.deleteBusyBlocksByIds[0] ?? []).slice().sort().join(",") === "b-raced,b-stuck",
+      "#4165: still asks to delete both candidates (deleting a gone row is harmless)",
+    );
+    assert(res.freed === 1, "#4165: counts only the row the delete actually removed");
+    assert(res.freedCancelled === 1, "#4165: the cancelled count comes from removed rows too");
+    assert(
+      JSON.stringify(res.freedBookingIds) === JSON.stringify(["bk-stuck"]),
+      "#4165: names only the booking whose block was really freed",
+    );
+    assert(
+      JSON.stringify(res.userIds) === JSON.stringify(["u2"]),
+      "#4165: recomputes only the agent whose block was really freed",
+    );
+  }
+
+  {
+    // Every candidate was already gone: the tick freed nothing and must say so.
+    const rows: Row[] = [block("b-raced", "u1", "bk-raced")];
+    const { deps } = makeDeps({
+      rows,
+      statuses: { "bk-raced": "cancelled" },
+      presentAtDelete: [],
+    });
+    const res = await reconcileCancelledBusyBlocks(deps, 500);
+    assert(res.freed === 0, "#4165: a delete that removed nothing reports nothing freed");
+    assert(res.freedCancelled === 0 && res.freedOrphans === 0, "#4165: and neither kind is counted");
+    assert(res.userIds.length === 0 && res.freedBookingIds.length === 0, "#4165: and no agent or booking is named");
+    assert(res.scanned === 1, "#4165: the scan size is still reported for the cursor");
+  }
+
+  // #4165, window 2: the status flip and the cancel's outbox insert are separate
+  // statements, so for a moment a cancelled booking has no pending outbox row and
+  // looks exactly like a cancel that finished and missed its delete. A booking
+  // cancelled inside the grace is left alone; one cancelled earlier is a real miss.
+  {
+    const rows: Row[] = [
+      block("b-just", "u1", "bk-just"), // cancelled 10 s ago, outbox row not written yet
+      block("b-old", "u2", "bk-old"), // cancelled 2 min ago, block still here
+      block("b-orphan", "u3", null), // the orphan path must be untouched by the grace
+    ];
+    const { deps, calls } = makeDeps({
+      rows,
+      statuses: { "bk-just": "cancelled", "bk-old": "cancelled" },
+      justCancelled: ["bk-just"],
+    });
+    const res = await reconcileCancelledBusyBlocks(deps, 500);
+    const deleted = new Set(calls.deleteBusyBlocksByIds[0] ?? []);
+    assert(!deleted.has("b-just"), "#4165: leaves a booking cancelled inside the grace alone");
+    assert(deleted.has("b-old"), "#4165: frees a booking cancelled before the grace whose block survived");
+    assert(deleted.has("b-orphan"), "#4165: still frees an orphan, which has no cancel to wait for");
+    assert(res.freedCancelled === 1 && res.freedOrphans === 1, "#4165: the just-cancelled booking is not counted");
+    assert(
+      JSON.stringify(res.freedBookingIds) === JSON.stringify(["bk-old"]),
+      "#4165: names only the booking past the grace",
+    );
+    assert(
+      JSON.stringify(calls.loadJustCancelledBookingIds[0]?.slice().sort()) === JSON.stringify(["bk-just", "bk-old"]),
+      "#4165: asks about every booking in the scan, in one batched read",
+    );
+  }
+
+  {
+    // No booking in the scan: skip the grace read entirely (an orphan-only tick).
+    const rows: Row[] = [block("b-orphan", "u1", null)];
+    const { deps, calls } = makeDeps({ rows, statuses: {} });
+    await reconcileCancelledBusyBlocks(deps, 500);
+    assert(calls.loadJustCancelledBookingIds.length === 0, "#4165: no bookings -> skips the grace read");
   }
 }
 

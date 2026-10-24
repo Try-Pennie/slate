@@ -31,9 +31,14 @@ on:
       - "worker/**"
       - "wrangler.jsonc"
 
-# Serialised, so two pushes landing together cannot each find no open issue and open two.
+# Keyed on the push, so EVERY qualifying push runs (#3553, L1020). It used to be one
+# constant group, to stop two pushes each finding no issue and opening two, but GitHub
+# keeps one running and ONE pending run per group and a third arrival cancels the
+# pending one even with cancel-in-progress false, so in a burst of merges the middle
+# push was never named. Two runs that race now settle on the lowest numbered issue
+# afterwards (scripts/lib/loadtest-due-nag.ts). Pinned by scripts/test-loadtest-due-nag.ts.
 concurrency:
-  group: loadtest-due
+  group: loadtest-due-${{ github.sha }}
   cancel-in-progress: false
 
 permissions:
@@ -42,35 +47,20 @@ permissions:
 
 jobs:
   nag:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
-      - name: Open or update the load run due issue
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No dependency install: the script imports nothing outside scripts/
+      # (scripts/test-dependency-free-scripts.ts). setup-node pins the version the
+      # type stripping flag needs.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Name this push on the load run due issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
           BEFORE: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          title="Load run due: the confirm path or a cron lane changed"
-          link="https://github.com/$REPO/compare/$BEFORE...$SHA"
-          existing=$(gh issue list -R "$REPO" --state open --search "\"$title\" in:title" --json number,title \
-            --jq ".[] | select(.title == \"$title\") | .number" | head -1)
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" -R "$REPO" --body "Another push changed the confirm path or a cron lane: $SHA ($link). The next run covers it too."
-            echo "commented on #$existing"
-            exit 0
-          fi
-          body_file=$(mktemp)
-          {
-            echo "A push to main changed the booking confirm path or a cron lane, so the booking path load run's last recorded figures no longer describe what is deployed."
-            echo
-            echo "Push: $SHA ($link)"
-            echo
-            echo "Dispatch \`loadtest.yml\` on main against a fresh throwaway branch, following scripts/loadtest/RUNBOOK.md, and record the run id and its figures in the runbook's run record. Close this issue from that PR."
-            echo
-            echo "Opened by .github/workflows/loadtest-due.yml (#3103)."
-          } > "$body_file"
-          gh issue create -R "$REPO" --title "$title" --body-file "$body_file" \
-            --label load-chaos --label priority-p2 --milestone Ungrouped
+        run: node --experimental-strip-types scripts/loadtest-due-nag.ts

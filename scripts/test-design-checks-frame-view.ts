@@ -52,7 +52,7 @@ const small: DesignFixtureFile = {
   nearlyFullPct: 85,
   examples: { unsynced: "B", timeOff: { advisor: "A", dayIndex: 0, start: "2026-10-19T17:00:00Z", end: "2026-10-19T18:00:00Z" } },
   picker: { closedWeekday: 7, savedFrom: "2026-10-12", aheadDays: 21 },
-  pace: { readAt: "2026-10-19T11:30:00Z", days: [{ pace_state: "no-pace-yet", pace_per_hour: null, pace_back_at: null, estimate_method: null, estimate_line_state: null, estimate_line_at: null, estimate_pattern_state: null, estimate_pattern_at: null }] },
+  pace: { readAt: "2026-10-19T11:30:00Z", days: [{ pace_state: "no-pace-yet", pace_per_hour: null, pace_back_at: null, estimate_method: null, estimate_line_state: null, estimate_line_at: null, estimate_pattern_state: null, estimate_pattern_at: null, estimate_last_line_state: null, estimate_last_line_at: null, estimate_last_pattern_state: null, estimate_last_pattern_at: null, estimate_last_method: null }] },
   frames: {
     plain: { theme: "light" },
     ex: { theme: "light", examples: true },

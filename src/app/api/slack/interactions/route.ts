@@ -8,6 +8,7 @@ import {
   dmSlackUserByEmail,
   getSlackUserEmail,
   openSlackModal,
+  replyToSlackResponseUrl,
 } from "@/lib/notify/slack";
 import { approveOoo, rejectOoo } from "@/lib/ooo/service";
 import { formatWhenLine } from "@/lib/ooo/core";
@@ -72,19 +73,6 @@ function requestLink(requestId: string): string {
   return `<${appUrl()}/admin/ooo?request=${requestId}|Open it in Slate>`;
 }
 
-/** Post an ephemeral note back to the interaction's response_url (best-effort). */
-async function replyEphemeral(responseUrl: string, text: string): Promise<void> {
-  try {
-    await fetch(responseUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ response_type: "ephemeral", text }),
-    });
-  } catch {
-    /* best-effort */
-  }
-}
-
 async function runApprove(
   requestId: string,
   slackUserId: string,
@@ -92,14 +80,14 @@ async function runApprove(
 ): Promise<void> {
   const { user } = await resolveActor(slackUserId);
   if (!user) {
-    await replyEphemeral(
+    await replyToSlackResponseUrl(
       responseUrl,
       `Couldn't match your Slack account to a Slate user, so the approval didn't go through. ${requestLink(requestId)} to decide.`,
     );
     return;
   }
   const res = await approveOoo(requestId, user);
-  if (!res.ok) await replyEphemeral(responseUrl, res.error);
+  if (!res.ok) await replyToSlackResponseUrl(responseUrl, res.error);
 }
 
 async function runReject(

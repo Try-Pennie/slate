@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // #3615: the step the daily reroute drill takes inside the deployment, where Slate's own
 // credentials reach the calendars. Pinned here: the canary's key and nothing else (the smoke
-// family's contract), one drill at a time, and the drill's own answer passed through untouched so
-// the command exits on its code. The drill itself is node-tested in scripts/test-demotion-drill.ts.
+// family's contract), one drill at a time, the shared lease over the smoke test advisors (#4180),
+// and the drill's own answer passed through untouched so the command exits on its code. The drill itself is node-tested in scripts/test-demotion-drill.ts.
 
 const env = vi.hoisted(() => ({ bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => "") }));
 vi.mock("@/lib/env", () => env);
@@ -14,6 +14,12 @@ const locks = vi.hoisted(() => ({
   releaseLock: vi.fn(async () => {}),
 }));
 vi.mock("@/lib/locks", () => locks);
+// #4180: the one lease over the two smoke test advisors the canary also books on.
+const advisors = vi.hoisted(() => ({
+  takeTestAdvisorLease: vi.fn(async (): Promise<string | null> => "advisor-claim"),
+  releaseTestAdvisorLease: vi.fn(async (_token: string) => "released" as const),
+}));
+vi.mock("@/lib/booking/test-advisor-lease", () => advisors);
 vi.mock("@/lib/log", () => ({ log: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 
 import { POST } from "./route";
@@ -76,5 +82,32 @@ describe("POST /api/smoke/demotion-drill (#3615)", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ reason: "errored" });
     expect(locks.releaseLock).toHaveBeenCalled();
+    expect(advisors.releaseTestAdvisorLease).toHaveBeenCalledWith("advisor-claim");
+  });
+
+  it("holds the smoke test advisors' lease for the drill and releases it after (#4180)", async () => {
+    drill.runDemotionDrillLive.mockImplementationOnce(async () => {
+      expect(advisors.takeTestAdvisorLease).toHaveBeenCalledTimes(1);
+      expect(advisors.releaseTestAdvisorLease).not.toHaveBeenCalled();
+      return { reason: "passed", detail: "ok" };
+    });
+    await post();
+    expect(advisors.releaseTestAdvisorLease).toHaveBeenCalledWith("advisor-claim");
+  });
+
+  it("answers test-advisors-held, without running, while the canary holds the advisors (#4180)", async () => {
+    advisors.takeTestAdvisorLease.mockResolvedValueOnce(null);
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect((await res.json()).reason).toBe("test-advisors-held");
+    expect(drill.runDemotionDrillLive).not.toHaveBeenCalled();
+    expect(advisors.releaseTestAdvisorLease).not.toHaveBeenCalled();
+    expect(locks.releaseLock).toHaveBeenCalled();
+  });
+
+  it("never takes the advisors' lease for a second drill answered busy", async () => {
+    locks.acquireLock.mockResolvedValueOnce(null);
+    await post();
+    expect(advisors.takeTestAdvisorLease).not.toHaveBeenCalled();
   });
 });

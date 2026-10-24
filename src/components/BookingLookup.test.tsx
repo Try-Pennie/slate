@@ -46,7 +46,12 @@ describe("BookingLookup", () => {
     await userEvent.type(screen.getByRole("searchbox"), "jane@acme.co");
     await userEvent.click(screen.getByRole("button", { name: /^search$/i }));
     await waitFor(() => expect(fn).toHaveBeenCalled());
-    expect(fn.mock.calls[0][0]).toContain("/api/admin/bookings/search?q=jane%40acme.co");
+    // #3399: the term rides in the body. Cloudflare logs every request address in
+    // full, so a lead's email typed here must never become part of the address.
+    const [url, init] = fn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/admin/bookings/search");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ q: "jane@acme.co" });
     const link = (await screen.findByRole("link", { name: /jane doe/i })) as HTMLAnchorElement;
     expect(link.getAttribute("href")).toBe("/admin/bookings/b1");
     expect(screen.getByText(/Jamie Smith/)).toBeTruthy();

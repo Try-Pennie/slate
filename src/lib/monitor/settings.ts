@@ -1124,6 +1124,19 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
     return t === "on" || t === "true";
   };
 
+  // #3766 (lesson L769): the owner reassign notice posts ONLY to the handoff channel,
+  // which deliberately has no fallback (#2367). Switched on with that channel blank,
+  // the notice step withholds every notice (`no_handoff_channel`), the save reads as
+  // saved, and the first anybody hears of it is the weekly withheld count. So the pair
+  // is refused here, when the switch goes on, naming the field that fixes it.
+  const handoffChannel = channel(input.handoffChannel);
+  const ownerReassignNoticeOn = checked(input.ownerReassignNoticeOn);
+  if (ownerReassignNoticeOn && handoffChannel === null) {
+    errors.push(
+      "Pick a handoff channel before turning on the notice for a call that goes to the advisor the lead already spoke with. That notice posts only in the handoff channel.",
+    );
+  }
+
   return {
     cooldowns,
     config: {
@@ -1131,7 +1144,7 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
       floor_120: parseBounded(input.floor120, "120-min floor", FLOOR_MIN, FLOOR_MAX),
       alerts_channel: channel(input.alertsChannel),
       info_channel: channel(input.infoChannel),
-      handoff_channel: channel(input.handoffChannel),
+      handoff_channel: handoffChannel,
       low_volume_armed: checked(input.lowVolumeArmed),
       failure_rate_armed: checked(input.failureRateArmed),
       availability_drift_armed: checked(input.availabilityDriftArmed),
@@ -1139,7 +1152,7 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
       awaiting_activation_armed: checked(input.awaitingActivationArmed),
       below_lead_tier_armed: checked(input.belowLeadTierArmed),
       regal_calls_armed: checked(input.regalCallsArmed),
-      owner_reassign_notice_on: checked(input.ownerReassignNoticeOn),
+      owner_reassign_notice_on: ownerReassignNoticeOn,
       empty_tier_recovery_min_times: parseBounded(
         input.tierRecoveryMinTimes,
         "Open times to end a tier page",

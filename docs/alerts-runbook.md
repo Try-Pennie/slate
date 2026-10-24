@@ -735,6 +735,68 @@ written down with the reason, never done to make the page stop.
 
 ---
 
+## A sign in was refused as a different person
+
+Keys: `sign_in_google_account_mismatch:*` (one per Slate account).
+
+**What fired it.** Slate finds a staff member's account by email address, and an
+address can be given to somebody new. So once an account has signed in, Slate keeps
+Google's permanent id for that Google account (`users.google_sub`, which Google never
+reuses) and refuses any later sign in with that address from a DIFFERENT Google
+account (#3526). This page means one such sign in, or one live session, was refused.
+Nobody was let in, and nothing on the account was changed. A person refused at sign
+in was sent back to the sign in page. For a different account it told them this
+Google account is not the one their Slate account belongs to and to ask a Slate admin
+to link a new one; for two accounts on one sign in (`several-accounts`) it told them
+more than one Google account is attached and to ask a Slate admin to sort it out.
+
+The rule is `judgeGoogleIdentity` (`src/lib/auth/google-identity.ts`). It runs at sign
+in (`src/lib/provision.ts`, before anything is written to the row) AND on every request
+(`realCurrentUser` in `src/lib/auth.ts`), because a session can reach a row without
+the sign in page ever running, by exchanging the sign in code with Supabase directly.
+The accounts it compares are the Google identities Supabase keeps for the auth user,
+never `user_metadata`, which the person holding a session can rewrite. An account with
+no stored id yet is armed at its next sign in, with one exception that is refused even
+then: an auth user holding two Google accounts.
+
+**First checks.**
+- Find out who the person was. The page names the address; the Worker log line
+  (`msg="refused a different google account"`, `tag=auth-callback` at sign in or
+  `tag=auth` on a later request) carries the Slate account id and the reason.
+- A reason of `several-accounts` means two Google accounts are attached to one sign
+  in: almost always somebody new signing in with that address on top of its owner's
+  sign in. Treat it like a different account, and find out who the second one is.
+- A reason of `no-account-id` means Supabase handed over no Google identity at all.
+  One is odd; several for different people means sign in is broken for everybody who
+  has signed in before, which is an outage: read `googleAccountIdsOf` and what
+  `supabase.auth.getUser()` returns for `identities`.
+
+**Fix or escalate.**
+- **The same person on a new Google account** (a rehire, or an account Pennie
+  recreated): an admin opens their page in Slate (`/admin/agents/<id>`, the id is in
+  the log line), opens the closed section at the bottom, and presses **Link a new
+  Google account** under Account status, then confirms. That deletes their old
+  Supabase sign in (ending every session on it, audited as `agent.sign_in_removed`
+  the moment it lands) and forgets the old id (audited as `agent.google_relinked`,
+  never the id itself), and their next sign in creates a fresh one holding only the
+  new account, which is recorded. The control shows only to an admin who outranks
+  them, never on the admin's own page, and while an account OR a sign in is on
+  record, so a person refused as `several-accounts` or `no-account-id` before any
+  account was recorded has the same way out. If it says the old sign in could not be
+  removed, nothing was changed: press it again.
+- **Someone new who was given a departed person's address**: do NOT link it. Linking
+  hands them the old account's role, bookings and calendar, which is the thing this
+  guard exists to stop. The departed person's account needs deactivating, and the new
+  person needs an account of their own, which today means a code or data change:
+  escalate to whoever looks after Slate.
+- **Nobody Pennie recognises**: treat it as an attempt to use an address that is not
+  theirs and tell whoever runs Pennie's Google Workspace.
+
+This is an incident: it never sends an all clear, because the refusal is already over
+when the page is sent.
+
+---
+
 ## The booking API is refusing its caller
 
 Keys: `booking_api_ceiling`, `booking_api_credential`, `booking_api_list_read`,
@@ -883,6 +945,11 @@ main's tip, and reads whether the newest completed run's jobs executed anything.
   so the last merge of a burst can sit undeployed indefinitely. A run that reported
   SUCCESS and is still not being served is a different fault: look at the deploy job
   inside that run before re-running anything.
+- A `main_not_deployed` that links a COMMIT rather than a run means GitHub never
+  started a CI run for main's tip (#3648), so nothing built it and no workflow will
+  say so. Check githubstatus.com for an Actions incident, then push an empty commit to
+  main to start a run. Main's tip is read from the branch itself, so a merge with no
+  run can no longer read as live because the merge before it is being served.
 - `ci_runs_refused` means the jobs concluded failed having executed zero steps, so
   there is no log to open. Read the annotation on any job in the linked run, which is
   shown on neither `gh pr checks` nor the checks list on the pull request. A failed
@@ -934,6 +1001,27 @@ issue that will remove it in the note above the audit step in `ci.yml`, rather t
 leaving the daily run red: a run that is red
 every day stops being read. A run that says it could not finish an audit found
 nothing either way; re-run it.
+
+**A green audit is not proof for what the browser runs (#4113).** The audit reads the
+lockfile, and two things the browser loads are copies the lockfile does not decide.
+No page loads a script from a CDN: the policy in `src/lib/csp.ts` allows scripts from
+Slate itself only.
+
+- **React.** An App Router build sends the browser the React that Next vendors under
+  `next/dist/compiled` (a canary build), not `node_modules/react-dom`. On the
+  2026-10-02 build the lockfile held react-dom 19.2.8 while every client chunk ran
+  React 19.3.0-canary-cbb046ab-20260731. So bumping `react` or `react-dom` changes only
+  the copy the tests use, and the audit goes green anyway. A React advisory is fixed by
+  a `next` release that carries the patched React. Confirm it after `pnpm cf:build` by
+  reading the version out of the built chunks:
+  `grep -rhoE '\.version="[^"]+"' .open-next/assets/_next/static/chunks | sort | uniq -c`.
+  `scripts/test-browser-loaded-copies.ts` fails if Next stops vendoring React, which
+  is when this paragraph needs rewriting.
+- **The dotLottie player's wasm**, `public/brand/dotlottie-player.wasm`, is a copy of
+  the installed player's, served by Slate. After bumping `@lottiefiles/dotlottie-web`
+  (and `@lottiefiles/dotlottie-react`, which must agree), rebuild it with
+  `pnpm build:confirmation-mark`; `scripts/test-confirmation-mark-assets.ts` refuses a
+  served wasm that differs from the installed one.
 
 ---
 
@@ -1134,3 +1222,16 @@ directly above the line.
 
 Prefer pointing at where the detail lives over pasting any of it:
 `Diagnose via booking_outbox.last_error; rows: ...` is the pattern to copy.
+
+### What a person typed is escaped where the message is sent (#3528)
+
+A name, a time off reason or a decline note can hold `<!channel>` or a
+`<url|label>` link, and Slack would act on either. Copy builders do NOT escape
+anything: every message leaves through `src/lib/notify/slack.ts` (or, for the
+bare node workflows, `scripts/lib/slack-post.ts`), which escapes Slack's three
+characters and keeps only links to Slate itself (`scripts/lib/slack-mrkdwn.ts`).
+So never write a mention on purpose, write links only to the app, never write an
+entity yourself (it arrives doubled, so `&` shows as `&amp;`), pass typed text used
+as a link label through `slackLinkLabel` (it swaps `|` and `>`, which no escape can
+carry inside a label), and never post to Slack from anywhere else:
+`scripts/test-slack-send-points.ts` fails on a file that does.

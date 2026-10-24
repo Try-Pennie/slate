@@ -2106,16 +2106,50 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       );
     },
 
+    // #4165: a booking cancelled inside the grace, whose outbox row may not exist yet.
+    loadJustCancelledBookingIds: async (bookingIds) => {
+      if (bookingIds.length === 0) return new Set<string>();
+      // `updated_at` and not the booking_events row: the `set_updated_at` trigger
+      // stamps it in the very statement that flips the status, so a booking can never
+      // read cancelled without it, whereas the cancelled event is written by an outbox
+      // step AFTER the outbox insert, which is the gap this exists to cover. A later
+      // edit to a cancelled row only moves the stamp forward, which only waits longer.
+      const cancelledSince = new Date(
+        Date.now() - orchestration.RECONCILE_CANCELLED_GRACE_MS,
+      ).toISOString();
+      // Fail loud like the in-flight read: an empty set born of a read error would
+      // free a cancel still on its way and page about it, the false alert this guards.
+      const data = unwrap(
+        await supabaseAdmin()
+          .from("bookings")
+          // cap-safe: bounded by the reconcile sweep's page of booking ids (.in over one page of rows).
+          .select("id")
+          .in("id", bookingIds)
+          .eq("status", "cancelled")
+          .gt("updated_at", cancelledSince),
+        "loadJustCancelledBookingIds",
+      );
+      return new Set(((data ?? []) as { id: string }[]).map((r) => r.id));
+    },
+
+    // #4165: the cancel finishing between the sweep's two reads deletes its own block,
+    // so a candidate is not proof of a row. This answers with the rows the statement
+    // removed (`.select("id")`), and every count and alert is built from those.
     deleteBusyBlocksByIds: async (ids) => {
-      if (ids.length === 0) return;
-      const { error } = await supabaseAdmin()
-        .from("busy_blocks")
-        .delete()
-        .in("id", ids);
-      if (error) {
-        // Best-effort: the next tick re-finds and retries these rows.
-        log.error("reconcile", { msg: "deleteBusyBlocksByIds failed" }, error);
-      }
+      if (ids.length === 0) return [];
+      // A refused delete removed nothing, so it THROWS (#4165): the lane reads that as
+      // "could not tell", which neither pages nor all-clears, and the next tick re-finds
+      // and retries these rows. Logging it and carrying on reported every candidate as
+      // freed, a page about a delete that never ran.
+      const data = unwrap(
+        await supabaseAdmin()
+          .from("busy_blocks")
+          .delete()
+          .in("id", ids)
+          .select("id"),
+        "deleteBusyBlocksByIds",
+      );
+      return ((data ?? []) as { id: string }[]).map((r) => r.id);
     },
 
     loadActiveUpcomingBookings,
@@ -4122,7 +4156,12 @@ export function drainBulkReassignJob(
         // than moving calls beside it, and the drain renews and stops on `stillHeld` (#3120).
         const lease = await acquireLease(BULK_REASSIGN_LANE_LOCK, CRON_LOCK_TTL_MS);
         return lease
-          ? { release: () => releaseLock(BULK_REASSIGN_LANE_LOCK, lease.token()), stillHeld: () => lease.stillHeld() }
+          ? {
+              release: async () => {
+                await releaseLock(BULK_REASSIGN_LANE_LOCK, lease.token());
+              },
+              stillHeld: () => lease.stillHeld(),
+            }
           : null;
       },
       drain: async (stillHeld) => {
