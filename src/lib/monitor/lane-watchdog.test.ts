@@ -565,8 +565,8 @@ describe("alertOnStaleLanes (#803)", () => {
     expect(call).toBeTruthy();
   });
 
-  it("alerts on each lane a CPU kill left unfinished, keyed per lane", async () => {
-    // sync ran first and stamped; the later lanes in the same invocation died.
+  it("alerts on each lane that went quiet, keyed per lane", async () => {
+    // Two lanes stopped stamping together while sync kept going.
     heartbeat.readAllHeartbeatMs.mockResolvedValue({
       ...healthy(),
       recompute: ago(25 * MIN),
