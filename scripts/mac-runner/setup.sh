@@ -6,20 +6,20 @@
 # cannot log in, so a job can read nothing in Dan's home. Docker for the jobs is
 # cirunner's own Colima VM, which mounts only /Users/cirunner.
 #
-# Run one stage at a time, with sudo:
 # Kept in Slate's repo as scripts/mac-runner/setup.sh; Dan's copy is
-# ~/pennie-ci-runner/setup.sh.
+# ~/pennie-ci-runner/setup.sh. Run one stage at a time, with sudo:
 #
 #   sudo bash ~/pennie-ci-runner/setup.sh user      creates the cirunner user
 #   sudo bash ~/pennie-ci-runner/setup.sh docker    starts cirunner's Docker and proves it answers
 #   sudo bash ~/pennie-ci-runner/setup.sh runners   asks for the registration token, registers two runners
+#   sudo bash ~/pennie-ci-runner/setup.sh refresh   rewrites each runner's settings and restarts it (no token)
 #   sudo bash ~/pennie-ci-runner/setup.sh status    shows what is installed and running
 #   sudo bash ~/pennie-ci-runner/setup.sh stop      stops runners and Docker (they start again on the next "start")
 #   sudo bash ~/pennie-ci-runner/setup.sh start     starts them again
 #   sudo bash ~/pennie-ci-runner/setup.sh remove    stops and deletes everything, the user included
 #
-# Going back to GitHub's runners does not need this script: empty the org
-# variable PENNIE_CI_RUNNER and every repo's jobs run on GitHub again.
+# Going back to GitHub's runners does not need this script: set the org
+# variable PENNIE_CI_RUNNER to github and every repo's jobs run on GitHub again.
 
 set -euo pipefail
 
@@ -65,8 +65,8 @@ missing_tools() {
   echo "${out# }"
 }
 
-write_daemon() { # path label workdir log program args...
-  local path=$1 label=$2 workdir=$3 log=$4; shift 4
+write_daemon() { # path label workdir home log program args...
+  local path=$1 label=$2 workdir=$3 home=$4 log=$5; shift 5
   local args=""
   for a in "$@"; do args="$args<string>$a</string>"; done
   cat >"$path" <<PLIST
@@ -79,7 +79,7 @@ write_daemon() { # path label workdir log program args...
   <key>WorkingDirectory</key><string>$workdir</string>
   <key>ProgramArguments</key><array>$args</array>
   <key>EnvironmentVariables</key><dict>
-    <key>HOME</key><string>$RUNNER_HOME</string>
+    <key>HOME</key><string>$home</string>
     <key>PATH</key><string>$PATH_FOR_JOBS</string>
   </dict>
   <key>RunAtLoad</key><true/>
@@ -121,7 +121,7 @@ stage_docker() {
   need_root
   user_exists || die "run the user stage first"
   [ -x /opt/homebrew/bin/colima ] || die "Colima is not installed (brew install colima docker)"
-  write_daemon "$COLIMA_PLIST" com.trypennie.ci-colima "$RUNNER_HOME" "$RUNNER_HOME/colima.log" \
+  write_daemon "$COLIMA_PLIST" com.trypennie.ci-colima "$RUNNER_HOME" "$RUNNER_HOME" "$RUNNER_HOME/colima.log" \
     /opt/homebrew/bin/colima start --foreground --vm-type vz --cpu 4 --memory 6 --disk 25 \
     --mount "$RUNNER_HOME:w"
   load_daemon "$COLIMA_PLIST"
@@ -139,6 +139,25 @@ stage_docker() {
   echo "--- last lines of $RUNNER_HOME/colima.log:" >&2
   tail -20 "$RUNNER_HOME/colima.log" >&2 || true
   die "cirunner's Docker did not answer within 5 minutes"
+}
+
+# Each runner gets its OWN home folder. Shared, two jobs at once collided on
+# 2026-10-24: pnpm/action-setup installs pnpm into $HOME/setup-pnpm, and the two
+# runners' installs deleted each other's files mid job (PR #4208's first run).
+# The pnpm store, Playwright's browsers and every other per user cache follow HOME.
+runner_home() { echo "$RUNNER_HOME/runners/$1/home"; }
+
+write_runner_settings() { # name
+  local name=$1 dir=$RUNNER_HOME/runners/$1 home
+  home=$(runner_home "$1")
+  as_runner mkdir -p "$home"
+  echo "$PATH_FOR_JOBS" | as_runner tee "$dir/.path" >/dev/null
+  {
+    echo "HOME=$home"
+    [ "$name" = "$DOCKER_RUNNER" ] && echo "DOCKER_HOST=unix://$DOCKER_SOCK"
+    true
+  } | as_runner tee "$dir/.env" >/dev/null
+  write_daemon "$(runner_plist "$name")" "com.trypennie.ci-runner.$name" "$dir" "$home" "$dir/launchd.log" "$dir/run.sh"
 }
 
 stage_runners() {
@@ -164,21 +183,31 @@ stage_runners() {
     [ "$name" = "$DOCKER_RUNNER" ] && labels=$LABEL,$LABEL-docker
     as_runner mkdir -p "$dir"
     as_runner tar xzf "$tmp/$RUNNER_TARBALL" -C "$dir"
-    echo "$PATH_FOR_JOBS" | as_runner tee "$dir/.path" >/dev/null
-    if [ "$name" = "$DOCKER_RUNNER" ]; then
-      echo "DOCKER_HOST=unix://$DOCKER_SOCK" | as_runner tee "$dir/.env" >/dev/null
-    else
-      : | as_runner tee "$dir/.env" >/dev/null
-    fi
     (cd "$dir" && as_runner ./config.sh --unattended --url "$ORG_URL" --token "$token" \
       --name "dan-macbook-$name" --labels "$labels" --runnergroup Default --work _work --replace) \
       || die "registering $name failed (an expired token is the usual cause: it lasts an hour)"
-    write_daemon "$(runner_plist "$name")" "com.trypennie.ci-runner.$name" "$dir" "$dir/launchd.log" "$dir/run.sh"
+    write_runner_settings "$name"
     load_daemon "$(runner_plist "$name")"
     echo "OK: registered and started dan-macbook-$name (labels: $labels)"
   done
   token=""
   rm -rf "$tmp"
+}
+
+stage_refresh() {
+  need_root
+  user_exists || die "run the user stage first"
+  local name
+  for name in "${RUNNERS[@]}"; do
+    [ -f "$RUNNER_HOME/runners/$name/.runner" ] || die "$name is not registered; run the runners stage"
+    write_runner_settings "$name"
+    # A job running now finishes first: launchd stops the listener, which hands
+    # an in progress job back as failed, so only refresh between runs.
+    load_daemon "$(runner_plist "$name")"
+    echo "OK: $name now uses $(runner_home "$name") and was restarted"
+  done
+  # The shared folder the collision happened in is no longer used.
+  rm -rf "$RUNNER_HOME/setup-pnpm"
 }
 
 stage_status() {
@@ -235,6 +264,7 @@ case "${1:-}" in
   user) stage_user ;;
   docker) stage_docker ;;
   runners) stage_runners ;;
+  refresh) stage_refresh ;;
   status) stage_status ;;
   stop) stage_stop ;;
   start) stage_start ;;
