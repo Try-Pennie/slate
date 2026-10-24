@@ -877,6 +877,16 @@ export interface Booking {
    *  the deterministic reschedule event id so an oscillating reschedule can't
    *  reuse a tombstoned Google id. 0 for a never-rescheduled booking. */
   reschedule_seq: number;
+  /**
+   * The booking that REPLACED this one (#3672, migration 0200): set only when the
+   * booking API moved the call to another bucket (`moveToRequestedBucket`), which
+   * makes a new booking under a new token and cancels this one. Written in the same
+   * statement as the cancel, so a cancelled row never lacks it and a live one never
+   * has it. The manage page, the calendar file and the rebook route follow it, so a
+   * link the lead already holds opens the call they still have. Null on every other
+   * booking, including one cancelled any other way.
+   */
+  replaced_by_booking_id: string | null;
   created_at: string;
   updated_at: string;
 }
