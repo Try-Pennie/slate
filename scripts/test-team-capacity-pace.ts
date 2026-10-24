@@ -25,6 +25,11 @@ const row = (day: string, over: Partial<PaceRow> = {}): PaceRow => ({
   estimate_line_at: "2026-10-20T01:30:00.000Z",
   estimate_pattern_state: "wont-fill",
   estimate_pattern_at: null,
+  estimate_last_line_state: null,
+  estimate_last_line_at: null,
+  estimate_last_pattern_state: null,
+  estimate_last_pattern_at: null,
+  estimate_last_method: null,
   ...over,
 });
 const fresh = (rows: PaceRow[]) => {
@@ -51,11 +56,19 @@ eq(lines(row("2026-10-21", { pace_per_hour: 0.2 }))[0], "Filling at 1 an hour", 
 eq(cardPaceLines(fresh([row("2026-11-02", { read_at: "2026-11-01T04:00:00.000Z", estimate_line_at: "2026-11-02T14:00:00.000Z" })]).get("2026-11-02"), 50, Z, "2026-11-01"), ["Filling at 6 an hour", "Full by 9am Mon at this pace"], "after the clocks go back the time is still the office's");
 
 // --- one line, in place of both (D33 to D36) -------------------------------------------------------
-eq(lines(row("2026-10-20"), 96), ["Filling at 6 an hour"], "a day already at 95% shows the pace alone (D33)");
+eq(lines(row("2026-10-20"), 96), ["Filling at 6 an hour"], "a day at 95% read with no last call estimate (saved before #4190) shows the pace alone");
+// From 95%, Full by is the last call (#4190, decision 20): 10pm tonight is 02:00 UTC.
+const last = { estimate_line_state: "already", estimate_line_at: null, estimate_pattern_state: "already", estimate_last_line_state: "at", estimate_last_line_at: "2026-10-20T02:00:00.000Z", estimate_last_pattern_state: "wont-fill", estimate_last_method: "line" } as const;
+eq(lines(row("2026-10-20", last), 96), ["Filling at 6 an hour", "Full by 10pm at this pace"], "a day at 95% says when its last call goes, at this pace (D48)");
+eq(lines(row("2026-10-20", { ...last, estimate_last_method: "pattern", estimate_last_pattern_state: "at", estimate_last_pattern_at: "2026-10-20T03:00:00.000Z" }), 99), ["Filling at 6 an hour", "Full by 11pm"], "by the pattern, with no qualifier");
+eq(lines(row("2026-10-20", { ...last, estimate_last_line_state: "wont-fill", estimate_last_line_at: null }), 96), ["Filling at 6 an hour", "Won't fill at this pace"], "a last call the walk never reaches won't fill");
+eq(lines(row("2026-10-20", { ...last, estimate_last_line_state: "already", estimate_last_line_at: null }), 96), ["Filling at 6 an hour"], "a last call already gone, read a moment before the card, is the pace alone");
+eq(lines(row("2026-10-20", last), 94), ["Filling at 6 an hour"], "under 95% the card reads the 95% estimate, never the last call");
 eq(lines(row("2026-10-20"), PACE_ESTIMATE_PCT), ["Filling at 6 an hour"], "95% exactly is already there");
 eq(lines(row("2026-10-20"), PACE_ESTIMATE_PCT - 1).length, 2, "94% still shows the estimate");
 eq(lines(row("2026-10-20", { estimate_line_state: "already", estimate_line_at: null }), 93), ["Filling at 6 an hour"], "the lane's already, read a moment before the card, is the pace alone too");
-eq(lines(row("2026-10-20", { pace_state: "not-filling", pace_per_hour: -0.6 })), ["Not filling right now"], "a pace at or under 0 (D34)");
+eq(lines(row("2026-10-20", { pace_state: "not-filling", pace_per_hour: -0.6 })), ["Won't fill at this pace"], "a pace at or under 0 won't fill (D34, #4190 decision 21)");
+eq(lines(row("2026-10-20", { ...last, pace_state: "not-filling", pace_per_hour: -1.6 }), 99), ["Won't fill at this pace"], "nor does a day at 99% that is not filling (D49)");
 eq(lines(row("2026-10-22", { pace_state: "no-pace-yet", pace_per_hour: null, estimate_line_state: "no-pace", estimate_line_at: null })), ["Pace shows after 3 hours of readings"], "no pace yet (D35)");
 eq(lines(row("2026-10-20", { pace_state: "readings-missed", pace_per_hour: null, pace_back_at: "2026-10-19T22:30:00.000Z", estimate_line_state: "no-pace" })), ["Readings missed, pace back by 6:30pm"], "readings missed, with when the pace returns (D36)");
 eq(lines(row("2026-10-20", { pace_state: "readings-missed", pace_per_hour: null, pace_back_at: "2026-10-20T04:30:00.000Z" })), ["Readings missed, pace back by 12:30am Tue"], "a return after midnight says its day");
@@ -97,6 +110,9 @@ eq(lines(row("2026-10-21", { estimate_method: null })), ["Filling at 6 an hour"]
     ["an unreadable pace", { pace_per_hour: "lots" as unknown as number }],
     ["a pace with no number", { pace_per_hour: null }],
     ["an estimate with no time", { estimate_line_at: null }],
+    ["an unknown last call state", { estimate_last_line_state: "soon", estimate_last_pattern_state: "at", estimate_last_pattern_at: READ, estimate_last_method: "line" }],
+    ["a last call at a time with no time", { estimate_last_line_state: "at", estimate_last_pattern_state: "wont-fill", estimate_last_method: "line" }],
+    ["an unknown last call method", { estimate_last_line_state: "wont-fill", estimate_last_pattern_state: "wont-fill", estimate_last_method: "guess" }],
     ["an unreadable estimate time", { estimate_line_at: "soon" }],
     ["readings missed with no return time", { pace_state: "readings-missed", pace_back_at: null }],
     ["an unreadable read_at", { read_at: "later" }],
