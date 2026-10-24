@@ -22,6 +22,7 @@ import {
   triggerCanaryGapFill,
   runCanaryGapFills,
   postWorkflowDispatch,
+  countActiveWorkflowRuns,
   CANARY_TRIGGER_STALE_MS,
   CANARY_FULL_TRIGGER_STALE_MS,
   CANARY_DISPATCH_COOLDOWN_MS,
@@ -807,6 +808,85 @@ async function main() {
     eq((declared ?? []).length, 0, "the replay workflow declares no dispatch inputs");
     eq(body.ref, "main", "it dispatches against main");
     eq(Object.keys(body.inputs ?? {}).join(","), "", "and sends no inputs");
+  }
+
+  // #4009 (L796): a stale heartbeat is not proof GitHub LOST the run. A run queued
+  // behind the workflow's concurrency group or a runner backlog stamps nothing until it
+  // finishes, and a dispatch then joins the same group, where GitHub cancels whichever
+  // run was pending in favour of the newest (a dry dispatch evicting a pending FULL
+  // booking pass, since both modes share `smoke-canary`). So the gap-fill asks the queue
+  // first, and waits on a run that is already there.
+  {
+    const { d, calls } = deps({ activeRuns: async () => 1 });
+    const r = await triggerCanaryGapFill(d);
+    eq(r.dispatched, false, "a stale heartbeat with a run already queued or running does not dispatch");
+    eq(r.reason, "already-pending", "and says it is waiting on that run");
+    eq(calls.dispatched, 0, "already pending: dispatch not called");
+    eq(calls.lockTried, 0, "already pending: the cooldown is not spent, so the next tick can still fill a real gap");
+    assert(calls.infos.some((m) => m.includes("already")), "already pending: one info line, which pages nobody");
+    eq(calls.errors.length, 0, "already pending is not an error");
+  }
+  {
+    const { d, calls } = deps({ activeRuns: async () => 0 });
+    const r = await triggerCanaryGapFill(d);
+    eq(r.reason, "dispatched", "with nothing queued or running, a stale heartbeat is a lost run and is refilled");
+    eq(calls.dispatched, 1, "nothing pending: dispatched once");
+  }
+  for (const [label, activeRuns] of [
+    ["unreadable", async () => null],
+    ["throwing", async () => {
+      throw new Error("socket hang up");
+    }],
+  ] as const) {
+    const { d, calls } = deps({ activeRuns });
+    const r = await triggerCanaryGapFill(d);
+    eq(r.reason, "dispatched", `a queue that cannot be asked (${label}) keeps today's refill rather than leaving the gap open`);
+    eq(calls.errors.length, 1, `and says once that GitHub could not be asked (${label})`);
+  }
+  {
+    const asked: GapFillPass[] = [];
+    const { w, calls } = wiring({
+      activeRuns: async (pass) => {
+        asked.push(pass);
+        return pass === "dry" ? 1 : 0;
+      },
+    });
+    const r = await runCanaryGapFills(w);
+    eq(r.dry?.reason, "already-pending", "the wiring asks the queue for each pass");
+    eq(r.full?.dispatched, true, "and a pass with nothing pending still fills its gap");
+    eq(asked.join(","), "dry,full", "only the passes whose heartbeat is stale are asked about");
+    eq(calls.modes.join(","), "full", "only the full pass dispatched");
+  }
+  {
+    const realFetch = globalThis.fetch;
+    let url = "";
+    let signalled = false;
+    const answer = (status: number, body: unknown) => {
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        url = String(input);
+        signalled = init?.signal instanceof AbortSignal;
+        return new Response(JSON.stringify(body), { status });
+      }) as typeof fetch;
+    };
+    const run = (status: string) => ({ id: 1, status, head_sha: "abc", html_url: "https://github.com/x" });
+    try {
+      answer(200, { workflow_runs: [run("completed"), run("queued"), run("in_progress"), run("pending"), run("completed")] });
+      eq(await countActiveWorkflowRuns("ghp_tok", "full"), 3, "every run not yet completed counts as pending");
+      eq(
+        url.split("?")[0],
+        `https://api.github.com/repos/Try-Pennie/slate/actions/workflows/${GAP_FILL_PASSES.full.workflow}/runs`,
+        "it lists the runs of the pass's own workflow",
+      );
+      assert(signalled, "the listing carries its own timeout, so a hung GitHub cannot stall the monitor lane");
+      answer(200, { workflow_runs: [run("completed")] });
+      eq(await countActiveWorkflowRuns("ghp_tok", "dry"), 0, "only completed runs: nothing pending");
+      answer(403, { message: "Resource not accessible" });
+      eq(await countActiveWorkflowRuns("ghp_tok", "dry"), null, "a refused listing is unknown, never zero");
+      answer(200, { message: "not a listing" });
+      eq(await countActiveWorkflowRuns("ghp_tok", "dry"), null, "an unreadable listing is unknown, never zero");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   }
 
   finish();

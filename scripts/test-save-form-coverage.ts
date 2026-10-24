@@ -178,7 +178,10 @@ function saveFormTags(src: string): string[] {
  */
 const MIGRATED: [string, string][] = [
   ["src/app/admin/alerts/page.tsx", "setMonitorSettings"],
-  ["src/app/admin/booker-copy/page.tsx", "setEventDescription"],
+  // #3798: moved into its own component with the same markup, like the two below.
+  ["src/app/admin/booker-copy/EventDescriptionForm.tsx", "setEventDescription"],
+  ["src/app/admin/event-types/EventTypeGapForm.tsx", "setEventTypeGap"],
+  ["src/app/admin/event-types/EventTypeNoticeForm.tsx", "setEventTypeNotice"],
   ["src/app/admin/buckets/page.tsx", "setDefaultBucket"],
   ["src/app/admin/business-hours/page.tsx", "setDaysOffered"],
   ["src/app/admin/business-hours/page.tsx", "setOrgDefaultHours"],
@@ -237,7 +240,11 @@ const PER_ROW: [string, string][] = [
   ["src/app/admin/ooo/page.tsx", "approveOooAction"],
   ["src/app/admin/ooo/page.tsx", "retryOooAction"],
   ["src/app/admin/webhooks/page.tsx", "resendWebhookDelivery"],
-  ["src/app/admin/booker-copy/page.tsx", "setEventDescription"],
+  // #3798: drawn once per event type by its page, which keys the component, so the
+  // `key` rule below no longer sees these; this is what says their names vary.
+  ["src/app/admin/booker-copy/EventDescriptionForm.tsx", "setEventDescription"],
+  ["src/app/admin/event-types/EventTypeGapForm.tsx", "setEventTypeGap"],
+  ["src/app/admin/event-types/EventTypeNoticeForm.tsx", "setEventTypeNotice"],
   ["src/components/admin/ViewAsButton.tsx", "startImpersonation"],
   ["src/app/admin/ooo/page.tsx", "rejectOooAction"],
 ];
@@ -280,21 +287,29 @@ const PER_ROW: [string, string][] = [
 // `users.map((u) => ({ ... }))` left its count unbalanced. React already
 // requires `key` on exactly the elements this rule is about, so that is the
 // signal, and no bracket elsewhere in the file can confuse it.
-{
+/** What the rule finds wrong with one file's `<SaveForm>` tags. */
+function repeatedFormFindings(f: string, src: string): string[] {
   const bad: string[] = [];
-  let tagsSeen = 0;
-  for (const f of files) {
-    for (const tag of saveFormTags(readFileSync(f, "utf8"))) {
-      tagsSeen++;
-      if (!/\bname=/.test(tag)) {
-        bad.push(`${f}: a SaveForm with no name at all`);
-        continue;
-      }
-      if (!/\bkey=/.test(tag)) continue; // not rendered in a list
-      if (!/name=\{`[^`]*\$\{/.test(tag)) {
-        bad.push(`${f}: <SaveForm> has a key, so it is one of several, but its name is fixed`);
-      }
+  for (const tag of saveFormTags(src)) {
+    if (!/\bname=/.test(tag)) {
+      bad.push(`${f}: a SaveForm with no name at all`);
+      continue;
     }
+    if (!/\bkey=/.test(tag)) continue; // not rendered in a list
+    if (!/name=\{`[^`]*\$\{/.test(tag)) {
+      bad.push(`${f}: <SaveForm> has a key, so it is one of several, but its name is fixed`);
+    }
+  }
+  return bad;
+}
+
+{
+  let tagsSeen = 0;
+  const bad: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    tagsSeen += saveFormTags(src).length;
+    bad.push(...repeatedFormFindings(f, src));
   }
   assert(
     bad.length === 0,
@@ -302,13 +317,24 @@ const PER_ROW: [string, string][] = [
   );
 
   // Controls, because a rule that matched nothing would read the same as a clean
-  // tree, and the first version of the scan really did match nothing.
+  // tree, and the first version of the scan really did match nothing. The booker
+  // copy page's keyed form, the one this rule was written for, moved into its own
+  // component in #3798 (PER_ROW above covers it now), so no real keyed form is
+  // left to judge and the controls are written out here.
   assert(tagsSeen > 3, `the scan found SaveForm tags to judge (${tagsSeen})`);
-  const keyed = saveFormTags(
-    readFileSync(join("src", "app", "admin", "booker-copy", "page.tsx"), "utf8"),
-  ).filter((t) => /\bkey=/.test(t));
-  assert(keyed.length > 0, "the keyed form the rule was written for is still there");
-  assert(/name=\{`[^`]*\$\{/.test(keyed[0]!), "and its name varies per instance");
+  const keyedFixed = [
+    "rows.map((r) => (",
+    "  <SaveForm key={r.id} action={save} name=\"booker-copy\" unsaved=\"x\">",
+  ].join("\n");
+  assert(
+    repeatedFormFindings("control.tsx", keyedFixed).length === 1,
+    "a keyed form with one fixed name IS caught",
+  );
+  const keyedPerRow = keyedFixed.replace('name="booker-copy"', "name={`booker-copy-${r.id}`}");
+  assert(
+    repeatedFormFindings("control.tsx", keyedPerRow).length === 0,
+    "and a keyed form whose name carries the row is not",
+  );
 }
 
 finish();

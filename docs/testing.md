@@ -140,7 +140,9 @@ throwaway local Supabase from the committed migrations on its own ports, seeds i
 builds, serves on `localhost:3100` and runs Playwright. Locally,
 `E2E_REUSE_STACK=1` and `E2E_SKIP_BUILD=1` speed iteration; args after `--` go to
 Playwright. Run it from a worktree: **the runner refuses a checkout holding any
-`.env*` file Next would load**, because `.env.local` points at production.
+`.env*` file Next would load, or a `.dev.vars*` file**, because `.env.local` points
+at production. `pnpm cf:preview` refuses the same checkout by the same rule
+(`scripts/lib/live-env-files.ts`, #3694).
 
 **It cannot touch production (L2)**, by four layers documented in `e2e/env.ts`: an
 environment built from nothing, `SLATE_LOADTEST=true` (Google stubbed, Slack,

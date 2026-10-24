@@ -1,17 +1,14 @@
 import { redirect } from "next/navigation";
-import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
 import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { setEventDescription } from "@/app/admin/actions";
-import { LOADED_VERSION_FIELD, loadedVersionValue } from "@/lib/admin/edit-version";
+import { EventDescriptionForm } from "@/app/admin/booker-copy/EventDescriptionForm";
 import { EVENT_DESCRIPTION_MAX } from "@/lib/booking/settings";
-import { SubmitButton } from "@/components/ui/SubmitButton";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
-import { btnCls, cardCls, labelCls, proseCls, textareaCls } from "@/components/ui/styles";
+import { cardCls, proseCls } from "@/components/ui/styles";
 
 export const metadata = { title: "Booker copy" };
 
@@ -32,13 +29,13 @@ export default async function BookerCopyPage({
   // #1335: the event types whose lead-facing description is editable here.
   // Guarded like its old neighbours, so a missing table during a
   // migrate-before-deploy window shows an empty editor rather than 500ing.
-  let eventTypes: { id: string; name: string; description: string | null; updated_at: string }[] = [];
+  let eventTypes: { id: string; name: string; description: string | null }[] = [];
   try {
     // cap-safe: event_types is roster-bounded config (one per offering), a fixed
     // handful of rows that can never fill a page.
     const types = await supabaseAdmin()
       .from("event_types")
-      .select("id, name, description, updated_at")
+      .select("id, name, description")
       .order("created_at");
     if (!types.error && types.data) {
       eventTypes = types.data as typeof eventTypes;
@@ -71,45 +68,7 @@ export default async function BookerCopyPage({
             No event type yet. Add one on the admin page first.
           </p>
         ) : (
-          eventTypes.map((e) => (
-            <SaveForm
-              key={e.id}
-              action={setEventDescription}
-              // #1998: the name carries the EVENT TYPE, because this form is
-              // rendered once per event type. A single name would file every
-              // one of them under one key, so a save killed by a deploy would
-              // restore one event type's description onto another's field.
-              name={`booker-copy-${e.id}`}
-              unsaved="changes to this description"
-              // #1945: an explicit column with a real gap. `space-y-3` alone
-              // could not separate the field from the button, because both were
-              // inline level and sat side by side: a vertical utility has nothing
-              // to act on. The field is `block` now AND the form says how the two
-              // are laid out, rather than depending on one of them.
-              className="mb-4 flex flex-col items-start gap-3 last:mb-0"
-            >
-              <input type="hidden" name="event_type_id" value={e.id} />
-              {/* #3122: the version this form was drawn from, so a save over a newer one is refused. */}
-              <input type="hidden" name={LOADED_VERSION_FIELD} value={loadedVersionValue(e.updated_at)} />
-              <label className={labelCls} htmlFor={`description-${e.id}`}>
-                {e.name}
-              </label>
-              <textarea
-                id={`description-${e.id}`}
-                name="description"
-                rows={6}
-                maxLength={EVENT_DESCRIPTION_MAX}
-                defaultValue={e.description ?? ""}
-                // prose-width-ok: this is a text INPUT, not a line of prose.
-                // The number is sizing a control, and a 110 character wide box
-                // on this page would be wrong.
-                className={`${textareaCls} max-w-prose`}
-              />
-              <SubmitButton className={btnCls} pendingLabel="Saving…">
-                Save description
-              </SubmitButton>
-            </SaveForm>
-          ))
+          eventTypes.map((e) => <EventDescriptionForm key={e.id} eventType={e} />)
         )}
       </section>
     </>
