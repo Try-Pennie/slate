@@ -1359,9 +1359,11 @@ describe("alertOnStaleLanes (#803)", () => {
       expect(key).toBe(laneKey("outbox"));
       expect(text).toContain("outbox");
       expect(text).toMatch(/running again|recovered|is stamping/i);
-      // The page told the reader to go and check for a CPU kill and a stuck lock.
-      // Repeating that in the all-clear sends them to investigate a fault that is over.
+      // The page names the likely causes and sends the reader to the runbook (an
+      // earlier page named a CPU kill and a stuck lock). Repeating any of that in the
+      // all-clear sends them to investigate a fault that is over.
       expect(text).not.toMatch(/exceededCpu/i);
+      expect(text).not.toMatch(/runbook|deploy cancelled|far from the database/i);
     });
 
     it("resolves nothing when no lane page is outstanding, at the cost of one read", async () => {
