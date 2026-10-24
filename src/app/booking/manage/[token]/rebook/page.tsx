@@ -5,8 +5,14 @@ import ManageNotFound from "@/components/ManageNotFound";
 import StandaloneTheme from "@/components/StandaloneTheme";
 import LegalFooter from "@/components/LegalFooter";
 import { ClientErrorBeacon } from "@/components/ClientErrorBeacon";
-import { existingCallForLanding, landingAttendee, rebookRowForToken } from "@/lib/booking/service";
-import { REBOOK_ROUTE, rebookEntry } from "@/lib/booking/book-link";
+import { redirect } from "next/navigation";
+import {
+  existingCallForLanding,
+  getBookingByToken,
+  landingAttendee,
+  rebookRowForToken,
+} from "@/lib/booking/service";
+import { REBOOK_ROUTE, manageHref, rebookEntry } from "@/lib/booking/book-link";
 import { resolveLandingCode } from "@/lib/routing/landing-code";
 import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
@@ -40,7 +46,10 @@ function first(sp: SP, key: string): string {
  * page it was booked from fill the booker server side: none of it rides on a URL,
  * and the token never reaches the public `/book` page that host pages frame.
  *
- * Three outcomes of the lookup, each drawn differently:
+ * Four outcomes of the lookup, each drawn differently:
+ * - replaced (#3672): a booking the API moved to another bucket. The manage page of
+ *   the booking that replaced it opens instead, or not found if that one cannot be
+ *   read, never a booker that would book the lead a second call.
  * - found: the booking's own bucket, prefilled.
  * - absent (no such booking, or one whose page offers no rebook): the manage
  *   page's own not found state, never another booking and never a booker.
@@ -60,7 +69,12 @@ export default async function RebookPage({
   const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
 
   const lookup = await rebookRowForToken(token);
-  if (lookup.kind === "absent") {
+  // #3672: the booking API moved this call to another bucket. A rebook here would book
+  // the lead a second call in the old bucket, so open the booking that replaced it,
+  // followed to the end of the chain by the lookup the manage page uses.
+  const replacement = lookup.kind === "replaced" ? await getBookingByToken(token) : null;
+  if (replacement) redirect(manageHref({ manageToken: replacement.booking.manage_token, theme }));
+  if (lookup.kind === "absent" || lookup.kind === "replaced") {
     return (
       <>
         <StandaloneTheme theme={theme} />

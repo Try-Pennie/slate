@@ -93,12 +93,24 @@ export function rebookHref(b: { bucketCode: string; manageToken: string; theme: 
   return `/booking/manage/${encodeURIComponent(b.manageToken)}/rebook?${q.toString()}`;
 }
 
+/**
+ * The manage page for a booking's token (#3672), keeping a dark page dark. Where a
+ * token for a booking the API moved to another bucket sends the lead: the manage page
+ * of the booking that replaced it.
+ */
+export function manageHref(b: { manageToken: string; theme: "light" | "dark" }): string {
+  const path = `/booking/manage/${encodeURIComponent(b.manageToken)}`;
+  return b.theme === "dark" ? `${path}?theme=dark` : path;
+}
+
 /** The booking columns a rebook reads, and nothing more: one row by token. */
 export const REBOOK_COLUMNS =
-  "status, salesforce_id, external_id, attendee_name, attendee_email, attendee_phone, source, bucket:buckets(code)";
+  "status, salesforce_id, external_id, attendee_name, attendee_email, attendee_phone, source, replaced_by_booking_id, bucket:buckets(code)";
 
 export interface RebookRow {
   status: string;
+  /** #3672: the booking that replaced this one on a cross bucket move, or null. */
+  replacedBy: string | null;
   bucketCode: string;
   /**
    * The lead the booking belongs to, by the shared `bookingLeadId` rule:
@@ -127,10 +139,19 @@ export function parseRebookRow(data: unknown): RebookRow | null {
   const bucket = Array.isArray(d.bucket) ? d.bucket[0] : d.bucket;
   const code = bucket && typeof bucket === "object" ? (bucket as Record<string, unknown>).code : undefined;
   if (typeof d.status !== "string" || typeof code !== "string" || !code) return null;
-  const fields = [d.salesforce_id, d.external_id, d.attendee_name, d.attendee_email, d.attendee_phone, d.source];
+  const fields = [
+    d.salesforce_id,
+    d.external_id,
+    d.attendee_name,
+    d.attendee_email,
+    d.attendee_phone,
+    d.source,
+    d.replaced_by_booking_id,
+  ];
   if (!fields.every(nullableString)) return null;
   return {
     status: d.status,
+    replacedBy: d.replaced_by_booking_id as string | null,
     bucketCode: code,
     leadId: bookingLeadId({
       salesforce_id: d.salesforce_id as string | null,
@@ -153,6 +174,12 @@ export type RebookLookup =
   | { kind: "found"; row: RebookRow }
   /** No such booking, or one whose page offers no rebook: the not found state. */
   | { kind: "absent" }
+  /**
+   * #3672: a booking the API moved to another bucket, so cancelled and REPLACED. A
+   * rebook from it would book the lead a second call in the old bucket, so the page
+   * opens the booking that replaced it instead.
+   */
+  | { kind: "replaced" }
   /** The read failed, timed out or answered an unreadable shape: no prefill. */
   | { kind: "failed" };
 
@@ -196,6 +223,8 @@ export async function loadRebookRow(token: string, deps: RebookDeps): Promise<Re
     return { kind: "failed" };
   }
   if (!REBOOKABLE_STATUSES.has(row.status)) return { kind: "absent" };
+  // Only a cancelled row is ever replaced: the move writes both in one statement.
+  if (row.status === "cancelled" && row.replacedBy) return { kind: "replaced" };
   return { kind: "found", row };
 }
 

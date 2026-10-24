@@ -116,6 +116,9 @@ const CHIP_CLS =
  */
 const CHIP_SECONDARY_CLS = "text-fg";
 
+/** Shown on a chip for somebody the roster does not list, and part of its name. */
+const OFF_ROSTER_NOTE = "(not on the current roster)";
+
 /**
  * A selected row or option. The selected state is carried by a tick icon and the
  * word in the row, never by the sky wash alone: colour is never the only signal.
@@ -344,12 +347,14 @@ export function BucketMembersPicker({
                 key={id}
                 type="button"
                 onClick={() => toggle(id)}
-                aria-label={cfg.removeLabel(name)}
+                // #3917 (L786): named with every word the chip shows, the off
+                // roster note included, so a person driving by voice can say it.
+                aria-label={cfg.removeLabel(entry ? name : `${name} ${OFF_ROSTER_NOTE}`)}
                 className={`${CHIP_CLS} min-h-11 gap-2 px-3 hover:bg-fg/10`}
               >
                 <span>{name}</span>
                 {!entry && (
-                  <span className={CHIP_SECONDARY_CLS}>(not on the current roster)</span>
+                  <span className={CHIP_SECONDARY_CLS}>{OFF_ROSTER_NOTE}</span>
                 )}
                 <span aria-hidden="true" className="text-base text-fg-muted">
                   &times;

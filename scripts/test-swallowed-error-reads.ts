@@ -774,7 +774,8 @@ assert(
   )})`,
 );
 assert(
-  claimFindings[0].snippet.includes('.update({ status: "cancelled" })'),
+  // Open ended since #3672, whose move names the replacing booking in the same patch.
+  claimFindings[0].snippet.includes('.update({ status: "cancelled"'),
   `the gated-write finding names the write it is about (got: ${claimFindings[0].snippet})`,
 );
 
