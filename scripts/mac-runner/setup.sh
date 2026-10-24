@@ -43,7 +43,9 @@ DAEMON_DIR=/Library/LaunchDaemons
 # fails, saying why, below this many GB. The runners share Dan's work disk, and on
 # 2026-10-24 their first runs used about 10 GB in half an hour.
 MIN_FREE_GB=10
-DISK_GUARD=$RUNNER_HOME/runners/disk-guard.sh
+# Outside cirunner's home, in a root owned folder: a file root owns inside a
+# folder cirunner owns can still be deleted and replaced by a job.
+DISK_GUARD=/usr/local/libexec/pennie-ci-runner/disk-guard.sh
 COLIMA_PLIST=$DAEMON_DIR/com.trypennie.ci-colima.plist
 
 die() { echo "FAILED: $*" >&2; exit 1; }
@@ -153,8 +155,9 @@ stage_docker() {
 runner_home() { echo "$RUNNER_HOME/runners/$1/home"; }
 
 write_disk_guard() {
-  # Owned by root, so a job (running as cirunner) cannot edit its own check away.
-  mkdir -p "$RUNNER_HOME/runners"
+  # Root owned, file and folder, so a job (running as cirunner) cannot edit or
+  # replace its own check.
+  mkdir -p "$(dirname "$DISK_GUARD")"
   cat >"$DISK_GUARD" <<GUARD
 #!/bin/bash
 free_kb=\$(df -k / | awk 'NR==2 {print \$4}')

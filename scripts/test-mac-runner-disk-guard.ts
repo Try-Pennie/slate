@@ -25,6 +25,9 @@ assert(/echo "ACTIONS_RUNNER_HOOK_JOB_STARTED=\$DISK_GUARD"/.test(source), "each
 assert(/^ {2}write_disk_guard$/m.test(source), "writing a runner's settings writes the guard");
 const floor = /^MIN_FREE_GB=(\d+)$/m.exec(source)?.[1];
 eq(floor, "10", "the floor is 10 GB");
+// A root owned file in a folder cirunner owns can still be deleted by a job.
+const guardPath = /^DISK_GUARD=(.+)$/m.exec(source)?.[1] ?? "";
+assert(guardPath.startsWith("/usr/local/") && !guardPath.includes("RUNNER_HOME"), `the guard lives in a root owned folder, not the runner's home: ${guardPath}`);
 
 /** Writes the guard with a floor, runs it, and returns its exit and output. */
 function runGuard(minGb: number): { status: number | null; out: string } {
