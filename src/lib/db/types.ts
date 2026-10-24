@@ -267,6 +267,12 @@ export interface CapacityFillReading {
   estimate_pattern_state: string | null;
   estimate_method: string | null;
   estimate_cells_fallen_back: number | null;
+  /** #4190 (migration 0201): from 95%, the walk to no call open; null under 95% and before it. */
+  estimate_last_line_state: string | null;
+  estimate_last_line_at: string | null;
+  estimate_last_pattern_state: string | null;
+  estimate_last_pattern_at: string | null;
+  estimate_last_method: string | null;
   created_at: string;
 }
 
@@ -297,8 +303,10 @@ export interface EventType {
   daily_cap: number | null;
   slot_interval_min: number;
   created_at: string;
-  /** The row's version (#3122, migration 0161): an editor sends back the value it
-   *  loaded and the write lands only while the row still holds it. */
+  /** The row's version (migration 0161), moved by every write. Not what an editor
+   *  is judged by: any save of any field moves it, so the editors send back their
+   *  own fields' loaded values instead (#3798). `updateEventType` uses it only to
+   *  close the gap between its own read and its write. */
   updated_at: string;
 }
 

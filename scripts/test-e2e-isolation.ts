@@ -64,7 +64,7 @@ assert(!isLoopbackHost("127.0.0.1.example.com"), "a name that merely starts like
 // --- the env file refusal -----------------------------------------------------------
 
 assert(envFileRefusal([".env.example", "package.json"]) === null, "the committed template is not a refusal");
-for (const f of [".env", ".env.local", ".env.production", ".env.production.local"]) {
+for (const f of [".env", ".env.local", ".env.production", ".env.production.local", ".dev.vars"]) {
   assert(envFileRefusal([f]) !== null, `${f} in the checkout refuses the build`);
 }
 

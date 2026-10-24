@@ -30,7 +30,7 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
 //   scripts/test-browser-checks-gate.ts
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { sourceFiles } from "./lib/source-files.ts";
 import {
@@ -104,9 +104,32 @@ function browserRunInputs(tracked: string[]): string[] {
 const unmatched = (inputs: string[], patterns: readonly string[]) =>
   inputs.filter((f) => !patterns.some((p) => globMatches(p, f)));
 
+/**
+ * The files under `scripts/` that the suite IMPORTS (#3694: `e2e/env.ts` reads the
+ * live settings rule from `scripts/lib/live-env-files.ts`). Read from the import
+ * statements themselves, so a new one cannot be missed by a hand kept list.
+ */
+function scriptsImportedByE2e(tracked: string[]): string[] {
+  const found = new Set<string>();
+  for (const f of tracked) {
+    if (!/^e2e\/.*\.(ts|mts|mjs)$/.test(f)) continue;
+    const text = readFileSync(join(ROOT, f), "utf8");
+    for (const m of text.matchAll(/(?:from|import)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g)) {
+      const resolved = posix.normalize(posix.join(posix.dirname(f), m[1]));
+      if (resolved.startsWith("scripts/")) found.add(resolved);
+    }
+  }
+  return [...found];
+}
+
 // The shared enumeration, which refuses a listing too short to believe (#2421).
 const tracked = sourceFiles({ paths: ["."], match: /./ });
-const inputs = browserRunInputs(tracked);
+const e2eScriptImports = scriptsImportedByE2e(tracked);
+assert(
+  e2eScriptImports.includes("scripts/lib/live-env-files.ts"),
+  `the import scan finds the suite's known import from scripts (found: ${e2eScriptImports.join(", ")})`,
+);
+const inputs = [...new Set([...browserRunInputs(tracked), ...e2eScriptImports])];
 assert(inputs.length > 100, `the run's inputs were enumerated from the tree (${inputs.length} files)`);
 for (const must of ["src/middleware.ts", "e2e/run.ts", "next.config.ts", "pnpm-lock.yaml", "cloudflare-env.d.ts", ".github/workflows/ci.yml", "docs/design/team-capacity.html", "docs/design/team-capacity.checks.js", "scripts/design-score/capture-web.mjs"]) {
   assert(inputs.includes(must), `${must} is counted as an input`);

@@ -83,6 +83,7 @@ const paceRow = (day: string, readAt: DateTime) => {
   return {
     day, read_at: readAt.toISO(), pace_state: "pace", pace_per_hour: 6, pace_back_at: null,
     estimate_method: "line", estimate_line_state: "at", estimate_line_at: readAt.plus({ hours: 1 }).toISO(), estimate_pattern_state: null, estimate_pattern_at: null,
+    estimate_last_method: null, estimate_last_line_state: null, estimate_last_line_at: null, estimate_last_pattern_state: null, estimate_last_pattern_at: null,
   };
 };
 const paceLines = (card: number) => [...document.querySelectorAll('[data-tc="day-card"]')[card].querySelectorAll('[data-tc="pace"]')].map((n) => n.textContent);
