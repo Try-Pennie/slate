@@ -40,7 +40,7 @@ comment on column monitor_alert_config.calcom_retired_at is
 update monitor_alert_config c
   set calcom_retired_at = coalesce(
     (
-      select max(a.created_at)
+      select min(a.created_at)
       from audit_log a
       where a.action = 'monitor.calcom_retired'
         and a.details ->> 'to' = 'true'
