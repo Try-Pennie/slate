@@ -274,6 +274,14 @@ stage_status() {
   local m; m=$(missing_tools)
   [ -z "$m" ] && echo "job tools: all present" || echo "job tools: MISSING $m"
   df -h / | tail -1 | awk '{print "disk free: " $4}'
+  # What the runners hold, largest first: checkouts and builds (_work), each
+  # runner's caches (home), and the Docker VM (.colima). Only root can read it.
+  if [ "$(id -u)" = 0 ] && [ -d "$RUNNER_HOME" ]; then
+    echo "runner disk use:"
+    du -sh "$RUNNER_HOME"/runners/*/_work "$RUNNER_HOME"/runners/*/home "$RUNNER_HOME"/.colima 2>/dev/null \
+      | sort -rh | sed "s|$RUNNER_HOME/||; s|^|  |"
+    du -sh "$RUNNER_HOME" 2>/dev/null | awk '{print "  total " $1}'
+  fi
 }
 
 stage_stop() {
