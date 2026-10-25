@@ -478,6 +478,27 @@ A trait send states the agent's value AT THAT SEND (`payloadForSend`,
 `src/lib/webhooks/agent-trait.ts`), because retries and replays reorder, and a
 stale false retried after a newer true would otherwise win.
 
+## An outbound call with no timeout of its own (the `// deadline-ok:` convention, #3972)
+
+Cloudflare kills an invocation at hard deadlines: `after()` work 30 seconds after
+the response, a scheduled tick at its own wall limit. A kill runs no catch block, so
+whatever a call's failure path records or pages never happens, and a dependency that
+HANGS goes silent while one that refuses is reported (L1028). So every server `fetch`
+names a `signal` (usually `AbortSignal.timeout`, sized well inside the deadline it
+runs under), or goes through `fetchWithinBudget`/`fetchWithDeadline`.
+
+`scripts/test-outbound-deadlines.ts` scans `src/` and `worker/` (tests and
+`"use client"` modules excluded) for a global `fetch` call whose options name no
+`signal`, and for the global `fetch` handed on as a value (`fetchImpl: fetch`,
+`?? fetch`, a default parameter), since the receiver calls it where the scan cannot
+follow. `// deadline-ok: <why>`, on the line or in the `//` block above it, names
+what bounds it instead: the deadline wrapper it is the inner fetch of, the
+receiver's own timeout, or a browser.
+
+What it cannot see: a library that makes its own requests (googleapis is bounded
+through the fetch it is given, `src/lib/google/`), and a `signal` that never fires,
+such as a caller's own signal with no timer behind it.
+
 ## Adding a webhook event (#1459)
 
 `emitWebhook` delivers only to endpoints whose stored `events` array **contains**

@@ -1,4 +1,5 @@
 import { isCalcomLane } from "@/lib/calcom/retirement";
+import { GITHUB_API_TIMEOUT_MS } from "@/lib/monitor/github-ci-health";
 
 /**
  * Reliable trigger for the booking smoke canary (#525 follow-up).
@@ -139,6 +140,13 @@ export interface CanaryTriggerDeps {
   acquireDispatchLock: () => Promise<boolean>;
   /** POST the workflow_dispatch to GitHub. Resolves the HTTP outcome. */
   dispatch: () => Promise<{ ok: boolean; status: number }>;
+  /**
+   * #4009 (L796): how many runs of this pass's workflow GitHub holds that have not
+   * completed (queued, pending, waiting or in progress), or null when it could not be
+   * asked. Asked only once the heartbeat is stale, before the cooldown is spent.
+   * Omitted, every stale heartbeat reads as a lost run, as before.
+   */
+  activeRuns?: () => Promise<number | null>;
   /** Visible, non-paging info line (logs only). Optional. */
   onInfo?: (msg: string) => void;
   /** Surface a failure (fail loud). Optional. */
@@ -152,6 +160,8 @@ export interface CanaryTriggerResult {
     | "never-stamped"
     | "no-token"
     | "cooldown"
+    /** #4009: a run of the workflow is already queued or running; it will stamp the heartbeat. */
+    | "already-pending"
     | "dispatched"
     | "dispatch-failed"
     | "dispatch-error"
@@ -273,9 +283,43 @@ export async function postWorkflowDispatch(
       body: JSON.stringify(
         target.inputs === null ? { ref: "main" } : { ref: "main", inputs: target.inputs },
       ),
+      // #3972: a hung GitHub is a reported dispatch error, never a stalled monitor lane.
+      signal: AbortSignal.timeout(GITHUB_API_TIMEOUT_MS),
     },
   );
   return { ok: res.ok, status: res.status };
+}
+
+/** How long the gap-fill waits for GitHub's run listing; the monitor lane must not stall on it. */
+export const ACTIVE_RUNS_TIMEOUT_MS = 10_000;
+
+/**
+ * #4009: how many runs of a pass's workflow have not completed (queued, pending,
+ * waiting, requested or in progress), from the newest 20, or null when GitHub refused
+ * or answered something that is not a listing. Never zero for an answer it could not
+ * read (L11). Both canary passes share `smoke-canary.yml` and its concurrency group, so
+ * a run of either mode counts for both: a dispatch of one would cancel the other's
+ * pending run. The newest 20 reach back ten hours at the canary's cadence, so an
+ * unfinished run older than that is not seen; the watchdog's bound is far inside it.
+ */
+export async function countActiveWorkflowRuns(token: string, pass: GapFillPass): Promise<number | null> {
+  const target = GAP_FILL_PASSES[pass];
+  const res = await fetch(
+    `https://api.github.com/repos/${CANARY_REPO}/actions/workflows/${target.workflow}/runs?per_page=20`,
+    {
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: "application/vnd.github+json",
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "slate-canary-gapfill",
+      },
+      signal: AbortSignal.timeout(ACTIVE_RUNS_TIMEOUT_MS),
+    },
+  );
+  if (!res.ok) return null;
+  const runs = ((await res.json().catch(() => null)) as { workflow_runs?: unknown } | null)?.workflow_runs;
+  if (!Array.isArray(runs)) return null;
+  return runs.filter((r) => (r as { status?: unknown } | null)?.status !== "completed").length;
 }
 
 /** Everything every gap-fill shares, injected once. `dispatch` and `acquireLock`
@@ -289,6 +333,8 @@ export interface CanaryGapFillWiring {
   acquireLock: (name: string, ttlMs: number) => Promise<boolean>;
   /** POST a workflow_dispatch for the given pass. */
   dispatch: (pass: GapFillPass) => Promise<{ ok: boolean; status: number }>;
+  /** #4009: runs of the pass's workflow not yet completed, or null when GitHub could not be asked. */
+  activeRuns?: (pass: GapFillPass) => Promise<number | null>;
   onInfo?: (msg: string) => void;
   onError?: (msg: string, err?: unknown) => void;
   /**
@@ -331,6 +377,7 @@ export async function runCanaryGapFills(
     }
   }
 
+  const askQueue = w.activeRuns;
   // Sequential, never `Promise.all`: these run on the invocation budget four cron
   // lanes share, and the tests assert the order the lanes are read in.
   for (const pass of Object.keys(GAP_FILL_PASSES) as GapFillPass[]) {
@@ -351,6 +398,7 @@ export async function runCanaryGapFills(
         readHeartbeatMs: () => w.readHeartbeatMs(cfg.lane),
         acquireDispatchLock: () => w.acquireLock(cfg.lock, cfg.cooldownMs),
         dispatch: () => w.dispatch(pass),
+        activeRuns: askQueue ? () => askQueue(pass) : undefined,
       });
     } catch (err) {
       // Isolated per pass: a heartbeat or lock read that throws is reported and
@@ -378,12 +426,35 @@ export async function triggerCanaryGapFill(
   // GitHub's schedule is keeping the heartbeat fresh: nothing to do.
   if (now - heartbeatMs <= staleMs) return { dispatched: false, reason: "fresh" };
 
-  // Stale: GitHub dropped a run. Fill the gap if we can.
+  // Stale: GitHub either dropped a run or is still holding one (asked below). Fill
+  // the gap if it was dropped.
   if (!token) {
     info(
       `canary gap-fill: the ${label} heartbeat is stale but GITHUB_CANARY_TOKEN is not set, so cannot trigger`,
     );
     return { dispatched: false, reason: "no-token" };
+  }
+  // #4009 (L796): stale is not proof the run was LOST. A run queued behind the
+  // workflow's concurrency group or a runner backlog stamps nothing until it ends, and a
+  // dispatch joins that same group, where GitHub cancels whichever run was pending in
+  // favour of the newest. So ask first, before the cooldown is spent, and wait on a run
+  // that is already there. A queue that cannot be asked keeps the refill: its cost is at
+  // most a pending run replaced by the dispatch, which is what happened before; the
+  // other way, a really dropped run would go unfilled until the watchdog pages.
+  if (deps.activeRuns) {
+    let active: number | null = null;
+    try {
+      active = await deps.activeRuns();
+    } catch (err) {
+      error(`canary gap-fill: could not ask GitHub whether a ${label} run is already pending; refilling as if none is`, err);
+      active = -1;
+    }
+    if (active === null) {
+      error(`canary gap-fill: GitHub's run listing for ${label} was unreadable; refilling as if no run is pending`);
+    } else if (active > 0) {
+      info(`canary gap-fill: the ${label} heartbeat is stale but ${active} run(s) of its workflow are already queued or running, so it waits on them rather than dispatching another`);
+      return { dispatched: false, reason: "already-pending" };
+    }
   }
   // The lock is both the cooldown and the concurrency guard: only the invocation
   // that wins it dispatches, and it is not released, so we do not re-fire until it

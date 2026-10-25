@@ -628,8 +628,8 @@ the canary through `/api/smoke/test-advisor-lease` around its booking steps.
 The server never waits. While the canary holds the lease the endpoint answers
 `test-advisors-held` without starting, and the command asks again every 15 seconds for up to 12
 minutes, which is past the lease's 10 minute TTL, so even a canary that died holding it has lost
-it inside the wait. Still held at the bound is exit 24: the reporter says the pipeline was not
-exercised today and that this is not a reroute fault, and nothing is stamped. The client half is
+it inside the wait. Still held at the bound is exit 24: the reporter posts nothing (Dan,
+2026-10-23: a day the canary kept the drill off is not news) and nothing is stamped. The client half is
 pinned by `scripts/test-test-advisor-lease-wait.ts`, the lease itself (a crashed holder's claim
 lapses, release is idempotent, the two endpoints exclude each other) by
 `src/lib/booking/test-advisor-lease.test.ts`. A shared GitHub concurrency group was rejected: a
@@ -651,7 +651,8 @@ reasons (`scripts/test-reroute-drill-schedule.ts` re-derives it from the workflo
 run that exercised the pipeline may stamp it**: exits 0, 12 to 20 and 23 conclude, and every bad one of
 those is posted to Slack. A drill that could not start, or could not clean up, does not stamp; its
 message still says so daily, and the lapsing stamp pages as a blind detector. Exit 24 (the canary
-held the advisors past the wait) is one of those: posted once as not measured, never as broken.
+held the advisors past the wait) does not stamp either, and posts nothing: only a run of such days
+surfaces, when the lapsing stamp pages.
 
 # Proving an approved time off blocks (`pnpm verify:ooo-protection`)
 

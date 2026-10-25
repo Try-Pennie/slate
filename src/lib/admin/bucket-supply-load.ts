@@ -42,6 +42,7 @@ import { log } from "@/lib/log";
 import { DateTime } from "luxon";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { searchWindowDays } from "@/lib/availability/bookable-days";
+import { withStartedColumn } from "@/lib/availability/slot-row-times";
 import { loadPoolCalls } from "@/lib/admin/bucket-calls-load";
 import {
   bucketSupplyReport,
@@ -73,10 +74,21 @@ export async function loadBucketSupply(
   // than a page of zeros (#277's direction).
   let cacheRows: CachedSlotRow[];
   try {
-    cacheRows = (unwrap(
-      await db.from("bucket_slots").select("bucket_code, payload, computed_at"),
-      "bucket supply slot cache",
-    ) ?? []) as CachedSlotRow[];
+    // #3388: with when each row's compute started, which the "Last computed" column
+    // and its freshness grade judge by (see `supplyComputedAtMs`). A database without
+    // migration 0202 is read for the stamp alone.
+    const read = await withStartedColumn(
+      (withStarted) =>
+        db
+          .from("bucket_slots")
+          .select(
+            withStarted
+              ? "bucket_code, payload, computed_at, compute_started_at"
+              : "bucket_code, payload, computed_at",
+          ),
+      "bucket supply",
+    );
+    cacheRows = (unwrap(read, "bucket supply slot cache") ?? []) as unknown as CachedSlotRow[];
   } catch (err) {
     log.error("bucket-supply", { msg: "slot cache unreadable" }, err);
     return { measurable: false, reason: "slot-cache" };

@@ -201,10 +201,24 @@ export interface RetryOptions {
 
 // Bounded on purpose. The export lane's per-run wall-time budget is spent across
 // many batches, so a long retry ladder on any one batch would starve the drain.
-// Worst case here is ~5s of waiting per batch; the lane's deadline check stops
-// the run cleanly if a sustained Snowflake outage eats the budget anyway.
+// The backoff adds ~5s per batch. A Snowflake that HANGS costs each attempt its
+// SNOWFLAKE_SUBMIT_TIMEOUT_MS as well, so three attempts can hold one batch about
+// four minutes (#3972), which is still an error the lane reports rather than a kill;
+// the lane's deadline check stops the run cleanly if an outage eats the budget.
 const RETRY_MAX_ATTEMPTS = 3;
 const RETRY_DELAYS_MS = [1_000, 4_000];
+
+/**
+ * #3972: each request's own bound, so a hung Snowflake ends as a thrown attempt (which
+ * the ladder above resubmits under the same requestId) rather than a lane held until
+ * the platform kills it with no failure recorded. The SQL API answers a submit with a
+ * 202 and a handle once a statement runs past about 45 seconds, and `executeStatement`
+ * caps the statement itself at 60 (`timeout: 60` in the body), so the submit's bound
+ * sits a margin past BOTH and only ever cuts a request Snowflake has stopped answering;
+ * a status poll answers at once.
+ */
+export const SNOWFLAKE_SUBMIT_TIMEOUT_MS = 75_000;
+export const SNOWFLAKE_POLL_TIMEOUT_MS = 15_000;
 
 /**
  * POST a statement, resubmitting on transient failures.
@@ -232,7 +246,7 @@ export async function postStatementWithRetry(
     let error: Error;
 
     try {
-      const res = await fetch(target, { method: "POST", headers, body });
+      const res = await fetch(target, { method: "POST", headers, body, signal: AbortSignal.timeout(SNOWFLAKE_SUBMIT_TIMEOUT_MS) });
       const text = await res.text();
       if (res.ok) return { status: res.status, text };
       retryable = isTransientSnowflakeError(res.status);
@@ -298,7 +312,7 @@ export async function pollStatement(
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await doSleep(intervalMs);
-    const res = await fetch(url, { method: "GET", headers });
+    const res = await fetch(url, { method: "GET", headers, signal: AbortSignal.timeout(SNOWFLAKE_POLL_TIMEOUT_MS) });
     const text = await res.text();
     if (res.status === 202) continue; // still running
     if (!res.ok) throw new Error(`Snowflake poll ${res.status}: ${text}`);

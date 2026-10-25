@@ -363,6 +363,7 @@ async function mintToken(
 ): Promise<string> {
   const assertion = await signJwt(email, scope);
   const res = await fetchWithinBudget(
+    // deadline-ok: fetchWithinBudget lays its deadline over this fetch
     fetch,
     TOKEN_URL,
     {

@@ -19,18 +19,23 @@ import { resolveAlert, sendThrottledAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failure";
 import { googleBreakerClosedAlert, googleBreakerOpenAlert } from "@/lib/notify/misc-alert-copy";
 import { log } from "@/lib/log";
+import { recentStall } from "@/lib/dependency-stall";
 import { GOOGLE_BREAKER_OPEN_MS, type BreakerTransition } from "@/lib/google/breaker";
 
 export const GOOGLE_BREAKER_ALERT_KEY = "google_calendar_breaker_open";
 export const GOOGLE_BREAKER_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
-export function announceGoogleBreaker(t: BreakerTransition): void {
+export function announceGoogleBreaker(t: BreakerTransition, now: () => number = () => Date.now()): void {
   if (t.to === "open") {
+    // #3784: Supabase stalling in this isolate in the same minutes means both services
+    // were failing from one location, and the page suspects the location first.
+    const supabaseStall = recentStall("supabase", now());
     log.warn("google-breaker", {
       msg: "opened: holding Google Calendar calls back",
       failures: t.failures,
       last_failure: t.lastFailure,
       open_ms: GOOGLE_BREAKER_OPEN_MS,
+      ...(supabaseStall ? { supabase_stall_ms: supabaseStall.ms, supabase_edge_colo: supabaseStall.colo } : {}),
     });
     afterResponse("google-breaker-open", () =>
       sendThrottledAlert(
@@ -38,7 +43,7 @@ export function announceGoogleBreaker(t: BreakerTransition): void {
         GOOGLE_BREAKER_ALERT_COOLDOWN_MS,
         // alert-text-ok: the last failure is already short, from shortErrorReason
         // or a status plus the call's own label; no error body reaches it.
-        googleBreakerOpenAlert(t.failures, t.lastFailure, GOOGLE_BREAKER_OPEN_MS),
+        googleBreakerOpenAlert(t.failures, t.lastFailure, GOOGLE_BREAKER_OPEN_MS, supabaseStall),
       ).catch(logAlertSendFailure(GOOGLE_BREAKER_ALERT_KEY)),
     );
     return;

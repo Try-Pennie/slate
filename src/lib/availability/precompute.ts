@@ -9,6 +9,7 @@ import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import type { Attributes, Bucket, Criteria } from "@/lib/db/types";
 import type { PooledBucket } from "./pool-recompute";
 import type { InvalidationMarker } from "./precompute-cron";
+import { readKnownSlotRows, type KnownSlotRowTimes } from "./slot-row-times";
 import { log } from "@/lib/log";
 import {
   markSlotRowsInvalidated,
@@ -86,24 +87,19 @@ export async function listPoolBuckets(): Promise<PooledBucket[]> {
   }));
 }
 
-/** Existing precomputed rows with their last-computed time (epoch ms). */
-export async function listKnownBucketSlotRows(): Promise<
-  { code: string; computedAtMs: number }[]
-> {
-  const data = unwrap(
-    await supabaseAdmin()
-      .from("bucket_slots")
-      .select("bucket_code, computed_at"),
-    "listKnownBucketSlotRows",
-  );
-  return (data ?? []).map((r) => {
-    const row = r as { bucket_code: string; computed_at: string };
-    // #1169: fail closed. An unparseable computed_at reads as epoch 0 (ancient:
-    // first in line to recompute, flagged stale), never NaN, which compared false
-    // against the freshness window so the bucket was never recomputed AND never
-    // flagged: a frozen slot cache with no alert.
-    return { code: row.bucket_code, computedAtMs: parseStampMs(row.computed_at) ?? 0 };
-  });
+/**
+ * Existing precomputed rows with their stamp and, since #3388, when the compute
+ * that wrote each began (epoch ms), which the due set and the stale alarm read
+ * through `scheduleAnchorMs`.
+ *
+ * #1169: fail closed. An unparseable computed_at reads as epoch 0 (ancient: first
+ * in line to recompute, flagged stale), never NaN, which compared false against the
+ * freshness window so the bucket was never recomputed AND never flagged: a frozen
+ * slot cache with no alert. The anchor keeps that: a start never outranks a stamp
+ * of 0.
+ */
+export async function listKnownBucketSlotRows(): Promise<KnownSlotRowTimes[]> {
+  return readKnownSlotRows(supabaseAdmin());
 }
 
 /**
@@ -261,8 +257,17 @@ export async function storeBucketSlotsRow(
   computedAtMs: number,
   /** Which path is storing it (#3381), stamped on the row. */
   writtenBy: WrittenBy,
+  /** When the compute began, if earlier inputs moved the stamp back (#3388). */
+  computeStartedAtMs: number = computedAtMs,
 ): Promise<SlotRowWriteOutcome> {
-  const outcome = await writeSlotRow(supabaseAdmin(), code, val as unknown, computedAtMs, writtenBy);
+  const outcome = await writeSlotRow(
+    supabaseAdmin(),
+    code,
+    val as unknown,
+    computedAtMs,
+    writtenBy,
+    computeStartedAtMs,
+  );
   if (outcome === "kept-newer") {
     // Worth a line: it means two computes for one bucket overlapped and the slower one
     // finished last. Harmless (the fresher row is the one serving) but it is the only

@@ -29,6 +29,13 @@ const loadReasonOptions = vi.hoisted(() =>
 
 vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/booking/reason-options", () => ({ loadReasonOptions }));
+// Next's redirect throws to end the render; this one throws a readable marker.
+const redirect = vi.hoisted(() =>
+  vi.fn((url: string): never => {
+    throw new Error(`REDIRECT ${url}`);
+  }),
+);
+vi.mock("next/navigation", () => ({ redirect }));
 
 import ManagePage from "./page";
 
@@ -203,5 +210,37 @@ describe("manage page advisor wiring (#1338)", () => {
     const props = await renderPage();
     expect(service.getBookingCallingNumber).not.toHaveBeenCalled();
     expect(props?.callingNumber).toBeNull();
+  });
+});
+
+// #3672: the booking API moved the call to another bucket, which cancelled the booking
+// this token names and made a new one under a new token. Every link the lead already
+// holds (the text Regal sent, the calendar invite) carries the OLD token, and it used
+// to open "This booking is cancelled" while they still had a call.
+describe("an old token for a booking the API moved (#3672)", () => {
+  const moved = {
+    ...found,
+    booking: { ...found.booking, id: "bk-new", manage_token: "tok-new", status: "confirmed" },
+    followedToToken: "tok-new",
+  };
+
+  it("opens the manage page of the booking that replaced it", async () => {
+    service.getBookingByToken.mockResolvedValue(moved);
+    await expect(renderPage()).rejects.toThrow("REDIRECT /booking/manage/tok-new");
+    // Nothing about either booking is read or drawn on the way.
+    expect(service.getBookingAdvisorName).not.toHaveBeenCalled();
+  });
+
+  it("keeps a dark page dark on the way", async () => {
+    service.getBookingByToken.mockResolvedValue(moved);
+    await expect(renderPage({ theme: "dark" })).rejects.toThrow("REDIRECT /booking/manage/tok-new?theme=dark");
+  });
+
+  it("CONTROL: a booking cancelled any other way still opens as itself, cancelled", async () => {
+    service.getBookingByToken.mockResolvedValue({ ...found, booking: { ...found.booking, status: "cancelled" } });
+    const props = await renderPage();
+    expect(redirect).not.toHaveBeenCalled();
+    expect(props?.status).toBe("cancelled");
+    expect(props?.token).toBe("tok1");
   });
 });

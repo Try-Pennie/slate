@@ -43,6 +43,13 @@ What follows from it:
   `response.origin_time` on the lanes' tables) and the `cf-placement` value on the
   timings line, read by its colo: beside Oregon is placed, anywhere else is not,
   whichever of `remote-` or `local-` it carries (the next section).
+- **The public route beside SELF (#4189, a temporary measurement).** Each tick also
+  sends one credential free GET to `https://slate.trypennie.app/api/smoke/version`
+  and logs its `cf-placement` as `public_probe` (or `no_header`, `unreadable`,
+  `timeout`, `threw`, `skipped_loadtest`), with `public_probe_status`,
+  `public_probe_ms`, `public_probe_near_db`, any `public_probe_cf_error`, and on
+  `threw` the reason in `public_probe_error` (`worker/public-probe.ts`). Read it with `scripts/logs.ts "tag=cron" --lines` one hour
+  at a time and compare each tick's `<lane>_placement` with its `public_probe`.
 
 ## Placement is an explicit region hint, not Smart Placement (#3693)
 
@@ -81,6 +88,59 @@ Three things follow, all from the same page
   `local-BOM` or `local-AMS` means it did not. Confirm it the first day on the
   Supabase edge logs (`request.cf.colo` for the lanes' tables), which do not depend
   on a header Cloudflare says "may be removed before Smart Placement exits beta".
+
+## Where a confirm ran (#3784)
+
+Placement runs every confirm beside Oregon, so a degraded colo there slows Google and
+Supabase together with no healthy location in Slate's traffic to compare against. The
+`confirm answered` line (`src/lib/booking/confirm-latency.ts`) therefore records where
+it ran. Three candidate readings exist inside a placed Worker, and they say different
+things:
+
+- **`supabase_edge_colo`: where the confirm RAN.** The suffix of the `cf-ray` on each
+  Supabase answer (`coloFromRay`, `src/lib/http/cf-ray.ts`), collected by the call
+  budget for every budgeted call and kept per confirm by its profile, comma separated,
+  first seen first. Supabase is behind Cloudflare, and a Worker's subrequest enters
+  Supabase's zone in the colo the Worker runs in, so this is the same reading as
+  `request.cf.colo` in Supabase's own edge logs, which is how placement was confirmed
+  above (the lanes showed Mumbai and Stockholm there, the placed lead requests
+  Seattle). It costs no extra call. Absent when no Supabase call answered (every one
+  stalled or failed) and on the staff time change, which runs no confirm budget, so
+  nothing observes its calls.
+- **`request_cf_colo`: the runtime's `request.cf.colo`, raw, and probably where the
+  lead ENTERED.** `@cloudflare/workers-types` documents it as "the data center that the
+  request hit", and the placement page does not mention it. A Cloudflare Community
+  thread ("How to determine Worker placement from inside the Worker",
+  community.cloudflare.com/t/665739) is quoted by search results as saying it stays the
+  colo nearest the client when placement runs the Worker elsewhere; the thread itself
+  refused a direct read on 2026-10-23. Nobody has confirmed it on Slate, so it
+  is logged under its own name and never read as the run location. Read through
+  OpenNext's `getCloudflareContext().cf`, which its worker template fills from the
+  incoming `request.cf` (`requestCfColo`, `src/lib/http/request-cf-colo.ts`).
+- **`cf-placement`: not on the confirm line.** The placement page says Cloudflare
+  "adds a `cf-placement` header to all requests when placement is enabled" and gives
+  only Smart Placement's values. The same thread is quoted as saying it is not on the
+  request the Worker receives but on the response, which matches how Slate reads it:
+  the lane dispatcher reads it off the `SELF` binding's answer (`placementOf`,
+  `worker/lane-run.ts`). A confirm cannot read a header added to its own response, so
+  the confirm line carries no placement value.
+
+**The production reading that settles `request_cf_colo`.** In Workers observability,
+filter `message` to `confirm answered` over an hour of ordinary traffic and group by
+`request_cf_colo` and `supabase_edge_colo`. Leads arrive from all over the US, so
+`request_cf_colo` spread across several colos (ORD, IAD, DFW) while
+`supabase_edge_colo` stays SEA or PDX means `request.cf.colo` is the entry location.
+The two always agreeing means it is the run location too. Update this section with the
+answer and the date it was read.
+
+**The pages read the same fact (#3784).** When one confirm's slowest Google call and
+slowest Supabase call both took 2 seconds or more, the booking timeout page names the
+colo (`supabase_edge_colo`) and suspects it before either service; the Google breaker
+page does the same when a confirm in this isolate saw a Supabase stall within 5 minutes
+of opening (a cron lane's statement is left out: it can take 7.9s while healthy).
+One predicate decides both (`src/lib/dependency-stall.ts`, which records the
+measurements behind the threshold). What to do with such a page is in
+`docs/alerts-runbook.md`, "Google cannot be reached for an agent".
 
 ## CPU is the real ceiling, and `limits.cpu_ms` DOES raise it
 

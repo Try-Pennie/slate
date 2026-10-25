@@ -75,6 +75,7 @@ export async function fetchSfWithRetry(
   refuseUnderLoadtest("Salesforce");
   const maxAttempts = opts.maxAttempts ?? SF_MAX_ATTEMPTS;
   const timeoutMs = opts.timeoutMs ?? SF_TIMEOUT_MS;
+  // deadline-ok: every attempt below carries AbortSignal.timeout(waitMs)
   const doFetch = opts.fetchImpl ?? fetch;
 
   let lastErr: unknown;

@@ -461,6 +461,40 @@ async function main() {
     );
   }
 
+  // --- #3784: where the confirm ran ----------------------------------------------
+  //
+  // Placement pins every confirm near Oregon (#3730), so a degraded location there
+  // slows Google and Supabase together and each page blames one of them. The line
+  // now says where the confirm ran, read the one way Slate already trusts: the colo
+  // Supabase's edge answered its calls at (`supabase_edge_colo`, the cf-ray each
+  // answer carries; a Worker's subrequest enters Supabase's zone where the Worker
+  // runs). And `request_cf_colo`, the runtime's request.cf.colo, logged raw under its
+  // own name, because under a placement hint it may name where the lead ENTERED.
+  {
+    const cap = captureInfo();
+    const facts: ConfirmLineFacts = {};
+    await answerTimed(
+      "booking",
+      async () => {
+        facts.profile!.call("supabase bookings", 0, 20, "SEA");
+        facts.profile!.call("google freeBusy.many", 20, 300, null);
+        facts.profile!.call("supabase", 300, 320, "SEA");
+        facts.profile!.call("supabase", 320, 340, "PDX");
+        return new Response("{}", { status: 200 });
+      },
+      { now: () => 0, facts, requestCfColo: () => "ORD" },
+    );
+    await answerTimed("booking", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: {}, requestCfColo: () => null });
+    cap.restore();
+    const [ran, unknown] = answered(cap.lines).map(fieldsOf);
+    assert(ran?.get("supabase_edge_colo") === '"SEA,PDX"', `ran at: every colo Supabase answered from, first seen first, each once (got ${ran?.get("supabase_edge_colo")})`);
+    assert(ran?.get("request_cf_colo") === '"ORD"', `ran at: request.cf.colo under its own name (got ${ran?.get("request_cf_colo")})`);
+    assert(
+      !unknown?.has("supabase_edge_colo") && !unknown?.has("request_cf_colo"),
+      `ran at: a confirm with no Supabase answer and no cf object names nowhere, never a guess (got ${[...(unknown?.keys() ?? [])]})`,
+    );
+  }
+
   // --- #3401: which kind of confirm it was, new or a time change ----------------
   {
     const cap = captureInfo();

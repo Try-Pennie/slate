@@ -48,6 +48,7 @@ export function reportBoundaryCatch(input: {
     const message = scrubContactData(
       (input.message ?? "").trim() || `boundary caught${input.digest ? "" : " an error with no digest"}`,
     ).slice(0, 500);
+    // deadline-ok: runs in the browser (error boundaries are client components), not the Worker
     void fetch("/api/client-errors", {
       method: "POST",
       headers: { "content-type": "application/json" },

@@ -27,6 +27,7 @@ import { bookingRescheduleTimesLive } from "@/lib/booking/reschedule-times-live"
 import { wakeConfirmLineForCode } from "@/lib/booking/confirm-line-live";
 import { createServerTimer, SERVER_TIMING_NAMES } from "@/lib/api/server-timing";
 import { makeFreshnessReader } from "@/lib/api/isolate-runs";
+import { coloFromRay } from "@/lib/http/cf-ray";
 
 export const dynamic = "force-dynamic";
 
@@ -356,9 +357,7 @@ function utcDayOf(iso: string): string {
 function requestColo(req: NextRequest): string | null {
   const cf = (req as unknown as { cf?: { colo?: unknown } }).cf;
   if (typeof cf?.colo === "string" && cf.colo) return cf.colo;
-  const ray = req.headers.get("cf-ray");
-  const m = ray ? /-([A-Z]{3,4})$/.exec(ray) : null;
-  return m ? m[1] : null;
+  return coloFromRay(req.headers.get("cf-ray"));
 }
 
 /**

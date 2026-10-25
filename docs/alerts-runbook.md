@@ -65,6 +65,30 @@ its fix. If the page says shipping was NEVER confirmed, the usual cause is a tai
 not redeployed since the receipt shipped (`npx wrangler deploy -c wrangler.log-tail.jsonc`).
 
 **First checks.**
+- For a Worker lane (`cron_lane_stale:<lane>`), read the dispatcher's `lane timings`
+  lines across the gap: `scripts/logs.ts "tag=cron" --lines --from <iso> --to <iso>`
+  (#4168). They show the three causes the page names, seen since each lane became its
+  own placed invocation (#3693): a gradual deploy landing mid run cancels it (the
+  invocation ends `canceled`; compare the deploy time with the gap), and the next tick
+  then skips while the cancelled run's lock has not expired; `<lane>_placement` far
+  from the database with `lanes_near_db=0`, which made a 21 s monitor run take 77 s on
+  2026-10-23; and `<lane>_ms` longer than the cadence, a lane that overran. A CPU kill
+  (`exceededCpu`) is no longer the usual cause. Each lane's fields and lock, from
+  `LANE_RUNS` in `src/lib/monitor/health.ts` (#3468; `scripts/test-stale-lane-copy.ts`
+  holds this list to it):
+  - `sync`: `sync_placement`, `sync_ms`; lock `cron_sync`.
+  - `recompute`: `recompute_placement`, `recompute_ms`; lock `cron_recompute`.
+  - `outbox`: `outbox_placement`, `outbox_ms`; lock `cron_outbox`.
+  - `selfheal`: `selfheal_placement`, `selfheal_ms`; lock `cron_selfheal`.
+  - `complete`: `complete_placement`, `complete_ms`; lock `cron_complete`.
+  - `watch`: `watch_placement`, `watch_ms`; lock `cron_watch`.
+  - `monitor`: `monitor_placement`, `monitor_ms`; lock `cron_monitor`.
+  - `bulk-reassign`: `bulk_reassign_placement`, `bulk_reassign_ms`; lock `cron_bulk_reassign`.
+  - `hydrate-calendars`: `hydrate_calendars_placement`, `hydrate_calendars_ms`; lock `cron_hydrate_calendars`.
+  - `booking-reminders`: `booking_reminders_placement`, `booking_reminders_ms`; takes no lock.
+  - `reroute-hold-sweep`: runs inside the selfheal lane, so `selfheal_placement`, `selfheal_ms`; takes no lock of its own.
+  - `capacity-history`: `capacity_history_placement`, `capacity_history_ms`; lock `cron_capacity_history`.
+  - `capacity-fill`: `capacity_fill_placement`, `capacity_fill_ms`; lock `cron_capacity_fill`.
 - The Cloudflare dashboard's cron triggers: did the schedule fire at all?
 - `npx wrangler tail`, attach, and wait one cadence. A lane that is running logs a
   cycle line every tick.
@@ -353,6 +377,20 @@ carries it (`gone`, `not-provisioned`, `transient`):
   every 30 seconds. Check Google's status page before anything in Slate. Bookings answer
   "try again in a moment" until it closes, and the all-clear arrives on its own when a
   probe call is answered.
+- **Google and Supabase stalled together** (#3784): `verify_on_book_outage` (both
+  services had a call of 2 seconds or more in the one confirm) and
+  `google_calendar_breaker_open` (a confirm's Supabase call stalled in the same isolate
+  within 5 minutes; a cron lane's slow statement does not count)
+  then say so and suspect the Cloudflare location before either service. Every fetch
+  runs beside Oregon (#3730), so a degraded colo there slows both at once. The page
+  names the colo when an answer said it; otherwise the confirm answered line's
+  `supabase_edge_colo` does. In Supabase's edge logs for the window, filter by
+  `request.cf.colo` to that colo and read `response.origin_time`: Supabase's own origin
+  answering quickly while Slate's calls stalled puts the time between the location and
+  Supabase, not in Supabase. Check cloudflarestatus.com for that colo. Only if the
+  origin was slow too is it Supabase, and Google's status page decides Google. The
+  threshold and window live in `src/lib/dependency-stall.ts`; how to read where a
+  confirm ran is in `docs/cloudflare-platform-notes.md`, "Where a confirm ran".
 
 **Fix or escalate.** One agent, `gone` or `not-provisioned`: a person action, and
 `bookable` should go false until it is done, or the rotation spends its budget retrying
@@ -1001,6 +1039,27 @@ issue that will remove it in the note above the audit step in `ci.yml`, rather t
 leaving the daily run red: a run that is red
 every day stops being read. A run that says it could not finish an audit found
 nothing either way; re-run it.
+
+**A green audit is not proof for what the browser runs (#4113).** The audit reads the
+lockfile, and two things the browser loads are copies the lockfile does not decide.
+No page loads a script from a CDN: the policy in `src/lib/csp.ts` allows scripts from
+Slate itself only.
+
+- **React.** An App Router build sends the browser the React that Next vendors under
+  `next/dist/compiled` (a canary build), not `node_modules/react-dom`. On the
+  2026-10-02 build the lockfile held react-dom 19.2.8 while every client chunk ran
+  React 19.3.0-canary-cbb046ab-20260731. So bumping `react` or `react-dom` changes only
+  the copy the tests use, and the audit goes green anyway. A React advisory is fixed by
+  a `next` release that carries the patched React. Confirm it after `pnpm cf:build` by
+  reading the version out of the built chunks:
+  `grep -rhoE '\.version="[^"]+"' .open-next/assets/_next/static/chunks | sort | uniq -c`.
+  `scripts/test-browser-loaded-copies.ts` fails if Next stops vendoring React, which
+  is when this paragraph needs rewriting.
+- **The dotLottie player's wasm**, `public/brand/dotlottie-player.wasm`, is a copy of
+  the installed player's, served by Slate. After bumping `@lottiefiles/dotlottie-web`
+  (and `@lottiefiles/dotlottie-react`, which must agree), rebuild it with
+  `pnpm build:confirmation-mark`; `scripts/test-confirmation-mark-assets.ts` refuses a
+  served wasm that differs from the installed one.
 
 ---
 

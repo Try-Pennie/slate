@@ -88,17 +88,9 @@ merge_gap_guard
 # key. See the note in scripts/check-workflow-settings.ts.
 #
 # The decision lives in its own lib so it can be driven by
-# scripts/test-workflow-settings-guard.ts without a remote; this only computes
-# which paths the push touches.
-# parse-ok: fails CLOSED, not open. A diff that cannot be read (no upstream yet,
-# a detached HEAD) yields the literal "UNKNOWN", and the guard then RUNS the
-# check rather than skipping it, because an unreadable diff and a push that
-# touched no workflow would otherwise be the same empty string and the skip would
-# be silent (#1436). Running it costs one GitHub round trip and can only be right.
-changed_paths="$(git diff --name-only "@{push}"..HEAD 2>/dev/null)" \
-  || changed_paths="$(git diff --name-only origin/main...HEAD 2>/dev/null)" \
-  || changed_paths="UNKNOWN"
-"$root_dir/.githooks/lib/workflow-settings-guard.sh" "$changed_paths" || exit 1
+# scripts/test-workflow-settings-guard.ts without a remote. It runs just after
+# the stale-main guard below, which fetches origin/main, because the list of
+# changed paths it reads is a diff from the merge base with origin/main (#3898).
 
 # --- 1c. Stale-main guard (#1612) -------------------------------------------
 #
@@ -116,6 +108,18 @@ changed_paths="$(git diff --name-only "@{push}"..HEAD 2>/dev/null)" \
 #
 # Cost: one `git fetch --no-tags origin main`, a single ref, on every push.
 "$root_dir/.githooks/lib/stale-main-guard.sh" "$branch" || exit 1
+
+# The files this branch changes, for 1b above and 1d below: a diff from the
+# branch's MERGE BASE with origin/main, never a two dot diff from an upstream tip,
+# which after a rebase or a merge of a moved main names main's files as the
+# branch's (#3898, scripts/test-prepush-changed-paths.ts).
+# parse-ok: fails CLOSED, not open. A diff that cannot be read (no origin/main, a
+# shallow clone) yields the literal "UNKNOWN", and the guard then RUNS the check
+# rather than skipping it, because an unreadable diff and a push that touched no
+# workflow would otherwise be the same empty string and the skip would be silent
+# (#1436). Running it costs one GitHub round trip and can only be right.
+changed_paths="$("$root_dir/.githooks/lib/push-changed-paths.sh")"
+"$root_dir/.githooks/lib/workflow-settings-guard.sh" "$changed_paths" || exit 1
 
 # --- 1d. Security-review reminder (#1043) -----------------------------------
 #

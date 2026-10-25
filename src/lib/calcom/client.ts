@@ -45,6 +45,16 @@ export function calcomConfigured(): boolean {
   return calcomOrgId().length > 0 && calcomApiKey().length > 0;
 }
 
+/**
+ * How long one cal.com request may wait when its caller sets no bound of its own
+ * (#3972). cal.com answers in well under a second (measured 2026-09-30); a time off
+ * write is up to three attempts (`RETRY_WAITS_MS`), each ending at its first stalled
+ * request, so a hung cal.com is reported "failed" after about 18 seconds, inside the
+ * 30 second `after()` window the Slack approve button runs in, where the monitor
+ * lane's retry sweep picks it up. Without a bound it was killed with no outcome.
+ */
+export const CALCOM_REQUEST_TIMEOUT_MS = 6_000;
+
 async function calcomFetch(
   path: string,
   init: RequestInit = {},
@@ -60,6 +70,10 @@ async function calcomFetch(
       Authorization: `Bearer ${calcomApiKey()}`,
       "Content-Type": "application/json; charset=utf-8",
     },
+    // #3972: a caller's own signal wins; every other call gets this one, so a hung
+    // cal.com is a "failed" outcome rather than a time off write killed mid await by
+    // the 30 second `after()` cancel (the Slack approve button) or a lane's limit.
+    signal: init.signal ?? AbortSignal.timeout(CALCOM_REQUEST_TIMEOUT_MS),
   });
   const body = (await res.json().catch(() => ({}))) as { data?: unknown };
   return { status: res.status, data: body.data };
