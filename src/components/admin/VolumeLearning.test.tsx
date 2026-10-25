@@ -31,6 +31,8 @@ function renderIt(over: Partial<Parameters<typeof VolumeLearning>[0]> = {}) {
       rampEndOn={null}
       detail={["Slate learns from its own bookings from the first real Low booking a landing page sends, which has not happened yet."]}
       tiers={TIERS}
+      retirement={null}
+      lowFloorNote="Low's never go below the cal.com floors."
       coverage={coverage}
       sourceNotice={null}
       sourceSetAside={null}
@@ -86,6 +88,32 @@ describe("VolumeLearning", () => {
     expect(screen.queryByRole("button", { name: "Clear the ramp end" })).toBeNull();
   });
 
+  // #3896: what the confirm says about the cal.com floor under Low's floors comes from
+  // the same retirement state as the sentence under the tiers, so it stays true.
+  it("says the cal.com floor holds Low's floors only until the anchor retires", () => {
+    renderIt({
+      retirement:
+        "cal.com was marked retired on Jan 4, 2027. From Mar 8, 2027, 9 weeks later, its measurement stops holding any floor up, and every tier, Low included, follows Slate's own bookings.",
+      lowFloorNote: "Low's never go below the cal.com floors before Mar 8, 2027.",
+    });
+    fireEvent.change(screen.getByLabelText("The ramp ended on"), { target: { value: "2027-01-11" } });
+    fireEvent.click(screen.getByRole("button", { name: "Set the ramp end" }));
+    expect(screen.getByRole("alert").textContent).toContain("Low's never go below the cal.com floors before Mar 8, 2027.");
+  });
+
+  it("claims no cal.com floor under Low once the anchor has retired", () => {
+    renderIt({
+      retirement:
+        "No cal.com measurement has held any floor up since Mar 8, 2027, 9 weeks after cal.com was marked retired, so every tier, Low included, follows Slate's own bookings.",
+      lowFloorNote: null,
+    });
+    fireEvent.change(screen.getByLabelText("The ramp ended on"), { target: { value: "2027-03-15" } });
+    fireEvent.click(screen.getByRole("button", { name: "Set the ramp end" }));
+    const alert = screen.getByRole("alert").textContent!;
+    expect(alert).toContain("bookings made on or after Mar 15, 2027");
+    expect(alert).not.toContain("cal.com");
+  });
+
   it("names the old date and the new when changing it, and offers clearing", () => {
     renderIt({ rampEndOn: "2026-10-05" });
     fireEvent.change(screen.getByLabelText("The ramp ended on"), { target: { value: "2026-10-12" } });
@@ -113,6 +141,23 @@ describe("VolumeLearning", () => {
     const items = [...container.querySelectorAll("[data-volume-tiers] li")].map((li) => li.textContent);
     expect(items).toEqual(TIERS);
     expect(container.textContent).toContain("nothing needs setting when another tier");
+  });
+
+  // #3896, Dan's design round "Once, under the tiers": the cal.com anchor's retirement
+  // is one sentence directly after the tier list, for every tier with Low included.
+  it("says the anchor's retirement once, directly under the tier list", () => {
+    const sentence =
+      "cal.com was marked retired on Nov 9, 2026. From Jan 11, 2027, 9 weeks later, its measurement stops holding any floor up, and every tier, Low included, follows Slate's own bookings.";
+    const { container } = renderIt({ retirement: sentence });
+    const shown = container.querySelector("[data-volume-anchor-retirement]")!;
+    expect(shown.textContent).toBe(sentence);
+    expect(container.querySelector("[data-volume-tiers]")!.nextElementSibling).toBe(shown);
+    expect(container.textContent!.split("marked retired").length - 1).toBe(1);
+  });
+
+  it("says nothing about retirement while cal.com is live", () => {
+    const { container } = renderIt({ retirement: null });
+    expect(container.querySelector("[data-volume-anchor-retirement]")).toBeNull();
   });
 
   // #2765: until every booking carries the page it came from, the pages' own floors

@@ -817,7 +817,7 @@ export function quietedAlarms(
  * judge the admin page also reads, so the page and the alarm cannot disagree.
  */
 export function resolveFloors(
-  config: Pick<MonitorAlertConfig, "floor_30" | "floor_120" | "volume_ramp_end_on" | "volume_learning"> | null,
+  config: Pick<MonitorAlertConfig, "floor_30" | "floor_120" | "volume_ramp_end_on" | "volume_learning" | "calcom_retired_at"> | null,
   env: { floor30?: number; floor120?: number },
 ): FloorPolicy {
   const pick = (stored: number | null, envVal: number | undefined): FloorOverride | null =>
@@ -827,7 +827,11 @@ export function resolveFloors(
         ? { value: envVal, origin: "env" }
         : null;
   const inForce = baselineInForce(
-    { rampEndOn: config?.volume_ramp_end_on ?? null, learning: config?.volume_learning ?? null },
+    {
+      rampEndOn: config?.volume_ramp_end_on ?? null,
+      learning: config?.volume_learning ?? null,
+      calcomRetiredAt: config?.calcom_retired_at ?? null,
+    },
     LOW_TIER,
   );
   return {
@@ -848,7 +852,7 @@ export function resolveFloors(
  * are Low's knobs, named for the alarm that predates the tiers.
  */
 export function resolveTierBaselines(
-  config: Pick<MonitorAlertConfig, "volume_ramp_end_on" | "volume_learning"> | null,
+  config: Pick<MonitorAlertConfig, "volume_ramp_end_on" | "volume_learning" | "calcom_retired_at"> | null,
   anchors: AnchorSource = REAL_ANCHOR_SOURCE,
 ): Partial<Record<VolumeTier, VolumeBaseline>> {
   const out: Partial<Record<VolumeTier, VolumeBaseline>> = {};
@@ -856,7 +860,11 @@ export function resolveTierBaselines(
     if (tier === LOW_TIER) continue;
     const judged = tierJudgedBaseline(
       baselineInForce(
-        { rampEndOn: config?.volume_ramp_end_on ?? null, learning: config?.volume_learning ?? null },
+        {
+          rampEndOn: config?.volume_ramp_end_on ?? null,
+          learning: config?.volume_learning ?? null,
+          calcomRetiredAt: config?.calcom_retired_at ?? null,
+        },
         tier,
         anchors,
       ),
@@ -1214,6 +1222,7 @@ type AlertConfigRow = Pick<
   | "floor_120"
   | "volume_ramp_end_on"
   | "volume_learning"
+  | "calcom_retired_at"
   | "low_volume_armed"
   | "failure_rate_armed"
   | "availability_drift_armed"
@@ -1265,7 +1274,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
     db
       .from("monitor_alert_config")
       .select(
-        "floor_30, floor_120, volume_ramp_end_on, volume_learning, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed, below_lead_tier_armed, regal_calls_armed, empty_tier_recovery_min_times, empty_tier_recovery_hold_min, pool_nearly_full_open_pct",
+        "floor_30, floor_120, volume_ramp_end_on, volume_learning, calcom_retired_at, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed, below_lead_tier_armed, regal_calls_armed, empty_tier_recovery_min_times, empty_tier_recovery_hold_min, pool_nearly_full_open_pct",
       )
       .eq("id", 1)
       .maybeSingle(),

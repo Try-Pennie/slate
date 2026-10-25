@@ -220,6 +220,26 @@ not there, so **check the switch before anything else here**. The Overview and t
 business hours page both show it, and starting booking again is what ends the notice; if
 it is still meant to be off, nothing needs doing and the notice repeats while it stands.
 
+**`low_booking_volume` and `low_tier_volume:*` judge each tier against floors learned
+from Slate's own bookings, and the cal.com measurement under them retires
+9 weeks after cal.com is marked retired** (#3896, Dan 2026-10-23). Until then every learned floor is held
+at or above the tier's cal.com measurement, thinned to the share Slate carries (#2893),
+so a slow decline cannot be learned as normal. After cutover that share is 1 for good, so
+held for ever it would page every day about a deliberate traffic cut to Medium, High or
+Very High, which have no floor override. The anchor stops applying `ANCHOR_OVERLAP_WEEKS`
+(`src/lib/monitor/volume-relearn.ts`) after `monitor_alert_config.calcom_retired_at`, the
+moment the database stamped when somebody pressed "retire" on /admin/alerts: the learner
+reads 8 weeks back, so by then everything it fits was booked with Slate carrying the whole
+tier, and one more week covers the press landing a few days off the real move. The first
+daily refit after that fits without it; /admin/alerts says the date once, under the tier list.
+From then on a sudden collapse still pages against the learned floors, and a fall over the
+last 2 weeks is refused as a decline and judged against the weeks before it. A deliberate
+cut is learned once the 8 week horizon has passed it (about six and a half weeks for a
+halving), or sooner by declaring a ramp end at the day it moved. Putting cal.com back
+clears the date and the anchor is under the floors again at once. To move the date (the
+press was well off the day the last page moved), update `calcom_retired_at` by hand or in
+a migration while cal.com stays retired; the trigger keeps a value it is given.
+
 **`booking_failure_rate` pages only while failures are still happening** (#3275). It
 needs both the last 180 minutes over 20% failed AND the last 30 minutes holding more
 failures than a clean run allows, and it says "Still failing" and when the window's
