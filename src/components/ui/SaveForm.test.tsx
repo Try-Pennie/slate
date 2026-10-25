@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { Component, useState, type ReactNode } from "react";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // The predicate is the one thing that decides whether a failure is swallowed or
@@ -122,8 +122,11 @@ describe("SaveForm survives a deploy landing under the page (#1994)", () => {
 
     // It reached the boundary, which is exactly where a refusal the wrapper does
     // not understand belongs. Asserting only that no notice appeared would pass
-    // over a wrapper that swallowed it into nothing at all.
-    expect(caught).toContain(refusal);
+    // over a wrapper that swallowed it into nothing at all. Waited for, not read
+    // straight after the click: React delivers the action's error to the boundary
+    // a few ticks later, and on a loaded runner the read came first (main at
+    // 732b445, attempt 2, 2026-10-24: `expected [] to include Error`).
+    await waitFor(() => expect(caught).toContain(refusal));
     expect(window.sessionStorage.length).toBe(0);
   });
 
@@ -198,8 +201,10 @@ describe("SaveForm reloads instead, where that is the whole recovery (#1998)", (
     await press();
     await press();
 
+    // Waited for, like the refusal above: the boundary hears of the second
+    // press's error a few ticks after the click returns.
+    await waitFor(() => expect(caught).toContain(failure));
     expect(reload).toHaveBeenCalledTimes(1);
-    expect(caught).toContain(failure);
   });
 
   it("still draws the notice on a form that has something to say", async () => {
