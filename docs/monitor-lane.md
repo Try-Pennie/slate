@@ -59,6 +59,27 @@ neither: "we did not see it fail" is not a measured healthy result. A failing
 `setup_*` read also names the checks it took down, asked of `monitorSetupGates`
 rather than listed again.
 
+### A step that ran and measured nothing counts as neither (#3955)
+
+"Never ran" is not only a step missing from the tick. Most gated checks consult
+their gate INSIDE their step, the hourly cross system check returns `not-due` on
+eleven ticks in twelve, and the volume checks return early while the org is closed.
+Each of those used to be recorded as a healthy run, which broke both directions of
+the streak (L792): a step paged for failing was all cleared "running again" after
+four ticks of a shut gate or a closed evening, and a check throwing on every one of
+its hourly runs never paged at all, its idle ticks resetting the count between runs.
+
+So a step that stands down answers through the context the runner hands it,
+`return step.unmeasured(value)`, and `judgeMonitorSteps` moves neither streak for
+an unmeasured run (a throw is always measured). A step whose WORK is slower than the
+lane's tick also declares its cadence in `MONITOR_STEP_CADENCE_MS`
+(`src/lib/monitor/step-failure.ts`), read from the check itself, so its streak is
+counted in its own runs inside a window sized for them: the fixed `rate_limit_hit`
+window is sized for five minute ticks and expires before a second hourly run
+arrives. Such a step pages on its second failing run, and the copy counts runs and
+hours rather than ticks. `scripts/test-monitor-step-coverage.ts` requires every
+step whose opening consults a gate to answer the shut gate through `unmeasured`.
+
 **The judgement is deliberately NOT a `steps.run` step**, which is why it carries a
 named exemption in `scripts/test-monitor-step-coverage.ts`: containing the reporter
 behind the fault it reports is the same defect one level up. It runs BEFORE

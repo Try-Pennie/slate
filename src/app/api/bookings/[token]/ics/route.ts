@@ -55,10 +55,13 @@ export async function GET(
       // refusal: manage_ics_not_found
       return text(CALENDAR_COPY.icsNotFound, 404);
     }
+    // #3672: a token for a booking the API moved to another bucket opens the booking
+    // that replaced it, so the file is the call the lead HAS. If that one is itself
+    // cancelled since, its own manage page is where they go.
     if (ctx.booking.status === "cancelled") {
       return new Response(null, {
         status: 303,
-        headers: { location: bookingManageUrl(token), "cache-control": "no-store" },
+        headers: { location: bookingManageUrl(ctx.followedToToken ?? token), "cache-control": "no-store" },
       });
     }
     return new Response(bookingIcs(ctx.booking, new Date().toISOString()), {

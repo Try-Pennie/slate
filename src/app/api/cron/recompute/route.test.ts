@@ -68,6 +68,15 @@ const grouping = vi.hoisted(() => ({
   publishPoolGrouping: vi.fn(async (..._a: unknown[]): Promise<{ ok: boolean; kind: string }> => ({ ok: true, kind: "stored" })),
 }));
 vi.mock("@/lib/booking/pool-grouping-live", () => grouping);
+// #3388: the lane reads eligibility through the DATED cache reader, so its rows can be
+// stamped from when the list was read.
+const eligibleCache = vi.hoisted(() => ({
+  readEligibleCached: vi.fn(async (_b: unknown) => ({
+    agents: { ids: ["a1"], fallbackApplied: false },
+    readAtMs: 1,
+  })),
+}));
+vi.mock("@/lib/availability/eligible-cache", () => eligibleCache);
 
 import { GET } from "./route";
 import { POOL_GROUPING_LANE } from "@/lib/monitor/health";
@@ -454,6 +463,12 @@ describe("one compute per pool", () => {
     expect(dispatched).toEqual(["100 101 102 110 111 112", "120 121 122"]);
     // #3381: every row the lane writes says the lane wrote it.
     expect(slotCache.recomputePoolSlotsForToday.mock.calls.map((call) => call[1])).toEqual(["lane", "lane"]);
+    // #3388: the reader handed to each pool is the dated cache reader, whose answer
+    // carries the read time the pool's rows are stamped from.
+    const reader = slotCache.recomputePoolSlotsForToday.mock.calls[0]![2] as (b: unknown) => Promise<unknown>;
+    const bucket = { id: "id-100" };
+    await expect(reader(bucket)).resolves.toEqual({ agents: { ids: ["a1"], fallbackApplied: false }, readAtMs: 1 });
+    expect(eligibleCache.readEligibleCached).toHaveBeenCalledWith(bucket);
   });
 
   it("reports every pool's writes, not just the last one to finish", async () => {

@@ -4,7 +4,7 @@ import { Field } from "@/components/admin/Field";
 import { btnCls } from "@/components/ui/styles";
 import { setEventTypeGap } from "@/app/admin/actions";
 import type { EventType } from "@/lib/db/types";
-import { LOADED_VERSION_FIELD, loadedVersionValue } from "@/lib/admin/edit-version";
+import { loadedFieldName, loadedFieldValue } from "@/lib/admin/edit-version";
 
 /**
  * Edit the gap kept between two calls on one advisor, in place on the listed
@@ -26,8 +26,11 @@ export function EventTypeGapForm({ eventType: e }: { eventType: EventType }) {
       className="flex flex-wrap items-end gap-3"
     >
       <input type="hidden" name="event_type_id" value={e.id} />
-      {/* #3122: the version this form was drawn from, so a save over a newer one is refused. */}
-      <input type="hidden" name={LOADED_VERSION_FIELD} value={loadedVersionValue(e.updated_at)} />
+      {/* #3122, #3798: the gap this form was drawn with, so a save over somebody
+          else's newer gap is refused, while a save of the notice or the
+          description in between is not. */}
+      <input type="hidden" name={loadedFieldName("buffer_before_min")} value={loadedFieldValue(e.buffer_before_min)} />
+      <input type="hidden" name={loadedFieldName("buffer_after_min")} value={loadedFieldValue(e.buffer_after_min)} />
       <Field
         name="gap_min"
         id={`field-gap_min-${e.id}`}

@@ -163,8 +163,8 @@ function fakeClock() {
   eq(RUN_JUDGEMENT[REROUTE_DRILL_EXIT.testAdvisorsHeld].concluded, false, "a held lease is not a measured verdict, so it never stamps");
   const report = decideRerouteDrillReport({ exit: REROUTE_DRILL_EXIT.testAdvisorsHeld, detail: blocked.detail }, "https://run/9");
   eq(report.concluded, false, "the reporter does not stamp it");
-  assert(report.alert !== null && /not exercised/.test(report.alert), "what it says is that the pipeline was not exercised today");
-  assert(report.alert !== null && !/broken|wrongly|affected the same way/i.test(report.alert), "and never that the pipeline is broken");
+  // Dan, 2026-10-23: a drill the canary kept off the test advisors posts nothing.
+  eq(report.alert, null, "and posts nothing, so a canary that held the advisors is never news");
 }
 
 // --- the canary's side ---------------------------------------------------------------------
