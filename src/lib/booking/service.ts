@@ -174,10 +174,10 @@ import type {
   ApiBookingInput,
   ApiBookingResult,
   ApiBookingPreview,
-  BookingContext,
   BookingDeps,
   BookingResult,
   CreateBookingInput,
+  ManageLookup,
   ReschedulePin,
   RescheduleClaim,
 } from "@/lib/booking/orchestration";
@@ -2466,7 +2466,7 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       );
     },
 
-    claimCancellation: async (bookingId) => {
+    claimCancellation: async (bookingId, replacedBy) => {
       // Atomic flip active->cancelled (#413). Gating on the row still being in an
       // active status (not just "not cancelled") means a concurrent cancel OR a
       // complete-cron tick that already terminated it touches 0 rows (#618); a
@@ -2476,11 +2476,13 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       // from having lost the claim, and the cancel route reported that as
       // `{ ok: true }`, so the lead read "Your call is cancelled" while the
       // booking, the invite and the advisor's slot all stood.
+      // #3672: a cross bucket move names the booking that replaced this one in the
+      // SAME statement, so the cancel and its successor land together or not at all.
       return gatedWriteApplied(
         "cancel_claim",
         await supabaseAdmin()
           .from("bookings")
-          .update({ status: "cancelled" })
+          .update({ status: "cancelled", ...(replacedBy ? { replaced_by_booking_id: replacedBy } : {}) })
           .eq("id", bookingId)
           .in("status", ["confirmed", "rescheduled"])
           .select("id"),
@@ -4356,7 +4358,8 @@ export function cancelDueDemoBookingsNow(nowMs: number = Date.now()) {
   );
 }
 
-export function getBookingByToken(token: string): Promise<BookingContext | null> {
+/** The booking a manage token opens, followed past a cross bucket move (#3672). */
+export function getBookingByToken(token: string): Promise<ManageLookup | null> {
   return orchestration.getBookingByToken(token, realDeps());
 }
 

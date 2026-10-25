@@ -216,8 +216,8 @@ jobs:
       # endpoint holds one server side lease over them, and while the canary holds it the endpoint
       # answers without starting. The command asks again every 15 seconds for up to twelve minutes
       # (past the lease's ten minute TTL, so even a crashed canary's claim lapses inside the wait),
-      # then ends NOT MEASURED on exit 24: the reporter says the pipeline was not exercised today,
-      # never that it is broken, and nothing is stamped. Not a shared concurrency group with the
+      # then ends NOT MEASURED on exit 24: the reporter posts nothing (Dan, 2026-10-23) and nothing
+      # is stamped, so only a run of such days pages, through the verdict's stale bound. Not a shared concurrency group with the
       # canary: a third queued run cancels the pending one (L1020), which could drop the drill.
       - name: Run the reroute drill
         id: reroute_drill

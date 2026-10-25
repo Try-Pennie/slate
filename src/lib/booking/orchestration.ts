@@ -1901,8 +1901,12 @@ export interface BookingDeps {
    * concurrent cancel that already lost the claim gets false, so the non-idempotent
    * direct API can 404 it and the side effects (gcal delete, history, webhook) fire
    * exactly once. Same gated-update pattern as `completeBookingsIfDue`.
+   *
+   * `replacedBy` (#3672): the booking that replaced this one on a cross bucket move,
+   * written by the SAME statement as the status, so a cancelled row never lacks its
+   * successor and no successor is ever recorded on a row that was not cancelled.
    */
-  claimCancellation(bookingId: string): Promise<boolean>;
+  claimCancellation(bookingId: string, replacedBy?: string): Promise<boolean>;
   /**
    * Batch-flips finished bookings to `completed`, returning the ids THIS call
    * actually transitioned. The update is gated on each row still being in a
@@ -7681,7 +7685,11 @@ async function moveToRequestedBucket(
     }
     throw err;
   }
-  await cancelBooking(existing.manage_token, API_REBOOK_REASON, "system", deps);
+  // #3672: the old row names the new one in the cancel's own statement, so every link
+  // the lead already holds for the old booking follows to the call they now have.
+  await cancelBookingWithDetail(existing.manage_token, API_REBOOK_REASON, "system", deps, undefined, {
+    replacedBy: created.booking.id,
+  });
   return {
     outcome: "moved",
     booking: created.booking,
@@ -9223,6 +9231,8 @@ export async function cancelBookingWithDetail(
   initiator: BookingEventInitiator,
   deps: BookingDeps,
   actor?: BookingActor,
+  /** #3672: the booking replacing this one, recorded by the cancel's own claim. */
+  opts: { replacedBy?: string } = {},
 ): Promise<CancelOutcome> {
   const ctx = await deps.loadBookingContext(token);
   if (!ctx) throw new Error("Booking not found");
@@ -9266,7 +9276,7 @@ export async function cancelBookingWithDetail(
   // so the side effects below run once and the loser returns false (404 for the
   // non-idempotent direct API). A failed gcal delete still enqueues (#401), so
   // flipping status first never strands an event.
-  if (!(await deps.claimCancellation(booking.id))) return { claimed: false, booking: named };
+  if (!(await deps.claimCancellation(booking.id, opts.replacedBy))) return { claimed: false, booking: named };
 
   // Record the cancel's intent durably, then deliver every side effect through
   // the idempotent outbox executor (#429 P3). The row is enqueued right after the
@@ -9839,12 +9849,61 @@ async function announcePhoneCorrection(
   }
 }
 
-export async function getBookingByToken(
-  token: string,
-  deps: BookingDeps,
-): Promise<BookingContext | null> {
+/**
+ * How many moves a manage link follows before it gives up (#3672). A lead is moved
+ * between buckets once in the ordinary case and a handful of times at most, so a
+ * chain longer than this is a corrupt one, refused rather than walked.
+ */
+export const MAX_REPLACEMENT_HOPS = 10;
+
+/**
+ * What a manage token opens: the booking, and, when the token named a booking the API
+ * moved to another bucket (#3672), the token of the LIVE booking it followed to. The
+ * manage page and the rebook route open that token's page; the calendar file is built
+ * from the booking it carries. Absent on every booking that was never moved.
+ */
+export type ManageLookup = BookingContext & { followedToToken?: string };
+
+/**
+ * The booking a manage token opens (#3672). A cross bucket move cancels the old booking
+ * and records the one that replaced it (`replaced_by_booking_id`), so a CANCELLED row
+ * naming a successor is followed, move after move, to the end of the chain: the call the
+ * lead actually has, or the last one they had if they have since cancelled it. Only a
+ * cancelled row is followed, and nothing but a move writes the column, so a link to any
+ * other booking opens exactly what it always did.
+ *
+ * A chain that loops back on itself or runs past `MAX_REPLACEMENT_HOPS` cannot come from
+ * a move (each successor is brand new), so it is refused and logged rather than walked.
+ * That, and a successor that cannot be read, answer null, the not found state a failed
+ * read of the token itself has always had. Never the cancelled row: "This booking is
+ * cancelled" is the false sentence this exists to stop.
+ */
+export async function getBookingByToken(token: string, deps: BookingDeps): Promise<ManageLookup | null> {
   try {
-    return await deps.loadBookingContext(token);
+    const ctx = await deps.loadBookingContext(token);
+    if (!ctx) return null;
+    let current = ctx;
+    const seen = new Set([ctx.booking.id]);
+    for (let hops = 0; ; hops += 1) {
+      const next = current.booking.status === "cancelled" ? current.booking.replaced_by_booking_id : null;
+      if (!next) break;
+      if (seen.has(next) || hops >= MAX_REPLACEMENT_HOPS) {
+        log.error("manage-follow", {
+          msg: seen.has(next) ? "booking replacement chain loops" : "booking replacement chain too long",
+          booking_id: ctx.booking.id,
+          hops,
+        });
+        return null;
+      }
+      const loaded = await deps.loadBookingById(next);
+      if (!loaded) {
+        log.warn("manage-follow", { msg: "replacing booking could not be read", booking_id: ctx.booking.id, next });
+        return null;
+      }
+      seen.add(next);
+      current = loaded;
+    }
+    return current === ctx ? ctx : { ...current, followedToToken: current.booking.manage_token };
   } catch {
     return null;
   }
