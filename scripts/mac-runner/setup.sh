@@ -159,7 +159,10 @@ write_disk_guard() {
   # Root owned, file and folder, so a job (running as cirunner) cannot edit or
   # replace its own check.
   mkdir -p "$(dirname "$DISK_GUARD")"
-  cat >"$DISK_GUARD" <<GUARD
+  # Written beside it and renamed over it, so a job starting on another runner
+  # mid write never runs a half written check.
+  local next="$DISK_GUARD.next"
+  cat >"$next" <<GUARD
 #!/bin/bash
 free_kb=\$(df -k / | awk 'NR==2 {print \$4}')
 if [ -z "\$free_kb" ] || [ "\$free_kb" -lt $((MIN_FREE_GB * 1024 * 1024)) ]; then
@@ -167,8 +170,9 @@ if [ -z "\$free_kb" ] || [ "\$free_kb" -lt $((MIN_FREE_GB * 1024 * 1024)) ]; the
   exit 1
 fi
 GUARD
-  chown root:wheel "$DISK_GUARD"
-  chmod 755 "$DISK_GUARD"
+  chown root:wheel "$next"
+  chmod 755 "$next"
+  mv -f "$next" "$DISK_GUARD"
 }
 
 write_runner_settings() { # name
