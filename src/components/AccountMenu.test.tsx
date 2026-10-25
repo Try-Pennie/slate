@@ -10,6 +10,7 @@ vi.mock("@/app/theme-actions", () => ({ setThemePreference: vi.fn() }));
 vi.mock("@/app/auth-actions", () => ({ signOut: vi.fn() }));
 
 import { AccountMenu } from "@/components/AccountMenu";
+import { labelInNameMismatches } from "@/components/ui/label-in-name.test-support";
 
 // #2100: while an admin is viewing as somebody else, the theme control read the
 // IMPERSONATED person's preference and wrote the ADMIN's account. Each half was
@@ -71,5 +72,26 @@ describe("AccountMenu", () => {
     // Removing the control must not remove the menu: the identity it names is
     // how somebody checks who they are currently acting as.
     expect(screen.getByText("agent@trypennie.com")).toBeTruthy();
+  });
+});
+
+// #3917 (L786): with no photo the trigger DRAWS the initials, and a person driving
+// by voice says what they see ("click AD"), so the button's name must contain them.
+describe("AccountMenu trigger name", () => {
+  it("contains the initials it draws when there is no photo", () => {
+    const { container } = render(
+      <AccountMenu email="admin@trypennie.com" role="admin" themePreference="light" calendar="na" photoSrc={null} />,
+    );
+    expect(container.textContent).toContain("AD");
+    expect(labelInNameMismatches(container)).toEqual([]);
+    expect(screen.getByRole("button", { name: /account and settings/i })).toBeTruthy();
+  });
+
+  it("keeps the same name over a photo, where nothing is drawn in words", () => {
+    const { container } = render(
+      <AccountMenu email="admin@trypennie.com" role="admin" themePreference="light" calendar="na" photoSrc="/p.jpg" />,
+    );
+    expect(labelInNameMismatches(container)).toEqual([]);
+    expect(screen.getByRole("button", { name: /account and settings/i })).toBeTruthy();
   });
 });

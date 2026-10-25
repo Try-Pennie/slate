@@ -29,6 +29,7 @@ export const ALERT_FAMILIES = [
   "the-warehouse-mirror-or-an-erasure-is-in-doubt",
   "a-limit-or-a-guard-is-not-working",
   "the-audit-log-was-changed-after-it-was-written",
+  "a-sign-in-was-refused-as-a-different-person",
   "the-booking-api-is-refusing-its-caller",
   "an-unexpected-fault-was-reported",
   "a-merge-has-not-shipped-or-ci-cannot-run",
@@ -329,7 +330,6 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #3615. The reroute for demoted advisors could not finish acting on a roster change, like the
   // Twilio writes above: the first question is which agent and which error.
   demotion_trigger_failures: "the-roster-or-routing-data-is-wrong",
-  demotion_reroute_moved: "the-roster-or-routing-data-is-wrong",
   // #1908. The lead's own routing input is missing, so they are routed to the Low
   // pool rather than their real tier. Same family as the rest: the routing data is
   // wrong, and the fix is upstream of Slate rather than inside it.
@@ -391,6 +391,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #3090. Its own family: the guard did not fail, somebody switched it off, and the
   // first move is to keep the evidence rather than to repair anything.
   audit_log_chain_broken: "the-audit-log-was-changed-after-it-was-written",
+  // #3526. Its own family: nothing is broken and nothing was handed over, and the
+  // only question is who the person was, which a person at Pennie answers.
+  sign_in_google_account_mismatch: "a-sign-in-was-refused-as-a-different-person",
   rate_limit_broken: "a-limit-or-a-guard-is-not-working",
   rate_limit_refund_broken: "a-limit-or-a-guard-is-not-working",
   rate_limit_unidentified: "a-limit-or-a-guard-is-not-working",

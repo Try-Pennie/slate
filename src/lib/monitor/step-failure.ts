@@ -27,6 +27,7 @@
  * step that alternates is still broken (L160).
  */
 import { LANE_STALE_BOUNDS_MS } from "@/lib/monitor/health";
+import { CROSS_SYSTEM_BOOKINGS_CADENCE_MS } from "@/lib/monitor/cross-system-bookings";
 import {
   ALL_SETUP_READ,
   monitorSetupGates,
@@ -70,6 +71,47 @@ export const MONITOR_STEP_STREAK_WINDOW_S =
  */
 export const MONITOR_STEP_ALERT_COOLDOWN_MS = 2 * 60 * 60_000;
 
+/**
+ * Steps that do their work on a SLOWER cadence than the lane's tick (#3955, L792).
+ *
+ * Such a step still runs on every tick, and on the ticks it is not due it marks
+ * itself unmeasured, so those ticks move neither streak. That is half the fix: a
+ * streak counted in five minute ticks, inside a window sized for five minute ticks,
+ * still cannot hold four hourly failures, because the fixed window has expired
+ * before the second one arrives. So each such step is counted in runs of its own
+ * cadence, with a window sized for them. The cadence is read from the check itself,
+ * never restated here. An every tick step needs no entry.
+ */
+export const MONITOR_STEP_CADENCE_MS: Readonly<Record<string, number>> = {
+  cross_system_bookings: CROSS_SYSTEM_BOOKINGS_CADENCE_MS,
+};
+
+/** How often `step` actually does its work. */
+export function stepCadenceMs(step: string): number {
+  return MONITOR_STEP_CADENCE_MS[step] ?? MONITOR_CADENCE_MS;
+}
+
+/**
+ * Consecutive failing RUNS of `step` before its page. The same derivation as
+ * `MONITOR_STEP_FAILING_TICKS`, in the step's own runs, so an every tick step is
+ * unchanged. A step slower than the lane's stale bound cannot page inside it at
+ * all, so it pages on its second failing run: one failed run is still a blip (L36),
+ * the precedent the hourly coverage retry set (`sweep-failure.ts`).
+ */
+export function stepFailingRuns(step: string): number {
+  return Math.max(2, Math.floor(LANE_STALE_BOUNDS_MS.monitor / stepCadenceMs(step)));
+}
+
+/** Consecutive healthy runs of `step` before its all clear: the L160 re-arm window. */
+export function stepRearmRuns(step: string): number {
+  return stepFailingRuns(step);
+}
+
+/** The fixed `rate_limit_hit` window `step`'s streaks are counted in, sized for its cadence. */
+export function stepStreakWindowS(step: string): number {
+  return (2 * Math.max(stepFailingRuns(step), stepRearmRuns(step)) * stepCadenceMs(step)) / 1000;
+}
+
 /** How many steps' streaks are advanced at once. See `judgeMonitorSteps`. */
 const JUDGE_CONCURRENCY = 6;
 
@@ -99,6 +141,8 @@ export interface MonitorStepStreaks {
 export interface StepTickOutcome {
   name: string;
   ok: boolean;
+  /** False when the step ran and measured nothing (`StepContext.unmeasured`). Absent means measured. */
+  measured?: boolean;
 }
 
 export interface MonitorStepVerdict {
@@ -181,10 +225,13 @@ function list(items: string[]): string {
  * Judge one tick's step outcomes.
  *
  * A step is judged only if this tick MEASURED it. A step absent from `outcomes`
- * did not run (an earlier gate stood it down, or the tick died before reaching
- * it), and neither streak moves for it: "we did not see it fail" is not a
- * healthy result, and building an all clear on it is the defect
- * scripts/test-all-clear-failure-coverage.ts exists to stop.
+ * did not run (a gate outside it stood it down, or the tick died before reaching
+ * it), and a step that ran but marked itself unmeasured (its gate inside the step
+ * was shut, it was not due, its org was closed) did no work this tick (#3955).
+ * Neither streak moves for either: "we did not see it fail" is not a healthy
+ * result, and building an all clear on it is the defect
+ * scripts/test-all-clear-failure-coverage.ts exists to stop. A step slower than the
+ * lane is counted in its own runs (`MONITOR_STEP_CADENCE_MS`).
  *
  * A step that appears twice with one failure counts as failing, since the runner
  * sums duplicate names and the interesting half is the throw.
@@ -196,6 +243,7 @@ export async function judgeMonitorSteps(
   const failed = new Set<string>();
   const seen: string[] = [];
   for (const o of outcomes) {
+    if (o.ok && o.measured === false) continue;
     if (!seen.includes(o.name)) seen.push(o.name);
     if (!o.ok) failed.add(o.name);
   }
@@ -203,19 +251,11 @@ export async function judgeMonitorSteps(
   const judgeOne = async (step: string): Promise<{ page: boolean; recovered: boolean }> => {
     if (failed.has(step)) {
       await streaks.clear(stepOkStreakKey(step));
-      const speak = await streaks.bump(
-        stepFailStreakKey(step),
-        MONITOR_STEP_STREAK_WINDOW_S,
-        MONITOR_STEP_FAILING_TICKS,
-      );
+      const speak = await streaks.bump(stepFailStreakKey(step), stepStreakWindowS(step), stepFailingRuns(step));
       return { page: speak, recovered: false };
     }
     await streaks.clear(stepFailStreakKey(step));
-    const clear = await streaks.bump(
-      stepOkStreakKey(step),
-      MONITOR_STEP_STREAK_WINDOW_S,
-      MONITOR_STEP_REARM_TICKS,
-    );
+    const clear = await streaks.bump(stepOkStreakKey(step), stepStreakWindowS(step), stepRearmRuns(step));
     return { page: false, recovered: clear };
   };
 
@@ -247,6 +287,18 @@ export async function judgeMonitorSteps(
   return { page, recovered };
 }
 
+/** An every tick step's runs are ticks; a slower step's are its own runs, never "ticks". */
+function runNoun(step: string): string {
+  return stepCadenceMs(step) === MONITOR_CADENCE_MS ? "ticks" : "runs";
+}
+
+/** "20 minutes" or "2 hours", whichever reads naturally. */
+function aboutDuration(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 120) return `${minutes} minutes`;
+  return `${Math.round(minutes / 60)} hours`;
+}
+
 /**
  * The page. It has to carry the one thing the reader cannot work out from Slack:
  * that this is invisible everywhere else, so nothing will escalate it and no
@@ -261,7 +313,6 @@ export function monitorStepFailingAlert(input: {
   reason: string | null;
   gated: string[];
 }): string {
-  const minutes = Math.round((input.ticks * MONITOR_CADENCE_MS) / 60_000);
   const because = input.reason
     ? `It is failing with: ${input.reason}.`
     : `The tick recorded no reason for it, which is itself worth a look.`;
@@ -269,8 +320,8 @@ export function monitorStepFailingAlert(input: {
     ? ` It is a shared read, so while it fails ${list(input.gated)} cannot run at all.`
     : "";
   return (
-    `The monitor lane's ${input.step} step has thrown on ${input.ticks} consecutive ticks ` +
-    `(about ${minutes} minutes), so it has reported nothing in that time. ${because}${took} ` +
+    `The monitor lane's ${input.step} step has thrown on ${input.ticks} consecutive ${runNoun(input.step)} ` +
+    `(about ${aboutDuration(input.ticks * stepCadenceMs(input.step))}), so it has reported nothing in that time. ${because}${took} ` +
     `Nothing else can see this: the failure is contained so the other checks keep running, ` +
     `the lane still stamps its heartbeat, and /api/health stays green. ` +
     `Read the Worker logs for tag=monitor step=${input.step}.`
@@ -284,7 +335,7 @@ export function monitorStepFailingAlert(input: {
 export function monitorStepRecoveryText(step: string, ticks: number): string {
   return (
     `The monitor lane's ${step} step is running again. It has completed on ${ticks} ` +
-    `consecutive ticks, so whatever it checks is being checked once more and the earlier ` +
+    `consecutive ${runNoun(step)}, so whatever it checks is being checked once more and the earlier ` +
     `page is cleared. No action is needed.`
   );
 }

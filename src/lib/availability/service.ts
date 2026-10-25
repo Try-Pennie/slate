@@ -111,9 +111,11 @@ export async function resolveBucketAgentPool(
  */
 /**
  * Resolves a bucket's eligible agent ids. The live `eligibleAgentIds` is the
- * default everywhere; the recompute lane injects the 60s cached resolver
- * (`eligibleAgentIdsCached`) so all cron lanes in a tick share one eligibility
- * read per bucket, while the booker read + booking verify stay live (#421/#508).
+ * default everywhere; the recompute lane injects the 60s cached reader
+ * (`readEligibleCached`, wrapped by `trackEligibleReads`) so all cron lanes in a
+ * tick share one eligibility read per bucket, while the booker read + booking
+ * verify stay live (#421/#508). The cached reader also says when its answer was
+ * read, and the lane's rows are stamped from that (#3388).
  */
 export type EligibleResolver = (bucket: Bucket) => Promise<EligibleAgents>;
 

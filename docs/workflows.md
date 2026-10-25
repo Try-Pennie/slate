@@ -248,3 +248,33 @@ The overlay replaces a file's content in memory, so nothing is written to the re
 also runs the deploy alerter on bare node with Slack deliberately unconfigured and
 requires it to reach its own refusal, which node can only report once every import
 resolved.
+
+## Where jobs run: GitHub's runners or the Mac (2026-10-24)
+
+From 2026-10-23 GitHub refused every hosted job in the Try-Pennie org over billing
+(a support ticket is open), while self-hosted runners still got jobs. So every job
+reads one ORG variable, `PENNIE_CI_RUNNER`:
+
+```yaml
+runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+```
+
+- **`pennie-mac`**: jobs run on the runners on Dan's work MacBook, installed by
+  `scripts/mac-runner/setup.sh` as a hidden `cirunner` user that cannot read Dan's
+  files (his home folder must be `chmod 700`, since every local user is in `staff`;
+  the script refuses otherwise). It also refuses when a tool jobs assume from
+  GitHub's image (`aws`, `jq`, `gh` and others) is missing, and its `status` stage
+  reports both. Jobs queue while that Mac is asleep or offline.
+- **Anything else** (`github`, empty, deleted, a typo): GitHub's `ubuntu-latest`,
+  as before. Switching back is that one org setting, with no code change.
+
+Jobs that need Docker (the browser checks, the backup, the database replay) ask
+for `pennie-mac-docker` instead. Only one runner carries that label, because two of
+those jobs would each start a local Supabase on the same ports of one Docker host.
+`loadtest.yml` and `clock-shift.yml` stay on `ubuntu-latest`: they use GNU `timeout`
+(and `setsid`), which a Mac lacks, and the test refuses a routed job using either.
+
+Mac specific steps carry `if: runner.os == 'macOS'` beside the unchanged Linux step
+(the security scan's gitleaks and semgrep installs), so neither path depends on the
+other. `scripts/test-runner-routing.ts` pins all of it: every job, the Docker set,
+and the fallback for any value but the exact one.

@@ -126,7 +126,8 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why:
       "A check on the monitor lane is throwing rather than reporting, so whatever it " +
       "watches is unwatched. It stays true until somebody deploys a fix, and the lane " +
-      "measures the step on every tick, so it ends when the step completes again (#2382).",
+      "measures the step on every run that does its work, so it ends when the step completes " +
+      "again (#2382). A run that stood down measured nothing and ends nothing (#3955).",
   },
   {
     key: "detector_unpark:*",
@@ -801,6 +802,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "change to that agent records its own trait and the backfill repairs this one (#2085).",
   },
   {
+    key: "sign_in_google_account_mismatch:*",
+    kind: "incident",
+    suffix: "bounded",
+    why:
+      "One sign in was refused because its Google account is not the one the Slate account belongs to, " +
+      "and nothing was handed over, so the event is over when the page is sent. There is no healthy " +
+      "state to observe: the next sign in by the right account simply works, and an admin relinking a " +
+      "rehire (Link a new Google account, on their page) is a decision, not a recovery (#3526).",
+  },
+  {
     key: "webhook_dead:*",
     kind: "condition",
     suffix: "bounded",
@@ -1314,19 +1325,6 @@ export const ALERT_CATALOG: AlertEntry[] = [
   },
 
   // --- Info: never needed action, so never announces recovery ---------------
-  {
-    key: "demotion_reroute_moved:*",
-    kind: "info",
-    // The suffix is the narrowed advisor's user id, so the family is bounded by the roster. Per
-    // advisor because the line goes out from the every minute drain as each sweep finishes, and
-    // two sweeps finishing a tick apart under ONE key would lose the second to the throttle.
-    suffix: "bounded",
-    why:
-      "A demotion sweep finished moving an advisor's booked calls (#3615), and this says how " +
-      "they settled. Nothing is broken, so nobody is woken; it is said at all because nothing " +
-      "else tells a person a reroute happened, and the moves can only be checked by somebody " +
-      "who knows. There is no all-clear: the move is an event, not a state that ends.",
-  },
   {
     key: "client_error_test_bucket",
     kind: "info",

@@ -174,10 +174,10 @@ import type {
   ApiBookingInput,
   ApiBookingResult,
   ApiBookingPreview,
-  BookingContext,
   BookingDeps,
   BookingResult,
   CreateBookingInput,
+  ManageLookup,
   ReschedulePin,
   RescheduleClaim,
 } from "@/lib/booking/orchestration";
@@ -2106,16 +2106,50 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       );
     },
 
+    // #4165: a booking cancelled inside the grace, whose outbox row may not exist yet.
+    loadJustCancelledBookingIds: async (bookingIds) => {
+      if (bookingIds.length === 0) return new Set<string>();
+      // `updated_at` and not the booking_events row: the `set_updated_at` trigger
+      // stamps it in the very statement that flips the status, so a booking can never
+      // read cancelled without it, whereas the cancelled event is written by an outbox
+      // step AFTER the outbox insert, which is the gap this exists to cover. A later
+      // edit to a cancelled row only moves the stamp forward, which only waits longer.
+      const cancelledSince = new Date(
+        Date.now() - orchestration.RECONCILE_CANCELLED_GRACE_MS,
+      ).toISOString();
+      // Fail loud like the in-flight read: an empty set born of a read error would
+      // free a cancel still on its way and page about it, the false alert this guards.
+      const data = unwrap(
+        await supabaseAdmin()
+          .from("bookings")
+          // cap-safe: bounded by the reconcile sweep's page of booking ids (.in over one page of rows).
+          .select("id")
+          .in("id", bookingIds)
+          .eq("status", "cancelled")
+          .gt("updated_at", cancelledSince),
+        "loadJustCancelledBookingIds",
+      );
+      return new Set(((data ?? []) as { id: string }[]).map((r) => r.id));
+    },
+
+    // #4165: the cancel finishing between the sweep's two reads deletes its own block,
+    // so a candidate is not proof of a row. This answers with the rows the statement
+    // removed (`.select("id")`), and every count and alert is built from those.
     deleteBusyBlocksByIds: async (ids) => {
-      if (ids.length === 0) return;
-      const { error } = await supabaseAdmin()
-        .from("busy_blocks")
-        .delete()
-        .in("id", ids);
-      if (error) {
-        // Best-effort: the next tick re-finds and retries these rows.
-        log.error("reconcile", { msg: "deleteBusyBlocksByIds failed" }, error);
-      }
+      if (ids.length === 0) return [];
+      // A refused delete removed nothing, so it THROWS (#4165): the lane reads that as
+      // "could not tell", which neither pages nor all-clears, and the next tick re-finds
+      // and retries these rows. Logging it and carrying on reported every candidate as
+      // freed, a page about a delete that never ran.
+      const data = unwrap(
+        await supabaseAdmin()
+          .from("busy_blocks")
+          .delete()
+          .in("id", ids)
+          .select("id"),
+        "deleteBusyBlocksByIds",
+      );
+      return ((data ?? []) as { id: string }[]).map((r) => r.id);
     },
 
     loadActiveUpcomingBookings,
@@ -2432,7 +2466,7 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       );
     },
 
-    claimCancellation: async (bookingId) => {
+    claimCancellation: async (bookingId, replacedBy) => {
       // Atomic flip active->cancelled (#413). Gating on the row still being in an
       // active status (not just "not cancelled") means a concurrent cancel OR a
       // complete-cron tick that already terminated it touches 0 rows (#618); a
@@ -2442,11 +2476,13 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       // from having lost the claim, and the cancel route reported that as
       // `{ ok: true }`, so the lead read "Your call is cancelled" while the
       // booking, the invite and the advisor's slot all stood.
+      // #3672: a cross bucket move names the booking that replaced this one in the
+      // SAME statement, so the cancel and its successor land together or not at all.
       return gatedWriteApplied(
         "cancel_claim",
         await supabaseAdmin()
           .from("bookings")
-          .update({ status: "cancelled" })
+          .update({ status: "cancelled", ...(replacedBy ? { replaced_by_booking_id: replacedBy } : {}) })
           .eq("id", bookingId)
           .in("status", ["confirmed", "rescheduled"])
           .select("id"),
@@ -4039,23 +4075,7 @@ function realBulkReassignDeps(): BulkReassignDeps {
     jobFinished: (job) =>
       reportDemotionSweepOutcome(job, {
         loadItemStatuses: loadBulkReassignItems,
-        loadAdvisor: async (userId) => {
-          const row = unwrap(
-            await supabaseAdmin()
-              .from("users")
-              // cap-safe: single-row primary-key lookup.
-              .select("email, is_test")
-              .eq("id", userId)
-              .maybeSingle(),
-            "demotion-outcome-advisor",
-          ) as { email: string; is_test: boolean } | null;
-          return row ? { email: row.email, isTest: row.is_test } : null;
-        },
-        appUrl,
-        // A one minute cooldown, the shortest the notifier accepts (it refuses zero before
-        // posting): the key is per advisor and their sweeps are at least an hour apart.
-        // alert-key: demotion_reroute_moved:*
-        sendInfo: (key, text) => sendThrottledInfo(key, 60_000, text),
+        log: (fields) => log.info("bulk-reassign", fields),
       }),
   };
 }
@@ -4122,7 +4142,12 @@ export function drainBulkReassignJob(
         // than moving calls beside it, and the drain renews and stops on `stillHeld` (#3120).
         const lease = await acquireLease(BULK_REASSIGN_LANE_LOCK, CRON_LOCK_TTL_MS);
         return lease
-          ? { release: () => releaseLock(BULK_REASSIGN_LANE_LOCK, lease.token()), stillHeld: () => lease.stillHeld() }
+          ? {
+              release: async () => {
+                await releaseLock(BULK_REASSIGN_LANE_LOCK, lease.token());
+              },
+              stillHeld: () => lease.stillHeld(),
+            }
           : null;
       },
       drain: async (stillHeld) => {
@@ -4333,7 +4358,8 @@ export function cancelDueDemoBookingsNow(nowMs: number = Date.now()) {
   );
 }
 
-export function getBookingByToken(token: string): Promise<BookingContext | null> {
+/** The booking a manage token opens, followed past a cross bucket move (#3672). */
+export function getBookingByToken(token: string): Promise<ManageLookup | null> {
   return orchestration.getBookingByToken(token, realDeps());
 }
 

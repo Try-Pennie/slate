@@ -20,7 +20,7 @@ permissions:
 jobs:
   do-migration-plan:
     timeout-minutes: 5  # a checkout, one fetch and a file compare
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     steps:
       # The checkout is the merge commit CI tests; its first parent is the base it was
       # built on. That, not the event's base.sha (which can be older), is what this pull

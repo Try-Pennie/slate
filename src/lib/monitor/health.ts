@@ -29,10 +29,10 @@ const MIN = 60_000;
  * is a Worker cron lane doing app-critical work (draining coverage reassignments
  * moves real bookings and their calendar events), which is the line the Slack-only
  * maps draw: the canary is not a Worker lane at all, and the mirror lanes feed
- * analytics rather than the app. In the usual failure mode, a CPU kill on the shared
- * 5-min invocation, its three co-scheduled siblings already 503, so this adds a page
- * only when bulk-reassign alone dies (its own lock stuck, or its own route erroring),
- * where work really is not happening.
+ * analytics rather than the app. Since #3693 each lane runs as its own placed
+ * invocation, so a lane goes quiet on its own (a deploy cancelling its run, a run far
+ * from the database, its own lock held, its own route erroring) rather than with its
+ * co-scheduled siblings, and this bound is what says so for bulk-reassign (#4168).
  *
  * The hourly `agents` lane is intentionally NOT covered: at a 60-min cadence a
  * heartbeat bound is noisy, and a stalled roster sync is already surfaced by its
@@ -134,6 +134,46 @@ export const LANE_NOTES: Record<LaneName, { does: string; cadence: string }> = {
   "capacity-history": { does: "saves each advisor's unbooked calls as they pass, for Team capacity's past days", cadence: "every 30 minutes" },
   "capacity-fill": { does: "saves each coming day's calls open and how many were booked since the last reading, for its booking pace", cadence: "every 30 minutes" },
 };
+
+/**
+ * Where each lane runs, and the lock it takes there, or none (#3468).
+ *
+ * `route` is the cron route the lane's work happens in, which is also the name its
+ * fields carry on the dispatcher's `lane timings` line (`laneFieldName`). A sub step
+ * lane such as `reroute-hold-sweep` runs inside another lane's route and is timed as
+ * that lane. `lock` is the name the route passes to `acquireLock` or `acquireLease`,
+ * or null when the lane takes none of its own.
+ *
+ * Recorded rather than built from the lane name, which the stale lane page used to do:
+ * it named `cron_bulk-reassign` (the route takes `cron_bulk_reassign`) and locks for
+ * lanes that take none, and a reader who finds no such row reads it as "the lock is
+ * fine". `scripts/test-lane-lock-registry.ts` reads each route and holds the two
+ * together in both directions.
+ */
+export const LANE_RUNS: Record<LaneName, { route: string; lock: string | null }> = {
+  sync: { route: "/api/cron/sync", lock: "cron_sync" },
+  recompute: { route: "/api/cron/recompute", lock: "cron_recompute" },
+  outbox: { route: "/api/cron/outbox", lock: "cron_outbox" },
+  selfheal: { route: "/api/cron/selfheal", lock: "cron_selfheal" },
+  complete: { route: "/api/cron/complete", lock: "cron_complete" },
+  watch: { route: "/api/cron/watch", lock: "cron_watch" },
+  monitor: { route: "/api/cron/monitor", lock: "cron_monitor" },
+  "bulk-reassign": { route: "/api/cron/bulk-reassign", lock: "cron_bulk_reassign" },
+  "hydrate-calendars": { route: "/api/cron/hydrate-calendars", lock: "cron_hydrate_calendars" },
+  "booking-reminders": { route: "/api/cron/booking-reminders", lock: null },
+  "reroute-hold-sweep": { route: "/api/cron/selfheal", lock: null },
+  "capacity-history": { route: "/api/cron/capacity-history", lock: "cron_capacity_history" },
+  "capacity-fill": { route: "/api/cron/capacity-fill", lock: "cron_capacity_fill" },
+};
+
+/** The registry entry for a lane the watchdog names by string, or a route of its own
+ *  and no lock for one the registry does not know, so nothing is invented. */
+export function laneRun(lane: string): { route: string; lock: string | null } {
+  return (LANE_RUNS as Record<string, { route: string; lock: string | null }>)[lane] ?? {
+    route: `/api/cron/${lane}`,
+    lock: null,
+  };
+}
 
 /**
  * One lane, as a sentence: what it does, how often, and when it counts as late.
@@ -630,10 +670,11 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   //          pages for a cause nobody can fix, which is how a channel stops being read.
   //   +3h    the worst GitHub scheduling LATENESS this repo has measured, so the run
   //          after a dropped one being merely late is not a second page.
-  //   +20m   the job's own `timeout-minutes` (20 since #3615 added the reroute drill to
-  //          the same job), because the stamp lands at the END of a run rather than at its start.
+  //   +30m   the job's own `timeout-minutes` (20 since #3615 added the reroute drill to
+  //          the same job, 30 since #4180 let the drill wait for the smoke canary), because
+  //          the stamp lands at the END of a run rather than at its start.
   //
-  // That is 51h20m, and 52 clears it by under an hour. `scripts/test-burst-counter-schedule.ts`
+  // That is 51h30m, and 52 clears it by under an hour. `scripts/test-burst-counter-schedule.ts`
   // re-derives all of it FROM the workflow file, so editing the cron or the timeout
   // without revisiting this fails the build, and it also refuses a bound with days of
   // slack in it: a bound that cannot be wrong is one that notices nothing.
@@ -660,14 +701,14 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // The daily proof that the shared confirm line answers (#3340). It runs as its own step
   // of the burst counter's workflow, so it shares that workflow's cron and timeout and the
   // same arithmetic: 24h of cadence, doubled so one dropped run does not page, plus the 3h
-  // worst lateness measured here, plus the job's 20 minute timeout (#3615). That is 51h20m, and
-  // 52 clears it by under an hour. `scripts/test-confirm-line-schedule.ts` re-derives it FROM
+  // worst lateness measured here, plus the job's 30 minute timeout (#3615, #4180). That is 51h30m,
+  // and 52 clears it by under an hour. `scripts/test-confirm-line-schedule.ts` re-derives it FROM
   // the workflow file.
   "verdict:confirm-line": 52 * 60 * MIN,
   // The daily reroute drill (#3615), its own steps of the same workflow, so the same arithmetic:
   // 24h of cadence, doubled so one dropped run does not page, plus the 3h worst lateness measured
-  // here, plus the job's 20 minute timeout (raised from 10 to leave the drill room). That is
-  // 51h20m, and 52 clears it. `scripts/test-reroute-drill-schedule.ts` re-derives it FROM the
+  // here, plus the job's 30 minute timeout (raised from 10 to leave the drill room, then to 30 for
+  // its wait on the smoke canary, #4180). That is 51h30m, and 52 clears it. `scripts/test-reroute-drill-schedule.ts` re-derives it FROM the
   // workflow file.
   "verdict:reroute-drill": 52 * 60 * MIN,
   // The smoke canary's latency reading (#1700), stamped by the 30 minute canary
@@ -860,7 +901,8 @@ export const LANE_WATCHDOG_UNJUDGED: LaneWatchdogOutcome = { judged: false, stal
  *
  * PURE, so it is node-testable (scripts/test-stale-lanes.ts). Where
  * computeHealthStatus reports only the single worst lane (it drives one 200/503),
- * an alert wants EVERY quiet lane, since a CPU kill takes out several at once.
+ * an alert wants EVERY quiet lane, since one cause (a deploy cancelling a tick, a
+ * Cloudflare incident) can take out several at once.
  */
 export function findStaleLanes(
   lastRanAtMsByLane: Record<string, number | null | undefined>,

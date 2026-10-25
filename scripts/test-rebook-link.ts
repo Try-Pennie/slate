@@ -15,6 +15,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 import {
   REBOOK_COLUMNS,
   loadRebookRow,
+  manageHref,
   parseRebookRow,
   readBookEntryQuery,
   prefillFromQuery,
@@ -34,6 +35,7 @@ const DATA = {
   attendee_email: "dana+test@example.com",
   attendee_phone: "+12155550100",
   source: "my-offers-result",
+  replaced_by_booking_id: null,
   bucket: { code: "100" },
 };
 
@@ -50,6 +52,13 @@ async function main() {
     const dark = new URL(rebookHref({ bucketCode: "100", manageToken: TOKEN, theme: "dark" }), "https://slate.example");
     eq(dark.searchParams.get("theme"), "dark", "a dark manage page opens a dark booker");
     eq(dark.searchParams.get("xbc"), "100", "and still names the bucket");
+  }
+
+  // --- the manage page link a followed token opens (#3672) ---------------------
+  {
+    eq(manageHref({ manageToken: TOKEN, theme: "light" }), `/booking/manage/${TOKEN}`, "a light page carries nothing");
+    eq(manageHref({ manageToken: TOKEN, theme: "dark" }), `/booking/manage/${TOKEN}?theme=dark`, "a dark page stays dark");
+    eq(manageHref({ manageToken: "a/b", theme: "light" }), "/booking/manage/a%2Fb", "the token is one path segment");
   }
 
   // --- the runtime shape check, never a cast ---------------------------------
@@ -82,6 +91,7 @@ async function main() {
     const both = parseRebookRow({ ...DATA, external_id: "00QUi00000APIidMAH" });
     eq(rebookEntry(both!).externalId, "00QUi00000ABCdeMAH", "salesforce_id still comes first");
     assert(REBOOK_COLUMNS.includes("external_id"), "the read selects external_id");
+    assert(REBOOK_COLUMNS.includes("replaced_by_booking_id"), "#3672: the read selects the successor");
     eq(parseRebookRow({ ...DATA, external_id: 7 }), null, "a non string external_id: unreadable");
     const { external_id: _omitted, ...withoutExternal } = DATA;
     eq(parseRebookRow(withoutExternal), null, "a row missing external_id: unreadable (the select changed)");
@@ -137,6 +147,23 @@ async function main() {
       eq((await loadRebookRow(TOKEN, deps(async () => ({ data: { ...DATA, status }, error: null })))).kind, "absent", `a ${status} booking is not a rebook`);
     }
     eq(warned.length, 0, "an unknown or other state token is silent");
+
+    // #3672: a booking the API moved to another bucket was cancelled and REPLACED.
+    // Rebooking from it would give the lead a second call in the old bucket, so the
+    // page is told it was replaced and opens the booking that replaced it instead.
+    const replaced = { ...DATA, status: "cancelled", replaced_by_booking_id: "bk-new" };
+    eq((await loadRebookRow(TOKEN, deps(async () => ({ data: replaced, error: null })))).kind, "replaced", "a moved booking: replaced");
+    eq((await loadRebookRow(TOKEN, deps(async () => ({ data: DATA, error: null })))).kind, "found", "control: a booking cancelled any other way still rebooks");
+    eq(
+      (await loadRebookRow(TOKEN, deps(async () => ({ data: { ...replaced, status: "confirmed" }, error: null })))).kind,
+      "absent",
+      "only a CANCELLED row is followed: a live one is not a rebook either way",
+    );
+    eq(parseRebookRow({ ...DATA, replaced_by_booking_id: 7 }), null, "a non string successor: unreadable");
+    const withoutSuccessor: Record<string, unknown> = { ...DATA };
+    delete withoutSuccessor.replaced_by_booking_id;
+    eq(parseRebookRow(withoutSuccessor), null, "a row missing the successor column: unreadable (the select changed)");
+    eq(warned.length, 0, "a replaced booking is not a failure");
 
     eq((await loadRebookRow(TOKEN, deps(async () => ({ data: null, error: { code: "57014", message: `manage_token=eq.${TOKEN}` } })))).kind, "failed", "a failed read: failed");
     eq((await loadRebookRow(TOKEN, deps(async () => { throw new Error("network"); }))).kind, "failed", "a thrown read: failed");

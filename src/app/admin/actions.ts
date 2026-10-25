@@ -6,8 +6,9 @@ import { refusedFromQuery, refusedQuery, savedQuery } from "@/lib/admin/save-out
 import {
   CHANGED_SINCE_OPENED,
   PAGE_OUT_OF_DATE,
-  loadedStampOfExistingRow,
+  loadedFieldsFrom,
   loadedVersionFrom,
+  type LoadedFieldValue,
   type LoadedVersion,
 } from "@/lib/admin/edit-version";
 import { HOURS_CHANGED_SQLSTATE } from "@/lib/calcom/import-write";
@@ -91,6 +92,7 @@ import {
   type BookableResult,
 } from "@/lib/bookable/service";
 import { planClearPendingFlip } from "@/lib/bookable/plan";
+import { GOOGLE_RELINK_REFUSED } from "@/lib/auth/google-identity-copy";
 import { MISSING_TIMEZONE_HOURS, submittedTimezone } from "@/lib/submitted-timezone";
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { runRosterSync } from "@/lib/salesforce/run-roster-sync";
@@ -121,7 +123,11 @@ import {
 } from "@/lib/booking/settings";
 import { parseDaysOfferedForm } from "@/lib/booking/days-offered";
 import { markAllBucketSlotsStale } from "@/lib/availability/precompute";
-import { updateEventType, type EventTypePatch } from "@/lib/availability/event-type-store";
+import {
+  updateEventType,
+  type EventTypeField,
+  type EventTypePatch,
+} from "@/lib/availability/event-type-store";
 import { log } from "@/lib/log";
 import { coverageForWeek } from "@/lib/booking/business-hours-coverage";
 import { parseExceptionForm, countBookingsOnDate } from "@/lib/booking/business-hours-form";
@@ -1578,27 +1584,28 @@ const GAP_REFUSAL = `The gap between calls has to be a whole number of minutes f
  * The one save every event type editor makes, and the refusals that can come back
  * from it, each sent to the page the form is on (#3122).
  *
- * Returns only when the write landed. A database error, a row somebody else saved
- * after the page was opened (the write is guarded on the `updated_at` the form
- * loaded), and an id that matched nothing this org owns each redirect with their
- * own sentence, because they send the person to do three different things. Zero
- * rows is never a success: saying otherwise would be a lie about somebody else's
- * data as much as about theirs.
+ * Returns only when the write landed. A database error, a field being saved that
+ * somebody else changed after the page was opened (judged by that field's value
+ * as the form loaded it, never by the row's `updated_at`, which a save of any
+ * other field moves: #3798), and an id that matched nothing this org owns each
+ * redirect with their own sentence, because they send the person to do three
+ * different things. Zero rows is never a success: saying otherwise would be a lie
+ * about somebody else's data as much as about theirs.
  */
-async function saveEventTypeOrRefuse(opts: {
+async function saveEventTypeOrRefuse<K extends EventTypeField>(opts: {
   page: string;
   orgId: string;
   eventTypeId: string;
-  patch: EventTypePatch;
-  loadedUpdatedAt: string;
+  patch: Required<Pick<EventTypePatch, K>>;
+  loaded: NoInfer<Record<K, LoadedFieldValue>>;
   /** What the person was saving, for the failure sentence and the log. */
   what: string;
 }): Promise<void> {
-  const saved = await updateEventType({
+  const saved = await updateEventType<K>({
     eventTypeId: opts.eventTypeId,
     orgId: opts.orgId,
     patch: opts.patch,
-    loadedUpdatedAt: opts.loadedUpdatedAt,
+    loaded: opts.loaded,
   });
   if (saved.error) {
     log.error("admin", { msg: "event type save failed", what: opts.what, event_type_id: opts.eventTypeId }, saved.error);
@@ -1633,7 +1640,7 @@ export async function setEventTypeGap(form: FormData): Promise<void> {
   if (gap === null) {
     redirect(`${page}${refusedQuery(GAP_REFUSAL)}`);
   }
-  const loaded = loadedStampOfExistingRow(form);
+  const loaded = loadedFieldsFrom(form, ["buffer_before_min", "buffer_after_min"] as const);
   if (loaded === null) redirect(`${page}${refusedQuery(PAGE_OUT_OF_DATE)}`);
 
   // The current value, so the trail records what it was as well as what it became.
@@ -1656,7 +1663,7 @@ export async function setEventTypeGap(form: FormData): Promise<void> {
     orgId: admin.org_id,
     eventTypeId,
     patch,
-    loadedUpdatedAt: loaded,
+    loaded,
     what: "gap between calls",
   });
 
@@ -1713,7 +1720,7 @@ export async function setEventTypeNotice(form: FormData): Promise<void> {
   if (notice === null) {
     redirect(`${page}${refusedQuery(NOTICE_REFUSAL)}`);
   }
-  const loaded = loadedStampOfExistingRow(form);
+  const loaded = loadedFieldsFrom(form, ["min_notice_min"] as const);
   if (loaded === null) redirect(`${page}${refusedQuery(PAGE_OUT_OF_DATE)}`);
 
   // The current value, so the trail records what it was as well as what it became.
@@ -1731,7 +1738,7 @@ export async function setEventTypeNotice(form: FormData): Promise<void> {
   }
 
   const patch = { min_notice_min: notice };
-  await saveEventTypeOrRefuse({ page, orgId: admin.org_id, eventTypeId, patch, loadedUpdatedAt: loaded, what: "notice" });
+  await saveEventTypeOrRefuse({ page, orgId: admin.org_id, eventTypeId, patch, loaded, what: "notice" });
 
   await recordAudit({
     orgId: admin.org_id,
@@ -1777,7 +1784,7 @@ export async function setEventDescription(form: FormData): Promise<void> {
   if (parsed.errors.length) {
     redirect(`/admin/booker-copy${refusedQuery(parsed.errors.join(" "))}`);
   }
-  const loaded = loadedStampOfExistingRow(form);
+  const loaded = loadedFieldsFrom(form, ["description"] as const);
   if (loaded === null) redirect(`/admin/booker-copy${refusedQuery(PAGE_OUT_OF_DATE)}`);
 
   // #1435: one helper owns the write AND the refresh of what the booker serves,
@@ -1790,7 +1797,7 @@ export async function setEventDescription(form: FormData): Promise<void> {
     orgId: admin.org_id,
     eventTypeId,
     patch: { description: parsed.description },
-    loadedUpdatedAt: loaded,
+    loaded,
     what: "description",
   });
 
@@ -2154,6 +2161,131 @@ export async function clearPendingBookableFlip(form: FormData): Promise<void> {
     details: { bookable_pending_since: { from: plan.pendingSince, to: null }, bookable: row!.bookable },
   });
   redirect(`${back}?bookable=pending-cleared`);
+}
+
+/**
+ * Admin only: forget the Google account somebody signs in with (#3526), so the
+ * next Google account that signs in with their address records itself instead.
+ *
+ * Sign in refuses a Google account other than the one a Slate account holds,
+ * because an address handed to somebody new would otherwise hand them the old
+ * account. A rehire on a NEW Google account meets the same refusal, and this is
+ * how an admin lets them through. The role, bookings and calendar stay with the
+ * account, which is the point of relinking rather than recreating.
+ *
+ * IT ALSO DELETES THE OLD SUPABASE AUTH USER (security review of #4169). GoTrue
+ * links a new Google identity onto an existing auth user with the same address, so
+ * forgetting the stored id alone would leave the rehire's next sign in landing on
+ * the OLD auth user holding BOTH accounts, which the per request check refuses as
+ * two accounts. GoTrue's admin API has no call that removes one identity from a
+ * user (`unlinkIdentity` acts only on the caller's own session), so the auth user
+ * goes, through the same `supabaseAdmin().auth.admin` client the offboarding ban
+ * uses. Deleting it ends every session on it, and `users.auth_user_id` is set null
+ * by its foreign key (`on delete set null`, migration 0006). The next sign in makes
+ * a fresh auth user with one Google identity, which provisioning finds by email.
+ *
+ * ORDER: the auth user goes FIRST and the row second. A failed delete changes
+ * nothing and the admin can press again; a failed row write after a delete leaves
+ * the row still holding the account id, so the control is still offered and the
+ * retry finds no auth user to delete and finishes.
+ *
+ * A compare and swap on the id it read, so a press that races a sign in (or a
+ * second press) writes nothing twice and records nothing it did not do. Every
+ * outcome comes back to the page as a sentence (`?error=` or the saved notice),
+ * never a throw, which production would replace with the generic error page.
+ * Never on your own account: it would delete the sign in you are using.
+ */
+export async function relinkGoogleAccount(form: FormData): Promise<void> {
+  const userId = String(form.get("user_id") ?? "");
+  if (!userId) return;
+  const admin = await requireAdmin();
+  const back = `/admin/agents/${userId}`;
+  const db = supabaseAdmin();
+  if (admin.id === userId) redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.self)}`);
+
+  let row: { role: Role; google_sub: string | null; auth_user_id: string | null } | null;
+  try {
+    row = unwrap(
+      await db
+        .from("users")
+        .select("role, google_sub, auth_user_id")
+        .eq("id", userId)
+        .eq("org_id", admin.org_id)
+        .maybeSingle(),
+      "relink google account target",
+    ) as typeof row;
+  } catch (err) {
+    log.error("admin", { msg: "relink target could not be read", user_id: userId }, err);
+    redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.unreadable)}`);
+  }
+  if (!row) return redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.missing)}`);
+  // The same escalation rule every agent control uses: an admin cannot act on a
+  // super admin, whatever the button on their screen offered.
+  if (!canManageUser(admin.role, row.role, admin.id === userId)) {
+    redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.notPermitted)}`);
+  }
+  const stored = row.google_sub;
+  const oldAuthUserId = row.auth_user_id;
+  // Something to undo: an account on record, or a sign in on record. A row with no
+  // account recorded but a sign in holding no Google account, or two, is refused on
+  // every request, and this is its way out too (re-review of #4169).
+  if (stored == null && !oldAuthUserId) {
+    redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.nothingLinked)}`);
+  }
+
+  if (oldAuthUserId) {
+    const { error: deleteError } = await db.auth.admin.deleteUser(oldAuthUserId);
+    // 404 is an auth user already gone (a retry after a delete that landed, or a
+    // race with another press), which is the state this step exists to reach.
+    if (deleteError && deleteError.status !== 404) {
+      log.error("admin", { msg: "relink could not delete the old auth user", user_id: userId }, deleteError);
+      redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.signInNotRemoved)}`);
+    }
+    // Recorded the moment it lands and only when THIS press deleted it: the row
+    // write below can still fail, the deletion cannot be undone, and a retry finds
+    // no auth user to delete, so this is the one entry it will ever get.
+    if (!deleteError) {
+      await recordAudit({
+        orgId: admin.org_id,
+        actorId: admin.id,
+        action: "agent.sign_in_removed",
+        targetUserId: userId,
+        details: { sign_in: { from: "present", to: "deleted" }, because: "relink google account" },
+      });
+    }
+  }
+
+  const unlink = db
+    .from("users")
+    // `auth_user_id` is already null through the foreign key once the auth user is
+    // deleted; written here too so the row says so whatever the database did.
+    .update({ google_sub: null, auth_user_id: null })
+    .eq("id", userId)
+    .eq("org_id", admin.org_id);
+  // A compare and swap on the account as read, null included.
+  const { data, error } = await (stored == null ? unlink.is("google_sub", null) : unlink.eq("google_sub", stored)).select(
+    "id",
+  );
+  if (error) {
+    redirect(`${back}${refusedQuery(writeRefused("Linking a new Google account", error))}`);
+  }
+  revalidatePath(back);
+  // Nothing matched the account that was read: another press got there first, so
+  // there is no unlink of ours to record.
+  if (!data || data.length === 0) redirect(`${back}${refusedQuery(GOOGLE_RELINK_REFUSED.nothingLinked)}`);
+
+  // Only when an account was on record: with none, the deletion above was the
+  // whole of the change and its entry already says so.
+  if (stored != null) {
+    await recordAudit({
+      orgId: admin.org_id,
+      actorId: admin.id,
+      action: "agent.google_relinked",
+      targetUserId: userId,
+      details: { google_account: { from: "linked", to: "unlinked" } },
+    });
+  }
+  redirect(`${back}${savedQuery("agent-google-relinked")}`);
 }
 
 /**

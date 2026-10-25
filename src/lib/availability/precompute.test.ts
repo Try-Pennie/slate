@@ -243,9 +243,10 @@ describe("listKnownBucketSlotRows on a corrupt computed_at (#1169)", () => {
       { bucket_code: "411", computed_at: "not-a-timestamp" },
       { bucket_code: "412", computed_at: iso },
     ];
+    // #3388: each row also carries its compute's start, null where it has none.
     expect(await listKnownBucketSlotRows()).toEqual([
-      { code: "411", computedAtMs: 0 },
-      { code: "412", computedAtMs: Date.parse(iso) },
+      { code: "411", computedAtMs: 0, startedAtMs: null },
+      { code: "412", computedAtMs: Date.parse(iso), startedAtMs: null },
     ]);
   });
 });

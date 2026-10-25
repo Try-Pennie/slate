@@ -3,7 +3,8 @@
 // The `verdict:reroute-drill` stamp may be written only on a run that EXERCISED the reroute
 // pipeline, whichever way it went: a drill that could not start (not seeded, no free time, busy)
 // measured nothing, and stamping it would report the drill concluding while it was blind (L98,
-// #1394). Every ending speaks except a pass (L36), and in the drill's own words.
+// #1394). Every ending speaks except a pass (L36) and the canary-held skip (exit 24), and in the
+// drill's own words.
 import {
   REROUTE_DRILL_EXIT,
   REASON_EXIT,
@@ -84,6 +85,8 @@ for (const exit of [
   REROUTE_DRILL_EXIT.notConfigured,
   REROUTE_DRILL_EXIT.endpointMissing,
   REROUTE_DRILL_EXIT.busy,
+  // #4180: the smoke canary held the shared test advisors past the drill's wait.
+  REROUTE_DRILL_EXIT.testAdvisorsHeld,
   REROUTE_DRILL_EXIT.notSeeded,
   REROUTE_DRILL_EXIT.noFreeSlot,
   REROUTE_DRILL_EXIT.bookingRefused,
@@ -98,6 +101,11 @@ for (const exit of [
 {
   const pass = decideRerouteDrillReport({ exit: REROUTE_DRILL_EXIT.passed, detail: "fine" }, "https://run");
   eq(pass.alert, null, "a pass says nothing");
+  // Dan, 2026-10-23: a drill the canary kept off the test advisors is not news. It says nothing
+  // and stamps nothing, so only a run of such days surfaces, through the verdict's stale bound.
+  const held = decideRerouteDrillReport({ exit: REROUTE_DRILL_EXIT.testAdvisorsHeld, detail: "held" }, "https://run/2");
+  eq(held.alert, null, "a drill skipped because the canary held the test advisors says nothing");
+  assert(!held.concluded, "a drill skipped because the canary held the test advisors never stamps");
   const moved = decideRerouteDrillReport({ exit: REROUTE_DRILL_EXIT.didNotMove, detail: "The call stayed put." }, "https://run/1");
   assert(moved.alert !== null && moved.alert.includes("The call stayed put.") && moved.alert.includes("https://run/1"), "a failure says the drill's own words and links the run");
   const cleanup = decideRerouteDrillReport({ exit: REROUTE_DRILL_EXIT.cleanupFailed, detail: "cancel: refused" }, "");

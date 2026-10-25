@@ -1776,8 +1776,19 @@ export interface BookingDeps {
    * that simply has not run yet, so they are mid-flight, not damaged (#784).
    */
   loadInflightCancelBookingIds(bookingIds: string[]): Promise<Set<string>>;
-  /** Delete busy_blocks by id (the reconcile sweep's targeted cleanup). */
-  deleteBusyBlocksByIds(ids: string[]): Promise<void>;
+  /**
+   * Of these bookings, the ones CANCELLED inside `RECONCILE_CANCELLED_GRACE_MS`
+   * (#4165). The status flip and the cancel's outbox insert are two statements, so for
+   * a moment such a booking has no pending cancel row, and its block delete is on its
+   * way rather than missed.
+   */
+  loadJustCancelledBookingIds(bookingIds: string[]): Promise<Set<string>>;
+  /**
+   * Delete busy_blocks by id (the reconcile sweep's targeted cleanup). Returns the ids
+   * the statement actually removed (#4165): a row somebody else deleted after the
+   * sweep read it is not among them. THROWS on a refused delete, which removed nothing.
+   */
+  deleteBusyBlocksByIds(ids: string[]): Promise<string[]>;
   /**
    * Reconcile-missing sweep (#431): active upcoming bookings whose busy_block
    * write-through may have been missed. Returns the agent + window + bucket
@@ -1890,8 +1901,12 @@ export interface BookingDeps {
    * concurrent cancel that already lost the claim gets false, so the non-idempotent
    * direct API can 404 it and the side effects (gcal delete, history, webhook) fire
    * exactly once. Same gated-update pattern as `completeBookingsIfDue`.
+   *
+   * `replacedBy` (#3672): the booking that replaced this one on a cross bucket move,
+   * written by the SAME statement as the status, so a cancelled row never lacks its
+   * successor and no successor is ever recorded on a row that was not cancelled.
    */
-  claimCancellation(bookingId: string): Promise<boolean>;
+  claimCancellation(bookingId: string, replacedBy?: string): Promise<boolean>;
   /**
    * Batch-flips finished bookings to `completed`, returning the ids THIS call
    * actually transitioned. The update is gated on each row still being in a
@@ -2522,6 +2537,11 @@ const ACTIVE_BUSY_STATUSES: ReadonlySet<BookingStatus> = new Set<BookingStatus>(
  * whoever read it to "check cancel-path health" on a cancel path that was working.
  * Once the outbox row is delivered, a block that STILL exists is a genuine miss, and
  * this sweep is exactly what heals it.
+ *
+ * #4165 closed the two windows #784 left, both a cancel landing between this sweep's
+ * block read and its status read: one that FINISHED in between is not counted, since
+ * every count comes from the rows the delete removed; one not yet QUEUED is held back
+ * by `RECONCILE_CANCELLED_GRACE_MS`.
  */
 export async function reconcileCancelledBusyBlocks(
   deps: BookingDeps,
@@ -2561,12 +2581,15 @@ export async function reconcileCancelledBusyBlocks(
         .map((r) => r.ooo_request_id as string),
     ),
   ];
-  const [statuses, inflightCancels, approvedOoo] = await Promise.all([
+  const [statuses, inflightCancels, justCancelled, approvedOoo] = await Promise.all([
     bookingIds.length
       ? deps.loadBookingStatuses(bookingIds)
       : Promise.resolve(new Map<string, BookingStatus>()),
     bookingIds.length
       ? deps.loadInflightCancelBookingIds(bookingIds)
+      : Promise.resolve(new Set<string>()),
+    bookingIds.length
+      ? deps.loadJustCancelledBookingIds(bookingIds)
       : Promise.resolve(new Set<string>()),
     oooIds.length
       ? deps.loadApprovedOooRequestIds(oooIds)
@@ -2581,6 +2604,8 @@ export async function reconcileCancelledBusyBlocks(
     if (r.booking_id === null) return true; // orphan: nothing owns this slot
     // The cancel's own busy_block delete is still queued: not damage, just in flight.
     if (inflightCancels.has(r.booking_id)) return false;
+    // #4165: cancelled so recently its outbox row may not exist yet; same reason.
+    if (justCancelled.has(r.booking_id)) return false;
     const status = statuses.get(r.booking_id);
     // Missing booking (not in the map) or an explicitly cancelled one is stuck;
     // anything still active stays busy.
@@ -2590,17 +2615,37 @@ export async function reconcileCancelledBusyBlocks(
   if (stuck.length === 0) {
     return { freed: 0, freedCancelled: 0, freedOrphans: 0, userIds: [], freedBookingIds: [], scanned: rows.length };
   }
-  await deps.deleteBusyBlocksByIds(stuck.map((r) => r.id));
-  const freedCancelled = stuck.filter((r) => r.booking_id !== null).length;
+  // #4165: every count comes from the rows the delete REMOVED, never from the
+  // candidates. A cancel that finished between the block read and the status read
+  // had already deleted its own block, so this delete removes nothing for it, and
+  // counting the candidate paged "a write-through delete was missed" about a cancel
+  // path that worked. A refused delete throws (it removed nothing to report).
+  const removed = new Set(await deps.deleteBusyBlocksByIds(stuck.map((r) => r.id)));
+  const freedRows = stuck.filter((r) => removed.has(r.id));
+  const freedCancelled = freedRows.filter((r) => r.booking_id !== null).length;
   return {
-    freed: stuck.length,
+    freed: freedRows.length,
     freedCancelled,
-    freedOrphans: stuck.length - freedCancelled,
-    userIds: [...new Set(stuck.map((r) => r.user_id))],
-    freedBookingIds: [...new Set(stuck.filter((r) => r.booking_id !== null).map((r) => r.booking_id as string))],
+    freedOrphans: freedRows.length - freedCancelled,
+    userIds: [...new Set(freedRows.map((r) => r.user_id))],
+    freedBookingIds: [...new Set(freedRows.filter((r) => r.booking_id !== null).map((r) => r.booking_id as string))],
     scanned: rows.length,
   };
 }
+
+/**
+ * How long a just-cancelled booking's block is left alone by the reconcile-cancelled
+ * sweep (#4165), the free side's mirror of `RECONCILE_MISSING_GRACE_MS` (#778).
+ *
+ * The cancel flips the status, THEN inserts its outbox row (a separate statement, 31
+ * ms later in the incident), and only that row's step deletes the block. In between,
+ * the booking reads cancelled with no pending cancel, which the #784 guard cannot
+ * tell from a cancel that finished and missed. 60 s is far longer than that gap and
+ * than an inline cancel's steps; a block still present once it closes is a genuine
+ * miss, and the next tick frees it. Judged on `bookings.updated_at`, which the
+ * `set_updated_at` trigger stamps in the flip statement itself.
+ */
+export const RECONCILE_CANCELLED_GRACE_MS = 60_000;
 
 /**
  * How long a booking is left alone before the reconcile-missing sweep will heal
@@ -7640,7 +7685,11 @@ async function moveToRequestedBucket(
     }
     throw err;
   }
-  await cancelBooking(existing.manage_token, API_REBOOK_REASON, "system", deps);
+  // #3672: the old row names the new one in the cancel's own statement, so every link
+  // the lead already holds for the old booking follows to the call they now have.
+  await cancelBookingWithDetail(existing.manage_token, API_REBOOK_REASON, "system", deps, undefined, {
+    replacedBy: created.booking.id,
+  });
   return {
     outcome: "moved",
     booking: created.booking,
@@ -9182,6 +9231,8 @@ export async function cancelBookingWithDetail(
   initiator: BookingEventInitiator,
   deps: BookingDeps,
   actor?: BookingActor,
+  /** #3672: the booking replacing this one, recorded by the cancel's own claim. */
+  opts: { replacedBy?: string } = {},
 ): Promise<CancelOutcome> {
   const ctx = await deps.loadBookingContext(token);
   if (!ctx) throw new Error("Booking not found");
@@ -9225,7 +9276,7 @@ export async function cancelBookingWithDetail(
   // so the side effects below run once and the loser returns false (404 for the
   // non-idempotent direct API). A failed gcal delete still enqueues (#401), so
   // flipping status first never strands an event.
-  if (!(await deps.claimCancellation(booking.id))) return { claimed: false, booking: named };
+  if (!(await deps.claimCancellation(booking.id, opts.replacedBy))) return { claimed: false, booking: named };
 
   // Record the cancel's intent durably, then deliver every side effect through
   // the idempotent outbox executor (#429 P3). The row is enqueued right after the
@@ -9798,12 +9849,61 @@ async function announcePhoneCorrection(
   }
 }
 
-export async function getBookingByToken(
-  token: string,
-  deps: BookingDeps,
-): Promise<BookingContext | null> {
+/**
+ * How many moves a manage link follows before it gives up (#3672). A lead is moved
+ * between buckets once in the ordinary case and a handful of times at most, so a
+ * chain longer than this is a corrupt one, refused rather than walked.
+ */
+export const MAX_REPLACEMENT_HOPS = 10;
+
+/**
+ * What a manage token opens: the booking, and, when the token named a booking the API
+ * moved to another bucket (#3672), the token of the LIVE booking it followed to. The
+ * manage page and the rebook route open that token's page; the calendar file is built
+ * from the booking it carries. Absent on every booking that was never moved.
+ */
+export type ManageLookup = BookingContext & { followedToToken?: string };
+
+/**
+ * The booking a manage token opens (#3672). A cross bucket move cancels the old booking
+ * and records the one that replaced it (`replaced_by_booking_id`), so a CANCELLED row
+ * naming a successor is followed, move after move, to the end of the chain: the call the
+ * lead actually has, or the last one they had if they have since cancelled it. Only a
+ * cancelled row is followed, and nothing but a move writes the column, so a link to any
+ * other booking opens exactly what it always did.
+ *
+ * A chain that loops back on itself or runs past `MAX_REPLACEMENT_HOPS` cannot come from
+ * a move (each successor is brand new), so it is refused and logged rather than walked.
+ * That, and a successor that cannot be read, answer null, the not found state a failed
+ * read of the token itself has always had. Never the cancelled row: "This booking is
+ * cancelled" is the false sentence this exists to stop.
+ */
+export async function getBookingByToken(token: string, deps: BookingDeps): Promise<ManageLookup | null> {
   try {
-    return await deps.loadBookingContext(token);
+    const ctx = await deps.loadBookingContext(token);
+    if (!ctx) return null;
+    let current = ctx;
+    const seen = new Set([ctx.booking.id]);
+    for (let hops = 0; ; hops += 1) {
+      const next = current.booking.status === "cancelled" ? current.booking.replaced_by_booking_id : null;
+      if (!next) break;
+      if (seen.has(next) || hops >= MAX_REPLACEMENT_HOPS) {
+        log.error("manage-follow", {
+          msg: seen.has(next) ? "booking replacement chain loops" : "booking replacement chain too long",
+          booking_id: ctx.booking.id,
+          hops,
+        });
+        return null;
+      }
+      const loaded = await deps.loadBookingById(next);
+      if (!loaded) {
+        log.warn("manage-follow", { msg: "replacing booking could not be read", booking_id: ctx.booking.id, next });
+        return null;
+      }
+      seen.add(next);
+      current = loaded;
+    }
+    return current === ctx ? ctx : { ...current, followedToToken: current.booking.manage_token };
   } catch {
     return null;
   }
