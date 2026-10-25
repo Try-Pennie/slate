@@ -4,12 +4,13 @@
 // and its copy offline:
 //
 //   1. the share is Team capacity's own (calls that fit against what the shifts could
-//      hold), added up over the next two days leads can book, with advisors whose
+//      hold), for each of the next two days leads can book, with advisors whose
 //      calendar is not syncing and advisors out for the day left out of both sides;
-//   2. at or over the line it posts, naming the share, the counts, the days and the
-//      fullest tiers, with an empty subject list and a band that rises every five
-//      points, so it posts again only when the share gets worse;
-//   3. under the line it sends the all clear, and only then;
+//   2. with EVERY day at or over the line it posts (#4219), naming each day's share, the
+//      counts, and the fullest tiers, with an empty subject list and a band that rises
+//      every five points the least full day is over, so it posts again only when that
+//      day gets worse;
+//   3. with any day under the line it sends the all clear, naming that day, and only then;
 //   4. a failed read (the report, the line, a throw) posts nothing and clears nothing;
 //      a failed tier read still measures the roster and says the tiers are unknown;
 //   5. a failed post or all clear never throws out of the check;
@@ -115,6 +116,33 @@ if (over.status === "measured") {
 const at = judgeRosterFill({ report: report(ROSTER), linePct: 82, tierAgents: TIERS });
 assert(at.status === "measured" && at.over && at.band === 1, "exactly on the line counts as over, in band 1");
 
+// #4219: every judged day must be over the line on its own (Dan, 2026-10-25: "Fire when
+// the next two days cross 85%"). That evening a full Monday and an 81% Tuesday added up
+// to 90% and paged, while Team capacity showed Tuesday under the line.
+const FULL_THEN_81 = [advisor("a", [[0, 50], [10, 50], [10, 10]]), advisor("b", [[0, 50], [9, 50], [10, 10]])];
+const split = judgeRosterFill({ report: report(FULL_THEN_81), linePct: 85, tierAgents: null });
+assert(split.status === "measured", "a full day and a day under the line is measured");
+if (split.status === "measured") {
+  eq(split.bookedPct, 90, "together the two days are 90% booked, over the line");
+  eq(
+    split.perDay.map((d) => [d.day, d.bookedPct, d.open, d.capacity]),
+    [["2026-10-22", 100, 0, 100], ["2026-10-23", 81, 19, 100]],
+    "each day's own share, as Team capacity draws it",
+  );
+  eq(split.over, false, "one day under the line holds the notice back, however full the other");
+  eq(split.band, 0, "and is band 0");
+}
+const FULL_THEN_86 = [advisor("a", [[0, 50], [7, 50], [10, 10]]), advisor("b", [[0, 50], [7, 50], [10, 10]])];
+const bothOver = judgeRosterFill({ report: report(FULL_THEN_86), linePct: 85, tierAgents: null });
+assert(bothOver.status === "measured" && bothOver.over, "both days at or over the line is over");
+// Together 93% (band 2), but the 86% day is what holds the condition, so its band is the one that counts.
+assert(bothOver.status === "measured" && bothOver.band === fillBand(86, 85), "the band follows the least full day");
+const emptyDay = judgeRosterFill({ report: report([advisor("a", [[0, 10], [0, 0], [10, 10]])]), linePct: 85, tierAgents: null });
+assert(
+  emptyDay.status === "unmeasured" && /Fri Oct 23/.test(emptyDay.why),
+  "a judged day nobody works is unmeasured, naming the day, never counted as full or empty",
+);
+
 // Bands: one per five points over the line, so drifting inside a band is no change.
 eq(fillBand(84, 85), 0, "under the line");
 eq(fillBand(85, 85), 1, "on the line");
@@ -193,8 +221,12 @@ const fullRoster = [
 ];
 const filling = judgeRosterFill({ report: report(fullRoster), linePct: 85, tierAgents: TIERS }) as Extract<RosterFillReading, { status: "measured" }>;
 const alert = formatRosterFillAlert(filling, BASE);
-assert(alert.includes("91%"), `the alert names the share (${alert})`);
-assert(alert.includes("Thu Oct 22 and Fri Oct 23"), "the alert names the two days");
+// Day one: 3 open of 30, 90%. Day two: 2 open of 30, 93%. Together 91%, which is never said:
+// a reader takes one share for every day (#4219).
+assert(alert.includes("Thu Oct 22 is 90% full and Fri Oct 23 is 93% full, both at or over"), `the alert names each day's own share (${alert})`);
+assert(!alert.includes("91%"), "and never the two days added together");
+const fullDay = formatRosterFillAlert(bothOver as Extract<RosterFillReading, { status: "measured" }>, BASE);
+assert(fullDay.includes("Thu Oct 22 is full and Fri Oct 23 is 86% full"), `a day with no call open is full, as the page says (${fullDay})`);
 assert(alert.includes("85%"), "the alert names the line it was judged against");
 assert(alert.includes("Team capacity"), "the alert says where the line is set");
 assert(alert.includes(TEAM_CAPACITY_LINK), `the alert links to the Team capacity page (${alert})`);
@@ -206,8 +238,12 @@ assert(/1 advisor whose calendar is not syncing/.test(alert), "the alert says wh
 assert(!/^\W*slate/i.test(alert), "the alert does not open with Slate");
 const unknownTiers = formatRosterFillAlert({ ...filling, tiers: null }, BASE);
 assert(/tiers could not be read/i.test(unknownTiers), "an unknown tier read is said, not left out");
-const recovery = formatRosterFillRecovery({ ...filling, bookedPct: 70, over: false, band: 0 }, BASE);
-assert(recovery.includes("70%") && recovery.includes("85%") && /cleared/.test(recovery), "the all clear names the share, the line, and that it cleared");
+const recovery = formatRosterFillRecovery(split as Extract<RosterFillReading, { status: "measured" }>, BASE);
+assert(
+  recovery.includes("Fri Oct 23 is 81% full, under the 85%") && /cleared/.test(recovery),
+  `the all clear names the day under the line, its share, the line, and that it cleared (${recovery})`,
+);
+assert(!recovery.includes("Thu Oct 22"), "and not the day still full, which is no room");
 assert(recovery.includes(TEAM_CAPACITY_LINK), `the all clear links to the Team capacity page (${recovery})`);
 
 // The check end to end, through fakes.
@@ -238,7 +274,7 @@ async function tick(over: Partial<Parameters<typeof runRosterFillCheck>[0]>) {
   eq(sent.length, 1, "over the line posts once");
   eq(sent[0]?.key, ROSTER_FILLING_KEY, "on the roster filling key");
   eq(sent[0]?.repeat?.subjects?.length, 0, "with no subjects, so only a worse band reposts");
-  eq(sent[0]?.repeat?.band, fillBand(91, 85), "with the band of the share");
+  eq(sent[0]?.repeat?.band, fillBand(90, 85), "with the band of the least full day");
   eq(resolved.length, 0, "and clears nothing");
   assert(sent[0]?.text.includes(TEAM_CAPACITY_LINK) ?? false, "the posted notice carries the Team capacity link");
 }
@@ -248,6 +284,11 @@ async function tick(over: Partial<Parameters<typeof runRosterFillCheck>[0]>) {
   eq(resolved.length, 1, "and sends the all clear off the measured reading");
   eq(resolved[0]?.key, ROSTER_FILLING_KEY, "on the same key");
   assert(resolved[0]?.text.includes(TEAM_CAPACITY_LINK) ?? false, "the posted all clear carries the Team capacity link");
+}
+{
+  const { sent, resolved } = await tick({ loadReport: async () => report(FULL_THEN_81) });
+  eq(sent.length, 0, "a full day beside a day under the line posts nothing (#4219)");
+  eq(resolved.length, 1, "and is a measured reading under the condition, so it clears");
 }
 {
   const { sent, resolved, result } = await tick({ loadReport: async () => ({ measurable: false, reason: "time-off" }) });

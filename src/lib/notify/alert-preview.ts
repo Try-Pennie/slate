@@ -701,7 +701,7 @@ export const INVITE_MOVE_DM_PREVIEWS: InviteMoveDmPreview[] = [
 /** Slate's production address, for copy that links to a page. */
 const PREVIEW_APP_URL = "https://slate.trypennie.app";
 
-/** A roster 88% booked over two days, against the 85% line production holds (#2590). */
+/** Two days 90% and 85% booked (88% together), each on the 85% line production holds (#2590, #4219). */
 const PREVIEW_ROSTER_FILL: Extract<RosterFillReading, { status: "measured" }> = {
   status: "measured",
   days: ["2026-10-22", "2026-10-23"],
@@ -709,6 +709,10 @@ const PREVIEW_ROSTER_FILL: Extract<RosterFillReading, { status: "measured" }> = 
   open: 39,
   capacity: 330,
   bookedPct: 88,
+  perDay: [
+    { day: "2026-10-22", open: 15, capacity: 165, bookedPct: 90 },
+    { day: "2026-10-23", open: 24, capacity: 165, bookedPct: 85 },
+  ],
   notCounted: 0,
   tiers: [
     { tier: "1", label: "Low", open: 8, capacity: 120, bookedPct: 93 },
@@ -717,7 +721,7 @@ const PREVIEW_ROSTER_FILL: Extract<RosterFillReading, { status: "measured" }> = 
     { tier: "5", label: "Ultra High", open: 8, capacity: 40, bookedPct: 80 },
   ],
   over: true,
-  band: fillBand(88, 85),
+  band: fillBand(85, 85),
 };
 
 /** One rendered state of one alert. */
@@ -4526,7 +4530,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // --- the whole roster filling up against the Team capacity line (#2590)
   {
     key: "roster_filling_up",
-    state: "88% booked over the next two days against an 85% line",
+    state: "both of the next two days at or over an 85% line",
     channel: "alert",
     text: formatRosterFillAlert(PREVIEW_ROSTER_FILL, PREVIEW_APP_URL),
   },
@@ -4538,9 +4542,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   {
     key: "roster_filling_up",
-    state: "back under the line",
+    state: "the second day back under the line",
     channel: "recovery",
-    text: formatRosterFillRecovery({ ...PREVIEW_ROSTER_FILL, open: 66, bookedPct: 80, over: false, band: 0 }, PREVIEW_APP_URL),
+    text: formatRosterFillRecovery(
+      {
+        ...PREVIEW_ROSTER_FILL,
+        open: 66,
+        bookedPct: 80,
+        perDay: [PREVIEW_ROSTER_FILL.perDay[0]!, { day: "2026-10-23", open: 51, capacity: 165, bookedPct: 69 }],
+        over: false,
+        band: 0,
+      },
+      PREVIEW_APP_URL,
+    ),
   },
   // --- a debt tier nearly full over the days the booker shows (#1256, #3559, #3637)
   {
