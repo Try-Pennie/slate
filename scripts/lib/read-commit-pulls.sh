@@ -8,7 +8,8 @@
 # 2026-08-17 this endpoint answered `403 Resource not accessible by integration`
 # at 13:59 and again at 14:02, then answered 200 at 14:28 from a job carrying the
 # guard's exact permissions. Nothing was misconfigured. That blip failed the run
-# and posted a Slack page on the only control standing in for branch protection,
+# and posted a Slack page on what was then the only control over main (the ruleset
+# that now prevents a direct push came later, #4197),
 # and a false page there is worse than none, because it is the alert everybody
 # learns to ignore (L36, L77).
 #
