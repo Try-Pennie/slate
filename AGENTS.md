@@ -52,12 +52,15 @@ deploying script must build through `cf:build`. A hand deploy passes
 `NEXT_PUBLIC_*` in the shell (DEPLOY.md, 2a). `ALLOW_ENV_IN_BUNDLE=1` is for one
 local build, never a deploy. Detail: DEPLOY.md, section 3.
 
-# Main is guarded by detection, not prevention
+# Main is protected by a ruleset, with detection behind it (#4197)
 
-The free GitHub plan has no branch protection, so nothing stops a direct push to
-main or a red merge. `main-push-guard.yml` (#1027) checks that every push to main
-came from a merged PR with green CI and pages Slack otherwise. A deliberate direct
-push carries `[allow-direct-push]` in its commit message. The Worker's `ci_health`
+The "Protect main" ruleset (id 25746489, 2026-10-23) refuses deletion, force pushes
+and any change that is not a pull request with the `ci` check green (0 approvals, by
+Dan's choice), and nobody can bypass it, so `[allow-direct-push]` no longer lets a
+push through. **Renaming the `ci` job blocks every PR** unless the ruleset changes in
+the same PR. `main-push-guard.yml` (#1027) stays as the backstop if the ruleset is
+switched off: it pages Slack for any push to main that is not a merged PR with green
+CI, reading the marker from the commit subject only (#4096). The Worker's `ci_health`
 step pages when main's tip is not deployed or CI jobs never started
 (`docs/alerts-runbook.md`, "A merge has not shipped, or CI cannot run"). Detail:
 `docs/workflows.md`.
@@ -105,7 +108,9 @@ shared read resolves to **null, never an empty or default value**, and which che
 needs which read lives only in `monitorSetupGates` (`src/lib/monitor/setup-gates.ts`).
 Settings fall back to the last known values, never the defaults (#2773). A step
 failing on consecutive ticks pages `monitor_step_failing:<step>`
-(`judgeMonitorSteps`, deliberately not a step itself). Guard:
+(`judgeMonitorSteps`, deliberately not a step itself). A step that stands down (gate
+shut, not due, org closed) returns `step.unmeasured(value)`, and one slower than the
+tick declares its cadence in `MONITOR_STEP_CADENCE_MS` (#3955). Guard:
 `scripts/test-monitor-step-coverage.ts`. Detail: `docs/monitor-lane.md`.
 
 # A workflow reference to a repo setting that does not exist
@@ -239,6 +244,7 @@ cannot see and the incidents behind it are in `docs/repo-guards.md`.
 | `-- anon-execute-ok: <reason>` | a SECURITY DEFINER function revokes EXECUTE from `public, anon, authenticated` | `test-migration-grants.ts` |
 | `// typecheck-ok: <why>` | `scripts/` and `worker/` carry no undefined name (TS2304) or unresolved import (TS2307) | `test-scripts-typecheck.ts`, `test-worker-typecheck.ts` |
 | `// tree-write-ok: <why>` | a suite writes only under a real `tmpdir()`/`mkdtemp` path | `test-no-tree-writes.ts` |
+| `// deadline-ok: <why>` | a server `fetch` names a `signal`; the opt out names what bounds it instead (#3972) | `test-outbound-deadlines.ts` |
 | `# settings-provisioned-per-run: NAMES because <reason>` | a dispatch only workflow's settings may be absent between runs | `check:workflow-settings` |
 
 # Capped single-page reads (the `// cap-safe:` convention)

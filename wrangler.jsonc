@@ -268,7 +268,9 @@
 			// #3555: served by its own small Worker (wrangler.burst-limiter.jsonc), deployed
 			// before this one, so waking a counter does not load the whole app. (Every Slate
 			// deploy still redeploys it, which restarts the counters, #3561.) The class stays exported and its
-			// migration kept here until a deleted_classes migration retires it.
+			// migration kept here ON PURPOSE (#4025, Dan 2026-10-23): deleting a class ends rollback
+			// to every version from before 2026-10-09, so it stays as rollback insurance. Revisit
+			// on 2027-01-23.
 			{
 				"name": "BURST_LIMITER",
 				"class_name": "BurstLimiter",
@@ -278,7 +280,8 @@
 			// (src/lib/booking/confirm-line-object.ts). #3500: served by its own small
 			// Worker (wrangler.confirm-line.jsonc), deployed before this one, so waking an
 			// idle line does not load the whole app. The class is still exported and its
-			// migration kept here until a deleted_classes migration retires it.
+			// migration kept here ON PURPOSE, as rollback insurance, like BurstLimiter's above
+			// (#4025). Revisit on 2027-01-23.
 			{
 				"name": "CONFIRM_LINE",
 				"class_name": "ConfirmLine",
