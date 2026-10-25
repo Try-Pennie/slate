@@ -32,10 +32,22 @@
  * on a timeout, so the same lead booking again a minute later can be matched to the
  * attempt that failed them (#3300). Nothing else, ever: never a name, email or phone.
  *
+ * **Where it ran (#3784).** Placement pins every confirm beside Oregon (#3730), so a
+ * degraded location there slows Google and Supabase together. `supabase_edge_colo`
+ * is where the confirm RAN: every colo Supabase's edge answered its calls at, read off
+ * each answer's `cf-ray` (a Worker's subrequest enters Supabase's zone where the
+ * Worker runs), comma separated, first seen first. `request_cf_colo` is the runtime's
+ * `request.cf.colo`, raw, under its own name, because under a placement hint it may
+ * name where the lead ENTERED rather than where the Worker ran; the two on one line
+ * settle which (docs/cloudflare-platform-notes.md, "Where a confirm ran"). Each is
+ * absent when nothing said it: the staff time change runs no confirm budget, so its
+ * calls are not observed and it carries no `supabase_edge_colo`.
+ *
  * A Worker's clock moves at I/O, so it measures the waiting the confirm did, and
  * a response is always handed back after I/O, so the end is never early.
  */
 import { log } from "@/lib/log";
+import { requestCfColo } from "@/lib/http/request-cf-colo";
 import { refusalLogFields, refusalTraceOf } from "@/lib/booking/refusal-trace";
 import { confirmProfileFields, googleTimingFields, makeConfirmProfile, type ConfirmProfile } from "@/lib/booking/confirm-profile";
 import { DependencyTimeoutError } from "@/lib/booking/orchestration";
@@ -152,9 +164,16 @@ export async function answerTimed(
   tag: string,
   handle: () => Promise<Response>,
   /** `kind` is `new` unless a time change says otherwise. */
-  opts: { now?: () => number; facts?: ConfirmLineFacts; kind?: ConfirmKind } = {},
+  opts: {
+    now?: () => number;
+    facts?: ConfirmLineFacts;
+    kind?: ConfirmKind;
+    /** #3784: reads `request.cf.colo`; the runtime's own by default, injected by tests. */
+    requestCfColo?: () => string | null;
+  } = {},
 ): Promise<Response> {
   const now = opts.now ?? (() => Date.now());
+  const readCfColo = opts.requestCfColo ?? (() => requestCfColo());
   const startedAt = now();
   const facts = opts.facts;
   // #3300: opened on the same reading as `startedAt`, so the profile's wall and
@@ -165,6 +184,10 @@ export async function answerTimed(
     const endedAt = now();
     const responseMs = Math.max(0, endedAt - startedAt);
     const profiled = facts?.profile && (facts.timedOut || responseMs >= CONFIRM_PROFILE_SLOW_MS) ? facts.profile : null;
+    // #3784: where the confirm ran, and the runtime's request.cf.colo beside it, each
+    // absent when nothing said, never a guess. See "Where it ran" above.
+    const ranAt = facts?.profile?.answeredFrom("supabase") ?? [];
+    const cfColo = readCfColo();
     log.info(tag, {
       msg: "confirm answered",
       confirm_kind: opts.kind ?? "new",
@@ -173,6 +196,8 @@ export async function answerTimed(
       ...(facts?.timedOut ? { timed_out: true } : {}),
       ...(facts?.timedOut && facts.leadId ? { lead_id: facts.leadId } : {}),
       ...(opts.facts?.dryRun ? { dry_run: true } : {}),
+      ...(ranAt.length > 0 ? { supabase_edge_colo: ranAt.join(",") } : {}),
+      ...(cfColo ? { request_cf_colo: cfColo } : {}),
       ...(opts.facts?.refusal ?? {}),
       ...(opts.facts?.line
         ? {
