@@ -23,9 +23,16 @@
  * Calls that still fit against the calls the shifts could hold, from
  * `teamCapacityReport` through `dayTotals`, the same function the page totals a day
  * with: advisors out for the day and advisors whose calendar is not syncing count on
- * neither side. Added up over the first two days the booker offers a lead
- * (`bookerDays`, `offeredWindowFor`'s own list), so the notice speaks to the next two
- * days leads can book.
+ * neither side, for each of the first two days the booker offers a lead (`bookerDays`,
+ * `offeredWindowFor`'s own list), so the notice speaks to the next two days leads can book.
+ *
+ * ## Every day over the line, not the days added up (#4219)
+ *
+ * Dan, 2026-10-25: "Fire when the next two days cross 85%". Added up, a full Monday and an
+ * 81% Tuesday read 90% and paged at 6:53 PM that day, while Team capacity drew Tuesday
+ * under the line. So each judged day is held to the line on its own, the least full one
+ * sets the band, and the notice names each day's share. The added up counts stay in the
+ * notice as the calls behind them; the added up share is never said.
  *
  * ## The booker's days, not the page's (#4064)
  *
@@ -38,10 +45,11 @@
  *
  * ## A condition, repeating only when it gets worse
  *
- * It holds while the share is at or over the line and ends on a MEASURED reading under
- * it. Its subjects are empty, so a change of which tiers are fullest is no news; its
- * band rises every five points over the line, so the dispatcher posts again only when
- * the share climbs into a worse band, and otherwise once a day (#3801).
+ * It holds while every judged day is at or over the line and ends on a MEASURED reading
+ * with any of them under it. Its subjects are empty, so a change of which tiers are
+ * fullest is no news; its band rises every five points the least full day is over the
+ * line, so the dispatcher posts again only when that day climbs into a worse band, and
+ * otherwise once a day (#3801).
  *
  * Pure apart from its injected seams (luxon, type imports and relative imports), so
  * scripts/test-roster-fill.ts drives every branch node natively.
@@ -64,6 +72,15 @@ export const ROSTER_FILL_BAND_POINTS = 5;
 /** How many tiers the notice names. */
 const NAMED_TIERS = 3;
 
+/** One judged day's own share, as Team capacity draws that day. */
+export interface DayFill {
+  /** The office date. */
+  day: string;
+  open: number;
+  capacity: number;
+  bookedPct: number;
+}
+
 export interface TierFill {
   /** The debt tier digit ("1"). */
   tier: string;
@@ -80,9 +97,12 @@ export type RosterFillReading =
       /** The office dates judged. */
       days: string[];
       linePct: number;
+      /** The judged days added together: the counts the notice gives. */
       open: number;
       capacity: number;
       bookedPct: number;
+      /** Each judged day's own share, in day order. The condition is judged on these (#4219). */
+      perDay: DayFill[];
       /** Advisors left out because their calendar is not syncing. */
       notCounted: number;
       /** Fullest first, or null when the tier roster could not be read. */
@@ -130,6 +150,15 @@ export function judgeRosterFill(input: {
   if (dayIndexes.some((i) => i < 0)) return { status: "unmeasured", why: "the report does not hold every judged day" };
   const total = totalsOver(report.advisors, dayIndexes);
   if (total === null) return { status: "unmeasured", why: "nobody is working the judged days" };
+  const perDay: DayFill[] = [];
+  for (const [n, i] of dayIndexes.entries()) {
+    const t = totalsOver(report.advisors, [i]);
+    // A day with no shifts has no share: neither full nor empty, so nothing is judged.
+    if (t === null) return { status: "unmeasured", why: `nobody is working ${dayList([days[n]!])}` };
+    perDay.push({ day: days[n]!, open: t.open, capacity: t.capacity, bookedPct: t.bookedPct });
+  }
+  // The least full day is the one holding the condition, so it sets whether and how far over.
+  const leastFull = Math.min(...perDay.map((d) => d.bookedPct));
 
   let tiers: TierFill[] | null = null;
   if (input.tierAgents !== null) {
@@ -142,7 +171,7 @@ export function judgeRosterFill(input: {
     }
     tiers.sort((a, b) => b.bookedPct - a.bookedPct || a.tier.localeCompare(b.tier));
   }
-  const over = total.bookedPct >= linePct;
+  const over = leastFull >= linePct;
   return {
     status: "measured",
     days,
@@ -150,10 +179,11 @@ export function judgeRosterFill(input: {
     open: total.open,
     capacity: total.capacity,
     bookedPct: total.bookedPct,
+    perDay,
     notCounted: total.notCounted,
     tiers,
     over,
-    band: fillBand(total.bookedPct, linePct),
+    band: fillBand(leastFull, linePct),
   };
 }
 
@@ -165,8 +195,10 @@ function dayList(days: string[]): string {
   return names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
 
-function windowPhrase(days: string[]): string {
-  return days.length === 1 ? `the next day leads can book (${dayList(days)})` : `the next ${days.length} days leads can book (${dayList(days)})`;
+/** "Thu Oct 22 is full and Fri Oct 23 is 86% full": a day with no call open is full, as the page labels it. */
+function dayShares(days: DayFill[]): string {
+  const each = days.map((d) => `${dayList([d.day])} is ${d.open === 0 ? "full" : `${d.bookedPct}% full`}`);
+  return each.length <= 1 ? (each[0] ?? "") : `${each.slice(0, -1).join(", ")} and ${each.at(-1)}`;
 }
 
 /** Team capacity, as a Slack link to the page the line is set on and the days are drawn on. */
@@ -188,8 +220,8 @@ export function formatRosterFillAlert(r: Measured, appBaseUrl: string): string {
       ? ""
       : `${r.notCounted} advisor${r.notCounted === 1 ? "" : "s"} whose calendar is not syncing ${r.notCounted === 1 ? "is" : "are"} left out of these numbers.`;
   return [
-    `Calendars are filling up: ${r.bookedPct}% of the roster's call capacity over ${windowPhrase(r.days)} is already taken ` +
-      `(${taken} of ${r.capacity} calls, ${r.open} still open), at or over the ${r.linePct}% nearly full line set on ${teamCapacityLink(appBaseUrl)}. ` +
+    `Calendars are filling up: ${dayShares(r.perDay)}, ${r.perDay.length === 1 ? "" : r.perDay.length === 2 ? "both " : "all "}at or over ` +
+      `the ${r.linePct}% nearly full line set on ${teamCapacityLink(appBaseUrl)} (${taken} of ${r.capacity} calls taken, ${r.open} still open). ` +
       `This is the point to consider turning ad spend down.`,
     tiers,
     left,
@@ -201,7 +233,7 @@ export function formatRosterFillAlert(r: Measured, appBaseUrl: string): string {
 /** The all clear, off a measured reading under the line. */
 export function formatRosterFillRecovery(r: Measured, appBaseUrl: string): string {
   return (
-    `Calendars have room again: ${r.bookedPct}% of the roster's call capacity over ${windowPhrase(r.days)} is taken, ` +
+    `Calendars have room again: ${dayShares(r.perDay.filter((d) => d.bookedPct < r.linePct))}, ` +
     `under the ${r.linePct}% nearly full line set on ${teamCapacityLink(appBaseUrl)}, so the earlier notice about calendars filling up is cleared.`
   );
 }
@@ -255,6 +287,8 @@ export async function runRosterFillCheck(deps: {
   deps.log?.({
     status: "measured",
     booked_pct: result.bookedPct,
+    // Each day's own share, in the order of `days`: what `band` and the notice follow (#4219).
+    day_pcts: result.perDay.map((d) => d.bookedPct).join(","),
     line_pct: result.linePct,
     band: result.band,
     days: result.days.join(","),

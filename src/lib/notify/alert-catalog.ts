@@ -104,9 +104,9 @@ export const ALERT_CATALOG: AlertEntry[] = [
     key: "roster_filling_up",
     kind: "condition",
     why:
-      "The roster's call capacity over the next two days leads can book is booked at or over the nearly full " +
-      "line set on Team capacity (#2590), the point to think about ad spend. It holds while the share stays " +
-      "there and ends when the capacity history lane measures it under the line again.",
+      "The roster's call capacity on each of the next two days leads can book is booked at or over the nearly " +
+      "full line set on Team capacity (#2590, #4219), the point to think about ad spend. It holds while every " +
+      "one of those days stays there and ends when the capacity history lane measures any of them under the line.",
   },
   {
     key: "db_saturation",
