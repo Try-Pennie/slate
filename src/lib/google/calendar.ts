@@ -173,6 +173,7 @@ async function sendGoogleCall(
       (refused) => getDelegatedToken(email, undefined, deadline, refused),
       (token) =>
         fetchWithinBudget(
+          // deadline-ok: fetchWithinBudget lays its deadline over this fetch
           fetch,
           url,
           {

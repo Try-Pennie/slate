@@ -55,6 +55,7 @@ const tailWorker = {
       const outcome = await shipRecords(
         records,
         { token: env.BETTERSTACK_SOURCE_TOKEN, host: env.BETTERSTACK_INGEST_HOST },
+        // deadline-ok: shipRecords gives every POST its own AbortSignal.timeout
         fetch,
       );
       const dropped = droppedCount(outcome);

@@ -65,6 +65,7 @@ export async function readAuthSettings(deps: {
   timeoutMs?: number;
   log?: (msg: string, fields: Record<string, unknown>, err?: unknown) => void;
 }): Promise<unknown> {
+  // deadline-ok: the read below carries AbortSignal.timeout(timeoutMs)
   const doFetch = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? AUTH_SETTINGS_TIMEOUT_MS;
   const timedOut = (err: unknown) => err instanceof Error && err.name === "TimeoutError";
