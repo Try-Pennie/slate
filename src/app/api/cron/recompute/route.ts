@@ -9,7 +9,7 @@ import { sendThrottledAlert, resolveRecovered } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { recomputePoolSlotsForToday } from "@/lib/availability/slot-cache";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
-import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
+import { readEligibleCached } from "@/lib/availability/eligible-cache";
 import {
   listPoolBuckets,
   listKnownBucketSlotRows,
@@ -173,9 +173,10 @@ export async function GET(req: NextRequest) {
 async function recomputeLocked(prefetched: PooledBucket[] | null) {
   // Overlapping invocations would recompute the same buckets for nothing; the
   // lock referees both the every-minute cadence and the duplicate cron worker.
-  // lock-overlap: every slot write is a compare and swap on when its compute started
-  // (slot-row-write.ts), so an overlapping run can never put older slots over newer
-  // ones; the residual is a duplicate streak count or alert.
+  // lock-overlap: every slot write is a compare and swap on the row's stamp, the
+  // oldest state its compute used (slot-row-write.ts), so an overlapping run can
+  // never put older slots over newer ones; the residual is a duplicate streak count
+  // or alert.
   const lock = await acquireLock("cron_recompute", RECOMPUTE_LOCK_TTL_MS);
   if (!lock) {
     return NextResponse.json({ skipped: "overlapping-run" });
@@ -213,6 +214,9 @@ async function recomputeLocked(prefetched: PooledBucket[] | null) {
     // read per bucket instead of each re-querying the DB. The booker read + booking
     // verify keep the live resolver, so a stale cache can never mis-route a real
     // booking; the recompute row is display-only and re-verified live at book time.
+    // The dated reader, not the bare list (#3388): a cached list is as old as its
+    // read, so the pool's rows are stamped from that read when it is earlier than
+    // the compute's start, and the #1048 gate keeps a row a live path wrote since.
     // The pool REPORTS how many codes it refreshed and the drain sums it. Not
     // accumulated here: `recomputed += await ...` reads the variable before it
     // awaits, so a wave of pools running at once each add to the value they saw
@@ -221,7 +225,7 @@ async function recomputeLocked(prefetched: PooledBucket[] | null) {
     const recomputed = await recomputeDueBuckets(
       duePools,
       (pool) =>
-        recomputePoolSlotsForToday(pool, "lane", (b) => eligibleAgentIdsCached(b), horizonDays),
+        recomputePoolSlotsForToday(pool, "lane", (b) => readEligibleCached(b), horizonDays),
       () => withinBudget(Date.now(), deadlineMs),
       RECOMPUTE_CONCURRENCY,
       (pool) => pool.map((b) => b.code).join("+"),

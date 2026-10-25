@@ -24,6 +24,7 @@ import {
   type PooledBucket,
 } from "./pool-recompute";
 import { SlotRowRefused } from "./slot-row-write";
+import { trackEligibleReads, type DatedEligibleResolver } from "./eligible-cache";
 import { joinWriters, type SlotRowWriter, type WrittenBy } from "./slot-row-writer";
 import { bookedSpliceIo } from "./booked-splice-io";
 import { spliceBookedTime, type BookedTime, type BookedSpliceOutcome } from "./booked-splice";
@@ -216,7 +217,15 @@ export async function recomputePoolSlotsForToday(
   pool: PooledBucket[],
   /** Which path is refreshing it (#3381), stamped on every row it writes. */
   writtenBy: WrittenBy,
-  resolveEligible?: EligibleResolver,
+  /**
+   * Where eligibility comes from when it is not the live read, and WHEN each answer
+   * was read (#3388). Only the recompute lane passes one (the 60 second cache), and
+   * its rows are stamped from the oldest read the compute used whenever that is
+   * earlier than the compute's start, so a cached list can never outrank a row a live
+   * path wrote after it was read. Omitted, eligibility is read live during the compute
+   * and the rows are stamped at its start, as every other path always has been.
+   */
+  readEligible?: DatedEligibleResolver,
   horizonDays?: number,
 ): Promise<number> {
   const representative = pool[0];
@@ -225,16 +234,29 @@ export async function recomputePoolSlotsForToday(
   const horizon = horizonDays ?? (await loadBookingHorizonDays());
   const { fromIso, toIso } = slotCacheKey(representative.code, nowIso, horizon);
 
+  const reads = readEligible ? trackEligibleReads(readEligible) : null;
   const outcome = await recomputePool(pool, {
     nowMs: Date.now,
     compute: (code) =>
-      computeBucketSlotsForWindow(code, fromIso, toIso, resolveEligible, horizon),
-    writeRow: (code, val, computedAtMs) => storeBucketSlotsRow(code, val, computedAtMs, writtenBy),
+      computeBucketSlotsForWindow(code, fromIso, toIso, reads?.resolve, horizon),
+    eligibilityReadAtMs: () => reads?.oldestReadAtMs() ?? null,
+    writeRow: (code, val, computedAtMs, startedAtMs) =>
+      storeBucketSlotsRow(code, val, computedAtMs, writtenBy, startedAtMs),
     // The L1 key is on the fixed HORIZON_DAYS namespace, the same one the read
     // path looks up, so read and invalidate always agree.
     invalidate: (code) => invalidateBucketSlots(code),
   });
 
+  if (outcome.stampLagMs !== null) {
+    // #3388: one line per pool whose rows were stamped from a cached eligibility read
+    // rather than the compute's start. An older stamp brings the pool due sooner, so
+    // this is what to count when the lane's headroom moves.
+    log.info("slot-cache", {
+      msg: "pool stamped from its eligibility read",
+      pool: representative.code,
+      lag_ms: outcome.stampLagMs,
+    });
+  }
   if (outcome.failed.length > 0) {
     // Counted out loud rather than swallowed: these codes keep serving their
     // previous row, so the only other trace would be the stale alarm minutes later.

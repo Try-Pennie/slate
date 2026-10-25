@@ -12,7 +12,12 @@ export const ELIGIBLE_TTL_SECONDS = 60;
  * Cache key for a bucket's eligible-agent set.
  * Keyed by bucket id (org-unique UUID), not bucket code, so the key is stable
  * across any code renames and avoids any code-format ambiguity.
+ *
+ * v2 (#3388): an entry is `{ agents, readAtMs }` rather than the bare list. The
+ * version moved with the shape so that during a deploy an isolate still running
+ * the old code never reads the new shape as a list with no `ids`, and the new
+ * code never reads an old entry it cannot date.
  */
 export function eligibleCacheKey(bucketId: string): string {
-  return `eligible:v1:${bucketId}`;
+  return `eligible:v2:${bucketId}`;
 }

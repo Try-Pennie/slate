@@ -20,11 +20,13 @@ export interface SlotRow {
   payload: unknown;
   computed_at: string;
   invalidated_at: string | null;
+  /** #3388, migration 0202. Optional so a fixture can leave it out. */
+  compute_started_at?: string | null;
 }
 
 type Filter = (r: SlotRow) => boolean;
 
-const TIMESTAMP_COLUMNS = new Set(["computed_at", "invalidated_at"]);
+const TIMESTAMP_COLUMNS = new Set(["computed_at", "invalidated_at", "compute_started_at"]);
 
 /** A column or json path's value, as Postgres would hand it to a comparison. */
 function cell(r: SlotRow, col: string): string | null {
@@ -104,8 +106,27 @@ export interface FakeTable {
   beforeNextUpdate(fn: () => Promise<void> | void): void;
 }
 
-export function fakeBucketSlotsTable(initial: SlotRow[]): FakeTable {
+export function fakeBucketSlotsTable(
+  initial: SlotRow[],
+  /**
+   * Columns this table does NOT have, answered as the real one answers a database
+   * a migration has not reached yet: a read naming one gets Postgres's undefined
+   * column (42703), a write naming one gets PostgREST's unknown column (PGRST204).
+   */
+  opts: { withoutColumns?: string[] } = {},
+): FakeTable {
   const rows = initial;
+  const absent = new Set(opts.withoutColumns ?? []);
+  const readNames = (cols: string) => cols.split(",").map((c) => c.trim()).find((c) => absent.has(c));
+  const writeNames = (values: object) => Object.keys(values).find((c) => absent.has(c));
+  const noColumnRead = (c: string) => ({
+    data: null,
+    error: { code: "42703", message: `column bucket_slots.${c} does not exist` },
+  });
+  const noColumnWrite = (c: string) => ({
+    data: null,
+    error: { code: "PGRST204", message: `Could not find the '${c}' column of 'bucket_slots' in the schema cache` },
+  });
   const statements = { select: 0, update: 0, insert: 0 };
   let hook: (() => Promise<void> | void) | null = null;
 
@@ -153,14 +174,17 @@ export function fakeBucketSlotsTable(initial: SlotRow[]): FakeTable {
   const db = {
     from(_table: string) {
       return {
-        select(_cols: string) {
+        select(cols: string) {
           const filters: Filter[] = [];
+          const missing = readNames(cols);
           const b = builder(filters, async () => {
             statements.select++;
+            if (missing) return noColumnRead(missing);
             return { data: matching(filters).map(copy), error: null };
           });
           b.maybeSingle = async () => {
             statements.select++;
+            if (missing) return noColumnRead(missing);
             const hit = matching(filters);
             return { data: hit[0] ? copy(hit[0]) : null, error: null };
           };
@@ -176,6 +200,8 @@ export function fakeBucketSlotsTable(initial: SlotRow[]): FakeTable {
               await h();
             }
             statements.update++;
+            const missing = writeNames(values);
+            if (missing) return noColumnWrite(missing);
             const hit = matching(filters);
             for (const r of hit) Object.assign(r, JSON.parse(JSON.stringify(values)));
             return { data: hit.map((r) => ({ bucket_code: r.bucket_code })), error: null };
@@ -184,6 +210,8 @@ export function fakeBucketSlotsTable(initial: SlotRow[]): FakeTable {
         },
         insert: async (values: SlotRow) => {
           statements.insert++;
+          const missing = writeNames(values);
+          if (missing) return noColumnWrite(missing);
           if (rows.some((r) => r.bucket_code === values.bucket_code)) {
             return { data: null, error: { code: "23505", message: "duplicate key" } };
           }
