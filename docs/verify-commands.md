@@ -2397,3 +2397,25 @@ node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/ve
 No Docker is exit 2, UNMEASURED. It runs in the DB replay workflow with the other
 `verify-*-sql.ts` suites. Seen failing on a planted breakage the offline suite cannot see:
 the backfill taking the first move into retired instead of the last.
+
+# Proving the reconcile-missing re-create in a real database (`pnpm verify:recreate-missing-busy-blocks-sql`)
+
+#3592: migration 0204 adds `recreate_missing_busy_blocks`, the reconcile-missing sweep's
+re-create as ONE statement. It inserts a slate busy block only for a booking still
+confirmed or rescheduled, upcoming, assigned, past the #778 grace and on an advisor still
+in the pool (#3304), skips one that already has a block (`ON CONFLICT (booking_id) DO
+NOTHING`), and returns the rows it inserted, which is all the sweep counts and pages about.
+`for share of b` is what closes the cancel race: without it the SELECT reads its snapshot,
+and a cancel committing mid statement still gets a block.
+
+`pnpm verify:recreate-missing-busy-blocks-sql` replays every migration into the
+`supabase/postgres` image and checks, both directions: an active booking gets a block on its
+own agent and window and is named, a second call inserts nothing; a cancelled, completed,
+ended, too fresh, departed or taken out booking gets none, while an advisor owed an
+activation still does; a mixed batch names exactly what it inserted. The race is driven for
+real: a second session holds a cancel's UPDATE open, the function returns only once that
+cancel has committed and writes no block, and a control booking nobody is cancelling is
+re-created without waiting. Neither browser role can execute it. Seen failing with `for
+share of b` taken out of 0204 (the stray block was written without waiting). It writes
+nothing outside the container. No Docker is exit 2, never a pass (L98); any failed check is
+exit 1. It runs in the DB replay workflow with the other `verify-*-sql.ts` suites.

@@ -383,6 +383,16 @@ export interface Database {
         Args: { p_prefixes: string[]; p_older_than_seconds: number };
         Returns: number;
       };
+      /** #3592 (migration 0204): the reconcile-missing sweep's re-create as one statement,
+       *  inserting only for bookings still active, settled and in pool; returns the rows
+       *  it inserted. Bounded by the sweep's page of candidate ids. */
+      recreate_missing_busy_blocks: {
+        Args: {
+          p_booking_ids: string[];
+          p_created_before: string;
+        };
+        Returns: { booking_id: string; user_id: string }[];
+      };
       move_busy_block: {
         Args: {
           p_booking_id: string;

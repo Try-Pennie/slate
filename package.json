@@ -59,6 +59,7 @@
     "verify:audit-chain-sql": "node --experimental-strip-types scripts/verify-audit-chain-sql.ts",
     "verify:advisor-photos-sql": "node --experimental-strip-types scripts/verify-advisor-photos-sql.ts",
     "verify:migration-replay-sql": "node --experimental-strip-types scripts/verify-migration-replay-sql.ts",
+    "verify:recreate-missing-busy-blocks-sql": "node --experimental-strip-types scripts/verify-recreate-missing-busy-blocks-sql.ts",
     "verify:advisor-photos": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-advisor-photos-live.ts",
     "loadtest:export-shape": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/export-roster-shape.ts",
     "test:e2e": "node --experimental-strip-types e2e/run.ts"

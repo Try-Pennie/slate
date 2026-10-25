@@ -11,7 +11,6 @@ import {
   type ActiveUpcomingBooking,
   type BookingDeps,
 } from "../src/lib/booking/orchestration.ts";
-import type { BusyBlockInsert } from "../src/lib/booking/core.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 function booking(id: string, user_id: string): ActiveUpcomingBooking {
@@ -23,22 +22,25 @@ function booking(id: string, user_id: string): ActiveUpcomingBooking {
   };
 }
 
+/** One row the fake database inserted, as the RPC answers it. */
+type Recreated = { booking_id: string; user_id: string };
+
 function makeDeps(opts: {
   active: ActiveUpcomingBooking[];
   haveBlock: string[];
-  /** #3585: ids that were cancelled between the booking read and the re-verify, so the
-   *  re-verify no longer sees them as active. Defaults to none (every candidate active). */
-  cancelledBeforeReverify?: string[];
+  /** Ids cancelled after the sweep's reads (#3585, #3592). The database's own active
+   *  check inside the one statement sees them, so it inserts nothing for them. */
+  cancelledBeforeInsert?: string[];
 }) {
-  const inserted: BusyBlockInsert[] = [];
+  const inserted: Recreated[] = [];
+  const blocks = new Set(opts.haveBlock);
   const calls = {
     loadActiveUpcomingBookings: 0,
     loadBusyBlockBookingIds: [] as string[][],
-    loadStillActiveBookingIds: [] as string[][],
-    // #762: how many WRITES the sweep issued, as opposed to how many rows it wrote.
-    insertBatches: 0,
+    recreateMissingBusyBlocks: [] as string[][],
   };
-  const cancelled = new Set(opts.cancelledBeforeReverify ?? []);
+  const cancelled = new Set(opts.cancelledBeforeInsert ?? []);
+  const agentOf = new Map(opts.active.map((b) => [b.id, b.user_id]));
   const deps = {
     loadActiveUpcomingBookings: async (limit: number) => {
       calls.loadActiveUpcomingBookings = limit;
@@ -48,14 +50,18 @@ function makeDeps(opts: {
       calls.loadBusyBlockBookingIds.push(ids);
       return new Set(opts.haveBlock.filter((id) => ids.includes(id)));
     },
-    loadStillActiveBookingIds: async (ids: string[]) => {
-      calls.loadStillActiveBookingIds.push(ids);
-      // #3585: every candidate is still active unless a cancel landed in the window.
-      return new Set(ids.filter((id) => !cancelled.has(id)));
-    },
-    insertBusyBlocks: async (blocks: BusyBlockInsert[]) => {
-      calls.insertBatches++;
-      inserted.push(...blocks);
+    // The conditional insert, modelled: still active, and no block yet (ON CONFLICT DO
+    // NOTHING). Answers with the rows it inserted, as the RPC's RETURNING does.
+    recreateMissingBusyBlocks: async (ids: string[]) => {
+      calls.recreateMissingBusyBlocks.push(ids);
+      const rows: Recreated[] = [];
+      for (const id of ids) {
+        if (cancelled.has(id) || blocks.has(id)) continue;
+        blocks.add(id);
+        rows.push({ booking_id: id, user_id: agentOf.get(id) as string });
+      }
+      inserted.push(...rows);
+      return rows;
     },
   } as unknown as BookingDeps;
   return { deps, inserted, calls };
@@ -75,17 +81,15 @@ function makeDeps(opts: {
   // #762: the sweep scans up to RECONCILE_LIMIT=200 rows, so one write per missing
   // row was up to 200 serial round-trips on the shared every-minute invocation.
   assert(
-    calls.insertBatches === 1,
+    calls.recreateMissingBusyBlocks.length === 1,
     "#762: the missing blocks go out in ONE batched write, not one write per row",
   );
+  // #3592: the block's agent and window come from the booking row inside the
+  // statement (proved in pnpm verify:recreate-missing-busy-blocks-sql); the sweep
+  // hands over only the candidate ids.
   assert(
-    inserted.every((b) => b.source === "slate" && b.booking_id !== null),
-    "inserted blocks are slate-sourced and carry the booking id",
-  );
-  const a1 = inserted.find((b) => b.booking_id === "A1");
-  assert(
-    !!a1 && a1.user_id === "u1" && a1.starts_at === "2030-01-01T10:00:00.000Z",
-    "the re-created block carries the booking's agent + window",
+    calls.recreateMissingBusyBlocks[0]!.slice().sort().join(",") === "A1,A2",
+    "#3592: asks the database to re-create exactly the missing candidates",
   );
   assert(
     inserted.find((b) => b.booking_id === "A3") === undefined,
@@ -122,16 +126,17 @@ function makeDeps(opts: {
 {
   // The safety-critical branch: if we can't tell which bookings have blocks, we
   // must NOT treat them all as missing and mass-insert. Abort the tick instead.
-  const inserted: BusyBlockInsert[] = [];
+  const inserted: string[] = [];
   let insertCalls = 0;
   const deps = {
     loadActiveUpcomingBookings: async () => [booking("E1", "u1"), booking("E2", "u2")],
     loadBusyBlockBookingIds: async () => {
       throw new Error("read blip");
     },
-    insertBusyBlocks: async (blocks: BusyBlockInsert[]) => {
+    recreateMissingBusyBlocks: async (ids: string[]) => {
       insertCalls++;
-      inserted.push(...blocks);
+      inserted.push(...ids);
+      return [];
     },
   } as unknown as BookingDeps;
   // The message is asserted, not merely that SOMETHING threw. `assert(threw)` alone
@@ -180,35 +185,70 @@ function makeDeps(opts: {
   assert(calls.loadActiveUpcomingBookings === 50, "passes the scan limit through to the loader");
 }
 
-// --- #3585: a cancel landing between the two reads is not re-created ------------
+// --- #3585 / #3592: a cancel landing after the reads is not re-created ---------------
 {
-  // D1 looked active, its block is gone (the cancel deleted it), and by the re-verify
-  // it is no longer active. Nothing is re-created, so no false "missed write" page and
-  // no block for the next tick to free and page about again. D2 beside it is a genuine
-  // missed write for a still-active booking and IS re-created.
+  // D1 looked active and its block is gone (the cancel deleted it); by the time the
+  // insert runs it is cancelled, which the statement's own check sees. D2 beside it is
+  // a genuine missed write for a still-active booking and IS re-created. The counts
+  // come from the rows the statement inserted, so D1 is neither counted nor named.
   const { deps, inserted, calls } = makeDeps({
     active: [booking("D1", "u1"), booking("D2", "u2")],
     haveBlock: [],
-    cancelledBeforeReverify: ["D1"],
+    cancelledBeforeInsert: ["D1"],
   });
   const res = await reconcileMissingBusyBlocks(deps, 100);
   assert(res.recreated === 1, "only the still-active missing block is re-created");
   assert(res.bookingIds.length === 1 && res.bookingIds[0] === "D2", "and it is D2, not the cancelled D1");
+  assert(JSON.stringify(res.userIds) === JSON.stringify(["u2"]), "#3592: and only D2's agent is recomputed");
   assert(!inserted.some((b) => b.booking_id === "D1"), "no block is re-created for the booking being cancelled");
-  // The re-verify reads only the MISSING set (D1, D2), never the whole scan.
   assert(
-    calls.loadStillActiveBookingIds.length === 1 &&
-      calls.loadStillActiveBookingIds[0]!.slice().sort().join(",") === "D1,D2",
-    "the re-verify reads only the missing candidates",
+    calls.recreateMissingBusyBlocks.length === 1 &&
+      calls.recreateMissingBusyBlocks[0]!.slice().sort().join(",") === "D1,D2",
+    "the conditional insert is asked about only the missing candidates",
   );
 }
 
-// --- #3585: no re-verify read when nothing is missing --------------------------
+// --- #3592: an insert that wrote no row reports nothing ---------------------------------
+{
+  // The booking's own write through (or a move) landed between the block read and the
+  // insert, so ON CONFLICT DO NOTHING inserted nothing. Modelled by the cancel set, which
+  // the fake treats the same way: no row comes back.
+  const { deps } = makeDeps({ active: [booking("F1", "u1")], haveBlock: [], cancelledBeforeInsert: ["F1"] });
+  const res = await reconcileMissingBusyBlocks(deps, 100);
+  assert(
+    res.recreated === 0 && res.bookingIds.length === 0 && res.userIds.length === 0,
+    "#3592: an insert that wrote no row reports nothing re-created",
+  );
+  assert(res.scanned === 1, "#3592: while still reporting the scan size for the cursor");
+}
+
+// --- #3592: a failed insert aborts with no count ----------------------------------------
+{
+  const deps = {
+    loadActiveUpcomingBookings: async () => [booking("G1", "u1")],
+    loadBusyBlockBookingIds: async () => new Set<string>(),
+    recreateMissingBusyBlocks: async () => {
+      throw new Error("rpc refused");
+    },
+  } as unknown as BookingDeps;
+  let caught: unknown = null;
+  try {
+    await reconcileMissingBusyBlocks(deps, 100);
+  } catch (err) {
+    caught = err;
+  }
+  assert(
+    caught instanceof Error && /rpc refused/.test(caught.message),
+    "#3592: a refused insert throws rather than reporting the candidates as re-created",
+  );
+}
+
+// --- no insert call when nothing is missing --------------------------------------------
 {
   const { deps, calls } = makeDeps({ active: [booking("E1", "u1")], haveBlock: ["E1"] });
   const res = await reconcileMissingBusyBlocks(deps, 100);
   assert(res.recreated === 0, "nothing missing, nothing re-created");
-  assert(calls.loadStillActiveBookingIds.length === 0, "and no re-verify read is paid when nothing is missing");
+  assert(calls.recreateMissingBusyBlocks.length === 0, "and no insert is issued when nothing is missing");
 }
 
 finish();

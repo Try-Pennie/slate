@@ -10,9 +10,12 @@ import { reconcileMissingBusyBlocks, type BookingDeps, type ActiveUpcomingBookin
 // manufactured two false "write health" pages (2026-10-10), eroding a real double-booking
 // alarm (L36).
 //
-// The fix re-verifies the NARROW candidate set is still active immediately before
-// re-creating, closing the window. These drive the orchestration logic with hand
-// written deps so each read's answer is controlled exactly.
+// #3585 re-verified the candidates just before inserting, which left the gap between
+// that read and the insert. #3592 closes it: the active check and the insert are ONE
+// statement (`recreate_missing_busy_blocks`, migration 0204), and every count comes
+// from the rows it says it inserted. The statement itself is proved in a real Postgres
+// by `pnpm verify:recreate-missing-busy-blocks-sql`; these drive the orchestration with
+// hand written deps so each answer is controlled exactly.
 
 const bookingA: ActiveUpcomingBooking = {
   id: "A",
@@ -27,64 +30,78 @@ function makeDeps(over: Partial<BookingDeps>): BookingDeps {
     loadActiveUpcomingBookings: vi.fn(async () => [bookingA]),
     // Read 2: no block (either genuinely missed, or a cancel just deleted it).
     loadBusyBlockBookingIds: vi.fn(async () => new Set<string>()),
-    // Re-verify (the #3585 read): still active by default.
-    loadStillActiveBookingIds: vi.fn(async (ids: string[]) => new Set(ids)),
-    insertBusyBlocks: vi.fn(async () => {}),
+    // The conditional insert: by default the booking is still active and gets its block.
+    recreateMissingBusyBlocks: vi.fn(async (ids: string[]) =>
+      ids.map((id) => ({ booking_id: id, user_id: `u${id}` })),
+    ),
     ...over,
   } as unknown as BookingDeps;
 }
 
-describe("reconcileMissingBusyBlocks re-verifies before re-creating (#3585)", () => {
+describe("reconcileMissingBusyBlocks re-creates in one conditional statement (#3585, #3592)", () => {
   it("re-creates a genuinely missing block when the booking is still active", async () => {
-    const insertBusyBlocks = vi.fn(async () => {});
-    const deps = makeDeps({ insertBusyBlocks });
+    const deps = makeDeps({});
     const res = await reconcileMissingBusyBlocks(deps, 200);
     expect(res.recreated).toBe(1);
     expect(res.bookingIds).toEqual(["A"]);
     expect(res.userIds).toEqual(["uA"]);
-    expect(insertBusyBlocks).toHaveBeenCalledTimes(1);
+    expect(deps.recreateMissingBusyBlocks).toHaveBeenCalledTimes(1);
   });
 
-  it("does NOT re-create (or page) when the booking was cancelled between the two reads", async () => {
-    // The race: active in read 1, its block gone in read 2 (the cancel deleted it),
-    // and the re-verify finds it no longer active. Nothing is re-created, so no false
-    // "missed write" page, and no block for the next tick to free and page about again.
-    const insertBusyBlocks = vi.fn(async () => {});
-    const loadStillActiveBookingIds = vi.fn(async () => new Set<string>());
-    const deps = makeDeps({ insertBusyBlocks, loadStillActiveBookingIds });
+  it("does NOT count (or page) a booking the statement refused because it was cancelled", async () => {
+    // The race: active in read 1, its block gone in read 2 (the cancel deleted it), and
+    // the statement's own check finds it cancelled, so it inserts and returns nothing.
+    // Nothing is counted, so no false "missed write" page and no agent recomputed.
+    const deps = makeDeps({ recreateMissingBusyBlocks: vi.fn(async () => []) });
     const res = await reconcileMissingBusyBlocks(deps, 200);
     expect(res.recreated).toBe(0);
     expect(res.bookingIds).toEqual([]);
     expect(res.userIds).toEqual([]);
-    expect(insertBusyBlocks).not.toHaveBeenCalled();
     // scanned still reflects what the first read saw, so the sweep is not reported as
     // having looked at nothing.
     expect(res.scanned).toBe(1);
   });
 
-  it("re-verifies only the MISSING set, not every scanned booking", async () => {
+  it("counts only the rows the statement inserted, never the candidates", async () => {
+    // Two candidates; the statement inserts one (the other was cancelled or its block
+    // landed meanwhile). The agent named is the one the inserted row carries.
+    const other: ActiveUpcomingBooking = { ...bookingA, id: "C", user_id: "uC" };
+    const deps = makeDeps({
+      loadActiveUpcomingBookings: vi.fn(async () => [bookingA, other]),
+      recreateMissingBusyBlocks: vi.fn(async () => [{ booking_id: "C", user_id: "uC" }]),
+    });
+    const res = await reconcileMissingBusyBlocks(deps, 200);
+    expect(res).toEqual({ recreated: 1, bookingIds: ["C"], userIds: ["uC"], scanned: 2 });
+  });
+
+  it("asks about only the MISSING set, not every scanned booking", async () => {
     // One booking has a block (not missing), one does not. Only the block-less one is
-    // re-verified, so the extra read is paid on candidates, never the whole page.
+    // sent, so the statement works on candidates, never the whole page.
     const withBlock: ActiveUpcomingBooking = { ...bookingA, id: "B", user_id: "uB" };
-    const loadStillActiveBookingIds = vi.fn(async (ids: string[]) => new Set(ids));
     const deps = makeDeps({
       loadActiveUpcomingBookings: vi.fn(async () => [bookingA, withBlock]),
       loadBusyBlockBookingIds: vi.fn(async () => new Set(["B"])), // B already has a block
-      loadStillActiveBookingIds,
     });
     const res = await reconcileMissingBusyBlocks(deps, 200);
     expect(res.bookingIds).toEqual(["A"]);
-    expect(loadStillActiveBookingIds).toHaveBeenCalledWith(["A"]);
+    expect(deps.recreateMissingBusyBlocks).toHaveBeenCalledWith(["A"]);
   });
 
-  it("skips the re-verify read entirely when nothing is missing", async () => {
-    const loadStillActiveBookingIds = vi.fn(async (ids: string[]) => new Set(ids));
+  it("issues no insert when nothing is missing", async () => {
     const deps = makeDeps({
       loadBusyBlockBookingIds: vi.fn(async () => new Set(["A"])), // A already has a block
-      loadStillActiveBookingIds,
     });
     const res = await reconcileMissingBusyBlocks(deps, 200);
     expect(res.recreated).toBe(0);
-    expect(loadStillActiveBookingIds).not.toHaveBeenCalled();
+    expect(deps.recreateMissingBusyBlocks).not.toHaveBeenCalled();
+  });
+
+  it("a refused insert aborts the sweep instead of reporting the candidates as re-created", async () => {
+    const deps = makeDeps({
+      recreateMissingBusyBlocks: vi.fn(async () => {
+        throw new Error("recreate_missing_busy_blocks refused");
+      }),
+    });
+    await expect(reconcileMissingBusyBlocks(deps, 200)).rejects.toThrow(/refused/);
   });
 });

@@ -24,7 +24,6 @@ import { withoutOwnBooking } from "./reroute-hold.ts";
 import {
   bookingWindow,
   bufferedWindow,
-  busyBlockFor,
   bookingEventFrom,
   deterministicEventId,
   EventGone,
@@ -1801,14 +1800,14 @@ export interface BookingDeps {
    */
   loadBusyBlockBookingIds(bookingIds: string[]): Promise<Set<string>>;
   /**
-   * Of `bookingIds`, which are STILL active (confirmed/rescheduled, upcoming, in
-   * pool), re-read immediately before re-creating their blocks (#3585). A
-   * cancellation landing between the booking read and the block read makes an active
-   * booking look like a missed write-through; this closes that window. Same active
-   * predicate as `loadActiveUpcomingBookings`, minus the create grace (which cannot
-   * change in the interval).
+   * Re-create the slate busy_block of each of `bookingIds` that is STILL active
+   * (confirmed/rescheduled, upcoming, assigned, past the #778 grace, on an advisor
+   * still in the pool) and still has no block, in ONE statement (#3592,
+   * `recreate_missing_busy_blocks`, migration 0204), so no cancel can land between the
+   * check and the insert. Answers with the rows it actually inserted; THROWS when the
+   * statement is refused, having paged the write failure.
    */
-  loadStillActiveBookingIds(bookingIds: string[]): Promise<Set<string>>;
+  recreateMissingBusyBlocks(bookingIds: string[]): Promise<{ booking_id: string; user_id: string }[]>;
   // --- Outbox (#429 P2): durable intent + idempotent drain ---
   /** Write a durable mutation-intent row; returns its id. */
   enqueueOutbox(row: BookingOutboxInsert): Promise<string>;
@@ -2712,37 +2711,20 @@ export async function reconcileMissingBusyBlocks(
   const missing = bookings.filter((b) => !haveBlock.has(b.id));
   if (missing.length === 0) return empty;
 
-  // #3585: re-verify the NARROW candidate set is still active immediately before
-  // re-creating. The booking read and the block read above are two separate reads; a
-  // cancellation landing between them deletes the block and makes an active booking
-  // look like a missed write-through INSERT, so the sweep re-created a block for a
-  // booking being cancelled and paged a false "missed write" (and the next tick freed
-  // it and paged a false "stuck block"). Re-reading just the `missing` ids collapses
-  // that window from the full two-scan gap (tens of ms to seconds under load, which an
-  // ordinary cancel hit) to a single read-then-insert, which an ordinary cancel does
-  // not. The insert-only safety bias is unchanged: a genuinely-missing block for a
-  // still-active booking is still re-created.
-  //
-  // A RESIDUAL window remains, between this re-verify and the insert below: a cancel
-  // landing there still re-creates one block and the next tick frees and pages about
-  // it. Closing it fully needs a DB-side conditional insert (INSERT ... SELECT WHERE
-  // the booking is still active), an RPC and a migration, tracked in #3592. It is left
-  // there because this residual is in the SAFE direction (the stray block keeps the
-  // slot busy, never a double-book) and is now MEASURABLE rather than inferred: both the
-  // re-create and the free side name the booking ids, so if it ever fires the two pages
-  // carry the same id a cancel is logged against, instead of a point-in-time snapshot
-  // having to rule it out by hand.
-  const stillActive = await deps.loadStillActiveBookingIds(missing.map((b) => b.id));
-  const toRecreate = missing.filter((b) => stillActive.has(b.id));
-  if (toRecreate.length === 0) return empty;
-
-  await deps.insertBusyBlocks(
-    toRecreate.map((b) => busyBlockFor(b.user_id, b.starts_at, b.ends_at, b.id)),
-  );
+  // #3585 then #3592: a cancellation landing between the booking read and the block
+  // read deletes the block and makes an active booking look like a missed write-through
+  // INSERT. #3585 re-read the candidates just before inserting, which left the gap
+  // between that read and the insert. Now the active check and the insert are ONE
+  // statement that locks each booking row (`recreate_missing_busy_blocks`), so a cancel
+  // cannot land between them, and every count below comes from the rows it says it
+  // inserted: a booking cancelled meanwhile, or whose own block landed meanwhile, is
+  // neither re-created nor reported. The insert-only safety bias is unchanged.
+  const inserted = await deps.recreateMissingBusyBlocks(missing.map((b) => b.id));
+  if (inserted.length === 0) return empty;
   return {
-    recreated: toRecreate.length,
-    bookingIds: toRecreate.map((b) => b.id),
-    userIds: [...new Set(toRecreate.map((b) => b.user_id))],
+    recreated: inserted.length,
+    bookingIds: inserted.map((r) => r.booking_id),
+    userIds: [...new Set(inserted.map((r) => r.user_id))],
     scanned: bookings.length,
   };
 }
