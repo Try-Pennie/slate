@@ -78,7 +78,11 @@ beforeAll(() => {
   new Function(readFileSync(resolve("public/widget.js"), "utf8"))();
 });
 
-describe("the booker's layout follows its container, not the viewport (#2729)", () => {
+// Each test renders the whole Booker, and the first render in the file pays its
+// cold start: 6.5s on a Mac runner busy with other jobs (main at 732b445,
+// 2026-10-24), over vitest's 5s default. The bound is for that machine, not a
+// budget the render is held to.
+describe("the booker's layout follows its container, not the viewport (#2729)", { timeout: 20_000 }, () => {
   it("is a size container, so a variant on it measures the booker's own width", async () => {
     const { root } = await renderBooker();
     expect(root.classList).toContain("@container");

@@ -3,7 +3,7 @@
 // script convention). The workflow gathers the GitHub context and the runner
 // (scripts/check-main-push.ts) turns a violation into a Slack alert + a red run.
 
-/** A commit-message marker that authorizes a deliberate direct push to main. */
+/** A commit-subject marker (the first line only) that authorizes a deliberate direct push to main. */
 export const BYPASS_MARKER = "[allow-direct-push]";
 
 export interface AssociatedPr {
@@ -73,6 +73,11 @@ export interface Verdict {
   unverified?: boolean;
 }
 
+/** The first line of a commit message, the only part this guard reads. */
+export function commitSubject(commitMessage: string): string {
+  return (commitMessage || "").split("\n")[0] ?? "";
+}
+
 /**
  * Decide whether a commit that landed on main arrived legitimately.
  *
@@ -83,7 +88,10 @@ export interface Verdict {
  *               merge commit (#1447, #1519).
  * Violation   = a direct push with no merged PR (bypassed review), OR a merged
  *               PR whose CI concluded failure (a red merge).
- * Bypass      = the commit message carries BYPASS_MARKER (a deliberate hotfix).
+ * Bypass      = the commit SUBJECT carries BYPASS_MARKER (a deliberate hotfix). The body
+ *               is never read for it (#4096, L801): a squash merge's body is every commit
+ *               message on the branch, so a branch that only MENTIONS the marker, as any
+ *               change to this guard or its docs does, would exempt its own red merge.
  *
  * An unknown CI conclusion (null) is tolerated rather than alerted on, so a
  * transient inability to read checks never pages; the hard signal is "no merged
@@ -97,7 +105,7 @@ export interface Verdict {
  * passes, saying that the primary read is down (#1519).
  */
 export function classifyPush(ctx: PushContext): Verdict {
-  if (ctx.commitMessage.includes(BYPASS_MARKER)) {
+  if (commitSubject(ctx.commitMessage).includes(BYPASS_MARKER)) {
     return { ok: true, reason: `bypass marker ${BYPASS_MARKER} present` };
   }
 
@@ -194,7 +202,7 @@ export function classifyPush(ctx: PushContext): Verdict {
  * another API call on a guard that runs on every push.
  */
 export function prNumbersInSubject(commitMessage: string): number[] {
-  const subject = (commitMessage || "").split("\n")[0] ?? "";
+  const subject = commitSubject(commitMessage);
   const found: number[] = [];
   for (const m of subject.matchAll(/#(\d+)/g)) {
     const n = Number(m[1]);
@@ -207,7 +215,7 @@ export function prNumbersInSubject(commitMessage: string): number[] {
 
 export function buildViolationMessage(ctx: PushContext, verdict: Verdict): string {
   const shortSha = ctx.headSha ? ctx.headSha.slice(0, 7) : "unknown";
-  const firstLine = (ctx.commitMessage || "").split("\n")[0] || "(no message)";
+  const firstLine = commitSubject(ctx.commitMessage) || "(no message)";
   // The unverified case gets its own opening line and its own instruction. Telling
   // someone to review and revert a commit, when the only thing that happened is
   // that GitHub did not answer, is advice that cannot fix the state they are in
@@ -219,7 +227,7 @@ export function buildViolationMessage(ctx: PushContext, verdict: Verdict): strin
     ? "Re-run the main-push-guard job. If it keeps failing, check by hand whether this commit " +
       "came from a merged PR: until then main is unguarded, not proven bad."
     : "Review and revert if this was not intended. A deliberate direct push must " +
-      `carry the ${BYPASS_MARKER} marker.`;
+      `carry the ${BYPASS_MARKER} marker in its subject line.`;
   return [
     opening,
     verdict.reason + ".",

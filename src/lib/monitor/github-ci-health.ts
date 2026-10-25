@@ -509,6 +509,13 @@ export function formatCiStartedRecovery(): string {
  * The one GitHub read, and the check that turns it into two verdicts.
  * -------------------------------------------------------------------------- */
 
+/**
+ * How long any GitHub API call from the monitor lane may wait (#3972). GitHub answers
+ * these in well under a second; a hang must end as a reported failure, never as a
+ * lane stalled until the platform kills it, which skips every alert below it.
+ */
+export const GITHUB_API_TIMEOUT_MS = 10_000;
+
 const GITHUB_HEADERS = (token: string) => ({
   authorization: `Bearer ${token}`,
   accept: "application/vnd.github+json",
@@ -531,7 +538,7 @@ export async function fetchRecentRuns(
 ): Promise<WorkflowRunSummary[] | null> {
   const res = await fetch(
     `https://api.github.com/repos/${CI_REPO}/actions/runs?per_page=${perPage}`,
-    { headers: GITHUB_HEADERS(token) },
+    { headers: GITHUB_HEADERS(token), signal: AbortSignal.timeout(GITHUB_API_TIMEOUT_MS) },
   );
   if (!res.ok) return null;
   return parseWorkflowRuns(await res.json());
@@ -541,6 +548,7 @@ export async function fetchRecentRuns(
 export async function fetchMainTip(token: string): Promise<MainTip | null> {
   const res = await fetch(`https://api.github.com/repos/${CI_REPO}/commits/main`, {
     headers: GITHUB_HEADERS(token),
+    signal: AbortSignal.timeout(GITHUB_API_TIMEOUT_MS),
   });
   if (!res.ok) return null;
   return parseMainTip(await res.json());
@@ -556,7 +564,7 @@ export async function fetchTipRuns(token: string, sha: string): Promise<Workflow
   const workflow = DEPLOY_WORKFLOW_PATH.split("/").pop();
   const res = await fetch(
     `https://api.github.com/repos/${CI_REPO}/actions/workflows/${workflow}/runs?event=push&branch=main&head_sha=${encodeURIComponent(sha)}&per_page=5`,
-    { headers: GITHUB_HEADERS(token) },
+    { headers: GITHUB_HEADERS(token), signal: AbortSignal.timeout(GITHUB_API_TIMEOUT_MS) },
   );
   if (!res.ok) return null;
   const payload = (await res.json()) as { workflow_runs?: unknown };
@@ -570,7 +578,7 @@ export async function fetchRunJobs(
 ): Promise<WorkflowJobSummary[] | null> {
   const res = await fetch(
     `https://api.github.com/repos/${CI_REPO}/actions/runs/${runId}/jobs?per_page=50`,
-    { headers: GITHUB_HEADERS(token) },
+    { headers: GITHUB_HEADERS(token), signal: AbortSignal.timeout(GITHUB_API_TIMEOUT_MS) },
   );
   if (!res.ok) return null;
   return parseWorkflowJobs(await res.json());

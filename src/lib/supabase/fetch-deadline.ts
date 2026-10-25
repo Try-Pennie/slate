@@ -18,6 +18,7 @@ export const SUPABASE_FETCH_TIMEOUT_MS = 15_000;
  * middleware bundle never reaches the async context module that budgets need.
  */
 export const supabaseEdgeFetch = fetchWithDeadline(
+  // deadline-ok: the inner fetch of fetchWithDeadline, bounded by SUPABASE_FETCH_TIMEOUT_MS
   (input, init) => fetch(input, init),
   SUPABASE_FETCH_TIMEOUT_MS,
   "supabase auth",

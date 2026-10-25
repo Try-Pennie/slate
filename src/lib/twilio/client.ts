@@ -40,6 +40,9 @@ const PAGE_SIZE = 200;
  */
 export const TWILIO_RETRY_DELAY_MS = 2_000;
 
+/** How long one page of the worker listing may wait (#3972). */
+export const TWILIO_PAGE_TIMEOUT_MS = 10_000;
+
 /** The pause between attempts. Injected so no test waits for real (L524). */
 export type Sleep = (ms: number) => Promise<void>;
 const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -103,6 +106,7 @@ export interface TwilioWorker {
  */
 export async function fetchTwilioWorkers(
   creds: TwilioCredentials = twilioCredentials(),
+  // deadline-ok: fetchPageWithOneRetry gives every page TWILIO_PAGE_TIMEOUT_MS
   fetchImpl: typeof fetch = fetch,
   sleep: Sleep = realSleep,
 ): Promise<TwilioWorker[]> {
@@ -176,7 +180,9 @@ async function fetchPageWithOneRetry(
 ): Promise<Response> {
   const attempt = async (): Promise<Response | { networkError: unknown }> => {
     try {
-      return await fetchImpl(url, { headers: { Authorization: authHeader } });
+      // #3972: a page that never answers is a network error, retried once, rather
+      // than a sync lane held until the platform kills it with nothing reported.
+      return await fetchImpl(url, { headers: { Authorization: authHeader }, signal: AbortSignal.timeout(TWILIO_PAGE_TIMEOUT_MS) });
     } catch (err) {
       return { networkError: err };
     }

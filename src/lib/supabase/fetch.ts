@@ -23,4 +23,5 @@ export function supabaseFetchOver(inner: FetchLike): FetchLike {
  * the cookie bound one. Reads the global `fetch` per request rather than
  * capturing it once, so a test that stubs it is honoured.
  */
+// deadline-ok: the inner fetch of supabaseFetchOver, bounded by SUPABASE_FETCH_TIMEOUT_MS
 export const supabaseFetch = supabaseFetchOver((input, init) => fetch(input, init));

@@ -163,4 +163,72 @@ const PENDING = "Check booking_reservations for a pending row before asking them
   assert(page.endsWith(", and Google Calendar API and Supabase health."), "a call that did not answer still points at the dependencies");
 }
 
+// --- #3784: Google and Supabase stalled TOGETHER: suspect the location first ---------
+// Placement runs every confirm beside Oregon (#3730), so a degraded location there
+// slows both services at once, and a page naming either one sends the reader to the
+// wrong place (L774). Two unrelated services stalling in one confirm is the tell.
+/** A confirm whose Supabase read took 3.1s and whose Google call ran out at 8s, answered from SEA. */
+async function bothStalled() {
+  const c = clock();
+  const profile = makeConfirmProfile({ now: c.now }).observeCalls();
+  await profile.time("idempotency-lookup", async () => {
+    profile.call("supabase idempotency", c.now(), c.now() + 20, "SEA");
+    c.advance(20);
+    profile.call("supabase bookings", c.now(), c.now() + 3_100, null);
+    c.advance(3_100);
+  });
+  await profile.time("complete-reservation", async () => {
+    profile.call("google events.insert", c.now(), c.now() + 8_000, null);
+    c.advance(8_000);
+  });
+  return { profile, at: c.now() };
+}
+const RAN_OUT = { dependency: "google events.insert", timeoutMs: 8000, budget: null };
+{
+  const { profile, at } = await bothStalled();
+  const spent = whereTimeWent(profile.read(at));
+  assert(
+    spent.stalled?.googleMs === 8_000 && spent.stalled.supabaseMs === 3_100,
+    `the reading says both stalled, with each one's slowest call (got ${JSON.stringify(spent.stalled)})`,
+  );
+  const inside = await withinCallBudget(12_000, "the booking confirm", async () => timeSpentInThisRequest(() => at), undefined, profile);
+  assert(inside?.ranAt === "SEA", `read in the request, it says where the confirm ran (got ${inside?.ranAt})`);
+}
+{
+  const { profile, at } = await replay1655();
+  assert(whereTimeWent(profile.read(at)).stalled == null, "Google alone stalled (the 16:55 confirm): not together");
+}
+{
+  const { profile, at } = await bothStalled();
+  const spent = { ...whereTimeWent(profile.read(at)), ranAt: "SEA" };
+  const page = dependencyTimeoutAlert({ ...RAN_OUT, spent });
+  assert(page.includes(PENDING), "the pending row check stays first");
+  assert(page.includes("Google Calendar and Supabase both stalled in this confirm"), `the page says both stalled (got: ${page})`);
+  assert(page.includes("suspect the Cloudflare location it ran at (SEA) before either service"), `and suspects the location first, by name (got: ${page})`);
+  assert(page.includes("request.cf.colo"), "and says how to check it in Supabase's edge logs");
+  assert(!page.includes("Google Calendar API and Supabase health."), `and no longer ends on either service's health (got: ${page})`);
+}
+{
+  // The budget spent before the call was asked, with both stalled: still the location,
+  // never "inside Slate", since the stalls are what used the time.
+  const { profile, at } = await bothStalled();
+  const page = dependencyTimeoutAlert({ ...GATE, spent: { ...whereTimeWent(profile.read(at)), ranAt: "SEA" } });
+  assert(page.includes("suspect the Cloudflare location it ran at (SEA)"), `a refused call with both stalled suspects the location (got: ${page})`);
+  assert(!page.includes("inside Slate"), "and does not call it Slate's own work");
+}
+{
+  // Where it ran is unknown (no Supabase answer carried a ray): say where to read it.
+  const { profile, at } = await bothStalled();
+  const page = dependencyTimeoutAlert({ ...RAN_OUT, spent: { ...whereTimeWent(profile.read(at)), ranAt: null } });
+  assert(page.includes("suspect the Cloudflare location it ran at before either service"), `an unknown location is still suspected (got: ${page})`);
+  assert(page.includes("supabase_edge_colo"), "and the reader is told which field of the confirm answered line names it");
+}
+{
+  // A dry run whose Google and Supabase calls both stalled gets the same advice.
+  const { profile, at } = await bothStalled();
+  const page = dependencyTimeoutAlert({ ...RAN_OUT, reach: "dry-run", spent: { ...whereTimeWent(profile.read(at)), ranAt: "SEA" } });
+  assert(page.includes("suspect the Cloudflare location it ran at (SEA)"), `a dry run suspects the location too (got: ${page})`);
+  assert(!page.includes("Check Google Calendar API health"), "and does not blame Google");
+}
+
 finish();

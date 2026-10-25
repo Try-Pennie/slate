@@ -35,6 +35,8 @@ import {
 } from "./fetch-within-deadline.ts";
 import { realTimer, type ScheduleTimer } from "./read-within-deadline.ts";
 import { log } from "@/lib/log";
+import { noteDependencyCall } from "@/lib/dependency-stall";
+import { coloFromRay } from "@/lib/http/cf-ray";
 
 interface Budget {
   readonly expiresAt: number;
@@ -60,7 +62,8 @@ interface Budget {
  * all (`current`). `ConfirmProfile.call` is the one in production.
  */
 export interface CallObserver {
-  call(label: string, startedAt: number, endedAt: number): void;
+  /** `colo` (#3784): the colo the answer's `cf-ray` named, null when it named none. */
+  call(label: string, startedAt: number, endedAt: number, colo?: string | null): void;
 }
 
 /** The two methods of Node's AsyncLocalStorage this module uses. */
@@ -325,19 +328,29 @@ export async function fetchWithinBudget(
 ): Promise<Response> {
   // Read before the call, so the request this call belongs to is the one charged
   // even when it answers after the request has closed.
-  const observer = current()?.request.observer;
+  const budget = current();
+  const observer = budget?.request.observer;
   const { waitMs, reportAs } = deadlineWithinBudget(deadline, label, now);
-  if (!observer) return fetchWithinDeadline(fetchImpl, input, init, waitMs, label, timer, reportAs);
   // A call refused before it started (a spent budget) threw above and is not a
   // call. One that started is charged however it ends, a failure included, since a
   // call that failed slowly is exactly what a profile of a failed confirm needs.
   // The span ends when the RESPONSE arrives; reading its body happens after, in
   // the caller, and is not in it.
   const from = now();
+  let answer: Response | null = null;
   try {
-    return await fetchWithinDeadline(fetchImpl, input, init, waitMs, label, timer, reportAs);
+    answer = await fetchWithinDeadline(fetchImpl, input, init, waitMs, label, timer, reportAs);
+    return answer;
   } finally {
-    observer.call(label, from, now());
+    // #3784: where the answer came from, by the colo its `cf-ray` names (Supabase is
+    // behind Cloudflare, so this is the colo Slate ran in), and this isolate's memory
+    // of a stall, which the Google breaker page reads. Only a call inside a budget is
+    // remembered: outside one is a cron lane's Supabase statement, which can take 7.9s
+    // while healthy (`SUPABASE_FETCH_TIMEOUT_MS`), and would read as a stall.
+    const to = now();
+    const colo = coloFromRay(answer?.headers.get("cf-ray"));
+    if (budget) noteDependencyCall(label, to - from, to, colo);
+    observer?.call(label, from, to, colo);
   }
 }
 

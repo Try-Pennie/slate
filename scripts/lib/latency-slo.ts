@@ -105,7 +105,8 @@ const COLO_CODE = /^[A-Z]{3,4}$/;
 /**
  * Read the colo out of a `cf-ray` header (`8c1a2b3c4d5e6f70-LHR`). The same suffix the
  * route reads for its own log line (`requestColo` in src/app/api/availability/route.ts),
- * copied because this runs on bare node.
+ * copied because this runs on bare node (the app reads it through `coloFromRay`,
+ * src/lib/http/cf-ray.ts).
  */
 export function readColo(header: string | null): ColoReading {
   if (header === null) return { kind: "absent" };

@@ -15,6 +15,7 @@ export function supabaseAdmin() {
   if (!cached) {
     // #3104: null everywhere but a load run faulting the database, so production
     // gets the plain deadline fetch.
+    // deadline-ok: the fault injector sits INSIDE supabaseFetchOver, whose deadline bounds it
     const faulting = loadtestSupabaseFetch((input, init) => fetch(input, init));
     cached = createClient<Database>(publicSupabaseUrl(), supabaseSecretKey(), {
       auth: { persistSession: false, autoRefreshToken: false },

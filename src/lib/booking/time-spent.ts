@@ -9,6 +9,7 @@
  * the page did not ask it.
  */
 import { requestObserver } from "@/lib/call-budget";
+import { stalledTogether, type StalledTogether } from "@/lib/dependency-stall";
 import type { ConfirmProfile, ConfirmRequestReading } from "./confirm-profile";
 
 export interface TimeSpent {
@@ -16,13 +17,26 @@ export interface TimeSpent {
   stage: { name: string; ms: number } | null;
   /** The slowest single outside call made INSIDE that stage, by its full label. */
   call: { label: string; ms: number } | null;
+  /**
+   * #3784: Google and Supabase BOTH stalled in this confirm (`dependency-stall.ts`),
+   * with each one's slowest call; null or absent when they did not. The page then
+   * suspects the Cloudflare location before either service.
+   */
+  stalled?: StalledTogether | null;
+  /**
+   * #3784: where the confirm ran, the colos Supabase's edge answered it from (the
+   * line's `supabase_edge_colo`); null or absent when no answer named one.
+   */
+  ranAt?: string | null;
 }
 
 export function whereTimeWent(r: ConfirmRequestReading): TimeSpent {
   const top = r.stages[0];
+  const slowest = (dependency: string) => r.calls?.byDependency.find((d) => d.dependency === dependency)?.maxMs ?? null;
   return {
     stage: top ? { name: top.stage, ms: top.ms } : null,
     call: top ? (r.calls?.slowestByStage[top.stage] ?? null) : null,
+    stalled: stalledTogether({ google: slowest("google"), supabase: slowest("supabase") }),
   };
 }
 
@@ -35,7 +49,8 @@ export function timeSpentInThisRequest(now: () => number = () => Date.now()): Ti
   const observer = requestObserver() as Partial<ConfirmProfile> | undefined;
   if (!observer || typeof observer.read !== "function") return null;
   try {
-    return whereTimeWent(observer.read(now()));
+    const ranAt = typeof observer.answeredFrom === "function" ? observer.answeredFrom("supabase") : [];
+    return { ...whereTimeWent(observer.read(now())), ranAt: ranAt.length > 0 ? ranAt.join(",") : null };
   } catch {
     return null;
   }
