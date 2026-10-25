@@ -53,6 +53,8 @@ export function VolumeLearning({
   rampEndOn,
   detail,
   tiers,
+  retirement,
+  lowFloorNote,
   coverage,
   sourceNotice,
   sourceSetAside,
@@ -69,6 +71,18 @@ export function VolumeLearning({
   detail: string[];
   /** From `tierLearningLines` (#2874): one line for every other tier, judged or not. */
   tiers: string[];
+  /**
+   * From `anchorRetirementSentence` (#3896): when the cal.com measurement stops, or
+   * stopped, holding every tier's floors up, said once under the tier list, or null
+   * while cal.com is live. Required, so the page has to decide it.
+   */
+  retirement: string | null;
+  /**
+   * From `rampEndLowFloorNote` (#3896): what the ramp end confirm says about the
+   * cal.com floor under Low's floors, or null once the anchor has retired and there
+   * is none. Required, so the page has to decide it.
+   */
+  lowFloorNote: string | null;
   /** Each Low page's coverage from `pageCoverage()`, or null when the week could not be read. */
   coverage: PageCoverageView[] | null;
   /**
@@ -118,7 +132,7 @@ export function VolumeLearning({
       {changing ? `The ramp end moves from ${day(rampEndOn)} to ${day(typed)}. ` : ""}
       Every tier then learns only from bookings made on or after {day(typed)}, or after its own
       first booking if that is later, and each is judged against its learned floors once {minWeeks}{" "}
-      full weeks of them have been booked. Low&apos;s never go below the cal.com floors.
+      full weeks of them have been booked.{lowFloorNote ? ` ${lowFloorNote}` : ""}
       {changing ? " The floors learned for the old date stop applying at the next check." : ""}
     </>
   );
@@ -145,6 +159,13 @@ export function VolumeLearning({
           </li>
         ))}
       </ul>
+      {/* #3896, design round "Once, under the tiers": one sentence for every tier,
+          Low included, never repeated on a tier line or Low's status. */}
+      {retirement ? (
+        <p className="mt-3 text-xs text-fg" data-volume-anchor-retirement>
+          {retirement}
+        </p>
+      ) : null}
 
       <p className="mt-4 text-xs text-fg-muted">
         Each tier learns from its own first real booking, so nothing needs setting when another tier

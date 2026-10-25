@@ -42,6 +42,15 @@
  * UNJUDGED until its own traffic has been learned, and says so
  * (`tierJudgedBaseline`).
  *
+ * THE ANCHOR RETIRES `ANCHOR_OVERLAP_WEEKS` AFTER CAL.COM IS MARKED RETIRED (#3896).
+ * After cutover cal.com carries nothing, the share is 1 for good, and the anchor would
+ * be each tier's whole cal.com measurement for ever: a deliberate cut to a tier with
+ * no floor override would page every day. So once the overlap has passed, no fit is
+ * underpinned and no read is either, and the learned floors follow Slate's own
+ * bookings, still guarded by the decline comparison in `learnFloors`. The date is
+ * `monitor_alert_config.calcom_retired_at`, stamped by the database when somebody
+ * marks cal.com retired on /admin/alerts (migration 0203).
+ *
  * No `@/` imports, so node scripts can drive it directly.
  */
 import { DateTime } from "luxon";
@@ -85,6 +94,61 @@ export const REFIT_EVERY_MS = 24 * HOUR_MS;
  * Two refits missed, so one slow day never reads as a fault.
  */
 export const REFIT_OVERDUE_MS = 2 * REFIT_EVERY_MS;
+
+/**
+ * How long the cal.com anchor stays under the learned floors after cal.com is marked
+ * retired on /admin/alerts (#3896, Dan 2026-10-23). After it, every tier's learned
+ * floors follow Slate's own bookings alone, so a deliberate traffic cut is learned
+ * rather than paged on every day.
+ *
+ * WHY 9 WEEKS, from the learner's own window (`LEARNING` in volume-learning.ts):
+ *
+ * - Learning reads `horizonWeeks` (8) back. Until 8 weeks have passed since cutover,
+ *   some of what it reads was booked while Slate carried only its pilot share of the
+ *   tier (half, since the split), so a fit then sits below full traffic, the trap
+ *   "THE RAMP IS NORMAL TO NOBODY" describes. The anchor is what holds those floors
+ *   up meanwhile, so it must not go before the horizon is wholly post cutover.
+ *   `minWeeks` (4) is NOT enough: at 4 weeks half the horizon is still pilot weeks.
+ * - Once the horizon is wholly post cutover, the decline guard compares the last
+ *   `recentWeeks` (2) with the 6 before them, all of them full traffic, so a real
+ *   fall is still refused as a decline rather than learned.
+ * - One more week, because the stamp is when somebody pressed the switch, which can
+ *   sit a few days either side of the day the last landing page really moved.
+ *
+ * Derived from the horizon, so a change to it moves this too.
+ */
+export const ANCHOR_OVERLAP_WEEKS: number = LEARNING.horizonWeeks + 1;
+
+/** When the cal.com anchor retires, and from what. */
+export interface AnchorRetirement {
+  /** When cal.com was marked retired (`monitor_alert_config.calcom_retired_at`). */
+  calcomRetiredAt: string;
+  /** `ANCHOR_OVERLAP_WEEKS` after it, as an ISO instant. */
+  retiresAt: string;
+}
+
+/**
+ * When the anchor stops applying, or null while cal.com is not marked retired. A
+ * stamp that does not read is null too (L50), which keeps the anchor: a floor held
+ * up pages about a deliberate cut, while a floor let go can miss a real decline.
+ */
+export function anchorRetirement(calcomRetiredAt: string | null | undefined): AnchorRetirement | null {
+  if (typeof calcomRetiredAt !== "string") return null;
+  const ms = parseStampMs(calcomRetiredAt);
+  if (ms === null) return null;
+  return { calcomRetiredAt, retiresAt: new Date(ms + ANCHOR_OVERLAP_WEEKS * WEEK_MS).toISOString() };
+}
+
+/**
+ * Whether the anchor had retired at `atMs`. The ONE predicate for it: the refit asks
+ * it at the moment it fits, and `baselineInForce` asks it at the stored refit's own
+ * fit time, so a floor is read with exactly the anchor it was fitted with.
+ */
+export function anchorRetiredAt(retirement: AnchorRetirement | null, atMs: number | null): boolean {
+  if (!retirement || atMs === null) return false;
+  const retiresMs = parseStampMs(retirement.retiresAt);
+  return retiresMs !== null && atMs >= retiresMs;
+}
 
 /**
  * The stored shape's version. 3 carries each tier's carried share (#2893); 2 is per
@@ -298,8 +362,15 @@ interface InForceCommon {
   share: StoredTierShare | null;
   /** When the stored shares were measured, when there are any. */
   shareMeasuredAt: string | null;
-  /** The cal.com floor under this tier at the share in force, or null with none. */
+  /**
+   * The cal.com floor under this tier's learned floors at the share in force, or null
+   * with none: a tier nobody measured, or one whose anchor has retired (#3896).
+   */
   anchor: VolumeBaseline | null;
+  /** When the anchor retires, or null while cal.com is not marked retired (#3896). */
+  anchorRetirement: AnchorRetirement | null;
+  /** True once the stored refit was fitted after the anchor retired, so none is under it. */
+  anchorRetired: boolean;
 }
 
 export type BaselineInForce =
@@ -324,7 +395,12 @@ export type BaselineInForce =
  * page's "in force" line both come from here, so they cannot disagree (L16).
  */
 export function baselineInForce(
-  input: { rampEndOn: string | null; learning: unknown },
+  input: {
+    rampEndOn: string | null;
+    learning: unknown;
+    /** When cal.com was marked retired (#3896), or null while it is not. */
+    calcomRetiredAt: string | null;
+  },
   tier: VolumeTier,
   source: AnchorSource = REAL_ANCHOR_SOURCE,
 ): BaselineInForce {
@@ -334,7 +410,13 @@ export function baselineInForce(
   const share = stored?.carriedShare?.tiers[tier] ?? null;
   // The anchor at the share in force, the same one the refit underpinned with, so the
   // floors read here are the floors the refit fitted (#2893).
-  const anchor = anchorFor(tier, share?.applied?.share ?? null, source);
+  const measured = anchorFor(tier, share?.applied?.share ?? null, source);
+  // #3896: retired as of the stored refit's OWN fit time, the moment the refit asked
+  // the same question, so the read never disagrees with the fit. Putting cal.com back
+  // clears the date, and the anchor is under the floors again from this read on.
+  const retirement = anchorRetirement(input.calcomRetiredAt);
+  const retired = anchorRetiredAt(retirement, stored ? parseStampMs(stored.fittedAt) : null);
+  const anchor = retired ? null : measured;
   const entry = stored?.tiers[tier] ?? null;
   const common: InForceCommon = {
     tier,
@@ -344,9 +426,16 @@ export function baselineInForce(
     share,
     shareMeasuredAt: stored?.carriedShare?.measuredAt ?? null,
     anchor,
+    anchorRetirement: retirement,
+    anchorRetired: retired,
   };
+  // Low is judged against its measurement before it has learned, retired or not: it
+  // has nothing else, and its two floor overrides on /admin/alerts are its own knobs.
+  // Any other tier is not judged before it has learned, so a retired anchor leaves it
+  // with nothing under what it learns.
+  const fallback = tier === LOW_TIER ? measured : anchor;
   const notLearned = (why: MeasuredWhy): BaselineInForce =>
-    anchor ? { ...common, kind: "measured", baseline: anchor, why } : { ...common, kind: "unjudged", why };
+    fallback ? { ...common, kind: "measured", baseline: fallback, why } : { ...common, kind: "unjudged", why };
   if (read.state === "unreadable") return notLearned("unreadable");
   if (!stored) return notLearned("not-fitted");
   if (stored.declaredRampEndOn !== rampEndOn) return notLearned("other-ramp-end");
@@ -405,8 +494,11 @@ export async function runVolumeRelearn(deps: {
   anchors: AnchorSource;
   /** The zone weekday, hour and a declared ramp end's day are judged in. */
   zone: string;
-  /** The stored ramp end and refit. Throws when it cannot be read. */
-  readConfig: () => Promise<{ rampEndOn: string | null; learning: unknown }>;
+  /**
+   * The stored ramp end and refit, and when cal.com was marked retired (#3896), which
+   * decides whether the anchor is still under the fit. Throws when it cannot be read.
+   */
+  readConfig: () => Promise<{ rampEndOn: string | null; learning: unknown; calcomRetiredAt: string | null }>;
   /**
    * Each tier's first real page booking at or after `sinceIso`, or null for a tier
    * nobody booked (`firstTierBookingsSince`). Throws on a failed read.
@@ -432,7 +524,7 @@ export async function runVolumeRelearn(deps: {
   save: (state: StoredVolumeLearning) => Promise<void>;
   log?: (fields: Record<string, unknown>) => void;
 }): Promise<RelearnResult> {
-  const { rampEndOn, learning } = await deps.readConfig();
+  const { rampEndOn, learning, calcomRetiredAt } = await deps.readConfig();
   const declaredMs = rampEndOn ? rampEndMs(rampEndOn, deps.zone) : null;
   if (rampEndOn && declaredMs === null) throw new Error(`volume learning: the stored ramp end ${rampEndOn} is not a date`);
 
@@ -478,7 +570,12 @@ export async function runVolumeRelearn(deps: {
   const previousShare = read.state === "ok" ? read.value.carriedShare : null;
   const carriedShare =
     carried.length > 0 ? await measureCarriedShares(deps, rows, closedDates, previousShare) : previousShare;
-  const anchors = anchorsFor(carriedShare, deps.anchors);
+  // #3896: ANCHOR_OVERLAP_WEEKS after cal.com was marked retired, no tier is fitted
+  // with its cal.com measurement under it, so a deliberate cut is learned. The read
+  // asks the same predicate at this refit's fit time, so the two cannot disagree.
+  const retirement = anchorRetirement(calcomRetiredAt ?? null);
+  const anchorRetired = anchorRetiredAt(retirement, deps.nowMs);
+  const anchors = anchorRetired ? {} : anchorsFor(carriedShare, deps.anchors);
 
   const tiers: Partial<Record<VolumeTier, StoredTierLearning>> = {};
   const summary: [VolumeTier, LearnedFloors["status"] | "not-carried"][] = [];
@@ -514,6 +611,8 @@ export async function runVolumeRelearn(deps: {
   });
   deps.log?.({
     ramp_end: rampEndOn,
+    anchor_retires_at: retirement?.retiresAt ?? null,
+    anchor_retired: anchorRetired,
     rows_read: rows.length,
     closed_days: closedDates.length,
     carried: carried.join(",") || "none",

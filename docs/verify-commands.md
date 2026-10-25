@@ -2373,3 +2373,27 @@ from readings measured over exactly one half hour (a reading after a gap is left
 out readings before its since instant and never reaches another org; neither browser role can
 run it. Seen failing with the half hour filter and the return time check taken out of 0199.
 
+
+# Proving when cal.com was marked retired is recorded (`scripts/verify-calcom-retired-at-sql.ts`)
+
+#3896: the cal.com anchor under the learned low volume floors retires
+`ANCHOR_OVERLAP_WEEKS` after `monitor_alert_config.calcom_retired_at`, and only the database
+writes that date: migration 0203's backfill and its trigger. The offline suites read the
+migration's text and drive the reader with dates handed to it.
+
+This suite replays every migration before 0203 into the `supabase/postgres` image, marks
+cal.com retired with a history of presses in the audit log, applies 0203, and then drives the
+switch exactly as `setCalcomRetired`'s upsert does. It proves: the backfill takes the last move
+into retired, not the first press or a repeat; while retired, a repeat press and a save of
+another setting keep the stamp, a date written by hand is kept (so it can be corrected) and a
+null is refused; putting cal.com back clears it and a date written while live is refused; a
+retire stamps the moment of the press, or the date the same write names; a first write of the
+row stamps or leaves null by its state; the function is invoker run with `search_path` pinned.
+
+```
+node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-calcom-retired-at-sql.ts
+```
+
+No Docker is exit 2, UNMEASURED. It runs in the DB replay workflow with the other
+`verify-*-sql.ts` suites. Seen failing on a planted breakage the offline suite cannot see:
+the backfill taking the first move into retired instead of the last.

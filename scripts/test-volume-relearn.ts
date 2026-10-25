@@ -16,8 +16,11 @@
 //   as well as at fit time. An unmeasured tier has nothing under it, and says so.
 // - A result belongs to the declared ramp end it was fitted under; changing that
 //   takes it out of force and makes a refit due at once.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { DateTime } from "luxon";
 import {
+  ANCHOR_OVERLAP_WEEKS,
   REFIT_EVERY_MS,
   REFIT_OVERDUE_MS,
   baselineInForce,
@@ -30,7 +33,7 @@ import {
   shareInForce,
   type StoredVolumeLearning,
 } from "../src/lib/monitor/volume-relearn.ts";
-import { learningStatusCopy, tierLearningLines } from "../src/lib/monitor/volume-relearn-copy.ts";
+import { anchorRetirementSentence, learningStatusCopy, rampEndLowFloorNote, tierLearningLines } from "../src/lib/monitor/volume-relearn-copy.ts";
 import { LEARNING, type SlateBookingRow } from "../src/lib/monitor/volume-learning.ts";
 import { floorsFor, type FloorCell, type VolumeBaseline } from "../src/lib/monitor/volume-floors.ts";
 import { MEASURED_VOLUME_BASELINE } from "../src/lib/monitor/volume-baseline.ts";
@@ -39,6 +42,7 @@ import { resolveFloors, resolveTierBaselines } from "../src/lib/monitor/settings
 import { binomialFloor, carriedAnchor, type AnchorSource } from "../src/lib/monitor/carried-share.ts";
 import { FLOOR_FIT } from "../src/lib/monitor/volume-floors.ts";
 import { TIER_MEASUREMENTS } from "../src/lib/monitor/volume-tiers.ts";
+import { runTierVolumeChecks } from "../src/lib/monitor/tier-volume.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ZONE = "America/New_York";
@@ -108,6 +112,8 @@ function harness(opts: {
   calcom?: Partial<Record<VolumeTier, number>> | null;
   calcomThrows?: boolean;
   source?: AnchorSource;
+  /** When cal.com was marked retired (#3896), or null (the default) for never. */
+  calcomRetiredAt?: string | null;
 }) {
   const reads: { sinceIso: string; untilIso: string }[] = [];
   const firstReads: string[] = [];
@@ -120,7 +126,7 @@ function harness(opts: {
       zone: ZONE,
       readConfig: async () => {
         if (opts.configThrows) throw new Error("config read failed");
-        return { rampEndOn: opts.rampEndOn ?? null, learning: opts.learning ?? null };
+        return { rampEndOn: opts.rampEndOn ?? null, learning: opts.learning ?? null, calcomRetiredAt: opts.calcomRetiredAt ?? null };
       },
       readFirstBookings: async (sinceIso) => {
         firstReads.push(sinceIso);
@@ -687,6 +693,172 @@ let fitted: StoredVolumeLearning | null = null;
   delete noField.carriedShare;
   eq(readStoredLearning(noField).state, "unreadable", "a version 3 record with no share field is malformed, not 'none measured'");
   eq(readStoredLearning({ ...(fitted as object), carriedShare: { measuredAt: "soon" } }).state, "unreadable", "and so is one whose shares do not validate");
+}
+
+// --- #3896: the cal.com anchor retires a set time after cal.com is marked retired ---
+//
+// After cutover cal.com takes nothing, so the share is 1 for good and the anchor is
+// the tier's whole cal.com measurement for ever. A deliberate cut to Medium, High or
+// Very High, which have no floor override, would then page every day. Dan,
+// 2026-10-23: the anchor stops applying ANCHOR_OVERLAP_WEEKS after cal.com is marked
+// retired, so the learned floors follow Slate's own traffic. Driven end to end: the
+// refit, the resolver the monitor reads, and the tier check that pages.
+{
+  const RETIRED = DateTime.fromISO("2027-01-04T11:00", { zone: ZONE }).toMillis(); // a Monday
+  const RETIRED_AT = new Date(RETIRED).toISOString();
+  const MED_START = RETIRED - 12 * WEEK;
+  // Medium's whole tier measurement: a 2 hour floor of 20, which full traffic (30
+  // bookings in 2 hours) clears and the deliberately halved traffic (15) does not.
+  const MED_ANCHORED = sourceOf({ "1": anchor(0, 4), "2": anchor(4, 20) });
+  const HOURS = {
+    zone: ZONE,
+    rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 24 * 60 })),
+    exceptions: [],
+  };
+  /** Refit at `nowMs`, then run the tier check the monitor runs, and return what it paged. */
+  async function judgeMedium(rows: SlateBookingRow[], nowMs: number, calcomRetiredAt: string | null) {
+    const h = harness({ rows, first: { "2": MED_START }, nowMs, source: MED_ANCHORED, calcomRetiredAt });
+    await h.run();
+    const config = { volume_ramp_end_on: null, volume_learning: h.saves[0], calcom_retired_at: calcomRetiredAt };
+    const baselines = resolveTierBaselines(config, MED_ANCHORED);
+    const sent: string[] = [];
+    await runTierVolumeChecks({
+      nowMs,
+      businessHours: HOURS,
+      baselines,
+      countSince: async (tier, sinceIso) =>
+        rows.filter((r) => r.tier === tier && r.createdAtMs >= Date.parse(sinceIso) && r.createdAtMs < nowMs).length,
+      armed: true,
+      cooldownMs: 30 * MIN,
+      notify: async (key) => void sent.push(key),
+      notifyCountUnreadable: async (key) => void sent.push(key),
+      resolveRecovered: async () => [],
+    });
+    const state = baselineInForce({ rampEndOn: null, learning: h.saves[0], calcomRetiredAt }, "2", MED_ANCHORED);
+    return { sent, saved: h.saves[0]!, baselines, state };
+  }
+  const CUT = RETIRED + WEEK; // Pennie deliberately halves Medium a week after cutover
+  const cutRows = (until: number) => [...bookings(MED_START, CUT, 4, "2"), ...bookings(CUT, until, 8, "2")];
+
+  assert(ANCHOR_OVERLAP_WEEKS >= LEARNING.horizonWeeks, `the overlap (${ANCHOR_OVERLAP_WEEKS} weeks) covers the learner's whole horizon (${LEARNING.horizonWeeks}), so it learns from post cutover weeks alone`);
+
+  // Inside the overlap, the anchor holds the floor up: the halved traffic pages.
+  const inside = RETIRED + 8 * WEEK + 3 * 60 * MIN;
+  assert(inside < RETIRED + ANCHOR_OVERLAP_WEEKS * WEEK, "the first check is inside the overlap");
+  const held = await judgeMedium(cutRows(inside), inside, RETIRED_AT);
+  assert(held.baselines["2"]!.cells.every((d) => d.every((c) => c.floor120 >= 20)), "inside the overlap every Medium floor is held at the cal.com measurement");
+  eq(held.sent, ["low_tier_volume:2"], "so the deliberately halved Medium pages, as it always has");
+  assert(held.state.kind === "learned" && held.state.anchored, "and the state says the anchor is under it");
+
+  // After it, the cut is learned and the same traffic does not page.
+  const after = RETIRED + 10 * WEEK + 3 * 60 * MIN;
+  assert(after >= RETIRED + ANCHOR_OVERLAP_WEEKS * WEEK, "the second check is past the overlap");
+  const learned = await judgeMedium(cutRows(after), after, RETIRED_AT);
+  eq(learned.saved.tiers["2"]?.result?.status, "learned", "past the overlap the halved weeks are learned as Medium's traffic");
+  assert(learned.baselines["2"]!.cells.some((d) => d.some((c) => c.floor120 < 20)), "with floors below the retired cal.com measurement");
+  eq(learned.sent, [], "and the deliberately halved Medium no longer pages");
+  assert(learned.state.kind === "learned" && !learned.state.anchored, "the state says no anchor is under it");
+  const fit = learned.saved.tiers["2"]?.result;
+  assert(
+    (fit?.status === "learned" || fit?.status === "declining") && fit.baseline.cells.some((d) => d.some((c) => c.floor120 < 20)),
+    "the fit itself left the anchor out, the same decision the read makes",
+  );
+
+  // Control: with cal.com never marked retired the anchor never retires, which is the gap.
+  const never = await judgeMedium(cutRows(after), after, null);
+  eq(never.sent, ["low_tier_volume:2"], "control: with no retirement date the anchor holds for good and the halved Medium pages");
+
+  // Control: an unexplained collapse after retirement still pages.
+  const full = bookings(MED_START, after - 2 * 60 * MIN, 4, "2");
+  const collapse = await judgeMedium(full, after, RETIRED_AT);
+  eq(collapse.saved.tiers["2"]?.result?.status, "learned", "bookings that stopped two hours ago are not yet anything the fit saw");
+  eq(collapse.sent, ["low_tier_volume:2"], "control: Medium stopping outright after retirement still pages");
+  // And a fall the horizon has not absorbed is held off by the decline guard.
+  const fell = [...bookings(MED_START, after - 2 * WEEK, 4, "2"), ...bookings(after - 2 * WEEK, after, 20, "2")];
+  const declining = await judgeMedium(fell, after, RETIRED_AT);
+  eq(declining.saved.tiers["2"]?.result?.status, "declining", "a fall to a fifth over the last two weeks is a decline, not learned");
+  eq(declining.sent, ["low_tier_volume:2"], "control: and it pages against the floors from before it");
+
+  // The read follows the fit: a result fitted inside the overlap keeps its anchor
+  // until the next refit, and putting cal.com back restores the anchor at once.
+  const readLater = baselineInForce({ rampEndOn: null, learning: held.saved, calcomRetiredAt: RETIRED_AT }, "2", MED_ANCHORED);
+  assert(readLater.kind === "learned" && readLater.anchored, "a result fitted inside the overlap is read with its anchor, whenever it is read");
+  const putBack = baselineInForce({ rampEndOn: null, learning: learned.saved, calcomRetiredAt: null }, "2", MED_ANCHORED);
+  assert(
+    putBack.kind === "learned" && putBack.anchored && putBack.baseline.cells.every((d) => d.every((c) => c.floor120 >= 20)),
+    "cal.com put back: the anchor is under the floors again from the next read",
+  );
+  const unreadable = baselineInForce({ rampEndOn: null, learning: learned.saved, calcomRetiredAt: "not a date" }, "2", MED_ANCHORED);
+  assert(unreadable.kind === "learned" && unreadable.anchored, "a retirement date that does not read keeps the anchor (L50)");
+
+  // The admin page says it ONCE, under the tier list, for every tier with Low
+  // included (Dan's design round, 2026-10-23: "Once, under the tiers"), and never on
+  // a tier line or in Low's status. Low is carried here too, so its status is real.
+  const both = async (nowMs: number) => {
+    const h = harness({
+      rows: [...cutRows(nowMs), ...bookings(MED_START, nowMs, 5, "1")],
+      first: { "1": MED_START, "2": MED_START },
+      nowMs,
+      source: MED_ANCHORED,
+      calcomRetiredAt: RETIRED_AT,
+    });
+    await h.run();
+    const input = { rampEndOn: null, learning: h.saves[0], calcomRetiredAt: RETIRED_AT };
+    return {
+      sentence: anchorRetirementSentence(input),
+      tierLine: tierLearningLines(input, nowMs + MIN, MED_ANCHORED)[0]!,
+      lowStatus: learningStatusCopy(baselineInForce(input, "1", MED_ANCHORED), nowMs + MIN),
+      input,
+    };
+  };
+  const before = await both(inside);
+  eq(
+    before.sentence,
+    "cal.com was marked retired on Jan 4, 2027. From Mar 8, 2027, 9 weeks later, its measurement stops holding any floor up, and every tier, Low included, follows Slate's own bookings.",
+    "inside the overlap one sentence under the tiers says when the anchor stops",
+  );
+  assert(/none below its cal\.com measurement/.test(before.tierLine), `inside the overlap the tier line still names the floor under it (${before.tierLine})`);
+  const pastCut = await both(after);
+  eq(
+    pastCut.sentence,
+    "No cal.com measurement has held any floor up since Mar 8, 2027, 9 weeks after cal.com was marked retired, so every tier, Low included, follows Slate's own bookings.",
+    "past it the same place says since when no cal.com measurement is under any floor",
+  );
+  assert(
+    /^Medium: judged against floors learned from its own bookings since .*, last refit [^.]*\.$/.test(pastCut.tierLine) && !/cal\.com/.test(pastCut.tierLine),
+    `past it the tier line stops mentioning the cal.com measurement (${pastCut.tierLine})`,
+  );
+  for (const view of [before, pastCut]) {
+    const lines = [view.tierLine, view.lowStatus.inForce, ...view.lowStatus.detail];
+    assert(
+      lines.every((l) => !/marked retired|stops holding|held any floor/.test(l)),
+      `the retirement is said once, never on a tier line or Low's status (${lines.join(" | ")})`,
+    );
+  }
+  assert(
+    pastCut.lowStatus.detail.every((l) => !/applies in full|No floor is below/.test(l)),
+    "Low's status claims no cal.com floor under it once the anchor has gone",
+  );
+  eq(anchorRetirementSentence({ rampEndOn: null, learning: held.saved, calcomRetiredAt: null }), null, "control: with cal.com not marked retired there is no sentence");
+  // The ramp end confirm's claim about Low's floors, from the same retirement state.
+  eq(rampEndLowFloorNote(before.input), "Low's never go below the cal.com floors before Mar 8, 2027.", "inside the overlap the confirm says until when Low is held up");
+  eq(rampEndLowFloorNote(pastCut.input), null, "past it the confirm claims no cal.com floor under Low");
+  eq(rampEndLowFloorNote({ rampEndOn: null, learning: held.saved, calcomRetiredAt: null }), "Low's never go below the cal.com floors.", "control: with cal.com live it says so plainly");
+  const lowState = baselineInForce({ rampEndOn: null, learning: learned.saved, calcomRetiredAt: RETIRED_AT }, "1", MED_ANCHORED);
+  eq(lowState.kind, "measured", "control: Low, which the refit found not carried, is still judged against its measurement");
+  for (const line of [before.sentence ?? "", pastCut.sentence ?? "", before.tierLine, pastCut.tierLine]) {
+    assert(!/undefined|NaN|null|\[object/.test(line), `no leaked value in "${line.slice(0, 50)}"`);
+    assert(/^[\x20-\x7E]*$/.test(line), "plain ASCII copy, so no dashes or emoji");
+  }
+  // The settled design draws its sentence from the same constant.
+  const fixture = JSON.parse(
+    readFileSync(join(import.meta.dirname, "..", "docs", "design", "fixtures", "alerts-learning-retirement.json"), "utf8"),
+  ) as { overlapWeeks: number };
+  eq(fixture.overlapWeeks, ANCHOR_OVERLAP_WEEKS, "the design fixture's overlap is the constant's");
+
+  // The runbook says when the anchor stops applying, in the constant's own number.
+  const runbook = readFileSync(join(import.meta.dirname, "..", "docs", "alerts-runbook.md"), "utf8");
+  assert(runbook.includes("ANCHOR_OVERLAP_WEEKS") && runbook.includes(`${ANCHOR_OVERLAP_WEEKS} weeks after cal.com is marked retired`), "docs/alerts-runbook.md names the overlap and its length");
 }
 
 finish();

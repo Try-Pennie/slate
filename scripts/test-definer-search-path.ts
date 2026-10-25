@@ -304,6 +304,9 @@ const EXPECTED_PINNED = [
   "ladder_candidate_inputs",
   // #3248: the live reroute holds the booker skips, judged on the database clock.
   "live_reroute_holds",
+  // #3896: stamps when cal.com was marked retired. Security INVOKER; now() and
+  // coalesce are pg_catalog built ins.
+  "monitor_alert_config_stamp_calcom_retired",
   "move_busy_block",
   // #3365: releases a time off's held 'ooo' block when its request ends or stops
   // pointing at it. A trigger, Security DEFINER, pinned to public, no extensions.

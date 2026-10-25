@@ -160,6 +160,18 @@ assert(!isSettled(OUTCOME_CALCOM_RETIRED) && isFailure(OUTCOME_CALCOM_RETIRED), 
   );
 }
 
+// --- #3896: when it was retired is stamped by the database, at every writer ----------
+{
+  const sql = readFileSync(join(process.cwd(), "supabase/migrations/0203_calcom_retired_at.sql"), "utf8");
+  assert(/add column calcom_retired_at timestamptz;/.test(sql), "the stamp is a nullable timestamptz: null means cal.com is live");
+  const backfill = sql.indexOf("update monitor_alert_config c");
+  const trigger = sql.indexOf("create trigger monitor_alert_config_stamp_calcom_retired");
+  assert(backfill > 0 && trigger > backfill, "a row already retired is backfilled BEFORE the trigger exists, which would otherwise keep its null");
+  assert(/before insert or update on monitor_alert_config/.test(sql), "every write to the row passes the trigger, the admin action and hand SQL alike (L593)");
+  assert(/old\.calcom_retired then\s+[^\n]*\n\s*new\.calcom_retired_at := coalesce\(new\.calcom_retired_at, old\.calcom_retired_at, now\(\)\)/.test(sql), "pressing retire again keeps the first stamp, so the overlap is not restarted");
+  assert(/else\s+new\.calcom_retired_at := null;/.test(sql), "putting cal.com back clears the stamp");
+}
+
 // --- the two workflows ask before they touch cal.com ---------------------------------
 /** The `if:` of the step whose `- name:` line matches, read out of the workflow file. */
 function stepIf(file: string, name: RegExp): string | null {

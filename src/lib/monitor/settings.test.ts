@@ -204,13 +204,13 @@ describe("resolveFloors", () => {
   });
 
   it("uses env as an override when the store is unset", () => {
-    const policy = resolveFloors({ floor_30: null, floor_120: null, volume_ramp_end_on: null, volume_learning: null }, { floor30: 7, floor120: 25 });
+    const policy = resolveFloors({ floor_30: null, floor_120: null, volume_ramp_end_on: null, volume_learning: null, calcom_retired_at: null }, { floor30: 7, floor120: 25 });
     expect(policy.override30).toEqual({ value: 7, origin: "env" });
     expect(policy.override120).toEqual({ value: 25, origin: "env" });
   });
 
   it("prefers the store over env (store wins)", () => {
-    const policy = resolveFloors({ floor_30: 3, floor_120: 12, volume_ramp_end_on: null, volume_learning: null }, { floor30: 7, floor120: 25 });
+    const policy = resolveFloors({ floor_30: 3, floor_120: 12, volume_ramp_end_on: null, volume_learning: null, calcom_retired_at: null }, { floor30: 7, floor120: 25 });
     expect(policy.override30).toEqual({ value: 3, origin: "stored" });
     expect(policy.override120).toEqual({ value: 12, origin: "stored" });
     const now = floorsFor(policy, at);
@@ -219,13 +219,13 @@ describe("resolveFloors", () => {
   });
 
   it("accepts a stored floor of zero (a valid, meaningful override)", () => {
-    const policy = resolveFloors({ floor_30: 0, floor_120: 0, volume_ramp_end_on: null, volume_learning: null }, { floor30: 7, floor120: 25 });
+    const policy = resolveFloors({ floor_30: 0, floor_120: 0, volume_ramp_end_on: null, volume_learning: null, calcom_retired_at: null }, { floor30: 7, floor120: 25 });
     expect(policy.override30).toEqual({ value: 0, origin: "stored" });
     expect(policy.override120).toEqual({ value: 0, origin: "stored" });
   });
 
   it("ignores invalid stored floors (negative, non-integer) and falls through to env, then the measurement", () => {
-    const policy = resolveFloors({ floor_30: -1, floor_120: 2.5, volume_ramp_end_on: null, volume_learning: null }, { floor30: 7 });
+    const policy = resolveFloors({ floor_30: -1, floor_120: 2.5, volume_ramp_end_on: null, volume_learning: null, calcom_retired_at: null }, { floor30: 7 });
     expect(policy.override30).toEqual({ value: 7, origin: "env" });
     expect(policy.override120).toBeNull();
   });
