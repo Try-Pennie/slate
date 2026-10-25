@@ -286,9 +286,13 @@ async function tick(over: Partial<Parameters<typeof runRosterFillCheck>[0]>) {
   assert(resolved[0]?.text.includes(TEAM_CAPACITY_LINK) ?? false, "the posted all clear carries the Team capacity link");
 }
 {
-  const { sent, resolved } = await tick({ loadReport: async () => report(FULL_THEN_81) });
+  const logged: Record<string, unknown>[] = [];
+  const { sent, resolved } = await tick({ loadReport: async () => report(FULL_THEN_81), log: (f) => logged.push(f) });
   eq(sent.length, 0, "a full day beside a day under the line posts nothing (#4219)");
   eq(resolved.length, 1, "and is a measured reading under the condition, so it clears");
+  const line = logged.find((f) => f.status === "measured");
+  eq(line?.day_pcts, "100,81", "the log line carries each day's share, which the band and the notice follow");
+  eq(line?.booked_pct, 90, "beside the two days added up");
 }
 {
   const { sent, resolved, result } = await tick({ loadReport: async () => ({ measurable: false, reason: "time-off" }) });

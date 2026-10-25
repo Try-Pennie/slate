@@ -287,6 +287,8 @@ export async function runRosterFillCheck(deps: {
   deps.log?.({
     status: "measured",
     booked_pct: result.bookedPct,
+    // Each day's own share, in the order of `days`: what `band` and the notice follow (#4219).
+    day_pcts: result.perDay.map((d) => d.bookedPct).join(","),
     line_pct: result.linePct,
     band: result.band,
     days: result.days.join(","),
