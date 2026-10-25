@@ -1,6 +1,6 @@
 # GitHub workflows: what guards main, settings, and alerters
 
-The detective control over main, the two facts a workflow cannot report about
+The ruleset that protects main and the detective guard behind it, the two facts a workflow cannot report about
 itself, how a workflow's `vars.` and `secrets.` references are checked, and why
 an alerting workflow carries no dependency install.
 
