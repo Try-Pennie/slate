@@ -4075,23 +4075,7 @@ function realBulkReassignDeps(): BulkReassignDeps {
     jobFinished: (job) =>
       reportDemotionSweepOutcome(job, {
         loadItemStatuses: loadBulkReassignItems,
-        loadAdvisor: async (userId) => {
-          const row = unwrap(
-            await supabaseAdmin()
-              .from("users")
-              // cap-safe: single-row primary-key lookup.
-              .select("email, is_test")
-              .eq("id", userId)
-              .maybeSingle(),
-            "demotion-outcome-advisor",
-          ) as { email: string; is_test: boolean } | null;
-          return row ? { email: row.email, isTest: row.is_test } : null;
-        },
-        appUrl,
-        // A one minute cooldown, the shortest the notifier accepts (it refuses zero before
-        // posting): the key is per advisor and their sweeps are at least an hour apart.
-        // alert-key: demotion_reroute_moved:*
-        sendInfo: (key, text) => sendThrottledInfo(key, 60_000, text),
+        log: (fields) => log.info("bulk-reassign", fields),
       }),
   };
 }
