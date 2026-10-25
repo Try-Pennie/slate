@@ -2395,4 +2395,5 @@ node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/ve
 ```
 
 No Docker is exit 2, UNMEASURED. It runs in the DB replay workflow with the other
-`verify-*-sql.ts` suites.
+`verify-*-sql.ts` suites. Seen failing on a planted breakage the offline suite cannot see:
+the backfill taking the first move into retired instead of the last.
