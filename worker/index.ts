@@ -83,6 +83,11 @@ import { dispatchWithProbe, publicProbeFields, startPublicProbe } from "./public
 // The shared per-address burst counter (#1536). A Durable Object is the only
 // primitive that can hold ONE count across isolates, which is what the native
 // rate limiter cannot do and why a parallel burst sailed through its ceiling.
+//
+// Both now run in their own small Workers (#3555, #3500), and these exports stay ON
+// PURPOSE (#4025, Dan 2026-10-23): removing them needs a deleted_classes migration,
+// which ends rollback to every version from before 2026-10-09. Kept as rollback
+// insurance; revisit on 2027-01-23.
 export { BurstLimiter } from "./burst-limiter";
 export { ConfirmLine } from "./confirm-line";
 

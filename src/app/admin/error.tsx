@@ -25,9 +25,11 @@ import {
  * rather than replacing the app. That is why this is the boundary that matters
  * and `global-error` is only the backstop.
  *
- * `retry` is Next 16's name for this prop, not the `reset` of earlier versions.
- * Worth knowing because the wrong name is not a type error at runtime, it is a
- * button that does nothing.
+ * Try again is wired to `retry`, never `reset` (L753, #3425). Both props exist in
+ * this Next: `retry` re-fetches the boundary's children from the server and
+ * re-renders them, while `reset` only clears the error and re-renders what the
+ * browser already holds. After a server error that re-renders the same failure,
+ * so a button wired to `reset` looks dead (node_modules/next/dist/docs, error.md).
  */
 export default function AdminError({
   error,

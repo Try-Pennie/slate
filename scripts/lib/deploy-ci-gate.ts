@@ -1,9 +1,9 @@
 /**
  * Refuse to deploy a commit unless `ci` passed on that EXACT commit (#3088).
  *
- * Native branch protection is a paid feature this org does not have, so nothing
- * prevents a direct push to main, and the main push guard (#1027) only detects one
- * after it has deployed. The deploy job's `needs: [ci, ...]` already waits on the
+ * The "Protect main" ruleset (#4197) now refuses a direct push to main and a merge
+ * without a green `ci`, but a ruleset is a setting an admin can switch off, and the
+ * main push guard (#1027) only detects a push after it has deployed. The deploy job's `needs: [ci, ...]` already waits on the
  * fan-in in the same run, but that is a property of one line of YAML: an edit to
  * `needs`, an `if: always()` added to the deploy job, or a re-run that reaches the
  * deploy some other way would ship with nothing checking. This is the second,

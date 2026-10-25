@@ -1,6 +1,6 @@
 # GitHub workflows: what guards main, settings, and alerters
 
-The detective control over main, the two facts a workflow cannot report about
+The ruleset that protects main and the detective guard behind it, the two facts a workflow cannot report about
 itself, how a workflow's `vars.` and `secrets.` references are checked, and why
 an alerting workflow carries no dependency install.
 
@@ -9,18 +9,23 @@ every session (#2393). `AGENTS.md` keeps the rule and points here; this is the
 full text as it stood, with the reasoning, the incidents and the measurements
 behind it.
 
-## Main is guarded by detection, not prevention (free-plan constraint)
+## Main is protected by a ruleset, with detection behind it (#4197)
 
-Native GitHub branch protection (require a PR, require passing checks before a
-push reaches main) needs a **paid org plan**; Try-Pennie is on the free plan, so
-nothing server-side *prevents* a direct push to main or the merge of a red PR.
-The compensating control is **detective**: `.github/workflows/main-push-guard.yml`
-(#1027) fires on every push to main, resolves whether the commit came from a
-merged PR whose CI passed (`scripts/check-main-push.ts` +
-`scripts/lib/main-push-guard.ts`), and on a violation **fails the run and posts a
-Slack alert** so a human can revert. Because it runs *after* the push (and the
-deploy), it is a safety net, not prevention: that is the accepted residual risk
-until the org upgrades. A **deliberate** direct push (an admin hotfix) must carry
+Since 2026-10-23 the **"Protect main"** ruleset
+(id 25746489, on the default branch, active) *prevents* what used to be detected
+only: it refuses deleting main and force pushes, requires every change to arrive as
+a pull request (0 approvals, Dan's choice), and requires the `ci` check from GitHub
+Actions (integration 15368) to pass. Its bypass list is empty, so nobody, admins
+included, can push to main directly, and `[allow-direct-push]` no longer lets a push
+through. **Renaming the `ci` fan-in job blocks every pull request** until the
+ruleset names the new check, so a rename changes the ruleset in the same PR (L305).
+
+The **detective** control stays as the backstop for the day the ruleset is switched
+off or loosened: `.github/workflows/main-push-guard.yml` (#1027) fires on every push
+to main, resolves whether the commit came from a merged PR whose CI passed
+(`scripts/check-main-push.ts` + `scripts/lib/main-push-guard.ts`), and on a
+violation **fails the run and posts a Slack alert** so a human can revert. A
+deliberate direct push, possible only with the ruleset off, must carry
 `[allow-direct-push]` in its commit subject (the first line) to stay silent;
 otherwise it pages. The body is never read for it (#4096): a squash merge's body
 quotes every commit on its branch, so a branch that only mentions the marker would

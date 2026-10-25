@@ -1,14 +1,13 @@
 name: Main-push guard
 
-# Server-side compensating control for direct pushes to main (#1027). Native
-# GitHub branch protection needs a paid org plan, which Try-Pennie is not on, so
-# nothing PREVENTS a direct push to main or the merge of a red PR. This workflow
-# is the free DETECTIVE backstop: on every push to main it works out whether the
-# commit arrived through a merged PR whose CI passed, and if not it fails the run
-# and posts a Slack alert so a human can review/revert. It fires AFTER the push
-# (and the deploy), so it is a safety net, not prevention; that residual risk is
-# documented in AGENTS.md. A deliberate direct push must carry the
-# `[allow-direct-push]` marker in its commit message to stay silent.
+# Detective backstop for direct pushes to main (#1027). Since 2026-10-23 the
+# "Protect main" ruleset PREVENTS a direct push or a red merge (#4197, AGENTS.md);
+# this workflow stays for the day that ruleset is switched off or loosened. On every
+# push to main it works out whether the commit arrived through a merged PR whose CI
+# passed, and if not it fails the run and posts a Slack alert so a human can
+# review/revert. It fires AFTER the push (and the deploy). A deliberate direct push,
+# possible only with the ruleset off, must carry the `[allow-direct-push]` marker in
+# its commit subject to stay silent (#4096: the body is never read).
 on:
   push:
     branches:
@@ -209,9 +208,9 @@ jobs:
       # #1523: say so when the guard itself could not run.
       #
       # The violation alert is posted from the classify step, so until now every step
-      # before it could fail with the run going red and NOTHING sent anywhere. Native
-      # branch protection needs a paid org plan, so this workflow is the only control over
-      # main, and the whole design rests on it failing the run AND telling a human (#1027).
+      # before it could fail with the run going red and NOTHING sent anywhere. This
+      # workflow was then the only control over main (the ruleset came later, #4197), and
+      # the whole design rests on it failing the run AND telling a human (#1027).
       # When it dies early only the first half happens, and a red run nobody is told about
       # is the same as no guard, with the added problem that it looks like it ran. Observed
       # on 2026-08-17: run 32039856279 died on a 429 downloading an action and was found

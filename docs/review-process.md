@@ -27,7 +27,7 @@ is a report, not a gate.
 | The migration drift check (CI, in `static-checks`) | Code shipping ahead of an unapplied migration. |
 | `security-scan` (CI) | A secret in the commits a push adds, not merely in the working tree. |
 | `merge-gap` (CI) | A commit pushed to a branch whose PR already merged, which would strand it. |
-| The `main-push-guard` (CI) | A direct push to main, or a merge of a red PR. **Detective**, not preventive: it runs after the push and pages, because native branch protection needs a paid plan. |
+| The `main-push-guard` (CI) | A direct push to main, or a merge of a red PR. **Detective**, the backstop behind the "Protect main" ruleset (#4197), which now prevents both: it runs after the push and pages, so it matters only if the ruleset is switched off. |
 
 On top of those sit the repo invariant guards, each written after a
 defect got through: capped single-page reads, swallowed error reads, raw
