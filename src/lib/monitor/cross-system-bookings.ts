@@ -89,6 +89,14 @@ const ALERT_ZONE = "America/New_York";
 /** The window inside each hour whose monitor tick reads cal.com. One tick, since the lane ticks every five minutes. */
 const DUE_WINDOW_MINUTES = 5;
 
+/**
+ * How often the check actually runs: once an hour (`crossSystemBookingsDue`). The monitor
+ * lane's step failure streak counts this step in runs of THIS cadence, not in the lane's
+ * five minute ticks, because its eleven idle ticks an hour would otherwise break every
+ * streak (#3955). `scripts/test-monitor-step-failure.ts` holds the due rule to it.
+ */
+export const CROSS_SYSTEM_BOOKINGS_CADENCE_MS = 60 * 60_000;
+
 /** True on the one five minute monitor tick an hour that runs this check. */
 export function crossSystemBookingsDue(nowMs: number): boolean {
   return new Date(nowMs).getUTCMinutes() < DUE_WINDOW_MINUTES;

@@ -162,9 +162,10 @@ export const ANSWER_READ_MS = 5_000;
 
 /**
  * Read a response's body through within `ms`, then let it go, with the text that
- * arrived. Never throws.
+ * arrived. Never throws. Also how the public placement probe reads its answer
+ * (worker/public-probe.ts, #4189).
  */
-async function readThrough(
+export async function readThrough(
   res: Response,
   ms: number,
   wait?: (ms: number) => Promise<void>,

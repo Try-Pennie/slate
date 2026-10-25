@@ -132,6 +132,12 @@ export interface FillReadingRow {
   estimate_pattern_at?: string | null;
   estimate_method?: "line" | "pattern";
   estimate_cells_fallen_back?: number;
+  /** From 95%, when the last open call is taken (#4190); null on a day under 95%. */
+  estimate_last_line_state?: string | null;
+  estimate_last_line_at?: string | null;
+  estimate_last_pattern_state?: string | null;
+  estimate_last_pattern_at?: string | null;
+  estimate_last_method?: "line" | "pattern" | null;
 }
 
 export interface FillReadingsInput {

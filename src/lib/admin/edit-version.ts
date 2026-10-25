@@ -7,6 +7,11 @@
  * change had saved. Each form now carries the row's `updated_at` as it was when
  * the page was drawn, and the write lands only while the row still holds it.
  *
+ * That record stamp is right only where one form saves the record's whole
+ * subject, as the working hours form does with the week. The event type editors
+ * each save one field of a shared row, so they carry their fields' loaded values
+ * instead (`loadedFieldsFrom` below, #3798).
+ *
  * Three states, kept apart because they mean different things to the person
  * reading the refusal:
  *
@@ -20,7 +25,7 @@
  * No `@/` imports, so the node suite reads it directly.
  */
 
-/** The hidden field every guarded form carries. */
+/** The hidden field a form guarded on the record's version carries. */
 export const LOADED_VERSION_FIELD = "loaded_updated_at";
 
 export type LoadedVersion = { kind: "missing" } | { kind: "loaded"; stamp: string | null };
@@ -34,13 +39,55 @@ export function loadedVersionFrom(form: FormData): LoadedVersion {
 }
 
 /**
- * The stamp of a record that always exists when its form is drawn (an event type):
- * null when the form sent none, or an empty one, since either way nothing says
- * which version the person was looking at and the save must be refused.
+ * The value one field held when its form was drawn (#3798, L776).
+ *
+ * A record whose fields are edited by SEPARATE forms (an event type: the gap and
+ * the notice on one page, the description on another) must not judge a conflict
+ * by the record's `updated_at`: any save of any field moves it, so every other open
+ * form was refused over a field nobody touched. Each such form carries the loaded
+ * value of each field it saves instead, and the save is refused only when one of
+ * THOSE fields moved.
+ *
+ * JSON, so the value comes back exactly as it was drawn: a number stays a number,
+ * a null stays a null rather than turning into "", and a description's line breaks
+ * are not rewritten by the browser's form encoding, which would turn every
+ * multi paragraph description into a false conflict.
  */
-export function loadedStampOfExistingRow(form: FormData): string | null {
-  const v = loadedVersionFrom(form);
-  return v.kind === "loaded" ? v.stamp : null;
+export type LoadedFieldValue = string | number | null;
+
+/** The hidden field carrying one field's loaded value. */
+export function loadedFieldName(field: string): string {
+  return `loaded_${field}`;
+}
+
+/** What a form renders into that hidden field. */
+export function loadedFieldValue(value: LoadedFieldValue): string {
+  return JSON.stringify(value);
+}
+
+/**
+ * The loaded value of every named field, or null when any is missing or cannot be
+ * read: a form drawn by code from before these fields existed, so nothing says
+ * which values the person was looking at and the save must be refused.
+ */
+export function loadedFieldsFrom<K extends string>(
+  form: FormData,
+  fields: readonly K[],
+): Record<K, LoadedFieldValue> | null {
+  const out = {} as Record<K, LoadedFieldValue>;
+  for (const field of fields) {
+    const raw = form.get(loadedFieldName(field));
+    if (typeof raw !== "string" || raw === "") return null;
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+    if (value !== null && typeof value !== "string" && typeof value !== "number") return null;
+    out[field] = value;
+  }
+  return out;
 }
 
 /** The value a form renders into the hidden field: the stamp, or empty for no row. */

@@ -23,6 +23,7 @@ import {
   RosterProvider,
 } from "@/components/admin/BucketMembersPicker";
 import { rosterSectionFor, type RosterEntry } from "@/lib/admin/bucket-member-picker";
+import { labelInNameMismatches } from "@/components/ui/label-in-name.test-support";
 
 const person = (id: string, name: string, role: "agent" | "manager" = "agent"): RosterEntry => ({
   id,
@@ -429,5 +430,26 @@ describe("chips never carry the page's muted foreground (#1896)", () => {
     // The membership whose user is off the roster is one of them, and its
     // explanatory aside is exactly the text that was muted (#1762).
     expect(screen.getByText(/not on the current roster/)).toBeTruthy();
+  });
+});
+
+// #3917 (L786): each chip is a button whose name is set apart from its text, so the
+// name must contain every word the chip shows, the off roster note included, or a
+// person driving by voice cannot say what they see.
+describe("member chips are named with the words they show", () => {
+  it("in members mode, for a listed member and one off the roster", () => {
+    const { container } = renderPicker(["ada", "someone-off-roster"]);
+    expect(screen.getByText(/not on the current roster/i)).toBeTruthy();
+    expect(labelInNameMismatches(container)).toEqual([]);
+  });
+
+  it("in fallback mode, for a fallback the roster does not list", () => {
+    const { container } = render(
+      <RosterProvider roster={ROSTER}>
+        <BucketMembersPicker mode="fallback" selectedIds={["departed-id"]} rosterTotal={ROSTER.length} />
+      </RosterProvider>,
+    );
+    expect(screen.getByText(/not on the current roster/i)).toBeTruthy();
+    expect(labelInNameMismatches(container)).toEqual([]);
   });
 });

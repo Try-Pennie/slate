@@ -10,6 +10,7 @@ import {
   type SplicePart,
 } from "./slot-splice.ts";
 import { stampWriter, type WrittenBy } from "./slot-row-writer.ts";
+import { withStartedColumn } from "./slot-row-times.ts";
 
 /**
  * The one write into `bucket_slots` (#1048).
@@ -23,8 +24,10 @@ import { stampWriter, type WrittenBy } from "./slot-row-writer.ts";
  *
  * Both halves are fixed together and neither works alone:
  *
- *   - `computed_at` is the instant the COMPUTE started, so it describes the data
- *     rather than the moment it arrived;
+ *   - `computed_at` is the oldest state the COMPUTE used (its start, or the
+ *     recompute lane's cached eligibility read when that is earlier, #3388), so it
+ *     describes the data rather than the moment it arrived; when the compute began
+ *     is kept apart in `compute_started_at`, which schedules the next one;
  *   - the write only overwrites a row OLDER than that stamp.
  *
  * The damage was always bounded (the 1 minute cron reconverges, and verify-on-book
@@ -85,18 +88,30 @@ export async function writeSlotRow(
    * refresh passes every requester (`joinWriters`).
    */
   writtenBy: WrittenBy,
+  /**
+   * When the compute that produced `computed` began (#3388), stored as
+   * `compute_started_at` for the scheduling readers. Defaults to `computedAtMs`,
+   * which is what every compute that read nothing older than its own start passes.
+   * The gate below never reads it: freshness of the DATA is the stamp's question.
+   */
+  computeStartedAtMs: number = computedAtMs,
 ): Promise<SlotRowWriteOutcome> {
-  const computedAt = new Date(computedAtMs).toISOString();
+  const times: RowTimes = {
+    computed_at: new Date(computedAtMs).toISOString(),
+    compute_started_at: new Date(computeStartedAtMs).toISOString(),
+  };
   const payload = stampWriter(computed, writtenBy);
 
-  const first = await gatedUpdate(db, code, payload, computedAt);
+  const first = await gatedUpdate(db, code, payload, times);
   if (first !== "no-row") return first;
 
   // Nothing older to overwrite. Either the bucket has no row at all, or the row that
   // is there is at least as fresh as this compute. The insert tells us which.
-  const { error } = await db
-    .from("bucket_slots")
-    .insert({ bucket_code: code, payload, computed_at: computedAt });
+  const { error } = await withStartedColumn(
+    (withStarted) =>
+      db.from("bucket_slots").insert({ bucket_code: code, payload, ...timesFor(times, withStarted) }),
+    SLOT_WRITE,
+  );
   if (!error) return "written";
   if (error.code !== UNIQUE_VIOLATION) {
     log.warn("precompute", { msg: "slot row insert failed", bucket: code }, error);
@@ -106,9 +121,24 @@ export async function writeSlotRow(
   // A row exists. Re-run the gate: if it is older than this compute (a create race we
   // lost while holding newer data), overwrite it; otherwise it is genuinely fresher,
   // or a save invalidated it after this compute began, and it stands.
-  const second = await gatedUpdate(db, code, payload, computedAt);
-  return second === "no-row" ? settleRefused(db, code, payload, computedAtMs) : second;
+  const second = await gatedUpdate(db, code, payload, times);
+  return second === "no-row" ? settleRefused(db, code, payload, computedAtMs, times) : second;
 }
+
+/** The two times a full compute writes (#3388): the stamp the gate compares, and
+ *  when the compute began, for the scheduling readers (`slot-row-times.ts`). */
+interface RowTimes {
+  computed_at: string;
+  compute_started_at: string;
+}
+
+/** `times` as a write names them, without the start when the column is missing. */
+function timesFor(times: RowTimes, withStarted: boolean): Partial<RowTimes> & { computed_at: string } {
+  return withStarted ? { ...times } : { computed_at: times.computed_at };
+}
+
+/** Where a write names the column, for the one line said if it is missing. */
+const SLOT_WRITE = "slot row write";
 
 /**
  * Mark every row stale after a settings save (#216, #3118), stamped from `nowMs`.
@@ -170,17 +200,23 @@ async function swapRow(
   db: SlotRowDb,
   code: string,
   read: StoredSlotRow,
-  values: { payload: unknown; computed_at?: string },
+  /** A splice moves neither time; a full compute merged over a splice moves both. */
+  values: { payload: unknown; times?: RowTimes },
 ): Promise<"swapped" | "changed" | "failed"> {
-  let q = db
-    .from("bucket_slots")
-    .update(values)
-    .eq("bucket_code", code)
-    .eq("computed_at", read.computed_at);
-  q = read.invalidated_at === null ? q.is("invalidated_at", null) : q.eq("invalidated_at", read.invalidated_at);
-  const seq = spliceMetaOf(read.payload)?.seq;
-  q = seq === undefined ? q.is("payload->splice->>seq", null) : q.eq("payload->splice->>seq", String(seq));
-  const { data, error } = await q.select("bucket_code");
+  const statement = (withStarted: boolean) => {
+    let q = db
+      .from("bucket_slots")
+      .update({ payload: values.payload, ...(values.times ? timesFor(values.times, withStarted) : {}) })
+      .eq("bucket_code", code)
+      .eq("computed_at", read.computed_at);
+    q = read.invalidated_at === null ? q.is("invalidated_at", null) : q.eq("invalidated_at", read.invalidated_at);
+    const seq = spliceMetaOf(read.payload)?.seq;
+    q = seq === undefined ? q.is("payload->splice->>seq", null) : q.eq("payload->splice->>seq", String(seq));
+    return q.select("bucket_code");
+  };
+  const { data, error } = values.times
+    ? await withStartedColumn(statement, SLOT_WRITE)
+    : await statement(false);
   if (error) {
     log.warn("precompute", { msg: "slot row compare and swap failed", bucket: code }, error);
     return "failed";
@@ -205,8 +241,8 @@ async function settleRefused(
   code: string,
   payload: unknown,
   computedAtMs: number,
+  times: RowTimes,
 ): Promise<SlotRowWriteOutcome> {
-  const computedAt = new Date(computedAtMs).toISOString();
   for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
     const { row, error } = await readRow(db, code);
     const invalidatedMs = row?.invalidated_at ? Date.parse(row.invalidated_at) : Number.NaN;
@@ -217,12 +253,12 @@ async function settleRefused(
     if (freshFences(spliceMetaOf(row.payload), computedAtMs).length === 0) {
       // Nothing explains the refusal any more: the row changed between the update and
       // this read. Try the plain gated update again.
-      const again = await gatedUpdate(db, code, payload, computedAt);
+      const again = await gatedUpdate(db, code, payload, times);
       if (again !== "no-row") return again;
       continue;
     }
     const merged = mergeFreshSplices(payload as SlotLists, row.payload, computedAtMs);
-    const swapped = await swapRow(db, code, row, { payload: merged, computed_at: computedAt });
+    const swapped = await swapRow(db, code, row, { payload: merged, times });
     if (swapped === "failed") return "failed";
     if (swapped === "swapped") {
       log.info("precompute", { msg: "merged a compute with a booking spliced after it began", bucket: code });
@@ -240,27 +276,32 @@ async function gatedUpdate(
   db: SlotRowDb,
   code: string,
   payload: unknown,
-  computedAt: string,
+  times: RowTimes,
 ): Promise<SlotRowWriteOutcome | "no-row"> {
-  const { data, error } = await db
-    .from("bucket_slots")
-    .update({ payload, computed_at: computedAt })
-    .eq("bucket_code", code)
-    .lt("computed_at", computedAt)
-    // #3118: no save has invalidated the row since this compute began, and #3324: no
-    // booking has been spliced into it since then either. Both strictly before, so a
-    // compute starting at either instant is refused too. One `or` of four `and`s,
-    // because two `or` parameters on one request is not a shape to rely on. The fence
-    // is a json path, compared as text, which is why it is always an ISO stamp.
-    .or(
-      [
-        `and(invalidated_at.is.null,${FENCE_PATH}.is.null)`,
-        `and(invalidated_at.is.null,${FENCE_PATH}.lt.${computedAt})`,
-        `and(invalidated_at.lt.${computedAt},${FENCE_PATH}.is.null)`,
-        `and(invalidated_at.lt.${computedAt},${FENCE_PATH}.lt.${computedAt})`,
-      ].join(","),
-    )
-    .select("bucket_code");
+  // The gate compares the STAMP only (#3388): a row built from fresher data wins
+  // whenever its compute happened to start.
+  const computedAt = times.computed_at;
+  const statement = (withStarted: boolean) =>
+    db
+      .from("bucket_slots")
+      .update({ payload, ...timesFor(times, withStarted) })
+      .eq("bucket_code", code)
+      .lt("computed_at", computedAt)
+      // #3118: no save has invalidated the row since this compute began, and #3324: no
+      // booking has been spliced into it since then either. Both strictly before, so a
+      // compute starting at either instant is refused too. One `or` of four `and`s,
+      // because two `or` parameters on one request is not a shape to rely on. The fence
+      // is a json path, compared as text, which is why it is always an ISO stamp.
+      .or(
+        [
+          `and(invalidated_at.is.null,${FENCE_PATH}.is.null)`,
+          `and(invalidated_at.is.null,${FENCE_PATH}.lt.${computedAt})`,
+          `and(invalidated_at.lt.${computedAt},${FENCE_PATH}.is.null)`,
+          `and(invalidated_at.lt.${computedAt},${FENCE_PATH}.lt.${computedAt})`,
+        ].join(","),
+      )
+      .select("bucket_code");
+  const { data, error } = await withStartedColumn(statement, SLOT_WRITE);
   if (error) {
     log.warn("precompute", { msg: "slot row update failed", bucket: code }, error);
     return "failed";

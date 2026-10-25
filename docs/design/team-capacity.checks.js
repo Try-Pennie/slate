@@ -335,10 +335,10 @@
       var pct = q(doc, "day-card")[1] && q(doc, "day-card")[1].querySelector('[data-tc="pct"]');
       var m = /^(\d+)% full/.exec(text(pct));
       if (!m || Number(m[1]) < 95) return fail("Tomorrow's card is not at 95% or more: '" + text(pct) + "'");
-      return paceIs(doc, 1, ["Filling at 9 an hour"]);
+      return paceIs(doc, 1, ["Filling at 9 an hour", "Full by 10pm at this pace"]);
     } },
     { id: "D34", frames: ["f1"], check: function (doc) {
-      return paceIs(doc, 0, ["Not filling right now"]);
+      return paceIs(doc, 0, ["Won't fill at this pace"]);
     } },
     { id: "D35", frames: ["f12"], check: function (doc) {
       return paceIs(doc, 3, ["Pace shows after 3 hours of readings"]);
