@@ -11,8 +11,8 @@
 #
 #   sudo bash ~/pennie-ci-runner/setup.sh user      creates the cirunner user
 #   sudo bash ~/pennie-ci-runner/setup.sh docker    starts cirunner's Docker and proves it answers
-#   sudo bash ~/pennie-ci-runner/setup.sh runners   asks for the registration token, registers two runners
-#   sudo bash ~/pennie-ci-runner/setup.sh refresh   rewrites each runner's settings and restarts it (no token)
+#   sudo bash ~/pennie-ci-runner/setup.sh runners   asks for the registration token, registers any runner not yet registered
+#   sudo bash ~/pennie-ci-runner/setup.sh refresh   rewrites each runner's settings and restarts it between jobs (no token)
 #   sudo bash ~/pennie-ci-runner/setup.sh status    shows what is installed and running
 #   sudo bash ~/pennie-ci-runner/setup.sh stop      stops runners and Docker (they start again on the next "start")
 #   sudo bash ~/pennie-ci-runner/setup.sh start     starts them again
@@ -30,15 +30,23 @@ RUNNER_VERSION=2.338.1
 RUNNER_SHA256=52c3fb801b931fbd454979bae5ec3443ea3da2c4a1b4c44fa546fb630d61a0a9
 RUNNER_TARBALL=actions-runner-osx-arm64-$RUNNER_VERSION.tar.gz
 RUNNER_URL=https://github.com/actions/runner/releases/download/v$RUNNER_VERSION/$RUNNER_TARBALL
-# Two runners, not three: the disk had 33 GB free on 2026-10-24, and each runner
-# keeps its own checkouts of Slate, Bidspoke and PET. Only mac-1 can reach Docker,
-# so two Docker jobs (each starting a local Supabase on the same ports) never overlap.
-RUNNERS=(mac-1 mac-2)
+# Three runners: two queued seven runs deep within an hour of Slate switching over
+# (2026-10-24), and each one keeps its own checkouts and caches, about 5 GB, under
+# the disk floor below. Only mac-1 can reach Docker, so two Docker jobs (each
+# starting a local Supabase on the same ports) never overlap.
+RUNNERS=(mac-1 mac-2 mac-3)
 DOCKER_RUNNER=mac-1
 LABEL=pennie-mac
 DOCKER_SOCK=$RUNNER_HOME/.colima/default/docker.sock
 PATH_FOR_JOBS=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
 DAEMON_DIR=/Library/LaunchDaemons
+# Every job checks free disk before it starts (the runner's job started hook) and
+# fails, saying why, below this many GB. The runners share Dan's work disk, and on
+# 2026-10-24 their first runs used about 10 GB in half an hour.
+MIN_FREE_GB=10
+# Outside cirunner's home, in a root owned folder: a file root owns inside a
+# folder cirunner owns can still be deleted and replaced by a job.
+DISK_GUARD=/usr/local/libexec/pennie-ci-runner/disk-guard.sh
 COLIMA_PLIST=$DAEMON_DIR/com.trypennie.ci-colima.plist
 
 die() { echo "FAILED: $*" >&2; exit 1; }
@@ -147,13 +155,35 @@ stage_docker() {
 # The pnpm store, Playwright's browsers and every other per user cache follow HOME.
 runner_home() { echo "$RUNNER_HOME/runners/$1/home"; }
 
+write_disk_guard() {
+  # Root owned, file and folder, so a job (running as cirunner) cannot edit or
+  # replace its own check.
+  mkdir -p "$(dirname "$DISK_GUARD")"
+  # Written beside it and renamed over it, so a job starting on another runner
+  # mid write never runs a half written check.
+  local next="$DISK_GUARD.next"
+  cat >"$next" <<GUARD
+#!/bin/bash
+free_kb=\$(df -k / | awk 'NR==2 {print \$4}')
+if [ -z "\$free_kb" ] || [ "\$free_kb" -lt $((MIN_FREE_GB * 1024 * 1024)) ]; then
+  echo "::error title=The Mac runner's disk is nearly full::\$((\${free_kb:-0} / 1024 / 1024)) GB free, under the $MIN_FREE_GB GB floor, so this job did not start. Free space on Dan's work MacBook, then re-run."
+  exit 1
+fi
+GUARD
+  chown root:wheel "$next"
+  chmod 755 "$next"
+  mv -f "$next" "$DISK_GUARD"
+}
+
 write_runner_settings() { # name
   local name=$1 dir=$RUNNER_HOME/runners/$1 home
   home=$(runner_home "$1")
+  write_disk_guard
   as_runner mkdir -p "$home"
   echo "$PATH_FOR_JOBS" | as_runner tee "$dir/.path" >/dev/null
   {
     echo "HOME=$home"
+    echo "ACTIONS_RUNNER_HOOK_JOB_STARTED=$DISK_GUARD"
     [ "$name" = "$DOCKER_RUNNER" ] && echo "DOCKER_HOST=unix://$DOCKER_SOCK"
     true
   } | as_runner tee "$dir/.env" >/dev/null
@@ -179,6 +209,10 @@ stage_runners() {
   local name dir labels
   for name in "${RUNNERS[@]}"; do
     dir=$RUNNER_HOME/runners/$name
+    if [ -f "$dir/.runner" ]; then
+      echo "OK: dan-macbook-$name is already registered, left running"
+      continue
+    fi
     labels=$LABEL
     [ "$name" = "$DOCKER_RUNNER" ] && labels=$LABEL,$LABEL-docker
     as_runner mkdir -p "$dir"
@@ -199,10 +233,20 @@ stage_refresh() {
   user_exists || die "run the user stage first"
   local name
   for name in "${RUNNERS[@]}"; do
-    [ -f "$RUNNER_HOME/runners/$name/.runner" ] || die "$name is not registered; run the runners stage"
+    if [ ! -f "$RUNNER_HOME/runners/$name/.runner" ]; then
+      echo "SKIPPED: $name is not registered yet; the runners stage registers it with these settings"
+      continue
+    fi
+    # Restarting the listener fails the job it is running, so wait for that job
+    # to finish. Runner.Worker is the process that runs a job, one per job.
+    local waited=0
+    while pgrep -u "$RUNNER_USER" -f "runners/$name/bin/Runner.Worker" >/dev/null; do
+      [ "$waited" -eq 0 ] && echo "$name is running a job; waiting for it to finish..."
+      [ "$waited" -ge 3600 ] && die "$name was still running a job after an hour; try again later"
+      sleep 10
+      waited=$((waited + 10))
+    done
     write_runner_settings "$name"
-    # A job running now finishes first: launchd stops the listener, which hands
-    # an in progress job back as failed, so only refresh between runs.
     load_daemon "$(runner_plist "$name")"
     echo "OK: $name now uses $(runner_home "$name") and was restarted"
   done
@@ -215,8 +259,14 @@ stage_status() {
   local p
   for p in "$COLIMA_PLIST" $(for n in "${RUNNERS[@]}"; do runner_plist "$n"; done); do
     if [ -f "$p" ]; then
-      launchctl print "system/$(basename "$p" .plist)" 2>/dev/null | grep -m1 -E "state =" | sed "s|^|$(basename "$p" .plist): |" \
-        || echo "$(basename "$p" .plist): installed, not loaded"
+      # Judged by grep's own exit, not the pipeline's last command, so an
+      # installed daemon launchd does not know about says so.
+      local state
+      if state=$(launchctl print "system/$(basename "$p" .plist)" 2>/dev/null | grep -m1 -E "state ="); then
+        echo "$(basename "$p" .plist):$state"
+      else
+        echo "$(basename "$p" .plist): installed, not loaded"
+      fi
     else
       echo "$(basename "$p" .plist): not installed"
     fi
@@ -228,6 +278,14 @@ stage_status() {
   local m; m=$(missing_tools)
   [ -z "$m" ] && echo "job tools: all present" || echo "job tools: MISSING $m"
   df -h / | tail -1 | awk '{print "disk free: " $4}'
+  # What the runners hold, largest first: checkouts and builds (_work), each
+  # runner's caches (home), and the Docker VM (.colima). Only root can read it.
+  if [ "$(id -u)" = 0 ] && [ -d "$RUNNER_HOME" ]; then
+    echo "runner disk use:"
+    du -sh "$RUNNER_HOME"/runners/*/_work "$RUNNER_HOME"/runners/*/home "$RUNNER_HOME"/.colima 2>/dev/null \
+      | sort -rh | sed "s|$RUNNER_HOME/||; s|^|  |" || true  # a runner with no job yet has no _work
+    du -sh "$RUNNER_HOME" 2>/dev/null | awk '{print "  total " $1}'
+  fi
 }
 
 stage_stop() {
@@ -242,7 +300,10 @@ stage_start() {
   need_root
   load_daemon "$COLIMA_PLIST"
   local n
-  for n in "${RUNNERS[@]}"; do load_daemon "$(runner_plist "$n")"; done
+  for n in "${RUNNERS[@]}"; do
+    # A runner added to RUNNERS but not registered yet has no daemon to start.
+    if [ -f "$(runner_plist "$n")" ]; then load_daemon "$(runner_plist "$n")"; else echo "SKIPPED: $n is not registered yet"; fi
+  done
   echo "OK: started"
 }
 
@@ -256,7 +317,7 @@ stage_remove() {
     as_runner /opt/homebrew/bin/colima delete --force >/dev/null 2>&1 || true
     dscl . -delete "/Users/$RUNNER_USER"
   fi
-  rm -rf "$RUNNER_HOME"
+  rm -rf "$RUNNER_HOME" "$(dirname "$DISK_GUARD")"
   echo "OK: removed. Delete the dan-macbook-mac-* runners on GitHub's org Runners page too."
 }
 
