@@ -144,6 +144,12 @@ Playwright. Run it from a worktree: **the runner refuses a checkout holding any
 at production. `pnpm cf:preview` refuses the same checkout by the same rule
 (`scripts/lib/live-env-files.ts`, #3694).
 
+**One run per machine at a time** (#4018): runs share the local Supabase and port
+3100, so a second worktree's run is refused naming the one in progress, a server
+already on the port (a killed run's leftover, a dev server) is refused, and the run
+counts as started only once its OWN server reports listening, never because
+something answered on the port (`e2e/run-guards.ts`).
+
 **It cannot touch production (L2)**, by four layers documented in `e2e/env.ts`: an
 environment built from nothing, `SLATE_LOADTEST=true` (Google stubbed, Slack,
 Salesforce, cal.com and Twilio refused), an egress guard in the server that refuses

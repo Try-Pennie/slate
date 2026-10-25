@@ -16,6 +16,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 import {
   BYPASS_MARKER,
   classifyPush,
+  commitSubject,
   buildViolationMessage,
   prNumbersInSubject,
   type PushContext,
@@ -46,6 +47,22 @@ const mergedRed = {
 };
 assert(!classifyPush(mergedRed).ok, "violation: a merged PR whose CI failed is flagged");
 
+// #4096 (L801): the marker is read from the SUBJECT only. A squash merge's body is every
+// commit message on the branch, so a branch that merely MENTIONS the marker (a change to
+// this guard or its docs, as #1069's own squash did) would otherwise exempt its red merge.
+const mentionedInBody = {
+  ...mergedRed,
+  commitMessage: `Explain the hotfix escape hatch (#42)\n\n* Document that a direct push carries ${BYPASS_MARKER}`,
+};
+assert(!classifyPush(mentionedInBody).ok, "a red merge whose body only mentions the marker is still flagged");
+const bodyOnlyDirect = { ...directPush, commitMessage: `Hotfix main\n\n${BYPASS_MARKER}` };
+assert(!classifyPush(bodyOnlyDirect).ok, "a direct push with the marker only in its body is not a bypass");
+eq(commitSubject(`Hotfix main\n\n${BYPASS_MARKER}`), "Hotfix main", "commitSubject keeps the first line only");
+eq(commitSubject("One line, no body"), "One line, no body", "commitSubject of a one line message is the whole message");
+eq(commitSubject(""), "", "commitSubject of an empty message is empty, never a throw");
+const subjectMarked = { ...directPush, commitMessage: `Hotfix main ${BYPASS_MARKER}\n\nWhy: the booker is down.` };
+assert(classifyPush(subjectMarked).ok, "the marker in the subject still allows a deliberate direct push");
+
 // An open (not merged) PR associated with the commit is NOT a legitimate merge.
 const openOnly = { ...base, prs: [{ number: 42, merged: false, ciConclusion: "success" }] };
 assert(!classifyPush(openOnly).ok, "violation: an associated but unmerged PR does not count as a merge");
@@ -53,6 +70,11 @@ assert(!classifyPush(openOnly).ok, "violation: an associated but unmerged PR doe
 // The alert names the actor and the short sha so a human can act fast.
 const msg = buildViolationMessage(directPush, classifyPush(directPush));
 assert(/someone/.test(msg) && /abcdef1/.test(msg), "violation message names the actor and short sha");
+// It quotes the subject, never the body, through the same commitSubject the verdict reads.
+const bodied = { ...directPush, commitMessage: "Hotfix the booker\n\nA long body line" };
+const bodiedMsg = buildViolationMessage(bodied, classifyPush(bodied));
+assert(/Hotfix the booker/.test(bodiedMsg) && !/A long body line/.test(bodiedMsg), "the alert quotes the subject only");
+assert(/\(no message\)/.test(buildViolationMessage({ ...directPush, commitMessage: "" }, classifyPush(directPush))), "an empty message reads as (no message)");
 
 // --- runner (with a fake poster) -----------------------------------------
 function fakePoster(result: { ok: boolean; error?: string }) {
