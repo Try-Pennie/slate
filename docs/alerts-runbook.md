@@ -377,6 +377,20 @@ carries it (`gone`, `not-provisioned`, `transient`):
   every 30 seconds. Check Google's status page before anything in Slate. Bookings answer
   "try again in a moment" until it closes, and the all-clear arrives on its own when a
   probe call is answered.
+- **Google and Supabase stalled together** (#3784): `verify_on_book_outage` (both
+  services had a call of 2 seconds or more in the one confirm) and
+  `google_calendar_breaker_open` (a confirm's Supabase call stalled in the same isolate
+  within 5 minutes; a cron lane's slow statement does not count)
+  then say so and suspect the Cloudflare location before either service. Every fetch
+  runs beside Oregon (#3730), so a degraded colo there slows both at once. The page
+  names the colo when an answer said it; otherwise the confirm answered line's
+  `supabase_edge_colo` does. In Supabase's edge logs for the window, filter by
+  `request.cf.colo` to that colo and read `response.origin_time`: Supabase's own origin
+  answering quickly while Slate's calls stalled puts the time between the location and
+  Supabase, not in Supabase. Check cloudflarestatus.com for that colo. Only if the
+  origin was slow too is it Supabase, and Google's status page decides Google. The
+  threshold and window live in `src/lib/dependency-stall.ts`; how to read where a
+  confirm ran is in `docs/cloudflare-platform-notes.md`, "Where a confirm ran".
 
 **Fix or escalate.** One agent, `gone` or `not-provisioned`: a person action, and
 `bookable` should go false until it is done, or the rotation spends its budget retrying

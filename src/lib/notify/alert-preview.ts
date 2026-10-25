@@ -5765,6 +5765,58 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       neededMs: 8_100,
     }),
   },
+  // #3784: Google and Supabase both stalled in the one confirm, so the page suspects
+  // the location it ran at before either service.
+  {
+    key: "verify_on_book_outage",
+    state: "Google and Supabase both stalled in the confirm, location known (#3784)",
+    channel: "alert",
+    text: dependencyTimeoutAlert({
+      dependency: "google events.insert",
+      timeoutMs: 8000,
+      budget: null,
+      spent: {
+        stage: { name: "complete-reservation", ms: 8_100 },
+        call: { label: "google events.insert", ms: 8_000 },
+        stalled: { googleMs: 8_000, supabaseMs: 3_100 },
+        ranAt: "SEA",
+      },
+    }),
+  },
+  {
+    key: "verify_on_book_outage",
+    state: "Google and Supabase both stalled in the confirm, location unknown (#3784)",
+    channel: "alert",
+    text: dependencyTimeoutAlert({
+      dependency: "writing the booking and its calendar event",
+      timeoutMs: 3_900,
+      budget: null,
+      neededMs: 5_100,
+      spent: {
+        stage: { name: "assign-and-verify", ms: 7_600 },
+        call: { label: "google freeBusy.many", ms: 4_200 },
+        stalled: { googleMs: 4_200, supabaseMs: 2_400 },
+        ranAt: null,
+      },
+    }),
+  },
+  {
+    key: "verify_on_book_outage",
+    state: "a dry run where Google and Supabase both stalled (#3784)",
+    channel: "alert",
+    text: dependencyTimeoutAlert({
+      dependency: "google token mint",
+      timeoutMs: 8000,
+      budget: null,
+      reach: "dry-run",
+      spent: {
+        stage: { name: "assign-and-verify", ms: 8_200 },
+        call: { label: "google token mint", ms: 8_000 },
+        stalled: { googleMs: 8_000, supabaseMs: 2_900 },
+        ranAt: "SEA",
+      },
+    }),
+  },
   {
     key: "reschedule_lock_outage",
     state: "the lock claim hit a DB error",
@@ -6324,6 +6376,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: googleBreakerOpenAlert(5, "503 from google freeBusy", 30_000) },
   { key: "google_calendar_breaker_open", state: "the last failure carried no detail", channel: "alert",
     text: googleBreakerOpenAlert(5, null, 30_000) },
+  // #3784: Supabase stalled in the same isolate in the same minutes, so the location
+  // both were called from is suspected before either service.
+  { key: "google_calendar_breaker_open", state: "Supabase stalled in the same minutes, location known (#3784)", channel: "alert",
+    text: googleBreakerOpenAlert(5, "google freeBusy.many did not answer within 8 seconds", 30_000, { ms: 3_200, colo: "SEA" }) },
+  { key: "google_calendar_breaker_open", state: "Supabase stalled in the same minutes, location unknown (#3784)", channel: "alert",
+    text: googleBreakerOpenAlert(5, "503 from google freeBusy", 30_000, { ms: 3_200, colo: null }) },
   { key: "google_calendar_breaker_open", state: "answering again after a short outage", channel: "recovery",
     text: googleBreakerClosedAlert(40_000) },
   { key: "google_calendar_breaker_open", state: "answering again after a long outage", channel: "recovery",

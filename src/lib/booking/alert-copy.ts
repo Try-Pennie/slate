@@ -13,6 +13,7 @@
 import type { FailureKind } from "@/lib/google/sync-health";
 import { deadlineReason, durationText, spentBeforeAsked } from "@/lib/notify/error-text";
 import type { TimeSpent } from "./time-spent";
+import type { StalledTogether } from "@/lib/dependency-stall";
 import { normalizeEmail } from "@/lib/auth/email";
 import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 
@@ -544,6 +545,10 @@ export function dependencyTimeoutAlert(timeout: {
   // Slate asked, never that the dependency "was not started".
   const found = { label: timeout.dependency, timeoutMs: timeout.timeoutMs, budget: timeout.budget, neededMs: timeout.neededMs };
   const what = deadlineReason(found);
+  // #3784: Google and Supabase both stalled in this confirm, so the location they were
+  // both called from is the first suspect, ahead of whichever call was in flight and
+  // ahead of where the time went. One stalling alone keeps the wording below.
+  const together = timeout.spent?.stalled ? locationFirstSentence(timeout.spent.stalled, timeout.spent.ranAt ?? null) : null;
   // #3663: a dry run and a request whose body was never read wrote no row and were
   // seen by nobody but the caller, so neither may send the reader to a lead or to
   // booking_reservations. Their advice names the dependency that was in flight.
@@ -553,13 +558,16 @@ export function dependencyTimeoutAlert(timeout: {
       reach === "dry-run"
         ? `A dry run booking check failed because ${what}, not because the slot was full. The caller saw a retryable error, and a dry run writes nothing, so there is no booking or reservation to look for.`
         : `A booking request failed before Slate had read its body, because ${what}. The caller saw a retryable error and no booking was attempted.`;
-    const advice = spentBeforeAsked(found)
-      ? (timeWentSentence(timeout.spent ?? null) ??
-        "The time went inside Slate before that call, so start from that request's confirm answered log line rather than Google Calendar API and Supabase health.")
-      : dependencyHealthAdvice(found.label);
+    const advice =
+      together ??
+      (spentBeforeAsked(found)
+        ? (timeWentSentence(timeout.spent ?? null) ??
+          "The time went inside Slate before that call, so start from that request's confirm answered log line rather than Google Calendar API and Supabase health.")
+        : dependencyHealthAdvice(found.label));
     return `${opening} ${advice}`;
   }
   const head = `A booking failed because ${what}, not because the slot was full. The lead saw a retryable error. Check booking_reservations for a pending row before asking them to rebook`;
+  if (together) return `${head}. ${together}`;
   // #3313: a budget spent before Slate asked means the dependency was never
   // asked, so pointing at its health is a claim nothing measured (L11): on
   // 2026-10-06 at 13:54 ET Google and Supabase were both healthy and this sent the
@@ -588,6 +596,28 @@ const DEPENDENCY_HEALTH = new Map<string, string>([
  * is a request whose body Slate never parsed, so no bucket, lead or row exists.
  */
 export type TimeoutReach = "booking" | "dry-run" | "before-body";
+
+/**
+ * #3784: Google and Supabase both stalled in one confirm. Placement runs every confirm
+ * beside Oregon (#3730), so a degraded location there slows both at once, and two
+ * unrelated services stalling together points at where they were called from (L774).
+ * Names the location when an answer said it (`ranAt`, the line's `supabase_edge_colo`),
+ * and otherwise says which field of the line holds it.
+ */
+function locationFirstSentence(stalled: StalledTogether, ranAt: string | null): string {
+  const slow =
+    `Google Calendar and Supabase both stalled in this confirm (the slowest Google call took ${durationText(stalled.googleMs)}, ` +
+    `the slowest Supabase call ${durationText(stalled.supabaseMs)}). Two unrelated services rarely stall at the same moment, so`;
+  const health = "and only then look at either service's health";
+  if (ranAt) {
+    const where = ranAt.split(",").join(" and ");
+    return `${slow} suspect the Cloudflare location it ran at (${where}) before either service. Check Supabase's edge logs, by request.cf.colo, for other slow requests from ${where}, ${health}.`;
+  }
+  return (
+    `${slow} suspect the Cloudflare location it ran at before either service. That request's confirm answered log line names it ` +
+    `as supabase_edge_colo; check Supabase's edge logs, by request.cf.colo, for other slow requests from there, ${health}.`
+  );
+}
 
 /** Look at the named dependency's health, or at the request's own line for one with no health page. */
 function dependencyHealthAdvice(label: string): string {

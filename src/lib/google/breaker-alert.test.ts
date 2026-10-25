@@ -19,6 +19,7 @@ vi.mock("@/lib/after-response", () => ({
 import { announceGoogleBreaker, GOOGLE_BREAKER_ALERT_KEY, GOOGLE_BREAKER_ALERT_COOLDOWN_MS } from "./breaker-alert";
 import { createCircuitBreaker } from "./breaker";
 import { alertFamily } from "@/lib/notify/alert-runbook";
+import { forgetDependencyCalls, noteDependencyCall, STALLED_TOGETHER_WINDOW_MS } from "@/lib/dependency-stall";
 
 function rig() {
   let t = 0;
@@ -30,7 +31,10 @@ function rig() {
   return { breaker, open, advance: (ms: number) => (t += ms) };
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  forgetDependencyCalls();
+});
 
 describe("Google breaker alerts (#3134)", () => {
   it("pages once when it opens, naming the last failure, on its cooldown", async () => {
@@ -87,5 +91,44 @@ describe("Google breaker alerts (#3134)", () => {
     expect(open).not.toThrow();
     await Promise.resolve();
     expect(breaker.state()).toBe("open");
+  });
+
+  // #3784: placement runs every fetch beside Oregon (#3730), so a degraded location
+  // there slows Google and Supabase together. When this isolate's Supabase calls also
+  // stalled in the same minutes, the page suspects the location before either service.
+  describe("when Supabase stalled in the same minutes (#3784)", () => {
+    beforeEach(() => forgetDependencyCalls());
+
+    it("suspects the Cloudflare location first, by name, not Google", async () => {
+      noteDependencyCall("supabase bookings", 3_200, Date.now(), "SEA");
+      rig().open();
+      await Promise.resolve();
+      const [, , text] = dispatch.sendThrottledAlert.mock.calls[0];
+      expect(text).toContain("Supabase calls from SEA stalled in the same minutes");
+      expect(text).toContain("suspect the Cloudflare location these calls ran from (SEA) before either service");
+      expect(text).toContain("request.cf.colo");
+      expect(text).not.toMatch(/^Google Calendar is not answering/);
+      // What the reader will see while it holds is still said.
+      expect(text).toContain("bookings ask the lead to try again");
+    });
+
+    it("says where to read the location when no Supabase answer named it", async () => {
+      noteDependencyCall("supabase", 3_200, Date.now(), null);
+      rig().open();
+      await Promise.resolve();
+      const [, , text] = dispatch.sendThrottledAlert.mock.calls[0];
+      expect(text).toContain("suspect the Cloudflare location these calls ran from before either service");
+      expect(text).toContain("supabase_edge_colo");
+    });
+
+    it("keeps blaming Google when Supabase answered quickly, or stalled too long ago", async () => {
+      noteDependencyCall("supabase", 40, Date.now(), "SEA");
+      noteDependencyCall("supabase", 3_200, Date.now() - STALLED_TOGETHER_WINDOW_MS - 1_000, "SEA");
+      rig().open();
+      await Promise.resolve();
+      const [, , text] = dispatch.sendThrottledAlert.mock.calls[0];
+      expect(text).toMatch(/^Google Calendar is not answering/);
+      expect(text).not.toContain("Cloudflare location");
+    });
   });
 });

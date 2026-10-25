@@ -299,6 +299,7 @@ const worker = {
       () =>
         startPublicProbe(
           { loadtest: env.SLATE_LOADTEST === "true", tickId: tick.tickId },
+          // deadline-ok: startPublicProbe aborts it at PUBLIC_PROBE_TIMEOUT_MS (worker/public-probe.ts)
           { fetch: (request, init) => fetch(request, init), now: () => performance.now() },
         ),
       () => performance.now(),
