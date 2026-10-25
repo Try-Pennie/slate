@@ -50,6 +50,9 @@ export const UNMIRRORED_COLUMNS: Record<string, Record<string, string>> = {
     pii_redacted_at: "never written; a row Supabase holds redacted is skipped instead",
     reminder_sent_for: "null on an inserted booking, so its reminder can be sent a second time",
     attendee_first_name: "null on an inserted booking; the full name is restored",
+    // #3672: a restored row that a cross bucket move replaced reads as an ordinary
+    // cancel, so its old links say cancelled instead of opening the call that replaced it.
+    replaced_by_booking_id: "null on an inserted booking, so a moved booking's old links show it cancelled",
   },
   webhook_deliveries: {
     dedupe_key: "null on an inserted delivery",

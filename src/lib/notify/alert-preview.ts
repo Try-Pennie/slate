@@ -63,6 +63,8 @@ import {
   monitorStepRecoveryText,
   MONITOR_STEP_FAILING_TICKS,
   MONITOR_STEP_REARM_TICKS,
+  stepFailingRuns,
+  stepRearmRuns,
 } from "@/lib/monitor/step-failure";
 import { ACTIVATION_BUDGET_MS } from "@/lib/bookable/activation-allowance";
 import { REFUSED_POOL_EXIT_AFTER_MS } from "@/lib/bookable/refused-pool-exit-rule";
@@ -4703,6 +4705,41 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       unreadable: true,
     }),
   },
+  // #4168, #3468: plain causes, and the next run waiting only for a lane whose route
+  // takes a lock (`LANE_RUNS`); a lane that takes none says nothing about waiting.
+  {
+    key: "cron_lane_stale:*",
+    state: "the monitor lane, quiet across a deploy",
+    channel: "alert",
+    text: coreLaneAlertText({
+      lane: "monitor",
+      ageMs: 22 * 60_000,
+      maxStaleMs: LANE_STALE_BOUNDS_MS.monitor,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "bulk-reassign, whose next run waits on its lock",
+    channel: "alert",
+    text: coreLaneAlertText({
+      lane: "bulk-reassign",
+      ageMs: 25 * 60_000,
+      maxStaleMs: LANE_STALE_BOUNDS_MS["bulk-reassign"],
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "a sub step lane with no lock, so nothing waits",
+    channel: "alert",
+    text: coreLaneAlertText({
+      lane: "reroute-hold-sweep",
+      ageMs: 14 * 60_000,
+      maxStaleMs: LANE_STALE_BOUNDS_MS["reroute-hold-sweep"],
+      unreadable: false,
+    }),
+  },
   {
     key: "cron_lane_stale:*",
     state: "a core lane recovered",
@@ -5173,6 +5210,25 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the step is completing again",
     channel: "recovery",
     text: monitorStepRecoveryText("inactive_bookings", MONITOR_STEP_REARM_TICKS),
+  },
+  // #3955: a step that works once an hour is counted in its own runs, so its page
+  // and all clear say runs and hours rather than five minute ticks.
+  {
+    key: "monitor_step_failing:*",
+    state: "an hourly check has thrown on every one of its runs",
+    channel: "alert",
+    text: monitorStepFailingAlert({
+      step: "cross_system_bookings",
+      ticks: stepFailingRuns("cross_system_bookings"),
+      reason: "Invalid time value",
+      gated: [],
+    }),
+  },
+  {
+    key: "monitor_step_failing:*",
+    state: "an hourly check is completing again",
+    channel: "recovery",
+    text: monitorStepRecoveryText("cross_system_bookings", stepRearmRuns("cross_system_bookings")),
   },
   // #1561: the third thing that can be true of a detector. Not blind by fault and
   // not measuring, but deliberately switched off, which needs its own voice: the

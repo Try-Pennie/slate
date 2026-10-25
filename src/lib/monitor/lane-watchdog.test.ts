@@ -565,8 +565,8 @@ describe("alertOnStaleLanes (#803)", () => {
     expect(call).toBeTruthy();
   });
 
-  it("alerts on each lane a CPU kill left unfinished, keyed per lane", async () => {
-    // sync ran first and stamped; the later lanes in the same invocation died.
+  it("alerts on each lane that went quiet, keyed per lane", async () => {
+    // Two lanes stopped stamping together while sync kept going.
     heartbeat.readAllHeartbeatMs.mockResolvedValue({
       ...healthy(),
       recompute: ago(25 * MIN),
@@ -1213,8 +1213,9 @@ describe("alertOnStaleLanes (#803)", () => {
       // No five-plus digit minute count anywhere in the copy.
       expect(text).not.toMatch(/\d{5,}\s*minutes/);
       // It still names the lane and points somewhere useful.
+      // Since #4168 that is the runbook section, which holds the lane's lock and fields.
       expect(text).toContain("outbox");
-      expect(text).toContain("cron_outbox");
+      expect(text).toContain("A lane or schedule has gone quiet");
     });
 
     it("a genuinely quiet lane still gets its real, measured age", async () => {
@@ -1358,9 +1359,11 @@ describe("alertOnStaleLanes (#803)", () => {
       expect(key).toBe(laneKey("outbox"));
       expect(text).toContain("outbox");
       expect(text).toMatch(/running again|recovered|is stamping/i);
-      // The page told the reader to go and check for a CPU kill and a stuck lock.
-      // Repeating that in the all-clear sends them to investigate a fault that is over.
+      // The page names the likely causes and sends the reader to the runbook (an
+      // earlier page named a CPU kill and a stuck lock). Repeating any of that in the
+      // all-clear sends them to investigate a fault that is over.
       expect(text).not.toMatch(/exceededCpu/i);
+      expect(text).not.toMatch(/runbook|deploy cancelled|far from the database/i);
     });
 
     it("resolves nothing when no lane page is outstanding, at the cost of one read", async () => {

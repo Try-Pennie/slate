@@ -66,6 +66,33 @@ describe("GET /api/bookings/[token]/ics (#2643)", () => {
     expect(service.bookingIcs).not.toHaveBeenCalled();
   });
 
+  // #3672: the booking API moved the call to another bucket, which cancelled the
+  // booking this token names and made a new one. The lookup follows to the new one,
+  // so the file is the call the lead HAS, never a redirect to "cancelled".
+  it("serves the booking that replaced a moved one, from the old token", async () => {
+    service.getBookingByToken.mockResolvedValue({
+      booking: { id: "bk-new", status: "confirmed", manage_token: "tok-new" },
+      bucket: {},
+      eventType: {},
+      followedToToken: "tok-new",
+    });
+    const res = await get("tok-old");
+    expect(res.status).toBe(200);
+    expect(service.bookingIcs.mock.calls[0][0]).toMatchObject({ id: "bk-new" });
+  });
+
+  it("sends an old token whose replacing booking was since cancelled to THAT booking's page", async () => {
+    service.getBookingByToken.mockResolvedValue({
+      booking: { id: "bk-new", status: "cancelled", manage_token: "tok-new" },
+      bucket: {},
+      eventType: {},
+      followedToToken: "tok-new",
+    });
+    const res = await get("tok-old");
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("https://slate.example/booking/manage/tok-new");
+  });
+
   it("answers an unknown token with 404 in the lead's own words", async () => {
     service.getBookingByToken.mockResolvedValue(null);
     const res = await get("nope");
