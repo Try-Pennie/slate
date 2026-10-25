@@ -78,6 +78,7 @@ import {
   type LaneRunDeps,
   type LaneTick,
 } from "./lane-run";
+import { dispatchWithProbe, publicProbeFields, startPublicProbe } from "./public-probe";
 
 // The shared per-address burst counter (#1536). A Durable Object is the only
 // primitive that can hold ONE count across isolates, which is what the native
@@ -289,15 +290,28 @@ const worker = {
       now: () => performance.now(),
       log,
     };
-    const startedAt = performance.now();
-    const outcomes = await Promise.all(paths.map((path) => runLane(path, tick, deps)));
+    // #4189: one public request to the Worker's own custom domain beside the lanes, so the
+    // timings line shows where a public request from this tick was placed next to where the
+    // SELF lanes ran. Started only after every lane is dispatched, never thrown, and outside
+    // the lane time the budget line reads (worker/public-probe.ts).
+    const dispatched = dispatchWithProbe(
+      () => Promise.all(paths.map((path) => runLane(path, tick, deps))),
+      () =>
+        startPublicProbe(
+          { loadtest: env.SLATE_LOADTEST === "true", tickId: tick.tickId },
+          { fetch: (request, init) => fetch(request, init), now: () => performance.now() },
+        ),
+      () => performance.now(),
+    );
+    const { lanes: outcomes, lanesMs, probe } = await dispatched.done;
     const runs: LaneRun[] = outcomes.map((o) => o.run);
-    const totalMs = performance.now() - startedAt;
+    const totalMs = lanesMs;
     log.info("cron", {
       msg: "lane timings",
       cron: controller.cron,
       tick: tick.tickId,
       ...laneTimingFields(runs, totalMs),
+      ...publicProbeFields(probe),
     });
     const failures = outcomes.flatMap((o) => (o.failure ? [o.failure] : []));
     if (failures.length > 0) await reportLaneFailures(failures, tick, deps);

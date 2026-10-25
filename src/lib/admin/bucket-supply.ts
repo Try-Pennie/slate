@@ -45,6 +45,7 @@ import {
   type MemberAvailability,
 } from "../availability/compute.ts";
 import { parseStampMs } from "../date/stamp.ts";
+import { scheduleAnchorMs } from "../availability/slot-row-times.ts";
 import { searchWindowDays } from "../availability/bookable-days.ts";
 import {
   RECOMPUTE_FRESH_MS,
@@ -82,6 +83,24 @@ export interface CachedSlotRow {
     eventType?: Partial<SupplyEventType> | null;
   } | null;
   computed_at: string;
+  /** When the compute that wrote the row began (#3388, migration 0202); absent when
+   *  the column is not there yet or the row predates it. */
+  compute_started_at?: string | null;
+}
+
+/**
+ * The instant the "Last computed" column and its freshness grade judge a row by
+ * (#3388): when its compute STARTED, through the same anchor the recompute lane
+ * schedules from and the stale alarm pages on, because this grade promises never
+ * to disagree with that alarm about what stale means. The stamp can sit up to one
+ * eligibility cache lifetime earlier when the lane used a cached list; the column
+ * says when the row was computed, which is the start. Null when the stamp cannot be
+ * read, so the row reads as unknown rather than fresh.
+ */
+export function supplyComputedAtMs(row: Pick<CachedSlotRow, "computed_at" | "compute_started_at">): number | null {
+  const stampMs = parseStampMs(row.computed_at);
+  if (stampMs === null) return null;
+  return scheduleAnchorMs(stampMs, parseStampMs(row.compute_started_at ?? null));
 }
 
 /** One column: a concrete date in the ORG's zone, so a real offset and that
@@ -655,7 +674,7 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
         : eventType !== null && Array.isArray(slots)
           ? "measured"
           : "unreadable";
-    const computedAtMs = row ? parseStampMs(row.computed_at) : null;
+    const computedAtMs = row ? supplyComputedAtMs(row) : null;
 
     // The times already taken, by date. An unreadable read makes every cell
     // unknown below rather than reporting a zero nobody measured.
