@@ -19,6 +19,14 @@ import { log } from "@/lib/log";
  * that helper branch on `instanceof GoogleHttpError` and must keep receiving one.
  */
 
+/**
+ * How long one Gmail send may wait for its answer (#3972). A hung send ends as the
+ * "no response" failure below, whose outcome is `unknown` because Gmail may still
+ * have accepted it, rather than being killed mid await by the platform's deadline,
+ * which records nothing at all.
+ */
+export const GMAIL_SEND_TIMEOUT_MS = 10_000;
+
 function b64url(input: string): string {
   const bytes = new TextEncoder().encode(input);
   let bin = "";
@@ -119,6 +127,7 @@ export async function sendGmailEmail(msg: MimeMessage): Promise<string> {
                 "Content-Type": "application/json",
               },
               body: JSON.stringify({ raw }),
+              signal: AbortSignal.timeout(GMAIL_SEND_TIMEOUT_MS),
             },
           );
         } catch (err) {

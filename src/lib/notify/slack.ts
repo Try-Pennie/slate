@@ -38,6 +38,7 @@ function fetchWithTimeout(
     throw new Error(loadtestRefusal("Slack"));
   }
   // The global fetch is read at call time, never captured, so a test's stub applies.
+  // deadline-ok: the inner fetch of fetchWithinBudget, which lays SLACK_TIMEOUT_MS over it
   return fetchWithinBudget((input, req) => fetch(input, req), url, init, SLACK_TIMEOUT_MS, "slack");
 }
 
