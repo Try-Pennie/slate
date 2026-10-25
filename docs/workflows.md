@@ -264,7 +264,12 @@ runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-la
   files (his home folder must be `chmod 700`, since every local user is in `staff`;
   the script refuses otherwise). It also refuses when a tool jobs assume from
   GitHub's image (`aws`, `jq`, `gh` and others) is missing, and its `status` stage
-  reports both. Jobs queue while that Mac is asleep or offline.
+  reports both. Jobs queue while that Mac is asleep or offline. Each runner has its
+  own HOME (shared, two jobs at once broke `pnpm/action-setup`), and a job started
+  hook fails any job, saying why, while the disk has under 10 GB free
+  (`scripts/test-mac-runner-disk-guard.ts`). `setup.sh refresh` applies a settings
+  change by restarting each runner, and first waits for the job it is running to
+  finish, since a restart fails that job.
 - **Anything else** (`github`, empty, deleted, a typo): GitHub's `ubuntu-latest`,
   as before. Switching back is that one org setting, with no code change.
 
