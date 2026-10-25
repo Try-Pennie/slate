@@ -279,7 +279,7 @@ stage_status() {
   if [ "$(id -u)" = 0 ] && [ -d "$RUNNER_HOME" ]; then
     echo "runner disk use:"
     du -sh "$RUNNER_HOME"/runners/*/_work "$RUNNER_HOME"/runners/*/home "$RUNNER_HOME"/.colima 2>/dev/null \
-      | sort -rh | sed "s|$RUNNER_HOME/||; s|^|  |"
+      | sort -rh | sed "s|$RUNNER_HOME/||; s|^|  |" || true  # a runner with no job yet has no _work
     du -sh "$RUNNER_HOME" 2>/dev/null | awk '{print "  total " $1}'
   fi
 }
