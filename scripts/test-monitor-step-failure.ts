@@ -37,11 +37,19 @@ import {
   judgeMonitorSteps,
   monitorStepFailingAlert,
   monitorStepRecoveryText,
+  stepCadenceMs,
   stepFailingAlertKey,
+  stepFailingRuns,
   stepFailStreakKey,
   stepOkStreakKey,
+  stepRearmRuns,
+  stepStreakWindowS,
   type MonitorStepStreaks,
 } from "../src/lib/monitor/step-failure.ts";
+import {
+  CROSS_SYSTEM_BOOKINGS_CADENCE_MS,
+  crossSystemBookingsDue,
+} from "../src/lib/monitor/cross-system-bookings.ts";
 import { ALL_SETUP_READ } from "../src/lib/monitor/setup-gates.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -202,6 +210,142 @@ const tick = (...steps: { name: string; ok: boolean }[]) => steps;
     !streaks.counts.has(stepOkStreakKey("avail_truth")),
     "and a tick that never ran it grows no re-arm streak for it",
   );
+}
+
+// --- a step that RAN but measured nothing counts as neither (#3955, L792) ------
+//
+// Most gated checks consult their gate INSIDE their step, so a shut gate still
+// appears in the outcomes. Recorded as a healthy run, four ticks of a shut gate
+// cleared a standing page with "it is being checked once more", which is the one
+// thing that was not happening. Marked unmeasured, it moves neither streak.
+{
+  const streaks = memoryStreaks();
+  for (let i = 0; i < MONITOR_STEP_FAILING_TICKS; i++) {
+    await judgeMonitorSteps(tick({ name: "below_lead_tier", ok: false }), streaks);
+  }
+  let recovered = 0;
+  let paged = 0;
+  for (let i = 0; i < 3 * MONITOR_STEP_FAILING_TICKS; i++) {
+    const verdict = await judgeMonitorSteps([{ name: "below_lead_tier", ok: true, measured: false }], streaks);
+    recovered += verdict.recovered.length;
+    paged += verdict.page.length;
+  }
+  eq(recovered, 0, "a step whose gate was shut for a whole re-arm window is never all-cleared");
+  eq(paged, 0, "and an unmeasured tick never adds to a page either");
+  eq(
+    streaks.counts.get(stepFailStreakKey("below_lead_tier")),
+    MONITOR_STEP_FAILING_TICKS,
+    "its failure streak stands, so the page stays open until the step is measured working",
+  );
+  assert(!streaks.counts.has(stepOkStreakKey("below_lead_tier")), "and no re-arm streak grows for it");
+
+  // A name both unmeasured and failed in one tick (the runner sums duplicates) is a failure.
+  const both = memoryStreaks();
+  await judgeMonitorSteps(
+    [
+      { name: "dup", ok: true, measured: false },
+      { name: "dup", ok: false },
+    ],
+    both,
+  );
+  eq(both.counts.get(stepFailStreakKey("dup")), 1, "a throw beside an unmeasured run of the same name still counts");
+}
+
+// --- a step that measures on a SLOWER cadence is counted in its own runs -------
+//
+// `cross_system_bookings` reads cal.com once an hour, on the monitor tick in the
+// first five minutes of it. Counted in five minute ticks, its eleven idle ticks an
+// hour broke every failure streak, and a forty minute window could never hold four
+// hourly failures anyway, so a check throwing on every one of its runs never paged
+// (bidspoke#2538 is the same defect on another lane). The store below keeps the
+// real `rate_limit_hit` contract, a FIXED window from the first hit, because the
+// window is half of what broke.
+{
+  let nowMs = Date.UTC(2026, 9, 23, 0, 0, 0);
+  const rows = new Map<string, { start: number; count: number }>();
+  const windowed: MonitorStepStreaks = {
+    async bump(key, windowSeconds, alertAt) {
+      const r = rows.get(key);
+      if (!r || r.start < nowMs - windowSeconds * 1000) rows.set(key, { start: nowMs, count: 1 });
+      else r.count++;
+      return rows.get(key)!.count >= alertAt;
+    },
+    async clear(key) {
+      rows.delete(key);
+    },
+  };
+  const hourly = "cross_system_bookings";
+  eq(
+    stepCadenceMs(hourly),
+    CROSS_SYSTEM_BOOKINGS_CADENCE_MS,
+    "the hourly check's cadence is read from the check itself, not restated",
+  );
+  eq(stepCadenceMs("inactive_bookings"), MONITOR_CADENCE_MS, "every other step runs at the lane's own cadence");
+  eq(stepFailingRuns("inactive_bookings"), MONITOR_STEP_FAILING_TICKS, "an every tick step keeps its threshold");
+  eq(stepStreakWindowS("inactive_bookings"), MONITOR_STEP_STREAK_WINDOW_S, "and its window");
+  assert(stepFailingRuns(hourly) >= 2, "one failed hourly run is still a blip, never a page");
+  assert(
+    stepStreakWindowS(hourly) * 1000 >= (stepFailingRuns(hourly) + 1) * CROSS_SYSTEM_BOOKINGS_CADENCE_MS,
+    "the hourly streak's window holds all its runs with one to spare, so consecutive runs are never split",
+  );
+
+  // Its due rule fires on exactly one monitor tick per cadence, which is what makes
+  // counting it in runs of that cadence right.
+  const dueTicks: number[] = [];
+  for (let t = nowMs; t < nowMs + 24 * 60 * 60_000; t += MONITOR_CADENCE_MS) {
+    if (crossSystemBookingsDue(t)) dueTicks.push(t);
+  }
+  eq(dueTicks.length, (24 * 60 * 60_000) / CROSS_SYSTEM_BOOKINGS_CADENCE_MS, "the check is due once per cadence");
+  assert(
+    dueTicks.every((t, i) => i === 0 || t - dueTicks[i - 1] === CROSS_SYSTEM_BOOKINGS_CADENCE_MS),
+    "and its runs are exactly one cadence apart",
+  );
+
+  // Throwing on every run it makes, idle (and saying so) on every tick between.
+  const pagedAt: number[] = [];
+  for (let i = 0; i < 4 * 12; i++, nowMs += MONITOR_CADENCE_MS) {
+    const due = crossSystemBookingsDue(nowMs);
+    const verdict = await judgeMonitorSteps(
+      [
+        due ? { name: hourly, ok: false } : { name: hourly, ok: true, measured: false },
+        { name: "migration_drift", ok: true },
+      ],
+      windowed,
+    );
+    if (verdict.page.some((p) => p.step === hourly)) pagedAt.push(i);
+    eq(verdict.recovered.includes(hourly), false, "an idle tick between failing runs never reads as recovery");
+  }
+  assert(pagedAt.length > 0, "an hourly check throwing on every run pages");
+  eq(
+    pagedAt[0],
+    (stepFailingRuns(hourly) - 1) * 12,
+    "on its Nth failing run, counted in its own runs rather than the lane's ticks",
+  );
+
+  // And it ends only on its own healthy runs, the idle ticks between moving nothing.
+  const recoveredAt: number[] = [];
+  for (let i = 0; i < 4 * 12; i++, nowMs += MONITOR_CADENCE_MS) {
+    const due = crossSystemBookingsDue(nowMs);
+    const verdict = await judgeMonitorSteps(
+      [{ name: hourly, ok: true, measured: due }],
+      windowed,
+    );
+    if (verdict.recovered.includes(hourly)) recoveredAt.push(i);
+  }
+  eq(recoveredAt[0], (stepRearmRuns(hourly) - 1) * 12, "the all clear lands on its Nth healthy run, not on idle ticks");
+
+  const page = monitorStepFailingAlert({ step: hourly, ticks: stepFailingRuns(hourly), reason: null, gated: [] });
+  assert(
+    page.includes(`${stepFailingRuns(hourly)} consecutive runs`) && page.includes("hours"),
+    `the hourly page counts runs and hours, not five minute ticks: ${page}`,
+  );
+  assert(!page.includes("ticks"), "and never calls an hourly run a tick");
+  const clear = monitorStepRecoveryText(hourly, stepRearmRuns(hourly));
+  assert(
+    clear.includes(`${stepRearmRuns(hourly)} consecutive runs`) && !clear.includes("ticks"),
+    `the hourly all clear counts runs too: ${clear}`,
+  );
+  assert(!DASHES.test(page) && !DASHES.test(clear), "neither holds an em or en dash");
 }
 
 // --- a tick whose streak store cannot be read speaks in NEITHER direction -----
@@ -461,6 +605,40 @@ const tick = (...steps: { name: string; ok: boolean }[]) => steps;
   assert(
     /stepFailingAlertKey\s*\(/.test(code),
     "the page is sent on the per step key",
+  );
+  // #3955: the copy counts each step in its own runs, which only holds if the route
+  // asks per step rather than passing the lane's tick count to every page.
+  assert(
+    /ticks:\s*stepFailingRuns\(step\)/.test(code),
+    "the page states the failing step's own run count",
+  );
+  assert(
+    /monitorStepRecoveryText\(step,\s*stepRearmRuns\(step\)\)/.test(code),
+    "the all clear states the recovered step's own run count",
+  );
+  // The hourly check's idle ticks are unmeasured, or its streak is broken eleven times an hour.
+  const crossAt = code.indexOf('"cross_system_bookings"');
+  assert(crossAt >= 0, "the hourly cross system check is a named step");
+  const crossBody = code.slice(crossAt, code.indexOf("steps.run", crossAt + 30));
+  assert(
+    /status\s*===\s*"not-due"[\s\S]{0,80}unmeasured\(/.test(crossBody),
+    "a tick on which the hourly check is not due is recorded as unmeasured",
+  );
+  // Derived from the file (L96): ANY step that answers a not-due tick works on a slower
+  // cadence, and without a declared one its runs are counted in ticks inside a window
+  // that expires between them, so it could never page.
+  const slower: string[] = [];
+  for (let at = code.indexOf("steps.run"); at >= 0; at = code.indexOf("steps.run", at + 1)) {
+    const named = /^steps\.run\s*(?:<[\s\S]*?>\s*)?\(\s*"([a-z_]+)"/.exec(code.slice(at, at + 300));
+    if (!named) continue;
+    const next = code.indexOf("steps.run", at + 1);
+    if (/"not-due"/.test(code.slice(at, next < 0 ? code.length : next))) slower.push(named[1]);
+  }
+  assert(slower.includes("cross_system_bookings"), "the scan finds the hourly check it exists to hold");
+  eq(
+    slower.filter((step) => stepCadenceMs(step) === MONITOR_CADENCE_MS),
+    [],
+    "every step with a not-due tick declares its own cadence in MONITOR_STEP_CADENCE_MS",
   );
 }
 

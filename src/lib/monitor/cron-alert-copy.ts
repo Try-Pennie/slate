@@ -3,12 +3,8 @@
  *
  * Lifted out of the route handlers so the alert preview renders the REAL copy by
  * calling these (L41: one place per sentence). All of these are CONDITIONS, so
- * each has a matching all-clear that a person reads in the same channel, except
- * `demotionRerouteOutcomeInfo`, an info line that never needed action (#3615).
+ * each has a matching all-clear that a person reads in the same channel.
  */
-
-import { describeDemotionChange } from "@/lib/booking/demotion-copy";
-import type { DemotionChange } from "@/lib/booking/demotion-plan";
 
 /** The hourly Salesforce roster sync is failing on consecutive runs. */
 export function agentSyncFailureAlert(message: string): string {
@@ -171,68 +167,6 @@ export function demotionTriggerFailureRecovery(): string {
     "The automatic reroute for advisors Twilio demoted is running cleanly again: on the latest run " +
     "every changed agent was checked and every move was queued. No action is needed."
   );
-}
-
-/** How a finished demotion sweep's calls settled, by item status. */
-export interface DemotionOutcomeCounts {
-  moved: number;
-  /** Nobody else was free at that time; the hourly coverage retry tries again. */
-  unplaceable: number;
-  /** The move kept erroring; the coverage page asks a person to move it. */
-  failed: number;
-  /** The booking was cancelled or had already passed. */
-  skipped: number;
-  /** A person stopped the sweep. */
-  cancelled: number;
-}
-
-/**
- * The quiet line once a demotion sweep has FINISHED (#3615): whose tiers narrowed, what changed
- * in Twilio (the one shared sentence), how the calls settled, and the sweep's page.
- *
- * Written from the settled counts, never at enqueue: the line used to go out when the sweep was
- * queued and said "is moving 1 call" for a call nobody was free to take (evaldez1, 2026-10-21).
- * "Narrowed", not "demoted", because removing a tier is sometimes the correction of a mistake.
- */
-export function demotionRerouteOutcomeInfo(input: {
-  email: string;
-  change: DemotionChange | null;
-  counts: DemotionOutcomeCounts;
-  url: string;
-}): string {
-  const { moved, unplaceable, failed, skipped, cancelled } = input.counts;
-  const total = moved + unplaceable + failed + skipped + cancelled;
-  const settled =
-    moved === 0
-      ? "None moved."
-      : moved === total
-        ? total === 1
-          ? "It moved to another advisor."
-          : `All ${total} moved to other advisors.`
-        : `${moved} of ${total} moved to other advisors.`;
-  const rest: string[] = [];
-  if (unplaceable > 0) {
-    rest.push(
-      `${unplaceable} stayed with them because no other advisor was free at that time, and Slate tries again every hour.`,
-    );
-  }
-  if (failed > 0) {
-    // The coverage page (`coverage_needs_human`) is what asks a person; this line is an FYI.
-    rest.push(`${failed} could not be moved because of an error, so the coverage page will ask a person to move ${failed === 1 ? "it" : "them"}.`);
-  }
-  if (skipped + cancelled > 0) rest.push(`${skipped + cancelled} no longer needed moving.`);
-  return [
-    `Twilio narrowed ${input.email}'s pools, so ${calls(total)} they held needed another advisor.`,
-    describeDemotionChange(input.change) ?? "What changed in Twilio was not recorded.",
-    settled,
-    ...rest,
-    input.url,
-  ].join(" ");
-}
-
-/** "1 call" / "4 calls". */
-function calls(n: number): string {
-  return `${n} call${n === 1 ? "" : "s"}`;
 }
 
 /** "1 agent" / "4 agents", so a count of one never renders as a plural. */

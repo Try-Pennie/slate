@@ -206,6 +206,50 @@ const code = src
   }
 }
 
+// --- and a shut gate is answered as UNMEASURED, never as a healthy run (#3955) --
+// A step that consults its gate INSIDE its boundary still appears in the tick's
+// outcomes when the gate is shut. Returned plainly, that tick read as the step
+// working: four of them all cleared a standing `monitor_step_failing` page saying
+// "it is being checked once more" about a check that was not running (L792). So the
+// shut branch must go through `step.unmeasured`, which the step failure judgement
+// counts in neither direction. Derived from the FILE: every step whose opening
+// consults a gate is held to it, so a new gated step is covered by construction (L96).
+{
+  const shutGatesUnanswered = (text: string): { gated: string[]; offenders: string[] } => {
+    const gated: string[] = [];
+    const offenders: string[] = [];
+    for (let at = text.indexOf("steps.run"); at >= 0; at = text.indexOf("steps.run", at + 1)) {
+      // The name is the first argument, past any type argument (whose own string
+      // literals, `{ status: "errored" }`, are not names).
+      const named = /^steps\.run\s*(?:<[\s\S]*?>\s*)?\(\s*"([a-z_]+)"/.exec(text.slice(at, at + 300));
+      if (!named) continue;
+      const nameAt = at + named[0].length - named[1].length - 1;
+      // The gate is the body's first decision, so it sits close behind the name (as
+      // above), and the window stops at the next step so it can never read that one's.
+      const next = text.indexOf("steps.run", at + 1);
+      const opening = text.slice(nameAt, Math.min(nameAt + 500, next < 0 ? text.length : next));
+      if (!/!gates\.\w+\.run/.test(opening)) continue;
+      gated.push(named[1]);
+      if (!/unmeasured\(/.test(opening)) offenders.push(named[1]);
+    }
+    return { gated, offenders };
+  };
+  const { gated, offenders } = shutGatesUnanswered(code);
+  eq(offenders, [], "every gated step answers its shut gate as unmeasured, so a skipped tick never reads as a healthy one");
+  assert(
+    gated.length >= 15,
+    `the scan found the gated steps it exists to hold (found ${gated.length}: ${gated.join(", ")})`,
+  );
+  // Positive control: a gated step written the old way IS caught (L1).
+  const sabotaged =
+    `${code}\n    const x = await steps.run("new_gated_check", null, async () =>\n      !gates.newCheck.run\n        ? null\n        : runNewCheck({}),\n    );\n`;
+  eq(
+    shutGatesUnanswered(sabotaged).offenders,
+    ["new_gated_check"],
+    "a gated step whose shut branch returns a plain value IS caught",
+  );
+}
+
 // --- the settings read is contained, and falls back to the LAST KNOWN value (#2773)
 // A failed settings read used to resolve to the defaults inside the loader, and
 // every armed switch defaults to OFF, so one failure disarmed half the lane with
