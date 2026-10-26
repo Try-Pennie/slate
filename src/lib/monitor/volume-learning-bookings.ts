@@ -24,8 +24,9 @@ import { isTestSourceBooking } from "./offsite-origin.ts";
  * it left out, and a zero there must mean none existed rather than none were looked at.
  *
  * Eight weeks of traffic is well past one PostgREST page, so it pages
- * (`selectAllPages`), ordered on created_at then id so the pages tile, and bounded
- * above by `untilIso` so a booking made while it pages cannot shift a later page.
+ * (`selectAllPages`, keyset paged on id, so a booking made while it pages can never
+ * repeat or skip a row), bounded above by `untilIso`, and sorted oldest first after
+ * the read.
  * THROWS on any failed page and on an unreadable timestamp: the pages it did get
  * would read as a quiet stretch, and a quiet stretch learned is a lower floor.
  */
