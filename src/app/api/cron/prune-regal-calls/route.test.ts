@@ -92,7 +92,7 @@ describe("GET /api/cron/prune-regal-calls: the rate_limits sweep (#3109)", () =>
     expect(hb.recordHeartbeat).toHaveBeenCalled();
   });
 
-  it("fails the lane on a refused prune, and the Regal sweeps still run", async () => {
+  it("fails the lane on a refused prune, and the Regal and lane_runs sweeps still run", async () => {
     db.state.rpcResult = { data: null, error: { message: "function prune_rate_limits does not exist" } };
     const res = await GET(req());
     expect(res.status).toBe(500);

@@ -144,7 +144,8 @@ export type LaneRunInsert = (row: { tick_id: string; lane: string }) => Promise<
  * The store over `lane_runs`. A plain insert, never an upsert or a read first: the
  * primary key alone decides who claimed, and only 23505 reads as taken. Any other
  * error, an error with no code, or a rejected call throws, which `claimLane` turns
- * into the refusal that runs nothing.
+ * into an unreadable claim: a first delivery runs marked `unreadable`, and a re-send is
+ * refused and runs nothing.
  */
 export function laneRunStore(insert: LaneRunInsert): LaneClaimStore {
   return {
