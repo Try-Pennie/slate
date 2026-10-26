@@ -113,7 +113,7 @@ export const defaultRoutableWriteDeps: RoutableWriteDeps = {
       (work) => afterResponse("bookable-trait", work),
     ),
   // alert-key: bookable_trait_unrecorded:*
-  notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
+  notify: (key, cooldownMs, text, repeat) => sendThrottledAlert(key, cooldownMs, text, repeat),
 };
 
 function idsOf(w: RoutableWrite): string[] {

@@ -827,7 +827,9 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "today (#2593). The page asks for one action on one call, and whoever " +
       "reassigns it already knows it is done, so an all clear per booking was noise " +
       "(Dan, 2026-10-07). The monitor still re-measures every tick and settles the " +
-      "state SILENTLY once the call agrees or is gone, so a recurrence pages at once.",
+      "state SILENTLY once the call agrees or is gone, so a recurrence pages at once. " +
+      "It posts once per call and again only when the call, the lead's tier or the " +
+      "team's free time changes (`CHANGE_ONLY_KEYS`, Dan 2026-10-26).",
   },
   {
     key: "cross_system_booking:*",
@@ -1562,4 +1564,35 @@ const URGENT = new Set(URGENT_CONDITION_KEYS);
 export function isUrgentCondition(key: string): boolean {
   const entry = catalogEntryForSentKey(key);
   return entry !== undefined && entry.kind === "condition" && URGENT.has(entry.key);
+}
+
+/**
+ * The INCIDENTS that post once and then again only on a change (Dan, 2026-10-26: "I
+ * got a ton of this alert and they were all the same. Just page once per call.").
+ *
+ * An incident has no repeat rule of its own, so the dispatcher posts it again every
+ * time its cooldown runs out. For a page about one call that stays wrong for days,
+ * that is the same message every few hours. A key listed here gets #3801's change
+ * rule instead, with no reminder at all: it posts when first seen, and again only
+ * when its send site names a subject the last post did not (`AlertRepeat.subjects`).
+ * What counts as a change is the send site's subject list, so the decision about
+ * WHICH facts matter stays beside the copy that states them.
+ *
+ * One named set, like the urgent one above, so a send site cannot opt itself in or
+ * out (L621). `scripts/test-change-only-alerts.ts` holds every entry to existing in
+ * the catalog and being an incident (a condition already has the change rule, plus a
+ * reminder its all clear depends on).
+ *
+ *   - booking_below_lead_tier:*: one call booked below the lead's tier. Its subjects
+ *     are the call's time, advisor and bucket, the lead's tier, and whether the
+ *     lead's own team is free then (`belowLeadTierRepeat`).
+ */
+export const CHANGE_ONLY_KEYS: readonly string[] = ["booking_below_lead_tier:*"];
+
+const CHANGE_ONLY = new Set(CHANGE_ONLY_KEYS);
+
+/** Whether a SENT key posts only on a change, family members included. */
+export function isChangeOnly(key: string): boolean {
+  const entry = catalogEntryForSentKey(key);
+  return entry !== undefined && entry.kind === "incident" && CHANGE_ONLY.has(entry.key);
 }

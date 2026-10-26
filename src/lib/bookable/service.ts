@@ -214,7 +214,7 @@ export const defaultBookableDeps: BookableDeps = {
   // didn't happen on a block; the alert is the only side effect left).
   // alert-key: bookable_blocked:*
   // alert-key: bookable_unverified:*
-  notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text).catch(logAlertSendFailure(key)),
+  notify: (key, cooldownMs, text, repeat) => sendThrottledAlert(key, cooldownMs, text, repeat).catch(logAlertSendFailure(key)),
   // Best-effort: the flip already succeeded, so a cleanup failure must not fail
   // it. The self-heal reconcile backstop retries any leftover watch/blocks.
   cleanupOnPoolExit: (userId) => cleanupOnPoolExit(userId).then(() => {}),
