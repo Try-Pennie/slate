@@ -300,7 +300,7 @@ describe("sendThrottledInfo", () => {
 // all clear and an urgent page open with a lead line naming their severity, and an
 // ordinary page opens with its own text (Dan, 2026-10-25), so the two read differently
 // whatever channel they reach. Asserted at the transport, since that is what the reader sees.
-describe("severity lead on every post (#1825)", () => {
+describe("severity lead on every post but an ordinary page (#1825)", () => {
   const firstLine = (call: number) => slack.postSlack.mock.calls[call][0].text.split("\n")[0];
 
   it("a page needing attention has no lead and is posted as its own text", async () => {
