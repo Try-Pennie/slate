@@ -4453,7 +4453,7 @@ export async function GET(req: NextRequest) {
         claim: ownClaim.claim,
         // alert-key: lane_claim_unreadable
         // alert-text-ok: our own copy from lane-claim-health.ts, never a raw error.
-        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
         // A condition: it ends on a claim this lane actually wrote.
         // alert-key: lane_claim_unreadable
         // all-clear-proof: scripts/test-lane-claim-health.ts (a hand run, a duplicate and
