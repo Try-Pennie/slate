@@ -91,8 +91,10 @@ type BookingsSelectBuilder = ReturnType<
  * select, whatever columns it selected. The rule lives HERE once so `coverageBookings` and the
  * demotion snapshot can never drift on what "upcoming" means (L16, L342): same statuses, same
  * `coverageSelectionBounds` (strictly after now so one under way is never moved; still running
- * when the absence begins, #1237), same order. The `.from`/`.select`/tag/key stay at each call
- * site because the paged-read-key guard reads those literally.
+ * when the absence begins, #1237). It applies NO order: selectAllPages pages by its key alone
+ * (#4238), so a caller wanting time order sorts the rows with `byStartTime`. The
+ * `.from`/`.select`/tag/key stay at each call site because the paged-read-key guard reads those
+ * literally.
  */
 function applyUpcomingWindow(
   base: BookingsSelectBuilder,
@@ -105,10 +107,19 @@ function applyUpcomingWindow(
     // Strictly after now: one already under way is never moved out from under the customer.
     .gt("starts_at", bounds.startsAfterIso)
     // Still running when the absence begins. The bound that was missing (#1237).
-    .gt("ends_at", bounds.endsAfterIso)
-    .order("starts_at", { ascending: true });
+    .gt("ends_at", bounds.endsAfterIso);
+  // No .order here: selectAllPages pages by its key alone and refuses a query that orders
+  // itself (#4238), so a caller wanting time order sorts the rows with `byStartTime`.
   if (bounds.startsBeforeIso) q = q.lt("starts_at", bounds.startsBeforeIso);
   return q;
+}
+
+/** Time order, then id, for rows read through `applyUpcomingWindow` (the order the window
+ *  itself carried before keyset paging, #4238). Returns a new array. */
+function byStartTime<T extends { id: string; starts_at: string }>(rows: T[]): T[] {
+  return [...rows].sort((a, b) =>
+    a.starts_at < b.starts_at ? -1 : a.starts_at > b.starts_at ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+  );
 }
 
 /**
@@ -126,13 +137,15 @@ export async function coverageBookings(
     { startIso: rangeStartIso, endIso: rangeEndIso },
     new Date().toISOString(),
   );
-  return selectAllPages<CoverageBookingRow>("bulk-reassign-coverage-bookings", "id", () =>
-    // cap-safe: read every page via selectAllPages, which orders and pages it, so an out
-    // agent with more than one page of upcoming bookings is fully snapshotted.
-    applyUpcomingWindow(
-      supabaseAdmin().from("bookings").select("id, starts_at, ends_at, attendee_name"),
-      outUserId,
-      bounds,
+  return byStartTime(
+    await selectAllPages<CoverageBookingRow>("bulk-reassign-coverage-bookings", "id", () =>
+      // cap-safe: read every page via selectAllPages, which orders and pages it, so an out
+      // agent with more than one page of upcoming bookings is fully snapshotted.
+      applyUpcomingWindow(
+        supabaseAdmin().from("bookings").select("id, starts_at, ends_at, attendee_name"),
+        outUserId,
+        bounds,
+      ),
     ),
   );
 }
@@ -177,18 +190,20 @@ function demotionSnapshotReaders(
     new Date().toISOString(),
   );
   return {
-    candidates: () =>
+    candidates: async () =>
       // The SAME window as coverageBookings (via the shared applyUpcomingWindow), plus the
       // bucket_id and kind the eligibility join needs. Its own inline paged read so the
       // paged-read-key guard can read the table, tag and key literally here.
-      selectAllPages<DemotionCandidateRow>("bulk-reassign-demotion-candidates", "id", () =>
-        // cap-safe: read every page via selectAllPages, which orders and pages it.
-        applyUpcomingWindow(
-          supabaseAdmin()
-            .from("bookings")
-            .select("id, starts_at, ends_at, attendee_name, bucket_id, kind"),
-          outUserId,
-          bounds,
+      byStartTime(
+        await selectAllPages<DemotionCandidateRow>("bulk-reassign-demotion-candidates", "id", () =>
+          // cap-safe: read every page via selectAllPages, which orders and pages it.
+          applyUpcomingWindow(
+            supabaseAdmin()
+              .from("bookings")
+              .select("id, starts_at, ends_at, attendee_name, bucket_id, kind"),
+            outUserId,
+            bounds,
+          ),
         ),
       ),
     bucketCriteria: async (bucketIds) => {
