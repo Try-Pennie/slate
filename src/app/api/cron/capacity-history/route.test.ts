@@ -85,6 +85,18 @@ describe("GET /api/cron/capacity-history", () => {
     );
   });
 
+  it("hands the roster filling up check the tick's own clock, which decides whether it may post", async () => {
+    history.runHistoryTick.mockResolvedValue(ok);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-26T05:23:00Z"));
+      await GET(req());
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(rosterFill.runRosterFillCheck).toHaveBeenCalledWith(expect.objectContaining({ nowMs: Date.parse("2026-10-26T05:23:00Z") }));
+  });
+
   it("does not judge the roster filling up when the history tick failed", async () => {
     history.runHistoryTick.mockRejectedValueOnce(new Error("capacity history could not read calendars"));
     await GET(req());

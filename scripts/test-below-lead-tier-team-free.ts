@@ -17,6 +17,7 @@
 //  - the reader is chunked, newest first, held to a per lead count, and THROWS on a
 //    truncated answer rather than counting part of a history as the whole.
 import {
+  belowLeadTierRepeat,
   formatBelowLeadTierAlert,
   runBelowLeadTierCheck,
   submissionAgreement,
@@ -203,6 +204,36 @@ function text(team: PageFacts["team"], history: PageFacts["history"] = STEADY, f
   }
 }
 
+// --- what counts as a change worth posting again (2026-10-26) ----------------------------------
+// Dan: "Just page once per call." The page posts again only when a subject differs from
+// the last post's, so these pin what the subjects are: each of the three measured team
+// answers is its own subject, the nearest free time is not part of it, an unchecked team
+// names nothing, and the lead is named by tier, never by the raw XBC.
+{
+  const subjects = (team: Parameters<typeof belowLeadTierRepeat>[1], f: BelowFinding = FINDING) =>
+    belowLeadTierRepeat(f, team).subjects ?? [];
+  const base = [`call:${START}`, "advisor:dana.whitfield@trypennie.com", "bucket:212", "tier:high"];
+  eq(subjects({ kind: "free" }), [...base, "team:free-at-call"], "free at the call's time");
+  eq(subjects({ kind: "not-free", nearestMs: START_MS + 90 * MIN }), [...base, "team:free-later-that-day"], "free later that day");
+  eq(
+    subjects({ kind: "not-free", nearestMs: START_MS + 30 * MIN }),
+    subjects({ kind: "not-free", nearestMs: START_MS + 90 * MIN }),
+    "the nearest free time moving is not a change",
+  );
+  eq(subjects({ kind: "not-free", nearestMs: null }), [...base, "team:free-no-time-that-day"], "free at no time that day");
+  for (const why of ["no-row", "unreadable", "inside-notice", "past-horizon"] as const) {
+    eq(subjects({ kind: "unchecked", why }), base, `a team not checked (${why}) names nothing`);
+  }
+  const rescored = { ...FINDING, lead: { ...FINDING.lead, code: "322" } };
+  eq(subjects({ kind: "free" }, rescored), subjects({ kind: "free" }), "a new XBC inside the tier names the same subjects");
+  const unassigned = { ...FINDING, booking: booking({ agent_name: null, agent_email: null }) };
+  assert(subjects({ kind: "free" }, unassigned).includes("advisor:unassigned"), "an unassigned call is named as such");
+  const byName = { ...FINDING, booking: booking({ agent_email: " ", agent_name: "Dana Whitfield" }) };
+  assert(subjects({ kind: "free" }, byName).includes("advisor:dana whitfield"), "with no email the advisor is named by name");
+  const sameInstant = { ...FINDING, booking: booking({ starts_at: "2026-10-13T19:00:00+00:00" }) };
+  eq(subjects({ kind: "free" }, sameInstant), subjects({ kind: "free" }), "one instant spelled two ways is one call time");
+}
+
 // --- the runner --------------------------------------------------------------------------------
 type Calls = { notified: string[]; historyAsked: string[][] };
 
@@ -219,7 +250,6 @@ function deps(over: Partial<BelowLeadTierDeps> = {}, calls: Calls = { notified: 
       calls.notified.push(t);
     },
     settle: async () => undefined,
-    cooldownMs: 60 * MIN,
     nowMs: NOW,
     leadTierOffer: (code) => (code === "312" ? OFFER : null),
     readSubmissionHistory: async (ids) => {
