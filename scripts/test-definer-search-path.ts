@@ -266,6 +266,9 @@ const EXPECTED_PINNED = [
   "booking_api_outcome_mix",
   // #2366: keeps booking_settings.public_booking_paused_at in step with the flag.
   "booking_settings_stamp_pause",
+  // #4202: a booking on the placeholder is staff_placed and stacks, and a move off it
+  // makes the call routed. Definer, pinned, reading only users.
+  "bookings_kind_follows_assignee",
   // #3247: the reroute hold backstop on bookings, and the delete of a cancelled
   // booking's hold. Definer, pinned, reaching only pg_catalog built ins.
   "bookings_refuse_held_agent",
@@ -288,6 +291,8 @@ const EXPECTED_PINNED = [
   "commit_fresh_booking",
   // #3265: the gated reschedule and its outbox row in one transaction.
   "commit_reschedule",
+  // #4202: commit_reschedule for a move onto the placeholder, as staff_placed and stacking.
+  "commit_reschedule_onto_placeholder",
   "count_bookings_per_local_day",
   // #2447: reports which definer functions the web roles can execute. Security INVOKER
   // itself, deliberately, so it adds no row to the list it reports on.

@@ -91,8 +91,9 @@ try {
     const coordinator = user(ORG, {});
     const at = (h: string) => `2031-03-04T${h}:00.000Z`;
     const id = nextId();
-    sql(bookingInsertSql({ id, orgId: ORG, bucketId: B100, eventTypeId: ET, assignedUserId: placeholder, startIso: at("15:00"), endIso: at("15:20"), kind: "staff_placed" }));
-    sql(`update bookings set source = 'coordinator', placed_by_user_id = '${coordinator}', allow_double_book = true where id = '${id}';`);
+    // Stacking from the insert: since 0208 a booking on the placeholder must stack (#4202).
+    sql(bookingInsertSql({ id, orgId: ORG, bucketId: B100, eventTypeId: ET, assignedUserId: placeholder, startIso: at("15:00"), endIso: at("15:20"), kind: "staff_placed" }).replace("insert into bookings (id,", "insert into bookings (allow_double_book, id,").replace("values ('", "values (true, '"));
+    sql(`update bookings set source = 'coordinator', placed_by_user_id = '${coordinator}' where id = '${id}';`);
     eq(sql(`select kind || '|' || source || '|' || placed_by_user_id from bookings where id = '${id}';`), `staff_placed|coordinator|${coordinator}`,
       "a booking may be staff_placed, from the coordinator page, naming who placed it");
     // Stacked: a second staff placed call at the same time on the same placeholder.
