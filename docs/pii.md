@@ -286,7 +286,12 @@ not the copy Cloudflare holds. Before anything is sent
   `[param]` route appears that it does not classify.
 - **every message, stack and string field goes through `scrubContactData`**, the same
   scrub the client error beacon and the fault page use, so emails, phone numbers and
-  long digit runs become markers.
+  long digit runs become markers. The scrub reads DECODED text (#4237): a `slate`
+  line is parsed first, each field is scrubbed, and the shipped message is rebuilt
+  from those scrubbed fields; an object argument has its strings scrubbed before it
+  is turned into JSON. Escaped text writes a line break as backslash n, which the
+  phone shape does not read as a break, so scrubbing it as written let a phone after
+  a line break ship in the clear.
 - **request headers and `cf` are never sent**, so no cookie, authorization header or
   client address leaves.
 

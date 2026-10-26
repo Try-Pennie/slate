@@ -68,17 +68,33 @@ function escapeChar(ch: string): string {
  * A value with none of these characters renders exactly as it always did, so no
  * existing query changes. `src/lib/log-shipping/parse-line.ts` reads it back.
  */
-function renderValue(value: string | number | boolean): string {
+export function renderValue(value: string | number | boolean): string {
   if (typeof value === "string") return `"${value.replace(NEEDS_ESCAPE, escapeChar)}"`;
   return String(value);
 }
 
+/** What a field key must look like for `parseSlateLine` to read it back. */
+export const LOG_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** A key as written. Every key comes from code today; one built from data later is
+ *  made an identifier rather than allowed to split or forge a field (#4237). */
+function safeKey(key: string): string {
+  if (LOG_KEY.test(key)) return key;
+  const cleaned = key.replace(/[^A-Za-z0-9_]/g, "_");
+  return /^[A-Za-z_]/.test(cleaned) ? cleaned : `_${cleaned}`;
+}
+
+/** The tag is written bare, so it may hold nothing that ends or escapes a field. */
+function safeTag(tag: string): string {
+  return tag.replace(/[\s="]/g, "_").replace(NEEDS_ESCAPE, "_");
+}
+
 /** The line itself, so it can be asserted on without spying on the console. */
 export function formatLine(tag: LogTag, fields: LogFields): string {
-  const parts = [`${SERVICE} tag=${tag}`];
+  const parts = [`${SERVICE} tag=${safeTag(tag)}`];
   for (const [key, value] of Object.entries(fields)) {
     if (value === null || value === undefined) continue;
-    parts.push(`${key}=${renderValue(value)}`);
+    parts.push(`${safeKey(key)}=${renderValue(value)}`);
   }
   return parts.join(" ");
 }

@@ -16,10 +16,11 @@
  * plain text rather than inventing fields for it.
  */
 
+import { LOG_KEY as KEY } from "../log.ts";
+
 export type ParsedFields = Record<string, string | number | boolean>;
 
 const PREFIX = "slate ";
-const KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** Parse one line, or null when it is not a `slate` line. */
 export function parseSlateLine(line: string): ParsedFields | null {

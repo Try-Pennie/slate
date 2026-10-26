@@ -366,6 +366,72 @@ function fetchItem(url: string, logs: TraceItemLike["logs"], exceptions: TraceIt
   eq(fields.phone, "[phone]", "and a numeric phone field still carries the marker");
 }
 
+// #4237 review: the shipped MESSAGE is the line as text, and the line now writes a
+// line break inside a value as backslash n. The contact scrub needs a word boundary
+// or a separator between a phone's groups, so scrubbing that escaped text let a
+// phone after an escaped control character ship in the clear. Invented values only.
+const PHONE_LEAK = /555\D{0,6}123\D{0,6}4567/;
+function shippedLog(message: unknown[]): { message: string; fields: Record<string, unknown> } {
+  const line = recordsFromTraces([fetchItem("/x", [{ timestamp: 1, level: "error", message }])]).find((r) => r.kind === "log");
+  return { message: String(line?.message), fields: (line?.fields ?? {}) as Record<string, unknown> };
+}
+
+{
+  const values = [
+    "Call me on\u000a555-123-4567 please",
+    "phone:\u0009555.123.4567",
+    "x\u000d\u000a555 123 4567",
+    "555\u000a123\u000a4567",
+    "555\u000d123\u000d4567",
+    "555\u0009123\u00094567",
+    "(555)\u000a123-4567",
+  ];
+  for (const value of values) {
+    const { message, fields } = shippedLog([formatLine("probe", { detail: value })]);
+    assert(!PHONE_LEAK.test(message), `the message never ships the phone: ${JSON.stringify(value)} (got ${message})`);
+    assert(message.includes("[phone]"), `the message carries the marker instead: ${JSON.stringify(value)}`);
+    assert(!PHONE_LEAK.test(String(fields.detail)), `nor does the field: ${JSON.stringify(value)}`);
+    assert(String(fields.detail).includes("[phone]"), `and the field carries the marker: ${JSON.stringify(value)}`);
+  }
+}
+
+{
+  // The same class, older than #4237: an object console argument was stringified
+  // BEFORE the scrub, and JSON writes a line break as backslash n too.
+  const { message } = shippedLog([formatLine("x", { msg: "y" }), { message: "note\u000a555-123-4567", nested: { at: "c\u000ajane.doe@example.com" } }]);
+  assert(!PHONE_LEAK.test(message), `an object argument never ships a phone after a line break (got ${message})`);
+  assert(!message.includes("jane.doe"), "nor a nested email after one");
+  assert(message.includes("[phone]") && message.includes("[email]"), "both carry their markers");
+  const plain = shippedLog([formatLine("x", { msg: "y" }), "and 555-123-4567 as a string argument", 5551234567]);
+  assert(!PHONE_LEAK.test(plain.message), "a string or numeric extra argument is scrubbed as before");
+}
+
+{
+  // The message and the fields can never disagree: the message read back as fields
+  // IS the shipped fields, so nothing scrubbed out of one survives in the other.
+  const BACKSLASH = "\u005c";
+  const samples: Record<string, string | number | boolean>[] = [
+    { detail: "Call me on\u000a555-123-4567 please" },
+    { detail: "(555)\u000a123-4567", n: 5551234567 },
+    { ua: `jane.doe@example.com${BACKSLASH}" forged=1` },
+    { u: `/booking/manage/${MANAGE_TOKEN}\u000apaged=true` },
+    { u: "/book?name=secretname&email=jane.doe%40example.com\u000anext line" },
+    { u: `/book?name=secret${BACKSLASH}name&x=1`, ok: true },
+    { blocked: `x${BACKSLASH}" paged=true`, paged: false },
+    { msg: "lane timings", total_ms: 5400.2, lanes_ok: 3 },
+  ];
+  for (const sample of samples) {
+    const { message, fields } = shippedLog([formatLine("probe", sample)]);
+    eq(JSON.stringify(parseSlateLine(message)), JSON.stringify(fields), `the message reads back as the shipped fields: ${JSON.stringify(sample)}`);
+    for (const secret of [PHONE_LEAK, /jane\.doe/, /secretname/, new RegExp(MANAGE_TOKEN)]) {
+      assert(!secret.test(message) && !secret.test(JSON.stringify(fields)), `${secret} ships in neither: ${JSON.stringify(sample)}`);
+    }
+  }
+  // A line with nothing to scrub ships exactly as it was written.
+  const clean = formatLine("cron", { msg: "lane timings", total_ms: 5400.2, ok: true, url: "/api/cron/sync" });
+  eq(shippedLog([clean]).message, clean, "an ordinary line's message is the line itself");
+}
+
 {
   const [inv] = recordsFromTraces([{ ...fetchItem("/x", []), scriptVersion: undefined }]);
   eq(inv.version_id, null, "no version reads as null, never as a guessed id");

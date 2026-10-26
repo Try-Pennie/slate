@@ -99,6 +99,16 @@ describe("formatLine with a value a stranger wrote (#4237)", () => {
     expect(line).not.toMatch(/[\u0000-\u001f\u007f\u2028\u2029]/);
   });
 
+  // Every tag and key comes from code today, so this is a guard, not a feature: one
+  // built from data later still cannot split the line or forge a field.
+  it("keeps a tag or key built from data to one field, and leaves ordinary ones alone", () => {
+    const line = formatLine("csp report paged=true", { "user agent": "x", "a=b": 1, "9lives": 2, ok_key: 3 });
+    expect(keysOf(line)).toEqual(["tag", "user_agent", "a_b", "_9lives", "ok_key"]);
+    expect(line).toBe('slate tag=csp_report_paged_true user_agent="x" a_b=1 _9lives=2 ok_key=3');
+    expect(formatLine("csp-report", { lane_ms: 1 })).toBe("slate tag=csp-report lane_ms=1");
+    expect(formatLine(`a${LF}b"c`, {})).toBe("slate tag=a_b_c");
+  });
+
   it("renders ordinary values exactly as before, so no existing log query changes", () => {
     expect(formatLine("t", { msg: "lane timings", url: "https://slate.trypennie.app/book?xbc=411#x" })).toBe(
       'slate tag=t msg="lane timings" url="https://slate.trypennie.app/book?xbc=411#x"',

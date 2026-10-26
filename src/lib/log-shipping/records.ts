@@ -23,6 +23,7 @@
  * The input type is structural rather than the runtime's `TraceItem`, so the node
  * tests build real shaped items without the Workers type library.
  */
+import { renderValue } from "../log.ts";
 import { parseSlateLine, type ParsedFields } from "./parse-line.ts";
 import { redactText, redactUrl } from "./redact.ts";
 
@@ -81,17 +82,46 @@ function iso(ms: number | null | undefined): string {
   return new Date(typeof ms === "number" && Number.isFinite(ms) ? ms : Date.now()).toISOString();
 }
 
-/** A console argument as text. An object (a serialized Error, a plain object) is
- *  stringified, since dropping it would lose the stack the call site passed on
- *  purpose (#1188). */
-function argText(arg: unknown): string {
-  if (typeof arg === "string") return arg;
+/**
+ * A console argument as scrubbed text. An object (a serialized Error, a plain
+ * object) is stringified, since dropping it would lose the stack the call site
+ * passed on purpose (#1188).
+ *
+ * Every string inside an object is scrubbed BEFORE it is stringified (#4237
+ * review): JSON writes a line break as backslash n, and the contact scrub needs a
+ * word boundary or a separator before a phone's digits, so `note\n555-123-4567`
+ * scrubbed as JSON text kept the phone. The JSON text is scrubbed once more for
+ * what a string pass cannot see: a number, or a key built from data.
+ */
+function scrubbedArgText(arg: unknown): string {
+  if (typeof arg === "string") return redactText(arg);
   if (arg === undefined) return "undefined";
+  let json: string | undefined;
   try {
-    return JSON.stringify(arg) ?? String(arg);
+    json = JSON.stringify(arg, (_key, value: unknown) => (typeof value === "string" ? redactText(value) : value));
   } catch {
-    return String(arg);
+    json = undefined;
   }
+  return redactText(json ?? String(arg));
+}
+
+/**
+ * A parsed line as text again, written from its SCRUBBED fields with the same
+ * escaping `formatLine` uses (#4237 review). Scrubbing the line as written cannot
+ * work: it is escaped text, where a line break inside a value is backslash n,
+ * which the contact scrub does not read as a break. Rebuilt from the fields, the
+ * message and the fields cannot disagree, and a line with nothing to scrub reads
+ * exactly as it was written.
+ */
+function messageFromFields(fields: ParsedFields): string {
+  const parts = ["slate"];
+  for (const [key, value] of Object.entries(fields)) {
+    const rendered = renderValue(value);
+    // `formatLine` writes the tag bare, so a reader's `tag=cron` still matches.
+    const bare = key === "tag" && typeof value === "string" && value !== "" && rendered === `"${value}"` && !/\s/.test(value);
+    parts.push(`${key}=${bare ? value : rendered}`);
+  }
+  return parts.join(" ");
 }
 
 function redactFields(fields: ParsedFields): ParsedFields {
@@ -162,7 +192,6 @@ export function recordsFromTraces(items: readonly TraceItemLike[]): ShippedRecor
     records.push(invocationRecord(item, base));
     for (const line of item.logs) {
       const args = Array.isArray(line.message) ? line.message : [line.message];
-      const text = args.map(argText).join(" ");
       // Parsed AS WRITTEN, then scrubbed field by field (#4237). Scrubbing the whole
       // line first let a redaction end on the backslash of an escaped quote (a token
       // path or a query string runs up to the quote), which handed the parser a
@@ -170,14 +199,19 @@ export function recordsFromTraces(items: readonly TraceItemLike[]): ShippedRecor
       // number is scrubbed too (`redactFields`), so a ten digit phone that parsed
       // as a number still meets the digit scrub (review of #3160).
       const parsed = typeof args[0] === "string" ? parseSlateLine(args[0]) : null;
+      const fields = parsed ? redactFields(parsed) : null;
+      const text = [
+        fields ? messageFromFields(fields) : scrubbedArgText(args[0]),
+        ...args.slice(1).map(scrubbedArgText),
+      ].join(" ");
       const record: ShippedRecord = {
         ...base,
         dt: iso(line.timestamp),
         level: level(line.level),
         kind: "log",
-        message: cap(redactText(text), TEXT_LIMITS.message),
+        message: cap(text, TEXT_LIMITS.message),
       };
-      if (parsed) record.fields = redactFields(parsed);
+      if (fields) record.fields = fields;
       records.push(record);
     }
     for (const ex of item.exceptions) {
