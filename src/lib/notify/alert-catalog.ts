@@ -106,7 +106,8 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why:
       "The roster's call capacity on each of the next two days leads can book is booked at or over the nearly " +
       "full line set on Team capacity (#2590, #4219), the point to think about ad spend. It holds while every " +
-      "one of those days stays there and ends when the capacity history lane measures any of them under the line.",
+      "one of those days stays there and ends when the capacity history lane measures any of them under the line. " +
+      "It posts and clears only from 9 AM up to 6 PM New York time, every day (posting-hours.ts).",
   },
   {
     key: "db_saturation",
