@@ -2,6 +2,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, cleanup, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 // Access guard for the monitor-settings page (#676): unauthenticated to /login,
 // the OOO-only launch flag diverts non-super-admins to /admin/ooo, and once
@@ -71,6 +73,12 @@ vi.mock("@/lib/env", async (importOriginal) => ({
 }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
+// The host the request came to, which the design frames' preview reads (`?frame=`).
+const hdrs = vi.hoisted(() => ({ host: "slate.trypennie.app" }));
+vi.mock("next/headers", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/headers")>()),
+  headers: async () => new Headers({ host: hdrs.host }),
+}));
 // The pilot switch in Salesforce, which decides whether the Low pages are judged. Every
 // Low lead on Slate by default, so the cases that are not about it see the table.
 vi.mock("@/lib/salesforce/pilot-settings", () => ({ pilotSettingsCache: { read: pilot.read } }));
@@ -98,6 +106,8 @@ const ADMIN = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  hdrs.host = "slate.trypennie.app";
+  delete process.env.SLATE_DESIGN_FIXTURES;
   env.consoleHiddenFor.mockReturnValue(false);
   db.reads = [];
   db.throwSettings = false;
@@ -606,6 +616,64 @@ describe("AlertSettings alert toggles", () => {
       expect(name).not.toMatch(/\barm\b/i);
       expect(name).not.toMatch(/\bpage Slack\b/i);
     }
+  });
+});
+
+// The settled design (docs/design/admin-alerts-help-text.html) is scored against this page
+// drawing the same fixture (`?frame=<id>`), which is honoured only on this machine under the
+// local flag, the mechanism Team capacity already uses (`designFixturesEnabled`). It only ever
+// picks which boxes are ticked; who may open the page is decided before it, as always.
+describe("AlertSettings design frames", () => {
+  const frameProps = (frame: string) => ({ searchParams: Promise.resolve({ frame }) });
+  const fixture = JSON.parse(
+    readFileSync(join(process.cwd(), "docs/design/fixtures/admin-alerts-help-text.json"), "utf8"),
+  ) as { frames: Record<string, { armed: Record<string, boolean> }> };
+  const ticked = () =>
+    Object.fromEntries(
+      alertSwitchCopy(null).map((s) => [
+        s.name,
+        (document.querySelector(`input[name="${s.name}"]`) as HTMLInputElement).checked,
+      ]),
+    );
+  const nothingTicked = Object.fromEntries(alertSwitchCopy(null).map((s) => [s.name, false]));
+
+  it("draws a frame's switches from the fixture on this machine under the flag", async () => {
+    process.env.SLATE_DESIGN_FIXTURES = "1";
+    hdrs.host = "localhost:3100";
+    for (const id of Object.keys(fixture.frames)) {
+      cleanup();
+      auth.currentUser.mockResolvedValueOnce(ADMIN);
+      render(await AlertSettingsPage(frameProps(id)));
+      expect(ticked()).toEqual(fixture.frames[id].armed);
+    }
+  });
+
+  it("never serves the fixture from a deployment: no flag, or a host that is not this machine", async () => {
+    // A deployment carries no flag (scripts/test-team-capacity-view.ts holds wrangler.jsonc to it).
+    hdrs.host = "localhost:3100";
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await AlertSettingsPage(frameProps("f1")));
+    expect(ticked()).toEqual(nothingTicked);
+
+    // And a flag somehow set is still refused on any host but this machine's.
+    cleanup();
+    process.env.SLATE_DESIGN_FIXTURES = "1";
+    hdrs.host = "slate.trypennie.app";
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await AlertSettingsPage(frameProps("f1")));
+    expect(ticked()).toEqual(nothingTicked);
+  });
+
+  it("keeps every access check in front of a frame", async () => {
+    process.env.SLATE_DESIGN_FIXTURES = "1";
+    hdrs.host = "localhost:3100";
+    auth.currentUser.mockResolvedValueOnce(null);
+    await expect(AlertSettingsPage(frameProps("f1"))).rejects.toThrow(/NEXT_REDIRECT:\/login/);
+
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
+    render(await AlertSettingsPage(frameProps("f1")));
+    expect(screen.getByText(/admin account to open this page/i)).toBeTruthy();
+    expect(document.querySelector('input[name="failure_rate_armed"]')).toBeNull();
   });
 });
 

@@ -40,6 +40,9 @@ import {
 import { VolumeFloors } from "@/components/admin/VolumeFloors";
 import { AlertSwitch } from "@/components/admin/AlertSwitch";
 import { alertSwitchCopy, type AlertSwitchName } from "@/lib/monitor/alert-switch-copy";
+import { alertsFixtureFrame, type AlertsDesignFixture } from "@/lib/admin/alerts-design-fixture";
+import { designFixturesEnabled } from "@/lib/admin/team-capacity-fixture";
+import { headers } from "next/headers";
 import { CalcomRetirementSwitch } from "@/components/admin/CalcomRetirementSwitch";
 import { CALCOM_RETIREMENT_FORM } from "@/lib/calcom/retirement";
 import { loadPutBackCounts, putBackSavedSentence, type PutBackCounts } from "@/lib/calcom/put-back";
@@ -174,7 +177,7 @@ const ALERT_TUNING_FIELDS: Partial<
 export default async function AlertSettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ ok?: string; error?: string; form?: string; copy?: string; remove?: string }>;
+  searchParams: Promise<{ ok?: string; error?: string; form?: string; copy?: string; remove?: string; frame?: string }>;
 }) {
   const sp = await searchParams;
   const outcome = savedOutcome(sp.ok);
@@ -240,6 +243,19 @@ export default async function AlertSettingsPage({
     below_lead_tier_armed: resolveBelowLeadTierArmed(config),
     regal_calls_armed: resolveRegalCallsArmed(config),
   };
+  // The settled design's frames (docs/design/admin-alerts-help-text.html): `?frame=<id>` ticks the
+  // switches from the design's fixture, so the design match score compares like with like. Honoured
+  // only under the local flag on this machine (`designFixturesEnabled`, Team capacity's mechanism),
+  // after every access check above, and it changes nothing but which boxes are drawn ticked.
+  let switchesShown = armedBySwitch;
+  if (sp.frame && designFixturesEnabled(process.env.SLATE_DESIGN_FIXTURES, (await headers()).get("host"))) {
+    // Read from disk, never imported, so no deployment's bundle carries the fixture.
+    const { readFile } = await import("node:fs/promises");
+    const fixture = JSON.parse(
+      await readFile(`${process.cwd()}/docs/design/fixtures/admin-alerts-help-text.json`, "utf8"),
+    ) as AlertsDesignFixture;
+    switchesShown = alertsFixtureFrame(fixture, sp.frame).armed;
+  }
   // #2875: null when the row could not be read, or was read without the column
   // (a deploy ahead of migration 0147), never a guess. No row at all is the
   // column's default, live.
@@ -629,17 +645,20 @@ export default async function AlertSettingsPage({
             stored30={config?.floor_30 ?? null}
             stored120={config?.floor_120 ?? null}
           />
-          {/* Dan, 2026-10-26: each switch says only what its current state means. */}
-          {alertSwitchCopy(calcomRetired).map((s) => (
-            <AlertSwitch
-              key={s.name}
-              name={s.name}
-              label={s.label}
-              on={s.on}
-              off={s.off}
-              defaultChecked={armedBySwitch[s.name]}
-            />
-          ))}
+          {/* Dan, 2026-10-26: each switch says only what its current state means. The id is the
+              slot the settled design draws its frames into. */}
+          <div id="alert-switches">
+            {alertSwitchCopy(calcomRetired).map((s) => (
+              <AlertSwitch
+                key={s.name}
+                name={s.name}
+                label={s.label}
+                on={s.on}
+                off={s.off}
+                defaultChecked={switchesShown[s.name]}
+              />
+            ))}
+          </div>
         </section>
 
         <section className={cardCls}>
