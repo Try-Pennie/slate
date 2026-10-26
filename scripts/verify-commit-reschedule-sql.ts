@@ -194,6 +194,42 @@ try {
     eq(sql(`select routing_trace::text from bookings where id = '${id}';`), before, "and the trace it was passed is not written");
   }
 
+  // --- a reschedule clears allow_double_book (#4199) ------------------------------------------
+  // A reassign sets the flag so the call may stack on its advisor (0017, 0166). A
+  // reschedule always lands on a time checked free for the advisor it goes to, so
+  // the flag stops being true of the call the moment it moves. Left set, it exempts
+  // the call from 0017's unique index and 0120's overlap constraint on its NEW
+  // advisor, and the buffer breach monitor reads any clash there as forced.
+  {
+    const flag = (id: string) => sql(`select allow_double_book::text from bookings where id = '${id}';`);
+    for (const [label, sameAdvisor] of [["to another advisor", false], ["keeping its advisor", true]] as const) {
+      const x = advisor();
+      const y = sameAdvisor ? x : advisor();
+      const id = seed(x, "11:00", "11:20");
+      sql(`update bookings set allow_double_book = true where id = '${id}';`);
+      eq(flag(id), "true", `a reassigned call carries allow_double_book before it is rescheduled ${label}`);
+      assert(UUID.test(move({ booking: id, from: x, to: y, start: "11:40", end: "12:00" })), `the reschedule ${label} applies`);
+      eq(flag(id), "false", `a reschedule ${label} clears allow_double_book`);
+      // The constraint it was exempt from now holds it: a second call on the same
+      // advisor at the same time is refused, where the flagged call would have stacked.
+      const err = pg.verboseError(bookingInsertSql({ id: nextId(), orgId: ORG, bucketId: B100, eventTypeId: ET, assignedUserId: y, startIso: at("11:40"), endIso: at("12:00"), status: "confirmed" }));
+      assert(err !== null && /23505|23P01/.test(err), `a call on the same advisor at the moved call's time is now refused (got ${firstLine(err)})`);
+    }
+    // Control: a call that was never flagged stays unflagged, so the clear is not a
+    // side effect of something that sets every row false anyway.
+    const x = advisor();
+    const id = seed(x, "12:30", "12:50");
+    eq(flag(id), "false", "control: a call booked normally carries no flag");
+    assert(UUID.test(move({ booking: id, from: x, to: x, start: "13:30", end: "13:50" })), "control: it reschedules");
+    eq(flag(id), "false", "control: and still carries none");
+    // And a guard that matches nothing leaves a flagged call's flag exactly as it was.
+    const z = advisor();
+    const held = seed(z, "14:30", "14:50");
+    sql(`update bookings set allow_double_book = true where id = '${held}';`);
+    eq(move({ booking: held, from: z, to: z, start: "15:30", end: "15:50", guardEvent: "gcal-elsewhere" }), "null", "a move whose guard fails answers null");
+    eq(flag(held), "true", "and leaves the flag on the call it did not move");
+  }
+
   // A guard on an EMPTY event id matches a booking with none (IS NOT DISTINCT FROM),
   // and a guard naming an event does not match a booking with none.
   {
