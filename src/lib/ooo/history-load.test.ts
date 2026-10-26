@@ -7,13 +7,15 @@ import { loadOrgOooHistory } from "./history-load";
 // 1,000-row cap within a year. A single-page read would silently under-report
 // every insight, so the loader must page.
 
-/** Emulates PostgREST paging: `.range(from,to)` returns that window; a read with
- *  no range is capped at the first 1,000 rows (the silent truncation this fixes). */
 // A fixture row naming no primary key is given one by its position, in key order,
 // and `.gt` honours it: a paged read cuts each later page as the rows after the last
 // key seen (keyset paging, 2026-10-25).
 const keyed = (rows: unknown[]) =>
   rows.map((r, i): Record<string, unknown> => ({ id: `row-${String(i).padStart(6, "0")}`, ...(r as Record<string, unknown>) }));
+
+/** Emulates PostgREST paging: `.order` sorts, `.gt` filters on the key, and
+ *  `.range(from,to)` returns that window; a read with no range is capped at the
+ *  first 1,000 rows (the silent truncation this fixes). */
 function fakeDb(tableRows: unknown[]): ReturnType<typeof supabaseAdmin> {
   const builder = () => {
     let range: [number, number] | null = null;
