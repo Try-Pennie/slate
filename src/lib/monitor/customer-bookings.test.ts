@@ -75,6 +75,8 @@ function fakeDb(
 ) {
   const filters: { col: string; val: unknown }[] = [];
   const ors: ((r: { source?: string | null; code?: string }) => boolean)[] = [];
+  // The keyset filter on the primary key, which each later page is cut with.
+  let after: string | undefined;
   const kept = () => {
     const testFilter = filters.find((f) => f.col === "buckets.is_test");
     const kindFilter = filters.find((f) => f.col === "kind");
@@ -90,19 +92,25 @@ function fakeDb(
   const chain = {
     select: (_cols: string, _opts?: { count: string; head: boolean }) => chain,
     order: () => chain,
+    gt: (_col: string, val: string) => ((after = val), chain),
     // #2974: the count is read as rows, paged, so each one's host page can be judged.
     range: (from: number, to: number) =>
       Promise.resolve(
-        opts.error || (opts.errorOnPageFrom !== undefined && from >= opts.errorOnPageFrom)
+        // A page fails when the first row it would return sits at or past
+        // `errorOnPageFrom`; the row after key `bkNNNNNN` is row NNNNNN + 1.
+        opts.error ||
+        (opts.errorOnPageFrom !== undefined &&
+          from + (after === undefined ? 0 : Number(after.slice(2)) + 1) >= opts.errorOnPageFrom)
           ? { data: null, error: { message: opts.error ?? "read timeout" } }
           : {
               data: kept()
-                .slice(from, to + 1)
                 .map((r, i) => ({
-                  id: `bk${from + i}`,
+                  id: `bk${String(i).padStart(6, "0")}`,
                   parent_origin: r.parentOrigin === undefined ? "https://trypennie.com" : r.parentOrigin,
                   referrer_origin: r.referrer_origin ?? null,
-                })),
+                }))
+                .filter((r) => after === undefined || r.id > after)
+                .slice(from, to + 1),
               error: null,
             },
       ),
@@ -296,8 +304,10 @@ function sourceDb(rows: SourceFakeRow[], opts: { error?: string } = {}) {
     const filters: { col: string; val: unknown }[] = [];
     const ors: ((r: SourceFakeRow) => boolean)[] = [];
     let limit = Infinity;
+    let after: string | undefined;
     const chain = {
       select: () => chain,
+      gt: (_col: string, val: string) => ((after = val), chain),
       eq: (col: string, val: unknown) => (filters.push({ col, val }), chain),
       gte: (col: string, val: unknown) => (filters.push({ col, val }), chain),
       in: (col: string, val: unknown) => (filters.push({ col, val }), chain),
@@ -334,10 +344,11 @@ function sourceDb(rows: SourceFakeRow[], opts: { error?: string } = {}) {
           ),
         );
         kept.sort((a, b) => a.created_at.localeCompare(b.created_at));
-        const page = kept.slice(0, limit);
-        return Promise.resolve(
-          res({ data: page.map((r, i) => ({ id: `bk${i}`, created_at: r.created_at, source: r.source, ...originCols(r) })), count: kept.length, error: null }),
-        );
+        const page = kept
+          .map((r, i) => ({ id: `bk${String(i).padStart(6, "0")}`, created_at: r.created_at, source: r.source, ...originCols(r) }))
+          .filter((r) => after === undefined || r.id > after)
+          .slice(0, limit);
+        return Promise.resolve(res({ data: page, count: kept.length, error: null }));
       },
     };
     return chain;

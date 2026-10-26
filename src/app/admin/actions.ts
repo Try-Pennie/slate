@@ -3097,7 +3097,7 @@ export async function setBusinessHoursException(
       () =>
         db
           .from("bookings")
-          .select("starts_at")
+          .select("id, starts_at")
           .in("status", ["confirmed", "rescheduled"])
           .gte("starts_at", nowIso),
     );
@@ -3270,7 +3270,7 @@ export async function setBusinessHours(
       () =>
         db
           .from("bookings")
-          .select("starts_at")
+          .select("id, starts_at")
           .in("status", ["confirmed", "rescheduled"])
           .gte("starts_at", nowIso),
     );

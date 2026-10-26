@@ -22,7 +22,7 @@ const routing = vi.hoisted(() => {
   const page = vi.fn<(from: number, to: number) => { data: unknown[] | null; error: { message: string } | null }>();
   const builder = () => {
     const b: Record<string, unknown> = {};
-    for (const method of ["select", "not", "gte", "lt", "order"]) {
+    for (const method of ["select", "not", "gte", "lt", "gt", "order"]) {
       b[method] = (...args: unknown[]) => {
         calls.push([method, ...args]);
         return b;
@@ -264,13 +264,15 @@ describe("readRefusedPeople", () => {
   it("walks every page, so a big outage is not cut off at the first one", async () => {
     const full = Array.from({ length: PAGE_SIZE }, (_, i) => ({ id: `a${i}`, lead_id: `L${i}`, buckets: { is_test: false } }));
     const rest = Array.from({ length: 5 }, (_, i) => ({ id: `b${i}`, lead_id: `M${i}`, buckets: { is_test: false } }));
-    routing.page.mockImplementation((start) => ({ data: start === 0 ? full : rest, error: null }));
+    routing.page.mockReturnValueOnce({ data: full, error: null }).mockReturnValueOnce({ data: rest, error: null });
     const out = await readRefusedPeople(SINCE, UNTIL);
     expect(out).toEqual({ people: PAGE_SIZE + 5, refusals: PAGE_SIZE + 5, withoutLead: 0 });
     expect(routing.calls.filter((c) => c[0] === "range")).toEqual([
       ["range", 0, PAGE_SIZE - 1],
-      ["range", PAGE_SIZE, 2 * PAGE_SIZE - 1],
+      ["range", 0, PAGE_SIZE - 1],
     ]);
+    // Keyset paging: the second page is the rows after the first page's last id.
+    expect(routing.calls.filter((c) => c[0] === "gt")).toEqual([["gt", "id", `a${PAGE_SIZE - 1}`]]);
   });
 
   it("THROWS when a page fails, rather than counting the pages it did get", async () => {

@@ -356,7 +356,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // as days that differ while the importer diffs a week it never fully loaded.
 //
 // The fake caps every response at 1,000 rows exactly as PostgREST does, honours
-// `.range` and `.order`, and fails the named table when told to.
+// `.range`, `.order` and `.gt`, and fails the named table when told to.
 {
   const PG_CAP = 1000;
   type Row = Record<string, unknown>;
@@ -370,6 +370,8 @@ import { assert, eq, finish } from "./lib/harness.ts";
         eq: (col: string, v: unknown) => ((rows = rows.filter((r) => r[col] === v)), q),
         is: (col: string, v: unknown) => ((rows = rows.filter((r) => (r[col] ?? null) === v)), q),
         in: (col: string, vs: unknown[]) => ((rows = rows.filter((r) => vs.includes(r[col]))), q),
+        // The keyset filter a paged read cuts its next page with (2026-10-25).
+        gt: (col: string, v: unknown) => ((rows = rows.filter((r) => String(r[col]) > String(v))), q),
         order: (col: string) => (
           (rows = rows.sort((a, b) => String(a[col]).localeCompare(String(b[col])))), q
         ),

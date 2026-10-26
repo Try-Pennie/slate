@@ -89,7 +89,7 @@ export async function loadSnapshottedBookingIds(
     selectAllPages<{ booking_id: string }>("monitor ooo coverage snapshotted", "id", () =>
       db
         .from("bulk_reassign_items")
-        .select("booking_id")
+        .select("id, booking_id")
         .in("booking_id", batch),
     ),
   );

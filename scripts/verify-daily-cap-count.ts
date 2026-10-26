@@ -56,7 +56,7 @@ const rows = await selectAllPages<{ assigned_user_id: string; starts_at: string 
   () =>
     db
       .from("bookings")
-      .select("assigned_user_id, starts_at")
+      .select("id, assigned_user_id, starts_at")
       .in("assigned_user_id", userIds)
       .in("status", ["confirmed", "rescheduled"])
       .gte("starts_at", cap.from)

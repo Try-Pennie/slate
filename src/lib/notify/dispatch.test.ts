@@ -141,15 +141,27 @@ vi.mock("@/lib/supabase/admin", () => {
               .map((key) => ({ key }));
           };
           const refused = { data: null, error: { message: "read timeout" } };
+          // The keyset filter a paged read cuts each later page with (2026-10-25).
+          let after: string | null = null;
+          const ordered = {
+            range: async (from: number, to: number) =>
+              failReads.value
+                ? refused
+                : {
+                    data: matching()
+                      .filter((r) => after === null || r.key > after)
+                      .slice(from, Math.min(to + 1, from + 1000)),
+                    error: null,
+                  },
+          };
+          const paged = {
+            gt: (_c: string, v: string) => ((after = v), paged),
+            order: () => ordered,
+          };
           return {
             limit: async (n: number) =>
               failReads.value ? refused : { data: matching().slice(0, Math.min(n, 1000)), error: null },
-            order: () => ({
-              range: async (from: number, to: number) =>
-                failReads.value
-                  ? refused
-                  : { data: matching().slice(from, Math.min(to + 1, from + 1000)), error: null },
-            }),
+            ...paged,
           };
         },
         // The bulk firing-marker read (#1134).

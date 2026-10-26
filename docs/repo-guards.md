@@ -44,6 +44,17 @@ growth-table SELECT is cap-safe when it carries ONE of:
 - `{ ..., head: true }` (a server-side count, no rows returned),
 - `.eq("id", ...)` / `.in("id", ...)` (a primary-key lookup, bounded set).
 
+**A paged read is keyset paged (2026-10-25).** `selectAllPages` orders by the
+unique key its caller names and asks each page for the rows after the last key
+seen, so a row inserted or removed between page requests can neither repeat nor
+skip a row (under OFFSET, one booking inserted mid read paged the buffer breach
+check about a booking overlapping itself). It throws on a row missing its key and
+on a key returned twice. `scripts/test-paged-read-keys.ts` holds every call site to
+the rules this needs: the key is unique and NOT NULL in the migrations, the chain
+carries no `.order()` of its own (sort the result with `sortByStamp` instead), the
+select returns every key column, and a composite key's chain carries no `.or()` of
+its own (the helper writes the tuple comparison as one).
+
 A write (`.insert` / `.update` / `.delete` / `.upsert` reached before any
 `.select`) is not a read and is never flagged. A reused builder
 (`let q = db.from(...).select(...); ...; await q.range(...)`) is handled: a bound

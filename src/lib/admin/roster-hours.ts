@@ -67,7 +67,7 @@ export async function loadRosterHours(db: Db, orgId: string, userIds: string[]):
           () =>
             db
               .from("availability_rules")
-              .select("schedule_id, weekday, start_minute, end_minute")
+              .select("id, schedule_id, weekday, start_minute, end_minute")
               .in("schedule_id", scheds.map((s) => s.id)),
         );
   const rulesBySchedule = groupRulesBySchedule(rules);

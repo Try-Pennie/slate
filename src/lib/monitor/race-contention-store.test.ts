@@ -14,6 +14,7 @@ interface Recorded {
   eq: [string, unknown][];
   gte: [string, unknown][];
   lt: [string, unknown][];
+  gt: [string, unknown][];
   order: string[];
   range: [number, number][];
 }
@@ -25,7 +26,7 @@ const bookingsRead = vi.hoisted(() => ({
 }));
 const from = vi.hoisted(() =>
   vi.fn((table: string) => {
-    const rec: Recorded = { table, select: "", eq: [], gte: [], lt: [], order: [], range: [] };
+    const rec: Recorded = { table, select: "", eq: [], gte: [], lt: [], gt: [], order: [], range: [] };
     bookingsRead.calls.push(rec);
     const answer = bookingsRead.queue.shift() ?? bookingsRead.answer;
     const chain = {
@@ -33,6 +34,7 @@ const from = vi.hoisted(() =>
       eq: (c: string, v: unknown) => (rec.eq.push([c, v]), chain),
       gte: (c: string, v: unknown) => (rec.gte.push([c, v]), chain),
       lt: (c: string, v: unknown) => (rec.lt.push([c, v]), chain),
+      gt: (c: string, v: unknown) => (rec.gt.push([c, v]), chain),
       order: (c: string) => (rec.order.push(c), chain),
       range: (a: number, b: number) => (rec.range.push([a, b]), chain),
       then: (res: (v: unknown) => unknown) => Promise.resolve(answer).then(res),
@@ -121,8 +123,8 @@ describe("readRaceRateBookings (#2877)", () => {
   it("reads real routed bookings over the lookback before the injected clock", async () => {
     bookingsRead.answer = {
       data: [
-        { created_at: "2026-09-28T15:10:00.000Z", buckets: { code: "111", is_test: false } },
-        { created_at: "2026-09-28T15:20:00.000Z", buckets: [{ code: "412", is_test: false }] },
+        { id: "b2", created_at: "2026-09-28T15:20:00.000Z", buckets: [{ code: "412", is_test: false }] },
+        { id: "b1", created_at: "2026-09-28T15:10:00.000Z", buckets: { code: "111", is_test: false } },
       ],
       error: null,
     };
@@ -141,23 +143,25 @@ describe("readRaceRateBookings (#2877)", () => {
     // Both ends on a whole hour: the partial first hour and the hour under way are out.
     expect(q.gte).toEqual([["created_at", new Date(NOW - RACE_RATE_LOOKBACK_DAYS * 86_400_000).toISOString()]]);
     expect(q.lt).toEqual([["created_at", new Date(NOW).toISOString()]]);
-    // A stable order, so pages do not overlap or skip.
-    expect(q.order).toEqual(["created_at", "id"]);
+    // Ordered by the key alone, so each page is the rows after the last key seen
+    // and a booking made mid read cannot repeat or skip one (2026-10-25); the rows
+    // come back oldest first all the same, sorted after the read.
+    expect(q.order).toEqual(["id"]);
     expect(q.range[0]).toEqual([0, 999]);
   });
 
   it("pages past the 1,000 row cap rather than measuring a truncated fortnight", async () => {
-    const page = Array.from({ length: 1000 }, () => ({
-      created_at: "2026-09-28T15:10:00.000Z",
-      buckets: { code: "111", is_test: false },
-    }));
+    const booking = (id: string) => ({ id, created_at: "2026-09-28T15:10:00.000Z", buckets: { code: "111", is_test: false } });
+    const page = Array.from({ length: 1000 }, (_, i) => booking(`a${String(i).padStart(4, "0")}`));
     bookingsRead.queue = [
       { data: page, error: null },
-      { data: page.slice(0, 5), error: null },
+      { data: Array.from({ length: 5 }, (_, i) => booking(`b${i}`)), error: null },
     ];
     const rows = await readRaceRateBookings(NOW);
     expect(rows).toHaveLength(1005);
-    expect(bookingsRead.calls.map((c) => c.range[0])).toEqual([[0, 999], [1000, 1999]]);
+    expect(bookingsRead.calls.map((c) => c.range[0])).toEqual([[0, 999], [0, 999]]);
+    // The second page asks for the rows after the first page's last key.
+    expect(bookingsRead.calls.map((c) => c.gt)).toEqual([[], [["id", "a0999"]]]);
   });
 
   it("THROWS on a failed read, rather than measuring no traffic and falling back in silence", async () => {
@@ -166,7 +170,7 @@ describe("readRaceRateBookings (#2877)", () => {
   });
 
   it("THROWS on a stamp it cannot read, rather than dropping the booking from the rate", async () => {
-    bookingsRead.answer = { data: [{ created_at: "not a time", buckets: { code: "111", is_test: false } }], error: null };
+    bookingsRead.answer = { data: [{ id: "b1", created_at: "not a time", buckets: { code: "111", is_test: false } }], error: null };
     await expect(readRaceRateBookings(NOW)).rejects.toThrow(/created_at/);
   });
 

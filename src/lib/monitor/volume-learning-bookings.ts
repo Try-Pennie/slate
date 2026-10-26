@@ -1,7 +1,7 @@
 import type { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
 import { parseStampMs } from "@/lib/date/stamp";
-import { selectAllPages } from "@/lib/supabase/paginate";
+import { selectAllPages, sortByStamp } from "@/lib/supabase/paginate";
 import type { SlateBookingRow } from "./volume-learning.ts";
 import { pageTrafficFilter } from "./page-volume.ts";
 import { tierOfBucketCode } from "./volume-tiers.ts";
@@ -35,6 +35,7 @@ export async function listBookingStampsBetween(
   untilIso: string,
 ): Promise<SlateBookingRow[]> {
   const rows = await selectAllPages<{
+    id: string;
     created_at: string;
     parent_origin: string | null;
     referrer_origin: string | null;
@@ -48,7 +49,7 @@ export async function listBookingStampsBetween(
         // #2874: the bucket's code too, whose first digit is the booking's tier.
         // #2974: and the two recorded host page origins, never the rest of `prefill`,
         // which carries the lead's contact.
-        .select("created_at, referrer_origin, parent_origin:prefill->>parentOrigin, buckets!inner(is_test, code)")
+        .select("id, created_at, referrer_origin, parent_origin:prefill->>parentOrigin, buckets!inner(is_test, code)")
         // #2073: the floors are fitted to the population the alarm counts, which
         // is routed bookings only.
         .eq("kind", "routed")
@@ -56,12 +57,15 @@ export async function listBookingStampsBetween(
         // learned as traffic would raise the floors above what the pages send.
         .or(pageTrafficFilter())
         .gte("created_at", sinceIso)
-        .lt("created_at", untilIso)
-        .order("created_at", { ascending: true }),
-  ).catch((err: unknown) => {
-    log.error("monitor", { msg: "volume learning read failed", since: sinceIso }, err instanceof Error ? err : undefined);
-    throw err;
-  });
+        .lt("created_at", untilIso),
+  )
+    // Oldest first, as the read used to ask Postgres for; the read itself is ordered
+    // by id, which keyset paging owns (2026-10-25).
+    .then((r) => sortByStamp("volume learning bookings", r, "created_at", "id"))
+    .catch((err: unknown) => {
+      log.error("monitor", { msg: "volume learning read failed", since: sinceIso }, err instanceof Error ? err : undefined);
+      throw err;
+    });
   return rows.map((r) => {
     const createdAtMs = parseStampMs(r.created_at);
     if (createdAtMs === null) throw new Error("volume learning: a booking's created_at is unreadable");

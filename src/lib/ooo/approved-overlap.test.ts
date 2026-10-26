@@ -17,6 +17,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  */
 
 type Row = { user_id: string; status: string; starts_at: string; ends_at: string };
+/** A row as the table holds it, with the primary key a paged read cuts its pages on. */
+type Stored = Row & { id: string };
 
 const state = vi.hoisted(() => ({ rows: [] as Row[], failWith: null as string | null }));
 
@@ -24,22 +26,24 @@ const admin = vi.hoisted(() => ({
   supabaseAdmin: () => ({
     from(table: string) {
       if (table !== "ooo_requests") throw new Error(`unexpected table ${table}`);
-      let rows: Row[] = [...state.rows];
+      // A fixture row naming no primary key is given one by its position: a paged
+      // read cuts each later page on it (keyset paging, 2026-10-25).
+      let rows: Stored[] = state.rows.map((r, i) => ({ id: `ooo-${String(i).padStart(6, "0")}`, ...r }));
       const builder = {
         select: () => builder,
-        in: (col: keyof Row, vals: string[]) => {
+        in: (col: keyof Stored, vals: string[]) => {
           rows = rows.filter((r) => vals.includes(r[col]));
           return builder;
         },
-        eq: (col: keyof Row, val: string) => {
+        eq: (col: keyof Stored, val: string) => {
           rows = rows.filter((r) => r[col] === val);
           return builder;
         },
-        lt: (col: keyof Row, val: string) => {
+        lt: (col: keyof Stored, val: string) => {
           rows = rows.filter((r) => r[col] < val);
           return builder;
         },
-        gt: (col: keyof Row, val: string) => {
+        gt: (col: keyof Stored, val: string) => {
           rows = rows.filter((r) => r[col] > val);
           return builder;
         },

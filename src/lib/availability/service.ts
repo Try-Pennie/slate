@@ -247,7 +247,7 @@ export async function loadMembersAvailability(
     () =>
       db
         .from("busy_blocks")
-        .select("user_id, starts_at, ends_at, source")
+        .select("id, user_id, starts_at, ends_at, source")
         .in("user_id", userIds)
         .lt("starts_at", to)
         .gt("ends_at", from),
