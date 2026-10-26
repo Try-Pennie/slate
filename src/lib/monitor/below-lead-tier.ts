@@ -619,10 +619,10 @@ export interface BelowLeadTierDeps {
   /**
    * Drops the page state for bookings measured as fixed, WITHOUT posting anything.
    * Nobody wanted an all clear per booking (Dan, 2026-10-07): the page asks for one
-   * action on one call, and whoever took it already knows. Settling still matters,
-   * so a booking that goes below again later pages at once: without it the stored
-   * subjects of the last post would read the same facts as already told, and the
-   * change only hold would keep the page back. Best effort and never throws.
+   * action on one call, and whoever took it already knows. Settling clears the firing
+   * marker only: the dispatcher keeps a change only key's hold row, so a booking that
+   * goes below again later stays quiet (Dan, 2026-10-26: "a single ping about this per
+   * booking"). Best effort and never throws.
    */
   settle: (keys: string[]) => Promise<void>;
   /** The tick's clock, so a nearest free time already past is never named. */

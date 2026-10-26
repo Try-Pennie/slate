@@ -832,7 +832,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "today (#2593). The page asks for one action on one call, and whoever " +
       "reassigns it already knows it is done, so an all clear per booking was noise " +
       "(Dan, 2026-10-07). The monitor still re-measures every tick and settles the " +
-      "state SILENTLY once the call agrees or is gone, so a recurrence pages at once. " +
+      "state SILENTLY once the call agrees or is gone, keeping the booking's hold. " +
       "It posts once per booking and never again, whatever changes and even after the " +
       "call comes right and goes wrong again (`CHANGE_ONLY_KEYS`, Dan 2026-10-26).",
   },
