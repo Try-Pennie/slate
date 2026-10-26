@@ -220,12 +220,6 @@ export const ALERT_FIELDS: {
     help: "Every hourly roster run bans everybody who has left from renewing a sign in, and lifts that ban from anybody active again. This fires when two runs in a row could not do it: the account list could not be read or came back partial, a ban was refused, or somebody active is still locked out. A backlog the run leaves for the next hour does not count. It ends when a run completes cleanly.",
   },
   {
-    key: "booking_below_lead_tier",
-    urgency: "alert",
-    label: "A lead booked with a team below their tier",
-    help: "An upcoming call is with a team below the tier Salesforce gives the lead today, for example an Ultra High lead booked with the Low team. It is checked every 5 minutes against the lead's current score, so a lead scored higher after booking is caught too. Each call pages on its own, and ends when the call moves to the right team, the score comes down, or the call is cancelled.",
-  },
-  {
     key: "cross_system_booking",
     urgency: "alert",
     label: "A lead booked in both Slate and cal.com",
@@ -556,12 +550,6 @@ export const MONITOR_DEFAULTS = {
     // Sign in access not following the roster (#2459): judged hourly and only after two
     // unhealthy runs. Once a day while unchanged (#3801).
     departed_sessions_unconverged: CONDITION_REPEAT_MS,
-    // Below the lead's tier (#2593), per booking. Six hours: the repair is a person
-    // reassigning one call, and calls are usually booked a day or more ahead, so a
-    // reminder inside the same working day is worth its noise while a repeat every
-    // tick would not be. Each booking has its own key, so a second booking pages at
-    // once however recently the first did.
-    booking_below_lead_tier: 6 * 60 * 60_000,
     // A lead booked in both Slate and cal.com (#2933), per Slate booking: the repair is
     // a person cancelling one call. Each booking has its own key, so a second one pages
     // at once; the same one is said again once a day (#3801).

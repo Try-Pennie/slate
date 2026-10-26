@@ -5,6 +5,7 @@ import {
   ALERT_KEYS,
   MONITOR_DEFAULTS,
   resolveCooldownMs,
+  quietedAlarms,
   resolveFloors,
   resolveLowVolumeArmed,
   resolveFailureRateArmed,
@@ -311,8 +312,13 @@ describe("parseMonitorSettingsForm low_volume_armed", () => {
     expect(resolveBelowLeadTierArmed({ below_lead_tier_armed: true })).toBe(true);
   });
 
-  it("gives the below-lead-tier family a real cooldown, so it can never page every tick", () => {
-    expect(ALERT_KEYS).toContain("booking_below_lead_tier");
-    expect(MONITOR_DEFAULTS.cooldownMs.booking_below_lead_tier).toBeGreaterThan(0);
+  // Dan, 2026-10-26: the below tier page posts once per call and again only on a
+  // change (CHANGE_ONLY_KEYS), so no cooldown paces it. A value stored before then
+  // stays in the table; the resolvers must pass over it rather than read it.
+  it("has no below-lead-tier cooldown, and passes over one stored before it went", () => {
+    expect(ALERT_KEYS).not.toContain("booking_below_lead_tier");
+    const stored = { key: "booking_below_lead_tier", cooldown_min: 10080, updated_at: "2026-10-01T10:00:00.000Z" };
+    expect(Object.keys(resolveCooldownMs([stored]))).not.toContain("booking_below_lead_tier");
+    expect(quietedAlarms([stored])).toEqual([]);
   });
 });

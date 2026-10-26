@@ -83,6 +83,7 @@ import AlertSettingsPage from "../alerts/page";
 import BucketsPage from "../buckets/page";
 import BusinessHoursPage from "../business-hours/page";
 import { ALERT_FIELDS } from "@/lib/monitor/settings";
+import { alertSwitchCopy } from "@/lib/monitor/alert-switch-copy";
 
 const props = { searchParams: Promise.resolve({}) };
 const ADMIN = {
@@ -286,6 +287,24 @@ describe("AlertSettings quieted-alarm notice (#1289)", () => {
     expect(screen.queryByText(/repeat less often/i)).toBeNull();
   });
 
+  // Dan, 2026-10-26: the below tier alert has no cooldown any more, so no row here
+  // paces it. A value stored before then stays in the table and is passed over:
+  // neither drawn as a field nor reported as a quieted alarm.
+  it("draws no cooldown for the below tier alert, and passes over a value stored for it", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    db.results.monitor_settings = {
+      data: [
+        { key: "booking_below_lead_tier", cooldown_min: 10080, updated_at: "2026-10-01T10:00:00.000Z", updated_by: null },
+      ],
+      error: null,
+    };
+    render(await AlertSettingsPage(props));
+
+    expect(document.getElementById("cooldown_booking_below_lead_tier")).toBeNull();
+    expect(screen.queryByText(/A lead booked with a team below their tier/)).toBeNull();
+    expect(screen.queryByText(/repeat less often/i)).toBeNull();
+  });
+
   // A stored value the resolver discards leaves the alert AT its default, so the
   // notice must stay silent: pointing at it would send someone to fix a setting
   // that is already correct.
@@ -440,18 +459,110 @@ describe("AlertSettings alert toggles", () => {
     ).toBeTruthy();
   });
 
-  it("says what is still happening while a toggle is OFF, so 'off' is not read as 'not running'", async () => {
+  // Dan, 2026-10-26: "I think in general this page is too noisy. We should probably
+  // show on OR off based on the current state and the wording probably can be less
+  // 'wordy'." Each switch says only what its current state means, read through the
+  // box's own aria-describedby so the sentence stays tied to the control it explains.
+  const SWITCHES = [
+    "low_volume_armed",
+    "failure_rate_armed",
+    "availability_drift_armed",
+    "roster_coverage_armed",
+    "awaiting_activation_armed",
+    "below_lead_tier_armed",
+    "regal_calls_armed",
+  ] as const;
+  const helpFor = (name: string): string => {
+    const box = document.querySelector<HTMLInputElement>(`input[name="${name}"]`);
+    const id = box?.getAttribute("aria-describedby");
+    return ((id && document.getElementById(id)?.textContent) || "").replace(/\s+/g, " ").trim();
+  };
+  const armedConfig = Object.fromEntries(SWITCHES.map((s) => [s, true]));
+
+  it("draws one sentence per switch for the card, and the copy covers exactly these switches", () => {
+    expect(alertSwitchCopy(null).map((s) => s.name)).toEqual([...SWITCHES]);
+  });
+
+  it("shows only the off sentence under every switch that is off", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     render(await AlertSettingsPage(props));
 
-    // Both checks keep measuring while disarmed; only the notification stops.
-    expect(screen.getByText(/Slate still counts bookings, but nobody is notified/i)).toBeTruthy();
-    expect(
-      screen.getByText(/Slate still checks every 5 minutes and records what it finds in the logs, but nobody is notified/i),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(/samples the times each bucket is offering and checks them against the real calendars/i),
-    ).toBeTruthy();
+    for (const s of alertSwitchCopy(null)) {
+      expect((document.querySelector(`input[name="${s.name}"]`) as HTMLInputElement).checked).toBe(false);
+      expect(helpFor(s.name)).toBe(s.off);
+      expect(helpFor(s.name)).not.toContain(s.on);
+    }
+  });
+
+  it("shows only the on sentence under every switch that is on", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    db.results.monitor_alert_config = { data: armedConfig, error: null };
+    render(await AlertSettingsPage(props));
+
+    for (const s of alertSwitchCopy(null)) {
+      expect((document.querySelector(`input[name="${s.name}"]`) as HTMLInputElement).checked).toBe(true);
+      expect(helpFor(s.name)).toBe(s.on);
+      expect(helpFor(s.name)).not.toContain(s.off);
+    }
+  });
+
+  it("carries no state labels and nothing about the interface, in either state", async () => {
+    for (const data of [null, armedConfig]) {
+      cleanup();
+      auth.currentUser.mockResolvedValueOnce(ADMIN);
+      db.results.monitor_alert_config = { data, error: null };
+      render(await AlertSettingsPage(props));
+      for (const name of SWITCHES) {
+        const help = helpFor(name);
+        expect(help).not.toBe("");
+        expect(help).not.toMatch(/\b(On|Off):/);
+        expect(help).not.toMatch(/nobody is notified|Saving applies|no deploy needed/i);
+      }
+    }
+  });
+
+  // The below tier alert posts once per call and again only on a change
+  // (CHANGE_ONLY_KEYS, #4235); a call put right has been silent since 2026-10-07.
+  it("says the below tier alert posts once per call and again only when the call or the lead changes", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    db.results.monitor_alert_config = { data: { below_lead_tier_armed: true }, error: null };
+    render(await AlertSettingsPage(props));
+
+    const help = helpFor("below_lead_tier_armed");
+    expect(help).toMatch(/one alert per call/i);
+    expect(help).toMatch(/time, advisor or bucket/i);
+    expect(help).toMatch(/the lead's tier/i);
+    expect(help).not.toMatch(/follow up|is moved|score comes down|is cancelled/i);
+  });
+
+  it("names the cal.com cutover under the below tier switch while it is off, and the retirement once it is", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    db.results.monitor_alert_config = { data: { calcom_retired: false }, error: null };
+    render(await AlertSettingsPage(props));
+    expect(helpFor("below_lead_tier_armed")).toMatch(/Turn this on before cutover/);
+
+    cleanup();
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    db.results.monitor_alert_config = { data: { calcom_retired: true }, error: null };
+    render(await AlertSettingsPage(props));
+    expect(helpFor("below_lead_tier_armed")).toMatch(/cal\.com is retired/);
+    expect(helpFor("below_lead_tier_armed")).not.toMatch(/before cutover/);
+  });
+
+  // The sentence follows the box as it is ticked, before any save: it says what the
+  // switch will do once saved, and the unsaved changes guard already marks the form.
+  it("swaps the sentence the moment a box is ticked or cleared, before saving", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await AlertSettingsPage(props));
+    const copy = alertSwitchCopy(null).find((s) => s.name === "awaiting_activation_armed")!;
+    const box = document.querySelector<HTMLInputElement>('input[name="awaiting_activation_armed"]')!;
+
+    expect(helpFor(copy.name)).toBe(copy.off);
+    await userEvent.click(box);
+    expect(box.checked).toBe(true);
+    expect(helpFor(copy.name)).toBe(copy.on);
+    await userEvent.click(box);
+    expect(helpFor(copy.name)).toBe(copy.off);
   });
 
   it("uses no alerting jargon in either label", async () => {

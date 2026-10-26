@@ -58,7 +58,6 @@ export const ALERT_KEYS = [
   "agents_stranded_outside_pool",
   "ladder_advisor_unreadable",
   "departed_sessions_unconverged",
-  "booking_below_lead_tier",
   "cross_system_booking",
   "regal_call_unroutable",
   "regal_calls_quiet",

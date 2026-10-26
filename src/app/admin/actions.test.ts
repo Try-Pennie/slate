@@ -1211,6 +1211,19 @@ describe("setMonitorSettings save path (#582)", () => {
     expect(configCall?.[1]).toEqual({ onConflict: "id" });
   });
 
+  // Dan, 2026-10-26: the below tier alert has no cooldown any more. A page opened
+  // before that deploy still posts its old field, so the save must go through and
+  // write no row for it, leaving whatever is stored alone rather than refusing.
+  it("saves without the below tier cooldown, and passes over the field from a page opened before it went", async () => {
+    await expect(
+      setMonitorSettings(monitorForm({ cooldown_booking_below_lead_tier: "720" })),
+    ).rejects.toThrow(/NEXT_REDIRECT:\/admin\/alerts\?ok=alerts/);
+
+    const keys = settingsUpsertPayload().map((r) => r.key);
+    expect(keys).not.toContain("booking_below_lead_tier");
+    expect(keys).toHaveLength(ALERT_KEYS.length);
+  });
+
   // The acting admin is stamped on both writes and in the audit trail.
   it("stamps updated_by with the acting admin and audits the change", async () => {
     await expect(setMonitorSettings(monitorForm())).rejects.toThrow(/ok=alerts/);
