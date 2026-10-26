@@ -1,8 +1,11 @@
 // #3505: a reschedule's one transaction save, proved in a REAL Postgres.
 //
-// `commit_reschedule` (migration 0171, #3265) applies a gated move and records its
+// `commit_reschedule` (migration 0171, #3265; redefined by 0206, #4199, to clear
+// allow_double_book on every applied move) applies a gated move and records its
 // outbox row (the slot move, the recompute, the owner alert's move and the
-// rescheduled webhook to Regal) in ONE transaction. Before this suite nothing ever
+// rescheduled webhook to Regal) in ONE transaction. It also proves the 0206 clear:
+// a reassigned call that moves loses its exemption from 0017 and 0120, so a second
+// call at its new time is refused. Before this suite nothing ever
 // executed it: scripts/test-reschedule-commit-args.ts checks the arguments the caller
 // builds, offline, and scripts/test-definer-search-path.ts reads its search_path as
 // text. So the two things that matter were proved nowhere they run:
