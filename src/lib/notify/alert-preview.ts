@@ -6476,6 +6476,10 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: cspViolationAlert({ directive: "script-src", surface: "booking", blocked: { kind: "keyword", keyword: "eval" }, sourceNamed: true }) },
   { key: "csp_violation:*", state: "inline styling refused on the booker", channel: "alert",
     text: cspViolationAlert({ directive: "style-src", surface: "book", blocked: { kind: "keyword", keyword: "inline" } }) },
+  // #4071: the one state whose pointer names a source outside script-src, which is only
+  // the script that was RUNNING when the browser refused it, never what asked for it.
+  { key: "csp_violation:*", state: "inline styling refused on the booker, the report naming a source", channel: "alert",
+    text: cspViolationAlert({ directive: "style-src", surface: "book", blocked: { kind: "keyword", keyword: "inline" }, sourceNamed: true }) },
   { key: "csp_violation:*", state: "an unreadable address under an unrecognised rule, from a page Slate does not serve", channel: "alert",
     text: cspViolationAlert({ directive: "other", surface: "other", blocked: { kind: "unreadable" } }) },
   { key: "internal_error:*", state: "a browser reported an error on the booker", channel: "alert",

@@ -134,7 +134,11 @@ so from 6 PM New York time they are tomorrow and the next open day, while the Te
 page still shows today first (#4064, #3949). What to do: open Team capacity
 (`/admin/team-capacity`) to see which advisors are full on the days the notice names, and decide with whoever runs ad spend whether to
 turn it down. It posts again only when the less full day climbs another five points, otherwise
-once a day, and clears on a measured reading with either day under the line. To change when it fires, move the
+once a day, and clears on a measured reading with either day under the line. It posts and clears only
+from 8 AM up to 6 PM New York time, every day (Dan, 2026-10-26; `DAYTIME_POSTING_HOURS` in
+`src/lib/notify/posting-hours.ts`): a reading outside those hours is logged with `held=true` and
+nothing else, so the first tick inside them (8:23 AM) posts that morning's numbers if the days are
+still over the line, and an open notice gets its all clear then rather than overnight. To change when it fires, move the
 line on Team capacity. Silence can also mean the lane could not measure: look for
 `tag=capacity-history msg="roster fill"` with `status="unmeasured"`.
 
