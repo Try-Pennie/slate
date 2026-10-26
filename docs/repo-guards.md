@@ -50,10 +50,15 @@ seen, so a row inserted or removed between page requests can neither repeat nor
 skip a row (under OFFSET, one booking inserted mid read paged the buffer breach
 check about a booking overlapping itself). It throws on a row missing its key and
 on a key returned twice. `scripts/test-paged-read-keys.ts` holds every call site to
-the rules this needs: the key is unique and NOT NULL in the migrations, the chain
-carries no `.order()` of its own (sort the result with `sortByStamp` instead), the
-select returns every key column, and a composite key's chain carries no `.or()` of
-its own (the helper writes the tuple comparison as one).
+the rules this needs: the key covers a unique column set in the migrations and
+EVERY key column is NOT NULL there (not only the unique set inside the key: a key
+of `["id", "booking_id"]` covers the primary key, then throws on the first row with
+a null `booking_id`), the chain carries no `.order()` of its own (sort the result
+with `sortByStamp` instead), the select returns every key column under its own name
+(an alias named like the key, `id:booking_id`, is refused, since the read is
+ordered by the real `id` and cut on `booking_id`; `id:id` and plain `id` pass), and
+a composite key's chain carries no `.or()` of its own (the helper writes the tuple
+comparison as one).
 
 A write (`.insert` / `.update` / `.delete` / `.upsert` reached before any
 `.select`) is not a read and is never flagged. A reused builder

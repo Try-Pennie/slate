@@ -8,10 +8,12 @@
 //
 // Keyset paging adds three rules at the call site, judged here too
 // (`judgePagedReadShape`): the chain carries no order of its own, the select
-// returns every key column, and a composite key's chain carries no `.or(` of its own.
+// returns every key column under its own name (an alias like `id:booking_id` is
+// not the key), and a composite key's chain carries no `.or(` of its own.
 // The type system makes a key REQUIRED; only the schema can say it is unique, so
 // this reads the unique column sets the migrations declare and requires every
-// caller's key to cover one. See scripts/lib/scan-paged-read-keys.ts.
+// caller's key to cover one, with EVERY key column NOT NULL, since a null key
+// value cannot cut a page. See scripts/lib/scan-paged-read-keys.ts.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -38,7 +40,7 @@ const fixtureSets = uniqueSetsFromMigrations([
      name text not null,
      unique (day, name)
    );
-   create table pairs (a text, b text, n int, primary key (a, b));
+   create table pairs (a text, b text, n int not null, primary key (a, b));
    create unique index pairs_partial on pairs (n) where n > 0;
    create unique index things_lower on things (lower(name));
    create unique index if not exists things_name_day on things (name, day);`,
@@ -118,19 +120,46 @@ assert(gx("dn", ["code"]) !== null, "drop not null: a unique column made nullabl
 assert(gx("apk", ["a", "b"]) === null, "add primary key: a primary key added by ALTER is unique");
 assert(gx("auq", ["a"]) !== null, "add unique: a unique constraint added by ALTER on a nullable column is not proven");
 assert(gx("auq", ["b"]) === null, "add unique: one added on a NOT NULL column is, read from the second action of one ALTER");
-assert(gx("inn", ["x"]) === null, "index nulls not distinct: a full unique index saying so is unique over a nullable column");
+assert(
+  (gapSets.get("inn")?.unique ?? []).some((s) => s.join() === "x"),
+  "index nulls not distinct: a full unique index saying so is unique over a nullable column",
+);
 assert(gx("quoted", ["code"]) === null, "quoted comma: a comma inside a string default does not split the column list");
 assert(gx("quoted", ["kind"]) !== null, "quoted comma: and the word unique inside that string is not a constraint");
 assert(gx("quoted", ["ghost"]) !== null, "quoted comma: text after a comma inside a string is not read as another column");
-// NULLS NOT DISTINCT makes the NULLs collide, so the set is unique whatever is nullable.
-assert(gx("nnd", ["a", "b"]) === null, "nulls not distinct: the pair is unique");
-assert(gx("nnd", ["a"]) !== null, "nulls not distinct: and not misread as a column named a being unique");
+// NULLS NOT DISTINCT makes the NULLs collide, so the set is unique whatever is
+// nullable. Paging on it is a separate question (every key column NOT NULL, below).
+assert((gapSets.get("nnd")?.unique ?? []).some((s) => s.join() === "a,b"), "nulls not distinct: the pair is unique");
+assert(!(gapSets.get("nnd")?.unique ?? []).some((s) => s.join() === "a"), "nulls not distinct: and not misread as a column named a being unique");
 // The word unique inside a default or a check is not a constraint.
 assert(gx("chk", ["note"]) !== null, "default: 'unique' in a default does not make the column unique");
 assert(gx("chk", ["kind"]) !== null, "check: 'unique' in a check does not make the column unique");
 // Index column modifiers are not part of the column's name.
 assert(gx("idx", ["a", "b"]) === null, "modifiers: desc, collate and nulls last are stripped from an index column");
 assert(gx("idx", ["c"]) === null, "modifiers: an operator class is stripped, and a schema qualified table is read");
+
+// --- review of #4238: EVERY key column must be NOT NULL --------------------------
+// Keyset paging cuts the next page from the last row's key, and `keyOf` throws on
+// a row whose key column is null. A key that only CONTAINS a unique NOT NULL set
+// passed the cover check above while its other columns could be null, so the read
+// threw on the first null row, in production only.
+const nullSets = uniqueSetsFromMigrations([
+  `create table calls (id uuid primary key, booking_id uuid, agent_id uuid not null);
+   create table nn (a text, b text, unique nulls not distinct (a, b));
+   create table nnn (a text not null, b text not null, unique nulls not distinct (a, b));`,
+]);
+const nx = (table: string, keys: string[]) =>
+  judgePagedReadKey({ file: "fixture", line: 1, table, keys }, nullSets);
+assert(nx("calls", ["id", "booking_id"]) !== null, "not null: a key holding a nullable column beside a primary key is refused");
+assert(nx("calls", ["id", "agent_id"]) === null, "not null: a key whose extra column is NOT NULL still pages");
+assert(nx("calls", ["id", "ghost"]) !== null, "not null: a key column the migrations never declare is not proven NOT NULL");
+// NULLS NOT DISTINCT proves the set unique, but a null in it still cannot cut a page.
+assert(
+  (nullSets.get("nn")?.unique ?? []).some((s) => s.join() === "a,b"),
+  "not null: a nulls not distinct set over nullable columns is still read as unique",
+);
+assert(nx("nn", ["a", "b"]) !== null, "not null: and paging on it is refused, since a null key value throws");
+assert(nx("nnn", ["a", "b"]) === null, "not null: a nulls not distinct set over NOT NULL columns pages");
 
 // --- the call reading, on fixtures --------------------------------------------
 const calls = pagedReadKeys(
@@ -187,6 +216,21 @@ assert(single[1]?.table === "things" && single[1]?.keys?.join() === "id", `reads
     `shape: select fields read aliases, casts and embeds (${[...f].join(" ")})`);
   const aliasOnly = selectedFields("other:id");
   assert(!aliasOnly.has("id") && aliasOnly.has("other"), "shape: a key renamed by an alias is not returned under its own name");
+  // Review of #4238: an ALIAS named like the key is not the key. The helper orders
+  // by the table's real column and cuts the next page on whatever the field holds,
+  // so `id:booking_id` skips rows or throws "returned twice".
+  assert(shape(`selectAllPages<R>("x", "id", () => db.from("t").select("id:booking_id, name"))`) !== null,
+    "alias: another column returned under the key's name is refused");
+  assert(shape(`selectAllPages<R>("x", "id", () => db.from("t").select("*, id:booking_id"))`) !== null,
+    "alias: and refused beside a select * that would otherwise return the key");
+  assert(shape(`selectAllPages<R>("x", "id", () => db.from("t").select("id:prefill->>id"))`) !== null,
+    "alias: a json path returned under the key's name is refused");
+  assert(shape(`selectAllPages<R>("x", ["a", "b"], () => db.from("t").select("a, b:c"))`) !== null,
+    "alias: one renamed column of a composite key is refused");
+  assert(shape(`selectAllPages<R>("x", "id", () => db.from("t").select("id:id, name"))`) === null,
+    "alias: the key aliased to itself pages");
+  assert(shape(`selectAllPages<R>("x", "id", () => db.from("t").select("id : id, n:name"))`) === null,
+    "alias: spacing around the colon, and an alias on another column, still page");
 }
 
 // --- the real repository ------------------------------------------------------
@@ -197,9 +241,9 @@ const realSets = uniqueSetsFromMigrations(
     .sort()
     .map((f) => readFileSync(join(migDir, f), "utf8")),
 );
-assert((realSets.get("busy_blocks") ?? []).some((s) => s.join() === "id"), "busy_blocks reads as keyed on id");
+assert((realSets.get("busy_blocks")?.unique ?? []).some((s) => s.join() === "id"), "busy_blocks reads as keyed on id");
 assert(
-  (realSets.get("pilot_offer_samples") ?? []).some((s) => [...s].sort().join() === "sampled_at,system"),
+  (realSets.get("pilot_offer_samples")?.unique ?? []).some((s) => [...s].sort().join() === "sampled_at,system"),
   "pilot_offer_samples reads as keyed on (sampled_at, system)",
 );
 
@@ -230,9 +274,10 @@ for (const file of scanned) {
     assert(shapeWhy === null, `${read.file}:${read.line} keyset pages ${read.table ?? "?"}: ${shapeWhy ?? "ok"}`);
   }
 }
-// Measured when this guard was written: 72 paged reads. A scan that finds none
-// has stopped reading the tree, and an empty pass is not a clean one.
-assert(reads >= 70, `found the repository's paged reads (got ${reads})`);
+// Measured when this guard was written: 72 paged reads; 94 on 2026-10-26, every
+// one passing both rules above. A scan that finds none has stopped reading the
+// tree, and an empty pass is not a clean one.
+assert(reads >= 90, `found the repository's paged reads (got ${reads})`);
 
 // Positive control on the real code: page the availability busy read on a column
 // two meetings can share, and the guard must refuse it.
@@ -263,6 +308,22 @@ const keyless = pagedReadKeys("service.ts", svc.replace(/(\.from\("busy_blocks"\
 assert(
   keyless.length === 1 && judgePagedReadShape(keyless[0], constants) !== null,
   "positive control: the busy read selecting without its id is refused",
+);
+// The two gaps of the #4238 review, on the same real read. busy_blocks.booking_id
+// is nullable (0001_init.sql), so a key adding it beside id throws on a gcal row.
+const nullableKey = pagedReadKeys("service.ts", svc.replace(/("busy_blocks",\s*)"id"/, '$1["id", "booking_id"]')).filter(
+  (r) => r.table === "busy_blocks",
+);
+assert(
+  nullableKey.length === 1 && nullableKey[0].keys?.join() === "id,booking_id" && judgePagedReadKey(nullableKey[0], realSets) !== null,
+  "positive control: the busy read keyed on [id, booking_id] is refused, booking_id being nullable",
+);
+const aliased = pagedReadKeys("service.ts", svc.replace(/(\.from\("busy_blocks"\)\s*\.select\(")id, /, "$1id:booking_id, ")).filter(
+  (r) => r.table === "busy_blocks",
+);
+assert(
+  aliased.length === 1 && aliased[0].selectArg?.includes("id:booking_id") === true && judgePagedReadShape(aliased[0], constants) !== null,
+  "positive control: the busy read returning booking_id under the name id is refused",
 );
 
 finish();
