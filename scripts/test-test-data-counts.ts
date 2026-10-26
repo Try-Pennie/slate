@@ -83,6 +83,28 @@ const FIXTURES: Fixture[] = [
     `,
   },
   {
+    name: "the shared real advisor rule (#4201), which keeps test advisors out",
+    flagged: false,
+    code: `
+      const rows = unwrap(
+        await realAdvisorsOnly(
+          db.from("users").select("id").eq("bookable", true),
+        ),
+        "roster",
+      );
+      const total = rows.length;
+    `,
+  },
+  {
+    name: "a comment naming the shared rule cannot satisfy the guard",
+    flagged: true,
+    code: `
+      // realAdvisorsOnly( used to wrap this
+      const rows = unwrap(await db.from("users").select("id"), "roster");
+      const total = rows.length;
+    `,
+  },
+  {
     name: "a primary-key lookup: the set was already chosen upstream",
     flagged: false,
     code: `

@@ -251,6 +251,7 @@ async function listAuthBans(): Promise<AuthBanListing> {
 async function listRoster(): Promise<RosterAuthRow[]> {
   const rows = unwrap(
     // cap-safe: users is roster bounded (SAFE_TABLES), a few hundred rows.
+    // any-advisor-ok: sessions are about who can sign in, whatever kind of row it is.
     await supabaseAdmin().from("users").select("id, auth_user_id, deactivated_at").not("auth_user_id", "is", null),
     "session-convergence.roster",
   );

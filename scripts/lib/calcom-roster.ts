@@ -12,6 +12,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { retryDelayMs, retryAfterMs, CAL_SCHEDULES_API_VERSION } from "@/lib/calcom/schedule-import";
 import { selectAllPages } from "@/lib/supabase/paginate";
+import { realAdvisorsOnly } from "@/lib/advisors/real-advisor";
 // `pickDefaultSchedule` moved to `src/lib/calcom/schedule-import.ts` (#2627), because
 // the activation path in the Worker now reads a default schedule too and one choice
 // of "which schedule" must serve both.
@@ -305,12 +306,7 @@ export async function loadBookableRoster(
   unwrap: Unwrap,
 ): Promise<RosterAgent[]> {
   const agents = (unwrap(
-    await db
-      .from("users")
-      .select("id, email")
-      .eq("bookable", true)
-      .is("deactivated_at", null)
-      .eq("is_test", false),
+    await realAdvisorsOnly(db.from("users").select("id, email").eq("bookable", true).is("deactivated_at", null)),
     "bookable agents",
   ) ?? []) as { id: string; email: string }[];
   if (agents.length === 0) return [];

@@ -65,6 +65,7 @@ import { isMarkedRedistribute, withMark } from "@/lib/twilio/roster-plan";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import type { Attributes, Role, User } from "@/lib/db/types";
+import { withoutPlaceholder } from "@/lib/advisors/real-advisor";
 
 /**
  * Failure-streak key for the hourly SF roster sync (#486). Shared so the cron
@@ -528,10 +529,16 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
   // (unwrap, #963): a swallowed read error left this null, so every SF agent
   // looked brand new and was re-inserted (the #277 class). An empty roster is a
   // null-safe pass; only a real query error throws.
+  //
+  // #4201: the placeholder advisor is a Slate row no Salesforce user stands behind.
+  // It is READ here, so its address is known and the loop below can leave it alone;
+  // excluded from the read, an address Salesforce also held would look brand new
+  // and be inserted as a second row. Every later read leaves it out entirely.
   const existing = unwrap(
+    // any-advisor-ok: the placeholder is kept so its address is recognised and skipped below.
     await db
       .from("users")
-      .select("id, email, attributes, salesforce_user_id, bookable, deactivated_at, bookable_pending_since")
+      .select("id, email, attributes, salesforce_user_id, bookable, deactivated_at, bookable_pending_since, is_placeholder")
       .eq("org_id", org.id),
     "sf-existing-agents",
   );
@@ -542,11 +549,17 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     bookable?: boolean | null;
     deactivated_at?: string | null;
     bookable_pending_since?: string | null;
+    is_placeholder?: boolean | null;
   };
+  const placeholderEmails = new Set<string>();
   const byEmail = new Map(
-    (existing ?? []).map((u) => {
+    (existing ?? []).flatMap((u) => {
       const row = u as ExistingRow;
-      return [normalizeEmail(row.email), row];
+      if (row.is_placeholder === true) {
+        placeholderEmails.add(normalizeEmail(row.email));
+        return [];
+      }
+      return [[normalizeEmail(row.email), row] as const];
     }),
   );
 
@@ -584,7 +597,7 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
 
   for (const u of sfUsers) {
     const email = normalizeEmail(u.Email ?? "");
-    if (!email) continue;
+    if (!email || placeholderEmails.has(email)) continue;
     const attributes = toAttributes(u);
     const current = byEmail.get(email);
     if (current) {
@@ -803,14 +816,19 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
   // Fail loud (unwrap, #963): a swallowed error here left the id/manager maps
   // empty, so no links resolved and the sync reported a clean run over a broken
   // read.
+  //
+  // Without the placeholder (#4201), so no manager link, promotion, Salesforce id or
+  // divergence finding can ever name it.
   const afterInsert = unwrap(
-    await db
-      .from("users")
-      // `bookable`, `deactivated_at` and `is_test` are here for the reconcile at
-      // the end (#1833), which needs to know who is in scope and who is still
-      // routable. Same read, no extra round trip.
-      .select("id, email, manager_id, role, salesforce_user_id, bookable, deactivated_at, is_test")
-      .eq("org_id", org.id),
+    await withoutPlaceholder(
+      db
+        .from("users")
+        // `bookable`, `deactivated_at` and `is_test` are here for the reconcile at
+        // the end (#1833), which needs to know who is in scope and who is still
+        // routable. Same read, no extra round trip.
+        .select("id, email, manager_id, role, salesforce_user_id, bookable, deactivated_at, is_test")
+        .eq("org_id", org.id),
+    ),
     "sf-after-insert",
   );
   const idByEmail = new Map(
@@ -1111,14 +1129,18 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
   // of them is this row's.
   // Fail loud (unwrap, #963): a swallowed error here left reapableRows empty and
   // silently skipped deactivation, so a broken read read as "nothing to reap".
+  // The placeholder never signs in and is never in Salesforce, so it is left out
+  // here (#4201): whatever Salesforce says of its address, it is never departed.
   const reapable = unwrap(
-    await db
-      .from("users")
-      .select("id, email, salesforce_user_id")
-      .eq("org_id", org.id)
-      .in("role", ["agent", "manager"])
-      .is("auth_user_id", null)
-      .is("deactivated_at", null),
+    await withoutPlaceholder(
+      db
+        .from("users")
+        .select("id, email, salesforce_user_id")
+        .eq("org_id", org.id)
+        .in("role", ["agent", "manager"])
+        .is("auth_user_id", null)
+        .is("deactivated_at", null),
+    ),
     "sf-reapable",
   );
   const reapableRows = (reapable ?? []) as {

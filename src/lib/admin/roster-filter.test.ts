@@ -448,6 +448,8 @@ describe("needs a photo", () => {
     // Offboarded and test rows are not on the roster, whatever their photo.
     row({ id: "gone", photo: { kind: "none" }, deactivated_at: "2026-01-01T00:00:00Z" }),
     row({ id: "smoke", photo: { kind: "none" }, is_test: true }),
+    // #4201: nor is the placeholder advisor, the same rule the page's read applies.
+    row({ id: "marcia", photo: { kind: "none" }, is_placeholder: true }),
   ];
 
   it("is the measured none, and only that", () => {
@@ -458,7 +460,7 @@ describe("needs a photo", () => {
   });
 
   it("puts every row in exactly one photo filter (L45)", () => {
-    const on = P.filter((u) => u.deactivated_at === null && !u.is_test).map((u) => u.id);
+    const on = P.filter((u) => u.deactivated_at === null && !u.is_test && !u.is_placeholder).map((u) => u.id);
     const views = (["needed", "has", "unread"] as const).map((photo) => filterRoster(P, { ...NONE, photo }).map((u) => u.id));
     expect(views.flat().sort()).toEqual([...on].sort());
     expect(new Set(views.flat()).size).toBe(views.flat().length);

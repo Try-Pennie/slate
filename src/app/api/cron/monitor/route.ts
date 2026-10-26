@@ -455,6 +455,7 @@ import { ACTIVE_BOOKING_STATUSES, pinnedDemotionBookingIds } from "@/lib/booking
 import { loadOooCoverageBookings, loadSnapshottedBookingIds } from "@/lib/monitor/ooo-coverage-bookings";
 import { inIdChunks } from "@/lib/db/id-batch";
 import { selectAllPages } from "@/lib/supabase/paginate";
+import { REAL_ADVISOR_COLUMNS, realAdvisorsOnly } from "@/lib/advisors/real-advisor";
 import type { Attributes, Bucket, BulkReassignJob, Criteria, OooStatus, Role } from "@/lib/db/types";
 import { log } from "@/lib/log";
 import { groupRulesBySchedule, runUnsetHoursCheck, type UnsetHoursAgent, type HoursSource } from "@/lib/monitor/unset-hours";
@@ -2363,12 +2364,9 @@ export async function GET(req: NextRequest) {
           "monitor schedule-coverage bookable agents",
           "id",
           () =>
-            db
-              .from("users")
-              .select("id, name, email, org_id")
-              .eq("bookable", true)
-              .is("deactivated_at", null)
-              .eq("is_test", false),
+            realAdvisorsOnly(
+              db.from("users").select("id, name, email, org_id").eq("bookable", true).is("deactivated_at", null),
+            ),
         ),
         selectAllPages<{ id: string; user_id: string }>(
           "monitor schedule-coverage schedules",
@@ -2420,12 +2418,9 @@ export async function GET(req: NextRequest) {
         load: async () => {
           const [agents, scheds, rules, orgRow] = await Promise.all([
             selectAllPages<UnsetHoursAgent>("monitor unset-hours bookable agents", "id", () =>
-              db
-                .from("users")
-                .select("id, name, email")
-                .eq("bookable", true)
-                .is("deactivated_at", null)
-                .eq("is_test", false),
+              realAdvisorsOnly(
+                db.from("users").select("id, name, email").eq("bookable", true).is("deactivated_at", null),
+              ),
             ),
             selectAllPages<{
               id: string;
@@ -2497,11 +2492,12 @@ export async function GET(req: NextRequest) {
         : runAwaitingActivationCheck({
         load: () =>
           selectAllPages<AwaitingActivationRow>("monitor awaiting-activation roster", "id", () =>
-            db
-              .from("users")
-              .select("id, name, email, bookable, deactivated_at, bookable_pending_since")
-              .not("bookable_pending_since", "is", null)
-              .eq("is_test", false),
+            realAdvisorsOnly(
+              db
+                .from("users")
+                .select("id, name, email, bookable, deactivated_at, bookable_pending_since")
+                .not("bookable_pending_since", "is", null),
+            ),
           ),
         armed: settings!.awaitingActivationArmed,
         // alert-key: agents_awaiting_activation
@@ -2535,13 +2531,14 @@ export async function GET(req: NextRequest) {
       runStrandedHiresCheck({
         loadCandidates: () =>
           selectAllPages<StrandedHireRow>("monitor stranded-hires roster", "id", () =>
-            db
-              .from("users")
-              .select("id, name, email, attributes, bookable, deactivated_at, bookable_pending_since, auth_user_id")
-              .eq("bookable", false)
-              .is("deactivated_at", null)
-              .not("auth_user_id", "is", null)
-              .eq("is_test", false),
+            realAdvisorsOnly(
+              db
+                .from("users")
+                .select("id, name, email, attributes, bookable, deactivated_at, bookable_pending_since, auth_user_id")
+                .eq("bookable", false)
+                .is("deactivated_at", null)
+                .not("auth_user_id", "is", null),
+            ),
           ),
         loadSyncedCalendarUserIds: async (ids) => {
           const rows = await selectAllPages<{ user_id: string }>("monitor stranded-hires calendars", "id", () =>
@@ -2881,7 +2878,7 @@ export async function GET(req: NextRequest) {
           selectAllPages<RegalCaller>("monitor regal call roster", "id", () =>
             db
               .from("users")
-              .select("id, name, email, role, bookable, deactivated_at, is_test, attributes"),
+              .select(`id, name, email, role, bookable, deactivated_at, attributes, ${REAL_ADVISOR_COLUMNS}`),
           ),
         loadIgnores: () =>
           selectAllPages<RegalIgnore>("monitor regal call ignore list", "user_id", () =>
@@ -3051,12 +3048,9 @@ export async function GET(req: NextRequest) {
           "monitor attribute-coverage bookable agents",
           "id",
           () =>
-            db
-              .from("users")
-              .select("id, name, email, attributes")
-              .eq("bookable", true)
-              .is("deactivated_at", null)
-              .eq("is_test", false),
+            realAdvisorsOnly(
+              db.from("users").select("id, name, email, attributes").eq("bookable", true).is("deactivated_at", null),
+            ),
         ),
         selectAllPages<{ user_id: string }>(
           "monitor attribute-coverage manual members",
@@ -3091,12 +3085,9 @@ export async function GET(req: NextRequest) {
           "monitor sync-staleness agents",
           "id",
           () =>
-            db
-              .from("users")
-              .select("id, name, email, last_synced_at")
-              .eq("bookable", true)
-              .is("deactivated_at", null)
-              .eq("is_test", false),
+            realAdvisorsOnly(
+              db.from("users").select("id, name, email, last_synced_at").eq("bookable", true).is("deactivated_at", null),
+            ),
         ),
         // #2299: created_at and the sync failure columns come back with the row,
         // because the first-run grace is judged on when the calendar joined the
@@ -3148,11 +3139,14 @@ export async function GET(req: NextRequest) {
       // cap-safe: `users` is roster-bounded (a fixed 100-200 agent target), so the
       // out-of-pool subset can never fill a PostgREST page.
       const agents = (unwrap(
-        await db
-          .from("users")
-          .select("id, name, email, deactivated_at, attributes")
-          .or("bookable.eq.false,deactivated_at.not.is.null")
-          .eq("is_test", false),
+        // #4201: real advisors only. The placeholder is never bookable and holds every
+        // stacked call, so it would page here for each one.
+        await realAdvisorsOnly(
+          db
+            .from("users")
+            .select("id, name, email, deactivated_at, attributes")
+            .or("bookable.eq.false,deactivated_at.not.is.null"),
+        ),
         "monitor inactive-agent roster",
       ) ?? []) as {
         id: string;
@@ -3181,7 +3175,7 @@ export async function GET(req: NextRequest) {
           db
             // agent-link-ok: an upcoming call held by somebody who has left needs
             // a person however it was booked, including through their own link (#2073).
-            // test-data-ok: scoped to outOfPool, which are is_test=false agents (filtered on
+            // test-data-ok: scoped to outOfPool, which are real advisors (realAdvisorsOnly on
             // the users read above), so no test fixtures can be counted.
             .from("bookings")
             .select("id, assigned_user_id")
@@ -3233,12 +3227,9 @@ export async function GET(req: NextRequest) {
       const nowIso = new Date(now).toISOString();
       // cap-safe: users is roster-bounded (100-200 agent target), so the bookable subset fits a page.
       const bookable = (unwrap(
-        await db
-          .from("users")
-          .select("id, name, email, attributes")
-          .eq("bookable", true)
-          .is("deactivated_at", null)
-          .eq("is_test", false),
+        await realAdvisorsOnly(
+          db.from("users").select("id, name, email, attributes").eq("bookable", true).is("deactivated_at", null),
+        ),
         "monitor demoted-agent roster",
       ) ?? []) as { id: string; name: string | null; email: string | null; attributes: Attributes | null }[];
       // Only marked agents past the debounce window; a pending sweep holds its calls by design.
@@ -3256,7 +3247,7 @@ export async function GET(req: NextRequest) {
           db
             // agent-link-ok: all kinds are read; the demotion snapshot (unservedBookingIds) drops
             // agent_link bookings itself, exactly as the reroute does, so the query need not.
-            // test-data-ok: scoped to stampedIds, which are is_test=false agents (filtered on the
+            // test-data-ok: scoped to stampedIds, which are real advisors (realAdvisorsOnly on the
             // users read above), so no test fixtures can be counted.
             // in-chunk-ok: stampedIds is a SUBSET of the bookable roster (design ceiling 200, the
             // in() URL id limit), and in practice a small transient set of currently-marked agents.
@@ -4003,6 +3994,8 @@ export async function GET(req: NextRequest) {
         // rotation hydrates their calendars, the canary books against them, and
         // before cutover they are the only bookable agents, so excluding them
         // would leave the detector with no subjects at all (#1394).
+        // any-advisor-ok: the smoke agents belong, as above, and `bookable` already keeps
+        // the placeholder out (a CHECK makes it never bookable, #4200).
         .from("users")
         .select("id, name, email")
         .eq("bookable", true)
@@ -4086,6 +4079,8 @@ export async function GET(req: NextRequest) {
         // test-data-ok: the smoke agents are the only bookable agents before
         // cutover; without them the sampler ships blind (#1394), and their cache
         // is maintained by the same lanes as everyone else's.
+        // any-advisor-ok: the smoke agents belong, as above, and `bookable` already keeps
+        // the placeholder out (a CHECK makes it never bookable, #4200).
         .from("users")
         .select("id, email")
         .eq("bookable", true)

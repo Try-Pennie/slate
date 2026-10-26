@@ -54,6 +54,8 @@ export function bookedSpliceIo(
       const [bucketsRes, membersRes, usersRes, businessHours] = await Promise.all([
         db.from("buckets").select("*, event_types(*)"),
         db.from("bucket_members").select("bucket_id, user_id").eq("active", true),
+        // any-advisor-ok: the pool as the live reads judge it, test advisors included; the
+        // placeholder is never bookable (a CHECK, #4200), so `bookable` keeps it out.
         db
           .from("users")
           .select("id, org_id, attributes")

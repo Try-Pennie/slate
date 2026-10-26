@@ -50,6 +50,8 @@ export async function resolveBucketPool(bucket: Bucket): Promise<{
     // One pass over org agents: include a bookable agent if they're a manual
     // member OR match the criteria. Non-bookable and deactivated (offboarded)
     // agents never enter the pool.
+    // any-advisor-ok: test advisors staff the test buckets; the placeholder is never
+    // bookable (a CHECK, #4200), so `bookable` keeps it out of every pool.
     db
       .from("users")
       .select("id, attributes, bookable")

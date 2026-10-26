@@ -32,6 +32,7 @@ function chunks<T>(items: T[], size = IN_CHUNK): T[][] {
 /** Everybody the refresh may read for, active or not. `users` is roster bounded. */
 export async function listPhotoSubjects(): Promise<PhotoSubjectUser[]> {
   const rows = unwrap(
+    // any-advisor-ok: every face a booking can show is resolved, the placeholder's included.
     await supabaseAdmin().from("users").select("id, email, deactivated_at"),
     "advisor photo subjects",
   ) as { id: string; email: string; deactivated_at: string | null }[] | null;

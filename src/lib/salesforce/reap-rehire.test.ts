@@ -48,7 +48,9 @@ const store = vi.hoisted(() => {
 
   function seed(rows: Row[]) {
     users.clear();
-    for (const row of rows) users.set(String(row.id), { ...row });
+    // The column's NOT NULL DEFAULT false (#4200), so a read narrowed by it matches
+    // a row the fixture did not spell it on, as the database would.
+    for (const row of rows) users.set(String(row.id), { is_placeholder: false, ...row });
   }
 
   type Filter = [kind: "eq" | "in" | "is" | "not", col: string, val: unknown];

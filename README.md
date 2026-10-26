@@ -287,6 +287,7 @@ src/lib/regal          the inbound Regal call feed: what each call.completed bod
 src/lib/mcp-booking    Marcia's booking MCP endpoint (#3541 to #3545): her lead token check, the five booking operations behind McpBookingGateway, and their audit rows
 src/lib/log-shipping   what the slate-log-tail Worker ships to Better Stack: the redaction, the line parser, the bounded POST
 src/lib/advisor-photos advisor photos from the Google directory: the daily refresh, its guards, and the one resolver every face goes through
+src/lib/advisors       the one real advisor rule: which users rows (not test, not the placeholder) any advisor surface lists (#4201)
 src/lib/{calcom,date,db,embed,supabase}   cal.com dual-write, Luxon helpers, hand-written DB types, embed origin, Supabase clients
 src/app/api            availability, bookings, auth callback, google push, cron/* lanes, keyed reassign/booking/offboarding APIs
 src/app/admin          admin: agents, hours, event types, buckets, webhook, settings, monitor tuning

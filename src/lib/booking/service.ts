@@ -691,6 +691,7 @@ import { makeCommitCostLog } from "@/lib/booking/commit-cost";
 import { confirmLineFor, lineGroupOfLive, settleLineGrouping } from "@/lib/booking/confirm-line-live";
 import type { ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 import { timeStage } from "@/lib/booking/confirm-profile";
+import { realAdvisorsOnly } from "@/lib/advisors/real-advisor";
 export type { BookingResult, CreateBookingInput };
 export type { ExistingCall } from "@/lib/booking/orchestration";
 export type { BookingActor } from "@/lib/booking/core";
@@ -3649,18 +3650,16 @@ export async function adminCancelBooking(
 }
 
 /**
- * Active agents for the manager reassign picker (#546): non-deactivated, non-test
- * users in the org, minimal fields only (never the full user row to the client).
+ * Active agents for the manager reassign picker (#546): non-deactivated real
+ * advisors in the org (no test agent, no placeholder, #4201), minimal fields only
+ * (never the full user row to the client).
  * The picker filters/sorts these with `rankReassignAgents`.
  */
 export async function listActiveAgents(orgId: string): Promise<ReassignAgent[]> {
   // error-ok: candidate agents for reassignment; a read error yields an empty list so the reassignment is retried, never run against a wrong pool.
-  const { data } = await supabaseAdmin()
-    .from("users")
-    .select("id, name, email, bookable")
-    .eq("org_id", orgId)
-    .eq("is_test", false)
-    .is("deactivated_at", null);
+  const { data } = await realAdvisorsOnly(
+    supabaseAdmin().from("users").select("id, name, email, bookable").eq("org_id", orgId).is("deactivated_at", null),
+  );
   return (data as ReassignAgent[] | null) ?? [];
 }
 
