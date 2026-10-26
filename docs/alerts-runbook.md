@@ -1188,13 +1188,14 @@ behind it.
 
 ### Every post opens with a severity lead (#1825)
 
-The dispatcher puts one line in front of everything it posts, so a page and a whisper
-never look alike, even with the info channel falling back to the alerts channel (it does
-whenever no info channel is set on `/admin/alerts` or in `SLACK_INFO_CHANNEL`). The rule
-is `severityOf` in `src/lib/notify/severity-lead.ts`: an all-clear opens with
-**Resolved.**, a `sendThrottledInfo` whisper or an info key with _FYI, no action needed
-now._ (italic), an urgent condition (`URGENT_CONDITION_KEYS`) with **URGENT: leads are
-affected now.**, and every other page with **Needs attention.** A copy builder never
+The dispatcher puts a lead line in front of every post that is not an ordinary page, so a
+page and a whisper never look alike, even with the info channel falling back to the alerts
+channel (it does whenever no info channel is set on `/admin/alerts` or in
+`SLACK_INFO_CHANNEL`). The rule is `severityOf` in `src/lib/notify/severity-lead.ts`: an
+all-clear opens with **Resolved.**, a `sendThrottledInfo` whisper or an info key with _FYI,
+no action needed now._ (italic), an urgent condition (`URGENT_CONDITION_KEYS`) with
+**URGENT: leads are affected now.**, and every other page opens with its own text, no lead
+(Dan, 2026-10-25, dropping **Needs attention.**). A copy builder never
 writes its own lead, and `pnpm preview:alerts` prints each state under the lead it ships
 with.
 

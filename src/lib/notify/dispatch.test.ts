@@ -306,7 +306,7 @@ describe("severity lead on every post (#1825)", () => {
   it("a page opens with the needs attention lead and keeps its text below", async () => {
     process.env.SLACK_ALERTS_CHANNEL = "#alerts";
     await sendThrottledAlert("sync_failures", 1000, "2 agents failing");
-    expect(slack.postSlack.mock.calls[0][0].text).toBe(`${SEVERITY_LEADS.attention}\n2 agents failing`);
+    expect(slack.postSlack.mock.calls[0][0].text).toBe("2 agents failing");
   });
 
   it("an urgent condition opens with the urgent lead", async () => {
@@ -489,7 +489,7 @@ describe("a page that carries news (#3303)", () => {
       asOfMs: Date.now() - 1_000,
     } });
     expect(slack.postSlack).toHaveBeenCalledTimes(1);
-    expect(slack.postSlack.mock.calls[0][0]).toMatchObject({ text: `${SEVERITY_LEADS.attention}\n4 appointments` });
+    expect(slack.postSlack.mock.calls[0][0]).toMatchObject({ text: "4 appointments" });
   });
 
   it("stays throttled when nothing is newer than the last delivered page", async () => {
