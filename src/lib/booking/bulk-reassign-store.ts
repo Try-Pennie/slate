@@ -91,8 +91,10 @@ type BookingsSelectBuilder = ReturnType<
  * select, whatever columns it selected. The rule lives HERE once so `coverageBookings` and the
  * demotion snapshot can never drift on what "upcoming" means (L16, L342): same statuses, same
  * `coverageSelectionBounds` (strictly after now so one under way is never moved; still running
- * when the absence begins, #1237), same order. The `.from`/`.select`/tag/key stay at each call
- * site because the paged-read-key guard reads those literally.
+ * when the absence begins, #1237). It applies NO order: selectAllPages pages by its key alone
+ * (#4238), so a caller wanting time order sorts the rows with `byStartTime`. The
+ * `.from`/`.select`/tag/key stay at each call site because the paged-read-key guard reads those
+ * literally.
  */
 function applyUpcomingWindow(
   base: BookingsSelectBuilder,
