@@ -42,6 +42,10 @@ const body = route.slice(stepAt, route.indexOf("\n    );\n", stepAt));
 assert(body.includes("runLaneClaimHealthCheck("), "the step calls the check");
 assert(body.includes("claim: ownClaim.claim"), "with the lane's own claim, the measurement");
 assert(body.includes("sendThrottledAlert(") && body.includes("resolveAlert("), "raising and clearing through the dispatcher");
+assert(
+  body.includes("notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat)"),
+  "passing the page's AlertRepeat on to the dispatcher, as every monitor wiring must (#4235)",
+);
 assert(body.includes("cooldownMs.lane_claim_unreadable"), "with the tunable cooldown");
 
 // --- one sender: nothing else in src/ can raise it ---------------------------------------
