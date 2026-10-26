@@ -16,7 +16,9 @@
  *     hourly repeat (`URGENT_CONDITION_KEYS` in the catalog);
  *   - a stored `monitor_settings.cooldown_min` still decides a tunable alert's
  *     interval, so the settings page keeps working as the reminder interval;
- *   - incident and info alerts keep their own throttles.
+ *   - incident and info alerts keep their own throttles, except the incidents in
+ *     `CHANGE_ONLY_KEYS` (Dan, 2026-10-26), which take the change rule with no
+ *     reminder and ignore the cooldown they are handed.
  *
  * The dispatcher (`sendThrottledAlert`) is the only caller, so every condition gets
  * the rule by construction rather than by each send site remembering it (L621).
@@ -108,7 +110,7 @@ export function isRepeatRuled(key: string): boolean {
  *
  * - A change only incident (`CHANGE_ONLY_KEYS`): `CHANGE_ONLY_HOLD_MS`, whatever it is
  *   handed, so no stored or coded cooldown can bring back a repeat nobody wanted.
- * - Not a condition: `cooldownMs`, exactly as before #3801.
+ * - Any other incident, and info: `cooldownMs`, exactly as before #3801.
  * - A tunable condition: `cooldownMs`, because the caller resolved it from the
  *   settings (a stored value, or the coded default in `MONITOR_DEFAULTS`, which
  *   #3801 set to the repeat above). This is how a stored override keeps winning.
