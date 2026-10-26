@@ -38,6 +38,11 @@ import {
   type MonitorAlertKey,
 } from "@/lib/monitor/settings";
 import { VolumeFloors } from "@/components/admin/VolumeFloors";
+import { AlertSwitch } from "@/components/admin/AlertSwitch";
+import { alertSwitchCopy, type AlertSwitchName } from "@/lib/monitor/alert-switch-copy";
+import { alertsFixtureFrame, type AlertsDesignFixture } from "@/lib/admin/alerts-design-fixture";
+import { designFixturesEnabled } from "@/lib/admin/team-capacity-fixture";
+import { headers } from "next/headers";
 import { CalcomRetirementSwitch } from "@/components/admin/CalcomRetirementSwitch";
 import { CALCOM_RETIREMENT_FORM } from "@/lib/calcom/retirement";
 import { loadPutBackCounts, putBackSavedSentence, type PutBackCounts } from "@/lib/calcom/put-back";
@@ -172,7 +177,7 @@ const ALERT_TUNING_FIELDS: Partial<
 export default async function AlertSettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ ok?: string; error?: string; form?: string; copy?: string; remove?: string }>;
+  searchParams: Promise<{ ok?: string; error?: string; form?: string; copy?: string; remove?: string; frame?: string }>;
 }) {
   const sp = await searchParams;
   const outcome = savedOutcome(sp.ok);
@@ -229,13 +234,28 @@ export default async function AlertSettingsPage({
   // #575: default the arm toggle to the EFFECTIVE state (store > env > disarmed),
   // not just the stored column, so an admin on an env-armed deploy who saves other
   // changes can't silently disarm the alert by leaving a falsely-unchecked box.
-  const lowVolumeArmed = resolveLowVolumeArmed(config, envLowVolumeArmed());
-  const failureRateArmed = resolveFailureRateArmed(config);
-  const availabilityDriftArmed = resolveAvailabilityDriftArmed(config);
-  const rosterCoverageArmed = resolveRosterCoverageArmed(config);
-  const awaitingActivationArmed = resolveAwaitingActivationArmed(config);
-  const belowLeadTierArmed = resolveBelowLeadTierArmed(config);
-  const regalCallsArmed = resolveRegalCallsArmed(config);
+  const armedBySwitch: Record<AlertSwitchName, boolean> = {
+    low_volume_armed: resolveLowVolumeArmed(config, envLowVolumeArmed()),
+    failure_rate_armed: resolveFailureRateArmed(config),
+    availability_drift_armed: resolveAvailabilityDriftArmed(config),
+    roster_coverage_armed: resolveRosterCoverageArmed(config),
+    awaiting_activation_armed: resolveAwaitingActivationArmed(config),
+    below_lead_tier_armed: resolveBelowLeadTierArmed(config),
+    regal_calls_armed: resolveRegalCallsArmed(config),
+  };
+  // The settled design's frames (docs/design/admin-alerts-help-text.html): `?frame=<id>` ticks the
+  // switches from the design's fixture, so the design match score compares like with like. Honoured
+  // only under the local flag on this machine (`designFixturesEnabled`, Team capacity's mechanism),
+  // after every access check above, and it changes nothing but which boxes are drawn ticked.
+  let switchesShown = armedBySwitch;
+  if (sp.frame && designFixturesEnabled(process.env.SLATE_DESIGN_FIXTURES, (await headers()).get("host"))) {
+    // Read from disk, never imported, so no deployment's bundle carries the fixture.
+    const { readFile } = await import("node:fs/promises");
+    const fixture = JSON.parse(
+      await readFile(`${process.cwd()}/docs/design/fixtures/admin-alerts-help-text.json`, "utf8"),
+    ) as AlertsDesignFixture;
+    switchesShown = alertsFixtureFrame(fixture, sp.frame).armed;
+  }
   // #2875: null when the row could not be read, or was read without the column
   // (a deploy ahead of migration 0147), never a guess. No row at all is the
   // column's default, live.
@@ -353,7 +373,7 @@ export default async function AlertSettingsPage({
   // Direct-booking default bucket (#1016). Read the current default + the list of
   // #1956: the EFFECTIVE arming (store > env > disarmed). This used to read the env
   // var alone, so it announced "disarmed" to an admin who had armed the alarm here.
-  const armed = lowVolumeArmed;
+  const armed = armedBySwitch.low_volume_armed;
   const envAlerts = process.env.SLACK_ALERTS_CHANNEL ?? "";
   const envInfo = process.env.SLACK_INFO_CHANNEL ?? "";
   // #2438: started here and NOT awaited, so the form draws at once and the Slack
@@ -625,130 +645,20 @@ export default async function AlertSettingsPage({
             stored30={config?.floor_30 ?? null}
             stored120={config?.floor_120 ?? null}
           />
-          <label className="mt-4 flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              name="low_volume_armed"
-              value="on"
-              defaultChecked={lowVolumeArmed}
-              className="h-4 w-4"
-            />
-            Send a Slack alert when bookings drop off
-          </label>
-          <p className="mt-1 text-xs text-fg-muted">
-            Off: Slate still counts bookings, but nobody is notified. On: Slack gets an
-            alert when bookings fall below the floors above. The floors are fitted to the
-            traffic named above, so turn this on once that traffic reaches Slate.
-            Saving applies immediately, no deploy needed.
-          </p>
-          <label className="mt-4 flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              name="failure_rate_armed"
-              value="on"
-              defaultChecked={failureRateArmed}
-              className="h-4 w-4"
-            />
-            Send a Slack alert when customers are failing to book
-          </label>
-          <p className="mt-1 text-xs text-fg-muted">
-            Off: Slate still checks every 5 minutes and records what it finds in the
-            logs, but nobody is notified. On: Slack gets an alert when too many booking
-            attempts fail over its rolling window, and a follow up once bookings are
-            completing again. Leave this off until real booking traffic has run for a
-            while, so the threshold is set against numbers someone has seen.
-          </p>
-          <label className="mt-4 flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              name="availability_drift_armed"
-              value="on"
-              defaultChecked={availabilityDriftArmed}
-              className="h-4 w-4"
-            />
-            Send a Slack alert when we offer times that are not really free
-          </label>
-          <p className="mt-1 text-xs text-fg-muted">
-            Off: Slate still samples the times each bucket is offering and checks them
-            against the real calendars every 5 minutes, recording what it finds in the
-            logs, but nobody is notified. On: Slack gets an alert naming the bucket when
-            too many of the times it offers turn out to be already busy, and a follow up
-            once they are free again.
-          </p>
-          <label className="mt-4 flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              name="roster_coverage_armed"
-              value="on"
-              defaultChecked={rosterCoverageArmed}
-              className="h-4 w-4"
-            />
-            Send a Slack alert when nobody works hours we say we are open
-          </label>
-          <p className="mt-1 text-xs text-fg-muted">
-            Off: Slate still compares the business hours against everyone&apos;s working
-            hours every 5 minutes and records what it finds in the logs, but nobody is
-            notified. On: Slack gets an alert naming the days and times no bookable
-            agent is scheduled for, and a follow up once every advertised hour is
-            covered again. Leave this off until agents are live and have set their real
-            working hours, or it will report the whole week as uncovered.
-          </p>
-          <label className="mt-4 flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              name="awaiting_activation_armed"
-              value="on"
-              defaultChecked={awaitingActivationArmed}
-              className="h-4 w-4"
-            />
-            Send a Slack alert when somebody is stuck outside the booking pool
-          </label>
-          <p className="mt-1 text-xs text-fg-muted">
-            Off: Slate still checks every 5 minutes who the roster counts as working
-            but cannot be booked, and records what it finds in the logs, but nobody is
-            notified. On: Slack gets an alert naming anyone who has been waiting more
-            than four hours, and a follow up once nobody is. Leave this off until
-            somebody has watched a few ordinary days, so the alert is turned on
-            against numbers a person has seen.
-          </p>
-          <label className="mt-4 flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              name="below_lead_tier_armed"
-              value="on"
-              defaultChecked={belowLeadTierArmed}
-              className="h-4 w-4"
-            />
-            Send a Slack alert when a lead is booked with a team below their tier
-          </label>
-          <p className="mt-1 text-xs text-fg-muted">
-            Off: Slate still holds every upcoming call against the tier Salesforce
-            gives the lead today, every 5 minutes, and records what it finds in the
-            logs, but nobody is notified. On: Slack gets an alert for each call that
-            is with a lower team than the lead&apos;s tier, and a follow up once it
-            is moved, the score comes down, or the call is cancelled.{" "}
-            {calcomRetired === true
-              ? "cal.com is retired, so this is the only check doing what its Slack workflow did."
-              : "Turn this on before cutover: it replaces the cal.com Slack workflow that stops working then."}
-          </p>
-          <label className="mt-4 flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              name="regal_calls_armed"
-              value="on"
-              defaultChecked={regalCallsArmed}
-              className="h-4 w-4"
-            />
-            Send a Slack alert when somebody not taking bookings is placing calls
-          </label>
-          <p className="mt-1 text-xs text-fg-muted">
-            Off: Slate still reads every call Regal reports, checks every 5 minutes who
-            placed one while their bookable switch is off or they are deactivated, and
-            records it in the logs, but nobody is notified. On: Slack gets one alert per
-            person a day, plus an alert when no call from a Slate user arrived all
-            business day or Regal sends calls Slate cannot read. Leave this off until
-            Regal is sending calls and somebody has watched a few ordinary days.
-          </p>
+          {/* Dan, 2026-10-26: each switch says only what its current state means. The id is the
+              slot the settled design draws its frames into. */}
+          <div id="alert-switches">
+            {alertSwitchCopy(calcomRetired).map((s) => (
+              <AlertSwitch
+                key={s.name}
+                name={s.name}
+                label={s.label}
+                on={s.on}
+                off={s.off}
+                defaultChecked={switchesShown[s.name]}
+              />
+            ))}
+          </div>
         </section>
 
         <section className={cardCls}>

@@ -1,0 +1,73 @@
+{
+  "about": "The data the /admin/alerts switch design (docs/design/admin-alerts-help-text.html) draws its frames from, and the page's ?frame= preview reads (honoured only under SLATE_DESIGN_FIXTURES on this machine). switches is the page's copy as it reads before cal.com cutover, held to src/lib/monitor/alert-switch-copy.ts by scripts/test-alerts-design-fixture.ts; each frame says which boxes are ticked, and between them every sentence is drawn.",
+  "switches": [
+    {
+      "name": "low_volume_armed",
+      "label": "Send a Slack alert when bookings drop off",
+      "on": "Slack gets an alert when bookings fall below the floors above.",
+      "off": "Slate still counts bookings. Turn this on once the traffic the floors were measured on reaches Slate."
+    },
+    {
+      "name": "failure_rate_armed",
+      "label": "Send a Slack alert when customers are failing to book",
+      "on": "Slack gets an alert when too many booking attempts fail, and a follow up once bookings complete again.",
+      "off": "Slate still checks every 5 minutes and logs what it finds."
+    },
+    {
+      "name": "availability_drift_armed",
+      "label": "Send a Slack alert when we offer times that are not really free",
+      "on": "Slack gets an alert naming the bucket when too many offered times are already busy, and a follow up once they are free.",
+      "off": "Slate still checks the times each bucket offers against the real calendars every 5 minutes, and logs what it finds."
+    },
+    {
+      "name": "roster_coverage_armed",
+      "label": "Send a Slack alert when nobody works hours we say we are open",
+      "on": "Slack gets an alert naming the open hours nobody bookable works, and a follow up once every hour is covered.",
+      "off": "Slate still checks every 5 minutes that someone works each hour we are open, and logs what it finds."
+    },
+    {
+      "name": "awaiting_activation_armed",
+      "label": "Send a Slack alert when somebody is stuck outside the booking pool",
+      "on": "Slack gets an alert naming anyone waiting more than four hours, and a follow up once nobody is.",
+      "off": "Slate still checks every 5 minutes for anyone working who cannot be booked, and logs what it finds."
+    },
+    {
+      "name": "below_lead_tier_armed",
+      "label": "Send a Slack alert when a lead is booked with a team below their tier",
+      "on": "Slack gets one alert per call booked below the lead's tier, and another only if the call's time, advisor or bucket, the lead's tier, or their own team's availability changes.",
+      "off": "Slate still checks every upcoming call against the lead's tier in Salesforce every 5 minutes, and logs what it finds. Turn this on before cutover, when the cal.com Slack workflow stops."
+    },
+    {
+      "name": "regal_calls_armed",
+      "label": "Send a Slack alert when somebody not taking bookings is placing calls",
+      "on": "Slack gets one alert per person a day, plus one when no call from a Slate user arrives all business day, Regal sends a call Slate cannot read, or calls go missing from the show rate.",
+      "off": "Slate still checks every 5 minutes for calls from anyone not bookable or deactivated, and logs them."
+    }
+  ],
+  "frames": {
+    "f1": {
+      "title": "Three switches on, four off",
+      "armed": {
+        "low_volume_armed": false,
+        "failure_rate_armed": true,
+        "availability_drift_armed": false,
+        "roster_coverage_armed": true,
+        "awaiting_activation_armed": false,
+        "below_lead_tier_armed": true,
+        "regal_calls_armed": false
+      }
+    },
+    "f2": {
+      "title": "The opposite: four on, three off",
+      "armed": {
+        "low_volume_armed": true,
+        "failure_rate_armed": false,
+        "availability_drift_armed": true,
+        "roster_coverage_armed": false,
+        "awaiting_activation_armed": true,
+        "below_lead_tier_armed": false,
+        "regal_calls_armed": true
+      }
+    }
+  }
+}

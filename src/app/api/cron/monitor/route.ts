@@ -2682,8 +2682,7 @@ export async function GET(req: NextRequest) {
         // firing read settles NOTHING, and an unmeasurable booking keeps its page.
         settle: settleAlertsSilently,
         // No cooldown is passed (2026-10-26): the page posts once per call and again
-        // only on a change (`belowLeadTierRepeat`), so the stored cooldown for
-        // `booking_below_lead_tier` no longer paces it.
+        // only on a change (`belowLeadTierRepeat`).
         nowMs: now,
         // #3665: is anybody on the lead's own team free at the call's time? Asked of
         // the served list the lane already holds (`slotByCode`, the stored rows
