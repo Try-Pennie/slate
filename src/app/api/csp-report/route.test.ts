@@ -19,10 +19,10 @@ vi.mock("@/lib/monitor/settings", () => settings);
 
 import { POST } from "./route";
 
-function req(body: unknown, contentType = "application/csp-report") {
+function req(body: unknown, contentType = "application/csp-report", headers: Record<string, string> = {}) {
   return new Request("https://slate.trypennie.app/api/csp-report", {
     method: "POST",
-    headers: { "content-type": contentType },
+    headers: { "content-type": contentType, ...headers },
     body: typeof body === "string" ? body : JSON.stringify(body),
   }) as unknown as Parameters<typeof POST>[0];
 }
@@ -287,9 +287,13 @@ describe("the page an enforced violation sends (#2575)", () => {
     expect(text).not.toContain("inline code");
     // Its own sentence, not one opening on "So" after a full stop.
     expect(text).not.toMatch(/\. So /);
-    // The source of a style refusal is the page, not a script.
+    // #4071: outside script-src the named source is only the script that was RUNNING when
+    // the browser refused it (Chrome credits a load to whatever is on the stack, L799), so
+    // the pointer says that and never claims the source is where the refused thing came from.
     expect(text).toContain("source=");
     expect(text).not.toContain("script that tried it");
+    expect(text).toContain("names the script that was running when the browser refused it");
+    expect(text).not.toContain("where it came from");
   });
 
   it("never says code was stopped for a Trusted Types refusal", async () => {
@@ -488,5 +492,80 @@ describe("#4063 the Google product logo credited to a Slate page script", () => 
   it("still pages another gstatic image whose source is a Slate chunk", async () => {
     await POST(req(chromeReport({ blockedURL: "https://fonts.gstatic.com/s/i/other/logo.png" }), "application/reports+json"));
     expect(dispatch.sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual(["csp_violation:img-src"]);
+  });
+});
+
+// 2026-10-24 19:37Z (3:37 PM ET): an add-on's Mulish font paged font-src on /book with
+// Slate's own chunk named as the source, the same forced layout as #4063. The rule that
+// logs the logo now covers a third-party font too. Finding WHICH browser sent it took a
+// second Cloudflare query, so the log line now carries the user agent.
+describe("a third-party font credited to a Slate page script, and the browser on the line", () => {
+  const MULISH = "https://fonts.gstatic.com/s/mulish/v18/1Ptvg83HX_SGhgqk0AotYKNnBcif.woff2";
+  // The report, field for field as logged (the log keeps no query string; none is added).
+  const fontReport = (over: Record<string, unknown> = {}) => [
+    {
+      type: "csp-violation",
+      body: {
+        documentURL: "https://slate.trypennie.app/book",
+        referrer: "https://trypennie.com/",
+        effectiveDirective: "font-src",
+        blockedURL: MULISH,
+        sourceFile: "https://slate.trypennie.app/_next/static/chunks/2xlik_6mb5atx.js",
+        lineNumber: 1,
+        columnNumber: 14435,
+        disposition: "enforce",
+        ...over,
+      },
+    },
+  ];
+  // The browser was read from the request record, not the report: Chrome 155 on macOS.
+  const CHROME_155 =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36";
+  const fields = () => logged.warn.mock.calls.map((c) => c[1] as Record<string, unknown>);
+
+  it("logs the report of 2026-10-24 with not_paged=injected-passive, its source and browser kept, and does NOT page", async () => {
+    const res = await POST(req(fontReport(), "application/reports+json", { "user-agent": CHROME_155 }));
+    expect(res.status).toBe(204);
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    expect(logged.warn).toHaveBeenCalledWith(
+      "csp-report",
+      expect.objectContaining({
+        directive: "font-src",
+        blocked: MULISH,
+        source: "https://slate.trypennie.app/_next/static/chunks/2xlik_6mb5atx.js:1:14435",
+        paged: false,
+        not_paged: "injected-passive",
+        user_agent: CHROME_155,
+      }),
+    );
+  });
+
+  it("still pages a refused font from Slate's own origin credited to a Slate chunk, and names the browser", async () => {
+    await POST(
+      req(fontReport({ blockedURL: "https://slate.trypennie.app/fonts/PPMori-Regular.woff2" }), "application/reports+json", {
+        "user-agent": CHROME_155,
+      }),
+    );
+    expect(dispatch.sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual(["csp_violation:font-src"]);
+    expect(fields()).toEqual([expect.objectContaining({ paged: true, user_agent: CHROME_155 })]);
+  });
+
+  it("still pages the third-party font when the source is on another origin, or is inline", async () => {
+    for (const sourceFile of ["https://evil.example/_next/static/chunks/a.js", "inline", "https://slate.trypennie.app/book"]) {
+      await POST(req(fontReport({ sourceFile }), "application/reports+json"));
+    }
+    expect(dispatch.sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual([
+      "csp_violation:font-src",
+      "csp_violation:font-src",
+      "csp_violation:font-src",
+    ]);
+  });
+
+  it("cuts a long user agent to 300 characters, and leaves the field off when the browser sent none", async () => {
+    await POST(req(fontReport(), "application/reports+json", { "user-agent": `${CHROME_155} ${"x".repeat(1000)}` }));
+    await POST(req(fontReport(), "application/reports+json"));
+    const [long, none] = fields();
+    expect(long.user_agent).toBe(`${CHROME_155} ${"x".repeat(1000)}`.slice(0, 300));
+    expect(none.user_agent ?? null).toBeNull();
   });
 });
