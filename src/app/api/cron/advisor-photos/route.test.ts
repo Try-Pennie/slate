@@ -13,7 +13,7 @@ vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(
 import { GET } from "./route";
 import { noteAlertKey } from "@/lib/notify/alert-recording";
 
-const req = () => ({}) as unknown as Parameters<typeof GET>[0];
+const req = () => ({ headers: new Headers() }) as unknown as Parameters<typeof GET>[0];
 const HEADER = "x-slate-lane-alerted";
 
 beforeEach(() => vi.clearAllMocks());

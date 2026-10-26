@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { laneFailure } from "@/lib/monitor/lane-failure-response";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
+import { claimLaneTick } from "@/lib/cron-lane-claim";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { reconcileSnowflakeMirror } from "@/lib/snowflake/reconcile";
 import { runSnowflakeHealthcheck } from "@/lib/snowflake/healthcheck";
@@ -82,6 +83,9 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // #4222: claim this tick before any work, so the same lane sent twice runs once.
+  const claimed = await claimLaneTick(req.headers, "/api/cron/snowflake-reconcile");
+  if (claimed) return claimed;
 
   // lock-overlap: COUNT reads, a re-merge of one known row by id, and throttled alerts
   // on a 6 hour cadence; an overlap needs a manual call and costs at most a duplicate

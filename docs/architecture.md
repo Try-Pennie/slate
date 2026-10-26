@@ -152,6 +152,32 @@ invocation, which is why per-lane subrequest cost still matters. The
 full lane list is in `docs/api.md`, and the platform ceilings are in
 `docs/cloudflare-platform-notes.md`.
 
+A lane sent twice for one tick runs once (#4222). Every scheduled lane's first awaited
+call claims `(tick id, lane)` in `lane_runs`, whose primary key lets exactly one
+delivery through; any other delivery of that tick's lane answers 200 with
+`x-slate-lane-not-run: duplicate` and does nothing. A lane that crashed after claiming is
+not re-run by a re-send of that tick; the next tick runs it. This is what lets the relay
+of #4189 fall back to today's route rather than skip a run. A request with no tick id (a
+hand run with the cron secret) runs unclaimed.
+
+When a claim cannot be read (the table missing, locked or slow), the table must not
+become a single point of failure for every lane, so (Dan decided 2026-10-26: run anyway,
+one alert):
+- a FIRST delivery runs anyway, unprotected, and logs `lane claim unreadable, running
+  anyway` on the lane's line;
+- a RE-SEND, marked `x-slate-lane-resend` by the dispatcher (from #4189's phase 4; nothing
+  re-sends yet), runs nothing and answers 503 `claim_unreadable`, because it is the one
+  delivery that could run a lane twice;
+- one alert, `lane_claim_unreadable`, is raised by the monitor lane from its own claim
+  and cleared by its next claim that is written. The lanes never send it, so 28 lanes
+  failing in one minute is one page: one judge every five minutes under its lease, one
+  key, and a condition that repeats once a day (`src/lib/monitor/lane-claim-health.ts`).
+
+Rules: `src/lib/monitor/lane-claim.ts`; every scheduled route claiming first:
+`scripts/test-lane-claim-coverage.ts`; the constraint in a real Postgres:
+`scripts/verify-lane-runs-sql.ts`. Claims are kept two days, pruned by the
+`prune-regal-calls` lane.
+
 Every lane stamps a heartbeat, and a watchdog pages when one goes quiet, because a
 lane that has stopped running looks exactly like a lane with nothing to do. Three
 detectors carry a second stamp for when they last reached a MEASURED verdict, since a

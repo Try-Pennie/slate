@@ -433,6 +433,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "An audit log entry no longer matches the hash chain written with it, which stays true until the trail is put back or re-anchored; the next complete walk from the first entry to the last that finds nothing wrong is the measured healthy reading that ends it (#3090).",
   },
   {
+    key: "lane_claim_unreadable",
+    kind: "condition",
+    why: "The cron lanes cannot write their claim on a tick to lane_runs, which stays true until the table answers again; the monitor lane's next claim that is actually written is the measured healthy reading that ends it. One key for every lane, raised only by the monitor lane (#4222).",
+  },
+  {
     key: "smoke_canary_failed:*",
     kind: "condition",
     suffix: "bounded",

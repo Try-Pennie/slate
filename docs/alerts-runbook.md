@@ -729,7 +729,7 @@ backfill is fixed by rewinding that table's cursor, in the same change as the wr
 ## A limit or a guard is not working
 
 Keys: `edge_limiter_unusable`, `rate_limit_broken:*`, `rate_limit_refund_broken:*`,
-`rate_limit_unidentified:*`, `confirm_line_unreachable`.
+`rate_limit_unidentified:*`, `confirm_line_unreachable`, `lane_claim_unreadable`.
 
 **What fired it.** A control that is supposed to bound something has stopped bounding
 it. Every limiter here fails OPEN, so the page means requests are being served
@@ -754,6 +754,16 @@ It is not a statement that the limit is down across the deployment; that is
   the reason (`unbound` is a deploy without the `CONFIRM_LINE` binding), and the
   `line_reason` on `confirm answered` lines for how many confirms it touched. Turning the
   switch off on the admin Hours page stops the attempts. `docs/confirm-line.md` has the rest.
+- `lane_claim_unreadable` means the cron lanes could not write their claim on a tick to
+  `lane_runs` (#4222). Dan decided 2026-10-26: they run anyway, with this one alert, so
+  nothing is skipped. What is lost while it lasts is the guard against a lane sent twice
+  for one tick running twice; a re-sent lane (`x-slate-lane-resend`) is refused instead.
+  It is raised and cleared by the monitor lane from its own claim, once per five minutes
+  at most, never by each lane. Read `tag=cron msg="lane claim unreadable, running anyway"`
+  for the error and which lanes met it. A missing table means migration 0205 is not
+  applied (`docs/migrations-runbook.md`); a timeout or lock means look for what holds
+  `lane_runs` (the daily prune at 03:05 is one range delete). It clears on the monitor's
+  next claim that is written.
 
 **Fix or escalate.** A missing binding is a deploy fix. Treat an unmetered public path
 as time-sensitive rather than urgent: nothing is broken for a customer, and nothing is

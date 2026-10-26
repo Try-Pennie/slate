@@ -46,6 +46,7 @@ export const ALERT_KEYS = [
   "definer_grants_to_web_roles",
   "auth_sign_in_beyond_google",
   "audit_log_chain_broken",
+  "lane_claim_unreadable",
   "hydration_all_failing",
   "calendar_window_uncovered",
   "db_saturation",

@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { laneFailure } from "@/lib/monitor/lane-failure-response";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
+import { claimLaneTick } from "@/lib/cron-lane-claim";
 import { acquireLease, releaseLock } from "@/lib/locks";
 import { runSnowflakeExport } from "@/lib/snowflake/export";
 import { leaseHeldThroughout } from "@/lib/monitor/lease-heartbeat";
@@ -24,6 +25,9 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // #4222: claim this tick before any work, so the same lane sent twice runs once.
+  const claimed = await claimLaneTick(req.headers, "/api/cron/snowflake-export");
+  if (claimed) return claimed;
 
   // lock-overlap: fenced. One MERGE can outlast the TTL, and the MERGE overwrites by
   // id with no recency check, so a stale batch from an overrunning run could land

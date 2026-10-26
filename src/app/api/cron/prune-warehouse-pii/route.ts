@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { laneFailure } from "@/lib/monitor/lane-failure-response";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
+import { claimLaneTick } from "@/lib/cron-lane-claim";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { sweepWarehousePii } from "@/lib/snowflake/warehouse-retention";
 import { alertRetentionResumed, alertRetentionSkipped, laneCompleted } from "@/lib/snowflake/retention-lane";
@@ -51,6 +52,9 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // #4222: claim this tick before any work, so the same lane sent twice runs once.
+  const claimed = await claimLaneTick(req.headers, "/api/cron/prune-warehouse-pii");
+  if (claimed) return claimed;
   // lock-overlap: the warehouse redaction nulls contact columns, which is idempotent; a
   // second run nulls the same values again.
   const lock = await acquireLock("cron_prune_warehouse_pii", LOCK_TTL_MS);

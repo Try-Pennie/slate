@@ -1097,6 +1097,16 @@ returns `401` without it, and is guarded by a database lock so two ticks cannot
 overlap. They are internal to the deployment's scheduler (`wrangler.jsonc` crons
 plus `worker/cron-routes.ts`) and are listed here so the surface is complete.
 
+Each lane claims the request's `x-slate-tick-id` before any work (#4222), so the same
+lane sent twice for one tick runs once: a repeat answers `200` with
+`x-slate-lane-not-run: duplicate` and does nothing, and a tick id that is not one the
+dispatcher mints answers `400` with `tick_unreadable`. A request with no tick id runs
+unclaimed. When the claim cannot be read, a first delivery runs anyway (logged, and the
+monitor lane raises the one `lane_claim_unreadable` alert; Dan decided 2026-10-26: run
+anyway, one alert), while a re-send, marked `x-slate-lane-resend: 1`, answers `503` with
+`claim_unreadable` and runs nothing. The re-send marker is read only behind the cron
+secret and can only make a delivery stricter.
+
 Four of them (`sync`, `recompute`, `outbox`, `selfheal`) share ONE Worker
 invocation budget on the every-minute trigger, which is why per-lane subrequest
 cost matters; see `docs/cloudflare-platform-notes.md`.
@@ -1125,7 +1135,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `GET /api/cron/prune-busy-blocks` | Deletes cached busy blocks whose end is far enough in the past to be unreachable (#1252). |
 | `GET /api/cron/capacity-fill` | Saves, every half hour, each coming day's calls open and how many were taken since the last reading, measured at the earlier reading's instant, for the booking pace on Team capacity (#4102), and writes each day's pace and both estimates of when it reaches 95% full onto that reading (#4103). Taken is null with its reason, never 0, when under `COMPARABLE_SHARE_FLOOR` of the team's capacity can be compared (80% to start, recalibrated from the first weeks of readings in #4105). |
 | `GET /api/cron/capacity-history` | Saves each advisor's calls still open when they stopped being bookable, with the day's shift, time off and capacity, so Team capacity can show how a past day ended (#3940). Every half hour; a cursor catches a missed tick up, at most a day back. |
-| `GET /api/cron/prune-regal-calls` | Deletes inbound Regal call events received more than three days ago (#2090), and call outcomes received more than 120 days ago (#2944). |
+| `GET /api/cron/prune-regal-calls` | Deletes inbound Regal call events received more than three days ago (#2090), and call outcomes received more than 120 days ago (#2944). Also prunes expired `rate_limits` rows (#3109) and cron lane claims (`lane_runs`) older than two days (#4222). |
 | `GET /api/cron/prune-booking-alert-state` | Deletes the `alert_state` rows of alerts keyed by booking once that booking both started and was made more than a week ago (#2726). |
 | `GET /api/cron/prune-bookings-pii` | Redacts consumer contact data on bookings past the 24 month window (#1071). |
 | `GET /api/cron/prune-webhook-payloads` | Blanks `webhook_deliveries.payload`, which carries attendee PII, once a delivery is settled (#1073). |

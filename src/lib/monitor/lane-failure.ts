@@ -24,6 +24,26 @@ import { laneFieldName } from "./lane-timing.ts";
 export const TICK_ID_HEADER = "x-slate-tick-id";
 
 /**
+ * The header a lane answer carries when the lane did NOT run, with why. Moved here from
+ * `worker/lane-run.ts` (which re-exports it) so the app's routes can set it too (#4222).
+ * `standby` (a canary refusing a placed lane, #3693) is the one value the dispatcher
+ * runs the lane in process after; `duplicate`, `claim_unreadable` and `tick_unreadable`
+ * come from the lane's claim on its tick (`src/lib/monitor/lane-claim.ts`).
+ */
+export const LANE_NOT_RUN_HEADER = "x-slate-lane-not-run";
+
+/**
+ * The header the dispatcher will set on a lane request it RE-SENDS for the same tick
+ * (#4222, defined now; set from #4189's phase 4, when a relay failure falls back to
+ * today's route). Any value marks a re-send. It decides one thing only: a re-send whose
+ * claim on its tick cannot be read runs nothing, because the first delivery may already
+ * have run, while a first delivery with an unreadable claim runs anyway
+ * (`src/lib/monitor/lane-claim.ts`). Read only behind the cron secret, and it can only
+ * make a delivery stricter, so nobody gains by sending it.
+ */
+export const LANE_RESEND_HEADER = "x-slate-lane-resend";
+
+/**
  * The header a lane's non-ok response carries when the lane ALREADY raised its own
  * alert about this failure (#3133 follow-up). Its value is the keys it raised, and
  * the dispatcher sends no generic page for a response that carries it, so a failure

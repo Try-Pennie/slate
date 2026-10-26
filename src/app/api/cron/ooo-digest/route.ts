@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
+import { claimLaneTick } from "@/lib/cron-lane-claim";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { appUrl } from "@/lib/env";
@@ -124,6 +125,9 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // #4222: claim this tick before any work, so the same lane sent twice runs once.
+  const claimed = await claimLaneTick(req.headers, "/api/cron/ooo-digest");
+  if (claimed) return claimed;
   // #2543: the cron reached the route. Stamped BEFORE the time gate, so it is
   // written by both weekday triggers and says one thing only, that the dispatcher
   // is firing. Whether anybody was nudged is the second stamp, further down.

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
+import { claimLaneTick } from "@/lib/cron-lane-claim";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import {
@@ -67,6 +68,9 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // #4222: claim this tick before any work, so the same lane sent twice runs once.
+  const claimed = await claimLaneTick(req.headers, "/api/cron/selfheal");
+  if (claimed) return claimed;
 
   // lock-overlap: Google event deletes treat a 404 as done and busy block recreates are
   // deduplicated by the unique index on booking_id, so overlapping runs repeat work

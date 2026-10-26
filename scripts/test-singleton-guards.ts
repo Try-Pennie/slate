@@ -82,6 +82,7 @@ const SINGLETON_INVARIANTS: {
   { table: "capacity_history", cols: "user_id,day", issue: "#3940/0191", why: "one saved day per advisor (the primary key), so every tick merges into it and a past day can never count an advisor twice" },
   { table: "capacity_fill_readings", cols: "org_id,read_at,day", issue: "#4102/0198", why: "one booking pace reading per org, half hour and day (the primary key), so a rerun of a half hour inserts nothing and a day's pace never counts an interval twice" },
   { table: "capacity_fill_last", cols: "org_id,day", issue: "#4102/0198", why: "one last snapshot per org and day (the primary key), so the next reading compares with exactly one earlier one" },
+  { table: "lane_runs", cols: "tick_id,lane", issue: "#4222/0205", why: "one claim per cron lane per tick (the primary key), so of any number of deliveries of a lane for one tick exactly one runs and the rest answer duplicate" },
   { table: "advisor_photos", cols: "user_id", issue: "#3027/0156", why: "one photo row per user (the primary key), so the daily refresh upserts onto it and a person can never hold two pictures" },
   { table: "regal_call_ignores", cols: "user_id", issue: "#2090/0138", why: "one ignore list entry per person (the primary key), so a second add is refused rather than replacing the reason somebody wrote" },
   { table: "audit_log_chain_head", cols: "singleton", issue: "#3090/0160", why: "the ONE head of the audit_log hash chain (boolean key pinned true), so every insert locks the same row and the chain can never fork" },

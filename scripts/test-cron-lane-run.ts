@@ -413,6 +413,23 @@ const PLACED_ORIGIN = placedLaneOrigin(false);
 }
 
 {
+  // #4222: the lane's claim on its tick. A duplicate answer means the tick's lane already
+  // ran once, so it is never run again in process and never paged; a refused claim is the
+  // lane's own failure, reported and never re-run.
+  for (const [notRun, status] of [["duplicate", 200], ["claim_unreadable", 503], ["tick_unreadable", 400]] as const) {
+    const { deps, seen } = harness(async () => new Response("{}", { status: 200 }));
+    const self = selfBinding(
+      async () => new Response("{}", { status, headers: { [LANE_NOT_RUN_HEADER]: notRun } }),
+    );
+    deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+    const out = await runLane("/api/cron/outbox", tick, deps);
+    eq(seen.requests.length, 0, `a ${notRun} answer is never run again in process`);
+    eq(out.run.via, "placed", `and is recorded as placed (${notRun})`);
+    eq(out.failure?.status ?? null, status === 200 ? null : status, `a ${notRun} answer is ${status === 200 ? "no failure" : "the lane's failure"}`);
+  }
+}
+
+{
   // The refusal the entry gives a placed lane on a standby canary.
   const req = (mark: boolean) =>
     new Request(`${PLACED_ORIGIN}/api/cron/sync`, { headers: mark ? { [PLACED_LANE_HEADER]: "1" } : {} });
