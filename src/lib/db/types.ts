@@ -290,6 +290,13 @@ export interface CapacityHistoryCursor {
   recorded_through: string;
 }
 
+/** #4222 (migration 0205): a scheduled cron lane's claim on its tick, one per (tick, lane). */
+export interface LaneRunClaim {
+  tick_id: string;
+  lane: string;
+  claimed_at: string;
+}
+
 export interface EventType {
   id: string;
   org_id: string;

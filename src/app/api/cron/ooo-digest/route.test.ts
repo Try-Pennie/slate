@@ -52,6 +52,7 @@ import { GET } from "./route";
 const noAuthReq = () => ({ headers: new Headers() }) as unknown as Parameters<typeof GET>[0];
 const forcedReq = () =>
   ({
+    headers: new Headers(),
     nextUrl: { searchParams: new URLSearchParams("force=1") },
   }) as unknown as Parameters<typeof GET>[0];
 
@@ -523,6 +524,7 @@ describe("GET /api/cron/ooo-digest: the two lane stamps (#2543)", () => {
   it("stamps the attempt even on the tick the time gate no-ops", async () => {
     wireDb();
     await GET({
+      headers: new Headers(),
       nextUrl: { searchParams: new URLSearchParams() },
     } as unknown as Parameters<typeof GET>[0]);
     expect(stamped).toContain("ooo-digest");

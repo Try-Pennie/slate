@@ -2,12 +2,14 @@ import { NextResponse, type NextRequest } from "next/server";
 import { laneFailure } from "@/lib/monitor/lane-failure-response";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
+import { claimLaneTick } from "@/lib/cron-lane-claim";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap, unwrapCount } from "@/lib/db/result";
 import { laneCompleted } from "@/lib/snowflake/retention-lane";
 import { pruneRegalCallOutcomes, pruneRegalCalls } from "@/lib/regal/retention";
 import { pruneRateLimits } from "@/lib/rate-limit-core";
+import { pruneLaneRuns } from "@/lib/monitor/lane-claim";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -41,11 +43,19 @@ const LOCK_TTL_MS = 60_000;
  * heartbeat bound and two more. Which rows go is decided in
  * `rateLimitPrunePlan`, which keeps every streak counter and every open window
  * out of reach.
+ *
+ * And `lane_runs` (#4222), the cron lanes' claims on their ticks, as a fourth sweep
+ * for the same reasons: not mirrored, no lead or agent data, one range delete on
+ * the indexed `claimed_at`, one more subrequest. Two days are kept
+ * (`LANE_RUN_RETENTION_DAYS`); a claim only has to outlive its tick's re-send.
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // #4222: claim this tick before any work, so the same lane sent twice runs once.
+  const claimed = await claimLaneTick(req.headers, "/api/cron/prune-regal-calls");
+  if (claimed) return claimed;
   // lock-overlap: idempotent deletes before a fixed cutoff; a second run deletes
   // nothing new.
   const lock = await acquireLock("cron_prune_regal_calls", LOCK_TTL_MS);
@@ -57,7 +67,7 @@ export async function GET(req: NextRequest) {
     // run independently so a failure in one still lets the others do their night's
     // work; any of them failing fails the lane, so it stops stamping and the
     // watchdog pages.
-    const [events, outcomes, rateLimits] = await Promise.allSettled([
+    const [events, outcomes, rateLimits, laneRuns] = await Promise.allSettled([
       pruneRegalCalls({
         nowMs,
         // unwrapCount, not `count ?? 0` (#1165): a delete that failed reports a null
@@ -91,10 +101,20 @@ export async function GET(req: NextRequest) {
           return deleted;
         },
       }),
+      // #4222: the cron lanes' claims on their ticks, kept two days.
+      pruneLaneRuns({
+        nowMs,
+        deleteClaimedBefore: async (cutoff) =>
+          unwrapCount(
+            await db.from("lane_runs").delete({ count: "exact" }).lt("claimed_at", cutoff),
+            "lane_runs prune delete",
+          ),
+      }),
     ]);
     if (events.status === "rejected") throw events.reason;
     if (outcomes.status === "rejected") throw outcomes.reason;
     if (rateLimits.status === "rejected") throw rateLimits.reason;
+    if (laneRuns.status === "rejected") throw laneRuns.reason;
     const report = {
       deleted: events.value.deleted,
       cutoff: events.value.cutoff,
@@ -102,6 +122,8 @@ export async function GET(req: NextRequest) {
       outcomesCutoff: outcomes.value.cutoff,
       rateLimitsDeleted: rateLimits.value.deleted,
       rateLimitsGroups: rateLimits.value.groups,
+      laneRunsDeleted: laneRuns.value.deleted,
+      laneRunsCutoff: laneRuns.value.cutoff,
     };
     log.info("prune-regal-calls", {
       msg: "cycle",
@@ -110,6 +132,7 @@ export async function GET(req: NextRequest) {
       outcomes_deleted: report.outcomesDeleted,
       outcomes_cutoff: report.outcomesCutoff,
       rate_limits_deleted: report.rateLimitsDeleted,
+      lane_runs_deleted: report.laneRunsDeleted,
     });
     return laneCompleted("prune-regal-calls", report);
   } catch (err) {

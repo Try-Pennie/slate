@@ -17,14 +17,23 @@ const db = vi.hoisted(() => {
     rpcResult: { data: 7 as number | null, error: null as { message: string } | null },
     rpcCalls: [] as Array<[string, Record<string, unknown>]>,
     deletedTables: [] as string[],
+    deletes: [] as Array<[string, string, string]>,
+    laneRunsDelete: { count: 5 as number | null, error: null as { message: string } | null },
+    claim: { error: null as { code?: string; message: string } | null },
+    claims: [] as unknown[],
   };
   const from = vi.fn((table: string) => ({
     delete: () => ({
-      lt: async () => {
+      lt: async (column: string, cutoff: string) => {
         state.deletedTables.push(table);
-        return { count: 3, error: null };
+        state.deletes.push([table, column, cutoff]);
+        return table === "lane_runs" ? state.laneRunsDelete : { count: 3, error: null };
       },
     }),
+    insert: async (row: unknown) => {
+      state.claims.push(row);
+      return state.claim;
+    },
   }));
   const rpc = vi.fn(async (fn: string, args: Record<string, unknown>) => {
     state.rpcCalls.push([fn, args]);
@@ -55,6 +64,10 @@ beforeEach(() => {
   db.state.rpcResult = { data: 7, error: null };
   db.state.rpcCalls = [];
   db.state.deletedTables = [];
+  db.state.deletes = [];
+  db.state.laneRunsDelete = { count: 5, error: null };
+  db.state.claim = { error: null };
+  db.state.claims = [];
 });
 
 describe("GET /api/cron/prune-regal-calls: the rate_limits sweep (#3109)", () => {
@@ -80,7 +93,7 @@ describe("GET /api/cron/prune-regal-calls: the rate_limits sweep (#3109)", () =>
     const res = await GET(req());
     expect(res.status).toBe(500);
     expect((await res.json()).error).toMatch(/prune_rate_limits/);
-    expect(db.state.deletedTables.sort()).toEqual(["regal_call_events", "regal_call_outcomes"]);
+    expect(db.state.deletedTables.sort()).toEqual(["lane_runs", "regal_call_events", "regal_call_outcomes"]);
     expect(hb.recordHeartbeat).not.toHaveBeenCalled();
   });
 
@@ -89,5 +102,64 @@ describe("GET /api/cron/prune-regal-calls: the rate_limits sweep (#3109)", () =>
     const res = await GET(req());
     expect(res.status).toBe(500);
     expect(hb.recordHeartbeat).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/cron/prune-regal-calls: the lane_runs sweep (#4222)", () => {
+  it("prunes lane claims older than two days and reports the count", async () => {
+    vi.useFakeTimers({ now: new Date("2026-10-26T03:05:00Z"), toFake: ["Date"] });
+    try {
+      const res = await GET(req());
+      expect(res.status).toBe(200);
+      expect(db.state.deletes.filter(([t]) => t === "lane_runs")).toEqual([
+        ["lane_runs", "claimed_at", "2026-10-24T03:05:00.000Z"],
+      ]);
+      const body = await res.json();
+      expect(body.laneRunsDeleted).toBe(5);
+      expect(body.laneRunsCutoff).toBe("2026-10-24T03:05:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails the lane on a refused lane_runs delete, and the other sweeps still run", async () => {
+    db.state.laneRunsDelete = { count: null, error: { message: 'relation "lane_runs" does not exist' } };
+    const res = await GET(req());
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toMatch(/lane_runs/);
+    expect(db.state.deletedTables.sort()).toEqual(["lane_runs", "regal_call_events", "regal_call_outcomes"]);
+    expect(db.state.rpcCalls.length).toBe(rateLimitPrunePlan().length);
+    expect(hb.recordHeartbeat).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/cron/prune-regal-calls: a re-sent tick does nothing (#4222)", () => {
+  const tickReq = (id: string) =>
+    ({ headers: new Headers({ "x-slate-tick-id": id }) }) as unknown as Parameters<typeof GET>[0];
+
+  it("claims the tick, then runs", async () => {
+    const res = await GET(tickReq("abc123"));
+    expect(res.status).toBe(200);
+    expect(db.state.claims).toEqual([{ tick_id: "abc123", lane: "prune_regal_calls" }]);
+    expect(locks.acquireLock).toHaveBeenCalled();
+  });
+
+  it("answers a duplicate without taking the lock, deleting, or stamping", async () => {
+    db.state.claim = { error: { code: "23505", message: "duplicate key value violates unique constraint" } };
+    const res = await GET(tickReq("abc123"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-slate-lane-not-run")).toBe("duplicate");
+    expect(locks.acquireLock).not.toHaveBeenCalled();
+    expect(db.state.deletedTables).toEqual([]);
+    expect(db.state.rpcCalls).toEqual([]);
+    expect(hb.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("runs nothing and answers 503 when the claim cannot be read", async () => {
+    db.state.claim = { error: { code: "57014", message: "canceling statement due to statement timeout" } };
+    const res = await GET(tickReq("abc123"));
+    expect(res.status).toBe(503);
+    expect(locks.acquireLock).not.toHaveBeenCalled();
+    expect(db.state.deletedTables).toEqual([]);
   });
 });

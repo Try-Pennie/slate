@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { laneFailure } from "@/lib/monitor/lane-failure-response";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
+import { claimLaneTick } from "@/lib/cron-lane-claim";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { webhookPayloadCutoffIso } from "@/lib/webhooks/retention";
@@ -28,6 +29,9 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // #4222: claim this tick before any work, so the same lane sent twice runs once.
+  const claimed = await claimLaneTick(req.headers, "/api/cron/prune-webhook-payloads");
+  if (claimed) return claimed;
   // lock-overlap: erasing a payload by id is idempotent, so a second run erases nothing
   // new.
   const lock = await acquireLock("cron_prune_webhook_payloads", LOCK_TTL_MS);

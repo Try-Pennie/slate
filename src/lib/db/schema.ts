@@ -12,6 +12,7 @@ import type {
   CalcomOverrideRemoval,
   BookingInviteChange,
   CapacityHistoryCursor,
+  LaneRunClaim,
   CapacityFillLast,
   CapacityFillReading,
   CapacityHistoryDay,
@@ -176,6 +177,8 @@ export interface Database {
       capacity_fill_readings: Table<CapacityFillReading>;
       /** #4102 (migration 0198): each page day's last snapshot, what the next reading compares with. */
       capacity_fill_last: Table<CapacityFillLast>;
+      /** #4222 (migration 0205): each scheduled lane's claim on its tick, so a re-sent lane does nothing. */
+      lane_runs: Table<LaneRunClaim>;
       webhook_endpoints: Table<WebhookEndpoint>;
       webhook_deliveries: Table<WebhookDelivery>;
       alert_state: Table<AlertState>;

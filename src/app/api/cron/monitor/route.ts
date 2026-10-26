@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { leaseHeldThroughout } from "@/lib/monitor/lease-heartbeat";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
+import { claimLaneTick } from "@/lib/cron-lane-claim";
 import { acquireLease, acquireLock, releaseLock } from "@/lib/locks";
 import {
   sendThrottledAlert,
@@ -860,6 +861,9 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => NextResponse.json({ error: "unauthorized" }, { status: 401 }));
   }
+  // #4222: claim this tick before any work, so the same lane sent twice runs once.
+  const claimed = await claimLaneTick(req.headers, "/api/cron/monitor");
+  if (claimed) return claimed;
   const now = Date.now();
 
   // lock-overlap: fenced. Two overlapping ticks would post the same booking handoff

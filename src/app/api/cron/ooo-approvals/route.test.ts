@@ -39,6 +39,7 @@ import { noteAlertKey } from "@/lib/notify/alert-recording";
 const noAuthReq = () => ({ headers: new Headers() }) as unknown as Parameters<typeof GET>[0];
 const forcedReq = () =>
   ({
+    headers: new Headers(),
     nextUrl: { searchParams: new URLSearchParams("force=1") },
   }) as unknown as Parameters<typeof GET>[0];
 
@@ -201,6 +202,7 @@ describe("GET /api/cron/ooo-approvals: the catch-up watermark (#2543)", () => {
     // ever claims.
     healthyTables();
     const res = await GET({
+      headers: new Headers(),
       nextUrl: { searchParams: new URLSearchParams() },
     } as unknown as Parameters<typeof GET>[0]);
     const body = await res.json();

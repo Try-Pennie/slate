@@ -24,6 +24,15 @@ import { laneFieldName } from "./lane-timing.ts";
 export const TICK_ID_HEADER = "x-slate-tick-id";
 
 /**
+ * The header a lane answer carries when the lane did NOT run, with why. Moved here from
+ * `worker/lane-run.ts` (which re-exports it) so the app's routes can set it too (#4222).
+ * `standby` (a canary refusing a placed lane, #3693) is the one value the dispatcher
+ * runs the lane in process after; `duplicate`, `claim_unreadable` and `tick_unreadable`
+ * come from the lane's claim on its tick (`src/lib/monitor/lane-claim.ts`).
+ */
+export const LANE_NOT_RUN_HEADER = "x-slate-lane-not-run";
+
+/**
  * The header a lane's non-ok response carries when the lane ALREADY raised its own
  * alert about this failure (#3133 follow-up). Its value is the keys it raised, and
  * the dispatcher sends no generic page for a response that carries it, so a failure

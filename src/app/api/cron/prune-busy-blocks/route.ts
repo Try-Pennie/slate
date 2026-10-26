@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { laneFailure } from "@/lib/monitor/lane-failure-response";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
+import { claimLaneTick } from "@/lib/cron-lane-claim";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap, unwrapCount } from "@/lib/db/result";
@@ -60,6 +61,9 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // #4222: claim this tick before any work, so the same lane sent twice runs once.
+  const claimed = await claimLaneTick(req.headers, "/api/cron/prune-busy-blocks");
+  if (claimed) return claimed;
   // lock-overlap: idempotent deletes of out-of-window Google busy blocks (past and
   // future); a second run re-selects what a first already removed and deletes nothing new.
   const lock = await acquireLock("cron_prune_busy_blocks", LOCK_TTL_MS);

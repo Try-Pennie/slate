@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
+import { claimLaneTick } from "@/lib/cron-lane-claim";
 import { runBusyMinutesLane } from "@/lib/monitor/busy-minutes-lane";
 import { log } from "@/lib/log";
 import { laneFailure } from "@/lib/monitor/lane-failure-response";
@@ -25,6 +26,9 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // #4222: claim this tick before any work, so the same lane sent twice runs once.
+  const claimed = await claimLaneTick(req.headers, "/api/cron/busy-minutes");
+  if (claimed) return claimed;
   try {
     return NextResponse.json(await runBusyMinutesLane());
   } catch (err) {

@@ -26,13 +26,16 @@
  * until now the only thing tying a lane's lines to the tick that drove it was the
  * time. Each tick mints one id, sends it on every lane request as
  * `TICK_ID_HEADER`, and stamps it on every line the DISPATCHER writes for that
- * tick and on the failure page. That is the extent of it: no lane reads the header
- * yet, so a lane's own lines do not carry the id and are still found by time, and
+ * tick and on the failure page. Each scheduled lane reads it for one thing only, to
+ * claim its tick before any work, so the same lane sent twice runs once (#4222,
+ * `src/lib/monitor/lane-claim.ts`). A lane's own lines still do not carry the id
+ * (only the claim's duplicate and refusal lines do) and are still found by time, and
  * the page says so rather than promising more (L440).
  */
 import { laneFieldName, type LaneRun } from "@/lib/monitor/lane-timing";
 import {
   LANE_ALERTED_HEADER,
+  LANE_NOT_RUN_HEADER,
   TICK_ID_HEADER,
   type LaneFailureReport,
 } from "@/lib/monitor/lane-failure";
@@ -58,8 +61,10 @@ export const SELF_BINDING = "SELF";
 export const PLACED_LANE_HEADER = "x-slate-placed-lane";
 
 /** Set by the entry on that refusal. Its value `standby` is the one answer that proves the
- *  lane did NOT run, and so the one answer the dispatcher may run it in process after. */
-export const LANE_NOT_RUN_HEADER = "x-slate-lane-not-run";
+ *  lane did NOT run, and so the one answer the dispatcher may run it in process after. The
+ *  lane's own claim on its tick sets it too (`duplicate` and the rest, #4222), and those
+ *  are never run again here: a duplicate already ran, and a refused claim is a failure. */
+export { LANE_NOT_RUN_HEADER };
 
 /**
  * Where a placed lane request is addressed. It goes through the entry's own fetch handler,

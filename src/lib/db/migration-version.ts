@@ -10,4 +10,4 @@
  * because a stale constant would make prod look in sync while it is behind, which
  * is precisely the false confidence the lag alert exists to remove.
  */
-export const SHIPPED_MIGRATION_VERSION = "0204";
+export const SHIPPED_MIGRATION_VERSION = "0205";

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
+import { claimLaneTick } from "@/lib/cron-lane-claim";
 import { cancelDueDemoBookingsNow, completePastBookings } from "@/lib/booking/service";
 import { retryFailedDeliveries } from "@/lib/webhooks/emit";
 import { acquireLock, releaseLock } from "@/lib/locks";
@@ -28,6 +29,9 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // #4222: claim this tick before any work, so the same lane sent twice runs once.
+  const claimed = await claimLaneTick(req.headers, "/api/cron/complete");
+  if (claimed) return claimed;
 
   // Two overlapping */5 ticks would both read the same finished booking and
   // race to flip it; the conditional transition in completePastBookings stops

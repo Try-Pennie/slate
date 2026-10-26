@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { retryUnplaceableCoverageJobs } from "@/lib/booking/service";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
+import { claimLaneTick } from "@/lib/cron-lane-claim";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { acquireLease, releaseLock } from "@/lib/locks";
 import { log } from "@/lib/log";
@@ -37,6 +38,9 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // #4222: claim this tick before any work, so the same lane sent twice runs once.
+  const claimed = await claimLaneTick(req.headers, "/api/cron/bulk-reassign-retry");
+  if (claimed) return claimed;
 
   // lock-overlap: a repeat is safe. The re-arm is a conditional UPDATE (unplaceable ->
   // pending only) that is idempotent, and it touches a different status than the drain, so a

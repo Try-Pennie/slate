@@ -152,6 +152,19 @@ invocation, which is why per-lane subrequest cost still matters. The
 full lane list is in `docs/api.md`, and the platform ceilings are in
 `docs/cloudflare-platform-notes.md`.
 
+A lane sent twice for one tick runs once (#4222). Every scheduled lane's first awaited
+call claims `(tick id, lane)` in `lane_runs`, whose primary key lets exactly one
+delivery through; any other delivery of that tick's lane answers 200 with
+`x-slate-lane-not-run: duplicate` and does nothing, and a claim that cannot be read runs
+nothing and answers 503, so the lane is reported as failed. A lane that crashed after
+claiming is not re-run by a re-send of that tick; the next tick runs it. This is what
+lets the relay of #4189 fall back to today's route rather than skip a run. A request
+with no tick id (a hand run with the cron secret) runs unclaimed. Rules:
+`src/lib/monitor/lane-claim.ts`; every scheduled route claiming first:
+`scripts/test-lane-claim-coverage.ts`; the constraint in a real Postgres:
+`scripts/verify-lane-runs-sql.ts`. Claims are kept two days, pruned by the
+`prune-regal-calls` lane.
+
 Every lane stamps a heartbeat, and a watchdog pages when one goes quiet, because a
 lane that has stopped running looks exactly like a lane with nothing to do. Three
 detectors carry a second stamp for when they last reached a MEASURED verdict, since a

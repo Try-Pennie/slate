@@ -3,6 +3,7 @@ import { drainBulkReassignJobs } from "@/lib/booking/service";
 import { BULK_REASSIGN_LANE_LOCK } from "@/lib/booking/bulk-reassign";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
+import { claimLaneTick } from "@/lib/cron-lane-claim";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { acquireLease, releaseLock } from "@/lib/locks";
 import { log } from "@/lib/log";
@@ -23,6 +24,9 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // #4222: claim this tick before any work, so the same lane sent twice runs once.
+  const claimed = await claimLaneTick(req.headers, "/api/cron/bulk-reassign");
+  if (claimed) return claimed;
 
   // lock-overlap: fenced. The per item claim leaves the item pending and relies on
   // this lock, so two ticks could move bookings against the same daily cap count.
