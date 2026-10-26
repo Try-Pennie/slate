@@ -2681,8 +2681,8 @@ export async function GET(req: NextRequest) {
         // scripts/test-below-lead-tier.ts proves a failed bookings, Salesforce or
         // firing read settles NOTHING, and an unmeasurable booking keeps its page.
         settle: settleAlertsSilently,
-        // No cooldown is passed (2026-10-26): the page posts once per call and again
-        // only on a change (`belowLeadTierRepeat`).
+        // No cooldown is passed (2026-10-26): the page posts once per booking and never
+        // again (`belowLeadTierRepeat`).
         nowMs: now,
         // #3665: is anybody on the lead's own team free at the call's time? Asked of
         // the served list the lane already holds (`slotByCode`, the stored rows

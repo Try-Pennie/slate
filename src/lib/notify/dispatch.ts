@@ -21,6 +21,7 @@ import {
   type RepeatChange,
 } from "@/lib/notify/repeat-policy";
 import { foldFor, foldMarkKey, judgeFold, type FoldRead } from "@/lib/notify/alert-folds";
+import { isChangeOnly } from "@/lib/notify/alert-catalog";
 import { withSeverityLead, type AlertVoice } from "@/lib/notify/severity-lead";
 
 /**
@@ -958,8 +959,12 @@ export async function settleAlertsSilently(keys: string[]): Promise<void> {
   const db = supabaseAdmin();
   // Both rows per key: the firing marker (so no recovery notice fires later) and
   // the cooldown row (so a genuinely new page is not muted by the old cooldown),
-  // matching what resolveAlert deletes after a delivered notice.
-  const rows = [...keys.map(firingKey), ...keys];
+  // matching what resolveAlert deletes after a delivered notice. Except a change only
+  // key (`CHANGE_ONLY_KEYS`) keeps its cooldown row: that row is the hold that makes it
+  // post once, so deleting it would let the same subject going wrong again post a
+  // second time (Dan, 2026-10-26: "a single ping about this per booking"). Retention
+  // prunes it once its booking has passed (alert-state-retention.ts).
+  const rows = [...keys.map(firingKey), ...keys.filter((k) => !isChangeOnly(k))];
   // Chunked by measured BYTES, not by a row count (#1321). The keys ride in the
   // request URL and an oversized `in` filter is REFUSED at the transport rather
   // than merely slow. A count would be the more dangerous choice here than most:

@@ -1,21 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// Once per call (Dan, 2026-10-26: "I got a ton of this alert and they were all the
-// same. Just page once per call."), end to end through the REAL dispatcher.
+// One post per booking, ever, end to end through the REAL dispatcher. Dan, 2026-10-26
+// 15:31 ET: "I want a single ping about this per booking", choosing strictly once over
+// "once, plus real moves".
 //
-// The below tier page is one key per booking. Before this change it was an INCIDENT,
-// which #3801's repeat rule never applies to, so the dispatcher simply posted it again
-// every time its cooldown ran out: every six hours by default, for as long as the call
-// stayed booked below the lead's tier, which is usually days. Every one of those posts
-// said the same thing. The rule now: one post per booking, and another only when
-// something a reader would act on differs from what the LAST post said:
-//   - the booking itself (its time, its advisor, its bucket);
-//   - the lead's score TIER (not the raw XBC inside the same tier);
-//   - whether anybody on the lead's own team is free at the call's time, or that day.
-// Anything else (the same facts on every tick, the days going by, a read that failed
-// this tick) posts nothing. Supabase and Slack are faked; `alert_state` is the shared
-// in-memory store that keeps the repeat columns and refuses what Postgres would, so
-// two runs at once are arbitrated the way production arbitrates them.
+// The page is one key per booking. Before #4235 it was an INCIDENT reposted every time
+// its cooldown ran out. #4235 (the same morning, Dan: "Just page once per call") posted
+// once and again on any change to the call, the lead's tier or whether the lead's own
+// team was free, and the team answer flips as calendars fill, so one booking posted four
+// times in 25 minutes. The rule now: one post, and nothing about the booking (a
+// reschedule, a new advisor or bucket, a new tier, the team, a failed read, the call
+// coming right and going wrong again) posts it again. Supabase and Slack are faked;
+// `alert_state` is the shared in-memory store that keeps the repeat columns and refuses
+// what Postgres would, so two runs at once are arbitrated the way production arbitrates
+// them.
 
 const posted = vi.hoisted(() => [] as string[]);
 const slackOk = vi.hoisted(() => ({ value: true }));
@@ -197,7 +195,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("the below tier page posts once per call", () => {
+describe("the below tier page posts once per booking, ever", () => {
   it("the same booking, re-measured every five minutes for three days, posts once", async () => {
     expect(await drive(72)).toEqual([0]);
     expect(posted[0]).toMatch(/^A High lead is booked with the Low team: Salesforce scores them XBC 312 today/);
@@ -217,13 +215,12 @@ describe("the below tier page posts once per call", () => {
     expect(await drive(24, (hour) => (world.scores[LEAD] = hour >= 5 ? "322" : "312"))).toEqual([0]);
   });
 
-  it("a change of TIER posts once, and not again while it holds", async () => {
+  it("a change of TIER does not post again", async () => {
     const at = await drive(24, (hour) => (world.scores[LEAD] = hour >= 5 ? "212" : "312"));
-    expect(at).toEqual([0, 5]);
-    expect(posted[1]).toMatch(/^A Medium lead is booked with the Low team/);
+    expect(at).toEqual([0]);
   });
 
-  it("a reschedule, a new advisor and a new bucket each post once", async () => {
+  it("a reschedule, a new advisor and a new bucket do not post again", async () => {
     const at = await drive(24, (hour) => {
       const b = booking();
       if (hour >= 5) b.starts_at = new Date(CALL_MS + DAY).toISOString();
@@ -234,22 +231,21 @@ describe("the below tier page posts once per call", () => {
       if (hour >= 9) b.bucket_id = LOW_111.id;
       world.bookings = [b];
     });
-    expect(at).toEqual([0, 5, 7, 9]);
+    expect(at).toEqual([0]);
   });
 
-  it("the High team becoming free posts once, and stopping being free posts once", async () => {
+  it("the High team becoming free, then not, does not post again", async () => {
     const at = await drive(24, (hour) => {
       world.team = hour >= 8 ? "nobody-that-day" : hour >= 5 ? "free-at-call" : "nobody-that-day";
     });
-    expect(at).toEqual([0, 5, 8]);
-    expect(posted[1]).toMatch(/Somebody on the High team is free at 6:30pm ET: reassign the call to them/);
+    expect(at).toEqual([0]);
   });
 
-  it("the High team freeing up later that day posts once, however its nearest time moves", async () => {
-    const at = await drive(24, (hour) => {
-      world.team = hour >= 5 ? "free-later-that-day" : "nobody-that-day";
+  it("the High team's free time flipping on and off every few ticks posts once (2026-10-26, four posts in 25 minutes)", async () => {
+    const at = await drive(6, (hour) => {
+      world.team = Math.floor(hour * 12) % 4 < 2 ? "free-later-that-day" : "nobody-that-day";
     });
-    expect(at).toEqual([0, 5]);
+    expect(at).toEqual([0]);
   });
 
   it("two bookings each post once", async () => {
@@ -257,9 +253,9 @@ describe("the below tier page posts once per call", () => {
     expect(await drive(48)).toEqual([0, 0]);
   });
 
-  it("two lane runs at once post once, at the start and at a change", async () => {
+  it("two lane runs at once post once", async () => {
     const at = await drive(12, (hour) => (world.scores[LEAD] = hour >= 5 ? "212" : "312"), { runs: 2 });
-    expect(at).toEqual([0, 5]);
+    expect(at).toEqual([0]);
   });
 
   it("a post Slack refused is retried within minutes, then holds", async () => {
@@ -270,11 +266,13 @@ describe("the below tier page posts once per call", () => {
     expect(at).toEqual([0, 5 / 60]);
   });
 
-  it("a call that comes right is settled silently, and going wrong again posts at once", async () => {
+  it("a call that comes right is settled silently, and going wrong again does not post again", async () => {
     const at = await drive(12, (hour) => {
       world.scores[LEAD] = hour >= 5 && hour < 6 ? "112" : "312";
     });
-    // The catalog's rule for this family: no all clear, and a recurrence is a new page.
-    expect(at).toEqual([0, 6]);
+    // No all clear, and the settle keeps the booking's hold, so a score flipping back
+    // (this lead's submissions disagree) is not a second page for the same booking.
+    expect(at).toEqual([0]);
+    expect(alertStateRows.has(`${BELOW_LEAD_TIER_KEY}:bk-1`)).toBe(true);
   });
 });
