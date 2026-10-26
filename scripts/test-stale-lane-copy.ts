@@ -84,8 +84,9 @@ assert(stoppedTogether(tonight), "five lanes stopping inside two seconds stopped
 assert(!stoppedTogether([lane("recompute", 12 * MIN), lane("monitor", 25 * MIN)]), "thirteen minutes apart is not together");
 assert(!stoppedTogether([lane("sync", 16 * MIN)]), "one lane is not a group");
 assert(!stoppedTogether([lane("sync", 16 * MIN), lane("outbox", 0, true)]), "an unreadable stamp cannot be placed in time");
-const together = /stopped within a minute of each other while the other lanes kept running/;
-assert(together.test(five), "tonight's page says they stopped together while others ran");
+const together = /They stopped together while other lanes kept running/;
+// Dan, 2026-10-26: shortened, since it had become the longest line on the page.
+assert(five.includes("They stopped together while other lanes kept running: a schedule or deploy problem, not one lane."), `tonight's page says they stopped together while others ran, briefly (saw: ${five})`);
 assert(!together.test(page(tonight, { othersRunning: false })), "not claimed when nothing else was running to compare with");
 assert(!together.test(spread), "not claimed for lanes that stopped apart");
 

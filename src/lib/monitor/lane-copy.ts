@@ -110,10 +110,8 @@ export function coreLanesAlertText(page: CoreLanesPage): string {
     }
   }
   if (page.othersRunning && stoppedTogether(stale)) {
-    sentences.push(
-      `They stopped within a minute of each other while the other lanes kept running, which points to their ` +
-        `schedule not firing or a deploy cancelling their runs, not to one lane failing.`,
-    );
+    // Within a minute (`stoppedTogether`). Shortened at Dan's ask, 2026-10-26.
+    sentences.push(`They stopped together while other lanes kept running: a schedule or deploy problem, not one lane.`);
   }
   if (page.cloudflare.kind === "incident") {
     const names = page.cloudflare.names.map((n) => `"${n}"`);

@@ -616,7 +616,7 @@ describe("alertOnStaleLanes (#803)", () => {
 
     const text = dispatch.sendThrottledAlert.mock.calls[0][2];
     expect(text).toMatch(/^5 cron lanes have not run for 16 minutes/);
-    expect(text).toContain("stopped within a minute of each other while the other lanes kept running");
+    expect(text).toContain("They stopped together while other lanes kept running");
     expect(text).toContain(`"Delayed, missed, and duplicated Workers Cron Triggers"`);
   });
 
