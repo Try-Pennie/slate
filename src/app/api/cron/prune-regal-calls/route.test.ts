@@ -3,9 +3,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // #3109: the daily retention lane that prunes the Regal call feed also prunes
 // rate_limits, as a third independent sweep. What is pinned here is the wiring:
 // the plan reaches the database function, a refused prune fails the lane (so it
-// stops stamping and the watchdog pages) without stopping the two Regal sweeps,
+// stops stamping and the watchdog pages) without stopping the other sweeps,
 // and a null count from the function is a failure rather than "nothing to do".
 // The plan itself and the SQL are pinned in scripts/test-rate-limit-prune.ts.
+//
+// #4222 added a fourth sweep, the cron lanes' claims in lane_runs, with the same
+// failure boundary, and the claim every scheduled lane makes before any work: a
+// re-sent tick takes no lock, deletes nothing and stamps nothing.
 
 const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => true) }));
 const locks = vi.hoisted(() => ({
