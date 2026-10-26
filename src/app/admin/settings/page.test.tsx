@@ -521,6 +521,20 @@ describe("AlertSettings alert toggles", () => {
     }
   });
 
+  // Dan, 2026-10-26: advisors' hours are their real hours, Regal is sending and has
+  // been watched, and the pool has had its ordinary days, so those three switches no
+  // longer say to wait. The pilot is held at 50% and the per page alarm judges only at
+  // 100%, so bookings drop off keeps its reason to wait.
+  it("asks to wait only where the reason still holds", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await AlertSettingsPage(props));
+
+    for (const name of ["roster_coverage_armed", "awaiting_activation_armed", "regal_calls_armed", "failure_rate_armed"]) {
+      expect(helpFor(name)).not.toMatch(/leave this off|watched a few ordinary days|real hours/i);
+    }
+    expect(helpFor("low_volume_armed")).toMatch(/Turn this on once the traffic the floors were measured on reaches Slate/);
+  });
+
   // The below tier alert posts once per call and again only on a change
   // (CHANGE_ONLY_KEYS, #4235); a call put right has been silent since 2026-10-07.
   it("says the below tier alert posts once per call and again only when the call or the lead changes", async () => {

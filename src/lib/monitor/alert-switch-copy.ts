@@ -62,13 +62,13 @@ export function alertSwitchCopy(calcomRetired: boolean | null): AlertSwitchCopy[
       name: "roster_coverage_armed",
       label: "Send a Slack alert when nobody works hours we say we are open",
       on: "Slack gets an alert naming the open hours nobody bookable works, and a follow up once every hour is covered.",
-      off: "Slate still checks every 5 minutes that someone works each hour we are open, and logs what it finds. Leave this off until agents have set their real hours, or every hour will look uncovered.",
+      off: "Slate still checks every 5 minutes that someone works each hour we are open, and logs what it finds.",
     },
     {
       name: "awaiting_activation_armed",
       label: "Send a Slack alert when somebody is stuck outside the booking pool",
       on: "Slack gets an alert naming anyone waiting more than four hours, and a follow up once nobody is.",
-      off: "Slate still checks every 5 minutes for anyone working who cannot be booked, and logs what it finds. Leave this off until somebody has watched a few ordinary days.",
+      off: "Slate still checks every 5 minutes for anyone working who cannot be booked, and logs what it finds.",
     },
     {
       name: "below_lead_tier_armed",
@@ -84,7 +84,7 @@ export function alertSwitchCopy(calcomRetired: boolean | null): AlertSwitchCopy[
       name: "regal_calls_armed",
       label: "Send a Slack alert when somebody not taking bookings is placing calls",
       on: "Slack gets one alert per person a day, plus one when no call from a Slate user arrives all business day, Regal sends a call Slate cannot read, or calls go missing from the show rate.",
-      off: "Slate still checks every 5 minutes for calls from anyone not bookable or deactivated, and logs them. Leave this off until Regal is sending calls and somebody has watched a few ordinary days.",
+      off: "Slate still checks every 5 minutes for calls from anyone not bookable or deactivated, and logs them.",
     },
   ];
 }
