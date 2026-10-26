@@ -7,6 +7,7 @@ import { loadMonitorCooldowns } from "@/lib/monitor/settings";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { cspViolationAlert } from "@/lib/notify/misc-alert-copy";
 import { readJsonCapped, CSP_REPORT_MAX_BYTES } from "@/lib/http/read-json-capped";
+import { loggedUserAgent } from "@/lib/http/user-agent";
 
 export const dynamic = "force-dynamic";
 
@@ -40,9 +41,10 @@ export const dynamic = "force-dynamic";
  *    can post to must not walk it into the logs instead.
  *  - It does not page a report only report, a browser extension's own refusal, or a
  *    passive third-party font refusal (#3417, `injected-passive`), or the Google
- *    product logo an add-on injects under `img-src` (#3699), also when Chrome credits
- *    it to a Slate page script that happened to be running (#4063), none of which is
- *    Slate's page failing somebody. All are still logged.
+ *    product logo an add-on injects under `img-src` (#3699), either of them also when
+ *    Chrome credits it to a Slate page script that happened to be running (#4063),
+ *    none of which is Slate's page failing somebody. All are still logged, with the
+ *    browser that sent them.
  */
 export async function POST(req: NextRequest): Promise<NextResponse> {
   // 204 on every path: refusal and success are indistinguishable from outside.
@@ -72,6 +74,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     referrer: violation.referrer,
     source: violation.source,
     disposition: violation.disposition,
+    // Which browser sent it, so a report needs no second query to say (2026-10-24).
+    user_agent: loggedUserAgent(req.headers),
   };
 
   // Three refusals are logged and dropped (#3417 added the third): a report-only report

@@ -59,6 +59,7 @@ import {
   isOpaqueScriptError,
 } from "@/lib/api/client-error-scrub";
 import { readJsonCapped, PUBLIC_JSON_MAX_BYTES } from "@/lib/http/read-json-capped";
+import { loggedUserAgent } from "@/lib/http/user-agent";
 
 export const dynamic = "force-dynamic";
 
@@ -211,7 +212,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       new_address: seen.newAddress,
       burst: seen.burst,
       measured: seen.measured,
-      user_agent: (req.headers.get("user-agent") ?? "").slice(0, 300) || null,
+      user_agent: loggedUserAgent(req.headers),
     });
     if (!seen.burst) return done();
     // alert-key: opaque_script_errors:*
