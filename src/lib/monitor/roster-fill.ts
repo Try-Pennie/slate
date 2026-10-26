@@ -41,15 +41,14 @@
  * still served. Judged on the page's days, the notice at 11:53 PM on Wed 2026-10-21 read
  * "Wed Oct 21 and Thu Oct 22", a day that was over. So before 6 PM it judges today and
  * tomorrow, and from 6 PM tomorrow and the next open day; the page is unchanged. The
- * notice and its all clear link to the page, so the reader lands on those days.
+ * notice names the days by date; its all clear links to the page.
  *
  * ## A condition, repeating only when it gets worse
  *
  * It holds while every judged day is at or over the line and ends on a MEASURED reading
- * with any of them under it. Its subjects are empty, so a change of which tiers are
- * fullest is no news; its band rises every five points the least full day is over the
- * line, so the dispatcher posts again only when that day climbs into a worse band, and
- * otherwise once a day (#3801).
+ * with any of them under it. Its subjects are empty; its band rises every five points
+ * the least full day is over the line, so the dispatcher posts again only when that day
+ * climbs into a worse band, and otherwise once a day (#3801).
  *
  * Pure apart from its injected seams (luxon, type imports and relative imports), so
  * scripts/test-roster-fill.ts drives every branch node natively.
@@ -57,7 +56,6 @@
 import { DateTime } from "luxon";
 import type { TeamCapacityReport } from "../admin/team-capacity-load.ts";
 import { dayTotals, type TeamCapacityAdvisor } from "../admin/team-capacity.ts";
-import { DEBT_TIER } from "../xbc.ts";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps.ts";
 
 /** alert_state key for the condition. */
@@ -69,22 +67,10 @@ export const ROSTER_FILL_WINDOW_DAYS = 2;
 /** How many points over the line make a worse band, which posts again at once. */
 export const ROSTER_FILL_BAND_POINTS = 5;
 
-/** How many tiers the notice names. */
-const NAMED_TIERS = 3;
-
 /** One judged day's own share, as Team capacity draws that day. */
 export interface DayFill {
   /** The office date. */
   day: string;
-  open: number;
-  capacity: number;
-  bookedPct: number;
-}
-
-export interface TierFill {
-  /** The debt tier digit ("1"). */
-  tier: string;
-  label: string;
   open: number;
   capacity: number;
   bookedPct: number;
@@ -105,8 +91,6 @@ export type RosterFillReading =
       perDay: DayFill[];
       /** Advisors left out because their calendar is not syncing. */
       notCounted: number;
-      /** Fullest first, or null when the tier roster could not be read. */
-      tiers: TierFill[] | null;
       over: boolean;
       band: number;
     };
@@ -138,8 +122,6 @@ function totalsOver(advisors: TeamCapacityAdvisor[], dayIndexes: number[]): { op
 export function judgeRosterFill(input: {
   report: TeamCapacityReport;
   linePct: number | null;
-  /** Debt tier digit to its bookable advisors' ids, or null when that read failed. */
-  tierAgents: Map<string, string[]> | null;
 }): RosterFillReading {
   const { report, linePct } = input;
   if (!report.measurable) return { status: "unmeasured", why: `team capacity: ${report.reason}` };
@@ -159,18 +141,6 @@ export function judgeRosterFill(input: {
   }
   // The least full day is the one holding the condition, so it sets whether and how far over.
   const leastFull = Math.min(...perDay.map((d) => d.bookedPct));
-
-  let tiers: TierFill[] | null = null;
-  if (input.tierAgents !== null) {
-    tiers = [];
-    for (const [tier, ids] of input.tierAgents) {
-      const members = new Set(ids);
-      const t = totalsOver(report.advisors.filter((a) => members.has(a.id)), dayIndexes);
-      if (t === null) continue;
-      tiers.push({ tier, label: DEBT_TIER[tier]?.label ?? tier, open: t.open, capacity: t.capacity, bookedPct: t.bookedPct });
-    }
-    tiers.sort((a, b) => b.bookedPct - a.bookedPct || a.tier.localeCompare(b.tier));
-  }
   const over = leastFull >= linePct;
   return {
     status: "measured",
@@ -181,7 +151,6 @@ export function judgeRosterFill(input: {
     bookedPct: total.bookedPct,
     perDay,
     notCounted: total.notCounted,
-    tiers,
     over,
     band: fillBand(leastFull, linePct),
   };
@@ -206,24 +175,18 @@ function teamCapacityLink(appBaseUrl: string): string {
   return `<${appBaseUrl}/admin/team-capacity|Team capacity>`;
 }
 
-/** The page: the share, the counts, the days, the line, the decision it is for, and the fullest tiers. */
-export function formatRosterFillAlert(r: Measured, appBaseUrl: string): string {
-  const taken = r.capacity - r.open;
-  const tiers =
-    r.tiers === null
-      ? "The debt tiers could not be read this time, so the fullest are not named."
-      : r.tiers.length === 0
-        ? ""
-        : `Fullest tiers: ${r.tiers.slice(0, NAMED_TIERS).map((t) => `${t.label} ${t.bookedPct}%`).join(", ")} booked.`;
+/**
+ * The page: each day's share and the decision it is for, nothing more (Dan, 2026-10-25,
+ * cutting the line, the Team capacity link, the counts and the fullest tiers). The one
+ * caveat kept is who is left out of the shares, on its own line when anybody is.
+ */
+export function formatRosterFillAlert(r: Measured): string {
   const left =
     r.notCounted === 0
       ? ""
       : `${r.notCounted} advisor${r.notCounted === 1 ? "" : "s"} whose calendar is not syncing ${r.notCounted === 1 ? "is" : "are"} left out of these numbers.`;
   return [
-    `Calendars are filling up: ${dayShares(r.perDay)}, ${r.perDay.length === 1 ? "" : r.perDay.length === 2 ? "both " : "all "}at or over ` +
-      `the ${r.linePct}% nearly full line set on ${teamCapacityLink(appBaseUrl)} (${taken} of ${r.capacity} calls taken, ${r.open} still open). ` +
-      `This is the point to consider turning ad spend down.`,
-    tiers,
+    `Calendars are filling up: ${dayShares(r.perDay)}. This is the point to consider turning ad spend down.`,
     left,
   ]
     .filter((line) => line !== "")
@@ -239,18 +202,17 @@ export function formatRosterFillRecovery(r: Measured, appBaseUrl: string): strin
 }
 
 /**
- * One tick: read the report, the line and the tier roster; post when over the line,
+ * One tick: read the report and the line; post when over the line,
  * clear when measured under it, and do nothing at all when it could not be measured.
  * Never throws: a failed read is a reading of its own and a failed post is logged.
  */
 export async function runRosterFillCheck(deps: {
   loadReport: () => Promise<TeamCapacityReport>;
   readLine: () => Promise<number | null>;
-  loadTierAgents: () => Promise<Map<string, string[]>>;
   notify: ThrottledNotify<unknown>;
   resolve: AlertResolve<unknown>;
   cooldownMs: number;
-  /** Slate's own address (`appUrl()`), for the Team capacity link. */
+  /** Slate's own address (`appUrl()`), for the all clear's Team capacity link. */
   appBaseUrl: string;
   log?: (fields: Record<string, unknown>) => void;
 }): Promise<RosterFillReading> {
@@ -264,20 +226,14 @@ export async function runRosterFillCheck(deps: {
     deps.log?.({ status: "unmeasured", why: result.why });
     return result;
   }
-  // The tiers only decorate the notice, so a failed read is said in it rather than
-  // stopping the roster reading the decision rests on.
-  const tierAgents = await deps.loadTierAgents().catch((err: unknown) => {
-    deps.log?.({ status: "tiers-unreadable", why: why(err) });
-    return null;
-  });
-  const result = judgeRosterFill({ report, linePct, tierAgents });
+  const result = judgeRosterFill({ report, linePct });
   if (result.status === "unmeasured") {
     deps.log?.({ status: "unmeasured", why: result.why });
     return result;
   }
   try {
     if (result.over) {
-      await deps.notify(ROSTER_FILLING_KEY, deps.cooldownMs, formatRosterFillAlert(result, deps.appBaseUrl), { subjects: [], band: result.band });
+      await deps.notify(ROSTER_FILLING_KEY, deps.cooldownMs, formatRosterFillAlert(result), { subjects: [], band: result.band });
     } else {
       await deps.resolve(ROSTER_FILLING_KEY, formatRosterFillRecovery(result, deps.appBaseUrl));
     }

@@ -7,17 +7,16 @@
 //      hold), for each of the next two days leads can book, with advisors whose
 //      calendar is not syncing and advisors out for the day left out of both sides;
 //   2. with EVERY day at or over the line it posts (#4219), naming each day's share, the
-//      counts, and the fullest tiers, with an empty subject list and a band that rises
+//      decision it is for and nothing more (Dan, 2026-10-25), with an empty subject list and a band that rises
 //      every five points the least full day is over, so it posts again only when that
 //      day gets worse;
 //   3. with any day under the line it sends the all clear, naming that day, and only then;
 //   4. a failed read (the report, the line, a throw) posts nothing and clears nothing;
-//      a failed tier read still measures the roster and says the tiers are unknown;
 //   5. a failed post or all clear never throws out of the check;
 //   6. the days judged are the booker's (#4064): after the 6 PM cutoff that is
 //      tomorrow and the next open day, never today, although Team capacity's page
 //      still leads with today (#3949); before it, today and tomorrow; and the
-//      notice and its all clear link to the Team capacity page.
+//      all clear links to the Team capacity page.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-roster-fill.ts
 import {
@@ -91,14 +90,9 @@ const ROSTER = [
   advisor("out-a", [[10, 10, true], [1, 10], [10, 10]]),
   advisor("broken", [[10, 10], [10, 10], [10, 10]], true),
 ];
-const TIERS = new Map([
-  ["1", ["low-a", "low-b"]],
-  ["3", ["high-a"]],
-  ["5", []],
-]);
 
 // 1: the measurement.
-const over = judgeRosterFill({ report: report(ROSTER), linePct: 85, tierAgents: TIERS });
+const over = judgeRosterFill({ report: report(ROSTER), linePct: 85 });
 assert(over.status === "measured", "a readable report and line are measured");
 if (over.status === "measured") {
   eq(over.days, ["2026-10-22", "2026-10-23"], "the next two days leads can book, never the third");
@@ -110,17 +104,16 @@ if (over.status === "measured") {
   eq(over.notCounted, 1, "the advisor whose calendar is not syncing is counted as left out");
   eq(over.over, false, "82% is under an 85% line");
   eq(over.band, 0, "under the line is band 0");
-  eq(over.tiers?.map((t) => [t.label, t.bookedPct]), [["Low", 90], ["High", 65]], "tiers fullest first, an empty tier left out");
 }
 
-const at = judgeRosterFill({ report: report(ROSTER), linePct: 82, tierAgents: TIERS });
+const at = judgeRosterFill({ report: report(ROSTER), linePct: 82 });
 assert(at.status === "measured" && at.over && at.band === 1, "exactly on the line counts as over, in band 1");
 
 // #4219: every judged day must be over the line on its own (Dan, 2026-10-25: "Fire when
 // the next two days cross 85%"). That evening a full Monday and an 81% Tuesday added up
 // to 90% and paged, while Team capacity showed Tuesday under the line.
 const FULL_THEN_81 = [advisor("a", [[0, 50], [10, 50], [10, 10]]), advisor("b", [[0, 50], [9, 50], [10, 10]])];
-const split = judgeRosterFill({ report: report(FULL_THEN_81), linePct: 85, tierAgents: null });
+const split = judgeRosterFill({ report: report(FULL_THEN_81), linePct: 85 });
 assert(split.status === "measured", "a full day and a day under the line is measured");
 if (split.status === "measured") {
   eq(split.bookedPct, 90, "together the two days are 90% booked, over the line");
@@ -133,11 +126,11 @@ if (split.status === "measured") {
   eq(split.band, 0, "and is band 0");
 }
 const FULL_THEN_86 = [advisor("a", [[0, 50], [7, 50], [10, 10]]), advisor("b", [[0, 50], [7, 50], [10, 10]])];
-const bothOver = judgeRosterFill({ report: report(FULL_THEN_86), linePct: 85, tierAgents: null });
+const bothOver = judgeRosterFill({ report: report(FULL_THEN_86), linePct: 85 });
 assert(bothOver.status === "measured" && bothOver.over, "both days at or over the line is over");
 // Together 93% (band 2), but the 86% day is what holds the condition, so its band is the one that counts.
 assert(bothOver.status === "measured" && bothOver.band === fillBand(86, 85), "the band follows the least full day");
-const emptyDay = judgeRosterFill({ report: report([advisor("a", [[0, 10], [0, 0], [10, 10]])]), linePct: 85, tierAgents: null });
+const emptyDay = judgeRosterFill({ report: report([advisor("a", [[0, 10], [0, 0], [10, 10]])]), linePct: 85 });
 assert(
   emptyDay.status === "unmeasured" && /Fri Oct 23/.test(emptyDay.why),
   "a judged day nobody works is unmeasured, naming the day, never counted as full or empty",
@@ -151,19 +144,17 @@ eq(fillBand(90, 85), 2, "five points over is band 2");
 eq(fillBand(100, 85), 4, "fully booked is the top band for an 85 line");
 
 // 4: what is not a reading.
-const unmeasurable = judgeRosterFill({ report: { measurable: false, reason: "calendars" }, linePct: 85, tierAgents: TIERS });
+const unmeasurable = judgeRosterFill({ report: { measurable: false, reason: "calendars" }, linePct: 85 });
 assert(unmeasurable.status === "unmeasured" && /calendars/.test(unmeasurable.why), "an unreadable report is unmeasured, naming the read");
-const noLine = judgeRosterFill({ report: report(ROSTER), linePct: null, tierAgents: TIERS });
+const noLine = judgeRosterFill({ report: report(ROSTER), linePct: null });
 assert(noLine.status === "unmeasured" && /line/.test(noLine.why), "an unreadable line is unmeasured, never the default");
-const nobody = judgeRosterFill({ report: report([advisor("x", [[0, 0], [0, 0], [0, 0]])]), linePct: 85, tierAgents: TIERS });
+const nobody = judgeRosterFill({ report: report([advisor("x", [[0, 0], [0, 0], [0, 0]])]), linePct: 85 });
 assert(nobody.status === "unmeasured", "no capacity at all is unmeasured, never 0% or 100% booked");
-const noWindow = judgeRosterFill({ report: report(ROSTER, []), linePct: 85, tierAgents: TIERS });
+const noWindow = judgeRosterFill({ report: report(ROSTER, []), linePct: 85 });
 assert(noWindow.status === "unmeasured", "no days to judge is unmeasured");
-const noTiers = judgeRosterFill({ report: report(ROSTER), linePct: 80, tierAgents: null });
-assert(noTiers.status === "measured" && noTiers.over && noTiers.tiers === null, "a failed tier read still measures the roster");
-const oneDay = judgeRosterFill({ report: report(ROSTER, ["2026-10-23"]), linePct: 80, tierAgents: TIERS });
+const oneDay = judgeRosterFill({ report: report(ROSTER, ["2026-10-23"]), linePct: 80 });
 assert(oneDay.status === "measured" && oneDay.days.length === 1, "a window of one day judges that day alone");
-const notHeld = judgeRosterFill({ report: report(ROSTER, ["2026-10-23", "2026-10-26"]), linePct: 80, tierAgents: TIERS });
+const notHeld = judgeRosterFill({ report: report(ROSTER, ["2026-10-23", "2026-10-26"]), linePct: 80 });
 assert(notHeld.status === "unmeasured" && /every judged day/.test(notHeld.why), "a booker's day the report does not hold is unmeasured, never skipped");
 
 // 6: which days are judged, through the same rule the page's days come from, at an
@@ -184,7 +175,7 @@ function judgedAt(nowIso: string): { page: string[]; judged: string[] } {
   const busy = advisor("busy", d.windowDays.map((): [number, number] => [1, 10]), false, d.windowDays);
   const base = report([busy]) as Extract<TeamCapacityReport, { measurable: true }>;
   const r: TeamCapacityReport = { ...base, nowMs, windowDays: d.windowDays, bookerDays: d.bookerDays, days: d.windowDays };
-  const reading = judgeRosterFill({ report: r, linePct: 85, tierAgents: null });
+  const reading = judgeRosterFill({ report: r, linePct: 85 });
   return { page: d.windowDays, judged: reading.status === "measured" ? reading.days : [] };
 }
 {
@@ -219,25 +210,23 @@ const fullRoster = [
   advisor("high-a", [[2, 10], [1, 10], [10, 10]]),
   advisor("broken", [[10, 10], [10, 10], [10, 10]], true),
 ];
-const filling = judgeRosterFill({ report: report(fullRoster), linePct: 85, tierAgents: TIERS }) as Extract<RosterFillReading, { status: "measured" }>;
-const alert = formatRosterFillAlert(filling, BASE);
+const filling = judgeRosterFill({ report: report(fullRoster), linePct: 85 }) as Extract<RosterFillReading, { status: "measured" }>;
+const alert = formatRosterFillAlert(filling);
 // Day one: 3 open of 30, 90%. Day two: 2 open of 30, 93%. Together 91%, which is never said:
 // a reader takes one share for every day (#4219).
-assert(alert.includes("Thu Oct 22 is 90% full and Fri Oct 23 is 93% full, both at or over"), `the alert names each day's own share (${alert})`);
+// Dan, 2026-10-25: the days and the decision, nothing more.
+eq(
+  alert.split("\n")[0],
+  "Calendars are filling up: Thu Oct 22 is 90% full and Fri Oct 23 is 93% full. This is the point to consider turning ad spend down.",
+  "the alert is each day's share and the decision it is for",
+);
 assert(!alert.includes("91%"), "and never the two days added together");
-const fullDay = formatRosterFillAlert(bothOver as Extract<RosterFillReading, { status: "measured" }>, BASE);
+const fullDay = formatRosterFillAlert(bothOver as Extract<RosterFillReading, { status: "measured" }>);
 assert(fullDay.includes("Thu Oct 22 is full and Fri Oct 23 is 86% full"), `a day with no call open is full, as the page says (${fullDay})`);
-assert(alert.includes("85%"), "the alert names the line it was judged against");
-assert(alert.includes("Team capacity"), "the alert says where the line is set");
-assert(alert.includes(TEAM_CAPACITY_LINK), `the alert links to the Team capacity page (${alert})`);
-assert(alert.split("Team capacity").length === 2, "and names Team capacity once, as the link");
-assert(alert.includes("55 of 60"), "the alert gives the counts behind the share");
-assert(/ad spend/i.test(alert), "the alert says what decision it is for");
-assert(alert.includes("Low 95%") && alert.indexOf("Low") < alert.indexOf("High"), "the alert names the fullest tiers, fullest first");
-assert(/1 advisor whose calendar is not syncing/.test(alert), "the alert says who is left out of the numbers");
+assert(!/85%|Team capacity|55 of 60|tier/i.test(alert), `and no line, link, counts or tiers (${alert})`);
+eq(alert.split("\n")[1], "1 advisor whose calendar is not syncing is left out of these numbers.", "the one caveat on the shares stays, on its own line");
+eq(formatRosterFillAlert({ ...filling, notCounted: 0 }).split("\n").length, 1, "and with nobody left out the alert is one line");
 assert(!/^\W*slate/i.test(alert), "the alert does not open with Slate");
-const unknownTiers = formatRosterFillAlert({ ...filling, tiers: null }, BASE);
-assert(/tiers could not be read/i.test(unknownTiers), "an unknown tier read is said, not left out");
 const recovery = formatRosterFillRecovery(split as Extract<RosterFillReading, { status: "measured" }>, BASE);
 assert(
   recovery.includes("Fri Oct 23 is 81% full, under the 85%") && /cleared/.test(recovery),
@@ -254,7 +243,6 @@ async function tick(over: Partial<Parameters<typeof runRosterFillCheck>[0]>) {
   const result = await runRosterFillCheck({
     loadReport: async () => report(fullRoster),
     readLine: async () => 85,
-    loadTierAgents: async () => TIERS,
     notify: async (key, _ms, text, repeat) => {
       sent.push({ key, text, repeat });
     },
@@ -276,7 +264,6 @@ async function tick(over: Partial<Parameters<typeof runRosterFillCheck>[0]>) {
   eq(sent[0]?.repeat?.subjects?.length, 0, "with no subjects, so only a worse band reposts");
   eq(sent[0]?.repeat?.band, fillBand(90, 85), "with the band of the least full day");
   eq(resolved.length, 0, "and clears nothing");
-  assert(sent[0]?.text.includes(TEAM_CAPACITY_LINK) ?? false, "the posted notice carries the Team capacity link");
 }
 {
   const { sent, resolved } = await tick({ readLine: async () => 95 });
@@ -322,15 +309,6 @@ async function tick(over: Partial<Parameters<typeof runRosterFillCheck>[0]>) {
   });
   eq(sent.length, 0, "a line read that throws posts nothing");
   eq(resolved.length, 0, "a line read that throws clears nothing");
-}
-{
-  const { sent } = await tick({
-    loadTierAgents: async () => {
-      throw new Error("roster unreadable");
-    },
-  });
-  eq(sent.length, 1, "a failed tier read still posts the roster reading");
-  assert(/tiers could not be read/i.test(sent[0]?.text ?? ""), "and says the tiers are unknown");
 }
 {
   let threw = false;

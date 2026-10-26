@@ -131,8 +131,8 @@ shifts could hold, out and not syncing advisors left out), judged per day, so a 
 beside one under the line does not fire (#4219), and measured every half hour by the
 capacity history lane (`src/lib/monitor/roster-fill.ts`). The two days are the booker's,
 so from 6 PM New York time they are tomorrow and the next open day, while the Team capacity
-page still shows today first (#4064, #3949). What to do: follow the notice's Team capacity
-link to see which days and advisors are full, and decide with whoever runs ad spend whether to
+page still shows today first (#4064, #3949). What to do: open Team capacity
+(`/admin/team-capacity`) to see which advisors are full on the days the notice names, and decide with whoever runs ad spend whether to
 turn it down. It posts again only when the less full day climbs another five points, otherwise
 once a day, and clears on a measured reading with either day under the line. To change when it fires, move the
 line on Team capacity. Silence can also mean the lane could not measure: look for

@@ -714,12 +714,6 @@ const PREVIEW_ROSTER_FILL: Extract<RosterFillReading, { status: "measured" }> = 
     { day: "2026-10-23", open: 24, capacity: 165, bookedPct: 85 },
   ],
   notCounted: 0,
-  tiers: [
-    { tier: "1", label: "Low", open: 8, capacity: 120, bookedPct: 93 },
-    { tier: "3", label: "High", open: 9, capacity: 80, bookedPct: 88 },
-    { tier: "2", label: "Medium", open: 14, capacity: 90, bookedPct: 84 },
-    { tier: "5", label: "Ultra High", open: 8, capacity: 40, bookedPct: 80 },
-  ],
   over: true,
   band: fillBand(85, 85),
 };
@@ -4532,13 +4526,13 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "roster_filling_up",
     state: "both of the next two days at or over an 85% line",
     channel: "alert",
-    text: formatRosterFillAlert(PREVIEW_ROSTER_FILL, PREVIEW_APP_URL),
+    text: formatRosterFillAlert(PREVIEW_ROSTER_FILL),
   },
   {
     key: "roster_filling_up",
-    state: "the tiers could not be read, two advisors not syncing",
+    state: "two advisors whose calendars are not syncing",
     channel: "alert",
-    text: formatRosterFillAlert({ ...PREVIEW_ROSTER_FILL, tiers: null, notCounted: 2 }, PREVIEW_APP_URL),
+    text: formatRosterFillAlert({ ...PREVIEW_ROSTER_FILL, notCounted: 2 }),
   },
   {
     key: "roster_filling_up",

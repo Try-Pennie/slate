@@ -10,7 +10,6 @@ import { runHistoryTick, type HistoryTickResult } from "@/lib/admin/capacity-his
 import { readHistoryCursor, readSavedCalls, writeHistory } from "@/lib/admin/capacity-history-store";
 import { loadCapacityPeople, loadCapacityRules, loadTeamCapacity } from "@/lib/admin/team-capacity-load";
 import { readNearlyFullPct } from "@/lib/booking/settings";
-import { loadTierAgentIds } from "@/lib/monitor/tier-staffing-load";
 import { runRosterFillCheck } from "@/lib/monitor/roster-fill";
 import { resolveAlert, sendThrottledAlert } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
@@ -83,7 +82,6 @@ export async function GET(req: NextRequest) {
       await runRosterFillCheck({
         loadReport: () => loadTeamCapacity({ orgId: onlyOrg.id, now: new Date(nowMs) }),
         readLine: readNearlyFullPct,
-        loadTierAgents: loadTierAgentIds,
         // alert-key: roster_filling_up
         // alert-text-ok: our own copy from roster-fill.ts, never a raw error.
         notify: sendThrottledAlert,
