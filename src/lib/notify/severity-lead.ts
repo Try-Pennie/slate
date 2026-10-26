@@ -1,6 +1,6 @@
 /**
- * The first line of every message the alert dispatcher posts (#1825): whether the
- * reader is being asked to do anything. Pure, so the rule is pinned offline
+ * The first line of every message the alert dispatcher posts but an ordinary page
+ * (#1825): whether the reader is being asked to do anything. Pure, so the rule is pinned offline
  * (`scripts/test-alert-severity-lead.ts`) and the preview shows exactly what ships.
  *
  * On 2026-09-03 a page (a parked detector able to watch and still switched off) and
@@ -27,13 +27,17 @@ export type AlertVoice = "page" | "info" | "recovery";
 export type AlertSeverity = "urgent" | "attention" | "whisper" | "resolved";
 
 /**
- * The lead lines, in Slack mrkdwn. A page and an all clear are bold; a whisper is
- * italic, so the quiet one also LOOKS quieter, not only reads so. Words rather than
+ * The lead lines, in Slack mrkdwn. An urgent page and an all clear are bold; a whisper
+ * is italic, so the quiet one also LOOKS quieter, not only reads so. Words rather than
  * emoji (project copy rule), and colour is never the only signal.
+ *
+ * A page needing attention, the commonest post, carries NO lead and opens with its own
+ * text (Dan, 2026-10-25: "We can just remove it everywhere"). The ones that differ from
+ * it still say so: urgent above it, a whisper and an all clear beside it.
  */
-export const SEVERITY_LEADS: Readonly<Record<AlertSeverity, string>> = {
+export const SEVERITY_LEADS: Readonly<Record<AlertSeverity, string | null>> = {
   urgent: "*URGENT: leads are affected now.*",
-  attention: "*Needs attention.*",
+  attention: null,
   whisper: "_FYI, no action needed now._",
   resolved: "*Resolved.*",
 };
@@ -48,20 +52,21 @@ export function severityOf(key: string, voice: AlertVoice): AlertSeverity {
   return "attention";
 }
 
-/** `text` as posted: the lead on its own first line, the text below it untouched. */
+/** `text` as posted: the lead, if its severity has one, on its own first line, the text below it untouched. */
 export function withSeverityLead(text: string, key: string, voice: AlertVoice): string {
-  return `${SEVERITY_LEADS[severityOf(key, voice)]}\n${text}`;
+  const lead = SEVERITY_LEADS[severityOf(key, voice)];
+  return lead === null ? text : `${lead}\n${text}`;
 }
 
 /**
- * The text a post was built from, with its lead taken off, or null when the post does
- * not open with one of the leads above. For a reader of posted text (a test faking
- * Slack) that asserts what a condition SAYS, and must not mistake a post with no lead
- * for one that has it.
+ * The text a post was built from, with its lead taken off. A post that opens with no
+ * lead is a page needing attention and is its own text; a lead with nothing under it
+ * is no post, and null. For a reader of posted text (a test faking Slack) that
+ * asserts what a condition SAYS.
  */
 export function withoutSeverityLead(posted: string): string | null {
+  const leads = Object.values(SEVERITY_LEADS).filter((l): l is string => l !== null);
+  if (leads.includes(posted)) return null;
   const at = posted.indexOf("\n");
-  if (at < 0) return null;
-  const lead = posted.slice(0, at);
-  return (Object.values(SEVERITY_LEADS) as string[]).includes(lead) ? posted.slice(at + 1) : null;
+  return at >= 0 && leads.includes(posted.slice(0, at)) ? posted.slice(at + 1) : posted;
 }

@@ -1,12 +1,14 @@
 // #1825: a page and a whisper used to arrive in the same channel looking exactly
 // alike, so a reader mid incident had to parse a paragraph before learning whether
-// anything was asked of them. Every message the dispatcher posts now opens with a
-// lead line saying so, chosen by ONE pure rule from the sender (page, whisper or
-// all clear) and the catalog classification. This pins that rule:
+// anything was asked of them. Every message the dispatcher posts but an ordinary page
+// now opens with a lead line saying so, chosen by ONE pure rule from the sender (page,
+// whisper or all clear) and the catalog classification. This pins that rule:
 //
 //   1. a whisper, and any key the catalog calls info, reads as needing nothing,
 //      whichever sender carried it;
-//   2. an urgent condition reads as urgent, and every other page as needing attention;
+//   2. an urgent condition reads as urgent, and every other page as needing attention,
+//      which carries NO lead line (Dan, 2026-10-25: "We can just remove it everywhere"),
+//      so a whisper's and an urgent page's leads are what set them apart;
 //   3. an all clear reads as resolved;
 //   4. a key the catalog does not classify reads as a page (the loud direction);
 //   5. the leads are pairwise distinct, sit on one line, set a whisper quieter than
@@ -49,34 +51,36 @@ eq(severityOf("empty_tier:low", "recovery"), "resolved", "an urgent condition's 
 eq(severityOf("no_such_key_anywhere", "page"), "attention", "an unclassified key reads as a page");
 
 // 5
-const leads = Object.values(SEVERITY_LEADS);
-eq(new Set(leads).size, leads.length, "every severity has its own lead");
+const leads = Object.values(SEVERITY_LEADS).filter((l): l is string => l !== null);
+eq(new Set(leads).size, leads.length, "every lead is its own");
 for (const [severity, lead] of Object.entries(SEVERITY_LEADS)) {
+  if (lead === null) continue;
   assert(!lead.includes("\n"), `${severity} lead is one line`);
   assert(!/^\W*slate/i.test(lead), `${severity} lead does not open with Slate`);
 }
 assert(/urgent/i.test(SEVERITY_LEADS.urgent), "the urgent lead says urgent");
 assert(/no action/i.test(SEVERITY_LEADS.whisper), "the whisper lead says no action is needed");
-assert(!/no action/i.test(SEVERITY_LEADS.attention), "a page lead never says no action");
+eq(SEVERITY_LEADS.attention, null, "a page needing attention opens with its own text, no lead line");
 // A whisper is set quieter than a page: italic, where every page and the all clear are bold.
 assert(/^_.*_$/.test(SEVERITY_LEADS.whisper), "the whisper lead is italic");
-for (const s of ["urgent", "attention", "resolved"] as const) {
+for (const s of ["urgent", "resolved"] as const) {
   assert(/^\*[^*]+\*/.test(SEVERITY_LEADS[s]), `the ${s} lead opens in bold`);
 }
 
 // 6
 const body = "Reminder: still true after 24 hours, with nothing new since the last message.\n<!channel> 2 lanes";
 const posted = withSeverityLead(body, "sync_failures", "page");
-eq(posted, `${SEVERITY_LEADS.attention}\n${body}`, "the lead sits on its own line above the untouched text");
+eq(posted, body, "a page needing attention is posted as its text, untouched");
+eq(withSeverityLead(body, "booking_failure_rate", "page"), `${SEVERITY_LEADS.urgent}\n${body}`, "an urgent page keeps its lead above the untouched text");
 eq(
   withSeverityLead("x", "reassign-unknown-reason-code", "page").split("\n")[0],
   SEVERITY_LEADS.whisper,
   "the first line of a whisper is the whisper lead",
 );
 
-// The reader's side: a post's lead comes off exactly, and text with no lead is refused.
-eq(withoutSeverityLead(posted), body, "the lead comes back off the posted text");
-eq(withoutSeverityLead(body), null, "text opening with something else has no lead to take off");
+// The reader's side: a post's lead comes off exactly, and a post with no lead is its own text.
+eq(withoutSeverityLead(withSeverityLead(body, "x", "recovery")), body, "the lead comes back off the posted text");
+eq(withoutSeverityLead(posted), body, "a page with no lead reads as its own text");
 eq(withoutSeverityLead(SEVERITY_LEADS.resolved), null, "a lead with nothing under it is not a post");
 
 finish();

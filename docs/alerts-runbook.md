@@ -23,7 +23,7 @@ a procedure here, and no procedure exists for nothing.
    `GET /api/health/availability` (200, or 503 when the booker is offering nothing).
 4. **Ask whether it is a reminder** (#3801). A condition that has not changed is said
    again once a day (hourly for one costing leads right now), and the repeat carries
-   "Reminder: still true after ..." on the line under the severity lead (#1825).
+   "Reminder: still true after ..." as its first line, under the severity lead where the post has one (#1825).
    Anything without that line is new: a new subject
    (an appointment, an agent, a pool, a lane) or a measured value that got worse.
 5. **Look for an all-clear.** Conditions send one when they clear
@@ -131,8 +131,8 @@ shifts could hold, out and not syncing advisors left out), judged per day, so a 
 beside one under the line does not fire (#4219), and measured every half hour by the
 capacity history lane (`src/lib/monitor/roster-fill.ts`). The two days are the booker's,
 so from 6 PM New York time they are tomorrow and the next open day, while the Team capacity
-page still shows today first (#4064, #3949). What to do: follow the notice's Team capacity
-link to see which days and advisors are full, and decide with whoever runs ad spend whether to
+page still shows today first (#4064, #3949). What to do: open Team capacity
+(`/admin/team-capacity`) to see which advisors are full on the days the notice names, and decide with whoever runs ad spend whether to
 turn it down. It posts again only when the less full day climbs another five points, otherwise
 once a day, and clears on a measured reading with either day under the line. To change when it fires, move the
 line on Team capacity. Silence can also mean the lane could not measure: look for
@@ -1186,15 +1186,16 @@ every session (#2393). `AGENTS.md` keeps the rule and points here; this is the
 full text as it stood, with the reasoning, the incidents and the measurements
 behind it.
 
-### Every post opens with a severity lead (#1825)
+### Every post but an ordinary page opens with a severity lead (#1825)
 
-The dispatcher puts one line in front of everything it posts, so a page and a whisper
-never look alike, even with the info channel falling back to the alerts channel (it does
-whenever no info channel is set on `/admin/alerts` or in `SLACK_INFO_CHANNEL`). The rule
-is `severityOf` in `src/lib/notify/severity-lead.ts`: an all-clear opens with
-**Resolved.**, a `sendThrottledInfo` whisper or an info key with _FYI, no action needed
-now._ (italic), an urgent condition (`URGENT_CONDITION_KEYS`) with **URGENT: leads are
-affected now.**, and every other page with **Needs attention.** A copy builder never
+The dispatcher puts a lead line in front of every post that is not an ordinary page, so a
+page and a whisper never look alike, even with the info channel falling back to the alerts
+channel (it does whenever no info channel is set on `/admin/alerts` or in
+`SLACK_INFO_CHANNEL`). The rule is `severityOf` in `src/lib/notify/severity-lead.ts`: an
+all-clear opens with **Resolved.**, a `sendThrottledInfo` whisper or an info key with _FYI,
+no action needed now._ (italic), an urgent condition (`URGENT_CONDITION_KEYS`) with
+**URGENT: leads are affected now.**, and every other page opens with its own text, no lead
+(Dan, 2026-10-25, dropping **Needs attention.**). A copy builder never
 writes its own lead, and `pnpm preview:alerts` prints each state under the lead it ships
 with.
 
