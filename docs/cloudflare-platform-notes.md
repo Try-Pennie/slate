@@ -598,8 +598,8 @@ log.warn("lane-watchdog", { msg: "stale lane", lane: "outbox" });
 log.error("booking", { msg: "insert failed", booking_id: id }, err);  // Error passed THROUGH
 ```
 
-which emits `slate tag=recompute msg="cycle" refreshed=3 util_pct=42`. Two things
-that kept being decided wrongly per call site now live in one place:
+which emits `slate tag=recompute msg="cycle" refreshed=3 util_pct=42`. Three things
+that used to be decided, or missed, per call site now live in one place:
 
 - **The level.** `console.log` is unreachable from the helper. It is the one method
   Cloudflare stores with **no `level` field**, so the line is kept but is invisible
