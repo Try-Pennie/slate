@@ -953,8 +953,9 @@ export async function resolveAlert(
  */
 export async function settleAlertsSilently(keys: string[]): Promise<void> {
   if (keys.length === 0) return;
-  // Deletes the firing markers and the cooldown rows, so a laptop running this would leave a
-  // real page able to re-fire immediately and its recovery notice never sent.
+  // Deletes the firing markers and (for every key but a change only one, below) the cooldown
+  // rows, so a laptop running this would leave a real page able to re-fire immediately and
+  // its recovery notice never sent.
   if (!mayWriteAlerts(keys[0] ?? "(none)", `silent settle of ${keys.length} key(s)`)) return;
   const db = supabaseAdmin();
   // Both rows per key: the firing marker (so no recovery notice fires later) and
