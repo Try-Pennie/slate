@@ -63,7 +63,8 @@ export async function GET(req: NextRequest) {
   try {
     const db = supabaseAdmin();
     const nowMs = Date.now();
-    // Three sweeps, each one statement (#2944 added the second, #3109 the third),
+    // Four sweeps, each one statement (#2944 added the second, #3109 the third,
+    // #4222 the fourth),
     // run independently so a failure in one still lets the others do their night's
     // work; any of them failing fails the lane, so it stops stamping and the
     // watchdog pages.
