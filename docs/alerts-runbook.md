@@ -23,7 +23,7 @@ a procedure here, and no procedure exists for nothing.
    `GET /api/health/availability` (200, or 503 when the booker is offering nothing).
 4. **Ask whether it is a reminder** (#3801). A condition that has not changed is said
    again once a day (hourly for one costing leads right now), and the repeat carries
-   "Reminder: still true after ..." on the line under the severity lead (#1825).
+   "Reminder: still true after ..." as its first line, under the severity lead where the post has one (#1825).
    Anything without that line is new: a new subject
    (an appointment, an agent, a pool, a lane) or a measured value that got worse.
 5. **Look for an all-clear.** Conditions send one when they clear
@@ -1186,7 +1186,7 @@ every session (#2393). `AGENTS.md` keeps the rule and points here; this is the
 full text as it stood, with the reasoning, the incidents and the measurements
 behind it.
 
-### Every post opens with a severity lead (#1825)
+### Every post but an ordinary page opens with a severity lead (#1825)
 
 The dispatcher puts a lead line in front of every post that is not an ordinary page, so a
 page and a whisper never look alike, even with the info channel falling back to the alerts

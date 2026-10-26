@@ -1,6 +1,6 @@
 /**
- * The first line of every message the alert dispatcher posts (#1825): whether the
- * reader is being asked to do anything. Pure, so the rule is pinned offline
+ * The first line of every message the alert dispatcher posts but an ordinary page
+ * (#1825): whether the reader is being asked to do anything. Pure, so the rule is pinned offline
  * (`scripts/test-alert-severity-lead.ts`) and the preview shows exactly what ships.
  *
  * On 2026-09-03 a page (a parked detector able to watch and still switched off) and

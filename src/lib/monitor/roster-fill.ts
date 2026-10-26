@@ -31,8 +31,7 @@
  * Dan, 2026-10-25: "Fire when the next two days cross 85%". Added up, a full Monday and an
  * 81% Tuesday read 90% and paged at 6:53 PM that day, while Team capacity drew Tuesday
  * under the line. So each judged day is held to the line on its own, the least full one
- * sets the band, and the notice names each day's share. The added up counts stay in the
- * notice as the calls behind them; the added up share is never said.
+ * sets the band, and the notice names each day's share and nothing added up.
  *
  * ## The booker's days, not the page's (#4064)
  *
@@ -83,7 +82,7 @@ export type RosterFillReading =
       /** The office dates judged. */
       days: string[];
       linePct: number;
-      /** The judged days added together: the counts the notice gives. */
+      /** The judged days added together, for the log line; the notice never says them. */
       open: number;
       capacity: number;
       bookedPct: number;

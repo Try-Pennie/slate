@@ -1,8 +1,8 @@
 // #1825: a page and a whisper used to arrive in the same channel looking exactly
 // alike, so a reader mid incident had to parse a paragraph before learning whether
-// anything was asked of them. Every message the dispatcher posts now opens with a
-// lead line saying so, chosen by ONE pure rule from the sender (page, whisper or
-// all clear) and the catalog classification. This pins that rule:
+// anything was asked of them. Every message the dispatcher posts but an ordinary page
+// now opens with a lead line saying so, chosen by ONE pure rule from the sender (page,
+// whisper or all clear) and the catalog classification. This pins that rule:
 //
 //   1. a whisper, and any key the catalog calls info, reads as needing nothing,
 //      whichever sender carried it;

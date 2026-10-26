@@ -296,14 +296,14 @@ describe("sendThrottledInfo", () => {
   });
 });
 
-// #1825: a page and a whisper landed in one channel looking identical. Every post
-// the dispatcher makes now opens with a lead line naming its severity, so the two
-// read differently whatever channel they reach. Asserted at the transport, since
-// that is what the reader sees.
+// #1825: a page and a whisper landed in one channel looking identical. A whisper, an
+// all clear and an urgent page open with a lead line naming their severity, and an
+// ordinary page opens with its own text (Dan, 2026-10-25), so the two read differently
+// whatever channel they reach. Asserted at the transport, since that is what the reader sees.
 describe("severity lead on every post (#1825)", () => {
   const firstLine = (call: number) => slack.postSlack.mock.calls[call][0].text.split("\n")[0];
 
-  it("a page opens with the needs attention lead and keeps its text below", async () => {
+  it("a page needing attention has no lead and is posted as its own text", async () => {
     process.env.SLACK_ALERTS_CHANNEL = "#alerts";
     await sendThrottledAlert("sync_failures", 1000, "2 agents failing");
     expect(slack.postSlack.mock.calls[0][0].text).toBe("2 agents failing");
