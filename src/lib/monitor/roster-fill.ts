@@ -49,14 +49,15 @@
  * the least full day is over the line, so the dispatcher posts again only when that day
  * climbs into a worse band, and otherwise once a day (#3801).
  *
- * ## Only from 9 AM up to 6 PM New York time
+ * ## Only from 8 AM up to 6 PM New York time
  *
  * Dan, 2026-10-26, on the notice posting at 1:23 AM: "I only want it to post during
- * business hours from 9am - 6pm", every day including weekends (`DAYTIME_POSTING_HOURS`).
+ * business hours from 9am - 6pm", every day including weekends, then moved the start to
+ * 8 AM so the first post comes slightly early rather than late (`DAYTIME_POSTING_HOURS`).
  * Outside those hours a reading is still taken and logged, but it neither posts nor
  * clears: nothing reaches the dispatcher, so nothing is recorded as sent and the repeat
  * policy cannot take the morning's post for a repeat. The first tick inside the window
- * (the lane runs at :23 and :53, so 9:23 AM) judges that morning's numbers afresh: still
+ * (the lane runs at :23 and :53, so 8:23 AM) judges that morning's numbers afresh: still
  * over the line, it posts them; under it, an open notice is cleared then, and one never
  * posted says nothing. Never a stale overnight reading.
  *

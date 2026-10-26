@@ -91,7 +91,7 @@ export async function GET(req: NextRequest) {
         resolve: resolveAlert,
         cooldownMs: ROSTER_FILL_COOLDOWN_MS,
         appBaseUrl: appUrl(),
-        // Posts and clears only from 9 AM up to 6 PM New York time; this lane's 9:23 tick is
+        // Posts and clears only from 8 AM up to 6 PM New York time; this lane's 8:23 tick is
         // the first inside, so a reading held overnight is judged afresh then.
         nowMs,
         log: (fields) => log.info("capacity-history", { msg: "roster fill", ...fields }),

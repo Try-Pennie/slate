@@ -2,9 +2,10 @@
  * Hours of the day an alert may post in, for an alert nobody needs at night.
  *
  * Dan, 2026-10-26, on the calendars filling up notice posting at 1:23 AM: "this alert
- * looks good but I only want it to post during business hours from 9am - 6pm". So it
- * posts from 9 AM up to 6 PM New York time, every day of the week, weekends included,
- * judged on the New York clock so the window follows daylight saving.
+ * looks good but I only want it to post during business hours from 9am - 6pm". He then
+ * moved the start to 8 AM the same day, preferring a post slightly early to one slightly
+ * late. So it posts from 8 AM up to 6 PM New York time, every day of the week, weekends
+ * included, judged on the New York clock so the window follows daylight saving.
  *
  * Named posting hours, not business hours: in Slate "business hours" are the org's
  * stored opening times (`src/lib/booking/business-hours.ts`), which differ by weekday
@@ -29,10 +30,10 @@ export interface PostingHours {
   toMinute: number;
 }
 
-/** 9 AM up to 6 PM New York time, every day (Dan, 2026-10-26). */
+/** 8 AM up to 6 PM New York time, every day (Dan, 2026-10-26). */
 export const DAYTIME_POSTING_HOURS: PostingHours = {
   zone: BUSINESS_ZONE,
-  fromMinute: 9 * 60,
+  fromMinute: 8 * 60,
   toMinute: 18 * 60,
 };
 
