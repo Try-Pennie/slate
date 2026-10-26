@@ -28,7 +28,7 @@ import {
   type AlertFold,
 } from "../src/lib/notify/alert-folds.ts";
 import { alertEntry, alertKindOf } from "../src/lib/notify/alert-catalog.ts";
-import { CANARY_STALE_BOUNDS_MS, VERDICT_STALE_BOUNDS_MS } from "../src/lib/monitor/health.ts";
+import { CANARY_STALE_BOUNDS_MS, POOL_GROUPING_STALE_BOUNDS_MS, VERDICT_STALE_BOUNDS_MS } from "../src/lib/monitor/health.ts";
 import { formatCiRefusedAlert, formatCiStartedRecovery, REFUSAL_ALERT_KEY } from "../src/lib/monitor/github-ci-health.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -87,6 +87,17 @@ for (const e of ci?.explains ?? []) {
   eq(foldFor(e.key)?.explainer, REFUSAL_ALERT_KEY, `${e.key} resolves to the CI refusal`);
 }
 eq(foldFor("cron_lane_stale:sync"), null, "a Worker cron lane is explained by nothing: CI cannot stop it");
+
+// 6: the pool grouping is published only by the recompute lane, so it waits while the
+// core lanes' page is firing, which names it (2026-10-26: it posted as a sixth page).
+const lanesFold = ALERT_FOLDS.find((f) => f.explainer === "cron_lanes_stale");
+assert(lanesFold !== undefined, "the core lanes' page has a fold");
+eq(foldFor("cron_lane_stale:pool-grouping")?.explainer, "cron_lanes_stale", "the pool grouping waits on the core lanes' page");
+eq(
+  foldFor("cron_lane_stale:pool-grouping")?.folded.graceMs,
+  POOL_GROUPING_STALE_BOUNDS_MS["pool-grouping"],
+  "and waits its own bound after that page clears",
+);
 
 // The CI page and its all-clear name every folded lane, from the same table.
 const page = formatCiRefusedAlert({ runName: "CI", runUrl: "https://github.com/Try-Pennie/slate/actions/runs/1" });

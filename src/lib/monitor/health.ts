@@ -938,6 +938,25 @@ export function findStaleLanes(
   return stale.sort((a, b) => b.ageMs - b.maxStaleMs - (a.ageMs - a.maxStaleMs));
 }
 
+/** How close together lanes must have stopped to have stopped "together". */
+export const STOPPED_TOGETHER_MS = 60_000;
+
+/**
+ * Whether several quiet lanes stopped within a minute of each other (2026-10-26).
+ *
+ * That evening five every minute lanes stamped their last run inside one second and
+ * the five minute lanes kept going: the shared schedule had stopped firing, which no
+ * single lane's failure produces. Said on the page only because it is measured here,
+ * from the stamps themselves. An unreadable stamp cannot be placed in time, so a list
+ * holding one is never judged together.
+ */
+export function stoppedTogether(stale: StaleLane[]): boolean {
+  if (stale.length < 2) return false;
+  if (stale.some((l) => l.unreadable || !Number.isFinite(l.ageMs))) return false;
+  const ages = stale.map((l) => l.ageMs);
+  return Math.max(...ages) - Math.min(...ages) <= STOPPED_TOGETHER_MS;
+}
+
 /**
  * The one clause every stale-lane alert uses to say how it knows (#1172).
  *

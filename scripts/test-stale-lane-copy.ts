@@ -1,5 +1,6 @@
-// The stale lane page says in plain words why a lane usually goes quiet, and the
-// runbook holds the per lane detail (#4168, #3468).
+// The stale lane page says what stopped and where to look; the runbook holds the
+// usual causes and the per lane detail (#4168, #3468). Since 2026-10-26 the core
+// lanes share ONE page: a Cloudflare cron incident posted six (Dan: "this is too much").
 //
 // It used to end "A mid-run CPU kill on the shared cron invocation is the usual cause
 // (#760): check the Worker's outcome for exceededCpu, and the cron_<lane> lock." Since
@@ -17,50 +18,97 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-stale-lane-copy.ts
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { coreLaneAlertText, STALE_LANE_RUNBOOK_SECTION } from "../src/lib/monitor/lane-copy.ts";
-import { LANE_NAMES, LANE_RUNS, LANE_STALE_BOUNDS_MS } from "../src/lib/monitor/health.ts";
+import { coreLanesAlertText, coreLanesRecoveryText, STALE_LANE_RUNBOOK_SECTION } from "../src/lib/monitor/lane-copy.ts";
+import { LANE_NAMES, LANE_RUNS, LANE_STALE_BOUNDS_MS, stoppedTogether, type StaleLane } from "../src/lib/monitor/health.ts";
 import { laneFieldName } from "../src/lib/monitor/lane-timing.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 // Built from code points, so this file holds neither character for the style gates to find.
 const LONG_DASHES = new RegExp(`[${String.fromCharCode(0x2014, 0x2013)}]`);
-const WAITED = "the next run then waited for the first to time out";
+const MIN = 60_000;
 
-const page = (lane: string) =>
-  coreLaneAlertText({
-    lane,
-    ageMs: 22 * 60_000,
-    maxStaleMs: LANE_STALE_BOUNDS_MS[lane as keyof typeof LANE_STALE_BOUNDS_MS] ?? 20 * 60_000,
-    unreadable: false,
+const lane = (name: string, ageMs: number, unreadable = false): StaleLane => ({
+  lane: name,
+  ageMs,
+  maxStaleMs: LANE_STALE_BOUNDS_MS[name as keyof typeof LANE_STALE_BOUNDS_MS] ?? 20 * MIN,
+  unreadable,
+});
+const page = (stale: StaleLane[], over: Partial<Parameters<typeof coreLanesAlertText>[0]> = {}) =>
+  coreLanesAlertText({
+    stale,
+    othersRunning: true,
+    poolGroupingStopped: false,
+    cloudflare: { kind: "unknown" },
+    ...over,
   });
+const clean = (text: string, what: string) =>
+  assert(!LONG_DASHES.test(text) && !/undefined|NaN|null|Infinity/.test(text), `${what}: clean copy (saw: ${text})`);
 
-// --- The page: plain causes, no interface.
-for (const lane of LANE_NAMES) {
-  const text = page(lane);
-  assert(text.startsWith(`The ${lane} cron lane has not run for 22 minutes`), `${lane}: opens with the lane and how long it has been quiet`);
-  assert(text.includes("Its work is not happening."), `${lane}: keeps what the silence means`);
-  assert(!/exceededCpu|CPU|#760/.test(text), `${lane}: no longer blames a CPU kill on a shared invocation`);
+// --- One lane: what stopped, how long, where to look. Nothing else (Dan, 2026-10-26: "this is too much").
+for (const name of LANE_NAMES) {
+  const text = page([lane(name, 22 * MIN)]);
+  assert(text.startsWith(`The ${name} cron lane has not run for 22 minutes`), `${name}: opens with the lane and how long it has been quiet`);
+  assert(text.includes(`"${STALE_LANE_RUNBOOK_SECTION}"`), `${name}: points at the runbook section by name`);
   assert(
-    /a deploy cancelled a run part way/.test(text) &&
-      /far from the database and ran slowly/.test(text) &&
-      /took longer than its schedule/.test(text),
-    `${lane}: names the three usual causes in plain words`,
+    !/scripts\/|tag=|_placement|lanes_near_db|_ms\b|\bcron_\w+|\block\b|lane timings|exceededCpu/i.test(text),
+    `${name}: carries no log command, field name or lock name (saw: ${text})`,
   );
-  assert(
-    !/scripts\/|tag=|_placement|lanes_near_db|_ms\b|\bcron_\w+|\block\b|lane timings/i.test(text),
-    `${lane}: carries no log command, field name or lock name (saw: ${text})`,
-  );
-  assert(text.includes(`"${STALE_LANE_RUNBOOK_SECTION}"`), `${lane}: points at the runbook section by name`);
-  // Waiting on the first run applies only where a lock makes the next run wait.
-  assert(text.includes(WAITED) === (LANE_RUNS[lane].lock !== null), `${lane}: says the next run waited only when the lane takes a lock`);
-  assert(!LONG_DASHES.test(text) && !/undefined|NaN|null/.test(text), `${lane}: clean copy`);
+  // The three usual causes moved to the runbook: repeated on every page they were most of the text.
+  assert(!/deploy cancelled|far from the database|longer than its schedule/.test(text), `${name}: no paragraph of causes`);
+  clean(text, name);
 }
+const unreadable = page([lane("sync", 0, true)]);
+assert(unreadable.includes("cannot be read") && !/has not run for \d/.test(unreadable), "an unreadable stamp says so and quotes no age");
 
-assert(page("bulk-reassign").includes(WAITED), "bulk-reassign takes a lock, so its next run waits");
-assert(!page("reroute-hold-sweep").includes(WAITED), "the hold sweep takes no lock of its own, so nothing waits on one");
-assert(!page("booking-reminders").includes(WAITED), "booking-reminders takes no lock");
-const unknown = page("some-new-lane");
-assert(!unknown.includes(WAITED) && unknown.includes(STALE_LANE_RUNBOOK_SECTION), "an unregistered lane invents no lock");
+// --- Several lanes: ONE page naming them all (2026-10-26, six pages for one Cloudflare incident).
+const tonight = [
+  lane("recompute", 16 * MIN + 2_000),
+  lane("reroute-hold-sweep", 16 * MIN + 1_000),
+  lane("selfheal", 16 * MIN + 1_000),
+  lane("outbox", 16 * MIN),
+  lane("sync", 15 * MIN + 59_000),
+];
+const five = page(tonight);
+assert(five.startsWith("5 cron lanes have not run for 16 minutes: recompute, reroute-hold-sweep, selfheal, outbox and sync."), `names every lane once (saw: ${five})`);
+eq((five.match(/runbook/g) ?? []).length, 1, "the runbook is named once, not once per lane");
+const spread = page([lane("recompute", 12 * MIN), lane("monitor", 25 * MIN)], { othersRunning: false });
+assert(spread.startsWith("2 cron lanes have not run for 12 to 25 minutes: recompute and monitor."), `quotes the range when ages differ (saw: ${spread})`);
+const mixed = page([lane("recompute", 12 * MIN), lane("sync", 0, true)]);
+assert(mixed.includes("recompute and sync") && /last-run record for sync cannot be read/.test(mixed), `an unreadable lane is named, not aged (saw: ${mixed})`);
+clean(five, "five lanes");
+clean(spread, "spread");
+clean(mixed, "mixed");
+
+// --- Stopped together while other lanes ran: the schedule or a deploy, not one lane. Measured, so said.
+assert(stoppedTogether(tonight), "five lanes stopping inside two seconds stopped together");
+assert(!stoppedTogether([lane("recompute", 12 * MIN), lane("monitor", 25 * MIN)]), "thirteen minutes apart is not together");
+assert(!stoppedTogether([lane("sync", 16 * MIN)]), "one lane is not a group");
+assert(!stoppedTogether([lane("sync", 16 * MIN), lane("outbox", 0, true)]), "an unreadable stamp cannot be placed in time");
+const together = /They stopped together while other lanes kept running/;
+// Dan, 2026-10-26: shortened, since it had become the longest line on the page.
+assert(five.includes("They stopped together while other lanes kept running: a schedule or deploy problem, not one lane."), `tonight's page says they stopped together while others ran, briefly (saw: ${five})`);
+assert(!together.test(page(tonight, { othersRunning: false })), "not claimed when nothing else was running to compare with");
+assert(!together.test(spread), "not claimed for lanes that stopped apart");
+
+// --- Cloudflare's status page: quoted when it has an incident, said when it has none, silent when unread.
+const incident = page(tonight, {
+  cloudflare: { kind: "incident", names: ["Delayed, missed, and duplicated Workers Cron Triggers"] },
+});
+assert(incident.includes(`Cloudflare's status page has an open incident: "Delayed, missed, and duplicated Workers Cron Triggers".`), `quotes the incident (saw: ${incident})`);
+const two = page(tonight, { cloudflare: { kind: "incident", names: ["A", "B"] } });
+assert(two.includes(`open incidents: "A" and "B".`), `names each incident (saw: ${two})`);
+assert(page(tonight, { cloudflare: { kind: "clear" } }).includes("Cloudflare's status page shows no open Workers incident."), "says when Cloudflare reports nothing");
+assert(!/Cloudflare/.test(page(tonight)), "an unread status page claims nothing either way (L11)");
+
+// --- The pool grouping it explains rides on this page rather than posting its own.
+assert(page(tonight, { poolGroupingStopped: true }).includes("The pool grouping, which the recompute lane publishes, has stopped with it."), "names the pool grouping as recompute's");
+assert(page([lane("sync", 12 * MIN)], { poolGroupingStopped: true }).includes("The pool grouping publish has stopped too."), "without recompute it is only named");
+assert(!/pool grouping/.test(five), "no pool grouping line while it is publishing");
+
+// --- The all-clear names nothing it cannot know and asks for nothing.
+const recovery = coreLanesRecoveryText();
+assert(/running again/.test(recovery) && /No action is needed\./.test(recovery), "the all-clear says the lanes are running and nothing is needed");
+clean(recovery, "recovery");
 
 // --- The runbook section the page names holds the per lane detail, from the registry.
 const runbook = readFileSync(join(import.meta.dirname, "..", "docs/alerts-runbook.md"), "utf8");

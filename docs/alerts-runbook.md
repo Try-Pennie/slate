@@ -37,7 +37,7 @@ run hours behind (#1533). Filter on `tag=` (see `docs/cloudflare-platform-notes.
 
 ## A lane or schedule has gone quiet
 
-Keys: `cron_lane_stale:*`, `monitor_step_failing:*`, `completion_sweep_failing`,
+Keys: `cron_lanes_stale`, `cron_lane_stale:*`, `monitor_step_failing:*`, `completion_sweep_failing`,
 `webhook_retry_sweep_failing`, `demo_auto_cancel_failing`, `sync_staleness`, `detector_parked`, `detector_unpark:*`,
 `migration_version_lag`, `volume_count_unreadable`, `audit_write_failed`.
 
@@ -64,10 +64,25 @@ receipt that did not land; DEPLOY.md, "When records stop arriving", maps each re
 its fix. If the page says shipping was NEVER confirmed, the usual cause is a tail worker
 not redeployed since the receipt shipped (`npx wrangler deploy -c wrangler.log-tail.jsonc`).
 
+The Worker cron lanes (`LANE_RUNS`) share ONE page, `cron_lanes_stale`, naming every
+quiet lane (2026-10-26: a Cloudflare cron incident had posted one page per lane). When
+they stopped within a minute of each other while other lanes kept running, the page
+says so: their shared schedule stopped firing or a deploy cancelled their runs. It also
+quotes any open Workers incident on Cloudflare's status page, or says there is none, and
+says nothing about Cloudflare when that page could not be read. A Cloudflare incident
+is not ours to fix: the lanes resume on their own when it ends, and the page clears
+once every core lane has stamped inside its bound. The pool grouping page waits while
+this one fires (`ALERT_FOLDS`), because only the recompute lane publishes it.
+
+The usual causes of a single quiet lane, which the page no longer lists: a deploy
+cancelled a run part way, a run went to a server far from the database and ran slowly,
+or a run took longer than its schedule (and, for a lane that takes a lock, the next run
+then waited for the first to time out).
+
 **First checks.**
-- For a Worker lane (`cron_lane_stale:<lane>`), read the dispatcher's `lane timings`
+- For a Worker lane (`cron_lanes_stale`), read the dispatcher's `lane timings`
   lines across the gap: `scripts/logs.ts "tag=cron" --lines --from <iso> --to <iso>`
-  (#4168). They show the three causes the page names, seen since each lane became its
+  (#4168). They show the three usual causes listed above, seen since each lane became its
   own placed invocation (#3693): a gradual deploy landing mid run cancels it (the
   invocation ends `canceled`; compare the deploy time with the gap), and the next tick
   then skips while the cancelled run's lock has not expired; `<lane>_placement` far

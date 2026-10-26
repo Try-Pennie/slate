@@ -25,6 +25,14 @@ const heartbeat = vi.hoisted(() => ({
 
 vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
+// Cloudflare's status page, read for the combined page (2026-10-26). Replaced so no
+// test reaches the network; the reader itself is pinned in scripts/test-cloudflare-status.ts.
+const cloudflare = vi.hoisted(() => ({
+  read: vi.fn(async (): Promise<{ kind: "incident"; names: string[] } | { kind: "clear" } | { kind: "unknown" }> => ({
+    kind: "unknown",
+  })),
+}));
+vi.mock("@/lib/monitor/cloudflare-status", () => ({ readCloudflareCronStatus: cloudflare.read }));
 // #2875: the "cal.com retired" switch, read through its per isolate cache. Only the
 // read is replaced; which lanes belong to cal.com stays the real module's answer.
 const retirement = vi.hoisted(() => ({
@@ -202,6 +210,7 @@ beforeEach(() => {
   dispatch.resolveAlert.mockResolvedValue(true);
   heartbeat.readAllHeartbeatMs.mockResolvedValue(healthy());
   retirement.load.mockResolvedValue(false);
+  cloudflare.read.mockResolvedValue({ kind: "unknown" });
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(console, "info").mockImplementation(() => {});
 });
@@ -559,14 +568,14 @@ describe("alertOnStaleLanes (#803)", () => {
     heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "bulk-reassign": ago(25 * MIN) });
     const { stale } = await alertOnStaleLanes();
     expect(stale.map((l) => l.lane)).toContain("bulk-reassign");
-    const call = dispatch.sendThrottledAlert.mock.calls.find(
-      (c) => c[0] === "cron_lane_stale:bulk-reassign",
-    );
-    expect(call).toBeTruthy();
+    const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === "cron_lanes_stale");
+    expect(call?.[2]).toContain("bulk-reassign");
   });
 
-  it("alerts on each lane that went quiet, keyed per lane", async () => {
-    // Two lanes stopped stamping together while sync kept going.
+  // 2026-10-26: Cloudflare stopped firing the every minute cron and five lanes went quiet
+  // in the same second. They posted five identical pages (six with the pool grouping),
+  // which Dan called "too much". One cause is one page, naming every lane in it.
+  it("pages ONCE for every core lane that went quiet, naming them all", async () => {
     heartbeat.readAllHeartbeatMs.mockResolvedValue({
       ...healthy(),
       recompute: ago(25 * MIN),
@@ -576,18 +585,90 @@ describe("alertOnStaleLanes (#803)", () => {
     const { stale } = await alertOnStaleLanes();
 
     expect(stale.map((l) => l.lane).sort()).toEqual(["outbox", "recompute"]);
-    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(2);
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+    const [key, , text, opts] = dispatch.sendThrottledAlert.mock.calls[0] as unknown as [
+      string,
+      number,
+      string,
+      { subjects: string[] },
+    ];
+    expect(key).toBe("cron_lanes_stale");
+    expect(text).toContain("recompute");
+    expect(text).toContain("outbox");
+    // The lanes are the page's subjects, so a THIRD lane going quiet is a change that
+    // posts at once rather than waiting out a day's repeat (#3801).
+    expect([...opts.subjects].sort()).toEqual(["outbox", "recompute"]);
+  });
 
-    const calls = dispatch.sendThrottledAlert.mock.calls as unknown as [string, number, string][];
-    const keys = calls.map((c) => c[0]);
-    // Per-lane keys: one dead lane must not throttle away the alert for another.
-    expect(new Set(keys).size).toBe(2);
-    expect(keys.every((k) => k.includes("recompute") || k.includes("outbox"))).toBe(true);
-    // The text has to name the lane and how long it has been quiet, or the alert
-    // is not actionable at 3am.
-    const texts = calls.map((c) => c[2]).join(" ");
-    expect(texts).toContain("recompute");
-    expect(texts).toContain("outbox");
+  it("says the lanes stopped together and quotes Cloudflare's incident when there is one", async () => {
+    const stoppedAt = ago(16 * MIN);
+    heartbeat.readAllHeartbeatMs.mockResolvedValue({
+      ...healthy(),
+      sync: stoppedAt,
+      recompute: stoppedAt,
+      outbox: stoppedAt,
+      selfheal: stoppedAt,
+      "reroute-hold-sweep": stoppedAt,
+    });
+    cloudflare.read.mockResolvedValueOnce({ kind: "incident", names: ["Delayed, missed, and duplicated Workers Cron Triggers"] });
+
+    await alertOnStaleLanes();
+
+    const text = dispatch.sendThrottledAlert.mock.calls[0][2];
+    expect(text).toMatch(/^5 cron lanes have not run for 16 minutes/);
+    expect(text).toContain("They stopped together while other lanes kept running");
+    expect(text).toContain(`"Delayed, missed, and duplicated Workers Cron Triggers"`);
+  });
+
+  it("reads Cloudflare's status page only when a core lane is quiet", async () => {
+    heartbeat.readAllHeartbeatMs.mockResolvedValue(healthy());
+    await alertOnStaleLanes();
+    expect(cloudflare.read).not.toHaveBeenCalled();
+  });
+
+  it("names a stopped pool grouping on the lanes' page when recompute is among them", async () => {
+    heartbeat.readAllHeartbeatMs.mockResolvedValue({
+      ...healthy(),
+      recompute: ago(16 * MIN),
+      "pool-grouping": ago(16 * MIN),
+    });
+    await alertOnStaleLanes();
+    const lanesPage = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === "cron_lanes_stale");
+    expect(lanesPage?.[2]).toContain("The pool grouping, which the recompute lane publishes, has stopped with it.");
+  });
+
+  // Review of 33522ff: the pool grouping's own page waits on this one (ALERT_FOLDS), so if
+  // it stopped AFTER this page posted and nothing marked that as new, nobody would hear of
+  // it until the daily repeat. It is a subject, so its joining is a change that posts at once.
+  it("names a stopped pool grouping as a subject, so it joining the page posts at once", async () => {
+    heartbeat.readAllHeartbeatMs.mockResolvedValue({
+      ...healthy(),
+      recompute: ago(16 * MIN),
+      "pool-grouping": ago(16 * MIN),
+    });
+    await alertOnStaleLanes();
+    const lanesPage = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === "cron_lanes_stale") as unknown as
+      | [string, number, string, { subjects: string[] }]
+      | undefined;
+    expect(lanesPage?.[3].subjects).toEqual(["recompute", "pool-grouping"]);
+  });
+
+  it("clears the lanes' page once every core lane is stamping again", async () => {
+    heartbeat.readAllHeartbeatMs.mockResolvedValue(healthy());
+    dispatch.existingAlertStateKeys.mockResolvedValueOnce(new Set(["alert_firing:cron_lanes_stale"]));
+
+    await alertOnStaleLanes();
+
+    expect(dispatch.resolveAlert).toHaveBeenCalledWith("cron_lanes_stale", expect.stringContaining("running again"));
+  });
+
+  it("does not clear the lanes' page while any core lane is still quiet", async () => {
+    heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), outbox: ago(25 * MIN) });
+    dispatch.existingAlertStateKeys.mockResolvedValue(new Set(["alert_firing:cron_lanes_stale"]));
+
+    await alertOnStaleLanes();
+
+    expect(dispatch.resolveAlert).not.toHaveBeenCalledWith("cron_lanes_stale", expect.anything());
   });
 
   it("does not alert on a lane that has never stamped (fresh deploy, not a death)", async () => {
@@ -619,7 +700,7 @@ describe("alertOnStaleLanes (#803)", () => {
     await expect(alertOnStaleLanes()).resolves.toEqual({ judged: true, stale: [] });
   });
 
-  it("swallows an alert failure, and still reports the other stale lanes", async () => {
+  it("swallows an alert failure, and still reports every stale lane", async () => {
     heartbeat.readAllHeartbeatMs.mockResolvedValue({
       ...healthy(),
       recompute: ago(25 * MIN),
@@ -629,9 +710,9 @@ describe("alertOnStaleLanes (#803)", () => {
 
     const { stale } = await alertOnStaleLanes();
 
-    // A failed Slack post must not hide the detection or skip the second lane.
+    // A failed Slack post must not hide the detection or throw into the calling lane.
     expect(stale.map((l) => l.lane).sort()).toEqual(["outbox", "recompute"]);
-    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(2);
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
   });
 
   // #525: the booking-smoke canary is a scheduled GitHub Actions workflow that
