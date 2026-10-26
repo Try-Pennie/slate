@@ -187,7 +187,11 @@ export interface ViolationSummary {
   document: string;
   blocked: string;
   referrer: string;
-  /** The script that tried the refused thing, `url:line:column`, or `(none)`. */
+  /**
+   * The script the browser credited, `url:line:column`, or `(none)`. For a refused eval or
+   * inline script that is the script that tried it; for a refused load (a font, an image)
+   * it is only the script that was running when the load fired, not what asked for it (L799).
+   */
   source: string;
   /** Whether the report named that source at all. The one place `(none)` is decided. */
   sourceNamed: boolean;
