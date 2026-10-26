@@ -418,9 +418,10 @@ describe("cspViolationPage (#2575)", () => {
 describe("the injected passive third-party class (#3417)", () => {
   // A FONT refused from a third-party host no Slate page requests, with no named source,
   // is almost always an extension and blocked nothing a lead needed, so it is logged and
-  // does NOT page. Only font-src is suppressed: a named script, a Slate-own-origin refusal,
-  // an ACTIVE directive (script/connect/frame), and the other passive exfil channels
-  // (img/style/media) all still page at once.
+  // does NOT page. Only font-src is suppressed: a named source (unless it is a Slate page
+  // script under /_next/static/ on the page's own origin, #4063, below), a Slate-own-origin
+  // refusal, an ACTIVE directive (script/connect/frame), and the other passive exfil
+  // channels (img/style/media) all still page at once.
   const report = (over: Record<string, unknown> = {}) => ({
     "csp-report": {
       "document-uri": "https://slate.trypennie.app/book?xbc=411",
