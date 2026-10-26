@@ -37,19 +37,64 @@ export type LogFields = Record<string, string | number | boolean | null | undefi
 
 const SERVICE = "slate";
 
-/** `key=value`, quoting strings so a value with spaces stays one field. Numbers
- *  and booleans go unquoted so they read as the scalars they are. */
-function renderValue(value: string | number | boolean): string {
-  if (typeof value === "string") return `"${value.replace(/"/g, '\\"')}"`;
+/**
+ * What has to be escaped inside a quoted value: the backslash itself, the quote,
+ * and every character that a log viewer may draw as a line break or not at all
+ * (C0 and C1 controls, DEL, and the two Unicode line and paragraph separators).
+ */
+const NEEDS_ESCAPE = /[\\"\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
+
+const SHORT_ESCAPES: Readonly<Record<string, string>> = {
+  "\\": "\\\\",
+  '"': '\\"',
+  "\n": "\\n",
+  "\r": "\\r",
+  "\t": "\\t",
+};
+
+function escapeChar(ch: string): string {
+  return SHORT_ESCAPES[ch] ?? `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
+}
+
+/**
+ * `key=value`, quoting strings so a value with spaces stays one field. Numbers
+ * and booleans go unquoted so they read as the scalars they are.
+ *
+ * A string can be a stranger's (the public beacons log a CSP report's URLs and the
+ * browser's user agent), so it is escaped in ONE pass where the backslash is its
+ * own case (#4237, L809). Escaping only the quote let `x\" paged=true` render as
+ * `x\\" paged=true`, which a reader takes as an escaped backslash, then a closing
+ * quote, then a forged `paged=true` field; and a raw line feed forged a whole line.
+ * A value with none of these characters renders exactly as it always did, so no
+ * existing query changes. `src/lib/log-shipping/parse-line.ts` reads it back.
+ */
+export function renderValue(value: string | number | boolean): string {
+  if (typeof value === "string") return `"${value.replace(NEEDS_ESCAPE, escapeChar)}"`;
   return String(value);
+}
+
+/** What a field key must look like for `parseSlateLine` to read it back. */
+export const LOG_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** A key as written. Every key comes from code today; one built from data later is
+ *  made an identifier rather than allowed to split or forge a field (#4237). */
+function safeKey(key: string): string {
+  if (LOG_KEY.test(key)) return key;
+  const cleaned = key.replace(/[^A-Za-z0-9_]/g, "_");
+  return /^[A-Za-z_]/.test(cleaned) ? cleaned : `_${cleaned}`;
+}
+
+/** The tag is written bare, so it may hold nothing that ends or escapes a field. */
+function safeTag(tag: string): string {
+  return tag.replace(/[\s="]/g, "_").replace(NEEDS_ESCAPE, "_");
 }
 
 /** The line itself, so it can be asserted on without spying on the console. */
 export function formatLine(tag: LogTag, fields: LogFields): string {
-  const parts = [`${SERVICE} tag=${tag}`];
+  const parts = [`${SERVICE} tag=${safeTag(tag)}`];
   for (const [key, value] of Object.entries(fields)) {
     if (value === null || value === undefined) continue;
-    parts.push(`${key}=${renderValue(value)}`);
+    parts.push(`${safeKey(key)}=${renderValue(value)}`);
   }
   return parts.join(" ");
 }
