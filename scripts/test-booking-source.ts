@@ -63,6 +63,9 @@ const DECIDED: Record<string, string | null> = {
   "api-canary": null,
   // #3543: a booking Marcia made through her booking MCP endpoint, one per MCP channel.
   "mcp-marcia": null,
+  // #4200: the booking page scheduling coordinators use while on the phone with the
+  // customer. A person's door, not a landing page, so no cal.com event type.
+  coordinator: null,
 };
 
 eq(BOOKING_SOURCE_PARAM, "source", "the URL key a page sets is `source`");

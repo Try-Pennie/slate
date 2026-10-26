@@ -39,6 +39,12 @@
  * landing page gone dark. A machine source is not page traffic and is not unsourced
  * (`page-volume.ts`). A page the caller DOES name still wins, being the finer fact.
  *
+ * The SIXTH kind is a person's door (#4200): `coordinator`, the booking page a
+ * scheduling coordinator uses while on the phone with the customer. It is not a
+ * machine, but it is not a landing page either, so it is a STAFF source
+ * (`STAFF_SOURCES`), and machine and staff sources together are the NON PAGE sources
+ * (`isNonPageSource`) the per page volume alarm leaves out of page traffic.
+ *
  * The list, the database constraint (`bookings_source_check`) and this mapping
  * agree by test: `scripts/test-booking-source.ts`.
  */
@@ -112,13 +118,31 @@ export function isMachineSource(source: string | null): source is MachineSource 
   return source !== null && MACHINE_SET.has(source);
 }
 
+/**
+ * A source a PERSON records on Pennie's side (#4200), set only by that page's own
+ * server code, never read off a link.
+ */
+export const STAFF_SOURCES = ["coordinator"] as const;
+export type StaffSource = (typeof STAFF_SOURCES)[number];
+export const SOURCE_COORDINATOR: StaffSource = "coordinator";
+
+/** Every source that names no landing page: the machine callers and the staff pages. */
+export type NonPageSource = MachineSource | StaffSource;
+export const NON_PAGE_SOURCES: readonly NonPageSource[] = [...MACHINE_SOURCES, ...STAFF_SOURCES];
+const NON_PAGE_SET: ReadonlySet<string> = new Set(NON_PAGE_SOURCES);
+
+/** Whether a stored source names a machine caller or a staff page, so no landing page sent it. */
+export function isNonPageSource(source: string | null): source is NonPageSource {
+  return source !== null && NON_PAGE_SET.has(source);
+}
+
 /** Every value `bookings.source` can hold (besides null for older rows). */
-export type BookingSource = PageSource | typeof SOURCE_NOT_GIVEN | typeof SOURCE_UNRECOGNISED | MachineSource;
+export type BookingSource = PageSource | typeof SOURCE_NOT_GIVEN | typeof SOURCE_UNRECOGNISED | NonPageSource;
 export const BOOKING_SOURCES: readonly BookingSource[] = [
   ...PAGE_SOURCES,
   SOURCE_NOT_GIVEN,
   SOURCE_UNRECOGNISED,
-  ...MACHINE_SOURCES,
+  ...NON_PAGE_SOURCES,
 ];
 
 /** The seven cal.com event types the routing forms booked into. */
@@ -244,6 +268,8 @@ export const SOURCE_DETAILS: Record<BookingSource, SourceDetail> = {
   "api-canary": { page: "The booking API, called by the smoke canary", legacyEventType: null, links: [] },
   // #3543: Marcia's booking MCP endpoint, not a page either.
   "mcp-marcia": { page: "Marcia, through her booking MCP endpoint", legacyEventType: null, links: [] },
+  // #4200: a person's door, not a page a lead opens.
+  coordinator: { page: "The coordinator booking page", legacyEventType: null, links: [] },
 };
 
 /** How much of an unrecognised value is handed back for the log. */

@@ -127,10 +127,10 @@ const refused = (m: Move): string | null => pg.verboseError(moveSql(m));
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const count = (table: string, where: string) => sql(`select count(*) from ${table} where ${where};`);
 const outboxRows = (booking: string) => count("booking_outbox", `booking_id = '${booking}'`);
-/** Every column the move writes, so "wrote nothing" is measured, never assumed. */
+/** Every column the move writes, allow_double_book included (0206), so "wrote nothing" is measured, never assumed. */
 const state = (booking: string) =>
   sql(`select concat_ws('|', starts_at, ends_at, assigned_user_id, agent_name, agent_email, status, gcal_event_id,
-         reschedule_seq, coalesce(routing_trace::text, '-')) from bookings where id = '${booking}';`);
+         reschedule_seq, coalesce(routing_trace::text, '-'), allow_double_book) from bookings where id = '${booking}';`);
 const firstLine = (e: string | null) => e?.split("\n").find((l) => /ERROR/.test(l)) ?? e?.split("\n")[0] ?? "it ran";
 
 try {
@@ -169,7 +169,7 @@ try {
     assert(UUID.test(answer), `a move to another advisor answers its outbox row's id (got ${answer})`);
     eq(state(id),
       sql(`select concat_ws('|', '${at("13:00")}'::timestamptz, '${at("13:20")}'::timestamptz, '${B}', 'Agent b', 'b@example.com',
-             'rescheduled', '${newEvent(m)}', 1, ${lit(trace)}::text);`),
+             'rescheduled', '${newEvent(m)}', 1, ${lit(trace)}::text, false);`),
       "the booking carries the new time, advisor, event id, ordinal and trace, and reads as rescheduled");
     eq(outboxRows(id), "1", "exactly one outbox row for the booking");
     eq(sql(`select concat_ws('|', id, booking_id, action, status, attempts, coalesce(lease_until::text, '-'), coalesce(next_attempt_at::text, '-'))

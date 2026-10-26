@@ -314,6 +314,29 @@ export async function readDemotionRerouteEnabled(): Promise<boolean | null> {
 }
 
 /**
+ * May a coordinator place a call on the placeholder advisor? (#4200, migration 0207.)
+ *
+ * The go live switch for placeholder bookings, read on every coordinator booking. It
+ * lets a call stack on the placeholder, so an unreadable switch is never read as "on".
+ * An absent settings row is a real answer (nobody has turned it on) and is off. A read
+ * ERROR answers **null**, never throwing, so the booking path can refuse it by name
+ * rather than read it as a switch somebody left off.
+ */
+export async function readPlaceholderBookingEnabled(): Promise<boolean | null> {
+  try {
+    const db = supabaseAdmin();
+    const row = unwrap(
+      await db.from("booking_settings").select("placeholder_booking_enabled").eq("id", 1).maybeSingle(),
+      "booking_settings.placeholder_booking_enabled",
+    ) as Pick<BookingSettings, "placeholder_booking_enabled"> | null;
+    return row?.placeholder_booking_enabled === true;
+  } catch (err) {
+    log.error("booking-settings", { msg: "placeholder booking switch read failed, treating as unreadable" }, err);
+    return null;
+  }
+}
+
+/**
  * The kill switch AND when it was last thrown, for the monitor lane (#2366).
  *
  * A deliberate second read rather than a widening of `readPublicBookingPaused`
