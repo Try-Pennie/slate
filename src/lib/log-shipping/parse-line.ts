@@ -9,8 +9,9 @@
  * fields as JSON, numbers as numbers.
  *
  * The grammar is exactly what `formatLine` emits: space separated `key=value`,
- * strings double quoted with `\"` escaping a quote inside, numbers and booleans
- * bare. A line that does not start with `slate ` is not ours (a library's own
+ * strings double quoted with a backslash escaping a backslash, a quote, a line
+ * break, a tab or (as `\uXXXX`) any other control character inside (#4237),
+ * numbers and booleans bare. A line that does not start with `slate ` is not ours (a library's own
  * console line, a framework warning) and returns null, so the caller ships it as
  * plain text rather than inventing fields for it.
  */
@@ -38,9 +39,10 @@ export function parseSlateLine(line: string): ParsedFields | null {
       let out = "";
       i++;
       while (i < n && line[i] !== '"') {
-        if (line[i] === "\\" && line[i + 1] === '"') {
-          out += '"';
-          i += 2;
+        if (line[i] === "\\" && i + 1 < n) {
+          const [text, width] = unescape(line, i + 1);
+          out += text;
+          i += 1 + width;
         } else {
           out += line[i];
           i++;
@@ -59,6 +61,31 @@ export function parseSlateLine(line: string): ParsedFields | null {
     if (KEY.test(key)) fields[key] = value;
   }
   return fields;
+}
+
+const SHORT_UNESCAPES: Readonly<Record<string, string>> = {
+  "\\": "\\",
+  '"': '"',
+  n: "\n",
+  r: "\r",
+  t: "\t",
+};
+
+/**
+ * The text an escape stands for, and how many characters after the backslash it
+ * used. `formatLine` writes `\\`, `\"`, `\n`, `\r`, `\t` and `\uXXXX` (#4237). Any
+ * other pair is kept as written, backslash included, which is how a line from
+ * before #4237 holding a lone backslash (a Windows path) still reads as it was.
+ */
+function unescape(line: string, at: number): [string, number] {
+  const ch = line[at] ?? "";
+  const short = SHORT_UNESCAPES[ch];
+  if (short !== undefined) return [short, 1];
+  if (ch === "u") {
+    const hex = line.slice(at + 1, at + 5);
+    if (/^[0-9a-fA-F]{4}$/.test(hex)) return [String.fromCharCode(parseInt(hex, 16)), 5];
+  }
+  return [`\\${ch}`, 1];
 }
 
 /** An unquoted value is a number or a boolean, as `formatLine` wrote it. Anything

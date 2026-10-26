@@ -98,12 +98,20 @@ function redactFields(fields: ParsedFields): ParsedFields {
   const out: ParsedFields = {};
   for (const [key, value] of Object.entries(fields)) {
     // The KEY through the same scrub as the value (review of #3160): a call site
-    // can build a key from data. The line was already scrubbed whole before it was
-    // parsed, so this is the second of two guards, kept so neither depends on the
-    // other staying in place.
-    out[redactText(key)] = typeof value === "string" ? cap(redactText(value), TEXT_LIMITS.field) : value;
+    // can build a key from data.
+    out[redactText(key)] = typeof value === "string" ? cap(redactText(value), TEXT_LIMITS.field) : redactScalar(value);
   }
   return out;
+}
+
+/** A number is scrubbed as the text it was written as: a ten digit phone parses as
+ *  a number and must still leave as the marker (review of #3160). One the scrub
+ *  leaves alone stays a number, so Better Stack can still chart it. */
+function redactScalar(value: number | boolean): string | number | boolean {
+  if (typeof value !== "number") return value;
+  const written = String(value);
+  const scrubbed = redactText(written);
+  return scrubbed === written ? value : scrubbed;
 }
 
 /** Map a console level onto the three Better Stack treats as severities. */
@@ -155,11 +163,13 @@ export function recordsFromTraces(items: readonly TraceItemLike[]): ShippedRecor
     for (const line of item.logs) {
       const args = Array.isArray(line.message) ? line.message : [line.message];
       const text = args.map(argText).join(" ");
-      // Scrubbed BEFORE it is parsed: the parser turns a bare value into a number,
-      // and a ten digit phone that became a number would never meet the digit scrub
-      // (review of #3160). Every marker is one word with no quote, so the scrubbed
-      // line still parses as the same fields.
-      const parsed = typeof args[0] === "string" ? parseSlateLine(redactText(args[0])) : null;
+      // Parsed AS WRITTEN, then scrubbed field by field (#4237). Scrubbing the whole
+      // line first let a redaction end on the backslash of an escaped quote (a token
+      // path or a query string runs up to the quote), which handed the parser a
+      // closed quote and whatever a stranger wrote after it as forged fields. A
+      // number is scrubbed too (`redactFields`), so a ten digit phone that parsed
+      // as a number still meets the digit scrub (review of #3160).
+      const parsed = typeof args[0] === "string" ? parseSlateLine(args[0]) : null;
       const record: ShippedRecord = {
         ...base,
         dt: iso(line.timestamp),

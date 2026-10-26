@@ -54,6 +54,62 @@ describe("formatLine", () => {
   });
 });
 
+// #4237 (L809): the public beacons log strings a stranger controls. A value has to
+// stay ONE field on ONE line however it is spelled, or a forged report can append
+// `paged=true` to a csp-report line, or a whole fake line, and mislead whoever
+// reads the logs during an incident.
+describe("formatLine with a value a stranger wrote (#4237)", () => {
+  /** The keys a line holds, read the way any reader of `key="value"` reads it: a
+   *  backslash escapes the next character, and a quote ends the value. */
+  function keysOf(line: string): string[] {
+    const keys: string[] = [];
+    const field = / ([A-Za-z_][A-Za-z0-9_]*)=("(?:\\.|[^"\\])*"|[^\s"]\S*)/g;
+    for (const m of line.matchAll(field)) keys.push(m[1]!);
+    return keys;
+  }
+
+  const BACKSLASH = "\u005c";
+  const LF = "\u000a";
+  const CR = "\u000d";
+
+  it("keeps a backslash then a quote inside the value, so no forged field appears", () => {
+    const forged = `x${BACKSLASH}" paged=true`;
+    const line = formatLine("csp-report", { blocked: forged, paged: false });
+    expect(keysOf(line)).toEqual(["tag", "blocked", "paged"]);
+    expect(line).toBe('slate tag=csp-report blocked="x\\\\\\" paged=true" paged=false');
+  });
+
+  it("keeps a value that ends in a backslash from swallowing the next field", () => {
+    const line = formatLine("t", { a: `ends${BACKSLASH}`, b: 1 });
+    expect(keysOf(line)).toEqual(["tag", "a", "b"]);
+  });
+
+  it("never lets a line feed or a carriage return start a second line", () => {
+    const forged = `x${LF}slate tag=csp-report paged=true${CR}${LF}more`;
+    const line = formatLine("csp-report", { document: forged, paged: false });
+    expect(line).not.toMatch(/[\r\n]/);
+    expect(line.split(LF)).toHaveLength(1);
+    expect(keysOf(line)).toEqual(["tag", "document", "paged"]);
+    expect(line).toBe('slate tag=csp-report document="x\\nslate tag=csp-report paged=true\\r\\nmore" paged=false');
+  });
+
+  it("writes a tab and every other control character as an escape, never raw", () => {
+    const line = formatLine("t", { v: `a\u0009b\u0000c\u001bd\u007fe\u2028f` });
+    expect(line).toBe('slate tag=t v="a\\tb\\u0000c\\u001bd\\u007fe\\u2028f"');
+    expect(line).not.toMatch(/[\u0000-\u001f\u007f\u2028\u2029]/);
+  });
+
+  it("renders ordinary values exactly as before, so no existing log query changes", () => {
+    expect(formatLine("t", { msg: "lane timings", url: "https://slate.trypennie.app/book?xbc=411#x" })).toBe(
+      'slate tag=t msg="lane timings" url="https://slate.trypennie.app/book?xbc=411#x"',
+    );
+    expect(formatLine("t", { msg: 'he said "hi"' })).toBe('slate tag=t msg="he said \\"hi\\""');
+    expect(formatLine("t", { msg: "caf\u00e9 \u2192 ok", n: 3, ok: true })).toBe(
+      'slate tag=t msg="caf\u00e9 \u2192 ok" n=3 ok=true',
+    );
+  });
+});
+
 describe("log", () => {
   it("routes info to console.info (never console.log, which Cloudflare stores with no level)", () => {
     log.info("recompute", { msg: "refreshed", util: 42 });

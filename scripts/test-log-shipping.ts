@@ -199,6 +199,29 @@ const LINK_TOKEN = "9f".repeat(32);
   eq(parseSlateLine("Warning: something from a library"), null, "a line that is not ours is not parsed");
 }
 
+{
+  // #4237 (L809): a value a stranger wrote round trips as ONE field, whatever it
+  // holds, so a forged csp-report cannot plant `paged=true` among the parsed fields.
+  const BACKSLASH = "\u005c";
+  const nasty = [
+    `x${BACKSLASH}" paged=true`,
+    `ends in a backslash${BACKSLASH}`,
+    `${BACKSLASH}${BACKSLASH}" paged=true`,
+    `one\u000aslate tag=forged paged=true\u000d\u000atwo`,
+    `tab\u0009nul\u0000esc\u001bdel\u007fsep\u2028end`,
+    `${BACKSLASH}n is not a line feed, ${BACKSLASH}u0041 is not an A`,
+  ];
+  for (const value of nasty) {
+    const fields = parseSlateLine(formatLine("csp-report", { blocked: value, paged: false }));
+    eq(fields?.blocked, value, `the value round trips exactly: ${JSON.stringify(value)}`);
+    eq(fields?.paged, false, `and the real paged field is untouched: ${JSON.stringify(value)}`);
+    eq(Object.keys(fields ?? {}).sort().join(","), "blocked,paged,tag", `and no forged key appears: ${JSON.stringify(value)}`);
+  }
+  // A line written before #4237 held a lone backslash before an ordinary letter;
+  // it still reads as the text it was.
+  eq(parseSlateLine(String.raw`slate tag=t path="C:\Users\Dan"`)?.path, String.raw`C:\Users\Dan`, "an unknown escape keeps its backslash");
+}
+
 // ------------------------------------------------------------- records
 
 const VERSION = "7a1b2c3d-0000-4000-8000-123456789abc";
@@ -310,6 +333,37 @@ function fetchItem(url: string, logs: TraceItemLike["logs"], exceptions: TraceIt
   eq(fields.next, `/booking/manage/${REDACTED_SEGMENT}`, "and the value keeps its route");
   assert(!Object.keys(fields).some((k) => k.includes("5551234567")), "a phone number inside a field key does not ship");
   eq(fields.ok_key, 2, "an ordinary key and its number are untouched");
+}
+
+{
+  // #4237: the shipped copy. Redaction runs over the line, so a redaction that eats
+  // the backslash of an escaped quote (a token path or a query string ending at it)
+  // would hand the parser a closed quote and a forged field.
+  const records = recordsFromTraces([
+    fetchItem("/x", [
+      {
+        timestamp: 1,
+        level: "warn",
+        message: [
+          formatLine("csp-report", {
+            document: `/booking/manage/${MANAGE_TOKEN}" forged_path=1`,
+            blocked: `https://slate.trypennie.app/book?email=jane%40example.com" forged_query=1`,
+            paged: false,
+            not_paged: "report-only",
+            phone: 5551234567,
+          }),
+        ],
+      },
+    ]),
+  ]);
+  const fields = records.find((r) => r.kind === "log")?.fields as Record<string, unknown>;
+  eq(fields.forged_path, undefined, "a redacted token path cannot forge a field in what ships");
+  eq(fields.forged_query, undefined, "nor can a stripped query string");
+  eq(fields.paged, false, "and the real fields keep their values");
+  eq(Object.keys(fields).sort().join(","), "blocked,document,not_paged,paged,phone,tag", "and no other key appears");
+  assert(!JSON.stringify(records).includes(MANAGE_TOKEN), "the token is still redacted");
+  assert(!JSON.stringify(records).includes("jane%40"), "and the query string still stripped");
+  eq(fields.phone, "[phone]", "and a numeric phone field still carries the marker");
 }
 
 {

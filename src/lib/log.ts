@@ -37,10 +37,39 @@ export type LogFields = Record<string, string | number | boolean | null | undefi
 
 const SERVICE = "slate";
 
-/** `key=value`, quoting strings so a value with spaces stays one field. Numbers
- *  and booleans go unquoted so they read as the scalars they are. */
+/**
+ * What has to be escaped inside a quoted value: the backslash itself, the quote,
+ * and every character that a log viewer may draw as a line break or not at all
+ * (C0 and C1 controls, DEL, and the two Unicode line and paragraph separators).
+ */
+const NEEDS_ESCAPE = /[\\"\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
+
+const SHORT_ESCAPES: Readonly<Record<string, string>> = {
+  "\\": "\\\\",
+  '"': '\\"',
+  "\n": "\\n",
+  "\r": "\\r",
+  "\t": "\\t",
+};
+
+function escapeChar(ch: string): string {
+  return SHORT_ESCAPES[ch] ?? `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
+}
+
+/**
+ * `key=value`, quoting strings so a value with spaces stays one field. Numbers
+ * and booleans go unquoted so they read as the scalars they are.
+ *
+ * A string can be a stranger's (the public beacons log a CSP report's URLs and the
+ * browser's user agent), so it is escaped in ONE pass where the backslash is its
+ * own case (#4237, L809). Escaping only the quote let `x\" paged=true` render as
+ * `x\\" paged=true`, which a reader takes as an escaped backslash, then a closing
+ * quote, then a forged `paged=true` field; and a raw line feed forged a whole line.
+ * A value with none of these characters renders exactly as it always did, so no
+ * existing query changes. `src/lib/log-shipping/parse-line.ts` reads it back.
+ */
 function renderValue(value: string | number | boolean): string {
-  if (typeof value === "string") return `"${value.replace(/"/g, '\\"')}"`;
+  if (typeof value === "string") return `"${value.replace(NEEDS_ESCAPE, escapeChar)}"`;
   return String(value);
 }
 
