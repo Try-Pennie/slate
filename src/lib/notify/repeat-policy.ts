@@ -22,13 +22,22 @@
  * the rule by construction rather than by each send site remembering it (L621).
  */
 import { ALERT_KEYS, type MonitorAlertKey } from "@/lib/monitor/alert-keys";
-import { alertKindOf, isUrgentCondition } from "@/lib/notify/alert-catalog";
+import { alertKindOf, isChangeOnly, isUrgentCondition } from "@/lib/notify/alert-catalog";
 
 /** How long an unchanged condition waits before it posts again. */
 export const CONDITION_REPEAT_MS = 24 * 60 * 60_000;
 
 /** The same, for an urgent condition: leads are being lost while it lasts. */
 export const URGENT_CONDITION_REPEAT_MS = 60 * 60_000;
+
+/**
+ * How long an unchanged CHANGE ONLY incident (`CHANGE_ONLY_KEYS`) waits before it may
+ * post again: in practice never. Finite rather than infinite because a failed send's
+ * short retry stamp is worked out from the interval (`alertStampMs`), and a year is
+ * longer than any key here lives: each is one booking, settled when the call comes
+ * right and pruned once its time has passed.
+ */
+export const CHANGE_ONLY_HOLD_MS = 366 * 24 * 60 * 60_000;
 
 /**
  * What a send site says about the condition it is posting, so the dispatcher can
@@ -85,14 +94,20 @@ export function settingKeyFor(key: string): MonitorAlertKey | null {
   return BORROWED_SETTING[base] ?? null;
 }
 
-/** Whether the change and reminder rules apply to `key` at all: conditions only. */
+/**
+ * Whether the change rule applies to `key` at all: every condition, and the incidents
+ * named in `CHANGE_ONLY_KEYS` (Dan, 2026-10-26), which take the change rule without
+ * the reminder.
+ */
 export function isRepeatRuled(key: string): boolean {
-  return alertKindOf(key) === "condition";
+  return alertKindOf(key) === "condition" || isChangeOnly(key);
 }
 
 /**
  * How long `key` waits after its last post before an unchanged condition posts again.
  *
+ * - A change only incident (`CHANGE_ONLY_KEYS`): `CHANGE_ONLY_HOLD_MS`, whatever it is
+ *   handed, so no stored or coded cooldown can bring back a repeat nobody wanted.
  * - Not a condition: `cooldownMs`, exactly as before #3801.
  * - A tunable condition: `cooldownMs`, because the caller resolved it from the
  *   settings (a stored value, or the coded default in `MONITOR_DEFAULTS`, which
@@ -102,6 +117,7 @@ export function isRepeatRuled(key: string): boolean {
  *   otherwise never sooner than a day (a longer coded interval is kept).
  */
 export function reminderIntervalMs(key: string, cooldownMs: number): number {
+  if (isChangeOnly(key)) return CHANGE_ONLY_HOLD_MS;
   if (!isRepeatRuled(key)) return cooldownMs;
   const setting = settingKeyFor(key);
   const base = key.split(":")[0] ?? key;

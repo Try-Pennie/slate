@@ -239,7 +239,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
         ),
       clearStreak: () => clearFailureStreak(SESSION_CONVERGENCE_ALERT_KEY),
       // alert-key: departed_sessions_unconverged
-      notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+      notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
       // alert-key: departed_sessions_unconverged
       resolve: (key, text) => resolveAlert(key, text),
       cooldownMs: async () => (await loadMonitorCooldowns("agents")).departed_sessions_unconverged,
