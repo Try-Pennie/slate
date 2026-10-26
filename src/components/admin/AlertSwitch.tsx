@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * One alert switch on /admin/alerts with the one sentence its current state means
@@ -28,11 +28,27 @@ export function AlertSwitch({
   defaultChecked: boolean;
 }) {
   const [checked, setChecked] = useState(defaultChecked);
+  const box = useRef<HTMLInputElement>(null);
   const helpId = `${name}_help`;
+  // Two ways the box changes with no change event: the browser restoring an unsaved
+  // edit before the page hydrates, and the form being reset. Both are read from the
+  // box itself, so the sentence never describes the state the box is not in.
+  useEffect(() => {
+    const input = box.current;
+    if (!input) return;
+    setChecked(input.checked);
+    const form = input.form;
+    if (!form) return;
+    // The reset event fires BEFORE the fields go back, so read them a task later.
+    const onReset = () => setTimeout(() => setChecked(input.checked), 0);
+    form.addEventListener("reset", onReset);
+    return () => form.removeEventListener("reset", onReset);
+  }, []);
   return (
     <>
       <label className="mt-4 flex items-center gap-2 text-sm">
         <input
+          ref={box}
           type="checkbox"
           name={name}
           value="on"

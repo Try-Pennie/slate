@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // Access guard for the monitor-settings page (#676): unauthenticated to /login,
@@ -562,6 +562,24 @@ describe("AlertSettings alert toggles", () => {
     expect(box.checked).toBe(true);
     expect(helpFor(copy.name)).toBe(copy.on);
     await userEvent.click(box);
+    expect(helpFor(copy.name)).toBe(copy.off);
+  });
+
+  // A form reset changes the box without a change event, so the sentence must read
+  // the box itself afterwards rather than trust what the last click left behind.
+  it("puts the sentence back with the box when the form is reset", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await AlertSettingsPage(props));
+    const copy = alertSwitchCopy(null).find((s) => s.name === "awaiting_activation_armed")!;
+    const box = document.querySelector<HTMLInputElement>('input[name="awaiting_activation_armed"]')!;
+
+    await userEvent.click(box);
+    expect(helpFor(copy.name)).toBe(copy.on);
+    await act(async () => {
+      box.form!.reset();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(box.checked).toBe(false);
     expect(helpFor(copy.name)).toBe(copy.off);
   });
 
