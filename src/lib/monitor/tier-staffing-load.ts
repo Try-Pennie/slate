@@ -168,7 +168,7 @@ export async function loadTierCauseReads(input: {
         () =>
           db
             .from("busy_blocks")
-            .select("user_id, starts_at, ends_at, booking_id")
+            .select("id, user_id, starts_at, ends_at, booking_id")
             .in("user_id", ids)
             .lt("starts_at", new Date(input.windowEndMs + padMs).toISOString())
             .gt("ends_at", new Date(input.nowMs - padMs).toISOString()),

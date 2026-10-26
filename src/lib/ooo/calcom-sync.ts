@@ -72,7 +72,7 @@ export async function loadOtherApprovedWindows(args: {
       () =>
         supabaseAdmin()
           .from("ooo_requests")
-          .select("starts_at, ends_at")
+          .select("id, starts_at, ends_at")
           .eq("user_id", args.agentUserId)
           .eq("status", "approved")
           .neq("id", args.requestId)

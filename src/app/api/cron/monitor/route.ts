@@ -2369,7 +2369,7 @@ export async function GET(req: NextRequest) {
         selectAllPages<{ schedule_id: string }>(
           "monitor schedule-coverage rules",
           "id",
-          () => db.from("availability_rules").select("schedule_id"),
+          () => db.from("availability_rules").select("id, schedule_id"),
         ),
       ]);
       return missingScheduleAgents(
@@ -2434,7 +2434,7 @@ export async function GET(req: NextRequest) {
               "monitor unset-hours rules",
               "id",
               () =>
-                db.from("availability_rules").select("schedule_id, weekday, start_minute, end_minute"),
+                db.from("availability_rules").select("id, schedule_id, weekday, start_minute, end_minute"),
             ),
             db
               .from("organizations")
@@ -2538,7 +2538,7 @@ export async function GET(req: NextRequest) {
           const rows = await selectAllPages<{ user_id: string }>("monitor stranded-hires calendars", "id", () =>
             db
               .from("agent_calendars")
-              .select("user_id")
+              .select("id, user_id")
               .in("user_id", ids)
               .not("last_success_at", "is", null),
           );
@@ -2548,7 +2548,7 @@ export async function GET(req: NextRequest) {
           const rows = await selectAllPages<{ target_id: string }>("monitor stranded-hires audit", "id", () =>
             db
               .from("audit_log")
-              .select("target_id")
+              .select("id, target_id")
               .eq("action", "agent.bookable")
               .in("target_id", ids)
               .not("actor_id", "is", null),
@@ -2865,10 +2865,9 @@ export async function GET(req: NextRequest) {
           selectAllPages<RegalCandidate>("monitor regal call candidates", "id", () =>
             db
               .from("regal_call_events")
-              .select("agent_email, occurred_at")
+              .select("id, agent_email, occurred_at")
               .eq("reason", "candidate")
-              .gte("received_at", sinceIso)
-              .order("received_at", { ascending: true }),
+              .gte("received_at", sinceIso),
           ),
         loadUsers: () =>
           selectAllPages<RegalCaller>("monitor regal call roster", "id", () =>
@@ -3055,7 +3054,7 @@ export async function GET(req: NextRequest) {
           "monitor attribute-coverage manual members",
           "id",
           () =>
-            db.from("bucket_members").select("user_id").eq("active", true),
+            db.from("bucket_members").select("id, user_id").eq("active", true),
         ),
       ]);
       return findUnroutableAgents(agents, new Set(members.map((m) => m.user_id)));
@@ -3105,7 +3104,7 @@ export async function GET(req: NextRequest) {
           () =>
             db
               .from("agent_calendars")
-              .select("user_id, created_at, consecutive_failures, last_sync_error"),
+              .select("id, user_id, created_at, consecutive_failures, last_sync_error"),
         ),
       ]);
       return syncRotationCandidates(agents, cals);
@@ -3382,7 +3381,7 @@ export async function GET(req: NextRequest) {
       }>("monitor stranded coverage items", "id", () =>
         db
           .from("bulk_reassign_items")
-          .select("booking_id, status, job_id, updated_at")
+          .select("id, booking_id, status, job_id, updated_at")
           .in("status", ACTIONABLE_ITEM_STATUSES),
       );
       // #3485 part C: pending items are coverage work still in flight: a fresh sweep's items
@@ -3679,7 +3678,7 @@ export async function GET(req: NextRequest) {
       const blocks = await selectAllPages<ApprovedTimeOffBlock>("monitor time off busy blocks", "id", () =>
         db
           .from("busy_blocks")
-          .select("user_id, starts_at, ends_at, source, gcal_event_id, booking_id")
+          .select("id, user_id, starts_at, ends_at, source, gcal_event_id, booking_id")
           // in-chunk-ok: bounded by the roster, see the note on userIds above.
           .in("user_id", userIds)
           .gte("ends_at", new Date(now).toISOString())
@@ -3937,7 +3936,7 @@ export async function GET(req: NextRequest) {
         () =>
           db
             .from("bulk_reassign_jobs")
-            .select("out_user_id")
+            .select("id, out_user_id")
             .eq("status", "active")
             // in-chunk-ok: bounded by the roster, see the note on userIds above.
             .in("out_user_id", userIds),
@@ -4109,7 +4108,7 @@ export async function GET(req: NextRequest) {
           }>("busy drift cached blocks", "id", () =>
             db
               .from("busy_blocks")
-              .select("user_id, starts_at, ends_at")
+              .select("id, user_id, starts_at, ends_at")
               .in("user_id", userIds)
               .lt("starts_at", to)
               .gt("ends_at", from),

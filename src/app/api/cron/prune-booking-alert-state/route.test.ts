@@ -32,16 +32,21 @@ const db = vi.hoisted(() => {
         select: () => ({
           like: (_col: string, pattern: string) => {
             state.patterns.push(pattern);
-            return {
+            // The keyset filter a paged read cuts each later page with (2026-10-25).
+            let after: string | null = null;
+            const q = {
+              gt: (_c: string, v: string) => ((after = v), q),
               order: () => ({
                 range: async (a: number, b: number) => ({
                   data: matching(pattern)
+                    .filter((k) => after === null || k > after)
                     .slice(a, Math.min(b + 1, a + PAGE))
                     .map((key) => ({ key })),
                   error: null,
                 }),
               }),
             };
+            return q;
           },
         }),
         delete: () => ({

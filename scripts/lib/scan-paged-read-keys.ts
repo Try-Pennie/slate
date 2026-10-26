@@ -1,10 +1,11 @@
 // The scan behind scripts/test-paged-read-keys.ts (#3273).
 //
 // `selectAllPages` orders every paged read by the key its caller names and cuts
-// pages with OFFSET. That partitions the result only when the key is UNIQUE: page
-// on a column two rows share and Postgres may return those two in either order on
-// each request, repeating one and skipping the other, which is the very defect the
-// key exists to close. Nothing at the call site can tell a unique key from a
+// each page as the rows AFTER the last key the previous page returned (keyset
+// paging, since 2026-10-25; it cut by OFFSET before). That partitions the result
+// only when the key is UNIQUE: page on a column two rows share and the rows tied
+// with the last one on a page are never read, which is the very defect the key
+// exists to close. Nothing at the call site can tell a unique key from a
 // plausible one, so this reads the schema the migrations declare and requires
 // every caller's key to cover one of the table's unique column sets.
 //
@@ -234,12 +235,19 @@ export interface PagedReadKey {
   line: number;
   table: string | null;
   keys: string[] | null;
+  /** The raw first argument of the chain's `.select(`, as written; null when absent. */
+  selectArg?: string | null;
+  /** The chain calls `.order(` itself (the helper owns the order since keyset paging). */
+  ordersItself?: boolean;
+  /** The chain calls `.or(` itself. */
+  ownOr?: boolean;
 }
 
 /** Every `selectAllPages` call in a file, with the table it reads and its key. */
 export function pagedReadKeys(file: string, source: string): PagedReadKey[] {
   return pagedCallSpans(source).map(([s, e]) => {
     const call = source.slice(s, e);
+    const shape = chainShape(call);
     const table = /\.from\(\s*["'`]([\w]+)["'`]/.exec(call)?.[1] ?? null;
     const args = call.slice(call.indexOf("(") + 1);
     // Either quote is valid TypeScript, so the key is read with a pattern, never
@@ -250,8 +258,136 @@ export function pagedReadKeys(file: string, source: string): PagedReadKey[] {
       const found = [...keyM[1].matchAll(/"([^"]+)"|'([^']+)'/g)].map((m) => m[1] ?? m[2]);
       keys = found.length > 0 ? found : null;
     }
-    return { file, line: source.slice(0, s).split("\n").length, table, keys };
+    return { file, line: source.slice(0, s).split("\n").length, table, keys, ...shape };
   });
+}
+
+// --- the chain's shape, for keyset paging (2026-10-25) -------------------------
+//
+// `selectAllPages` pages by KEYSET: it orders by the key alone and asks each page
+// for the rows after the last key seen. Three things at a call site break that,
+// and none of them shows in a test whose fake returns whole rows in any order:
+//   - the chain orders itself: a leading caller order makes "key after the last"
+//     skip every row that sorts earlier by that order but later by key;
+//   - the select leaves out a key column: the next page is cut from the last
+//     row's key, so the read throws at the first full page, in production only;
+//   - a composite key beside a chain carrying its own `.or(`: the helper writes
+//     the tuple comparison as an `or` parameter, and two of them is not a shape
+//     it has proved.
+
+/** The text with string and template literals and comments blanked, so a word in them is not code. */
+function codeOnly(text: string): string {
+  let out = "";
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (quote) {
+      if (c === "\\") {
+        out += "  ";
+        i++;
+        continue;
+      }
+      if (c === quote) quote = null;
+      out += c === "\n" ? "\n" : " ";
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      quote = c;
+      out += " ";
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "/") {
+      const nl = text.indexOf("\n", i);
+      const end = nl === -1 ? text.length : nl;
+      out += " ".repeat(end - i);
+      i = end - 1;
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
+function chainShape(call: string): { selectArg: string | null; ordersItself: boolean; ownOr: boolean } {
+  const code = codeOnly(call);
+  const sel = /\.select\(/.exec(code);
+  let selectArg: string | null = null;
+  if (sel) {
+    const rest = call.slice(sel.index + sel[0].length);
+    const m = /^\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`[^`]*`|[A-Za-z_$][\w$]*)/.exec(rest);
+    selectArg = m ? m[1]! : null;
+  }
+  return { selectArg, ordersItself: /\.order\s*\(/.test(code), ownOr: /\.or\s*\(/.test(code) };
+}
+
+/** Exported string constants by name (`export const NAME = "a, b";`), for selects built from one. */
+export function stringConstants(sources: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const src of sources) {
+    for (const m of src.matchAll(/\bconst\s+([A-Z][A-Z0-9_]*)\s*=\s*("([^"\\]*)"|'([^'\\]*)')\s*;/g)) {
+      out.set(m[1]!, m[3] ?? m[4] ?? "");
+    }
+  }
+  return out;
+}
+
+/** The select's text with constants expanded, or null when this scan cannot read it. */
+function selectText(arg: string, constants: Map<string, string>): string | null {
+  const q = arg[0];
+  if (q === '"' || q === "'") return arg.slice(1, -1);
+  if (q === "`") {
+    let unreadable = false;
+    const text = arg.slice(1, -1).replace(/\$\{\s*([A-Za-z_$][\w$]*)\s*\}/g, (_, name: string) => {
+      const v = constants.get(name);
+      if (v === undefined) unreadable = true;
+      return v ?? "";
+    });
+    return unreadable || text.includes("${") ? null : text;
+  }
+  return constants.get(arg) ?? null;
+}
+
+/** The field names a select returns at the top level; "*" when it returns every column. */
+export function selectedFields(select: string): Set<string> {
+  const out = new Set<string>();
+  for (const raw of topLevelItems(select)) {
+    const item = raw.trim();
+    if (item === "*") {
+      out.add("*");
+      continue;
+    }
+    const paren = item.indexOf("(");
+    const head = paren === -1 ? item : item.slice(0, paren);
+    // `alias:expr` names the field by its alias; `::` is a cast, not an alias.
+    const alias = /^([\w$]+)\s*:(?!:)/.exec(head);
+    if (alias) {
+      out.add(alias[1]!);
+      continue;
+    }
+    if (paren !== -1) continue; // an embedded resource, not a column of this table
+    if (/->/.test(item)) continue; // a json path with no alias is named by its last key
+    out.add(item.replace(/::[\w\s]+$/, "").trim());
+  }
+  return out;
+}
+
+/** Null when the call's chain can be keyset paged on its key, else why not. */
+export function judgePagedReadShape(read: PagedReadKey, constants: Map<string, string>): string | null {
+  if (read.ordersItself) {
+    return "the chain orders itself; selectAllPages orders by its key alone, so sort the result instead";
+  }
+  if (read.keys && read.keys.length > 1 && read.ownOr) {
+    return "a composite key cannot page a chain carrying its own .or(";
+  }
+  if (!read.selectArg) return "names no select this scan can read";
+  const text = selectText(read.selectArg, constants);
+  if (text === null) return `select ${read.selectArg} is not one this scan can read`;
+  const fields = selectedFields(text);
+  if (fields.has("*")) return null;
+  const missing = (read.keys ?? []).filter((k) => !fields.has(k));
+  return missing.length === 0
+    ? null
+    : `the select leaves out key column ${missing.join(", ")}, which the next page is cut from`;
 }
 
 /** Null when the key covers one of the table's unique sets, else why it does not. */

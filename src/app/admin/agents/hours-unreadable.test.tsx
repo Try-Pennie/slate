@@ -61,8 +61,8 @@ const SCHEDULES = [
   { id: "s2", user_id: "u2", timezone: "America/Phoenix", hours_source: "agent", hours_set_at: null, created_at: "2026-09-01T00:00:00Z" },
 ];
 const RULES = [
-  { schedule_id: "s1", weekday: 1, start_minute: 480, end_minute: 1020 },
-  { schedule_id: "s2", weekday: 2, start_minute: 540, end_minute: 1020 },
+  { id: "r1", schedule_id: "s1", weekday: 1, start_minute: 480, end_minute: 1020 },
+  { id: "r2", schedule_id: "s2", weekday: 2, start_minute: 540, end_minute: 1020 },
 ];
 
 function mockDb(schedulesFail: boolean) {

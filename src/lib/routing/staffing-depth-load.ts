@@ -35,14 +35,14 @@ async function loadAllDayOutUserIds(
     selectAllPages<BlockRow>("staffing depth busy_blocks", "id", () =>
       db
         .from("busy_blocks")
-        .select("user_id, starts_at, ends_at")
+        .select("id, user_id, starts_at, ends_at")
         .eq("source", "gcal")
         .in("user_id", agentIds)
         .lte("starts_at", nowIso)
         .gt("ends_at", nowIso),
     ),
     selectAllPages<ScheduleRow>("staffing depth availability_schedules", "id", () =>
-      db.from("availability_schedules").select("user_id, timezone").in("user_id", agentIds),
+      db.from("availability_schedules").select("id, user_id, timezone").in("user_id", agentIds),
     ),
   ]);
 

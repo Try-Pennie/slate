@@ -19,7 +19,7 @@ import { DateTime } from "luxon";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { OUTCOME_DAY_ZONE, type RawMix } from "@/lib/monitor/booking-api-outcome";
-import { selectAllPages } from "@/lib/supabase/paginate";
+import { selectAllPages, sortByStamp } from "@/lib/supabase/paginate";
 import { parseStampMs } from "@/lib/date/stamp";
 import {
   createRaceThresholdCache,
@@ -83,19 +83,18 @@ export async function readRaceRateBookings(nowMs: number): Promise<TierBooking[]
   const sinceIso = new Date(win.sinceMs).toISOString();
   const untilIso = new Date(win.untilMs).toISOString();
   const db = supabaseAdmin();
-  const rows = await selectAllPages<{ created_at: string; buckets: { code: string } | { code: string }[] | null }>(
+  const rows = await selectAllPages<{ id: string; created_at: string; buckets: { code: string } | { code: string }[] | null }>(
     "race rate bookings",
     "id",
     () =>
       db
         .from("bookings")
-        .select("created_at, buckets!inner(code, is_test)")
+        .select("id, created_at, buckets!inner(code, is_test)")
         .eq("buckets.is_test", false)
         .eq("kind", "routed")
         .gte("created_at", sinceIso)
-        .lt("created_at", untilIso)
-        .order("created_at"),
-  );
+        .lt("created_at", untilIso),
+  ).then((r) => sortByStamp("race rate bookings", r, "created_at", "id"));
   return rows.map((r) => {
     const createdMs = parseStampMs(r.created_at);
     if (createdMs === null) throw new Error("race rate: a booking's created_at is unreadable");

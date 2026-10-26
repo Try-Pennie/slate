@@ -35,7 +35,17 @@ const from = vi.hoisted(() => {
       if (db.throwSettings && (table === "booking_settings" || table === "buckets")) {
         return Promise.reject(new Error("relation does not exist"));
       }
-      return Promise.resolve(db.results[table] ?? { data: null, error: null });
+      const r = db.results[table] ?? { data: null, error: null };
+      // A list row naming no primary key is given one by its position: a paged read
+      // cuts its next page on it, and refuses a row without it (keyset paging,
+      // 2026-10-25). Fixtures here reuse one row object many times.
+      if (!Array.isArray(r.data)) return Promise.resolve(r);
+      return Promise.resolve({
+        ...r,
+        data: r.data.map((row: unknown, i: number) =>
+          row !== null && typeof row === "object" && !("id" in row) ? { id: `${table}-${i}`, ...row } : row,
+        ),
+      });
     };
     const b: Record<string, unknown> = {
       maybeSingle: () => res(),
@@ -568,7 +578,7 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
     // #2974: the real booking count is read as rows, so the fake answers every bookings
     // read with 40 sourced page bookings framed by the production site.
     const sourced = { id: "b1", source: "offerhub", parent_origin: "https://trypennie.com", referrer_origin: null };
-    db.results.bookings = { data: Array.from({ length: 40 }, () => sourced), error: null } as { data: unknown; error: unknown };
+    db.results.bookings = { data: Array.from({ length: 40 }, (_, i) => ({ ...sourced, id: `sourced-${i}` })), error: null } as { data: unknown; error: unknown };
     db.results.business_hours = { data: [], error: null };
     db.results.business_hours_exceptions = { data: [], error: null };
     render(await AlertSettingsPage(props));
@@ -593,7 +603,7 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
     // The fake answers every bookings read alike: 40 real, 40 unsourced rows framed
     // by the production site, a row found.
     const framed = { id: "b1", source: "not-given", parent_origin: "https://trypennie.com", referrer_origin: null };
-    db.results.bookings = { data: Array.from({ length: 40 }, () => framed), error: null, count: 40 } as { data: unknown; error: unknown };
+    db.results.bookings = { data: Array.from({ length: 40 }, (_, i) => ({ ...framed, id: `framed-${i}` })), error: null, count: 40 } as { data: unknown; error: unknown };
     render(await AlertSettingsPage(props));
     const said = learningCard().querySelector("[data-page-sources]")!.textContent!;
     expect(said).toMatch(/^Source not recorded on 40 of 40 bookings in the last 7 days/);
@@ -618,7 +628,7 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
     // 4 made by hand, and every bookings read is answered alike.
     const sourced = { id: "b2", source: "offerhub", parent_origin: "https://trypennie.com", referrer_origin: null };
     db.results.bookings = {
-      data: [...Array.from({ length: 40 }, () => sourced), ...Array.from({ length: 4 }, () => byHand)],
+      data: [...Array.from({ length: 40 }, (_, i) => ({ ...sourced, id: `sourced-${i}` })), ...Array.from({ length: 4 }, (_, i) => ({ ...byHand, id: `byHand-${i}` }))],
       error: null,
     } as { data: unknown; error: unknown };
     db.results.business_hours = { data: [], error: null };
@@ -636,7 +646,7 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
     // #2974: the real booking count is read as rows, so the fake answers every bookings
     // read with 40 sourced page bookings framed by the production site.
     const sourced = { id: "b1", source: "offerhub", parent_origin: "https://trypennie.com", referrer_origin: null };
-    db.results.bookings = { data: Array.from({ length: 40 }, () => sourced), error: null } as { data: unknown; error: unknown };
+    db.results.bookings = { data: Array.from({ length: 40 }, (_, i) => ({ ...sourced, id: `sourced-${i}` })), error: null } as { data: unknown; error: unknown };
     db.results.business_hours = { data: [], error: null };
     db.results.business_hours_exceptions = { data: [], error: null };
     render(await AlertSettingsPage(props));

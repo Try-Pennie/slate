@@ -46,7 +46,7 @@ export async function ensureDefaultSchedules(orgId: string): Promise<number> {
     // which here reads as "these agents have no working hours" and would refill
     // a week somebody had personalized.
     selectAllPages<{ schedule_id: string }>("ensureDefaultSchedules rules", "id", () =>
-      db.from("availability_rules").select("schedule_id"),
+      db.from("availability_rules").select("id, schedule_id"),
     ),
   ]);
   const users = unwrap(usersRes, "ensureDefaultSchedules users");

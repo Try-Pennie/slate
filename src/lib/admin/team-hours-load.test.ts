@@ -12,7 +12,8 @@ import { loadTeamHours } from "./team-hours-load";
 import { idFilterBytes, MAX_IN_FILTER_BYTES } from "@/lib/db/id-batch";
 
 type Result = { data: unknown; error: { message: string } | null };
-type Call = { table: string; filters: [string, unknown][]; range?: [number, number] };
+/** `after` is the keyset filter a paged read cuts each later page with (2026-10-25). */
+type Call = { table: string; filters: [string, unknown][]; range?: [number, number]; after?: unknown };
 
 const ORG = {
   default_timezone: "America/New_York",
@@ -31,13 +32,15 @@ const SCHEDULES = [
 
 let calls: Call[];
 
-function mockDb(over: Partial<Record<string, Result | ((range?: [number, number]) => Result)>> = {}) {
+type Answer = Result | ((range?: [number, number], after?: unknown) => Result);
+
+function mockDb(over: Partial<Record<string, Answer>> = {}) {
   calls = [];
-  const byTable: Record<string, Result | ((range?: [number, number]) => Result)> = {
+  const byTable: Record<string, Answer> = {
     organizations: { data: ORG, error: null },
     users: { data: USERS, error: null },
     availability_schedules: { data: SCHEDULES, error: null },
-    availability_rules: { data: [{ schedule_id: "s1", weekday: 1, start_minute: 540, end_minute: 1020 }], error: null },
+    availability_rules: { data: [{ id: "r1", schedule_id: "s1", weekday: 1, start_minute: 540, end_minute: 1020 }], error: null },
     ...over,
   };
   admin.supabaseAdmin.mockReturnValue({
@@ -46,11 +49,15 @@ function mockDb(over: Partial<Record<string, Result | ((range?: [number, number]
       calls.push(call);
       const resolve = () => {
         const r = byTable[table]!;
-        return typeof r === "function" ? r(call.range) : r;
+        return typeof r === "function" ? r(call.range, call.after) : r;
       };
       const b: Record<string, unknown> = {};
       b.select = () => b;
       b.order = () => b;
+      b.gt = (_col: string, v: unknown) => {
+        call.after = v;
+        return b;
+      };
       for (const m of ["eq", "in", "is"]) {
         b[m] = (col: string, v: unknown) => {
           call.filters.push([`${m}:${col}`, v]);
@@ -140,10 +147,11 @@ describe("loadTeamHours", () => {
 
   it("reports an unreadable rules read, including one that fails on a later page", async () => {
     mockDb({
-      availability_rules: (range) =>
-        range && range[0] === 0
+      availability_rules: (range, after) =>
+        range && range[0] === 0 && after === undefined
           ? {
               data: Array.from({ length: 1000 }, (_, i) => ({
+                id: `r${String(i).padStart(4, "0")}`,
                 schedule_id: "s1",
                 weekday: (i % 7) + 1,
                 start_minute: 540,
