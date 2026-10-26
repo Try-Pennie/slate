@@ -42,6 +42,7 @@ import {
 import { belowLeadTierReachedVerdict } from "@/lib/monitor/verdict-freshness";
 import { readLeadScores, leadIdKey, type LeadScore, type LeadFieldRecord } from "@/lib/salesforce/lead-xbc";
 import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
+import { CHANGE_ONLY_HOLD_MS } from "@/lib/notify/repeat-policy";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const NOW = Date.UTC(2026, 8, 24, 14, 0, 0);
@@ -269,7 +270,11 @@ function asScores(codes: Map<string, string | null>): Map<string, LeadScore> {
   return new Map([...codes].map(([k, code]) => [k, { code, source: "lead" as const, submissionId: null }]));
 }
 
-type Calls = { notified: { key: string; text: string; cooldown: number }[]; resolved: { key: string; text: string }[]; sfQueries: number };
+type Calls = {
+  notified: { key: string; text: string; cooldown: number; subjects: readonly string[] | undefined }[];
+  resolved: { key: string; text: string }[];
+  sfQueries: number;
+};
 
 function deps(over: Partial<BelowLeadTierDeps> = {}, calls: Calls = { notified: [], resolved: [], sfQueries: 0 }): BelowLeadTierDeps {
   return {
@@ -285,13 +290,12 @@ function deps(over: Partial<BelowLeadTierDeps> = {}, calls: Calls = { notified: 
     listFiring: async () => new Set<string>(),
     bookingUrl: (id) => `https://slate.example/admin/bookings/${id}`,
     armed: true,
-    notify: async (key, cooldown, text) => {
-      calls.notified.push({ key, text, cooldown });
+    notify: async (key, cooldown, text, repeat) => {
+      calls.notified.push({ key, text, cooldown, subjects: repeat?.subjects });
     },
     settle: async (keys) => {
       for (const key of keys) calls.resolved.push({ key, text: "" });
     },
-    cooldownMs: 6 * 60 * 60_000,
     nowMs: NOW,
     leadTierOffer: () => null,
     readSubmissionHistory: async () => new Map(),
@@ -311,7 +315,14 @@ async function main(): Promise<void> {
       eq(r.paged, true, "armed, so it paged");
     }
     eq(calls.notified.map((n) => n.key), [belowLeadTierKey("bk-1")], "one page, keyed to the booking");
-    eq(calls.notified[0]?.cooldown, 6 * 60 * 60_000, "on the configured cooldown");
+    // 2026-10-26: once per call. The hold is the change only interval, never a
+    // setting, and the page names what a change would be.
+    eq(calls.notified[0]?.cooldown, CHANGE_ONLY_HOLD_MS, "held for the change only interval, not a tunable cooldown");
+    eq(
+      calls.notified[0]?.subjects,
+      [`call:${new Date(NOW + 26 * 60 * 60_000).toISOString()}`, "advisor:dana.whitfield@trypennie.com", "bucket:100", "tier:ultra_high"],
+      "the page names the call, its advisor and bucket, and the lead's tier",
+    );
     assert(/catch-all chose/i.test(calls.notified[0]?.text ?? ""), "the catch-all context reaches the page");
     eq(calls.resolved.length, 0, "nothing was firing, so nothing clears");
     assert(belowLeadTierReachedVerdict(r), "a measured run that compared bookings stamps a verdict");

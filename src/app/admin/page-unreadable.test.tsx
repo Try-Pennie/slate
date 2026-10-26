@@ -150,7 +150,7 @@ const HEALTHY: Record<string, Result> = {
     ],
     error: null,
   },
-  bucket_members: { data: [{ bucket_id: "b1", user_id: "u1", active: true }], error: null },
+  bucket_members: { data: [{ id: "m1", bucket_id: "b1", user_id: "u1", active: true }], error: null },
   webhook_endpoints: {
     data: { id: "w1", org_id: "o1", url: "https://regal.test/events", format: "regal", auth_header: "set" },
     error: null,
@@ -215,11 +215,14 @@ const eqCalls: Record<string, [string, unknown][][]> = {};
  */
 const inCalls: Record<string, [string, unknown][][]> = {};
 const rangeCalls: Record<string, [number, number][]> = {};
+/** The keyset filter each later page of a paged read is cut with (2026-10-25). */
+const gtCalls: Record<string, [string, unknown][]> = {};
 
 /**
  * A table that answers one array per PAGE, so pagination can be exercised.
- * `pagedByTable.bucket_members = [firstPage, secondPage]` makes range 0 return
- * the first and range 1000 the second, which is what a truncating read cannot do.
+ * `pagedByTable.bucket_members = [firstPage, secondPage]` makes the first page
+ * request return the first and the second the second, which is what a truncating
+ * read cannot do.
  */
 const pagedByTable: Record<string, unknown[][]> = {};
 
@@ -238,6 +241,7 @@ function mockDb(overrides: Record<string, Result> = {}) {
   for (const k of Object.keys(eqCalls)) delete eqCalls[k];
   for (const k of Object.keys(inCalls)) delete inCalls[k];
   for (const k of Object.keys(rangeCalls)) delete rangeCalls[k];
+  for (const k of Object.keys(gtCalls)) delete gtCalls[k];
   admin.supabaseAdmin.mockReturnValue({
     from: (table: string) => {
       const result = byTable[table] ?? { data: [], error: null };
@@ -258,6 +262,10 @@ function mockDb(overrides: Record<string, Result> = {}) {
       };
       b.in = (column: string, values: unknown) => {
         thisIn.push([column, values]);
+        return b;
+      };
+      b.gt = (column: string, value: unknown) => {
+        (gtCalls[table] ??= []).push([column, value]);
         return b;
       };
       b.range = (from: number, to: number) => {
@@ -456,7 +464,9 @@ describe("the memberships read is scoped and paged (#1933)", () => {
     const ranges = rangeCalls.bucket_members ?? [];
     expect(ranges.length).toBe(2);
     expect(ranges[0]).toEqual([0, 999]);
-    expect(ranges[1]).toEqual([1000, 1999]);
+    // Keyset paging: the second page is the rows after the first page's last id.
+    expect(ranges[1]).toEqual([0, 999]);
+    expect(gtCalls.bucket_members).toEqual([["id", "m999"]]);
     delete pagedByTable.bucket_members;
   });
 

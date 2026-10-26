@@ -1148,7 +1148,7 @@ export async function GET(req: NextRequest) {
           // declared instead of being read off this call.
           // alert-text-ok: our own copy from booking-pause.ts, built from a measured
           // span; no error text can reach it.
-          notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
+          notify: (key, cooldownMs, text, repeat) => sendThrottledAlert(key, cooldownMs, text, repeat),
           // alert-key: public_booking_stopped
           // all-clear-proof: scripts/test-monitor-booking-pause.ts - a tick that is
           // itself reporting the stopped switch, and a tick holding under the
@@ -1193,7 +1193,7 @@ export async function GET(req: NextRequest) {
           // alert-key: shared_confirm_line_left_off
           // alert-text-ok: our own copy from shared-line-left-off.ts, built from a measured
           // span; no error text can reach it.
-          notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
+          notify: (key, cooldownMs, text, repeat) => sendThrottledAlert(key, cooldownMs, text, repeat),
           // alert-key: shared_confirm_line_left_off
           // all-clear-proof: scripts/test-monitor-shared-line-left-off.ts - a tick reporting
           // the switch off, one holding under the threshold, and one that has never seen it
@@ -1464,7 +1464,7 @@ export async function GET(req: NextRequest) {
         // scanner cannot read it off this call: it is declared instead (#1390).
         // alert-text-ok: our own copy from booking-volume.ts, built from measured
         // counts; no error text can reach it.
-        notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
+        notify: (key, cooldownMs, text, repeat) => sendThrottledAlert(key, cooldownMs, text, repeat),
         notifyCountUnreadable: (key, cooldownMs, text) => {
           // alert-key: volume_count_unreadable
           // alert-text-ok: our own copy from booking-volume.ts, with no error
@@ -1506,7 +1506,7 @@ export async function GET(req: NextRequest) {
         // alert-key: low_volume_verdict_gap
         // alert-text-ok: our own copy from volume-verdict-gap.ts, built from a
         // count of minutes and a stamp; no error text can reach it.
-        notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
+        notify: (key, cooldownMs, text, repeat) => sendThrottledAlert(key, cooldownMs, text, repeat),
         log: (fields) => log.info("monitor", { msg: "volume verdict gap", ...fields }),
       }).then((r) => (r.status === "closed" ? step.unmeasured(r) : r)),
     );
@@ -1540,7 +1540,7 @@ export async function GET(req: NextRequest) {
           // alert-text-ok: our own copy from booking-volume.ts, built from measured
           // counts and the tier's own name; no error text can reach it (a tier's
           // thrown error goes to the log through logError below).
-          notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
+          notify: (key, cooldownMs, text, repeat) => sendThrottledAlert(key, cooldownMs, text, repeat),
           notifyCountUnreadable: (key, cooldownMs, text) => {
             // alert-key: volume_count_unreadable:*
             // alert-text-ok: our own copy from booking-volume.ts, with no error
@@ -1593,7 +1593,7 @@ export async function GET(req: NextRequest) {
         // alert-key: page_volume_share_unknown
         // alert-text-ok: our own copy from page-volume.ts, built from measured
         // counts and the page's own names; no error text can reach it.
-        notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
+        notify: (key, cooldownMs, text, repeat) => sendThrottledAlert(key, cooldownMs, text, repeat),
         // alert-key: low_page_volume:*
         // alert-key: page_volume_share_unknown
         // all-clear-proof: scripts/test-page-volume.ts - pins that an unmeasured
@@ -2369,7 +2369,7 @@ export async function GET(req: NextRequest) {
         selectAllPages<{ schedule_id: string }>(
           "monitor schedule-coverage rules",
           "id",
-          () => db.from("availability_rules").select("schedule_id"),
+          () => db.from("availability_rules").select("id, schedule_id"),
         ),
       ]);
       return missingScheduleAgents(
@@ -2434,7 +2434,7 @@ export async function GET(req: NextRequest) {
               "monitor unset-hours rules",
               "id",
               () =>
-                db.from("availability_rules").select("schedule_id, weekday, start_minute, end_minute"),
+                db.from("availability_rules").select("id, schedule_id, weekday, start_minute, end_minute"),
             ),
             db
               .from("organizations")
@@ -2459,7 +2459,7 @@ export async function GET(req: NextRequest) {
           };
         },
         // alert-key: agents_on_unset_hours
-        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
         // alert-key: agents_on_unset_hours
         resolve: (key, text) => resolveAlert(key, text),
         cooldownMs: cooldownMs.agents_on_unset_hours,
@@ -2496,7 +2496,7 @@ export async function GET(req: NextRequest) {
           ),
         armed: settings!.awaitingActivationArmed,
         // alert-key: agents_awaiting_activation
-        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
         // alert-key: agents_awaiting_activation
         resolve: (key, text) => resolveAlert(key, text),
         cooldownMs: cooldownMs.agents_awaiting_activation,
@@ -2538,7 +2538,7 @@ export async function GET(req: NextRequest) {
           const rows = await selectAllPages<{ user_id: string }>("monitor stranded-hires calendars", "id", () =>
             db
               .from("agent_calendars")
-              .select("user_id")
+              .select("id, user_id")
               .in("user_id", ids)
               .not("last_success_at", "is", null),
           );
@@ -2548,7 +2548,7 @@ export async function GET(req: NextRequest) {
           const rows = await selectAllPages<{ target_id: string }>("monitor stranded-hires audit", "id", () =>
             db
               .from("audit_log")
-              .select("target_id")
+              .select("id, target_id")
               .eq("action", "agent.bookable")
               .in("target_id", ids)
               .not("actor_id", "is", null),
@@ -2556,7 +2556,7 @@ export async function GET(req: NextRequest) {
           return new Set(rows.map((r) => r.target_id));
         },
         // alert-key: agents_stranded_outside_pool
-        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
         // alert-key: agents_stranded_outside_pool
         resolve: (key, text) => resolveAlert(key, text),
         cooldownMs: cooldownMs.agents_stranded_outside_pool,
@@ -2582,7 +2582,7 @@ export async function GET(req: NextRequest) {
       runLadderDroppedCheck({
         read: () => readLadderDroppedLive(now),
         // alert-key: ladder_advisor_unreadable
-        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
         // alert-key: ladder_advisor_unreadable
         // all-clear-proof: scripts/test-ladder-dropped-advisors.ts - pins that a read that
         // fails sends no all clear and that only a read that answered and left nobody out
@@ -2667,12 +2667,14 @@ export async function GET(req: NextRequest) {
         // alert-key: booking_below_lead_tier:*
         // alert-text-ok: our own copy from below-lead-tier.ts, built from measured
         // tiers and the booking row; no error text can reach it.
-        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
         // No all clear is posted (Dan, 2026-10-07); the state is dropped silently.
         // scripts/test-below-lead-tier.ts proves a failed bookings, Salesforce or
         // firing read settles NOTHING, and an unmeasurable booking keeps its page.
         settle: settleAlertsSilently,
-        cooldownMs: cooldownMs.booking_below_lead_tier,
+        // No cooldown is passed (2026-10-26): the page posts once per call and again
+        // only on a change (`belowLeadTierRepeat`), so the stored cooldown for
+        // `booking_below_lead_tier` no longer paces it.
         nowMs: now,
         // #3665: is anybody on the lead's own team free at the call's time? Asked of
         // the served list the lane already holds (`slotByCode`, the stored rows
@@ -2753,7 +2755,7 @@ export async function GET(req: NextRequest) {
         // alert-key: cross_system_booking:*
         // alert-text-ok: our own copy from cross-system-bookings.ts, built from booking
         // ids and times; no error text can reach it.
-        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
         // alert-key: cross_system_booking:*
         // all-clear-proof: scripts/test-cross-system-bookings.ts - a refused, unreadable
         // or partial cal.com read and a failed Slate read each clear NOTHING, and a
@@ -2811,7 +2813,7 @@ export async function GET(req: NextRequest) {
         // alert-key: booking_offsite_origin:*
         // alert-text-ok: our own copy from offsite-origin.ts, built from the booking
         // row and a parsed origin; no error text and no raw host value can reach it.
-        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
         bookingUrl: (id) => `${appUrl()}${bookingDetailHref(id)}`,
       }).then((result) => {
         if (result.status === "unreadable") {
@@ -2863,10 +2865,9 @@ export async function GET(req: NextRequest) {
           selectAllPages<RegalCandidate>("monitor regal call candidates", "id", () =>
             db
               .from("regal_call_events")
-              .select("agent_email, occurred_at")
+              .select("id, agent_email, occurred_at")
               .eq("reason", "candidate")
-              .gte("received_at", sinceIso)
-              .order("received_at", { ascending: true }),
+              .gte("received_at", sinceIso),
           ),
         loadUsers: () =>
           selectAllPages<RegalCaller>("monitor regal call roster", "id", () =>
@@ -2883,7 +2884,7 @@ export async function GET(req: NextRequest) {
         // alert-key: regal_call_unroutable:*
         // alert-text-ok: our own copy from regal-calls.ts, built from roster fields and a
         // formatted time; no error text can reach it.
-        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
         // alert-key: regal_call_unroutable:*
         // all-clear-proof: scripts/test-regal-call-detector.ts pins that a failed read of
         // the events, the roster, the ignore list or the open pages clears nothing, and that
@@ -2926,7 +2927,7 @@ export async function GET(req: NextRequest) {
             loadCounts: loadRegalCounts,
             armed: settings!.regalCallsArmed,
             // alert-key: regal_calls_quiet
-            notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+            notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
             // alert-key: regal_calls_quiet
             // all-clear-proof: scripts/test-regal-call-feed.ts pins that unreadable counts and
             // a disarmed tick clear nothing, and that only a measured call from a Slate user does.
@@ -2953,7 +2954,7 @@ export async function GET(req: NextRequest) {
         loadCounts: loadRegalCounts,
         armed: settings!.regalCallsArmed,
         // alert-key: regal_calls_unreadable
-        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
         // alert-key: regal_calls_unreadable
         // all-clear-proof: scripts/test-regal-call-feed.ts pins that unreadable counts and
         // a disarmed tick clear nothing, and that only a measured clean day does.
@@ -3005,7 +3006,7 @@ export async function GET(req: NextRequest) {
             clearStreak: () => clearFailureStreak(REGAL_CALL_OUTCOMES_STREAK_KEY),
             armed: settings!.regalCallsArmed,
             // alert-key: regal_call_outcomes_short
-            notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+            notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
             // alert-key: regal_call_outcomes_short
             // all-clear-proof: scripts/test-regal-call-outcomes-monitor.ts pins that a failed
             // read of either count, a window with no calls, too few calls and a disarmed tick
@@ -3053,7 +3054,7 @@ export async function GET(req: NextRequest) {
           "monitor attribute-coverage manual members",
           "id",
           () =>
-            db.from("bucket_members").select("user_id").eq("active", true),
+            db.from("bucket_members").select("id, user_id").eq("active", true),
         ),
       ]);
       return findUnroutableAgents(agents, new Set(members.map((m) => m.user_id)));
@@ -3103,7 +3104,7 @@ export async function GET(req: NextRequest) {
           () =>
             db
               .from("agent_calendars")
-              .select("user_id, created_at, consecutive_failures, last_sync_error"),
+              .select("id, user_id, created_at, consecutive_failures, last_sync_error"),
         ),
       ]);
       return syncRotationCandidates(agents, cals);
@@ -3380,7 +3381,7 @@ export async function GET(req: NextRequest) {
       }>("monitor stranded coverage items", "id", () =>
         db
           .from("bulk_reassign_items")
-          .select("booking_id, status, job_id, updated_at")
+          .select("id, booking_id, status, job_id, updated_at")
           .in("status", ACTIONABLE_ITEM_STATUSES),
       );
       // #3485 part C: pending items are coverage work still in flight: a fresh sweep's items
@@ -3677,7 +3678,7 @@ export async function GET(req: NextRequest) {
       const blocks = await selectAllPages<ApprovedTimeOffBlock>("monitor time off busy blocks", "id", () =>
         db
           .from("busy_blocks")
-          .select("user_id, starts_at, ends_at, source, gcal_event_id, booking_id")
+          .select("id, user_id, starts_at, ends_at, source, gcal_event_id, booking_id")
           // in-chunk-ok: bounded by the roster, see the note on userIds above.
           .in("user_id", userIds)
           .gte("ends_at", new Date(now).toISOString())
@@ -3935,7 +3936,7 @@ export async function GET(req: NextRequest) {
         () =>
           db
             .from("bulk_reassign_jobs")
-            .select("out_user_id")
+            .select("id, out_user_id")
             .eq("status", "active")
             // in-chunk-ok: bounded by the roster, see the note on userIds above.
             .in("out_user_id", userIds),
@@ -4107,7 +4108,7 @@ export async function GET(req: NextRequest) {
           }>("busy drift cached blocks", "id", () =>
             db
               .from("busy_blocks")
-              .select("user_id, starts_at, ends_at")
+              .select("id, user_id, starts_at, ends_at")
               .in("user_id", userIds)
               .lt("starts_at", to)
               .gt("ends_at", from),
@@ -4291,7 +4292,7 @@ export async function GET(req: NextRequest) {
         // alert-key: owner_notice_withheld
         // alert-text-ok: our own copy from owner-notice-withheld-report.ts, built from a
         // measured count; no error text can reach it.
-        notify: (key, ms, text) => sendThrottledInfo(key, ms, text),
+        notify: (key, ms, text, repeat) => sendThrottledInfo(key, ms, text, repeat),
         settingsUrl: `${appUrl()}/admin/alerts`,
       }).then((result) => {
         log.info("monitor", { msg: "owner notices withheld", status: result.status, count: result.count });
@@ -4566,7 +4567,7 @@ export async function GET(req: NextRequest) {
         },
         // alert-key: audit_log_chain_broken
         // alert-text-ok: our own copy from audit-chain.ts, never a raw error.
-        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
         // A condition: it ends on a complete walk that finds nothing wrong.
         // alert-key: audit_log_chain_broken
         // all-clear-proof: scripts/test-audit-chain.ts - a failed read, a failed write and

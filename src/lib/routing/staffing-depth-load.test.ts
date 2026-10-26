@@ -8,6 +8,11 @@ import type { supabaseAdmin } from "@/lib/supabase/admin";
 
 type Rows = Record<string, unknown[]>;
 
+/** Every table's primary key, which a paged read cuts its pages on: a fixture row
+ *  that names none is given one by its position. */
+const keyed = (table: string, rows: unknown[]) =>
+  rows.map((r, i) => ({ id: `${table}-${i}`, ...(r as Record<string, unknown>) }));
+
 /** Minimal chainable stand-in for the supabase client: from().select().eq() all
  *  resolve to { data } for the table, ignoring filters (fixtures are pre-scoped). */
 function fakeDb(tables: Rows): ReturnType<typeof supabaseAdmin> {
@@ -25,7 +30,7 @@ function fakeDb(tables: Rows): ReturnType<typeof supabaseAdmin> {
     return b;
   };
   return {
-    from: (table: string) => builder(tables[table] ?? []),
+    from: (table: string) => builder(keyed(table, tables[table] ?? [])),
   } as unknown as ReturnType<typeof supabaseAdmin>;
 }
 
@@ -54,7 +59,7 @@ function fakeDbFailing(tables: Rows, failingTable: string): ReturnType<typeof su
       builder(
         table === failingTable
           ? { data: null, error: { message: `${table} read exploded` } }
-          : { data: tables[table] ?? [], error: null },
+          : { data: keyed(table, tables[table] ?? []), error: null },
       ),
   } as unknown as ReturnType<typeof supabaseAdmin>;
 }

@@ -20,7 +20,12 @@ import {
   runBufferBreachCheck,
   type BufferedBooking,
 } from "../src/lib/monitor/buffer-breach.ts";
+import { loadBookingsForBufferCheck } from "../src/lib/monitor/buffer-breach-store.ts";
+import { createStepRunner } from "../src/lib/monitor/step-runner.ts";
+import { judgeMonitorSteps, stepFailingRuns } from "../src/lib/monitor/step-failure.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { liveTable, type FakeRow, type LiveTable } from "./lib/fake-live-pageable-table.ts";
+import { memoryStreaks } from "./lib/memory-step-streaks.ts";
 
 const MIN = 60_000;
 const T0 = Date.parse("2026-10-23T16:00:00.000Z");
@@ -55,6 +60,39 @@ const ids = (pairs: { earlier: BufferedBooking; later: BufferedBooking }[]) =>
   eq(j.breaches[0]?.requiredMin, 10, "and ten were needed");
   eq(j.forced.length, 0, "nothing was forced");
   eq(j.examined, 2, "both bookings were examined");
+}
+
+// 2026-10-25: one booking handed in twice paged "overlapping by 20 minutes" naming
+// the same booking on both sides. A booking is never in a pair with itself.
+{
+  const j = judgeBufferBreaches([call("f2f68932", "u1", 0), call("f2f68932", "u1", 0)]);
+  eq(ids(j.breaches), [], "one booking handed in twice is never paired with itself");
+  eq(ids(j.forced), [], "nor counted as a forced pair with itself");
+  const real = judgeBufferBreaches([call("a", "u1", 0), call("a", "u1", 0), call("b", "u1", 20)]);
+  eq(ids(real.breaches), ["a>b", "a>b"], "a real clash beside the repeat still pairs");
+}
+
+// The join refuses a repeated booking id outright: a read that returned one row
+// twice did not work as designed, and judging it would be an answer built on that.
+{
+  const row = {
+    id: "f2f68932",
+    assigned_user_id: "u1",
+    agent_name: "Advisor u1",
+    starts_at: "2026-10-26T17:20:00.000Z",
+    ends_at: "2026-10-26T17:40:00.000Z",
+    event_type_id: "et",
+    bucket_id: "bk",
+    allow_double_book: false,
+  };
+  let err: Error | null = null;
+  try {
+    bookingsForBufferCheck([row, { ...row }], [{ id: "et", buffer_before_min: 10, buffer_after_min: 10 }], [{ id: "bk", is_test: false }]);
+  } catch (e) {
+    err = e as Error;
+  }
+  assert(err !== null && /f2f68932/.test(err.message) && /twice/.test(err.message),
+    `a booking id the read returned twice throws, naming it (${err?.message ?? "no throw"})`);
 }
 
 // The exact boundary: a gap EQUAL to the buffer is what the slot rule allows, so it
@@ -329,6 +367,93 @@ async function runWith(load: () => Promise<BufferedBooking[]>) {
   eq(result.breaches, 1, "a failed page still reports the breach it measured");
   eq(result.unassigned, 2, "and the unassigned bookings it could not pair");
   eq(result.examined, 4, "counted among those examined");
+}
+
+// --- the monitor step, through the real read (2026-10-25) ----------------------------
+// The read pages bookings over a table other writers change between page requests.
+// A booking inserted mid read must not put a row on two pages (the false page that
+// named one booking twice), and a source that DOES repeat a row must fail the step,
+// so `monitor_step_failing:buffer_breach` speaks, never a breach and never an all clear.
+{
+  const FROM = "2026-10-26T00:00:00.000Z";
+  const UNTIL = "2026-10-31T00:00:00.000Z";
+  const hex = (n: number) => n.toString(16).padStart(8, "0");
+  // 1,039 active calls, each on its own advisor, so no real clash exists anywhere;
+  // the 1,000th row by id is the boundary row.
+  const bookingRows = (): FakeRow[] =>
+    Array.from({ length: 1039 }, (_, i) => ({
+      id: i === 999 ? "f2f68932-boundary" : i < 999 ? `a${hex(i)}` : `f9${hex(i)}`,
+      assigned_user_id: `u${i}`,
+      agent_name: `Advisor ${i}`,
+      starts_at: "2026-10-26T17:20:00.000Z",
+      ends_at: "2026-10-26T17:40:00.000Z",
+      event_type_id: "et",
+      bucket_id: "bk",
+      allow_double_book: false,
+      status: "confirmed",
+    }));
+  const rosterRead = (data: unknown[]) => ({ select: () => Promise.resolve({ data, error: null }) });
+  const fakeDb = (bookings: LiveTable) => ({
+    from: (t: string) =>
+      t === "bookings"
+        ? bookings.build()
+        : t === "event_types"
+          ? rosterRead([{ id: "et", buffer_before_min: 10, buffer_after_min: 10 }])
+          : rosterRead([{ id: "bk", is_test: false }]),
+  });
+
+  async function monitorTick(bookings: LiveTable, streaks: ReturnType<typeof memoryStreaks>) {
+    const sent: string[] = [];
+    const resolved: string[] = [];
+    const errors: string[] = [];
+    const steps = createStepRunner({ now: () => 0, onError: (_name, err) => errors.push(String(err)) });
+    const value = await steps.run("buffer_breach", null, () =>
+      runBufferBreachCheck({
+        load: () => loadBookingsForBufferCheck(fakeDb(bookings) as never, FROM, UNTIL),
+        notify: async (key) => {
+          sent.push(key);
+        },
+        resolve: async (key) => {
+          resolved.push(key);
+          return true;
+        },
+        cooldownMs: 60_000,
+        bookingUrl: (id) => id,
+      }),
+    );
+    const verdict = await judgeMonitorSteps(steps.outcomes(), streaks);
+    return { value, sent, resolved, errors, verdict, requests: bookings.requests.length };
+  }
+
+  // A booking inserted below the boundary between page 1 and page 2: no false page.
+  {
+    const bookings = liveTable(bookingRows(), (page, table) => {
+      if (page === 0) table.rows.push({ ...bookingRows()[0]!, id: "8d8f8b7d-new", assigned_user_id: "u-new" });
+    });
+    const r = await monitorTick(bookings, memoryStreaks());
+    assert(r.requests >= 2, `insert mid read: positive control, the read crossed a page boundary (${r.requests} requests)`);
+    eq(r.errors, [], "insert mid read: the step does not fail");
+    eq(r.sent, [], "insert mid read: no booking is paged as overlapping itself");
+    eq(r.value?.breaches, 0, "insert mid read: the tick measures zero breaches");
+    eq(r.value?.examined, 1039, "insert mid read: every booking present for the whole read is examined once");
+  }
+
+  // A source that repeats a row across pages: the step fails, and on a sustained run
+  // the step failure alert speaks for it. No page, no all clear.
+  {
+    const streaks = memoryStreaks();
+    let last: Awaited<ReturnType<typeof monitorTick>> | null = null;
+    for (let tick = 0; tick < stepFailingRuns("buffer_breach"); tick++) {
+      last = await monitorTick(liveTable(bookingRows(), undefined, { ignoreKeyset: true }), streaks);
+      eq(last.sent, [], `repeating source, tick ${tick + 1}: no breach is paged`);
+      eq(last.resolved, [], `repeating source, tick ${tick + 1}: no all clear is posted`);
+      eq(last.value, null, `repeating source, tick ${tick + 1}: the step returns its null fallback`);
+    }
+    assert((last?.errors.length ?? 0) === 1 && /twice|repeat/i.test(last?.errors[0] ?? ""),
+      `repeating source: the step failed on the repeated key (${last?.errors[0] ?? "no error"})`);
+    eq(last?.verdict.page.map((p) => p.step), ["buffer_breach"],
+      "repeating source: a sustained run pages monitor_step_failing:buffer_breach");
+  }
 }
 
 finish();

@@ -3,7 +3,7 @@ import { inIdChunks } from "@/lib/db/id-batch";
 import { hasLeftPool, POOL_STATE_COLUMNS, type PoolStateRow } from "@/lib/bookable/left-pool";
 import { log } from "@/lib/log";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { selectAllPages, type PageableQuery } from "@/lib/supabase/paginate";
+import { selectAllPages, sortByStamp, type PageableQuery } from "@/lib/supabase/paginate";
 import { selectRetryableUnplaceable, type RetryableUnplaceable } from "@/lib/booking/coverage-retry";
 import type { ActionableBookingContext, BookingSnapshot, ItemOutcome } from "@/lib/booking/bulk-reassign";
 import { enqueueCoverageSweep } from "@/lib/booking/coverage-sweep-enqueue";
@@ -876,9 +876,8 @@ export async function loadBulkReassignItems(jobId: string): Promise<BulkReassign
     supabaseAdmin()
       .from("bulk_reassign_items")
       .select("*")
-      .eq("job_id", jobId)
-      .order("created_at", { ascending: true }),
-  );
+      .eq("job_id", jobId),
+  ).then((rows) => sortByStamp("bulk-reassign-job-items", rows, "created_at", "id"));
 }
 
 /** Booking display context for the (small) set of actionable item booking ids. */

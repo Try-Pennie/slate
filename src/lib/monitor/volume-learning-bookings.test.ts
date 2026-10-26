@@ -17,7 +17,7 @@ function stampDb(
 ) {
   const pages: [number, number][] = [];
   const make = () => {
-    const f: { gte?: string; lt?: string; eqTest?: unknown; or?: string } = {};
+    const f: { gte?: string; lt?: string; eqTest?: unknown; or?: string; after?: string } = {};
     const chain = {
       select: (_c: string) => chain,
       // Only the page traffic filter (#2876) is understood; anything else throws.
@@ -33,16 +33,21 @@ function stampDb(
       gte: (_c: string, v: string) => ((f.gte = v), chain),
       lt: (_c: string, v: string) => ((f.lt = v), chain),
       order: () => chain,
+      // The keyset filter on the primary key, which each later page is cut with.
+      gt: (_c: string, v: string) => ((f.after = v), chain),
       range: (from: number, to: number) => {
         pages.push([from, to]);
         const index = pages.length - 1;
         const kept = rows
+          .map((r, i) => ({ ...r, id: `bk-${String(i).padStart(6, "0")}` }))
+          .filter((r) => f.after === undefined || r.id > f.after)
           .filter((r) => (f.gte === undefined || r.created_at >= f.gte) && (f.lt === undefined || r.created_at < f.lt))
           .filter((r) => f.eqTest === undefined || r.is_test === f.eqTest)
           .filter((r) => f.or === undefined || isPageTraffic(r.source ?? null))
-          .sort((a, b) => a.created_at.localeCompare(b.created_at))
+          .sort((a, b) => a.id.localeCompare(b.id))
           .slice(from, to + 1)
           .map((r) => ({
+            id: r.id,
             created_at: r.created_at,
             // #2974: the recorded host page, a framed production booking unless the row says otherwise.
             parent_origin: r.parentOrigin === undefined ? "https://trypennie.com" : r.parentOrigin,

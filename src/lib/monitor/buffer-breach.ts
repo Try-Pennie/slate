@@ -103,6 +103,10 @@ export function judgeBufferBreaches(bookings: readonly BufferedBooking[]): Buffe
       for (let j = i + 1; j < calls.length; j++) {
         const earlier = calls[i]!;
         const later = calls[j]!;
+        // A booking is never in a pair with itself. One handed in twice (a read that
+        // returned a row twice, 2026-10-25) would otherwise pair at minus its own
+        // length and page as an overlap.
+        if (earlier.id === later.id) continue;
         const gapMin = (later.startsMs - earlier.endsMs) / MIN;
         const requiredMin = Math.max(earlier.bufferAfterMin, later.bufferBeforeMin);
         if (gapMin >= requiredMin && gapMin >= 0) continue;
@@ -130,7 +134,8 @@ export interface BufferBookingRow {
 /**
  * The three reads joined into bookings the judge can take.
  *
- * A booking whose event type or bucket the reads did not return THROWS. Both are
+ * A booking id returned twice THROWS, and so does a booking whose event type or
+ * bucket the reads did not return. The event type and bucket are
  * foreign keys, so a miss means the read did not work as designed, and judging the
  * booking with a guessed zero buffer, or a guessed real or test bucket, would be an
  * answer built on nothing (L50).
@@ -144,7 +149,12 @@ export function bookingsForBufferCheck(
   const testById = new Map(buckets.map((b) => [b.id, b.is_test]));
   const bookings: BufferedBooking[] = [];
   let unassigned = 0;
+  const ids = new Set<string>();
   for (const r of rows) {
+    // One booking id twice means the read did not work as designed; judging it
+    // would page the booking as overlapping itself (2026-10-25).
+    if (ids.has(r.id)) throw new Error(`buffer breach: booking ${r.id} was returned twice by the read`);
+    ids.add(r.id);
     if (!r.assigned_user_id) {
       unassigned++;
       continue;

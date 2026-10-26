@@ -1,6 +1,6 @@
 import { supabaseAdmin } from "../supabase/admin.ts";
 import { unwrap } from "../db/result.ts";
-import { selectAllPages } from "../supabase/paginate.ts";
+import { selectAllPages, sortByStamp } from "../supabase/paginate.ts";
 import {
   buildHistoryViews,
   type BookingEventView,
@@ -54,9 +54,8 @@ const defaultDeps: BookingHistoryDeps = {
       supabaseAdmin()
         .from("booking_events")
         .select("*")
-        .eq("booking_id", bookingId)
-        .order("created_at", { ascending: true }),
-    );
+        .eq("booking_id", bookingId),
+    ).then((rows) => sortByStamp("booking_events history", rows, "created_at", "id"));
   },
   async users(ids) {
     return unwrap(

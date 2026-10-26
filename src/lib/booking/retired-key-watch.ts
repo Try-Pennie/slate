@@ -24,7 +24,7 @@ export const watchRetiredKey = makeRetiredKeyWatcher({
   liveKeys: () => configuredBookingApiKeys(BOOKING_API_CALLERS).map((k) => ({ id: k.id, secret: k.secret })),
   cooldownMs: async () => (await loadMonitorCooldowns("booking-api")).retired_booking_key,
   // alert-key: retired_booking_key:*
-  notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
+  notify: (key, cooldownMs, text, repeat) => sendThrottledAlert(key, cooldownMs, text, repeat),
   report: (event) => {
     if (event.kind === "config-unreadable") {
       log.error("booking-api", { msg: "retired key hashes unusable, so a retired key cannot be noticed" }, event.error);

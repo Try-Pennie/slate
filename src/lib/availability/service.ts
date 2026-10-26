@@ -239,15 +239,16 @@ export async function loadMembersAvailability(
   // busy_blocks over the whole pool + window is an aggregate; a large pool crosses
   // PostgREST's 1,000-row cap, so page past it (#828) or a silent truncation drops busy
   // blocks and an agent looks free and gets overbooked (#35 / #166). selectAllPages
-  // orders the pages by id, without which OFFSET paging skipped rows and offered a
-  // sold out Monday (#3273), and throws on a read error (fail-loud).
+  // pages by keyset on id, so a block written mid read can never repeat or skip a
+  // row (unordered OFFSET paging offered a sold out Monday, #3273), and throws on a
+  // read error (fail-loud).
   const busyP = selectAllPages<{ user_id: string; starts_at: string; ends_at: string; source: string }>(
     "busy_blocks",
     "id",
     () =>
       db
         .from("busy_blocks")
-        .select("user_id, starts_at, ends_at, source")
+        .select("id, user_id, starts_at, ends_at, source")
         .in("user_id", userIds)
         .lt("starts_at", to)
         .gt("ends_at", from),

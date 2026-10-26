@@ -34,7 +34,7 @@ export async function userIdsOnApprovedTimeOff(
       // is a growth table and correctly NOT in SAFE_TABLES: one agent accumulates
       // requests over time, so a roster-sized `in` filter is not by itself a bound.
       .from("ooo_requests")
-      .select("user_id")
+      .select("id, user_id")
       .in("user_id", userIds)
       .eq("status", "approved")
       .lt("starts_at", endIso)
@@ -77,7 +77,7 @@ export async function approvedTimeOffIntervals(
         // cap-safe: read every page via selectAllPages, which orders and pages it; ooo_requests
         // is a growth table, deliberately not in SAFE_TABLES.
         .from("ooo_requests")
-        .select("user_id, starts_at, ends_at")
+        .select("id, user_id, starts_at, ends_at")
         .eq("status", "approved")
         .lt("starts_at", endIso)
         .gt("ends_at", startIso),

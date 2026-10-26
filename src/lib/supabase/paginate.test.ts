@@ -6,10 +6,14 @@ import { selectAllPages, PAGE_SIZE, type PageableQuery } from "./paginate";
 // #166 overbooking failure class). selectAllPages is the shared paginator that
 // keeps a read from stopping at the first page.
 //
-// #3273: it pages with OFFSET, which partitions a result only under a total order.
-// The table below has NO natural order: like Postgres, it returns a query that
-// names no order in whatever order it likes, different on every call. Production
-// read 2,392 busy rows of which 1,826 were distinct that way.
+// #3273: a page cut needs a total order. The table below has NO natural order:
+// like Postgres, it returns a query that names no order in whatever order it
+// likes, different on every call. Production read 2,392 busy rows of which 1,826
+// were distinct that way, under OFFSET paging.
+//
+// 2026-10-25: pages are cut by KEYSET (each page asks for the rows after the last
+// key seen), so a row inserted or removed between page requests can no longer
+// repeat or skip a row; scripts/test-paged-read-live-table.ts drives that case.
 
 type Row = { id: string; grp: number };
 
@@ -18,6 +22,7 @@ type Row = { id: string; grp: number };
 function unorderedTable(rows: Row[]) {
   const ranges: [number, number][] = [];
   const orders: string[][] = [];
+  const afters: (string | number | null)[] = [];
   let seed = 7;
   const shuffle = (xs: Row[]) => {
     const out = [...xs];
@@ -30,15 +35,25 @@ function unorderedTable(rows: Row[]) {
   };
   const build = (): PageableQuery => {
     const by: string[] = [];
+    let after: { column: string; value: string | number } | null = null;
     const q: PageableQuery = {
       order: (column) => {
         by.push(column);
         return q;
       },
+      gt: (column, value) => {
+        after = { column, value };
+        return q;
+      },
+      or: () => {
+        throw new Error("this fake models single column keys only");
+      },
       range: (from, to) => {
         ranges.push([from, to]);
         orders.push([...by]);
-        let out = shuffle(rows);
+        const a: { column: string; value: string | number } | null = after;
+        afters.push(a ? a.value : null);
+        let out = shuffle(rows).filter((r) => !a || String(r[a.column as keyof Row]) > String(a.value));
         if (by.length > 0) {
           out = out.sort((a, b) => {
             for (const c of by) {
@@ -54,7 +69,7 @@ function unorderedTable(rows: Row[]) {
     };
     return q;
   };
-  return { build, ranges, orders };
+  return { build, ranges, orders, afters };
 }
 
 const rowsOf = (n: number): Row[] =>
@@ -69,21 +84,20 @@ describe("selectAllPages", () => {
 
     expect(got).toHaveLength(rows.length);
     expect(new Set(got.map((r) => r.id)).size).toBe(rows.length);
-    // Positive control: three pages were really cut, so a boundary was crossed.
-    expect(t.ranges.map((r) => r[0])).toEqual([0, 1000, 2000]);
+    // Positive control: three pages were really cut, each after the last key seen.
+    expect(t.afters).toEqual([null, rows[PAGE_SIZE - 1]!.id, rows[2 * PAGE_SIZE - 1]!.id]);
+    expect(t.ranges).toEqual([
+      [0, PAGE_SIZE - 1],
+      [0, PAGE_SIZE - 1],
+      [0, PAGE_SIZE - 1],
+    ]);
+    // The result is in key order, which is the only order the read asks for.
+    expect(got.map((r) => r.id)).toEqual(rows.map((r) => r.id));
   });
 
-  it("appends the key AFTER the query's own order, so a non unique order still pages cleanly", async () => {
-    const rows = rowsOf(PAGE_SIZE + 500);
-    const t = unorderedTable(rows);
-    const build = () => t.build().order("grp");
-
-    const got = await selectAllPages<Row>("bookings", "id", build);
-
-    expect(new Set(got.map((r) => r.id)).size).toBe(rows.length);
-    expect(t.orders[0]).toEqual(["grp", "id"]);
-    // The caller's order still decides the sequence.
-    expect(got.map((r) => r.grp)).toEqual([...got.map((r) => r.grp)].sort());
+  it("refuses a row that does not carry its key, rather than cutting the next page from nothing", async () => {
+    const t = unorderedTable(rowsOf(3));
+    await expect(selectAllPages<Row>("busy_blocks", "missing_col", t.build)).rejects.toThrow(/missing_col/);
   });
 
   it("orders by every column of a composite key", async () => {
@@ -110,6 +124,8 @@ describe("selectAllPages", () => {
     const failing = (): PageableQuery => {
       const q: PageableQuery = {
         order: () => q,
+        gt: () => q,
+        or: () => q,
         range: () => Promise.resolve({ data: null, error: { message: "read timeout" } }),
       };
       return q;

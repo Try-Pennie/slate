@@ -144,7 +144,7 @@ describe("loadCurrentAgentPicture", () => {
   });
 
   it("reads approved time off over the call as time off", async () => {
-    db.answers.ooo_requests = [{ user_id: "A" }];
+    db.answers.ooo_requests = [{ id: "ooo-1", user_id: "A" }];
     expect((await loadCurrentAgentPicture(bucket, eventType, booking)).onTimeOff).toBe(true);
   });
 
