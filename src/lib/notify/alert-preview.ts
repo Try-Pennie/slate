@@ -571,6 +571,7 @@ import {
   formatDefinerGrantsClearedAlert,
 } from "@/lib/monitor/definer-grants";
 import { formatAuditChainBrokenAlert, formatAuditChainRecovery } from "@/lib/monitor/audit-chain";
+import { formatLaneClaimRecovered, formatLaneClaimUnreadableAlert } from "@/lib/monitor/lane-claim-health";
 import { formatCronCpuAlert, formatCronCpuNotConfigured, formatCronCpuRecovery } from "@/lib/monitor/cron-budget";
 import {
   formatAuthSignInOpenAlert,
@@ -4426,6 +4427,18 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "cleared",
     channel: "recovery",
     text: formatAuditChainRecovery(5120),
+  },
+  {
+    key: "lane_claim_unreadable",
+    state: "the cron lanes cannot write their claim on a tick, and run anyway",
+    channel: "alert",
+    text: formatLaneClaimUnreadableAlert(),
+  },
+  {
+    key: "lane_claim_unreadable",
+    state: "cleared",
+    channel: "recovery",
+    text: formatLaneClaimRecovered(),
   },
   {
     key: "edge_limiter_unusable",

@@ -36,6 +36,7 @@ import { laneFieldName, type LaneRun } from "@/lib/monitor/lane-timing";
 import {
   LANE_ALERTED_HEADER,
   LANE_NOT_RUN_HEADER,
+  LANE_RESEND_HEADER,
   TICK_ID_HEADER,
   type LaneFailureReport,
 } from "@/lib/monitor/lane-failure";
@@ -65,6 +66,12 @@ export const PLACED_LANE_HEADER = "x-slate-placed-lane";
  *  lane's own claim on its tick sets it too (`duplicate` and the rest, #4222), and those
  *  are never run again here: a duplicate already ran, and a refused claim is a failure. */
 export { LANE_NOT_RUN_HEADER };
+
+/** The mark a RE-SENT lane request must carry (#4222), so the lane refuses it when its
+ *  claim on the tick cannot be read. Nothing here re-sends yet: the dispatch that falls
+ *  back after a relay failure (#4189, phase 4) sets it on the second request, and only
+ *  there. A first delivery never carries it, so it runs even when its claim is unreadable. */
+export { LANE_RESEND_HEADER };
 
 /**
  * Where a placed lane request is addressed. It goes through the entry's own fetch handler,

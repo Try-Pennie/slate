@@ -159,10 +159,21 @@ describe("GET /api/cron/prune-regal-calls: a re-sent tick does nothing (#4222)",
     expect(hb.recordHeartbeat).not.toHaveBeenCalled();
   });
 
-  it("runs nothing and answers 503 when the claim cannot be read", async () => {
+  it("runs a FIRST delivery whose claim cannot be read (Dan, 2026-10-26: never skip a run)", async () => {
     db.state.claim = { error: { code: "57014", message: "canceling statement due to statement timeout" } };
     const res = await GET(tickReq("abc123"));
+    expect(res.status).toBe(200);
+    expect(locks.acquireLock).toHaveBeenCalled();
+    expect(db.state.deletedTables.sort()).toEqual(["lane_runs", "regal_call_events", "regal_call_outcomes"]);
+  });
+
+  it("runs nothing and answers 503 for a RE-SEND whose claim cannot be read", async () => {
+    db.state.claim = { error: { code: "57014", message: "canceling statement due to statement timeout" } };
+    const res = await GET({
+      headers: new Headers({ "x-slate-tick-id": "abc123", "x-slate-lane-resend": "1" }),
+    } as unknown as Parameters<typeof GET>[0]);
     expect(res.status).toBe(503);
+    expect(res.headers.get("x-slate-lane-not-run")).toBe("claim_unreadable");
     expect(locks.acquireLock).not.toHaveBeenCalled();
     expect(db.state.deletedTables).toEqual([]);
   });

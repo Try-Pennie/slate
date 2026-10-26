@@ -13,8 +13,11 @@
 //   2. Two deliveries at the same moment run once between them.
 //   3. A lane that crashed after claiming is not run again by a re-send of that tick,
 //      and the NEXT tick runs it (the lease and the heartbeat cover liveness).
-//   4. A claim that cannot be read runs nothing and answers 503, never duplicate and
-//      never a run: a failed read is neither "claimed" nor "taken".
+//   4. A claim that cannot be read is neither "claimed" nor "taken". On a FIRST
+//      delivery the lane runs anyway, marked unreadable so the route logs it (Dan,
+//      2026-10-26: never skip a run; a broken lane_runs must not stop all 28 lanes).
+//      On a RE-SEND (`x-slate-lane-resend`, the case that could run twice) it runs
+//      nothing and answers 503. Any value of the marker counts as a re-send.
 //   5. No tick id runs the lane unclaimed (a hand run with the cron secret); a tick id
 //      that does not read as one runs nothing.
 //   6. The database adapter maps exactly 23505 to taken; any other error, an error with
@@ -63,13 +66,13 @@ const PATH = "/api/cron/sync";
 /** A lane route as the routes are written: claim, then work. Counts the work. */
 function lane(store: LaneClaimStore, work: () => Promise<void> = async () => {}) {
   const ran = { count: 0 };
-  const deliver = async (tickHeader: string | null) => {
-    const claim = await claimLane(tickHeader, PATH, store);
+  const deliver = async (tickHeader: string | null, resendHeader: string | null = null) => {
+    const claim = await claimLane(tickHeader, PATH, store, resendHeader);
     const answer = laneClaimAnswer(claim);
-    if (answer) return { answer, ran: false };
+    if (answer) return { answer, ran: false, claim };
     ran.count++;
     await work();
-    return { answer: null, ran: true };
+    return { answer: null, ran: true, claim };
   };
   return { deliver, ran };
 }
@@ -137,14 +140,39 @@ async function main() {
       },
     };
     const { deliver, ran } = lane(failing);
-    const r = await deliver("abc123");
-    eq(r.ran, false, "a claim that cannot be read runs nothing");
-    eq(ran.count, 0, "no work at all");
-    eq(r.answer?.status, 503, "and answers 503, so the dispatcher reports the lane as failed");
-    eq(r.answer?.notRun, "claim_unreadable", "saying the claim could not be read");
-    eq(r.answer?.headers[LANE_NOT_RUN_HEADER], "claim_unreadable", "on the not-run header");
-    const claim = await claimLane("abc123", PATH, failing);
-    assert(!claim.run && claim.error instanceof Error, "the claim keeps the error for the log");
+    const first = await deliver("abc123");
+    eq(first.ran, true, "a FIRST delivery whose claim cannot be read runs the lane anyway");
+    eq(first.answer, null, "with no refusal answer");
+    assert(first.claim.run && first.claim.claim === "unreadable", "marked unreadable, so the route logs it");
+    assert(first.claim.run && first.claim.error instanceof Error, "keeping the error for the log");
+    eq(ran.count, 1, "the work ran once");
+
+    const resent = await deliver("abc123", "1");
+    eq(resent.ran, false, "a RE-SEND whose claim cannot be read runs nothing");
+    eq(ran.count, 1, "no more work");
+    eq(resent.answer?.status, 503, "and answers 503, so the dispatcher reports the lane as failed");
+    eq(resent.answer?.notRun, "claim_unreadable", "saying the claim could not be read");
+    eq(resent.answer?.headers[LANE_NOT_RUN_HEADER], "claim_unreadable", "on the not-run header");
+    assert(!resent.claim.run && resent.claim.error instanceof Error, "the refusal keeps the error for the log");
+    for (const marker of ["", "0", "true", "yes please"]) {
+      eq((await deliver("abc123", marker)).ran, false, `any value of the marker (${JSON.stringify(marker)}) is a re-send, refused on an unreadable claim`);
+    }
+    eq((await deliver(null, "1")).answer?.notRun, "tick_unreadable", "a re-send with no tick id cannot be claimed, so it runs nothing");
+  }
+
+  // --- 4b. a re-send whose claim reads -------------------------------------------------------
+  {
+    const store = pkStore();
+    const { deliver, ran } = lane(store);
+    eq((await deliver("beef01")).ran, true, "the first delivery runs");
+    const resent = await deliver("beef01", "1");
+    eq(resent.answer?.notRun, "duplicate", "a re-send of a tick that already ran is a duplicate, not run");
+    eq((await deliver("beef02", "1")).ran, true, "a re-send whose first delivery never claimed (it never landed) runs");
+    eq(ran.count, 2, "two runs, one per tick");
+    const claimed = await claimLane("beef03", PATH, store);
+    assert(claimed.run && claimed.claim === "claimed", "a claim that was written is marked claimed");
+    const unclaimed = await claimLane(null, PATH, store);
+    assert(unclaimed.run && unclaimed.claim === "unclaimed", "a hand run is marked unclaimed");
   }
 
   // --- 5. no tick id, or one that does not read ------------------------------------------

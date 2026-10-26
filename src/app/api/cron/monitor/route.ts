@@ -358,6 +358,8 @@ import { postSlack } from "@/lib/notify/slack";
 import { bookingDetailHref } from "@/lib/booking/detail";
 import { runEdgeLimiterCheck } from "@/lib/monitor/edge-limiter-health";
 import { runDefinerGrantsCheck, type DefinerFunctionRow } from "@/lib/monitor/definer-grants";
+import { runLaneClaimHealthCheck } from "@/lib/monitor/lane-claim-health";
+import type { LaneClaim } from "@/lib/monitor/lane-claim";
 import { runAuthSignInSurfaceCheck, readAuthSettings } from "@/lib/monitor/auth-sign-in-surface";
 import { runAuditChainCheck, type AuditChainRow } from "@/lib/monitor/audit-chain";
 import { EDGE_LIMITER_BINDINGS } from "@/lib/rate-limit-core";
@@ -861,8 +863,11 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => NextResponse.json({ error: "unauthorized" }, { status: 401 }));
   }
-  // #4222: claim this tick before any work, so the same lane sent twice runs once.
-  const claimed = await claimLaneTick(req.headers, "/api/cron/monitor");
+  // #4222: claim this tick before any work, so the same lane sent twice runs once. The
+  // claim is kept, because this lane's own claim is what the `lane_claim_health` step
+  // below judges claiming by: the one alert for every lane (lane-claim-health.ts).
+  const ownClaim: { claim: LaneClaim | null } = { claim: null };
+  const claimed = await claimLaneTick(req.headers, "/api/cron/monitor", (c) => (ownClaim.claim = c));
   if (claimed) return claimed;
   const now = Date.now();
 
@@ -4435,6 +4440,26 @@ export async function GET(req: NextRequest) {
         resolve: resolveAlert,
         cooldownMs: cooldownMs.edge_limiter_unusable,
         log: (msg) => log.info("edge-limiter", { msg }),
+      }),
+    );
+
+    // Can the cron lanes claim their ticks? (#4222 follow up) A lane whose claim cannot be
+    // read runs anyway (Dan, 2026-10-26), and the ONE alert about it is raised here, from
+    // this lane's own claim at the top of the handler: one judge per five minutes under
+    // the lease, never 28 lanes each paging. No read of its own: the claim was the read.
+    await steps.run("lane_claim_health", null, () =>
+      runLaneClaimHealthCheck({
+        claim: ownClaim.claim,
+        // alert-key: lane_claim_unreadable
+        // alert-text-ok: our own copy from lane-claim-health.ts, never a raw error.
+        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        // A condition: it ends on a claim this lane actually wrote.
+        // alert-key: lane_claim_unreadable
+        // all-clear-proof: scripts/test-lane-claim-health.ts (a hand run, a duplicate and
+        // no claim each report unmeasured and clear nothing)
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: cooldownMs.lane_claim_unreadable,
+        log: (msg) => log.info("monitor", { msg: `lane claim health: ${msg}` }),
       }),
     );
 

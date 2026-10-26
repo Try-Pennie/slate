@@ -20,13 +20,27 @@
  *   next tick claims a new id and runs it, and the lane's lease and heartbeat watchdog
  *   already cover a lane that stopped part way. Skipping one tick's re-send is the
  *   safe direction; running a half finished lane twice is not.
- * - A claim that cannot be read (the table missing, a timeout, the network) runs
- *   NOTHING and answers 503, so the dispatcher reports the lane as failed and pages. It
- *   is neither "claimed" (which could run the lane twice) nor "taken" (which would skip
- *   it with a 200 and say nothing).
+ * - A claim that cannot be read (the table missing, locked or slow, a timeout, the
+ *   network) is neither "claimed" nor "taken", and what happens depends on whether
+ *   this is the tick's FIRST delivery of the lane:
+ *     A first delivery RUNS the lane anyway, marked `claim: "unreadable"` so the route
+ *     logs it on the lane's line. Dan decided 2026-10-26: run anyway, one alert. Failing
+ *     closed made lane_runs a single point of failure, since one missing, locked or slow
+ *     table would stop all 28 lanes at once and page once per lane, and the rule is
+ *     never skip a run. A first delivery is today's only delivery, so running it
+ *     unclaimed is exactly how every lane ran before this table existed. The one alert
+ *     is the monitor lane's (`lane-claim-health.ts`), never the lanes'.
+ *     A RE-SEND (`LANE_RESEND_HEADER` present, with any value) runs NOTHING and answers
+ *     503, so the dispatcher reports it as failed. A re-send exists because a first
+ *     delivery may already have run, so an unprotected re-send is the one case that
+ *     could run a lane twice. The marker is read only behind the cron secret (the
+ *     claim runs after it), and it can only make a delivery stricter, so a caller who
+ *     sends it gains nothing. The dispatcher will set it when it starts re-sending
+ *     (#4189, phase 4); nothing sets it yet.
  * - No tick id at all is a hand run with the cron secret, never the dispatcher, which
  *   stamps every lane request (`scripts/test-cron-lane-run.ts`). It runs unclaimed, as
- *   every lane ran before this. A tick id that does not read as one we mint runs nothing.
+ *   every lane ran before this. A tick id that does not read as one we mint runs
+ *   nothing, and neither does a re-send with no tick id, which could never be claimed.
  *
  * Pure apart from the injected store, so `scripts/test-lane-claim.ts` drives it; the
  * route glue is `src/lib/cron-lane-claim.ts`.
@@ -45,30 +59,45 @@ export interface LaneClaimStore {
   claim(tickId: string, lane: string): Promise<"claimed" | "taken">;
 }
 
+/**
+ * How a lane that RUNS stands with its tick: `claimed` (this delivery holds the claim),
+ * `unclaimed` (no tick id: a hand run), or `unreadable` (a first delivery whose claim
+ * could not be read, running unprotected and logged).
+ */
+export type LaneClaimStanding = "claimed" | "unclaimed" | "unreadable";
+
 export type LaneClaim =
-  | { run: true; lane: string; tickId: string | null }
+  | { run: true; lane: string; tickId: string | null; claim: LaneClaimStanding; error?: unknown }
   | { run: false; lane: string; tickId: string | null; refusal: LaneClaimRefusal; error?: unknown };
 
 /**
  * Claim `path`'s lane for the tick named by `tickHeader` (the raw `TICK_ID_HEADER`
- * value, null when absent). Never throws: a store failure is the `claim_unreadable`
- * refusal, with the error kept for the log.
+ * value, null when absent). `resendHeader` is the raw `LANE_RESEND_HEADER` value: any
+ * value at all, the empty string included, makes this delivery a re-send. Never throws:
+ * a store failure is kept as the error, beside a run on a first delivery and beside the
+ * `claim_unreadable` refusal on a re-send.
  */
 export async function claimLane(
   tickHeader: string | null,
   path: string,
   store: LaneClaimStore,
+  resendHeader: string | null = null,
 ): Promise<LaneClaim> {
   const lane = laneFieldName(path);
-  if (tickHeader === null) return { run: true, lane, tickId: null };
+  const resend = resendHeader !== null;
+  if (tickHeader === null) {
+    if (resend) return { run: false, lane, tickId: null, refusal: "tick_unreadable" };
+    return { run: true, lane, tickId: null, claim: "unclaimed" };
+  }
   const tickId = parseTickId(tickHeader);
   if (tickId === null) return { run: false, lane, tickId: null, refusal: "tick_unreadable" };
   try {
     const outcome = await store.claim(tickId, lane);
-    if (outcome === "claimed") return { run: true, lane, tickId };
+    if (outcome === "claimed") return { run: true, lane, tickId, claim: "claimed" };
     return { run: false, lane, tickId, refusal: "duplicate" };
   } catch (error) {
-    return { run: false, lane, tickId, refusal: "claim_unreadable", error };
+    if (resend) return { run: false, lane, tickId, refusal: "claim_unreadable", error };
+    return { run: true, lane, tickId, claim: "unreadable", error };
   }
 }
 

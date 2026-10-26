@@ -1099,9 +1099,13 @@ plus `worker/cron-routes.ts`) and are listed here so the surface is complete.
 
 Each lane claims the request's `x-slate-tick-id` before any work (#4222), so the same
 lane sent twice for one tick runs once: a repeat answers `200` with
-`x-slate-lane-not-run: duplicate` and does nothing, a claim that cannot be read answers
-`503` with `claim_unreadable`, and a tick id that is not one the dispatcher mints
-answers `400` with `tick_unreadable`. A request with no tick id runs unclaimed.
+`x-slate-lane-not-run: duplicate` and does nothing, and a tick id that is not one the
+dispatcher mints answers `400` with `tick_unreadable`. A request with no tick id runs
+unclaimed. When the claim cannot be read, a first delivery runs anyway (logged, and the
+monitor lane raises the one `lane_claim_unreadable` alert; Dan decided 2026-10-26: run
+anyway, one alert), while a re-send, marked `x-slate-lane-resend: 1`, answers `503` with
+`claim_unreadable` and runs nothing. The re-send marker is read only behind the cron
+secret and can only make a delivery stricter.
 
 Four of them (`sync`, `recompute`, `outbox`, `selfheal`) share ONE Worker
 invocation budget on the every-minute trigger, which is why per-lane subrequest

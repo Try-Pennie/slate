@@ -352,6 +352,12 @@ export const ALERT_FIELDS: {
     help: "Every audit log entry carries a hash of itself and of the entry before it, and the monitor re-checks the whole trail a few hundred entries at a time. This fires when an entry was edited, deleted or cut off the end, which only a role able to switch off the log's append only guard can do. It clears once a check from the first entry to the last finds nothing wrong.",
   },
   {
+    key: "lane_claim_unreadable",
+    urgency: "page",
+    label: "Scheduled jobs running without their run record",
+    help: "Each scheduled job records that it ran for a given minute, so the same job sent twice runs once. When that record cannot be written the jobs still run, but a job sent twice would not be recognised as a repeat. One message covers all of them. Clears itself once a record is written again.",
+  },
+  {
     key: "hydration_all_failing",
     urgency: "page",
     label: "Calendar refresh failing on every calendar",
@@ -639,6 +645,10 @@ export const MONITOR_DEFAULTS = {
     // it means a privileged role has been used against the trail. Once a day while
     // unchanged (#3801); a further broken entry is a change.
     audit_log_chain_broken: CONDITION_REPEAT_MS,
+    // The cron lanes unable to claim their ticks (#4222) persists until lane_runs answers
+    // again. The lanes still run, so nothing is skipped meanwhile. Once a day while
+    // unchanged (#3801).
+    lane_claim_unreadable: CONDITION_REPEAT_MS,
     // The refresh failing everywhere (#1544) persists until somebody fixes the cause.
     // Named by Dan as one of the URGENT conditions (2026-10-16, #3801), so it repeats
     // hourly while it lasts, although cached cover has weeks of margin before it stops

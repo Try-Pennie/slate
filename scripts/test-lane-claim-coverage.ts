@@ -41,7 +41,8 @@ export function claimFirstProblem(source: string, path: string): string | null {
   const firstAwait = body.search(/\bawait\b/);
   if (firstAwait < 0) return "awaits nothing, so it never claims its tick";
   const claim = new RegExp(
-    `^await claimLaneTick\\(req\\.headers, "${escape(path)}"\\);\\s*if \\((\\w+)\\) return \\1;`,
+    // An optional third argument: the observer the monitor lane keeps its claim through.
+    `^await claimLaneTick\\(req\\.headers, "${escape(path)}"(?:, [^;]*)?\\);\\s*if \\((\\w+)\\) return \\1;`,
   );
   const before = body.slice(0, firstAwait);
   const assigned = /const (\w+) = $/.exec(before);
@@ -68,6 +69,11 @@ eq(
   claimFirstProblem(`${AUTH}  const claimed = await claimLaneTick(req.headers, "${P}");\n  if (claimed) return claimed;\n  const lock = await acquireLock("x", 1);\n}`, P),
   null,
   "a handler that claims first passes",
+);
+eq(
+  claimFirstProblem(`${AUTH}  const claimed = await claimLaneTick(req.headers, "${P}", (c) => (own.claim = c));\n  if (claimed) return claimed;\n  const lock = await acquireLease("x", 1);\n}`, P),
+  null,
+  "a handler that keeps its claim through the observer (the monitor lane) passes",
 );
 const planted: Array<[string, string, RegExp]> = [
   [`${AUTH}  const lock = await acquireLock("x", 1);\n  const claimed = await claimLaneTick(req.headers, "${P}");\n  if (claimed) return claimed;\n}`, "a lock before the claim", /acquireLock/],
