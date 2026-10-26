@@ -598,8 +598,8 @@ log.warn("lane-watchdog", { msg: "stale lane", lane: "outbox" });
 log.error("booking", { msg: "insert failed", booking_id: id }, err);  // Error passed THROUGH
 ```
 
-which emits `slate tag=recompute msg="cycle" refreshed=3 util_pct=42`. Two things
-that kept being decided wrongly per call site now live in one place:
+which emits `slate tag=recompute msg="cycle" refreshed=3 util_pct=42`. Three things
+that used to be decided, or missed, per call site now live in one place:
 
 - **The level.** `console.log` is unreachable from the helper. It is the one method
   Cloudflare stores with **no `level` field**, so the line is kept but is invisible
@@ -609,6 +609,14 @@ that kept being decided wrongly per call site now live in one place:
 - **A searchable `tag=`.** Filter on `tag=booking-api` instead of guessing at a
   message substring. Pass the `Error` itself as the third argument so Cloudflare
   serializes its stack rather than it being flattened into text.
+- **One value, one field, one line.** A string value is quoted, and inside it a
+  backslash, a quote, a line break, a tab and any other control character are
+  written as `\\`, `\"`, `\n`, `\r`, `\t` and `\uXXXX` (#4237). The public beacons log
+  text a stranger wrote, and escaping only the quote let a CSP report append a
+  forged `paged=true` field, or a whole forged line. A value holding none of those
+  renders as it always did, so a needle like `msg="cycle"` still matches; a needle
+  for text that contains one has to be written escaped. `parseSlateLine`
+  (`src/lib/log-shipping/parse-line.ts`) reads the escapes back for Better Stack.
 
 **Stitching one request's lines together needs nothing from us.** Workers Logs has an
 Invocations view that groups every line from one invocation, so a request's confirm-path

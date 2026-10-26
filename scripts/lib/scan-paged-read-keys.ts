@@ -27,10 +27,23 @@
 // word `unique` inside a string or a parenthesised expression (a default, a check)
 // is not a constraint. A constraint later dropped is not tracked; every key in use
 // today is a primary key, which no migration drops.
+//
+// Covering a unique set is not enough on its own: the helper cuts each page from
+// the last row's key and throws on a row whose key column is null, so EVERY column
+// of the key must be proven NOT NULL, not only the unique set inside it (review of
+// #4238: `["id", "booking_id"]` covered the primary key and threw on the first
+// gcal busy block, whose booking_id is null).
 
 import { pagedCallSpans } from "./scan-paged-calls.ts";
 
-export type UniqueSets = Map<string, string[][]>;
+export interface TableKeys {
+  /** The column sets proven unique. */
+  unique: string[][];
+  /** Every column proven NOT NULL. */
+  notNull: Set<string>;
+}
+
+export type UniqueSets = Map<string, TableKeys>;
 
 interface Declared {
   cols: string[];
@@ -225,7 +238,8 @@ export function uniqueSetsFromMigrations(sources: string[]): UniqueSets {
     const proven = f.declared
       .filter((d) => d.unconditional || d.cols.every((c) => f.notNull.get(c) === true))
       .map((d) => d.cols);
-    if (proven.length > 0) sets.set(t, proven);
+    const notNull = new Set([...f.notNull].filter(([, nn]) => nn).map(([c]) => c));
+    if (proven.length > 0) sets.set(t, { unique: proven, notNull });
   }
   return sets;
 }
@@ -347,13 +361,17 @@ function selectText(arg: string, constants: Map<string, string>): string | null 
   return constants.get(arg) ?? null;
 }
 
-/** The field names a select returns at the top level; "*" when it returns every column. */
-export function selectedFields(select: string): Set<string> {
-  const out = new Set<string>();
+/**
+ * Each field a select returns at the top level, mapped to what fills it: the
+ * column itself for a plain column, the expression after the colon for an alias
+ * (`id:booking_id` maps id to booking_id), and "*" for a select of every column.
+ */
+export function selectedFieldSources(select: string): Map<string, string> {
+  const out = new Map<string, string>();
   for (const raw of topLevelItems(select)) {
     const item = raw.trim();
     if (item === "*") {
-      out.add("*");
+      out.set("*", "*");
       continue;
     }
     const paren = item.indexOf("(");
@@ -361,14 +379,20 @@ export function selectedFields(select: string): Set<string> {
     // `alias:expr` names the field by its alias; `::` is a cast, not an alias.
     const alias = /^([\w$]+)\s*:(?!:)/.exec(head);
     if (alias) {
-      out.add(alias[1]!);
+      out.set(alias[1]!, item.slice(alias[0].length).trim());
       continue;
     }
     if (paren !== -1) continue; // an embedded resource, not a column of this table
     if (/->/.test(item)) continue; // a json path with no alias is named by its last key
-    out.add(item.replace(/::[\w\s]+$/, "").trim());
+    const name = item.replace(/::[\w\s]+$/, "").trim();
+    out.set(name, name);
   }
   return out;
+}
+
+/** The field names a select returns at the top level; "*" when it returns every column. */
+export function selectedFields(select: string): Set<string> {
+  return new Set(selectedFieldSources(select).keys());
 }
 
 /** Null when the call's chain can be keyset paged on its key, else why not. */
@@ -382,7 +406,17 @@ export function judgePagedReadShape(read: PagedReadKey, constants: Map<string, s
   if (!read.selectArg) return "names no select this scan can read";
   const text = selectText(read.selectArg, constants);
   if (text === null) return `select ${read.selectArg} is not one this scan can read`;
-  const fields = selectedFields(text);
+  const fields = selectedFieldSources(text);
+  // An alias named like a key column is not that column: the helper orders by the
+  // table's real column and cuts the next page on whatever the field holds, so
+  // `id:booking_id` skips rows or throws "returned twice". Only `id:id` (or plain
+  // `id`) returns the key, and this is judged before `*`, which the alias overrides.
+  const renamed = (read.keys ?? []).filter((k) => fields.has(k) && fields.get(k) !== k);
+  if (renamed.length > 0) {
+    return `the select returns ${renamed
+      .map((k) => `${fields.get(k)} under the key's name ${k}`)
+      .join(", ")}, but the read is ordered by the column ${renamed.join(", ")} and cut on that field`;
+  }
   if (fields.has("*")) return null;
   const missing = (read.keys ?? []).filter((k) => !fields.has(k));
   return missing.length === 0
@@ -394,11 +428,20 @@ export function judgePagedReadShape(read: PagedReadKey, constants: Map<string, s
 export function judgePagedReadKey(read: PagedReadKey, sets: UniqueSets): string | null {
   if (read.table === null) return "names no table this scan can read";
   if (read.keys === null) return "passes no literal key this scan can read";
-  const known = sets.get(read.table);
-  if (!known || known.length === 0) return `table ${read.table} declares no unique column set in the migrations`;
+  const table = sets.get(read.table);
+  const known = table?.unique ?? [];
+  if (!table || known.length === 0) return `table ${read.table} declares no unique column set in the migrations`;
   const keys = new Set(read.keys.map((k) => k.toLowerCase()));
-  if (known.some((set) => set.every((c) => keys.has(c)))) return null;
-  return `key [${read.keys.join(", ")}] covers none of ${read.table}'s unique sets: ${known
-    .map((s) => `(${s.join(", ")})`)
-    .join(" ")}`;
+  if (!known.some((set) => set.every((c) => keys.has(c)))) {
+    return `key [${read.keys.join(", ")}] covers none of ${read.table}'s unique sets: ${known
+      .map((s) => `(${s.join(", ")})`)
+      .join(" ")}`;
+  }
+  // Every key column, not only the unique set inside the key, must be NOT NULL:
+  // selectAllPages throws on a row whose key column is null.
+  const nullable = [...keys].filter((c) => !table.notNull.has(c));
+  if (nullable.length > 0) {
+    return `key column ${nullable.join(", ")} of ${read.table} is not proven NOT NULL in the migrations, and a null key value cannot cut a page`;
+  }
+  return null;
 }

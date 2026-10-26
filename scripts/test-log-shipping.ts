@@ -199,6 +199,29 @@ const LINK_TOKEN = "9f".repeat(32);
   eq(parseSlateLine("Warning: something from a library"), null, "a line that is not ours is not parsed");
 }
 
+{
+  // #4237 (L809): a value a stranger wrote round trips as ONE field, whatever it
+  // holds, so a forged csp-report cannot plant `paged=true` among the parsed fields.
+  const BACKSLASH = "\u005c";
+  const nasty = [
+    `x${BACKSLASH}" paged=true`,
+    `ends in a backslash${BACKSLASH}`,
+    `${BACKSLASH}${BACKSLASH}" paged=true`,
+    `one\u000aslate tag=forged paged=true\u000d\u000atwo`,
+    `tab\u0009nul\u0000esc\u001bdel\u007fsep\u2028end`,
+    `${BACKSLASH}n is not a line feed, ${BACKSLASH}u0041 is not an A`,
+  ];
+  for (const value of nasty) {
+    const fields = parseSlateLine(formatLine("csp-report", { blocked: value, paged: false }));
+    eq(fields?.blocked, value, `the value round trips exactly: ${JSON.stringify(value)}`);
+    eq(fields?.paged, false, `and the real paged field is untouched: ${JSON.stringify(value)}`);
+    eq(Object.keys(fields ?? {}).sort().join(","), "blocked,paged,tag", `and no forged key appears: ${JSON.stringify(value)}`);
+  }
+  // A line written before #4237 held a lone backslash before an ordinary letter;
+  // it still reads as the text it was.
+  eq(parseSlateLine(String.raw`slate tag=t path="C:\Users\Dan"`)?.path, String.raw`C:\Users\Dan`, "an unknown escape keeps its backslash");
+}
+
 // ------------------------------------------------------------- records
 
 const VERSION = "7a1b2c3d-0000-4000-8000-123456789abc";
@@ -310,6 +333,103 @@ function fetchItem(url: string, logs: TraceItemLike["logs"], exceptions: TraceIt
   eq(fields.next, `/booking/manage/${REDACTED_SEGMENT}`, "and the value keeps its route");
   assert(!Object.keys(fields).some((k) => k.includes("5551234567")), "a phone number inside a field key does not ship");
   eq(fields.ok_key, 2, "an ordinary key and its number are untouched");
+}
+
+{
+  // #4237: the shipped copy. Redaction runs over the line, so a redaction that eats
+  // the backslash of an escaped quote (a token path or a query string ending at it)
+  // would hand the parser a closed quote and a forged field.
+  const records = recordsFromTraces([
+    fetchItem("/x", [
+      {
+        timestamp: 1,
+        level: "warn",
+        message: [
+          formatLine("csp-report", {
+            document: `/booking/manage/${MANAGE_TOKEN}" forged_path=1`,
+            blocked: `https://slate.trypennie.app/book?email=jane%40example.com" forged_query=1`,
+            paged: false,
+            not_paged: "report-only",
+            phone: 5551234567,
+          }),
+        ],
+      },
+    ]),
+  ]);
+  const fields = records.find((r) => r.kind === "log")?.fields as Record<string, unknown>;
+  eq(fields.forged_path, undefined, "a redacted token path cannot forge a field in what ships");
+  eq(fields.forged_query, undefined, "nor can a stripped query string");
+  eq(fields.paged, false, "and the real fields keep their values");
+  eq(Object.keys(fields).sort().join(","), "blocked,document,not_paged,paged,phone,tag", "and no other key appears");
+  assert(!JSON.stringify(records).includes(MANAGE_TOKEN), "the token is still redacted");
+  assert(!JSON.stringify(records).includes("jane%40"), "and the query string still stripped");
+  eq(fields.phone, "[phone]", "and a numeric phone field still carries the marker");
+}
+
+// #4237 review: the shipped MESSAGE is the line as text, and the line now writes a
+// line break inside a value as backslash n. The contact scrub needs a word boundary
+// or a separator between a phone's groups, so scrubbing that escaped text let a
+// phone after an escaped control character ship in the clear. Invented values only.
+const PHONE_LEAK = /555\D{0,6}123\D{0,6}4567/;
+function shippedLog(message: unknown[]): { message: string; fields: Record<string, unknown> } {
+  const line = recordsFromTraces([fetchItem("/x", [{ timestamp: 1, level: "error", message }])]).find((r) => r.kind === "log");
+  return { message: String(line?.message), fields: (line?.fields ?? {}) as Record<string, unknown> };
+}
+
+{
+  const values = [
+    "Call me on\u000a555-123-4567 please",
+    "phone:\u0009555.123.4567",
+    "x\u000d\u000a555 123 4567",
+    "555\u000a123\u000a4567",
+    "555\u000d123\u000d4567",
+    "555\u0009123\u00094567",
+    "(555)\u000a123-4567",
+  ];
+  for (const value of values) {
+    const { message, fields } = shippedLog([formatLine("probe", { detail: value })]);
+    assert(!PHONE_LEAK.test(message), `the message never ships the phone: ${JSON.stringify(value)} (got ${message})`);
+    assert(message.includes("[phone]"), `the message carries the marker instead: ${JSON.stringify(value)}`);
+    assert(!PHONE_LEAK.test(String(fields.detail)), `nor does the field: ${JSON.stringify(value)}`);
+    assert(String(fields.detail).includes("[phone]"), `and the field carries the marker: ${JSON.stringify(value)}`);
+  }
+}
+
+{
+  // The same class, older than #4237: an object console argument was stringified
+  // BEFORE the scrub, and JSON writes a line break as backslash n too.
+  const { message } = shippedLog([formatLine("x", { msg: "y" }), { message: "note\u000a555-123-4567", nested: { at: "c\u000ajane.doe@example.com" } }]);
+  assert(!PHONE_LEAK.test(message), `an object argument never ships a phone after a line break (got ${message})`);
+  assert(!message.includes("jane.doe"), "nor a nested email after one");
+  assert(message.includes("[phone]") && message.includes("[email]"), "both carry their markers");
+  const plain = shippedLog([formatLine("x", { msg: "y" }), "and 555-123-4567 as a string argument", 5551234567]);
+  assert(!PHONE_LEAK.test(plain.message), "a string or numeric extra argument is scrubbed as before");
+}
+
+{
+  // The message and the fields can never disagree: the message read back as fields
+  // IS the shipped fields, so nothing scrubbed out of one survives in the other.
+  const BACKSLASH = "\u005c";
+  const samples: Record<string, string | number | boolean>[] = [
+    { detail: "Call me on\u000a555-123-4567 please" },
+    { detail: "(555)\u000a123-4567", n: 5551234567 },
+    { ua: `jane.doe@example.com${BACKSLASH}" forged=1` },
+    { u: `/booking/manage/${MANAGE_TOKEN}\u000apaged=true` },
+    { u: "/book?name=secretname&email=jane.doe%40example.com\u000anext line" },
+    { u: `/book?name=secret${BACKSLASH}name&x=1`, ok: true },
+    { blocked: `x${BACKSLASH}" paged=true`, paged: false },
+    { msg: "lane timings", total_ms: 5400.2, lanes_ok: 3 },
+  ];
+  for (const sample of samples) {
+    const { message, fields } = shippedLog([formatLine("probe", sample)]);
+    eq(JSON.stringify(parseSlateLine(message)), JSON.stringify(fields), `the message reads back as the shipped fields: ${JSON.stringify(sample)}`);
+    for (const secret of [PHONE_LEAK, /jane\.doe/, /secretname/, new RegExp(MANAGE_TOKEN)]) {
+      assert(!secret.test(message) && !secret.test(JSON.stringify(fields)), `${secret} ships in neither: ${JSON.stringify(sample)}`);
+    }
+  }
+  // A line with nothing to scrub ships exactly as it was written.
+  const clean = formatLine("cron", { msg: "lane timings", total_ms: 5400.2, ok: true, url: "/api/cron/sync" });
+  eq(shippedLog([clean]).message, clean, "an ordinary line's message is the line itself");
 }
 
 {
