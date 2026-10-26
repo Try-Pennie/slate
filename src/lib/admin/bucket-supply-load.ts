@@ -249,7 +249,7 @@ export async function loadBookedTimes(
     () => {
       const q = db
         .from("bookings")
-        .select("starts_at, buckets!inner(code)")
+        .select("id, starts_at, buckets!inner(code)")
         // #2073: a share of a bucket's ROUTED demand. A booking through an agent's
         // own link sits in a bucket only because a booking needs one, so it is not
         // demand that bucket's pool served.

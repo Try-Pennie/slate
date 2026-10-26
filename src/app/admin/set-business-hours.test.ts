@@ -60,10 +60,18 @@ const from = vi.hoisted(() => {
       eq: () => builder,
       is: () => builder,
       order: () => builder,
+      // The keyset filter selectAllPages cuts each later page with; the table's
+      // primary key is modelled as the row's position.
+      gt: (_col: string, after: string) => {
+        builder.after = after;
+        return builder;
+      },
       range: (fromRow: number, toRow: number) => {
         db.bookingPages++;
+        const keyed = db.bookingRows.map((r, i) => ({ id: `b${String(i).padStart(6, "0")}`, ...r }));
+        const after = builder.after as string | undefined;
         return Promise.resolve({
-          data: db.bookingRows.slice(fromRow, toRow + 1),
+          data: keyed.filter((r) => after === undefined || r.id > after).slice(fromRow, toRow + 1),
           error: null,
         });
       },

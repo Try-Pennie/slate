@@ -16,7 +16,11 @@
 //   6. the days judged are the booker's (#4064): after the 6 PM cutoff that is
 //      tomorrow and the next open day, never today, although Team capacity's page
 //      still leads with today (#3949); before it, today and tomorrow; and the
-//      all clear links to the Team capacity page.
+//      all clear links to the Team capacity page;
+//   7. it speaks only from 8 AM up to 6 PM New York time, every day (Dan, 2026-10-26, who
+//      asked for 9 AM and then moved it to 8 so the first post is early rather than late).
+//      A reading outside those hours posts nothing, clears nothing and records nothing as
+//      sent, so the first tick inside them (8:23 AM) judges that morning's numbers afresh.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-roster-fill.ts
 import {
@@ -33,6 +37,8 @@ import type { AdvisorDay, TeamCapacityAdvisor } from "../src/lib/admin/team-capa
 import { capacityDays } from "../src/lib/admin/capacity-days.ts";
 import { offeredWindowFor } from "../src/lib/availability/offered-window.ts";
 import type { AlertRepeat } from "../src/lib/notify/repeat-policy.ts";
+import { DAYTIME_POSTING_HOURS } from "../src/lib/notify/posting-hours.ts";
+import { CRON_ROUTES } from "../worker/cron-routes.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const DAYS = ["2026-10-22", "2026-10-23", "2026-10-24"];
@@ -252,6 +258,8 @@ async function tick(over: Partial<Parameters<typeof runRosterFillCheck>[0]>) {
     },
     cooldownMs: 4 * 60 * 60_000,
     appBaseUrl: BASE,
+    // 11 AM New York on a Monday: inside the posting hours, so these ticks speak.
+    nowMs: Date.parse("2026-10-26T15:00:00Z"),
     ...over,
   });
   return { sent, resolved, result };
@@ -328,6 +336,136 @@ async function tick(over: Partial<Parameters<typeof runRosterFillCheck>[0]>) {
     threw = true;
   }
   assert(!threw, "a failed post or all clear never throws out of the check");
+}
+
+// 7: the posting hours. A fake dispatcher with the real one's memory: a post stamps the
+// condition as firing, and an all clear posts only while it is (resolveAlert's marker).
+function dispatcher() {
+  const posts: { at: string; text: string; kind: "alert" | "all clear" }[] = [];
+  let firing = false;
+  let clock = "";
+  return {
+    posts,
+    isFiring: () => firing,
+    async tickAt(iso: string, over: Partial<Parameters<typeof runRosterFillCheck>[0]> = {}) {
+      clock = iso;
+      const logged: Record<string, unknown>[] = [];
+      const result = await runRosterFillCheck({
+        loadReport: async () => report(fullRoster),
+        readLine: async () => 85,
+        notify: async (_key, _ms, text) => {
+          posts.push({ at: clock, text, kind: "alert" });
+          firing = true;
+        },
+        resolve: async (_key, text) => {
+          if (!firing) return false;
+          posts.push({ at: clock, text, kind: "all clear" });
+          firing = false;
+          return true;
+        },
+        cooldownMs: 4 * 60 * 60_000,
+        appBaseUrl: BASE,
+        nowMs: Date.parse(iso),
+        log: (f) => logged.push(f),
+        ...over,
+      });
+      return { result, logged };
+    },
+  };
+}
+// A different roster that is also over the line, so a post can be told apart by its numbers.
+const FULLER = [advisor("a", [[0, 20], [0, 20], [10, 10]]), advisor("b", [[1, 20], [2, 20], [10, 10]])];
+const fullerText = formatRosterFillAlert(judgeRosterFill({ report: report(FULLER), linePct: 85 }) as Extract<RosterFillReading, { status: "measured" }>);
+assert(fullerText !== alert, "the two rosters read differently, so the test can tell which one posted");
+
+{
+  // The post Dan saw: over the line at 1:23 AM.
+  const d = dispatcher();
+  const { result, logged } = await d.tickAt("2026-10-26T05:23:00Z");
+  eq(result.status === "measured" && result.over, true, "1:23 AM is still measured as over the line");
+  eq(d.posts.length, 0, "1:23 AM posts nothing");
+  eq(d.isFiring(), false, "and records nothing as sent, so 8:23 AM is not taken for a repeat");
+  eq(logged.find((f) => f.status === "measured")?.held, true, "the log line says the post was held");
+
+  // 7:53 AM, the lane's last tick before the window: still held.
+  await d.tickAt("2026-10-26T11:53:00Z");
+  eq(d.posts.length, 0, "7:53 AM still posts nothing");
+
+  // 8:23 AM, the lane's first tick inside the window, still over the line: posts once, with that
+  // morning's numbers.
+  await d.tickAt("2026-10-26T12:23:00Z", { loadReport: async () => report(FULLER) });
+  eq(d.posts.length, 1, "8:23 AM, still over the line, posts");
+  eq(d.posts[0]?.text, fullerText, "with the numbers read at 8:23 AM, never the overnight ones");
+  eq(d.posts[0]?.at, "2026-10-26T12:23:00Z", "at 8:23 AM");
+}
+{
+  // Over the line overnight, under it by 8 AM: nothing at all.
+  const d = dispatcher();
+  await d.tickAt("2026-10-26T05:23:00Z");
+  await d.tickAt("2026-10-26T07:53:00Z");
+  await d.tickAt("2026-10-26T12:23:00Z", { readLine: async () => 95 });
+  eq(d.posts.length, 0, "a condition that cleared before 8 AM never posts, alert or all clear");
+}
+{
+  // The edges, one fresh tick each.
+  const edges: [string, boolean, string][] = [
+    ["2026-10-26T11:59:00Z", false, "7:59 AM"],
+    ["2026-10-26T12:00:00Z", true, "8:00 AM"],
+    ["2026-10-26T21:59:00Z", true, "5:59 PM"],
+    ["2026-10-26T22:00:00Z", false, "6:00 PM"],
+    ["2026-10-31T12:23:00Z", true, "a Saturday at 8:23 AM"],
+    ["2026-11-01T12:53:00Z", false, "7:53 AM on the day the clocks go back"],
+    ["2026-11-01T13:23:00Z", true, "8:23 AM on the day the clocks go back"],
+    ["2026-03-08T11:53:00Z", false, "7:53 AM on the day the clocks go forward"],
+    ["2026-03-08T12:23:00Z", true, "8:23 AM on the day the clocks go forward"],
+  ];
+  for (const [iso, speaks, what] of edges) {
+    const d = dispatcher();
+    await d.tickAt(iso);
+    eq(d.posts.length, speaks ? 1 : 0, `over the line at ${what} ${speaks ? "posts" : "posts nothing"}`);
+  }
+}
+{
+  // Posted in the afternoon, under the line at 2 AM: the all clear waits for the morning too.
+  const d = dispatcher();
+  await d.tickAt("2026-10-26T20:53:00Z");
+  eq(d.posts.length, 1, "4:53 PM over the line posts");
+  const { logged } = await d.tickAt("2026-10-27T06:00:00Z", { readLine: async () => 95 });
+  eq(d.posts.length, 1, "a 2 AM reading under the line posts no all clear");
+  eq(d.isFiring(), true, "and leaves the notice open for the morning");
+  eq(logged.find((f) => f.status === "measured")?.held, true, "the held all clear is in the log");
+  await d.tickAt("2026-10-27T11:53:00Z", { readLine: async () => 95 });
+  eq(d.posts.length, 1, "nor at 7:53 AM");
+  await d.tickAt("2026-10-27T12:23:00Z", { readLine: async () => 95 });
+  eq(d.posts.at(-1)?.kind, "all clear", "8:23 AM still under the line sends the all clear");
+  eq(d.isFiring(), false, "and the notice is cleared");
+}
+{
+  // Posted in the afternoon, under the line overnight, over again by morning: no all clear at
+  // all, and the morning reading goes to the dispatcher, whose daily repeat decides (#3801).
+  const d = dispatcher();
+  await d.tickAt("2026-10-26T20:53:00Z");
+  await d.tickAt("2026-10-27T06:00:00Z", { readLine: async () => 95 });
+  await d.tickAt("2026-10-27T12:23:00Z");
+  eq(d.posts.filter((p) => p.kind === "all clear").length, 0, "a dip under the line that ended before 8 AM sends no all clear");
+}
+{
+  // The hold is only as prompt as the lane: its first tick each day must land soon after 8 AM.
+  const exprs = Object.entries(CRON_ROUTES)
+    .filter(([, routes]) => (Array.isArray(routes) ? routes : [routes]).includes("/api/cron/capacity-history"))
+    .map(([expr]) => expr);
+  assert(exprs.length > 0, "the capacity history lane has a schedule");
+  for (const expr of exprs) {
+    const [minutes, ...rest] = expr.split(" ");
+    eq(rest.join(" "), "* * * *", `${expr} runs every hour of every day, so it reaches 8 AM on each one`);
+    // New York is a whole number of hours off UTC all year, so a minute past each UTC hour is
+    // the same minute past 8 AM New York, on both sides of a clock change.
+    const first = Math.min(...(minutes ?? "").split(",").map(Number));
+    assert(Number.isInteger(first) && first < 30, `the lane's first tick in the window is ${first} minutes after it opens, within half an hour`);
+    // Dan, 2026-10-26: early rather than late, so the first morning post is at 8:23 AM.
+    eq(DAYTIME_POSTING_HOURS.fromMinute + first, 8 * 60 + 23, "the first morning tick inside the window is 8:23 AM");
+    assert(DAYTIME_POSTING_HOURS.fromMinute + first < DAYTIME_POSTING_HOURS.toMinute, "and inside the window");
+  }
 }
 
 finish();

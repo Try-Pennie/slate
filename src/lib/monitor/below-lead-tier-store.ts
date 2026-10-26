@@ -85,8 +85,7 @@ export async function loadRoutingContextByBooking(
       db
         .from("routing_decisions")
         .select("id, booking_id, catchall_applied, requested_code, tier_fallback, rungs_dropped, created_at")
-        .in("booking_id", batch)
-        .order("created_at", { ascending: true }) as unknown as PageableQuery,
+        .in("booking_id", batch) as unknown as PageableQuery,
     ),
   );
   const newest = new Map<string, { createdAt: string; id: string }>();

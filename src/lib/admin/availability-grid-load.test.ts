@@ -60,7 +60,9 @@ vi.mock("@/lib/supabase/admin", () => ({
           lt: () => q,
           gt: () => q,
           order: () => q,
-          range: async () => ({ data: ooo.rows, error: ooo.error }),
+          // Each row carries its primary key, which a paged read cuts its next page
+          // on (keyset paging, 2026-10-25).
+          range: async () => ({ data: ooo.error ? null : ooo.rows.map((r, i) => ({ id: `ooo-${i}`, ...r })), error: ooo.error }),
         };
         return q;
       }

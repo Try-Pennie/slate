@@ -127,7 +127,7 @@ export async function loadTeamHours(
         selectAllPages<RuleRow>("team hours rules", "id", () =>
           db
             .from("availability_rules")
-            .select("schedule_id, weekday, start_minute, end_minute")
+            .select("id, schedule_id, weekday, start_minute, end_minute")
             .in("schedule_id", chunk),
         ),
       )

@@ -298,11 +298,10 @@ if (window.update === null) {
         () =>
           db
             .from("regal_call_outcomes")
-            .select("lead_key, started_at, talk_time_s, is_ai_agent")
+            .select("id, lead_key, started_at, talk_time_s, is_ai_agent")
             .in("lead_key", chunk)
             .gte("started_at", from)
-            .lt("started_at", to)
-            .order("event_id"),
+            .lt("started_at", to),
       );
       calls.push(...rows.map((r) => ({ leadKey: r.lead_key, startedAt: r.started_at, talkTimeS: r.talk_time_s, isAiAgent: r.is_ai_agent })));
     }

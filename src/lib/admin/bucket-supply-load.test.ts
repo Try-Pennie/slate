@@ -126,7 +126,9 @@ vi.mock("@/lib/supabase/admin", () => ({
           order: () => q,
           range: async () => {
             if (db.bookingError) return { data: null, error: db.bookingError };
-            const page = served ? [] : db.bookingRows;
+            // Each row carries its primary key, which a paged read cuts its next
+            // page on (keyset paging, 2026-10-25).
+            const page = served ? [] : db.bookingRows.map((r, i) => ({ id: `bk-${i}`, ...r }));
             served = true;
             return { data: page, error: null };
           },

@@ -36,6 +36,11 @@ function fakeDb(
           filters.push((r) => r[col] === val);
           return chain;
         },
+        // The keyset filter a paged read cuts each later page with.
+        gt: (col: string, val: string) => {
+          filters.push((r) => String(r[col]) > val);
+          return chain;
+        },
         // Recorded rather than applied, so a test can ask whether the paged read
         // asked for a stable order at all: without one Postgres may skip or
         // repeat rows across pages.
@@ -49,7 +54,9 @@ function fakeDb(
         },
         then: (res: (v: unknown) => unknown) => {
           if (opts.error) return Promise.resolve(res({ data: null, error: { message: opts.error } }));
+          // A fixture row naming no primary key is given one by its position.
           const kept = (tables[table] ?? [])
+            .map((r, i): Row => ({ id: `${table}-${i}`, ...r }))
             .filter((r) => filters.every((f) => f(r)))
             .map((r) => (columns ? Object.fromEntries(columns.map((c) => [c, r[c]])) : r));
           return Promise.resolve(res({ data: kept.slice(range[0], range[1] + 1), error: null }));
@@ -194,13 +201,13 @@ describe("loadRoutingContextByBooking", () => {
     }
   });
 
-  it("pages in a stable order (created_at, then id), so no row is skipped or repeated across pages", async () => {
+  it("pages by its unique key alone, so no row is skipped or repeated across pages", async () => {
+    // Keyset paging (2026-10-25): each page is the rows after the last id seen, so
+    // the read asks for no other order; the newest decision is chosen by created_at
+    // in code, whatever order the rows arrive in (the cases above).
     const orders: [string, string, unknown][] = [];
     await loadRoutingContextByBooking(fakeDb({ routing_decisions: [] }, { orders }), ["bk-1"]);
-    expect(orders.map(([t, c]) => [t, c])).toEqual([
-      ["routing_decisions", "created_at"],
-      ["routing_decisions", "id"],
-    ]);
+    expect(orders.map(([t, c]) => [t, c])).toEqual([["routing_decisions", "id"]]);
   });
 
   it("THROWS on a read error, so the page says the context could not be read", async () => {

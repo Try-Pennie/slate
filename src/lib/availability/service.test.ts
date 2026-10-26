@@ -37,8 +37,10 @@ function fakeDb(
   tables: Rows,
   rpc: { result?: RpcResult; calls?: RpcCall[] } = {},
 ): ReturnType<typeof supabaseAdmin> {
-  const builder = (tableRows: unknown[]) => {
-    let rows = tableRows;
+  const builder = (table: string, tableRows: unknown[]) => {
+    // A fixture row naming no primary key is given one by its position, in key order,
+    // since a paged read cuts each later page on it (keyset paging, 2026-10-25).
+    let rows = tableRows.map((r, i) => ({ id: `${table}-${String(i).padStart(6, "0")}`, ...(r as Record<string, unknown>) }));
     let range: [number, number] | null = null;
     // A range filter is honoured on a row carrying that column, as PostgREST would, so
     // a read window that stops short leaves the row out here too. A row without the
@@ -55,7 +57,7 @@ function fakeDb(
       eq: () => b,
       in: () => b,
       lt: (col: string, v: string) => keep(col, (x) => Date.parse(x) < Date.parse(v)),
-      gt: (col: string, v: string) => keep(col, (x) => Date.parse(x) > Date.parse(v)),
+      gt: (col: string, v: string) => keep(col, (x) => (col === "id" ? x > v : Date.parse(x) > Date.parse(v))),
       lte: () => b,
       gte: () => b,
       is: () => b,
@@ -75,7 +77,7 @@ function fakeDb(
     return b;
   };
   return {
-    from: (table: string) => builder(tables[table] ?? []),
+    from: (table: string) => builder(table, tables[table] ?? []),
     rpc: (name: string, params: Record<string, unknown>) => {
       rpc.calls?.push({ name, params });
       return Promise.resolve(rpc.result ?? { data: {}, error: null });

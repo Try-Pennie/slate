@@ -136,7 +136,10 @@ function pagingDb(
   // sent in BOUNDED batches rather than one request PostgREST would reject on length.
   const deleteBatches: unknown[][] = [];
   const from = (table: string) => {
-    const rows = tables[table] ?? [];
+    // A fixture row naming no primary key is given one by its position, in key order.
+    let rows = (tables[table] ?? []).map(
+      (r, i): Record<string, unknown> => ({ id: `${table}-${String(i).padStart(6, "0")}`, ...r }),
+    );
     let range: [number, number] | null = null;
     let mode: "read" | "delete" = "read";
     const b: Record<string, unknown> = {
@@ -145,6 +148,12 @@ function pagingDb(
       is: () => b,
       not: () => b,
       gt: (col: string, value: unknown) => {
+        // The keyset filter a paged read cuts each later page with (2026-10-25) is
+        // honoured, and kept apart from the window bounds the tests below count.
+        if (col === "id") {
+          rows = rows.filter((r) => String(r.id) > String(value));
+          return b;
+        }
         bounds.push({ op: "gt", col, value });
         return b;
       },
@@ -152,7 +161,10 @@ function pagingDb(
         bounds.push({ op: "lt", col, value });
         return b;
       },
-      order: () => b,
+      order: (col: string) => {
+        rows = [...rows].sort((x, y) => (String(x[col]) < String(y[col]) ? -1 : 1));
+        return b;
+      },
       range: (f: number, t: number) => {
         range = [f, t];
         return b;

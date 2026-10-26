@@ -38,7 +38,10 @@ function fakeDb(tables: Record<string, Row[]>): ReturnType<typeof supabaseAdmin>
       eq: (c: string, v: unknown) => (filters.push((r) => r[c] === v), b),
       in: (c: string, vs: unknown[]) => (filters.push((r) => vs.includes(r[c])), b),
       lt: (c: string, v: string) => (filters.push((r) => Date.parse(String(r[c])) < Date.parse(v)), b),
-      gt: (c: string, v: string) => (filters.push((r) => Date.parse(String(r[c])) > Date.parse(v)), b),
+      // A time column compares as instants; the key (the keyset filter each later
+      // page is cut with, 2026-10-25) compares as text, as Postgres compares it.
+      gt: (c: string, v: string) =>
+        (filters.push((r) => (c === "id" ? String(r[c]) > v : Date.parse(String(r[c])) > Date.parse(v))), b),
       gte: () => b,
       lte: () => b,
       is: () => b,

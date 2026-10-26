@@ -10,7 +10,7 @@ import { sendGmailEmail } from "@/lib/notify/email";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
-import { selectAllPages } from "@/lib/supabase/paginate";
+import { selectAllPages, sortByStamp } from "@/lib/supabase/paginate";
 import { REMINDER_LEAD_MS } from "@/lib/booking/reminder";
 import { runBookingReminders, type DueBooking } from "@/lib/booking/reminder-send";
 import { runReminderFailureRateCheck } from "@/lib/booking/reminder-rate";
@@ -130,12 +130,12 @@ export async function GET(req: NextRequest) {
           // cancels a real row every hour against a real inbox, and reminding
           // SMOKE about its own fixture would be a live email nobody asked for
           // (#396).
-          .eq("buckets.is_test", false)
-          // A keyset the pages can be cut on. A read with no order is in whatever
-          // order came back (L343), and page two of an unordered read can repeat or
-          // skip rows from page one.
-          .order("starts_at", { ascending: true }),
+          .eq("buckets.is_test", false),
       );
+      // Soonest first, as the read used to ask Postgres for: the order decides which
+      // bookings a tick sends first and which are paged by name. The read itself is
+      // ordered by id, which keyset paging owns (2026-10-25).
+      sortByStamp("bookings due a reminder", rows, "starts_at", "id");
       for (const r of rows) rowsSeen.set(r.id, r.reminder_sent_for);
       return rows
         .filter((r): r is typeof r & { agent_email: string } => !!r.agent_email)

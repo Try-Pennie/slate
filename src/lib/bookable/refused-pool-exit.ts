@@ -286,6 +286,6 @@ export const defaultRefusedPoolExitDeps: RefusedPoolExitDeps = {
     (await writeRoutableState({ kind: "hold-out", userId, stampIso })).length > 0,
   audit: recordAudit,
   // alert-key: refused_advisor_left_pool:*
-  notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
+  notify: (key, cooldownMs, text, repeat) => sendThrottledAlert(key, cooldownMs, text, repeat),
   now: () => Date.now(),
 };

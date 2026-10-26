@@ -59,6 +59,7 @@ import type { ThrottledNotify } from "./alert-deps";
 import { isTestSourceBooking, type BookingOriginFacts } from "./offsite-origin";
 import { tierLadder } from "@/lib/routing/tiers";
 import { parseStampMs } from "@/lib/date/stamp";
+import { CHANGE_ONLY_HOLD_MS, type AlertRepeat } from "@/lib/notify/repeat-policy";
 import { DateTime } from "luxon";
 
 /** The alert family: one condition per booking, `booking_below_lead_tier:<id>`. */
@@ -527,6 +528,43 @@ function actionLine(f: BelowFinding, team: TeamAtTime, agent: string | null): st
   }
 }
 
+// ------------------------------------------- when the page posts again (2026-10-26)
+
+/**
+ * What one booking's page names, for the dispatcher's change rule: the facts whose
+ * change is a reason to post again. Dan, 2026-10-26: "I got a ton of this alert and
+ * they were all the same. Just page once per call." The family is change only
+ * (`CHANGE_ONLY_KEYS`), so the page posts once and again only when one of these is
+ * not what the last post said:
+ *
+ *   - the call itself: its time (a reschedule), its advisor, its bucket;
+ *   - the lead's TIER, never the raw XBC, so 312 becoming 322 is the same High lead;
+ *   - what the manager can do about it: somebody on the lead's own team free at the
+ *     call's time, free only at another time that day, or free at no time that day.
+ *
+ * Everything else the page says is left out on purpose, because it varies without
+ * the situation changing: the nearest free time walking as the day fills, the
+ * submission history and routing sentences on a tick whose read failed, and a team
+ * this tick could not check. An unchecked team names nothing, so it is never a
+ * change, and the answer it could not give is not forgotten: the dispatcher compares
+ * against the last POST, so a measured answer that matches what was posted stays
+ * quiet when the check can read again.
+ */
+export function belowLeadTierRepeat(f: BelowFinding, team: TeamAtTime): AlertRepeat {
+  const startMs = parseStampMs(f.booking.starts_at);
+  const advisor =
+    f.booking.agent_email?.trim().toLowerCase() || f.booking.agent_name?.trim().toLowerCase() || "unassigned";
+  const subjects = [
+    `call:${startMs === null ? f.booking.starts_at : new Date(startMs).toISOString()}`,
+    `advisor:${advisor}`,
+    `bucket:${f.bucket.code}`,
+    `tier:${f.lead.key}`,
+  ];
+  if (team.kind === "free") subjects.push("team:free-at-call");
+  else if (team.kind === "not-free") subjects.push(team.nearestMs === null ? "team:free-no-time-that-day" : "team:free-later-that-day");
+  return { subjects };
+}
+
 /** "6 scored High and 4 Medium", "5 scored High, 3 Medium and 2 Low". */
 function tierCounts(tiers: { label: string; count: number }[]): string {
   const parts = tiers.map((t, i) => (i === 0 ? `${t.count} scored ${t.label}` : `${t.count} ${t.label}`));
@@ -597,11 +635,11 @@ export interface BelowLeadTierDeps {
    * Drops the page state for bookings measured as fixed, WITHOUT posting anything.
    * Nobody wanted an all clear per booking (Dan, 2026-10-07): the page asks for one
    * action on one call, and whoever took it already knows. Settling still matters,
-   * so a booking that goes below again later pages at once rather than waiting out
-   * the old cooldown. Best effort and never throws.
+   * so a booking that goes below again later pages at once: without it the stored
+   * subjects of the last post would read the same facts as already told, and the
+   * change only hold would keep the page back. Best effort and never throws.
    */
   settle: (keys: string[]) => Promise<void>;
-  cooldownMs: number;
   /** The tick's clock, so a nearest free time already past is never named. */
   nowMs: number;
   /**
@@ -738,11 +776,15 @@ export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<Be
       for (const f of below) {
         const context = contextOf(f);
         const facts: PageFacts = { team: teamOf.get(f) ?? { kind: "unchecked", why: "unreadable" }, history: historyOf(f) };
+        // Once per call, and again only on a change (`belowLeadTierRepeat`). The hold is
+        // the change only interval, not a setting, so nothing can tune a repeat back in;
+        // it is what the dispatcher falls back to if the repeat columns are missing.
         await deps
           .notify(
             belowLeadTierKey(f.booking.id),
-            deps.cooldownMs,
+            CHANGE_ONLY_HOLD_MS,
             formatBelowLeadTierAlert(f, context, deps.bookingUrl(f.booking.id), facts),
+            belowLeadTierRepeat(f, facts.team),
           )
           .catch(logAlertSendFailure(belowLeadTierKey(f.booking.id)));
       }

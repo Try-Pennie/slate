@@ -167,7 +167,7 @@ export function bookedSpliceIo(
     loadBusy: async (userIds, spans) => {
       if (spans.length === 0) return [];
       return selectAllPages<{ user_id: string; starts_at: string; ends_at: string }>("splice busy_blocks", "id", () => {
-        const q = db.from("busy_blocks").select("user_id, starts_at, ends_at").in("user_id", userIds);
+        const q = db.from("busy_blocks").select("id, user_id, starts_at, ends_at").in("user_id", userIds);
         if (spans.length === 1) return q.lt("starts_at", spans[0]!.to).gt("ends_at", spans[0]!.from);
         return q.or(spans.map((s) => `and(starts_at.lt.${s.to},ends_at.gt.${s.from})`).join(","));
       });

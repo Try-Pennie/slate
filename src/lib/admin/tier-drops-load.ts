@@ -1,5 +1,5 @@
 import type { supabaseAdmin } from "@/lib/supabase/admin";
-import { selectAllPages, type PageableQuery } from "@/lib/supabase/paginate";
+import { selectAllPages, sortByStamp, type PageableQuery } from "@/lib/supabase/paginate";
 import { unwrapCount } from "@/lib/db/result";
 import {
   TIER_DROP_WINDOW_DAYS,
@@ -52,9 +52,8 @@ export async function loadTierDropReport(
         .eq("buckets.is_test", false)
         .eq("kind", "routed")
         .eq("routing_trace->>tier_fallback", "true")
-        .gte("created_at", since(TIER_DROP_WINDOW_DAYS.month))
-        .order("created_at", { ascending: false }) as unknown as PageableQuery,
-    ),
+        .gte("created_at", since(TIER_DROP_WINDOW_DAYS.month)) as unknown as PageableQuery,
+    ).then((r) => sortByStamp("admin tier drops", r, "created_at", "id", "desc")),
     routedSince(TIER_DROP_WINDOW_DAYS.week),
     routedSince(TIER_DROP_WINDOW_DAYS.month),
   ]);

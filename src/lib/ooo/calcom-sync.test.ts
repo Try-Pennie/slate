@@ -59,7 +59,11 @@ vi.mock("@/lib/supabase/admin", () => ({
         range: (from: number, to: number) => {
           range(from, to);
           return Promise.resolve(
-            state.error ? { data: null, error: state.error } : { data: state.rows, error: null },
+            state.error
+              ? { data: null, error: state.error }
+              : // A fixture row naming no primary key is given one: a paged read cuts its
+                // next page on it (keyset paging, 2026-10-25).
+                { data: state.rows.map((r, i) => ({ id: `ooo-${i}`, ...r })), error: null },
           );
         },
       };

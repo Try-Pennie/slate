@@ -100,7 +100,7 @@ describe("ensureDefaultSchedules (#1670)", () => {
   // an overwrite.
   it("CONTROL: leaves an agent whose schedule already holds rules untouched", async () => {
     tables.results.availability_schedules = { data: [{ id: "s1", user_id: "u1" }], error: null };
-    tables.results.availability_rules = { data: [{ schedule_id: "s1" }], error: null };
+    tables.results.availability_rules = { data: [{ id: "r1", schedule_id: "s1" }], error: null };
 
     expect(await ensureDefaultSchedules("org1")).toBe(0);
     expect(rpc).not.toHaveBeenCalled();

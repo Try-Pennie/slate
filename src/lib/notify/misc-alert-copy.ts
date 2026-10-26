@@ -358,8 +358,10 @@ export function cspViolationAlert(v: {
   surface: string;
   blocked: BlockedResource;
   /**
-   * Whether the report named the script that tried it. Only the fact, never the
-   * URL: the report is a stranger's text, and the redacted URL is in the log line.
+   * Whether the report named a source script: under `script-src` the script that tried
+   * it, elsewhere only the script running when the browser refused it (#4071). Only the
+   * fact, never the URL: the report is a stranger's text, and the redacted URL is in the
+   * log line.
    */
   sourceNamed?: boolean;
 }): string {
@@ -390,7 +392,10 @@ export function cspViolationAlert(v: {
  * It points at `source=` only when the report named one: a refusal can come from a
  * browser's own features or an extension, and many reports carry none, where
  * sending somebody to the field finds nothing. Under `script-src` the source is the
- * script that tried it; elsewhere it is usually the page, so the pointer is neutral.
+ * script that tried it. Elsewhere it is only the script that was RUNNING when the browser
+ * refused the thing, never proof of what asked for it, because Chrome credits a load to
+ * whatever script is on the stack when it fires (#4071, #4063, L799), so the pointer says
+ * exactly that and no more (L11).
  */
 function refusalConsequence(directive: string, b: BlockedResource, sourceNamed: boolean): string {
   if (b.kind !== "keyword") return "The browser blocked that one resource for whoever had it open.";
@@ -400,7 +405,7 @@ function refusalConsequence(directive: string, b: BlockedResource, sourceNamed: 
     ? ""
     : scripted
       ? " source= on the log line names the script that tried it."
-      : " source= on the log line names where it came from.";
+      : " source= on the log line names the script that was running when the browser refused it, not necessarily what asked for it.";
   if (scripted) return `Some code on that page was stopped from running for whoever had it open.${pointer}`;
   if (codeOrStyle && directive === "style-src") {
     return `Some of that page's styling was not applied for whoever had it open.${pointer}`;
