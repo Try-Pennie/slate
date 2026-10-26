@@ -95,6 +95,12 @@ export interface BookingEventPayload {
    * field existed has none, and every such booking was routed.
    */
   booking_kind?: BookingKind;
+  /**
+   * #4204: true on the event of a move that took the call OFF the placeholder advisor
+   * onto a real one, so Regal is told Marcia stops texting. Absent on every other
+   * event, and on any payload stored before the field existed.
+   */
+  left_placeholder?: boolean;
 }
 
 /** The booking events, the family `buildRegalEvent` describes. */
