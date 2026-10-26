@@ -545,17 +545,17 @@ describe("AlertSettings alert toggles", () => {
     expect(helpFor("low_volume_armed")).toMatch(/Turn this on once the traffic the floors were measured on reaches Slate/);
   });
 
-  // The below tier alert posts once per call and again only on a change
-  // (CHANGE_ONLY_KEYS, #4235); a call put right has been silent since 2026-10-07.
-  it("says the below tier alert posts once per call and again only when the call or the lead changes", async () => {
+  // The below tier alert posts once per booking and never again (Dan, 2026-10-26: "a
+  // single ping about this per booking"); a call put right has been silent since 2026-10-07.
+  it("says the below tier alert posts once per call and never a second time", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     db.results.monitor_alert_config = { data: { below_lead_tier_armed: true }, error: null };
     render(await AlertSettingsPage(props));
 
     const help = helpFor("below_lead_tier_armed");
     expect(help).toMatch(/one alert per call/i);
-    expect(help).toMatch(/time, advisor or bucket/i);
-    expect(help).toMatch(/the lead's tier/i);
+    expect(help).toMatch(/never a second about the same call/i);
+    expect(help).not.toMatch(/another only if|changes/i);
     expect(help).not.toMatch(/follow up|is moved|score comes down|is cancelled/i);
   });
 

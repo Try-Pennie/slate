@@ -10,7 +10,7 @@
 // Every claim here is one the monitor lane makes true: a second post when it ends is
 // promised only for an alert the catalog calls a condition, whose all clear posts then
 // (src/lib/notify/alert-catalog.ts); the below tier alert is an incident that posts
-// once per call and again only on a change (CHANGE_ONLY_KEYS), so it promises none.
+// once per booking and never again (CHANGE_ONLY_KEYS), so it promises none.
 
 /** The `monitor_alert_config` column each switch saves, in the order the card draws them. */
 export type AlertSwitchName =
@@ -73,7 +73,7 @@ export function alertSwitchCopy(calcomRetired: boolean | null): AlertSwitchCopy[
     {
       name: "below_lead_tier_armed",
       label: "Send a Slack alert when a lead is booked with a team below their tier",
-      on: "Slack gets one alert per call booked below the lead's tier, and another only if the call's time, advisor or bucket, the lead's tier, or their own team's availability changes.",
+      on: "Slack gets one alert per call booked below the lead's tier, and never a second about the same call.",
       off:
         "Slate still checks every upcoming call against the lead's tier in Salesforce every 5 minutes, and logs what it finds. " +
         (calcomRetired === true

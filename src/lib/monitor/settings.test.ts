@@ -312,8 +312,8 @@ describe("parseMonitorSettingsForm low_volume_armed", () => {
     expect(resolveBelowLeadTierArmed({ below_lead_tier_armed: true })).toBe(true);
   });
 
-  // Dan, 2026-10-26: the below tier page posts once per call and again only on a
-  // change (CHANGE_ONLY_KEYS), so no cooldown paces it. A value stored before then
+  // Dan, 2026-10-26: the below tier page posts once per booking and never again
+  // (CHANGE_ONLY_KEYS), so no cooldown paces it. A value stored before then
   // stays in the table; the resolvers must pass over it rather than read it.
   it("has no below-lead-tier cooldown, and passes over one stored before it went", () => {
     expect(ALERT_KEYS).not.toContain("booking_below_lead_tier");

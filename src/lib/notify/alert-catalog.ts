@@ -832,9 +832,9 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "today (#2593). The page asks for one action on one call, and whoever " +
       "reassigns it already knows it is done, so an all clear per booking was noise " +
       "(Dan, 2026-10-07). The monitor still re-measures every tick and settles the " +
-      "state SILENTLY once the call agrees or is gone, so a recurrence pages at once. " +
-      "It posts once per call and again only when the call, the lead's tier or the " +
-      "team's free time changes (`CHANGE_ONLY_KEYS`, Dan 2026-10-26).",
+      "state SILENTLY once the call agrees or is gone, keeping the booking's hold. " +
+      "It posts once per booking and never again, whatever changes and even after the " +
+      "call comes right and goes wrong again (`CHANGE_ONLY_KEYS`, Dan 2026-10-26).",
   },
   {
     key: "cross_system_booking:*",
@@ -1573,7 +1573,9 @@ export function isUrgentCondition(key: string): boolean {
 
 /**
  * The INCIDENTS that post once and then again only on a change (Dan, 2026-10-26: "I
- * got a ton of this alert and they were all the same. Just page once per call.").
+ * got a ton of this alert and they were all the same. Just page once per call."). A
+ * key that names no subjects therefore posts once and never again, which is what the
+ * below tier page now does (Dan, 2026-10-26: "a single ping about this per booking").
  *
  * An incident has no repeat rule of its own, so the dispatcher posts it again every
  * time its cooldown runs out. For a page about one call that stays wrong for days,
@@ -1588,9 +1590,9 @@ export function isUrgentCondition(key: string): boolean {
  * the catalog and being an incident (a condition already has the change rule, plus a
  * reminder its all clear depends on).
  *
- *   - booking_below_lead_tier:*: one call booked below the lead's tier. Its subjects
- *     are the call's time, advisor and bucket, the lead's tier, and whether the
- *     lead's own team is free then (`belowLeadTierRepeat`).
+ *   - booking_below_lead_tier:*: one call booked below the lead's tier. It names no
+ *     subjects (`belowLeadTierRepeat`), so it posts once per booking and never again;
+ *     a silent settle keeps its hold row for the same reason (`settleAlertsSilently`).
  */
 export const CHANGE_ONLY_KEYS: readonly string[] = ["booking_below_lead_tier:*"];
 

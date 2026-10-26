@@ -34,7 +34,7 @@
     {
       "name": "below_lead_tier_armed",
       "label": "Send a Slack alert when a lead is booked with a team below their tier",
-      "on": "Slack gets one alert per call booked below the lead's tier, and another only if the call's time, advisor or bucket, the lead's tier, or their own team's availability changes.",
+      "on": "Slack gets one alert per call booked below the lead's tier, and never a second about the same call.",
       "off": "Slate still checks every upcoming call against the lead's tier in Salesforce every 5 minutes, and logs what it finds. Turn this on before cutover, when the cal.com Slack workflow stops."
     },
     {

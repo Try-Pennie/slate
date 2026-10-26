@@ -36,6 +36,7 @@ import {
   type LeadFieldRecord,
   type LeadScore,
 } from "@/lib/salesforce/lead-xbc";
+import { repeatChange, subjectsFor } from "@/lib/notify/repeat-policy";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const MIN = 60_000;
@@ -204,34 +205,30 @@ function text(team: PageFacts["team"], history: PageFacts["history"] = STEADY, f
   }
 }
 
-// --- what counts as a change worth posting again (2026-10-26) ----------------------------------
-// Dan: "Just page once per call." The page posts again only when a subject differs from
-// the last post's, so these pin what the subjects are: each of the three measured team
-// answers is its own subject, the nearest free time is not part of it, an unchecked team
-// names nothing, and the lead is named by tier, never by the raw XBC.
+// --- one page per booking, never again (2026-10-26) --------------------------------------------
+// Dan, 2026-10-26 15:31 ET: "I want a single ping about this per booking", choosing strictly
+// once over "once, plus real moves". It replaces the same morning's rule (#4235), which posted
+// again whenever a subject changed: the lead's own team being free later that day flips as
+// calendars fill, so one booking posted four times in 25 minutes. The page now names no
+// subjects at all, so the change only family's year long hold is the only thing that could
+// post it again, and a subject a past post named leaving is never a change.
 {
-  const subjects = (team: Parameters<typeof belowLeadTierRepeat>[1], f: BelowFinding = FINDING) =>
-    belowLeadTierRepeat(f, team).subjects ?? [];
-  const base = [`call:${START}`, "advisor:dana.whitfield@trypennie.com", "bucket:212", "tier:high"];
-  eq(subjects({ kind: "free" }), [...base, "team:free-at-call"], "free at the call's time");
-  eq(subjects({ kind: "not-free", nearestMs: START_MS + 90 * MIN }), [...base, "team:free-later-that-day"], "free later that day");
+  eq(belowLeadTierRepeat().subjects, [], "the page names no subjects, so nothing about the booking reposts it");
+  eq(belowLeadTierRepeat().band, undefined, "and carries no band that could rise");
+  // Through the dispatcher's own rule, with the page's text standing in for a tick whose
+  // wording moved: the subjects stay empty whatever the message says.
+  const now = subjectsFor(belowLeadTierRepeat(), "the High team's nearest free time is 3:30pm ET");
+  eq(now, [], "the message's changing wording never stands in for subjects");
+  eq(repeatChange({ subjects: [], band: null }, now, null), null, "after the one post, no later tick is a change");
   eq(
-    subjects({ kind: "not-free", nearestMs: START_MS + 30 * MIN }),
-    subjects({ kind: "not-free", nearestMs: START_MS + 90 * MIN }),
-    "the nearest free time moving is not a change",
+    repeatChange(
+      { subjects: [`call:${START}`, "advisor:dana.whitfield@trypennie.com", "bucket:212", "tier:high", "team:free-later-that-day"], band: null },
+      now,
+      null,
+    ),
+    null,
+    "a booking already paged under #4235's subjects stays quiet too",
   );
-  eq(subjects({ kind: "not-free", nearestMs: null }), [...base, "team:free-no-time-that-day"], "free at no time that day");
-  for (const why of ["no-row", "unreadable", "inside-notice", "past-horizon"] as const) {
-    eq(subjects({ kind: "unchecked", why }), base, `a team not checked (${why}) names nothing`);
-  }
-  const rescored = { ...FINDING, lead: { ...FINDING.lead, code: "322" } };
-  eq(subjects({ kind: "free" }, rescored), subjects({ kind: "free" }), "a new XBC inside the tier names the same subjects");
-  const unassigned = { ...FINDING, booking: booking({ agent_name: null, agent_email: null }) };
-  assert(subjects({ kind: "free" }, unassigned).includes("advisor:unassigned"), "an unassigned call is named as such");
-  const byName = { ...FINDING, booking: booking({ agent_email: " ", agent_name: "Dana Whitfield" }) };
-  assert(subjects({ kind: "free" }, byName).includes("advisor:dana whitfield"), "with no email the advisor is named by name");
-  const sameInstant = { ...FINDING, booking: booking({ starts_at: "2026-10-13T19:00:00+00:00" }) };
-  eq(subjects({ kind: "free" }, sameInstant), subjects({ kind: "free" }), "one instant spelled two ways is one call time");
 }
 
 // --- the runner --------------------------------------------------------------------------------

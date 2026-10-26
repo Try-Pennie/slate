@@ -315,14 +315,10 @@ async function main(): Promise<void> {
       eq(r.paged, true, "armed, so it paged");
     }
     eq(calls.notified.map((n) => n.key), [belowLeadTierKey("bk-1")], "one page, keyed to the booking");
-    // 2026-10-26: once per call. The hold is the change only interval, never a
-    // setting, and the page names what a change would be.
+    // 2026-10-26: once per booking, never again. The hold is the change only interval,
+    // never a setting, and the page names no subjects, so nothing about it reposts it.
     eq(calls.notified[0]?.cooldown, CHANGE_ONLY_HOLD_MS, "held for the change only interval, not a tunable cooldown");
-    eq(
-      calls.notified[0]?.subjects,
-      [`call:${new Date(NOW + 26 * 60 * 60_000).toISOString()}`, "advisor:dana.whitfield@trypennie.com", "bucket:100", "tier:ultra_high"],
-      "the page names the call, its advisor and bucket, and the lead's tier",
-    );
+    eq(calls.notified[0]?.subjects, [], "the page names no subjects, so no change reposts it");
     assert(/catch-all chose/i.test(calls.notified[0]?.text ?? ""), "the catch-all context reaches the page");
     eq(calls.resolved.length, 0, "nothing was firing, so nothing clears");
     assert(belowLeadTierReachedVerdict(r), "a measured run that compared bookings stamps a verdict");
