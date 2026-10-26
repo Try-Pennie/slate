@@ -358,8 +358,10 @@ export function cspViolationAlert(v: {
   surface: string;
   blocked: BlockedResource;
   /**
-   * Whether the report named the script that tried it. Only the fact, never the
-   * URL: the report is a stranger's text, and the redacted URL is in the log line.
+   * Whether the report named a source script: under `script-src` the script that tried
+   * it, elsewhere only the script running when the browser refused it (#4071). Only the
+   * fact, never the URL: the report is a stranger's text, and the redacted URL is in the
+   * log line.
    */
   sourceNamed?: boolean;
 }): string {
