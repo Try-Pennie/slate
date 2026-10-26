@@ -35,7 +35,7 @@
  * firing marker, so `resolveAlert` sends nothing for it, and the explaining alert's
  * own all-clear speaks for the group.
  */
-import { CANARY_STALE_BOUNDS_MS, VERDICT_STALE_BOUNDS_MS } from "@/lib/monitor/health";
+import { CANARY_STALE_BOUNDS_MS, POOL_GROUPING_STALE_BOUNDS_MS, VERDICT_STALE_BOUNDS_MS } from "@/lib/monitor/health";
 import { CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
 
 /** One alert held while its explainer fires. */
@@ -86,6 +86,23 @@ export const ALERT_FOLDS: readonly AlertFold[] = [
         key: staleLaneKey("verdict:availability-latency"),
         label: "its availability latency reading",
         graceMs: VERDICT_STALE_BOUNDS_MS["verdict:availability-latency"],
+      },
+    ],
+  },
+  {
+    // The lane watchdog's one page for quiet Worker cron lanes (`CORE_LANES_ALERT_KEY`).
+    explainer: "cron_lanes_stale",
+    why:
+      "The pool grouping is published only by the recompute lane, so once recompute is quiet it " +
+      "stops by construction, and the core lanes' page names it. On 2026-10-26 it posted as a " +
+      "sixth page for one Cloudflare cron incident. Held too when some other core lane is quiet " +
+      "and the publish failed on its own: that page names it as stopped, and it posts on its own " +
+      "one bound after the lanes recover.",
+    explains: [
+      {
+        key: staleLaneKey("pool-grouping"),
+        label: "the pool grouping",
+        graceMs: POOL_GROUPING_STALE_BOUNDS_MS["pool-grouping"],
       },
     ],
   },

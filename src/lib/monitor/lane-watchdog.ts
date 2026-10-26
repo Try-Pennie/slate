@@ -1,8 +1,10 @@
 import { readAllHeartbeatMs } from "@/lib/monitor/heartbeat";
+import { readCloudflareCronStatus } from "@/lib/monitor/cloudflare-status";
 import {
   backupAlertText,
   backupRecoveryText,
-  coreLaneAlertText,
+  coreLanesAlertText,
+  coreLanesRecoveryText,
   canaryAlertText,
   canaryRecoveryText,
   calcomLaneRetiredText,
@@ -61,10 +63,17 @@ import { CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
 const staleLaneAlertKey = (lane: string) => `cron_lane_stale:${lane}`;
 
 /**
+ * The ONE key for every quiet Worker cron lane (2026-10-26). Those lanes share a
+ * Worker and a schedule, so they stop together, and a key per lane posted one cause
+ * as five pages. The other families keep a key per lane: each is its own system.
+ */
+export const CORE_LANES_ALERT_KEY = "cron_lanes_stale";
+
+/**
  * A dead lane stays dead, so it is said again once a day while unchanged (#3801),
- * not hourly. Every stale lane page names its lane as its only subject, so the
+ * not hourly. Every stale lane page names its lanes as its subjects, so the
  * "has not run for N minutes" in the copy, which grows on every tick, can never read
- * as a change; a SECOND lane going quiet is its own key and posts at once.
+ * as a change; a lane newly going quiet is a new subject, or its own key, and posts at once.
  */
 const STALE_LANE_COOLDOWN_MS = CONDITION_REPEAT_MS;
 
@@ -260,17 +269,30 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       count: stale.length,
       lanes: stale.map((l) => `${l.lane}=${minutes(l.ageMs)}m`).join(","),
     });
-    for (const lane of stale) {
-      await sendThrottledAlert(
-        staleLaneAlertKey(lane.lane),
-        STALE_LANE_COOLDOWN_MS,
-        coreLaneAlertText(lane),
-        { subjects: [lane.lane] },
-      ).catch((err) => {
-        // One lane's failed Slack post must not skip the remaining lanes.
-        log.error("lane-watchdog", { msg: "alert failed", lane: lane.lane }, err);
-      });
-    }
+    // ONE page for every quiet core lane (2026-10-26), its lanes as its subjects so a
+    // lane joining it posts at once (#3801). Cloudflare's status page is read only now,
+    // never on a healthy tick.
+    const fresh = Object.entries(LANE_STALE_BOUNDS_MS).some(([name, bound]) => {
+      const at = heartbeats[name];
+      return at !== null && at !== undefined && now - at <= bound;
+    });
+    const cloudflare = await readCloudflareCronStatus();
+    // alert-key: cron_lanes_stale
+    await sendThrottledAlert(
+      CORE_LANES_ALERT_KEY,
+      STALE_LANE_COOLDOWN_MS,
+      coreLanesAlertText({
+        stale,
+        othersRunning: fresh,
+        // A publish that has never landed is in this list under its grace window, and is not "stopped".
+        poolGroupingStopped: poolGroupingStale.some((l) => Number.isFinite(l.ageMs)),
+        cloudflare,
+      }),
+      { subjects: stale.map((l) => l.lane) },
+    ).catch((err) => {
+      // A failed Slack post must not throw into the lane that called the watchdog.
+      log.error("lane-watchdog", { msg: "alert failed", lanes: stale.length }, err);
+    });
   }
 
   for (const lane of canaryStale) {
@@ -429,6 +451,9 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       ...(calcomRetired === true
         ? CALCOM_HEARTBEAT_LANES.map((lane) => ({ key: staleLaneAlertKey(lane), text: calcomLaneRetiredText(lane) }))
         : []),
+      // The core lanes' page ends only when NO core lane is quiet, measured by this
+      // successful read; one lane coming back while another is still quiet ends nothing.
+      ...(stale.length === 0 ? [{ key: CORE_LANES_ALERT_KEY, text: coreLanesRecoveryText() }] : []),
     ],
     canaryBounds,
   );
@@ -516,6 +541,9 @@ function laneFamilies(canaryBounds: Record<string, number>): {
   graceWindow?: true;
 }[] {
   return [
+    // The core lanes page under CORE_LANES_ALERT_KEY since 2026-10-26. Kept so a per lane
+    // page a deploy before that sent still gets its all-clear; it costs nothing, as these
+    // keys ride the same bulk read.
     { bounds: LANE_STALE_BOUNDS_MS, recovery: laneRecoveryText },
     // #2875: the SAME canary bounds the staleness pass judged against, so a retired
     // cal.com lane is settled once, by its retirement text, never also as recovered.
@@ -608,6 +636,7 @@ async function resolveRecoveredLanes(
     }
     if (!present.has(firingKey(r.key))) continue;
     // alert-key: cron_lane_stale:*
+    // alert-key: cron_lanes_stale
     // alert-key: detector_unpark:*
     const sent = await resolveAlert(r.key, r.text).catch((err) => {
       // One lane's failed notice must not skip the rest, and the firing marker

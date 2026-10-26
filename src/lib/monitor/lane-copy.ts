@@ -10,7 +10,8 @@
  * #1123 already had to unpick one shared message that pointed responders at the
  * wrong lane and lock.
  */
-import { describeGap, laneQuietClause, laneRun, type StaleLane } from "@/lib/monitor/health";
+import { describeGap, laneQuietClause, stoppedTogether, type StaleLane } from "@/lib/monitor/health";
+import type { CloudflareCronStatus } from "@/lib/monitor/cloudflare-status";
 import {
   AVAILABILITY_TRUTH_VERDICT_LANE,
   FAILURE_RATE_VERDICT_LANE,
@@ -53,33 +54,93 @@ const minutes = (ms: number) => Math.round(ms / 60_000);
 /** The alerts runbook section the stale lane page sends its reader to. */
 export const STALE_LANE_RUNBOOK_SECTION = "A lane or schedule has gone quiet";
 
+/** A list read aloud: "a", "a and b", "a, b and c". */
+function spoken(items: string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/** What the core lanes' page is built from. */
+export interface CoreLanesPage {
+  /** The quiet core lanes, worst first, as `findStaleLanes` returns them. */
+  stale: StaleLane[];
+  /** At least one core lane stamped inside its bound this tick, so "the others kept running" is measured. */
+  othersRunning: boolean;
+  /** The pool grouping publish is stale too; its own page waits on this one (ALERT_FOLDS). */
+  poolGroupingStopped: boolean;
+  /** Cloudflare's status page, as read this tick. */
+  cloudflare: CloudflareCronStatus;
+}
+
 /**
- * A Worker cron lane that has gone quiet (#4168, #3468).
+ * The ONE page for every quiet Worker cron lane (#4168, #3468, 2026-10-26).
  *
- * Since #3693 every lane runs as its own placed fetch, so a CPU kill on a shared
- * invocation (#760) is no longer how lanes go quiet. What was seen on 2026-10-23 was a
- * gradual deploy cancelling a run part way, the next tick waiting on the cancelled
- * run's lock, and a run far from the database taking 77 s instead of 21 s.
+ * It used to be a page per lane, each ending in the same three usual causes. On
+ * 2026-10-26 Cloudflare stopped firing the every minute cron and five identical pages
+ * went out, six with the pool grouping (Dan: "this is too much"). So it names every
+ * quiet lane once, says only what this tick measured about why (they stopped together
+ * while others ran; Cloudflare's status page), and points at the runbook once. The
+ * usual causes and the per lane detail live in that runbook section, held to
+ * `LANE_RUNS` by scripts/test-stale-lane-copy.ts.
  *
- * The page is read by a product manager on a phone, so it says those causes in plain
- * words and names no log command, field or lock (Dan, 2026-10-23, "Plainer"). The
- * runbook section it names holds that detail per lane, held to `LANE_RUNS` by
- * scripts/test-stale-lane-copy.ts. The waiting clause comes only for a lane whose route
- * takes a lock (`LANE_RUNS`), because without one the next run has nothing to wait on.
+ * Read by a product manager on a phone, so it names no log command, field or lock
+ * (Dan, 2026-10-23, "Plainer").
  */
-export function coreLaneAlertText(lane: StaleLane): string {
-  const waited = laneRun(lane.lane).lock
-    ? `, and the next run then waited for the first to time out`
-    : "";
+export function coreLanesAlertText(page: CoreLanesPage): string {
+  const { stale } = page;
+  const sentences: string[] = [];
+  if (stale.length === 1) {
+    const [lane] = stale;
+    sentences.push(
+      `The ${lane.lane} cron lane ${laneQuietClause({
+        ageMs: lane.ageMs,
+        boundMin: minutes(lane.maxStaleMs),
+        unreadable: lane.unreadable,
+      })}.`,
+    );
+  } else {
+    const ages = stale.filter((l) => !l.unreadable).map((l) => minutes(l.ageMs));
+    const low = Math.min(...ages);
+    const high = Math.max(...ages);
+    const forHowLong = ages.length === 0 ? "" : low === high ? ` for ${high} minutes` : ` for ${low} to ${high} minutes`;
+    sentences.push(`${stale.length} cron lanes have not run${forHowLong}: ${spoken(stale.map((l) => l.lane))}.`);
+    const unreadable = stale.filter((l) => l.unreadable).map((l) => l.lane);
+    if (unreadable.length > 0) {
+      sentences.push(`The last-run record for ${spoken(unreadable)} cannot be read, so it is treated as stopped.`);
+    }
+  }
+  if (page.othersRunning && stoppedTogether(stale)) {
+    sentences.push(
+      `They stopped within a minute of each other while the other lanes kept running, which points to their ` +
+        `schedule not firing or a deploy cancelling their runs, not to one lane failing.`,
+    );
+  }
+  if (page.cloudflare.kind === "incident") {
+    const names = page.cloudflare.names.map((n) => `"${n}"`);
+    sentences.push(
+      names.length === 1
+        ? `Cloudflare's status page has an open incident: ${names[0]}.`
+        : `Cloudflare's status page has open incidents: ${spoken(names)}.`,
+    );
+  } else if (page.cloudflare.kind === "clear") {
+    sentences.push(`Cloudflare's status page shows no open Workers incident.`);
+  }
+  if (page.poolGroupingStopped) {
+    sentences.push(
+      stale.some((l) => l.lane === "recompute")
+        ? `The pool grouping, which the recompute lane publishes, has stopped with it.`
+        : `The pool grouping publish has stopped too.`,
+    );
+  }
+  sentences.push(`What to check for each lane is in the alerts runbook, under "${STALE_LANE_RUNBOOK_SECTION}".`);
+  return sentences.join(" ");
+}
+
+/** All-clear for the core lanes' page: every core lane has stamped inside its bound. */
+export function coreLanesRecoveryText(): string {
   return (
-    `The ${lane.lane} cron lane ${laneQuietClause({
-      ageMs: lane.ageMs,
-      boundMin: minutes(lane.maxStaleMs),
-      unreadable: lane.unreadable,
-    })}. Its work is not happening. Usually a deploy cancelled a run part way, a run ` +
-    `went to a server far from the database and ran slowly, or a run took longer than ` +
-    `its schedule${waited}. The alerts runbook covers what to check for each lane, under ` +
-    `"${STALE_LANE_RUNBOOK_SECTION}".`
+    `The cron lanes are all running again. Each has stamped a heartbeat inside its bound, so the work they ` +
+    `had stopped doing is happening again and the earlier page is cleared. No action is needed.`
   );
 }
 

@@ -15,6 +15,7 @@ import {
   shortestBoundLanes,
   LANE_SAMPLER_MAX_MS,
   STALE_LANE_ALERT_PREFIX,
+  CORE_LANES_ALERT_KEY,
   SYNC_FAILURE_ALERT_KEY,
   type FaultLaneEvidence,
   type FaultLaneExpectations,
@@ -102,6 +103,25 @@ function findingsOf(e: FaultLaneEvidence, x: FaultLaneExpectations = EXPECT): st
   const h = healthy();
   for (const s of h.samples) s.alerts[`${STALE_LANE_ALERT_PREFIX}outbox`] = iso(T0 - 30 * MIN);
   eq(findingsOf(h), [], "nor a stale page from before the window");
+}
+// 2026-10-26: the core lanes page as ONE key naming its lanes as subjects, so the bar
+// reads which lanes from what the page named rather than from a key per lane.
+{
+  const e = healthy();
+  for (const s of e.samples) {
+    if (s.atMs < T0 + 3 * MIN) continue;
+    s.alerts[CORE_LANES_ALERT_KEY] = iso(T0 + 3 * MIN);
+    s.alertState = { [CORE_LANES_ALERT_KEY]: { subjects: ["outbox", "monitor"], band: null } };
+  }
+  const found = findingsOf(e);
+  assert(found.some((d) => d.includes("watchdog paged that the outbox lane")), "the combined page's lanes are each a finding");
+  assert(!found.some((d) => d.includes("monitor lane")), "but not a lane this deployment does not run");
+  const u = healthy();
+  for (const s of u.samples) if (s.atMs >= T0 + 3 * MIN) s.alerts[CORE_LANES_ALERT_KEY] = iso(T0 + 3 * MIN);
+  assert(
+    findingsOf(u).some((d) => d.includes("which lanes it named was not read")),
+    "a combined page whose lanes were not read is still a finding, never excused (L98)",
+  );
 }
 
 // --- the platform stopped firing the crons (#3746) --------------------------------
@@ -314,6 +334,7 @@ function series(frozen: readonly string[], from: number, to: number): FaultLaneE
   const watchdog = readFileSync(new URL("../src/lib/monitor/lane-watchdog.ts", import.meta.url), "utf8");
   const stale = scanAlertSites(watchdog, "lane-watchdog.ts").filter((s) => s.channel === "alert").map((s) => s.key);
   assert(stale.includes(`${STALE_LANE_ALERT_PREFIX}*`), `the watchdog really pages on ${STALE_LANE_ALERT_PREFIX}<lane>`);
+  assert(stale.includes(CORE_LANES_ALERT_KEY), `the watchdog really pages the core lanes on ${CORE_LANES_ALERT_KEY}`);
 
   // "Throttled" is judged as at most one send per CHANGE in a window (#3801): a repeat
   // naming nothing new is the throttle failing, which is only right while the page's

@@ -35,6 +35,10 @@ export const SYNC_FAILURE_ALERT_KEY = "sync_failures";
 /** The lane watchdog's own stale page, one key per lane. Pinned the same way. */
 export const STALE_LANE_ALERT_PREFIX = "cron_lane_stale:";
 
+/** The watchdog's ONE page for the Worker cron lanes (2026-10-26), naming them as its
+ *  subjects. Pinned the same way. */
+export const CORE_LANES_ALERT_KEY = "cron_lanes_stale";
+
 /** How often the sampler reads. Well inside the one minute cadence of the sync lane,
  *  so a page sent every tick would show as a new stamp at almost every reading. */
 export const LANE_SAMPLE_INTERVAL_MS = 15_000;
@@ -320,6 +324,27 @@ export function judgeFaultLanes(e: FaultLaneEvidence, x: FaultLaneExpectations):
       const ms = Date.parse(raw);
       if (Number.isFinite(ms) && ms >= x.windowStartMs && ms <= e.finishedAtMs) stalePaged.add(lane);
     }
+  }
+  // The core lanes share one page (2026-10-26), whose lanes are what it named. A send
+  // whose subjects were not read is a finding of its own, never excused (L98).
+  let unreadCorePage = false;
+  for (const sample of s) {
+    const raw = sample.alerts[CORE_LANES_ALERT_KEY];
+    if (raw === undefined) continue;
+    const ms = Date.parse(raw);
+    if (!Number.isFinite(ms) || ms < x.windowStartMs || ms > e.finishedAtMs) continue;
+    const subjects = sample.alertState?.[CORE_LANES_ALERT_KEY]?.subjects;
+    if (!subjects) {
+      unreadCorePage = true;
+      continue;
+    }
+    for (const lane of subjects) if (lane in x.lanes) stalePaged.add(lane);
+  }
+  if (unreadCorePage) {
+    findings.push({
+      bar: "lane heartbeats under fault",
+      detail: "the lane watchdog paged that cron lanes had gone stale while faults were injected; which lanes it named was not read",
+    });
   }
   for (const lane of [...stalePaged].sort()) {
     findings.push({

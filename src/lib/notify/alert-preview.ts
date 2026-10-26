@@ -438,7 +438,8 @@ import {
 import {
   backupAlertText,
   backupRecoveryText,
-  coreLaneAlertText,
+  coreLanesAlertText,
+  coreLanesRecoveryText,
   canaryAlertText,
   canaryRecoveryText,
   calcomLaneRetiredText,
@@ -4703,66 +4704,60 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatLaneFailureAlert({ lane: "bulk_reassign", status: 503, reason: "answered 503" }, null),
   },
   // --- the cron dead-man's switch -------------------------------------------
+  // 2026-10-26: every quiet core lane on ONE page. Tonight's shape first: five lanes
+  // stopped in the same second, Cloudflare reporting a cron incident, and the pool
+  // grouping stopped with recompute.
   {
-    key: "cron_lane_stale:*",
-    state: "quiet for a measured age",
+    key: "cron_lanes_stale",
+    state: "five lanes stopped together during a Cloudflare cron incident",
     channel: "alert",
-    text: coreLaneAlertText({
-      lane: "sync",
-      ageMs: 42 * 60_000,
-      maxStaleMs: LANE_STALE_BOUNDS_MS.sync,
-      unreadable: false,
+    text: coreLanesAlertText({
+      stale: [
+        { lane: "recompute", ageMs: 16 * 60_000, maxStaleMs: LANE_STALE_BOUNDS_MS.recompute, unreadable: false },
+        { lane: "reroute-hold-sweep", ageMs: 16 * 60_000, maxStaleMs: LANE_STALE_BOUNDS_MS["reroute-hold-sweep"], unreadable: false },
+        { lane: "selfheal", ageMs: 16 * 60_000, maxStaleMs: LANE_STALE_BOUNDS_MS.selfheal, unreadable: false },
+        { lane: "outbox", ageMs: 16 * 60_000, maxStaleMs: LANE_STALE_BOUNDS_MS.outbox, unreadable: false },
+        { lane: "sync", ageMs: 16 * 60_000, maxStaleMs: LANE_STALE_BOUNDS_MS.sync, unreadable: false },
+      ],
+      othersRunning: true,
+      poolGroupingStopped: true,
+      cloudflare: { kind: "incident", names: ["Delayed, missed, and duplicated Workers Cron Triggers"] },
     }),
   },
   {
-    key: "cron_lane_stale:*",
-    state: "its last-run record cannot be read",
+    key: "cron_lanes_stale",
+    state: "one lane quiet, Cloudflare reporting nothing",
     channel: "alert",
-    text: coreLaneAlertText({
-      lane: "outbox",
-      ageMs: NOW_MS,
-      maxStaleMs: LANE_STALE_BOUNDS_MS.outbox,
-      unreadable: true,
-    }),
-  },
-  // #4168, #3468: plain causes, and the next run waiting only for a lane whose route
-  // takes a lock (`LANE_RUNS`); a lane that takes none says nothing about waiting.
-  {
-    key: "cron_lane_stale:*",
-    state: "the monitor lane, quiet across a deploy",
-    channel: "alert",
-    text: coreLaneAlertText({
-      lane: "monitor",
-      ageMs: 22 * 60_000,
-      maxStaleMs: LANE_STALE_BOUNDS_MS.monitor,
-      unreadable: false,
+    text: coreLanesAlertText({
+      stale: [{ lane: "monitor", ageMs: 22 * 60_000, maxStaleMs: LANE_STALE_BOUNDS_MS.monitor, unreadable: false }],
+      othersRunning: true,
+      poolGroupingStopped: false,
+      cloudflare: { kind: "clear" },
     }),
   },
   {
-    key: "cron_lane_stale:*",
-    state: "bulk-reassign, whose next run waits on its lock",
+    key: "cron_lanes_stale",
+    state: "two lanes stopped apart, one record unreadable, status page unread",
     channel: "alert",
-    text: coreLaneAlertText({
-      lane: "bulk-reassign",
-      ageMs: 25 * 60_000,
-      maxStaleMs: LANE_STALE_BOUNDS_MS["bulk-reassign"],
-      unreadable: false,
+    text: coreLanesAlertText({
+      stale: [
+        { lane: "bulk-reassign", ageMs: 25 * 60_000, maxStaleMs: LANE_STALE_BOUNDS_MS["bulk-reassign"], unreadable: false },
+        { lane: "outbox", ageMs: NOW_MS, maxStaleMs: LANE_STALE_BOUNDS_MS.outbox, unreadable: true },
+      ],
+      othersRunning: true,
+      poolGroupingStopped: false,
+      cloudflare: { kind: "unknown" },
     }),
   },
   {
-    key: "cron_lane_stale:*",
-    state: "a sub step lane with no lock, so nothing waits",
-    channel: "alert",
-    text: coreLaneAlertText({
-      lane: "reroute-hold-sweep",
-      ageMs: 14 * 60_000,
-      maxStaleMs: LANE_STALE_BOUNDS_MS["reroute-hold-sweep"],
-      unreadable: false,
-    }),
+    key: "cron_lanes_stale",
+    state: "every core lane running again",
+    channel: "recovery",
+    text: coreLanesRecoveryText(),
   },
   {
     key: "cron_lane_stale:*",
-    state: "a core lane recovered",
+    state: "a core lane paged before the combined page recovered",
     channel: "recovery",
     text: laneRecoveryText("sync"),
   },

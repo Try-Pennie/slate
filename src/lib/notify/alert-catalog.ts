@@ -115,6 +115,13 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The database's committed memory is critically high (#3588), which slows every booking and availability request; it falls back under the threshold and the monitor lane sees it on its next pass.",
   },
   {
+    key: "cron_lanes_stale",
+    kind: "condition",
+    why:
+      "One or more Worker cron lanes are not running, named on one page because they share a schedule " +
+      "and stop together; it ends when every one of them stamps a heartbeat inside its bound again.",
+  },
+  {
     key: "cron_lane_stale:*",
     kind: "condition",
     suffix: "bounded",
