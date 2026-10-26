@@ -437,8 +437,8 @@ export type CspPageDecision =
  * exfil), so a refusal there may signal an injection attempt and keeps paging. The ACTIVE
  * and security-critical directives (script-src, connect-src, frame-src, object-src ...)
  * keep paging for the same reason, and so does a refusal of Slate's own origin or a
- * refusal that names a script source (the one exception is the Google product logo
- * credited to a Slate page script, #4063, below).
+ * refusal that names a script source (the one exception is a Slate page script as the
+ * source of a passive refusal, #4063, see `namedSourceIsExempt`).
  *
  * This logs and does NOT page, rather than trying to page only when "several distinct
  * visitors" hit the host: the only per-visitor signal a CSP report carries is the client
@@ -511,12 +511,12 @@ const SLATE_PAGE_SCRIPT_PATH = "/_next/static/";
  * source, a source on any other origin (the embedding host page included), a Slate URL
  * outside that path, and an unreadable document are all false, which pages.
  *
- * Why a named source does not settle who asked for the image (L799): Chrome credits a
+ * Why a named source does not settle who asked for the resource (L799): Chrome credits a
  * blocked load to whatever script is on the stack when the load FIRES, not to the code that
- * added the element. On 2026-10-22 the add-on's injected Voice logo was credited to the
- * embed's ResizeObserver callback, whose `scrollHeight` read forced the layout during which
- * the image started loading. So a Slate page script as the source means only that Slate code
- * was running at that moment.
+ * added the element. On 2026-10-22 the add-on's injected Voice logo, and on 2026-10-24 an
+ * add-on's Mulish font, were credited to the embed's ResizeObserver callback, whose
+ * `scrollHeight` read forced the layout during which the load started. So a Slate page script
+ * as the source means only that Slate code was running at that moment.
  */
 function isSlatePageScript(sourceUrl: string | null, document: string): boolean {
   if (sourceUrl === null) return false;
@@ -537,28 +537,35 @@ function isSlatePageScript(sourceUrl: string | null, document: string): boolean 
 }
 
 /**
- * Whether a report's named source still lets the refusal be logged rather than paged. Only
- * the Google product logo under `img-src`, credited to a Slate page script (#4063, Dan
- * 2026-10-22). Every other named source pages: a source is no proof Slate requested the
- * resource (L799), but outside that one image nothing here can say what else it is.
+ * Whether a passive refusal's named source still lets it be logged rather than paged: the
+ * source is a Slate page script (#4063, Dan 2026-10-22, for the Google product logo; Dan
+ * 2026-10-26 for a third-party font, the same forced layout crediting an add-on's Mulish font
+ * to the embed's ResizeObserver on 2026-10-24). Such a source says only that Slate code was
+ * running when the browser refused the load (L799), so the refusal reads as one that named no
+ * source, and every other test of the passive class still applies to it: a refusal of Slate's
+ * own origin, the PP Mori Slate self hosts included, pages whatever its source.
+ *
+ * Only ever asked of the passive class (`isPassiveRefusal`), so it widens nothing for an
+ * image, stylesheet, media or active directive. Any other named source pages: an inline or
+ * eval source, a script on another origin, a Slate URL outside `/_next/static/`. A source is
+ * no proof Slate requested the resource, but outside its own scripts nothing here can say
+ * what else it is, and the source is the only lead to what did.
  */
-function namedSourceIsExempt(directive: string, v: ViolationSummary): boolean {
-  return directive === "img-src" && isGoogleProductLogo(v.blocked) && isSlatePageScript(v.sourceUrl, v.document);
+function namedSourceIsExempt(v: ViolationSummary): boolean {
+  return isSlatePageScript(v.sourceUrl, v.document);
 }
 
 /**
  * Whether a violation is the injected passive third-party class (#3417): true when it is
  * logged rather than paged, false when it pages at once. False on any doubt, which pages,
- * the safe direction. True needs all of: no named source (or, for the one Google product
- * logo, a Slate page script as the source, #4063), a concrete third-party origin, a passive
- * directive (or that logo under `img-src`, #3699), and a host that is NOT the page's own.
+ * the safe direction. True needs all of: a passive directive (`font-src`, or the Google
+ * product logo under `img-src`, #3699), no named source or a Slate page script as the source
+ * (#4063, `namedSourceIsExempt`), a concrete third-party origin, and a host that is NOT the
+ * page's own.
  */
 function isInjectedPassive(directive: string, v: ViolationSummary, blocked: BlockedResource): boolean {
   if (!isPassiveRefusal(directive, v.blocked)) return false;
-  // A named source pages unless it is the logo credited to a Slate page script. Not because
-  // a named source proves Slate asked for the resource (it does not, L799), but because
-  // outside that one image the source is the only lead to what did.
-  if (v.sourceNamed && !namedSourceIsExempt(directive, v)) return false;
+  if (v.sourceNamed && !namedSourceIsExempt(v)) return false;
   if (blocked.kind !== "origin") return false; // inline/eval/data/blob/unreadable page at once
   const blockedHost = hostOf(blocked.origin);
   const documentHost = hostOf(v.document);
@@ -577,8 +584,8 @@ function isInjectedPassive(directive: string, v: ViolationSummary, blocked: Bloc
  * and Safari's legacy body never says.
  *
  * A THIRD non-paging reason, `injected-passive` (#3417): a passive third-party resource
- * no Slate page requests, with no named source (or, for the Google product logo only, a
- * Slate page script as the source, #4063), is almost always an extension and is logged
+ * no Slate page requests, with no named source (or a Slate page script as the source,
+ * #4063), is almost always an extension and is logged
  * rather than paged (see isInjectedPassive).
  *
  * Keyed on the DIRECTIVE, not one key for the whole policy: a stray image refusal

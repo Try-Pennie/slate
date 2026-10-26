@@ -689,17 +689,106 @@ describe("the Google product logo credited to a Slate page script (#4063)", () =
     }
   });
 
-  it("still pages a third-party FONT whose report names a Slate chunk: #4063 is the logo only", async () => {
-    const { cspViolationPage } = await import("./csp");
-    const d = cspViolationPage(
-      summariseViolation(modern({ effectiveDirective: "font-src", blockedURL: "https://fonts.gstatic.com/s/mulish/x.woff2" })),
-    );
-    expect(d).toMatchObject({ page: true, key: "csp_violation:font-src" });
-  });
-
   it("pages when the document cannot be read, so the source cannot be proven the page's own", async () => {
     const { cspViolationPage } = await import("./csp");
     expect(cspViolationPage(summariseViolation(modern({ documentURL: "not a url" }))).page).toBe(true);
     expect(cspViolationPage(summariseViolation(modern({ documentURL: undefined }))).page).toBe(true);
+  });
+});
+
+describe("a third-party font credited to a Slate page script (the #4063 rule, extended to font-src)", () => {
+  // 2026-10-24 19:37Z (3:37 PM ET): an add-on's Mulish font paged font-src on /book,
+  // embedded from trypennie.com. #3417 already logs a third-party font with no source; this
+  // report named Slate's own chunk at the column where the embed's ResizeObserver reads
+  // scrollHeight, the same forced layout #4063 found crediting the Voice logo to Slate
+  // (L799). Until 2026-10-26 a test here held that a named Slate chunk still paged a font
+  // ("#4063 is the logo only"); Dan reversed that on 2026-10-26, so the one rule is now:
+  // a passive refusal credited to a Slate page script reads as one that named no source.
+  const MULISH = "https://fonts.gstatic.com/s/mulish/v18/1Ptvg83HX_SGhgqk0AotYKNnBcif.woff2";
+  const CHUNK = "https://slate.trypennie.app/_next/static/chunks/2xlik_6mb5atx.js";
+  // The report as logged, field for field (the log carries no query string; none is added).
+  const modern = (over: Record<string, unknown> = {}) => [
+    {
+      type: "csp-violation",
+      body: {
+        documentURL: "https://slate.trypennie.app/book",
+        referrer: "https://trypennie.com/",
+        effectiveDirective: "font-src",
+        blockedURL: MULISH,
+        sourceFile: CHUNK,
+        lineNumber: 1,
+        columnNumber: 14435,
+        disposition: "enforce",
+        ...over,
+      },
+    },
+  ];
+  const legacy = (over: Record<string, unknown> = {}) => ({
+    "csp-report": {
+      "document-uri": "https://slate.trypennie.app/book",
+      referrer: "https://trypennie.com/",
+      "violated-directive": "font-src",
+      "blocked-uri": MULISH,
+      "source-file": CHUNK,
+      "line-number": 1,
+      "column-number": 14435,
+      disposition: "enforce",
+      ...over,
+    },
+  });
+
+  it("logs, rather than pages, the exact report of 2026-10-24, in both report shapes", async () => {
+    const { cspViolationPage } = await import("./csp");
+    expect(cspViolationPage(summariseViolation(modern()))).toEqual({ page: false, why: "injected-passive" });
+    expect(cspViolationPage(summariseViolation(legacy()))).toEqual({ page: false, why: "injected-passive" });
+  });
+
+  it("still pages a refused font from Slate's OWN origin with a Slate chunk as its source (Slate self hosts PP Mori)", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const blockedURL of [
+      "https://slate.trypennie.app/fonts/PPMori-Regular.woff2",
+      "https://slate.trypennie.app/_next/static/media/pp-mori.woff2",
+    ]) {
+      const d = cspViolationPage(summariseViolation(modern({ blockedURL })));
+      expect(d, blockedURL).toMatchObject({ page: true, key: "csp_violation:font-src" });
+    }
+  });
+
+  it("still pages the third-party font when the source is on any origin but the page's own", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const sourceFile of [
+      "https://evil.example/_next/static/chunks/a.js",
+      "https://trypennie.com/_next/static/chunks/a.js", // the host page that embeds Slate
+      "https://slate.trypennie.app.evil.example/_next/static/chunks/a.js",
+      "https://slate.trypennie.app:8443/_next/static/chunks/a.js",
+      "http://slate.trypennie.app/_next/static/chunks/a.js",
+      "https://fonts.gstatic.com/_next/static/chunks/a.js",
+    ]) {
+      const d = cspViolationPage(summariseViolation(modern({ sourceFile })));
+      expect(d, sourceFile).toMatchObject({ page: true, key: "csp_violation:font-src" });
+    }
+  });
+
+  it("still pages the third-party font when the source is inline, eval, or a Slate URL outside /_next/static/", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const sourceFile of [
+      "inline",
+      "eval",
+      "wasm-eval",
+      "https://slate.trypennie.app/book", // an inline script, credited to the document
+      "https://slate.trypennie.app/widget.js",
+      "https://slate.trypennie.app/_next/static/../../api/x.js",
+      "/_next/static/chunks/a.js",
+    ]) {
+      const d = cspViolationPage(summariseViolation(modern({ sourceFile })));
+      expect(d, sourceFile).toMatchObject({ page: true, key: "csp_violation:font-src" });
+    }
+  });
+
+  it("keeps paging a stylesheet, media or script from that host with a Slate chunk source: fonts and the logo only", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const effectiveDirective of ["style-src", "media-src", "script-src", "connect-src", "img-src"]) {
+      expect(cspViolationPage(summariseViolation(modern({ effectiveDirective }))).page, effectiveDirective).toBe(true);
+    }
   });
 });
