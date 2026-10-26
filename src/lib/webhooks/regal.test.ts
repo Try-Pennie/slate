@@ -293,7 +293,7 @@ describe("the Regal wire contract (#2314)", () => {
     "slateRungsDropped",
     // #4204: true when the call sits on the placeholder advisor, so Regal's journeys
     // send it straight to the pool and Marcia texts the customer.
-    "slatePlaceholderBooking",
+    "slateGhostBooking",
     // #32: added by the wire layer, so Regal can dedupe a retried delivery.
     "slateDeliveryId",
   ];
@@ -534,7 +534,7 @@ describe("placeholder bookings to Regal (#4204)", () => {
     "marks %s on the placeholder, names Marcia and turns Marcia's texting on",
     (event) => {
       const e = buildRegalEvent(event, onPlaceholder());
-      expect(e.properties.slatePlaceholderBooking).toBe(true);
+      expect(e.properties.slateGhostBooking).toBe(true);
       expect(e.properties.agentName).toBe("Marcia");
       expect(e.properties.agentFirstName).toBe("Marcia");
       expect(aiEligible(e)).toBe(true);
@@ -548,7 +548,7 @@ describe("placeholder bookings to Regal (#4204)", () => {
 
   it("turns Marcia's texting off when a placeholder call is cancelled", () => {
     const e = buildRegalEvent("booking.cancelled", onPlaceholder({ status: "cancelled" }));
-    expect(e.properties.slatePlaceholderBooking).toBe(true);
+    expect(e.properties.slateGhostBooking).toBe(true);
     expect(aiEligible(e)).toBe(false);
   });
 
@@ -556,7 +556,7 @@ describe("placeholder bookings to Regal (#4204)", () => {
     "turns Marcia's texting off when %s moves the call onto a real advisor",
     (event) => {
       const e = buildRegalEvent(event, { ...payload(), booking_kind: "routed", left_placeholder: true });
-      expect(e.properties.slatePlaceholderBooking).toBe(false);
+      expect(e.properties.slateGhostBooking).toBe(false);
       expect(e.properties.agentName).toBe("Amanda Ferguson");
       expect(aiEligible(e)).toBe(false);
     },
@@ -568,7 +568,7 @@ describe("placeholder bookings to Regal (#4204)", () => {
     "leaves a routed %s unmarked and its customProperties unsent",
     (event) => {
       const e = buildRegalEvent(event, { ...payload(), booking_kind: "routed" });
-      expect(e.properties.slatePlaceholderBooking).toBe(false);
+      expect(e.properties.slateGhostBooking).toBe(false);
       expect(e.traits.customProperties).toBeUndefined();
     },
   );
@@ -577,7 +577,7 @@ describe("placeholder bookings to Regal (#4204)", () => {
   // replay) was routed: it reads unmarked, never as a placeholder call.
   it("reads a payload with no kind as routed", () => {
     const e = buildRegalEvent("booking.created", payload());
-    expect(e.properties.slatePlaceholderBooking).toBe(false);
+    expect(e.properties.slateGhostBooking).toBe(false);
     expect(e.traits.customProperties).toBeUndefined();
   });
 });

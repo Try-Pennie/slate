@@ -332,7 +332,7 @@ export function buildRegalEvent(
       // #4204: on every event, false included, so a journey branching on it never
       // reads a missing key as either answer. Regal sends these calls straight to the
       // pool, since nobody dials as the placeholder.
-      slatePlaceholderBooking: onPlaceholder,
+      slateGhostBooking: onPlaceholder,
     },
     traits: contactTraits(p, event),
   };
