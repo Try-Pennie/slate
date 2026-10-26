@@ -637,6 +637,22 @@ describe("alertOnStaleLanes (#803)", () => {
     expect(lanesPage?.[2]).toContain("The pool grouping, which the recompute lane publishes, has stopped with it.");
   });
 
+  // Review of 33522ff: the pool grouping's own page waits on this one (ALERT_FOLDS), so if
+  // it stopped AFTER this page posted and nothing marked that as new, nobody would hear of
+  // it until the daily repeat. It is a subject, so its joining is a change that posts at once.
+  it("names a stopped pool grouping as a subject, so it joining the page posts at once", async () => {
+    heartbeat.readAllHeartbeatMs.mockResolvedValue({
+      ...healthy(),
+      recompute: ago(16 * MIN),
+      "pool-grouping": ago(16 * MIN),
+    });
+    await alertOnStaleLanes();
+    const lanesPage = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === "cron_lanes_stale") as unknown as
+      | [string, number, string, { subjects: string[] }]
+      | undefined;
+    expect(lanesPage?.[3].subjects).toEqual(["recompute", "pool-grouping"]);
+  });
+
   it("clears the lanes' page once every core lane is stamping again", async () => {
     heartbeat.readAllHeartbeatMs.mockResolvedValue(healthy());
     dispatch.existingAlertStateKeys.mockResolvedValueOnce(new Set(["alert_firing:cron_lanes_stale"]));

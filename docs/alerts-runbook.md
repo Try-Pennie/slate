@@ -82,7 +82,7 @@ then waited for the first to time out).
 **First checks.**
 - For a Worker lane (`cron_lanes_stale`), read the dispatcher's `lane timings`
   lines across the gap: `scripts/logs.ts "tag=cron" --lines --from <iso> --to <iso>`
-  (#4168). They show the three causes the page names, seen since each lane became its
+  (#4168). They show the three usual causes listed above, seen since each lane became its
   own placed invocation (#3693): a gradual deploy landing mid run cancels it (the
   invocation ends `canceled`; compare the deploy time with the gap), and the next tick
   then skips while the cancelled run's lock has not expired; `<lane>_placement` far

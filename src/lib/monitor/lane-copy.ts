@@ -144,9 +144,9 @@ export function coreLanesRecoveryText(): string {
   );
 }
 
-/** All-clear for a Worker cron lane. Carries no remediation: the page named the
- *  usual causes and the runbook, and repeating that here would send the reader after
- *  a fault that is over. */
+/** All-clear for a per lane Worker cron page sent before the combined page. Carries no
+ *  remediation: the page named the runbook, where the usual causes live, and repeating
+ *  that here would send the reader after a fault that is over. */
 export function laneRecoveryText(lane: string): string {
   return (
     `The ${lane} cron lane is running again. It has stamped a heartbeat inside ` +

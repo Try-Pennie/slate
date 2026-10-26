@@ -277,18 +277,16 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       return at !== null && at !== undefined && now - at <= bound;
     });
     const cloudflare = await readCloudflareCronStatus();
+    // A publish that has never landed is in this list under its grace window, and is not "stopped".
+    const poolGroupingStopped = poolGroupingStale.some((l) => Number.isFinite(l.ageMs));
     // alert-key: cron_lanes_stale
     await sendThrottledAlert(
       CORE_LANES_ALERT_KEY,
       STALE_LANE_COOLDOWN_MS,
-      coreLanesAlertText({
-        stale,
-        othersRunning: fresh,
-        // A publish that has never landed is in this list under its grace window, and is not "stopped".
-        poolGroupingStopped: poolGroupingStale.some((l) => Number.isFinite(l.ageMs)),
-        cloudflare,
-      }),
-      { subjects: stale.map((l) => l.lane) },
+      coreLanesAlertText({ stale, othersRunning: fresh, poolGroupingStopped, cloudflare }),
+      // The pool grouping is a subject too: its own page waits on this one (ALERT_FOLDS),
+      // so its stopping after this page posted must read as a change and post at once.
+      { subjects: [...stale.map((l) => l.lane), ...(poolGroupingStopped ? ["pool-grouping"] : [])] },
     ).catch((err) => {
       // A failed Slack post must not throw into the lane that called the watchdog.
       log.error("lane-watchdog", { msg: "alert failed", lanes: stale.length }, err);
