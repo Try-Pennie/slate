@@ -874,7 +874,7 @@ describe("a third-party font credited to a Slate page script (the #4063 rule, ex
     }
   });
 
-  it("keeps paging a stylesheet, media or script from that host with a Slate chunk source: fonts and the logo only", async () => {
+  it("keeps paging a stylesheet, media or script from that host with a Slate chunk source: fonts, the logo and Google Fonts' css only", async () => {
     const { cspViolationPage } = await import("./csp");
     for (const effectiveDirective of ["style-src", "media-src", "script-src", "connect-src", "img-src"]) {
       expect(cspViolationPage(summariseViolation(modern({ effectiveDirective }))).page, effectiveDirective).toBe(true);

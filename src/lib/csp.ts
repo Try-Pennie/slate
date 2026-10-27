@@ -580,7 +580,8 @@ function isSlatePageScript(sourceUrl: string | null, document: string): boolean 
  * own origin, the PP Mori Slate self hosts included, pages whatever its source.
  *
  * Only ever asked of the passive class (`isPassiveRefusal`), so it widens nothing for an
- * image, stylesheet, media or active directive. Any other named source pages: an inline or
+ * image or stylesheet beyond the Google product logo (#3699) and Google Fonts' css (#4275),
+ * nor for a media or active directive. Any other named source pages: an inline or
  * eval source, a script on another origin, a Slate URL outside `/_next/static/`. A source is
  * no proof Slate requested the resource, but outside its own scripts nothing here can say
  * what else it is, and the source is the only lead to what did.
