@@ -357,8 +357,12 @@ advisor is at risk"):
   call only when it completes.
 - `placeholder_seat_failing`: the seat's Calendar (`calendarList.list`) or Gmail (a
   `gmail.send` token mint) failing while the seat is in use, classified with
-  `isDefinitiveFailure` (`src/lib/monitor/placeholder-seat.ts`). The vacation responder
-  is NOT checked: reading it needs `gmail.settings.basic`, which Slate does not hold.
+  `isDefinitiveFailure` (`src/lib/monitor/placeholder-seat.ts`), or its vacation
+  responder (`users.settings.getVacation`, #4265) off, restricted or no longer the
+  decided text. That read mints its own `gmail.settings.basic` token, joined to no other
+  scope; until the delegation grants it (Dan decided to, 2026-10-26) the refusal reads as
+  "not checked", never as the seat failing. Held while `google_calendar_breaker_open`
+  fires (`ALERT_FOLDS`).
 - `placeholder_missing`: the switch on with no usable placeholder (no row, deactivated,
   or no address).
 

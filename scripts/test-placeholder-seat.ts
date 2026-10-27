@@ -11,7 +11,11 @@
 //   3. a seat in use by neither the switch nor any call is not probed, and an open page
 //      closes as a stand down, never a recovery (L11);
 //   4. no usable placeholder with the switch on pages, each cause in its own words, and
-//      with the switch off it says nothing and an open page closes as switched off.
+//      with the switch off it says nothing and an open page closes as switched off;
+//   5. the seat's Gmail auto reply (#4265): off, restricted or no longer the decided text
+//      pages as a definitive failure, a failed read is classified like any Google read,
+//      and a read permission not granted yet is its own outcome, said in its own words
+//      on the page and the all clear, never a seat failure and never a page by itself.
 import {
   runPlaceholderSeatCheck,
   missingReason,
@@ -27,6 +31,13 @@ import {
   type PlaceholderSeatDeps,
   type PlaceholderSeatRow,
   type SeatProbe,
+  type AutoReplyProbe,
+  type VacationSettings,
+  judgeAutoReply,
+  isScopeNotGranted,
+  formatPlaceholderSeatRecovery,
+  PLACEHOLDER_SEAT_AUTO_REPLY,
+  AUTO_REPLY_UNCHECKED,
 } from "@/lib/monitor/placeholder-seat";
 import { alertKindOf } from "@/lib/notify/alert-catalog";
 import { MONITOR_STEP_FAILING_TICKS } from "@/lib/monitor/step-failure";
@@ -42,6 +53,7 @@ interface World {
   futureCalls?: number;
   calendar?: SeatProbe;
   gmail?: SeatProbe;
+  autoReply?: AutoReplyProbe;
   /** Shared across ticks, like the real rate limit row. */
   streak: { count: number; unreadable?: boolean };
 }
@@ -66,6 +78,10 @@ function deps(w: World, out: Out): PlaceholderSeatDeps {
     probeGmail: async (email) => {
       out.probed.push(`gmail:${email}`);
       return w.gmail ?? "reachable";
+    },
+    probeAutoReply: async (email) => {
+      out.probed.push(`auto-reply:${email}`);
+      return w.autoReply ?? "matches";
     },
     bumpStreak: async (alertAt) => {
       if (w.streak.unreadable) return "unknown";
@@ -237,12 +253,136 @@ for (const which of ["loadPlaceholders", "countFutureCalls"] as const) {
   eq(healthy.resolved.find((r) => r.key === PLACEHOLDER_MISSING_KEY)?.text, PLACEHOLDER_MISSING_RECOVERY, "a usable placeholder is the recovery");
 }
 
+// --- 5. the seat's Gmail auto reply (#4265) -------------------------------------------------
+
+const DECIDED = PLACEHOLDER_SEAT_AUTO_REPLY;
+const NOW_MS = Date.UTC(2026, 9, 27, 15, 0, 0);
+const on = (over: Partial<VacationSettings> = {}): VacationSettings => ({
+  enableAutoReply: true,
+  responseBodyPlainText: DECIDED,
+  restrictToContacts: false,
+  restrictToDomain: false,
+  ...over,
+});
+{
+  eq(
+    DECIDED,
+    "Hi, thanks for writing. Nobody reads this inbox, so we won't see your email. To change your call or ask a question, " +
+      "reply to one of our texts and someone will answer you there. Thank you, the Pennie team",
+    "the decided text is Dan's, word for word (#4206, 2026-10-26)",
+  );
+  eq(judgeAutoReply(on(), NOW_MS), "matches", "on, unrestricted and the decided text: it matches");
+  eq(judgeAutoReply(on({ enableAutoReply: false }), NOW_MS), "off", "switched off is off");
+  eq(judgeAutoReply({}, NOW_MS), "off", "a responder Gmail reports nothing about is off, never assumed on");
+  eq(judgeAutoReply(on({ endTime: String(NOW_MS - 1) }), NOW_MS), "off", "past its end date it is off");
+  eq(judgeAutoReply(on({ startTime: String(NOW_MS + 60_000) }), NOW_MS), "off", "before its start date it is off");
+  eq(judgeAutoReply(on({ startTime: String(NOW_MS - 1), endTime: String(NOW_MS + 60_000) }), NOW_MS), "matches", "inside its dates it is on");
+  eq(judgeAutoReply(on({ restrictToContacts: true }), NOW_MS), "restricted", "answering only contacts misses every customer");
+  eq(judgeAutoReply(on({ restrictToDomain: true }), NOW_MS), "restricted", "answering only the Workspace misses every customer");
+  eq(judgeAutoReply(on({ responseBodyPlainText: "Out of office until Monday." }), NOW_MS), "text-changed", "another text is changed");
+  eq(judgeAutoReply(on({ responseBodyPlainText: "" }), NOW_MS), "text-changed", "an empty text is changed");
+  // What Gmail's own settings page saves: HTML, line breaks, a curly apostrophe.
+  const typed =
+    '<div dir="ltr">Hi, thanks for writing. Nobody reads this inbox, so we won’t see your email.<br><br>' +
+    "To change your call or ask a question, reply to one of our texts and someone will answer you there.<br><br>" +
+    "Thank you,<br>the Pennie team&nbsp;</div>";
+  eq(
+    judgeAutoReply(on({ responseBodyPlainText: undefined, responseBodyHtml: typed }), NOW_MS),
+    "matches",
+    "the same words typed into Gmail's editor match: markup, breaks and a curly apostrophe are not a change",
+  );
+  eq(
+    judgeAutoReply(on({ responseBodyPlainText: undefined, responseBodyHtml: typed.replace("texts", "emails") }), NOW_MS),
+    "text-changed",
+    "control: one word changed in that same HTML is a change (L1)",
+  );
+}
+{
+  eq(isScopeNotGranted(401, "unauthorized_client"), true, "the token endpoint's refusal of an ungranted scope is not granted");
+  eq(isScopeNotGranted(400, "unauthorized_client"), true, "whichever status it comes with");
+  eq(isScopeNotGranted(400, "invalid_grant"), false, "a removed account is not a missing permission");
+  eq(isScopeNotGranted(401, undefined), false, "nor is a bare 401");
+  eq(isScopeNotGranted(undefined, undefined), false, "nor a timeout");
+}
+for (const problem of ["off", "restricted", "text-changed"] as const) {
+  const w: World = { autoReply: problem, streak: { count: 0 } };
+  const first = fresh();
+  await runPlaceholderSeatCheck(deps(w, first));
+  eq(seatPages(first).length, 0, `a first ${problem} tick is held for the next one`);
+  const second = fresh();
+  const r = await runPlaceholderSeatCheck(deps(w, second));
+  const page = seatPages(second)[0];
+  eq(seatPages(second).length, 1, `${problem}: a second tick in a row pages, as definitive`);
+  eq(page?.band, 2, `${problem}: the worse band`);
+  eq(page?.subjects, [`marcia@trypennie.com:auto-reply:${problem}`], `${problem}: its own subject`);
+  assert(/auto reply/.test(page?.text ?? ""), `${problem}: the page names the auto reply`);
+  assert(!/repair the account/.test(page?.text ?? ""), `${problem}: and does not send the reader to repair the account`);
+  assert(!/may get neither/.test(page?.text ?? ""), `${problem}: nor claim invites and reminders are at risk`);
+  eq(r.status === "checked" && r.seat, "failing", `${problem}: the seat reads as failing`);
+}
+{
+  const texts = (["off", "restricted", "text-changed"] as const).map((problem) =>
+    formatPlaceholderSeatAlert([{ email: "m@x", surface: "auto-reply", problem }], { autoReplyUnchecked: false }),
+  );
+  eq(new Set(texts).size, 3, "each auto reply problem in its own words (L11)");
+}
+{
+  // A failed READ of the responder is a Google read failing, judged like the others.
+  const w: World = { autoReply: "transient", streak: { count: 0 } };
+  const pages: number[] = [];
+  for (let i = 0; i < PLACEHOLDER_SEAT_TRANSIENT_TICKS; i++) {
+    const o = fresh();
+    await runPlaceholderSeatCheck(deps(w, o));
+    pages.push(seatPages(o).length);
+  }
+  eq(pages, [0, 0, 0, 1], "a transient read of the auto reply pages only on the fourth tick");
+}
+{
+  // NOT GRANTED YET: Dan decided to grant gmail.settings.basic (2026-10-26), and until
+  // he does every read is refused. That is not the seat failing.
+  const w: World = { autoReply: "not-granted", calendar: "gone", streak: { count: 3 } };
+  const healed = fresh();
+  w.calendar = "reachable";
+  const r = await runPlaceholderSeatCheck(deps(w, healed));
+  eq(r.status === "checked" && r.seat, "healthy", "an ungranted read with both other probes answering is a healthy seat");
+  eq(r.status === "checked" && r.autoReplyUnchecked, ["marcia@trypennie.com"], "and the result names the seat whose auto reply went unread");
+  eq(seatPages(healed).length, 0, "it pages nothing on its own");
+  eq(seatClears(healed).length, 1, "the measured recovery still clears an open page");
+  assert(seatClears(healed)[0]!.text.includes(AUTO_REPLY_UNCHECKED), "and says, in its own words, that the auto reply was not checked");
+  assert(!/auto reply is on/.test(seatClears(healed)[0]!.text), "never that the auto reply is fine");
+  eq(w.streak.count, 0, "and the streak clears");
+
+  const quiet = fresh();
+  for (let i = 0; i < 5; i++) await runPlaceholderSeatCheck(deps({ autoReply: "not-granted", streak: { count: 0 } }, quiet));
+  eq(seatPages(quiet).length, 0, "five ungranted ticks in a row page nothing");
+
+  const both = fresh();
+  await runPlaceholderSeatCheck(deps({ autoReply: "not-granted", gmail: "gone", streak: { count: 1 } }, both));
+  assert(seatPages(both)[0]!.text.includes(AUTO_REPLY_UNCHECKED), "a seat page while the read is ungranted says the auto reply went unchecked");
+  eq(seatPages(both)[0]!.subjects, ["marcia@trypennie.com:gmail:gone"], "and the ungranted read is no subject of it");
+}
+{
+  const checked = fresh();
+  await runPlaceholderSeatCheck(deps({ calendar: "reachable", streak: { count: 2 } }, checked));
+  assert(/auto reply is on/.test(seatClears(checked)[0]!.text), "a measured matching auto reply is named in the all clear");
+  eq(AUTO_REPLY_UNCHECKED.includes("gmail.settings.basic"), true, "the unchecked sentence names the permission to grant");
+}
+{
+  const o = fresh();
+  await runPlaceholderSeatCheck(deps({ switchOn: false, futureCalls: 0, streak: { count: 0 } }, o));
+  eq(o.probed, [], "a seat not in use has its auto reply left unread too");
+}
+
 // --- classification and copy -------------------------------------------------------------------
 
 eq(alertKindOf(PLACEHOLDER_SEAT_KEY), "condition", "the seat page is a condition");
 eq(alertKindOf(PLACEHOLDER_MISSING_KEY), "condition", "the missing page is a condition");
 for (const t of [
-  formatPlaceholderSeatAlert([{ email: "m@x", surface: "calendar", kind: "transient" }]),
+  formatPlaceholderSeatAlert([{ email: "m@x", surface: "calendar", kind: "transient" }], { autoReplyUnchecked: false }),
+  formatPlaceholderSeatAlert([{ email: "m@x", surface: "auto-reply", problem: "off" }], { autoReplyUnchecked: false }),
+  formatPlaceholderSeatAlert([{ email: "m@x", surface: "gmail", kind: "gone" }], { autoReplyUnchecked: true }),
+  formatPlaceholderSeatRecovery(["m@x"], { autoReplyUnchecked: false }),
+  formatPlaceholderSeatRecovery(["m@x"], { autoReplyUnchecked: true }),
   formatPlaceholderMissingAlert("no-row"),
   PLACEHOLDER_SEAT_STOOD_DOWN,
   PLACEHOLDER_MISSING_RECOVERY,

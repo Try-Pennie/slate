@@ -59,6 +59,7 @@ import {
   countFutureCallsOnPlaceholders,
   probePlaceholderCalendar,
   probePlaceholderGmail,
+  probePlaceholderAutoReply,
 } from "@/lib/monitor/placeholder-seat-store";
 import {
   runEmptyReasonCheck,
@@ -3118,7 +3119,8 @@ export async function GET(req: NextRequest) {
 
     // --- The placeholder advisor's Google seat (#4206). Its invites and reminders go
     // out from its own Calendar and Gmail, and every advisor health path skips it on
-    // purpose (it is never bookable), so this probes both, read only, while the seat is
+    // purpose (it is never bookable), so this probes both, and its standing Gmail auto
+    // reply (#4265), read only, while the seat is
     // in use (the switch is on, or a call still sits on it), and pages on a definitive
     // failure over two ticks or a transient one over four. Also pages when the switch is
     // on and no usable placeholder exists. Consumes no setup read, so it is not gated. ---
@@ -3129,6 +3131,9 @@ export async function GET(req: NextRequest) {
         countFutureCalls: (ids) => countFutureCallsOnPlaceholders(db, ids, new Date(now).toISOString()),
         probeCalendar: probePlaceholderCalendar,
         probeGmail: probePlaceholderGmail,
+        // #4265: the seat's standing auto reply, under its own gmail.settings.basic token;
+        // a refusal for want of that permission reads as not granted, never as failing.
+        probeAutoReply: (email) => probePlaceholderAutoReply(email, now),
         bumpStreak: (alertAt) => trackConsecutiveStreak(PLACEHOLDER_SEAT_STREAK_KEY, PLACEHOLDER_SEAT_STREAK_WINDOW_S, alertAt),
         clearStreak: () => clearFailureStreak(PLACEHOLDER_SEAT_STREAK_KEY),
         // alert-key: placeholder_seat_failing
@@ -3159,7 +3164,10 @@ export async function GET(req: NextRequest) {
               future_calls: placeholderSeat.futureCalls,
               missing: placeholderSeat.missing,
               seat: placeholderSeat.seat,
-              failures: placeholderSeat.failures.map((f) => `${f.surface}:${f.kind}`).join(","),
+              failures: placeholderSeat.failures.map((f) => `${f.surface}:${"problem" in f ? f.problem : f.kind}`).join(","),
+              // #4265: said every tick while the read permission is not granted, so the
+              // day it is granted is visible as this going empty.
+              auto_reply_unchecked: placeholderSeat.autoReplyUnchecked.join(","),
               paged: placeholderSeat.paged,
             }
           : {}),

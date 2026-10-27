@@ -28,7 +28,12 @@ import {
   type AlertFold,
 } from "../src/lib/notify/alert-folds.ts";
 import { alertEntry, alertKindOf } from "../src/lib/notify/alert-catalog.ts";
-import { CANARY_STALE_BOUNDS_MS, POOL_GROUPING_STALE_BOUNDS_MS, VERDICT_STALE_BOUNDS_MS } from "../src/lib/monitor/health.ts";
+import {
+  CANARY_STALE_BOUNDS_MS,
+  LANE_STALE_BOUNDS_MS,
+  POOL_GROUPING_STALE_BOUNDS_MS,
+  VERDICT_STALE_BOUNDS_MS,
+} from "../src/lib/monitor/health.ts";
 import { formatCiRefusedAlert, formatCiStartedRecovery, REFUSAL_ALERT_KEY } from "../src/lib/monitor/github-ci-health.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -98,6 +103,13 @@ eq(
   POOL_GROUPING_STALE_BOUNDS_MS["pool-grouping"],
   "and waits its own bound after that page clears",
 );
+
+// 7 (#4265): a Google outage pages the calendar breaker AND the placeholder seat, whose
+// calendar probe fails through the same outage, so the seat waits while the breaker fires,
+// and after it clears waits one monitor lane bound, the lane the seat check runs on.
+eq(foldFor("placeholder_seat_failing")?.explainer, "google_calendar_breaker_open", "the seat page waits on the calendar breaker");
+eq(foldFor("placeholder_seat_failing")?.folded.graceMs, LANE_STALE_BOUNDS_MS.monitor, "and waits the monitor lane's bound after it clears");
+eq(foldFor("placeholder_missing"), null, "a missing placeholder is no Google outage, so nothing holds it");
 
 // The CI page and its all-clear name every folded lane, from the same table.
 const page = formatCiRefusedAlert({ runName: "CI", runUrl: "https://github.com/Try-Pennie/slate/actions/runs/1" });
