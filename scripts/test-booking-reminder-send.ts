@@ -32,6 +32,7 @@ const due = (over: Partial<DueBooking> = {}): DueBooking => ({
   reminderSentForIso: null,
   reminderSentAtIso: null,
   hourReminderSentForIso: null,
+  attendeePhone: null,
   status: "confirmed",
   attendeeEmail: "lead@example.com",
   agentEmail: "jordan@trypennie.com",
@@ -1260,5 +1261,18 @@ const hourDue = (over: Partial<DueBooking> = {}): DueBooking =>
   assert(s.warnings.some((w) => /send time/.test(w)), "but it is logged");
 }
 
-finish();
+// --- the lead's own number reaches the email (#4292) -------------------------------
+{
+  const bodies: string[] = [];
+  const s = spy({
+    loadDue: async () => [due({ attendeePhone: "+12155550100" })],
+    send: async (msg) => {
+      bodies.push(msg.body);
+      return "gmail-id";
+    },
+  });
+  await runBookingReminders(s.deps);
+  assert(bodies[0]?.includes("We will call you at (215) 555-0100") ?? false, "the booking's phone is the number the email names");
+}
 
+finish();

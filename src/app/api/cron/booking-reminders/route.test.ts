@@ -576,3 +576,12 @@ describe("combinedTick (#4282)", () => {
     });
   });
 });
+
+describe("the lead's own number (#4292)", () => {
+  it("reads the booking's phone and names it in the email", async () => {
+    state.pages = [[due(1, { attendee_phone: "+12155550100" })]];
+    await GET(req());
+    for (const sel of state.worklistSelects) expect(sel).toContain("attendee_phone");
+    expect(state.sent[0]?.body).toContain("We will call you at (215) 555-0100");
+  });
+});

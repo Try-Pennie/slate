@@ -11,7 +11,9 @@
 // Optional: REMINDER_EXAMPLE_LEAD (a 00Q lead id whose calling number goes on the
 // card; defaults to the advisor's most recent booked lead) and REMINDER_EXAMPLE_TZ
 // (the zone the call time is written in; defaults to America/New_York), and
-// REMINDER_EXAMPLE_KIND (day, the default, or hour for the 1 hour email, #4285).
+// REMINDER_EXAMPLE_KIND (day, the default, or hour for the 1 hour email, #4285), and
+// REMINDER_EXAMPLE_PHONE (the lead's own number the email names, #4292; unset shows
+// the "number you gave us" fallback).
 //
 // It sends FROM the advisor's mailbox (the email lands in their Sent folder) and only
 // TO a @trypennie.com inbox. It writes nothing: no booking, no calendar, no alert.

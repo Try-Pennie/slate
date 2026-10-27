@@ -1,6 +1,6 @@
 import { DateTime } from "luxon";
 import { formatClockTime } from "@/lib/date/parse";
-import { callComesFrom, placeholderReplyLine } from "./manage-copy.ts";
+import { callComesFrom, placeholderReplyLine, weWillCallYou } from "./manage-copy.ts";
 import { realAdvisorName } from "./advisor-contact-card.ts";
 
 /**
@@ -257,6 +257,11 @@ export interface ReminderCopyInput {
    */
   callingNumber: string | null;
   /**
+   * The LEAD's own number from the booking (`attendee_phone`, #4292), the one we will
+   * dial, or null when none is on file. REQUIRED, so `tsc` names every caller (L168).
+   */
+  leadPhone: string | null;
+  /**
    * A call on the placeholder advisor, Marcia (booking kind `staff_placed`, #4206).
    * Its reminder goes out from the placeholder seat, whose inbox nobody reads, so the
    * copy invites no reply to itself, names no number, and sends the customer back to
@@ -345,7 +350,7 @@ export function hourReminderBody(input: ReminderCopyInput): string {
 }
 
 function reminderBodyAt(input: ReminderCopyInput, when: string): string {
-  if (input.onPlaceholder) return placeholderReminderBody(when);
+  if (input.onPlaceholder) return placeholderReminderBody(when, input.leadPhone);
   // #1334: with the calling number known, the lead has one thing worth doing before
   // the call, saving it, so "nothing you need to set up" stops being true. The
   // sentence is the manage page's own (`callComesFrom`), and the card it points at
@@ -357,9 +362,12 @@ function reminderBodyAt(input: ReminderCopyInput, when: string): string {
   // it is named Pennie and stays "our" card (Dan, 2026-10-01).
   const name = realAdvisorName(input.agentName);
   const from = callComesFrom(input.callingNumber);
+  // #4292: the lead's own number, as the manage page shows it, so a wrong one is
+  // noticed before the call rather than on it.
+  const callYou = weWillCallYou(input.leadPhone);
   const numberLines = from
-    ? [`We will call you on the number you gave us. ${from} ${name ? "My" : "Our"} contact card is attached, so one tap adds it.`]
-    : ["We will call you on the number you gave us, so there is nothing you need to set up."];
+    ? [`${callYou}. ${from} ${name ? "My" : "Our"} contact card is attached, so one tap adds it.`]
+    : [`${callYou}, so there is nothing you need to set up.`];
   return [
     `Hi, this is a reminder that your call with ${name ? `${name} at Pennie` : "Pennie"} is ${when}.`,
     "",
@@ -383,11 +391,13 @@ function reminderBodyAt(input: ReminderCopyInput, when: string): string {
  * carries no manage link and no offer to change or cancel (Dan, 2026-10-27: a customer
  * who texts asking to change the call is handled then), so `manageUrl` goes unused.
  */
-function placeholderReminderBody(when: string): string {
+function placeholderReminderBody(when: string, leadPhone: string | null): string {
   return [
     `Hi, this is a reminder that your call with Pennie is ${when}.`,
     "",
-    "We will call you on the number you gave us, so there is nothing you need to set up.",
+    // The lead's OWN number (#4292), which a text to the seat cannot misuse; the rule
+    // above is about the number the call comes FROM.
+    `${weWillCallYou(leadPhone)}, so there is nothing you need to set up.`,
     "",
     placeholderReplyLine("email"),
     "",

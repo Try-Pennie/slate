@@ -124,6 +124,8 @@ export interface DueBooking {
   status: string;
   /** Null when the lead gave a phone and no address, which is legitimate. */
   attendeeEmail: string | null;
+  /** The lead's own phone (`attendee_phone`, #4292), named in the email; null for none. */
+  attendeePhone: string | null;
   /** The advisor's mailbox, which is also the sender. */
   agentEmail: string;
   /** The advisor's name, or null when the booking holds none (never their address). */
@@ -497,6 +499,7 @@ export async function runBookingReminders(deps: ReminderDeps, kind: ReminderKind
       // so "tomorrow" and "is this due" can never disagree about what day it is.
       nowMs,
       callingNumber,
+      leadPhone: row.attendeePhone,
       onPlaceholder: row.onPlaceholder,
     };
     // Counted BEFORE the call, so a send that threw is in the denominator of its

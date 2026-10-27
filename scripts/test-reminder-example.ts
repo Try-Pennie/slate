@@ -329,4 +329,24 @@ function runCommand(envFile: string | null): { status: number | null; stderr: st
   eq(dayWarned, [], "the 24 hour example finishes with no warning about its send time");
 }
 
+// --- a number for the lead (#4292) -----------------------------------------------
+{
+  eq(exampleBooking(cfg, advisor, LEAD, NOW).attendeePhone, null, "no number by default, so the email shows the fallback");
+  const withPhone = readExampleConfig({
+    REMINDER_EXAMPLE_ADVISOR: "marnold@trypennie.com",
+    REMINDER_EXAMPLE_TO: "tconway@trypennie.com",
+    REMINDER_EXAMPLE_PHONE: "(215) 555-0100",
+  });
+  assert(withPhone.ok, "REMINDER_EXAMPLE_PHONE is accepted");
+  if (withPhone.ok) {
+    eq(exampleBooking(withPhone.config, advisor, LEAD, NOW).attendeePhone, "(215) 555-0100", "and becomes the lead's number");
+  }
+  const bad = readExampleConfig({
+    REMINDER_EXAMPLE_ADVISOR: "marnold@trypennie.com",
+    REMINDER_EXAMPLE_TO: "tconway@trypennie.com",
+    REMINDER_EXAMPLE_PHONE: "call me",
+  });
+  assert(!bad.ok && /REMINDER_EXAMPLE_PHONE/.test(bad.reason), "a number that cannot be written as one is refused");
+}
+
 finish();

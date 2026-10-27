@@ -17,6 +17,7 @@ import {
   hourReminderDue,
   hourReminderSubject,
   hourReminderBody,
+  reminderBody,
 } from "../src/lib/booking/reminder.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -197,6 +198,43 @@ const booking = (over: Partial<Parameters<typeof hourReminderDue>[0]> = {}) => (
 
   const unreadable = hourReminderSubject({ ...input, startsAtIso: "not a time" });
   assert(!/Invalid/.test(unreadable), "an unreadable start never reaches an inbox as Invalid DateTime");
+}
+
+// --- the lead's own number (#4292, Dan 2026-10-27) --------------------------------
+//
+// The booking page already tells the lead the number we will call. The emails used to
+// say "the number you gave us" every time, because the job never read it.
+{
+  const base = {
+    agentName: "Sam Rivera",
+    startsAtIso: new Date(NOW + 55 * MIN).toISOString(),
+    timezone: "America/New_York",
+    manageUrl: "https://slate.example/booking/manage/tok",
+    nowMs: NOW,
+    callingNumber: null,
+    onPlaceholder: false,
+    leadPhone: "+12155550100",
+  };
+  const day = reminderBody(base);
+  const hour = hourReminderBody(base);
+  for (const [which, body] of [["24 hour", day], ["1 hour", hour]] as const) {
+    assert(body.includes("We will call you at (215) 555-0100"), `the ${which} email names the lead's number (${body.split("\n")[2]})`);
+    assert(!body.includes("the number you gave us"), `and drops the fallback when the number is known (${which})`);
+  }
+  assert(
+    hourReminderBody({ ...base, callingNumber: "+17867054716" }).includes("We will call you at (215) 555-0100. The call will come from (786) 705-4716."),
+    "beside the number the call comes from",
+  );
+  assert(
+    hourReminderBody({ ...base, onPlaceholder: true }).includes("We will call you at (215) 555-0100"),
+    "the placeholder's email names it too",
+  );
+  const unknown = hourReminderBody({ ...base, leadPhone: null });
+  assert(unknown.includes("We will call you on the number you gave us"), "with no number on file it keeps the fallback");
+  assert(
+    hourReminderBody({ ...base, leadPhone: "not a phone" }).includes("on the number you gave us"),
+    "and an unreadable number never reaches a lead as written",
+  );
 }
 
 finish();

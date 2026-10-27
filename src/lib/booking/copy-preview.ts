@@ -894,6 +894,8 @@ export function reminderCopyScreens(): CopyScreen[] {
     manageUrl,
     nowMs: REMINDER_NOW_MS,
     callingNumber: null as string | null,
+    /** #4292: the lead's own number, named in the email as the manage page names it. */
+    leadPhone: PHONE as string | null,
     onPlaceholder: false,
   };
   /** #4206: a call on the placeholder advisor, sent from the placeholder seat. */
@@ -923,6 +925,11 @@ export function reminderCopyScreens(): CopyScreen[] {
         {
           state: "the body, when the number we call from is known (a contact card is attached)",
           text: reminderBody(withCallingNumber),
+        },
+        // #4292: no number on file, so the email keeps the manage page's fallback.
+        {
+          state: "the body, when the booking holds no number for the lead",
+          text: reminderBody({ ...tomorrow, leadPhone: null }),
         },
         // #1334 review: no advisor name on the booking. The copy speaks for Pennie
         // rather than showing the advisor's address as a name.
