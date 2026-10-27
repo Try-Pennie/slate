@@ -338,6 +338,7 @@ async function run() {
       assignedTo = "cov"; // the swap committed: the booking is now off the out agent
     },
     claimItem: async () => true,
+    callsTakenAgain: async () => new Set<string>(),
     commitItemOutcome: async () => {},
     markJobDoneIfDrained: async () => false,
     jobFinished: async () => {},
