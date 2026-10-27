@@ -4,7 +4,7 @@ import { callComesFrom, placeholderReplyLine } from "./manage-copy.ts";
 import { realAdvisorName } from "./advisor-contact-card.ts";
 
 /**
- * The 24 hour reminder email (#2359): the decision and the copy, kept pure so both
+ * The reminder emails (#2359, and the 1 hour one, #4282): the decision and the copy, kept pure so both
  * are driven offline by `scripts/test-booking-reminder.ts` with no database, no
  * Gmail and no real clock.
  *
@@ -51,6 +51,11 @@ export interface ReminderSubject {
   /** The start a reminder has already gone out about, or null for none. */
   reminderSentForMs: number | null;
   status: string;
+  /**
+   * The start the 1 hour email has gone out about (#4282), or null for none. Once
+   * that email has gone for this start, a retried 24 hour email would land after it.
+   */
+  hourReminderSentForMs?: number | null;
 }
 
 /**
@@ -70,9 +75,69 @@ export function reminderDue(b: ReminderSubject, nowMs: number): boolean {
   // is worse than silence.
   if (b.startsAtMs <= nowMs) return false;
   if (b.startsAtMs - nowMs > REMINDER_LEAD_MS) return false;
+  // The 1 hour email already reminded the lead about this start (#4282), so a 24 hour
+  // email still being retried would arrive after it.
+  if (b.hourReminderSentForMs === b.startsAtMs) return false;
   // The record is the START it was sent about, so a booking that moved no longer
   // matches and earns its own reminder with nobody clearing anything.
   return b.reminderSentForMs !== b.startsAtMs;
+}
+
+/** How far ahead of the call the 1 hour email goes out (#4282). */
+export const HOUR_REMINDER_LEAD_MS = 60 * 60_000;
+
+/**
+ * The least time between the 24 hour email being sent and the 1 hour email (Dan,
+ * 2026-10-27). A booking made a few hours ahead has its first reminder sent about ten
+ * minutes after it is made (`REMINDER_HOLD_MS`), so without this the lead would get
+ * two reminders close together.
+ */
+export const HOUR_REMINDER_GAP_MS = 2 * 60 * 60_000;
+
+export interface HourReminderSubject {
+  startsAtMs: number;
+  createdAtMs: number;
+  status: string;
+  /** The start the 1 hour email has gone out about, or null for none. */
+  hourReminderSentForMs: number | null;
+  /** The start the 24 hour email has gone out about, or null for none. */
+  dayReminderSentForMs: number | null;
+  /**
+   * When the 24 hour email was sent, or null when it was not recorded: emails sent
+   * before #4282 carry no send time.
+   */
+  dayReminderSentAtMs: number | null;
+}
+
+/**
+ * Whether this booking is due its 1 hour email right now (#4282).
+ *
+ * The window, the statuses and the once per start record work as `reminderDue`'s do,
+ * and an unreadable start, booking time or clock lands on the silent side for the
+ * same reason. Two rules are Dan's (2026-10-27):
+ *
+ * A booking made less than an hour before the call gets none: the invite and the
+ * confirmation text have only just arrived.
+ *
+ * None when the 24 hour email about this same start went out less than
+ * `HOUR_REMINDER_GAP_MS` ago, so a booking made a few hours ahead is not emailed twice
+ * back to back. That gap is a courtesy and the email is the promise, so a send time
+ * that is unknown or unreadable does not hold the email back (as `reminderHeld`
+ * releases on one).
+ */
+export function hourReminderDue(b: HourReminderSubject, nowMs: number): boolean {
+  if (!Number.isFinite(nowMs) || !Number.isFinite(b.startsAtMs)) return false;
+  if (!LIVE_STATUSES.has(b.status)) return false;
+  if (b.startsAtMs <= nowMs) return false;
+  if (b.startsAtMs - nowMs > HOUR_REMINDER_LEAD_MS) return false;
+  if (b.hourReminderSentForMs === b.startsAtMs) return false;
+  // Phrased as "was it booked early enough", so an unreadable booking time is false.
+  if (!(b.createdAtMs <= b.startsAtMs - HOUR_REMINDER_LEAD_MS)) return false;
+  const firstAboutThisStart = b.dayReminderSentForMs === b.startsAtMs;
+  if (firstAboutThisStart && b.dayReminderSentAtMs !== null && Number.isFinite(b.dayReminderSentAtMs)) {
+    if (nowMs - b.dayReminderSentAtMs < HOUR_REMINDER_GAP_MS) return false;
+  }
+  return true;
 }
 
 /**
@@ -237,7 +302,37 @@ export function reminderSubject(input: ReminderCopyInput): string {
  * reply will be read.
  */
 export function reminderBody(input: ReminderCopyInput): string {
-  const when = `${dayWord(input)} at ${timeLabel(input)}`;
+  return reminderBodyAt(input, `${dayWord(input)} at ${timeLabel(input)}`);
+}
+
+/**
+ * How soon the call is, for the 1 hour email (#4282). The lane sends it within five
+ * minutes of the mark, so it is "about an hour"; a send retried later says the minutes
+ * it really is, in fives, rather than an hour it no longer is. An unreadable start or
+ * clock says only "soon".
+ */
+function soonWord(input: ReminderCopyInput): string {
+  const startMs = DateTime.fromISO(input.startsAtIso).toMillis();
+  if (!Number.isFinite(startMs) || !Number.isFinite(input.nowMs)) return "soon";
+  const minutes = Math.round((startMs - input.nowMs) / 60_000 / 5) * 5;
+  if (minutes >= 50) return "in about an hour";
+  if (minutes <= 0) return "soon";
+  return `in about ${minutes} minutes`;
+}
+
+export function hourReminderSubject(input: ReminderCopyInput): string {
+  return `Your Pennie call is ${soonWord(input)}, at ${timeLabel(input)}`;
+}
+
+/**
+ * The 1 hour email (#4282): the 24 hour email's own body, saying "in about an hour"
+ * where that one names the day, so the two say everything else in the same words.
+ */
+export function hourReminderBody(input: ReminderCopyInput): string {
+  return reminderBodyAt(input, `${soonWord(input)}, at ${timeLabel(input)}`);
+}
+
+function reminderBodyAt(input: ReminderCopyInput, when: string): string {
   if (input.onPlaceholder) return placeholderReminderBody(when);
   // #1334: with the calling number known, the lead has one thing worth doing before
   // the call, saving it, so "nothing you need to set up" stops being true. The

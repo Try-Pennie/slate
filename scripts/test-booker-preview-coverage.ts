@@ -260,4 +260,15 @@ for (const screen of allScreens) {
   );
 }
 
+// #4282: the 1 hour email's wording is read in the preview like the 24 hour one's,
+// for a routed call and for one on the placeholder.
+{
+  const texts = reminderCopyScreens().flatMap((screen) => screen.lines.map((line) => line.text));
+  assert(texts.some((t) => /in about an hour/.test(t) && /reply to this email/.test(t)), "the preview carries the 1 hour email");
+  assert(
+    texts.some((t) => /in about an hour/.test(t) && /reply to one of our texts/.test(t)),
+    "and the placeholder's 1 hour email",
+  );
+}
+
 finish();

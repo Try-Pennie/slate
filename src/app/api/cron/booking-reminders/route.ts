@@ -11,8 +11,14 @@ import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { selectAllPages, sortByStamp } from "@/lib/supabase/paginate";
-import { REMINDER_LEAD_MS } from "@/lib/booking/reminder";
-import { runBookingReminders, type DueBooking } from "@/lib/booking/reminder-send";
+import { REMINDER_LEAD_MS, HOUR_REMINDER_LEAD_MS } from "@/lib/booking/reminder";
+import {
+  runBookingReminders,
+  type DueBooking,
+  type ReminderDeps,
+  type ReminderKind,
+  type ReminderRun,
+} from "@/lib/booking/reminder-send";
 import { runReminderFailureRateCheck } from "@/lib/booking/reminder-rate";
 import {
   loadReminderRateState,
@@ -28,7 +34,8 @@ import { bookingLeadId } from "@/lib/booking/lookup-identity";
 export const dynamic = "force-dynamic";
 
 /**
- * The 24 hour reminder email lane (#2359).
+ * The reminder email lane: 24 hours before the call (#2359), and 1 hour before it
+ * (#4282). Each tick runs the lane once per email, the 24 hour one first.
  *
  * The decision and the copy are pure (`src/lib/booking/reminder.ts`) and the order of
  * effects is pure too (`reminder-send.ts`); this file is the IO and nothing else.
@@ -63,17 +70,111 @@ export async function GET(req: NextRequest) {
 
   const db = supabaseAdmin();
   const now = Date.now();
-  const windowEndIso = new Date(now + REMINDER_LEAD_MS).toISOString();
+  // The 24 hour email first, so one sent this tick is on record before the 1 hour
+  // read judges its two hour gap (#4282): a call moved close in gets one email, not two.
+  const run = await runBookingReminders(laneDeps(db, now, "day"), "day");
+  const hourRun = await runBookingReminders(laneDeps(db, now, "hour"), "hour");
+
+  logRun("day", run);
+  logRun("hour", hourRun);
+
+
+  /**
+   * Is this ONE lead's reminder, or every lead's? (#2496)
+   *
+   * The per booking incident above cannot answer that: it names one booking each
+   * time, so one refused address is one page and a total outage is a page per lead
+   * with nothing saying they share a cause. This folds the tick into a rolling window
+   * and pages on the SHARE, which is the only thing that can tell the two apart.
+   * Sends released to be retried ride along by booking id, with how every other
+   * attempted booking settled, so one booking retried every tick counts once rather
+   * than once per tick and stops counting once it is sent or given up
+   * (`judgeReminderWindow`).
+   *
+   * It runs AFTER the sends and cannot stop them: every failure inside it is caught
+   * and reported, because a monitor bolted onto a lane that emails real people must
+   * not be able to take that lane down.
+   */
+  const rate = await runReminderFailureRateCheck({
+    nowMs: now,
+    day: reminderRateDay(now),
+    // Both kinds in one window: a broken send path fails both, and the alert speaks
+    // of "reminder emails". A 1 hour entry is keyed `hour:<id>`, so one booking's two
+    // emails are two attempts rather than one overwriting the other.
+    tick: combinedTick(run, hourRun),
+    thresholds: SHIPPED_REMINDER_FAILURE_RATE_THRESHOLDS,
+    cooldownMs: REMINDER_ALERT_COOLDOWN_MS,
+    loadState: loadReminderRateState,
+    saveState: saveReminderRateState,
+    notify: async (key, cooldownMs, text) => {
+      // alert-key: booking_reminders_failing
+      // alert-text-ok: the text is built by `formatReminderFailureRateAlert`, which
+      // carries counts and `ReminderFailureCode`s rather than the provider's body.
+      await sendThrottledAlert(key, cooldownMs, text);
+    },
+    // alert-key: booking_reminders_failing
+    // all-clear-proof: scripts/test-booking-reminder-rate.ts - a tick whose window
+    // could not be READ returns `unverified` and is asserted to resolve nothing, and
+    // a window below the floor is `insufficient` and resolves nothing either. The
+    // recovery hangs only off a MEASURED healthy verdict (#1134, #1152).
+    resolve: async (key, text) => resolveAlert(key, text),
+    log: (fields) => log.info("booking-reminder", fields),
+    onError: (context, err) =>
+      log.error(
+        "booking-reminder",
+        { msg: "reminder rate step failed", step: context },
+        err instanceof Error ? err : new Error(shortErrorReason(err)),
+      ),
+  }).catch((err) => {
+    // Nothing above throws today, and a fault nobody predicted here must still not
+    // cost a lead their reminder or the lane its heartbeat.
+    log.error(
+      "booking-reminder",
+      { msg: "reminder rate check threw" },
+      err instanceof Error ? err : new Error(shortErrorReason(err)),
+    );
+    return { status: "unverified", why: "state" } as const;
+  });
+
+  // Stamped at the END, so a tick that threw on the read never stamps and the lane
+  // watchdog notices. That is the whole dead man's switch for this lane: nothing
+  // else would say the reminders had stopped, because "nothing to send" and "the
+  // read is broken" both look like silence (L98).
+  await recordHeartbeat("booking-reminders").catch((e) =>
+    log.error("booking-reminder", { msg: "heartbeat failed" }, e instanceof Error ? e : new Error(shortErrorReason(e))),
+  );
+
+  return NextResponse.json({
+    ...run,
+    hour: hourRun,
+    // Said out loud, because "the share was fine" and "the share could not be
+    // measured" are the same silence otherwise (L98).
+    rate: rate.status === "checked" ? rate.verdict.status : "unverified",
+  });
+}
+
+/**
+ * What one run of the lane works on, for one kind of reminder email (#4282). The two
+ * kinds share everything but the window they read and the record they claim: the 24
+ * hour email's `reminder_sent_for` (stamping `reminder_sent_at` beside it, which the 1
+ * hour email's two hour gap is judged from), and the 1 hour email's
+ * `hour_reminder_sent_for`.
+ */
+function laneDeps(db: ReturnType<typeof supabaseAdmin>, now: number, kind: ReminderKind): ReminderDeps {
+  const windowEndIso = new Date(now + (kind === "day" ? REMINDER_LEAD_MS : HOUR_REMINDER_LEAD_MS)).toISOString();
   const nowIso = new Date(now).toISOString();
+  /** The column this kind's claim writes. */
+  const sentFor = kind === "day" ? "reminder_sent_for" : "hour_reminder_sent_for";
 
   /**
    * What this tick READ for each booking's reminder record, so the claim below can
    * compare and swap against the exact value rather than re-stating the rule in a
    * filter. Keyed by booking id, filled by the load.
    */
-  const rowsSeen = new Map<string, string | null>();
+  const rowsSeen = new Map<string, { sentFor: string | null; sentAt: string | null }>();
 
-  const run = await runBookingReminders({
+
+  return {
     now: () => now,
     loadDue: async () => {
       // PAGINATED, not one capped page (#2500).
@@ -106,6 +207,8 @@ export async function GET(req: NextRequest) {
         starts_at: string;
         created_at: string;
         reminder_sent_for: string | null;
+        reminder_sent_at: string | null;
+        hour_reminder_sent_for: string | null;
         status: string;
         attendee_email: string | null;
         agent_email: string | null;
@@ -121,7 +224,7 @@ export async function GET(req: NextRequest) {
         db
           .from("bookings")
           .select(
-            "id, starts_at, created_at, reminder_sent_for, status, attendee_email, agent_email, agent_name, timezone, manage_token, salesforce_id, external_id, gcal_event_id, assigned_user_id, kind, buckets!inner(is_test)",
+            "id, starts_at, created_at, reminder_sent_for, reminder_sent_at, hour_reminder_sent_for, status, attendee_email, agent_email, agent_name, timezone, manage_token, salesforce_id, external_id, gcal_event_id, assigned_user_id, kind, buckets!inner(is_test)",
           )
           .in("status", ["confirmed", "rescheduled"])
           .gt("starts_at", nowIso)
@@ -137,7 +240,11 @@ export async function GET(req: NextRequest) {
       // bookings a tick sends first and which are paged by name. The read itself is
       // ordered by id, which keyset paging owns (2026-10-25).
       sortByStamp("bookings due a reminder", rows, "starts_at", "id");
-      for (const r of rows) rowsSeen.set(r.id, r.reminder_sent_for);
+      for (const r of rows) {
+        rowsSeen.set(r.id, kind === "day"
+          ? { sentFor: r.reminder_sent_for, sentAt: r.reminder_sent_at }
+          : { sentFor: r.hour_reminder_sent_for, sentAt: null });
+      }
       return rows
         .filter((r): r is typeof r & { agent_email: string } => !!r.agent_email)
         .map(
@@ -146,6 +253,8 @@ export async function GET(req: NextRequest) {
             startsAtIso: r.starts_at,
             createdAtIso: r.created_at,
             reminderSentForIso: r.reminder_sent_for,
+            reminderSentAtIso: r.reminder_sent_at,
+            hourReminderSentForIso: r.hour_reminder_sent_for,
             status: r.status,
             attendeeEmail: r.attendee_email,
             agentEmail: r.agent_email,
@@ -188,13 +297,20 @@ export async function GET(req: NextRequest) {
       // `2026-09-17T10:00:00+00:00`. Embedding one in that grammar is a value being
       // parsed as syntax, which is the shape that fails on the character nobody
       // pictured rather than on the common case.
-      const seen = rowsSeen.get(id) ?? null;
+      const seen = rowsSeen.get(id)?.sentFor ?? null;
+      // The 24 hour claim stamps WHEN too, since the 1 hour email's two hour gap is
+      // judged from the send (#4282). The claim is written just before the send, so
+      // it is the send time to within one Gmail call.
+      const set =
+        kind === "day"
+          ? { reminder_sent_for: startsAtIso, reminder_sent_at: new Date().toISOString() }
+          : { hour_reminder_sent_for: startsAtIso };
       let q = db
         .from("bookings")
-        .update({ reminder_sent_for: startsAtIso })
+        .update(set)
         .eq("id", id)
         .eq("starts_at", startsAtIso);
-      q = seen === null ? q.is("reminder_sent_for", null) : q.eq("reminder_sent_for", seen);
+      q = seen === null ? q.is(sentFor, null) : q.eq(sentFor, seen);
       const claimed = unwrap(await q.select("id").maybeSingle(), "claim booking reminder") as
         | { id: string }
         | null;
@@ -209,9 +325,13 @@ export async function GET(req: NextRequest) {
       const released = unwrap(
         await db
           .from("bookings")
-          .update({ reminder_sent_for: restoreTo })
+          .update(
+            kind === "day"
+              ? { reminder_sent_for: restoreTo, reminder_sent_at: rowsSeen.get(id)?.sentAt ?? null }
+              : { hour_reminder_sent_for: restoreTo },
+          )
           .eq("id", id)
-          .eq("reminder_sent_for", claimedForIso)
+          .eq(sentFor, claimedForIso)
           .select("id")
           .maybeSingle(),
         "release booking reminder claim",
@@ -261,17 +381,21 @@ export async function GET(req: NextRequest) {
         },
         err,
       ),
-  });
+  };
+}
 
+/** One run's cycle line, and its error line when sends failed. Ids and counts only. */
+function logRun(kind: ReminderKind, run: ReminderRun) {
   if (run.failed > 0) {
     log.error(
       "booking-reminder",
-      { msg: "reminders failed to send", failed: run.failed, retrying: run.retrying },
+      { msg: "reminders failed to send", kind, failed: run.failed, retrying: run.retrying },
       new Error("reminder send failed"),
     );
   }
   log.info("booking-reminder", {
     msg: "cycle",
+    kind,
     sent: run.sent,
     failed: run.failed,
     retrying: run.retrying,
@@ -287,79 +411,19 @@ export async function GET(req: NextRequest) {
     photo_unread: run.photoUnread,
     with_logo: run.withLogo,
   });
+}
 
-  /**
-   * Is this ONE lead's reminder, or every lead's? (#2496)
-   *
-   * The per booking incident above cannot answer that: it names one booking each
-   * time, so one refused address is one page and a total outage is a page per lead
-   * with nothing saying they share a cause. This folds the tick into a rolling window
-   * and pages on the SHARE, which is the only thing that can tell the two apart.
-   * Sends released to be retried ride along by booking id, with how every other
-   * attempted booking settled, so one booking retried every tick counts once rather
-   * than once per tick and stops counting once it is sent or given up
-   * (`judgeReminderWindow`).
-   *
-   * It runs AFTER the sends and cannot stop them: every failure inside it is caught
-   * and reported, because a monitor bolted onto a lane that emails real people must
-   * not be able to take that lane down.
-   */
-  const rate = await runReminderFailureRateCheck({
-    nowMs: now,
-    day: reminderRateDay(now),
-    tick: {
-      attempts: run.attempted,
-      failures: run.failed,
-      byCode: run.byCode,
-      retried: run.retried,
-      settled: run.settled,
-    },
-    thresholds: SHIPPED_REMINDER_FAILURE_RATE_THRESHOLDS,
-    cooldownMs: REMINDER_ALERT_COOLDOWN_MS,
-    loadState: loadReminderRateState,
-    saveState: saveReminderRateState,
-    notify: async (key, cooldownMs, text) => {
-      // alert-key: booking_reminders_failing
-      // alert-text-ok: the text is built by `formatReminderFailureRateAlert`, which
-      // carries counts and `ReminderFailureCode`s rather than the provider's body.
-      await sendThrottledAlert(key, cooldownMs, text);
-    },
-    // alert-key: booking_reminders_failing
-    // all-clear-proof: scripts/test-booking-reminder-rate.ts - a tick whose window
-    // could not be READ returns `unverified` and is asserted to resolve nothing, and
-    // a window below the floor is `insufficient` and resolves nothing either. The
-    // recovery hangs only off a MEASURED healthy verdict (#1134, #1152).
-    resolve: async (key, text) => resolveAlert(key, text),
-    log: (fields) => log.info("booking-reminder", fields),
-    onError: (context, err) =>
-      log.error(
-        "booking-reminder",
-        { msg: "reminder rate step failed", step: context },
-        err instanceof Error ? err : new Error(shortErrorReason(err)),
-      ),
-  }).catch((err) => {
-    // Nothing above throws today, and a fault nobody predicted here must still not
-    // cost a lead their reminder or the lane its heartbeat.
-    log.error(
-      "booking-reminder",
-      { msg: "reminder rate check threw" },
-      err instanceof Error ? err : new Error(shortErrorReason(err)),
-    );
-    return { status: "unverified", why: "state" } as const;
-  });
-
-  // Stamped at the END, so a tick that threw on the read never stamps and the lane
-  // watchdog notices. That is the whole dead man's switch for this lane: nothing
-  // else would say the reminders had stopped, because "nothing to send" and "the
-  // read is broken" both look like silence (L98).
-  await recordHeartbeat("booking-reminders").catch((e) =>
-    log.error("booking-reminder", { msg: "heartbeat failed" }, e instanceof Error ? e : new Error(shortErrorReason(e))),
-  );
-
-  return NextResponse.json({
-    ...run,
-    // Said out loud, because "the share was fine" and "the share could not be
-    // measured" are the same silence otherwise (L98).
-    rate: rate.status === "checked" ? rate.verdict.status : "unverified",
-  });
+/** The tick the failure share is judged on: both kinds' sends, summed (#4282). */
+export function combinedTick(day: ReminderRun, hour: ReminderRun) {
+  const byCode: Record<string, number> = { ...day.byCode };
+  for (const [code, n] of Object.entries(hour.byCode)) byCode[code] = (byCode[code] ?? 0) + n;
+  const hourKeyed = <T,>(r: Record<string, T>) =>
+    Object.fromEntries(Object.entries(r).map(([id, v]) => [`hour:${id}`, v]));
+  return {
+    attempts: day.attempted + hour.attempted,
+    failures: day.failed + hour.failed,
+    byCode,
+    retried: { ...day.retried, ...hourKeyed(hour.retried) },
+    settled: { ...day.settled, ...hourKeyed(hour.settled) },
+  };
 }

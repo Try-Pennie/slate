@@ -5628,6 +5628,20 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "alert" as const,
     text: reminderFailedAlert("b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431", disposition, shortErrorReason(err), err.outcome),
   })),
+  // #4282: the 1 hour email pages under the same per booking key, and says which
+  // email it was. Its too late page has no text reminder to land before.
+  {
+    key: "booking_reminder_failed:*",
+    state: "a 1 hour reminder email did not go out and the call is too close to try again",
+    channel: "alert",
+    text: reminderFailedAlert(
+      "b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431",
+      "too_late",
+      "the Google token mint did not answer within 8 seconds",
+      "never_sent",
+      "hour",
+    ),
+  },
   {
     key: "booking_reminder_failed:*",
     state: "more lost reminders in one run than are paged by name",

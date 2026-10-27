@@ -30,6 +30,8 @@ const due = (over: Partial<DueBooking> = {}): DueBooking => ({
   // send path rather than the hold. The hold has its own section at the end.
   createdAtIso: new Date(NOW - HOUR).toISOString(),
   reminderSentForIso: null,
+  reminderSentAtIso: null,
+  hourReminderSentForIso: null,
   status: "confirmed",
   attendeeEmail: "lead@example.com",
   agentEmail: "jordan@trypennie.com",
@@ -1154,6 +1156,71 @@ const failingWith = (err: unknown) => async () => {
   eq(s.order.filter((o) => o === "refresh").length, 1, "only the routed call's invite is rewritten with the number");
   eq(run.withCallingNumber, 1, "and only it counts as sent with a number");
   eq(asked, [["00QUi000010889AMAQ"]], "Salesforce is asked only about the routed call's lead");
+}
+
+// --- the 1 hour email (#4282) -------------------------------------------------------
+//
+// The same lane, run a second time per tick for the 1 hour email: the same claim
+// before send, the same sender, its own rule for being due and its own words.
+const MIN = 60_000;
+const hourDue = (over: Partial<DueBooking> = {}): DueBooking =>
+  due({
+    startsAtIso: new Date(NOW + 55 * MIN).toISOString(),
+    createdAtIso: new Date(NOW - 48 * HOUR).toISOString(),
+    reminderSentForIso: new Date(NOW + 55 * MIN).toISOString(),
+    reminderSentAtIso: new Date(NOW - 23 * HOUR).toISOString(),
+    hourReminderSentForIso: null,
+    ...over,
+  });
+{
+  const s = spy({ loadDue: async () => [hourDue()] });
+  const run = await runBookingReminders(s.deps, "hour");
+  eq(s.order.join(" -> "), "claim:bk-1 -> send:lead@example.com", "the 1 hour email is claimed before it is sent");
+  eq(run.sent, 1, "and goes out once");
+  assert(/in about an hour/.test(s.sent[0]!.subject), `in the 1 hour words (${s.sent[0]!.subject})`);
+}
+{
+  // A booking made a few hours ahead: its 24 hour email went out half an hour ago.
+  const s = spy({ loadDue: async () => [hourDue({ reminderSentAtIso: new Date(NOW - 30 * MIN).toISOString() })] });
+  const run = await runBookingReminders(s.deps, "hour");
+  eq(s.order, [], "inside the two hour gap nothing is claimed or sent");
+  eq(run.attempted, 0, "and nothing counts as attempted");
+}
+{
+  // The 24 hour lane, judging the same booking after its 1 hour email went out.
+  const start = new Date(NOW + 50 * MIN).toISOString();
+  const s = spy({ loadDue: async () => [due({ startsAtIso: start, reminderSentForIso: null, hourReminderSentForIso: start })] });
+  await runBookingReminders(s.deps);
+  eq(s.sent.length, 0, "a 24 hour email is not sent after the 1 hour email for the same start");
+}
+{
+  // Too close to retry: the 1 hour email's own floor, 30 minutes plus the margin.
+  const s = spy({
+    loadDue: async () => [hourDue({ startsAtIso: new Date(NOW + 35 * MIN).toISOString(), reminderSentForIso: null, reminderSentAtIso: null })],
+    send: failingWith(mintTimeout()),
+  });
+  await runBookingReminders(s.deps, "hour");
+  eq(s.released.length, 0, "a 1 hour email failing 35 minutes out is not handed back");
+  eq(s.alerts.length, 1, "so it pages");
+  assert(/1 hour reminder email/.test(s.alerts[0]!), `naming the 1 hour email (${s.alerts[0]})`);
+  assert(!/24 hour/.test(s.alerts[0]!), "never the 24 hour one");
+  assert(/too close to the call/i.test(s.alerts[0]!), `and that it is too late to try again (${s.alerts[0]})`);
+}
+{
+  const s = spy({ loadDue: async () => [hourDue()], send: failingWith(mintTimeout()) });
+  const run = await runBookingReminders(s.deps, "hour");
+  eq(s.released.length, 1, "55 minutes out, a send that provably went nowhere is handed back");
+  eq(s.released[0]!.restoreTo, null, "to the 1 hour record this tick read, not the 24 hour one");
+  eq(run.retrying, 1, "and retried next tick");
+}
+{
+  const many = Array.from({ length: REMINDER_PAGES_PER_TICK + 2 }, (_, i) =>
+    hourDue({ id: `bk-${i}`, attendeeEmail: `l${i}@example.com`, startsAtIso: new Date(NOW + 35 * MIN).toISOString(), reminderSentForIso: null, reminderSentAtIso: null }),
+  );
+  const s = spy({ loadDue: async () => many, send: failingWith(mintTimeout()) });
+  await runBookingReminders(s.deps, "hour");
+  const foldedPage = s.alerts.at(-1)!;
+  assert(/1 hour reminder emails/.test(foldedPage), `the folded page names the 1 hour email too (${foldedPage})`);
 }
 
 finish();

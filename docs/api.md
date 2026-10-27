@@ -1152,7 +1152,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `GET /api/cron/hydrate-calendars` | Fills in calendar metadata for agents whose calendars have not been read yet. |
 | `GET /api/cron/bulk-reassign` | Drains queued bulk coverage reassign jobs (#973, #562). |
 | `GET /api/cron/bulk-reassign-retry` | Hourly: re-arms still-stranded unplaceable coverage calls so the drain re-attempts them (#3485). |
-| `GET /api/cron/booking-reminders` | Emails each lead a reminder 24 hours before their call, from their advisor's own mailbox (#2359). |
+| `GET /api/cron/booking-reminders` | Emails each lead a reminder 24 hours before their call (#2359) and again 1 hour before it (#4282), from their advisor's own mailbox. |
 | `GET /api/cron/ooo-approvals` | Moves approved and declined time-off requests through their side effects. |
 | `GET /api/cron/ooo-digest` | The daily 7am ET time-off digest, and the record of whether it landed. |
 | `GET /api/cron/advisor-photos` | Reads each active person's photo from the Google directory and keeps the bytes for Slate to serve (#3027). Daily at 04:17 UTC, retried at 10:17 only when the first run reached no verdict. |

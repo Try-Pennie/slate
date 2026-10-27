@@ -346,8 +346,9 @@ RESTORE_POINT=2026-10-03T06:00:00Z APPLY=1 RESTORE_CONFIRM_HOST=drukfvgaynzrralb
    Worker holds today. It never writes over a row Supabase holds a newer copy of
    (Slate is serving again, so a booking cancelled after the restore stays cancelled),
    never over a row Supabase holds redacted, and it prints the columns the mirror does
-   not carry, which a restored row cannot get back: `reminder_sent_for` is the one that
-   matters, because a restored booking may be sent its reminder twice. It is safe to
+   not carry, which a restored row cannot get back: `reminder_sent_for` and
+   `hour_reminder_sent_for` are the ones that matter, because a restored booking may be
+   sent its 24 hour or 1 hour reminder email twice. It is safe to
    run again. What it cannot see: a booking written and then lost inside the last
    export interval (up to ten minutes, or up to 30 if the export lane was stalled),
    which is what the rest of this list is for.

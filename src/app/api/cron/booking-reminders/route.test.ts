@@ -147,7 +147,7 @@ vi.mock("@/lib/salesforce/lead-calling-number", async (importOriginal) => ({
 }));
 vi.mock("@/lib/google/calendar", () => calendar);
 
-import { GET } from "./route";
+import { GET, combinedTick } from "./route";
 import { REMINDER_FAILURE_RATE_KEY } from "@/lib/booking/reminder-rate";
 import { PAGE_SIZE } from "@/lib/supabase/paginate";
 import { EmailSendError } from "@/lib/notify/email-errors";
@@ -243,11 +243,14 @@ describe("GET /api/cron/booking-reminders", () => {
   });
 
   // A page that came back SHORT is the whole set, so the lane must not spend a
-  // second read on every tick of a normal day.
+  // second read on every tick of a normal day. One read per kind of email (#4282).
   it("stops after one page when that page is short", async () => {
-    state.pages = [[due(1)]];
+    state.pages = [[due(1)], []];
     await GET(req());
-    expect(state.ranges).toEqual([[0, PAGE_SIZE - 1]]);
+    expect(state.ranges).toEqual([
+      [0, PAGE_SIZE - 1],
+      [0, PAGE_SIZE - 1],
+    ]);
   });
 
   // #277 / the `unwrap` rule. An empty worklist is the NORMAL state here, so a read
@@ -321,7 +324,9 @@ describe("GET /api/cron/booking-reminders", () => {
     expect(String(claim!.set.reminder_sent_for).slice(0, 13)).toBe(startsAt);
     // Back to what the tick read (null: never reminded), only where the row still
     // holds the claim this tick wrote.
-    expect(release!.set).toEqual({ reminder_sent_for: null });
+    // The send time goes back to what the tick read too, so a retried send is
+    // stamped when it really goes (#4282).
+    expect(release!.set).toEqual({ reminder_sent_for: null, reminder_sent_at: null });
     expect(release!.eqs).toContainEqual(["id", "bk-1"]);
     expect(release!.eqs.find(([col]) => col === "reminder_sent_for")?.[1]).toBe(claim!.set.reminder_sent_for);
     const keys = dispatch.sendThrottledAlert.mock.calls.map((c) => String(c[0]));
@@ -482,5 +487,79 @@ describe("GET /api/cron/booking-reminders", () => {
     expect(calendar.updateEventDescription).not.toHaveBeenCalled();
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
     await expect(res.json()).resolves.toMatchObject({ sent: 1, callingNumberUnread: true });
+  });
+});
+
+// #4282: the 1 hour email. The same lane runs a second read per tick, after the 24
+// hour one, with its own record on the booking and its own words.
+describe("GET /api/cron/booking-reminders, the 1 hour email", () => {
+  /** A call 55 minutes out, booked two days ago, whose 24 hour email went out yesterday. */
+  function hourDue(i: number, over: Row = {}): Row {
+    const startsAt = new Date(Date.now() + 55 * 60_000).toISOString();
+    return due(i, {
+      starts_at: startsAt,
+      created_at: new Date(Date.now() - 48 * HOUR).toISOString(),
+      reminder_sent_for: startsAt,
+      reminder_sent_at: new Date(Date.now() - 23 * HOUR).toISOString(),
+      hour_reminder_sent_for: null,
+      ...over,
+    });
+  }
+
+  it("sends it from the second read, claimed on its own record", async () => {
+    // The first page is the 24 hour read's, the second the 1 hour read's.
+    state.pages = [[], [hourDue(1)]];
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(state.sent.map((m) => m.to[0])).toEqual(["lead-1@example.com"]);
+    expect(state.sent[0]?.subject).toMatch(/in about an hour/);
+    const claim = state.updates[0]!;
+    expect(Object.keys(claim.set)).toEqual(["hour_reminder_sent_for"]);
+    expect(claim.eqs).toContainEqual(["hour_reminder_sent_for", null]);
+    await expect(res.json()).resolves.toMatchObject({ sent: 0, hour: { sent: 1 } });
+  });
+
+  it("reads what both rules need, through the same test bucket exclusion", async () => {
+    state.pages = [[], []];
+    await GET(req());
+    expect(state.worklistSelects.length).toBe(2);
+    for (const s of state.worklistSelects) {
+      expect(s).toContain("reminder_sent_at");
+      expect(s).toContain("hour_reminder_sent_for");
+      expect(s).toContain("buckets!inner(is_test)");
+    }
+    expect(state.worklistFilters.filter(([c, v]) => c === "buckets.is_test" && v === false).length).toBe(2);
+  });
+
+  it("stamps when the 24 hour email was sent, which the two hour gap is judged from", async () => {
+    state.pages = [[due(1)]];
+    await GET(req());
+    const claim = state.updates[0]!;
+    expect(claim.set.reminder_sent_for).toBeTypeOf("string");
+    const sentAt = Date.parse(String(claim.set.reminder_sent_at));
+    expect(Math.abs(sentAt - Date.now())).toBeLessThan(60_000);
+  });
+
+  it("pages a lost 1 hour email under the booking, naming the 1 hour email", async () => {
+    state.pages = [[], [hourDue(1)]];
+    state.sendFailures = ["Gmail send failed: 400 Invalid To header"];
+    await GET(req());
+    const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === "booking_reminder_failed:bk-1");
+    expect(call?.[2]).toMatch(/1 hour reminder email/);
+  });
+});
+
+describe("combinedTick (#4282)", () => {
+  it("counts one booking's two emails as two attempts, keyed apart", () => {
+    const base = { attempted: 1, failed: 1, byCode: { refused: 1 }, retried: { "bk-1": "token_unavailable" }, settled: {} };
+    const day = { ...base } as unknown as Parameters<typeof combinedTick>[0];
+    const hour = { ...base, settled: { "bk-1": "sent" } } as unknown as Parameters<typeof combinedTick>[1];
+    expect(combinedTick(day, hour)).toEqual({
+      attempts: 2,
+      failures: 2,
+      byCode: { refused: 2 },
+      retried: { "bk-1": "token_unavailable", "hour:bk-1": "token_unavailable" },
+      settled: { "hour:bk-1": "sent" },
+    });
   });
 });
