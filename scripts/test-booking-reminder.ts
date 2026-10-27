@@ -191,6 +191,7 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
     manageUrl: "https://slate.trypennie.app/manage/abc",
     // No calling number known: the copy must then say nothing about one (#1334).
     callingNumber: null as string | null,
+    leadPhone: null as string | null,
     // A routed call: the advisor's own mailbox, which is read (#4206 adds the other).
     onPlaceholder: false,
     // The copy is told what "now" is rather than reading the clock (#2497). Both
@@ -310,7 +311,7 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
 
 // --- a call on the placeholder advisor, Marcia (#4206, Dan 2026-10-26) --------------
 // The reminder goes out from the placeholder seat, whose inbox nobody reads. So it
-// never invites a reply to itself, names no number, offers no way to change the call
+// never invites a reply to itself, names no number the call comes from, offers no way to change the call
 // (Dan, 2026-10-27: a customer who texts asking to change it is handled then), and
 // sends a question to our texts.
 {
@@ -320,6 +321,7 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
     timezone: "America/New_York",
     manageUrl: "https://slate.trypennie.app/manage/abc",
     callingNumber: null as string | null,
+    leadPhone: null as string | null,
     onPlaceholder: true,
     nowMs: NOW,
   };
@@ -334,7 +336,7 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
     assert(!/pick another|cancel|change/i.test(body), `${label}: and never offers to change or cancel the call`);
     assert(/Nobody reads replies to this email/.test(body), `${label}: and says a reply to the email is not read`);
     assert(!/reply to this email and it will reach me/i.test(body), `${label}: never the routed promise that a reply is read`);
-    assert(!/\(\d{3}\) \d{3}|\+1\d{10}/.test(body), `${label}: no number of any kind is named`);
+    assert(!body.includes("(219) 758-8170"), `${label}: the number the call comes from is never named`);
     assert(!/contact card|come from/i.test(body), `${label}: and no card or calling number line`);
     assert(!body.includes("Marcia"), `${label}: the seat's name is not presented as the advisor calling`);
     assert(/your call with Pennie is/.test(body), `${label}: the call is with Pennie`);

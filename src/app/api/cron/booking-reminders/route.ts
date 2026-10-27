@@ -213,6 +213,7 @@ function laneDeps(db: ReturnType<typeof supabaseAdmin>, now: number, kind: Remin
         hour_reminder_sent_for: string | null;
         status: string;
         attendee_email: string | null;
+        attendee_phone: string | null;
         agent_email: string | null;
         agent_name: string | null;
         timezone: string;
@@ -226,7 +227,7 @@ function laneDeps(db: ReturnType<typeof supabaseAdmin>, now: number, kind: Remin
         db
           .from("bookings")
           .select(
-            "id, starts_at, created_at, reminder_sent_for, reminder_sent_at, hour_reminder_sent_for, status, attendee_email, agent_email, agent_name, timezone, manage_token, salesforce_id, external_id, gcal_event_id, assigned_user_id, kind, buckets!inner(is_test)",
+            "id, starts_at, created_at, reminder_sent_for, reminder_sent_at, hour_reminder_sent_for, status, attendee_email, attendee_phone, agent_email, agent_name, timezone, manage_token, salesforce_id, external_id, gcal_event_id, assigned_user_id, kind, buckets!inner(is_test)",
           )
           .in("status", ["confirmed", "rescheduled"])
           .gt("starts_at", nowIso)
@@ -259,6 +260,7 @@ function laneDeps(db: ReturnType<typeof supabaseAdmin>, now: number, kind: Remin
             hourReminderSentForIso: r.hour_reminder_sent_for,
             status: r.status,
             attendeeEmail: r.attendee_email,
+            attendeePhone: r.attendee_phone,
             agentEmail: r.agent_email,
             // The advisor's name signs the email and names the contact card. A
             // missing one stays null, and the copy then speaks for Pennie: an
@@ -274,7 +276,8 @@ function laneDeps(db: ReturnType<typeof supabaseAdmin>, now: number, kind: Remin
             // manage page's, never stamped on the booking.
             agentId: r.assigned_user_id,
             // #4206: a call on the placeholder advisor is reminded from the
-            // placeholder seat with its own copy: no number, no card, and a reply
+            // placeholder seat with its own copy: no calling number, no card (the
+            // lead's own number is still named, #4292), and a reply
             // to our texts rather than to an inbox nobody reads.
             onPlaceholder: r.kind === "staff_placed",
           }),

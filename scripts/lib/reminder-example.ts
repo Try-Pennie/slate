@@ -10,6 +10,7 @@ import { DateTime } from "luxon";
 import type { DueBooking, ReminderDeps, ReminderKind, ReminderRun } from "../../src/lib/booking/reminder-send.ts";
 import type { MimeMessage } from "../../src/lib/notify/email-mime.ts";
 import { isLeadId } from "../../src/lib/salesforce/lead-xbc.ts";
+import { formatPhoneForDisplay } from "../../src/lib/phone-format.ts";
 
 /** The only inbox domain an example may be sent to: it is never a lead's. */
 const PENNIE_DOMAIN = "trypennie.com";
@@ -25,6 +26,8 @@ export interface ExampleConfig {
   send: boolean;
   /** Which email (#4285): the 24 hour one, the default, or the 1 hour one (#4282). */
   kind: ReminderKind;
+  /** The lead's own number the email names (#4292), or null to show the fallback. */
+  phone: string | null;
 }
 
 export type ConfigResult = { ok: true; config: ExampleConfig } | { ok: false; reason: string };
@@ -67,11 +70,15 @@ export function readExampleConfig(env: Record<string, string | undefined>): Conf
   if (kindRaw !== "day" && kindRaw !== "hour") {
     return { ok: false, reason: "REMINDER_EXAMPLE_KIND must be day or hour." };
   }
+  const phone = env.REMINDER_EXAMPLE_PHONE?.trim() || null;
+  if (phone && !formatPhoneForDisplay(phone)) {
+    return { ok: false, reason: "REMINDER_EXAMPLE_PHONE must be a US phone number, such as (215) 555-0100." };
+  }
   const sendRaw = env.SEND;
   if (sendRaw !== undefined && sendRaw !== "" && sendRaw !== "1") {
     return { ok: false, reason: "SEND must be 1 to send, or unset to preview." };
   }
-  return { ok: true, config: { advisorEmail, to, leadId: leadRaw, timezone, send: sendRaw === "1", kind: kindRaw } };
+  return { ok: true, config: { advisorEmail, to, leadId: leadRaw, timezone, send: sendRaw === "1", kind: kindRaw, phone } };
 }
 
 export interface ExampleAdvisor {
@@ -106,6 +113,7 @@ export function exampleBooking(cfg: ExampleConfig, advisor: ExampleAdvisor, lead
     onPlaceholder: false,
     status: "confirmed",
     attendeeEmail: cfg.to,
+    attendeePhone: cfg.phone,
     agentEmail: advisor.email,
     agentName: advisor.name,
     timezone: cfg.timezone,

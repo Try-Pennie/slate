@@ -115,6 +115,17 @@ export function advisorWillCall(phone: string | null): string {
 }
 
 /**
+ * The same fact in the reminder emails' first person (#4292), written by the advisor:
+ * the lead's own number, formatted and falling back exactly as `advisorWillCall` does,
+ * so the email and the manage page never disagree about what we will dial. No full
+ * stop, because each email carries on the sentence in its own way.
+ */
+export function weWillCallYou(phone: string | null): string {
+  const shown = formatPhoneForDisplay(phone);
+  return shown ? `We will call you at ${shown}` : "We will call you on the number you gave us";
+}
+
+/**
  * The number the call will come FROM (#1334), said the same way on the manage
  * page, in the invite and in the reminder email (L118).
  *

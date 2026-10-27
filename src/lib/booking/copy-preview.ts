@@ -894,6 +894,8 @@ export function reminderCopyScreens(): CopyScreen[] {
     manageUrl,
     nowMs: REMINDER_NOW_MS,
     callingNumber: null as string | null,
+    /** #4292: the lead's own number, named in the email as the manage page names it. */
+    leadPhone: PHONE as string | null,
     onPlaceholder: false,
   };
   /** #4206: a call on the placeholder advisor, sent from the placeholder seat. */
@@ -924,6 +926,11 @@ export function reminderCopyScreens(): CopyScreen[] {
           state: "the body, when the number we call from is known (a contact card is attached)",
           text: reminderBody(withCallingNumber),
         },
+        // #4292: no number on file, so the email keeps the manage page's fallback.
+        {
+          state: "the body, when the booking holds no number for the lead",
+          text: reminderBody({ ...tomorrow, leadPhone: null }),
+        },
         // #1334 review: no advisor name on the booking. The copy speaks for Pennie
         // rather than showing the advisor's address as a name.
         {
@@ -937,8 +944,8 @@ export function reminderCopyScreens(): CopyScreen[] {
       purpose:
         "A coordinator placed this call on the placeholder because nobody real was free. " +
         "It goes out from the placeholder seat, whose inbox nobody reads, so it names no " +
-        "number, attaches no card, offers no way to change the call, and sends a question " +
-        "back to our texts (#4206).",
+        "number the call comes from, attaches no card, offers no way to change the call, and " +
+        "sends a question back to our texts (#4206). It does name the lead's own number (#4292).",
       lines: [
         { state: "the subject line, the same as any reminder", text: reminderSubject(onPlaceholder) },
         { state: "the body, even when the number we call from is known", text: reminderBody(onPlaceholder) },

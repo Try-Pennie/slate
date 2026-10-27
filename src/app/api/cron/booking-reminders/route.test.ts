@@ -401,7 +401,7 @@ describe("GET /api/cron/booking-reminders", () => {
   // outside calls are the real ones.
   // #4206: a call on the placeholder advisor (kind `staff_placed`) is reminded from the
   // seat with its own copy, so the worklist must carry the kind to the lane.
-  it("reminds a call on the placeholder from the seat, with no number and the reply to our texts line", async () => {
+  it("reminds a call on the placeholder from the seat, with no calling number and the reply to our texts line", async () => {
     callingNumber.readLeadCallingNumbersLive.mockResolvedValue(new Map([["00QUi000010889Z", "+12197588170"]]));
     state.pages = [
       [
@@ -574,5 +574,14 @@ describe("combinedTick (#4282)", () => {
       retried: { "bk-1": "token_unavailable", "hour:bk-1": "token_unavailable" },
       settled: { "hour:bk-1": "sent" },
     });
+  });
+});
+
+describe("the lead's own number (#4292)", () => {
+  it("reads the booking's phone and names it in the email", async () => {
+    state.pages = [[due(1, { attendee_phone: "+12155550100" })]];
+    await GET(req());
+    for (const sel of state.worklistSelects) expect(sel).toContain("attendee_phone");
+    expect(state.sent[0]?.body).toContain("We will call you at (215) 555-0100");
   });
 });
