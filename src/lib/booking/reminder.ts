@@ -97,6 +97,16 @@ export const HOUR_REMINDER_LEAD_MS = 60 * 60_000;
 export const HOUR_REMINDER_MIN_LEAD_MS = 30 * 60_000;
 
 /**
+ * The timing an admin may give an editable reminder email (#4296), in minutes before
+ * the call. The floor is the minimum above, so no email is ever closer to the call than
+ * the lane already allows; the ceiling is 48 hours (Dan, 2026-10-27). Migration 0211's
+ * check on `reminder_emails.minutes_before` holds the same two numbers
+ * (scripts/test-reminder-email-bounds.ts).
+ */
+export const REMINDER_EMAIL_MIN_MINUTES = HOUR_REMINDER_MIN_LEAD_MS / 60_000;
+export const REMINDER_EMAIL_MAX_MINUTES = 48 * 60;
+
+/**
  * The least time between the 24 hour email being sent and the 1 hour email (Dan,
  * 2026-10-27). A booking made a few hours ahead has its first reminder sent about ten
  * minutes after it is made (`REMINDER_HOLD_MS`), so without this the lead would get

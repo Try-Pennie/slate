@@ -45,6 +45,8 @@ const NOT_LEAD_PII: Record<string, string> = {
   "pending_event_deletions.calendar_email": "the advisor calendar an event is deleted from, staff data",
   "regal_call_outcomes.agent_email": "the work address of the employee on the call, staff data",
   "bucket_slots.payload": "the cached slot list for a bucket: times and advisor ids, no lead",
+  "booking_reminder_sends.reminder_email_id": "the id of a reminder email template (#4296), not an email address",
+  "reminder_email_versions.reminder_email_id": "the id of a reminder email template (#4296), not an email address",
   "bulk_reassign_jobs.reason_detail":
     "a staff written reason for moving an out advisor's bookings; it describes the advisor's absence, not a lead",
 };

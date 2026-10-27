@@ -309,6 +309,82 @@ export interface LaneRunClaim {
   claimed_at: string;
 }
 
+/** What a reminder email does about a call booked after its window has opened (#4296). */
+export type ReminderLateBooking = "send_now" | "skip";
+
+/** #4296 (migration 0211): one editable reminder email. Written only by `save_reminder_email`. */
+export interface ReminderEmailRow {
+  id: string;
+  /** Stable, never changed once created; used in alert keys. */
+  slug: string;
+  name: string;
+  /** Minutes before the call, REMINDER_EMAIL_MIN_MINUTES to REMINDER_EMAIL_MAX_MINUTES. */
+  minutes_before: number;
+  late_booking: ReminderLateBooking;
+  enabled: boolean;
+  /** Stamped when switched on or retimed: a booking whose window opened earlier is skipped. */
+  effective_from: string;
+  subject: string;
+  body: string;
+  card_block: boolean;
+  placeholder_sends: boolean;
+  created_at: string;
+  updated_at: string;
+  updated_by: string | null;
+}
+
+/** The copy a version snapshots: the fields Restore brings back. */
+export interface ReminderEmailCopy {
+  subject: string;
+  body: string;
+  card_block: boolean;
+  placeholder_sends: boolean;
+}
+
+/** #4296 (migration 0211): one version of a reminder email's copy. */
+export interface ReminderEmailVersionRow {
+  id: string;
+  reminder_email_id: string;
+  version: number;
+  snapshot: ReminderEmailCopy;
+  created_by: string | null;
+  created_at: string;
+}
+
+/** Where one reminder email stands for one booking and start (#4296). */
+export type ReminderSendStatus = "claimed" | "sent" | "failed" | "released" | "skipped" | "legacy_claimed";
+
+/** #4296 (migration 0211): one row per booking, reminder email and the start it was about. */
+export interface BookingReminderSendRow {
+  booking_id: string;
+  reminder_email_id: string;
+  sent_for: string;
+  status: ReminderSendStatus;
+  /** Set for failed and skipped rows. */
+  reason: string | null;
+  /** When the key was last taken, by a claim or a skip. Null on a legacy_claimed row. */
+  claimed_at: string | null;
+  /** Set exactly when status is sent. */
+  sent_at: string | null;
+}
+
+/** What `claim_reminder_send` answers (#4296). Only `claimed` may send. */
+export type ReminderClaimOutcome = "claimed" | "taken" | "superseded" | "gap";
+
+/** What `save_reminder_email` answers (#4296). A stale save wrote nothing. */
+export type ReminderEmailSaveResult =
+  | {
+      status: "saved";
+      id: string;
+      updated_at: string;
+      effective_from: string;
+      /** The new copy version, or null when the copy did not change. */
+      version: number | null;
+      action: "reminder_email.created" | "reminder_email.updated" | "reminder_email.toggled" | "reminder_email.restored";
+    }
+  | { status: "stale"; id: string; updated_at: string }
+  | { status: "missing"; id: string };
+
 export interface EventType {
   id: string;
   org_id: string;
