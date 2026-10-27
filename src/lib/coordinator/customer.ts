@@ -34,6 +34,7 @@ export const CUSTOMER_REFUSALS = [
   "no-such-lead",
   "salesforce-unreadable",
   "no-bucket",
+  "bucket-unreadable",
   "zone-unknown",
 ] as const;
 export type CustomerRefusal = (typeof CUSTOMER_REFUSALS)[number];
@@ -88,7 +89,13 @@ export async function findCustomer(reference: string, deps: CustomerDeps): Promi
   } catch {
     return { ok: false, refusal: "salesforce-unreadable" };
   }
-  const resolved = await deps.resolveBucketByCode(code.code);
+  let resolved: Awaited<ReturnType<CustomerDeps["resolveBucketByCode"]>>;
+  try {
+    resolved = await deps.resolveBucketByCode(code.code);
+  } catch {
+    // An outage, never "no such bucket": the coordinator can try again.
+    return { ok: false, refusal: "bucket-unreadable" };
+  }
   if (!resolved) return { ok: false, refusal: "no-bucket" };
 
   return {

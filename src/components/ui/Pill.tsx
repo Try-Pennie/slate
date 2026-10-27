@@ -107,7 +107,8 @@ export type PillVariant =
 
 /**
  * WEIGHT LIVES HERE, NOT IN THE BASE (#1844). Every variant carries its own
- * `font-semibold` except `role-agent`, which is deliberately unweighted. Putting
+ * `font-semibold` except `role-agent` and `role-coordinator`, which are deliberately
+ * unweighted. Putting
  * it in the base and overriding it here would leave the winner to be decided by
  * the order Tailwind happens to emit the two utilities in, which is invisible at
  * the call site (L509).

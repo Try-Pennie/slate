@@ -138,11 +138,11 @@ export async function placeCall(
   const zone = customer.zone;
   switch (out.kind) {
     case "booked": {
-      const view = { on: out.on, advisorName: out.booking.agent_name, startsAt: out.booking.starts_at, zone };
+      const view = viewOf(out, zone);
       return { kind: "booked", ...view, manageUrl: out.manageUrl, replayed: out.replayed, submissionId, sentence: bookedSentence({ ...view, replayed: out.replayed }) };
     }
     case "moved": {
-      const view = { on: out.on, advisorName: out.booking.agent_name, startsAt: out.booking.starts_at, zone };
+      const view = viewOf(out, zone);
       return { kind: "moved", ...view, manageUrl: out.manageUrl, submissionId, sentence: movedSentence(view) };
     }
     case "existing-call":
@@ -150,4 +150,9 @@ export async function placeCall(
     case "possible-match":
       return { kind: "possible-match", call: out.call, matchedOn: out.matchedOn, submissionId, sentence: possibleMatchSentence(out.call, zone, out.matchedOn) };
   }
+}
+
+/** What the page shows of a call that was booked or moved. */
+function viewOf(out: { on: "advisor" | "placeholder"; booking: { agent_name: string | null; starts_at: string } }, zone: string) {
+  return { on: out.on, advisorName: out.booking.agent_name, startsAt: out.booking.starts_at, zone };
 }

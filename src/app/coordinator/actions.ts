@@ -30,6 +30,11 @@ const text = (v: unknown): string => (typeof v === "string" ? v : "");
 
 export type CoordinatorLookupAnswer = Exclude<CustomerLookup, { ok: false }> | Refused;
 
+/** The per person limit the lookup and the count share. */
+function withinLookupLimit(userId: string): Promise<boolean> {
+  return allowRequest({ kind: "opaque", key: `coordinator:${userId}` }, COORDINATOR_LOOKUP_RATE_RULES);
+}
+
 /**
  * Look up the customer on the phone from the Lead link or id: who they are, their zone
  * and bucket (from the Lead), their existing call and what will happen to it, and the
@@ -38,7 +43,7 @@ export type CoordinatorLookupAnswer = Exclude<CustomerLookup, { ok: false }> | R
 export async function lookupCoordinatorCustomer(input: { reference: string; date?: string }): Promise<CoordinatorLookupAnswer> {
   const me = await coordinatorDeskUser();
   if (!me) return refusedAnswer("not-authorized");
-  if (!(await allowRequest({ kind: "opaque", key: `coordinator:${me.id}` }, COORDINATOR_LOOKUP_RATE_RULES))) {
+  if (!(await withinLookupLimit(me.id))) {
     return refusedAnswer("rate-limited");
   }
   try {
@@ -59,7 +64,7 @@ export type PlaceholderCallsAnswer = Extract<PlaceholderCalls, { ok: true }> | R
 export async function countPlaceholderCalls(input: { bucketCode: string; startIso: string }): Promise<PlaceholderCallsAnswer> {
   const me = await coordinatorDeskUser();
   if (!me) return refusedAnswer("not-authorized");
-  if (!(await allowRequest({ kind: "opaque", key: `coordinator:${me.id}` }, COORDINATOR_LOOKUP_RATE_RULES))) {
+  if (!(await withinLookupLimit(me.id))) {
     return refusedAnswer("rate-limited");
   }
   try {

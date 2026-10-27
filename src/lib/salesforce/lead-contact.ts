@@ -33,13 +33,21 @@ function text(v: unknown): string | null {
 }
 
 /**
+ * One Lead's record with `fields`, or null when Salesforce returned no such lead. A
+ * refused query THROWS. Salesforce answers with the 18 character id even when asked
+ * with 15, so the match is on the id's key.
+ */
+async function readOneLead(leadId: string, fields: string, run: LeadSoqlRunner): Promise<LeadFieldRecord | null> {
+  const records: LeadFieldRecord[] = await run(`SELECT ${fields} FROM Lead WHERE Id IN (${sfInList([leadId])})`);
+  return records.find((r) => typeof r.Id === "string" && leadIdKey(r.Id) === leadIdKey(leadId)) ?? null;
+}
+
+/**
  * The Lead's contact fields, or null when Salesforce returned no such lead. A refused
  * query THROWS, so a failed read is never mistaken for a lead with no details.
  */
 export async function readLeadContact(leadId: string, run: LeadSoqlRunner): Promise<SalesforceLeadContact | null> {
-  const records: LeadFieldRecord[] = await run(`SELECT ${LEAD_CONTACT_SOQL_FIELDS} FROM Lead WHERE Id IN (${sfInList([leadId])})`);
-  // Salesforce answers with the 18 character id even when asked with 15.
-  const hit = records.find((r) => typeof r.Id === "string" && leadIdKey(r.Id) === leadIdKey(leadId));
+  const hit = await readOneLead(leadId, LEAD_CONTACT_SOQL_FIELDS, run);
   if (!hit) return null;
   return {
     name: text(hit.Name),
@@ -68,8 +76,7 @@ export interface SalesforceLeadWithPlace extends SalesforceLeadContact {
  * such lead. A refused query THROWS. Nothing here logs a value.
  */
 export async function readLeadWithPlace(leadId: string, run: LeadSoqlRunner): Promise<SalesforceLeadWithPlace | null> {
-  const records: LeadFieldRecord[] = await run(`SELECT ${LEAD_PLACE_SOQL_FIELDS} FROM Lead WHERE Id IN (${sfInList([leadId])})`);
-  const hit = records.find((r) => typeof r.Id === "string" && leadIdKey(r.Id) === leadIdKey(leadId));
+  const hit = await readOneLead(leadId, LEAD_PLACE_SOQL_FIELDS, run);
   if (!hit) return null;
   return {
     id: hit.Id,

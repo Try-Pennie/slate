@@ -73,6 +73,7 @@ const REFUSAL_TEXT: Record<Exclude<CoordinatorRefusal, "outside-calling-window">
   "no-such-lead": "Salesforce has no Lead with that ID. Check it was copied in full.",
   "salesforce-unreadable": "We could not reach Salesforce just now, so nothing was looked up or booked. Try again in a moment.",
   "no-bucket": "We could not tell which team this customer belongs to, so nothing was booked. Let a Slate admin know.",
+  "bucket-unreadable": "We could not look up this customer's team just now, so nothing was booked. Try again in a moment.",
   "zone-unknown": "We could not tell this customer's time zone from their Lead, so nothing was booked. Ask for their zip code and have it added to their Lead, then try again.",
   // The booking's own (`placed-booking.ts`), said for the coordinator.
   "lead-id-missing": "That is not a Salesforce Lead link or ID, so nothing was booked.",
@@ -112,6 +113,7 @@ export function refusalSentence(reason: CoordinatorRefusal, zone?: string): stri
 /** Refusals worth trying again unchanged: an outage, not a fact about the request. */
 export const RETRYABLE_REFUSALS: ReadonlySet<CoordinatorRefusal> = new Set<CoordinatorRefusal>([
   "salesforce-unreadable",
+  "bucket-unreadable",
   "switch-unreadable",
   "horizon-unreadable",
   "rate-limited",

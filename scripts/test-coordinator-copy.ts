@@ -46,7 +46,7 @@ eq(new Set(ALL.map((r) => refusalSentence(r))).size, ALL.length, "every refusal 
 for (const [name, text] of texts) {
   assert(text.trim().length > 20, `${name} says something`);
   assert(!/undefined|null|NaN|\[object/.test(text), `${name} leaks no placeholder`);
-  assert(!/[—–]/.test(text) && !/ - /.test(text), `${name} carries no dash punctuation`);
+  assert(!/[\u2014\u2013]/.test(text) && !/ - /.test(text), `${name} carries no dash punctuation`);
   assert(/[.]$/.test(text), `${name} ends as a sentence`);
 }
 eq(callTimeText("2026-06-09T17:00:00.000Z", "America/Phoenix"), "Tuesday, June 9 at 10:00am Arizona (Phoenix)", "a time is read out in the customer's clock");

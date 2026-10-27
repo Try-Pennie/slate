@@ -51,6 +51,7 @@ interface Fake {
   xbc?: string | null | undefined;
   xbcThrows?: boolean;
   noBucket?: boolean;
+  bucketThrows?: boolean;
 }
 function deps(f: Fake = {}): CustomerDeps & { asked: string[] } {
   const asked: string[] = [];
@@ -68,6 +69,7 @@ function deps(f: Fake = {}): CustomerDeps & { asked: string[] } {
     },
     resolveBucketByCode: async (code) => {
       asked.push(`bucket:${code}`);
+      if (f.bucketThrows) throw new Error("bucket read failed");
       if (f.noBucket) return null;
       return { bucket: code === "100" ? catchall : bucket, eventType };
     },
@@ -99,6 +101,8 @@ async function run() {
     ["Salesforce down on the Lead", ID18, { leadThrows: true }, "salesforce-unreadable"],
     ["Salesforce down on the score", ID18, { xbcThrows: true }, "salesforce-unreadable"],
     ["no bucket for the code", ID18, { noBucket: true }, "no-bucket"],
+    // A failed read of the bucket is an outage, never "no such bucket", and never a throw.
+    ["the bucket read failing", ID18, { bucketThrows: true }, "bucket-unreadable"],
     ["no zip and a split state", ID18, { lead: { ...LEAD, postalCode: null, state: "TX" } }, "zone-unknown"],
     ["a malformed zip and no state", ID18, { lead: { ...LEAD, postalCode: "N/A", state: null } }, "zone-unknown"],
   ];

@@ -292,8 +292,10 @@ fails when two share either.
 
 A scheduling coordinator on the phone books whatever time the customer names, through
 `placeBooking` (`src/lib/booking/placed-booking.ts`). Every rule a lead's booking keeps
-still holds there: the go live switch, Pennie's business hours, the customer's calling
-window in the zone their Lead gives, the horizon, nothing in the past.
+still holds there: Pennie's business hours, the customer's calling window in the zone
+their Lead gives, the horizon, nothing in the past. The go live switch gates only the
+fall to the placeholder (Dan, 2026-10-26): with it off or unreadable, a free real advisor
+is still booked, and a confirmed move to one still moves.
 
 1. **A real advisor first.** The ordinary create (slot predicate, verify on book, the
    confirm line) books a free advisor in the customer's bucket, as a `routed` booking
