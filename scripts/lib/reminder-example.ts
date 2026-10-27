@@ -7,7 +7,7 @@
 // everything the lane would write about a booking is stubbed out, because there is no
 // booking to write to.
 import { DateTime } from "luxon";
-import type { DueBooking, ReminderDeps, ReminderRun } from "../../src/lib/booking/reminder-send.ts";
+import type { DueBooking, ReminderDeps, ReminderKind, ReminderRun } from "../../src/lib/booking/reminder-send.ts";
 import type { MimeMessage } from "../../src/lib/notify/email-mime.ts";
 import { isLeadId } from "../../src/lib/salesforce/lead-xbc.ts";
 
@@ -23,6 +23,8 @@ export interface ExampleConfig {
   timezone: string;
   /** False previews the message and sends nothing. */
   send: boolean;
+  /** Which email (#4285): the 24 hour one, the default, or the 1 hour one (#4282). */
+  kind: ReminderKind;
 }
 
 export type ConfigResult = { ok: true; config: ExampleConfig } | { ok: false; reason: string };
@@ -61,11 +63,15 @@ export function readExampleConfig(env: Record<string, string | undefined>): Conf
   if (!DateTime.now().setZone(timezone).isValid) {
     return { ok: false, reason: `REMINDER_EXAMPLE_TZ "${timezone}" is not a timezone this can write a time in.` };
   }
+  const kindRaw = env.REMINDER_EXAMPLE_KIND?.trim() || "day";
+  if (kindRaw !== "day" && kindRaw !== "hour") {
+    return { ok: false, reason: "REMINDER_EXAMPLE_KIND must be day or hour." };
+  }
   const sendRaw = env.SEND;
   if (sendRaw !== undefined && sendRaw !== "" && sendRaw !== "1") {
     return { ok: false, reason: "SEND must be 1 to send, or unset to preview." };
   }
-  return { ok: true, config: { advisorEmail, to, leadId: leadRaw, timezone, send: sendRaw === "1" } };
+  return { ok: true, config: { advisorEmail, to, leadId: leadRaw, timezone, send: sendRaw === "1", kind: kindRaw } };
 }
 
 export interface ExampleAdvisor {
@@ -76,14 +82,28 @@ export interface ExampleAdvisor {
 
 const HALF_HOUR_MS = 30 * 60_000;
 
-/** A booking the lane judges due right now: about 23 hours out, made two days ago. */
+const FIVE_MINUTES_MS = 5 * 60_000;
+
+/**
+ * A booking the lane judges due right now, made two days ago. For the 24 hour email it
+ * is about 23 hours out, on a half hour. For the 1 hour email (#4285) it is 55 to 60
+ * minutes out, on five minutes, with its 24 hour email sent the day before, so the
+ * two hour gap and the 30 minute cutoff both let it through as they would a real call.
+ */
 export function exampleBooking(cfg: ExampleConfig, advisor: ExampleAdvisor, leadId: string, nowMs: number): DueBooking {
-  const startMs = Math.floor((nowMs + 23 * 60 * 60_000) / HALF_HOUR_MS) * HALF_HOUR_MS;
+  const startMs =
+    cfg.kind === "hour"
+      ? Math.floor((nowMs + 60 * 60_000) / FIVE_MINUTES_MS) * FIVE_MINUTES_MS
+      : Math.floor((nowMs + 23 * 60 * 60_000) / HALF_HOUR_MS) * HALF_HOUR_MS;
+  const startsAtIso = new Date(startMs).toISOString();
   return {
     id: "reminder-example",
-    startsAtIso: new Date(startMs).toISOString(),
+    startsAtIso,
     createdAtIso: new Date(nowMs - 2 * 24 * 60 * 60_000).toISOString(),
-    reminderSentForIso: null,
+    reminderSentForIso: cfg.kind === "hour" ? startsAtIso : null,
+    reminderSentAtIso: cfg.kind === "hour" ? new Date(nowMs - 23 * 60 * 60_000).toISOString() : null,
+    hourReminderSentForIso: null,
+    onPlaceholder: false,
     status: "confirmed",
     attendeeEmail: cfg.to,
     agentEmail: advisor.email,
@@ -121,6 +141,8 @@ export function exampleDeps(io: ExampleIo): ReminderDeps {
     claim: async () => true,
     // The claim above wrote nothing, so there is no row to hand back to.
     release: async () => false,
+    // Nor a row to stamp a send time on (#4282).
+    markSent: async () => {},
     send: async (msg) => {
       io.preview(msg);
       return io.config.send ? io.sendEmail(msg) : "not-sent";
