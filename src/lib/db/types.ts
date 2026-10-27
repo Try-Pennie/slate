@@ -132,6 +132,13 @@ export interface User {
   /** Synthetic smoke-test agent (#396): hidden from internal UI; stays bookable
    *  only inside its own test buckets via the key-authed smoke test. */
   is_test: boolean;
+  /**
+   * The placeholder advisor (#4200, migration 0207): holds the any time calls a
+   * coordinator places when no real advisor is free. At most one per org and
+   * `is_test`, never bookable (a database CHECK), and kept out of every advisor
+   * screen, picker, pool and monitor by the shared real advisor rule (#4201).
+   */
+  is_placeholder: boolean;
   created_at: string;
 }
 
@@ -531,6 +538,8 @@ export interface BookingSettings {
    *  debounce, move the agent's lost-pool bookings. NOT NULL DEFAULT false: off until an
    *  admin turns it on, and the whole demotion lifecycle is inert while off. */
   demotion_reroute_enabled: boolean;
+  /** #4200: the go live switch for placeholder bookings. Off by default. */
+  placeholder_booking_enabled: boolean;
   /** #3706, migration 0195: the prerender switch. True lets widget.js build the booker
    *  frame, hidden, when a host page calls prerender at page load. NOT NULL DEFAULT
    *  false: a prerender is a no op until an admin turns it on. Read through
@@ -813,8 +822,8 @@ export interface AgentCalendar {
   created_at: string;
 }
 
-/** #2073: how a booking was made. See `Booking.kind`. */
-export type BookingKind = "routed" | "agent_link";
+/** #2073, #4200: how a booking was made. See `Booking.kind`. */
+export type BookingKind = "routed" | "agent_link" | "staff_placed";
 
 export interface Booking {
   id: string;
@@ -871,7 +880,9 @@ export interface Booking {
    * agent's own named link (#2073, migration 0144). Every reader that reasons
    * about routed bookings (the volume alarms, the per page volume, the bucket
    * share ranking) filters on it; the named booking still sits in a bucket only
-   * because bucket_id is NOT NULL and the event type is the bucket's.
+   * because bucket_id is NOT NULL and the event type is the bucket's. A third kind,
+   * `staff_placed` (#4200, migration 0207), is a call a coordinator stacked on the
+   * placeholder advisor; a move onto a real advisor makes it `routed` again (#4203).
    */
   kind: BookingKind;
   /**
@@ -883,8 +894,17 @@ export interface Booking {
    * between the two costs a reminder rather than delivering a second copy.
    */
   reminder_sent_for: string | null;
-  /** Set ONLY by the reassign API to stack a consult onto a busy owning agent. */
+  /**
+   * Set by the reassign API to stack a consult onto a busy owning agent, and on a
+   * staff placed booking, which stacks on the placeholder by design (#4200). Every
+   * reschedule clears it (#4199, migration 0206).
+   */
   allow_double_book: boolean;
+  /**
+   * The person who placed this booking on the coordinator booking page (#4200),
+   * whichever advisor it landed on; null for every booking a lead or a machine made.
+   */
+  placed_by_user_id: string | null;
   /** Monotonic count of COMMITTED reschedules (#439, migration 0053). Mixed into
    *  the deterministic reschedule event id so an oscillating reschedule can't
    *  reuse a tombstoned Google id. 0 for a never-rescheduled booking. */
@@ -1224,6 +1244,13 @@ export interface OutboxPayload {
    * holds the new number by the time that step (or a drain re-run of it) reads it.
    */
   previousAttendeePhone?: string | null;
+  /**
+   * #4204: true when the move took a staff placed call OFF the placeholder advisor onto a
+   * real one, captured at the commit because the NOTIFY step re-reads a booking already
+   * routed. The step puts `left_placeholder` on the payload, which tells Regal Marcia
+   * stops texting. Absent on every other move.
+   */
+  leftPlaceholder?: boolean;
 }
 
 /**
@@ -1295,6 +1322,14 @@ export type BookingInsert = {
   /** #2728: always written by createBooking, reduced on the server; null when the
    *  booker sent no framing page. */
   referrer_origin: string | null;
+  /**
+   * #4202: true only on a call placed on the placeholder advisor, which stacks there.
+   * Optional, so a reservation written before it existed still resumes, and omitted it
+   * keeps the column's default (false), since the save writes only the keys it names.
+   */
+  allow_double_book?: boolean;
+  /** #4202: the coordinator who placed it; absent on every booking a lead or machine made. */
+  placed_by_user_id?: string | null;
 };
 
 /** The calendar-event input, captured in a reservation so a resume re-creates

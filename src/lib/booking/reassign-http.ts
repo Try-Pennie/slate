@@ -14,6 +14,7 @@ import {
   AttendeeEmailRefusedError,
   ATTENDEE_EMAIL_REFUSED_STAFF_ANSWER,
 } from "@/lib/booking/attendee-email-refused";
+import { StaffPlacedReassignRefusedError } from "@/lib/booking/staff-placed-refused";
 import {
   OWNER_REFUSAL_CODE,
   OWNER_REFUSAL_STATUS,
@@ -123,6 +124,11 @@ export async function mapReassignError(
   // a caller can tell it from a terminal booking.
   if (err instanceof ReassignAcrossWorldsError) {
     return NextResponse.json({ error: err.message, code: "ACROSS_WORLDS" }, { status: 409 });
+  }
+  // #4202: the owner automation met a call placed on the placeholder, which Regal
+  // hands on itself. A genuine conflict, with its own code so the automation stops.
+  if (err instanceof StaffPlacedReassignRefusedError) {
+    return NextResponse.json({ error: err.message, code: "STAFF_PLACED" }, { status: 409 });
   }
   return internalErrorResponse(err, context);
 }

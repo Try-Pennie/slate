@@ -17,6 +17,7 @@
  */
 import { DateTime } from "luxon";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { realAdvisorsOnly } from "@/lib/advisors/real-advisor";
 import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import type { CoverageAgent } from "@/lib/booking/business-hours-coverage";
@@ -32,12 +33,9 @@ import type { CoverageAgent } from "@/lib/booking/business-hours-coverage";
 export async function loadCoverageAgents(
   db: ReturnType<typeof supabaseAdmin>,
 ): Promise<(CoverageAgent & { userId: string })[]> {
-  const { data: pool, error } = await db
-    .from("users")
-    .select("id")
-    .eq("bookable", true)
-    .is("deactivated_at", null)
-    .eq("is_test", false);
+  const { data: pool, error } = await realAdvisorsOnly(
+    db.from("users").select("id").eq("bookable", true).is("deactivated_at", null),
+  );
   if (error) throw new Error(`coverage pool read failed: ${error.message}`);
   const poolIds = ((pool ?? []) as { id: string }[]).map((u) => u.id);
 

@@ -79,6 +79,7 @@ import { ensureDefaultOrg } from "@/lib/provision";
 import { recordAudit } from "@/lib/audit";
 import { log } from "@/lib/log";
 import type { Attributes } from "@/lib/db/types";
+import { withoutPlaceholder } from "@/lib/advisors/real-advisor";
 import type { TwilioWorker } from "@/lib/twilio/client";
 
 /** One demotion sweep queued this run (#3582), with what changed (#3615) so the run's report can
@@ -755,11 +756,14 @@ export async function defaultTwilioSyncDeps(orgId?: string): Promise<TwilioSyncD
     fetchWorkers: () => fetchTwilioWorkers(),
     loadRoster: async () => {
       // cap-safe: users is a roster-bounded table, ~148 rows against a 200-agent design target
+      // #4201: never the placeholder advisor, which has no Twilio worker to read or tag.
       const rows = (unwrap(
-        await supabaseAdmin()
-          .from("users")
-          .select("id, email, bookable, deactivated_at, bookable_pending_since, is_test, attributes")
-          .eq("org_id", id),
+        await withoutPlaceholder(
+          supabaseAdmin()
+            .from("users")
+            .select("id, email, bookable, deactivated_at, bookable_pending_since, is_test, attributes")
+            .eq("org_id", id),
+        ),
         "twilio-sync.roster",
       ) ?? []) as {
         id: string;

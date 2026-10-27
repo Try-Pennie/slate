@@ -174,6 +174,8 @@ export async function loadSyncAgents(): Promise<SyncAgent[]> {
   // healthy quiet minute (the #277 class). A legitimately empty roster still
   // returns [] via unwrap; only a real query error throws.
   const rows = (unwrap(
+    // any-advisor-ok: the smoke advisors' calendars sync like everyone's; the placeholder
+    // is never bookable (a CHECK, #4200), so `bookable` keeps it out.
     await db
       .from("users")
       .select("id, last_synced_at, deactivated_at")
@@ -1676,6 +1678,8 @@ export async function reconcileOrphanedPoolExits(
   // Everyone who has left the bookable pool on either axis. `users` is
   // roster-bounded (a fixed 100-200 agent target), so this can't fill a page.
   const leftRows = (unwrap(
+    // any-advisor-ok: everyone outside the pool, the placeholder included: it is never
+    // bookable, so its cached busy time is pruned like any non routable advisor's (#4201).
     await db
       .from("users")
       .select(`id, ${POOL_STATE_COLUMNS}`)

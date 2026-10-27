@@ -23,6 +23,8 @@
 //
 // A read is FLAGGED when it is on a population table, feeds a count or aggregate,
 // and neither filters test rows nor carries an opt-out. It is NOT flagged when:
+//   - the chain is wrapped in `realAdvisorsOnly(` or selects `REAL_ADVISOR_COLUMNS`,
+//     the shared real advisor rule (#4201), which excludes the test advisors;
 //   - the chain mentions `is_test`, directly or through an embed
 //     (`buckets!inner(is_test)`, as monitor/customer-bookings.ts does, because
 //     `bookings` has no is_test column of its own and test-ness is a property of
@@ -93,6 +95,12 @@ export function scanTestDataCounts(source: string, file = "<source>"): TestDataC
     if (!AGGREGATE_RE.test(window)) return;
     if (PRIMARY_KEY_RE.test(window)) return;
     if (window.includes("is_test")) return;
+    // The helper wraps the chain, so it sits on or just above the `.from(` line.
+    const above = lines
+      .slice(Math.max(0, i - 3), i + 1)
+      .map((l) => l.replace(/\/\/.*$/, ""))
+      .join("\n");
+    if (/realAdvisorsOnly\(/.test(above) || window.includes("REAL_ADVISOR_COLUMNS")) return;
     if (optedOut(lines, i)) return;
 
     findings.push({ file, line: i + 1, table, snippet: line.trim().slice(0, 120) });

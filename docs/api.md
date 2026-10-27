@@ -961,7 +961,19 @@ coverage move without reading the booking.
   sets voice, SMS, and email opt-in traits. The partner join keys in `prefill`
   ride through as `properties.sfdc_submission_id` and
   `properties.regal_profile_id`, under the tagging spec's own names and left out
-  of the event entirely when absent (#2659).
+  of the event entirely when absent (#2659). Every routed event carries
+  `properties.slateGhostBooking` (#4204), `true` when the call sits on the
+  placeholder advisor (booking kind `staff_placed`), `false` otherwise. On those
+  calls `agentName` and `agentFirstName` are `Marcia` and the traits carry
+  `customProperties.ai_agent_eligible: true`, so Marcia, Pennie's AI agent, texts the
+  customer; a cancel of one sends `false`, and so does the reschedule or reassign
+  that moves it onto a real advisor (`left_placeholder` on the stored payload, so a
+  resend or a dead letter replay sends the same). A routed booking sends no
+  `customProperties`, so a lead's own AI eligibility is never cleared. Regal's side:
+  every journey on these events branches on `slateGhostBooking`, sends those
+  calls straight to the pool (nobody dials as the placeholder), and still copies
+  `slateBookingLink` into the Lead's `calBookingLink__c`, which is how coordinators
+  open a placeholder call to move or cancel it.
 - `generic` (Cadence and any other subscriber): body `{ "event", "data" }` with
   headers `x-slate-event`, `x-slate-timestamp`, `x-slate-delivery-id`, and an
   HMAC `x-slate-signature` of `sha256=hex(hmac(secret, "<timestamp>.<body>"))`

@@ -113,6 +113,8 @@ export interface RegalCaller {
   bookable: boolean;
   deactivated_at: string | null;
   is_test: boolean;
+  /** The placeholder advisor (#4201): never bookable, so exempt under its own name. */
+  is_placeholder: boolean;
   /** Read for `redistribute_tagged` (#2724). */
   attributes: Attributes | null;
 }
@@ -154,7 +156,14 @@ export interface RegalIgnore {
   reason: string;
 }
 
-export type RegalExemption = "routable" | "role" | "test" | "ignored" | "redistribute" | "not-in-slate";
+export type RegalExemption =
+  | "routable"
+  | "role"
+  | "test"
+  | "placeholder"
+  | "ignored"
+  | "redistribute"
+  | "not-in-slate";
 
 export interface RegalCallerVerdict {
   email: string;
@@ -210,6 +219,7 @@ export function judgeRegalCallers(
     if (routable) exemptions.push("routable");
     if (REGAL_ROLE_EXEMPT[u.role] === true) exemptions.push("role");
     if (u.is_test) exemptions.push("test");
+    if (u.is_placeholder) exemptions.push("placeholder");
     if (ignored.has(u.id)) exemptions.push("ignored");
     if (redistributeExempt(u)) exemptions.push("redistribute");
     const axis = routable ? null : u.deactivated_at !== null ? "deactivated" : "not-bookable";
@@ -225,6 +235,7 @@ export type RegalCallEnding =
   | "ignored"
   | "exempt-role"
   | "exempt-test"
+  | "exempt-placeholder"
   | "exempt-redistribute"
   | "gone";
 
@@ -260,6 +271,7 @@ export function settleRegalCallAlerts(
     else if (reasonById.has(u.id)) ending = "ignored";
     else if (REGAL_ROLE_EXEMPT[u.role] === true) ending = "exempt-role";
     else if (u.is_test) ending = "exempt-test";
+    else if (u.is_placeholder) ending = "exempt-placeholder";
     else if (redistributeExempt(u)) ending = "exempt-redistribute";
     if (ending === null) continue;
     const settlement = { userId, ending, user: u, ignoreReason: u ? (reasonById.get(u.id) ?? null) : null };
@@ -344,6 +356,11 @@ export function formatRegalCallEnding(s: Omit<RegalCallSettlement, "text">): str
       return (
         `${person} is now marked as a test user, so their calls in Regal are no longer reported. ` +
         `Slate still routes no bookings to them.`
+      );
+    case "exempt-placeholder":
+      return (
+        `${person} is now the placeholder advisor, which holds stacked calls and is never bookable, ` +
+        `so their calls in Regal are no longer reported.`
       );
     case "exempt-redistribute":
       return (
@@ -435,6 +452,7 @@ export async function runRegalCallCheck(deps: RegalCallDeps): Promise<RegalCallR
     routable: 0,
     role: 0,
     test: 0,
+    placeholder: 0,
     ignored: 0,
     redistribute: 0,
     "not-in-slate": 0,

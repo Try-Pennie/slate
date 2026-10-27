@@ -11,6 +11,7 @@
  * manager's page never reads another team's rows at all.
  */
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { realAdvisorsOnly } from "@/lib/advisors/real-advisor";
 import { log } from "@/lib/log";
 import { unwrap } from "@/lib/db/result";
 import { selectAllPages } from "@/lib/supabase/paginate";
@@ -73,11 +74,12 @@ export async function loadTeamHours(
     if (!orgRow) return { kind: "unreadable", what: "roster" };
     org = orgRow as unknown as OrgDefaults;
 
-    let q = db
-      .from("users")
-      .select("id, name, email, role, manager_id, bookable, deactivated_at, is_test")
-      .eq("org_id", viewer.org_id)
-      .eq("is_test", false);
+    let q = realAdvisorsOnly(
+      db
+        .from("users")
+        .select("id, name, email, role, manager_id, bookable, deactivated_at, is_test")
+        .eq("org_id", viewer.org_id),
+    );
     // A manager reads only their own reports; an admin reads everybody, including
     // departed users, so a team whose manager has left still has a name over it.
     if (scope.kind === "team") q = q.eq("manager_id", scope.managerId).is("deactivated_at", null);

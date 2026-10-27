@@ -269,3 +269,8 @@ export function replayEveryMigration(pg: ThrowawayPostgres, dir: string): number
     (batch) => void pg.sql(batch, undefined, { singleTransaction: true }),
   );
 }
+
+/** The ERROR line of a refusal psql printed, for an assertion's message; "it ran" when there was no refusal. */
+export function firstErrorLine(e: string | null): string {
+  return e?.split("\n").find((l) => /ERROR/.test(l)) ?? e?.split("\n")[0] ?? "it ran";
+}

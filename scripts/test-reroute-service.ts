@@ -299,6 +299,9 @@ async function main() {
   eq(await refusedCode({ booking: null }), "booking_not_found", "an unknown booking is refused by name");
   eq(await refusedCode({ booking: { status: "cancelled" } }), "booking_inactive", "a cancelled booking is refused");
   eq(await refusedCode({ booking: { kind: "agent_link" } }), "agent_link", "an advisor link booking is refused: the lead chose that advisor");
+  // #4202: a call on the placeholder sits in the customer's bucket by construction and
+  // moves off through a reschedule or a reassign, which route it as routed.
+  eq(await refusedCode({ booking: { kind: "staff_placed" } }), "staff_placed", "a call placed on the placeholder is refused: it has no bucket correction to make");
   eq(await refusedCode({}, { bookingId: "K1", bucketCode: "999", actor }), "unknown_bucket", "a code that is no bucket is refused");
 
   // --- #3251: a reroute never crosses between the test world and the real one ---
@@ -501,7 +504,7 @@ async function main() {
   }
 
   // --- confirm: the move path checks the booking as start and keep do ---
-  for (const [patch, code] of [[{ status: "cancelled" }, "booking_inactive"], [{ kind: "agent_link" }, "agent_link"]] as const) {
+  for (const [patch, code] of [[{ status: "cancelled" }, "booking_inactive"], [{ kind: "agent_link" }, "agent_link"], [{ kind: "staff_placed" }, "staff_placed"]] as const) {
     const { deps, calls } = fake({ booking: patch });
     let got: string | null = null;
     try {

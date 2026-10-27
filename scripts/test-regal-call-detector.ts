@@ -55,6 +55,7 @@ function user(over: Partial<RegalCaller> = {}): RegalCaller {
     bookable: false,
     deactivated_at: null,
     is_test: false,
+    is_placeholder: false,
     attributes: null,
     ...over,
   };
@@ -477,6 +478,28 @@ const UNVOUCHED = { redistribute_tagged: "Y", twilio_worker_missing_since: "2026
   const r = await runRegalCallCheck(h.deps);
   eq(r.status, "unreadable", "a failed roster read is unmeasured");
   eq(h.pages.length + h.resolved.length, 0, "and pages nothing and clears nothing");
+}
+
+// --- 6. the placeholder advisor (#4201) ----------------------------------------
+//
+// The placeholder holds stacked calls and is never bookable, so a call under its
+// address would page every cooldown with nothing for anybody to fix. It is exempt
+// under its own name, never folded into the test exemption, and is not offered as
+// "becoming a test user" when a page ends.
+{
+  const marcia = user({ id: "u-marcia", name: "Marcia", email: "marcia@trypennie.com", is_placeholder: true });
+  const [v] = judgeRegalCallers([call("marcia@trypennie.com")], [marcia], []);
+  eq(v.exemptions, ["placeholder"], "a call under the placeholder's address is exempt as the placeholder");
+  const [t] = judgeRegalCallers([call("t@trypennie.com")], [user({ email: "t@trypennie.com", is_test: true, is_placeholder: true })], []);
+  eq(t.exemptions, ["test", "placeholder"], "the test placeholder carries both reasons, each its own");
+
+  const [ending] = settleRegalCallAlerts(["u-marcia"], [marcia], []);
+  eq(ending?.ending, "exempt-placeholder", "a page on somebody who becomes the placeholder ends as its own ending");
+  assert(/placeholder/i.test(ending?.text ?? ""), "and its sentence names the placeholder");
+  const others = (["routable", "ignored", "exempt-role", "exempt-test", "exempt-redistribute", "gone"] as const).map(
+    (e) => formatRegalCallEnding({ userId: "u-marcia", ending: e, user: marcia, ignoreReason: "dialer only" }),
+  );
+  assert(!others.includes(ending?.text ?? ""), "and no other ending shares it");
 }
 
 finish();

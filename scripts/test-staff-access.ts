@@ -360,6 +360,8 @@ const roster: User[] = [
   user({ email: "signed-in-admin@trypennie.com", role: "admin", auth_user_id: "auth-1" }),
   user({ email: "left@trypennie.com", role: "admin", deactivated_at: new Date(NOW - DAY).toISOString() }),
   user({ email: "smoke@trypennie.com", role: "admin", is_test: true }),
+  // #4201: the placeholder advisor never signs in, and is not a person to chase.
+  user({ email: "marcia@trypennie.com", role: "manager", is_placeholder: true }),
 ];
 
 const pending = pendingPrivilegedAccess(roster, NOW);

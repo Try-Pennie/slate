@@ -4,6 +4,7 @@ import { teamsOf } from "@/lib/admin/agent-display";
 import { isNeverSignedIn } from "@/lib/admin/unclaimed";
 import { awaitingFirstRead, needsPhoto as needsDirectoryPhoto, type AdvisorPhoto } from "@/lib/advisor-photos/resolve";
 import type { User } from "@/lib/db/types";
+import { isRealAdvisor } from "@/lib/advisors/real-advisor";
 import {
   BOOKABLE_STATES,
   bookableStateOf,
@@ -42,6 +43,8 @@ export type RosterRow = Pick<
   | "created_at"
   | "is_test"
 > & {
+  /** The placeholder advisor (#4201), off the roster like a test row; absent reads as false. */
+  is_placeholder?: boolean;
   /**
    * The state of this agent's working hours (#1802). Absent or null when the
    * page could not read the schedules, in which case the page offers no hours
@@ -197,13 +200,13 @@ export function hasAnyRosterFilter(f: RosterFilters): boolean {
 }
 
 /**
- * Whether a row is on the roster at all: not offboarded, and not a synthetic test
- * row (#396). The page already reads without test rows; this says so here too, so
- * the filter, the roster's size and the never signed in count are one population
- * however the rows arrived (#1802).
+ * Whether a row is on the roster at all: not offboarded, and a real advisor, so
+ * neither a synthetic test row (#396) nor the placeholder (#4201). The page already
+ * reads only real advisors; this says so here too, so the filter, the roster's size
+ * and the never signed in count are one population however the rows arrived (#1802).
  */
-export function onRoster(u: Pick<RosterRow, "deactivated_at" | "is_test">): boolean {
-  return isActive(u) && !u.is_test;
+export function onRoster(u: Pick<RosterRow, "deactivated_at" | "is_test" | "is_placeholder">): boolean {
+  return isActive(u) && isRealAdvisor(u);
 }
 
 /**

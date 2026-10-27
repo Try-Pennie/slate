@@ -19,6 +19,7 @@ import { teamsOf } from "@/lib/admin/agent-display";
 import { btnSecondaryCls, cardCls } from "@/components/ui/styles";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import type { User } from "@/lib/db/types";
+import { realAdvisorsOnly } from "@/lib/advisors/real-advisor";
 
 export const metadata = { title: "Agent roster" };
 
@@ -60,12 +61,11 @@ export default async function AgentRosterPage({
   if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
   if (!canManageAgents(me.role)) return <AdminDenied need="a manager or admin" />;
 
-  // Exclude the synthetic smoke-test agent (#396) from the roster and the counts.
-  const usersRes = await supabaseAdmin()
-    .from("users")
-    .select("*")
-    .eq("org_id", me.org_id)
-    .eq("is_test", false);
+  // Real advisors only (#396, #4201): no smoke-test agent or placeholder in the
+  // roster and the counts.
+  const usersRes = await realAdvisorsOnly(
+    supabaseAdmin().from("users").select("*").eq("org_id", me.org_id),
+  );
   // #1629: an unreadable roster and an empty one render identically once the
   // error is dropped, and this is the page somebody opens when access is not
   // working. Kept as an explicit "could not tell" so the surfaces that can say

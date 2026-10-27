@@ -6,8 +6,8 @@
  * text box (L611): a typed address offers every typo as an entry that silently
  * suppresses nobody. Each person is shown by name.
  *
- * Only people the detector could ever report are offered: role `agent`, not a test
- * user. Everybody else is already exempt in code (`REGAL_ROLE_EXEMPT`), and listing
+ * Only people the detector could ever report are offered: role `agent`, a real
+ * advisor (not a test user, not the placeholder, #4201). Everybody else is already exempt in code (`REGAL_ROLE_EXEMPT`), and listing
  * them would let somebody write a suppression that does nothing while reading as a
  * decision. A deactivated agent IS offered, because a departed employee whose Regal
  * seat is being shut off is a real reason to suppress, and is labelled as such.
@@ -15,6 +15,7 @@
  * Pure, so scripts/test-regal-call-ignores.ts drives it.
  */
 import { REGAL_ROLE_EXEMPT } from "@/lib/monitor/regal-calls";
+import { isRealAdvisor } from "@/lib/advisors/real-advisor";
 import type { Role } from "@/lib/db/types";
 
 export interface IgnoreRosterUser {
@@ -23,6 +24,7 @@ export interface IgnoreRosterUser {
   email: string;
   role: Role;
   is_test: boolean;
+  is_placeholder: boolean;
   deactivated_at: string | null;
 }
 
@@ -51,7 +53,7 @@ export function ignorePickerOptions(
   ignores: Pick<IgnoreRow, "user_id">[],
 ): { value: string; label: string }[] {
   const listed = new Set(ignores.map((i) => i.user_id));
-  const eligible = users.filter((u) => REGAL_ROLE_EXEMPT[u.role] === false && !u.is_test && !listed.has(u.id));
+  const eligible = users.filter((u) => REGAL_ROLE_EXEMPT[u.role] === false && isRealAdvisor(u) && !listed.has(u.id));
   const nameCount = new Map<string, number>();
   for (const u of eligible) {
     const k = personLabel(u).toLowerCase();
@@ -108,6 +110,9 @@ export function parseIgnoreAdd(
   }
   if (target.is_test) {
     return { ok: false, error: `${personLabel(target)} is a test user, so their calls are never reported.` };
+  }
+  if (target.is_placeholder) {
+    return { ok: false, error: `${personLabel(target)} is the placeholder advisor, so their calls are never reported.` };
   }
   if (!reason) return { ok: false, error: "Say why their calls should not be reported." };
   if (reason.length > IGNORE_REASON_MAX) {

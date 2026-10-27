@@ -708,6 +708,11 @@ const SETTINGS = (over: Partial<PilotSettings>): PilotSettings => ({
     assert(!isUnsourced({ source: s, hostless: false }), `${s} is not an unsourced booking`);
     assert(!isPageTraffic(s), `${s} is not page traffic`);
   }
+  // #4200: a coordinator booking was placed by a person on the phone with the
+  // customer, not made on any landing page, so it can no more excuse a dark page than
+  // an API call can.
+  assert(!isUnsourced({ source: "coordinator", hostless: false }), "coordinator is not an unsourced booking");
+  assert(!isPageTraffic("coordinator"), "coordinator is not page traffic");
   for (const s of [...PAGE_SOURCES, "not-given", "unrecognised", null]) {
     assert(isPageTraffic(s), `${s ?? "null"} is page traffic, or might be`);
   }
