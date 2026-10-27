@@ -54,9 +54,10 @@ booking sends Regal nothing; never book it on a real bucket.
 
 `smoketest@` is shared with the smoke canary and the daily reroute drill, which take a
 lease over it while they book (`docs/smoke-test-runbook.md`, "The full pass shares its two
-test advisors"). This drill takes no lease, so run it away from them: start just after a
-canary tick at :00 or :30, keep the busy hour and the move off the times they book, and
-if the canary fails during the run, read its report before blaming the drill.
+test advisors"). This drill takes no lease, so run it away from them: never between 10:30
+and 12:00 UTC, the window the daily reroute drill (scheduled 10:50 UTC, often late) uses,
+and start just after a canary tick at :00 or :30. If the canary fails during the run, read
+its report before blaming the drill.
 
 1. On `smoketest@`'s Google calendar, add a busy event over one hour in the next day the
    booker offers, inside the customer's calling window.
