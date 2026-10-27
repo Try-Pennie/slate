@@ -449,7 +449,7 @@ Keys: `outbox_drain_stuck`, `outbox_all_handed_off`, `reservation_drain_stuck`,
 `stale_phone_invite:*`, `phone_correction_unsent:*`, `webhook_dead:*`, `webhook_event_no_subscriber`,
 `handoff_channel_unset`, `handoff_undelivered`, `bookable_trait_unrecorded:*`,
 `booking_follow_up_left_to_drain`, `booking_invite_moved:*`, `booking_invite_resized:*`,
-`booking_invite_check_failed:*`, `booking_invite_launch_sweep`.
+`booking_invite_check_failed:*`, `booking_invite_launch_sweep`, `reminder_email_unrenderable:*`.
 
 **What fired it.** A booking exists and something that should have followed it did not:
 a calendar invite, a busy block, a webhook to Regal. **A real customer is affected**,
@@ -489,6 +489,18 @@ which is what makes this family different from the ones above.
   committed and the work after it did not finish" names each booking and the error
   that cut it off. It clears on a measured clean half hour of confirms. The healthy
   rate is zero: none in the 2,933 bookings of the week before it shipped.
+
+- For `reminder_email_unrenderable:<slug>` (#4298): a switched on reminder email's stored
+  subject or body holds a brace Slate cannot fill in (an unknown fill-in, a stray `{` or
+  `}`, an empty field), so the reminder lane sends that email to **nobody** and claims
+  and records nothing for it. The page quotes what is wrong. Fix the words in
+  `reminder_emails` (through the reminder emails page once it ships, #4299; until then
+  through `save_reminder_email`, never a hand update, which skips the version and the
+  audit row), or switch the email off. Leads still inside its window are sent it on the
+  first tick after the fix, since nothing was recorded for them. It clears on a tick
+  that rendered it, or as a stand down once it is switched off; the
+  `booking-reminder` log line "reminder email cannot be rendered" names the slug and the
+  problem kinds every tick it holds.
 
 - For `reservation_created_owed` (#3847): a booking committed more than a day ago and
   Regal has never been sent its `booking.created`, most often because the booked bucket
@@ -1250,7 +1262,15 @@ no super admin to hand, is it `/db-apply`:
 Keys: `rate_limit_blocked:*`, `ooo_agent_dm`, `ooo_approvals_digest`,
 `ooo-digest-unreachable:*`, `ooo-digest-unrouted-unreachable`, `ooo_undo`,
 `embed_origin_mismatch`, `cron_cpu_not_configured`, `pending_event_deletions_departed`,
-`owner_notice_withheld`.
+`owner_notice_withheld`, `reminder_emails_all_off`.
+
+**`reminder_emails_all_off`** (#4298) says, at most once a day, that no stored reminder
+email is switched on, so no lead is being sent any reminder email before their call. The
+lane is healthy (its heartbeat still stamps) and reads no worklist; every tick also logs
+"no reminder email is switched on" under `booking-reminder`. If it was meant, nothing to
+do. If not, switch the emails back on: `effective_from` is stamped when an email is
+switched on, so the leads whose windows opened while it was off are skipped
+(`before_effective`) rather than all emailed at once.
 
 **`owner_notice_withheld`** (#2440) says, at most once a week, how many owner reassign
 notices in the last seven days never reached the sales side because no handoff channel

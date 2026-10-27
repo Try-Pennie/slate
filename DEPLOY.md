@@ -731,7 +731,7 @@ trigger may drive more than one independent lane (each guards itself with its
 own lock). This table mirrors `worker/cron-routes.ts` exactly (the full lane set,
 not a subset; `scripts/test-cron-routes.ts` fails CI if any lane below drifts):
 - `* * * * *`   → `/api/cron/sync` (backstop calendar sync) **+** `/api/cron/recompute` (bucket_slots freshness) **+** `/api/cron/outbox` (booking-outbox drain, #429) **+** `/api/cron/selfheal` (deletion drain + cancelled/missing reconcile sweeps, #433)
-- `*/5 * * * *` → `/api/cron/complete` (mark-complete sweep + webhook retries) **+** `/api/cron/watch` (calendar watch renewal) **+** `/api/cron/monitor` (availability-health probe, #371) **+** `/api/cron/bulk-reassign` (bulk coverage-reassign drain, #973) **+** `/api/cron/booking-reminders` (the 24 hour reminder email to each lead, #2359)
+- `*/5 * * * *` → `/api/cron/complete` (mark-complete sweep + webhook retries) **+** `/api/cron/watch` (calendar watch renewal) **+** `/api/cron/monitor` (availability-health probe, #371) **+** `/api/cron/bulk-reassign` (bulk coverage-reassign drain, #973) **+** `/api/cron/booking-reminders` (each lead's stored reminder emails, #2359, #4298)
 - `0 * * * *`   → `/api/cron/agents` (hourly Salesforce roster reconcile + default hours, single locked path) **+** `/api/cron/bulk-reassign-retry` (hourly coverage-reassign retry: re-arm still-upcoming unplaceable calls so the */5 drain re-attempts them, #3485)
 - `0 13 * * MON-FRI` **and** `0 14 * * MON-FRI` → `/api/cron/ooo-digest` (pending-OOO morning digest; the two UTC slots straddle DST and the route's time gate lets exactly one fire at 9am ET)
 - `0 11 * * *` **and** `0 12 * * *` → `/api/cron/ooo-approvals` (7am ET email of yesterday's OOO approvals; two DST slots, one fires)

@@ -1,19 +1,24 @@
 // The decisions behind `pnpm send:reminder-example`, kept pure so
 // `scripts/test-reminder-example.ts` can drive them with no network.
 //
-// The command runs ONE booking through the real reminder lane (`runBookingReminders`),
-// so the email it produces is the one a lead receives: the same subject, body, sender
-// name and contact card, built by the same code. Only the booking is invented, and
+// The command runs ONE booking through the real reminder lane (`runBookingReminders`)
+// with ONE stored email (#4298), chosen by its slug, so the email it produces is the
+// one a lead receives: the same subject, body, sender name and contact card, rendered
+// from the same stored words by the same code. Only the booking is invented, and
 // everything the lane would write about a booking is stubbed out, because there is no
 // booking to write to.
 import { DateTime } from "luxon";
-import type { DueBooking, ReminderDeps, ReminderKind, ReminderRun } from "../../src/lib/booking/reminder-send.ts";
+import type { DueBooking, LaneEmail, ReminderDeps, ReminderRun } from "../../src/lib/booking/reminder-send.ts";
 import type { MimeMessage } from "../../src/lib/notify/email-mime.ts";
 import { isLeadId } from "../../src/lib/salesforce/lead-xbc.ts";
 import { formatPhoneForDisplay } from "../../src/lib/phone-format.ts";
+import { REMINDER_EMAIL_MIN_MINUTES } from "../../src/lib/booking/reminder.ts";
 
 /** The only inbox domain an example may be sent to: it is never a lead's. */
 const PENNIE_DOMAIN = "trypennie.com";
+
+/** What `reminder_emails.slug` may be (migration 0211's check). */
+const SLUG = /^[a-z][a-z0-9_]{0,39}$/;
 
 export interface ExampleConfig {
   advisorEmail: string;
@@ -24,8 +29,8 @@ export interface ExampleConfig {
   timezone: string;
   /** False previews the message and sends nothing. */
   send: boolean;
-  /** Which email (#4285): the 24 hour one, the default, or the 1 hour one (#4282). */
-  kind: ReminderKind;
+  /** Which stored email, by slug (#4285, #4298): `day` by default, `hour`, or any other. */
+  kind: string;
   /** The lead's own number the email names (#4292), or null to show the fallback. */
   phone: string | null;
 }
@@ -66,9 +71,9 @@ export function readExampleConfig(env: Record<string, string | undefined>): Conf
   if (!DateTime.now().setZone(timezone).isValid) {
     return { ok: false, reason: `REMINDER_EXAMPLE_TZ "${timezone}" is not a timezone this can write a time in.` };
   }
-  const kindRaw = env.REMINDER_EXAMPLE_KIND?.trim() || "day";
-  if (kindRaw !== "day" && kindRaw !== "hour") {
-    return { ok: false, reason: "REMINDER_EXAMPLE_KIND must be day or hour." };
+  const kind = env.REMINDER_EXAMPLE_KIND?.trim() || "day";
+  if (!SLUG.test(kind)) {
+    return { ok: false, reason: "REMINDER_EXAMPLE_KIND must be a stored email's slug, such as day or hour." };
   }
   const phone = env.REMINDER_EXAMPLE_PHONE?.trim() || null;
   if (phone && !formatPhoneForDisplay(phone)) {
@@ -78,7 +83,7 @@ export function readExampleConfig(env: Record<string, string | undefined>): Conf
   if (sendRaw !== undefined && sendRaw !== "" && sendRaw !== "1") {
     return { ok: false, reason: "SEND must be 1 to send, or unset to preview." };
   }
-  return { ok: true, config: { advisorEmail, to, leadId: leadRaw, timezone, send: sendRaw === "1", kind: kindRaw, phone } };
+  return { ok: true, config: { advisorEmail, to, leadId: leadRaw, timezone, send: sendRaw === "1", kind, phone } };
 }
 
 export interface ExampleAdvisor {
@@ -88,28 +93,41 @@ export interface ExampleAdvisor {
 }
 
 const HALF_HOUR_MS = 30 * 60_000;
-
 const FIVE_MINUTES_MS = 5 * 60_000;
+const HOUR_MS = 60 * 60_000;
 
 /**
- * A booking the lane judges due right now, made two days ago. For the 24 hour email it
- * is about 23 hours out, on a half hour. For the 1 hour email (#4285) it is 55 to 60
- * minutes out, on five minutes, with its 24 hour email sent the day before, so the
- * two hour gap and the 30 minute cutoff both let it through as they would a real call.
+ * A booking the lane judges due right now for `email`, made three days ago (before any
+ * window up to the 48 hour cap opened), with nothing sent. For an email two hours or
+ * more ahead the call is an hour inside its lead, on a half hour (the 24 hour email's
+ * call is about 23 hours out); for a shorter one it is up to five minutes inside its
+ * lead, on five minutes (the 1 hour email's is 55 to 60 minutes out), so the 30 minute
+ * cutoff lets it through as it would a real call.
  */
-export function exampleBooking(cfg: ExampleConfig, advisor: ExampleAdvisor, leadId: string, nowMs: number): DueBooking {
-  const startMs =
-    cfg.kind === "hour"
-      ? Math.floor((nowMs + 60 * 60_000) / FIVE_MINUTES_MS) * FIVE_MINUTES_MS
-      : Math.floor((nowMs + 23 * 60 * 60_000) / HALF_HOUR_MS) * HALF_HOUR_MS;
-  const startsAtIso = new Date(startMs).toISOString();
+export function exampleBooking(
+  cfg: ExampleConfig,
+  advisor: ExampleAdvisor,
+  leadId: string,
+  nowMs: number,
+  email: Pick<LaneEmail, "minutesBefore">,
+): DueBooking {
+  const leadMs = email.minutesBefore * 60_000;
+  const rounded =
+    leadMs >= 2 * HOUR_MS
+      ? Math.floor((nowMs + leadMs - HOUR_MS) / HALF_HOUR_MS) * HALF_HOUR_MS
+      : Math.floor((nowMs + leadMs) / FIVE_MINUTES_MS) * FIVE_MINUTES_MS;
+  // An email 30 to 35 minutes ahead has no five minute mark both inside its window and
+  // past the 30 minute minimum, so it takes the exact end of its lead instead, which is
+  // both, rather than an invented call the lane would skip as too close.
+  const startMs = rounded - nowMs < REMINDER_EMAIL_MIN_MINUTES * 60_000 ? nowMs + leadMs : rounded;
   return {
     id: "reminder-example",
-    startsAtIso,
-    createdAtIso: new Date(nowMs - 2 * 24 * 60 * 60_000).toISOString(),
-    reminderSentForIso: cfg.kind === "hour" ? startsAtIso : null,
-    reminderSentAtIso: cfg.kind === "hour" ? new Date(nowMs - 23 * 60 * 60_000).toISOString() : null,
+    startsAtIso: new Date(startMs).toISOString(),
+    createdAtIso: new Date(nowMs - 3 * 24 * HOUR_MS).toISOString(),
+    reminderSentForIso: null,
+    reminderSentAtIso: null,
     hourReminderSentForIso: null,
+    sends: [],
     onPlaceholder: false,
     status: "confirmed",
     attendeeEmail: cfg.to,
@@ -127,6 +145,8 @@ export function exampleBooking(cfg: ExampleConfig, advisor: ExampleAdvisor, lead
 
 export interface ExampleIo {
   config: ExampleConfig;
+  /** The stored email to send, chosen by slug. */
+  email: LaneEmail;
   booking: DueBooking;
   nowMs: number;
   readCallingNumbers: ReminderDeps["readCallingNumbers"];
@@ -138,24 +158,38 @@ export interface ExampleIo {
 }
 
 /**
- * The lane's dependencies for one invented booking. The reads that shape the email
- * (calling number, photo) are real; everything that would write about a booking is
- * a no op or a refusal, and an alert is printed rather than paged.
+ * The lane's dependencies for one invented booking and one stored email. The reads
+ * that shape the email (calling number, photo) are real; everything that would write
+ * about a booking is a no op, and an alert is printed rather than paged.
+ *
+ * The email is handed to the lane switched ON and in effect since the epoch, whatever
+ * its stored switch says, so an email can be read before it goes live: the example only
+ * ever reaches a Pennie inbox.
  */
 export function exampleDeps(io: ExampleIo): ReminderDeps {
+  const email: LaneEmail = { ...io.email, enabled: true, effectiveFromIso: "1970-01-01T00:00:00Z" };
   return {
     now: () => io.nowMs,
+    loadEmails: async () => [email],
     loadDue: async () => [io.booking],
-    claim: async () => true,
-    // The claim above wrote nothing, so there is no row to hand back to.
-    release: async () => false,
-    // Nor a row to stamp a send time on (#4282).
-    markSent: async () => {},
+    // Every record of the send is a no op: there is no booking to write to. The claim
+    // and the mark answer as if they landed, so the lane goes on as for a real send.
+    claimSend: async () => "claimed",
+    markSendSent: async () => true,
+    releaseSend: async () => false,
+    failSend: async () => false,
+    skipSend: async () => false,
+    legacyClaim: async () => true,
+    legacyRelease: async () => false,
+    legacyMarkSent: async () => {},
     send: async (msg) => {
       io.preview(msg);
       return io.config.send ? io.sendEmail(msg) : "not-sent";
     },
-    alert: async (_bookingId, text) => console.error(`(would have paged) ${text}`),
+    alert: async (_bookingId, _slug, text) => console.error(`(would have paged) ${text}`),
+    alertUnrenderable: async (_slug, text) => console.error(`(would have paged) ${text}`),
+    resolveRenderable: async () => {},
+    notifyNoneEnabled: async (text) => console.error(text),
     readCallingNumbers: io.readCallingNumbers,
     refreshInvite: async () => {
       throw new Error("the reminder example never writes a calendar invite");
@@ -173,16 +207,24 @@ export const EXAMPLE_EXIT = {
   noLead: 3,
   sendFailed: 4,
   noCard: 5,
+  noEmail: 6,
+  unrenderable: 7,
 } as const;
 
 export function judgeExampleRun(run: ReminderRun, sent: boolean): { code: number; message: string } {
+  if (run.unrenderable.length > 0) {
+    return {
+      code: EXAMPLE_EXIT.unrenderable,
+      message: "The stored email cannot be rendered: its subject or body holds something that is not a fill-in. The reason is printed above.",
+    };
+  }
   if (run.failed > 0) {
     return { code: EXAMPLE_EXIT.sendFailed, message: "Gmail refused the send; the reason is printed above." };
   }
   if (run.sent !== 1) {
     return {
       code: EXAMPLE_EXIT.sendFailed,
-      message: `The lane did not build the reminder (sent ${run.sent}, held ${run.held}, skipped ${run.skipped}).`,
+      message: `The lane did not build the reminder (sent ${run.sent}, held ${run.held}, waiting ${run.waiting}, skipped ${run.skipped}).`,
     };
   }
   if (run.withCallingNumber !== 1) {
@@ -190,7 +232,7 @@ export function judgeExampleRun(run: ReminderRun, sent: boolean): { code: number
       code: EXAMPLE_EXIT.noCard,
       message: run.callingNumberUnread
         ? "Salesforce could not be read, so the reminder carries no calling number and no contact card."
-        : "That lead has no calling number in Salesforce, so the reminder carries no contact card. Name another with REMINDER_EXAMPLE_LEAD.",
+        : "That lead has no calling number in Salesforce, or this email has its contact card switched off, so the reminder carries no card. Name another lead with REMINDER_EXAMPLE_LEAD.",
     };
   }
   const card = run.withPhoto === 1 ? "the advisor's photo" : "the Pennie logo";
