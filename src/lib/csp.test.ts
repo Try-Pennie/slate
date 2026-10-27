@@ -441,7 +441,8 @@ describe("the injected passive third-party class (#3417)", () => {
     // An injected `<img src=attacker/?d=...>` beacon or a CSS exfil is refused on these,
     // so a third-party refusal there may signal an injection attempt worth a page. Only
     // font-src is suppressed, plus the one Google product logo path under img-src (#3699,
-    // below); this font path on the same host is not it.
+    // below) and Google Fonts' css under style-src (#4275, below); this font file URL is
+    // neither.
     const { cspViolationPage } = await import("./csp");
     for (const directive of ["img-src", "style-src", "media-src"]) {
       const d = cspViolationPage(summariseViolation(report({ "violated-directive": directive })));
@@ -566,6 +567,93 @@ describe("the Google product logo an add-on injects, refused under img-src (#369
     const { cspViolationPage } = await import("./csp");
     const d = cspViolationPage(summariseViolation(report({ "blocked-uri": "https://fonts.gstatic.com/s/i/other/logo.png" })));
     expect(d).toMatchObject({ page: true, key: "csp_violation:img-src", directive: "img-src" });
+  });
+});
+
+describe("the Google Fonts stylesheet an add-on injects, refused under style-src (#4275)", () => {
+  // On 2026-10-26 two Safari add-ons on one iPhone injected a Google Fonts stylesheet on the
+  // manage page. Of each burst of three reports, two named the add-on and the third named
+  // no source, so it paged. Slate never loads Google Fonts. It is logged, not paged, ONLY for
+  // that exact host AND its css paths: Google's font CSS service carries nothing an attacker
+  // can collect. Every other refused stylesheet keeps paging, because CSS can exfiltrate.
+  const report = (over: Record<string, unknown> = {}) => ({
+    "csp-report": {
+      "document-uri": "https://slate.trypennie.app/booking/manage/tok-secret",
+      "violated-directive": "style-src-elem",
+      "blocked-uri": "https://fonts.googleapis.com:443/css2",
+      disposition: "enforce",
+      ...over,
+    },
+  });
+
+  it("logs, rather than pages, the 2026-10-26 report: the Google Fonts css2 sheet with no source", async () => {
+    const { cspViolationPage } = await import("./csp");
+    expect(cspViolationPage(summariseViolation(report()))).toEqual({ page: false, why: "injected-passive" });
+  });
+
+  it("logs the older css path, the default port omitted, a query, and a directive reported with its values", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const over of [
+      { "blocked-uri": "https://fonts.googleapis.com/css" },
+      { "blocked-uri": "https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" },
+      { "violated-directive": "style-src" },
+      { "violated-directive": "style-src 'self' 'unsafe-inline'" },
+      { "document-uri": "https://slate.trypennie.app/book?xbc=411" },
+    ]) {
+      expect(cspViolationPage(summariseViolation(report(over))), JSON.stringify(over)).toEqual({
+        page: false,
+        why: "injected-passive",
+      });
+    }
+  });
+
+  it("still pages a stylesheet from that host under any other path", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const blocked of [
+      "https://fonts.googleapis.com/",
+      "https://fonts.googleapis.com/css3",
+      "https://fonts.googleapis.com/css2/beacon",
+      "https://fonts.googleapis.com/x/css2",
+      "https://fonts.googleapis.com/icon",
+      "https://fonts.googleapis.com/css2/../beacon",
+    ]) {
+      expect(cspViolationPage(summariseViolation(report({ "blocked-uri": blocked }))).page, blocked).toBe(true);
+    }
+  });
+
+  it("still pages the css2 path on any other host, a look alike or a port included", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const blocked of [
+      "https://evil.example/css2",
+      "https://fonts.googleapis.com.evil.example/css2",
+      "https://evilfonts.googleapis.com/css2",
+      "https://www.googleapis.com/css2",
+      "https://fonts.googleapis.com:8443/css2",
+      "http://fonts.googleapis.com/css2",
+      "https://fonts.gstatic.com/css2",
+    ]) {
+      expect(cspViolationPage(summariseViolation(report({ "blocked-uri": blocked }))).page, blocked).toBe(true);
+    }
+  });
+
+  it("still pages the sheet when the report names a source on another origin, or an inline one", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const source of ["https://evil.example/_next/static/chunks/a.js", "inline"]) {
+      expect(cspViolationPage(summariseViolation(report({ "source-file": source }))).page, source).toBe(true);
+    }
+  });
+
+  it("still pages the sheet's URL under any directive but style-src", async () => {
+    const { cspViolationPage } = await import("./csp");
+    for (const directive of ["img-src", "media-src", "connect-src", "script-src", "frame-src"]) {
+      expect(cspViolationPage(summariseViolation(report({ "violated-directive": directive }))).page, directive).toBe(true);
+    }
+  });
+
+  it("still pages any other third-party stylesheet with no source (CSS exfiltration)", async () => {
+    const { cspViolationPage } = await import("./csp");
+    const d = cspViolationPage(summariseViolation(report({ "blocked-uri": "https://evil.example/x.css" })));
+    expect(d).toMatchObject({ page: true, key: "csp_violation:style-src" });
   });
 });
 
@@ -786,7 +874,7 @@ describe("a third-party font credited to a Slate page script (the #4063 rule, ex
     }
   });
 
-  it("keeps paging a stylesheet, media or script from that host with a Slate chunk source: fonts and the logo only", async () => {
+  it("keeps paging a stylesheet, media or script from that host with a Slate chunk source: fonts, the logo and Google Fonts' css only", async () => {
     const { cspViolationPage } = await import("./csp");
     for (const effectiveDirective of ["style-src", "media-src", "script-src", "connect-src", "img-src"]) {
       expect(cspViolationPage(summariseViolation(modern({ effectiveDirective }))).page, effectiveDirective).toBe(true);
