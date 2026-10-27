@@ -81,7 +81,7 @@ export const LANE_STALE_BOUNDS_MS: Record<LaneName, number> = {
   // cache by window: a stamp no bound watches looks like monitoring while nothing watches
   // (#1123), and a silently stopped rotation means coverage quietly expiring everywhere.
   "hydrate-calendars": 45 * MIN,
-  // #2359: the 24 hour reminder email, every 5 minutes. 20 minutes is four
+  // #2359, #4298: every enabled stored reminder email, every 5 minutes. 20 minutes is four
   // cadences, matching the other five minute lanes, so ordinary jitter cannot page
   // while a lane that has genuinely stopped does. It needs a bound because nothing
   // else would ever say the reminders had stopped: an empty send count is the
