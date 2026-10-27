@@ -54,8 +54,9 @@ export interface ReminderSubject {
   /**
    * The start the 1 hour email has gone out about (#4282), or null for none. Once
    * that email has gone for this start, a retried 24 hour email would land after it.
+   * REQUIRED, so `tsc` names every caller rather than one reading as "none sent" (L168).
    */
-  hourReminderSentForMs?: number | null;
+  hourReminderSentForMs: number | null;
 }
 
 /**

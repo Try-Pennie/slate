@@ -614,6 +614,7 @@ async function run() {
         status: ctx.booking.status,
         startsAtMs,
         reminderSentForMs: ctx.booking.reminder_sent_for ? Date.parse(ctx.booking.reminder_sent_for) : null,
+        hourReminderSentForMs: null,
       },
       startsAtMs - 60 * 60 * 1000,
     );
@@ -622,7 +623,7 @@ async function run() {
     // start is owed a reminder, so a due check that always said no cannot pass (L159).
     const movedStartMs = startsAtMs + 30 * 60 * 1000;
     assert(
-      reminderDue({ status: ctx.booking.status, startsAtMs: movedStartMs, reminderSentForMs: startsAtMs }, movedStartMs - 60 * 60 * 1000),
+      reminderDue({ status: ctx.booking.status, startsAtMs: movedStartMs, reminderSentForMs: startsAtMs, hourReminderSentForMs: null }, movedStartMs - 60 * 60 * 1000),
       "#2630: while a booking moved to a new time is still owed one",
     );
   }

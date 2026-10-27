@@ -134,7 +134,7 @@ const booking = (over: Partial<Parameters<typeof hourReminderDue>[0]> = {}) => (
 // the same start: the later one already reminded the lead.
 {
   const start = NOW + 50 * MIN;
-  const subject = { startsAtMs: start, reminderSentForMs: null, status: "confirmed" };
+  const subject = { startsAtMs: start, reminderSentForMs: null, hourReminderSentForMs: null, status: "confirmed" };
   assert(reminderDue(subject, NOW), "an unsent 24 hour email is due inside the window");
   assert(
     !reminderDue({ ...subject, hourReminderSentForMs: start }, NOW),
