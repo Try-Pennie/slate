@@ -8,6 +8,7 @@ import {
   hourReminderBody,
   REMINDER_HOLD_FLOOR_MS,
   HOUR_REMINDER_MIN_LEAD_MS,
+  REMINDER_RETRY_MARGIN_MS,
 } from "./reminder.ts";
 import { classifyReminderSendFailure, type ReminderFailureCode, type ReminderSettlement } from "./reminder-rate.ts";
 import type { MimeMessage } from "@/lib/notify/email-mime";
@@ -30,19 +31,9 @@ import { readWithinDeadline, type ScheduleTimer } from "@/lib/read-within-deadli
  */
 export const REMINDER_CALLING_NUMBER_DEADLINE_MS = 10_000;
 
-/**
- * How much further than its kind's floor a call must be for a failed send to be
- * handed back (2026-10-05 review): `REMINDER_HOLD_FLOOR_MS` for the 24 hour email,
- * `HOUR_REMINDER_RETRY_FLOOR_MS` for the 1 hour one (#4282). The floor is where a
- * reminder stops being worth sending (for the 24 hour email, because it would land
- * after the lead's one hour text); the RETRY is
- * the next tick, one five minute cadence later, so a hand back made right at the
- * floor would be retried inside it. Ten minutes is that cadence plus another, so a
- * next tick that itself spends minutes on slow mints still sends before the floor.
- * The distance is judged on the clock read when the send FAILED, not the tick's
- * start, for the same reason.
- */
-export const REMINDER_RETRY_MARGIN_MS = 10 * 60_000;
+// Defined beside the reminder rules in `reminder.ts`, so the pure judge
+// (`reminder-decision.ts`, #4297) reads it without importing this lane.
+export { REMINDER_RETRY_MARGIN_MS } from "./reminder.ts";
 
 /**
  * Which reminder email a run of the lane sends (#4282): the 24 hour one (#2359) or the
