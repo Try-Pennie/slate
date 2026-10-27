@@ -18,7 +18,9 @@
  *     interval, so the settings page keeps working as the reminder interval;
  *   - incident and info alerts keep their own throttles, except the incidents in
  *     `CHANGE_ONLY_KEYS` (Dan, 2026-10-26), which take the change rule with no
- *     reminder and ignore the cooldown they are handed.
+ *     reminder and ignore the cooldown they are handed; the conditions in that set
+ *     (`CHANGE_ONLY_CONDITIONS`) lose their reminder the same way and keep their all
+ *     clear, and a key in `CHANGE_BATCH_MS` collects its new subjects.
  *
  * The dispatcher (`sendThrottledAlert`) is the only caller, so every condition gets
  * the rule by construction rather than by each send site remembering it (L621).
@@ -33,11 +35,12 @@ export const CONDITION_REPEAT_MS = 24 * 60 * 60_000;
 export const URGENT_CONDITION_REPEAT_MS = 60 * 60_000;
 
 /**
- * How long an unchanged CHANGE ONLY incident (`CHANGE_ONLY_KEYS`) waits before it may
- * post again: in practice never. Finite rather than infinite because a failed send's
- * short retry stamp is worked out from the interval (`alertStampMs`), and a year is
- * longer than any key here lives: each is one booking, settled when the call comes
- * right and pruned once its time has passed.
+ * How long an unchanged CHANGE ONLY key (`CHANGE_ONLY_KEYS`) waits before it may post
+ * again: in practice never. Finite rather than infinite because a failed send's short
+ * retry stamp is worked out from the interval (`alertStampMs`), and a year is longer
+ * than any key here lives unchanged: a per booking incident is settled when the call
+ * comes right and pruned once its time has passed, and a condition's row is cleared by
+ * its all clear and gains a new subject whenever another call is stuck.
  */
 export const CHANGE_ONLY_HOLD_MS = 366 * 24 * 60 * 60_000;
 

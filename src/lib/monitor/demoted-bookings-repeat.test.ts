@@ -87,8 +87,9 @@ function tick() {
   });
 }
 
-/** Tick every five minutes from T0 for `hours`, letting `change(hour)` move the world
- *  first, and return the hour (from T0) of every post. */
+/** Tick every five minutes from T0 for `hours`, letting `change(minute)` move the world
+ *  first (whole minutes from T0, so the comparisons are exact), and return the hour (from
+ *  T0) of every post. */
 async function drive(hours: number, change: (minute: number) => void = () => undefined): Promise<number[]> {
   const at: number[] = [];
   for (let t = 0; t <= hours * HOUR; t += FIVE_MIN) {
