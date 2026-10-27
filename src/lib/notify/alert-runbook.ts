@@ -228,6 +228,11 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // land", and the difference between this and the key above is how MANY bookings
   // it landed for, which the message itself says.
   booking_reminders_failing: "a-booking-side-effect-did-not-complete",
+  // #4298. Same family: every lead due that email is not reminded, and the remedy is
+  // to look at what did not land, here the email's own stored words.
+  reminder_email_unrenderable: "a-booking-side-effect-did-not-complete",
+  // #4298. An admin's switch, said once a day so a decision nobody meant is noticed.
+  reminder_emails_all_off: "something-was-measured-and-is-only-worth-knowing",
   outbox_drain_stuck: "a-booking-side-effect-did-not-complete",
   outbox_all_handed_off: "a-booking-side-effect-did-not-complete",
   reservation_drain_stuck: "a-booking-side-effect-did-not-complete",

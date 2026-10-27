@@ -68,21 +68,25 @@ export interface SendRecord {
 }
 
 /** Why an email is skipped for good. Each is recorded, so a gap is never silent. */
-export type ReminderSkipReason =
-  | "before_effective"
-  | "placeholder_off"
-  | "late_booking"
-  | "superseded"
-  | "too_close"
-  | "no_sender"
-  | "no_email";
+export type ReminderSkipReason = "before_effective" | "late_booking" | "superseded" | "too_close";
+
+/**
+ * Why an email is not sent THIS tick, judged again on the next and never stored.
+ *
+ * `no_email`, `no_sender` and `placeholder_off` are waits rather than skips (#4298, the
+ * coordinator's call on the phase 3 review): each is a fact about the booking that can
+ * change while the window is open. A lead adds an address, an advisor with a mailbox is
+ * assigned, a call moves off the placeholder onto a real advisor, and the email then
+ * goes, exactly as the lane before #4298 did, which stored nothing for any of them.
+ */
+export type ReminderWaitReason = "not_yet" | "gap" | "no_email" | "no_sender" | "placeholder_off";
 
 export type ReminderDecision =
   | { action: "send" }
   /** Due, but waiting for the owner hand back (`REMINDER_HOLD_MS`); counted, never claimed. */
   | { action: "held" }
-  /** Not yet: judged again on the next tick, never stored. */
-  | { action: "wait"; reason: "not_yet" | "gap" }
+  /** Not this tick: judged again on the next, never stored. */
+  | { action: "wait"; reason: ReminderWaitReason }
   | { action: "skip"; reason: ReminderSkipReason }
   /**
    * Nothing to do and nothing to record: the call is not live or already started, this
@@ -112,8 +116,9 @@ function gapStampMs(r: SendRecord): number | null {
 /**
  * The decision for `email` on `booking` at `nowMs`. `sends` holds this booking's
  * records; any about another start are ignored, so a call that moved earns its emails
- * afresh. `allEnabledEmails` gives every email's lead, so a record can be told shorter
- * or longer than this one.
+ * afresh. `allEmails` gives every STORED email's lead, switched off ones included, so a
+ * record can be told shorter or longer than this one: a shorter email that was sent and
+ * later switched off must still supersede a longer one (#4298).
  *
  * The rules, in order (the plan's Phase 3, Dan 2026-10-27):
  *   * inside the window: after its lead opens and while the call is ahead;
@@ -132,7 +137,7 @@ export function reminderDecision(
   booking: DecisionBooking,
   email: DecisionEmail,
   sends: readonly SendRecord[],
-  allEnabledEmails: readonly DecisionEmail[],
+  allEmails: readonly DecisionEmail[],
   nowMs: number,
 ): ReminderDecision {
   const { startsAtMs, createdAtMs } = booking;
@@ -158,14 +163,15 @@ export function reminderDecision(
   const openedForThisBookingMs = Number.isFinite(createdAtMs) ? Math.max(windowOpensMs, createdAtMs) : windowOpensMs;
   if (openedForThisBookingMs < email.effectiveFromMs) return { action: "skip", reason: "before_effective" };
 
-  if (booking.onPlaceholder && !email.placeholderSends) return { action: "skip", reason: "placeholder_off" };
+  // A wait, not a skip: the call can move off the placeholder before the window closes.
+  if (booking.onPlaceholder && !email.placeholderSends) return { action: "wait", reason: "placeholder_off" };
 
   if (email.lateBooking === "skip") {
     if (!Number.isFinite(createdAtMs)) return { action: "none", reason: "unreadable" };
     if (createdAtMs > windowOpensMs) return { action: "skip", reason: "late_booking" };
   }
 
-  const leadOf = new Map(allEnabledEmails.map((e) => [e.id, e.minutesBefore]));
+  const leadOf = new Map(allEmails.map((e) => [e.id, e.minutesBefore]));
   const superseded = forThisStart.some((r) => {
     const lead = leadOf.get(r.emailId);
     return r.emailId !== email.id && lead !== undefined && lead < email.minutesBefore && MAY_HAVE_REACHED.has(r.status);
@@ -185,9 +191,11 @@ export function reminderDecision(
   });
   if (inGap) return { action: "wait", reason: "gap" };
 
-  // Last, as today: a held booking with no address is counted held, then skipped.
-  if (!booking.leadEmail) return { action: "skip", reason: "no_email" };
-  if (!booking.senderEmail) return { action: "skip", reason: "no_sender" };
+  // Last, as today: a held booking with no address is counted held, then waits. Both
+  // are waits, judged again every tick, so an address or a mailbox that arrives while
+  // the window is open still gets the email.
+  if (!booking.leadEmail) return { action: "wait", reason: "no_email" };
+  if (!booking.senderEmail) return { action: "wait", reason: "no_sender" };
   return { action: "send" };
 }
 

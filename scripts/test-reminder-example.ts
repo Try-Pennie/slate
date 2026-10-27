@@ -1,5 +1,5 @@
-// `pnpm send:reminder-example`: one reminder, the 24 hour one by default or the 1 hour
-// one with REMINDER_EXAMPLE_KIND=hour (#4285), built by the real lane, sent to a Pennie
+// `pnpm send:reminder-example`: one reminder, the stored 24 hour one by default or any
+// stored email by its slug with REMINDER_EXAMPLE_KIND (#4285, #4298), built by the real lane, sent to a Pennie
 // inbox so somebody can see what a lead receives. Run:
 //   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-reminder-example.ts
 //
@@ -14,7 +14,8 @@ import {
   judgeExampleRun,
   readExampleConfig,
 } from "./lib/reminder-example.ts";
-import { runBookingReminders, type ReminderDeps } from "../src/lib/booking/reminder-send.ts";
+import { runBookingReminders, type LaneEmail, type ReminderDeps } from "../src/lib/booking/reminder-send.ts";
+import { DEFAULT_TEMPLATES } from "../src/lib/booking/reminder-template.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -113,8 +114,28 @@ const cfg = (() => {
 })();
 const advisor = { id: "user-miles", name: "Miles Arnold", email: "marnold@trypennie.com" };
 
+/** A stored email as `send-reminder-example.ts` reads it by slug (#4298): the seeds. */
+const stored = (slug: string, over: Partial<LaneEmail> = {}): LaneEmail => {
+  const t = slug === "hour" ? DEFAULT_TEMPLATES.hour : DEFAULT_TEMPLATES.day;
+  return {
+    id: `email-${slug}`,
+    slug,
+    name: t.name,
+    minutesBefore: t.minutesBefore,
+    lateBooking: t.lateBooking,
+    enabled: true,
+    effectiveFromIso: "1970-01-01T00:00:00Z",
+    subject: t.subject,
+    body: t.body,
+    cardBlock: t.cardBlock,
+    placeholderSends: t.placeholderSends,
+    ...over,
+  };
+};
+const DAY = stored("day");
+
 {
-  const b = exampleBooking(cfg, advisor, LEAD, NOW);
+  const b = exampleBooking(cfg, advisor, LEAD, NOW, DAY);
   const startMs = Date.parse(b.startsAtIso);
   assert(startMs > NOW && startMs - NOW <= 24 * 60 * 60_000, "the call is inside the reminder window");
   eq(startMs % (30 * 60_000), 0, "the call starts on a half hour, as a real slot does");
@@ -133,7 +154,8 @@ function harness(over: { numbers?: Map<string, string | null> | Error; sendFails
   const writes: string[] = [];
   const deps = exampleDeps({
     config: { ...cfg, send: over.send ?? true },
-    booking: exampleBooking(cfg, advisor, LEAD, NOW),
+    email: DAY,
+    booking: exampleBooking(cfg, advisor, LEAD, NOW, DAY),
     nowMs: NOW,
     readCallingNumbers: async () => {
       if (over.numbers instanceof Error) throw over.numbers;
@@ -195,7 +217,10 @@ function harness(over: { numbers?: Map<string, string | null> | Error; sendFails
   // The lane would have claimed the booking; the example has no booking to claim,
   // and must never write a calendar or page Slack.
   const h = harness();
-  eq(await h.deps.claim("example-reminder", "x"), true, "the claim is a no op that always wins");
+  eq(await h.deps.claimSend("example-reminder", "x", "y"), "claimed", "the claim is a no op that always wins");
+  eq(await h.deps.legacyClaim("example-reminder", "day", "y", null), true, "and so is the legacy claim");
+  eq(await h.deps.skipSend("example-reminder", "x", "y", "no_email"), false, "a skip writes nothing");
+  eq(await h.deps.failSend("example-reminder", "x", "y", "unknown"), false, "nor does a failure");
   let threw = false;
   try {
     await h.deps.refreshInvite("a", "b", "c");
@@ -267,10 +292,12 @@ function runCommand(envFile: string | null): { status: number | null; stderr: st
   assert(/Set REMINDER_EXAMPLE_ADVISOR/.test(noFile.stderr), "and says the advisor is missing");
 }
 
-// --- the 1 hour email (#4285) -------------------------------------------------
+// --- choosing the stored email (#4285, #4298) ---------------------------------
 //
-// Since #4282 a lead also gets a 1 hour email. REMINDER_EXAMPLE_KIND=hour sends that one
-// instead, through the same lane, so it can be read in a real inbox before a lead does.
+// Since #4282 a lead also gets a 1 hour email, and since #4298 the emails are stored.
+// REMINDER_EXAMPLE_KIND names the stored email by its slug (day, the default, hour, or
+// any other an admin has added), and the example renders it through the same lane, so
+// it can be read in a real inbox before a lead does.
 {
   eq(cfg.kind, "day", "the 24 hour email is the default, as before");
   const hour = readExampleConfig({
@@ -279,16 +306,23 @@ function runCommand(envFile: string | null): { status: number | null; stderr: st
     REMINDER_EXAMPLE_KIND: "hour",
   });
   assert(hour.ok && hour.config.kind === "hour", "REMINDER_EXAMPLE_KIND=hour picks the 1 hour email");
+  const other = readExampleConfig({
+    REMINDER_EXAMPLE_ADVISOR: "marnold@trypennie.com",
+    REMINDER_EXAMPLE_TO: "tconway@trypennie.com",
+    REMINDER_EXAMPLE_KIND: "twelve_hour",
+  });
+  assert(other.ok && other.config.kind === "twelve_hour", "any stored email's slug is accepted");
   const odd = readExampleConfig({
     REMINDER_EXAMPLE_ADVISOR: "marnold@trypennie.com",
     REMINDER_EXAMPLE_TO: "tconway@trypennie.com",
-    REMINDER_EXAMPLE_KIND: "weekly",
+    REMINDER_EXAMPLE_KIND: "Weekly email!",
   });
-  assert(!odd.ok && /day or hour/.test(odd.reason), "any other kind is refused, naming the two");
+  assert(!odd.ok && /day or hour/.test(odd.reason), "text that cannot be a slug is refused, naming the two seeded ones");
 }
 {
-  const hourCfg = { ...cfg, kind: "hour" as const };
-  const b = exampleBooking(hourCfg, advisor, LEAD, NOW);
+  const HOUR_STORED = stored("hour");
+  const hourCfg = { ...cfg, kind: "hour" };
+  const b = exampleBooking(hourCfg, advisor, LEAD, NOW, HOUR_STORED);
   const leadMs = Date.parse(b.startsAtIso) - NOW;
   assert(leadMs >= 30 * 60_000 && leadMs <= 60 * 60_000, `the call is inside the 1 hour email's window (${leadMs / 60_000} min)`);
 
@@ -296,6 +330,7 @@ function runCommand(envFile: string | null): { status: number | null; stderr: st
   const warned: string[] = [];
   const deps = exampleDeps({
     config: { ...hourCfg, send: true },
+    email: HOUR_STORED,
     booking: b,
     nowMs: NOW,
     readCallingNumbers: async () => new Map([[LEAD.slice(0, 15), "+15555550123"]]),
@@ -307,17 +342,18 @@ function runCommand(envFile: string | null): { status: number | null; stderr: st
     preview: () => {},
     warn: (msg) => warned.push(msg),
   });
-  const run = await runBookingReminders(deps, hourCfg.kind);
+  const run = await runBookingReminders(deps);
   eq(sent.length, 1, "the 1 hour example sends exactly one email");
   assert(/in about an hour/.test(sent[0]?.subject ?? ""), `in the 1 hour words (${sent[0]?.subject})`);
   eq(judgeExampleRun(run, true).code, EXAMPLE_EXIT.ok, "and passes");
 
-  // The 24 hour example records its send time through the lane's markSent, which the
-  // example must answer without writing anything.
+  // The 24 hour example records its send through the lane's mark and legacy stamp,
+  // which the example must answer without writing anything.
   const dayWarned: string[] = [];
   const dayDeps = exampleDeps({
     config: { ...cfg, send: true },
-    booking: exampleBooking(cfg, advisor, LEAD, NOW),
+    email: DAY,
+    booking: exampleBooking(cfg, advisor, LEAD, NOW, DAY),
     nowMs: NOW,
     readCallingNumbers: async () => new Map([[LEAD.slice(0, 15), "+15555550123"]]),
     readAdvisorPhotos: async () => new Map(),
@@ -326,12 +362,79 @@ function runCommand(envFile: string | null): { status: number | null; stderr: st
     warn: (msg) => dayWarned.push(msg),
   });
   await runBookingReminders(dayDeps);
-  eq(dayWarned, [], "the 24 hour example finishes with no warning about its send time");
+  eq(dayWarned, [], "the 24 hour example finishes with no warning about its send record or send time");
+}
+{
+  // An email an admin added, rendered from its own stored words, and one that is
+  // switched off is still previewed, since seeing it before it goes live is the point.
+  const twelve = stored("twelve_hour", { name: "12 hour reminder", minutesBefore: 720, subject: "Still on for {when}?", enabled: false });
+  const b = exampleBooking({ ...cfg, kind: "twelve_hour" }, advisor, LEAD, NOW, twelve);
+  const leadMs = Date.parse(b.startsAtIso) - NOW;
+  assert(leadMs > 0 && leadMs <= 12 * 60 * 60_000, `the call is inside that email's own window (${leadMs / 60_000} min)`);
+  const sent: Sent[] = [];
+  const deps = exampleDeps({
+    config: { ...cfg, kind: "twelve_hour", send: true },
+    email: twelve,
+    booking: b,
+    nowMs: NOW,
+    readCallingNumbers: async () => new Map([[LEAD.slice(0, 15), "+15555550123"]]),
+    readAdvisorPhotos: async () => new Map(),
+    sendEmail: async (msg) => {
+      sent.push(msg);
+      return "msg-3";
+    },
+    preview: () => {},
+    warn: () => {},
+  });
+  const run = await runBookingReminders(deps);
+  eq(sent.length, 1, "a switched off email of any slug is still built and sent as an example");
+  assert(/^Still on for /.test(sent[0]?.subject ?? ""), `in its own stored words (${sent[0]?.subject})`);
+  eq(judgeExampleRun(run, true).code, EXAMPLE_EXIT.ok, "and passes");
+}
+for (const minutes of [30, 32, 35, 45]) {
+  // The shortest emails an admin may store: the invented call is still inside the
+  // window and past the 30 minute minimum, so the example builds it, whatever the clock.
+  for (const offset of [0, 60_000, 2 * 60_000 + 30_000, 4 * 60_000]) {
+    const now = NOW + offset;
+    const short = stored("short", { minutesBefore: minutes });
+    const deps = exampleDeps({
+      config: { ...cfg, kind: "short", send: false },
+      email: short,
+      booking: exampleBooking({ ...cfg, kind: "short" }, advisor, LEAD, now, short),
+      nowMs: now,
+      readCallingNumbers: async () => new Map([[LEAD.slice(0, 15), "+15555550123"]]),
+      readAdvisorPhotos: async () => new Map(),
+      sendEmail: async () => "msg-5",
+      preview: () => {},
+      warn: () => {},
+    });
+    const run = await runBookingReminders(deps);
+    eq(run.sent, 1, `a ${minutes} minute email is built at ${offset / 60_000} minutes past the hour`);
+  }
+}
+{
+  // Stored words the renderer refuses are not a pass, and say why.
+  const broken = stored("day", { subject: "Your call {whenever}" });
+  const deps = exampleDeps({
+    config: { ...cfg, send: true },
+    email: broken,
+    booking: exampleBooking(cfg, advisor, LEAD, NOW, broken),
+    nowMs: NOW,
+    readCallingNumbers: async () => new Map([[LEAD.slice(0, 15), "+15555550123"]]),
+    readAdvisorPhotos: async () => new Map(),
+    sendEmail: async () => "msg-4",
+    preview: () => {},
+    warn: () => {},
+  });
+  const run = await runBookingReminders(deps);
+  const v = judgeExampleRun(run, true);
+  eq(v.code, EXAMPLE_EXIT.unrenderable, "an email whose words cannot be rendered fails the command");
+  assert(/cannot be rendered/.test(v.message), `naming why (${v.message})`);
 }
 
 // --- a number for the lead (#4292) -----------------------------------------------
 {
-  eq(exampleBooking(cfg, advisor, LEAD, NOW).attendeePhone, null, "no number by default, so the email shows the fallback");
+  eq(exampleBooking(cfg, advisor, LEAD, NOW, DAY).attendeePhone, null, "no number by default, so the email shows the fallback");
   const withPhone = readExampleConfig({
     REMINDER_EXAMPLE_ADVISOR: "marnold@trypennie.com",
     REMINDER_EXAMPLE_TO: "tconway@trypennie.com",
@@ -339,7 +442,7 @@ function runCommand(envFile: string | null): { status: number | null; stderr: st
   });
   assert(withPhone.ok, "REMINDER_EXAMPLE_PHONE is accepted");
   if (withPhone.ok) {
-    eq(exampleBooking(withPhone.config, advisor, LEAD, NOW).attendeePhone, "(215) 555-0100", "and becomes the lead's number");
+    eq(exampleBooking(withPhone.config, advisor, LEAD, NOW, DAY).attendeePhone, "(215) 555-0100", "and becomes the lead's number");
   }
   const bad = readExampleConfig({
     REMINDER_EXAMPLE_ADVISOR: "marnold@trypennie.com",
