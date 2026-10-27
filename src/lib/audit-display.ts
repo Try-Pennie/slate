@@ -53,6 +53,11 @@ const ACTION_LABEL: Record<string, string> = {
   "event_type.created": "added an event type",
   "event_type.gap": "changed the gap between calls",
   "event_type.notice": "changed how much notice a lead needs to book",
+  // #4296: the reminder emails a lead gets before the call.
+  "reminder_email.created": "added a reminder email",
+  "reminder_email.updated": "changed a reminder email",
+  "reminder_email.toggled": "switched a reminder email on or off",
+  "reminder_email.restored": "restored an earlier version of a reminder email",
   "webhook.test_sent": "sent a test webhook to a URL they entered",
   "webhook.endpoint_set": "changed where booking events are sent",
   "webhook.resent": "resent a webhook delivery",

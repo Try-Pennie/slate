@@ -284,6 +284,9 @@ const EXPECTED_PINNED = [
   "capacity_fill_pattern",
   // #3936: the past days capacity history holds, for the page's date picker. Plain SQL.
   "capacity_history_days",
+  // #4296: the reminder email claim, under a per booking advisory lock; definer, pinned
+  // to public, pg_catalog built ins only (hashtextextended, pg_advisory_xact_lock).
+  "claim_reminder_send",
   // #3247: the first step of a reroute confirm.
   "claim_reroute_hold",
   // #3495: a fresh booking's save after its calendar event, in one transaction;
@@ -301,6 +304,8 @@ const EXPECTED_PINNED = [
   // built ins only, execute revoked from the web roles.
   "enqueue_webhook_deliveries",
   "erase_booking_pii",
+  // #4296: a reminder email send failed for good; definer, pinned, pg_catalog only.
+  "fail_reminder_send",
   // #3476: a lead's active bookings in one call; security INVOKER, pinned anyway,
   // pg_catalog built ins only, execute revoked from the web roles.
   "find_active_bookings_for_person",
@@ -309,6 +314,8 @@ const EXPECTED_PINNED = [
   "ladder_candidate_inputs",
   // #3248: the live reroute holds the booker skips, judged on the database clock.
   "live_reroute_holds",
+  // #4296: a claimed reminder email was sent; definer, pinned, pg_catalog only.
+  "mark_reminder_sent",
   // #3896: stamps when cal.com was marked retired. Security INVOKER; now() and
   // coalesce are pg_catalog built ins.
   "monitor_alert_config_stamp_calcom_retired",
@@ -338,6 +345,8 @@ const EXPECTED_PINNED = [
   // SQL; now() is a pg_catalog built in.
   "recreate_missing_busy_blocks",
   "regal_call_reason_counts",
+  // #4296: a reminder email claim given back after a transient failure.
+  "release_reminder_send",
   // #1293: replaces a schedule's weekly rules in one transaction, so a failure
   // cannot leave an agent with no working hours (and therefore no availability).
   "replace_availability_rules",
@@ -356,6 +365,10 @@ const EXPECTED_PINNED = [
   // #3124: routed real bookings per minute for the daily busy minute check. Security
   // INVOKER, plain SQL; floor, extract and jsonb_agg are pg_catalog built ins.
   "routed_bookings_per_minute",
+  // #4296: the one write of a reminder email, with its version and audit row; and a
+  // reminder email recorded as never to be sent. Definer, pinned, pg_catalog only.
+  "save_reminder_email",
+  "skip_reminder_send",
   // #2369: the digit rule two stored phone numbers are compared by. Deliberately not
   // libphonenumber, which no SQL expression reproduces; see migration 0124.
   "slate_phone_match_key",

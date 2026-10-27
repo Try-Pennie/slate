@@ -2428,3 +2428,35 @@ with the function redefined to include the placeholder: two blocks re-created an
 on every tick, the fight the issue feared. It writes
 nothing outside the container. No Docker is exit 2, never a pass (L98); any failed check is
 exit 1. It runs in the DB replay workflow with the other `verify-*-sql.ts` suites.
+
+# Proving the reminder email rules hold in the database (`scripts/verify-reminder-emails-sql.ts`)
+
+#4296: migration 0211 adds the editable reminder emails and one send record per booking,
+email and start. What keeps a lead from being emailed twice or out of order is enforced
+inside `claim_reminder_send`, and what keeps two editors from overwriting each other is
+enforced inside `save_reminder_email`, so this suite asks Postgres rather than a fake.
+
+It replays every migration BEFORE 0211 into the `supabase/postgres` image, seeds bookings
+carrying each shape of the three legacy columns, applies 0211, and proves: the backfill
+writes `sent` for a 24 hour record with a send time and `legacy_claimed` for one without and
+for every 1 hour record, nothing for a cancelled, past or never reminded booking, and leaves
+the bookings columns untouched; the two seeds are on with an epoch `effective_from` and a
+version 1; a second claim of a key is `taken`; a claim inside the gap after another email
+about the same start was claimed or sent answers `gap` and writes nothing, and a send outside
+the gap or with no recorded time does not; any email after a shorter one about the same start
+(claimed, sent or legacy) is `superseded`, and a released shorter one is not; release then
+reclaim works and only from claimed; fail and skip need a reason and never overwrite a sent or
+claimed row; two sessions claiming for one booking at once leave exactly one claim; a save
+from a stale `updated_at` writes nothing, no version and no audit row; `effective_from` moves
+only when switched on or retimed; restore brings back a version's copy only; the audit row
+carries only what changed, old and new; deleting an email with a send record is refused
+(RESTRICT); RLS is on and neither browser role can read a row or run a function.
+
+```
+node --experimental-strip-types scripts/verify-reminder-emails-sql.ts
+```
+
+No Docker is exit 2, UNMEASURED. It runs in the DB replay workflow with the other
+`verify-*-sql.ts` suites. Seen failing on planted breakages of 0211, one at a time: no
+advisory lock (both racers claimed), no shorter email rule, no gap rule, `effective_from`
+stamped on every save, ON DELETE CASCADE in place of RESTRICT, and no stale check.

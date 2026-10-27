@@ -87,6 +87,10 @@ export const SAFE_TABLES = new Set([
   // #1015: single-row direct-booking config (id pinned to 1), like
   // monitor_alert_config. Exactly one row, never a page.
   "booking_settings",
+  // #4296: the editable reminder emails, a handful of rows an admin creates one at a
+  // time (two seeded). NOT booking_reminder_sends or reminder_email_versions, which
+  // grow with bookings and with every copy edit.
+  "reminder_emails",
 ]);
 
 const FROM_SITE = /\.from\(\s*(["'`])([a-z_]+)\1/g;

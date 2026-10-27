@@ -74,6 +74,14 @@ export const AUDIT_ACTIONS = [
   // #1951: an admin making the server POST at an address they typed. The trail
   // is where a privileged outbound fetch belongs, and it is the only record of
   // one, since a test send deliberately writes no webhook_deliveries row.
+  // #4296: the reminder emails a lead gets before the call. Written by the
+  // save_reminder_email function itself (migration 0211), in the same transaction as
+  // the save, with only the fields that changed, old and new. Toggled is a save that
+  // changed nothing but on/off; restored brings back an earlier version's copy.
+  "reminder_email.created",
+  "reminder_email.updated",
+  "reminder_email.toggled",
+  "reminder_email.restored",
   "webhook.test_sent",
   // #3089: where booking events (lead contact data) are POSTed. Host and format
   // before and after, never the path, the query or a credential.
