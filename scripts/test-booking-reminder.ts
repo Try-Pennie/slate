@@ -191,6 +191,7 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
     manageUrl: "https://slate.trypennie.app/manage/abc",
     // No calling number known: the copy must then say nothing about one (#1334).
     callingNumber: null as string | null,
+    leadPhone: null as string | null,
     // A routed call: the advisor's own mailbox, which is read (#4206 adds the other).
     onPlaceholder: false,
     // The copy is told what "now" is rather than reading the clock (#2497). Both
@@ -320,6 +321,7 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
     timezone: "America/New_York",
     manageUrl: "https://slate.trypennie.app/manage/abc",
     callingNumber: null as string | null,
+    leadPhone: null as string | null,
     onPlaceholder: true,
     nowMs: NOW,
   };

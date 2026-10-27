@@ -171,6 +171,7 @@ const booking = (over: Partial<Parameters<typeof hourReminderDue>[0]> = {}) => (
     manageUrl: "https://slate.example/booking/manage/tok",
     nowMs: NOW,
     callingNumber: null,
+    leadPhone: null,
     onPlaceholder: false,
   };
   const subject = hourReminderSubject(input);
