@@ -1,5 +1,4 @@
 import { notFound, redirect } from "next/navigation";
-import { headers } from "next/headers";
 import { currentUser } from "@/lib/auth";
 import { consoleHiddenFor } from "@/lib/env";
 import { cardCls } from "@/components/ui/styles";
@@ -14,7 +13,7 @@ import { loadCoordinators } from "@/lib/admin/coordinators-load";
 import type { CoordinatorsRead } from "@/lib/admin/coordinators";
 import { COORDINATOR_BOOKING_COPY as COPY } from "@/lib/admin/coordinator-booking-copy";
 import { coordinatorFrame, type CoordinatorDesignFixture } from "@/lib/admin/coordinator-admin-fixture";
-import { designFixturesEnabled } from "@/lib/admin/team-capacity-fixture";
+import { readDesignFixture } from "@/lib/admin/design-fixture-read";
 
 export const metadata = { title: "Coordinator booking" };
 
@@ -45,12 +44,8 @@ export default async function CoordinatorBookingPage({
   if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
   if (me.role !== "super_admin") notFound();
 
-  if (sp.frame && designFixturesEnabled(process.env.SLATE_DESIGN_FIXTURES, (await headers()).get("host"))) {
-    // Read from disk, never imported, so no deployment's bundle carries the fixture.
-    const { readFile } = await import("node:fs/promises");
-    const fixture = JSON.parse(
-      await readFile(`${process.cwd()}/docs/design/fixtures/coordinator-admin.json`, "utf8"),
-    ) as CoordinatorDesignFixture;
+  const fixture = await readDesignFixture<CoordinatorDesignFixture>(sp.frame, "coordinator-admin");
+  if (fixture && sp.frame) {
     const f = coordinatorFrame(fixture, sp.frame);
     return (
       <>
