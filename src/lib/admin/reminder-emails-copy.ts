@@ -67,7 +67,6 @@ export const REMINDER_COPY = {
 
   historyHeading: "Earlier versions",
   historyIntro: "Restore brings back the subject, the body and the two switches. The timing and whether it is on stay as they are.",
-  historyCurrent: "Current",
   historyShowing: (shown: number, total: number) => `Showing the latest ${shown} of ${total} versions.`,
   historyUnreadable: "The earlier versions could not be read just now. Reload in a minute.",
   restore: "Restore",

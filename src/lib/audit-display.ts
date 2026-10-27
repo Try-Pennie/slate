@@ -159,6 +159,11 @@ export function auditDetailText(row: AuditDisplayRow, nameOf?: (id: string | nul
     parts.push(change ?? "What changed in Twilio was not recorded.");
     return parts.join(" ");
   }
+  if (row.action === "reminder_email.test_sent" && row.details?.gmail === "unconfirmed") {
+    // #4299: Gmail gave no answer, so the test may or may not have arrived, and a row
+    // reading like a confirmed send would claim more than was measured (L11).
+    return "Gmail never confirmed it, so it may not have arrived.";
+  }
   if (row.action === "role.set" && row.details?.from && row.details?.to) {
     parts.push(`${String(row.details.from)} to ${String(row.details.to)}`);
   }

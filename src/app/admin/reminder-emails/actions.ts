@@ -20,6 +20,7 @@ import { describeTemplateProblem, validateTemplate } from "@/lib/booking/reminde
 import { SAMPLE_CALLING_NUMBER, joinMinutes, previewCase, previewReminder } from "@/lib/booking/reminder-preview";
 import {
   CONFIRM_WINDOW_YES,
+  REMINDER_EMAIL_COLUMNS,
   REMINDER_FIELDS,
   freshWindowMessage,
   listWords,
@@ -70,8 +71,6 @@ async function realAdmin(): Promise<{ ok: true; actor: User } | { ok: false; rea
   return { ok: true, actor: real };
 }
 
-const ROW_COLUMNS =
-  "id, slug, name, minutes_before, late_booking, enabled, subject, body, card_block, placeholder_sends, updated_at";
 
 type EditableRow = Pick<
   ReminderEmailRow,
@@ -90,7 +89,7 @@ type EditableRow = Pick<
 
 /** One email by id, or null when there is none; a failed read is a fault. */
 async function readRow(id: string): Promise<EditableRow | null> {
-  const { data, error } = await supabaseAdmin().from("reminder_emails").select(ROW_COLUMNS).eq("id", id).maybeSingle();
+  const { data, error } = await supabaseAdmin().from("reminder_emails").select(REMINDER_EMAIL_COLUMNS).eq("id", id).maybeSingle();
   if (error) throw new Error(`read failed [reminder email ${id}]: ${error.message}`);
   return (data as EditableRow | null) ?? null;
 }

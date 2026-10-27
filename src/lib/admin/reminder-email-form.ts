@@ -46,6 +46,10 @@ export const CONFIRM_WINDOW_YES = "yes";
 
 export const REMINDER_NAME_MAX = 80;
 
+/** The columns the page and the actions read of an email, one list for both. */
+export const REMINDER_EMAIL_COLUMNS =
+  "id, slug, name, minutes_before, late_booking, enabled, subject, body, card_block, placeholder_sends, updated_at";
+
 /** A reminder email as the editor submits it, before anything is written. */
 export interface ReminderEmailInput {
   name: string;
