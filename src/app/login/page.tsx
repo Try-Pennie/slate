@@ -16,6 +16,7 @@ import {
   SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR,
   SEVERAL_GOOGLE_ACCOUNTS_MESSAGE,
 } from "@/lib/auth/google-identity-copy";
+import { PLACEHOLDER_ACCOUNT_LOGIN_ERROR, PLACEHOLDER_ACCOUNT_MESSAGE } from "@/lib/auth/landing";
 
 // Sign-in failures the callback can bounce back with. Kept plain and
 // non-technical; the domain case is the security gate from #589.
@@ -41,6 +42,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   // #3526: two Google accounts attached to one sign in. Not a retry either: they
   // stay attached until an admin removes the old sign in.
   [SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR]: SEVERAL_GOOGLE_ACCOUNTS_MESSAGE,
+  // #4205: the address is the placeholder advisor's, which nobody signs in as. Not
+  // a retry: signing in again reaches the same row.
+  [PLACEHOLDER_ACCOUNT_LOGIN_ERROR]: PLACEHOLDER_ACCOUNT_MESSAGE,
   // #3083: the deploy is missing its sign-in domain, so the callback refuses
   // everyone rather than letting any Google account in. Nothing the person does
   // can fix it, so it points at the people who can.

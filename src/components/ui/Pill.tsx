@@ -94,6 +94,7 @@ export const PILL_LABEL_OPTICAL_NUDGE_PX = 1;
 const LABEL_OPTICAL_CLS = "relative top-[1px]";
 
 export type PillVariant =
+  | "role-coordinator"
   | "role-agent"
   | "role-manager"
   | "role-team_lead"
@@ -112,6 +113,9 @@ export type PillVariant =
  * the call site (L509).
  */
 const VARIANT_CLS: Record<PillVariant, string> = {
+  // #4205: a scheduling coordinator sits below agent, off the ladder, so it is no
+  // more elevated than the floor and draws exactly as agent does.
+  "role-coordinator": "text-fg-muted",
   // THE FLOOR OF THE ROLE LADDER, and the only member that draws no chrome
   // (#1844). Agent is "no elevation", and on a 117 person roster it is nearly
   // every row, so a bordered semibold pill gave the least informative value the
