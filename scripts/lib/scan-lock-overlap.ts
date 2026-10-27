@@ -23,8 +23,12 @@ import { hasOptOut } from "./opt-out.ts";
 
 export const LOCK_OVERLAP_TOKEN = "lock-overlap:";
 
-/** A direct call: not `x.acquireLock(`, not the definition, not a comment line. */
-const CALL = /(?<![.\w])acquire(?:Lock|Lease)\(/;
+/**
+ * A direct call: not `x.acquireLock(`, not the definition, not a comment line.
+ * `claimSyncLock` is the same TTL claim answering in three words (#4261), so it is a
+ * subject too.
+ */
+const CALL = /(?<![.\w])(?:acquire(?:Lock|Lease)|claimSyncLock)\(/;
 
 export interface LockSiteFinding {
   file: string;
@@ -43,7 +47,7 @@ export function lockCallSiteLines(source: string): number[] {
   source.split("\n").forEach((raw, i) => {
     const t = raw.trim();
     if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) return;
-    if (/\bfunction\s+acquire(?:Lock|Lease)\b/.test(t)) return;
+    if (/\bfunction\s+(?:acquire(?:Lock|Lease)|claimSyncLock)\b/.test(t)) return;
     if (CALL.test(raw)) out.push(i);
   });
   return out;

@@ -24,6 +24,9 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const empty = `// lock-overlap:\nconst lock = await acquireLock("cron_x", TTL);`;
   eq(unreasonedLockSites("a.ts", empty).length, 1, "a marker that says nothing does not count");
 
+  const claim = `const claim = await claimSyncLock("k", TTL);`;
+  eq(unreasonedLockSites("a.ts", claim).length, 1, "#4261: a three way claimSyncLock with no reason is caught too");
+
   const inline = `x = (await acquireLock(\`k:\${c}\`, W)) !== null;`;
   eq(unreasonedLockSites("a.ts", inline).length, 1, "a call inside an expression is still a subject");
 }
@@ -41,6 +44,8 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
   const definition = `export async function acquireLock(\n  key: string,`;
   eq(unreasonedLockSites("a.ts", definition).length, 0, "the definition is not a call site");
+  const claimDefinition = `export async function claimSyncLock(key: string, ttlMs: number): Promise<LockClaim> {`;
+  eq(unreasonedLockSites("a.ts", claimDefinition).length, 0, "nor is claimSyncLock's");
 
   const prose = ` * \`acquireLock\` (src/lib/locks.ts) is a lease; acquireLock(k, ttl) returns a token.`;
   eq(unreasonedLockSites("a.ts", prose).length, 0, "a doc comment naming the call is not a call site");

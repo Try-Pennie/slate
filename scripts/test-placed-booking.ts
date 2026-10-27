@@ -38,7 +38,7 @@ import {
 } from "../src/lib/booking/orchestration.ts";
 import type { Booking, Bucket, EventType, User } from "../src/lib/db/types.ts";
 import type { BusinessHoursRules } from "../src/lib/availability/compute.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 // Tuesday 2026-06-09, 10:00 in Chicago (15:00Z); "now" is the Monday before, 09:00 Eastern.
 const NOW = Date.parse("2026-06-08T13:00:00.000Z");
@@ -116,6 +116,8 @@ function makeFake(f: Fake = {}) {
   const made = (b: Booking): BookingResult => ({ booking: b, manageUrl: `https://slate.test/booking/manage/${b.manage_token}`, newlyInserted: true });
   const deps: PlacedBookingDeps = {
     now: () => NOW,
+    // A free lock table of its own; the races below share one between two requests.
+    customerLock: lockTable().deps,
     manageUrl: (token) => `https://slate.test/booking/manage/${token}`,
     placeholderEnabled: async () => (f.enabled === undefined ? true : f.enabled),
     horizonDays: async () => (f.horizon === undefined ? 4 : f.horizon),
@@ -399,6 +401,181 @@ async function run() {
     const { deps } = makeFake({ person: [onIt] });
     const out: PlacedBookingOutcome = await placeBooking(base, deps);
     assert(out.kind === "existing-call" && out.call.onPlaceholder === true, "a call already on the placeholder is shown as one");
+  }
+
+  await races();
+}
+
+// --- #4261: two coordinators booking one customer at the same moment ---------------------------
+//
+// `placeBooking` reads the customer's calls and then creates, so two submissions under
+// different ids could each read "no call" before either created one. One lock table and
+// one bookings store are shared by both requests here, the create yields to the event
+// loop the way a real one does while it waits on Google, and the two run concurrently,
+// so the interleaving that made two calls is the one actually driven.
+
+/** A `sync_locks` stand in with the table's semantics: a key is claimed by whoever inserts it first. */
+function lockTable() {
+  const held = new Map<string, string>();
+  let n = 0;
+  const log: string[] = [];
+  let clock = NOW;
+  return {
+    held,
+    log,
+    deps: {
+      claim: async (key: string) => {
+        if (held.has(key)) {
+          log.push(`held ${key}`);
+          return { kind: "held" as const };
+        }
+        const token = `t${++n}`;
+        held.set(key, token);
+        log.push(`claimed ${key}`);
+        return { kind: "claimed" as const, token };
+      },
+      release: async (key: string, token: string) => {
+        if (held.get(key) !== token) return "not-held" as const;
+        held.delete(key);
+        log.push(`released ${key}`);
+        return "released" as const;
+      },
+      // A virtual clock: each wait moves it by the wait asked for, and yields so the
+      // other request runs meanwhile. No real time passes (L524).
+      sleep: async (ms: number) => {
+        clock += ms;
+        await new Promise((r) => setImmediate(r));
+      },
+      now: () => clock,
+    },
+  };
+}
+
+const yields = async (n: number) => {
+  for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
+};
+
+/** Deps for one request over a shared store and lock table. */
+function racer(store: Booking[], locks: ReturnType<typeof lockTable>, created: string[]) {
+  const { deps } = makeFake();
+  return {
+    ...deps,
+    customerLock: locks.deps,
+    findBookingByIdempotencyKey: async (key: string) => store.find((b) => b.idempotency_key === key) ?? null,
+    findActiveBookingsForPerson: async (identity: { salesforceId: string | null }) => {
+      await yields(1);
+      return store.filter((b) => b.salesforce_id?.slice(0, 15) === identity.salesforceId?.slice(0, 15));
+    },
+    createBooking: async (input: CreateBookingInput) => {
+      // The create's own reads and Google calls, during which the other request runs.
+      await yields(5);
+      const made = booking({
+        id: `bk-${input.idempotencyKey}`,
+        idempotency_key: input.idempotencyKey,
+        salesforce_id: input.salesforceId,
+        starts_at: input.startIso,
+        manage_token: `tok-${input.idempotencyKey}`,
+      });
+      store.push(made);
+      created.push(made.id);
+      return { booking: made, manageUrl: `https://slate.test/booking/manage/${made.manage_token}`, newlyInserted: true };
+    },
+  } as PlacedBookingDeps;
+}
+
+async function races() {
+  const SECOND = "6f1c2d3e-0000-4000-8000-000000000002";
+  {
+    const store: Booking[] = [];
+    const locks = lockTable();
+    const created: string[] = [];
+    const [a, b] = await Promise.all([
+      placeBooking({ ...base, coordinatorUserId: "coord-1", submissionId: SUBMISSION }, racer(store, locks, created)),
+      placeBooking({ ...base, coordinatorUserId: "coord-2", submissionId: SECOND }, racer(store, locks, created)),
+    ]);
+    eq(created.length, 1, "#4261: two coordinators booking one customer at once make exactly ONE call");
+    const kinds = [a.kind, b.kind].sort().join(",");
+    eq(kinds, "booked,existing-call", "one is booked and the other is answered with the call that now exists");
+    const winner = a.kind === "booked" ? a : b;
+    const loser = a.kind === "booked" ? b : a;
+    assert(
+      winner.kind === "booked" && loser.kind === "existing-call" && loser.call.bookingId === winner.booking.id,
+      "the existing call the second coordinator is shown is the one the first just booked",
+    );
+    assert(locks.log.some((l) => l.startsWith("held")), "the second really waited on the first's claim (the race was driven, not sequential)");
+    eq(locks.held.size, 0, "and every claim was released afterwards");
+  }
+  {
+    // The same race under the other spelling of the Lead id: one customer is one key.
+    const store: Booking[] = [];
+    const locks = lockTable();
+    const created: string[] = [];
+    await Promise.all([
+      placeBooking({ ...base, salesforceLeadId: "00Q000000000001", submissionId: SUBMISSION }, racer(store, locks, created)),
+      placeBooking({ ...base, salesforceLeadId: "00Q000000000001EAA", submissionId: SECOND }, racer(store, locks, created)),
+    ]);
+    eq(created.length, 1, "the 15 and the 18 character spellings of one Lead are one customer, so still one call");
+  }
+  {
+    // CONTROL: two different customers at the same moment both book; neither waits on the other.
+    const store: Booking[] = [];
+    const locks = lockTable();
+    const created: string[] = [];
+    const [a, b] = await Promise.all([
+      placeBooking({ ...base, salesforceLeadId: "00Q000000000001", submissionId: SUBMISSION }, racer(store, locks, created)),
+      placeBooking({ ...base, salesforceLeadId: "00Q000000000777", attendee: { name: "Other", email: "o@x.com", phone: "+12035550100" }, submissionId: SECOND }, racer(store, locks, created)),
+    ]);
+    eq(created.length, 2, "control: two different customers booked at the same moment both get a call");
+    assert(a.kind === "booked" && b.kind === "booked", "control: and both are answered as booked");
+    assert(!locks.log.some((l) => l.startsWith("held")), "control: neither waited on the other's claim");
+  }
+  {
+    // A double submit racing itself (the same submission id) still answers the first's booking.
+    const store: Booking[] = [];
+    const locks = lockTable();
+    const created: string[] = [];
+    const [a, b] = await Promise.all([
+      placeBooking(base, racer(store, locks, created)),
+      placeBooking(base, racer(store, locks, created)),
+    ]);
+    eq(created.length, 1, "a double submit racing itself books once");
+    assert(a.kind === "booked" && b.kind === "booked" && [a.replayed, b.replayed].sort().join(",") === "false,true",
+      "and the repeat is answered with the first's booking, as a replay, never as an existing call");
+  }
+  {
+    // A claim held for longer than the wait: refused as busy, nothing read or booked.
+    const locks = lockTable();
+    locks.held.set("coordinator_customer:00Q000000000001", "someone-else");
+    const { deps, calls } = makeFake();
+    const out = await refusal(() => placeBooking(base, { ...deps, customerLock: locks.deps } as PlacedBookingDeps));
+    eq(refusedFor(out), "customer-busy", "a customer another coordinator is still booking is refused as busy once the wait runs out");
+    assert(calls.create.length === 0 && calls.personWorlds.length === 0 && calls.keys.length === 0, "and nothing was read or booked");
+    eq(locks.held.get("coordinator_customer:00Q000000000001"), "someone-else", "and the other coordinator's claim is left alone");
+  }
+  {
+    // The lock table could not answer: an outage, said as one, never as "busy".
+    const locks = lockTable();
+    const { deps, calls } = makeFake();
+    const out = await refusal(() =>
+      placeBooking(base, { ...deps, customerLock: { ...locks.deps, claim: async () => ({ kind: "refused" as const }) } } as PlacedBookingDeps),
+    );
+    eq(refusedFor(out), "customer-lock-unavailable", "a claim that could not be made is refused as the outage it is (L11)");
+    assert(calls.create.length === 0, "and books nothing");
+  }
+  {
+    // A booking that throws still releases the claim, so the customer is not held for the TTL.
+    const locks = lockTable();
+    const { deps } = makeFake({ createThrows: () => new VerifyUnavailableError() });
+    const out = await refusal(() => placeBooking(base, { ...deps, customerLock: locks.deps } as PlacedBookingDeps));
+    assert(out instanceof VerifyUnavailableError, "the booking's own failure is what the coordinator is told");
+    eq(locks.held.size, 0, "and the claim was released on the way out");
+  }
+  {
+    // A release that could not run changes nothing about the answer: the TTL frees it.
+    const locks = lockTable();
+    const { deps } = makeFake();
+    const out = await placeBooking(base, { ...deps, customerLock: { ...locks.deps, release: async () => "refused" as const } } as PlacedBookingDeps);
+    eq(out.kind, "booked", "a refused release still answers the booking that was made");
   }
 }
 

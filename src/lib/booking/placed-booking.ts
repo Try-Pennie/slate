@@ -25,6 +25,10 @@
  *  - A DOUBLE SUBMIT books once: the key is the page's per submission id
  *    (`coordinatorKeyFor`), never the person and the start, which repeats the #3291
  *    tombstone defect, and a repeat is answered with the first's booking.
+ *  - ONE PLACEMENT AT A TIME PER CUSTOMER (#4261): everything from the replay check to
+ *    the create or the move runs in the customer's turn (`inCustomerTurn`), so two
+ *    coordinators booking one Lead at once make one call, and the second is answered
+ *    with it. Why a lock and not a database rule: `customer-turn.ts`.
  *
  * Every write goes through the booking machinery and the store, never this module: the
  * coordinator and their page are recorded on the booking row by the save itself
@@ -40,6 +44,7 @@ import { isOrgOpen, type BusinessHoursRules } from "../availability/compute.ts";
 import { withinLeadCallingWindow } from "./lead-calling-window.ts";
 import { findPersonMatch, type MatchStrength, type PersonIdentity, type NamedWorld } from "./person-dedupe.ts";
 import { leadIdSpellings } from "../salesforce/lead-xbc.ts";
+import { CustomerTurnRefusedError, customerTurnKey, inCustomerTurn, type CustomerTurnDeps } from "./customer-turn.ts";
 import {
   ExistingCallCheckUnavailableError,
   NoEligibleAgentsError,
@@ -118,6 +123,8 @@ export const PLACED_BOOKING_REFUSALS = [
   "outside-business-hours",
   "no-placeholder",
   "confirmed-call-changed",
+  "customer-busy",
+  "customer-lock-unavailable",
 ] as const;
 export type PlacedBookingRefusal = (typeof PLACED_BOOKING_REFUSALS)[number];
 
@@ -134,6 +141,8 @@ const REFUSAL_SENTENCE: Record<PlacedBookingRefusal, string> = {
   "outside-business-hours": "Pennie is closed at that time.",
   "no-placeholder": "No advisor is free then, and this team has no placeholder advisor to hold the call.",
   "confirmed-call-changed": "The call you confirmed moving is no longer active. Check the customer's calls and try again.",
+  "customer-busy": "Another booking for this customer is still being made, so nothing was placed. Try again in a moment.",
+  "customer-lock-unavailable": "Whether another booking for this customer is being made could not be checked, so nothing was placed. Try again in a moment.",
 };
 
 export class PlacedBookingRefusedError extends Error {
@@ -147,6 +156,8 @@ export class PlacedBookingRefusedError extends Error {
 
 export interface PlacedBookingDeps {
   now(): number;
+  /** The customer's turn (#4261): the claim in `sync_locks`, its release, and the wait between asks. */
+  customerLock: CustomerTurnDeps;
   /** The manage page for a booking's token (`manageUrlFor`). */
   manageUrl(token: string): string;
   /** `booking_settings.placeholder_booking_enabled`, or null when the read failed. */
@@ -254,6 +265,26 @@ export async function placeBooking(input: PlacedBookingInput, deps: PlacedBookin
   const startMs = Date.parse(input.startIso);
   if (!Number.isFinite(startMs)) throw new PlacedBookingRefusedError("start-unreadable");
 
+  try {
+    return await inCustomerTurn(customerTurnKey(leadId), deps.customerLock, () => placeInTurn(input, leadId, zone, startMs, deps));
+  } catch (err) {
+    if (err instanceof CustomerTurnRefusedError) throw new PlacedBookingRefusedError(err.reason);
+    throw err;
+  }
+}
+
+/**
+ * The placement itself, run only in the customer's turn: every read it decides on (the
+ * replay, the customer's calls) happens after the claim, so a second coordinator's
+ * placement for this customer sees what the first one made.
+ */
+async function placeInTurn(
+  input: PlacedBookingInput,
+  leadId: string,
+  zone: string,
+  startMs: number,
+  deps: PlacedBookingDeps,
+): Promise<PlacedBookingOutcome> {
   const key = coordinatorKeyFor(input.submissionId);
   const replay = await deps.findBookingByIdempotencyKey(key);
   if (replay) {

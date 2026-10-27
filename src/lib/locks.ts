@@ -9,31 +9,63 @@ import { makeSharedInFlight } from "@/lib/concurrency";
  * A claim expires after its TTL, so a crashed holder can't deadlock the key.
  */
 
-/** Returns the claim token on success, null when someone else holds the key. */
-export async function acquireLock(
-  key: string,
-  ttlMs: number,
-): Promise<string | null> {
+/**
+ * What one claim did (#4261): took the key, found it held by a live claim, or could not
+ * be made at all. A lane that only skips a tick treats the last two alike
+ * (`acquireLock`); a caller that answers a person must not, since "somebody else is
+ * doing this" and "the database did not answer" call for different words (L11).
+ */
+export type LockClaim = { kind: "claimed"; token: string } | { kind: "held" } | { kind: "refused" };
+
+/** Postgres's unique violation: the key already has a claim. */
+const KEY_EXISTS = "23505";
+
+/**
+ * Claims the key, saying which of the three things happened. A client that THROWS (the
+ * fetch itself failing) propagates, exactly as `acquireLock` always let it, so no lane's
+ * handling of that changes.
+ */
+export async function claimSyncLock(key: string, ttlMs: number): Promise<LockClaim> {
   const db = supabaseAdmin();
   const { claimIso, staleBeforeIso } = claimWindow(Date.now(), ttlMs);
-
   // Fresh key: the primary key makes the insert the atomic claim.
   const ins = await db.from("sync_locks").insert({ key, claimed_at: claimIso });
-  if (!ins.error) return claimIso;
+  if (!ins.error) return { kind: "claimed", token: claimIso };
 
-  // Key exists: steal it only if the current claim is stale.
-  // error-ok: a refused update arrives as `data: null`, which reads as "somebody
-  // else holds it" and is the SAFE side of this gate: the lane skips this tick
-  // and the next one retries. A read that stayed broken would stop the lane
-  // entirely, and the lane watchdog pages on exactly that (#1027 family), so the
-  // silence is watched rather than absolute.
-  const { data } = await db
+  // Key exists: steal it only if the current claim is stale. Tried after ANY insert
+  // error, as it always was, so a transient insert failure over a stale claim still
+  // claims.
+  const { data, error } = await db
     .from("sync_locks")
     .update({ claimed_at: claimIso })
     .eq("key", key)
     .lt("claimed_at", staleBeforeIso)
     .select("key");
-  return data?.length ? claimIso : null;
+  if (error) {
+    log.warn("locks", { msg: "lock steal could not run", key }, error);
+    return { kind: "refused" };
+  }
+  if (data?.length) return { kind: "claimed", token: claimIso };
+  // Nothing stale to steal. Only an insert refused because the key exists shows a live
+  // claim; any other insert failure shows nothing about who holds it.
+  if (ins.error.code === KEY_EXISTS) return { kind: "held" };
+  log.warn("locks", { msg: "lock claim could not be made", key }, ins.error);
+  return { kind: "refused" };
+}
+
+/**
+ * Returns the claim token on success, null when someone else holds the key OR the claim
+ * could not be made. Null is the SAFE side for a lane: it skips this tick and the next
+ * one retries. A read that stayed broken would stop the lane entirely, and the lane
+ * watchdog pages on exactly that (#1027 family), so the silence is watched rather than
+ * absolute (#2542).
+ */
+export async function acquireLock(
+  key: string,
+  ttlMs: number,
+): Promise<string | null> {
+  const claim = await claimSyncLock(key, ttlMs);
+  return claim.kind === "claimed" ? claim.token : null;
 }
 
 /**

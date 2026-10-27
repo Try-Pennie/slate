@@ -18,7 +18,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const supabase = vi.hoisted(() => ({ supabaseAdmin: vi.fn() }));
 vi.mock("@/lib/supabase/admin", () => supabase);
 
-import { acquireLock, makeLockLease, releaseLock, renewLock, type RenewLockResult } from "@/lib/locks";
+import { acquireLock, claimSyncLock, makeLockLease, releaseLock, renewLock, type RenewLockResult } from "@/lib/locks";
 
 type Result = { data: unknown; error: { message: string } | null };
 
@@ -241,5 +241,65 @@ describe("releaseLock (#4180)", () => {
     expect(await releaseLock("k", "t1")).toBe("refused");
     supabase.supabaseAdmin.mockReturnValue(locksWhoseDeleteAnswers(new Error("fetch failed")).db);
     expect(await releaseLock("k", "t1")).toBe("refused");
+  });
+});
+
+// #4261: a caller that must tell "somebody else holds it" from "the claim could not be
+// made" (the coordinator's per customer turn, which waits on the first and refuses the
+// second as an outage). `acquireLock` answers null for both, which is right for a lane
+// that only skips a tick, so `claimSyncLock` says which, and `acquireLock` is built on it.
+describe("claimSyncLock (#4261)", () => {
+  function locks(insert: { error: { message: string; code?: string } | null }, steal: Result | Error) {
+    const builder: Record<string, unknown> = {
+      update: () => builder,
+      eq: () => builder,
+      lt: () => builder,
+      select: async () => {
+        if (steal instanceof Error) throw steal;
+        return steal;
+      },
+      insert: async () => insert,
+    };
+    return { from: () => builder };
+  }
+  const taken = { error: { message: "duplicate key value violates unique constraint", code: "23505" } };
+
+  it("claims a fresh key with the insert", async () => {
+    supabase.supabaseAdmin.mockReturnValue(locks({ error: null }, { data: [], error: null }));
+    const claim = await claimSyncLock("k", 60_000);
+    expect(claim.kind).toBe("claimed");
+  });
+
+  it("answers held when the key exists and its claim is live", async () => {
+    supabase.supabaseAdmin.mockReturnValue(locks(taken, { data: [], error: null }));
+    expect(await claimSyncLock("k", 60_000)).toEqual({ kind: "held" });
+  });
+
+  it("CONTROL: steals a stale claim and answers claimed", async () => {
+    supabase.supabaseAdmin.mockReturnValue(locks(taken, { data: [{ key: "k" }], error: null }));
+    expect((await claimSyncLock("k", 60_000)).kind).toBe("claimed");
+  });
+
+  it("answers refused, never held, when the steal could not run (L11)", async () => {
+    supabase.supabaseAdmin.mockReturnValue(locks(taken, { data: null, error: { message: "statement timeout" } }));
+    expect(await claimSyncLock("k", 60_000)).toEqual({ kind: "refused" });
+  });
+
+  it("lets a client that throws propagate, as acquireLock always has", async () => {
+    supabase.supabaseAdmin.mockReturnValue(locks(taken, new Error("fetch failed")));
+    await expect(claimSyncLock("k", 60_000)).rejects.toThrow("fetch failed");
+    await expect(acquireLock("k", 60_000)).rejects.toThrow("fetch failed");
+  });
+
+  it("answers refused when the insert failed for a reason other than the key existing and nothing was stolen", async () => {
+    supabase.supabaseAdmin.mockReturnValue(locks({ error: { message: "connection reset" } }, { data: [], error: null }));
+    expect(await claimSyncLock("k", 60_000)).toEqual({ kind: "refused" });
+  });
+
+  it("leaves acquireLock's answers as they were: a token only for a claim", async () => {
+    supabase.supabaseAdmin.mockReturnValue(locks(taken, { data: [], error: null }));
+    expect(await acquireLock("k", 60_000)).toBeNull();
+    supabase.supabaseAdmin.mockReturnValue(locks({ error: { message: "connection reset" } }, { data: [{ key: "k" }], error: null }));
+    expect(await acquireLock("k", 60_000)).not.toBeNull();
   });
 });

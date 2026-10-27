@@ -318,7 +318,12 @@ is still booked, and a confirmed move to one still moves.
    and the stack flag that `commit_reschedule` deliberately clears (0206).
 4. **One call per customer**, matched on the Salesforce Lead id alone. An existing call
    is shown, and moved (the same booking and manage link) only once the coordinator
-   confirms; a match on email or phone only is shown and refused.
+   confirms; a match on email or phone only is shown and refused. Two coordinators
+   booking one Lead at the same moment make one call (#4261): the whole placement runs
+   holding a per customer claim in `sync_locks` (`src/lib/booking/customer-turn.ts`), so
+   the second waits for the first and is answered with the call it made. A claim still
+   held after 10 seconds is refused as somebody else booking the customer; a claim that
+   could not be made is refused as an outage.
 5. **The switch.** `booking_settings.placeholder_booking_enabled` (0207), false by
    default. Off, nothing is placed on the placeholder; an unreadable switch is refused,
    never read as on.
