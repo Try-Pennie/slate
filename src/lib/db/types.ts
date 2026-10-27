@@ -900,6 +900,17 @@ export interface Booking {
    */
   reminder_sent_for: string | null;
   /**
+   * When the 24 hour reminder recorded in `reminder_sent_for` was sent (#4282), which
+   * the 1 hour email's two hour gap is judged from. Written only once Gmail accepted
+   * it; null when not known (sent before 0210, mid send, or failed).
+   */
+  reminder_sent_at: string | null;
+  /**
+   * The start the 1 hour reminder email was sent about (#4282), on the same terms as
+   * `reminder_sent_for`. Null means none sent.
+   */
+  hour_reminder_sent_for: string | null;
+  /**
    * Set by the reassign API to stack a consult onto a busy owning agent, and on a
    * staff placed booking, which stacks on the placeholder by design (#4200). A move
    * onto the placeholder sets it true (`commit_reschedule_onto_placeholder`, migration

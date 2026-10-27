@@ -112,7 +112,7 @@ function reasonRefusal(input: ReasonInput): string {
 }
 import { formatSlotTime } from "@/lib/booking/slot-label";
 import { REASSIGN_INVITE_DESCRIPTION } from "@/lib/booking/orchestration";
-import { reminderBody, reminderSubject } from "@/lib/booking/reminder";
+import { reminderBody, reminderSubject, hourReminderBody, hourReminderSubject } from "@/lib/booking/reminder";
 
 /** One line of copy, and the state that puts it on screen. */
 export interface CopyLine {
@@ -902,6 +902,8 @@ export function reminderCopyScreens(): CopyScreen[] {
   const withCallingNumber = { ...tomorrow, callingNumber: CALLING_NUMBER };
   const laterToday = { ...tomorrow, startsAtIso: TODAY_ISO };
   const otherZone = { ...tomorrow, timezone: "America/Los_Angeles" };
+  /** #4282: the 1 hour email, written as the lane sends it, just inside the hour. */
+  const hourBefore = { ...withCallingNumber, nowMs: Date.parse(TOMORROW_ISO) - 57 * 60_000 };
 
   return [
     {
@@ -940,6 +942,21 @@ export function reminderCopyScreens(): CopyScreen[] {
       lines: [
         { state: "the subject line, the same as any reminder", text: reminderSubject(onPlaceholder) },
         { state: "the body, even when the number we call from is known", text: reminderBody(onPlaceholder) },
+      ],
+    },
+    {
+      screen: "Reminder email: an hour before the call",
+      purpose:
+        "The second reminder (#4282), sent beside the lead's one hour text. It is skipped " +
+        "when the first reminder went out in the last two hours, and for a call booked " +
+        "less than an hour ahead, so a lead never gets the two back to back.",
+      lines: [
+        { state: "the subject line", text: hourReminderSubject(hourBefore) },
+        { state: "the body, when the number we call from is known", text: hourReminderBody(hourBefore) },
+        {
+          state: "the body, for a call on the placeholder advisor",
+          text: hourReminderBody({ ...hourBefore, agentName: "Marcia", onPlaceholder: true }),
+        },
       ],
     },
     {

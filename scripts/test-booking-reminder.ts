@@ -34,6 +34,7 @@ const NOW = Date.UTC(2026, 8, 16, 14, 0, 0);
 const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
   startsAtMs: NOW + 12 * HOUR,
   reminderSentForMs: null,
+  hourReminderSentForMs: null,
   status: "confirmed" as string,
   ...over,
 });

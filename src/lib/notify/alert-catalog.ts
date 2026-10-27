@@ -1015,11 +1015,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     kind: "incident",
     suffix: "booking",
     why:
-      "That lead's 24 hour reminder did not go out, or may not have, and nothing is set to send it: " +
+      "That lead's 24 hour or 1 hour reminder email (the text says which, and the 1 hour email's key ends in :hour, #4282) did not go out, or may not have, and nothing is set to send it: " +
       "it was too close to the call to try again, Google refused it, Slate could not build it, the " +
       "send cannot say whether Gmail accepted it (a retry could deliver a second copy), or handing " +
       "it back for a retry could not be confirmed. A send that provably did not go out while the " +
-      "call is far enough away for the retry to land before the hour is retried instead and never pages. There is no healthy state to announce, only a call somebody was not reminded " +
+      "call is far enough away for the retry to land in time is retried instead and never pages. There is no healthy state to announce, only a call somebody was not reminded " +
       "about (#2359). Keyed per booking, so one lost reminder cannot hold back another's page " +
       "(2026-10-05).",
   },

@@ -30,6 +30,8 @@ const due = (over: Partial<DueBooking> = {}): DueBooking => ({
   // send path rather than the hold. The hold has its own section at the end.
   createdAtIso: new Date(NOW - HOUR).toISOString(),
   reminderSentForIso: null,
+  reminderSentAtIso: null,
+  hourReminderSentForIso: null,
   status: "confirmed",
   attendeeEmail: "lead@example.com",
   agentEmail: "jordan@trypennie.com",
@@ -52,6 +54,7 @@ function spy(over: Partial<ReminderDeps> = {}) {
   const warnings: string[] = [];
   const warned: { msg: string; bookingId: string | null; err: unknown; fields: Record<string, unknown> }[] = [];
   const released: { id: string; claimedForIso: string; restoreTo: string | null }[] = [];
+  const marked: string[] = [];
   const deps: ReminderDeps = {
     now: () => NOW,
     loadDue: async () => [due()],
@@ -86,13 +89,17 @@ function spy(over: Partial<ReminderDeps> = {}) {
     },
     // No photo held by default; the photo has its own section at the end.
     readAdvisorPhotos: async () => new Map(),
+    // Kept out of `order`, which the suites above assert exactly.
+    markSent: async (id, startsAtIso) => {
+      marked.push(`${id}@${startsAtIso}`);
+    },
     warn: (msg, bookingId, err, fields) => {
       warnings.push(msg);
       warned.push({ msg, bookingId, err, fields: fields ?? {} });
     },
     ...over,
   };
-  return { deps, order, sent, alerts, alertIds, warnings, warned, released };
+  return { deps, order, sent, alerts, alertIds, warnings, warned, released, marked };
 }
 
 // --- the claim comes BEFORE the send, which is what makes a crash safe -----------
@@ -1154,6 +1161,103 @@ const failingWith = (err: unknown) => async () => {
   eq(s.order.filter((o) => o === "refresh").length, 1, "only the routed call's invite is rewritten with the number");
   eq(run.withCallingNumber, 1, "and only it counts as sent with a number");
   eq(asked, [["00QUi000010889AMAQ"]], "Salesforce is asked only about the routed call's lead");
+}
+
+// --- the 1 hour email (#4282) -------------------------------------------------------
+//
+// The same lane, run a second time per tick for the 1 hour email: the same claim
+// before send, the same sender, its own rule for being due and its own words.
+const MIN = 60_000;
+const hourDue = (over: Partial<DueBooking> = {}): DueBooking =>
+  due({
+    startsAtIso: new Date(NOW + 55 * MIN).toISOString(),
+    createdAtIso: new Date(NOW - 48 * HOUR).toISOString(),
+    reminderSentForIso: new Date(NOW + 55 * MIN).toISOString(),
+    reminderSentAtIso: new Date(NOW - 23 * HOUR).toISOString(),
+    hourReminderSentForIso: null,
+    ...over,
+  });
+{
+  const s = spy({ loadDue: async () => [hourDue()] });
+  const run = await runBookingReminders(s.deps, "hour");
+  eq(s.order.join(" -> "), "claim:bk-1 -> send:lead@example.com", "the 1 hour email is claimed before it is sent");
+  eq(run.sent, 1, "and goes out once");
+  assert(/in about an hour/.test(s.sent[0]!.subject), `in the 1 hour words (${s.sent[0]!.subject})`);
+}
+{
+  // A booking made a few hours ahead: its 24 hour email went out half an hour ago.
+  const s = spy({ loadDue: async () => [hourDue({ reminderSentAtIso: new Date(NOW - 30 * MIN).toISOString() })] });
+  const run = await runBookingReminders(s.deps, "hour");
+  eq(s.order, [], "inside the two hour gap nothing is claimed or sent");
+  eq(run.attempted, 0, "and nothing counts as attempted");
+}
+{
+  // The 24 hour lane, judging the same booking after its 1 hour email went out.
+  const start = new Date(NOW + 50 * MIN).toISOString();
+  const s = spy({ loadDue: async () => [due({ startsAtIso: start, reminderSentForIso: null, hourReminderSentForIso: start })] });
+  await runBookingReminders(s.deps);
+  eq(s.sent.length, 0, "a 24 hour email is not sent after the 1 hour email for the same start");
+}
+{
+  // Too close to retry: the 1 hour email's own floor, 30 minutes plus the margin.
+  const s = spy({
+    loadDue: async () => [hourDue({ startsAtIso: new Date(NOW + 35 * MIN).toISOString(), reminderSentForIso: null, reminderSentAtIso: null })],
+    send: failingWith(mintTimeout()),
+  });
+  await runBookingReminders(s.deps, "hour");
+  eq(s.released.length, 0, "a 1 hour email failing 35 minutes out is not handed back");
+  eq(s.alerts.length, 1, "so it pages");
+  assert(/1 hour reminder email/.test(s.alerts[0]!), `naming the 1 hour email (${s.alerts[0]})`);
+  assert(!/24 hour/.test(s.alerts[0]!), "never the 24 hour one");
+  assert(/too close to the call/i.test(s.alerts[0]!), `and that it is too late to try again (${s.alerts[0]})`);
+}
+{
+  const s = spy({ loadDue: async () => [hourDue()], send: failingWith(mintTimeout()) });
+  const run = await runBookingReminders(s.deps, "hour");
+  eq(s.released.length, 1, "55 minutes out, a send that provably went nowhere is handed back");
+  eq(s.released[0]!.restoreTo, null, "to the 1 hour record this tick read, not the 24 hour one");
+  eq(run.retrying, 1, "and retried next tick");
+}
+{
+  const many = Array.from({ length: REMINDER_PAGES_PER_TICK + 2 }, (_, i) =>
+    hourDue({ id: `bk-${i}`, attendeeEmail: `l${i}@example.com`, startsAtIso: new Date(NOW + 35 * MIN).toISOString(), reminderSentForIso: null, reminderSentAtIso: null }),
+  );
+  const s = spy({ loadDue: async () => many, send: failingWith(mintTimeout()) });
+  await runBookingReminders(s.deps, "hour");
+  const foldedPage = s.alerts.at(-1)!;
+  assert(/1 hour reminder emails/.test(foldedPage), `the folded page names the 1 hour email too (${foldedPage})`);
+}
+
+// --- the 24 hour email's send time is recorded only once it has gone (#4282) ---------
+//
+// The 1 hour email's two hour gap is judged from it. Stamped at the claim, a 24 hour
+// email that FAILED would read as sent minutes ago and cost the lead the 1 hour email
+// too, so the lead would get neither.
+{
+  const s = spy();
+  await runBookingReminders(s.deps);
+  eq(s.marked, [`bk-1@${due().startsAtIso}`], "a 24 hour email that went out records its send time");
+}
+{
+  const s = spy({ send: failingWith(new Error("Gmail send failed: 503")) });
+  await runBookingReminders(s.deps);
+  eq(s.marked, [], "one that failed records none");
+}
+{
+  const s = spy({ loadDue: async () => [hourDue()] });
+  await runBookingReminders(s.deps, "hour");
+  eq(s.marked, [], "the 1 hour email records no send time: nothing reads one");
+}
+{
+  const s = spy({
+    markSent: async () => {
+      throw new Error("update failed");
+    },
+  });
+  const run = await runBookingReminders(s.deps);
+  eq(run.sent, 1, "a send time that cannot be written does not turn a sent email into a failed one");
+  eq(s.alerts.length, 0, "and pages nobody: the 1 hour email then simply goes out");
+  assert(s.warnings.some((w) => /send time/.test(w)), "but it is logged");
 }
 
 finish();
