@@ -72,6 +72,8 @@ async function run() {
     // #4206: the seat's inbox is not read, so the invite sends the customer to our texts.
     assert(String(calls.createEvent[0].args.description).endsWith(placeholderReplyLine("invite")),
       `the placeholder's invite ends with the reply to our texts line (got ${calls.createEvent[0].args.description})`);
+    assert(!String(calls.createEvent[0].args.description).includes("Reschedule or cancel"),
+      "and carries no manage link (Dan, 2026-10-27)");
     const row = calls.insertBooking[0] ?? {};
     assert(row.kind === "staff_placed" && row.allow_double_book === true, "the row is staff placed and stacks");
     assert(row.assigned_user_id === "p" && row.agent_name === "Marcia" && row.agent_email === "marcia@x.com", "on the placeholder");
@@ -204,6 +206,8 @@ async function run() {
     assert(calls.createEvent.length === 1 && calls.createEvent[0].email === "marcia@x.com", "a new invite goes on the placeholder's calendar");
     assert(String(calls.createEvent[0].args.description).endsWith(placeholderReplyLine("invite")),
       "written as the placeholder's invite, ending with the reply to our texts line (#4206)");
+    assert(!String(calls.createEvent[0].args.description).includes("Reschedule or cancel"),
+      "with no manage link");
     const commit = calls.commitReschedule[0];
     assert(commit?.ontoPlaceholder === true && commit.patch.assigned_user_id === "p", "committed through the placeholder's own function, onto the placeholder");
     assert((commit?.outbox?.payload as { leftPlaceholder?: boolean }).leftPlaceholder === undefined, "it records no left_placeholder: the call went ONTO it");

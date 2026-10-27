@@ -1146,6 +1146,8 @@ const failingWith = (err: unknown) => async () => {
   eq(placeholder.attachments?.length ?? 0, 0, "with no contact card");
   assert(!/\(\d{3}\) \d{3}|\+1\d{10}/.test(placeholder.body), "and no number of any kind");
   assert(/reply to one of our texts/.test(placeholder.body), "it tells the customer to reply to one of our texts");
+  assert(!placeholder.body.includes("https://slate.trypennie.app/manage/abc"), "with no manage link (Dan, 2026-10-27)");
+  assert(routed.body.includes("https://slate.trypennie.app/manage/abc"), "while the routed call keeps its manage link");
   assert(!/reply to this email and it will reach me/.test(placeholder.body), "and never promises a reply to the seat is read");
   eq(routed.attachments?.length ?? 0, 1, "the routed call beside it keeps its card");
   assert(/reply to this email and it will reach me directly/.test(routed.body), "and its own reply line");

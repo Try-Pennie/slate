@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { embedCopyEntries, embedCopyState } from "../src/lib/booking/embed-copy.ts";
 import { inviteCopyScreens } from "../src/lib/booking/copy-preview.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { placeholderReplyLine } from "../src/lib/booking/manage-copy.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const widget = readFileSync(join(ROOT, "public", "widget.js"), "utf8");
@@ -146,19 +147,28 @@ const screens = inviteCopyScreens();
   }
 }
 
-// The invite is the lead's only way back to their booking, so the manage link has
-// to be IN it. A body that lost the link would still pass every check above.
+// A routed invite is the lead's only way back to their booking, so the manage link
+// has to be IN it. A body that lost the link would still pass every check above.
+// The one exception is decided, not lost: a call on the placeholder advisor offers no
+// way to change it (Dan, 2026-10-27, #4206), so its invite must carry NO link, and
+// is told apart by the reply to our texts line it carries instead.
 {
   const bodies = screens
     .flatMap((s) => s.lines)
     .map((l) => l.text)
     .filter((t) => t.startsWith("Booked via Pennie"));
-  assert(bodies.length >= 2, "both invite bodies are previewed, with and without a number");
-  for (const b of bodies) {
+  const placeholder = bodies.filter((b) => b.includes(placeholderReplyLine("invite")));
+  const routed = bodies.filter((b) => !b.includes(placeholderReplyLine("invite")));
+  assert(routed.length >= 2, "both routed invite bodies are previewed, with and without a number");
+  for (const b of routed) {
     assert(
       b.includes("/booking/manage/"),
       `the invite carries the lead's way back to their booking (got: ${b})`,
     );
+  }
+  eq(placeholder.length, 1, "the placeholder advisor's invite is previewed");
+  for (const b of placeholder) {
+    assert(!b.includes("/booking/manage/"), `the placeholder's invite offers no way to change the call (got: ${b})`);
   }
 }
 

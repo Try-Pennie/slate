@@ -1201,12 +1201,12 @@ fails. The words in the page decide the branch.
   no longer says the decided text. To fix it, sign in to the seat's Gmail, Settings, See
   all settings, General, Vacation responder: on, no end date, both "only send a response
   to people in my Contacts" and "only send a response to people in Pennie" unticked, and
-  this text, word for word (Dan, 2026-10-26; line breaks and the apostrophe's style do not
+  this text, word for word (Dan, 2026-10-27; line breaks and the apostrophe's style do not
   matter):
 
-  > Hi, thanks for writing. Nobody reads this inbox, so we won't see your email. To change
-  > your call or ask a question, reply to one of our texts and someone will answer you
-  > there. Thank you, the Pennie team
+  > Hi, thanks for writing. Nobody reads this inbox, so we won't see your email. If you
+  > have a question, reply to one of our texts and someone will answer you there. Thank
+  > you, the Pennie team
 
   The text lives in `PLACEHOLDER_SEAT_AUTO_REPLY` (`src/lib/monitor/placeholder-seat.ts`);
   changing what the responder says means changing that constant in the same breath.

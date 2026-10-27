@@ -238,7 +238,7 @@ export function reminderSubject(input: ReminderCopyInput): string {
  */
 export function reminderBody(input: ReminderCopyInput): string {
   const when = `${dayWord(input)} at ${timeLabel(input)}`;
-  if (input.onPlaceholder) return placeholderReminderBody(input, when);
+  if (input.onPlaceholder) return placeholderReminderBody(when);
   // #1334: with the calling number known, the lead has one thing worth doing before
   // the call, saving it, so "nothing you need to set up" stops being true. The
   // sentence is the manage page's own (`callComesFrom`), and the card it points at
@@ -267,20 +267,20 @@ export function reminderBody(input: ReminderCopyInput): string {
 }
 
 /**
- * The placeholder's reminder (#4206, Dan 2026-10-26). The seat's name is the sender's
- * display name and nothing more: Marcia is who texts the customer, not who calls, so
- * the call is "with Pennie" and the email is signed by the team, as the seat's auto
- * reply is. It names no number, even a known calling number, because a text to it
- * reaches nobody and a card saved under Marcia's name invites exactly that; and it
- * never says a reply will be read, because nobody reads the seat's inbox.
+ * The placeholder's reminder (#4206, Dan 2026-10-26 and 27). The seat's name is the
+ * sender's display name and nothing more: Marcia is who texts the customer, not who
+ * calls, so the call is "with Pennie" and the email is signed by the team, as the
+ * seat's auto reply is. It names no number, even a known calling number, because a
+ * text to it reaches nobody and a card saved under Marcia's name invites exactly that;
+ * it never says a reply will be read, because nobody reads the seat's inbox; and it
+ * carries no manage link and no offer to change or cancel (Dan, 2026-10-27: a customer
+ * who texts asking to change the call is handled then), so `manageUrl` goes unused.
  */
-function placeholderReminderBody(input: ReminderCopyInput, when: string): string {
+function placeholderReminderBody(when: string): string {
   return [
     `Hi, this is a reminder that your call with Pennie is ${when}.`,
     "",
     "We will call you on the number you gave us, so there is nothing you need to set up.",
-    "",
-    `If that time no longer works, you can pick another or cancel here: ${input.manageUrl}`,
     "",
     placeholderReplyLine("email"),
     "",

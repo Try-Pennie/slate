@@ -309,8 +309,9 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
 
 // --- a call on the placeholder advisor, Marcia (#4206, Dan 2026-10-26) --------------
 // The reminder goes out from the placeholder seat, whose inbox nobody reads. So it
-// never invites a reply to itself, names no number, and says what Dan decided: to
-// change the call or ask a question, reply to one of our texts.
+// never invites a reply to itself, names no number, offers no way to change the call
+// (Dan, 2026-10-27: a customer who texts asking to change it is handled then), and
+// sends a question to our texts.
 {
   const args = {
     agentName: "Marcia",
@@ -325,9 +326,11 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
     const body = reminderBody({ ...args, callingNumber });
     const label = `number ${callingNumber ?? "unknown"}`;
     assert(
-      body.includes("To change your call or ask a question, reply to one of our texts and someone will answer you there."),
-      `${label}: it tells the customer to reply to one of our texts`,
+      body.includes("Nobody reads replies to this email. If you have a question, reply to one of our texts and someone will answer you there."),
+      `${label}: it sends a question to our texts`,
     );
+    assert(!body.includes(args.manageUrl), `${label}: it carries no manage link`);
+    assert(!/pick another|cancel|change/i.test(body), `${label}: and never offers to change or cancel the call`);
     assert(/Nobody reads replies to this email/.test(body), `${label}: and says a reply to the email is not read`);
     assert(!/reply to this email and it will reach me/i.test(body), `${label}: never the routed promise that a reply is read`);
     assert(!/\(\d{3}\) \d{3}|\+1\d{10}/.test(body), `${label}: no number of any kind is named`);
@@ -335,7 +338,6 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
     assert(!body.includes("Marcia"), `${label}: the seat's name is not presented as the advisor calling`);
     assert(/your call with Pennie is/.test(body), `${label}: the call is with Pennie`);
     assert(/The Pennie team$/.test(body), `${label}: signed by the Pennie team`);
-    assert(body.includes(args.manageUrl), `${label}: the link to move or cancel is kept`);
     assert(!DASHES.test(body), `${label}: no dashes as punctuation`);
   }
   eq(reminderSubject(args), reminderSubject({ ...args, onPlaceholder: false }), "the subject is the same either way");

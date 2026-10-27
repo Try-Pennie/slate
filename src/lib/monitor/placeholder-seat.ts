@@ -80,12 +80,13 @@ export type SeatSurface = "calendar" | "gmail" | "auto-reply";
 
 /**
  * The seat's standing Gmail auto reply, word for word as Dan decided it (#4206,
- * 2026-10-26). It names no number, for the reason Marcia's invite and reminder name
- * none (`REPLY_TO_OUR_TEXTS`, `src/lib/booking/manage-copy.ts`).
+ * 2026-10-27). It names no number and offers no change to the call, for the reasons
+ * Marcia's invite and reminder do neither (`REPLY_TO_OUR_TEXTS`,
+ * `src/lib/booking/manage-copy.ts`).
  */
 export const PLACEHOLDER_SEAT_AUTO_REPLY =
-  "Hi, thanks for writing. Nobody reads this inbox, so we won't see your email. To change your call or ask a " +
-  "question, reply to one of our texts and someone will answer you there. Thank you, the Pennie team";
+  "Hi, thanks for writing. Nobody reads this inbox, so we won't see your email. If you have a question, " +
+  "reply to one of our texts and someone will answer you there. Thank you, the Pennie team";
 
 /** The fields of `users.settings.getVacation` this check reads; Gmail omits a false or empty one. */
 export interface VacationSettings {

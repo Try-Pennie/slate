@@ -212,17 +212,21 @@ assert(!desc.includes(" - ") && !desc.includes("\u2014"), "lead-facing copy has 
   assert(!desc.includes(TEST_MODE_COPY.line), "and never carries the test line");
 }
 
-// #4206 (Dan, 2026-10-26): a call on the placeholder advisor, Marcia, sends its
+// #4206 (Dan, 2026-10-26 and 27): a call on the placeholder advisor, Marcia, sends its
 // invite from the placeholder seat, whose inbox nobody reads. Its invite names no
-// text number and says to reply to one of our texts; a routed invite is unchanged.
+// number, offers no way to change the call (no manage link: a customer who asks to
+// change it by text is handled then), and sends a question to our texts. A routed
+// invite is unchanged.
 {
   const placed = eventDescription("+12035615295", "https://x/m/t", { isTest: false, onPlaceholder: true });
   assert(
     placed ===
-      "Booked via Pennie. Phone: +12035615295\nReschedule or cancel: https://x/m/t\n" +
-        "Nobody reads replies to this invite. To change your call or ask a question, reply to one of our texts and someone will answer you there.",
-    "the placeholder invite ends with the reply to our texts line",
+      "Booked via Pennie. Phone: +12035615295\n" +
+        "Nobody reads replies to this invite. If you have a question, reply to one of our texts and someone will answer you there.",
+    "the placeholder invite is the dial line and the reply to our texts line, nothing else",
   );
+  assert(!/Reschedule or cancel|https:\/\/x\/m\/t/.test(placed), "it carries no manage link");
+  assert(!/change/i.test(placed), "and never says the call can be changed");
   assert(
     eventDescription("+12035615295", "https://x/m/t", { isTest: false, onPlaceholder: false }) ===
       eventDescription("+12035615295", "https://x/m/t"),

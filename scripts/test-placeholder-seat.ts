@@ -267,9 +267,9 @@ const on = (over: Partial<VacationSettings> = {}): VacationSettings => ({
 {
   eq(
     DECIDED,
-    "Hi, thanks for writing. Nobody reads this inbox, so we won't see your email. To change your call or ask a question, " +
+    "Hi, thanks for writing. Nobody reads this inbox, so we won't see your email. If you have a question, " +
       "reply to one of our texts and someone will answer you there. Thank you, the Pennie team",
-    "the decided text is Dan's, word for word (#4206, 2026-10-26)",
+    "the decided text is Dan's, word for word (#4206, 2026-10-27)",
   );
   eq(judgeAutoReply(on(), NOW_MS), "matches", "on, unrestricted and the decided text: it matches");
   eq(judgeAutoReply(on({ enableAutoReply: false }), NOW_MS), "off", "switched off is off");
@@ -284,7 +284,7 @@ const on = (over: Partial<VacationSettings> = {}): VacationSettings => ({
   // What Gmail's own settings page saves: HTML, line breaks, a curly apostrophe.
   const typed =
     '<div dir="ltr">Hi, thanks for writing. Nobody reads this inbox, so we won’t see your email.<br><br>' +
-    "To change your call or ask a question, reply to one of our texts and someone will answer you there.<br><br>" +
+    "If you have a question, reply to one of our texts and someone will answer you there.<br><br>" +
     "Thank you,<br>the Pennie team&nbsp;</div>";
   eq(
     judgeAutoReply(on({ responseBodyPlainText: undefined, responseBodyHtml: typed }), NOW_MS),

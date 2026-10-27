@@ -806,16 +806,18 @@ export function eventDescription(
     callingNumber?: string | null;
     /**
      * A call on the placeholder advisor, Marcia (booking kind `staff_placed`, #4206).
-     * Its invite comes from the placeholder seat, whose inbox nobody reads, so it ends
-     * with the reply to our texts line and names no calling number, even a known one
-     * (Dan, 2026-10-26: a text to that number reaches nobody). Absent is a routed call.
+     * Its invite comes from the placeholder seat, whose inbox nobody reads, so it is the
+     * dial line and the reply to our texts line only: no calling number, even a known
+     * one (Dan, 2026-10-26: a text to that number reaches nobody), and no manage link
+     * (Dan, 2026-10-27: the invite does not offer to change the call; a customer who
+     * texts asking to is handled then). Absent is a routed call.
      */
     onPlaceholder?: boolean;
   } = { isTest: false },
 ): string {
-  const lines = [bookedLine(phone), `${MANAGE_LINK_PREFIX}${manageUrl}`];
-  if (opts.isTest) lines.unshift(TEST_MODE_COPY.line);
-  if (opts.onPlaceholder) return [...lines, placeholderReplyLine("invite")].join("\n");
+  const test = opts.isTest ? [TEST_MODE_COPY.line] : [];
+  if (opts.onPlaceholder) return [...test, bookedLine(phone), placeholderReplyLine("invite")].join("\n");
+  const lines = [...test, bookedLine(phone), `${MANAGE_LINK_PREFIX}${manageUrl}`];
   return withCallingNumberLine(lines.join("\n"), opts.callingNumber ?? null);
 }
 
