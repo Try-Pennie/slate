@@ -235,10 +235,10 @@ export function demotedHolders(agents: DemotedAgent[]): InactiveHolder[] {
 
 /**
  * The demoted agents the backstop judges, built from its reads (#3582): each marked agent past the
- * debounce, with how many of their upcoming calls they can no longer serve, judged by the SAME
- * filtered snapshot the reroute moves with (`selectDemotionBookings`, L342). A call an admin moved
- * BACK to them (#3615) is theirs by decision and is not counted, or the backstop would page about
- * it every day. Pure, so the counting is tested where the route's reads are not.
+ * debounce, with the upcoming calls they can no longer serve, judged by the SAME filtered snapshot
+ * the reroute moves with (`selectDemotionBookings`, L342). A call an admin moved BACK to them
+ * (#3615) is theirs by decision and is left out, or the backstop would page about it. Pure, so
+ * which calls are listed is tested where the route's reads are not.
  */
 export function demotedAgentsFrom(input: {
   stamped: { id: string; name: string | null; email: string | null; attributes: Attributes | null }[];
