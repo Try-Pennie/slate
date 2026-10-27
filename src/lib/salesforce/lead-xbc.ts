@@ -48,10 +48,8 @@ export function leadIdSpellings(id: string): { short: string; long: string } {
   return { short, long: short + suffix };
 }
 
-/** A Salesforce LEAD id: the `00Q` key prefix, 15 or 18 characters. */
-export function isLeadId(id: string): boolean {
-  return /^00Q[a-zA-Z0-9]{12}(?:[a-zA-Z0-9]{3})?$/.test(id);
-}
+/** A Salesforce LEAD id: the `00Q` key prefix, 15 or 18 characters. Defined client safe in `lead-id.ts`. */
+export { isLeadId } from "./lead-id.ts";
 
 /** One query's worth of Lead records: the id plus whichever field was asked for. */
 export type LeadFieldRecord = { Id: string; [field: string]: unknown };

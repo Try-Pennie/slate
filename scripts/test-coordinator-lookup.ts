@@ -7,6 +7,7 @@
 // and the hours a call may start that day in the customer's zone. Each missing piece is
 // its own refusal: not a lead id, no such lead, Salesforce unreadable, no bucket, zone
 // unknown. Every value is invented.
+import { readFileSync } from "node:fs";
 import { parseLeadReference } from "../src/lib/coordinator/lead-reference.ts";
 import { findCustomer, lookupCustomer, type CustomerDeps, type LookupDeps } from "../src/lib/coordinator/customer.ts";
 import { bookableHoursOn, offeredDays } from "../src/lib/coordinator/bookable-hours.ts";
@@ -32,6 +33,17 @@ eq(parseLeadReference(`https://pennie.my.salesforce.com/${ID15}`), { ok: true, l
 eq(parseLeadReference(`https://pennie.lightning.force.com/lightning/r/Lead/${ID18}/view?ws=x#top`), { ok: true, leadId: ID18 }, "a query or fragment is ignored");
 for (const bad of ["", "   ", "003Ui00000AbCdEMAC", "https://pennie.lightning.force.com/lightning/r/Contact/003Ui00000AbCdEMAC/view", "Jane Doe", "00QUi00000AbC", "javascript:alert(1)"]) {
   eq(parseLeadReference(bad), { ok: false, refusal: "not-a-lead-id" }, `not a Lead id: ${JSON.stringify(bad)}`);
+}
+// The page parses a pasted reference in the BROWSER (find on paste, D22), so the parser
+// must reach nothing that reaches the Salesforce REST client: through lead-xbc.ts it
+// carried the deployment's Salesforce setting names into the client bundle, which
+// `pnpm cf:build` refused (#2335). Read from the source, both halves.
+{
+  const src = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
+  const imports = (p: string) => [...src(p).matchAll(/^import[^;]*?from\s+"([^"]+)"/gm)].map((m) => m[1]);
+  eq(imports("src/lib/coordinator/lead-reference.ts"), ["../salesforce/lead-id.ts"], "the reference parser imports only the client safe Lead id check");
+  eq(imports("src/lib/salesforce/lead-id.ts"), [], "which imports nothing");
+  assert(/import\("@\/lib\/salesforce\/rest"\)/.test(src("src/lib/salesforce/lead-xbc.ts")), "positive control: lead-xbc.ts really does reach the REST client");
 }
 
 // --- fakes ---------------------------------------------------------------------------
