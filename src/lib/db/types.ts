@@ -901,7 +901,8 @@ export interface Booking {
   reminder_sent_for: string | null;
   /**
    * When the 24 hour reminder recorded in `reminder_sent_for` was sent (#4282), which
-   * the 1 hour email's two hour gap is judged from. Null for one sent before 0210.
+   * the 1 hour email's two hour gap is judged from. Written only once Gmail accepted
+   * it; null when not known (sent before 0210, mid send, or failed).
    */
   reminder_sent_at: string | null;
   /**

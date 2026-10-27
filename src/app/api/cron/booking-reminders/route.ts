@@ -299,12 +299,12 @@ function laneDeps(db: ReturnType<typeof supabaseAdmin>, now: number, kind: Remin
       // parsed as syntax, which is the shape that fails on the character nobody
       // pictured rather than on the common case.
       const seen = rowsSeen.get(id)?.sentFor ?? null;
-      // The 24 hour claim stamps WHEN too, since the 1 hour email's two hour gap is
-      // judged from the send (#4282). The claim is written just before the send, so
-      // it is the send time to within one Gmail call.
+      // The 24 hour claim CLEARS the send time (#4282): it is written by `markSent`
+      // once Gmail has accepted the email, so a send that fails leaves it unknown and
+      // the 1 hour email is not held back by an email that never went.
       const set =
         kind === "day"
-          ? { reminder_sent_for: startsAtIso, reminder_sent_at: new Date().toISOString() }
+          ? { reminder_sent_for: startsAtIso, reminder_sent_at: null }
           : { hour_reminder_sent_for: startsAtIso };
       let q = db
         .from("bookings")
@@ -339,6 +339,20 @@ function laneDeps(db: ReturnType<typeof supabaseAdmin>, now: number, kind: Remin
       ) as { id: string } | null;
       return !!released;
     },
+    // When the 24 hour email went out (#4282), only where the row still holds the
+    // start this tick claimed it for. Never called for the 1 hour email.
+    markSent: async (id, startsAtIso) => {
+      unwrap(
+        await db
+          .from("bookings")
+          .update({ reminder_sent_at: new Date().toISOString() })
+          .eq("id", id)
+          .eq("reminder_sent_for", startsAtIso)
+          .select("id")
+          .maybeSingle(),
+        "record booking reminder send time",
+      );
+    },
     send: (msg) => sendGmailEmail(msg),
     alert: async (bookingId, text) => {
       // alert-key: booking_reminder_failed:*
@@ -347,7 +361,11 @@ function laneDeps(db: ReturnType<typeof supabaseAdmin>, now: number, kind: Remin
       // Keyed per booking (2026-10-05): under one shared key the first lost reminder
       // held every other booking's page back for the six hour cooldown, so a second
       // lead could go unreminded with nobody told. A wave is the share's job below.
-      await sendThrottledAlert(`booking_reminder_failed:${bookingId}`, REMINDER_ALERT_COOLDOWN_MS, text);
+      // The 1 hour email pages under its own key (#4282), the id still the segment
+      // after the family so the per booking prune finds it, so a 24 hour page for the
+      // same booking inside the cooldown cannot silence it.
+      const key = kind === "day" ? `booking_reminder_failed:${bookingId}` : `booking_reminder_failed:${bookingId}:hour`;
+      await sendThrottledAlert(key, REMINDER_ALERT_COOLDOWN_MS, text);
     },
     // #1334: one Salesforce read per tick (a token exchange and one SOQL query for
     // the leads being sent to). It throws on a refusal, and the lane then sends

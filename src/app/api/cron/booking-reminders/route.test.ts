@@ -531,20 +531,33 @@ describe("GET /api/cron/booking-reminders, the 1 hour email", () => {
     expect(state.worklistFilters.filter(([c, v]) => c === "buckets.is_test" && v === false).length).toBe(2);
   });
 
-  it("stamps when the 24 hour email was sent, which the two hour gap is judged from", async () => {
+  it("stamps when the 24 hour email was sent only after it went, which the two hour gap is judged from", async () => {
     state.pages = [[due(1)]];
     await GET(req());
-    const claim = state.updates[0]!;
-    expect(claim.set.reminder_sent_for).toBeTypeOf("string");
-    const sentAt = Date.parse(String(claim.set.reminder_sent_at));
-    expect(Math.abs(sentAt - Date.now())).toBeLessThan(60_000);
+    const [claim, marked] = state.updates;
+    // The claim clears the time, so a send that then fails leaves it unknown rather
+    // than reading as sent a moment ago.
+    expect(claim!.set).toEqual({ reminder_sent_for: claim!.set.reminder_sent_for, reminder_sent_at: null });
+    expect(Object.keys(marked!.set)).toEqual(["reminder_sent_at"]);
+    expect(Math.abs(Date.parse(String(marked!.set.reminder_sent_at)) - Date.now())).toBeLessThan(60_000);
+    expect(marked!.eqs).toContainEqual(["id", "bk-1"]);
+    expect(marked!.eqs).toContainEqual(["reminder_sent_for", claim!.set.reminder_sent_for]);
+  });
+
+  it("leaves the send time unwritten when the 24 hour email fails", async () => {
+    state.pages = [[due(1)]];
+    state.sendFailures = ["Gmail send failed: 400 Invalid To header"];
+    await GET(req());
+    expect(state.updates.filter((u) => "reminder_sent_at" in u.set && u.set.reminder_sent_at !== null)).toEqual([]);
   });
 
   it("pages a lost 1 hour email under the booking, naming the 1 hour email", async () => {
     state.pages = [[], [hourDue(1)]];
     state.sendFailures = ["Gmail send failed: 400 Invalid To header"];
     await GET(req());
-    const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === "booking_reminder_failed:bk-1");
+    // Its own key, so a 24 hour page for the same booking inside the six hour cooldown
+    // cannot silence it.
+    const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === "booking_reminder_failed:bk-1:hour");
     expect(call?.[2]).toMatch(/1 hour reminder email/);
   });
 });

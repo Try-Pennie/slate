@@ -163,6 +163,13 @@ export interface ReminderDeps {
    * write like the claim, so it can only undo this tick's own claim.
    */
   release(id: string, claimedForIso: string, restoreTo: string | null): Promise<boolean>;
+  /**
+   * Record WHEN the 24 hour email about `startsAtIso` went out (#4282), called only
+   * once Gmail has accepted it. The 1 hour email's two hour gap is judged from this,
+   * so it must never be written for a send that failed: that would cost the lead the
+   * 1 hour email as well. Not called for the 1 hour email, whose send time nothing reads.
+   */
+  markSent(id: string, startsAtIso: string): Promise<void>;
   send(msg: MimeMessage): Promise<string>;
   /** Fail loud: a reminder that did not go out is not allowed to be silent. Keyed
    *  by booking, so one booking's page cannot silence another's. */
@@ -620,6 +627,17 @@ export async function runBookingReminders(deps: ReminderDeps, kind: ReminderKind
       deps.warn("reminder send failed", row.id, err, fields(disposition, "not_attempted"));
       await page(disposition);
       continue;
+    }
+
+    // After the send and outside its try, so a failed write can never turn a sent
+    // email into a failed one. Left unwritten, the time reads as unknown, and the 1
+    // hour email then goes out rather than being held back (#4282).
+    if (kind === "day") {
+      try {
+        await deps.markSent(row.id, row.startsAtIso);
+      } catch (err) {
+        deps.warn("reminder send time not recorded", row.id, err);
+      }
     }
 
     // #1334: the invite carries the number too, so it sits on the lead's phone next
