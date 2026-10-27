@@ -2,9 +2,8 @@
 
 import { useState } from "react";
 import { ReminderPreview } from "@/components/admin/reminder-emails/ReminderPreview";
-import { lateBookingLabel } from "@/lib/admin/reminder-email-form";
 import { REMINDER_COPY } from "@/lib/admin/reminder-emails-copy";
-import { timingWords, type PreviewCaseId } from "@/lib/booking/reminder-preview";
+import type { PreviewCaseId } from "@/lib/booking/reminder-preview";
 import type { EditorEmail } from "@/components/admin/reminder-emails/ReminderEmailEditor";
 
 /**
@@ -19,9 +18,8 @@ export function ReminderEmailReadOnly({ email, note }: { email: EditorEmail; not
       <div className="space-y-4">
         <p className="text-sm text-fg-muted">{note}</p>
         <dl className="space-y-3 text-sm">
-          <Row term="Timing">{timingWords(email.minutes_before)} before the call</Row>
-          <Row term="A call booked after this time">{lateBookingLabel(email.late_booking)}</Row>
-          <Row term="Send this email">{email.enabled ? REMINDER_COPY.enabledOn : REMINDER_COPY.enabledOff}</Row>
+          {/* The timing, on or off and the late booking choice are on this email's row
+              in the list above, so they are not said a second time here. */}
           <Row term="Subject">{email.subject}</Row>
           <Row term="Body">
             <span className="block whitespace-pre-wrap break-words">{email.body}</span>

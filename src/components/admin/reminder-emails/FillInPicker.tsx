@@ -3,7 +3,6 @@
 import { useId } from "react";
 import { FILL_INS } from "@/lib/booking/reminder-template";
 import { btnSecondaryCls, labelCls } from "@/components/ui/styles";
-import { REMINDER_COPY } from "@/lib/admin/reminder-emails-copy";
 
 export type FillInTarget = "subject" | "body";
 
@@ -29,7 +28,6 @@ export function FillInPicker({
       <p id={`${base}-h`} className={labelCls}>
         Add a fill-in to the {target}
       </p>
-      <p className="mt-0.5 text-xs text-fg-muted">{REMINDER_COPY.fillInHelp}</p>
       <ul role="list" className="mt-2 space-y-2">
         {FILL_INS.map((f, i) => {
           const blocked = target === "subject" && !f.subject;

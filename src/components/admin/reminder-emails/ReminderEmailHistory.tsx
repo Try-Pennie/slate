@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { proseCls } from "@/components/ui/styles";
 import { RestoreVersionForm } from "@/components/admin/reminder-emails/RestoreVersionForm";
 import { restoreReminderEmailVersion } from "@/app/admin/reminder-emails/actions";
 import { listWords, restoreChanges } from "@/lib/admin/reminder-email-form";
@@ -47,7 +46,6 @@ export function ReminderEmailHistory({
   const [refused, setRefused] = useState<string[] | null>(null);
   return (
     <div className="space-y-3">
-      <p className={`${proseCls} text-xs text-fg-muted`}>{REMINDER_COPY.historyIntro}</p>
       {refused && refused.length > 0 && (
         <div role="alert" className="rounded-md border border-[var(--error)] px-4 py-3 text-sm text-error">
           <p className="font-semibold">Nothing was restored.</p>

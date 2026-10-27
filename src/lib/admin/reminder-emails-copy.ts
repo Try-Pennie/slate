@@ -34,16 +34,12 @@ export const REMINDER_COPY = {
   versionUnusable: (v: number) => `Version ${v} cannot be restored as it is:`,
   versionIsCurrent: (v: number) => `Version ${v} is the copy this email already has, so there is nothing to restore.`,
 
-  // The fields. Each explains the domain fact a reader cannot know, never the control.
-  timingHelp: "How long before the call the email goes out.",
-  lateBookingHelp: "What happens when a call is booked after this email's time has already passed.",
-  enabledOn: "On. Leads get this email.",
-  enabledOff: "Off. No lead gets this email.",
+  // The switches whose names leave a domain fact unsaid. Each explains that fact,
+  // never the control; the others carry no sentence.
   cardOn: "When we know the number the call comes from, the email names it and attaches the advisor's contact card.",
   cardOff: "The email never names the number the call comes from, and no card is attached.",
   placeholderOn: "Calls on the placeholder advisor get this email, with Pennie's fixed placeholder wording.",
   placeholderOff: "Calls on the placeholder advisor do not get this email.",
-  fillInHelp: "Fill-ins become the call's own details when the email is sent.",
 
   previewHeading: "What the lead receives",
   previewNote: "For a sample call on Thursday 5 November at 2:30pm in New York, with invented names and numbers.",
@@ -52,8 +48,7 @@ export const REMINDER_COPY = {
   noCard: "No contact card",
 
   testHeading: "Send me a test",
-  testExplain: (address: string) =>
-    `Sends this text, saved or not, for the call picked above, from and to your own mailbox (${address}), not the advisor's.`,
+  testExplain: (address: string) => `Goes from and to your own mailbox (${address}), not the advisor's.`,
   testNeedsOwnMailbox: (domain: string) => `A test goes only to your own @${domain} mailbox, and you are not signed in with one.`,
   testNeedsCase: "Pick which sample call the test is for.",
   testNotSentForPlaceholder:
@@ -66,7 +61,6 @@ export const REMINDER_COPY = {
       : `The test was not sent (${reason}).`,
 
   historyHeading: "Earlier versions",
-  historyIntro: "Restore brings back the subject, the body and the two switches. The timing and whether it is on stay as they are.",
   historyShowing: (shown: number, total: number) => `Showing the latest ${shown} of ${total} versions.`,
   historyUnreadable: "The earlier versions could not be read just now. Reload in a minute.",
   restore: "Restore",

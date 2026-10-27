@@ -194,7 +194,6 @@ function EditorFields({
     name: `${base}-name`,
     hours: `${base}-hours`,
     minutes: `${base}-minutes`,
-    timingHelp: `${base}-timing-help`,
     timingError: `${base}-timing-error`,
     late: `${base}-late`,
     subject: `${base}-subject`,
@@ -224,11 +223,9 @@ function EditorFields({
           />
         </div>
 
-        <fieldset aria-describedby={timing.ok ? ids.timingHelp : `${ids.timingHelp} ${ids.timingError}`}>
-          <legend className={labelCls}>Timing</legend>
-          <p id={ids.timingHelp} className="mt-0.5 text-xs text-fg-muted">
-            {REMINDER_COPY.timingHelp}
-          </p>
+        <fieldset aria-describedby={timing.ok ? undefined : ids.timingError}>
+          {/* The list's own column name for the same value, so the two read alike. */}
+          <legend className={labelCls}>Sent before the call</legend>
           <div className="mt-1 flex flex-wrap items-end gap-3">
             <div>
               <label className={labelCls} htmlFor={ids.hours}>
@@ -278,11 +275,7 @@ function EditorFields({
             value={late}
             options={LATE_BOOKING_CHOICES.map((c) => ({ value: c.value, label: c.label }))}
             onChange={setLate}
-            ariaDescribedBy={`${ids.late}-help`}
           />
-          <p id={`${ids.late}-help`} className="mt-1 text-xs text-fg-muted">
-            {REMINDER_COPY.lateBookingHelp}
-          </p>
         </div>
 
         {email ? (
@@ -291,8 +284,6 @@ function EditorFields({
             label="Send this email"
             checked={enabled}
             onChange={setEnabled}
-            on={REMINDER_COPY.enabledOn}
-            off={REMINDER_COPY.enabledOff}
           />
         ) : (
           <>
@@ -325,6 +316,7 @@ function EditorFields({
             ref={bodyRef}
             id={ids.body}
             name={REMINDER_FIELDS.body}
+            data-restore-own="true"
             rows={12}
             value={body}
             onChange={(e) => setBody(e.target.value)}

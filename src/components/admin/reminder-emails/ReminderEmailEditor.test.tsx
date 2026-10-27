@@ -21,6 +21,7 @@ import { ReminderEmailWorkspace } from "./ReminderEmailWorkspace";
 import { ReminderEmailHistory } from "./ReminderEmailHistory";
 import { REMINDER_COPY } from "@/lib/admin/reminder-emails-copy";
 import { REMINDER_FIELDS } from "@/lib/admin/reminder-email-form";
+import { stashForm } from "@/lib/form-restore";
 
 const HOUR: EditorEmail = {
   id: "e1",
@@ -54,6 +55,16 @@ describe("ReminderEmailEditor", () => {
     // A typo is named in the preview, rather than previewed as literal braces.
     fireEvent.change(subjectBox(), { target: { value: "Hi {advisor}" } });
     expect(screen.getByText(/uses \{advisor\}, which is not a fill-in/)).toBeTruthy();
+  });
+
+  it("names the timing as the list does, and ties a bad timing's reason to the boxes", () => {
+    render(<ReminderEmailEditor email={HOUR} testAddress={null} />);
+    const group = screen.getByRole("group", { name: "Sent before the call" });
+    expect(group.getAttribute("aria-describedby")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Minutes"), { target: { value: "75" } });
+    const describedBy = group.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.textContent).toMatch(/minutes must be under 60/);
   });
 
   it("follows the timing: a 24 hour email names the day", () => {
@@ -133,6 +144,28 @@ describe("ReminderEmailEditor", () => {
     expect(posted.get(REMINDER_FIELDS.previewCase)).toBe("calling_known");
   });
 
+  // Coordinator review, 2026-10-27: the labels, the options and the switch already say
+  // these, so a sentence restating them is the interface explained (L604, L605).
+  it("carries no sentence that restates a label, an option or a switch's position", () => {
+    const { container } = render(<ReminderEmailEditor email={HOUR} testAddress="dana@trypennie.com" />);
+    const text = container.textContent ?? "";
+    for (const gone of [
+      "How long before the call the email goes out",
+      "What happens when a call is booked after",
+      "Leads get this email",
+      "No lead gets this email",
+      "Fill-ins become the call's own details",
+      "Sends this text, saved or not",
+    ]) {
+      expect(text, gone).not.toContain(gone);
+    }
+    expect(screen.getByRole("switch", { name: "Send this email" }).getAttribute("aria-describedby")).toBeNull();
+    // The domain explanations stay.
+    expect(text).toContain(REMINDER_COPY.cardOn);
+    expect(text).toContain(REMINDER_COPY.placeholderOn);
+    expect(screen.getByText("Goes from and to your own mailbox (dana@trypennie.com), not the advisor's.")).toBeTruthy();
+  });
+
   it("warns before an in app link takes away unsaved edits", async () => {
     const user = userEvent.setup();
     render(
@@ -145,6 +178,27 @@ describe("ReminderEmailEditor", () => {
     await user.click(screen.getByRole("link", { name: "Buckets" }));
     const dialog = screen.getByRole("alertdialog");
     expect(dialog.textContent).toContain("You have unsaved changes to this reminder email");
+  });
+
+  it("puts back a draft kept on leaving, the body and the switches included", () => {
+    stashForm(
+      window.sessionStorage,
+      window.location.pathname,
+      "reminder-email-e1",
+      {
+        [REMINDER_FIELDS.subject]: ["Kept subject {when}"],
+        [REMINDER_FIELDS.body]: ["Kept body {signature}"],
+        [REMINDER_FIELDS.cardBlock]: ["false"],
+      },
+      "navigation",
+    );
+    render(<ReminderEmailEditor email={HOUR} testAddress={null} />);
+    expect(subjectBox().value).toBe("Kept subject {when}");
+    expect((screen.getByLabelText("Body") as HTMLTextAreaElement).value).toBe("Kept body {signature}");
+    expect((screen.getByRole("switch", { name: "Contact card" }) as HTMLInputElement).checked).toBe(false);
+    // The body is restored from the draft by the editor itself, so it opts out of the
+    // form's blanket restore rather than having it fight the field's own state.
+    expect(screen.getByLabelText("Body").getAttribute("data-restore-own")).toBe("true");
   });
 
   it("lets an in app link go when nothing was changed", async () => {
@@ -188,6 +242,12 @@ describe("ReminderEmailWorkspace for a manager", () => {
     expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
     // The history is still readable.
     expect(screen.getByText("Version 1")).toBeTruthy();
+    // Timing, on or off and the late booking choice are on the email's list row, so
+    // the read only view does not say them a second time.
+    for (const term of ["Timing", "Send this email", "A call booked after this time"]) {
+      expect(screen.queryByText(term), term).toBeNull();
+    }
+    expect(screen.getByText("Contact card")).toBeTruthy();
   });
 
   it("says the history could not be read, rather than showing none", () => {
@@ -224,6 +284,8 @@ describe("ReminderEmailHistory", () => {
     render(
       <ReminderEmailHistory emailId="e1" loadedUpdatedAt={HOUR.updated_at} current={current} versions={versions} total={2} canRestore editorDirty={false} />,
     );
+    // The card says nothing about restore until it is pressed: the question does.
+    expect(screen.queryByText(/stay as they are/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Restore" }));
     const question = screen.getByRole("alert").textContent ?? "";
     expect(question).toContain("Restoring version 1 changes the body and the contact card switch.");
