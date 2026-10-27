@@ -134,6 +134,23 @@ async function callSave(args: {
   return { result: data as ReminderEmailSaveResult };
 }
 
+/** The trail's row for one test send, with whether Gmail confirmed taking it. */
+async function recordTestSend(
+  actor: User,
+  form: FormData,
+  sampleCall: string,
+  cardAttached: boolean,
+  gmail: "accepted" | "unconfirmed",
+): Promise<void> {
+  const emailId = String(form.get(REMINDER_FIELDS.id) ?? "").trim();
+  await recordAudit({
+    orgId: actor.org_id,
+    actorId: actor.id,
+    action: "reminder_email.test_sent",
+    details: { reminder_email_id: emailId === "" ? null : emailId, sample_call: sampleCall, card_attached: cardAttached, gmail },
+  });
+}
+
 /** The refusal for an update that did not land, or null when it saved. */
 function notSaved(saved: { result: ReminderEmailSaveResult } | { refused: string }): ReminderEmailRefusal | null {
   if ("refused" in saved) return { refused: [saved.refused] };
@@ -333,20 +350,14 @@ export async function sendReminderEmailTest(form: FormData): Promise<ReminderTes
     });
   } catch (err) {
     const typed = asEmailSendError(err);
-    log.error("reminder-emails", { msg: "test send failed", outcome: typed?.outcome ?? "unknown", stage: typed?.stage ?? null }, err);
-    return { error: REMINDER_COPY.testFailed(typed?.outcome ?? "unknown", shortErrorReason(err)), sent: null };
+    const outcome = typed?.outcome ?? "unknown";
+    log.error("reminder-emails", { msg: "test send failed", outcome, stage: typed?.stage ?? null }, err);
+    // Gmail may still have delivered one it never answered for, and the trail is the
+    // only record of a test send, so that one is recorded as unconfirmed.
+    if (outcome === "unknown") await recordTestSend(actor, form, sample.id, preview.cardAttached, "unconfirmed");
+    return { error: REMINDER_COPY.testFailed(outcome, shortErrorReason(err)), sent: null };
   }
 
-  const emailId = String(form.get(REMINDER_FIELDS.id) ?? "").trim();
-  await recordAudit({
-    orgId: actor.org_id,
-    actorId: actor.id,
-    action: "reminder_email.test_sent",
-    details: {
-      reminder_email_id: emailId === "" ? null : emailId,
-      sample_call: sample.id,
-      card_attached: preview.cardAttached,
-    },
-  });
+  await recordTestSend(actor, form, sample.id, preview.cardAttached, "accepted");
   return { error: null, sent: { to: own, subject: preview.subject, cardAttached: preview.cardAttached } };
 }

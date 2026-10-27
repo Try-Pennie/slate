@@ -316,6 +316,17 @@ describe("sendReminderEmailTest", () => {
     const out = await sendReminderEmailTest(editorForm());
     expect(out.error).toMatch(/may or may not arrive/);
     expect(out.sent).toBeNull();
+    // It may have gone, so the trail records it, marked unconfirmed.
+    expect(recordAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "reminder_email.test_sent", details: expect.objectContaining({ gmail: "unconfirmed" }) }),
+    );
+  });
+
+  it("records nothing when Gmail refused before sending", async () => {
+    const { EmailSendError } = await import("@/lib/notify/email-errors");
+    sendGmailEmail.mockRejectedValueOnce(new EmailSendError("token", { outcome: "never_sent", stage: "token", transient: true }));
+    const out = await sendReminderEmailTest(editorForm());
+    expect(out.error).toMatch(/was not sent/);
     expect(recordAudit).not.toHaveBeenCalled();
   });
 
