@@ -11,6 +11,7 @@ import {
   atLeast,
   canManageAgents,
   isRole,
+  opensStaffConsole,
 } from "@/lib/auth/roles";
 import { getImpersonationView } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -48,6 +49,7 @@ export async function AppHeader({
   orgId,
   bookable,
   photoSrc,
+  sections = true,
 }: {
   email: string;
   role?: string;
@@ -63,6 +65,11 @@ export async function AppHeader({
   bookable?: boolean;
   /** The resolved picture (`staffPhotoSrc`), or null for initials (#3027). */
   photoSrc?: string | null;
+  /**
+   * False on the coordinator booking page (#4205, D32): its header is the Pennie logo
+   * and the account menu, with no section links, for whoever opens it.
+   */
+  sections?: boolean;
 }) {
   // The approval queue is a manager surface; agents manage their own time off
   // from /me/time-off, so they don't get the tab.
@@ -159,7 +166,8 @@ export async function AppHeader({
     // Read from the list rather than written out here, so a tab and its page
     // cannot drift apart (L41). `scripts/test-me-nav.ts` resolves every one of
     // them to a real page file.
-    ...ME_TABS.map((t) => ({ href: t.href, label: t.label })),
+    // #4205: a role that opens no staff page (a coordinator) has no pages of its own.
+    ...(isRole(r) && !opensStaffConsole(r) ? [] : ME_TABS.map((t) => ({ href: t.href, label: t.label }))),
     ...(showTimeOff
       ? [
           {
@@ -294,7 +302,8 @@ export async function AppHeader({
             alt="Pennie"
             className="pn-wordmark hidden h-[22px] w-auto dark:block"
           />
-          <HeaderNav tabs={tabs} />
+          {/* No nav at all when there is nothing in it, rather than an empty landmark. */}
+          {sections && tabs.length > 0 && <HeaderNav tabs={tabs} />}
         </div>
         <div className="ml-auto flex items-center">
           <AccountMenu

@@ -9,7 +9,8 @@
 // unknown. Every value is invented.
 import { parseLeadReference } from "../src/lib/coordinator/lead-reference.ts";
 import { findCustomer, lookupCustomer, type CustomerDeps, type LookupDeps } from "../src/lib/coordinator/customer.ts";
-import { bookableHoursOn } from "../src/lib/coordinator/bookable-hours.ts";
+import { bookableHoursOn, offeredDays } from "../src/lib/coordinator/bookable-hours.ts";
+import { lastHorizonDay, withinHorizon } from "../src/lib/booking/placed-booking.ts";
 import type { SalesforceLeadWithPlace } from "../src/lib/salesforce/lead-contact.ts";
 import type { BusinessHoursRules } from "../src/lib/availability/compute.ts";
 import type { Booking, Bucket, EventType } from "../src/lib/db/types.ts";
@@ -178,6 +179,39 @@ const MONDAY_MORNING = Date.parse("2026-06-08T12:00:00.000Z"); // 08:00 Eastern,
   eq(bookableHoursOn({ hours: HOURS, zone: "America/New_York", date: "June 9", durationMin: 30, nowMs: MONDAY_MORNING, horizonDays: 2 }), { ok: false, reason: "date-unreadable" }, "an unreadable day is refused");
 }
 
+// --- the days the page offers, and every bookable quarter hour start on each ----------
+// The page's day row runs from the customer's today through the last day Slate offers
+// (counted as `withinHorizon` counts open days), and its time buttons are the quarter hour
+// starts the SAME predicate as the hours accepts, so a button can never offer a time the
+// booking refuses.
+{
+  eq(lastHorizonDay(HOURS, MONDAY_MORNING, 3), "2026-06-10", "three open days from Monday morning end on Wednesday");
+  const fridayEvening = Date.parse("2026-06-12T22:30:00.000Z"); // 18:30 Eastern, after close
+  eq(lastHorizonDay(HOURS, fridayEvening, 2), "2026-06-16", "a day whose hours are over counts for nothing, nor does the weekend");
+  eq(lastHorizonDay(HOURS, MONDAY_MORNING, 0), null, "no open day is offered when the horizon is none");
+  assert(withinHorizon(HOURS, Date.parse("2026-06-16T14:00:00.000Z"), fridayEvening, 2) && !withinHorizon(HOURS, Date.parse("2026-06-17T14:00:00.000Z"), fridayEvening, 2),
+    "and withinHorizon agrees with it");
+
+  const chicago = offeredDays({ hours: HOURS, zone: "America/Chicago", durationMin: 30, nowMs: MONDAY_MORNING, horizonDays: 3 });
+  eq(chicago.map((d) => d.date), ["2026-06-08", "2026-06-09", "2026-06-10"], "Chicago: today through the last day Slate offers");
+  eq([chicago[0]!.starts[0], chicago[0]!.starts.at(-1), chicago[0]!.starts.length], ["2026-06-08T08:00:00.000-05:00", "2026-06-08T16:30:00.000-05:00", 35],
+    "every quarter hour from the org's opening to the last start a 30 minute call fits, in the customer's clock");
+  for (const day of chicago) {
+    const hours = bookableHoursOn({ hours: HOURS, zone: "America/Chicago", date: day.date, durationMin: 30, nowMs: MONDAY_MORNING, horizonDays: 3 });
+    assert(hours.ok && day.starts.every((t) => hours.windows.some((w) => Date.parse(w.firstStart) <= Date.parse(t) && Date.parse(t) <= Date.parse(w.lastStart))),
+      `${day.date}: every start offered sits inside the hours the same predicate gives`);
+  }
+
+  const weekend = offeredDays({ hours: HOURS, zone: "America/New_York", durationMin: 30, nowMs: fridayEvening, horizonDays: 2 });
+  eq(weekend.map((d) => [d.date, d.starts.length]), [["2026-06-12", 0], ["2026-06-13", 0], ["2026-06-14", 0], ["2026-06-15", 35], ["2026-06-16", 35]],
+    "Friday evening: today shown closed, the weekend closed, the row runs to the second open day");
+
+  const midday = offeredDays({ hours: HOURS, zone: "America/New_York", durationMin: 30, nowMs: Date.parse("2026-06-08T18:05:00.000Z"), horizonDays: 1 });
+  eq([midday.length, midday[0]!.starts[0]], [1, "2026-06-08T14:15:00.000-04:00"], "today offers only the quarter hours still ahead of now");
+
+  eq(offeredDays({ hours: HOURS, zone: "America/New_York", durationMin: 30, nowMs: MONDAY_MORNING, horizonDays: 0 }), [], "no horizon, no days");
+}
+
 // --- the lookup the page calls: the customer, their call, and the day's hours ----------
 function existing(over: Partial<Booking> = {}): Booking {
   return {
@@ -217,6 +251,8 @@ async function runLookup() {
     const out = await lookupCustomer({ reference: ID18, date: "2026-06-09" }, lookupDeps(), REAL);
     assert(out.ok && out.existingCall.kind === "none", "a customer with no call has none to move");
     assert(out.ok && out.hours.ok && out.hours.windows.length === 1 && out.hours.windows[0].firstStart.endsWith("-07:00"), "and the day's hours in Arizona's clock");
+    assert(out.ok && out.days.ok && out.days.days.length > 0 && out.days.days[0]!.date === "2026-06-08" && out.days.days.every((d) => d.starts.every((t) => t.endsWith("-07:00"))),
+      "and the days Slate offers, from the customer's today, every start in Arizona's clock");
   }
   {
     const out = await lookupCustomer({ reference: ID18 }, lookupDeps({ calls: [existing()] }), REAL);
@@ -236,8 +272,10 @@ async function runLookup() {
   {
     const hours = await lookupCustomer({ reference: ID18 }, lookupDeps({ hoursThrow: true }), REAL);
     assert(hours.ok && !hours.hours.ok && hours.hours.reason === "hours-unreadable", "unreadable business hours are said as such, never as closed");
+    assert(hours.ok && !hours.days.ok && hours.days.reason === "hours-unreadable", "and the days too, never an empty row");
     const horizon = await lookupCustomer({ reference: ID18 }, lookupDeps({ horizon: null }), REAL);
     assert(horizon.ok && !horizon.hours.ok && horizon.hours.reason === "horizon-unreadable", "and so is an unreadable horizon");
+    assert(horizon.ok && !horizon.days.ok && horizon.days.reason === "horizon-unreadable", "for the days as well");
   }
   {
     const out = await lookupCustomer({ reference: "nope" }, lookupDeps(), REAL);

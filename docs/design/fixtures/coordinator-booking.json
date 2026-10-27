@@ -1,0 +1,242 @@
+{
+  "about": "The coordinator booking page design (docs/design/coordinator-booking.html, #4205): its copy, its two invented customers, its fixed clock and its eighteen frames, exactly as the settled file draws them. The page renders the same frames from this file under ?frame=, only behind SLATE_DESIGN_FIXTURES on this machine, and scripts/test-coordinator-booking-design-fixture.ts holds this file to the design and the copy to the page.",
+  "design": {
+    "timing": {
+      "findMs": 800,
+      "placeMs": 1500
+    },
+    "callingWindow": {
+      "first": "08:00",
+      "endBefore": "20:00"
+    },
+    "page": {
+      "title": "Book a call"
+    },
+    "lead": {
+      "label": "Salesforce Lead",
+      "find": "Find customer",
+      "pending": "Looking up the customer",
+      "notALeadId": "This is not a Salesforce Lead link or ID. Paste the link to the customer's Lead. You can also paste the ID at the end of the link. It starts with 00Q.",
+      "noSuchLead": "Salesforce has no Lead with this ID. Make sure you copied all of it."
+    },
+    "customers": {
+      "00Q5e00000XyZ12EAC": {
+        "name": "Jordan Rivera",
+        "phone": "+1 (555) 010 2477",
+        "zone": "Arizona (Phoenix)",
+        "advisor": "Ada Example",
+        "existingCall": {
+          "when": "Tuesday, November 17 at 11:00am",
+          "advisor": "Ada Example",
+          "dayName": "Tuesday"
+        },
+        "firstName": "Jordan",
+        "utcOffsetMin": -420,
+        "zoneSpoken": "Arizona time (Phoenix)"
+      },
+      "00Q5e00000Qr7Ok4AF": {
+        "name": "Sam Okafor",
+        "phone": "+1 (555) 010 3318",
+        "zone": "Pacific (Los Angeles)",
+        "advisor": "Priya Example",
+        "existingCall": null,
+        "firstName": "Sam",
+        "utcOffsetMin": -480,
+        "zoneSpoken": "Pacific time (Los Angeles)"
+      }
+    },
+    "placeholderFrom": "16:00",
+    "customer": {
+      "heading": "Customer",
+      "phone": "Phone",
+      "zone": "Time zone",
+      "clock": "It's {time} for {first} right now."
+    },
+    "newTime": {
+      "dayLabel": "Day",
+      "timeLabel": "Time",
+      "hours": "On {day}, calls can start from {from} to {to}.",
+      "reasonLabel": "Why the call is moving",
+      "reasonPlaceholder": "Choose a reason",
+      "reasons": [
+        {
+          "code": "schedule_conflict",
+          "label": "Schedule conflict"
+        },
+        {
+          "code": "found_better_time",
+          "label": "Found a better time"
+        },
+        {
+          "code": "need_more_prep",
+          "label": "Need more time to prepare"
+        },
+        {
+          "code": "other",
+          "label": "Other"
+        }
+      ],
+      "reasonNeeded": "Choose why the call is moving.",
+      "book": "Book {day} at {time}",
+      "bookIdle": "Book the call",
+      "move": "Move the call to {day} at {time}",
+      "moveIdle": "Move the call",
+      "pickDay": "Choose a day to see when calls can start.",
+      "morning": "Morning",
+      "afternoon": "Afternoon",
+      "detailCode": "other",
+      "detailLabel": "What happened",
+      "detailMax": 500,
+      "detailNeeded": "Write what happened."
+    },
+    "outcome": {
+      "booking": "Booking the call",
+      "moving": "Moving the call",
+      "booked": "Booked",
+      "moved": "Moved",
+      "withAdvisor": "With {advisor}.",
+      "withMarcia": "With Marcia, Pennie's AI agent. No advisor was free at this time, so Marcia will text {first}.",
+      "marciaName": "Marcia, Pennie's AI agent",
+      "linkWorks": "{first}'s booking link still works.",
+      "bookedByYou": "Booked by you",
+      "movedByYou": "Moved by you",
+      "again": "Book another call"
+    },
+    "startWith": "00Q5e00000XyZ12EAC",
+    "warning": {
+      "heading": "{first} already has a call",
+      "details": "It is on {when} with {advisor}.",
+      "consequence": "If you book a new time, this call moves to the new time.",
+      "told": "I told {first} their {dayName} call will move",
+      "unlock": "Check the box above after you tell {first}.",
+      "lockedSay": "You cannot book yet. First check the box that says you told {first} their {dayName} call will move.",
+      "overlay": "Check the box above first"
+    },
+    "nowUtc": "2026-11-16T17:40:00Z",
+    "typeAheadResetMs": 800,
+    "day": {
+      "today": "Today",
+      "tomorrow": "Tomorrow",
+      "closed": "Closed"
+    },
+    "daysOffered": 4,
+    "org": {
+      "zone": "America/New_York",
+      "utcOffsetMin": -300,
+      "hours": {
+        "1": [
+          "08:00",
+          "19:30"
+        ],
+        "2": [
+          "08:00",
+          "19:30"
+        ],
+        "3": [
+          "08:00",
+          "19:30"
+        ],
+        "4": [
+          "08:00",
+          "19:30"
+        ],
+        "5": [
+          "08:00",
+          "19:30"
+        ],
+        "6": [
+          "10:00",
+          "15:30"
+        ],
+        "7": null
+      }
+    },
+    "dialog": {
+      "titleBook": "Book this call for {name}?",
+      "titleMove": "Move {name}'s call?",
+      "when": "{day} at {time}, {zone}",
+      "moves": "Moves {first}'s {old} call",
+      "back": "Go back",
+      "book": "Book the call",
+      "move": "Move the call"
+    },
+    "samId": "00Q5e00000Qr7Ok4AF",
+    "refusalSample": "00Q5e00000",
+    "listGap": 4
+  },
+  "frames": {
+    "f-locked": {
+      "theme": "light",
+      "state": "locked"
+    },
+    "f-pressed": {
+      "theme": "light",
+      "state": "locked-pressed"
+    },
+    "f-unlocked": {
+      "theme": "light",
+      "state": "unlocked"
+    },
+    "f-other": {
+      "theme": "light",
+      "state": "other"
+    },
+    "f-dialog-move": {
+      "theme": "light",
+      "state": "dialog-move"
+    },
+    "f-done-move": {
+      "theme": "light",
+      "state": "done-move"
+    },
+    "f-sam-empty": {
+      "theme": "light",
+      "state": "sam-empty"
+    },
+    "f-sam-dialog": {
+      "theme": "light",
+      "state": "sam-dialog"
+    },
+    "f-sam-done": {
+      "theme": "light",
+      "state": "sam-done-advisor"
+    },
+    "f-sam-marcia": {
+      "theme": "light",
+      "state": "sam-done-marcia"
+    },
+    "f-refusal": {
+      "theme": "light",
+      "state": "refusal"
+    },
+    "f-today-closed": {
+      "theme": "light",
+      "state": "unlocked",
+      "nowUtc": "2026-11-17T00:45:00Z"
+    },
+    "d-locked": {
+      "theme": "dark",
+      "state": "locked"
+    },
+    "d-unlocked": {
+      "theme": "dark",
+      "state": "unlocked"
+    },
+    "d-other": {
+      "theme": "dark",
+      "state": "other"
+    },
+    "d-dialog-move": {
+      "theme": "dark",
+      "state": "dialog-move"
+    },
+    "d-done-move": {
+      "theme": "dark",
+      "state": "done-move"
+    },
+    "d-sam-empty": {
+      "theme": "dark",
+      "state": "sam-empty"
+    }
+  }
+}

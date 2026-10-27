@@ -10,7 +10,7 @@
 // Run: node --experimental-strip-types scripts/test-contrast.ts
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { assert, fail, finish } from "./lib/harness.ts";
+import { assert, eq, fail, finish } from "./lib/harness.ts";
 import { ratio, type RGB } from "./lib/wcag-contrast.ts";
 import {
   parseColourClass,
@@ -1594,5 +1594,24 @@ for (const [theme, read] of [
   atLeast(read("--fg-muted"), read("--bg"), 4.5, `the pace notice's muted half on the page (${theme})`);
 }
 
+// --- A refused main button is never Sky (#4205, Dan's standing rule) ----------
+// Dan, walking the coordinator page: "It shouldn't be blue if I still have to do
+// something." The shared Button's refused primary (`data-refused`, which SubmitButton and
+// the coordinator page set) is the neutral --bg-alt fill with a --fg-muted label, on
+// every page. Read from the rule that ships, and measured as text in both themes.
+{
+  const RAW = readFileSync(TOKEN_FILE, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rule = RAW.match(/\.pn-btn--primary\[data-refused\][^{]*\{([^}]*)\}/);
+  assert(rule !== null, "globals.css styles a refused primary button");
+  const decl = (prop: string) => rule?.[1]?.match(new RegExp(`(?:^|;|\\s)${prop}\\s*:\\s*([^;]+);`))?.[1]?.trim();
+  eq(decl("background"), "var(--bg-alt)", "a refused primary is filled --bg-alt, never Sky");
+  eq(decl("color"), "var(--fg-muted)", "with the --fg-muted label");
+  eq(decl("cursor"), "not-allowed", "and a not-allowed cursor");
+  assert(/\.pn-btn--primary\[data-refused\]:hover/.test(RAW), "and a hover does not bring the Sky back");
+  for (const [theme, read] of [["light", r], ["dark", rDark]] as const) {
+    atLeast(read("--fg-muted"), read("--bg-alt"), 4.5, `a refused main button's label on its fill (${theme})`);
+    assert(ratio(read("--bg-alt"), read("--accent")) > 1.2, `a refused main button reads apart from Sky (${theme})`);
+  }
+}
 
 finish();

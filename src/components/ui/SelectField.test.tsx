@@ -57,6 +57,13 @@ describe("SelectField (#1849)", () => {
     expect(trigger().textContent).toContain("Not a US zone");
   });
 
+  it("draws the placeholder muted, like an empty text field's, and a chosen value in full ink (#4205, D5)", () => {
+    const { rerender } = render(<Field value="" placeholder="Choose a reason" />);
+    expect(screen.getByText("Choose a reason").className).toContain("text-fg-muted");
+    rerender(<Field value="ct" placeholder="Choose a reason" />);
+    expect(screen.getByText("Central").className).not.toContain("text-fg-muted");
+  });
+
   describe("the keyboard contract", () => {
     it("opens on ArrowDown with the highlight on the current value", async () => {
       const user = userEvent.setup();

@@ -234,7 +234,13 @@ export function SelectField({
         onKeyDown={onKeyDown}
         className="pn-select-trigger flex h-11 w-full items-center justify-between gap-2 rounded-sm border border-border bg-[var(--field)] pl-3 pr-3 text-left text-sm text-fg disabled:opacity-60"
       >
-        <span className={compact ? "flex-1 truncate text-center tabular-nums" : "truncate"}>{label}</span>
+        {/* #4205 (D5): a placeholder is drawn muted, as an empty text field's is, so
+            "Choose a reason" never reads as a value somebody chose. */}
+        <span
+          className={`${compact ? "flex-1 truncate text-center tabular-nums" : "truncate"}${current === null ? " text-fg-muted" : ""}`}
+        >
+          {label}
+        </span>
         <svg
           aria-hidden="true"
           width="12"

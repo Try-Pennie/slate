@@ -24,7 +24,7 @@
  * `scripts/test-coordinator-lookup.ts` drives every branch; `live.ts` wires the real ones.
  */
 import { parseLeadReference } from "./lead-reference.ts";
-import { bookableHoursOn, type BookableHours } from "./bookable-hours.ts";
+import { bookableHoursOn, offeredDays, type BookableHours, type OfferedDays } from "./bookable-hours.ts";
 import { leadZone } from "../zip-zones/zip-zones.ts";
 import { PARTNER_BUCKET_CODE } from "../embed/public-test-bucket.ts";
 import { resolveRoutingCode } from "../routing/lead-code.ts";
@@ -159,7 +159,14 @@ export interface LookupDeps extends CustomerDeps {
 }
 
 export type CustomerLookup =
-  | { ok: true; customer: Customer; existingCall: ExistingCallView; hours: BookableHours }
+  | {
+      ok: true;
+      customer: Customer;
+      existingCall: ExistingCallView;
+      hours: BookableHours;
+      /** The page's day row and its time buttons, judged by the same predicate as `hours`. */
+      days: OfferedDays;
+    }
   | { ok: false; refusal: CustomerRefusal };
 
 /**
@@ -194,15 +201,22 @@ export async function lookupCustomer(
   const nowMs = deps.now();
   const date = input.date ?? DateTime.fromMillis(nowMs, { zone: customer.zone }).toISODate() ?? "";
   let hours: BookableHours;
+  let days: OfferedDays;
   try {
     const rules = await deps.businessHours();
     const horizon = await deps.horizonDays();
-    hours =
-      horizon === null
-        ? { ok: false, reason: "horizon-unreadable" }
-        : bookableHoursOn({ hours: rules, zone: customer.zone, date, durationMin: customer.durationMin, nowMs, horizonDays: horizon });
+    if (horizon === null) {
+      hours = { ok: false, reason: "horizon-unreadable" };
+      days = { ok: false, reason: "horizon-unreadable" };
+    } else {
+      const startRules = { hours: rules, zone: customer.zone, durationMin: customer.durationMin, nowMs, horizonDays: horizon };
+      hours = bookableHoursOn({ ...startRules, date });
+      days = { ok: true, days: offeredDays(startRules) };
+    }
   } catch {
+    // Unreadable hours are said as such, never as a row of closed days.
     hours = { ok: false, reason: "hours-unreadable" };
+    days = { ok: false, reason: "hours-unreadable" };
   }
-  return { ok: true, customer, existingCall, hours };
+  return { ok: true, customer, existingCall, hours, days };
 }
