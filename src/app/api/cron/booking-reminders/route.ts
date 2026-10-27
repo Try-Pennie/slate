@@ -181,20 +181,21 @@ function laneDeps(db: ReturnType<typeof supabaseAdmin>, now: number, kind: Remin
       //
       // This used to be a single `.limit(200)`, justified against the busiest hour
       // measured across the roster. The justification was about the wrong quantity:
-      // the WINDOW is a day, and a booking stays in it for the whole 24 hours before
-      // it starts, reminded or not. So once more than 200 live bookings sat inside a
+      // the 24 hour WINDOW is a day, and a booking stays in it for the whole 24 hours
+      // before it starts, reminded or not (the 1 hour run reads an hour, #4282). So once more than 200 live bookings sat inside a
       // day the page filled with rows already dealt with, the unreminded ones behind
       // them were never reached, and nothing said so: the heartbeat stamped, `sent`
       // stayed non zero, and a truncated page is indistinguishable from the whole set
       // (L101, L98).
       //
       // Narrowing the query to the rows that are actually work is not available
-      // here. The condition is `reminder_sent_for is distinct from starts_at`, a
+      // here. The condition is this kind's record (`reminder_sent_for` or
+      // `hour_reminder_sent_for`) being distinct from `starts_at`, a
       // comparison between two COLUMNS, which PostgREST cannot express as a filter,
       // and the arithmetic dodge does not hold either: a booking that MOVED carries
       // the start it used to hold, which can sit anywhere. So the read pages instead,
       // which is exact rather than clever, and the judgement stays where it already
-      // lives (`reminderDue`).
+      // lives (`reminderDue`, or `hourReminderDue` for the 1 hour email).
       //
       // `selectAllPages` throws on a read error rather than returning a short list,
       // which is the `unwrap` rule by the other route. An empty list here is

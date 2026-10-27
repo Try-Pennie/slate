@@ -235,7 +235,9 @@ export interface ReminderRun {
   byCode: Record<string, number>;
   /**
    * Failed sends whose claim was RELEASED so the next tick tries again: nothing
-   * reached Gmail and the call is more than an hour away. Inside `failed`, and never
+   * reached Gmail and the call is still far enough away for the retry to land in time,
+   * which depends on the kind (`REMINDER_HOLD_FLOOR_MS` or `HOUR_REMINDER_RETRY_FLOOR_MS`,
+   * plus `REMINDER_RETRY_MARGIN_MS`). Inside `failed`, and never
    * paged, since the lead is still going to be reminded.
    */
   retrying: number;
@@ -285,8 +287,9 @@ export interface ReminderRun {
  * Why a failed reminder pages, which decides what the page can truthfully say.
  *
  *   too_late: it did not go out (nothing reached Gmail, or Gmail asked for it to
- *     be sent later), and the call is too close for the next tick to resend it before
- *     the lead's one hour text reminder.
+ *     be sent later), and the call is too close for the next tick to resend it in
+ *     time: before the lead's one hour text for the 24 hour email, and past
+ *     `HOUR_REMINDER_RETRY_FLOOR_MS` for the 1 hour one.
  *   refused: Google answered and refused it (the address, or the mailbox's
  *     delegation) in a way that will not pass, so it is not resent until that is
  *     repaired.
