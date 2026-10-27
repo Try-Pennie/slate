@@ -791,6 +791,11 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
   // user so manager_id can reference them. Managers come in role='manager',
   // bookable=false (they approve, they don't take bookings); if they later log
   // in, provision keeps that role.
+  //
+  // The known addresses include the placeholder's (#4206). It is left out of
+  // `byEmail` so the loop above never writes to it, but an address left out here
+  // too reads as nobody Slate holds, so a manager of record resolving to it would
+  // be planned as new and inserted as a twin of the placeholder.
   const plan = resolveManagerSync(
     sfUsers.map((u) => {
       const mgrName = (u.Agent_Manager__c ?? "").trim();
@@ -800,7 +805,7 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
         managerName: mgrName || null,
       };
     }),
-    new Set(byEmail.keys()),
+    new Set([...byEmail.keys(), ...placeholderEmails]),
   );
   const managerInserts: Partial<User>[] = plan.managersToCreate.map((m) => ({
     org_id: org.id,

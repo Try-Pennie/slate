@@ -896,8 +896,10 @@ export interface Booking {
   reminder_sent_for: string | null;
   /**
    * Set by the reassign API to stack a consult onto a busy owning agent, and on a
-   * staff placed booking, which stacks on the placeholder by design (#4200). Every
-   * reschedule clears it (#4199, migration 0206).
+   * staff placed booking, which stacks on the placeholder by design (#4200). A move
+   * onto the placeholder sets it true (`commit_reschedule_onto_placeholder`, migration
+   * 0208); every other reschedule clears it (#4199, migration 0206), and the trigger
+   * 0208 adds refuses a call on the placeholder without it.
    */
   allow_double_book: boolean;
   /**
