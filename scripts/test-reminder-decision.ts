@@ -206,11 +206,19 @@ const judge = (b: DecisionBooking, e: DecisionEmail, sends: SendRecord[] = [], a
 
 // --- who it goes to -----------------------------------------------------------------
 {
-  eq(judge(booking({ leadEmail: null }), DAY), "skip:no_email", "no address is a skip, never a page");
-  eq(judge(booking({ leadEmail: "" }), DAY), "skip:no_email", "nor is a blank one");
-  eq(judge(booking({ senderEmail: null }), DAY), "skip:no_sender", "no advisor mailbox to send from is its own skip");
+  // Waits, never stored skips (#4298): each can change while the window is open, and
+  // the lane before #4298 judged them again every tick with nothing stored.
+  eq(judge(booking({ leadEmail: null }), DAY), "wait:no_email", "no address is a wait, never a page and never a stored skip");
+  eq(judge(booking({ leadEmail: "" }), DAY), "wait:no_email", "nor is a blank one");
+  eq(judge(booking({ senderEmail: null }), DAY), "wait:no_sender", "no advisor mailbox to send from is its own wait");
   eq(judge(booking({ onPlaceholder: true }), DAY), "send", "a placeholder call is sent when the email says so");
-  eq(judge(booking({ onPlaceholder: true }), email({ placeholderSends: false })), "skip:placeholder_off", "and skipped when not");
+  eq(judge(booking({ onPlaceholder: true }), email({ placeholderSends: false })), "wait:placeholder_off", "and waits when not, in case the call moves off it");
+  eq(judge(booking({ leadEmail: null, senderEmail: null }), DAY), "wait:no_email", "the address is judged before the mailbox, as before");
+  eq(
+    judge(booking({ onPlaceholder: true, leadEmail: null }), email({ placeholderSends: false })),
+    "wait:placeholder_off",
+    "and the placeholder before either, as before",
+  );
 }
 
 // --- the retry floor, fixed by lead ---------------------------------------------------------
@@ -299,24 +307,26 @@ const judge = (b: DecisionBooking, e: DecisionEmail, sends: SendRecord[] = [], a
                   ? "held"
                   : leadEmail
                     ? "send"
-                    : "skip:no_email";
+                    // Today counted it skipped and stored nothing, so it was judged
+                    // again every tick: the judge's wait.
+                    : "wait:no_email";
               const hourDue = hourReminderDue(
                 { startsAtMs, createdAtMs, status, hourReminderSentForMs, dayReminderSentForMs: reminderSentForMs, dayReminderSentAtMs },
                 NOW,
               );
-              const todayHour = !hourDue ? "other" : leadEmail ? "send" : "skip:no_email";
+              const todayHour = !hourDue ? "other" : leadEmail ? "send" : "wait:no_email";
 
               for (const [e, today] of [[DAY, todayDay], [HOUR_EMAIL, todayHour]] as const) {
                 const d = reminderDecision(b, e, sends, TODAY, NOW);
                 const shown = show(d);
-                const mapped = shown === "send" || shown === "held" || shown === "skip:no_email" ? shown : "other";
+                const mapped = shown === "send" || shown === "held" || shown === "wait:no_email" ? shown : "other";
                 if (shown === "wait:gap") gapWaits += 1;
                 if (mapped === "held") held += 1;
                 if (mapped === "send") sendCount += 1;
                 compared += 1;
                 if (mapped === today) continue;
                 const deliberate =
-                  e === DAY && shown === "skip:too_close" && (today === "send" || today === "skip:no_email") && startsAtMs - NOW < 30 * MIN;
+                  e === DAY && shown === "skip:too_close" && (today === "send" || today === "wait:no_email") && startsAtMs - NOW < 30 * MIN;
                 if (deliberate) {
                   tooCloseDifferences += 1;
                   continue;

@@ -695,13 +695,15 @@ describe("GET /api/cron/booking-reminders, the stored emails (#4298)", () => {
     expect(cleared.map((c) => c.key)).toEqual(["reminder_email_unrenderable:hour"]);
   });
 
-  it("records a booking with no advisor mailbox as a no_sender skip", async () => {
+  it("keeps a booking with no advisor mailbox, stores nothing for it and counts it as a no_sender wait", async () => {
     state.pages = [[due(1, { agent_email: null })]];
-    await GET(req());
-    expect(rpcsOf("skip_reminder_send").map((r) => r.args)).toEqual([
-      expect.objectContaining({ p_booking_id: "bk-1", p_reminder_email_id: "email-day", p_reason: "no_sender" }),
-    ]);
+    const res = await GET(req());
+    expect(state.rpcs).toEqual([]);
+    expect(state.updates).toEqual([]);
     expect(email.sendGmailEmail).not.toHaveBeenCalled();
+    await expect(res.json()).resolves.toMatchObject({ waitingByReason: { no_sender: 1 } });
+    const cycle = logSpy.log.info.mock.calls.find((c) => (c[1] as Record<string, unknown>)?.msg === "cycle");
+    expect(String((cycle?.[1] as Record<string, unknown>)?.waiting_by_reason)).toContain("no_sender:1");
   });
 
   it("records a superseded claim as a skip, and sends nothing", async () => {

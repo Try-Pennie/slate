@@ -5,6 +5,7 @@ import {
   type DecisionBooking,
   type DecisionEmail,
   type ReminderSkipReason,
+  type ReminderWaitReason,
 } from "./reminder-decision.ts";
 import {
   describeTemplateProblem,
@@ -176,7 +177,7 @@ export interface DueBooking {
   attendeeEmail: string | null;
   /** The lead's own phone (`attendee_phone`, #4292), named in the email; null for none. */
   attendeePhone: string | null;
-  /** The advisor's mailbox, which is also the sender; null records a no_sender skip. */
+  /** The advisor's mailbox, which is also the sender; null waits (`no_sender`), judged again each tick. */
   agentEmail: string | null;
   /** The advisor's name, or null when the booking holds none (never their address). */
   agentName: string | null;
@@ -309,8 +310,14 @@ export interface ReminderRun {
    * a reminder on a later tick, and it is counted so the wait is visible.
    */
   held: number;
-  /** Not yet inside the window, or inside the two hour gap after another email: judged again. */
+  /**
+   * Not sent this tick and judged again on the next, with nothing stored: not yet inside
+   * the window, inside the two hour gap after another email, or no lead address, no
+   * advisor mailbox or a placeholder call the email skips, each of which can change
+   * while the window is open (`waitingByReason`).
+   */
   waiting: number;
+  waitingByReason: Partial<Record<ReminderWaitReason, number>>;
   /** Nothing to do: already settled, not live, or past. */
   idle: number;
   /** A value the judge could not read, so nothing was sent. Said in the log. */
@@ -560,6 +567,7 @@ function emptyRun(): ReminderRun {
     skippedByReason: {},
     held: 0,
     waiting: 0,
+    waitingByReason: {},
     idle: 0,
     unreadable: 0,
     lost: 0,
@@ -659,6 +667,11 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
   const allDecision = stored.map(decisionEmailOf);
   const decisionOf = new Map(judged.map((e) => [e.id, decisionEmailOf(e)]));
 
+  const countWait = (reason: ReminderWaitReason) => {
+    run.waiting += 1;
+    run.waitingByReason[reason] = (run.waitingByReason[reason] ?? 0) + 1;
+  };
+
   const recordSkip = async (row: DueBooking, email: LaneEmail, reason: ReminderSkipReason) => {
     run.skipped += 1;
     run.skippedByReason[reason] = (run.skippedByReason[reason] ?? 0) + 1;
@@ -705,7 +718,9 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
           counts.held += 1;
           break;
         case "wait":
-          run.waiting += 1;
+          // Nothing stored: judged again next tick, so a booking that gains an address
+          // or a mailbox, or moves off the placeholder, is sent its email then.
+          countWait(d.reason);
           counts.waiting += 1;
           break;
         case "skip":
@@ -813,7 +828,7 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
     if (outcome === "gap") {
       // Another email about this start went out inside the gap since the read. Judged
       // again next tick; the database stored nothing.
-      run.waiting += 1;
+      countWait("gap");
       counts.waiting += 1;
       continue;
     }

@@ -379,15 +379,16 @@ function wireStore(s: ReturnType<typeof spy>, rows: (DueBooking | (() => DueBook
 //
 // It is not an error worth paging about: a booking can legitimately carry a phone and
 // no address. It must not be claimed either, or the row is marked reminded for a
-// message that never existed. Since #4298 it is RECORDED as a skip with its reason, so
-// the status page and the owed check can tell it from an email nobody sent.
+// message that never existed. Nor is anything stored (#4298): it is a wait, judged
+// again every tick, so a lead who adds an address while the window is open still gets
+// the email, as before.
 {
   const s = spy({ loadDue: async () => [due({ attendeeEmail: null })] });
   const result = await runBookingReminders(s.deps);
   eq(s.sent.length, 0, "no address means no email");
   eq(s.order.length, 0, "and no claim, so the row is not marked as reminded");
-  eq(result.skipped, 1, "the run counts it, because a silent skip is how a gap hides");
-  eq(s.skips, [{ id: "bk-1", emailId: "email-day", reason: "no_email" }], "and records it as a no_email skip");
+  eq(result.waitingByReason.no_email, 1, "the run counts it by its reason, because a silent skip is how a gap hides");
+  eq(s.writes, [], "and stores nothing, so it is judged again next tick");
 }
 
 // --- the run reports WHY each send failed, in a bounded vocabulary ---------------
@@ -435,7 +436,7 @@ function wireStore(s: ReturnType<typeof spy>, rows: (DueBooking | (() => DueBook
     ],
   });
   const result = await runBookingReminders(s.deps);
-  eq(result.skipped, 1, "the addressless booking is skipped");
+  eq(result.waitingByReason.no_email, 1, "the addressless booking waits");
   eq(result.attempted, 1, "and is not in the denominator of the share");
   eq(Object.keys(result.byCode).length, 0, "a clean run names no failure reasons");
 }
@@ -459,7 +460,7 @@ function wireStore(s: ReturnType<typeof spy>, rows: (DueBooking | (() => DueBook
   eq(result.sent, 1, "the eleven minute old one is sent");
   eq(result.attempted, 1, "a held booking is not an attempt");
   eq(result.failed, 0, "and not a failure");
-  eq(result.skipped, 0, "and not an addressless skip either, which is a different fact");
+  eq(result.waitingByReason.no_email ?? 0, 0, "and not an addressless wait either, which is a different fact");
   assert(!s.order.includes("claim:young"), "the held booking is not claimed");
   eq(s.sent.map((m) => m.to).join(","), "old@x.com", "only the older booking's lead is emailed");
 }
@@ -1788,26 +1789,59 @@ for (const [minutes, released] of [
   );
 }
 
-// --- no advisor address: recorded, not dropped ------------------------------------------
+// --- no advisor address: kept, waited on, and sent once a mailbox arrives ----------------
+//
+// Not dropped from the read (where nothing would ever say so) and not stored as a skip
+// (which would settle the email for good): a wait, judged again every tick, so the
+// booking is sent its email on the tick after an advisor with a mailbox is on record.
 {
-  const s = spy({ loadDue: async () => [due({ agentEmail: null })] });
-  const run = await runBookingReminders(s.deps);
+  let agentEmail: string | null = null;
+  const s = spy();
+  wireStore(s, [() => due({ agentEmail })]);
+  const first = await runBookingReminders(s.deps);
   eq(s.sent.length, 0, "a booking with no advisor mailbox has nobody to send from");
-  eq(s.skips, [{ id: "bk-1", emailId: "email-day", reason: "no_sender" }], "and is recorded as a no_sender skip");
-  eq(run.skippedByReason.no_sender, 1, "counted by its reason");
+  eq(first.waitingByReason.no_sender, 1, "it is counted as a no_sender wait");
+  eq(s.writes, [], "and nothing is stored for it");
+
+  agentEmail = "trios@trypennie.com";
+  const second = await runBookingReminders(s.deps);
+  eq(second.sent, 1, "once an advisor with a mailbox is on record, the next tick sends it");
+  eq(s.store.rows.map((r) => r.status), ["sent"], "and records that one send");
+}
+{
+  // The same for a call on the placeholder whose email skips placeholder calls: it moves
+  // onto a real advisor, and the email then goes.
+  let onPlaceholder = true;
+  const noPlaceholder = { ...DAY, placeholderSends: false };
+  const s = spy({}, [noPlaceholder, HOUR_EMAIL]);
+  wireStore(s, [() => due({ onPlaceholder })]);
+  const first = await runBookingReminders(s.deps);
+  eq(first.waitingByReason.placeholder_off, 1, "a placeholder call the email skips waits");
+  eq(s.writes, [], "storing nothing");
+  onPlaceholder = false;
+  const second = await runBookingReminders(s.deps);
+  eq(second.sent, 1, "and is sent its email once it moves onto a real advisor");
 }
 
 // --- a skip that cannot be written costs nothing else -------------------------------------
 {
-  const s = spy({
-    loadDue: async () => [due({ id: "a", attendeeEmail: null }), due({ id: "b", attendeeEmail: "b@example.com" })],
-    skipSend: async () => {
-      throw new Error("rpc failed");
+  const s = spy(
+    {
+      loadDue: async () => [
+        // Booked after the 1 hour email's window opened: a permanent late_booking skip.
+        due({ id: "a", createdAtIso: new Date(NOW - 5 * 60_000).toISOString(), startsAtIso: new Date(NOW + 50 * 60_000).toISOString() }),
+        due({ id: "b", attendeeEmail: "b@example.com", createdAtIso: new Date(NOW - 48 * HOUR).toISOString(), startsAtIso: new Date(NOW + 50 * 60_000).toISOString() }),
+      ],
+      skipSend: async () => {
+        throw new Error("rpc failed");
+      },
     },
-  });
+    [HOUR_EMAIL],
+  );
   const run = await runBookingReminders(s.deps);
   eq(s.sent.map((m) => m.to), ["b@example.com"], "the other booking is still sent");
   assert(s.warnings.some((w) => /skip not recorded/.test(w)), "and the unrecorded skip is logged");
+  eq(run.skippedByReason.late_booking, 1, "and still counted by its reason");
   eq(run.sent, 1, "the tick completes");
 }
 

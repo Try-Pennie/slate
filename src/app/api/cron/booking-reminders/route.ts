@@ -298,8 +298,9 @@ function laneDeps(db: ReturnType<typeof supabaseAdmin>, now: number): ReminderDe
           status: r.status,
           attendeeEmail: r.attendee_email,
           attendeePhone: r.attendee_phone,
-          // A booking with no advisor mailbox is kept, and recorded as a no_sender
-          // skip, rather than dropped here where nothing would ever say so (#4298).
+          // A booking with no advisor mailbox is kept rather than dropped here, so the
+          // judge counts it as a no_sender wait in the cycle line, stores nothing, and
+          // sends once a mailbox is on record (#4298).
           agentEmail: r.agent_email,
           // The advisor's name signs the email and names the contact card. A
           // missing one stays null, and the copy then speaks for Pennie: an
@@ -500,6 +501,9 @@ function logRun(run: ReminderRun) {
       .join(","),
     held: run.held,
     waiting: run.waiting,
+    waiting_by_reason: Object.entries(run.waitingByReason)
+      .map(([reason, n]) => `${reason}:${n}`)
+      .join(","),
     idle: run.idle,
     unreadable: run.unreadable,
     lost: run.lost,
