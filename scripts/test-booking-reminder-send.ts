@@ -1228,6 +1228,15 @@ const failingWith = (err: unknown) => async () => {
   eq(s.alerts.length, 1, "so it pages");
   assert(/could not be confirmed/i.test(s.alerts[0] ?? ""), `as a retry that could not be confirmed (${s.alerts[0]})`);
 }
+{
+  // The column no longer holds this tick's claim: another writer moved it to some other
+  // start, so it settles nothing for this one, and the released record is retried.
+  const s = spy({ send: failingWith(mintTimeout()), legacyRelease: async () => false });
+  const run = await runBookingReminders(s.deps);
+  eq(run.retrying, 1, "a legacy column already changed by another writer blocks nothing, so the send is retrying");
+  eq(s.alerts.length, 0, "and nobody is paged");
+  assert(s.warnings.some((w) => /legacy column had changed/.test(w)), "but it is logged");
+}
 
 // --- the share is told how each attempted booking settled ---------------------------
 {

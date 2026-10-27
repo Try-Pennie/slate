@@ -491,9 +491,6 @@ export function reminderEmailUnrenderableKey(slug: string): string {
   return `reminder_email_unrenderable:${slug}`;
 }
 
-/** The info key said when no reminder email is switched on. */
-export const REMINDER_EMAILS_ALL_OFF_KEY = "reminder_emails_all_off";
-
 /** The page for an enabled email the renderer refuses: what is wrong, and what it costs. */
 export function reminderEmailUnrenderableAlert(email: Pick<LaneEmail, "name">, problems: TemplateProblem[]): string {
   const shown = problems.slice(0, 3).map(describeTemplateProblem).join(" ");
@@ -1036,13 +1033,19 @@ async function settleFailedSend(
     }
     if (released && legacy) {
       try {
-        released = await deps.legacyRelease(
+        const restored = await deps.legacyRelease(
           row.id,
           legacy,
           row.startsAtIso,
           legacySeen(row, legacy),
           legacy === "day" ? row.reminderSentAtIso : null,
         );
+        // A column that no longer holds this tick's claim was changed by another
+        // writer to some other start, so it does not settle this one either: with the
+        // send record released, nothing blocks the retry, and it is counted as one.
+        if (!restored) {
+          deps.warn("reminder legacy column had changed, so it was left as it was", row.id, null, { email: email.slug });
+        }
       } catch (releaseErr) {
         await notReleased(releaseErr);
         return;
