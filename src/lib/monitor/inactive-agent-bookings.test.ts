@@ -32,6 +32,7 @@ import {
   sweepHeldBookingIds,
   formatDemotedAgentBookingsAlert,
   formatDemotedAgentBookingsRecovery,
+  demotedAgentBookingsSend,
   DEMOTED_AGENT_BOOKINGS_KEY,
   INACTIVE_AGENT_BOOKINGS_KEY,
   INACTIVE_BOOKINGS_ALERT_AFTER_TICKS,
@@ -249,12 +250,68 @@ describe("formatInactiveAgentBookingsAlert (#1215)", () => {
     expect(text).toMatch(/still holds 1 appointment/);
   });
 
-  it("the demotion backstop page names its distinct cause and the demoted reason", () => {
+  it("the demotion backstop page says the reroute tried, why it could not, and that it keeps trying", () => {
     const text = formatDemotedAgentBookingsAlert([holder({ reason: "demoted", bookingCount: 2 })]);
-    expect(text).toContain("in a pool they were moved off");
-    expect(text).toContain("automatic reroute has not moved");
-    expect(text).toContain("demoted off a pool");
+    expect(text).toContain("The automatic reroute could not move 2 appointments held by an agent Twilio moved off a pool");
+    expect(text).toContain("nobody else in the pool each one needs was free at that time");
+    expect(text).toContain("It retries them every hour until they start.");
+    expect(text).toContain(`To move one sooner, use ${COVERAGE_PANEL_NAME} on the agent's page in Admin.`);
+    expect(text).toContain("Dana Ruiz (dana@example.com), 2 appointments");
+    // The opening says why they are held; the line per agent does not say it again (L605).
+    expect(text).not.toContain("demoted off a pool");
     expect(text).not.toContain("left the booking pool");
+  });
+
+  it("the demotion backstop page speaks of one appointment in the singular", () => {
+    const text = formatDemotedAgentBookingsAlert([holder({ reason: "demoted", bookingCount: 1 })]);
+    expect(text).toContain("could not move 1 appointment held by an agent Twilio moved off a pool");
+    expect(text).toContain("nobody else in the pool it needs was free at that time");
+    expect(text).toContain("It retries it every hour until it starts.");
+    expect(text).toContain(`To move it sooner, use ${COVERAGE_PANEL_NAME}`);
+  });
+
+  it("the demotion backstop page names only the calls it is told are new", () => {
+    const calls = (ids: string[]) => ids.map((id) => ({ id, startsAt: "2026-10-30T15:00:00Z" }));
+    const holders = [
+      holder({ userId: "u1", name: "Kai Example", email: "kai@example.com", reason: "demoted", bookingCount: 3, calls: calls(["k1", "k2", "k3"]) }),
+      holder({ userId: "u2", name: "Eli Example", email: "eli@example.com", reason: "demoted", bookingCount: 1, calls: calls(["e1"]) }),
+    ];
+    const text = formatDemotedAgentBookingsAlert(holders, new Set(["booking:k2", "booking:k3"]));
+    expect(text).toContain("could not move 2 appointments held by an agent");
+    expect(text).toContain("Kai Example (kai@example.com), 2 appointments");
+    expect(text).not.toContain("Eli Example");
+  });
+
+  it("the demotion send names one subject per call, and marks only calls starting before the next batch as urgent", () => {
+    const now = Date.UTC(2026, 9, 26, 23, 0);
+    const at = (ms: number) => new Date(ms).toISOString();
+    const HOUR = 60 * 60_000;
+    const opts = demotedAgentBookingsSend(
+      [
+        holder({
+          reason: "demoted",
+          bookingCount: 3,
+          calls: [
+            { id: "soon", startsAt: at(now + 2 * HOUR) },
+            { id: "edge", startsAt: at(now + 3 * HOUR) },
+            { id: "later", startsAt: at(now + 26 * HOUR) },
+          ],
+        }),
+      ],
+      now,
+    );
+    expect(opts.subjects).toEqual(["booking:soon", "booking:edge", "booking:later"]);
+    expect(opts.urgentSubjects).toEqual(["booking:soon"]);
+    expect(opts.band).toBeUndefined();
+    expect(opts.textForFresh?.(["booking:later"])).toContain("could not move 1 appointment");
+  });
+
+  it("the demotion send treats a call whose start cannot be read as soon, so it is never held", () => {
+    const opts = demotedAgentBookingsSend(
+      [holder({ reason: "demoted", bookingCount: 1, calls: [{ id: "x", startsAt: "not a time" }] })],
+      Date.UTC(2026, 9, 26, 23, 0),
+    );
+    expect(opts.urgentSubjects).toEqual(["booking:x"]);
   });
 
   it("agrees its verbs with several agents", () => {
@@ -373,21 +430,26 @@ describe("the demotion backstop (#3582)", () => {
     id: "d1",
     name: "Del Vane",
     email: "del@example.com",
-    unservedCount: 2,
+    unserved: [
+      { id: "bk1", startsAt: "2026-10-30T15:00:00Z" },
+      { id: "bk2", startsAt: "2026-10-30T16:00:00Z" },
+    ],
     coveredByPendingSweep: false,
     ...over,
   });
 
   it("demotedHolders keeps only past-window demoted agents still holding unserved bookings", () => {
+    const calls = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `c${i}`, startsAt: "2026-10-30T15:00:00Z" }));
     const out = demotedHolders([
-      demotedAgent({ id: "d1", unservedCount: 1 }),
-      demotedAgent({ id: "d2", unservedCount: 3 }),
-      demotedAgent({ id: "d3", unservedCount: 0 }), // serves everything: dropped
-      demotedAgent({ id: "d4", unservedCount: 5, coveredByPendingSweep: true }), // mid-debounce: dropped
+      demotedAgent({ id: "d1", unserved: calls(1) }),
+      demotedAgent({ id: "d2", unserved: calls(3) }),
+      demotedAgent({ id: "d3", unserved: [] }), // serves everything: dropped
+      demotedAgent({ id: "d4", unserved: calls(5), coveredByPendingSweep: true }), // mid-debounce: dropped
     ]);
     expect(out.map((h) => h.userId)).toEqual(["d2", "d1"]);
     expect(out.every((h) => h.reason === "demoted")).toBe(true);
     expect(out[0].bookingCount).toBe(3);
+    expect(out[0].calls).toEqual(calls(3));
   });
 
   const runDemoted = (holders: InactiveHolder[]) =>
@@ -409,7 +471,7 @@ describe("the demotion backstop (#3582)", () => {
     );
     const [key, , body] = sendThrottledAlert.mock.calls[0];
     expect(key).toBe(DEMOTED_AGENT_BOOKINGS_KEY);
-    expect(body).toContain("automatic reroute has not moved");
+    expect(body).toContain("The automatic reroute could not move");
     expect(body).not.toContain("left the booking pool");
   });
 
@@ -444,18 +506,27 @@ describe("the demotion backstop (#3582)", () => {
     it("counts every call the demoted advisor can no longer take", () => {
       const out = demotedAgentsFrom({ ...base, pinnedByUser: new Map() });
       expect(out).toEqual([
-        { id: "d1", name: "Del Vane", email: "del@example.com", coveredByPendingSweep: false, unservedCount: 2 },
+        {
+          id: "d1",
+          name: "Del Vane",
+          email: "del@example.com",
+          coveredByPendingSweep: false,
+          unserved: [
+            { id: "bk1", startsAt: "2026-10-20T15:00:00Z" },
+            { id: "bk2", startsAt: "2026-10-20T15:00:00Z" },
+          ],
+        },
       ]);
     });
 
     it("leaves out a call an admin moved back to them", () => {
       const out = demotedAgentsFrom({ ...base, pinnedByUser: new Map([["d1", new Set(["bk1"])]]) });
-      expect(out[0].unservedCount).toBe(1);
+      expect(out[0].unserved.map((c) => c.id)).toEqual(["bk2"]);
     });
 
     it("does not let one advisor's moved back call hide another's", () => {
       const out = demotedAgentsFrom({ ...base, pinnedByUser: new Map([["someone-else", new Set(["bk1"])]]) });
-      expect(out[0].unservedCount).toBe(2);
+      expect(out[0].unserved.map((c) => c.id)).toEqual(["bk1", "bk2"]);
     });
   });
 

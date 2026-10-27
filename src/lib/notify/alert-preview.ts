@@ -2594,6 +2594,37 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     ]),
   },
   {
+    // Each call is named once (Dan, 2026-10-26): a later post names only the calls new since.
+    key: "demoted_agent_bookings",
+    state: "new calls after an earlier post, naming only them",
+    channel: "alert",
+    text: formatDemotedAgentBookingsAlert(
+      [
+        {
+          userId: "u1",
+          name: "Dana Ruiz",
+          email: "dana.ruiz@example.com",
+          reason: "demoted",
+          bookingCount: 3,
+          calls: [
+            { id: "c1", startsAt: "2026-10-28T15:00:00Z" },
+            { id: "c2", startsAt: "2026-10-28T16:00:00Z" },
+            { id: "c3", startsAt: "2026-10-29T15:00:00Z" },
+          ],
+        },
+        {
+          userId: "u2",
+          name: "Sam Okafor",
+          email: "sam.okafor@example.com",
+          reason: "demoted",
+          bookingCount: 1,
+          calls: [{ id: "c4", startsAt: "2026-10-28T17:00:00Z" }],
+        },
+      ],
+      new Set(["booking:c2", "booking:c3"]),
+    ),
+  },
+  {
     key: "demoted_agent_bookings",
     state: "every appointment rerouted or reassigned",
     channel: "recovery",

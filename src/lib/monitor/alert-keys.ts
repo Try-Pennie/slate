@@ -26,7 +26,6 @@ export const ALERT_KEYS = [
   "migration_version_lag",
   "sync_staleness",
   "inactive_agent_bookings",
-  "demoted_agent_bookings",
   "coverage_needs_human",
   "ooo_coverage_gap",
   "ooo_calcom_unprotected",

@@ -1,9 +1,11 @@
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
-import { doublingBand, type AlertRepeat } from "@/lib/notify/repeat-policy";
+import { changeBatchMs, doublingBand, type AlertRepeat } from "@/lib/notify/repeat-policy";
+import type { SendOptions } from "@/lib/notify/dispatch";
 import { logAlertSendFailure, logAllClearFailure } from "@/lib/notify/send-failure";
 import { log } from "@/lib/log";
+import { parseStampMs } from "@/lib/date/stamp";
 import type { Attributes, BulkReassignItemStatus, Criteria } from "@/lib/db/types";
 import { selectDemotionBookings, type DemotionCandidateRow } from "@/lib/booking/demotion-snapshot";
 import { ACTIONABLE_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
@@ -88,6 +90,12 @@ export interface OutOfPoolAgent {
   coveredByPendingSweep: boolean;
 }
 
+/** One upcoming call an agent holds, as the demotion backstop names it. */
+export interface HeldCall {
+  id: string;
+  startsAt: string;
+}
+
 /** One out-of-pool agent who still holds future appointments. */
 export interface InactiveHolder {
   userId: string;
@@ -95,6 +103,9 @@ export interface InactiveHolder {
   email: string | null;
   reason: OutOfPoolReason;
   bookingCount: number;
+  /** The calls themselves, which the demotion backstop names one by one (Dan, 2026-10-26);
+   *  the pool-exit check counts by agent and leaves this out. */
+  calls?: readonly HeldCall[];
 }
 
 /** Item statuses that leave a booking in a coverage sweep's hands: still being worked
@@ -181,15 +192,16 @@ export function inactiveHoldersFromBookings(
 }
 
 /** A still-bookable agent a Twilio demotion took off a pool the bookings they hold need (#3582),
- *  with how many of those bookings they can no longer serve, already computed from the filtered
- *  demotion snapshot (`unservedBookingIds`). */
+ *  with the bookings they can no longer serve (each with its start, so the page can name it once
+ *  and tell a call starting soon), already computed from the filtered demotion snapshot
+ *  (`unservedBookingIds`). */
 export interface DemotedAgent {
   id: string;
   name: string | null;
   email: string | null;
   /** Bookings the agent no longer serves, per the demotion snapshot (excludes agent_link and
    *  manual-member bookings, exactly as the reroute does). */
-  unservedCount: number;
+  unserved: HeldCall[];
   /**
    * True while a debounced demotion sweep is still legitimately pending for them
    * (`demotionSweepPending`): the sweep has not run yet, so they hold the lost-pool calls by
@@ -209,23 +221,24 @@ export interface DemotedAgent {
  */
 export function demotedHolders(agents: DemotedAgent[]): InactiveHolder[] {
   return agents
-    .filter((a) => !a.coveredByPendingSweep && a.unservedCount > 0)
+    .filter((a) => !a.coveredByPendingSweep && a.unserved.length > 0)
     .map((a) => ({
       userId: a.id,
       name: a.name,
       email: a.email,
       reason: "demoted" as OutOfPoolReason,
-      bookingCount: a.unservedCount,
+      bookingCount: a.unserved.length,
+      calls: a.unserved,
     }))
     .sort((x, y) => y.bookingCount - x.bookingCount || x.userId.localeCompare(y.userId));
 }
 
 /**
  * The demoted agents the backstop judges, built from its reads (#3582): each marked agent past the
- * debounce, with how many of their upcoming calls they can no longer serve, judged by the SAME
- * filtered snapshot the reroute moves with (`selectDemotionBookings`, L342). A call an admin moved
- * BACK to them (#3615) is theirs by decision and is not counted, or the backstop would page about
- * it every day. Pure, so the counting is tested where the route's reads are not.
+ * debounce, with the upcoming calls they can no longer serve, judged by the SAME filtered snapshot
+ * the reroute moves with (`selectDemotionBookings`, L342). A call an admin moved BACK to them
+ * (#3615) is theirs by decision and is left out, or the backstop would page about it. Pure, so
+ * which calls are listed is tested where the route's reads are not.
  */
 export function demotedAgentsFrom(input: {
   stamped: { id: string; name: string | null; email: string | null; attributes: Attributes | null }[];
@@ -255,12 +268,12 @@ export function demotedAgentsFrom(input: {
     email: a.email,
     // Only agents past the debounce reach here (the caller filters), so never mid-sweep.
     coveredByPendingSweep: false,
-    unservedCount: selectDemotionBookings(
+    unserved: selectDemotionBookings(
       a.attributes,
       rowsByUser.get(a.id) ?? [],
       input.criteriaByBucket,
       input.membersByUser.get(a.id) ?? new Set<string>(),
-    ).length,
+    ).map((r) => ({ id: r.id, startsAt: r.starts_at })),
   }));
 }
 
@@ -315,30 +328,73 @@ export function formatInactiveAgentBookingsAlert(holders: InactiveHolder[]): str
   );
 }
 
+/** The subject the demotion backstop names one call by, so each is posted once. */
+export function demotedCallSubject(bookingId: string): string {
+  return `booking:${bookingId}`;
+}
+
+/** A holder narrowed to the calls in `only`, or null when none of theirs is in it. A holder
+ *  without its calls listed is kept whole, which is the loud side. */
+function narrowedTo(h: InactiveHolder, only: ReadonlySet<string>): InactiveHolder | null {
+  if (h.calls === undefined) return h;
+  const calls = h.calls.filter((c) => only.has(demotedCallSubject(c.id)));
+  return calls.length === 0 ? null : { ...h, calls, bookingCount: calls.length };
+}
+
 /**
  * The demotion backstop page (#3582). A separate alert from the pool-exit one above, deliberately:
  * the cause and the remediation differ (a demoted agent is still bookable; their held booking
- * needs REROUTING to an eligible advisor, which the automatic reroute should have done), and
- * keeping them separate means a failed demotion read can never blind the #1215 departed-agent
- * check (L11, L71). The reassign control is the same coverage panel, so the remediation line
- * matches, but the opening states the distinct cause.
+ * needs REROUTING to an eligible advisor, which the automatic reroute tried), and keeping them
+ * separate means a failed demotion read can never blind the #1215 departed-agent check (L11, L71).
+ *
+ * It says what the reader would otherwise ask (Dan, 2026-10-26: "why isn't it being fixed
+ * automatically?"): the reroute tried, nobody else in the pool was free, and the hourly retry
+ * (`coverage-retry.ts`) keeps trying until the call starts. Each call is named once, so `only`
+ * narrows the page to the calls the dispatcher found new (`textForFresh`); the opening already
+ * says why they are held, so the line per agent does not say it again (L605).
  */
-export function formatDemotedAgentBookingsAlert(holders: InactiveHolder[]): string {
-  const totalBookings = holders.reduce((n, h) => n + h.bookingCount, 0);
-  const lines = holders.slice(0, NAME_CAP).map(holderLine);
-  const more = holders.length > NAME_CAP ? `\n(and ${holders.length - NAME_CAP} more)` : "";
-  const oneAgent = holders.length === 1;
-  const oneBooking = totalBookings === 1;
+export function formatDemotedAgentBookingsAlert(holders: InactiveHolder[], only?: ReadonlySet<string>): string {
+  const named = only === undefined ? holders : holders.flatMap((h) => narrowedTo(h, only) ?? []);
+  const totalBookings = named.reduce((n, h) => n + h.bookingCount, 0);
+  const lines = named
+    .slice(0, NAME_CAP)
+    .map((h) => {
+      const who = h.name?.trim() || h.email || h.userId;
+      const contact = h.email && h.email !== who ? `${who} (${h.email})` : who;
+      return `${contact}, ${plural(h.bookingCount, "appointment", "appointments")}`;
+    });
+  const more = named.length > NAME_CAP ? `\n(and ${named.length - NAME_CAP} more)` : "";
+  const one = totalBookings === 1;
   return (
-    `${plural(holders.length, "agent", "agents")} ${oneAgent ? "is" : "are"} still holding ` +
-    `${plural(totalBookings, "appointment", "appointments")} in a pool they were moved off, which ` +
-    `the automatic reroute has not moved. ` +
-    `${oneBooking ? "That customer is" : "Those customers are"} booked with an advisor who can no ` +
-    `longer take ${oneBooking ? "it" : "them"}, so reassign ${oneBooking ? "it" : "them"} from the ` +
-    `agent's page in Admin, under ${COVERAGE_PANEL_NAME}.\n` +
+    `The automatic reroute could not move ${plural(totalBookings, "appointment", "appointments")} ` +
+    `held by ${named.length === 1 ? "an agent" : `${named.length} agents`} Twilio moved off a pool: nobody else in the ` +
+    `pool ${one ? "it needs" : "each one needs"} was free at that time. ` +
+    `It retries ${one ? "it" : "them"} every hour until ${one ? "it starts" : "they start"}. ` +
+    `To move ${one ? "it" : "one"} sooner, use ${COVERAGE_PANEL_NAME} on the agent's page in Admin.\n` +
     lines.join("\n") +
     more
   );
+}
+
+/**
+ * What the demotion backstop tells the dispatcher (Dan, 2026-10-26): one subject per call, so
+ * each is posted once; the calls starting before the next batch could post, so they skip the
+ * wait; and the page narrowed to whichever calls turn out to be new. No band: a growing count
+ * is new calls, which the subjects already carry.
+ */
+export function demotedAgentBookingsSend(holders: readonly InactiveHolder[], nowMs: number): SendOptions {
+  const calls = holders.flatMap((h) => h.calls ?? []);
+  const horizonMs = changeBatchMs(DEMOTED_AGENT_BOOKINGS_KEY) ?? 0;
+  // A start that cannot be read counts as soon, the side that posts.
+  const urgent = calls.filter((c) => {
+    const startMs = parseStampMs(c.startsAt);
+    return startMs === null || startMs - nowMs < horizonMs;
+  });
+  return {
+    subjects: calls.map((c) => demotedCallSubject(c.id)),
+    urgentSubjects: urgent.map((c) => demotedCallSubject(c.id)),
+    textForFresh: (fresh) => formatDemotedAgentBookingsAlert([...holders], new Set(fresh)),
+  };
 }
 
 /** The demotion backstop all-clear (#3582), the sibling of the pool-exit recovery. */
@@ -419,6 +475,9 @@ export async function runInactiveAgentBookingsCheck(deps: {
   key?: string;
   formatAlert?: (holders: InactiveHolder[]) => string;
   formatRecovery?: () => string;
+  /** What the page tells the dispatcher beyond its text. Defaults to one subject per agent
+   *  (`inactiveAgentBookingsRepeat`); the demotion backstop names one per call. */
+  sendOptions?: (holders: InactiveHolder[]) => SendOptions;
 }): Promise<InactiveAgentBookingsResult> {
   const key = deps.key ?? INACTIVE_AGENT_BOOKINGS_KEY;
   const formatAlert = deps.formatAlert ?? formatInactiveAgentBookingsAlert;
@@ -452,11 +511,10 @@ export async function runInactiveAgentBookingsCheck(deps: {
     INACTIVE_BOOKINGS_ALERT_AFTER_TICKS,
   );
   if (sustained) {
+    const opts = deps.sendOptions?.(holders) ?? inactiveAgentBookingsRepeat(holders);
     // alert-key: inactive_agent_bookings
     // alert-key: demoted_agent_bookings
-    await sendThrottledAlert(key, deps.cooldownMs, formatAlert(holders), inactiveAgentBookingsRepeat(holders)).catch(
-      logAlertSendFailure(key),
-    );
+    await sendThrottledAlert(key, deps.cooldownMs, formatAlert(holders), opts).catch(logAlertSendFailure(key));
   }
   deps.log?.({ status: "holding", agents: holders.length, bookings, sustained, key });
   return { status: "holding", agents: holders.length, bookings };

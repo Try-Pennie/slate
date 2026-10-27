@@ -18,7 +18,9 @@
  *     interval, so the settings page keeps working as the reminder interval;
  *   - incident and info alerts keep their own throttles, except the incidents in
  *     `CHANGE_ONLY_KEYS` (Dan, 2026-10-26), which take the change rule with no
- *     reminder and ignore the cooldown they are handed.
+ *     reminder and ignore the cooldown they are handed; the conditions in that set
+ *     (`CHANGE_ONLY_CONDITIONS`) lose their reminder the same way and keep their all
+ *     clear, and a key in `CHANGE_BATCH_MS` collects its new subjects.
  *
  * The dispatcher (`sendThrottledAlert`) is the only caller, so every condition gets
  * the rule by construction rather than by each send site remembering it (L621).
@@ -33,11 +35,12 @@ export const CONDITION_REPEAT_MS = 24 * 60 * 60_000;
 export const URGENT_CONDITION_REPEAT_MS = 60 * 60_000;
 
 /**
- * How long an unchanged CHANGE ONLY incident (`CHANGE_ONLY_KEYS`) waits before it may
- * post again: in practice never. Finite rather than infinite because a failed send's
- * short retry stamp is worked out from the interval (`alertStampMs`), and a year is
- * longer than any key here lives: each is one booking, settled when the call comes
- * right and pruned once its time has passed.
+ * How long an unchanged CHANGE ONLY key (`CHANGE_ONLY_KEYS`) waits before it may post
+ * again: in practice never. Finite rather than infinite because a failed send's short
+ * retry stamp is worked out from the interval (`alertStampMs`), and a year is longer
+ * than any key here lives unchanged: a per booking incident is settled when the call
+ * comes right and pruned once its time has passed, and a condition's row is cleared by
+ * its all clear and gains a new subject whenever another call is stuck.
  */
 export const CHANGE_ONLY_HOLD_MS = 366 * 24 * 60 * 60_000;
 
@@ -57,10 +60,61 @@ export const CHANGE_ONLY_HOLD_MS = 366 * 24 * 60 * 60_000;
  *   last post's is a change; anything else is not. Omitted, there is no band.
  *   A DURATION must never be a band: "has not run for N minutes" grows on every
  *   tick by construction, so it would post on every tick.
+ * - `urgentSubjects`: for a key with a batch window (`changeBatchMs`), the subjects that
+ *   may not wait for it, because they would be over before the batch posts (a call
+ *   starting inside the window). A new one posts at once. Ignored by every other key.
  */
 export interface AlertRepeat {
   subjects?: readonly string[];
   band?: number;
+  urgentSubjects?: readonly string[];
+}
+
+/**
+ * Change only keys whose NEW subjects are collected rather than posted one by one: a new
+ * subject waits until this long has passed since the last post, unless the send marks it
+ * urgent. Keyed by the catalog key.
+ *
+ *   - demoted_agent_bookings: 3 hours (Dan, 2026-10-26, asked how calls that get stuck
+ *     after a page should arrive: "At most every 3 hours", with a call starting inside
+ *     those 3 hours posting at once).
+ */
+export const CHANGE_BATCH_MS: Readonly<Record<string, number>> = {
+  demoted_agent_bookings: 3 * 60 * 60_000,
+};
+
+/** The batch window for a SENT key, family members included, or null when it has none. */
+export function changeBatchMs(key: string): number | null {
+  if (!isChangeOnly(key)) return null;
+  const base = key.split(":")[0] ?? key;
+  return CHANGE_BATCH_MS[key] ?? CHANGE_BATCH_MS[base] ?? null;
+}
+
+/** The subjects the last post did not name. With nothing recorded, every one. */
+export function freshSubjects(last: readonly string[] | null, subjects: readonly string[]): string[] {
+  if (last === null) return [...subjects];
+  const told = new Set(last);
+  return subjects.filter((s) => !told.has(s));
+}
+
+/**
+ * Whether new subjects wait for the batch: the last post was less than `batchMs` ago and
+ * none of the new ones is urgent. A last post that cannot be dated holds nothing, which is
+ * the loud side. An urgent subject that was ALREADY told does not count: it is not new, so
+ * it cannot carry another subject past the window.
+ */
+export function heldForBatch(input: {
+  batchMs: number;
+  lastPostMs: number | null;
+  nowMs: number;
+  fresh: readonly string[];
+  urgent: readonly string[];
+}): boolean {
+  const { batchMs, lastPostMs, nowMs, fresh, urgent } = input;
+  if (fresh.length === 0 || lastPostMs === null) return false;
+  if (nowMs - lastPostMs >= batchMs) return false;
+  const pressing = new Set(urgent);
+  return !fresh.some((s) => pressing.has(s));
 }
 
 /**
@@ -108,7 +162,7 @@ export function isRepeatRuled(key: string): boolean {
 /**
  * How long `key` waits after its last post before an unchanged condition posts again.
  *
- * - A change only incident (`CHANGE_ONLY_KEYS`): `CHANGE_ONLY_HOLD_MS`, whatever it is
+ * - A change only key (`CHANGE_ONLY_KEYS`, incident or condition): `CHANGE_ONLY_HOLD_MS`, whatever it is
  *   handed, so no stored or coded cooldown can bring back a repeat nobody wanted.
  * - Any other incident, and info: `cooldownMs`, exactly as before #3801.
  * - A tunable condition: `cooldownMs`, because the caller resolved it from the

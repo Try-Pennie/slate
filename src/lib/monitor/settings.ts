@@ -142,12 +142,6 @@ export const ALERT_FIELDS: {
     help: "An agent who has left the booking pool (deactivated or not bookable) still holds future appointments, so those customers are booked with nobody.",
   },
   {
-    key: "demoted_agent_bookings",
-    urgency: "alert",
-    label: "Demoted-appointment alert cooldown",
-    help: "An agent moved off a pool a booking they hold needs is still holding it, and the automatic reroute has not moved it, so that customer is booked with an advisor who can no longer take them.",
-  },
-  {
     key: "coverage_needs_human",
     urgency: "alert",
     label: "Stranded-appointment alert cooldown",
@@ -500,9 +494,6 @@ export const MONITOR_DEFAULTS = {
     // standing open. Once a day while unchanged; a new agent, or a count that doubles,
     // posts at once (#3801).
     inactive_agent_bookings: CONDITION_REPEAT_MS,
-    // Demoted-agent appointments (#3582): a held booking the reroute did not move stays
-    // wrong until a human places it. Once a day while unchanged (#3801).
-    demoted_agent_bookings: CONDITION_REPEAT_MS,
     // Stranded appointments (#1242): the sweep has already given up, so the state is
     // terminal and stays wrong until a human places it. Once a day while unchanged; a new
     // agent, or a newly countable call (#3303), posts at once (#3801).

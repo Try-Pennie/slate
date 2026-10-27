@@ -900,7 +900,12 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "demoted_agent_bookings",
     kind: "condition",
-    why: "A customer holds an appointment with an agent moved off the pool it needs, and the automatic reroute did not move it, until someone reassigns them; the monitor lane re-measures every 5 minutes.",
+    why:
+      "A customer holds an appointment with an agent moved off the pool it needs, and the automatic " +
+      "reroute could not move it, until it is moved, reassigned or has passed; the monitor lane " +
+      "re-measures every 5 minutes. Each call is named once, new ones at most every 3 hours unless " +
+      "one starts sooner, and never as a reminder; the all clear still posts (`CHANGE_ONLY_KEYS`, " +
+      "Dan 2026-10-26).",
   },
   {
     key: "ooo_protection_lost",
@@ -1579,7 +1584,8 @@ export function isUrgentCondition(key: string): boolean {
 }
 
 /**
- * The INCIDENTS that post once and then again only on a change (Dan, 2026-10-26: "I
+ * The INCIDENTS (and the conditions in `CHANGE_ONLY_CONDITIONS`) that post once and then
+ * again only on a change (Dan, 2026-10-26: "I
  * got a ton of this alert and they were all the same. Just page once per call."). A
  * key that names no subjects therefore posts once and never again, which is what the
  * below tier page now does (Dan, 2026-10-26: "a single ping about this per booking").
@@ -1594,19 +1600,35 @@ export function isUrgentCondition(key: string): boolean {
  *
  * One named set, like the urgent one above, so a send site cannot opt itself in or
  * out (L621). `scripts/test-change-only-alerts.ts` holds every entry to existing in
- * the catalog and being an incident (a condition already has the change rule, plus a
- * reminder its all clear depends on).
+ * the catalog and being an incident, or a condition named in `CHANGE_ONLY_CONDITIONS`.
  *
  *   - booking_below_lead_tier:*: one call booked below the lead's tier. It names no
  *     subjects (`belowLeadTierRepeat`), so it posts once per booking and never again;
  *     a silent settle keeps its hold row for the same reason (`settleAlertsSilently`).
+ *   - demoted_agent_bookings: one subject per stuck call, so each is named once; see
+ *     `CHANGE_ONLY_CONDITIONS` below.
  */
-export const CHANGE_ONLY_KEYS: readonly string[] = ["booking_below_lead_tier:*"];
+export const CHANGE_ONLY_KEYS: readonly string[] = ["booking_below_lead_tier:*", "demoted_agent_bookings"];
+
+/**
+ * The CONDITIONS in `CHANGE_ONLY_KEYS`, each listed here because dropping a condition's
+ * reminder is a decision about that alert, never a default. A condition in the set keeps its
+ * all clear (the dispatcher's resolve is untouched); only the reminder goes.
+ *
+ *   - demoted_agent_bookings: calls the automatic reroute could not move off a demoted agent.
+ *     Dan, 2026-10-26, after three posts in two hours that each listed every call again:
+ *     "make it so that every call only pages once. i don't need an hourly update about this
+ *     unless it resolves". Its subjects are one per call (`demotedAgentBookingsSend`), and new
+ *     ones are collected for `changeBatchMs` (repeat-policy.ts).
+ */
+export const CHANGE_ONLY_CONDITIONS: readonly string[] = ["demoted_agent_bookings"];
 
 const CHANGE_ONLY = new Set(CHANGE_ONLY_KEYS);
+const CHANGE_ONLY_CONDITION = new Set(CHANGE_ONLY_CONDITIONS);
 
 /** Whether a SENT key posts only on a change, family members included. */
 export function isChangeOnly(key: string): boolean {
   const entry = catalogEntryForSentKey(key);
-  return entry !== undefined && entry.kind === "incident" && CHANGE_ONLY.has(entry.key);
+  if (entry === undefined || !CHANGE_ONLY.has(entry.key)) return false;
+  return entry.kind === "incident" || (entry.kind === "condition" && CHANGE_ONLY_CONDITION.has(entry.key));
 }

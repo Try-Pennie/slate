@@ -15,7 +15,7 @@ import {
   existingAlertStateKeys,
 } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
-import { CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
+import { CHANGE_ONLY_HOLD_MS, CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
 import {
   runRegalCallCheck,
   REGAL_CALL_ALERT_PREFIX,
@@ -412,6 +412,7 @@ import {
   DEMOTED_AGENT_BOOKINGS_KEY,
   demotedHolders,
   demotedAgentsFrom,
+  demotedAgentBookingsSend,
   formatDemotedAgentBookingsAlert,
   formatDemotedAgentBookingsRecovery,
   inactiveHoldersFromBookings,
@@ -3303,10 +3304,13 @@ export async function GET(req: NextRequest) {
     const demotedBookings = await steps.run("demoted_bookings", null, () =>
       runInactiveAgentBookingsCheck({
         loadHolders: async () => demotedHolders(await loadDemotedHolders()),
-        cooldownMs: cooldownMs.demoted_agent_bookings,
+        // Change only (`CHANGE_ONLY_KEYS`, Dan 2026-10-26): each call is posted once and never
+        // as a reminder, so no setting paces it and the hold is the change only one.
+        cooldownMs: CHANGE_ONLY_HOLD_MS,
         key: DEMOTED_AGENT_BOOKINGS_KEY,
         formatAlert: formatDemotedAgentBookingsAlert,
         formatRecovery: formatDemotedAgentBookingsRecovery,
+        sendOptions: (holders) => demotedAgentBookingsSend(holders, Date.now()),
         log: (fields) => log.info("demoted-agent-bookings", { msg: "tick", ...fields }),
       }),
     );
