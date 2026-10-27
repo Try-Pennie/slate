@@ -211,6 +211,16 @@ export const WEBHOOK_TEST_SEND_RATE_RULES: RateLimitRule[] = [
 ];
 
 /**
+ * "Send me a test" on /admin/reminder-emails (#4299): each press is a real Gmail send
+ * on the org's grant, from and to the admin's own mailbox. A few a minute is plenty
+ * for checking a draft, and the hour cap keeps a stuck key from spending the quota.
+ */
+export const REMINDER_TEST_SEND_RATE_RULES: RateLimitRule[] = [
+  { prefix: "rmtest:m", windowSeconds: 60, max: 5 },
+  { prefix: "rmtest:h", windowSeconds: 3600, max: 30 },
+];
+
+/**
  * The exact hourly cap on landing identity lookups per address (#3106), behind the per minute
  * edge window (`LANDING_LIMITER`, below). It counts LOOKUPS rather than distinct ids: that
  * bounds distinct ids at the same number, needs no new table, and the only cost of counting a
@@ -271,6 +281,7 @@ const DB_RATE_LIMIT_RULE_SETS: readonly RateLimitRule[][] = [
   CSP_REPORT_RATE_RULES,
   ROUTING_HOURLY_RATE_RULES,
   WEBHOOK_TEST_SEND_RATE_RULES,
+  REMINDER_TEST_SEND_RATE_RULES,
   LANDING_IDENTITY_HOURLY_RATE_RULES,
   CALL_ME_NOW_HOURLY_RATE_RULES,
   COORDINATOR_LOOKUP_RATE_RULES,

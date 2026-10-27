@@ -79,6 +79,11 @@ export const SAVE_OUTCOMES = [
   "prerender-on",
   "regal-ignore-added",
   "regal-ignore-removed",
+  "reminder-email-created",
+  "reminder-email-off",
+  "reminder-email-on",
+  "reminder-email-restored",
+  "reminder-email-saved",
   "shared-line-off",
   "shared-line-on",
   "volume-ramp-end-cleared",
@@ -143,6 +148,14 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   // confirmed is which way the list moved.
   "regal-ignore-added": "Added to the ignore list. Their calls in Regal are no longer reported.",
   "regal-ignore-removed": "Removed from the ignore list. Their calls in Regal are reported again.",
+  // #4299: which way it went and who it reaches, since on and off are the saves a
+  // lead feels. The email's own name is on the editor beneath this notice (L605).
+  "reminder-email-created": "Reminder email added. It stays off until you switch it on.",
+  "reminder-email-off": "Reminder email saved and switched off. No lead gets it until it is switched back on.",
+  "reminder-email-on":
+    "Reminder email saved and on. Calls already inside its window when you saved are skipped, and every later one gets it.",
+  "reminder-email-restored": "Earlier copy restored. Its timing and whether it is on are unchanged.",
+  "reminder-email-saved": "Reminder email saved.",
   // #3325: which way it went and when it lands, like the frame lock above. What each
   // state means is drawn once, by the switch beneath this notice (L605).
   "shared-line-on": `The shared confirm line is on. It takes hold on every server within ${SHARED_LINE_SWITCH_TTL_SECONDS} seconds.`,

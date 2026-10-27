@@ -58,6 +58,7 @@ const ACTION_LABEL: Record<string, string> = {
   "reminder_email.updated": "changed a reminder email",
   "reminder_email.toggled": "switched a reminder email on or off",
   "reminder_email.restored": "restored an earlier version of a reminder email",
+  "reminder_email.test_sent": "sent themselves a test of a reminder email",
   "webhook.test_sent": "sent a test webhook to a URL they entered",
   "webhook.endpoint_set": "changed where booking events are sent",
   "webhook.resent": "resent a webhook delivery",
