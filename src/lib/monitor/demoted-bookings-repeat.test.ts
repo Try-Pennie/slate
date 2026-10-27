@@ -6,9 +6,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // unless it resolves", and new calls "at most every 3 hours", except a call starting
 // within those 3 hours, which posts at once.
 //
-// Replays that evening: Moriah's and Amanda's calls posted at 7:00 PM, Kim's six arrived
-// at 8:40 PM and Enrique's one at 9:00 PM, and the old rule posted the whole list each
-// time. Supabase and Slack are faked; `alert_state` is the shared in-memory store that
+// Replays the shape of that evening: two agents' calls posted at 7:00 PM, a third agent's
+// six arrived at 8:40 PM and a fourth's one at 9:00 PM, and the old rule posted the whole
+// list each time. Supabase and Slack are faked; `alert_state` is the shared in-memory store that
 // keeps the repeat columns. The streak is mocked as already sustained, because what is
 // under test is what the dispatcher does once the check decides to page.
 

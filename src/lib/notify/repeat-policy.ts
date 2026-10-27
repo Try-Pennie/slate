@@ -162,7 +162,7 @@ export function isRepeatRuled(key: string): boolean {
 /**
  * How long `key` waits after its last post before an unchanged condition posts again.
  *
- * - A change only incident (`CHANGE_ONLY_KEYS`): `CHANGE_ONLY_HOLD_MS`, whatever it is
+ * - A change only key (`CHANGE_ONLY_KEYS`, incident or condition): `CHANGE_ONLY_HOLD_MS`, whatever it is
  *   handed, so no stored or coded cooldown can bring back a repeat nobody wanted.
  * - Any other incident, and info: `cooldownMs`, exactly as before #3801.
  * - A tunable condition: `cooldownMs`, because the caller resolved it from the
