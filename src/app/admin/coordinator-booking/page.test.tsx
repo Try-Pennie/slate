@@ -193,7 +193,8 @@ describe("the coordinators", () => {
     ]);
     const removes = within(table).getAllByRole("button");
     expect(removes.map((b) => b.getAttribute("aria-label"))).toEqual(["Remove Aisha Bello", "Remove Grace Okafor", "Remove Tomas Rivera"]);
-    for (const b of removes) expect(b.className).toBe(btnSecondaryCls);
+    // Red: a removal cannot be undone, since Team access turns away anyone who has left (D11).
+    for (const b of removes) expect(b.className).toBe(btnDangerCls);
   });
 
   it("says nobody has access yet, with no table, when there is nobody", async () => {
@@ -222,10 +223,11 @@ describe("the coordinators", () => {
     expect(aisha.querySelector("button")).toBeNull();
     const ask = aisha.nextElementSibling!.querySelector('[role="alert"]')!;
     expect(ask.querySelector("p")?.textContent).toBe(
-      "Aisha Bello will no longer be able to sign in to Slate or book calls. The calls Aisha has already booked stay as they are.",
+      "Aisha Bello will no longer be able to sign in to Slate or book calls. This can't be undone. The calls Aisha has already booked stay as they are.",
     );
     const buttons = within(ask as HTMLElement).getAllByRole("button");
     expect(buttons.map((b) => b.textContent)).toEqual(["Remove Aisha Bello", "Cancel"]);
+    expect(buttons[0]!.className).toContain("pn-btn--danger");
     expect(document.activeElement).toBe(buttons[0]);
     // Who to remove is the confirm's own name and value, so only that press can name them.
     expect([buttons[0]!.getAttribute("name"), buttons[0]!.getAttribute("value")]).toEqual(["user_id", "c1"]);

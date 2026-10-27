@@ -29,7 +29,7 @@
   var CONFIRM_ON = "From the next booking, a coordinator can book a time no advisor is free for. The call goes on Marcia, and Regal rings it to whichever advisor is free when it comes up. You can turn this off again here.";
   var EMPTY = "Nobody has coordinator access yet. You give it on Team access.";
   var FAILED = "Could not read who has coordinator access. Nobody's access has changed. Reload the page to try again.";
-  var REMOVE_AISHA = "Aisha Bello will no longer be able to sign in to Slate or book calls. The calls Aisha has already booked stay as they are.";
+  var REMOVE_AISHA = "Aisha Bello will no longer be able to sign in to Slate or book calls. This can't be undone. The calls Aisha has already booked stay as they are.";
   var PEOPLE = [
     "Aisha Bello abello@trypennie.com 2 hours ago Remove",
     "Grace Okafor gokafor@trypennie.com yesterday Remove",
@@ -121,7 +121,7 @@
       var rows = bodyRows(doc), bad = [];
       rows.forEach(function (r) {
         var who = text(r.querySelector("td p")), b = r.querySelector("button");
-        if (!b || name(b) !== "Remove " + who || isErrorColour(b)) bad.push(who);
+        if (!b || name(b) !== "Remove " + who || !isErrorColour(b)) bad.push(who);
       });
       return ok(rows.length === 5 && bad.length === 0, rows.length + " rows, wrong: " + JSON.stringify(bad));
     } },
@@ -130,7 +130,8 @@
       var aisha = rows.filter(function (r) { return text(r.querySelector("td p")) === "Aisha Bello"; })[0];
       var next = aisha && aisha.nextElementSibling, a = next && next.querySelector("[role=alert]");
       var bs = a ? all(a, "button").map(name) : [];
-      return ok(a && text(a.querySelector("p")) === REMOVE_AISHA && JSON.stringify(bs) === JSON.stringify(["Remove Aisha Bello", "Cancel"]) && !aisha.querySelector("button"),
+      var confirm = a ? all(a, "button")[0] : null;
+      return ok(a && text(a.querySelector("p")) === REMOVE_AISHA && JSON.stringify(bs) === JSON.stringify(["Remove Aisha Bello", "Cancel"]) && isErrorColour(confirm) && !aisha.querySelector("button"),
         "question '" + (a ? text(a.querySelector("p")) : "") + "', buttons " + JSON.stringify(bs));
     } },
     { id: "D13", frames: ["f-empty"], check: function (doc) {

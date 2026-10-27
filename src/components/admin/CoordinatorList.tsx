@@ -4,7 +4,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { removeCoordinator } from "@/app/admin/actions";
 import { ConfirmQuestion } from "@/components/ui/ConfirmAction";
 import { SaveForm, holdsAView } from "@/components/ui/SaveForm";
-import { btnSecondaryCls } from "@/components/ui/styles";
+import { btnDangerCls } from "@/components/ui/styles";
 import { COORDINATOR_BOOKING_COPY, removeLabel, removeQuestion } from "@/lib/admin/coordinator-booking-copy";
 import type { CoordinatorsRead } from "@/lib/admin/coordinators";
 
@@ -15,9 +15,9 @@ const COPY = COORDINATOR_BOOKING_COPY.list;
  * docs/design/coordinator-admin.html).
  *
  * The table is the Team access panel's own, so the two lists of people read alike (D10).
- * Each Remove is the outlined button, named for its person: five danger buttons down a list
- * would make the commonest thing the loudest (L609), and the question carries the consequence
- * (D11). The question opens across the row beneath its person, since a cell is too narrow to
+ * Each Remove is the red danger button, named for its person, because a removal cannot be
+ * undone: Team access turns away anyone who has left, and a coordinator has no page of their
+ * own to be brought back from (D11). The question opens across the row beneath its person, since a cell is too narrow to
  * hold it (D12), and it is ConfirmQuestion, the question ConfirmAction draws, with the opener
  * and the focus move owned here because the two sit in different rows.
  *
@@ -86,7 +86,7 @@ export function CoordinatorList({
                           else openers.current.delete(row.id);
                         }}
                         type="button"
-                        className={btnSecondaryCls}
+                        className={btnDangerCls}
                         aria-label={removeLabel(row.name)}
                         onClick={() => {
                           setPressed(true);
@@ -114,7 +114,7 @@ export function CoordinatorList({
                           message={removeQuestion(row.name)}
                           confirmLabel={removeLabel(row.name)}
                           pendingLabel="Removing"
-                          className={btnSecondaryCls}
+                          className={btnDangerCls}
                           confirmName="user_id"
                           confirmValue={row.id}
                           confirmRef={confirmRef}

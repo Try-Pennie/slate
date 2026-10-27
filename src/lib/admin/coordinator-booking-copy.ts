@@ -38,7 +38,7 @@ export const COORDINATOR_BOOKING_COPY = {
     failed: "Could not read who has coordinator access.",
     failedMeanwhile: "Nobody's access has changed. Reload the page to try again.",
     removeAsk:
-      "{name} will no longer be able to sign in to Slate or book calls. The calls {first} has already booked stay as they are.",
+      "{name} will no longer be able to sign in to Slate or book calls. This can't be undone. The calls {first} has already booked stay as they are.",
   },
 } as const;
 
