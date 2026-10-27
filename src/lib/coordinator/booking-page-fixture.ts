@@ -23,6 +23,7 @@ import { offeredDays } from "./bookable-hours.ts";
 import { initialPageState, reducePage, zoneNames, type LookupAnswer, type PageEvent, type PageState } from "./booking-page.ts";
 import type { COORDINATOR_PAGE_COPY } from "./booking-page-copy.ts";
 import type { Customer } from "./customer.ts";
+import { designFixtureFrame } from "../admin/design-fixture-frame.ts";
 
 type Copy = typeof COORDINATOR_PAGE_COPY;
 
@@ -84,9 +85,7 @@ export function designZone(label: string): string {
 
 /** One frame of the design, from the fixture. Refuses a frame or a state the fixture does not name. */
 export function coordinatorBookingFrame(fixture: CoordinatorBookingDesignFixture, frameId: string): CoordinatorBookingFrame {
-  const frame = Object.prototype.hasOwnProperty.call(fixture.frames, frameId) ? fixture.frames[frameId] : undefined;
-  if (!frame) throw new Error(`the fixture names no frame "${frameId}"`);
-  if (frame.theme !== "light" && frame.theme !== "dark") throw new Error(`frame "${frameId}" has no theme named ${frame.theme}`);
+  const frame = designFixtureFrame(fixture.frames, frameId);
   const d = fixture.design;
   const nowMs = Date.parse(frame.nowUtc ?? d.nowUtc);
   const hours: BusinessHoursRules = {

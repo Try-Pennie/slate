@@ -9,8 +9,8 @@ import { AppHeader } from "@/components/AppHeader";
  * script can sit outside `<main>`, where the design's checks read the page's words.
  *
  * It makes NO access decision; the page does (`coordinatorDeskUser`), matching the
- * console's and /me's layouts. Signed out or refused, the page redirects or answers not
- * found, so there is no header to draw for nobody.
+ * console's and /me's layouts. Signed out or refused, the page redirects to sign in, so
+ * there is no header to draw for nobody.
  */
 export default async function CoordinatorLayout({ children }: { children: React.ReactNode }) {
   const me = await coordinatorDeskUser();
