@@ -266,4 +266,66 @@ function runCommand(envFile: string | null): { status: number | null; stderr: st
   assert(/Set REMINDER_EXAMPLE_ADVISOR/.test(noFile.stderr), "and says the advisor is missing");
 }
 
+// --- the 1 hour email (#4285) -------------------------------------------------
+//
+// Since #4282 a lead also gets a 1 hour email. REMINDER_EXAMPLE_KIND=hour sends that one
+// instead, through the same lane, so it can be read in a real inbox before a lead does.
+{
+  eq(cfg.kind, "day", "the 24 hour email is the default, as before");
+  const hour = readExampleConfig({
+    REMINDER_EXAMPLE_ADVISOR: "marnold@trypennie.com",
+    REMINDER_EXAMPLE_TO: "tconway@trypennie.com",
+    REMINDER_EXAMPLE_KIND: "hour",
+  });
+  assert(hour.ok && hour.config.kind === "hour", "REMINDER_EXAMPLE_KIND=hour picks the 1 hour email");
+  const odd = readExampleConfig({
+    REMINDER_EXAMPLE_ADVISOR: "marnold@trypennie.com",
+    REMINDER_EXAMPLE_TO: "tconway@trypennie.com",
+    REMINDER_EXAMPLE_KIND: "weekly",
+  });
+  assert(!odd.ok && /day or hour/.test(odd.reason), "any other kind is refused, naming the two");
+}
+{
+  const hourCfg = { ...cfg, kind: "hour" as const };
+  const b = exampleBooking(hourCfg, advisor, LEAD, NOW);
+  const leadMs = Date.parse(b.startsAtIso) - NOW;
+  assert(leadMs >= 30 * 60_000 && leadMs <= 60 * 60_000, `the call is inside the 1 hour email's window (${leadMs / 60_000} min)`);
+
+  const sent: Sent[] = [];
+  const warned: string[] = [];
+  const deps = exampleDeps({
+    config: { ...hourCfg, send: true },
+    booking: b,
+    nowMs: NOW,
+    readCallingNumbers: async () => new Map([[LEAD.slice(0, 15), "+15555550123"]]),
+    readAdvisorPhotos: async () => new Map(),
+    sendEmail: async (msg) => {
+      sent.push(msg);
+      return "msg-1";
+    },
+    preview: () => {},
+    warn: (msg) => warned.push(msg),
+  });
+  const run = await runBookingReminders(deps, hourCfg.kind);
+  eq(sent.length, 1, "the 1 hour example sends exactly one email");
+  assert(/in about an hour/.test(sent[0]?.subject ?? ""), `in the 1 hour words (${sent[0]?.subject})`);
+  eq(judgeExampleRun(run, true).code, EXAMPLE_EXIT.ok, "and passes");
+
+  // The 24 hour example records its send time through the lane's markSent, which the
+  // example must answer without writing anything.
+  const dayWarned: string[] = [];
+  const dayDeps = exampleDeps({
+    config: { ...cfg, send: true },
+    booking: exampleBooking(cfg, advisor, LEAD, NOW),
+    nowMs: NOW,
+    readCallingNumbers: async () => new Map([[LEAD.slice(0, 15), "+15555550123"]]),
+    readAdvisorPhotos: async () => new Map(),
+    sendEmail: async () => "msg-2",
+    preview: () => {},
+    warn: (msg) => dayWarned.push(msg),
+  });
+  await runBookingReminders(dayDeps);
+  eq(dayWarned, [], "the 24 hour example finishes with no warning about its send time");
+}
+
 finish();

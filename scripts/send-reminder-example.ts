@@ -1,4 +1,5 @@
-// Send one example 24 hour reminder email, built by the real reminder lane, so
+// Send one example reminder email, 24 hour by default or the 1 hour one with
+// REMINDER_EXAMPLE_KIND=hour (#4285), built by the real reminder lane, so
 // somebody can see exactly what a lead receives (subject, body, sender name, and the
 // contact card with the advisor's calling number and photo).
 //
@@ -9,7 +10,8 @@
 //
 // Optional: REMINDER_EXAMPLE_LEAD (a 00Q lead id whose calling number goes on the
 // card; defaults to the advisor's most recent booked lead) and REMINDER_EXAMPLE_TZ
-// (the zone the call time is written in; defaults to America/New_York).
+// (the zone the call time is written in; defaults to America/New_York), and
+// REMINDER_EXAMPLE_KIND (day, the default, or hour for the 1 hour email, #4285).
 //
 // It sends FROM the advisor's mailbox (the email lands in their Sent folder) and only
 // TO a @trypennie.com inbox. It writes nothing: no booking, no calendar, no alert.
@@ -95,6 +97,7 @@ const run = await runBookingReminders(
     },
     warn: (msg, _id, err) => console.error(`warning: ${msg} (${shortErrorReason(err)})`),
   }),
+  cfg.kind,
 );
 
 const verdict = judgeExampleRun(run, cfg.send);
