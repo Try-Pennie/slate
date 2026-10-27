@@ -341,11 +341,15 @@ export function buildRegalEvent(
     },
     traits: contactTraits(p, event),
   };
-  const eligible = aiAgentEligible(event, p);
-  regal.traits.customProperties = {
-    slateGhostBooking: onPlaceholder,
-    ...(eligible !== undefined ? { ai_agent_eligible: eligible } : {}),
-  };
+  // #4273: a cancel the customer has another live call beside leaves the contact's
+  // flags to that call; the event's own properties above still describe this one.
+  if (p.contact_properties_withheld === undefined) {
+    const eligible = aiAgentEligible(event, p);
+    regal.traits.customProperties = {
+      slateGhostBooking: onPlaceholder,
+      ...(eligible !== undefined ? { ai_agent_eligible: eligible } : {}),
+    };
+  }
 
   // #2659: the two join keys the landing page put on the booking URL, under the
   // GTM/GA4 tagging spec's OWN names (snake case, not camel cased to match the

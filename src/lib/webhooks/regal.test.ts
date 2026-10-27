@@ -586,6 +586,28 @@ describe("placeholder bookings to Regal (#4204)", () => {
     },
   );
 
+  // #4273: a cancel whose customer still has another live call leaves the contact's
+  // flags to that call. The decision is on the STORED payload, so a resend and the dead
+  // letter replay send the same; the event's own properties still name the cancelled call.
+  it.each([
+    ["a Marcia call", "staff_placed"],
+    ["a routed call", "routed"],
+  ] as const)("leaves the contact's flags alone when %s is cancelled beside a live one", (_label, kind) => {
+    for (const why of ["another-live-booking", "lookup-failed"] as const) {
+      const e = buildRegalEvent("booking.cancelled", onPlaceholder({ booking_kind: kind, status: "cancelled", contact_properties_withheld: why }));
+      expect(e.traits.customProperties).toBeUndefined();
+      expect(e.properties.slateGhostBooking).toBe(kind === "staff_placed");
+      expect(e.traits.phones).toBeDefined();
+    }
+  });
+
+  it("CONTROL: a cancel with no withholding still sends the contact's flags as before", () => {
+    expect(buildRegalEvent("booking.cancelled", onPlaceholder({ status: "cancelled" })).traits.customProperties).toEqual({
+      slateGhostBooking: true,
+      ai_agent_eligible: false,
+    });
+  });
+
   // A stored payload from before the kind existed (an admin resend, the dead letter
   // replay) was routed: it reads unmarked, never as a placeholder call.
   it("reads a payload with no kind as routed", () => {
