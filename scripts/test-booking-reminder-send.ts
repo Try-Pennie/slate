@@ -1,19 +1,32 @@
-// The 24 hour reminder lane's orchestration (#2359): claim, then send, and what
-// happens when the send fails. Run:
+// The reminder lane's orchestration (#2359, #4282, #4298): judge every stored reminder
+// email for every booking, claim, then send, and what happens when the send fails. Run:
 //   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-booking-reminder-send.ts
 //
 // This is a scheduled job that sends something a REAL PERSON reads, so the property
 // under test is that it is safe to run twice. Every dependency is injected, so the
 // ordering that makes it safe is asserted rather than assumed.
+//
+// Since #4298 the lane reads its emails from `reminder_emails` and records each one in
+// `booking_reminder_sends`, while still writing the legacy bookings columns for the day
+// and hour emails, so a rollback to the old code resends nothing. The default emails
+// here are the two seeded ones (DEFAULT_TEMPLATES), and the default store is the shared
+// fake (scripts/lib/reminder-send-store-fake.ts), which answers as migration 0211 does.
 import {
   REMINDER_CALLING_NUMBER_DEADLINE_MS,
   REMINDER_PAGES_PER_TICK,
+  reminderFailedAlertKey,
+  reminderShareKey,
   runBookingReminders,
+  type LaneEmail,
   type ReminderDeps,
   type DueBooking,
 } from "../src/lib/booking/reminder-send.ts";
+import { sendRecordsForBooking } from "../src/lib/booking/reminder-legacy.ts";
+import { DEFAULT_TEMPLATES } from "../src/lib/booking/reminder-template.ts";
+import { HOUR_REMINDER_GAP_MS } from "../src/lib/booking/reminder.ts";
 import { PENNIE_CARD_LOGO } from "../src/lib/booking/pennie-card-logo.ts";
 import { EmailSendError } from "../src/lib/notify/email-errors.ts";
+import { reminderSendStoreFake } from "./lib/reminder-send-store-fake.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const HOUR = 60 * 60_000;
@@ -22,6 +35,46 @@ const LEAD = "00QUi000010889ZMAQ";
 /** The invite as the booking path writes it, before any calling number. */
 const STANDARD_DESCRIPTION =
   "Booked via Pennie. Phone: +12035615295\nReschedule or cancel: https://slate.trypennie.app/manage/abc";
+
+/** A stored email as the route maps it, switched on since the epoch like the seeds. */
+const email = (over: Partial<LaneEmail> & Pick<LaneEmail, "id" | "slug">): LaneEmail => ({
+  name: over.slug,
+  minutesBefore: 60,
+  lateBooking: "skip",
+  enabled: true,
+  effectiveFromIso: "1970-01-01T00:00:00.000Z",
+  subject: DEFAULT_TEMPLATES.hour.subject,
+  body: DEFAULT_TEMPLATES.hour.body,
+  cardBlock: true,
+  placeholderSends: true,
+  ...over,
+});
+const fromDefault = (slug: "day" | "hour"): LaneEmail => {
+  const t = DEFAULT_TEMPLATES[slug];
+  return email({
+    id: `email-${slug}`,
+    slug,
+    name: t.name,
+    minutesBefore: t.minutesBefore,
+    lateBooking: t.lateBooking,
+    subject: t.subject,
+    body: t.body,
+    cardBlock: t.cardBlock,
+    placeholderSends: t.placeholderSends,
+  });
+};
+const DAY = fromDefault("day");
+const HOUR_EMAIL = fromDefault("hour");
+/** A third email an admin might add: 12 hours ahead, sent at once to a late booking. */
+const TWELVE = email({
+  id: "email-twelve",
+  slug: "twelve",
+  name: "12 hour reminder",
+  minutesBefore: 720,
+  lateBooking: "send_now",
+  subject: DEFAULT_TEMPLATES.day.subject,
+  body: DEFAULT_TEMPLATES.day.body,
+});
 
 const due = (over: Partial<DueBooking> = {}): DueBooking => ({
   id: "bk-1",
@@ -43,41 +96,110 @@ const due = (over: Partial<DueBooking> = {}): DueBooking => ({
   gcalEventId: "evt-1",
   agentId: "user-jordan",
   onPlaceholder: false,
+  sends: [],
   ...over,
 });
 
-/** Records the ORDER of every effect, which is the whole subject of this suite. */
-function spy(over: Partial<ReminderDeps> = {}) {
+/**
+ * Records the ORDER of every effect, which is the whole subject of this suite. `order`
+ * holds the claim, the send, a release and the invite refresh, as it always has; the
+ * other writes (the send record, the legacy columns, the skips) each have their own
+ * list, and `writes` holds every one of them in the order they happened.
+ */
+function spy(over: Partial<ReminderDeps> = {}, emails: LaneEmail[] = [DAY, HOUR_EMAIL]) {
   const order: string[] = [];
+  const writes: string[] = [];
   const sent: { to: string; subject: string }[] = [];
   const alerts: string[] = [];
   const alertIds: string[] = [];
+  const alertKeys: string[] = [];
   const warnings: string[] = [];
   const warned: { msg: string; bookingId: string | null; err: unknown; fields: Record<string, unknown> }[] = [];
-  const released: { id: string; claimedForIso: string; restoreTo: string | null }[] = [];
+  const released: { id: string; emailId: string; sentForIso: string }[] = [];
+  const legacyReleased: { id: string; slug: string; claimedForIso: string; restoreTo: string | null; restoreSentAt: string | null }[] = [];
   const marked: string[] = [];
+  const legacyMarked: string[] = [];
+  const failedRecords: { id: string; emailId: string; reason: string }[] = [];
+  const skips: { id: string; emailId: string; reason: string }[] = [];
+  const unrenderable: { slug: string; text: string }[] = [];
+  const renderable: { slug: string; text: string }[][] = [];
+  const noneEnabled: string[] = [];
+  let loadDueCalls = 0;
+  const store = reminderSendStoreFake({
+    now: () => NOW,
+    minutesOf: (id) => emails.find((e) => e.id === id)?.minutesBefore,
+    gapMs: HOUR_REMINDER_GAP_MS,
+  });
   const deps: ReminderDeps = {
     now: () => NOW,
-    loadDue: async () => [due()],
-    claim: async (id) => {
+    loadEmails: async () => emails,
+    loadDue: async () => {
+      loadDueCalls += 1;
+      return [due()];
+    },
+    claimSend: async (id, emailId, sentForIso) => {
       order.push(`claim:${id}`);
-      return true;
+      writes.push(`claim:${id}:${emailId}`);
+      return store.claim(id, emailId, sentForIso);
     },
     // A release that lands, by default; the cases that need it to lose say so.
-    release: async (id, claimedForIso, restoreTo) => {
+    releaseSend: async (id, emailId, sentForIso) => {
       order.push(`release:${id}`);
-      released.push({ id, claimedForIso, restoreTo });
+      writes.push(`release:${id}:${emailId}`);
+      released.push({ id, emailId, sentForIso });
+      store.release(id, emailId, sentForIso);
       return true;
+    },
+    markSendSent: async (id, emailId, sentForIso) => {
+      writes.push(`mark:${id}:${emailId}`);
+      marked.push(`${id}:${emailId}@${sentForIso}`);
+      return store.mark(id, emailId, sentForIso);
+    },
+    failSend: async (id, emailId, sentForIso, reason) => {
+      writes.push(`fail:${id}:${emailId}`);
+      failedRecords.push({ id, emailId, reason });
+      return store.fail(id, emailId, sentForIso, reason);
+    },
+    skipSend: async (id, emailId, sentForIso, reason) => {
+      writes.push(`skip:${id}:${emailId}:${reason}`);
+      skips.push({ id, emailId, reason });
+      return store.skip(id, emailId, sentForIso, reason);
+    },
+    // The legacy columns land by default, whatever the fake held, so the suites judge
+    // the send path; the cases about the compare and swap use the store's own.
+    legacyClaim: async (id, slug) => {
+      writes.push(`legacy-claim:${id}:${slug}`);
+      return true;
+    },
+    legacyRelease: async (id, slug, claimedForIso, restoreTo, restoreSentAt) => {
+      writes.push(`legacy-release:${id}:${slug}`);
+      legacyReleased.push({ id, slug, claimedForIso, restoreTo, restoreSentAt });
+      return true;
+    },
+    legacyMarkSent: async (id, startsAtIso) => {
+      writes.push(`legacy-mark:${id}`);
+      legacyMarked.push(`${id}@${startsAtIso}`);
     },
     send: async (msg) => {
       order.push(`send:${msg.to[0]}`);
+      writes.push(`send:${msg.to[0]}`);
       sent.push({ to: msg.to[0]!, subject: msg.subject });
       return "gmail-id";
     },
-    alert: async (bookingId, text) => {
+    alert: async (bookingId, slug, text) => {
       order.push("alert");
       alerts.push(text);
       alertIds.push(bookingId);
+      alertKeys.push(reminderFailedAlertKey(bookingId, slug));
+    },
+    alertUnrenderable: async (slug, text) => {
+      unrenderable.push({ slug, text });
+    },
+    resolveRenderable: async (list) => {
+      renderable.push(list);
+    },
+    notifyNoneEnabled: async (text) => {
+      noneEnabled.push(text);
     },
     // No calling number known by default, so the suites above judge the send path
     // exactly as it was; the calling number has its own section at the end.
@@ -90,17 +212,68 @@ function spy(over: Partial<ReminderDeps> = {}) {
     },
     // No photo held by default; the photo has its own section at the end.
     readAdvisorPhotos: async () => new Map(),
-    // Kept out of `order`, which the suites above assert exactly.
-    markSent: async (id, startsAtIso) => {
-      marked.push(`${id}@${startsAtIso}`);
-    },
     warn: (msg, bookingId, err, fields) => {
       warnings.push(msg);
       warned.push({ msg, bookingId, err, fields: fields ?? {} });
     },
     ...over,
   };
-  return { deps, order, sent, alerts, alertIds, warnings, warned, released, marked };
+  return {
+    deps,
+    store,
+    order,
+    writes,
+    sent,
+    alerts,
+    alertIds,
+    alertKeys,
+    warnings,
+    warned,
+    released,
+    legacyReleased,
+    marked,
+    legacyMarked,
+    failedRecords,
+    skips,
+    unrenderable,
+    renderable,
+    noneEnabled,
+    loadDueCalls: () => loadDueCalls,
+  };
+}
+
+/**
+ * Backs a spy's reads and legacy writes with its store, so several ticks run against
+ * one database: each tick's worklist carries what the previous tick wrote, both the send
+ * rows and the legacy columns, and the legacy writes are the store's compare and swaps.
+ */
+function wireStore(s: ReturnType<typeof spy>, rows: (DueBooking | (() => DueBooking))[] = [due()]) {
+  s.deps.loadDue = async () =>
+    rows.map((r) => {
+      const row = typeof r === "function" ? r() : r;
+      const cols = s.store.legacyOf(row.id);
+      return {
+        ...row,
+        reminderSentForIso: cols.reminderSentFor ?? row.reminderSentForIso,
+        reminderSentAtIso: cols.reminderSentAt ?? row.reminderSentAtIso,
+        hourReminderSentForIso: cols.hourReminderSentFor ?? row.hourReminderSentForIso,
+        sends: s.store.sendsFor(row.id),
+      };
+    });
+  s.deps.legacyClaim = async (id, slug, startsAtIso, seen) => {
+    s.writes.push(`legacy-claim:${id}:${slug}`);
+    return s.store.legacyClaim(id, slug, startsAtIso, seen);
+  };
+  s.deps.legacyRelease = async (id, slug, claimedForIso, restoreTo, restoreSentAt) => {
+    s.writes.push(`legacy-release:${id}:${slug}`);
+    s.legacyReleased.push({ id, slug, claimedForIso, restoreTo, restoreSentAt });
+    return s.store.legacyRelease(id, slug, claimedForIso, restoreTo, restoreSentAt);
+  };
+  s.deps.legacyMarkSent = async (id, startsAtIso) => {
+    s.writes.push(`legacy-mark:${id}`);
+    s.legacyMarked.push(`${id}@${startsAtIso}`);
+    s.store.legacyMarkSent(id, startsAtIso);
+  };
 }
 
 // --- the claim comes BEFORE the send, which is what makes a crash safe -----------
@@ -123,10 +296,12 @@ function spy(over: Partial<ReminderDeps> = {}) {
 // conditional write, so the loser is told so and must not send. This is the
 // concurrency case the issue asks for: assume it runs twice (L157).
 {
-  const s = spy({ claim: async () => false });
-  await runBookingReminders(s.deps);
+  const s = spy({ claimSend: async () => "taken" });
+  const run = await runBookingReminders(s.deps);
   eq(s.sent.length, 0, "a booking whose claim was lost sends nothing");
   eq(s.alerts.length, 0, "and losing a claim is not a fault, so nothing is alerted");
+  eq(run.lost, 1, "it is counted as lost");
+  eq(s.skips, [], "and a taken claim records nothing: the row that took it is the record");
 }
 
 // --- a failed send is LOUD, and stays claimed ------------------------------------
@@ -151,6 +326,8 @@ function spy(over: Partial<ReminderDeps> = {}) {
   );
   eq(result.failed, 1, "the run reports the failure to its caller rather than swallowing it");
   eq(result.sent, 0, "and counts nothing as sent");
+  eq(s.failedRecords, [{ id: "bk-1", emailId: "email-day", reason: "provider_unavailable" }], "the send record is failed with its classified code");
+  eq(s.alertKeys, ["booking_reminder_failed:bk-1"], "the 24 hour email pages under the booking's bare key, as before");
 }
 
 // --- one lead's failure does not stop the others ---------------------------------
@@ -195,19 +372,22 @@ function spy(over: Partial<ReminderDeps> = {}) {
   await runBookingReminders(s.deps);
   eq(s.sent.length, 0, "a cancelled row the query returned is not emailed");
   eq(s.order.length, 0, "and is not even claimed");
+  eq(s.writes, [], "and nothing is recorded about it");
 }
 
 // --- a lead with no email address cannot be reminded -----------------------------
 //
 // It is not an error worth paging about: a booking can legitimately carry a phone and
 // no address. It must not be claimed either, or the row is marked reminded for a
-// message that never existed.
+// message that never existed. Since #4298 it is RECORDED as a skip with its reason, so
+// the status page and the owed check can tell it from an email nobody sent.
 {
   const s = spy({ loadDue: async () => [due({ attendeeEmail: null })] });
   const result = await runBookingReminders(s.deps);
   eq(s.sent.length, 0, "no address means no email");
   eq(s.order.length, 0, "and no claim, so the row is not marked as reminded");
   eq(result.skipped, 1, "the run counts it, because a silent skip is how a gap hides");
+  eq(s.skips, [{ id: "bk-1", emailId: "email-day", reason: "no_email" }], "and records it as a no_email skip");
 }
 
 // --- the run reports WHY each send failed, in a bounded vocabulary ---------------
@@ -460,7 +640,7 @@ function spy(over: Partial<ReminderDeps> = {}) {
 // matters is that nothing is sent or written for it.
 {
   const s = spy({
-    claim: async () => false,
+    claimSend: async () => "taken",
     readCallingNumbers: async () => new Map([["00QUi000010889Z", "+12197588170"]]),
   });
   await runBookingReminders(s.deps);
@@ -785,10 +965,16 @@ const failingWith = (err: unknown) => async () => {
   eq(s.released.length, 1, "the claim is released");
   eq(
     s.released[0],
-    { id: "bk-1", claimedForIso: due().startsAtIso, restoreTo: null },
-    "for this booking, conditional on the start it claimed, back to the value the tick read",
+    { id: "bk-1", emailId: "email-day", sentForIso: due().startsAtIso },
+    "the send record for this booking, email and start",
+  );
+  eq(
+    s.legacyReleased[0],
+    { id: "bk-1", slug: "day", claimedForIso: due().startsAtIso, restoreTo: null, restoreSentAt: null },
+    "and the legacy column, conditional on the start it claimed, back to the value the tick read",
   );
   eq(s.order.join(" -> "), "claim:bk-1 -> release:bk-1", "after the claim and the failed send, never before");
+  eq(s.failedRecords, [], "a released send is not recorded as failed");
   eq(s.alerts.length, 0, "nobody is paged: the lead is still going to be reminded");
   eq(run.failed, 1, "it still counts as a failed send");
   eq(run.byCode.token_unavailable, 1, "classified as token_unavailable");
@@ -822,6 +1008,7 @@ const failingWith = (err: unknown) => async () => {
   assert(/too close to the call/i.test(s.alerts[0]!), `and that it is too late to try again (${s.alerts[0]})`);
   assert(!/may have/i.test(s.alerts[0]!), "and never that it may have gone out, which it provably did not");
   eq(s.alertIds, ["bk-1"], "keyed to the booking, so it cannot silence another booking's page");
+  eq(s.failedRecords, [{ id: "bk-1", emailId: "email-day", reason: "token_unavailable" }], "and the send is recorded failed with its code");
   assert(/did not answer within 8 seconds/.test(s.alerts[0]!), `with the short reason (${s.alerts[0]})`);
   // Every failed send is logged, the ones that page included (plan item E).
   const line = s.warned.find((w) => w.bookingId === "bk-1");
@@ -996,7 +1183,7 @@ const failingWith = (err: unknown) => async () => {
 
 // --- a release that loses its race, or throws, keeps the claim ---------------------
 {
-  const lost = spy({ send: failingWith(mintTimeout()), release: async () => false });
+  const lost = spy({ send: failingWith(mintTimeout()), releaseSend: async () => false });
   const lostRun = await runBookingReminders(lost.deps);
   eq(lostRun.retrying, 0, "a release that changed no row is not counted as retrying");
   eq(lostRun.retried, {}, "and names no booking to the share");
@@ -1005,7 +1192,7 @@ const failingWith = (err: unknown) => async () => {
 
   const thrown = spy({
     send: failingWith(mintTimeout()),
-    release: async () => {
+    releaseSend: async () => {
       throw new Error("release update failed");
     },
   });
@@ -1022,6 +1209,24 @@ const failingWith = (err: unknown) => async () => {
   assert(lines.some((l) => l.fields.release === "threw"), "and says the release threw rather than lost its race");
   assert(lines.some((l) => l.err instanceof EmailSendError), "with the send's own Error on one of them");
   eq(lost.warned.find((w) => w.bookingId === "bk-1")?.fields.release, "lost", "a release that lost its race says so");
+  // The legacy column is put back only once the send record has been: left claimed, it
+  // keeps a rollback from resending what this lane may still hold.
+  eq(lost.legacyReleased, [], "a send record that would not release leaves the legacy column claimed");
+  eq(thrown.legacyReleased, [], "and so does one whose release threw");
+}
+
+// --- the legacy column's own release, after the send record's ------------------------
+{
+  const s = spy({
+    send: failingWith(mintTimeout()),
+    legacyRelease: async () => {
+      throw new Error("bookings update failed");
+    },
+  });
+  const run = await runBookingReminders(s.deps);
+  eq(run.retrying, 0, "a legacy column that could not be put back is not retrying: its claim still blocks the retry");
+  eq(s.alerts.length, 1, "so it pages");
+  assert(/could not be confirmed/i.test(s.alerts[0] ?? ""), `as a retry that could not be confirmed (${s.alerts[0]})`);
 }
 
 // --- the share is told how each attempted booking settled ---------------------------
@@ -1037,24 +1242,13 @@ const failingWith = (err: unknown) => async () => {
 //
 // The release is a compare and swap like the claim, so the property is end to end:
 // tick one claims, fails before Gmail and hands the claim back; tick two claims
-// again and sends. One email, and the store ends holding the reminded start.
+// again and sends. One email, and both records end holding the reminded start: the
+// send row as sent, and the legacy column a rollback would read.
 {
   const startsAtIso = due().startsAtIso;
-  const store = { reminderSentFor: null as string | null };
   let sends = 0;
   const delivered: string[] = [];
   const s = spy({
-    loadDue: async () => [due({ reminderSentForIso: store.reminderSentFor })],
-    claim: async (_id, start) => {
-      if (store.reminderSentFor === start) return false;
-      store.reminderSentFor = start;
-      return true;
-    },
-    release: async (_id, claimedForIso, restoreTo) => {
-      if (store.reminderSentFor !== claimedForIso) return false;
-      store.reminderSentFor = restoreTo;
-      return true;
-    },
     send: async (msg) => {
       sends += 1;
       if (sends === 1) throw mintTimeout();
@@ -1062,13 +1256,17 @@ const failingWith = (err: unknown) => async () => {
       return "gmail-id";
     },
   });
+  wireStore(s);
   const first = await runBookingReminders(s.deps);
   eq(first.retrying, 1, "tick one: the mint timed out and the claim went back");
-  eq(store.reminderSentFor, null, "so the store no longer records a reminder");
+  eq(s.store.legacyOf("bk-1").reminderSentFor, null, "so the legacy column no longer records a reminder");
+  eq(s.store.rows.map((r) => r.status), ["released"], "and the send record is released");
   const second = await runBookingReminders(s.deps);
   eq(second.sent, 1, "tick two: sent");
   eq(delivered, ["lead@example.com"], "exactly one email reached the lead");
-  eq(store.reminderSentFor, startsAtIso, "and the store records the start it was sent about");
+  eq(s.store.legacyOf("bk-1").reminderSentFor, startsAtIso, "and the legacy column records the start it was sent about");
+  assert(s.store.legacyOf("bk-1").reminderSentAt !== null, "with its send time");
+  eq(s.store.rows.map((r) => r.status), ["sent"], "and the send record reads sent");
   const third = await runBookingReminders(s.deps);
   eq(third.attempted, 0, "a third tick finds nothing due");
 }
@@ -1164,94 +1362,120 @@ const failingWith = (err: unknown) => async () => {
   eq(asked, [["00QUi000010889AMAQ"]], "Salesforce is asked only about the routed call's lead");
 }
 
+
 // --- the 1 hour email (#4282) -------------------------------------------------------
 //
-// The same lane, run a second time per tick for the 1 hour email: the same claim
-// before send, the same sender, its own rule for being due and its own words.
+// Judged in the same tick as the 24 hour email, after it: the same claim before send,
+// the same sender, its own rule for being due and its own words.
 const MIN = 60_000;
-const hourDue = (over: Partial<DueBooking> = {}): DueBooking =>
-  due({
-    startsAtIso: new Date(NOW + 55 * MIN).toISOString(),
+/** A call 55 minutes out, booked two days ago, whose 24 hour email went out yesterday. */
+const hourDue = (over: Partial<DueBooking> = {}): DueBooking => {
+  const startsAtIso = over.startsAtIso ?? new Date(NOW + 55 * MIN).toISOString();
+  return due({
+    startsAtIso,
     createdAtIso: new Date(NOW - 48 * HOUR).toISOString(),
-    reminderSentForIso: new Date(NOW + 55 * MIN).toISOString(),
+    reminderSentForIso: startsAtIso,
     reminderSentAtIso: new Date(NOW - 23 * HOUR).toISOString(),
     hourReminderSentForIso: null,
     ...over,
   });
+};
 {
   const s = spy({ loadDue: async () => [hourDue()] });
-  const run = await runBookingReminders(s.deps, "hour");
+  const run = await runBookingReminders(s.deps);
   eq(s.order.join(" -> "), "claim:bk-1 -> send:lead@example.com", "the 1 hour email is claimed before it is sent");
   eq(run.sent, 1, "and goes out once");
   assert(/in about an hour/.test(s.sent[0]!.subject), `in the 1 hour words (${s.sent[0]!.subject})`);
+  assert(s.writes.includes("claim:bk-1:email-hour"), "claimed as the 1 hour email");
+  eq(run.byEmail.hour?.sent, 1, "and counted under it");
 }
 {
   // A booking made a few hours ahead: its 24 hour email went out half an hour ago.
   const s = spy({ loadDue: async () => [hourDue({ reminderSentAtIso: new Date(NOW - 30 * MIN).toISOString() })] });
-  const run = await runBookingReminders(s.deps, "hour");
+  const run = await runBookingReminders(s.deps);
   eq(s.order, [], "inside the two hour gap nothing is claimed or sent");
   eq(run.attempted, 0, "and nothing counts as attempted");
+  eq(s.writes, [], "and the gap is a wait, never a stored skip");
+  assert(run.waiting >= 1, "it is counted as waiting");
 }
 {
-  // The 24 hour lane, judging the same booking after its 1 hour email went out.
+  // The 24 hour email, judging the same booking after its 1 hour email went out.
   const start = new Date(NOW + 50 * MIN).toISOString();
   const s = spy({ loadDue: async () => [due({ startsAtIso: start, reminderSentForIso: null, hourReminderSentForIso: start })] });
   await runBookingReminders(s.deps);
   eq(s.sent.length, 0, "a 24 hour email is not sent after the 1 hour email for the same start");
+  eq(s.skips, [{ id: "bk-1", emailId: "email-day", reason: "superseded" }], "and is recorded as superseded");
 }
 {
   // Too close to retry: the 1 hour email's own floor, 30 minutes plus the margin.
   const s = spy({
-    loadDue: async () => [hourDue({ startsAtIso: new Date(NOW + 35 * MIN).toISOString(), reminderSentForIso: null, reminderSentAtIso: null })],
+    loadDue: async () => [hourDue({ startsAtIso: new Date(NOW + 35 * MIN).toISOString() })],
     send: failingWith(mintTimeout()),
   });
-  await runBookingReminders(s.deps, "hour");
+  await runBookingReminders(s.deps);
   eq(s.released.length, 0, "a 1 hour email failing 35 minutes out is not handed back");
   eq(s.alerts.length, 1, "so it pages");
+  eq(s.alertKeys, ["booking_reminder_failed:bk-1:hour"], "under the 1 hour email's own key, as before");
   assert(/1 hour reminder email/.test(s.alerts[0]!), `naming the 1 hour email (${s.alerts[0]})`);
   assert(!/24 hour/.test(s.alerts[0]!), "never the 24 hour one");
   assert(/too close to the call/i.test(s.alerts[0]!), `and that it is too late to try again (${s.alerts[0]})`);
 }
 {
   const s = spy({ loadDue: async () => [hourDue()], send: failingWith(mintTimeout()) });
-  const run = await runBookingReminders(s.deps, "hour");
+  const run = await runBookingReminders(s.deps);
   eq(s.released.length, 1, "55 minutes out, a send that provably went nowhere is handed back");
-  eq(s.released[0]!.restoreTo, null, "to the 1 hour record this tick read, not the 24 hour one");
+  eq(s.legacyReleased[0]!.slug, "hour", "to the 1 hour record");
+  eq(s.legacyReleased[0]!.restoreTo, null, "as this tick read it, not the 24 hour one");
   eq(run.retrying, 1, "and retried next tick");
+  eq(run.retried, { "hour:bk-1": "token_unavailable" }, "keyed hour:<id> for the share, as before");
 }
 {
   const many = Array.from({ length: REMINDER_PAGES_PER_TICK + 2 }, (_, i) =>
-    hourDue({ id: `bk-${i}`, attendeeEmail: `l${i}@example.com`, startsAtIso: new Date(NOW + 35 * MIN).toISOString(), reminderSentForIso: null, reminderSentAtIso: null }),
+    hourDue({ id: `bk-${i}`, attendeeEmail: `l${i}@example.com`, startsAtIso: new Date(NOW + 35 * MIN).toISOString() }),
   );
   const s = spy({ loadDue: async () => many, send: failingWith(mintTimeout()) });
-  await runBookingReminders(s.deps, "hour");
+  await runBookingReminders(s.deps);
   const foldedPage = s.alerts.at(-1)!;
   assert(/1 hour reminder emails/.test(foldedPage), `the folded page names the 1 hour email too (${foldedPage})`);
+  eq(s.alertKeys.at(-1), `booking_reminder_failed:bk-${REMINDER_PAGES_PER_TICK}:hour`, "keyed on the first folded booking's 1 hour key");
 }
 
-// --- the 24 hour email's send time is recorded only once it has gone (#4282) ---------
+// --- the send time is recorded only once it has gone (#4282) -----------------------
 //
-// The 1 hour email's two hour gap is judged from it. Stamped at the claim, a 24 hour
-// email that FAILED would read as sent minutes ago and cost the lead the 1 hour email
-// too, so the lead would get neither.
+// The two hour gap is judged from it. Stamped at the claim, a 24 hour email that FAILED
+// would read as sent minutes ago and cost the lead the 1 hour email too, so the lead
+// would get neither. The send record is marked sent, and the legacy 24 hour column is
+// stamped, both after Gmail accepted it.
 {
   const s = spy();
   await runBookingReminders(s.deps);
-  eq(s.marked, [`bk-1@${due().startsAtIso}`], "a 24 hour email that went out records its send time");
+  eq(s.marked, [`bk-1:email-day@${due().startsAtIso}`], "a 24 hour email that went out marks its send record");
+  eq(s.legacyMarked, [`bk-1@${due().startsAtIso}`], "and stamps the legacy send time");
+  eq(
+    s.writes,
+    ["claim:bk-1:email-day", "legacy-claim:bk-1:day", "send:lead@example.com", "mark:bk-1:email-day", "legacy-mark:bk-1"],
+    "in this order: the send record claimed, the legacy column claimed, Gmail, then both marked",
+  );
 }
 {
   const s = spy({ send: failingWith(new Error("Gmail send failed: 503")) });
   await runBookingReminders(s.deps);
-  eq(s.marked, [], "one that failed records none");
+  eq(s.marked, [], "one that failed marks nothing");
+  eq(s.legacyMarked, [], "and stamps no send time");
 }
 {
   const s = spy({ loadDue: async () => [hourDue()] });
-  await runBookingReminders(s.deps, "hour");
-  eq(s.marked, [], "the 1 hour email records no send time: nothing reads one");
+  await runBookingReminders(s.deps);
+  eq(s.legacyMarked, [], "the 1 hour email stamps no legacy send time: there is no such column");
+  eq(
+    s.writes,
+    ["claim:bk-1:email-hour", "legacy-claim:bk-1:hour", "send:lead@example.com", "mark:bk-1:email-hour"],
+    "the 1 hour email claims its own legacy column, then sends, then marks its record",
+  );
 }
 {
   const s = spy({
-    markSent: async () => {
+    legacyMarkSent: async () => {
       throw new Error("update failed");
     },
   });
@@ -1259,6 +1483,17 @@ const hourDue = (over: Partial<DueBooking> = {}): DueBooking =>
   eq(run.sent, 1, "a send time that cannot be written does not turn a sent email into a failed one");
   eq(s.alerts.length, 0, "and pages nobody: the 1 hour email then simply goes out");
   assert(s.warnings.some((w) => /send time/.test(w)), "but it is logged");
+}
+{
+  const s = spy({
+    markSendSent: async () => {
+      throw new Error("rpc failed");
+    },
+  });
+  const run = await runBookingReminders(s.deps);
+  eq(run.sent, 1, "a send record that cannot be marked sent still counts the email as sent");
+  eq(s.alerts.length, 0, "and pages nobody");
+  assert(s.warnings.some((w) => /not marked sent/.test(w)), "but it is logged");
 }
 
 // --- the lead's own number reaches the email (#4292) -------------------------------
@@ -1273,6 +1508,324 @@ const hourDue = (over: Partial<DueBooking> = {}): DueBooking =>
   });
   await runBookingReminders(s.deps);
   assert(bodies[0]?.includes("We will call you at (215) 555-0100") ?? false, "the booking's phone is the number the email names");
+}
+
+// =====================================================================================
+// #4298: the stored emails
+// =====================================================================================
+
+// --- a failed read of the emails THROWS: no sends, and the heartbeat lapses ----------
+//
+// There is no fallback to DEFAULT_TEMPLATES. "Send the defaults" would email leads
+// copy an admin may have changed or switched off, and the throw is what pages.
+{
+  const s = spy({
+    loadEmails: async () => {
+      throw new Error("reminder_emails read failed");
+    },
+  });
+  let threw = false;
+  try {
+    await runBookingReminders(s.deps);
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a failed read of the stored emails fails the tick");
+  eq(s.sent.length, 0, "and nothing is sent");
+  eq(s.loadDueCalls(), 0, "and the worklist is never read");
+}
+
+// --- no email switched on: an info line, and nothing read or sent ---------------------
+for (const [label, emails] of [
+  ["every email switched off", [{ ...DAY, enabled: false }, { ...HOUR_EMAIL, enabled: false }]],
+  ["no email stored at all", []],
+] as [string, LaneEmail[]][]) {
+  const s = spy({}, emails);
+  const run = await runBookingReminders(s.deps);
+  eq(s.noneEnabled.length, 1, `${label}: the lane says so once`);
+  assert(/no reminder email is switched on/i.test(s.noneEnabled[0] ?? ""), `${label}: in plain words (${s.noneEnabled[0]})`);
+  eq(run.emailsEnabled, 0, `${label}: and the run counts none on`);
+  eq(s.loadDueCalls(), 0, `${label}: with no worklist read`);
+  eq(s.sent.length, 0, `${label}: and nothing sent`);
+}
+{
+  const s = spy();
+  await runBookingReminders(s.deps);
+  eq(s.noneEnabled, [], "the control: with an email on, nothing is said");
+}
+
+// --- the worklist window is the longest ENABLED lead -------------------------------------
+{
+  const windows: number[] = [];
+  const s = spy({
+    loadDue: async (windowEndMs) => {
+      windows.push(windowEndMs);
+      return [];
+    },
+  }, [DAY, HOUR_EMAIL, { ...TWELVE, minutesBefore: 2880, enabled: false }]);
+  await runBookingReminders(s.deps);
+  eq(windows, [NOW + 24 * HOUR], "a disabled 48 hour email does not widen the read");
+  const t = spy({
+    loadDue: async (windowEndMs) => {
+      windows.push(windowEndMs);
+      return [];
+    },
+  }, [HOUR_EMAIL, { ...TWELVE, minutesBefore: 2880 }]);
+  await runBookingReminders(t.deps);
+  eq(windows[1], NOW + 48 * HOUR, "an enabled one does, up to its 48 hours");
+}
+
+// --- the legacy columns read as send records (one helper, which phase 5 reads too) --------
+{
+  const start = new Date(NOW + 5 * HOUR).toISOString();
+  const sentAt = new Date(NOW - 19 * HOUR).toISOString();
+  const records = sendRecordsForBooking(
+    due({
+      startsAtIso: start,
+      reminderSentForIso: start,
+      reminderSentAtIso: sentAt,
+      hourReminderSentForIso: start,
+      sends: [{ emailId: "email-twelve", sentForIso: start, status: "skipped", sentAtIso: null, claimedAtIso: sentAt }],
+    }),
+    [DAY, HOUR_EMAIL, TWELVE],
+  );
+  const startMs = Date.parse(start);
+  const sentAtMs = Date.parse(sentAt);
+  eq(
+    records,
+    [
+      { emailId: "email-twelve", sentForMs: startMs, status: "skipped", sentAtMs: null, claimedAtMs: sentAtMs },
+      { emailId: "email-day", sentForMs: startMs, status: "sent", sentAtMs, claimedAtMs: null },
+      { emailId: "email-hour", sentForMs: startMs, status: "legacy_claimed", sentAtMs: null, claimedAtMs: null },
+    ],
+    "the stored rows, then reminder_sent_for with its time as sent and hour_reminder_sent_for as legacy_claimed",
+  );
+  const noTime = sendRecordsForBooking(due({ startsAtIso: start, reminderSentForIso: start }), [DAY, HOUR_EMAIL]);
+  eq(noTime.map((r) => r.status), ["legacy_claimed"], "reminder_sent_for with no send time is legacy_claimed");
+  eq(sendRecordsForBooking(due({ reminderSentForIso: start }), [HOUR_EMAIL]), [], "and no day email stored means no day record");
+}
+{
+  // A send the OLD code made between the migration and this deploy wrote only the
+  // legacy columns. It is never sent again.
+  const start = due().startsAtIso;
+  const s = spy({ loadDue: async () => [due({ reminderSentForIso: start, reminderSentAtIso: new Date(NOW - 5 * MIN).toISOString() })] });
+  const run = await runBookingReminders(s.deps);
+  eq(s.sent.length, 0, "a 24 hour email the old code sent is not sent again");
+  eq(s.writes, [], "and nothing is written for it");
+  eq(run.attempted, 0, "or attempted");
+  const h = spy({
+    loadDue: async () => [hourDue({ reminderSentAtIso: null })],
+  });
+  await runBookingReminders(h.deps);
+  eq(h.sent.length, 1, "a legacy 24 hour record with no send time starts no gap, as the old 1 hour rule released on one");
+}
+
+// --- a shorter email that was sent and then switched off still supersedes ---------------
+//
+// The judge is handed EVERY stored email, so the record of a 1 hour email sent before an
+// admin switched it off still says the 24 hour one would now arrive after it.
+{
+  const start = new Date(NOW + 50 * MIN).toISOString();
+  const s = spy(
+    { loadDue: async () => [due({ startsAtIso: start, createdAtIso: new Date(NOW - 48 * HOUR).toISOString(), hourReminderSentForIso: start })] },
+    [DAY, { ...HOUR_EMAIL, enabled: false }],
+  );
+  await runBookingReminders(s.deps);
+  eq(s.sent.length, 0, "the 24 hour email is not sent after a 1 hour email that has since been switched off");
+  eq(s.skips, [{ id: "bk-1", emailId: "email-day", reason: "superseded" }], "it is superseded");
+}
+
+// --- a third email (12 hours) moves neither the hold nor the 24 hour retry floor -------
+{
+  const created = NOW;
+  const startsAtIso = new Date(NOW + 5 * HOUR).toISOString();
+  let clock = created + 9 * MIN;
+  const s = spy(
+    { now: () => clock, loadDue: async () => [due({ createdAtIso: new Date(created).toISOString(), startsAtIso })] },
+    [DAY, TWELVE, HOUR_EMAIL],
+  );
+  const first = await runBookingReminders(s.deps);
+  eq(first.byEmail.day?.held, 1, "nine minutes after booking, the 24 hour email is still held, as it was with two emails");
+  eq(s.sent.length, 0, "and nothing goes out");
+  clock = created + 10 * MIN + 30_000;
+  const second = await runBookingReminders(s.deps);
+  eq(second.byEmail.day?.sent, 1, "past the ten minute hold it goes, the same moment it did with two emails");
+  eq(second.byEmail.twelve?.sent ?? 0, 0, "and the 12 hour email waits out the two hour gap behind it");
+}
+for (const [minutes, released] of [
+  [65, 0],
+  [80, 1],
+] as const) {
+  const s = spy(
+    { loadDue: async () => [due({ startsAtIso: new Date(NOW + minutes * MIN).toISOString() })], send: failingWith(mintTimeout()) },
+    [DAY, TWELVE, HOUR_EMAIL],
+  );
+  await runBookingReminders(s.deps);
+  eq(s.released.length, released, `with a 12 hour email stored, the 24 hour email failing ${minutes} minutes out is released ${released} times, as before`);
+  eq(s.released[0]?.emailId ?? "email-day", "email-day", `${minutes} minutes out: it is the 24 hour email that was attempted`);
+}
+{
+  // The 12 hour email's own floor is set by its own lead, over an hour, so it is 70.
+  const s = spy({ loadDue: async () => [due({ startsAtIso: new Date(NOW + 65 * MIN).toISOString() })], send: failingWith(mintTimeout()) }, [TWELVE]);
+  await runBookingReminders(s.deps);
+  eq(s.released.length, 0, "the 12 hour email failing 65 minutes out is not released either");
+  eq(s.alertKeys, ["booking_reminder_failed:bk-1:twelve"], "and pages under booking_reminder_failed:<id>:<slug>");
+  assert(/12 hour reminder email/.test(s.alerts[0] ?? ""), `naming the email by its stored name (${s.alerts[0]})`);
+  assert(/before the lead's one hour text/.test(s.alerts[0] ?? ""), "with the reason a long lead email has a floor");
+}
+
+// --- switching an email on does not burst, through effective_from ---------------------
+{
+  const switchedOn = { ...TWELVE, effectiveFromIso: new Date(NOW - 20 * MIN).toISOString() };
+  const s = spy(
+    {
+      loadDue: async () => [
+        // Booked days ago, its 12 hour window opened two hours ago, before the switch.
+        due({ id: "before", createdAtIso: new Date(NOW - 48 * HOUR).toISOString(), startsAtIso: new Date(NOW + 10 * HOUR).toISOString() }),
+        // Booked after the switch, inside the window: sent at once.
+        due({ id: "after", attendeeEmail: "after@example.com", createdAtIso: new Date(NOW - 15 * MIN).toISOString(), startsAtIso: new Date(NOW + 11 * HOUR).toISOString() }),
+        // Its window has not opened.
+        due({ id: "later", createdAtIso: new Date(NOW - 48 * HOUR).toISOString(), startsAtIso: new Date(NOW + 13 * HOUR).toISOString() }),
+      ],
+    },
+    [switchedOn],
+  );
+  const run = await runBookingReminders(s.deps);
+  eq(s.skips, [{ id: "before", emailId: "email-twelve", reason: "before_effective" }], "a booking whose window opened before the switch is skipped, and recorded");
+  eq(s.sent.map((m) => m.to), ["after@example.com"], "one booked after it is sent");
+  eq(run.waiting, 1, "and one whose window has not opened waits");
+}
+
+// --- a template the renderer refuses: send nothing for it, and alert ONCE per email ----
+{
+  const broken = { ...DAY, subject: "Your Pennie call {whenever}" };
+  const s = spy(
+    { loadDue: async () => [due({ id: "a" }), due({ id: "b", attendeeEmail: "b@example.com" }), due({ id: "c", attendeeEmail: "c@example.com" })] },
+    [broken, HOUR_EMAIL],
+  );
+  const run = await runBookingReminders(s.deps);
+  eq(s.sent.length, 0, "no lead is sent an email holding a fill-in nobody can fill");
+  eq(s.writes, [], "nothing is claimed or skipped for it either, so a fix sends what is still owed");
+  eq(s.unrenderable.length, 1, "one alert for the email, not one per booking");
+  eq(s.unrenderable[0]?.slug, "day", "about the email that cannot render");
+  assert(/24 hour reminder/.test(s.unrenderable[0]?.text ?? ""), `naming it (${s.unrenderable[0]?.text})`);
+  assert(/\{whenever\}/.test(s.unrenderable[0]?.text ?? ""), "and what it cannot fill");
+  eq(run.unrenderable, ["day"], "the run names it");
+  eq(s.renderable.at(-1)?.map((r) => r.slug), ["hour"], "and the email that does render is cleared");
+
+  const fixed = spy({}, [DAY, HOUR_EMAIL]);
+  await runBookingReminders(fixed.deps);
+  eq(fixed.renderable.at(-1)?.map((r) => r.slug), ["day", "hour"], "once fixed, its alert is cleared on a tick that rendered it");
+  assert(/renders again|being sent again/i.test(fixed.renderable.at(-1)?.[0]?.text ?? ""), `saying it is sent again (${fixed.renderable.at(-1)?.[0]?.text})`);
+
+  const off = spy({}, [{ ...broken, enabled: false }, HOUR_EMAIL]);
+  await runBookingReminders(off.deps);
+  eq(off.unrenderable, [], "a broken email that is switched off pages nobody");
+  assert(/switched off/i.test(off.renderable.at(-1)?.[0]?.text ?? ""), `and stands its alert down as switched off (${off.renderable.at(-1)?.[0]?.text})`);
+}
+
+// --- what each claim answer writes --------------------------------------------------------
+{
+  const s = spy({ claimSend: async () => "superseded" });
+  const run = await runBookingReminders(s.deps);
+  eq(s.sent.length, 0, "superseded sends nothing");
+  eq(s.skips, [{ id: "bk-1", emailId: "email-day", reason: "superseded" }], "and is recorded as a superseded skip");
+  eq(run.skipped, 1, "counted as skipped");
+}
+{
+  const s = spy({ claimSend: async () => "gap" });
+  const run = await runBookingReminders(s.deps);
+  eq(s.sent.length, 0, "gap sends nothing");
+  eq(s.skips, [], "and writes nothing: it is judged again next tick");
+  assert(run.waiting >= 1, "counted as waiting");
+}
+{
+  const s = spy({ claimSend: async () => "taken" });
+  await runBookingReminders(s.deps);
+  // The overriding claim records nothing itself, so every write here is the lane's own.
+  eq(s.writes, [], "taken writes nothing past the claim: no legacy column, no skip, no send");
+}
+{
+  // The legacy column changed under the claim (the old code claimed it in the same
+  // minute): the old code is sending it, so this one must not.
+  const s = spy({ legacyClaim: async () => false });
+  const run = await runBookingReminders(s.deps);
+  eq(s.sent.length, 0, "a lost legacy claim sends nothing");
+  eq(run.lost, 1, "and is counted as lost");
+  eq(s.released.map((r) => r.emailId), ["email-day"], "and the send record it took is handed back");
+}
+{
+  // The claim is a compare and swap on the legacy value THIS tick read.
+  const seen: (string | null)[] = [];
+  const earlier = new Date(NOW + 30 * HOUR).toISOString();
+  const s = spy({
+    loadDue: async () => [due({ reminderSentForIso: earlier })],
+    legacyClaim: async (_id, _slug, _start, was) => {
+      seen.push(was);
+      return true;
+    },
+  });
+  await runBookingReminders(s.deps);
+  eq(seen, [earlier], "a moved booking claims its legacy column from the start it used to hold");
+}
+{
+  // Any other email writes no legacy column at all.
+  const s = spy({}, [TWELVE]);
+  await runBookingReminders(s.deps);
+  eq(
+    s.writes,
+    ["claim:bk-1:email-twelve", "send:lead@example.com", "mark:bk-1:email-twelve"],
+    "a third email claims, sends and marks its send record only",
+  );
+}
+
+// --- no advisor address: recorded, not dropped ------------------------------------------
+{
+  const s = spy({ loadDue: async () => [due({ agentEmail: null })] });
+  const run = await runBookingReminders(s.deps);
+  eq(s.sent.length, 0, "a booking with no advisor mailbox has nobody to send from");
+  eq(s.skips, [{ id: "bk-1", emailId: "email-day", reason: "no_sender" }], "and is recorded as a no_sender skip");
+  eq(run.skippedByReason.no_sender, 1, "counted by its reason");
+}
+
+// --- a skip that cannot be written costs nothing else -------------------------------------
+{
+  const s = spy({
+    loadDue: async () => [due({ id: "a", attendeeEmail: null }), due({ id: "b", attendeeEmail: "b@example.com" })],
+    skipSend: async () => {
+      throw new Error("rpc failed");
+    },
+  });
+  const run = await runBookingReminders(s.deps);
+  eq(s.sent.map((m) => m.to), ["b@example.com"], "the other booking is still sent");
+  assert(s.warnings.some((w) => /skip not recorded/.test(w)), "and the unrecorded skip is logged");
+  eq(run.sent, 1, "the tick completes");
+}
+
+// --- the share keys ------------------------------------------------------------------
+{
+  eq(reminderShareKey("bk-1", "day"), "bk-1", "the 24 hour email keeps the bare id in the failure share");
+  eq(reminderShareKey("bk-1", "hour"), "hour:bk-1", "the 1 hour email keeps hour:<id>");
+  eq(reminderShareKey("bk-1", "twelve"), "twelve:bk-1", "any other email is <slug>:<id>");
+  eq(reminderFailedAlertKey("bk-1", "day"), "booking_reminder_failed:bk-1", "the day page key is unchanged");
+  eq(reminderFailedAlertKey("bk-1", "hour"), "booking_reminder_failed:bk-1:hour", "and the hour one");
+  eq(reminderFailedAlertKey("bk-1", "twelve"), "booking_reminder_failed:bk-1:twelve", "and any other is :<id>:<slug>");
+}
+
+// --- a booking moved inside the window earns its emails afresh, with the store ---------
+{
+  const first = new Date(NOW + 12 * HOUR).toISOString();
+  const moved = new Date(NOW + 13 * HOUR).toISOString();
+  let start = first;
+  const s = spy();
+  wireStore(s, [() => due({ startsAtIso: start })]);
+  await runBookingReminders(s.deps);
+  start = moved;
+  const again = await runBookingReminders(s.deps);
+  eq(again.sent, 1, "a booking that moved is reminded about its new start");
+  eq(s.store.rows.map((r) => `${r.status}@${r.sentForIso === first ? "first" : "moved"}`), ["sent@first", "sent@moved"], "and keeps the record of the earlier one");
+  const third = await runBookingReminders(s.deps);
+  eq(third.attempted, 0, "and is not reminded twice about it");
 }
 
 finish();

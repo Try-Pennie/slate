@@ -593,7 +593,14 @@ import {
 } from "@/lib/handoffs/copy";
 import { HANDOFF_UNDELIVERED_AFTER_MS } from "@/lib/handoffs/check";
 import { formatOwnerReassignNotice } from "@/lib/booking/owner-notice-copy";
-import { reminderFailedAlert, reminderFoldedAlert } from "@/lib/booking/reminder-send";
+import {
+  noReminderEmailEnabledText,
+  reminderEmailRenderableText,
+  reminderEmailUnrenderableAlert,
+  reminderFailedAlert,
+  reminderFoldedAlert,
+} from "@/lib/booking/reminder-send";
+import { DEFAULT_TEMPLATES, validateTemplate } from "@/lib/booking/reminder-template";
 import {
   photosDeadlineAlert,
   photosHeldAlert,
@@ -5626,7 +5633,13 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_reminder_failed:*",
     state,
     channel: "alert" as const,
-    text: reminderFailedAlert("b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431", disposition, shortErrorReason(err), err.outcome),
+    text: reminderFailedAlert(
+      "b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431",
+      disposition,
+      shortErrorReason(err),
+      err.outcome,
+      DEFAULT_TEMPLATES.day,
+    ),
   })),
   // #4282: the 1 hour email pages under the same per booking key, and says which
   // email it was. Its too late page has no text reminder to land before.
@@ -5639,17 +5652,58 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       "too_late",
       "the Google token mint did not answer within 8 seconds",
       "never_sent",
-      "hour",
+      DEFAULT_TEMPLATES.hour,
+    ),
+  },
+  // #4298: an email an admin added pages under :<id>:<slug>, named by its stored name.
+  {
+    key: "booking_reminder_failed:*",
+    state: "an admin's own 12 hour email was refused by Google",
+    channel: "alert",
+    text: reminderFailedAlert(
+      "b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431",
+      "refused",
+      "Gmail answered 400 Invalid To header",
+      "refused",
+      { name: "12 hour check in", minutesBefore: 720 },
     ),
   },
   {
     key: "booking_reminder_failed:*",
     state: "more lost reminders in one run than are paged by name",
     channel: "alert",
-    text: reminderFoldedAlert([
-      "c2d8e1f0-4b7a-4e19-9c3d-7f1a2b6e8d40",
-      "e9a4b7c1-2f6d-4a83-b5e0-3c8d1f7a9b62",
-    ]),
+    text: reminderFoldedAlert(
+      ["c2d8e1f0-4b7a-4e19-9c3d-7f1a2b6e8d40", "e9a4b7c1-2f6d-4a83-b5e0-3c8d1f7a9b62"],
+      DEFAULT_TEMPLATES.day,
+    ),
+  },
+  // #4298: an enabled email whose stored words cannot be filled in is sent to nobody.
+  {
+    key: "reminder_email_unrenderable:*",
+    state: "the 24 hour email's subject names a fill-in that does not exist",
+    channel: "alert",
+    text: reminderEmailUnrenderableAlert(
+      DEFAULT_TEMPLATES.day,
+      validateTemplate("Your Pennie call {when we call}", DEFAULT_TEMPLATES.day.body),
+    ),
+  },
+  {
+    key: "reminder_email_unrenderable:*",
+    state: "the email renders again",
+    channel: "recovery",
+    text: reminderEmailRenderableText(DEFAULT_TEMPLATES.day, "renders"),
+  },
+  {
+    key: "reminder_email_unrenderable:*",
+    state: "the email was switched off instead",
+    channel: "recovery",
+    text: reminderEmailRenderableText(DEFAULT_TEMPLATES.day, "off"),
+  },
+  {
+    key: "reminder_emails_all_off",
+    state: "every reminder email is switched off",
+    channel: "info",
+    text: noReminderEmailEnabledText(),
   },
   // #2496. The one above and the three below are the whole point of the issue: they
   // are the same fault at two very different sizes, and they have to READ that way

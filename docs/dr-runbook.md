@@ -348,7 +348,9 @@ RESTORE_POINT=2026-10-03T06:00:00Z APPLY=1 RESTORE_CONFIRM_HOST=drukfvgaynzrralb
    never over a row Supabase holds redacted, and it prints the columns the mirror does
    not carry, which a restored row cannot get back: `reminder_sent_for` and
    `hour_reminder_sent_for` are the ones that matter, because a restored booking may be
-   sent its 24 hour or 1 hour reminder email twice. It is safe to
+   sent its 24 hour or 1 hour reminder email twice. Since #4298 the reminder lane also
+   reads `booking_reminder_sends`, which is not mirrored either, so a restored booking
+   has no record of ANY reminder email it was sent. It is safe to
    run again. What it cannot see: a booking written and then lost inside the last
    export interval (up to ten minutes, or up to 30 if the export lane was stalled),
    which is what the rest of this list is for.

@@ -959,6 +959,17 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A SHARE of the reminder emails in a rolling window did not go out, which is a broken send path rather than one lead's address: a refused mailbox delegation or a Gmail outage goes on costing every lead their reminder until somebody repairs it. Its sibling `booking_reminder_failed` is the incident about one booking and rightly has no recovery; this one has a healthy state to observe, and the reader who was paged about a wave needs to know when the wave ended (#2496).",
   },
   {
+    key: "reminder_email_unrenderable:*",
+    kind: "condition",
+    suffix: "bounded",
+    why:
+      "An enabled reminder email's stored subject or body holds something Slate cannot fill in, so it is " +
+      "sent to nobody and every lead due it goes without it (#4298). It holds until the words are fixed or " +
+      "the email is switched off, and the reminder lane re-renders every enabled email every 5 minutes; the " +
+      "all clear goes out on a tick that rendered it, or in its own words once it is switched off. The suffix " +
+      "is the email's slug, a handful of rows an admin creates one at a time.",
+  },
+  {
     key: "placeholder_call_unserved:*",
     kind: "condition",
     suffix: "booking",
@@ -1015,7 +1026,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
     kind: "incident",
     suffix: "booking",
     why:
-      "That lead's 24 hour or 1 hour reminder email (the text says which, and the 1 hour email's key ends in :hour, #4282) did not go out, or may not have, and nothing is set to send it: " +
+      "That lead's reminder email (the text names it; the 24 hour email's key is the bare booking id, the 1 hour email's ends in :hour, #4282, and any other email's in :<slug>, #4298) did not go out, or may not have, and nothing is set to send it: " +
       "it was too close to the call to try again, Google refused it, Slate could not build it, the " +
       "send cannot say whether Gmail accepted it (a retry could deliver a second copy), or handing " +
       "it back for a retry could not be confirmed. A send that provably did not go out while the " +
@@ -1391,6 +1402,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "nobody is woken, and there is no all-clear worth sending: a healthy database simply stops " +
       "whispering, and absence of the whisper is the healthy state. The critical page (db_saturation) " +
       "is the one that resolves.",
+  },
+  {
+    key: "reminder_emails_all_off",
+    kind: "info",
+    why:
+      "No stored reminder email is switched on, so the reminder lane sends no lead anything before their " +
+      "call (#4298). Switching them all off is an admin's decision rather than a fault, so nobody is woken; " +
+      "it is said once a day so a decision nobody meant does not go unnoticed, and it never resolves because " +
+      "it never claimed anything was broken.",
   },
   {
     key: "cron_cpu_not_configured",

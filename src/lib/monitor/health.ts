@@ -128,7 +128,7 @@ export const LANE_NOTES: Record<LaneName, { does: string; cadence: string }> = {
   watch: { does: "renews the Google subscriptions that tell Slate a calendar changed", cadence: "every 5 minutes" },
   monitor: { does: "runs the health checks that raise the Slack alerts", cadence: "every 5 minutes" },
   "bulk-reassign": { does: "moves the bookings a coverage sweep queued onto their new advisor", cadence: "every 5 minutes" },
-  "booking-reminders": { does: "emails each lead a reminder 24 hours before their call", cadence: "every 5 minutes" },
+  "booking-reminders": { does: "emails each lead its reminder emails", cadence: "every 5 minutes" },
   "hydrate-calendars": { does: "fills in cached busy time for agents whose window is running out", cadence: "every 15 minutes" },
   "reroute-hold-sweep": { does: "puts an advisor's time back on offer once a bucket correction hold expires", cadence: "every minute" },
   "capacity-history": { does: "saves each advisor's unbooked calls as they pass, for Team capacity's past days", cadence: "every 30 minutes" },

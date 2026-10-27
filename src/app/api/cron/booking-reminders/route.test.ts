@@ -1,22 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// The 24 hour reminder lane's IO (#2500, #2496).
+// The reminder lane's IO (#2500, #2496, #4298).
 //
-// Two properties live here and nowhere else, because both are about the QUERY and
-// the wiring rather than about the pure decision beside them:
+// The properties that live here and nowhere else are about the QUERIES and the wiring
+// rather than the pure decision beside them:
 //
 //  1. the worklist is cap safe. It used to be one `.limit(200)` page over every live
-//     booking starting in the next 24 HOURS, with no filter on what had already been
-//     reminded, so once more than 200 live bookings sat inside a day the page filled
-//     with rows already dealt with and the unreminded ones behind them were never
-//     reached. Nothing said so: the heartbeat stamped, `sent` stayed non zero, and a
-//     truncated page reads exactly like the whole set (L101, L98).
+//     booking in the window, with no filter on what had already been reminded, so once
+//     more than 200 sat inside it the page filled with rows already dealt with and the
+//     unreminded ones behind them were never reached, with nothing saying so (L101, L98).
 //
-//  2. a MASS failure reaches its own alert. One lead's refused address and every
-//     reminder failing used to be the same single throttled message at the same rate.
+//  2. a MASS failure reaches its own alert, apart from the per booking incident.
 //
-// Both are driven through a fake PostgREST builder rather than the real client, so a
-// page boundary can be produced on demand.
+//  3. the stored emails are read once a tick and a failed read stops the tick; every
+//     send is claimed through `claim_reminder_send`, recorded through the other 0211
+//     functions, and the legacy bookings columns are still written exactly as before.
+//
+// All driven through a fake PostgREST builder rather than the real client, so a page
+// boundary, a refused read or a claim answer can be produced on demand.
 
 type Row = Record<string, unknown>;
 
@@ -28,8 +29,16 @@ const state = vi.hoisted(() => ({
   /** Every equality filter and projection the worklist read carried (#2660). */
   worklistFilters: [] as [string, unknown][],
   worklistSelects: [] as string[],
+  /** Every `.lte` the worklist read carried: the end of its window. */
+  worklistLte: [] as [string, unknown][],
   bookingsReadError: null as { message: string } | null,
-  claimed: [] as string[],
+  /** The stored reminder emails the lane reads, and an error to answer with instead. */
+  emails: [] as Row[],
+  emailsReadError: null as { message: string } | null,
+  emailReads: 0,
+  /** Every rpc call, and what claim_reminder_send answers, in order (default claimed). */
+  rpcs: [] as { fn: string; args: Row }[],
+  claimAnswers: [] as unknown[],
   /** Every conditional update on bookings: what it set and every equality it carried. */
   updates: [] as { set: Row; eqs: [string, unknown][] }[],
   /** The stored reminder rate window, or null for a first run. */
@@ -44,7 +53,9 @@ const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => true) }));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 const dispatch = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
+  sendThrottledInfo: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
   resolveAlert: vi.fn(async (_key: string, _text: string) => true),
+  resolveRecovered: vi.fn(async (_list: { key: string; text: string }[]) => [] as string[]),
 }));
 const email = vi.hoisted(() => ({
   sendGmailEmail: vi.fn(async (_msg: { to: string[]; subject: string }) => "gmail-id"),
@@ -60,13 +71,16 @@ const admin = vi.hoisted(() => {
     const self = () => b as never;
     Object.assign(b, {
       select: (projection: string) => {
-        // The worklist read only: the claim is an update that also selects.
+        // The worklist read only: a legacy write is an update that also selects.
         if (mode === "select" && table === "bookings") state.worklistSelects.push(projection);
         return self();
       },
       in: () => self(),
       gt: () => self(),
-      lte: () => self(),
+      lte: (col: string, value: unknown) => {
+        if (table === "bookings") state.worklistLte.push([col, value]);
+        return self();
+      },
       order: () => self(),
       is: (col: string, value: unknown) => {
         if (mode === "update") updateEqs.push([col, value]);
@@ -97,15 +111,19 @@ const admin = vi.hoisted(() => {
           if (state.rateReadError) return { data: null, error: state.rateReadError };
           return { data: state.rateRow, error: null };
         }
-        // The claim, or a release: a conditional update returning the row it wrote.
+        // A legacy write: a conditional update returning the row it wrote.
         state.updates.push({ set: updateSet, eqs: [...updateEqs] });
-        state.claimed.push(updateId);
         return { data: { id: updateId }, error: null };
       },
       then: (
         resolve: (v: { data: unknown; error: unknown }) => unknown,
         reject: (e: unknown) => unknown,
       ) => {
+        if (table === "reminder_emails") {
+          state.emailReads += 1;
+          if (state.emailsReadError) return Promise.resolve({ data: null, error: state.emailsReadError }).then(resolve, reject);
+          return Promise.resolve({ data: state.emails, error: null }).then(resolve, reject);
+        }
         if (table !== "bookings") return Promise.resolve({ data: [], error: null }).then(resolve, reject);
         if (state.bookingsReadError) {
           return Promise.resolve({ data: null, error: state.bookingsReadError }).then(resolve, reject);
@@ -116,7 +134,12 @@ const admin = vi.hoisted(() => {
     });
     return b;
   }
-  return { supabaseAdmin: () => ({ from: (t: string) => make(t) }) };
+  const rpc = async (fn: string, args: Row) => {
+    state.rpcs.push({ fn, args });
+    if (fn === "claim_reminder_send") return { data: state.claimAnswers.shift() ?? "claimed", error: null };
+    return { data: true, error: null };
+  };
+  return { supabaseAdmin: () => ({ from: (t: string) => make(t), rpc }) };
 });
 
 vi.mock("@/lib/cron", () => cron);
@@ -130,7 +153,7 @@ vi.mock("@/lib/env", () => ({ appUrl: () => "https://slate.example" }));
 const logSpy = vi.hoisted(() => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock("@/lib/log", () => logSpy);
 
-// #1334: the calling number read and the invite write, the two new outside calls.
+// #1334: the calling number read and the invite write, the two outside calls.
 const callingNumber = vi.hoisted(() => ({
   readLeadCallingNumbersLive: vi.fn(async (_ids: string[]) => new Map<string, string | null>()),
 }));
@@ -147,25 +170,49 @@ vi.mock("@/lib/salesforce/lead-calling-number", async (importOriginal) => ({
 }));
 vi.mock("@/lib/google/calendar", () => calendar);
 
-import { GET, combinedTick } from "./route";
+import { GET, rateTick } from "./route";
 import { REMINDER_FAILURE_RATE_KEY } from "@/lib/booking/reminder-rate";
+import { DEFAULT_TEMPLATES } from "@/lib/booking/reminder-template";
 import { PAGE_SIZE } from "@/lib/supabase/paginate";
 import { EmailSendError } from "@/lib/notify/email-errors";
 
 const HOUR = 60 * 60_000;
 
-/** A booking due its reminder: live, inside the window, and never reminded. */
+/** A `reminder_emails` row as migration 0211 seeds it. */
+function seeded(slug: "day" | "hour", over: Row = {}): Row {
+  const t = DEFAULT_TEMPLATES[slug];
+  return {
+    id: `email-${slug}`,
+    slug,
+    name: t.name,
+    minutes_before: t.minutesBefore,
+    late_booking: t.lateBooking,
+    enabled: true,
+    effective_from: "1970-01-01T00:00:00+00:00",
+    subject: t.subject,
+    body: t.body,
+    card_block: t.cardBlock,
+    placeholder_sends: t.placeholderSends,
+    ...over,
+  };
+}
+
+/** A booking due its 24 hour reminder: live, inside the window, and never reminded. */
 function due(i: number, over: Row = {}): Row {
   return {
     id: `bk-${i}`,
     starts_at: new Date(Date.now() + 12 * HOUR).toISOString(),
+    created_at: new Date(Date.now() - 48 * HOUR).toISOString(),
     reminder_sent_for: null,
+    reminder_sent_at: null,
+    hour_reminder_sent_for: null,
     status: "confirmed",
     attendee_email: `lead-${i}@example.com`,
     agent_email: "jordan@trypennie.com",
     agent_name: "Jordan Lee",
     timezone: "America/New_York",
     manage_token: `tok-${i}`,
+    booking_reminder_sends: [],
     ...over,
   };
 }
@@ -179,14 +226,21 @@ function alreadyReminded(i: number): Row {
 
 const req = () => ({ headers: new Headers() }) as unknown as Parameters<typeof GET>[0];
 
+const rpcsOf = (fn: string) => state.rpcs.filter((r) => r.fn === fn);
+
 beforeEach(() => {
   vi.clearAllMocks();
   state.pages = [];
   state.ranges = [];
   state.worklistFilters = [];
   state.worklistSelects = [];
+  state.worklistLte = [];
   state.bookingsReadError = null;
-  state.claimed = [];
+  state.emails = [seeded("day"), seeded("hour")];
+  state.emailsReadError = null;
+  state.emailReads = 0;
+  state.rpcs = [];
+  state.claimAnswers = [];
   state.updates = [];
   state.rateRow = null;
   state.rateReadError = null;
@@ -207,6 +261,7 @@ describe("GET /api/cron/booking-reminders", () => {
     const res = await GET(req());
     expect(res.status).toBe(401);
     expect(state.ranges).toEqual([]);
+    expect(state.emailReads).toBe(0);
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
   });
 
@@ -239,18 +294,18 @@ describe("GET /api/cron/booking-reminders", () => {
     expect(state.ranges.length).toBeGreaterThan(1);
     expect(state.ranges[0]).toEqual([0, PAGE_SIZE - 1]);
     expect(state.sent.map((m) => m.to[0])).toEqual(["lead-9999@example.com"]);
+    // The already reminded ones were read as sent off their legacy column: no claim.
+    expect(rpcsOf("claim_reminder_send").map((r) => r.args.p_booking_id)).toEqual(["bk-9999"]);
     await expect(res.json()).resolves.toMatchObject({ sent: 1 });
   });
 
-  // A page that came back SHORT is the whole set, so the lane must not spend a
-  // second read on every tick of a normal day. One read per kind of email (#4282).
-  it("stops after one page when that page is short", async () => {
+  // A page that came back SHORT is the whole set, so the lane must not spend a second
+  // read on every tick of a normal day. One read for every email since #4298.
+  it("stops after one page when that page is short, with one read for every email", async () => {
     state.pages = [[due(1)], []];
     await GET(req());
-    expect(state.ranges).toEqual([
-      [0, PAGE_SIZE - 1],
-      [0, PAGE_SIZE - 1],
-    ]);
+    expect(state.ranges).toEqual([[0, PAGE_SIZE - 1]]);
+    expect(state.emailReads).toBe(1);
   });
 
   // #277 / the `unwrap` rule. An empty worklist is the NORMAL state here, so a read
@@ -261,6 +316,29 @@ describe("GET /api/cron/booking-reminders", () => {
     await expect(GET(req())).rejects.toThrow();
     expect(email.sendGmailEmail).not.toHaveBeenCalled();
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  // #4298: the same rule for the stored emails, and there is no fallback to the seeded
+  // defaults, which would mail leads words an admin had changed or switched off.
+  it("fails the tick, sends nothing and stamps no heartbeat when the stored emails cannot be read", async () => {
+    state.emailsReadError = { message: "permission denied for table reminder_emails" };
+    state.pages = [[due(1)]];
+    await expect(GET(req())).rejects.toThrow();
+    expect(state.ranges).toEqual([]);
+    expect(email.sendGmailEmail).not.toHaveBeenCalled();
+    expect(state.rpcs).toEqual([]);
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("reads the worklist as far ahead as the longest enabled email, embedding the send rows", async () => {
+    state.emails = [seeded("day", { enabled: false }), seeded("hour")];
+    state.pages = [[]];
+    const before = Date.now();
+    await GET(req());
+    expect(state.worklistSelects[0]).toContain("booking_reminder_sends(reminder_email_id, sent_for, status, sent_at, claimed_at)");
+    const end = Date.parse(String(state.worklistLte.find(([c]) => c === "starts_at")?.[1]));
+    expect(end - before).toBeGreaterThanOrEqual(HOUR - 1000);
+    expect(end - before).toBeLessThanOrEqual(HOUR + 5000);
   });
 
   // #2496. One lead's address is an incident about that booking, and nothing more.
@@ -274,6 +352,8 @@ describe("GET /api/cron/booking-reminders", () => {
     // six hour cooldown (2026-10-05).
     expect(keys).toContain("booking_reminder_failed:bk-1");
     expect(keys).not.toContain(REMINDER_FAILURE_RATE_KEY);
+    // The send record is failed with its classified code.
+    expect(rpcsOf("fail_reminder_send")[0]?.args).toMatchObject({ p_booking_id: "bk-1", p_reminder_email_id: "email-day" });
   });
 
   // Plan item E: the page says to diagnose via the log, so the log line has to carry
@@ -299,9 +379,11 @@ describe("GET /api/cron/booking-reminders", () => {
       outcome: "refused",
       disposition: "refused",
       claim_released: false,
+      email: "day",
     });
     expect(call![2]).toBe(refused);
     expect(JSON.stringify(call![1])).not.toContain("lead-1@example.com");
+    expect(rpcsOf("fail_reminder_send")[0]?.args.p_reason).toBe("recipient_refused");
   });
 
   // 2026-10-05: a token mint that timed out delivered nothing, because the mint runs
@@ -319,13 +401,16 @@ describe("GET /api/cron/booking-reminders", () => {
     const res = await GET(req());
     expect(res.status).toBe(200);
     const startsAt = String(due(1).starts_at).slice(0, 13);
+    // The send record: claimed, then released.
+    expect(state.rpcs.map((r) => r.fn)).toEqual(["claim_reminder_send", "release_reminder_send"]);
+    expect(rpcsOf("claim_reminder_send")[0]?.args).toMatchObject({ p_booking_id: "bk-1", p_reminder_email_id: "email-day", p_gap: "120 minutes" });
+    // And the legacy column, exactly as before: the claim, then the release.
     expect(state.updates).toHaveLength(2);
     const [claim, release] = state.updates;
     expect(String(claim!.set.reminder_sent_for).slice(0, 13)).toBe(startsAt);
     // Back to what the tick read (null: never reminded), only where the row still
-    // holds the claim this tick wrote.
-    // The send time goes back to what the tick read too, so a retried send is
-    // stamped when it really goes (#4282).
+    // holds the claim this tick wrote. The send time goes back to what the tick read
+    // too, so a retried send is stamped when it really goes (#4282).
     expect(release!.set).toEqual({ reminder_sent_for: null, reminder_sent_at: null });
     expect(release!.eqs).toContainEqual(["id", "bk-1"]);
     expect(release!.eqs.find(([col]) => col === "reminder_sent_for")?.[1]).toBe(claim!.set.reminder_sent_for);
@@ -379,7 +464,7 @@ describe("GET /api/cron/booking-reminders", () => {
     );
   });
 
-  // THE failure path for the new signal: a window nobody could read claims nothing,
+  // THE failure path for the share: a window nobody could read claims nothing,
   // writes nothing, and above all does not take the reminders down with it.
   it("still sends, and neither pages nor clears, when the rate window cannot be read", async () => {
     state.rateReadError = { message: "booking_failure_rate_state unreadable" };
@@ -490,8 +575,8 @@ describe("GET /api/cron/booking-reminders", () => {
   });
 });
 
-// #4282: the 1 hour email. The same lane runs a second read per tick, after the 24
-// hour one, with its own record on the booking and its own words.
+// #4282: the 1 hour email, judged in the same tick after the 24 hour one, with its own
+// send record, its own legacy column and its own words.
 describe("GET /api/cron/booking-reminders, the 1 hour email", () => {
   /** A call 55 minutes out, booked two days ago, whose 24 hour email went out yesterday. */
   function hourDue(i: number, over: Row = {}): Row {
@@ -506,29 +591,33 @@ describe("GET /api/cron/booking-reminders, the 1 hour email", () => {
     });
   }
 
-  it("sends it from the second read, claimed on its own record", async () => {
-    // The first page is the 24 hour read's, the second the 1 hour read's.
-    state.pages = [[], [hourDue(1)]];
+  it("sends it, claimed on its own send record and its own legacy column", async () => {
+    state.pages = [[hourDue(1)]];
     const res = await GET(req());
     expect(res.status).toBe(200);
     expect(state.sent.map((m) => m.to[0])).toEqual(["lead-1@example.com"]);
     expect(state.sent[0]?.subject).toMatch(/in about an hour/);
+    expect(state.rpcs.map((r) => [r.fn, r.args.p_reminder_email_id])).toEqual([
+      ["claim_reminder_send", "email-hour"],
+      ["mark_reminder_sent", "email-hour"],
+    ]);
     const claim = state.updates[0]!;
     expect(Object.keys(claim.set)).toEqual(["hour_reminder_sent_for"]);
     expect(claim.eqs).toContainEqual(["hour_reminder_sent_for", null]);
-    await expect(res.json()).resolves.toMatchObject({ sent: 0, hour: { sent: 1 } });
+    expect(state.updates).toHaveLength(1);
+    await expect(res.json()).resolves.toMatchObject({ sent: 1, byEmail: { hour: { sent: 1 }, day: { sent: 0 } } });
   });
 
-  it("reads what both rules need, through the same test bucket exclusion", async () => {
-    state.pages = [[], []];
+  it("reads what every rule needs in one read, through the same test bucket exclusion", async () => {
+    state.pages = [[]];
     await GET(req());
-    expect(state.worklistSelects.length).toBe(2);
+    expect(state.worklistSelects.length).toBe(1);
     for (const s of state.worklistSelects) {
       expect(s).toContain("reminder_sent_at");
       expect(s).toContain("hour_reminder_sent_for");
       expect(s).toContain("buckets!inner(is_test)");
     }
-    expect(state.worklistFilters.filter(([c, v]) => c === "buckets.is_test" && v === false).length).toBe(2);
+    expect(state.worklistFilters.filter(([c, v]) => c === "buckets.is_test" && v === false).length).toBe(1);
   });
 
   it("stamps when the 24 hour email was sent only after it went, which the two hour gap is judged from", async () => {
@@ -542,6 +631,8 @@ describe("GET /api/cron/booking-reminders, the 1 hour email", () => {
     expect(Math.abs(Date.parse(String(marked!.set.reminder_sent_at)) - Date.now())).toBeLessThan(60_000);
     expect(marked!.eqs).toContainEqual(["id", "bk-1"]);
     expect(marked!.eqs).toContainEqual(["reminder_sent_for", claim!.set.reminder_sent_for]);
+    // And the send record is marked sent, after Gmail accepted it.
+    expect(state.rpcs.map((r) => r.fn)).toEqual(["claim_reminder_send", "mark_reminder_sent"]);
   });
 
   it("leaves the send time unwritten when the 24 hour email fails", async () => {
@@ -549,10 +640,11 @@ describe("GET /api/cron/booking-reminders, the 1 hour email", () => {
     state.sendFailures = ["Gmail send failed: 400 Invalid To header"];
     await GET(req());
     expect(state.updates.filter((u) => "reminder_sent_at" in u.set && u.set.reminder_sent_at !== null)).toEqual([]);
+    expect(rpcsOf("mark_reminder_sent")).toEqual([]);
   });
 
   it("pages a lost 1 hour email under the booking, naming the 1 hour email", async () => {
-    state.pages = [[], [hourDue(1)]];
+    state.pages = [[hourDue(1)]];
     state.sendFailures = ["Gmail send failed: 400 Invalid To header"];
     await GET(req());
     // Its own key, so a 24 hour page for the same booking inside the six hour cooldown
@@ -560,19 +652,107 @@ describe("GET /api/cron/booking-reminders, the 1 hour email", () => {
     const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === "booking_reminder_failed:bk-1:hour");
     expect(call?.[2]).toMatch(/1 hour reminder email/);
   });
+
+  it("counts one booking's two emails as separate attempts in the share, keyed apart", async () => {
+    const mint = () =>
+      new EmailSendError("google token mint did not answer within 8000ms", { outcome: "never_sent", stage: "token", transient: true });
+    state.pages = [[due(1), hourDue(2)]];
+    state.sendFailures = [mint(), mint()];
+    await GET(req());
+    const saved = state.upserts.find((u) => u.key === "booking_reminders");
+    const samples = (saved?.samples ?? []) as { attempts?: number; retried?: Record<string, string> }[];
+    expect(samples.at(-1)?.retried).toEqual({ "bk-1": "token_unavailable", "hour:bk-2": "token_unavailable" });
+    expect(samples.at(-1)?.attempts).toBe(2);
+  });
 });
 
-describe("combinedTick (#4282)", () => {
-  it("counts one booking's two emails as two attempts, keyed apart", () => {
-    const base = { attempted: 1, failed: 1, byCode: { refused: 1 }, retried: { "bk-1": "token_unavailable" }, settled: {} };
-    const day = { ...base } as unknown as Parameters<typeof combinedTick>[0];
-    const hour = { ...base, settled: { "bk-1": "sent" } } as unknown as Parameters<typeof combinedTick>[1];
-    expect(combinedTick(day, hour)).toEqual({
+describe("GET /api/cron/booking-reminders, the stored emails (#4298)", () => {
+  it("says so on the info channel, and reads no worklist, when no email is switched on", async () => {
+    state.emails = [seeded("day", { enabled: false }), seeded("hour", { enabled: false })];
+    state.pages = [[due(1)]];
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(state.ranges).toEqual([]);
+    expect(email.sendGmailEmail).not.toHaveBeenCalled();
+    const info = dispatch.sendThrottledInfo.mock.calls.find((c) => c[0] === "reminder_emails_all_off");
+    expect(info?.[2]).toMatch(/No reminder email is switched on/);
+    expect(logSpy.log.warn).toHaveBeenCalledWith("booking-reminder", expect.objectContaining({ msg: expect.stringMatching(/no reminder email is switched on/) }));
+    // The lane is healthy, just told to send nothing: the heartbeat still stamps.
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("booking-reminders");
+  });
+
+  it("pages once under the email's own key, and claims nothing for it, when its words cannot be rendered", async () => {
+    state.emails = [seeded("day", { subject: "Your Pennie call {whenever}" }), seeded("hour")];
+    state.pages = [[due(1), due(2), due(3)]];
+    await GET(req());
+    const pages = dispatch.sendThrottledAlert.mock.calls.filter((c) => c[0] === "reminder_email_unrenderable:day");
+    expect(pages).toHaveLength(1);
+    expect(String(pages[0]?.[2])).toContain("{whenever}");
+    expect(rpcsOf("claim_reminder_send")).toEqual([]);
+    expect(email.sendGmailEmail).not.toHaveBeenCalled();
+    // The email that renders is offered its all clear.
+    const cleared = dispatch.resolveRecovered.mock.calls.at(-1)?.[0] ?? [];
+    expect(cleared.map((c) => c.key)).toEqual(["reminder_email_unrenderable:hour"]);
+  });
+
+  it("records a booking with no advisor mailbox as a no_sender skip", async () => {
+    state.pages = [[due(1, { agent_email: null })]];
+    await GET(req());
+    expect(rpcsOf("skip_reminder_send").map((r) => r.args)).toEqual([
+      expect.objectContaining({ p_booking_id: "bk-1", p_reminder_email_id: "email-day", p_reason: "no_sender" }),
+    ]);
+    expect(email.sendGmailEmail).not.toHaveBeenCalled();
+  });
+
+  it("records a superseded claim as a skip, and sends nothing", async () => {
+    state.pages = [[due(1)]];
+    state.claimAnswers = ["superseded"];
+    await GET(req());
+    expect(rpcsOf("skip_reminder_send")[0]?.args).toMatchObject({ p_booking_id: "bk-1", p_reason: "superseded" });
+    expect(state.updates).toEqual([]);
+    expect(email.sendGmailEmail).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing past a gap or a taken claim", async () => {
+    state.pages = [[due(1), due(2)]];
+    state.claimAnswers = ["gap", "taken"];
+    await GET(req());
+    expect(state.rpcs.map((r) => r.fn)).toEqual(["claim_reminder_send", "claim_reminder_send"]);
+    expect(state.updates).toEqual([]);
+    expect(email.sendGmailEmail).not.toHaveBeenCalled();
+  });
+
+  it("fails the tick on a claim answer it does not know, rather than guessing", async () => {
+    state.pages = [[due(1)]];
+    state.claimAnswers = ["maybe"];
+    await expect(GET(req())).rejects.toThrow(/claim_reminder_send answered maybe/);
+    expect(email.sendGmailEmail).not.toHaveBeenCalled();
+  });
+
+  it("does not send again what the old code sent between the migration and this deploy", async () => {
+    const startsAt = new Date(Date.now() + 12 * HOUR).toISOString();
+    state.pages = [[due(1, { starts_at: startsAt, reminder_sent_for: startsAt, reminder_sent_at: new Date().toISOString() })]];
+    await GET(req());
+    expect(state.rpcs).toEqual([]);
+    expect(email.sendGmailEmail).not.toHaveBeenCalled();
+  });
+});
+
+describe("rateTick (#4298)", () => {
+  it("hands the share every email's attempts with the lane's own keys", () => {
+    const run = {
+      attempted: 2,
+      failed: 2,
+      byCode: { refused: 2 },
+      retried: { "bk-1": "token_unavailable", "hour:bk-1": "token_unavailable" },
+      settled: { "twelve:bk-2": "sent" },
+    } as unknown as Parameters<typeof rateTick>[0];
+    expect(rateTick(run)).toEqual({
       attempts: 2,
       failures: 2,
       byCode: { refused: 2 },
       retried: { "bk-1": "token_unavailable", "hour:bk-1": "token_unavailable" },
-      settled: { "hour:bk-1": "sent" },
+      settled: { "twelve:bk-2": "sent" },
     });
   });
 });

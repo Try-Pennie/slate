@@ -1,7 +1,9 @@
-// Send one example reminder email, 24 hour by default or the 1 hour one with
-// REMINDER_EXAMPLE_KIND=hour (#4285), built by the real reminder lane, so
-// somebody can see exactly what a lead receives (subject, body, sender name, and the
-// contact card with the advisor's calling number and photo).
+// Send one example reminder email, the stored 24 hour one by default or any stored
+// email by its slug with REMINDER_EXAMPLE_KIND (hour for the 1 hour email, #4285; any
+// other an admin added, #4298), rendered from its stored words by the real reminder
+// lane, so somebody can see exactly what a lead receives (subject, body, sender name,
+// and the contact card with the advisor's calling number and photo). A switched off
+// email is still built, so it can be read before it goes live.
 //
 //   REMINDER_EXAMPLE_ADVISOR=marnold@trypennie.com \
 //   REMINDER_EXAMPLE_TO=you@trypennie.com \
@@ -11,7 +13,7 @@
 // Optional: REMINDER_EXAMPLE_LEAD (a 00Q lead id whose calling number goes on the
 // card; defaults to the advisor's most recent booked lead) and REMINDER_EXAMPLE_TZ
 // (the zone the call time is written in; defaults to America/New_York), and
-// REMINDER_EXAMPLE_KIND (day, the default, or hour for the 1 hour email, #4285), and
+// REMINDER_EXAMPLE_KIND (a stored email's slug: day, the default, or hour), and
 // REMINDER_EXAMPLE_PHONE (the lead's own number the email names, #4292; unset shows
 // the "number you gave us" fallback).
 //
@@ -25,7 +27,8 @@ import { loadCardPhotoRows } from "@/lib/advisor-photos/store";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { sendGmailEmail } from "@/lib/notify/email";
-import { runBookingReminders } from "@/lib/booking/reminder-send";
+import { laneEmailFromRow, runBookingReminders } from "@/lib/booking/reminder-send";
+import type { ReminderEmailRow } from "@/lib/db/types";
 import { readLeadCallingNumbersLive } from "@/lib/salesforce/lead-calling-number";
 import { bookingLeadId } from "@/lib/booking/lookup-identity";
 import { isLeadId } from "@/lib/salesforce/lead-xbc";
@@ -80,11 +83,28 @@ if (!leadId) {
   process.exit(EXAMPLE_EXIT.noLead);
 }
 
+// The stored email, by slug (#4298): the words a lead would be sent today.
+const emailRow = unwrap(
+  await db
+    .from("reminder_emails")
+    .select("id, slug, name, minutes_before, late_booking, enabled, effective_from, subject, body, card_block, placeholder_sends")
+    .eq("slug", cfg.kind)
+    .maybeSingle(),
+  "reminder email for the example",
+) as ReminderEmailRow | null;
+if (!emailRow) {
+  console.error(`No stored reminder email has the slug ${cfg.kind}. The seeded ones are day and hour.`);
+  process.exit(EXAMPLE_EXIT.noEmail);
+}
+const email = laneEmailFromRow(emailRow);
+if (!email.enabled) console.log(`Note: "${email.name}" is switched off, so no lead is sent it; this builds it anyway.`);
+
 const nowMs = Date.now();
 const run = await runBookingReminders(
   exampleDeps({
     config: cfg,
-    booking: exampleBooking(cfg, advisor, leadId, nowMs),
+    email,
+    booking: exampleBooking(cfg, advisor, leadId, nowMs, email),
     nowMs,
     readCallingNumbers: (ids) => readLeadCallingNumbersLive(ids),
     // #3027: the stored directory photos, the same read the reminder lane makes.
@@ -99,7 +119,6 @@ const run = await runBookingReminders(
     },
     warn: (msg, _id, err) => console.error(`warning: ${msg} (${shortErrorReason(err)})`),
   }),
-  cfg.kind,
 );
 
 const verdict = judgeExampleRun(run, cfg.send);

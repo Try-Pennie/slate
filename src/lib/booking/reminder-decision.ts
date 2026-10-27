@@ -112,8 +112,9 @@ function gapStampMs(r: SendRecord): number | null {
 /**
  * The decision for `email` on `booking` at `nowMs`. `sends` holds this booking's
  * records; any about another start are ignored, so a call that moved earns its emails
- * afresh. `allEnabledEmails` gives every email's lead, so a record can be told shorter
- * or longer than this one.
+ * afresh. `allEmails` gives every STORED email's lead, switched off ones included, so a
+ * record can be told shorter or longer than this one: a shorter email that was sent and
+ * later switched off must still supersede a longer one (#4298).
  *
  * The rules, in order (the plan's Phase 3, Dan 2026-10-27):
  *   * inside the window: after its lead opens and while the call is ahead;
@@ -132,7 +133,7 @@ export function reminderDecision(
   booking: DecisionBooking,
   email: DecisionEmail,
   sends: readonly SendRecord[],
-  allEnabledEmails: readonly DecisionEmail[],
+  allEmails: readonly DecisionEmail[],
   nowMs: number,
 ): ReminderDecision {
   const { startsAtMs, createdAtMs } = booking;
@@ -165,7 +166,7 @@ export function reminderDecision(
     if (createdAtMs > windowOpensMs) return { action: "skip", reason: "late_booking" };
   }
 
-  const leadOf = new Map(allEnabledEmails.map((e) => [e.id, e.minutesBefore]));
+  const leadOf = new Map(allEmails.map((e) => [e.id, e.minutesBefore]));
   const superseded = forThisStart.some((r) => {
     const lead = leadOf.get(r.emailId);
     return r.emailId !== email.id && lead !== undefined && lead < email.minutesBefore && MAY_HAVE_REACHED.has(r.status);
