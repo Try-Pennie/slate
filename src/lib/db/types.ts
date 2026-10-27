@@ -1244,6 +1244,13 @@ export interface OutboxPayload {
    * holds the new number by the time that step (or a drain re-run of it) reads it.
    */
   previousAttendeePhone?: string | null;
+  /**
+   * #4204: true when the move took a staff placed call OFF the placeholder advisor onto a
+   * real one, captured at the commit because the NOTIFY step re-reads a booking already
+   * routed. The step puts `left_placeholder` on the payload, which tells Regal Marcia
+   * stops texting. Absent on every other move.
+   */
+  leftPlaceholder?: boolean;
 }
 
 /**
@@ -1315,6 +1322,14 @@ export type BookingInsert = {
   /** #2728: always written by createBooking, reduced on the server; null when the
    *  booker sent no framing page. */
   referrer_origin: string | null;
+  /**
+   * #4202: true only on a call placed on the placeholder advisor, which stacks there.
+   * Optional, so a reservation written before it existed still resumes, and omitted it
+   * keeps the column's default (false), since the save writes only the keys it names.
+   */
+  allow_double_book?: boolean;
+  /** #4202: the coordinator who placed it; absent on every booking a lead or machine made. */
+  placed_by_user_id?: string | null;
 };
 
 /** The calendar-event input, captured in a reservation so a resume re-creates

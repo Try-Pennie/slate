@@ -125,6 +125,7 @@ import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadli
 import { GoogleBreakerOpenError } from "../google/breaker.ts";
 import { isInvalidAttendeeEmailRefusal } from "../google/http-error.ts";
 import { AttendeeEmailRefusedError } from "./attendee-email-refused.ts";
+import { StaffPlacedReassignRefusedError } from "./staff-placed-refused.ts";
 import { withinLostRaceCleanup, withinOwedCleanup } from "./cleanup-allowance.ts";
 import { confirmLineWaitMs, type ClaimOutcome, type ClaimPlace, type ConfirmLine, type LeaderVerdict, type LineKey, type SharedSeat, type StartFrom } from "./confirm-queue.ts";
 import { codeLineGroup } from "./line-key.ts";
@@ -132,7 +133,7 @@ import { budgetCovers, expectedCommitMs, type CommitCostLog } from "./commit-cos
 import type { WaitPoint } from "./wait-marks.ts";
 import { budgetLeftMs } from "../call-budget.ts";
 import { log } from "@/lib/log";
-import { readBookingSource } from "./booking-source.ts";
+import { readBookingSource, SOURCE_COORDINATOR, type SourceReading } from "./booking-source.ts";
 import type { AuditChannel } from "../audit-channel.ts";
 import type { FullApiCaller } from "./api-callers.ts";
 import { rescheduleTimesFrom, type RescheduleTimesFrom } from "./reschedule-times-url.ts";
@@ -734,7 +735,7 @@ export class ContactRefusedError extends Error {
 
 // #3359: the typed refusal of the lead's address. Its own module (#3373) so the
 // bulk coverage sweep can recognise it without importing the booking layer.
-export { AttendeeEmailRefusedError };
+export { AttendeeEmailRefusedError, StaffPlacedReassignRefusedError };
 
 export class ExistingCallError extends Error {
   readonly existingCall: ExistingCall;
@@ -820,6 +821,7 @@ export class ReassignAcrossWorldsError extends Error {
     this.name = "ReassignAcrossWorldsError";
   }
 }
+
 
 /** Thrown when a booking is (or becomes, concurrently) terminal so it can no
  *  longer be reassigned/changed (#621). A genuine conflict → 409, distinct from
@@ -1111,6 +1113,13 @@ export interface CreateBookingInput {
    * records `mcp-<channel>` as its source, never `not-given`.
    */
   mcpChannel?: AuditChannel;
+  /**
+   * #4202: the scheduling coordinator placing this call from their booking page, set
+   * ONLY by that page's server operation (`placed-booking.ts`) from the signed in
+   * user. The booking then records source `coordinator` and `placed_by_user_id`,
+   * whichever advisor it lands on, written by the save itself (L593).
+   */
+  placedByUserId?: string;
 }
 
 export interface BookingResult {
@@ -1893,6 +1902,12 @@ export interface BookingDeps {
      * slot move and rescheduled webhook.
      */
     outbox: { steps: OutboxStep[]; payload: OutboxPayload },
+    /**
+     * #4202: the move's target is the placeholder advisor, so it commits through
+     * `commit_reschedule_onto_placeholder` (migration 0208), which writes the call
+     * staff_placed and stacking where `commit_reschedule` clears the stack flag.
+     */
+    opts?: { ontoPlaceholder: true },
   ): Promise<string | null>;
   /**
    * Atomic cancel claim (#413): conditionally flips a booking active->cancelled in
@@ -3807,6 +3822,8 @@ interface WebhookExtras {
   previousAgentEmail?: string | null;
   /** The number a phone correction replaced (#1512). */
   previousPhone?: string | null;
+  /** #4204: the move took the call off the placeholder (`OutboxPayload.leftPlaceholder`). */
+  leftPlaceholder?: boolean;
 }
 
 function webhookPayload(
@@ -3817,6 +3834,7 @@ function webhookPayload(
   reason: BookingReasonMeta | null,
   previousAgentEmail: string | null,
   previousPhone?: string | null,
+  leftPlaceholder = false,
 ): BookingEventPayload {
   return {
     booking_id: booking.id,
@@ -3854,6 +3872,8 @@ function webhookPayload(
     routing: booking.kind === "agent_link" ? null : routingMetaFromTrace(booking.routing_trace),
     // #2073: absent on a row read before the column existed, which was routed.
     booking_kind: booking.kind ?? "routed",
+    // #4204: only on the move off the placeholder, so Regal stops Marcia texting.
+    ...(leftPlaceholder ? { left_placeholder: true } : {}),
   };
 }
 
@@ -3885,7 +3905,7 @@ async function fire(
   await deps.emitWebhook(
     booking.org_id,
     event,
-    webhookPayload(deps, booking, bucket, eventType, reason, extras.previousAgentEmail ?? null, extras.previousPhone),
+    webhookPayload(deps, booking, bucket, eventType, reason, extras.previousAgentEmail ?? null, extras.previousPhone, extras.leftPlaceholder === true),
     webhookDedupeKey(event, { bookingId: booking.id, bookingEventId }),
     bucket.is_test,
     // #884: set only on user-facing requests, so the confirm/cancel/reschedule
@@ -4255,6 +4275,8 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
       {
         bookingEventId: eventId,
         ...(p.previousAttendeePhone !== undefined ? { previousPhone: p.previousAttendeePhone } : {}),
+        // #4204: recorded at the commit, so a drain re-run sends the same.
+        leftPlaceholder: p.leftPlaceholder === true,
       },
     );
   },
@@ -4339,7 +4361,7 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
       bucket,
       eventType,
       reasonMeta(reason, initiator),
-      { bookingEventId: row.id, previousAgentEmail: p.fromAgentEmail ?? null },
+      { bookingEventId: row.id, previousAgentEmail: p.fromAgentEmail ?? null, leftPlaceholder: p.leftPlaceholder === true },
     );
   },
 
@@ -5825,7 +5847,11 @@ async function createHeld(
   // broken link must never cost a lead. The raw value is logged so the link can
   // be found and fixed, and stays in prefill; the column holds only the
   // vocabulary.
-  const sourceReading = readBookingSource(input.prefill, input.apiCaller, input.mcpChannel);
+  // #4202: a coordinator's call is from their page whatever the link fields say.
+  const sourceReading: SourceReading =
+    input.placedByUserId !== undefined
+      ? { source: SOURCE_COORDINATOR, unrecognisedRaw: null }
+      : readBookingSource(input.prefill, input.apiCaller, input.mcpChannel);
   if (sourceReading.unrecognisedRaw !== null) {
     log.warn("booking-source", {
       msg: "unrecognised source on the booking link",
@@ -5900,6 +5926,7 @@ async function createHeld(
       // #2728: re-reduced here rather than trusted, so a path or query the client
       // sent (which can carry a lead's details) never reaches the row.
       referrer_origin: readReferrerOrigin(input.referrerOrigin),
+      ...(input.placedByUserId !== undefined ? { placed_by_user_id: input.placedByUserId } : {}),
       kind: agentLinkUserId !== undefined ? "agent_link" : "routed",
       // #2073: nothing was routed, so there is no trace, and a fabricated one would
       // read as a routing decision to every reader of the column.
@@ -6331,6 +6358,131 @@ async function createHeld(
   return { result, verdict };
 }
 
+/** #4202: what a coordinator's call placed on the placeholder advisor is made from. */
+export interface PlaceholderBookingInput {
+  /** The customer's own bucket and its event type, already resolved by the caller. */
+  bucket: Bucket;
+  eventType: EventType;
+  /** The placeholder of the bucket's org and world (`users.is_placeholder`). */
+  placeholder: User;
+  startIso: string;
+  /** The customer's own IANA zone, given explicitly: never a device or Eastern default. */
+  timezone: string;
+  salesforceId: string;
+  attendee: CreateBookingInput["attendee"];
+  /** The submission's key (`coordinatorKeyFor`), so a double submit books once. */
+  idempotencyKey: string;
+  placedByUserId: string;
+}
+
+/**
+ * #4202: a call a coordinator places on the placeholder advisor when no real advisor in
+ * the customer's bucket is free, stacked with any others at that time.
+ *
+ * It runs the create's own crash safe chain, not a copy of it: the replay read and the
+ * resume of an in flight reservation by the submission's key, the reservation pinned to
+ * the placeholder, the invite on the placeholder's calendar under a deterministic id,
+ * and the one call save (`commit_fresh_booking`) with its busy block and booking.created,
+ * so the reservation drain finishes a call cut off part way exactly as it finishes any
+ * other. What a real advisor needs and the placeholder never does is skipped: the slot
+ * predicate, verify on book, the confirm line, min notice and the daily cap; the caller
+ * has already judged the org's hours, the customer's calling window and the horizon.
+ *
+ * The row is `staff_placed` and stacks (`allow_double_book`), which migration 0208 holds
+ * true of every booking on the placeholder. Nothing was routed, so it carries no routing
+ * trace and records no routing decision, and the slot cache is left alone because the
+ * placeholder serves no pool (`attemptReservation`, `afterFreshCommit`).
+ */
+export async function createPlaceholderBooking(
+  input: PlaceholderBookingInput,
+  deps: BookingDeps,
+): Promise<BookingResult> {
+  const { bucket, eventType, placeholder, idempotencyKey } = input;
+  if (!placeholder.is_placeholder) {
+    throw new Error(`createPlaceholderBooking: user ${placeholder.id} is not a placeholder advisor`);
+  }
+  // A real call never lands on the test placeholder, nor a test bucket's on the real one.
+  if (Boolean(bucket.is_test) !== Boolean(placeholder.is_test)) throw new ReassignAcrossWorldsError();
+  if (!placeholder.email) {
+    throw new Error(`the placeholder advisor ${placeholder.id} has no calendar address, so no invite can be written`);
+  }
+
+  // A double submit (the coordinator's second click) is answered with the first's booking.
+  const replay = await replayOf(deps, idempotencyKey);
+  if (replay) return replay;
+  // A submission cut off after its reservation resumes that reservation, whichever
+  // advisor it pinned, rather than writing a second one under the same key.
+  const inFlight = await deps.loadReservationByKey(idempotencyKey);
+  if (inFlight) {
+    const resumed = await resumeReservation(deps, inFlight, idempotencyKey);
+    if (resumed !== null) return answerCommitted(resumed);
+  }
+
+  const { startIso, endIso } = bookingWindow(input.startIso, eventType.duration_min);
+  const phone = toE164(input.attendee.phone);
+  const manageToken = deps.newManageToken();
+  const gcalClientId = await deterministicEventId(idempotencyKey, placeholder.id);
+  const bookingInsert: BookingInsert = {
+    org_id: bucket.org_id,
+    bucket_id: bucket.id,
+    event_type_id: eventType.id,
+    assigned_user_id: placeholder.id,
+    agent_name: placeholder.name,
+    agent_email: placeholder.email,
+    starts_at: startIso,
+    ends_at: endIso,
+    original_starts_at: startIso,
+    original_ends_at: endIso,
+    timezone: input.timezone,
+    status: "confirmed",
+    salesforce_id: input.salesforceId,
+    attendee_name: input.attendee.name ?? null,
+    attendee_first_name: storedFirstName(input.attendee.name, input.attendee.firstName),
+    attendee_email: input.attendee.email ?? null,
+    attendee_phone: phone,
+    prefill: withLeadIdFrom({}, null),
+    gcal_event_id: gcalClientId,
+    manage_token: manageToken,
+    idempotency_key: idempotencyKey,
+    external_id: null,
+    source: SOURCE_COORDINATOR,
+    referrer_origin: null,
+    kind: "staff_placed",
+    routing_trace: null,
+    allow_double_book: true,
+    placed_by_user_id: input.placedByUserId,
+  };
+  const event: ReservationPayload["event"] = {
+    summary: eventSummary({ eventType: eventType.name, advisor: placeholder.name, lead: input.attendee.name ?? null }),
+    description: eventDescription(phone, manageUrl(deps, manageToken), { isTest: bucket.is_test }),
+    location: eventLocation(phone),
+    start: startIso,
+    end: endIso,
+    timezone: input.timezone,
+    attendeeEmail: input.attendee.email,
+    attendeeName: input.attendee.name,
+  };
+  // The UNIQUE(idempotency_key) arbitrates a racing double submit: the winner's
+  // reservation comes back here, and its pin is the one completed.
+  const reservation = await deps.insertReservation({
+    idempotency_key: idempotencyKey,
+    pinned_user_id: placeholder.id,
+    pinned_agent_email: placeholder.email,
+    gcal_client_id: gcalClientId,
+    payload: { booking: bookingInsert, event, bucketCode: bucket.code },
+  });
+  const attempt = await attemptReservation(deps, reservation, { bucket, eventType, agent: placeholder });
+  if (attempt.kind === "completed") return answerCommitted(attempt.completed);
+  if (attempt.kind === "settled") {
+    throw new Error(`a placeholder booking's fresh reservation ${reservation.id} was settled, which only a resume can do`);
+  }
+  // Calls stack on the placeholder, so only a guard that is not about the time can lose
+  // the insert (a racing submission under another key holding nothing here). Refused as
+  // taken, after the rollback the attempt owes.
+  await attempt.rollBack();
+  throw new SlotUnavailableError();
+}
+
 /**
  * What a fresh confirm already holds when it commits (#3495): its booked bucket with its
  * event type, and the advisor it read before writing the booking. Each is used only for
@@ -6370,12 +6522,15 @@ async function deliverCreatedSideEffects(
   }
   // #3324: after the busy block above has committed, so the splice's fence is
   // stamped no earlier than the block every later compute will read.
-  await deps.invalidateSlots(
-    bookedCode,
-    booking.assigned_user_id
-      ? { userId: booking.assigned_user_id, startsAt: booking.starts_at, endsAt: booking.ends_at }
-      : undefined,
-  );
+  // #4202: a call on the placeholder changes no pool's times, since it serves none.
+  if (booking.kind !== "staff_placed") {
+    await deps.invalidateSlots(
+      bookedCode,
+      booking.assigned_user_id
+        ? { userId: booking.assigned_user_id, startsAt: booking.starts_at, endsAt: booking.ends_at }
+        : undefined,
+    );
+  }
 
   // Re-resolve bucket + eventType for the webhook (works on the drain path too), unless
   // the confirm already holds them for this very code (#3495: one request fewer).
@@ -6742,7 +6897,9 @@ async function attemptReservation(
   // On a tier drop the trace records the booked (lower) bucket, so the webhook, the
   // slot refresh and the routing record all name the bucket whose times changed.
   const bookedCode = bookingInsert.routing_trace?.bucket_code ?? bucketCode;
-  const routed = bookingInsert.kind !== "agent_link";
+  // #2073, #4202: only a routed booking logs a routing decision or pages a tier drop; a
+  // named link and a call placed on the placeholder were not routed.
+  const routed = bookingInsert.kind === "routed";
   // Nothing was written. The reservation stays PENDING, so the drain, or the lead's
   // own retry, resumes it and adopts THIS event through its deterministic id
   // (#3215). The event is therefore NOT deleted live: a deleted event keeps its id,
@@ -6952,8 +7109,9 @@ async function afterFreshCommit(
   // it (L73), and none reports itself as work the drain will finish. A refresh that
   // fails leaves the time offered until the every minute recompute lane reconverges
   // the bucket, so it is logged as the error it is.
+  // #4202: a call on the placeholder changes no pool's times, since it serves none.
   try {
-    await deps.invalidateSlots(
+    if (booking.kind !== "staff_placed") await deps.invalidateSlots(
       bookedCode,
       booking.assigned_user_id
         ? { userId: booking.assigned_user_id, startsAt: booking.starts_at, endsAt: booking.ends_at }
@@ -8198,6 +8356,14 @@ export async function rescheduleBooking(
      * `contact` is given, which is the lead speaking for themselves.
      */
     fill?: { name?: string; firstName?: string; email?: string; phone?: string };
+    /**
+     * #4202: move the call onto THIS placeholder advisor, set only by the coordinator's
+     * booking operation once a move to a real advisor was refused for want of one free.
+     * No advisor or calendar is asked; the call is committed staff_placed and stacking
+     * (`commit_reschedule_onto_placeholder`). Every other caller leaves it unset, and
+     * then a call on the placeholder is never kept there (#4203).
+     */
+    ontoPlaceholder?: User;
   },
 ): Promise<BookingResult> {
   // #2310: a zone the caller supplied is judged BEFORE the contact write below,
@@ -8322,6 +8488,7 @@ export async function rescheduleBooking(
     try {
       const result = await applyReschedule(
         deps, token, ctx, startIso, endIso, reason, initiator, claim, nowMs, actor, opts?.seat ?? null, correction,
+        opts?.ontoPlaceholder,
       );
       applied = true;
       return { ...result, contactChanged, isTest: ctx.bucket.is_test };
@@ -8359,6 +8526,8 @@ async function applyReschedule(
   seat: SharedSeat | null = null,
   /** #4031: what the move's own contact write corrected, carried to its webhook. */
   correction: MoveCorrection = {},
+  /** #4202: the placeholder to move the call onto (`rescheduleBooking`'s `ontoPlaceholder`). */
+  ontoPlaceholder?: User,
 ): Promise<BookingResult> {
   const { booking, bucket, eventType } = ctx;
   const currentEmail = booking.agent_email;
@@ -8432,7 +8601,10 @@ async function applyReschedule(
     // Reason vocabulary here: working_hours | calendar (live busy read failed) |
     // min_notice | buffer. daily_cap can't fire on a keep-same-agent move
     // (enforceDailyCap is off). null while there was no in-place candidate.
-    if (currentEmail && booking.assigned_user_id && booking.gcal_event_id) {
+    // #4203: a call on the placeholder is never a candidate to keep: whatever its
+    // calendar says, the move goes to a real advisor in the bucket, or is refused. And a
+    // move onto the placeholder (#4202) asks no advisor at all.
+    if (!ontoPlaceholder && booking.kind !== "staff_placed" && currentEmail && booking.assigned_user_id && booking.gcal_event_id) {
       // #3257: claimed before the live read, so a lead booking this time beside the
       // move is given another advisor at once. The line is handed on only when an
       // advisor nobody has claimed is left beside this one, judged as the create
@@ -8481,13 +8653,31 @@ async function applyReschedule(
     // #2073: a named link booking belongs to the agent it names. When they cannot
     // take the new time it is refused, never moved to somebody from the bucket
     // it is stored in, which the link never routed through.
-    if (!keepInPlace && booking.kind === "agent_link") {
+    if (!keepInPlace && !ontoPlaceholder && booking.kind === "agent_link") {
       const refusal =
         inPlaceDeclineReason === "calendar" ? new VerifyUnavailableError() : new SlotUnavailableError();
       tagRescheduleFailure(refusal, { bookingId: booking.id, inPlaceDeclineReason: inPlaceDeclineReason ?? undefined });
       throw refusal;
     }
-    if (keepInPlace) {
+    if (ontoPlaceholder) {
+      // #4202: the coordinator's move onto the placeholder, which takes any number of
+      // calls at one time. A call already there keeps its own invite, PATCHed to the
+      // new time; any other gets a new one on the placeholder's calendar.
+      if (!ontoPlaceholder.is_placeholder || !ontoPlaceholder.email) {
+        throw new Error(`rescheduleBooking: ${ontoPlaceholder.id} is not a placeholder advisor with a calendar`);
+      }
+      const alreadyThere = booking.assigned_user_id === ontoPlaceholder.id && booking.gcal_event_id !== null;
+      pin = {
+        reschedule_seq: seq,
+        branch: alreadyThere ? "in_place" : "reassign",
+        pinned_user_id: ontoPlaceholder.id,
+        pinned_agent_email: ontoPlaceholder.email,
+        gcal_client_id: alreadyThere
+          ? booking.gcal_event_id!
+          : await deterministicEventId(`reschedule:${booking.id}:${seq}`, ontoPlaceholder.id),
+        target_starts_at: startIso,
+      };
+    } else if (keepInPlace) {
       // keepInPlace is only true when all three were present (the guard block above).
       pin = {
         reschedule_seq: seq,
@@ -8524,8 +8714,14 @@ async function applyReschedule(
   // Who takes the call after this move: the advisor already on it in place, or the
   // one the reroute pinned. Read BEFORE the event is built, because the invite's
   // title names them (#3376), and a reroute hands the call to somebody else.
-  const agentName =
-    pin.branch === "in_place" ? booking.agent_name : (await deps.getUser(pin.pinned_user_id)).name;
+  const pinnedUser = pin.branch === "in_place" ? null : await deps.getUser(pin.pinned_user_id);
+  const agentName = pinnedUser ? pinnedUser.name : booking.agent_name;
+  // #4202: whether the move lands on the placeholder, read off the pin so a resume
+  // commits exactly as the attempt it resumes would have: a reroute's pinned user, or
+  // for an in place move the booking itself (0208 keeps a placeholder call staff placed).
+  const ontoPlaceholderCommit = pinnedUser ? pinnedUser.is_placeholder === true : booking.kind === "staff_placed";
+  // #4204: the move takes a call off the placeholder, which Regal must hear.
+  const leftPlaceholder = booking.kind === "staff_placed" && !ontoPlaceholderCommit;
 
   // The event either branch below may have to CREATE, built once: the in place
   // branch creates it only when the PATCH target is gone, the reassign branch
@@ -8635,31 +8831,34 @@ async function applyReschedule(
       actingAsUserId: actor?.actingAsUserId,
       // #4031: only when the move replaced the number, so its absence means "not corrected".
       ...(correction.previousPhone !== undefined ? { previousAttendeePhone: correction.previousPhone } : {}),
+      ...(leftPlaceholder ? { leftPlaceholder: true } : {}),
     },
   };
-  const committed = await deps.commitReschedule(
-    booking.id,
-    {
-      starts_at: startIso,
-      ends_at: endIso,
-      assigned_user_id: assigned,
-      agent_name: agentName,
-      agent_email: agentEmail,
-      status: "rescheduled",
-      gcal_event_id: newGcalEventId,
-      reschedule_seq: pin.reschedule_seq,
-      // #2916: a reroute hands the call to another advisor, so it is recorded in
-      // the trace's reassignments the way a reassign records it. Built from the
-      // snapshot, which is safe here and only here: the write is gated on the
-      // assignee AND the event id we read, and every other writer of the trace (a
-      // reassign) changes both, so a stale trace can never land over a newer one.
-      ...(assigned !== fromAgentUserId
-        ? { routing_trace: traceWithMove(traceOrSeed(booking, bucket), fromAgentUserId, assigned, nowMs) }
-        : {}),
-    },
-    { assignedUserId: fromAgentUserId, gcalEventId: fromGcalEventId },
-    rescheduleOutbox,
-  );
+  const commitPatch: BookingUpdate = {
+    starts_at: startIso,
+    ends_at: endIso,
+    assigned_user_id: assigned,
+    agent_name: agentName,
+    agent_email: agentEmail,
+    status: "rescheduled",
+    gcal_event_id: newGcalEventId,
+    reschedule_seq: pin.reschedule_seq,
+    // #2916: a reroute hands the call to another advisor, so it is recorded in
+    // the trace's reassignments the way a reassign records it. Built from the
+    // snapshot, which is safe here and only here: the write is gated on the
+    // assignee AND the event id we read, and every other writer of the trace (a
+    // reassign) changes both, so a stale trace can never land over a newer one.
+    ...(assigned !== fromAgentUserId
+      ? { routing_trace: traceWithMove(traceOrSeed(booking, bucket), fromAgentUserId, assigned, nowMs) }
+      : {}),
+  };
+  const commitGuard = { assignedUserId: fromAgentUserId, gcalEventId: fromGcalEventId };
+  // #4202: onto the placeholder through 0208's function, which writes the call
+  // staff_placed and stacking; anywhere else through commit_reschedule, which clears
+  // the stack flag and, by 0208's trigger, routes a call that leaves the placeholder.
+  const committed = ontoPlaceholderCommit
+    ? await deps.commitReschedule(booking.id, commitPatch, commitGuard, rescheduleOutbox, { ontoPlaceholder: true })
+    : await deps.commitReschedule(booking.id, commitPatch, commitGuard, rescheduleOutbox);
   // The outbox row the commit wrote, or null when this attempt's commit touched
   // nothing: either a real conflict (thrown below) or an earlier attempt that already
   // committed this exact pin, whose own commit wrote the row the drain will run.
@@ -8721,6 +8920,10 @@ async function applyReschedule(
     agent_name: agentName,
     agent_email: agentEmail,
     status: "rescheduled" as const,
+    // As the commit stored them: 0206 clears the stack flag, 0208's function sets it
+    // and the kind on the placeholder, and its trigger routes a call that left it.
+    allow_double_book: ontoPlaceholderCommit,
+    kind: ontoPlaceholderCommit ? ("staff_placed" as const) : leftPlaceholder ? ("routed" as const) : booking.kind,
   };
 
   // The booking is committed at the NEW time/agent, and its post-commit side effects
@@ -8833,6 +9036,12 @@ export interface ReassignOptions {
    * lands after that. Absent, nothing is checked, as for every other reassign.
    */
   expect?: ReassignExpectation;
+  /**
+   * #4202: refuse a call placed on the placeholder advisor (`StaffPlacedReassignRefusedError`).
+   * Set by the machine contact owner reassign only: Regal hands those calls on itself.
+   * A manager's reassign leaves it unset and moves the call off the placeholder.
+   */
+  refuseStaffPlaced?: boolean;
 }
 
 /** The booking's state a reassign was decided on (#1677): its advisor and its start. */
@@ -8856,7 +9065,7 @@ export async function reassignBooking(
   deps: BookingDeps,
   opts: ReassignOptions = {},
 ): Promise<BookingResult & { overCap: boolean }> {
-  const { overrideCap = false, actor, initiator = "system", allowNonBookable = false, reroute, expect } = opts;
+  const { overrideCap = false, actor, initiator = "system", allowNonBookable = false, reroute, expect, refuseStaffPlaced = false } = opts;
   const ctx = await deps.loadBookingById(bookingId);
   if (!ctx) throw new BookingNotFoundError();
   const { booking, bucket, eventType } = ctx;
@@ -8865,9 +9074,14 @@ export async function reassignBooking(
   }
   // #1677: already changed since the caller decided, so nothing is created anywhere.
   if (expect && !bookingStillAsExpected(booking, expect)) throw new RerouteRefusedError("booking_moved");
+  // #4204: read before the swap, which (with 0208's trigger) routes the call it moves.
+  const offPlaceholder = booking.kind === "staff_placed";
+  if (refuseStaffPlaced && offPlaceholder) throw new StaffPlacedReassignRefusedError();
 
   const agent = await deps.getAgentByEmail(agentEmail);
-  if (!agent || !agent.email || (!agent.bookable && !allowNonBookable)) {
+  // #4202: never onto the placeholder, whatever the override: a call reaches it only as
+  // a coordinator's staff placed call, which migration 0208 also holds at the database.
+  if (!agent || !agent.email || (!agent.bookable && !allowNonBookable) || agent.is_placeholder) {
     throw new AgentNotAvailableError();
   }
   // A booking and its advisor are in the same WORLD (#2660): a test booking
@@ -9098,6 +9312,8 @@ export async function reassignBooking(
     // The status is left as it was (#2617): the swap no longer writes it, because
     // a reassign hands the same call to another advisor and the lead did nothing.
     allow_double_book: true,
+    // #4203: 0208's trigger routes a call the swap moved off the placeholder.
+    kind: offPlaceholder ? ("routed" as const) : booking.kind,
     // Best-effort local view of the trace for the returned object (the swap owns
     // the authoritative append server-side, #519; this value is not surfaced to
     // any response, so a concurrent racer's extra entry not shown here is fine).
@@ -9136,6 +9352,8 @@ export async function reassignBooking(
     actorUserId: actor?.userId,
     actingAsUserId: actor?.actingAsUserId,
     ...(reroute ? { fromBucketId: reroute.fromBucketId, toBucketId: reroute.bucketId } : {}),
+    // #4204: the reassign took the call off the placeholder (the target never is one).
+    ...(offPlaceholder ? { leftPlaceholder: true } : {}),
   };
   const outboxId = await deps.enqueueOutbox({
     booking_id: booking.id,

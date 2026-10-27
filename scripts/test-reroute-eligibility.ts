@@ -118,6 +118,13 @@ const afterDemoted: Attributes = { debt_team: ["high"] };
 }
 
 {
+  // #4202: a call a coordinator placed on the placeholder is Regal's to hand on, and the
+  // placeholder is never demoted in Twilio; a demotion read naming it moves none of them.
+  const out = bookingsToReroute(before, afterDemoted, [{ bookingId: "sp1", kind: "staff_placed", ...UH }]);
+  eq(out.length, 0, "a staff placed booking is never rerouted on a demotion");
+}
+
+{
   // A manual member's booking never reroutes: they serve it by membership, not attributes.
   const out = bookingsToReroute(before, afterDemoted, [
     { bookingId: "m1", kind: "round_robin", criteria: { debt_team: "ultra_high" }, isManualMember: true },
@@ -159,6 +166,12 @@ const afterDemoted: Attributes = { debt_team: ["high"] };
   // and the manual reroute refusal, so a snapshot can never hand off a by-name booking.
   const out = unservedBookingIds(afterDemoted, [{ bookingId: "al1", kind: "agent_link", ...UH }]);
   eq(out.length, 0, "an agent_link booking is never in a demotion snapshot");
+}
+
+{
+  // #4202: nor a staff placed one, matching bookingsToReroute.
+  const out = unservedBookingIds(afterDemoted, [{ bookingId: "sp1", kind: "staff_placed", ...UH }, { bookingId: "uh1", kind: "round_robin", ...UH }]);
+  eq(out.join(","), "uh1", "a staff placed booking is never in a demotion snapshot, beside one that is");
 }
 
 {

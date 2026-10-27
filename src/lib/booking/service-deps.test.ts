@@ -84,6 +84,7 @@ vi.mock("@/lib/routing/record", async (importOriginal) => ({
 import { realDeps } from "./service";
 import { CommitRefusedError, type CommitFreshInput } from "./orchestration";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
+import { BookingWriteFailedError } from "./gated-write";
 
 beforeEach(() => {
   writeError = null;
@@ -371,5 +372,46 @@ describe("getUser refuses a failed read rather than answering null (#3477)", () 
   it("control: answers the advisor when the read lands", async () => {
     singleResult = { data: { id: "u1", name: "Ada" }, error: null };
     await expect(realDeps().getUser("u1")).resolves.toMatchObject({ id: "u1", name: "Ada" });
+  });
+});
+
+// #4202: a move onto the placeholder must commit through migration 0208's function, which
+// writes the call staff_placed and stacking; commit_reschedule clears the stack flag, and
+// 0208's trigger then refuses the whole move. One argument list serves both.
+describe("the reschedule commit picks its function by the move's target (#4202)", () => {
+  const patch = {
+    starts_at: "2026-06-08T15:00:00.000Z",
+    ends_at: "2026-06-08T15:30:00.000Z",
+    assigned_user_id: "p",
+    agent_name: "Marcia",
+    agent_email: "marcia@x.com",
+    status: "rescheduled" as const,
+    gcal_event_id: "evt-1",
+    reschedule_seq: 1,
+  };
+  const guard = { assignedUserId: "a", gcalEventId: "evt-0" };
+  const outbox = { steps: [], payload: {} };
+
+  it("commits a move onto the placeholder through commit_reschedule_onto_placeholder", async () => {
+    rpcCalls.length = 0;
+    rpcResult = { data: "ob-1", error: null };
+    await expect(realDeps().commitReschedule("bk-1", patch, guard, outbox, { ontoPlaceholder: true })).resolves.toBe("ob-1");
+    expect(rpcCalls.map((c) => c.fn)).toEqual(["commit_reschedule_onto_placeholder"]);
+    expect(rpcCalls[0]?.args).toMatchObject({ p_booking_id: "bk-1", p_assigned_user_id: "p", p_guard_assigned: "a" });
+  });
+
+  it("control: every other move commits through commit_reschedule, with the same arguments", async () => {
+    rpcCalls.length = 0;
+    rpcResult = { data: "ob-2", error: null };
+    await expect(realDeps().commitReschedule("bk-1", patch, guard, outbox)).resolves.toBe("ob-2");
+    expect(rpcCalls.map((c) => c.fn)).toEqual(["commit_reschedule"]);
+    expect(Object.keys(rpcCalls[0]?.args ?? {}).sort()).toEqual(
+      ["p_agent_email", "p_agent_name", "p_assigned_user_id", "p_booking_id", "p_ends_at", "p_gcal_event_id", "p_guard_assigned", "p_guard_event", "p_payload", "p_reschedule_seq", "p_routing_trace", "p_set_routing_trace", "p_starts_at", "p_steps"],
+    );
+  });
+
+  it("refuses rather than reading a refused move onto the placeholder as a lost race", async () => {
+    rpcResult = { data: null, error: { message: "commit_reschedule_onto_placeholder: u is not the placeholder of this booking's org and world" } };
+    await expect(realDeps().commitReschedule("bk-1", patch, guard, outbox, { ontoPlaceholder: true })).rejects.toBeInstanceOf(BookingWriteFailedError);
   });
 });

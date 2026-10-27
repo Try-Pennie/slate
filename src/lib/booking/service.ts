@@ -2474,14 +2474,19 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       );
     },
 
-    commitReschedule: async (bookingId, patch, guard, outbox) => {
+    commitReschedule: async (bookingId, patch, guard, outbox, opts) => {
       // #3265: the gated move (#615: only while the booking is still active AND its
       // assignee + event id are unchanged since we read them) and its outbox work, in
       // ONE transaction (migration 0171). The id of the outbox row it wrote means the
       // move applied; null means the guard matched nothing. A refused call throws as a
       // write failure rather than reading as a lost race (#2373).
+      // #4202: a move onto the placeholder goes through 0208's twin, which takes the
+      // same arguments and writes the call staff_placed and stacking.
       return readCommitReschedule(
-        await supabaseAdmin().rpc("commit_reschedule", commitRescheduleArgs(bookingId, patch, guard, outbox)),
+        await supabaseAdmin().rpc(
+          opts?.ontoPlaceholder ? "commit_reschedule_onto_placeholder" : "commit_reschedule",
+          commitRescheduleArgs(bookingId, patch, guard, outbox),
+        ),
       );
     },
 
@@ -3601,7 +3606,8 @@ export function reassignBooking(
   overrideCap = false,
 ) {
   return reassignForContactOwner({ bookingId, ownerEmail: agentEmail }, realOwnerGuardDeps(), () =>
-    orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(deferWebhookSend), { overrideCap }),
+    // #4202: a call a coordinator placed on the placeholder is Regal's to hand on.
+    orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(deferWebhookSend), { overrideCap, refuseStaffPlaced: true }),
   );
 }
 

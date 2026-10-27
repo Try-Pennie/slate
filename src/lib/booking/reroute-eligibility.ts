@@ -48,6 +48,7 @@ export interface RerouteCandidate {
  *    unread one is not (L214, L50). A null attribute must never be fed to `matchesCriteria`
  *    and scored as "ineligible".
  *  - An `agent_link` booking never reroutes: the lead asked for that specific advisor.
+ *    Nor does a `staff_placed` one (#4202): it sits on the placeholder for Regal to hand on.
  *
  * A widening (an upgrade) reroutes nothing, because the agent still serves everything they
  * did before. A manual member's booking never reroutes, because membership, not attributes,
@@ -60,7 +61,8 @@ export function bookingsToReroute(
 ): string[] {
   if (before == null || after == null) return [];
   return bookings
-    .filter((b) => b.kind !== "agent_link")
+    // #4202: nor a call placed on the placeholder, which Regal hands on itself.
+    .filter((b) => b.kind !== "agent_link" && b.kind !== "staff_placed")
     .filter(
       (b) =>
         agentStillServes(before, b.criteria, b.isManualMember) &&
@@ -92,7 +94,8 @@ export function unservedBookingIds(
 ): string[] {
   if (attributes == null) return [];
   return bookings
-    .filter((b) => b.kind !== "agent_link")
+    // #4202: nor a call placed on the placeholder, which Regal hands on itself.
+    .filter((b) => b.kind !== "agent_link" && b.kind !== "staff_placed")
     .filter((b) => !agentStillServes(attributes, b.criteria, b.isManualMember))
     .map((b) => b.bookingId);
 }

@@ -53,6 +53,8 @@ export const UNMIRRORED_COLUMNS: Record<string, Record<string, string>> = {
     // #3672: a restored row that a cross bucket move replaced reads as an ordinary
     // cancel, so its old links say cancelled instead of opening the call that replaced it.
     replaced_by_booking_id: "null on an inserted booking, so a moved booking's old links show it cancelled",
+    // #4200: who placed a coordinator's call is not mirrored; source still says the page.
+    placed_by_user_id: "null on an inserted booking, so a coordinator's call no longer names who placed it",
   },
   webhook_deliveries: {
     dedupe_key: "null on an inserted delivery",

@@ -117,7 +117,7 @@ try {
   sql(`
     insert into organizations (id, name) values ('${ORG}', 'Placeholder org'), ('${ORG2}', 'Second org');
     ${eventTypesInsertSql([{ id: ET, orgId: ORG, name: "Call", durationMin: 20, bufferBeforeMin: 10, bufferAfterMin: 10 }])}
-    ${bucketsInsertSql([{ id: B100, orgId: ORG, code: "100", name: "Low", eventTypeId: ET }, { id: BTEST, orgId: ORG, code: "PARTNER", name: "Partner", eventTypeId: ET }])}
+    ${bucketsInsertSql([{ id: B100, orgId: ORG, code: "100", name: "Low", eventTypeId: ET }, { id: BTEST, orgId: ORG, code: "T100", name: "Test", eventTypeId: ET }])}
     update buckets set is_test = true where id = '${BTEST}';
   `);
   const P = user(ORG, { placeholder: true });
@@ -186,6 +186,39 @@ try {
     const stays = seed(P, "16:00", "16:20", { kind: "staff_placed", doubleBook: true });
     sql(`update bookings set assigned_user_id = '${P}', starts_at = '${at("16:30")}', ends_at = '${at("16:50")}' where id = '${stays}';`);
     eq(kindOf(stays), "staff_placed|true", "control: a write keeping the call on the placeholder leaves it staff placed");
+  }
+
+  // --- a coordinator's call saved through the one call save every booking uses --------------
+  // createPlaceholderBooking hands commit_fresh_booking (0174) a staff placed, stacking row
+  // naming who placed it; two at one time both commit, each with its own busy block.
+  {
+    const coordinator = user(ORG);
+    const row = (id: string, o: { doubleBook?: boolean } = {}) => ({
+      id, org_id: ORG, bucket_id: B100, event_type_id: ET, assigned_user_id: P, agent_name: "Marcia", agent_email: "marcia@example.com",
+      starts_at: at("06:00"), ends_at: at("06:20"), original_starts_at: at("06:00"), original_ends_at: at("06:20"),
+      timezone: "America/Chicago", status: "confirmed", salesforce_id: "00Q000000000001", attendee_name: "Dana Lead",
+      attendee_first_name: null, attendee_email: "dana@example.com", attendee_phone: "+12155550100", prefill: {},
+      gcal_event_id: `gcal-${id}`, manage_token: `tok-${id}`, idempotency_key: `coordinator:${id}`, external_id: null,
+      source: "coordinator", referrer_origin: null, kind: "staff_placed", routing_trace: null,
+      placed_by_user_id: coordinator, ...(o.doubleBook === false ? {} : { allow_double_book: true }),
+    });
+    const save = (r: ReturnType<typeof row>) => {
+      const reservation = sql(`insert into booking_reservations (idempotency_key, pinned_user_id, pinned_agent_email, gcal_client_id, payload)
+        values ('${r.idempotency_key}', '${P}', 'marcia@example.com', '${r.gcal_event_id}', '{}'::jsonb) returning id;`);
+      const hook = { event: "booking.created", payload: { booking_id: r.id, bucket_code: "100", status: "confirmed", booking_kind: "staff_placed" }, dedupe_key: r.id, suppression: { generic: null, regal: null } };
+      return `select commit_fresh_booking(p_booking => ${lit(r)}, p_reservation_id => '${reservation}', p_webhook => ${lit(hook)}, p_routing => null)::text;`;
+    };
+    for (const id of [nextId(), nextId()]) {
+      const answer = JSON.parse(sql(save(row(id)), "service_role")) as { status: string; failed: Record<string, string> };
+      assert(answer.status === "committed" && Object.keys(answer.failed).length === 0, `a stacked placeholder call commits whole (got ${JSON.stringify(answer)})`);
+      eq(sql(`select concat_ws('|', kind, allow_double_book, source, placed_by_user_id) from bookings where id = '${id}';`),
+        `staff_placed|t|coordinator|${coordinator}`, "stored staff placed, stacking, from the coordinator page, naming who placed it");
+    }
+    eq(sql(`select count(*) from busy_blocks where user_id = '${P}' and starts_at = '${at("06:00")}';`), "2", "each stacked call has its own busy block on the placeholder");
+    const flat = nextId();
+    const err = pg.verboseError(save(row(flat, { doubleBook: false })));
+    assert(err !== null && /23514[\s\S]*bookings_placeholder_kind/.test(err), `a placeholder row that does not stack is an error, never a conflict (got ${firstLine(err)})`);
+    eq(sql(`select count(*) from bookings where id = '${flat}';`), "0", "and writes nothing");
   }
 
   // --- commit_reschedule_onto_placeholder ------------------------------------------------------
