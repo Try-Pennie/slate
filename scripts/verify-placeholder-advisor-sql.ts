@@ -18,8 +18,8 @@
 // Run: node --experimental-strip-types scripts/verify-placeholder-advisor-sql.ts
 // (the DB replay workflow also runs it, with every other scripts/verify-*-sql.ts)
 import { join } from "node:path";
-import { replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
-import { bookingInsertSql, bucketsInsertSql, eventTypesInsertSql } from "./lib/seed-sql.ts";
+import { firstErrorLine, replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
+import { bookingInsertSql, callEventTypeSql, lowBucketSql } from "./lib/seed-sql.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const DIR = join(import.meta.dirname, "..", "supabase", "migrations");
@@ -33,7 +33,6 @@ const ET = "00000000-0000-0000-0000-0000000000e1";
 const B100 = "00000000-0000-0000-0000-000000000100";
 let seq = 0;
 const nextId = () => `30000000-0000-4000-8000-${String(++seq).padStart(12, "0")}`;
-const firstLine = (e: string | null) => e?.split("\n").find((l) => /ERROR/.test(l)) ?? e?.split("\n")[0] ?? "it ran";
 
 /** A users row; returns its id. */
 function user(org: string, cols: { placeholder?: boolean; test?: boolean; bookable?: boolean } = {}): string {
@@ -51,21 +50,21 @@ function userRefused(org: string, cols: { placeholder?: boolean; test?: boolean;
 
 try {
   const applied = replayEveryMigration(pg, DIR);
-  assert(applied > 200, `every migration applied to an empty database (${applied})`);
+  assert(applied > 200, `the schema for the placeholder advisor: every migration applied to an empty database (${applied})`);
   sql(`
     insert into organizations (id, name) values ('${ORG}', 'Placeholder org'), ('${ORG2}', 'Second org');
-    ${eventTypesInsertSql([{ id: ET, orgId: ORG, name: "Call", durationMin: 20, bufferBeforeMin: 10, bufferAfterMin: 10 }])}
-    ${bucketsInsertSql([{ id: B100, orgId: ORG, code: "100", name: "Low", eventTypeId: ET }])}
+    ${callEventTypeSql(ORG, ET)}
+    ${lowBucketSql(ORG, B100, ET)}
   `);
 
   // --- a placeholder is never bookable -------------------------------------------------
   {
     const err = userRefused(ORG2, { placeholder: true, bookable: true });
-    assert(err !== null && /23514[\s\S]*users_placeholder_never_bookable/.test(err), `a bookable placeholder is refused (got ${firstLine(err)})`);
+    assert(err !== null && /23514[\s\S]*users_placeholder_never_bookable/.test(err), `a bookable placeholder is refused (got ${firstErrorLine(err)})`);
     const p = user(ORG2, { placeholder: true });
     eq(sql(`select bookable::text from users where id = '${p}';`), "false", "control: an unbookable placeholder is accepted");
     const flip = pg.verboseError(`update users set bookable = true where id = '${p}';`);
-    assert(flip !== null && /users_placeholder_never_bookable/.test(flip), `making the placeholder bookable later is refused too (got ${firstLine(flip)})`);
+    assert(flip !== null && /users_placeholder_never_bookable/.test(flip), `making the placeholder bookable later is refused too (got ${firstErrorLine(flip)})`);
     const real = user(ORG2, { bookable: true });
     eq(sql(`select bookable::text from users where id = '${real}';`), "true", "control: a real advisor may be bookable");
     eq(sql(`select is_placeholder::text from users where id = '${real}';`), "false", "and a row that names no marker is not a placeholder");
@@ -75,11 +74,11 @@ try {
   {
     user(ORG, { placeholder: true });
     const second = userRefused(ORG, { placeholder: true });
-    assert(second !== null && /23505[\s\S]*users_one_placeholder_per_org/.test(second), `a second real placeholder in one org is refused (got ${firstLine(second)})`);
+    assert(second !== null && /23505[\s\S]*users_one_placeholder_per_org/.test(second), `a second real placeholder in one org is refused (got ${firstErrorLine(second)})`);
     user(ORG, { placeholder: true, test: true });
     eq(sql(`select count(*) from users where org_id = '${ORG}' and is_placeholder;`), "2", "control: one test placeholder beside the real one is accepted");
     const secondTest = userRefused(ORG, { placeholder: true, test: true });
-    assert(secondTest !== null && /users_one_placeholder_per_org/.test(secondTest), `a second test placeholder is refused (got ${firstLine(secondTest)})`);
+    assert(secondTest !== null && /users_one_placeholder_per_org/.test(secondTest), `a second test placeholder is refused (got ${firstErrorLine(secondTest)})`);
     user(ORG, {});
     user(ORG, {});
     eq(sql(`select count(*) from users where org_id = '${ORG}' and not is_placeholder;`), "2", "control: the index leaves ordinary advisors alone");
@@ -102,9 +101,9 @@ try {
     eq(sql(`select count(*) from bookings where assigned_user_id = '${placeholder}' and starts_at = '${at("15:00")}';`), "2", "two calls stack on the placeholder at one time while both carry allow_double_book");
 
     const badKind = pg.verboseError(bookingInsertSql({ id: nextId(), orgId: ORG, bucketId: B100, eventTypeId: ET, assignedUserId: coordinator, startIso: at("16:00"), endIso: at("16:20"), kind: "staff" }));
-    assert(badKind !== null && /23514[\s\S]*bookings_kind_check/.test(badKind), `a kind nobody decided is still refused (got ${firstLine(badKind)})`);
+    assert(badKind !== null && /23514[\s\S]*bookings_kind_check/.test(badKind), `a kind nobody decided is still refused (got ${firstErrorLine(badKind)})`);
     const badSource = pg.verboseError(`update bookings set source = 'coordinators' where id = '${id}';`);
-    assert(badSource !== null && /23514[\s\S]*bookings_source_check/.test(badSource), `a source nobody decided is still refused (got ${firstLine(badSource)})`);
+    assert(badSource !== null && /23514[\s\S]*bookings_source_check/.test(badSource), `a source nobody decided is still refused (got ${firstErrorLine(badSource)})`);
     for (const kind of ["routed", "agent_link"]) {
       const ok = nextId();
       sql(bookingInsertSql({ id: ok, orgId: ORG, bucketId: B100, eventTypeId: ET, assignedUserId: coordinator, startIso: at(kind === "routed" ? "17:00" : "18:00"), endIso: at(kind === "routed" ? "17:20" : "18:20"), kind }));

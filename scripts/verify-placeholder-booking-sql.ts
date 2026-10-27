@@ -22,8 +22,8 @@
 // Run: node --experimental-strip-types scripts/verify-placeholder-booking-sql.ts
 // (the DB replay workflow also runs it, with every other scripts/verify-*-sql.ts)
 import { join } from "node:path";
-import { replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
-import { bookingInsertSql, bucketsInsertSql, eventTypesInsertSql, sqlLiteral } from "./lib/seed-sql.ts";
+import { firstErrorLine, replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
+import { bookingInsertSql, bucketsInsertSql, callEventTypeSql, sqlLiteral } from "./lib/seed-sql.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const DIR = join(import.meta.dirname, "..", "supabase", "migrations");
@@ -49,7 +49,6 @@ let seq = 0;
 const nextId = () => `40000000-0000-4000-8000-${String(++seq).padStart(12, "0")}`;
 const at = (hhmm: string) => `${DAY}T${hhmm}:00.000Z`;
 const lit = (v: unknown) => (v === null ? "null" : `'${JSON.stringify(v).replace(/'/g, "''")}'::jsonb`);
-const firstLine = (e: string | null) => e?.split("\n").find((l) => /ERROR/.test(l)) ?? e?.split("\n")[0] ?? "it ran";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** A users row; returns its id. */
@@ -113,10 +112,10 @@ const rescheduleRefused = (m: Move) => pg.verboseError(moveSql("commit_reschedul
 
 try {
   const applied = replayEveryMigration(pg, DIR);
-  assert(applied > 200, `every migration applied to an empty database (${applied})`);
+  assert(applied > 200, `the schema for placeholder bookings: every migration applied to an empty database (${applied})`);
   sql(`
-    insert into organizations (id, name) values ('${ORG}', 'Placeholder org'), ('${ORG2}', 'Second org');
-    ${eventTypesInsertSql([{ id: ET, orgId: ORG, name: "Call", durationMin: 20, bufferBeforeMin: 10, bufferAfterMin: 10 }])}
+    insert into organizations (id, name) values ('${ORG}', 'Booking org'), ('${ORG2}', 'Other org');
+    ${callEventTypeSql(ORG, ET)}
     ${bucketsInsertSql([{ id: B100, orgId: ORG, code: "100", name: "Low", eventTypeId: ET }, { id: BTEST, orgId: ORG, code: "T100", name: "Test", eventTypeId: ET }])}
     update buckets set is_test = true where id = '${BTEST}';
   `);
@@ -133,22 +132,22 @@ try {
     eq(kindOf(stacked), "staff_placed|true", "a second one at the same time stacks beside it");
     for (const kind of ["routed", "agent_link"]) {
       const err = seedRefused(P, "10:00", "10:20", { kind, doubleBook: true });
-      assert(err !== null && /23514[\s\S]*bookings_placeholder_kind/.test(err), `a ${kind} booking on the placeholder is refused (got ${firstLine(err)})`);
+      assert(err !== null && /23514[\s\S]*bookings_placeholder_kind/.test(err), `a ${kind} booking on the placeholder is refused (got ${firstErrorLine(err)})`);
     }
     const unstacked = seedRefused(P, "10:00", "10:20", { kind: "staff_placed" });
-    assert(unstacked !== null && /23514[\s\S]*bookings_placeholder_kind/.test(unstacked), `a staff placed booking that does not stack is refused (got ${firstLine(unstacked)})`);
+    assert(unstacked !== null && /23514[\s\S]*bookings_placeholder_kind/.test(unstacked), `a staff placed booking that does not stack is refused (got ${firstErrorLine(unstacked)})`);
     const offPlaceholder = seedRefused(a, "10:00", "10:20", { kind: "staff_placed", doubleBook: true });
     assert(offPlaceholder !== null && /23514[\s\S]*bookings_placeholder_kind/.test(offPlaceholder),
-      `a NEW staff placed booking on a real advisor is refused, never silently turned routed (got ${firstLine(offPlaceholder)})`);
+      `a NEW staff placed booking on a real advisor is refused, never silently turned routed (got ${firstErrorLine(offPlaceholder)})`);
     const routed = seed(a, "10:00", "10:20");
     eq(kindOf(routed), "routed|false", "control: a routed booking on a real advisor is accepted untouched");
     const onto = pg.verboseError(`update bookings set assigned_user_id = '${P}', allow_double_book = true where id = '${routed}';`);
-    assert(onto !== null && /bookings_placeholder_kind/.test(onto), `a bare update moving a routed booking onto the placeholder is refused (got ${firstLine(onto)})`);
+    assert(onto !== null && /bookings_placeholder_kind/.test(onto), `a bare update moving a routed booking onto the placeholder is refused (got ${firstErrorLine(onto)})`);
     eq(kindOf(routed), "routed|false", "and wrote nothing");
     const relabel = pg.verboseError(`update bookings set kind = 'staff_placed' where id = '${routed}';`);
-    assert(relabel !== null && /bookings_placeholder_kind/.test(relabel), `relabelling a real advisor's booking staff placed is refused (got ${firstLine(relabel)})`);
+    assert(relabel !== null && /bookings_placeholder_kind/.test(relabel), `relabelling a real advisor's booking staff placed is refused (got ${firstErrorLine(relabel)})`);
     const unstack = pg.verboseError(`update bookings set allow_double_book = false where id = '${ok}';`);
-    assert(unstack !== null && /bookings_placeholder_kind/.test(unstack), `clearing the stack flag of a placeholder booking is refused (got ${firstLine(unstack)})`);
+    assert(unstack !== null && /bookings_placeholder_kind/.test(unstack), `clearing the stack flag of a placeholder booking is refused (got ${firstErrorLine(unstack)})`);
     sql(`update bookings set status = 'cancelled' where id = '${stacked}';`);
     eq(sql(`select status || '|' || kind from bookings where id = '${stacked}';`), "cancelled|staff_placed", "control: a placeholder booking can still be cancelled, and stays staff placed");
   }
@@ -164,7 +163,7 @@ try {
     const kept = seed(P, "12:30", "12:50", { kind: "staff_placed", doubleBook: true });
     const before = state(kept);
     const keptErr = rescheduleRefused({ booking: kept, from: P, to: P, start: "13:00", end: "13:20" });
-    assert(keptErr !== null && /bookings_placeholder_kind/.test(keptErr), `commit_reschedule cannot keep a call on the placeholder (got ${firstLine(keptErr)})`);
+    assert(keptErr !== null && /bookings_placeholder_kind/.test(keptErr), `commit_reschedule cannot keep a call on the placeholder (got ${firstErrorLine(keptErr)})`);
     eq(state(kept), before, "the call is not moved");
     eq(outboxRows(kept), "0", "and no outbox row stands");
 
@@ -175,7 +174,7 @@ try {
     eq(kindOf(viaSwap), "routed|true", "and the call is routed (stacked on the advisor as every reassign is)");
     const swapOnto = seed(a, "15:00", "15:20");
     const swapErr = pg.verboseError(`select updated from reassign_booking_swap(p_booking_id => '${swapOnto}', p_user_id => '${P}', p_agent_name => 'P', p_agent_email => 'p', p_gcal_event_id => 'g-onto', p_routing_trace => '{}'::jsonb, p_gcal_client_id => null, p_bucket_id => null, p_requested_bucket_id => null, p_requested_tier => null, p_booked_tier => null, p_rungs_dropped => null, p_hold_id => null, p_result => null, p_expected_user_id => null, p_expected_starts_at => null);`);
-    assert(swapErr !== null && /bookings_placeholder_kind/.test(swapErr), `a reassign onto the placeholder is refused (got ${firstLine(swapErr)})`);
+    assert(swapErr !== null && /bookings_placeholder_kind/.test(swapErr), `a reassign onto the placeholder is refused (got ${firstErrorLine(swapErr)})`);
     eq(kindOf(swapOnto), "routed|false", "and leaves the routed call where it was");
 
     // A bare update, the lowest layer anything could reach.
@@ -217,7 +216,7 @@ try {
     eq(sql(`select count(*) from busy_blocks where user_id = '${P}' and starts_at = '${at("06:00")}';`), "2", "each stacked call has its own busy block on the placeholder");
     const flat = nextId();
     const err = pg.verboseError(save(row(flat, { doubleBook: false })));
-    assert(err !== null && /23514[\s\S]*bookings_placeholder_kind/.test(err), `a placeholder row that does not stack is an error, never a conflict (got ${firstLine(err)})`);
+    assert(err !== null && /23514[\s\S]*bookings_placeholder_kind/.test(err), `a placeholder row that does not stack is an error, never a conflict (got ${firstErrorLine(err)})`);
     eq(sql(`select count(*) from bookings where id = '${flat}';`), "0", "and writes nothing");
   }
 
@@ -270,7 +269,7 @@ try {
       const id = seed(from, "21:00", "21:20");
       const before = state(id);
       const err = ontoRefused({ booking: id, from, to, start: "21:40", end: "22:00" });
-      assert(err !== null && /22023[\s\S]*placeholder/.test(err), `${label} is refused as a target (got ${firstLine(err)})`);
+      assert(err !== null && /22023[\s\S]*placeholder/.test(err), `${label} is refused as a target (got ${firstErrorLine(err)})`);
       eq(state(id), before, `${label}: the call is not moved`);
       eq(outboxRows(id), "0", `${label}: and no outbox row stands`);
     }
@@ -282,7 +281,7 @@ try {
     const whole = seed(a, "22:30", "22:50");
     const w0 = state(whole);
     const err = ontoRefused({ booking: whole, from: a, to: P, start: "23:00", end: "23:20", steps: null });
-    assert(err !== null && /23502[\s\S]*steps/.test(err), `a refused outbox row fails the call (got ${firstLine(err)})`);
+    assert(err !== null && /23502[\s\S]*steps/.test(err), `a refused outbox row fails the call (got ${firstErrorLine(err)})`);
     eq(state(whole), w0, "and the move is rolled back with it: never a moved call with no record");
     assert(UUID.test(onto({ booking: whole, from: a, to: P, start: "23:00", end: "23:20" })), "control: the identical move with its steps applies");
   }

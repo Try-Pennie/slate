@@ -907,6 +907,12 @@ export async function GET(req: NextRequest) {
       },
     });
     const db = supabaseAdmin();
+    // The bookable real advisors with their attributes (#4201), read by the attribute
+    // coverage step and the demoted holders roster alike.
+    const bookableRealAdvisorRoster = () =>
+      realAdvisorsOnly(
+        db.from("users").select("id, name, email, attributes").eq("bookable", true).is("deactivated_at", null),
+      );
     // UI-tunable cooldowns, arming switches and low volume floors (#571). A setup
     // read like the ones below, and contained the same way (#2773). The read throws
     // rather than resolving to the defaults, because every switch defaults to OFF and
@@ -3048,9 +3054,7 @@ export async function GET(req: NextRequest) {
           "monitor attribute-coverage bookable agents",
           "id",
           () =>
-            realAdvisorsOnly(
-              db.from("users").select("id, name, email, attributes").eq("bookable", true).is("deactivated_at", null),
-            ),
+            bookableRealAdvisorRoster(),
         ),
         selectAllPages<{ user_id: string }>(
           "monitor attribute-coverage manual members",
@@ -3227,9 +3231,7 @@ export async function GET(req: NextRequest) {
       const nowIso = new Date(now).toISOString();
       // cap-safe: users is roster-bounded (100-200 agent target), so the bookable subset fits a page.
       const bookable = (unwrap(
-        await realAdvisorsOnly(
-          db.from("users").select("id, name, email, attributes").eq("bookable", true).is("deactivated_at", null),
-        ),
+        await bookableRealAdvisorRoster(),
         "monitor demoted-agent roster",
       ) ?? []) as { id: string; name: string | null; email: string | null; attributes: Attributes | null }[];
       // Only marked agents past the debounce window; a pending sweep holds its calls by design.

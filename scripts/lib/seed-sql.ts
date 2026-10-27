@@ -134,3 +134,13 @@ export function rerouteHoldInsertSql(h: SeedRerouteHold): string {
     values ('${h.orgId}', '${h.bookingId}', '${h.agentUserId}', '${h.bufferedStartsAt}', '${h.bufferedEndsAt}', '${h.bookingStartsAt}',
       '${h.bookingEndsAt}', 0, '${h.bucketId}', '${h.bucketId}', now() + interval '${h.expiresIn ?? "5 minutes"}');`;
 }
+
+/** The twenty minute call (10 minutes either side) the booking suites seed as their one event type. */
+export function callEventTypeSql(orgId: string, id: string): string {
+  return eventTypesInsertSql([{ id, orgId, name: "Call", durationMin: 20, bufferBeforeMin: 10, bufferAfterMin: 10 }]);
+}
+
+/** A Low bucket, code 100, booking `eventTypeId`. */
+export function lowBucketSql(orgId: string, id: string, eventTypeId: string): string {
+  return bucketsInsertSql([{ id, orgId, code: "100", name: "Low", eventTypeId }]);
+}

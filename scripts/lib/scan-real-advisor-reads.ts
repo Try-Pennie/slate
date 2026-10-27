@@ -32,6 +32,7 @@
 // select cannot push the filter out of view.
 
 import { hasOptOut } from "./opt-out.ts";
+import { blankComments } from "./strip-comments.ts";
 
 export interface RealAdvisorFinding {
   file: string;
@@ -56,12 +57,6 @@ const TEST_ONLY_RE = /\.eq\(\s*["'`]is_test["'`]\s*,\s*false\s*\)/;
 const HELPERS = ["realAdvisorsOnly(", "withoutPlaceholder("];
 const COLUMNS = "REAL_ADVISOR_COLUMNS";
 
-/** Blank out comments, keeping offsets and line numbers. */
-function stripComments(text: string): string {
-  return text
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/(^|[^:"'`\\])\/\/[^\n]*/g, (m, lead: string) => lead + " ".repeat(m.length - lead.length));
-}
 
 /** Index just past the bracket that closes the one at `open`, quote aware. */
 function closeOf(code: string, open: number): number {
@@ -125,7 +120,7 @@ function optedOut(code: string, rawLines: string[], index: number): boolean {
 
 export function scanRealAdvisorReads(source: string, file = "<source>"): RealAdvisorFinding[] {
   if (file === REAL_ADVISOR_MODULE) return [];
-  const code = stripComments(source);
+  const code = blankComments(source);
   const rawLines = source.split("\n");
   const spans = helperSpans(code);
   const findings: RealAdvisorFinding[] = [];
