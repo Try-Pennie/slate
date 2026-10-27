@@ -30,12 +30,14 @@ import { readWithinDeadline, type ScheduleTimer } from "@/lib/read-within-deadli
 export const REMINDER_CALLING_NUMBER_DEADLINE_MS = 10_000;
 
 /**
- * How much further than `REMINDER_HOLD_FLOOR_MS` a call must be for a failed send
- * to be handed back (2026-10-05 review). The floor is where a reminder stops being
- * worth sending, because it would land after the lead's one hour text; the RETRY is
+ * How much further than its kind's floor a call must be for a failed send to be
+ * handed back (2026-10-05 review): `REMINDER_HOLD_FLOOR_MS` for the 24 hour email,
+ * `HOUR_REMINDER_RETRY_FLOOR_MS` for the 1 hour one (#4282). The floor is where a
+ * reminder stops being worth sending (for the 24 hour email, because it would land
+ * after the lead's one hour text); the RETRY is
  * the next tick, one five minute cadence later, so a hand back made right at the
  * floor would be retried inside it. Ten minutes is that cadence plus another, so a
- * next tick that itself spends minutes on slow mints still sends before the hour.
+ * next tick that itself spends minutes on slow mints still sends before the floor.
  * The distance is judged on the clock read when the send FAILED, not the tick's
  * start, for the same reason.
  */

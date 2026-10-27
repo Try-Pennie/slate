@@ -50,7 +50,8 @@ export const dynamic = "force-dynamic";
  * The cooldown on both keys this lane can send, and they say different things: the
  * per booking incident names one booking, and the share names a wave (#2496).
  *
- * The incident is keyed by booking (`booking_reminder_failed:<id>`, 2026-10-05), so
+ * The incident is keyed by booking (`booking_reminder_failed:<id>`, 2026-10-05, and
+ * `booking_reminder_failed:<id>:hour` for the 1 hour email, #4282), so
  * this bounds how often ONE booking can page, not how often the lane can. Under a
  * single shared key the first lost reminder held every other booking's page back for
  * six hours, and a second lead could go unreminded with nobody told. A bad afternoon
@@ -365,6 +366,7 @@ function laneDeps(db: ReturnType<typeof supabaseAdmin>, now: number, kind: Remin
       // after the family so the per booking prune finds it, so a 24 hour page for the
       // same booking inside the cooldown cannot silence it.
       const key = kind === "day" ? `booking_reminder_failed:${bookingId}` : `booking_reminder_failed:${bookingId}:hour`;
+      // alert-key: booking_reminder_failed:*
       await sendThrottledAlert(key, REMINDER_ALERT_COOLDOWN_MS, text);
     },
     // #1334: one Salesforce read per tick (a token exchange and one SOQL query for
