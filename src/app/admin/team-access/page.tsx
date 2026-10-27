@@ -8,6 +8,7 @@ import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader
 import { isStaffAccessOutcome } from "@/lib/admin/staff-access";
 import { pendingPrivilegedAccess } from "@/lib/admin/pending-access";
 import type { User } from "@/lib/db/types";
+import { realAdvisorsOnly } from "@/lib/advisors/real-advisor";
 
 export const metadata = { title: "Team access" };
 
@@ -36,11 +37,7 @@ export default async function TeamAccessPage({
   // empty queue an actually-empty one draws, and this page's whole subject is who
   // is waiting, so the empty picture reads as "nobody is waiting for access".
   const users = unwrap(
-    await supabaseAdmin()
-      .from("users")
-      .select("*")
-      .eq("org_id", me.org_id)
-      .eq("is_test", false),
+    await realAdvisorsOnly(supabaseAdmin().from("users").select("*").eq("org_id", me.org_id)),
     "team-access roster",
   ) as User[];
 

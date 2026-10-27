@@ -69,6 +69,7 @@ import { heldByTwilio as isHeldByTwilio } from "@/lib/bookable/bookable-state";
 import { CLEAR_PENDING_FLIP_LABEL, pendingFlipSentence } from "@/lib/bookable/pending-flip-copy";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { SelectField } from "@/components/ui/SelectField";
+import { realAdvisorsOnly } from "@/lib/advisors/real-advisor";
 
 export const metadata = { title: "Agent" };
 
@@ -257,8 +258,8 @@ export default async function AgentProfilePage({
       .select("id, timezone, updated_at")
       .eq("user_id", agent.id)
       .maybeSingle(),
-    // Hide the synthetic smoke-test agent (#396) from the manager picker.
-    db.from("users").select("id, name, email, role, deactivated_at").eq("org_id", me.org_id).eq("is_test", false),
+    // Real advisors only (#396, #4201): no smoke-test agent or placeholder in the manager picker.
+    realAdvisorsOnly(db.from("users").select("id, name, email, role, deactivated_at").eq("org_id", me.org_id)),
     db.from("organizations").select("*").eq("id", me.org_id).single(),
   ]);
   // #1629: all three, and the rules read below, feed FORMS whose save replaces

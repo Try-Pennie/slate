@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { defaultRuleRows, type OrgDefaults } from "@/lib/schedule-core";
 import { selectAllPages } from "@/lib/supabase/paginate";
+import { withoutPlaceholder } from "@/lib/advisors/real-advisor";
 
 /**
  * Gives every agent without working hours the org default (newly-synced agents
@@ -38,8 +39,12 @@ export async function ensureDefaultSchedules(orgId: string): Promise<number> {
   // The same #2542 reading applies to both of these, and the second is the
   // dangerous one: an unreadable `availability_schedules` makes EVERY agent look
   // uncovered, and this fill then replaces a week somebody personalised on /me.
+  //
+  // #4201: everyone but the placeholder advisor, which holds stacked calls at the
+  // time a coordinator named and is never bookable, so working hours would only
+  // make it look like a member of the pool. The smoke advisors keep theirs.
   const [usersRes, schedulesRes, ruleRows] = await Promise.all([
-    db.from("users").select("id").eq("org_id", orgId),
+    withoutPlaceholder(db.from("users").select("id").eq("org_id", orgId)),
     db.from("availability_schedules").select("id, user_id"),
     // Paged: one rule per agent per working weekday, so the 200-agent design
     // target is ~1,400 rows and a single page would silently stop at 1,000,

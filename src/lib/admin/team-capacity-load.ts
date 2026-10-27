@@ -10,6 +10,7 @@
 import { DateTime } from "luxon";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
+import { isRealAdvisor, REAL_ADVISOR_COLUMNS } from "@/lib/advisors/real-advisor";
 import { log } from "@/lib/log";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { readOfferedOpenDays } from "@/lib/booking/days-offered-load";
@@ -114,18 +115,18 @@ export async function loadCapacityPeople(orgId: string, rules: CapacityRules, da
   const { hours, eventType } = rules;
   let roster: { id: string; name: string | null; email: string }[];
   try {
-    // The bookable pool is bookable AND not departed AND not a test advisor; is_test is filtered
-    // here because .eq(false) in the query would also drop every advisor whose flag is null.
+    // The bookable pool is bookable AND not departed AND a real advisor (#4201); judged here
+    // because .eq(false) in the query would also drop every advisor whose flag is null.
     roster = ((unwrap(
       await db
         .from("users")
-        .select("id, name, email, is_test")
+        .select(`id, name, email, ${REAL_ADVISOR_COLUMNS}`)
         .eq("org_id", orgId)
         .eq("bookable", true)
         .is("deactivated_at", null),
       "team capacity roster",
-    ) ?? []) as { id: string; name: string | null; email: string; is_test: boolean | null }[])
-      .filter((u) => !u.is_test)
+    ) ?? []) as { id: string; name: string | null; email: string; is_test: boolean | null; is_placeholder: boolean | null }[])
+      .filter(isRealAdvisor)
       .map(({ id, name, email }) => ({ id, name, email }));
   } catch (err) {
     return { ok: false, reason: "roster", err };

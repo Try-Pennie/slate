@@ -494,6 +494,42 @@ A trait send states the agent's value AT THAT SEND (`payloadForSend`,
 `src/lib/webhooks/agent-trait.ts`), because retries and replays reorder, and a
 stale false retried after a newer true would otherwise win.
 
+## Real advisors only (the `// any-advisor-ok:` convention, #4201)
+
+`users` holds three kinds of advisor: the real ones, the permanent test advisors
+the smoke canary books (#396), and from migration 0207 the placeholder advisor
+that holds the calls a coordinator stacks when nobody real is free (#4200). Only
+the first kind belongs on an advisor screen, picker, pool, default schedule, sync
+or monitor. The placeholder's BOOKINGS are real calls and stay wherever bookings
+are listed; it is the advisor that must not appear.
+
+Every advisor surface used to exclude the test advisors with its own
+`.eq("is_test", false)`, and the placeholder would have walked past every copy.
+The rule now lives in **`src/lib/advisors/real-advisor.ts`**:
+
+- `realAdvisorsOnly(query)` filters out both kinds (wrap the whole chain);
+- `withoutPlaceholder(query)` filters out only the placeholder, for the reads the
+  smoke canary still needs: the default schedule fill and the two roster syncs,
+  whose test exclusions live in their planners;
+- `isRealAdvisor(row)` judges rows already read, with an absent or null flag read
+  as false, and `REAL_ADVISOR_COLUMNS` is what such a read selects.
+
+`scripts/test-real-advisor-reads.ts` (scanner in
+`scripts/lib/scan-real-advisor-reads.ts`) reads every `.from("users")` chain in
+`src/` and `scripts/lib/calcom-roster.ts` by bracket matching. A LIST read must
+use one of the helpers, select `REAL_ADVISOR_COLUMNS`, or carry
+`// any-advisor-ok: <why>` on, or above, its `.from(` line or the line its
+statement starts on; a bare marker is refused. Not a list read: a chain keyed on
+`id`, `email` or `auth_user_id`, a `.single()`/`.maybeSingle()`, and a chain that
+never calls `.select(`. A bare `.eq("is_test", false)` on a users chain is refused
+outside the module, so a test only exclusion cannot come back.
+
+What it cannot see: a JS filter over rows read elsewhere (`!u.is_test`), which is
+why the predicate exists, and a users read reached through a variable table name.
+Most opt outs today are pool reads gated on `bookable`, which the placeholder never
+is (a CHECK, `users_placeholder_never_bookable`), and name maps that label a
+booking's advisor, the placeholder's included.
+
 ## An outbound call with no timeout of its own (the `// deadline-ok:` convention, #3972)
 
 Cloudflare kills an invocation at hard deadlines: `after()` work 30 seconds after

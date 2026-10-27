@@ -152,6 +152,7 @@ import { seederOwnsCode } from "@/lib/xbc";
 import { DAYS_OFFERED } from "@/lib/admin/days-offered-copy";
 import { parseNearlyFullPct } from "@/lib/admin/team-capacity-copy";
 import { ME_TABS } from "@/lib/me/nav";
+import { REAL_ADVISOR_COLUMNS } from "@/lib/advisors/real-advisor";
 import {
   COVERAGE_CHOICE_FIELD,
   readCoverageChoice,
@@ -2574,6 +2575,8 @@ export async function setUserRole(form: FormData): Promise<void> {
   // "zero admins left", and the refusal then claimed "Cannot remove the last
   // admin", a fact the check never actually measured. Still refuse (fail closed
   // on the safe side), but say which of the two happened.
+  // any-advisor-ok: counts who holds admin, whatever kind of row holds it; the
+  // last admin lockout rule is about access, not the advisor roster.
   const { count, error: countError } = await db
     .from("users")
     .select("id", { count: "exact", head: true })
@@ -2706,6 +2709,8 @@ export async function grantStaffAccess(form: FormData): Promise<void> {
 
   let adminCount: number | null = null;
   if (existing && requiresAdminCount(existing.role, requestedRole)) {
+    // any-advisor-ok: counts who holds admin, whatever kind of row holds it; the
+    // last admin lockout rule is about access, not the advisor roster.
     const { count, error: countError } = await db
       .from("users")
       .select("id", { count: "exact", head: true })
@@ -3152,7 +3157,7 @@ export async function addRegalCallIgnore(form: FormData): Promise<void> {
     ? (unwrap(
         await db
           .from("users")
-          .select("id, name, email, role, is_test, deactivated_at")
+          .select(`id, name, email, role, deactivated_at, ${REAL_ADVISOR_COLUMNS}`)
           .eq("id", userId)
           .maybeSingle(),
         "regal ignore target",

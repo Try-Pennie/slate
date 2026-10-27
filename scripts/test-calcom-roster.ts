@@ -400,7 +400,8 @@ import { assert, eq, finish } from "./lib/harness.ts";
     const scheds: Row[] = [];
     const rules: Row[] = [];
     for (let i = 0; i < agents; i++) {
-      users.push({ id: `u${pad(i)}`, email: `a${i}@trypennie.com`, bookable: true, deactivated_at: null, is_test: false });
+      // Both flags at their column default, which the roster read filters on (#4201).
+      users.push({ id: `u${pad(i)}`, email: `a${i}@trypennie.com`, bookable: true, deactivated_at: null, is_test: false, is_placeholder: false });
       scheds.push({ id: `s${pad(i)}`, user_id: `u${pad(i)}`, timezone: "America/New_York", hours_source: null });
       for (let d = 0; d < rulesPerAgent; d++) {
         // Ids interleave agents, so any one agent's rules straddle a page boundary

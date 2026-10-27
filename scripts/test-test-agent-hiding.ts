@@ -12,10 +12,11 @@ import { assert, finish } from "./lib/harness.ts";
 const root = join(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
 
-// Internal UI: every page that lists agents must filter is_test out of its
-// users query, so the test agent never shows in the roster, the bucket
-// member/fallback pickers it feeds, the OOO roster/insights, or the manager
-// picker.
+// Internal UI: every page that lists agents must keep the test agent out of its
+// users query, so it never shows in the roster, the bucket member/fallback
+// pickers it feeds, the OOO roster/insights, or the manager picker. Since #4201
+// that is the shared real advisor rule, which keeps the placeholder out too;
+// scripts/test-real-advisor-reads.ts holds every other list read to it.
 for (const page of [
   "src/app/admin/page.tsx",
   "src/app/admin/ooo/page.tsx",
@@ -23,8 +24,8 @@ for (const page of [
 ]) {
   const src = read(page);
   assert(
-    /\.eq\(\s*["']is_test["']\s*,\s*false\s*\)/.test(src),
-    `${page} filters is_test agents out of its users query`,
+    /realAdvisorsOnly\(\s*db\s*\.from\(\s*["']users["']\s*\)/.test(src),
+    `${page} applies the shared real advisor rule to its users query`,
   );
 }
 

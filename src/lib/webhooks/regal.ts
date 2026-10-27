@@ -138,7 +138,30 @@ interface RegalEvent {
     lastName?: string;
     phones?: Record<string, OptInTrait>;
     emails?: Record<string, OptInTrait>;
+    /** #4204: sent only on a placeholder call, or one that just left the placeholder. */
+    customProperties?: { ai_agent_eligible: boolean };
   };
+}
+
+/**
+ * #4204: the name a call on the placeholder advisor goes to Regal under. Marcia is
+ * Pennie's AI agent, and Regal's journeys hand her the texting on these calls, so
+ * the name is the decided one (Sam, 2026-10-23), never whatever the seat's profile
+ * happens to say.
+ */
+export const PLACEHOLDER_AGENT_NAME = "Marcia";
+
+/**
+ * #4204: whether Marcia texts this customer, or undefined to leave the customer's
+ * own setting alone. On the placeholder she does, until the call is cancelled; a
+ * call that just LEFT the placeholder (a move onto a real advisor) turns it off. A
+ * routed call says nothing, because a lead can be AI agent eligible in Salesforce for
+ * reasons of its own, and clearing that on every booking would undo them.
+ */
+function aiAgentEligible(event: BookingWebhookEvent, p: BookingEventPayload): boolean | undefined {
+  if (p.booking_kind === "staff_placed") return event !== "booking.cancelled";
+  if (p.left_placeholder === true) return false;
+  return undefined;
 }
 
 /**
@@ -258,7 +281,8 @@ export function buildRegalEvent(
     booked_tier: null,
     rungs_dropped: 0,
   };
-  const agentName = p.agent.name ?? "Unknown";
+  const onPlaceholder = p.booking_kind === "staff_placed";
+  const agentName = onPlaceholder ? PLACEHOLDER_AGENT_NAME : (p.agent.name ?? "Unknown");
 
   const regal: RegalEvent = {
     name: EVENT_NAMES[event],
@@ -305,9 +329,15 @@ export function buildRegalEvent(
       slateRequestedTier: routing.requested_tier,
       slateBookedTier: routing.booked_tier,
       slateRungsDropped: routing.rungs_dropped,
+      // #4204: on every event, false included, so a journey branching on it never
+      // reads a missing key as either answer. Regal sends these calls straight to the
+      // pool, since nobody dials as the placeholder.
+      slateGhostBooking: onPlaceholder,
     },
     traits: contactTraits(p, event),
   };
+  const eligible = aiAgentEligible(event, p);
+  if (eligible !== undefined) regal.traits.customProperties = { ai_agent_eligible: eligible };
 
   // #2659: the two join keys the landing page put on the booking URL, under the
   // GTM/GA4 tagging spec's OWN names (snake case, not camel cased to match the

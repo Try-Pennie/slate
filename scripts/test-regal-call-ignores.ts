@@ -15,7 +15,16 @@ import {
 import { assert, eq, finish } from "./lib/harness.ts";
 
 function u(over: Partial<IgnoreRosterUser>): IgnoreRosterUser {
-  return { id: "x", name: "X", email: "x@trypennie.com", role: "agent", is_test: false, deactivated_at: null, ...over };
+  return {
+    id: "x",
+    name: "X",
+    email: "x@trypennie.com",
+    role: "agent",
+    is_test: false,
+    is_placeholder: false,
+    deactivated_at: null,
+    ...over,
+  };
 }
 const roster = [
   u({ id: "a", name: "Zed Agent", email: "zed@trypennie.com" }),
@@ -27,6 +36,7 @@ const roster = [
   u({ id: "g", name: null, email: "nameless@trypennie.com" }),
   u({ id: "h", name: "Leah Left", email: "leah@trypennie.com", deactivated_at: "2026-09-01T00:00:00Z" }),
   u({ id: "i", name: "Ivy Ignored", email: "ivy@trypennie.com" }),
+  u({ id: "p", name: "Marcia", email: "marcia@trypennie.com", is_placeholder: true }),
 ];
 
 const options = ignorePickerOptions(roster, [{ user_id: "i" }]);
@@ -47,6 +57,8 @@ eq(labels, [...labels].sort((a, b) => a.localeCompare(b)), "the picker is in alp
 assert(!options.some((o) => o.value === "c"), "a manager is never offered: their calls are never reported anyway");
 assert(!options.some((o) => o.value === "d"), "a test user is never offered");
 assert(!options.some((o) => o.value === "i"), "somebody already listed is not offered twice");
+// #4201: the placeholder advisor is exempt in the detector, so listing it suppresses nothing.
+assert(!options.some((o) => o.value === "p"), "the placeholder advisor is never offered");
 
 // At production scale, the picker still names everybody once.
 const big: IgnoreRosterUser[] = Array.from({ length: 136 }, (_, k) =>
@@ -73,6 +85,7 @@ for (const [raw, target, why] of [
   [{ userId: "zz", reason: "x" }, null, "a person not in Slate"],
   [{ userId: "c", reason: "x" }, roster[2], "a manager"],
   [{ userId: "d", reason: "x" }, roster[3], "a test user"],
+  [{ userId: "p", reason: "x" }, roster[9], "the placeholder advisor"],
   [{ userId: "a", reason: "   " }, agent, "a blank reason"],
   [{ userId: "a", reason: "y".repeat(IGNORE_REASON_MAX + 1) }, agent, "an overlong reason"],
 ] as const) {

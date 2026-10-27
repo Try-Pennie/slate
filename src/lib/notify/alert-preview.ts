@@ -952,6 +952,7 @@ const REGAL_PREVIEW_CALLER: RegalCaller = {
   bookable: false,
   deactivated_at: null,
   is_test: false,
+  is_placeholder: false,
   attributes: null,
 };
 
@@ -3738,6 +3739,18 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "they were marked as a test user",
     channel: "recovery",
     text: formatRegalCallEnding({ userId: "u-ada", ending: "exempt-test", user: REGAL_PREVIEW_CALLER, ignoreReason: null }),
+  },
+  {
+    // #4201: the placeholder advisor is never bookable by design, so it is exempt.
+    key: "regal_call_unroutable:*",
+    state: "they became the placeholder advisor",
+    channel: "recovery",
+    text: formatRegalCallEnding({
+      userId: "u-ada",
+      ending: "exempt-placeholder",
+      user: REGAL_PREVIEW_CALLER,
+      ignoreReason: null,
+    }),
   },
   {
     // #2724: a suppression like the ignore list's, never recovery wording (L11).

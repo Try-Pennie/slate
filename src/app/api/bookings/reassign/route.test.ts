@@ -78,6 +78,7 @@ import {
   OwnerReassignUnavailableError,
 } from "@/lib/booking/owner-reassign-guard";
 import { AttendeeEmailRefusedError } from "@/lib/booking/attendee-email-refused";
+import { StaffPlacedReassignRefusedError } from "@/lib/booking/staff-placed-refused";
 import { POST } from "./route";
 
 function req(opts: { auth?: string; body?: unknown }) {
@@ -236,6 +237,15 @@ describe("POST /api/bookings/reassign", () => {
     const res = await POST(req(ok));
     expect(res.status).toBe(422);
     expect((await res.json()).code).toBe("ATTENDEE_EMAIL_REFUSED");
+  });
+
+  // #4202: a call a coordinator placed on the placeholder is Regal's to hand on, so the
+  // automation is told to stop, under a code it can branch on.
+  it("maps a refused call on the placeholder to a 409 STAFF_PLACED, not a retryable 5xx", async () => {
+    service.reassignBooking.mockRejectedValueOnce(new StaffPlacedReassignRefusedError());
+    const res = await POST(req(ok));
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("STAFF_PLACED");
   });
 
   it("maps the daily-cap conflict to a distinct 409 with a machine-readable code", async () => {

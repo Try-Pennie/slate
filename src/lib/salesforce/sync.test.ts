@@ -125,6 +125,21 @@ const store = vi.hoisted(() => {
       .map(([id, row]) => ({ ...row, id }));
   }
 
+  /**
+   * A canned read's rows narrowed by its own `.eq` filters, on the columns a fixture
+   * row carries, so an exclusion the read applies is part of what a test sees
+   * (#4201). A row without the column passes, which keeps every older fixture's
+   * meaning.
+   */
+  function eqFiltered(rows: unknown[], filters: [string, string, unknown][]): unknown[] {
+    return rows.filter((r) =>
+      filters.every(([kind, col, val]) => {
+        const row = r as Record<string, unknown>;
+        return kind !== "eq" || !(col in row) || row[col] === val;
+      }),
+    );
+  }
+
   function seedUsers(rows: Record<string, unknown>[]) {
     users.clear();
     for (const row of rows) users.set(String(row.id), { ...row });
@@ -198,9 +213,9 @@ const store = vi.hoisted(() => {
               // #2085: the routable write's BEFORE read, by id, answered from the
               // stored rows rather than a canned list, so its before and after agree.
               if (state.select === "id, org_id, email, bookable, deactivated_at, is_test") result = { data: readUsers(state.filters), error: null };
-              else if (state.select?.includes("attributes")) result = { data: config.existing, error: null };
-              else if (state.select?.includes("manager_id")) result = { data: config.afterInsert, error: null };
-              else result = { data: config.reapable, error: null };
+              else if (state.select?.includes("attributes")) result = { data: eqFiltered(config.existing, state.filters), error: null };
+              else if (state.select?.includes("manager_id")) result = { data: eqFiltered(config.afterInsert, state.filters), error: null };
+              else result = { data: eqFiltered(config.reapable, state.filters), error: null };
             }
             // A refused statement writes NOTHING, so the stored rows must not move
             // when the fake is returning an error: a test asserting what survived a
@@ -1407,6 +1422,49 @@ describe("roster rows Salesforce no longer confirms (#1833)", () => {
     expect(result.rosterRowsReconciled).toBe(0);
     expect(result.rosterUnconfirmedAbsent).toBe(0);
     expect(result.rosterUnconfirmedBookable).toEqual([]);
+  });
+
+  // #4201: the placeholder advisor is a Slate row with no Salesforce user behind it.
+  // Whatever Salesforce says about its address, the sync writes nothing to it, never
+  // inserts a twin of it, never reaps it, and never reports it as diverged.
+  const marciaRows = () => {
+    store.config.existing = [
+      { id: "u-marcia", email: "marcia@x.com", attributes: {}, bookable: false, deactivated_at: null, bookable_pending_since: null, is_placeholder: true },
+    ];
+    store.config.afterInsert = [
+      { id: "u-marcia", email: "marcia@x.com", manager_id: null, role: "agent", salesforce_user_id: null, bookable: false, deactivated_at: null, is_test: false, is_placeholder: true },
+    ];
+    store.config.reapable = [{ id: "u-marcia", email: "marcia@x.com", salesforce_user_id: null, is_placeholder: true }];
+  };
+
+  it("writes nothing to the placeholder advisor when Salesforce returns its address", async () => {
+    marciaRows();
+    sfWorld({
+      roster: [{ Id: "005M", Email: "marcia@x.com", Name: "Marcia Renamed", Profile: { Name: "Sales" }, HighDebt__c: true }],
+      present: [{ Id: "005M", Email: "marcia@x.com", IsActive: true }],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(writtenIds()).not.toContain("u-marcia");
+    const inserted = store.calls
+      .filter((c) => c.op === "insert")
+      .flatMap((c) => (Array.isArray(c.payload) ? c.payload : [c.payload]) as { email?: string }[]);
+    expect(inserted.map((r) => r.email)).not.toContain("marcia@x.com");
+    expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
+    expect(result.rosterRowsReconciled).toBe(0);
+  });
+
+  it("never reaps or reports the placeholder advisor when Salesforce calls its address inactive", async () => {
+    marciaRows();
+    sfWorld({ roster: [], present: [{ Id: "005M", Email: "marcia@x.com", IsActive: false }] });
+
+    const result = await syncSalesforceAgents();
+
+    expect(result.deactivated).toBe(0);
+    expect(writtenIds()).not.toContain("u-marcia");
+    expect(result.rosterRowsReconciled).toBe(0);
+    expect(result.rosterUnconfirmedInactive).toBe(0);
   });
 
   // The failure path. A Salesforce read that FAILED must never arrive anywhere as

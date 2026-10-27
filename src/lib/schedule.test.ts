@@ -23,10 +23,21 @@ const upserted = vi.hoisted(() => ({ rows: [] as { user_id: string }[] }));
 
 const from = vi.hoisted(() =>
   vi.fn((table: string) => {
-    const res = async (): Promise<Result> => tables.results[table] ?? { data: [], error: null };
+    // Filters are applied to a fixture's rows as PostgREST would, on the columns a
+    // row carries, so a read's own exclusions are part of what the test sees (#4201).
+    const filters: [string, unknown][] = [];
+    const res = async (): Promise<Result> => {
+      const r = tables.results[table] ?? { data: [], error: null };
+      if (!Array.isArray(r.data)) return r;
+      const rows = r.data as Record<string, unknown>[];
+      return { ...r, data: rows.filter((row) => filters.every(([c, v]) => !(c in row) || row[c] === v)) };
+    };
     const b: Record<string, unknown> = {
       select: () => b,
-      eq: () => b,
+      eq: (column: string, value: unknown) => {
+        filters.push([column, value]);
+        return b;
+      },
       // selectAllPages orders the query by its key, then `range` resolves the whole
       // (small) fixture in one page, which is what it sees when a first page comes
       // back short.
@@ -214,5 +225,24 @@ describe("ensureDefaultSchedules on an unreadable read (#2542)", () => {
     vi.clearAllMocks();
     tables.results.organizations = { data: null, error: null };
     expect(await ensureDefaultSchedules("org1")).toBe(0);
+  });
+});
+
+// #4201: the placeholder advisor holds stacked calls at whatever time a coordinator
+// placed them and is never bookable, so it has no working hours to fill. The smoke
+// test advisors still do: they need hours to be booked at all.
+describe("ensureDefaultSchedules leaves the placeholder advisor without hours (#4201)", () => {
+  it("fills the agents and the test advisor, never the placeholder", async () => {
+    tables.results.users = {
+      data: [
+        { id: "u1", is_test: false, is_placeholder: false },
+        { id: "smoke", is_test: true, is_placeholder: false },
+        { id: "marcia", is_test: false, is_placeholder: true },
+      ],
+      error: null,
+    };
+
+    expect(await ensureDefaultSchedules("org1")).toBe(2);
+    expect(upserted.rows.map((r) => r.user_id).sort()).toEqual(["smoke", "u1"]);
   });
 });

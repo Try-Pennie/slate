@@ -27,6 +27,7 @@ import {
   readBookingHorizonDays,
   readPublicBookingPaused,
   readDemotionRerouteEnabled,
+  readPlaceholderBookingEnabled,
   readPublicBookingPauseState,
   HORIZON_DEFAULT,
   HORIZON_MIN,
@@ -368,5 +369,30 @@ describe("readPublicBookingPauseState", () => {
     });
     expect(await readPublicBookingPaused()).toBe(true);
     expect((await readPublicBookingPauseState()).paused).toBe(true);
+  });
+});
+
+// #4200: the go live switch for placeholder bookings. It lets a coordinator stack a
+// call on the placeholder advisor, so an unreadable switch must never read as on.
+describe("readPlaceholderBookingEnabled", () => {
+  beforeEach(() => {
+    maybeSingle.mockReset();
+  });
+
+  it("reads a stored true as on", async () => {
+    maybeSingle.mockResolvedValue({ data: { placeholder_booking_enabled: true }, error: null });
+    await expect(readPlaceholderBookingEnabled()).resolves.toBe(true);
+  });
+
+  it("reads a stored false, and a missing settings row, as off", async () => {
+    maybeSingle.mockResolvedValue({ data: { placeholder_booking_enabled: false }, error: null });
+    await expect(readPlaceholderBookingEnabled()).resolves.toBe(false);
+    maybeSingle.mockResolvedValue({ data: null, error: null });
+    await expect(readPlaceholderBookingEnabled()).resolves.toBe(false);
+  });
+
+  it("answers null (unreadable), never true and never a throw, when the read ERRORS", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: { message: "column does not exist" } });
+    await expect(readPlaceholderBookingEnabled()).resolves.toBeNull();
   });
 });

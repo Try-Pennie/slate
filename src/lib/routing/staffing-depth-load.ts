@@ -103,6 +103,8 @@ export async function loadTierDepths(
 ): Promise<TierDepth[]> {
   const nowIso = now.toISOString();
   let bucketsQuery = db.from("buckets").select("*");
+  // any-advisor-ok: matches the booker, test advisors included (below); the placeholder is
+  // never bookable (a CHECK, #4200), so `isRoutable` keeps it out of every depth.
   let usersQuery = db.from("users").select("id, name, email, attributes, bookable, deactivated_at");
   // Approved time off that covers `now`: starts_at <= now < ends_at (ends_at is
   // exclusive, matching the all-day busy_block convention).

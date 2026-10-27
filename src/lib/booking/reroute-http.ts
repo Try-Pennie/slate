@@ -29,6 +29,7 @@ const REFUSAL: Record<RerouteRefusal, { status: number; error: string }> = {
   current_no_schedule: { status: 409, error: "The advisor has no schedule in Slate, so they cannot keep this call. Find an advisor again." },
   booking_inactive: { status: 409, error: "This booking is cancelled or completed, so it cannot be rerouted." },
   agent_link: { status: 409, error: "This lead booked a specific advisor by link, so there is no bucket to correct." },
+  staff_placed: { status: 409, error: "This call is on the placeholder advisor in the customer's own bucket. Reassign it to an advisor to move it." },
   booking_started: { status: 409, error: "This call has already started, so it cannot be rerouted." },
   booking_moved: { status: 409, error: "The lead moved this call while it was being rerouted. Find an advisor again." },
   org_mismatch: { status: 404, error: "That booking could not be found." },

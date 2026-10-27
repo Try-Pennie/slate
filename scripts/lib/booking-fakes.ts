@@ -69,7 +69,20 @@ export const users: Record<string, User> = {
   c: { id: "c", name: "Agent C", email: "c@x.com" } as unknown as User,
   d: { id: "d", name: "Agent D", email: "d@x.com" } as unknown as User,
   e: { id: "e", name: "Agent E", email: "e@x.com" } as unknown as User,
+  // #4202: the placeholder advisor (Marcia), never in a pool and never bookable.
+  p: { id: "p", name: "Marcia", email: "marcia@x.com", is_placeholder: true, is_test: false } as unknown as User,
 };
+
+/**
+ * #4202, migration 0208's trigger as the fakes model it: a staff placed booking a write
+ * has moved onto a real advisor is routed. The suites that move a placeholder call read
+ * the kind the row ends with, so the fake must not keep a kind the database would not.
+ */
+function kindFollowsAssignee(booking: Booking): void {
+  if (booking.kind === "staff_placed" && booking.assigned_user_id && !users[booking.assigned_user_id]?.is_placeholder) {
+    booking.kind = "routed";
+  }
+}
 
 export const input: CreateBookingInput = {
   bucketCode: "411",
@@ -396,6 +409,8 @@ export function makeDeps(opts: FakeOpts) {
       guard: { assignedUserId: string | null; gcalEventId: string | null };
       /** #3265: the outbox work the commit was handed, written in the same transaction. */
       outbox?: { steps: unknown; payload: unknown };
+      /** #4202: true when the move was committed onto the placeholder (0208's function). */
+      ontoPlaceholder?: boolean;
     }[],
     /** #3265: the reschedule outbox work a commit recorded, by booking and ordinal. */
     rescheduleOutbox: [] as { bookingId: string; seq: unknown }[],
@@ -443,6 +458,8 @@ export function makeDeps(opts: FakeOpts) {
       routing: unknown;
       /** #1512: the number a phone correction replaced. */
       previousPhone: string | null | undefined;
+      /** #4204: true on the event of a move that took the call off the placeholder. */
+      leftPlaceholder: boolean | undefined;
     }[],
     bookingEvents: [] as {
       booking_id: string;
@@ -986,6 +1003,7 @@ export function makeDeps(opts: FakeOpts) {
         allow_double_book: true,
         routing_trace: newRoutingTrace,
       });
+      kindFollowsAssignee(prev);
       return { prevGcalEventId: prevGcal, prevAgentEmail: prevEmail, updated: true };
     },
     deleteBusyBlocksForBooking: async (id) => {
@@ -1000,8 +1018,14 @@ export function makeDeps(opts: FakeOpts) {
     // (assignee + event id) that changed it since we read makes this touch 0 rows.
     // On success mirrors production by persisting the patch so a later
     // loadBookingById (outbox re-read) sees the committed booking.
-    commitReschedule: async (id, patch, guard, outbox) => {
-      calls.commitReschedule.push({ id, patch: patch as Record<string, unknown>, guard, outbox });
+    commitReschedule: async (id, patch, guard, outbox, commitOpts) => {
+      calls.commitReschedule.push({
+        id,
+        patch: patch as Record<string, unknown>,
+        guard,
+        outbox,
+        ...(commitOpts?.ontoPlaceholder ? { ontoPlaceholder: true } : {}),
+      });
       const live =
         opts.existing?.booking?.id === id
           ? opts.existing.booking
@@ -1011,8 +1035,17 @@ export function makeDeps(opts: FakeOpts) {
       const assigneeOk = (live.assigned_user_id ?? null) === guard.assignedUserId;
       const gcalOk = (live.gcal_event_id ?? null) === guard.gcalEventId;
       if (!(active && assigneeOk && gcalOk)) return null;
+      // 0206 clears the stack flag on every move; 0208's function writes the call onto
+      // the placeholder as staff placed and stacking; the trigger turns a call moved off
+      // the placeholder routed.
+      const written = commitOpts?.ontoPlaceholder
+        ? { ...patch, allow_double_book: true, kind: "staff_placed" as const }
+        : { ...patch, allow_double_book: false };
       for (const c of [opts.bookingById, opts.existing]) {
-        if (c?.booking && c.booking.id === id) Object.assign(c.booking, patch);
+        if (c?.booking && c.booking.id === id) {
+          Object.assign(c.booking, written);
+          kindFollowsAssignee(c.booking);
+        }
       }
       // #3265: the outbox work is written in the same transaction as the move.
       calls.rescheduleOutbox.push({ bookingId: id, seq: (patch as Record<string, unknown>).reschedule_seq });
@@ -1307,6 +1340,7 @@ export function makeDeps(opts: FakeOpts) {
         bookingKind: (payload as { booking_kind?: string }).booking_kind,
         routing: (payload as { routing?: unknown }).routing,
         previousPhone: payload.previous_attendee_phone,
+        leftPlaceholder: payload.left_placeholder,
       });
     },
     newManageToken: () => "tok-fixed",

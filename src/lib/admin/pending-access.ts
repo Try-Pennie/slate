@@ -1,6 +1,7 @@
 import { atLeast } from "../auth/roles.ts";
 import { isActive } from "../active-user.ts";
 import type { Role, User } from "../db/types.ts";
+import { isRealAdvisor } from "../advisors/real-advisor.ts";
 import { isNeverSignedIn, unclaimedDays } from "./unclaimed.ts";
 
 /**
@@ -111,7 +112,7 @@ export function pendingPrivilegedAccess(
   // Only an account somebody has actually signed in to can be the address the
   // person really uses. An unclaimed neighbour is another guess, not evidence.
   const claimed = users
-    .filter((u) => u.auth_user_id !== null && isActive(u) && !u.is_test)
+    .filter((u) => u.auth_user_id !== null && isActive(u) && isRealAdvisor(u))
     .map((u) => ({ id: u.id, email: u.email, role: u.role, key: emailLocalKey(u.email) }));
 
   const waiting = users.filter(
@@ -119,7 +120,7 @@ export function pendingPrivilegedAccess(
       isNeverSignedIn(u) &&
       atLeast(u.role, "manager") &&
       isActive(u) &&
-      !u.is_test,
+      isRealAdvisor(u),
   );
 
   const rows = waiting.map((u) => {

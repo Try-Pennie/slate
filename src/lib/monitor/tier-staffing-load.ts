@@ -31,6 +31,7 @@
  * is a number nobody can reconcile against the roster.
  */
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { realAdvisorsOnly } from "@/lib/advisors/real-advisor";
 import { unwrap } from "@/lib/db/result";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { agentIdsFromPool } from "@/lib/availability/pool";
@@ -72,12 +73,7 @@ export async function loadTierAgentIds(): Promise<Map<string, string[]>> {
   // cap-safe: the roster is bounded by the design target of 100 to 200 agents, and
   // `users` is on the guard's roster-bounded allowlist for exactly that reason.
   const rows = (unwrap(
-    await db
-      .from("users")
-      .select("id, attributes")
-      .eq("bookable", true)
-      .eq("is_test", false)
-      .is("deactivated_at", null),
+    await realAdvisorsOnly(db.from("users").select("id, attributes").eq("bookable", true).is("deactivated_at", null)),
     "tier staffing roster",
   ) ?? []) as { id: string; attributes: Attributes }[];
   const agents = rows.map((r) => ({ id: r.id, attributes: r.attributes }));

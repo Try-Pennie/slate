@@ -37,6 +37,7 @@ export type RerouteRefusal =
   | "booking_not_found"
   | "booking_inactive"
   | "agent_link"
+  | "staff_placed"
   | "unknown_bucket"
   | "no_current_advisor"
   | "no_calendar_event"
@@ -273,6 +274,9 @@ async function reroutableBooking(deps: RerouteDeps, bookingId: string) {
   if (ctx.booking.status === "cancelled" || ctx.booking.status === "completed") throw new RerouteRefusedError("booking_inactive");
   // The lead chose this advisor by name, so there is no bucket to correct (Dan, 2026-10-04).
   if (ctx.booking.kind === "agent_link") throw new RerouteRefusedError("agent_link");
+  // #4202: a call on the placeholder is in the customer's own bucket by construction, and
+  // leaves the placeholder through a reschedule or a reassign, which route it.
+  if (ctx.booking.kind === "staff_placed") throw new RerouteRefusedError("staff_placed");
   return ctx;
 }
 

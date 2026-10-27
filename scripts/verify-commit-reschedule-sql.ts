@@ -36,8 +36,8 @@
 // (the DB replay workflow also runs it, with every other scripts/verify-*-sql.ts)
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
-import { bookingInsertSql, bucketsInsertSql, eventTypesInsertSql, rerouteHoldInsertSql, sqlLiteral } from "./lib/seed-sql.ts";
+import { firstErrorLine, replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
+import { bookingInsertSql, callEventTypeSql, lowBucketSql, rerouteHoldInsertSql, sqlLiteral } from "./lib/seed-sql.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -127,11 +127,10 @@ const refused = (m: Move): string | null => pg.verboseError(moveSql(m));
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const count = (table: string, where: string) => sql(`select count(*) from ${table} where ${where};`);
 const outboxRows = (booking: string) => count("booking_outbox", `booking_id = '${booking}'`);
-/** Every column the move writes, so "wrote nothing" is measured, never assumed. */
+/** Every column the move writes, allow_double_book included (0206), so "wrote nothing" is measured, never assumed. */
 const state = (booking: string) =>
   sql(`select concat_ws('|', starts_at, ends_at, assigned_user_id, agent_name, agent_email, status, gcal_event_id,
-         reschedule_seq, coalesce(routing_trace::text, '-')) from bookings where id = '${booking}';`);
-const firstLine = (e: string | null) => e?.split("\n").find((l) => /ERROR/.test(l)) ?? e?.split("\n")[0] ?? "it ran";
+         reschedule_seq, coalesce(routing_trace::text, '-'), allow_double_book) from bookings where id = '${booking}';`);
 
 try {
   // --- every migration, from empty, as db push applies them ----------------------------
@@ -143,8 +142,8 @@ try {
     insert into users (id, org_id, email, role) values
       ('${A}', '${ORG}', 'a@example.com', 'agent'), ('${B}', '${ORG}', 'b@example.com', 'agent'),
       ('${H}', '${ORG}', 'h@example.com', 'agent');
-    ${eventTypesInsertSql([{ id: ET, orgId: ORG, name: "Call", durationMin: 20, bufferBeforeMin: 10, bufferAfterMin: 10 }])}
-    ${bucketsInsertSql([{ id: B100, orgId: ORG, code: "100", name: "Low", eventTypeId: ET }])}
+    ${callEventTypeSql(ORG, ET)}
+    ${lowBucketSql(ORG, B100, ET)}
   `);
 
   // --- the function the server calls is the one the caller names ---------------------------
@@ -169,7 +168,7 @@ try {
     assert(UUID.test(answer), `a move to another advisor answers its outbox row's id (got ${answer})`);
     eq(state(id),
       sql(`select concat_ws('|', '${at("13:00")}'::timestamptz, '${at("13:20")}'::timestamptz, '${B}', 'Agent b', 'b@example.com',
-             'rescheduled', '${newEvent(m)}', 1, ${lit(trace)}::text);`),
+             'rescheduled', '${newEvent(m)}', 1, ${lit(trace)}::text, false);`),
       "the booking carries the new time, advisor, event id, ordinal and trace, and reads as rescheduled");
     eq(outboxRows(id), "1", "exactly one outbox row for the booking");
     eq(sql(`select concat_ws('|', id, booking_id, action, status, attempts, coalesce(lease_until::text, '-'), coalesce(next_attempt_at::text, '-'))
@@ -216,7 +215,7 @@ try {
       // The constraint it was exempt from now holds it: a second call on the same
       // advisor at the same time is refused, where the flagged call would have stacked.
       const err = pg.verboseError(bookingInsertSql({ id: nextId(), orgId: ORG, bucketId: B100, eventTypeId: ET, assignedUserId: y, startIso: at("11:40"), endIso: at("12:00"), status: "confirmed" }));
-      assert(err !== null && /23505|23P01/.test(err), `a call on the same advisor at the moved call's time is now refused (got ${firstLine(err)})`);
+      assert(err !== null && /23505|23P01/.test(err), `a call on the same advisor at the moved call's time is now refused (got ${firstErrorLine(err)})`);
     }
     // Control: a call that was never flagged stays unflagged, so the clear is not a
     // side effect of something that sets every row false anyway.
@@ -296,7 +295,7 @@ try {
       const before = state(id);
       const m: Move = { booking: id, from: x, to, start: "21:00", end: "21:20", trace: { moved: true }, ...change };
       const err = refused(m);
-      assert(err !== null && why.test(err), `${label} is refused as ${why.source} (got ${firstLine(err)})`);
+      assert(err !== null && why.test(err), `${label} is refused as ${why.source} (got ${firstErrorLine(err)})`);
       eq(state(id), before, `${label}: the booking is NOT moved`);
       eq(outboxRows(id), "0", `${label}: and no outbox row stands`);
       const ok: Move = { ...m, to, steps: undefined, ...control };
@@ -321,7 +320,7 @@ try {
     const before = state(id);
     const m: Move = { booking: id, from: x, to: x, start: "07:30", end: "07:50", trace: { moved: true } };
     const err = refused(m);
-    assert(err !== null && /planted refusal of the outbox row/.test(err), `a refused outbox insert fails the call (got ${firstLine(err)})`);
+    assert(err !== null && /planted refusal of the outbox row/.test(err), `a refused outbox insert fails the call (got ${firstErrorLine(err)})`);
     eq(state(id), before, "and the move it would have recorded is rolled back with it: never a moved call with no record");
     eq(outboxRows(id), "0", "no outbox row");
     sql("drop trigger plant_outbox_refusal on booking_outbox; drop function plant_outbox_refusal();");
@@ -342,7 +341,7 @@ try {
     const before = state(id);
     const m: Move = { booking: id, from: x, to: H, start: "08:00", end: "08:20", trace: { moved: true } };
     const err = refused(m);
-    assert(err !== null && /23P01[\s\S]*reroute_hold/.test(err), `a move onto a held advisor's window is refused as the hold (got ${firstLine(err)})`);
+    assert(err !== null && /23P01[\s\S]*reroute_hold/.test(err), `a move onto a held advisor's window is refused as the hold (got ${firstErrorLine(err)})`);
     eq(state(id), before, "the booking is not moved");
     eq(outboxRows(id), "0", "and no outbox row stands");
     assert(UUID.test(move({ ...m, start: "09:00", end: "09:20" })), "control: the same advisor clear of the held window takes the move");
@@ -424,7 +423,7 @@ try {
     const id = seed(x, "01:00", "01:20");
     const before = state(id);
     const err = pg.verboseError(moveSql({ booking: id, from: x, to: x, start: "01:30", end: "01:50" }), role);
-    assert(err !== null && /permission denied for function commit_reschedule/.test(err), `${role} cannot execute it (got ${firstLine(err)})`);
+    assert(err !== null && /permission denied for function commit_reschedule/.test(err), `${role} cannot execute it (got ${firstErrorLine(err)})`);
     eq(state(id), before, `${role}: the booking is untouched`);
   }
   eq(sql(`select string_agg(r || '=' || has_function_privilege(r, '${SIGNATURE}', 'execute'), ',' order by r)
