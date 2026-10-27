@@ -24,7 +24,11 @@ import ts from "typescript";
 import { hasUseClientDirective, resolveLocalSpecifier } from "./scan-client-boundary-calls.ts";
 
 /** Modules no client graph may reach, as paths relative to the repo's `src/`. */
-export const SERVER_ONLY_MODULES = ["lib/supabase/admin.ts"] as const;
+export const SERVER_ONLY_MODULES = [
+  "lib/supabase/admin.ts",
+  // #4205: the zip to zone table, about 11 KB a browser has no use for.
+  "lib/zip-zones/zip-zone-data.ts",
+] as const;
 
 export interface ClientAdminReachFinding {
   /** The `"use client"` module the walk started from (absolute). */
