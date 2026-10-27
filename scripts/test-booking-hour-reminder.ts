@@ -12,6 +12,7 @@
 import {
   HOUR_REMINDER_LEAD_MS,
   HOUR_REMINDER_GAP_MS,
+  HOUR_REMINDER_MIN_LEAD_MS,
   reminderDue,
   hourReminderDue,
   hourReminderSubject,
@@ -48,6 +49,19 @@ const booking = (over: Partial<Parameters<typeof hourReminderDue>[0]> = {}) => (
   );
   assert(!hourReminderDue(booking({ startsAtMs: NOW }), NOW), "a call starting now is not reminded");
   assert(!hourReminderDue(booking({ startsAtMs: NOW - MIN }), NOW), "nor one already under way");
+}
+
+// --- never when the call is too close (#4287, Dan 2026-10-27) ----------------------
+//
+// With no lower bound, the first run after the deploy emailed every call in the next
+// hour at once, one of them minutes before it started. The same follows any stretch
+// the job stops and then catches up. Under half an hour the 15 minute text covers it.
+{
+  eq(HOUR_REMINDER_MIN_LEAD_MS, 30 * MIN, "no 1 hour email under thirty minutes before the call");
+  const at = (mins: number) => booking({ startsAtMs: NOW + mins * MIN, dayReminderSentForMs: NOW + mins * MIN });
+  assert(hourReminderDue(at(30), NOW), "thirty minutes out is still sent");
+  assert(!hourReminderDue(booking({ startsAtMs: NOW + 30 * MIN - 1, dayReminderSentForMs: NOW + 30 * MIN - 1 }), NOW), "one millisecond under is not");
+  assert(!hourReminderDue(at(5), NOW), "a call five minutes away gets no 1 hour email");
 }
 
 // --- once per start, and a moved call earns a fresh one --------------------------
