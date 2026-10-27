@@ -318,6 +318,36 @@ describe("reconcileOrphanedPoolExits", () => {
     expect(tables.busy_blocks).toEqual([{ user_id: "u3" }]);
   });
 
+  // #4259: the placeholder advisor (#4200) is never bookable and is owed no activation,
+  // so it has left the pool by construction: the backstop prunes the block each of its
+  // calls wrote at create, once, and a second pass finds nothing. The missing block
+  // repair asks the same rule (`whereStillInPool`, 0204) and never re-creates them, which
+  // the real Postgres suite proves over both sweeps tick after tick
+  // (verify-recreate-missing-busy-blocks-sql.ts); here, the backstop's half.
+  it("prunes the placeholder's stacked call blocks once, and finds nothing to prune after (#4259)", async () => {
+    const tables = {
+      users: [
+        { id: "ph", email: "marcia@trypennie.com", bookable: false, deactivated_at: null, bookable_pending_since: null, is_placeholder: true },
+        { id: "u3", email: "c@trypennie.com", bookable: true, deactivated_at: null, bookable_pending_since: null },
+      ],
+      agent_calendars: [],
+      busy_blocks: [
+        { user_id: "ph", booking_id: "call-1", ooo_request_id: null },
+        { user_id: "ph", booking_id: "call-2", ooo_request_id: null },
+        { user_id: "u3", booking_id: "call-3", ooo_request_id: null },
+      ],
+    } as Record<string, Row[]>;
+    admin.current = fakeDb(tables);
+
+    const first = await reconcileOrphanedPoolExits(50);
+    expect(first.scanned).toBe(1);
+    expect(first.blocksDeleted).toBe(2);
+    const second = await reconcileOrphanedPoolExits(50);
+    expect(second.blocksDeleted).toBe(0);
+    // CONTROL: the routable advisor's block is never in scope.
+    expect(tables.busy_blocks).toEqual([{ user_id: "u3", booking_id: "call-3", ooo_request_id: null }]);
+  });
+
   // #1165, the sweep's copy of the same defect: a failed bulk prune reported
   // `poolExitBlocksDeleted: 0` on the self-heal lane, which reads as "nothing
   // needed cleaning" rather than "this sweep did not run". The route already

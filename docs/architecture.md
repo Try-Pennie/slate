@@ -328,6 +328,12 @@ is still booked, and a confirmed move to one still moves.
    default. Off, nothing is placed on the placeholder; an unreadable switch is refused,
    never read as on.
 
+**Its busy time.** Each call writes its busy block at create like any booking, and the
+pool exit backstop prunes it on the next self heal tick, because the placeholder has left
+the pool by construction (`hasLeftPool`). The missing busy block repair asks that same
+rule, so it never rebuilds one and the two sweeps never fight (#4259). Nothing reads the
+placeholder's busy time: it is in no pool.
+
 **What happens at the call's time.** Nobody dials as the placeholder. Every Regal
 journey on Slate's events branches on `slateGhostBooking` (#4204, docs/api.md) and sends
 the call straight to the pool, and Marcia texts the customer. The placeholder's own

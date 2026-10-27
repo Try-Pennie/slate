@@ -17,6 +17,16 @@
  * left, and pruning them then emptied the cache they were about to be booked from.
  * A deactivated agent has left whatever stale mark their row still carries.
  *
+ * The placeholder advisor (#4200) has left by construction: it is never bookable
+ * (`users_placeholder_never_bookable`, 0207; `writeRoutableState` refuses to arm it)
+ * and no activation is ever owed for it. So the block each of its calls writes at
+ * create is pruned once by the backstop and never re-created by the repair, and the
+ * two do not fight over it (#4259, proved over both sweeps tick after tick in
+ * `scripts/verify-recreate-missing-busy-blocks-sql.ts`). It is deliberately NOT given
+ * an exemption from the prune: the repair would go on skipping it by this same rule,
+ * so the two sweeps would again be asking different questions, the #3304 defect. Its
+ * blocks are read by nothing, because it is in no pool.
+ *
  * The rule exists in two forms because its two readers need two: the backstop
  * judges roster rows in code (`hasLeftPool`), and the reconcile loader has to
  * filter in SQL, since every row it fetches spends its page budget (#778).
