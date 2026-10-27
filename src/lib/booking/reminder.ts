@@ -88,6 +88,15 @@ export function reminderDue(b: ReminderSubject, nowMs: number): boolean {
 export const HOUR_REMINDER_LEAD_MS = 60 * 60_000;
 
 /**
+ * The closest to the call a 1 hour email may go out (#4287, Dan 2026-10-27). With no
+ * lower bound, the first run after #4282 deployed emailed every call in the next hour
+ * at once, one of them minutes before it started, and any stretch the job stops and
+ * then catches up does the same (L815). Under half an hour the 15 minute text covers
+ * it. The lane's retry cutoff for a failed 1 hour email is this same value.
+ */
+export const HOUR_REMINDER_MIN_LEAD_MS = 30 * 60_000;
+
+/**
  * The least time between the 24 hour email being sent and the 1 hour email (Dan,
  * 2026-10-27). A booking made a few hours ahead has its first reminder sent about ten
  * minutes after it is made (`REMINDER_HOLD_MS`), so without this the lead would get
@@ -118,7 +127,8 @@ export interface HourReminderSubject {
  * same reason. Two rules are Dan's (2026-10-27):
  *
  * A booking made less than an hour before the call gets none: the invite and the
- * confirmation text have only just arrived.
+ * confirmation text have only just arrived. Nor does a call under
+ * `HOUR_REMINDER_MIN_LEAD_MS` away (#4287).
  *
  * None when the 24 hour email about this same start went out less than
  * `HOUR_REMINDER_GAP_MS` ago, so a booking made a few hours ahead is not emailed twice
@@ -131,6 +141,7 @@ export function hourReminderDue(b: HourReminderSubject, nowMs: number): boolean 
   if (!LIVE_STATUSES.has(b.status)) return false;
   if (b.startsAtMs <= nowMs) return false;
   if (b.startsAtMs - nowMs > HOUR_REMINDER_LEAD_MS) return false;
+  if (b.startsAtMs - nowMs < HOUR_REMINDER_MIN_LEAD_MS) return false;
   if (b.hourReminderSentForMs === b.startsAtMs) return false;
   // Phrased as "was it booked early enough", so an unreadable booking time is false.
   if (!(b.createdAtMs <= b.startsAtMs - HOUR_REMINDER_LEAD_MS)) return false;
