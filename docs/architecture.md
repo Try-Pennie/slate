@@ -288,6 +288,63 @@ Adding a fourth kind means giving it its own label AND its own instruction;
 `scripts/test-google-not-provisioned.ts` drives that off the list of kinds and
 fails when two share either.
 
+## The placeholder advisor path (milestone 75)
+
+A scheduling coordinator on the phone books whatever time the customer names, through
+`placeBooking` (`src/lib/booking/placed-booking.ts`). Every rule a lead's booking keeps
+still holds there: the go live switch, Pennie's business hours, the customer's calling
+window in the zone their Lead gives, the horizon, nothing in the past.
+
+1. **A real advisor first.** The ordinary create (slot predicate, verify on book, the
+   confirm line) books a free advisor in the customer's bucket, as a `routed` booking
+   with source `coordinator`. Only its refusal for want of a free advisor falls through;
+   an outage is reported as itself, never parked on the placeholder.
+2. **Then the placeholder.** One placeholder advisor per org and world
+   (`users.is_placeholder`, migration 0207, unique on `org_id, is_test`, so a test
+   bucket's call lands on the test placeholder and never the real one). It is Marcia,
+   Pennie's AI agent. The call is booking kind `staff_placed` and stacks with any number
+   of others at that time (`allow_double_book`). A CHECK keeps the placeholder never
+   bookable, so no public booking can be routed to it, and the shared real advisor rule
+   (`src/lib/advisors/real-advisor.ts`) keeps it off every advisor screen, picker, pool,
+   sync and advisor monitor. Its BOOKINGS are real calls and stay wherever bookings are.
+3. **The kind follows the assignee** (migration 0208). The trigger
+   `bookings_kind_follows_assignee` refuses a booking on the placeholder that is not
+   `staff_placed` and stacking, refuses `staff_placed` on a real advisor at insert, and
+   turns a `staff_placed` booking `routed` when any path (a lead's reschedule, a
+   reassign, coverage, a bulk sweep) moves it onto a real advisor. A move ONTO the
+   placeholder goes through `commit_reschedule_onto_placeholder`, which writes the kind
+   and the stack flag that `commit_reschedule` deliberately clears (0206).
+4. **One call per customer**, matched on the Salesforce Lead id alone. An existing call
+   is shown, and moved (the same booking and manage link) only once the coordinator
+   confirms; a match on email or phone only is shown and refused.
+5. **The switch.** `booking_settings.placeholder_booking_enabled` (0207), false by
+   default. Off, nothing is placed on the placeholder; an unreadable switch is refused,
+   never read as on.
+
+**What happens at the call's time.** Nobody dials as the placeholder. Every Regal
+journey on Slate's events branches on `slateGhostBooking` (#4204, docs/api.md) and sends
+the call straight to the pool, and Marcia texts the customer. The placeholder's own
+Google seat sends the invite and the 24 hour reminder from its Calendar and Gmail, and
+its inbox is a no reply mailbox with a standing auto reply that tells customers to text
+Pennie. A coordinator moves or cancels a call from the manage link Regal copies into the
+Lead's `calBookingLink__c`.
+
+**What watches it** (#4206, all in the monitor lane, runbook "A call on the placeholder
+advisor is at risk"):
+
+- `placeholder_call_unserved:<booking>`: a call 15 minutes past its booked END with no
+  Regal call to the customer's Lead in `regal_call_outcomes` since 15 minutes before its
+  start, judged only once the call feed has received anybody's call after that time
+  (`src/lib/monitor/placeholder-calls.ts`). The match is on the Lead id because the feed
+  stores no phone. The grace runs from the end, not the start, because Slate hears of a
+  call only when it completes.
+- `placeholder_seat_failing`: the seat's Calendar (`calendarList.list`) or Gmail (a
+  `gmail.send` token mint) failing while the seat is in use, classified with
+  `isDefinitiveFailure` (`src/lib/monitor/placeholder-seat.ts`). The vacation responder
+  is NOT checked: reading it needs `gmail.settings.basic`, which Slate does not hold.
+- `placeholder_missing`: the switch on with no usable placeholder (no row, deactivated,
+  or no address).
+
 ## One availability compute per POOL, not per bucket code (#2245)
 
 Moved out of `AGENTS.md` on 2026-10-15, where every character was loaded into

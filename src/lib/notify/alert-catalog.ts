@@ -959,6 +959,33 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A SHARE of the reminder emails in a rolling window did not go out, which is a broken send path rather than one lead's address: a refused mailbox delegation or a Gmail outage goes on costing every lead their reminder until somebody repairs it. Its sibling `booking_reminder_failed` is the incident about one booking and rightly has no recovery; this one has a healthy state to observe, and the reader who was paged about a wave needs to know when the wave ended (#2496).",
   },
   {
+    key: "placeholder_call_unserved:*",
+    kind: "condition",
+    suffix: "booking",
+    why:
+      "A call on the placeholder advisor is past its booked end plus 15 minutes and Regal's call feed, " +
+      "alive past that time, has no call to the customer's Lead (#4206). It ends when a call to them " +
+      "arrives (the recovery), or in its own words when the call is cancelled, moved onto a real advisor " +
+      "or moved to a later time, and as a stand down three days after the booked start, before the per " +
+      "booking prune would remove it silently. The monitor lane re-judges it every 5 minutes.",
+  },
+  {
+    key: "placeholder_seat_failing",
+    kind: "condition",
+    why:
+      "The placeholder advisor's Google Calendar or Gmail sending is failing while the seat is in use, " +
+      "so the invites and reminders of the calls placed on it may not go out (#4206). It ends when both " +
+      "probes answer on a measured tick, or as a stand down when the switch is off and no call sits on it.",
+  },
+  {
+    key: "placeholder_missing",
+    kind: "condition",
+    why:
+      "Placing calls on the placeholder is switched on and no usable placeholder advisor exists, so every " +
+      "customer a coordinator books while nobody is free is refused (#4206). It ends when one exists again, " +
+      "or, worded as a suppression, when the switch is turned off.",
+  },
+  {
     key: "ooo_calcom_unprotected",
     kind: "condition",
     why: "An agent is on approved time off right now with no cal.com block in place, so cal.com can still book them while they are away; it stays true until a retry lands the override or the absence ends, and the monitor lane re-measures every 5 minutes.",

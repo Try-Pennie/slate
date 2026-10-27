@@ -39,9 +39,27 @@ import { getBucketSlots } from "@/lib/availability/service";
 import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
 import { slotCacheKey } from "@/lib/availability/cache-key";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
-import { readBookingHorizonDays } from "@/lib/booking/settings";
+import { readBookingHorizonDays, readPlaceholderBookingEnabled } from "@/lib/booking/settings";
 import { readOfferedOpenDays } from "@/lib/booking/days-offered-load";
-import { recordFailureStreak, clearFailureStreak } from "@/lib/notify/streak";
+import { recordFailureStreak, clearFailureStreak, trackConsecutiveStreak } from "@/lib/notify/streak";
+import { runPlaceholderCallCheck, PLACEHOLDER_CALL_ALERT_PREFIX } from "@/lib/monitor/placeholder-calls";
+import {
+  loadPlaceholderCallCandidates,
+  loadPlaceholderBookingsById,
+  loadPlaceholderCalls,
+  loadCallFeedNewestReceivedMs,
+} from "@/lib/monitor/placeholder-calls-store";
+import {
+  runPlaceholderSeatCheck,
+  PLACEHOLDER_SEAT_STREAK_KEY,
+  PLACEHOLDER_SEAT_STREAK_WINDOW_S,
+} from "@/lib/monitor/placeholder-seat";
+import {
+  loadRealPlaceholders,
+  countFutureCallsOnPlaceholders,
+  probePlaceholderCalendar,
+  probePlaceholderGmail,
+} from "@/lib/monitor/placeholder-seat-store";
 import {
   runEmptyReasonCheck,
   EMPTY_REASON_STREAK_KEY,
@@ -3030,6 +3048,120 @@ export async function GET(req: NextRequest) {
         ...(regalOutcomes.status === "short" ? { paged: regalOutcomes.paged, ...(regalOutcomes.pageError ? { page_error: regalOutcomes.pageError } : {}) } : {}),
         ...(regalOutcomes.status === "unmeasured" ? { why: regalOutcomes.why } : {}),
         ...(regalOutcomes.status === "healthy" && regalOutcomes.resolveError ? { resolve_error: regalOutcomes.resolveError } : {}),
+      });
+    }
+
+    // --- A placeholder call past its time with no Regal call to the customer (#4206).
+    // Nobody dials as the placeholder: Regal sends the call to the pool at its time,
+    // so the one way the customer is left waiting is Regal never calling at all. This
+    // reads the day's placeholder calls in the REAL buckets, the pages already open,
+    // the calls to those customers' Leads and the feed's newest arrival (its positive
+    // control), and pages per booking. Gated on the shared bucket list, which is what
+    // keeps a test bucket's drill call off the page. A failed read measures nothing,
+    // pages nobody and clears nothing. ---
+    const placeholderCalls = await steps.run("placeholder_calls", null, async (step) => {
+      if (!gates.placeholderCalls.run) {
+        log.warn("monitor", { msg: "placeholder calls skipped", why: gates.placeholderCalls.why });
+        return step.unmeasured(null);
+      }
+      return runPlaceholderCallCheck({
+        loadCandidates: (sinceIso, untilIso) =>
+          loadPlaceholderCallCandidates(
+            db,
+            // in-chunk-ok: the real buckets are the routing matrix, sixty codes at the
+            // design target, about 2,300 bytes of uuids against the 10,000 budget.
+            buckets!.filter((b) => !b.is_test).map((b) => b.id),
+            sinceIso,
+            untilIso,
+          ),
+        loadFiringIds: () => firingFamilyMembers(PLACEHOLDER_CALL_ALERT_PREFIX),
+        loadBookingsById: (ids) => loadPlaceholderBookingsById(db, ids),
+        loadCalls: (leadKeys, sinceIso) => loadPlaceholderCalls(db, leadKeys, sinceIso),
+        feedNewestReceivedMs: () => loadCallFeedNewestReceivedMs(db),
+        bookingUrl: (id) => `${appUrl()}${bookingDetailHref(id)}`,
+        // alert-key: placeholder_call_unserved:*
+        // alert-text-ok: our own copy from placeholder-calls.ts, built from the booking
+        // row, a Lead id and formatted times; no error text can reach it.
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
+        // alert-key: placeholder_call_unserved:*
+        // all-clear-proof: scripts/test-placeholder-calls.ts pins that a failed read of the
+        // bookings, the open pages, the calls or the feed clears nothing, that a feed behind
+        // the due time clears nothing, and that only a call found is worded as a recovery.
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: CONDITION_REPEAT_MS,
+        nowMs: now,
+      }).then((result) => {
+        // Thrown, so the step's failing streak pages a read that stays broken: the
+        // check is silent on a healthy day, and an unreadable tick must not look like one.
+        if (result.status === "unreadable") throw new Error(`placeholder calls unreadable: ${result.error}`);
+        return result;
+      });
+    });
+    if (placeholderCalls) {
+      log.info("monitor", {
+        msg: "placeholder calls",
+        status: placeholderCalls.status,
+        ...(placeholderCalls.status === "checked"
+          ? {
+              judged: placeholderCalls.judged,
+              not_due: placeholderCalls.notDue,
+              served: placeholderCalls.served,
+              feed_behind: placeholderCalls.feedBehind,
+              no_lead_id: placeholderCalls.noLeadId.join(","),
+              unserved: placeholderCalls.unserved.join(","),
+              settled: placeholderCalls.settled.join(","),
+            }
+          : {}),
+      });
+    }
+
+    // --- The placeholder advisor's Google seat (#4206). Its invites and reminders go
+    // out from its own Calendar and Gmail, and every advisor health path skips it on
+    // purpose (it is never bookable), so this probes both, read only, while the seat is
+    // in use (the switch is on, or a call still sits on it), and pages on a definitive
+    // failure over two ticks or a transient one over four. Also pages when the switch is
+    // on and no usable placeholder exists. Consumes no setup read, so it is not gated. ---
+    const placeholderSeat = await steps.run("placeholder_seat", null, async () =>
+      runPlaceholderSeatCheck({
+        readSwitch: () => readPlaceholderBookingEnabled(),
+        loadPlaceholders: () => loadRealPlaceholders(db),
+        countFutureCalls: (ids) => countFutureCallsOnPlaceholders(db, ids, new Date(now).toISOString()),
+        probeCalendar: probePlaceholderCalendar,
+        probeGmail: probePlaceholderGmail,
+        bumpStreak: (alertAt) => trackConsecutiveStreak(PLACEHOLDER_SEAT_STREAK_KEY, PLACEHOLDER_SEAT_STREAK_WINDOW_S, alertAt),
+        clearStreak: () => clearFailureStreak(PLACEHOLDER_SEAT_STREAK_KEY),
+        // alert-key: placeholder_seat_failing
+        // alert-key: placeholder_missing
+        // alert-text-ok: our own copy from placeholder-seat.ts, built from the seat's address
+        // and the failure KIND; no error text can reach it.
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
+        // alert-key: placeholder_seat_failing
+        // alert-key: placeholder_missing
+        // all-clear-proof: scripts/test-placeholder-seat.ts pins that an unreadable switch,
+        // placeholder read or call count clears nothing, that a seat with nothing to probe
+        // clears nothing, and that only both probes answering is worded as a recovery.
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: CONDITION_REPEAT_MS,
+      }).then((result) => {
+        // Thrown for the same reason: a seat nobody can read about is not a healthy seat.
+        if (result.status === "unreadable") throw new Error(`placeholder seat unreadable: ${result.error}`);
+        return result;
+      }),
+    );
+    if (placeholderSeat) {
+      log.info("monitor", {
+        msg: "placeholder seat",
+        status: placeholderSeat.status,
+        ...(placeholderSeat.status === "checked"
+          ? {
+              switch_on: placeholderSeat.switchOn,
+              future_calls: placeholderSeat.futureCalls,
+              missing: placeholderSeat.missing,
+              seat: placeholderSeat.seat,
+              failures: placeholderSeat.failures.map((f) => `${f.surface}:${f.kind}`).join(","),
+              paged: placeholderSeat.paged,
+            }
+          : {}),
       });
     }
 
