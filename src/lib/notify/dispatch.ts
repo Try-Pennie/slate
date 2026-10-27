@@ -12,7 +12,10 @@ import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import type { AlertResolve, ThrottledNotify } from "@/lib/monitor/alert-deps";
 import {
+  changeBatchMs,
   formatReminder,
+  freshSubjects,
+  heldForBatch,
   isRepeatRuled,
   reminderIntervalMs,
   repeatChange,
@@ -379,6 +382,14 @@ export interface SendOptions extends AlertRepeat {
   channel?: string;
   news?: PageNews;
   /**
+   * The message to post when this send is a CHANGE (a subject the last post did not name),
+   * built from just those new subjects, so a post about new calls does not list again the
+   * ones already said. The dispatcher works out what is new, so the message and the rule
+   * that decided to post can never disagree about it (L342). Every other post (the first
+   * of an episode, a retry after a failed send) carries `text`, which names everything.
+   */
+  textForFresh?: (fresh: readonly string[]) => string;
+  /**
    * Told what the send did (#3801), for the one kind of caller that must act on it:
    * the canary's workflow hands its failure to the Worker and posts directly itself
    * unless the Worker sent or held it. A callback rather than a return value, so the
@@ -586,12 +597,26 @@ async function sendThrottledAlertUnrecorded(
   else if (news && (await carriesNews(key, seen, news))) reason = "news";
   else return "held";
 
+  // A change only key with a batch window collects new subjects rather than posting each
+  // as it appears (Dan, 2026-10-26), unless one is urgent. The last post's stamp is its
+  // delivery moment; a failed send leaves a stamp a year back, so a retry is never held.
+  const fresh = reason === "new-subject" && seen.kind === "present" ? freshSubjects(seen.subjects, subjects) : [];
+  const batchMs = reason === "new-subject" ? changeBatchMs(key) : null;
+  if (
+    batchMs !== null &&
+    seen.kind === "present" &&
+    heldForBatch({ batchMs, lastPostMs: seen.ms, nowMs, fresh, urgent: opts.urgentSubjects ?? [] })
+  ) {
+    log.info("slack-alert", { msg: "held: new subjects wait for the batch", key, fresh: fresh.length });
+    return "held";
+  }
+
   // #3802: a key another alert explains waits while that one fires, and for its own
   // grace after. Asked only once this send would otherwise post, so a tick the throttle
   // already holds pays nothing for it, and only for a key the fold table names.
   if (await heldByFold(key, nowMs)) return "held";
 
-  let posted = text;
+  let posted = reason === "new-subject" && opts.textForFresh && fresh.length > 0 ? opts.textForFresh(fresh) : text;
   let fields: RepeatFields | undefined;
   if (ruled) {
     // Asked only once the interval has run out: inside it the last post was recent, so

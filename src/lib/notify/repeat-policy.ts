@@ -57,10 +57,61 @@ export const CHANGE_ONLY_HOLD_MS = 366 * 24 * 60 * 60_000;
  *   last post's is a change; anything else is not. Omitted, there is no band.
  *   A DURATION must never be a band: "has not run for N minutes" grows on every
  *   tick by construction, so it would post on every tick.
+ * - `urgentSubjects`: for a key with a batch window (`changeBatchMs`), the subjects that
+ *   may not wait for it, because they would be over before the batch posts (a call
+ *   starting inside the window). A new one posts at once. Ignored by every other key.
  */
 export interface AlertRepeat {
   subjects?: readonly string[];
   band?: number;
+  urgentSubjects?: readonly string[];
+}
+
+/**
+ * Change only keys whose NEW subjects are collected rather than posted one by one: a new
+ * subject waits until this long has passed since the last post, unless the send marks it
+ * urgent. Keyed by the catalog key.
+ *
+ *   - demoted_agent_bookings: 3 hours (Dan, 2026-10-26, asked how calls that get stuck
+ *     after a page should arrive: "At most every 3 hours", with a call starting inside
+ *     those 3 hours posting at once).
+ */
+export const CHANGE_BATCH_MS: Readonly<Record<string, number>> = {
+  demoted_agent_bookings: 3 * 60 * 60_000,
+};
+
+/** The batch window for a SENT key, family members included, or null when it has none. */
+export function changeBatchMs(key: string): number | null {
+  if (!isChangeOnly(key)) return null;
+  const base = key.split(":")[0] ?? key;
+  return CHANGE_BATCH_MS[key] ?? CHANGE_BATCH_MS[base] ?? null;
+}
+
+/** The subjects the last post did not name. With nothing recorded, every one. */
+export function freshSubjects(last: readonly string[] | null, subjects: readonly string[]): string[] {
+  if (last === null) return [...subjects];
+  const told = new Set(last);
+  return subjects.filter((s) => !told.has(s));
+}
+
+/**
+ * Whether new subjects wait for the batch: the last post was less than `batchMs` ago and
+ * none of the new ones is urgent. A last post that cannot be dated holds nothing, which is
+ * the loud side. An urgent subject that was ALREADY told does not count: it is not new, so
+ * it cannot carry another subject past the window.
+ */
+export function heldForBatch(input: {
+  batchMs: number;
+  lastPostMs: number | null;
+  nowMs: number;
+  fresh: readonly string[];
+  urgent: readonly string[];
+}): boolean {
+  const { batchMs, lastPostMs, nowMs, fresh, urgent } = input;
+  if (fresh.length === 0 || lastPostMs === null) return false;
+  if (nowMs - lastPostMs >= batchMs) return false;
+  const pressing = new Set(urgent);
+  return !fresh.some((s) => pressing.has(s));
 }
 
 /**
