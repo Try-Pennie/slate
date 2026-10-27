@@ -62,7 +62,7 @@ function mockDb(result: { data: unknown; error: unknown }) {
   admin.supabaseAdmin.mockReturnValue({
     from: () => {
       const b: Record<string, unknown> = {};
-      for (const m of ["select", "eq", "in", "not", "order", "limit", "range"]) b[m] = () => b;
+      for (const m of ["select", "eq", "neq", "in", "not", "order", "limit", "range"]) b[m] = () => b;
       b.maybeSingle = () => b;
       b.then = (resolve: (r: unknown) => unknown) => Promise.resolve(result).then(resolve);
       return b;

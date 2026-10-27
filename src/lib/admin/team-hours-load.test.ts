@@ -58,7 +58,7 @@ function mockDb(over: Partial<Record<string, Answer>> = {}) {
         call.after = v;
         return b;
       };
-      for (const m of ["eq", "in", "is"]) {
+      for (const m of ["eq", "neq", "in", "is"]) {
         b[m] = (col: string, v: unknown) => {
           call.filters.push([`${m}:${col}`, v]);
           return b;

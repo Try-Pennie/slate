@@ -100,6 +100,8 @@ import {
   requireManager,
   requireAdmin,
   requireSuperAdmin,
+  coordinatorDeskUser,
+  requireCoordinatorDesk,
 } from "@/lib/auth";
 
 const ORG = "org-1";
@@ -537,5 +539,70 @@ describe("an aged session is refused (#3084)", () => {
     await arrange(user("admin-1", "admin"), user("agent-9", "agent"));
     stamps.started = String(Date.now() - 31 * DAY);
     expect(await currentUser()).toBeNull();
+  });
+});
+
+// #4205: a scheduling coordinator signs in like everybody else and opens ONE page.
+// `currentUser` is what every staff page, server action and API route resolves the
+// session through, so answering null for a coordinator is what keeps them off every
+// one of them without each having to remember; the coordinator page asks
+// `coordinatorDeskUser` instead. Each refusal below sits beside the same session
+// admitted, so a fixture nobody could get in with cannot pass it (L159).
+describe("a coordinator opens only the coordinator page (#4205)", () => {
+  it("resolves a coordinator's session to nobody on every staff surface", async () => {
+    signedInAs(user("coord-1", "coordinator", { bookable: false }));
+    expect(await currentUser()).toBeNull();
+    signedInAs(user("coord-1", "coordinator", { bookable: false }));
+    await expect(requireRole("agent")).rejects.toThrow("Not authorized");
+    signedInAs(user("coord-1", "coordinator", { bookable: false }));
+    expect((await realCurrentUser())?.id).toBe("coord-1");
+  });
+
+  it("admits a coordinator, and an admin, to the coordinator page", async () => {
+    signedInAs(user("coord-1", "coordinator", { bookable: false }));
+    expect((await coordinatorDeskUser())?.id).toBe("coord-1");
+    signedInAs(user("coord-1", "coordinator", { bookable: false }));
+    expect((await requireCoordinatorDesk()).id).toBe("coord-1");
+    signedInAs(user("admin-1", "admin"));
+    expect((await requireCoordinatorDesk()).id).toBe("admin-1");
+  });
+
+  it("refuses an advisor and a manager at the coordinator page, and a signed out caller", async () => {
+    signedInAs(user("agent-9", "agent"));
+    expect(await coordinatorDeskUser()).toBeNull();
+    signedInAs(user("mgr-1", "manager"));
+    await expect(requireCoordinatorDesk()).rejects.toThrow("Not authorized");
+    authUser.id = null;
+    await expect(requireCoordinatorDesk()).rejects.toThrow("Not authorized");
+  });
+
+  it("acts as the real admin on the coordinator page, never as whoever they are viewing as", async () => {
+    await arrange(user("admin-1", "admin"), user("agent-9", "agent"));
+    expect((await coordinatorDeskUser())?.id).toBe("admin-1");
+  });
+
+  it("never lets an admin view as a coordinator", async () => {
+    await arrange(user("admin-1", "admin"), user("coord-1", "coordinator", { bookable: false }));
+    expect((await currentUser())?.id).toBe("admin-1");
+  });
+});
+
+// #4205: nobody signs in as the placeholder advisor (Marcia, #4200), whose row holds
+// real customers' calls. A session reaching its row is refused like a departed one.
+describe("the placeholder advisor's row is never a session (#4205)", () => {
+  it("refuses a session on the placeholder row, and admits the same row as a person", async () => {
+    signedInAs(user("marcia", "agent", { is_placeholder: true, bookable: false }));
+    expect(await realCurrentUser()).toBeNull();
+    signedInAs(user("marcia", "agent", { is_placeholder: true, bookable: false }));
+    await expect(requireRole("agent")).rejects.toThrow("Not authorized");
+    signedInAs(user("marcia", "agent", { is_placeholder: false, bookable: false }));
+    expect((await realCurrentUser())?.id).toBe("marcia");
+  });
+
+  it("says so in the log, so a session refused this way is not mistaken for a stale cookie", async () => {
+    const warn = vi.spyOn(logModule.log, "warn");
+    signedInAs(user("marcia", "agent", { is_placeholder: true, bookable: false }));
+    await realCurrentUser();
+    expect(warn).toHaveBeenCalledWith("auth", expect.objectContaining({ msg: "refused a session on the placeholder advisor" }));
   });
 });

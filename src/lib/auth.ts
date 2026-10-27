@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { supabaseServer } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { atLeast, canImpersonate } from "@/lib/auth/roles";
+import { atLeast, canImpersonate, canUseCoordinatorDesk, opensStaffConsole } from "@/lib/auth/roles";
 import {
   IMPERSONATE_COOKIE,
   impersonationCookieOutcome,
@@ -94,6 +94,10 @@ export async function realCurrentUser(): Promise<User | null> {
   }
   if (gate.reason === "deactivated") {
     log.warn("auth", { msg: "refused a deactivated session", auth_user_id: user.id });
+  } else if (gate.reason === "placeholder") {
+    // #4205: nobody signs in as the placeholder advisor, and the sign in callback
+    // refuses it too; reaching here means a session got to its row another way.
+    log.warn("auth", { msg: "refused a session on the placeholder advisor", auth_user_id: user.id });
   } else if (gate.reason === "unreadable") {
     // Fails CLOSED (L42): "I could not tell whether they still work here" refuses.
     // It is a warning rather than silence because a sustained one signs everybody
@@ -209,7 +213,34 @@ async function resolveImpersonationTarget(real: User): Promise<User | null> {
 export async function currentUser(): Promise<User | null> {
   const real = await realCurrentUser();
   if (!real) return null;
+  // #4205: a scheduling coordinator opens no staff page, so to every one of them
+  // (and every server action and API route behind them, all of which resolve the
+  // session here) they are nobody. Refused HERE rather than page by page, so a page
+  // added tomorrow cannot forget; their one page asks `coordinatorDeskUser`.
+  if (!opensStaffConsole(real.role)) return null;
   return (await resolveImpersonationTarget(real)) ?? real;
+}
+
+/**
+ * The signed in person, when they may use the coordinator booking page (#4205): a
+ * coordinator, or an admin (`canUseCoordinatorDesk`). Null for everybody else and for
+ * a signed out request.
+ *
+ * The REAL session, never an impersonation target: a coordinator cannot be viewed as
+ * (`canImpersonate`), and an admin viewing as an advisor who opens this page is still
+ * the admin, who is who a placed call must record as having placed it.
+ */
+export async function coordinatorDeskUser(): Promise<User | null> {
+  const real = await realCurrentUser();
+  if (!real || !canUseCoordinatorDesk(real.role)) return null;
+  return real;
+}
+
+/** `coordinatorDeskUser`, or a `NotAuthorizedError` (a 403 at the HTTP layer). */
+export async function requireCoordinatorDesk(): Promise<User> {
+  const user = await coordinatorDeskUser();
+  if (!user) throw new NotAuthorizedError();
+  return user;
 }
 
 /**

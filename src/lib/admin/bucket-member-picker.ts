@@ -46,6 +46,10 @@ export const ROSTER_SECTION_ORDER: readonly string[] = [
   "Managers",
   "Team leads",
   "Admins",
+  // #4205: last, because a coordinator is never routed a call. The bucket page
+  // reads real advisors only, which leaves them out; this is the section they would
+  // fall under if a read ever did not.
+  "Coordinators",
 ];
 
 /**
@@ -54,6 +58,7 @@ export const ROSTER_SECTION_ORDER: readonly string[] = [
  * which is indistinguishable from a deliberate choice (L113).
  */
 const SECTION_BY_ROLE: Record<Role, string> = {
+  coordinator: "Coordinators",
   agent: "Agents",
   manager: "Managers",
   team_lead: "Team leads",

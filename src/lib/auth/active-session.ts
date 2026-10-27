@@ -33,10 +33,15 @@ import type { User } from "@/lib/db/types";
  * that is the correct side to be wrong on: the other side leaves a departed
  * manager holding admin for as long as the read is failing, which is exactly when
  * nobody is watching.
+ *
+ * A FOURTH refusal since #4205, `placeholder`: the placeholder advisor (Marcia,
+ * #4200) is a users row that holds real customers' calls and belongs to no person,
+ * so nobody may sign in as it or act as it. A session reaching it (an address that
+ * matched its row) could cancel or move every call it holds.
  */
 export type SessionGate =
   | { admit: true; user: User }
-  | { admit: false; reason: "no-row" | "deactivated" | "unreadable" };
+  | { admit: false; reason: "no-row" | "deactivated" | "unreadable" | "placeholder" };
 
 /** A row shape this judge can read: anything carrying the departure stamp. */
 export interface DeactivatableRow {
@@ -63,7 +68,13 @@ export function gateSessionRow(
   if (error) return { admit: false, reason: "unreadable" };
   if (!row) return { admit: false, reason: "no-row" };
   if (isDeactivated(row)) return { admit: false, reason: "deactivated" };
+  if (isPlaceholderAccount(row)) return { admit: false, reason: "placeholder" };
   return { admit: true, user: row };
+}
+
+/** Is this the placeholder advisor's row (#4200)? A row read without the column is not. */
+export function isPlaceholderAccount(row: { is_placeholder?: boolean | null } | null | undefined): boolean {
+  return row != null && row.is_placeholder === true;
 }
 
 /**
@@ -79,5 +90,19 @@ export class DeactivatedAccountError extends Error {
   constructor(message = "this Slate account has been deactivated") {
     super(message);
     this.name = "DeactivatedAccountError";
+  }
+}
+
+/**
+ * A sign in refused because the address belongs to the placeholder advisor (#4205).
+ *
+ * Its own type, like `DeactivatedAccountError`, because it is settled rather than
+ * retryable: signing in again reaches the same row. Thrown by provisioning before
+ * anything is written to the row, and caught in the sign in callback.
+ */
+export class PlaceholderAccountError extends Error {
+  constructor(message = "this Slate account is the placeholder advisor, which nobody signs in as") {
+    super(message);
+    this.name = "PlaceholderAccountError";
   }
 }

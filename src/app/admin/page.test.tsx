@@ -98,7 +98,7 @@ function mockDb(overrides: Record<string, Result> = {}) {
     from: (table: string) => {
       const result = byTable[table] ?? { data: [], error: null };
       const b: Record<string, unknown> = {};
-      for (const m of ["select", "eq", "in", "not", "gte", "lte", "order", "limit", "range"]) {
+      for (const m of ["select", "eq", "neq", "in", "not", "gte", "lte", "order", "limit", "range"]) {
         b[m] = () => b;
       }
       b.maybeSingle = () => b;

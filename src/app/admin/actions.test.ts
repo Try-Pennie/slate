@@ -415,6 +415,26 @@ describe("setUserRole denial branches", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  // #4205: a coordinator is never bookable (users_coordinator_never_bookable), so the
+  // write would fail as a database refusal. Said on the page instead, beside the same
+  // change admitted for an advisor who is out of the pool.
+  it("refuses on the page to make a bookable advisor a coordinator, and does not write", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    dbState.single = { role: "agent", bookable: true };
+    const to = await refusalOf(() => setUserRole(form({ user_id: "u2", role: "coordinator" })));
+    expect(to).toMatch(/^\/admin\/agents\/u2\?error=/);
+    expect(to).toMatch(/booking pool/i);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("makes an advisor who is out of the pool a coordinator", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    dbState.single = { role: "agent", bookable: false };
+    dbState.count = 5;
+    await setUserRole(form({ user_id: "u2", role: "coordinator" })).catch(() => {});
+    expect(update).toHaveBeenCalledWith({ role: "coordinator" });
+  });
+
   it("refuses on the page when an admin demotes themselves, and does not write", async () => {
     auth.requireAdmin.mockResolvedValueOnce(admin);
     dbState.single = { role: "admin" };

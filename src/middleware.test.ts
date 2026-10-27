@@ -251,6 +251,14 @@ describe("staff session age limits (#3084)", () => {
     await expectRefused(await middleware(staffRequest("/me", signedIn(10 * 86_400_000, SESSION_IDLE_MS))), "session_idle");
   });
 
+  // #4205: the coordinator page is a staff surface, so its session ages out like the
+  // console's, and an outside site may not frame it.
+  it("ages a session out on the coordinator page as on every other staff page", async () => {
+    const inside = await middleware(staffRequest("/coordinator", signedIn(10 * 86_400_000, SESSION_IDLE_MS - 1)));
+    expect(inside.status).toBe(200);
+    await expectRefused(await middleware(staffRequest("/coordinator", signedIn(10 * 86_400_000, SESSION_IDLE_MS))), "session_idle");
+  });
+
   it("answers an aged session's server action POST with a 303, so the browser does not re-POST to /login", async () => {
     const req = new NextRequest("https://slate.test/admin/agents", {
       method: "POST",

@@ -103,7 +103,8 @@ describe("TeamAccessPanel", () => {
     render(panel());
     await user.click(screen.getByRole("combobox", { name: /^access$/i }));
     const labels = screen.getAllByRole("option").map((o) => o.textContent?.trim());
-    expect(labels).toEqual(["manager", "team lead", "admin"]);
+    // #4205: and the scheduling coordinator, granted before their first sign in.
+    expect(labels).toEqual(["manager", "team lead", "admin", "coordinator"]);
     expect(labels).not.toContain("super admin");
   });
 

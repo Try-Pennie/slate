@@ -76,7 +76,7 @@ function mockDb(schedulesFail: boolean) {
   admin.supabaseAdmin.mockReturnValue({
     from: (table: string) => {
       const b: Record<string, unknown> = {};
-      for (const m of ["select", "eq", "in", "is", "not", "order", "limit", "range"]) b[m] = () => b;
+      for (const m of ["select", "eq", "neq", "in", "is", "not", "order", "limit", "range"]) b[m] = () => b;
       b.maybeSingle = () => b;
       b.then = (resolve: (r: unknown) => unknown) => Promise.resolve(answers[table]!()).then(resolve);
       return b;
