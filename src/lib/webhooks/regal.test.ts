@@ -576,7 +576,7 @@ describe("placeholder bookings to Regal (#4204)", () => {
   // A routed booking never touches the customer's AI eligibility: the lead may be
   // eligible in Salesforce for reasons of its own (the booking-agent-eligible page).
   it.each(["booking.created", "booking.rescheduled", "booking.reassigned", "booking.cancelled", "booking.contact_updated"] as const)(
-    "leaves a routed %s unmarked and its customProperties unsent",
+    "marks a routed %s false and leaves its ai_agent_eligible unsent",
     (event) => {
       const e = buildRegalEvent(event, { ...payload(), booking_kind: "routed" });
       expect(e.properties.slateGhostBooking).toBe(false);
