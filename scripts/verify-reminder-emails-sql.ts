@@ -155,11 +155,10 @@ try {
   sql(`
     update bookings set reminder_sent_for = starts_at, reminder_sent_at = '${sentAt}' where id = '${daySent.id}';
     update bookings set reminder_sent_for = starts_at, reminder_sent_at = null where id = '${dayClaimed.id}';
-    update bookings set reminder_sent_for = starts_at, reminder_sent_at = '${sentAt}', hour_reminder_sent_for = starts_at where id = '${both.id}';
+    update bookings set reminder_sent_for = starts_at, reminder_sent_at = '${sentAt}', hour_reminder_sent_for = starts_at
+     where id in ('${both.id}', '${cancelled.id}', '${past.id}');
     update bookings set hour_reminder_sent_for = starts_at where id = '${hourOnly.id}';
     update bookings set reminder_sent_for = '2031-03-01T15:00:00Z', reminder_sent_at = '${sentAt}' where id = '${moved.id}';
-    update bookings set reminder_sent_for = starts_at, reminder_sent_at = '${sentAt}', hour_reminder_sent_for = starts_at where id = '${cancelled.id}';
-    update bookings set reminder_sent_for = starts_at, reminder_sent_at = '${sentAt}', hour_reminder_sent_for = starts_at where id = '${past.id}';
   `);
   const legacyColumns = () =>
     sql(`select string_agg(id || '|' || coalesce(reminder_sent_for::text, '') || '|' || coalesce(reminder_sent_at::text, '') || '|' || coalesce(hour_reminder_sent_for::text, ''), ',' order by id) from bookings;`);
