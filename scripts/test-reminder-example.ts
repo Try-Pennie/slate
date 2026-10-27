@@ -1,5 +1,6 @@
-// `pnpm send:reminder-example`: one 24 hour reminder, built by the real lane, sent to
-// a Pennie inbox so somebody can see what a lead receives. Run:
+// `pnpm send:reminder-example`: one reminder, the 24 hour one by default or the 1 hour
+// one with REMINDER_EXAMPLE_KIND=hour (#4285), built by the real lane, sent to a Pennie
+// inbox so somebody can see what a lead receives. Run:
 //   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-reminder-example.ts
 //
 // The command emails a real inbox from a real advisor's mailbox, so the properties
