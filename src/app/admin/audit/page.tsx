@@ -19,6 +19,7 @@ import { InPlaceLink } from "@/components/ui/InPlaceLink";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { btnSecondaryCls, cardCls, inputCls, proseCls } from "@/components/ui/styles";
 import type { AuditEntry, User } from "@/lib/db/types";
+import { realAdvisorsOnly } from "@/lib/advisors/real-advisor";
 import { SelectField } from "@/components/ui/SelectField";
 
 export const metadata = { title: "Audit log" };
@@ -52,7 +53,7 @@ export default async function AuditLogPage({
   // they suspect something happened. A trail that cannot say who did anything is
   // a failure, not a trail with nothing in it.
   const users = unwrap(
-    await db.from("users").select("*").eq("org_id", me.org_id).eq("is_test", false),
+    await realAdvisorsOnly(db.from("users").select("*").eq("org_id", me.org_id)),
     "audit log roster",
   ) as User[];
 
@@ -92,6 +93,7 @@ export default async function AuditLogPage({
       ? []
       : (
           unwrap(
+            // any-advisor-ok: the test advisors themselves, whose drill rows are hidden.
             await db.from("users").select("id").eq("org_id", me.org_id).eq("is_test", true),
             "audit log test advisors",
           ) as { id: string }[]

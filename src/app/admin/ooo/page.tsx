@@ -43,6 +43,7 @@ import { SubmitButton } from "@/components/ui/SubmitButton";
 import { DeclineConfirm } from "@/components/ui/DeclineConfirm";
 import type { Booking, OooRequest, OooStatus, User } from "@/lib/db/types";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { realAdvisorsOnly } from "@/lib/advisors/real-advisor";
 
 export const metadata = { title: "Team time off" };
 
@@ -156,12 +157,11 @@ export default async function OooQueuePage({
   const [pendingRes, historyRes, usersRes, orgRes, allRequestsRaw] = await Promise.all([
     pendingQuery,
     historyQuery,
-    db
-      .from("users")
-      .select("id, name, email, manager_id, role")
-      .eq("org_id", me.org_id)
-      // Hide the synthetic smoke-test agent (#396) from the OOO roster + insights.
-      .eq("is_test", false),
+    // Real advisors only (#396, #4201): no smoke-test agent or placeholder in the
+    // OOO roster + insights.
+    realAdvisorsOnly(
+      db.from("users").select("id, name, email, manager_id, role").eq("org_id", me.org_id),
+    ),
     db
       .from("organizations")
       .select("default_timezone")

@@ -22,6 +22,7 @@ import { rosterSectionFor, type RosterEntry } from "@/lib/admin/bucket-member-pi
 import { btnCls, cardCls, labelCls, proseCls } from "@/components/ui/styles";
 import type { Bucket, BucketMember, EventType, User } from "@/lib/db/types";
 import { SelectField } from "@/components/ui/SelectField";
+import { realAdvisorsOnly } from "@/lib/advisors/real-advisor";
 
 export const metadata = { title: "Buckets" };
 
@@ -47,7 +48,9 @@ export default async function BucketsPage({
   // "unreadable" state a returned error produces, so the two arrive at one place
   // rather than at a 500 and a notice.
   const settled = await Promise.allSettled([
-    db.from("users").select("*").eq("org_id", me.org_id).eq("is_test", false),
+    // Real advisors only (#396, #4201): the member and fallback pickers never offer
+    // the smoke-test agent or the placeholder.
+    realAdvisorsOnly(db.from("users").select("*").eq("org_id", me.org_id)),
     db.from("event_types").select("*").eq("org_id", me.org_id),
     // #1929: `is_test = false`, matching the default bucket picker below
     // (`page.tsx` further down) and, crucially, `bucketCoverageByCode`, which

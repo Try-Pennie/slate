@@ -84,6 +84,8 @@ export default async function BookingDetailPage({
     // so the trail stops naming who did what.
     async getRoster(orgId) {
       const data = unwrap(
+        // any-advisor-ok: names every actor and advisor in the history, the
+        // placeholder and the test advisors included.
         await db.from("users").select("id,name,email").eq("org_id", orgId),
         "booking detail roster",
       );

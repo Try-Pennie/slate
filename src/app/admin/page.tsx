@@ -26,6 +26,7 @@ import {
 import { StuckDeliveriesPanel } from "@/components/admin/StuckDeliveriesPanel";
 import type { BookingOutbox, BookingReservation } from "@/lib/db/types";
 import type { User } from "@/lib/db/types";
+import { realAdvisorsOnly } from "@/lib/advisors/real-advisor";
 
 export const metadata = { title: "Health" };
 
@@ -212,8 +213,8 @@ export default async function AdminHealthPage() {
 
   const db = supabaseAdmin();
   const [usersRes, calsRes, outboxRes, reservationRes] = await Promise.all([
-    // Exclude the synthetic smoke-test agent (#396) from every count here.
-    db.from("users").select("*").eq("org_id", me.org_id).eq("is_test", false),
+    // Real advisors only (#396, #4201): no smoke-test agent or placeholder in any count here.
+    realAdvisorsOnly(db.from("users").select("*").eq("org_id", me.org_id)),
     db
       .from("agent_calendars")
       .select(

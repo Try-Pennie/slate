@@ -239,6 +239,7 @@ cannot see and the incidents behind it are in `docs/repo-guards.md`.
 | `// alert-key: <key>` | declares a key the alert scanner cannot read (required, not optional) | `test-alert-recovery-coverage.ts` |
 | `// lifecycle-write-ok: <why>` | departure and return write through `src/lib/offboarding/lifecycle-write.ts` (below) | `test-deactivation-write.ts` |
 | `// routable-write-ok: <why>` | `users.bookable` and `users.deactivated_at` are written only by `writeRoutableState` (below) | `test-routable-write-owner.ts` |
+| `// any-advisor-ok: <why>` | a `users` list read applies `realAdvisorsOnly`/`withoutPlaceholder` or selects `REAL_ADVISOR_COLUMNS` (`src/lib/advisors/real-advisor.ts`); a bare `.eq("is_test", false)` is refused | `test-real-advisor-reads.ts` |
 | `-- export-cursor-ok: <why>` | a backfill of a mirrored table rewinds its `export_cursor` in the same change (`docs/migrations-runbook.md`) | `test-mirror-backfill-cursor.ts` |
 | `-- search-path-ok: <reason>` | a SQL function's pinned `search_path` cannot reach extensions: use `pg_catalog` or schema qualify | `test-definer-search-path.ts` |
 | `-- anon-execute-ok: <reason>` | a SECURITY DEFINER function revokes EXECUTE from `public, anon, authenticated` | `test-migration-grants.ts` |

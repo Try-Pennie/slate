@@ -41,6 +41,7 @@ export default async function RecentRoutingPage() {
     // (#396), so every visible row's agent was missing from the very map used to
     // name it. The `is_test` filter belongs where a test agent must not be
     // CHOSEN (a picker, the pool), not where one has to be named.
+    // any-advisor-ok: the #1914 name map, which names the placeholder's bookings too (#4201).
     db.from("users").select("*").eq("org_id", me.org_id),
     // #2660: test bookings are kept OUT of this read through the bucket join,
     // which is where the flag lives (`bookings` has none of its own). A stranger's

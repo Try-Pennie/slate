@@ -83,6 +83,7 @@ import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { lastChangedLine, shortStamp } from "@/lib/admin/last-changed";
 import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import type { MonitorAlertConfig, MonitorSettings, User } from "@/lib/db/types";
+import { REAL_ADVISOR_COLUMNS } from "@/lib/advisors/real-advisor";
 
 export const metadata = { title: "Alerts and floors" };
 
@@ -313,7 +314,8 @@ export default async function AlertSettingsPage({
       selectAllPages<IgnoreRosterUser>("alerts page roster", "id", () =>
         db
           .from("users")
-          .select("id, name, email, role, is_test, deactivated_at"),
+          // The picker judges each row with isRealAdvisor (#4201), so both flags are read.
+          .select(`id, name, email, role, deactivated_at, ${REAL_ADVISOR_COLUMNS}`),
       ),
     ]);
     regalIgnores = { rows: ignoreListRows(ignores, roster), options: ignorePickerOptions(roster, ignores) };
