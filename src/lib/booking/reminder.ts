@@ -44,7 +44,7 @@ import { realAdvisorName } from "./advisor-contact-card.ts";
 export const REMINDER_LEAD_MS = 24 * 60 * 60_000;
 
 /** The booking statuses a reminder can belong to. A lead with no live call gets none. */
-const LIVE_STATUSES = new Set(["confirmed", "rescheduled"]);
+export const LIVE_STATUSES: ReadonlySet<string> = new Set(["confirmed", "rescheduled"]);
 
 export interface ReminderSubject {
   startsAtMs: number;
@@ -202,6 +202,21 @@ export const REMINDER_HOLD_MS = 10 * 60_000;
  */
 export const REMINDER_HOLD_FLOOR_MS = 60 * 60_000;
 
+/**
+ * How much further than its kind's floor a call must be for a failed send to be
+ * handed back (2026-10-05 review): `REMINDER_HOLD_FLOOR_MS` for the 24 hour email,
+ * `HOUR_REMINDER_RETRY_FLOOR_MS` for the 1 hour one (#4282). The floor is where a
+ * reminder stops being worth sending (for the 24 hour email, because it would land
+ * after the lead's one hour text); the RETRY is
+ * the next tick, one five minute cadence later, so a hand back made right at the
+ * floor would be retried inside it. Ten minutes is that cadence plus another, so a
+ * next tick that itself spends minutes on slow mints still sends before the floor.
+ * The distance is judged on the clock read when the send FAILED, not the tick's
+ * start, for the same reason. Lives here rather than in the lane so the pure judge
+ * (`reminder-decision.ts`, #4297) can read it; the lane re-exports it.
+ */
+export const REMINDER_RETRY_MARGIN_MS = 10 * 60_000;
+
 export interface ReminderHoldSubject {
   createdAtMs: number;
   startsAtMs: number;
@@ -280,7 +295,7 @@ export interface ReminderCopyInput {
  * start falls to: a day nobody worked out must not be asserted to a lead, and
  * "Invalid DateTime" must never reach an inbox.
  */
-function dayWord(input: ReminderCopyInput): string {
+export function dayWord(input: ReminderCopyInput): string {
   const at = DateTime.fromISO(input.startsAtIso, { zone: input.timezone });
   const now = DateTime.fromMillis(input.nowMs, { zone: input.timezone });
   if (!at.isValid || !now.isValid) return "soon";
@@ -290,7 +305,7 @@ function dayWord(input: ReminderCopyInput): string {
   return at.toFormat("cccc");
 }
 
-function timeLabel(input: ReminderCopyInput): string {
+export function timeLabel(input: ReminderCopyInput): string {
   const at = DateTime.fromISO(input.startsAtIso, { zone: input.timezone });
   // THE one spelling of a clock time (#2221), not a format string of this file's
   // own: a lead reads the same shape here as on the booker and the manage page.
@@ -329,7 +344,7 @@ export function reminderBody(input: ReminderCopyInput): string {
  * it really is, in fives, rather than an hour it no longer is. An unreadable start or
  * clock says only "soon".
  */
-function soonWord(input: ReminderCopyInput): string {
+export function soonWord(input: ReminderCopyInput): string {
   const startMs = DateTime.fromISO(input.startsAtIso).toMillis();
   if (!Number.isFinite(startMs) || !Number.isFinite(input.nowMs)) return "soon";
   const minutes = Math.round((startMs - input.nowMs) / 60_000 / 5) * 5;
@@ -350,6 +365,31 @@ export function hourReminderBody(input: ReminderCopyInput): string {
   return reminderBodyAt(input, `${soonWord(input)}, at ${timeLabel(input)}`);
 }
 
+/**
+ * How the call will reach the lead: the number we will dial (#4292) and, when the
+ * number the call comes FROM is known and passed, the sentence asking them to save it
+ * (#1334), which replaces "nothing you need to set up". `card` says whether that
+ * sentence was written, because the contact card it points at goes only with the copy
+ * that mentions it. Shared by today's builders and the template engine's
+ * `{how we call}` block (#4297), so the two cannot word it differently.
+ *
+ * `advisorNamed` picks "My" card (named after a real advisor, who the email comes
+ * from) or "Our" card (named Pennie) (Dan, 2026-10-01).
+ */
+export function howWeCallLine(
+  leadPhone: string | null,
+  callingNumber: string | null,
+  advisorNamed: boolean,
+): { line: string; card: boolean } {
+  const from = callComesFrom(callingNumber);
+  // #4292: the lead's own number, as the manage page shows it, so a wrong one is
+  // noticed before the call rather than on it.
+  const callYou = weWillCallYou(leadPhone);
+  return from
+    ? { line: `${callYou}. ${from} ${advisorNamed ? "My" : "Our"} contact card is attached, so one tap adds it.`, card: true }
+    : { line: `${callYou}, so there is nothing you need to set up.`, card: false };
+}
+
 function reminderBodyAt(input: ReminderCopyInput, when: string): string {
   if (input.onPlaceholder) return placeholderReminderBody(when, input.leadPhone);
   // #1334: with the calling number known, the lead has one thing worth doing before
@@ -362,17 +402,11 @@ function reminderBodyAt(input: ReminderCopyInput, when: string): string {
   // advisor, and the email comes from them, so it is "my" card; with no real name
   // it is named Pennie and stays "our" card (Dan, 2026-10-01).
   const name = realAdvisorName(input.agentName);
-  const from = callComesFrom(input.callingNumber);
-  // #4292: the lead's own number, as the manage page shows it, so a wrong one is
-  // noticed before the call rather than on it.
-  const callYou = weWillCallYou(input.leadPhone);
-  const numberLines = from
-    ? [`${callYou}. ${from} ${name ? "My" : "Our"} contact card is attached, so one tap adds it.`]
-    : [`${callYou}, so there is nothing you need to set up.`];
+  const { line: numberLine } = howWeCallLine(input.leadPhone, input.callingNumber, name !== null);
   return [
     `Hi, this is a reminder that your call with ${name ? `${name} at Pennie` : "Pennie"} is ${when}.`,
     "",
-    ...numberLines,
+    numberLine,
     "",
     `If that time no longer works, you can pick another or cancel here: ${input.manageUrl}`,
     "",
@@ -393,7 +427,7 @@ function reminderBodyAt(input: ReminderCopyInput, when: string): string {
  * carries no manage link and no offer to change or cancel (Dan, 2026-10-27: a customer
  * who texts asking to change the call is handled then), so `manageUrl` goes unused.
  */
-function placeholderReminderBody(when: string, leadPhone: string | null): string {
+export function placeholderReminderBody(when: string, leadPhone: string | null): string {
   return [
     `Hi, this is a reminder that your call with Pennie is ${when}.`,
     "",
