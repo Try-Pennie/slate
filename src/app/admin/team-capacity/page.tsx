@@ -1,5 +1,4 @@
 import { redirect } from "next/navigation";
-import { headers } from "next/headers";
 import { DateTime } from "luxon";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings, canManageAgents } from "@/lib/auth/roles";
@@ -21,7 +20,8 @@ import { loadCapacityHistoryDay, readSavedDays } from "@/lib/admin/capacity-hist
 import { EVERY_SAVED_DAY_FROM } from "@/lib/admin/capacity-history";
 import { HISTORY_UNREADABLE_COPY, LINE_UNREADABLE_COPY, UNMEASURABLE_COPY } from "@/lib/admin/team-capacity-copy";
 import { pickableDays, teamCapacityView, todayHasEnded, type CapacityDaySource } from "@/lib/admin/team-capacity-view";
-import { designFixturesEnabled, fixtureView, type DesignFixtureFile } from "@/lib/admin/team-capacity-fixture";
+import { fixtureView, type DesignFixtureFile } from "@/lib/admin/team-capacity-fixture";
+import { readDesignFixture } from "@/lib/admin/design-fixture-read";
 import { judgePace, type PaceRead } from "@/lib/admin/team-capacity-pace";
 import { readPaceRows } from "@/lib/admin/team-capacity-pace-load";
 import { dayTotals, type TeamCapacityAdvisor } from "@/lib/admin/team-capacity";
@@ -77,12 +77,8 @@ export default async function TeamCapacityPage({
   );
 
   // The design's frames, from the fixture, never from the database.
-  const host = (await headers()).get("host");
-  if (sp.frame && designFixturesEnabled(process.env.SLATE_DESIGN_FIXTURES, host)) {
-    // Read from disk, never imported: an import would put the whole fixture in every deployment's
-    // bundle for a branch only the e2e run on this machine reaches.
-    const { readFile } = await import("node:fs/promises");
-    const fixture = JSON.parse(await readFile(`${process.cwd()}/docs/design/fixtures/team-capacity.json`, "utf8")) as DesignFixtureFile;
+  const fixture = await readDesignFixture<DesignFixtureFile>(sp.frame, "team-capacity");
+  if (fixture && sp.frame) {
     const f = fixtureView(fixture, sp.frame);
     const theme = <StandaloneTheme theme={f.theme} />;
     if (!f.report.measurable) return <>{theme}{refused(UNMEASURABLE_COPY[f.report.reason])}</>;

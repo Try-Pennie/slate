@@ -119,6 +119,10 @@ export const ADMIN_NAV: AdminNavGroup[] = [
     title: "Bookings",
     items: [
       { href: "/admin/bookings", label: "Look up a booking", gate: "manager" },
+      // #4264: the switch that lets coordinators put a call nobody is free for on Marcia, and
+      // the coordinators themselves. Super admin only (D2 in docs/design/coordinator-admin.html),
+      // after Look up a booking, which is opened more often (D1).
+      { href: "/admin/coordinator-booking", label: "Coordinator booking", gate: "super_admin" },
       { href: "/admin/booker-copy", label: "Booker copy", gate: "admin" },
       { href: "/admin/booking-reasons", label: "Booking reasons", gate: "admin" },
       { href: "/admin/booking-outcomes", label: "API outcomes", gate: "admin" },

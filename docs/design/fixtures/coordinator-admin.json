@@ -1,0 +1,95 @@
+{
+  "about": "The Coordinator booking admin page design (docs/design/coordinator-admin.html, #4264): its copy, its five invented coordinators and its seven frames, exactly as the settled file draws them. The page renders the same frames from this file under ?frame=, only behind SLATE_DESIGN_FIXTURES on this machine, and scripts/test-coordinator-admin-design-fixture.ts holds this file to the design and the copy to the page.",
+  "adminSwitch": {
+    "page": {
+      "title": "Coordinator booking",
+      "href": "/admin/coordinator-booking",
+      "intro": "The offshore team who book and move customers' calls by phone. Slate opens no other page to them."
+    },
+    "section": {
+      "heading": "Scheduling coordinators"
+    },
+    "switch": {
+      "heading": "Coordinator calls nobody is free for",
+      "rule": "Only scheduling coordinators, booking on their own page, can ever put a call on Marcia, Pennie's AI agent. Leads booking on the website never can.",
+      "off": "Off. A coordinator who tries to book one is refused.",
+      "on": "On. A coordinator can book one on Marcia, and Regal rings it to whichever advisor is free.",
+      "turnOn": "Let coordinators book on Marcia",
+      "turnOff": "Stop booking them on Marcia",
+      "confirmOn": "From the next booking, a coordinator can book a time no advisor is free for. The call goes on Marcia, and Regal rings it to whichever advisor is free when it comes up. You can turn this off again here."
+    },
+    "list": {
+      "person": "Coordinator",
+      "lastSignedIn": "Last signed in",
+      "empty": "Nobody has coordinator access yet. You give it on Team access.",
+      "failed": "Could not read who has coordinator access.",
+      "failedMeanwhile": "Nobody's access has changed. Reload the page to try again.",
+      "removeAsk": "{name} will no longer be able to sign in to Slate or book calls. This can't be undone. The calls {first} has already booked stay as they are."
+    },
+    "coordinators": [
+      {
+        "name": "Aisha Bello",
+        "email": "abello@trypennie.com",
+        "lastSignedIn": "2 hours ago"
+      },
+      {
+        "name": "Grace Okafor",
+        "email": "gokafor@trypennie.com",
+        "lastSignedIn": "yesterday"
+      },
+      {
+        "name": "Marco Delgado",
+        "email": "mdelgado@trypennie.com",
+        "lastSignedIn": "today"
+      },
+      {
+        "name": "Priya Raman",
+        "email": "praman@trypennie.com",
+        "lastSignedIn": "4 days ago"
+      },
+      {
+        "name": "Tomas Rivera",
+        "email": "trivera@trypennie.com",
+        "lastSignedIn": "38 days ago"
+      }
+    ]
+  },
+  "frames": {
+    "f-off": {
+      "theme": "light",
+      "switch": "off",
+      "list": "rows"
+    },
+    "f-confirm-on": {
+      "theme": "light",
+      "switch": "confirm-on",
+      "list": "rows"
+    },
+    "f-on": {
+      "theme": "light",
+      "switch": "on",
+      "list": "rows"
+    },
+    "f-remove": {
+      "theme": "light",
+      "switch": "off",
+      "list": "remove",
+      "removing": 0
+    },
+    "f-empty": {
+      "theme": "light",
+      "switch": "off",
+      "list": "empty"
+    },
+    "f-failed": {
+      "theme": "light",
+      "switch": "off",
+      "list": "failed"
+    },
+    "d-off": {
+      "theme": "dark",
+      "switch": "off",
+      "list": "rows"
+    }
+  }
+}

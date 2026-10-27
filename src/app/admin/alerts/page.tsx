@@ -41,8 +41,7 @@ import { VolumeFloors } from "@/components/admin/VolumeFloors";
 import { AlertSwitch } from "@/components/admin/AlertSwitch";
 import { alertSwitchCopy, type AlertSwitchName } from "@/lib/monitor/alert-switch-copy";
 import { alertsFixtureFrame, type AlertsDesignFixture } from "@/lib/admin/alerts-design-fixture";
-import { designFixturesEnabled } from "@/lib/admin/team-capacity-fixture";
-import { headers } from "next/headers";
+import { readDesignFixture } from "@/lib/admin/design-fixture-read";
 import { CalcomRetirementSwitch } from "@/components/admin/CalcomRetirementSwitch";
 import { CALCOM_RETIREMENT_FORM } from "@/lib/calcom/retirement";
 import { loadPutBackCounts, putBackSavedSentence, type PutBackCounts } from "@/lib/calcom/put-back";
@@ -249,12 +248,8 @@ export default async function AlertSettingsPage({
   // only under the local flag on this machine (`designFixturesEnabled`, Team capacity's mechanism),
   // after every access check above, and it changes nothing but which boxes are drawn ticked.
   let switchesShown = armedBySwitch;
-  if (sp.frame && designFixturesEnabled(process.env.SLATE_DESIGN_FIXTURES, (await headers()).get("host"))) {
-    // Read from disk, never imported, so no deployment's bundle carries the fixture.
-    const { readFile } = await import("node:fs/promises");
-    const fixture = JSON.parse(
-      await readFile(`${process.cwd()}/docs/design/fixtures/admin-alerts-help-text.json`, "utf8"),
-    ) as AlertsDesignFixture;
+  const fixture = await readDesignFixture<AlertsDesignFixture>(sp.frame, "admin-alerts-help-text");
+  if (fixture && sp.frame) {
     switchesShown = alertsFixtureFrame(fixture, sp.frame).armed;
   }
   // #2875: null when the row could not be read, or was read without the column

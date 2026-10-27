@@ -153,6 +153,7 @@ import { DAYS_OFFERED } from "@/lib/admin/days-offered-copy";
 import { parseNearlyFullPct } from "@/lib/admin/team-capacity-copy";
 import { ME_TABS } from "@/lib/me/nav";
 import { REAL_ADVISOR_COLUMNS } from "@/lib/advisors/real-advisor";
+import { COORDINATOR_BOOKING_COPY, COORDINATOR_BOOKING_HREF } from "@/lib/admin/coordinator-booking-copy";
 import {
   COVERAGE_CHOICE_FIELD,
   readCoverageChoice,
@@ -3718,6 +3719,135 @@ export async function setSharedConfirmLine(form: FormData): Promise<void> {
 
   revalidatePath("/admin/business-hours");
   redirect(`/admin/business-hours${savedQuery(on ? "shared-line-on" : "shared-line-off")}`);
+}
+
+/**
+ * Let scheduling coordinators book a call nobody is free for on Marcia, or stop them
+ * (#4264, `booking_settings.placeholder_booking_enabled`, migration 0207). SUPER ADMIN only.
+ *
+ * WHO: `requireSuperAdmin`, checked here, never trusted to the page hiding the button
+ * (D2 in docs/design/coordinator-admin.html). WHOSE DATA: the one org wide settings row.
+ *
+ * Built the way `setSharedConfirmLine` above is: one column on `booking_settings` id=1
+ * through a column scoped upsert, the STATE the form wants rather than a toggle (L60), the
+ * write consulted before anything reports a save (#2379), and an audit entry carrying which
+ * way it went (L529). The booking path reads the column on every coordinator booking
+ * (`readPlaceholderBookingEnabled`), so a flip lands on the next one.
+ *
+ * Anything that is not an explicit "true" turns it OFF. Off is the default and the safe
+ * side: nothing is put on Marcia, and a stray submit must never be what starts that.
+ */
+export async function setPlaceholderBookingEnabled(form: FormData): Promise<void> {
+  const actor = await requireSuperAdmin();
+  const on = String(form.get("on") ?? "") === "true";
+
+  const { error } = await supabaseAdmin().from("booking_settings").upsert(
+    {
+      id: 1,
+      placeholder_booking_enabled: on,
+      updated_at: new Date().toISOString(),
+      updated_by: actor.id,
+    },
+    { onConflict: "id" },
+  );
+  if (error) {
+    // The direction stays in the sentence, in the button's own words (L60, L399).
+    redirect(
+      `${COORDINATOR_BOOKING_HREF}${refusedQuery(
+        writeRefused(
+          on
+            ? `The change to ${lowerFirst(COORDINATOR_BOOKING_COPY.switch.turnOn)}`
+            : `The change to ${lowerFirst(COORDINATOR_BOOKING_COPY.switch.turnOff)}`,
+          error,
+        ),
+      )}`,
+    );
+  }
+
+  await recordAudit({
+    orgId: actor.org_id,
+    actorId: actor.id,
+    action: "booking.settings",
+    details: { placeholder_booking_enabled: on },
+  });
+
+  revalidatePath(COORDINATOR_BOOKING_HREF);
+  redirect(`${COORDINATOR_BOOKING_HREF}${savedQuery(on ? "placeholder-on" : "placeholder-off")}`);
+}
+
+const lowerFirst = (s: string): string => s.charAt(0).toLowerCase() + s.slice(1);
+
+/**
+ * Take a scheduling coordinator's access away (#4264, D12). SUPER ADMIN only.
+ *
+ * Team access GRANTS access and never removes it; a staff member's access is removed by
+ * departing them, which is what `setUserLifecycle` does from an advisor's page. A
+ * coordinator has no such page (the real advisor rule keeps them off every advisor
+ * screen), so this is that same removal for them, through the same one path,
+ * `applyLifecycleByUserId(id, "deactivate")`: it stamps `deactivated_at` through
+ * `writeRoutableState` and bans their Supabase sign in. So a removed coordinator is
+ * refused on their very next request (`gateSessionRow` in `realCurrentUser`, which the
+ * coordinator page's own gate reads) and at sign in (`DeactivatedAccountError`).
+ *
+ * Their role is left as coordinator, so removing them can never make them an advisor,
+ * and no coverage sweep is asked for: the calls a coordinator booked sit with the
+ * advisors they booked them with, and stay.
+ *
+ * WHOSE DATA: only a coordinator in the caller's own org; anybody else is refused by name
+ * before anything is written, so this can never depart an advisor or an admin.
+ */
+// outcome-ok: the person's row leaves the list on this page, under a notice saying what Remove did
+export async function removeCoordinator(form: FormData): Promise<void> {
+  const actor = await requireSuperAdmin();
+  const userId = String(form.get("user_id") ?? "");
+  const refuse = (reason: string): never => redirect(`${COORDINATOR_BOOKING_HREF}${refusedQuery(reason)}`);
+  if (!userId) refuse("No coordinator was named, so nothing was changed. Reload the page and try again.");
+
+  // cap-safe: single-row primary-key lookup.
+  const { data, error: lookupError } = await supabaseAdmin()
+    .from("users")
+    .select("id, org_id, role, name, email, deactivated_at")
+    .eq("id", userId)
+    .maybeSingle();
+  if (lookupError) {
+    log.error("admin-actions", { msg: "coordinator removal lookup failed", user_id: userId }, lookupError);
+    refuse("Slate could not check who that is, so nobody's access changed. Try again in a moment.");
+  }
+  const target = data as Pick<User, "id" | "org_id" | "role" | "name" | "email" | "deactivated_at"> | null;
+  if (!target || target.org_id !== actor.org_id || target.role !== "coordinator") {
+    refuse("That person is not a coordinator here, so nothing was changed.");
+  }
+  const who = target!.name?.trim() || target!.email;
+
+  let result: Awaited<ReturnType<typeof applyLifecycleByUserId>>;
+  try {
+    result = await applyLifecycleByUserId(userId, "deactivate");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    refuse(writeRefused(`Removing ${who}`, { message }));
+  }
+  if (result!.status === "not_found") refuse("That person is not a coordinator here, so nothing was changed.");
+
+  // After the change, and only when it changed something: a second press on somebody
+  // already removed is a no-op and records nothing, as `setUserLifecycle` does.
+  if (result!.status === "applied") {
+    await recordAudit({
+      orgId: actor.org_id,
+      actorId: actor.id,
+      action: "agent.deactivate",
+      targetUserId: userId,
+      details: {
+        deactivated: { from: false, to: true },
+        role: "coordinator",
+        via: "coordinator_booking",
+        // A ban that did not land is recorded: the session gate refuses them anyway, and
+        // this is the fact somebody reading the trail would need.
+        ...(result!.sessionRevoke ? { session_revoke: result!.sessionRevoke } : {}),
+      },
+    });
+  }
+  revalidatePath(COORDINATOR_BOOKING_HREF);
+  redirect(`${COORDINATOR_BOOKING_HREF}${savedQuery("coordinator-removed")}`);
 }
 
 /**

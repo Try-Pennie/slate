@@ -326,7 +326,12 @@ is still booked, and a confirmed move to one still moves.
    could not be made is refused as an outage.
 5. **The switch.** `booking_settings.placeholder_booking_enabled` (0207), false by
    default. Off, nothing is placed on the placeholder; an unreadable switch is refused,
-   never read as on.
+   never read as on. Its one control is on `/admin/coordinator-booking` (#4264,
+   `setPlaceholderBookingEnabled`), a page only a super admin has, beside the list of
+   coordinators with a Remove for each (which departs them through
+   `applyLifecycleByUserId`, so the session gate refuses them at once). It is
+   deliberately on no page holding settings leads meet, such as Hours: drawn there it
+   read as though leads could book Marcia (docs/design/coordinator-admin.html, D3).
 
 **Its busy time.** Each call writes its busy block at create like any booking, and the
 pool exit backstop prunes it on the next self heal tick, because the placeholder has left

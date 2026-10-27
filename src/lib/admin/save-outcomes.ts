@@ -61,6 +61,7 @@ export const SAVE_OUTCOMES = [
   "booking-resumed",
   "calcom-live",
   "calcom-retired",
+  "coordinator-removed",
   "bucket-created",
   "bucket-routing",
   "bucket-updated",
@@ -72,6 +73,8 @@ export const SAVE_OUTCOMES = [
   "frame-unlocked",
   "nearly-full",
   "org-default-hours",
+  "placeholder-off",
+  "placeholder-on",
   "prerender-off",
   "prerender-on",
   "regal-ignore-added",
@@ -111,6 +114,9 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   // directions change what Slate writes. What each state MEANS is drawn once, by
   // the switch beneath this notice, so it is not said here a second time (L605).
   "calcom-retired": "Saved: cal.com is retired. Every cal.com lane stops at its next check, within 5 minutes.",
+  // #4264: what Remove did, on the page it was pressed on (L608). Who it was is not
+  // repeated: their row has just gone from the list beneath this notice.
+  "coordinator-removed": "Removed. They can no longer sign in to Slate or book calls, and the calls they booked stay as they are.",
   "bucket-created": "Bucket created.",
   "bucket-routing": "Bucket routing saved.",
   "bucket-updated": "Bucket saved.",
@@ -125,6 +131,10 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   // #3936: the line's own name, the one the sentence on the page uses.
   "nearly-full": "Nearly full line saved.",
   "org-default-hours": "Default hours for a new agent saved.",
+  // #4264: which way the coordinators' switch went. It is read on every booking, so it
+  // lands from the next one. What each state means is drawn by the switch itself (L605).
+  "placeholder-on": "Saved. From the next booking, a coordinator can put a call nobody is free for on Marcia.",
+  "placeholder-off": "Saved. From the next booking, a coordinator who tries to book a call nobody is free for is refused.",
   // #3706: which way it went and when it lands, like the frame lock above. What each
   // state means for a lead is drawn once, by the switch beneath this notice (L605).
   "prerender-on": `Saved. Within ${EMBED_PRERENDER_LANDS_SECONDS} seconds, partner pages that ask will load the booker with the page.`,
