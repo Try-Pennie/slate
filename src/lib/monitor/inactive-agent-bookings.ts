@@ -192,8 +192,9 @@ export function inactiveHoldersFromBookings(
 }
 
 /** A still-bookable agent a Twilio demotion took off a pool the bookings they hold need (#3582),
- *  with how many of those bookings they can no longer serve, already computed from the filtered
- *  demotion snapshot (`unservedBookingIds`). */
+ *  with the bookings they can no longer serve (each with its start, so the page can name it once
+ *  and tell a call starting soon), already computed from the filtered demotion snapshot
+ *  (`unservedBookingIds`). */
 export interface DemotedAgent {
   id: string;
   name: string | null;
