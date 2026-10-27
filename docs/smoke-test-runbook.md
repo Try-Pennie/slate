@@ -64,6 +64,9 @@ handling of a real booking). Then:
 3. **Cancel it as soon as it has proved its point**, from the manage link, so the
    slot goes back to the pool and the reminder texts stop.
 
+The coordinator booking page has its own `PARTNER` drill, with its own test placeholder
+and test coordinator accounts: `docs/placeholder-drill.md` (#4206).
+
 ## Preconditions
 
 - `.env.local` at the repo root holds `NEXT_PUBLIC_SUPABASE_URL` and
