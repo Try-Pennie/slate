@@ -452,7 +452,8 @@ export type CspPageDecision =
  * host, and detecting it as a page belongs in a monitor-lane aggregate off the hot path
  * (#3598), not here.
  *
- * ONE image is the exception (#3699, Dan 2026-10-13): see `isGoogleProductLogo`.
+ * ONE image is the exception (#3699, Dan 2026-10-13): see `isGoogleProductLogo`. ONE
+ * stylesheet is too (#4275, Dan 2026-10-27): see `isGoogleFontsCss`.
  */
 const CSP_INJECTED_PASSIVE_DIRECTIVES = new Set(["font-src"]);
 
@@ -490,9 +491,38 @@ function isGoogleProductLogo(blocked: string): boolean {
   );
 }
 
+/** The one host, and its css paths, a refused stylesheet may be logged rather than paged for (#4275). */
+const GOOGLE_FONTS_CSS_HOST = "fonts.googleapis.com";
+const GOOGLE_FONTS_CSS_PATHS = new Set(["/css", "/css2"]);
+
+/**
+ * Whether a refused stylesheet is Google Fonts' font CSS, the one `style-src` refusal treated
+ * as injected passive (#4275, Dan 2026-10-27).
+ *
+ * On 2026-10-26 two Safari add-ons on one iPhone injected `https://fonts.googleapis.com/css2`
+ * on the manage page; Slate never loads Google Fonts. Each burst sent three reports, two
+ * naming the add-on and one naming no source, and that one paged. The exfiltration worry that
+ * keeps `style-src` paging is CSS carrying a page's data to a host an ATTACKER reads, and
+ * this host is Google's font service, so it delivers nothing to anybody who planted it. The
+ * match is as narrow as the logo's: https, the host exactly (no other port, no look alike or
+ * sibling subdomain), and the parsed path exactly `/css` or `/css2`. Any other stylesheet
+ * from that host and those paths on any other host page, and so does a report naming any
+ * source but a Slate page script. The policy is unchanged: the stylesheet is still blocked.
+ */
+function isGoogleFontsCss(blocked: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(blocked);
+  } catch {
+    return false;
+  }
+  return url.protocol === "https:" && url.host === GOOGLE_FONTS_CSS_HOST && GOOGLE_FONTS_CSS_PATHS.has(url.pathname);
+}
+
 /** Whether a refusal under this directive, of this resource, is of the passive class. */
 function isPassiveRefusal(directive: string, blocked: string): boolean {
   if (CSP_INJECTED_PASSIVE_DIRECTIVES.has(directive)) return true;
+  if (directive === "style-src") return isGoogleFontsCss(blocked);
   return directive === "img-src" && isGoogleProductLogo(blocked);
 }
 
@@ -562,8 +592,8 @@ function namedSourceIsExempt(v: ViolationSummary): boolean {
 /**
  * Whether a violation is the injected passive third-party class (#3417): true when it is
  * logged rather than paged, false when it pages at once. False on any doubt, which pages,
- * the safe direction. True needs all of: a passive directive (`font-src`, or the Google
- * product logo under `img-src`, #3699), no named source or a Slate page script as the source
+ * the safe direction. True needs all of: a passive directive (`font-src`, the Google
+ * product logo under `img-src`, #3699, or Google Fonts' css under `style-src`, #4275), no named source or a Slate page script as the source
  * (#4063, `namedSourceIsExempt`), a concrete third-party origin, and a host that is NOT the
  * page's own.
  */

@@ -569,3 +569,44 @@ describe("a third-party font credited to a Slate page script, and the browser on
     expect(none.user_agent ?? null).toBeNull();
   });
 });
+
+// 2026-10-26 23:48Z (7:48 PM ET): two Safari add-ons on one iPhone injected a Google Fonts
+// stylesheet on the manage page. Two of each burst's three reports named the add-on; the
+// third named no source and paged style-src (#4275).
+describe("the Google Fonts stylesheet a Safari add-on injects (#4275)", () => {
+  const SAFARI_IOS =
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0.1 Mobile/15E148 Safari/604.1";
+  const sheetReport = (over: Record<string, unknown> = {}) => ({
+    "csp-report": {
+      "document-uri": "https://slate.trypennie.app/booking/manage/tok-secret",
+      referrer: "",
+      "violated-directive": "style-src-elem",
+      "effective-directive": "style-src-elem",
+      "blocked-uri": "https://fonts.googleapis.com:443/css2",
+      disposition: "enforce",
+      ...over,
+    },
+  });
+
+  it("logs the report of 2026-10-26 with not_paged=injected-passive and does NOT page", async () => {
+    const res = await POST(req(sheetReport(), "application/csp-report", { "user-agent": SAFARI_IOS }));
+    expect(res.status).toBe(204);
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    expect(logged.warn).toHaveBeenCalledWith(
+      "csp-report",
+      expect.objectContaining({
+        directive: "style-src-elem",
+        blocked: "https://fonts.googleapis.com:443/css2",
+        document: "https://slate.trypennie.app/booking/manage/[redacted]",
+        paged: false,
+        not_paged: "injected-passive",
+        user_agent: SAFARI_IOS,
+      }),
+    );
+  });
+
+  it("still pages any other third-party stylesheet refused with no source", async () => {
+    await POST(req(sheetReport({ "blocked-uri": "https://evil.example/x.css" })));
+    expect(dispatch.sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual(["csp_violation:style-src"]);
+  });
+});
