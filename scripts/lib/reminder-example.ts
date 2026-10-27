@@ -12,6 +12,7 @@ import type { DueBooking, LaneEmail, ReminderDeps, ReminderRun } from "../../src
 import type { MimeMessage } from "../../src/lib/notify/email-mime.ts";
 import { isLeadId } from "../../src/lib/salesforce/lead-xbc.ts";
 import { formatPhoneForDisplay } from "../../src/lib/phone-format.ts";
+import { REMINDER_EMAIL_MIN_MINUTES } from "../../src/lib/booking/reminder.ts";
 
 /** The only inbox domain an example may be sent to: it is never a lead's. */
 const PENNIE_DOMAIN = "trypennie.com";
@@ -111,10 +112,14 @@ export function exampleBooking(
   email: Pick<LaneEmail, "minutesBefore">,
 ): DueBooking {
   const leadMs = email.minutesBefore * 60_000;
-  const startMs =
+  const rounded =
     leadMs >= 2 * HOUR_MS
       ? Math.floor((nowMs + leadMs - HOUR_MS) / HALF_HOUR_MS) * HALF_HOUR_MS
       : Math.floor((nowMs + leadMs) / FIVE_MINUTES_MS) * FIVE_MINUTES_MS;
+  // An email 30 to 35 minutes ahead has no five minute mark both inside its window and
+  // past the 30 minute minimum, so it takes the exact end of its lead instead, which is
+  // both, rather than an invented call the lane would skip as too close.
+  const startMs = rounded - nowMs < REMINDER_EMAIL_MIN_MINUTES * 60_000 ? nowMs + leadMs : rounded;
   return {
     id: "reminder-example",
     startsAtIso: new Date(startMs).toISOString(),

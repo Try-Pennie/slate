@@ -391,6 +391,27 @@ function runCommand(envFile: string | null): { status: number | null; stderr: st
   assert(/^Still on for /.test(sent[0]?.subject ?? ""), `in its own stored words (${sent[0]?.subject})`);
   eq(judgeExampleRun(run, true).code, EXAMPLE_EXIT.ok, "and passes");
 }
+for (const minutes of [30, 32, 35, 45]) {
+  // The shortest emails an admin may store: the invented call is still inside the
+  // window and past the 30 minute minimum, so the example builds it, whatever the clock.
+  for (const offset of [0, 60_000, 2 * 60_000 + 30_000, 4 * 60_000]) {
+    const now = NOW + offset;
+    const short = stored("short", { minutesBefore: minutes });
+    const deps = exampleDeps({
+      config: { ...cfg, kind: "short", send: false },
+      email: short,
+      booking: exampleBooking({ ...cfg, kind: "short" }, advisor, LEAD, now, short),
+      nowMs: now,
+      readCallingNumbers: async () => new Map([[LEAD.slice(0, 15), "+15555550123"]]),
+      readAdvisorPhotos: async () => new Map(),
+      sendEmail: async () => "msg-5",
+      preview: () => {},
+      warn: () => {},
+    });
+    const run = await runBookingReminders(deps);
+    eq(run.sent, 1, `a ${minutes} minute email is built at ${offset / 60_000} minutes past the hour`);
+  }
+}
 {
   // Stored words the renderer refuses are not a pass, and say why.
   const broken = stored("day", { subject: "Your call {whenever}" });
