@@ -233,6 +233,23 @@ export const CALL_ME_NOW_HOURLY_RATE_RULES: RateLimitRule[] = [
 ];
 
 /**
+ * The coordinator booking page (#4205), per signed in coordinator. A lookup costs up to
+ * four Salesforce calls (a token, the Lead, the submission, the score's history) against
+ * the org's daily API allowance, and a placement re-reads the Lead before it books. A
+ * coordinator on the phone handles a call every few minutes, so these are far past
+ * anybody genuine and bound a script or a stuck page. DB rules, keyed on the user, like
+ * the webhook test send: an admin action that is not a hot path.
+ */
+export const COORDINATOR_LOOKUP_RATE_RULES: RateLimitRule[] = [
+  { prefix: "coord-lookup:m", windowSeconds: 60, max: 20 },
+  { prefix: "coord-lookup:h", windowSeconds: 3600, max: 300 },
+];
+export const COORDINATOR_PLACE_RATE_RULES: RateLimitRule[] = [
+  { prefix: "coord-place:m", windowSeconds: 60, max: 10 },
+  { prefix: "coord-place:h", windowSeconds: 3600, max: 120 },
+];
+
+/**
  * Every DB limiter rule above, in one list, so the prune below covers each one by
  * construction (#3109). scripts/test-rate-limit-prune.ts reads this module's
  * exports and fails when a rule set exists that this list leaves out.
@@ -256,6 +273,8 @@ const DB_RATE_LIMIT_RULE_SETS: readonly RateLimitRule[][] = [
   WEBHOOK_TEST_SEND_RATE_RULES,
   LANDING_IDENTITY_HOURLY_RATE_RULES,
   CALL_ME_NOW_HOURLY_RATE_RULES,
+  COORDINATOR_LOOKUP_RATE_RULES,
+  COORDINATOR_PLACE_RATE_RULES,
 ];
 
 /**

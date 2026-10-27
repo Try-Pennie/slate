@@ -38,7 +38,8 @@ import { DateTime, IANAZone } from "luxon";
 import { windowOnDate } from "./business-hours.ts";
 import { isOrgOpen, type BusinessHoursRules } from "../availability/compute.ts";
 import { withinLeadCallingWindow } from "./lead-calling-window.ts";
-import { findPersonMatch, type PersonIdentity, type NamedWorld } from "./person-dedupe.ts";
+import { findPersonMatch, type MatchStrength, type PersonIdentity, type NamedWorld } from "./person-dedupe.ts";
+import { leadIdSpellings } from "../salesforce/lead-xbc.ts";
 import {
   ExistingCallCheckUnavailableError,
   NoEligibleAgentsError,
@@ -190,7 +191,29 @@ export function noFreeAdvisor(err: unknown): boolean {
 
 const placedOn = (booking: Booking): PlacedOn => (booking.kind === "staff_placed" ? "placeholder" : "advisor");
 
-function summary(booking: Booking): PlacedCallSummary {
+/**
+ * Who the customer is, for the one call per customer rule and the coordinator page's
+ * lookup alike (#4205), so the two cannot find different calls. The Lead id goes in
+ * BOTH spellings: Slate stores whichever a caller sent (memory: 15 against 18 on
+ * 2026-10-14), and a strong id may sit in either id column (`bookingMatchesLookupIds`),
+ * so the 15 character key rides in the second slot rather than being lost.
+ */
+export function placedIdentity(leadId: string, attendee: { email?: string; phone?: string }): PersonIdentity {
+  const { short, long } = leadIdSpellings(leadId);
+  return {
+    externalId: short === long ? null : short,
+    salesforceId: long,
+    email: attendee.email ?? null,
+    phone: attendee.phone ?? null,
+  };
+}
+
+/** How a call matching only on email or phone is named to the coordinator. */
+export function looseMatchKind(strength: Exclude<MatchStrength, "strong">): "email-and-phone" | "email-or-phone" {
+  return strength === "medium" ? "email-and-phone" : "email-or-phone";
+}
+
+export function placedCallSummary(booking: Booking): PlacedCallSummary {
   return {
     bookingId: booking.id,
     startsAt: booking.starts_at,
@@ -254,12 +277,7 @@ export async function placeBooking(input: PlacedBookingInput, deps: PlacedBookin
   if (horizon === null) throw new PlacedBookingRefusedError("horizon-unreadable");
   if (!withinHorizon(hours, startMs, nowMs, horizon)) throw new PlacedBookingRefusedError("beyond-horizon");
 
-  const identity: PersonIdentity = {
-    externalId: null,
-    salesforceId: leadId,
-    email: input.attendee.email ?? null,
-    phone: input.attendee.phone ?? null,
-  };
+  const identity = placedIdentity(leadId, input.attendee);
   let calls: Booking[];
   try {
     calls = await deps.findActiveBookingsForPerson(identity, { isTest: bucket.is_test });
@@ -269,10 +287,10 @@ export async function placeBooking(input: PlacedBookingInput, deps: PlacedBookin
   }
   const match = findPersonMatch(identity, calls);
   if (match && match.strength !== "strong") {
-    return { kind: "possible-match", call: summary(match.booking), matchedOn: match.strength === "medium" ? "email-and-phone" : "email-or-phone" };
+    return { kind: "possible-match", call: placedCallSummary(match.booking), matchedOn: looseMatchKind(match.strength) };
   }
   if (match) {
-    if (input.move?.bookingId !== match.booking.id) return { kind: "existing-call", call: summary(match.booking) };
+    if (input.move?.bookingId !== match.booking.id) return { kind: "existing-call", call: placedCallSummary(match.booking) };
     return moveExisting(match.booking, bucket, input, zone, deps);
   }
   if (input.move) throw new PlacedBookingRefusedError("confirmed-call-changed");

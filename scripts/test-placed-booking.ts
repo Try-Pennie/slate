@@ -377,6 +377,19 @@ async function run() {
     assert(calls.create.length === 0 && calls.reschedule.length === 0, `a ${label} match is refused: nothing booked or moved, even when confirmed`);
   }
   {
+    // #4205: Slate stores whichever spelling of the Lead id a caller sent, so the
+    // customer's call is found under the 15 character id and the 18 character one alike.
+    const LONG = "00Q000000000001EAA"; // the Q is uppercase, so the first block's checksum is E
+    for (const [label, stored, asked] of [
+      ["stored long, asked short", LONG, "00Q000000000001"],
+      ["stored short, asked long", "00Q000000000001", LONG],
+    ] as const) {
+      const { deps } = makeFake({ person: [booking({ salesforce_id: stored, attendee_email: "other@x.com", attendee_phone: null })] });
+      const out = await placeBooking({ ...base, salesforceLeadId: asked }, deps);
+      assert(out.kind === "existing-call", `${label}: the customer's call is their own, matched on the Lead id (got ${out.kind})`);
+    }
+  }
+  {
     const { deps, calls } = makeFake({ personThrows: true });
     const out = await refusal(() => placeBooking(base, deps));
     assert(out instanceof ExistingCallCheckUnavailableError && calls.create.length === 0, "an unreadable existing call check refuses, never books blind");

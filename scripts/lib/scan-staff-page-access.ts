@@ -24,14 +24,24 @@
  */
 import ts from "typescript";
 
-/** The route trees whose layouts deliberately make no access decision. */
-export const STAFF_PAGE_ROOTS = ["src/app/admin", "src/app/me"] as const;
+/**
+ * The route trees whose layouts deliberately make no access decision. #4205 added the
+ * coordinator booking page's, so the page built there must gate itself like the rest.
+ */
+export const STAFF_PAGE_ROOTS = ["src/app/admin", "src/app/me", "src/app/coordinator"] as const;
 
 /** Guards that refuse a signed out request themselves. */
-export const REQUIRE_GUARDS = ["requireRole", "requireAdmin", "requireManager", "requireSuperAdmin"] as const;
+export const REQUIRE_GUARDS = [
+  "requireRole",
+  "requireAdmin",
+  "requireManager",
+  "requireSuperAdmin",
+  // #4205: the coordinator page's own gate, which admits coordinators and admins.
+  "requireCoordinatorDesk",
+] as const;
 
 /** Reads of the signed in user that the page must then refuse null from. */
-export const USER_READS = ["currentUser", "realCurrentUser"] as const;
+export const USER_READS = ["currentUser", "realCurrentUser", "coordinatorDeskUser"] as const;
 
 /** Calls that end the render without drawing the page. */
 const ENDS_RENDER = ["redirect", "notFound", "permanentRedirect"];
