@@ -969,8 +969,10 @@ coverage move without reading the booking.
   `customProperties.ai_agent_eligible: true`, so Marcia, Pennie's AI agent, texts the
   customer; a cancel of one sends `false`, and so does the reschedule or reassign
   that moves it onto a real advisor (`left_placeholder` on the stored payload, so a
-  resend or a dead letter replay sends the same). A routed booking sends no
-  `customProperties`, so a lead's own AI eligibility is never cleared. Regal's side:
+  resend or a dead letter replay sends the same). A routed booking never sends
+  `ai_agent_eligible`, so a lead's own AI eligibility is never cleared. Every routed
+  event also writes `customProperties.slateGhostBooking` onto the contact, so a
+  journey that does not start on a Slate event can read it. Regal's side:
   every journey on these events branches on `slateGhostBooking`, sends those
   calls straight to the pool (nobody dials as the placeholder), and still copies
   `slateBookingLink` into the Lead's `calBookingLink__c`, which is how coordinators

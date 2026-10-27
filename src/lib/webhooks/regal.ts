@@ -138,8 +138,12 @@ interface RegalEvent {
     lastName?: string;
     phones?: Record<string, OptInTrait>;
     emails?: Record<string, OptInTrait>;
-    /** #4204: sent only on a placeholder call, or one that just left the placeholder. */
-    customProperties?: { ai_agent_eligible: boolean };
+    /**
+     * #4204: `slateGhostBooking` on every routed event, so a journey that does not start
+     * on a Slate event can read it from the contact; `ai_agent_eligible` only on a
+     * placeholder call or the move that takes one off the placeholder.
+     */
+    customProperties?: { slateGhostBooking: boolean; ai_agent_eligible?: boolean };
   };
 }
 
@@ -155,7 +159,8 @@ export const PLACEHOLDER_AGENT_NAME = "Marcia";
  * #4204: whether Marcia texts this customer, or undefined to leave the customer's
  * own setting alone. On the placeholder she does, until the call is cancelled; a
  * call that just LEFT the placeholder (a move onto a real advisor) turns it off. A
- * routed call says nothing, because a lead can be AI agent eligible in Salesforce for
+ * routed call leaves `ai_agent_eligible` unsent (it still marks the contact with
+ * `slateGhostBooking`), because a lead can be AI agent eligible in Salesforce for
  * reasons of its own, and clearing that on every booking would undo them.
  */
 function aiAgentEligible(event: BookingWebhookEvent, p: BookingEventPayload): boolean | undefined {
@@ -337,7 +342,10 @@ export function buildRegalEvent(
     traits: contactTraits(p, event),
   };
   const eligible = aiAgentEligible(event, p);
-  if (eligible !== undefined) regal.traits.customProperties = { ai_agent_eligible: eligible };
+  regal.traits.customProperties = {
+    slateGhostBooking: onPlaceholder,
+    ...(eligible !== undefined ? { ai_agent_eligible: eligible } : {}),
+  };
 
   // #2659: the two join keys the landing page put on the booking URL, under the
   // GTM/GA4 tagging spec's OWN names (snake case, not camel cased to match the
