@@ -267,9 +267,9 @@ const on = (over: Partial<VacationSettings> = {}): VacationSettings => ({
 {
   eq(
     DECIDED,
-    "Hi, thanks for writing. Nobody reads this inbox, so we won't see your email. If you have a question, " +
-      "reply to one of our texts and someone will answer you there. Thank you, the Pennie team",
-    "the decided text is Dan's, word for word (#4206, 2026-10-27)",
+    "Hi, thanks for writing. Nobody reads this inbox, so we won't see your email. If you have a question about your " +
+      "upcoming call, reply to one of our texts and someone will answer you there. Thank you, the Pennie team",
+    "the decided text is Dan's as he set it in Gmail, word for word (#4265, 2026-10-27)",
   );
   eq(judgeAutoReply(on(), NOW_MS), "matches", "on, unrestricted and the decided text: it matches");
   eq(judgeAutoReply(on({ enableAutoReply: false }), NOW_MS), "off", "switched off is off");
@@ -282,10 +282,11 @@ const on = (over: Partial<VacationSettings> = {}): VacationSettings => ({
   eq(judgeAutoReply(on({ responseBodyPlainText: "Out of office until Monday." }), NOW_MS), "text-changed", "another text is changed");
   eq(judgeAutoReply(on({ responseBodyPlainText: "" }), NOW_MS), "text-changed", "an empty text is changed");
   // What Gmail's own settings page saves: HTML, line breaks, a curly apostrophe.
+  // Exactly what the seat's Gmail returned on 2026-10-27, after Dan set it (#4265).
   const typed =
-    '<div dir="ltr">Hi, thanks for writing. Nobody reads this inbox, so we won’t see your email.<br><br>' +
-    "If you have a question, reply to one of our texts and someone will answer you there.<br><br>" +
-    "Thank you,<br>the Pennie team&nbsp;</div>";
+    '<div dir="ltr">Hi, thanks for writing. <div><br></div><div>Nobody reads this inbox, so we won&#39;t see your email. ' +
+    "If you have a question about your upcoming call, reply to one of our texts and someone will answer you there. </div>" +
+    "<div><br></div><div>Thank you,</div><div>The Pennie team</div></div>";
   eq(
     judgeAutoReply(on({ responseBodyPlainText: undefined, responseBodyHtml: typed }), NOW_MS),
     "matches",

@@ -85,8 +85,8 @@ export type SeatSurface = "calendar" | "gmail" | "auto-reply";
  * `src/lib/booking/manage-copy.ts`).
  */
 export const PLACEHOLDER_SEAT_AUTO_REPLY =
-  "Hi, thanks for writing. Nobody reads this inbox, so we won't see your email. If you have a question, " +
-  "reply to one of our texts and someone will answer you there. Thank you, the Pennie team";
+  "Hi, thanks for writing. Nobody reads this inbox, so we won't see your email. If you have a question about your " +
+  "upcoming call, reply to one of our texts and someone will answer you there. Thank you, the Pennie team";
 
 /** The fields of `users.settings.getVacation` this check reads; Gmail omits a false or empty one. */
 export interface VacationSettings {
