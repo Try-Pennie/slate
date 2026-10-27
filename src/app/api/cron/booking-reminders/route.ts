@@ -276,7 +276,8 @@ function laneDeps(db: ReturnType<typeof supabaseAdmin>, now: number, kind: Remin
             // manage page's, never stamped on the booking.
             agentId: r.assigned_user_id,
             // #4206: a call on the placeholder advisor is reminded from the
-            // placeholder seat with its own copy: no number, no card, and a reply
+            // placeholder seat with its own copy: no calling number, no card (the
+            // lead's own number is still named, #4292), and a reply
             // to our texts rather than to an inbox nobody reads.
             onPlaceholder: r.kind === "staff_placed",
           }),

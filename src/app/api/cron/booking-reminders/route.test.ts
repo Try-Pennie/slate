@@ -401,7 +401,7 @@ describe("GET /api/cron/booking-reminders", () => {
   // outside calls are the real ones.
   // #4206: a call on the placeholder advisor (kind `staff_placed`) is reminded from the
   // seat with its own copy, so the worklist must carry the kind to the lane.
-  it("reminds a call on the placeholder from the seat, with no number and the reply to our texts line", async () => {
+  it("reminds a call on the placeholder from the seat, with no calling number and the reply to our texts line", async () => {
     callingNumber.readLeadCallingNumbersLive.mockResolvedValue(new Map([["00QUi000010889Z", "+12197588170"]]));
     state.pages = [
       [

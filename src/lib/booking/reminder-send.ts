@@ -141,7 +141,8 @@ export interface DueBooking {
   agentId: string | null;
   /**
    * The call sits on the placeholder advisor, Marcia (booking kind `staff_placed`,
-   * #4206): sent from the placeholder seat with its own copy, no number, no card and
+   * #4206): sent from the placeholder seat with its own copy, no calling number, no card
+   * (the lead's own number is still named, #4292) and
    * no calling number written into the invite (Dan, 2026-10-26).
    */
   onPlaceholder: boolean;
