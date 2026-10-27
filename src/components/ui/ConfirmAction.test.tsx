@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ConfirmAction } from "./ConfirmAction";
+import { ConfirmAction, ConfirmQuestion } from "./ConfirmAction";
 import { btnDangerCls, btnSecondaryCls } from "@/components/ui/styles";
 
 // #1873. The open, confirm, cancel and focus handling behind an in place confirm,
@@ -261,5 +261,49 @@ describe("ConfirmAction keeps Cancel neutral (#1875)", () => {
     const cancel = screen.getByRole("button", { name: "Cancel" });
     expect(cancel.className).toBe(btnSecondaryCls);
     expect(cancel.className).not.toContain("danger");
+  });
+});
+
+// #4264: a design's preview frame draws the question open (docs/design/coordinator-admin.html,
+// f-confirm-on), and a list asking about one row draws the question under that row rather than in
+// the opener's place (D12). Both use the question itself, ConfirmQuestion, so there is still one
+// drawing of it.
+describe("ConfirmAction drawn open, and the question on its own (#4264)", () => {
+  it("draws the question open when asked to, without taking focus on load", () => {
+    render(subject({ initiallyOpen: true }));
+    expect(screen.getByRole("alert").textContent).toContain("This replaces the stored week");
+    expect(confirm()).toBeTruthy();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("goes back to the opener from an open question, and focuses it", async () => {
+    const user = userEvent.setup();
+    render(subject({ initiallyOpen: true }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(document.activeElement).toBe(opener());
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("draws the question alone, with the confirm first and Cancel neutral, and says when it is cancelled", async () => {
+    const user = userEvent.setup();
+    const cancelled = vi.fn();
+    render(
+      <form action={save}>
+        <ConfirmQuestion
+          message="Aisha Bello will no longer be able to sign in."
+          confirmLabel="Remove Aisha Bello"
+          pendingLabel="Removing"
+          className={btnDangerCls}
+          onCancel={cancelled}
+        />
+      </form>,
+    );
+    const buttons = screen.getAllByRole("button");
+    expect(buttons.map((b) => b.textContent)).toEqual(["Remove Aisha Bello", "Cancel"]);
+    expect(buttons[1]?.className).toBe(btnSecondaryCls);
+    await user.click(buttons[1]!);
+    expect(cancelled).toHaveBeenCalledTimes(1);
+    await user.click(buttons[0]!);
+    expect(save).toHaveBeenCalledTimes(1);
   });
 });

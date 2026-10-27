@@ -289,3 +289,24 @@ describe("activeAdminItem", () => {
     expect(activeAdminItem([], "/admin")).toBeNull();
   });
 });
+
+// #4264 (docs/design/coordinator-admin.html, D1 and D2): the Coordinator booking page sits in the
+// Bookings group directly after Look up a booking, and only a super admin has the entry at all.
+describe("the Coordinator booking entry (#4264)", () => {
+  const bookings = (role: Role) =>
+    visibleAdminNav(role).find((g) => g.title === "Bookings")?.items.map((i) => i.label) ?? [];
+
+  it("is the second link under Bookings for a super admin, after Look up a booking", () => {
+    expect(bookings("super_admin").slice(0, 2)).toEqual(["Look up a booking", "Coordinator booking"]);
+    expect(activeAdminItem(visibleAdminNav("super_admin"), "/admin/coordinator-booking")?.label).toBe(
+      "Coordinator booking",
+    );
+  });
+
+  it("is absent for every other role, never listed and refused", () => {
+    for (const role of ROLES.filter((r) => r !== "super_admin")) {
+      const hrefs = adminNavFor(role, false).flatMap((g) => g.items.map((i) => i.href));
+      expect(hrefs, role).not.toContain("/admin/coordinator-booking");
+    }
+  });
+});

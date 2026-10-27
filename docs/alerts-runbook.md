@@ -1230,13 +1230,18 @@ a deactivated row, or no email address), so every customer a coordinator books w
 nobody is free is refused. The placeholder is kept off every advisor screen, so restoring
 it is a database change through `/db-apply`, on the `users` row with
 `is_placeholder = true and is_test = false`: clear its `deactivated_at`, or set its
-`email` to the seat's address. Or switch placing calls off; the page then closes as
-switched off, not as fixed.
+`email` to the seat's address. Or switch placing calls off on `/admin/coordinator-booking`;
+the page then closes as switched off, not as fixed.
 
-**Turning the switch off.** There is no admin control for it yet, so through `/db-apply`:
+**Turning the switch off.** A super admin presses **Stop booking them on Marcia** on
+`/admin/coordinator-booking` (Bookings, Coordinator booking in the admin sidebar; #4264).
+It is one press, it is recorded in the audit log as a `booking.settings` change, and
+nothing is placed on the placeholder from the next submission; calls already there stay,
+and their reminders still go out from the seat. Turning it back on is the danger button on
+the same page, which asks first. The page shows the switch as could not be read when
+`booking_settings` cannot be read, and offers no control then; only in that case, or with
+no super admin to hand, is it `/db-apply`:
 `update booking_settings set placeholder_booking_enabled = false where id = 1;` (one row).
-Nothing is placed on the placeholder from the next submission; calls already there stay,
-and their reminders still go out from the seat.
 
 ---
 

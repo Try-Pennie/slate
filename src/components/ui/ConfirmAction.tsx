@@ -31,20 +31,8 @@ import { btnSecondaryCls } from "@/components/ui/styles";
  * host a control that discards them: the control has to sit inside the form to
  * know the edits exist, and it must not run the form's own save.
  */
-export function ConfirmAction({
-  label,
-  confirmLabel,
-  pendingLabel,
-  message,
-  className,
-  extra,
-  formAction,
-  confirmName,
-  confirmValue,
-  alternative,
-}: {
-  /** The opener's text. Submits nothing. */
-  label: string;
+/** What the question needs, shared by `ConfirmAction` and a caller drawing it elsewhere. */
+type QuestionProps = {
   /** The confirm submit's text. Says what it is about to do, never just "Yes". */
   confirmLabel: string;
   pendingLabel: string;
@@ -89,9 +77,88 @@ export function ConfirmAction({
     name: string;
     value: string;
   };
+};
+
+export function ConfirmAction({
+  label,
+  initiallyOpen = false,
+  ...question
+}: QuestionProps & {
+  /** The opener's text. Submits nothing. */
+  label: string;
+  /**
+   * Draw the question already open (#4264), for a design's preview frame
+   * (docs/design/coordinator-admin.html, f-confirm-on). It takes no focus on load: the
+   * focus move below follows a PRESS, and a page that seized focus on arrival would
+   * strand a keyboard reader somewhere they did not choose.
+   */
+  initiallyOpen?: boolean;
 }) {
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirming] = useState(initiallyOpen);
   const [returning, setReturning] = useState(false);
+  const [pressed, setPressed] = useState(false);
+  const openRef = useRef<HTMLButtonElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (confirming && pressed) confirmRef.current?.focus();
+    else if (returning) openRef.current?.focus();
+  }, [confirming, pressed, returning]);
+
+  if (!confirming) {
+    return (
+      <button
+        ref={openRef}
+        type="button"
+        className={question.className}
+        onClick={() => {
+          setPressed(true);
+          setConfirming(true);
+        }}
+      >
+        {label}
+      </button>
+    );
+  }
+
+  return (
+    <ConfirmQuestion
+      {...question}
+      confirmRef={confirmRef}
+      onCancel={() => {
+        setReturning(true);
+        setConfirming(false);
+      }}
+    />
+  );
+}
+
+/**
+ * The question itself (#4264): the message, the decision or decisions, and Cancel.
+ *
+ * `ConfirmAction` draws it in the opener's place. A caller that has to draw it somewhere
+ * else, such as a table asking about one row in a row of its own beneath it
+ * (`CoordinatorList`, D12 in docs/design/coordinator-admin.html), draws this and owns the
+ * opener and the focus move itself, so the question is still drawn one way.
+ */
+export function ConfirmQuestion({
+  confirmLabel,
+  pendingLabel,
+  message,
+  className,
+  extra,
+  formAction,
+  confirmName,
+  confirmValue,
+  alternative,
+  confirmRef,
+  onCancel,
+}: QuestionProps & {
+  /** Where the confirm's element is handed, so the caller can move focus into it. */
+  confirmRef?: React.Ref<HTMLButtonElement>;
+  /** Cancel was pressed: the caller closes the question and puts focus back. */
+  onCancel: () => void;
+}) {
   /**
    * Which decision was taken, when there are two (#2124).
    *
@@ -105,27 +172,6 @@ export function ConfirmAction({
    * a reader who backs out and reopens is offered only the choice they abandoned.
    */
   const [taken, setTaken] = useState<"primary" | "alternative" | null>(null);
-  const openRef = useRef<HTMLButtonElement>(null);
-  const confirmRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (confirming) confirmRef.current?.focus();
-    else if (returning) openRef.current?.focus();
-  }, [confirming, returning]);
-
-  if (!confirming) {
-    return (
-      <button
-        ref={openRef}
-        type="button"
-        className={className}
-        onClick={() => setConfirming(true)}
-      >
-        {label}
-      </button>
-    );
-  }
-
   return (
     <div role="alert" className="rounded-sm border border-border bg-[var(--field)] p-4">
       <p className="text-sm text-fg">{message}</p>
@@ -164,8 +210,7 @@ export function ConfirmAction({
           className={btnSecondaryCls}
           onClick={() => {
             setTaken(null);
-            setReturning(true);
-            setConfirming(false);
+            onCancel();
           }}
         >
           Cancel
