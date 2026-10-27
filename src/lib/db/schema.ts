@@ -13,6 +13,11 @@ import type {
   BookingInviteChange,
   CapacityHistoryCursor,
   LaneRunClaim,
+  ReminderEmailRow,
+  ReminderEmailVersionRow,
+  BookingReminderSendRow,
+  ReminderClaimOutcome,
+  ReminderEmailSaveResult,
   CapacityFillLast,
   CapacityFillReading,
   CapacityHistoryDay,
@@ -179,6 +184,31 @@ export interface Database {
       capacity_fill_last: Table<CapacityFillLast>;
       /** #4222 (migration 0205): each scheduled lane's claim on its tick, so a re-sent lane does nothing. */
       lane_runs: Table<LaneRunClaim>;
+      /** #4296 (migration 0211): the editable reminder emails. Written only by `save_reminder_email`. */
+      reminder_emails: Table<ReminderEmailRow>;
+      /** #4296 (migration 0211): each version of a reminder email's copy. */
+      reminder_email_versions: Table<ReminderEmailVersionRow>;
+      /** #4296 (migration 0211): one row per booking, reminder email and start, moved only by the claim functions. */
+      booking_reminder_sends: Table<
+        BookingReminderSendRow,
+        [
+          {
+            // The lane's worklist embeds a booking's send rows through this key.
+            foreignKeyName: "booking_reminder_sends_booking_id_fkey";
+            columns: ["booking_id"];
+            isOneToOne: false;
+            referencedRelation: "bookings";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "booking_reminder_sends_reminder_email_id_fkey";
+            columns: ["reminder_email_id"];
+            isOneToOne: false;
+            referencedRelation: "reminder_emails";
+            referencedColumns: ["id"];
+          },
+        ]
+      >;
       webhook_endpoints: Table<WebhookEndpoint>;
       webhook_deliveries: Table<WebhookDelivery>;
       alert_state: Table<AlertState>;
@@ -261,6 +291,55 @@ export interface Database {
     };
     Views: Record<string, never>;
     Functions: {
+      /** #4296, migration 0211: create (p_id null) or update one reminder email, refusing
+       *  an update whose loaded `updated_at` is not the row's (answers stale, writes
+       *  nothing). Writes the copy version and the audit row in the same transaction. */
+      save_reminder_email: {
+        Args: {
+          p_id: string | null;
+          p_loaded_updated_at: string | null;
+          p_slug: string;
+          p_name: string;
+          p_minutes_before: number;
+          p_late_booking: "send_now" | "skip";
+          p_enabled: boolean;
+          p_subject: string;
+          p_body: string;
+          p_card_block: boolean;
+          p_placeholder_sends: boolean;
+          p_restored_from_version: number | null;
+          p_actor_id: string;
+          p_org_id: string;
+        };
+        Returns: ReminderEmailSaveResult;
+      };
+      /** #4296, migration 0211: take one email for one booking and start, under a per
+       *  booking lock. `p_gap` is a Postgres interval, such as "2 hours". */
+      claim_reminder_send: {
+        Args: { p_booking_id: string; p_reminder_email_id: string; p_sent_for: string; p_gap: string };
+        Returns: ReminderClaimOutcome;
+      };
+      /** #4296: claimed to sent; false when the row was not claimed. */
+      mark_reminder_sent: {
+        Args: { p_booking_id: string; p_reminder_email_id: string; p_sent_for: string };
+        Returns: boolean;
+      };
+      /** #4296: claimed to released after a transient failure; false when not claimed. */
+      release_reminder_send: {
+        Args: { p_booking_id: string; p_reminder_email_id: string; p_sent_for: string };
+        Returns: boolean;
+      };
+      /** #4296: claimed to failed with a reason; false when not claimed. */
+      fail_reminder_send: {
+        Args: { p_booking_id: string; p_reminder_email_id: string; p_sent_for: string; p_reason: string };
+        Returns: boolean;
+      };
+      /** #4296: record a permanent skip with a reason; false when the key already had a
+       *  row that was not released. */
+      skip_reminder_send: {
+        Args: { p_booking_id: string; p_reminder_email_id: string; p_sent_for: string; p_reason: string };
+        Returns: boolean;
+      };
       /** #3124 (migration 0193): routed real bookings per minute since the epoch over
        *  [p_from, p_to), as one jsonb array of [minute, bookings], so the read never meets
        *  the row cap. Judged by `slateMinutesFrom` before anything counts it. */
