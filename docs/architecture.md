@@ -339,7 +339,11 @@ journey on Slate's events branches on `slateGhostBooking` (#4204, docs/api.md) a
 the call straight to the pool, and Marcia texts the customer. The placeholder's own
 Google seat sends the invite and the 24 hour reminder from its Calendar and Gmail, and
 its inbox is a no reply mailbox with a standing auto reply that tells customers to text
-Pennie. A coordinator moves or cancels a call from the manage link Regal copies into the
+Pennie. Neither the invite nor the reminder names a number (Dan, 2026-10-26: the number
+Pennie calls from reaches nobody by text, and the Sendblue line lives only in Regal), and
+both say that to change the call or ask a question the customer replies to one of our
+texts (`placeholderReplyLine` in `manage-copy.ts`, through `eventDescription` and
+`reminderBody`; no contact card). A coordinator moves or cancels a call from the manage link Regal copies into the
 Lead's `calBookingLink__c`.
 
 **What watches it** (#4206, all in the monitor lane, runbook "A call on the placeholder

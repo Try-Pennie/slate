@@ -116,11 +116,12 @@ export async function GET(req: NextRequest) {
         external_id: string | null;
         gcal_event_id: string | null;
         assigned_user_id: string | null;
+        kind: string;
       }>("bookings due a reminder", "id", () =>
         db
           .from("bookings")
           .select(
-            "id, starts_at, created_at, reminder_sent_for, status, attendee_email, agent_email, agent_name, timezone, manage_token, salesforce_id, external_id, gcal_event_id, assigned_user_id, buckets!inner(is_test)",
+            "id, starts_at, created_at, reminder_sent_for, status, attendee_email, agent_email, agent_name, timezone, manage_token, salesforce_id, external_id, gcal_event_id, assigned_user_id, kind, buckets!inner(is_test)",
           )
           .in("status", ["confirmed", "rescheduled"])
           .gt("starts_at", nowIso)
@@ -161,6 +162,10 @@ export async function GET(req: NextRequest) {
             // Whose photo goes on the card: the CURRENT assignee, read live like the
             // manage page's, never stamped on the booking.
             agentId: r.assigned_user_id,
+            // #4206: a call on the placeholder advisor is reminded from the
+            // placeholder seat with its own copy: no number, no card, and a reply
+            // to our texts rather than to an inbox nobody reads.
+            onPlaceholder: r.kind === "staff_placed",
           }),
         );
     },

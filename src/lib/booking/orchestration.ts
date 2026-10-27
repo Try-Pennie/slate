@@ -6508,7 +6508,8 @@ export async function createPlaceholderBooking(
   };
   const event: ReservationPayload["event"] = {
     summary: eventSummary({ eventType: eventType.name, advisor: placeholder.name, lead: input.attendee.name ?? null }),
-    description: eventDescription(phone, manageUrl(deps, manageToken), { isTest: bucket.is_test }),
+    // #4206: sent from the placeholder seat, whose inbox nobody reads.
+    description: eventDescription(phone, manageUrl(deps, manageToken), { isTest: bucket.is_test, onPlaceholder: true }),
     location: eventLocation(phone),
     start: startIso,
     end: endIso,
@@ -8782,7 +8783,11 @@ async function applyReschedule(
   // always does, and the two must describe the same call the same way.
   const movedEvent = {
     summary: eventSummary({ eventType: eventType.name, advisor: agentName, lead: booking.attendee_name }),
-    description: eventDescription(booking.attendee_phone, manageUrl(deps, token), { isTest: bucket.is_test }),
+    // #4206: a move that lands on the placeholder is written as the placeholder's invite.
+    description: eventDescription(booking.attendee_phone, manageUrl(deps, token), {
+      isTest: bucket.is_test,
+      onPlaceholder: ontoPlaceholderCommit,
+    }),
     location: eventLocation(booking.attendee_phone) ?? undefined,
     start: startIso,
     end: endIso,

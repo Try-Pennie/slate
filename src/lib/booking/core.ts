@@ -4,7 +4,7 @@ import type {
   BusySource,
 } from "@/lib/db/types";
 import { TEST_MODE_COPY } from "@/lib/booking/booker-copy";
-import { CALL_COMES_FROM_PREFIX, callComesFrom } from "@/lib/booking/manage-copy";
+import { CALL_COMES_FROM_PREFIX, callComesFrom, placeholderReplyLine } from "@/lib/booking/manage-copy";
 
 /**
  * Pure, side-effect-free cores of the booking flow, split out from
@@ -804,10 +804,18 @@ export function eventDescription(
      * says nothing about a number.
      */
     callingNumber?: string | null;
+    /**
+     * A call on the placeholder advisor, Marcia (booking kind `staff_placed`, #4206).
+     * Its invite comes from the placeholder seat, whose inbox nobody reads, so it ends
+     * with the reply to our texts line and names no calling number, even a known one
+     * (Dan, 2026-10-26: a text to that number reaches nobody). Absent is a routed call.
+     */
+    onPlaceholder?: boolean;
   } = { isTest: false },
 ): string {
   const lines = [bookedLine(phone), `${MANAGE_LINK_PREFIX}${manageUrl}`];
   if (opts.isTest) lines.unshift(TEST_MODE_COPY.line);
+  if (opts.onPlaceholder) return [...lines, placeholderReplyLine("invite")].join("\n");
   return withCallingNumberLine(lines.join("\n"), opts.callingNumber ?? null);
 }
 

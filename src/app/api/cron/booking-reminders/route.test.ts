@@ -37,7 +37,7 @@ const state = vi.hoisted(() => ({
   rateReadError: null as { message: string } | null,
   upserts: [] as Row[],
   sendFailures: [] as (string | Error | null)[],
-  sent: [] as { to: string[]; subject: string; body?: string; attachments?: { content: string }[] }[],
+  sent: [] as { to: string[]; from?: string; subject: string; body?: string; attachments?: { content: string }[] }[],
 }));
 
 const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => true) }));
@@ -394,6 +394,34 @@ describe("GET /api/cron/booking-reminders", () => {
   // #1334: the wiring for the calling number. The lane's own suite proves the order
   // and the copy; this proves the worklist carries what the lane needs and the two
   // outside calls are the real ones.
+  // #4206: a call on the placeholder advisor (kind `staff_placed`) is reminded from the
+  // seat with its own copy, so the worklist must carry the kind to the lane.
+  it("reminds a call on the placeholder from the seat, with no number and the reply to our texts line", async () => {
+    callingNumber.readLeadCallingNumbersLive.mockResolvedValue(new Map([["00QUi000010889Z", "+12197588170"]]));
+    state.pages = [
+      [
+        due(1, {
+          kind: "staff_placed",
+          agent_email: "scheduling@trypennie.com",
+          agent_name: "Marcia",
+          salesforce_id: "00QUi000010889ZMAQ",
+          gcal_event_id: "evt-1",
+        }),
+      ],
+    ];
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    for (const s of state.worklistSelects) expect(s).toContain("kind");
+    expect(state.sent[0]?.from).toBe("scheduling@trypennie.com");
+    expect(state.sent[0]?.body).toContain("reply to one of our texts");
+    expect(state.sent[0]?.body).not.toContain("(219) 758-8170");
+    expect(state.sent[0]?.attachments ?? []).toHaveLength(0);
+    expect(callingNumber.readLeadCallingNumbersLive).not.toHaveBeenCalled();
+    expect(calendar.updateEventDescription).not.toHaveBeenCalled();
+    callingNumber.readLeadCallingNumbersLive.mockReset();
+    callingNumber.readLeadCallingNumbersLive.mockImplementation(async () => new Map());
+  });
+
   it("names the calling number, attaches the card and writes it into the invite", async () => {
     callingNumber.readLeadCallingNumbersLive.mockResolvedValueOnce(
       new Map([["00QUi000010889Z", "+12197588170"]]),

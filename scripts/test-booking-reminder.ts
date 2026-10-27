@@ -190,6 +190,8 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
     manageUrl: "https://slate.trypennie.app/manage/abc",
     // No calling number known: the copy must then say nothing about one (#1334).
     callingNumber: null as string | null,
+    // A routed call: the advisor's own mailbox, which is read (#4206 adds the other).
+    onPlaceholder: false,
     // The copy is told what "now" is rather than reading the clock (#2497). Both
     // ends of the relationship "tomorrow" describes have to be pinned, or the
     // fixture means a different thing every day and the suite goes red with no
@@ -303,6 +305,40 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
       }
     }
   }
+}
+
+// --- a call on the placeholder advisor, Marcia (#4206, Dan 2026-10-26) --------------
+// The reminder goes out from the placeholder seat, whose inbox nobody reads. So it
+// never invites a reply to itself, names no number, and says what Dan decided: to
+// change the call or ask a question, reply to one of our texts.
+{
+  const args = {
+    agentName: "Marcia",
+    startsAtIso: new Date(NOW + 20 * HOUR).toISOString(),
+    timezone: "America/New_York",
+    manageUrl: "https://slate.trypennie.app/manage/abc",
+    callingNumber: null as string | null,
+    onPlaceholder: true,
+    nowMs: NOW,
+  };
+  for (const callingNumber of [null, "+12197588170"]) {
+    const body = reminderBody({ ...args, callingNumber });
+    const label = `number ${callingNumber ?? "unknown"}`;
+    assert(
+      body.includes("To change your call or ask a question, reply to one of our texts and someone will answer you there."),
+      `${label}: it tells the customer to reply to one of our texts`,
+    );
+    assert(/Nobody reads replies to this email/.test(body), `${label}: and says a reply to the email is not read`);
+    assert(!/reply to this email and it will reach me/i.test(body), `${label}: never the routed promise that a reply is read`);
+    assert(!/\(\d{3}\) \d{3}|\+1\d{10}/.test(body), `${label}: no number of any kind is named`);
+    assert(!/contact card|come from/i.test(body), `${label}: and no card or calling number line`);
+    assert(!body.includes("Marcia"), `${label}: the seat's name is not presented as the advisor calling`);
+    assert(/your call with Pennie is/.test(body), `${label}: the call is with Pennie`);
+    assert(/The Pennie team$/.test(body), `${label}: signed by the Pennie team`);
+    assert(body.includes(args.manageUrl), `${label}: the link to move or cancel is kept`);
+    assert(!DASHES.test(body), `${label}: no dashes as punctuation`);
+  }
+  eq(reminderSubject(args), reminderSubject({ ...args, onPlaceholder: false }), "the subject is the same either way");
 }
 
 finish();

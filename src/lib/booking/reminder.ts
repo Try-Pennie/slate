@@ -1,6 +1,6 @@
 import { DateTime } from "luxon";
 import { formatClockTime } from "@/lib/date/parse";
-import { callComesFrom } from "./manage-copy.ts";
+import { callComesFrom, placeholderReplyLine } from "./manage-copy.ts";
 import { realAdvisorName } from "./advisor-contact-card.ts";
 
 /**
@@ -179,6 +179,13 @@ export interface ReminderCopyInput {
    * that has to decide (L168). Null says nothing about a number at all.
    */
   callingNumber: string | null;
+  /**
+   * A call on the placeholder advisor, Marcia (booking kind `staff_placed`, #4206).
+   * Its reminder goes out from the placeholder seat, whose inbox nobody reads, so the
+   * copy invites no reply to itself, names no number, and sends the customer back to
+   * our texts (Dan, 2026-10-26). REQUIRED, so `tsc` names every caller (L168).
+   */
+  onPlaceholder: boolean;
 }
 
 /**
@@ -231,6 +238,7 @@ export function reminderSubject(input: ReminderCopyInput): string {
  */
 export function reminderBody(input: ReminderCopyInput): string {
   const when = `${dayWord(input)} at ${timeLabel(input)}`;
+  if (input.onPlaceholder) return placeholderReminderBody(input, when);
   // #1334: with the calling number known, the lead has one thing worth doing before
   // the call, saving it, so "nothing you need to set up" stops being true. The
   // sentence is the manage page's own (`callComesFrom`), and the card it points at
@@ -255,5 +263,27 @@ export function reminderBody(input: ReminderCopyInput): string {
     "If it is easier, just reply to this email and it will reach me directly.",
     "",
     ...(name ? [name, "Pennie"] : ["Your Pennie advisor"]),
+  ].join("\n");
+}
+
+/**
+ * The placeholder's reminder (#4206, Dan 2026-10-26). The seat's name is the sender's
+ * display name and nothing more: Marcia is who texts the customer, not who calls, so
+ * the call is "with Pennie" and the email is signed by the team, as the seat's auto
+ * reply is. It names no number, even a known calling number, because a text to it
+ * reaches nobody and a card saved under Marcia's name invites exactly that; and it
+ * never says a reply will be read, because nobody reads the seat's inbox.
+ */
+function placeholderReminderBody(input: ReminderCopyInput, when: string): string {
+  return [
+    `Hi, this is a reminder that your call with Pennie is ${when}.`,
+    "",
+    "We will call you on the number you gave us, so there is nothing you need to set up.",
+    "",
+    `If that time no longer works, you can pick another or cancel here: ${input.manageUrl}`,
+    "",
+    placeholderReplyLine("email"),
+    "",
+    "The Pennie team",
   ].join("\n");
 }

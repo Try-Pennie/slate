@@ -823,6 +823,12 @@ export function inviteCopyScreens(): CopyScreen[] {
           state: "the body of a test booking, which opens with the test line",
           text: eventDescription(PHONE, manageUrl, { isTest: true }),
         },
+        // #4206: a call on the placeholder advisor, Marcia, invites from the
+        // placeholder seat, whose inbox nobody reads: no number, reply to our texts.
+        {
+          state: "the body of a call on the placeholder advisor, even with the number we call from known",
+          text: eventDescription(PHONE, manageUrl, { isTest: false, callingNumber: CALLING_NUMBER, onPlaceholder: true }),
+        },
       ],
     },
     {
@@ -887,7 +893,10 @@ export function reminderCopyScreens(): CopyScreen[] {
     manageUrl,
     nowMs: REMINDER_NOW_MS,
     callingNumber: null as string | null,
+    onPlaceholder: false,
   };
+  /** #4206: a call on the placeholder advisor, sent from the placeholder seat. */
+  const onPlaceholder = { ...tomorrow, agentName: "Marcia", callingNumber: CALLING_NUMBER, onPlaceholder: true };
   /** #1334: the number the call will come from, known, with the card attached. */
   const withCallingNumber = { ...tomorrow, callingNumber: CALLING_NUMBER };
   const laterToday = { ...tomorrow, startsAtIso: TODAY_ISO };
@@ -918,6 +927,17 @@ export function reminderCopyScreens(): CopyScreen[] {
           state: "the body, when the booking holds no advisor name",
           text: reminderBody({ ...withCallingNumber, agentName: null }),
         },
+      ],
+    },
+    {
+      screen: "Reminder email: a call on the placeholder advisor, Marcia",
+      purpose:
+        "A coordinator placed this call on the placeholder because nobody real was free. " +
+        "It goes out from the placeholder seat, whose inbox nobody reads, so it names no " +
+        "number, attaches no card, and sends the customer back to our texts (#4206).",
+      lines: [
+        { state: "the subject line, the same as any reminder", text: reminderSubject(onPlaceholder) },
+        { state: "the body, even when the number we call from is known", text: reminderBody(onPlaceholder) },
       ],
     },
     {

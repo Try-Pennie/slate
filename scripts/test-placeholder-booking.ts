@@ -26,6 +26,7 @@ import {
   type ApiBookingInput,
 } from "../src/lib/booking/orchestration.ts";
 import type { Booking, Bucket, User } from "../src/lib/db/types.ts";
+import { placeholderReplyLine } from "../src/lib/booking/manage-copy.ts";
 import { createAsserter, makeDeps, makeBooking, bucket, eventType, input, users, NOW, RR, SYS } from "./lib/booking-fakes.ts";
 
 const { assert, finish } = createAsserter();
@@ -68,6 +69,9 @@ async function run() {
     assert(calls.createEvent.length === 1 && calls.createEvent[0].email === "marcia@x.com", "the invite goes on the placeholder's own calendar");
     assert(calls.createEvent[0].args.summary.includes("Marcia") && calls.createEvent[0].args.timezone === "America/Chicago",
       `the invite names the placeholder and is in the customer's own zone (got ${calls.createEvent[0].args.summary})`);
+    // #4206: the seat's inbox is not read, so the invite sends the customer to our texts.
+    assert(String(calls.createEvent[0].args.description).endsWith(placeholderReplyLine("invite")),
+      `the placeholder's invite ends with the reply to our texts line (got ${calls.createEvent[0].args.description})`);
     const row = calls.insertBooking[0] ?? {};
     assert(row.kind === "staff_placed" && row.allow_double_book === true, "the row is staff placed and stacks");
     assert(row.assigned_user_id === "p" && row.agent_name === "Marcia" && row.agent_email === "marcia@x.com", "on the placeholder");
@@ -186,6 +190,8 @@ async function run() {
     assert(res.outcome === "rescheduled", `${channel}: a strong match at a new time is rescheduled`);
     assert(calls.updateEventTime.length === 0 && calls.createEvent[0]?.email === "a@x.com", `${channel}: onto a real advisor, never kept on the placeholder`);
     assert(res.booking.kind === "routed", `${channel}: and the moved call is routed`);
+    assert(!String(calls.createEvent[0]?.args.description).includes(placeholderReplyLine("invite")),
+      `${channel}: and its new invite is a routed one, with no reply to our texts line`);
     assert(calls.webhooks.find((w) => w.event === "booking.rescheduled")?.leftPlaceholder === true, `${channel}: with left_placeholder on the event`);
   }
 
@@ -196,6 +202,8 @@ async function run() {
     const res = await rescheduleBooking("tok1", START, RR, "admin", deps, NOW, { userId: "coord-1" }, undefined, { leadZone: "America/Chicago", ontoPlaceholder: placeholder });
     assert(calls.verifyFree.length === 0 && calls.roundRobinPreview.length === 0 && calls.busyIntervalsForAgent.length === 0, "the move onto the placeholder asks no advisor and no calendar");
     assert(calls.createEvent.length === 1 && calls.createEvent[0].email === "marcia@x.com", "a new invite goes on the placeholder's calendar");
+    assert(String(calls.createEvent[0].args.description).endsWith(placeholderReplyLine("invite")),
+      "written as the placeholder's invite, ending with the reply to our texts line (#4206)");
     const commit = calls.commitReschedule[0];
     assert(commit?.ontoPlaceholder === true && commit.patch.assigned_user_id === "p", "committed through the placeholder's own function, onto the placeholder");
     assert((commit?.outbox?.payload as { leftPlaceholder?: boolean }).leftPlaceholder === undefined, "it records no left_placeholder: the call went ONTO it");

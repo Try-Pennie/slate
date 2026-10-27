@@ -39,6 +39,7 @@ const due = (over: Partial<DueBooking> = {}): DueBooking => ({
   leadId: LEAD,
   gcalEventId: "evt-1",
   agentId: "user-jordan",
+  onPlaceholder: false,
   ...over,
 });
 
@@ -1109,6 +1110,48 @@ const failingWith = (err: unknown) => async () => {
   const run = await runBookingReminders(s.deps);
   eq(s.alertIds, ids, "three failures page three bookings by name");
   eq(run.pagesFolded, 0, "and fold nothing");
+}
+
+// --- a call on the placeholder advisor, Marcia (#4206, Dan 2026-10-26) ---------------
+// Its reminder goes out from the placeholder seat, whose inbox nobody reads, so it
+// names NO number at all (a text to the calling number reaches nobody, and a card
+// saved under Marcia's name invites exactly that), sends no card, never rewrites the
+// invite with one, and tells the customer to reply to one of our texts instead.
+{
+  const msgs: import("../src/lib/notify/email-mime.ts").MimeMessage[] = [];
+  const asked: string[][] = [];
+  const s = spy({
+    loadDue: async () => [
+      due({ id: "bk-p", agentEmail: "scheduling@trypennie.com", agentName: "Marcia", agentId: "user-marcia", onPlaceholder: true }),
+      due({ id: "bk-r", attendeeEmail: "other@example.com", leadId: "00QUi000010889AMAQ" }),
+    ],
+    readCallingNumbers: async (ids) => {
+      asked.push(ids);
+      return new Map([
+        ["00QUi000010889Z", "+12197588170"],
+        ["00QUi000010889A", "+12197588170"],
+      ]);
+    },
+    send: async (msg) => {
+      msgs.push(msg);
+      return "gmail-id";
+    },
+  });
+  const run = await runBookingReminders(s.deps);
+  eq(run.sent, 2, "both reminders go out");
+  const placeholder = msgs.find((m) => m.to[0] === "lead@example.com")!;
+  const routed = msgs.find((m) => m.to[0] === "other@example.com")!;
+  eq(placeholder.from, "scheduling@trypennie.com", "the placeholder's reminder comes from the seat");
+  eq(placeholder.fromName, "Marcia", "under its display name");
+  eq(placeholder.attachments?.length ?? 0, 0, "with no contact card");
+  assert(!/\(\d{3}\) \d{3}|\+1\d{10}/.test(placeholder.body), "and no number of any kind");
+  assert(/reply to one of our texts/.test(placeholder.body), "it tells the customer to reply to one of our texts");
+  assert(!/reply to this email and it will reach me/.test(placeholder.body), "and never promises a reply to the seat is read");
+  eq(routed.attachments?.length ?? 0, 1, "the routed call beside it keeps its card");
+  assert(/reply to this email and it will reach me directly/.test(routed.body), "and its own reply line");
+  eq(s.order.filter((o) => o === "refresh").length, 1, "only the routed call's invite is rewritten with the number");
+  eq(run.withCallingNumber, 1, "and only it counts as sent with a number");
+  eq(asked, [["00QUi000010889AMAQ"]], "Salesforce is asked only about the routed call's lead");
 }
 
 finish();
