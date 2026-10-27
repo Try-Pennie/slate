@@ -5,8 +5,7 @@
  *
  * The rules, as Sam and Dan decided them on 2026-10-23 (the issue's comments):
  *
- *  - KEPT, for every call this places: the go live switch (an unreadable one is refused,
- *    never read as on), Pennie's business hours (outside them nothing books), the
+ *  - KEPT, for every call this places: Pennie's business hours (outside them nothing books), the
  *    customer's calling window of 08:00 to before 20:00 in the zone GIVEN (required:
  *    never a device or Eastern default), the horizon, and nothing in the past.
  *  - A REAL ADVISOR FIRST: the normal create (slot predicate, verify on book, confirm
@@ -14,6 +13,10 @@
  *    one (`noFreeAdvisor`) falls to the placeholder; an outage is reported as itself.
  *  - THE PLACEHOLDER: the org's own, in the bucket's world, stacked with any others at
  *    that time (`createPlaceholderBooking`). None found is its own refusal.
+ *  - THE GO LIVE SWITCH gates ONLY the fall to the placeholder (Dan, 2026-10-26): off or
+ *    unreadable (never read as on), a free real advisor still books, and a confirmed move
+ *    still moves to one; only when nobody is free is it refused, `switch-off` or
+ *    `switch-unreadable`, instead of using the placeholder.
  *  - ONE CALL PER CUSTOMER, matched on the Salesforce id alone. Without a confirmation
  *    naming that call the call is shown so the page can ask; with one, the SAME booking
  *    moves (one Rescheduled event, the same manage link), to a real advisor first and
@@ -123,8 +126,8 @@ const REFUSAL_SENTENCE: Record<PlacedBookingRefusal, string> = {
   "zone-missing": "This customer has no usable time zone on their Lead, so the call cannot be placed.",
   "start-unreadable": "That time could not be read, so nothing was placed.",
   "start-in-past": "That time has already passed.",
-  "switch-unreadable": "Placing calls could not be checked as switched on, so nothing was placed. Try again in a moment.",
-  "switch-off": "Placing calls on the placeholder advisor is switched off.",
+  "switch-unreadable": "No advisor is free then, and placing calls on the placeholder advisor could not be checked as switched on, so nothing was placed. Try again in a moment.",
+  "switch-off": "No advisor is free then, and placing calls on the placeholder advisor is switched off.",
   "horizon-unreadable": "How far ahead calls can be booked could not be read, so nothing was placed. Try again in a moment.",
   "beyond-horizon": "That time is further ahead than calls can be booked.",
   "outside-business-hours": "Pennie is closed at that time.",
@@ -228,10 +231,6 @@ export async function placeBooking(input: PlacedBookingInput, deps: PlacedBookin
   const startMs = Date.parse(input.startIso);
   if (!Number.isFinite(startMs)) throw new PlacedBookingRefusedError("start-unreadable");
 
-  const enabled = await deps.placeholderEnabled();
-  if (enabled === null) throw new PlacedBookingRefusedError("switch-unreadable");
-  if (!enabled) throw new PlacedBookingRefusedError("switch-off");
-
   const key = coordinatorKeyFor(input.submissionId);
   const replay = await deps.findBookingByIdempotencyKey(key);
   if (replay) {
@@ -312,7 +311,14 @@ export async function placeBooking(input: PlacedBookingInput, deps: PlacedBookin
   return { kind: "booked", on: placedOn(booked.booking), booking: booked.booking, manageUrl: booked.manageUrl, replayed: booked.newlyInserted !== true };
 }
 
+/**
+ * The placeholder a call falls to when nobody real is free, behind the go live switch:
+ * the switch is read only here, so off or unreadable refuses the fall and nothing else.
+ */
 async function placeholderFor(bucket: Bucket, deps: PlacedBookingDeps): Promise<User> {
+  const enabled = await deps.placeholderEnabled();
+  if (enabled === null) throw new PlacedBookingRefusedError("switch-unreadable");
+  if (!enabled) throw new PlacedBookingRefusedError("switch-off");
   const placeholder = await deps.findPlaceholder(bucket.org_id, bucket.is_test);
   if (!placeholder) throw new PlacedBookingRefusedError("no-placeholder");
   return placeholder;
