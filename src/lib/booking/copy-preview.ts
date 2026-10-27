@@ -944,8 +944,8 @@ export function reminderCopyScreens(): CopyScreen[] {
       purpose:
         "A coordinator placed this call on the placeholder because nobody real was free. " +
         "It goes out from the placeholder seat, whose inbox nobody reads, so it names no " +
-        "number, attaches no card, offers no way to change the call, and sends a question " +
-        "back to our texts (#4206).",
+        "number the call comes from, attaches no card, offers no way to change the call, and " +
+        "sends a question back to our texts (#4206). It does name the lead's own number (#4292).",
       lines: [
         { state: "the subject line, the same as any reminder", text: reminderSubject(onPlaceholder) },
         { state: "the body, even when the number we call from is known", text: reminderBody(onPlaceholder) },

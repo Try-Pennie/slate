@@ -1152,7 +1152,7 @@ const failingWith = (err: unknown) => async () => {
   eq(placeholder.from, "scheduling@trypennie.com", "the placeholder's reminder comes from the seat");
   eq(placeholder.fromName, "Marcia", "under its display name");
   eq(placeholder.attachments?.length ?? 0, 0, "with no contact card");
-  assert(!/\(\d{3}\) \d{3}|\+1\d{10}/.test(placeholder.body), "and no number of any kind");
+  assert(!placeholder.body.includes("(219) 758-8170"), "and never the number the call comes from");
   assert(/reply to one of our texts/.test(placeholder.body), "it tells the customer to reply to one of our texts");
   assert(!placeholder.body.includes("https://slate.trypennie.app/manage/abc"), "with no manage link (Dan, 2026-10-27)");
   assert(routed.body.includes("https://slate.trypennie.app/manage/abc"), "while the routed call keeps its manage link");

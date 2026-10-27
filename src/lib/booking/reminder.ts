@@ -264,7 +264,8 @@ export interface ReminderCopyInput {
   /**
    * A call on the placeholder advisor, Marcia (booking kind `staff_placed`, #4206).
    * Its reminder goes out from the placeholder seat, whose inbox nobody reads, so the
-   * copy invites no reply to itself, names no number, and sends the customer back to
+   * copy invites no reply to itself, names no number the call comes from (the lead's own
+   * number is still named, #4292), and sends the customer back to
    * our texts (Dan, 2026-10-26). REQUIRED, so `tsc` names every caller (L168).
    */
   onPlaceholder: boolean;
@@ -385,7 +386,8 @@ function reminderBodyAt(input: ReminderCopyInput, when: string): string {
  * The placeholder's reminder (#4206, Dan 2026-10-26 and 27). The seat's name is the
  * sender's display name and nothing more: Marcia is who texts the customer, not who
  * calls, so the call is "with Pennie" and the email is signed by the team, as the
- * seat's auto reply is. It names no number, even a known calling number, because a
+ * seat's auto reply is. It names no number the call comes from (the lead's own is named,
+ * #4292), even a known calling number, because a
  * text to it reaches nobody and a card saved under Marcia's name invites exactly that;
  * it never says a reply will be read, because nobody reads the seat's inbox; and it
  * carries no manage link and no offer to change or cancel (Dan, 2026-10-27: a customer
