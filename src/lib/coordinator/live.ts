@@ -74,7 +74,7 @@ export function placeholderCallsDeps(): PlaceholderCallsDeps {
 export function placeCallDeps(): PlaceCallDeps {
   const customers = customerDeps();
   return {
-    findCustomer: (reference) => findCustomer(reference, customers),
+    findCustomer: (reference, routing) => findCustomer(reference, customers, routing),
     place: placeBookingForCoordinator,
     rescheduleReasons: async () => (await loadReasonOptions()).reschedule.selectable,
     mintSubmissionId: () => crypto.randomUUID(),

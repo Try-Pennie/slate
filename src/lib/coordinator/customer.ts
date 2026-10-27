@@ -10,7 +10,12 @@
  *    coordinator and never defaulted (Sam and Dan, 2026-10-23 and 26);
  *  - the BUCKET, exactly as the booker routes a link that carried no code
  *    (`resolveRoutingCode`): the score on the lead's current submission, and a score
- *    routing cannot use goes to the catch all, as it does for every other lead.
+ *    routing cannot use goes to the catch all, as it does for every other lead. The one
+ *    exception is a TEST coordinator (their own users row is `is_test`, the drill
+ *    account), who always books the partner test bucket whatever the score (Dan,
+ *    2026-10-27), so a drill booking never lands on a real bucket as a real lead. Who is
+ *    a test coordinator is decided by the server action from the signed in person
+ *    (`CustomerRouting`), never by anything the page sends.
  *
  * Each missing piece is its own refusal (L11), and a Salesforce read that FAILS is never
  * read as a lead with nothing in it. Nothing here logs a value (docs/pii.md).
@@ -21,6 +26,7 @@
 import { parseLeadReference } from "./lead-reference.ts";
 import { bookableHoursOn, type BookableHours } from "./bookable-hours.ts";
 import { leadZone } from "../zip-zones/zip-zones.ts";
+import { PARTNER_BUCKET_CODE } from "../embed/public-test-bucket.ts";
 import { resolveRoutingCode } from "../routing/lead-code.ts";
 import { findPersonMatch, type PersonIdentity, type NamedWorld } from "../booking/person-dedupe.ts";
 import { placedCallSummary, placedIdentity, looseMatchKind, type PlacedCallSummary } from "../booking/placed-booking.ts";
@@ -50,8 +56,11 @@ export interface Customer {
   zone: string;
   zoneFrom: "zip" | "state";
   bucketCode: string;
-  /** `catchall` when the lead's score is one routing cannot use, as on the booker. */
-  bucketSource: "salesforce" | "catchall";
+  /**
+   * `catchall` when the lead's score is one routing cannot use, as on the booker;
+   * `test-coordinator` when a test coordinator's booking went to the partner test bucket instead.
+   */
+  bucketSource: "salesforce" | "catchall" | "test-coordinator";
   bucketIsTest: boolean;
   durationMin: number;
 }
@@ -66,7 +75,16 @@ export interface CustomerDeps {
 
 export type FoundCustomer = { ok: true; customer: Customer } | { ok: false; refusal: CustomerRefusal };
 
-export async function findCustomer(reference: string, deps: CustomerDeps): Promise<FoundCustomer> {
+/**
+ * How the customer's bucket is decided, from the SIGNED IN coordinator (the server action
+ * reads it off their own users row). Required, so every caller has to say which.
+ */
+export interface CustomerRouting {
+  /** The coordinator is a test account (`users.is_test`): book the partner test bucket, whatever the Lead's score. */
+  testCoordinator: boolean;
+}
+
+export async function findCustomer(reference: string, deps: CustomerDeps, routing: CustomerRouting): Promise<FoundCustomer> {
   const ref = parseLeadReference(reference);
   if (!ref.ok) return { ok: false, refusal: ref.refusal };
 
@@ -81,13 +99,19 @@ export async function findCustomer(reference: string, deps: CustomerDeps): Promi
   const zone = leadZone({ postalCode: lead.postalCode, state: lead.state });
   if (!zone.ok) return { ok: false, refusal: "zone-unknown" };
 
-  let code: { code: string; source: "link" | "salesforce" | "catchall" };
-  try {
-    // No link code and no submission: the Lead id is what the coordinator has, so
-    // routing reads the lead's own score, the booker's step 2.
-    code = await resolveRoutingCode(null, lead.id, deps.readLeadXbc, { id: null, readLeadId: async () => undefined });
-  } catch {
-    return { ok: false, refusal: "salesforce-unreadable" };
+  let code: { code: string; source: "link" | "salesforce" | "catchall" | "test-coordinator" };
+  if (routing.testCoordinator) {
+    // The drill account: the score is never asked, so nothing about the Lead can send
+    // the booking to a real bucket.
+    code = { code: PARTNER_BUCKET_CODE, source: "test-coordinator" };
+  } else {
+    try {
+      // No link code and no submission: the Lead id is what the coordinator has, so
+      // routing reads the lead's own score, the booker's step 2.
+      code = await resolveRoutingCode(null, lead.id, deps.readLeadXbc, { id: null, readLeadId: async () => undefined });
+    } catch {
+      return { ok: false, refusal: "salesforce-unreadable" };
+    }
   }
   let resolved: Awaited<ReturnType<CustomerDeps["resolveBucketByCode"]>>;
   try {
@@ -109,7 +133,7 @@ export async function findCustomer(reference: string, deps: CustomerDeps): Promi
       zone: zone.zone,
       zoneFrom: zone.from,
       bucketCode: resolved.bucket.code,
-      bucketSource: code.source === "catchall" ? "catchall" : "salesforce",
+      bucketSource: code.source === "catchall" || code.source === "test-coordinator" ? code.source : "salesforce",
       bucketIsTest: resolved.bucket.is_test,
       durationMin: resolved.eventType.duration_min,
     },
@@ -144,8 +168,12 @@ export type CustomerLookup =
  * uses, so the page cannot promise a move the booking then refuses), and the hours a
  * call may start on `date` (the customer's local day; today there when absent).
  */
-export async function lookupCustomer(input: { reference: string; date?: string }, deps: LookupDeps): Promise<CustomerLookup> {
-  const found = await findCustomer(input.reference, deps);
+export async function lookupCustomer(
+  input: { reference: string; date?: string },
+  deps: LookupDeps,
+  routing: CustomerRouting,
+): Promise<CustomerLookup> {
+  const found = await findCustomer(input.reference, deps, routing);
   if (!found.ok) return found;
   const { customer } = found;
 

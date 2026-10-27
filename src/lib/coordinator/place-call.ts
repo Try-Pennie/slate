@@ -37,7 +37,7 @@ import {
   VerifyUnavailableError,
 } from "../booking/orchestration.ts";
 import { AttendeeEmailRefusedError } from "../booking/attendee-email-refused.ts";
-import type { FoundCustomer } from "./customer.ts";
+import type { CustomerRouting, FoundCustomer } from "./customer.ts";
 import {
   bookedSentence,
   movedSentence,
@@ -67,7 +67,8 @@ export type PlaceCallOutcome =
   | { kind: "refused"; reason: CoordinatorRefusal; retryable: boolean; submissionId: string; sentence: string };
 
 export interface PlaceCallDeps {
-  findCustomer(reference: string): Promise<FoundCustomer>;
+  /** The customer, re-read with the routing the signed in coordinator decides. */
+  findCustomer(reference: string, routing: CustomerRouting): Promise<FoundCustomer>;
   /** `placeBookingForCoordinator`. */
   place(input: PlacedBookingInput): Promise<PlacedBookingOutcome>;
   /** The reschedule reasons a person may submit (`loadReasonOptions().reschedule.selectable`). */
@@ -98,7 +99,8 @@ export function refusalFor(err: unknown): CoordinatorRefusal {
 
 export async function placeCall(
   request: PlaceCallRequest,
-  coordinator: { id: string },
+  /** The signed in coordinator: who placed it, and whether they are a test account (`users.is_test`). */
+  coordinator: { id: string; isTest: boolean },
   deps: PlaceCallDeps,
 ): Promise<PlaceCallOutcome> {
   const submissionId = request.submissionId && UUID.test(request.submissionId) ? request.submissionId : deps.mintSubmissionId();
@@ -110,7 +112,9 @@ export async function placeCall(
     move = { bookingId: request.move.bookingId, reason: reason.reason };
   }
 
-  const found = await deps.findCustomer(request.reference);
+  // The bucket is re-derived here from the Lead and the coordinator; nothing the page
+  // sent can name one (a test coordinator always books the partner test bucket).
+  const found = await deps.findCustomer(request.reference, { testCoordinator: coordinator.isTest });
   if (!found.ok) return refused(found.refusal, submissionId);
   const { customer } = found;
 
