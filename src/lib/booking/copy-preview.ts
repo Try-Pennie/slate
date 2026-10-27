@@ -182,7 +182,7 @@ export function bookerCopyScreens(): CopyScreen[] {
         // #3718: the inline card shows six times and offers the rest.
         { state: "the inline card, more times than it shows", text: PICKER_COPY.viewMore },
         { state: "a chosen day whose times have all gone", text: PICKER_COPY.dayEmpty(DAY) },
-        // #2310: the day HAS times, all before 8 AM or from 8 PM on the lead's
+        // #2310: the day HAS times, all before 8:00am or from 8:00pm on the lead's
         // clock. Read beside the line above: this must not say nothing is left.
         {
           state: "a chosen day whose times are all outside the lead's calling hours",

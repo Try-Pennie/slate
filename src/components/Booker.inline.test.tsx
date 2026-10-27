@@ -110,7 +110,7 @@ describe("the inline card (#3718)", () => {
     render(<Booker {...baseProps} layout="inline" />);
     // Not a blank card and not the "pick a day" prompt: the first day, chosen, saying
     // its times fall outside the lead's calling hours.
-    expect(await screen.findByText(/calling hours|8 AM|8 PM/i, { selector: "span.block" })).toBeTruthy();
+    expect(await screen.findByText(/calling hours|8:00am|8:00pm/i, { selector: "span.block" })).toBeTruthy();
     expect(timeButtons()).toHaveLength(0);
     expect(screen.queryByText(PICKER_COPY.pickADay, { selector: "span.block" })).toBeNull();
   });

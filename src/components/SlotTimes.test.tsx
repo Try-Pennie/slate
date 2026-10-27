@@ -114,7 +114,7 @@ describe("SlotTimes", () => {
 
     expect(
       visible(
-        "We only call between 8 AM and 8 PM your time, and the times left on Sat, Aug 15 are all outside those hours.",
+        "We only call between 8:00am and 8:00pm your time, and the times left on Sat, Aug 15 are all outside those hours.",
       ),
     ).toHaveLength(1);
     expect(visible("Pick another day above.")).toHaveLength(1);

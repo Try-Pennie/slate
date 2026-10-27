@@ -148,7 +148,7 @@ async function run() {
   {
     const { deps } = fake({ throws: () => new OutsideCallingWindowError("America/Phoenix") });
     const out = await placeCall({ reference: "00QUi00000AbCdEMAC", startIso: START, submissionId: SUBMISSION }, coordinator, deps);
-    assert(out.kind === "refused" && /Arizona/.test(out.sentence) && /8 AM and 8 PM/.test(out.sentence), "the calling window refusal names the window and the customer's zone");
+    assert(out.kind === "refused" && /Arizona/.test(out.sentence) && /8:00am and 8:00pm/.test(out.sentence), "the calling window refusal names the window and the customer's zone");
   }
 }
 

@@ -27,6 +27,7 @@
  */
 import { DateTime, IANAZone } from "luxon";
 import { FALLBACK_ZONE } from "./timezones.ts";
+import { formatTimeOfDay } from "../date/parse.ts";
 
 /** Minutes after local midnight: the window is [startMinute, endMinute). */
 export const LEAD_CALLING_WINDOW = {
@@ -85,12 +86,20 @@ export function splitByLeadCallingWindow(
   return { offered, outside };
 }
 
-/** "8 AM" / "8 PM" / "8:30 AM", from a minute of the day. */
+/**
+ * "8:00am" / "8:00pm", from a minute of the day, through THE one spelling of a time
+ * (`formatTimeOfDay`, #1765), so the window reads exactly as every other time beside
+ * it does: the booker's times, the manage page, the coordinator page's hours sentence
+ * (#4267). It printed "8 AM" by a spelling of its own until then, which put "from
+ * 8:00am to 5:30pm" beside "between 8 AM and 8 PM" on one screen.
+ */
 function clockLabel(minuteOfDay: number): string {
   const h24 = Math.floor(minuteOfDay / 60) % 24;
   const m = minuteOfDay % 60;
-  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
-  return `${h12}${m === 0 ? "" : `:${String(m).padStart(2, "0")}`} ${h24 < 12 ? "AM" : "PM"}`;
+  const label = formatTimeOfDay(`${String(h24).padStart(2, "0")}:${String(m).padStart(2, "0")}`);
+  // The bounds are constants above, so an unreadable time here is a broken constant.
+  if (label === null) throw new Error(`the calling window bound ${minuteOfDay} is not a time of day`);
+  return label;
 }
 
 /**
