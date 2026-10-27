@@ -398,6 +398,8 @@ describe("the Regal wire contract (#2314)", () => {
       lastName: "Doe",
       phones: { "+15551234567": { voiceOptIn: { subscribed: true }, smsOptIn: { subscribed: true } } },
       emails: { "jane@example.com": { emailOptIn: { subscribed: true } } },
+      // #4204: every routed event marks the contact, false off the placeholder.
+      customProperties: { slateGhostBooking: false },
     });
 
     // A cancel and a reassign name the number for identity only, even when the
@@ -408,6 +410,8 @@ describe("the Regal wire contract (#2314)", () => {
         lastName: "Doe",
         phones: { "+15551234567": {} },
         emails: { "jane@example.com": {} },
+        // #4204: every routed event marks the contact, false off the placeholder.
+        customProperties: { slateGhostBooking: false },
       });
     }
   });
@@ -426,6 +430,8 @@ describe("the Regal wire contract (#2314)", () => {
       lastName: "Doe",
       phones: CORRECTED_PHONE,
       emails: { "jane@example.com": {} },
+      // #4204: every routed event marks the contact, false off the placeholder.
+      customProperties: { slateGhostBooking: false },
     });
     const props = wireBody("booking.contact_updated", fullPayload()).properties as Record<string, unknown>;
     expect(props.previousPhone).toBe("+12155550100");
@@ -442,6 +448,8 @@ describe("the Regal wire contract (#2314)", () => {
       lastName: "Doe",
       phones: CORRECTED_PHONE,
       emails: { "jane@example.com": {} },
+      // #4204: every routed event marks the contact, false off the placeholder.
+      customProperties: { slateGhostBooking: false },
     });
   });
 
@@ -455,6 +463,8 @@ describe("the Regal wire contract (#2314)", () => {
       lastName: "Doe",
       phones: { "+15551234567": {} },
       emails: { "jane@example.com": {} },
+      // #4204: every routed event marks the contact, false off the placeholder.
+      customProperties: { slateGhostBooking: false },
     });
   });
 
@@ -538,6 +548,7 @@ describe("placeholder bookings to Regal (#4204)", () => {
       expect(e.properties.agentName).toBe("Marcia");
       expect(e.properties.agentFirstName).toBe("Marcia");
       expect(aiEligible(e)).toBe(true);
+      expect(e.traits.customProperties?.slateGhostBooking).toBe(true);
     },
   );
 
@@ -569,7 +580,9 @@ describe("placeholder bookings to Regal (#4204)", () => {
     (event) => {
       const e = buildRegalEvent(event, { ...payload(), booking_kind: "routed" });
       expect(e.properties.slateGhostBooking).toBe(false);
-      expect(e.traits.customProperties).toBeUndefined();
+      // #4204: the contact carries the marker too, so journeys that do not start on a
+      // Slate event can read it; Marcia's own flag is left alone.
+      expect(e.traits.customProperties).toEqual({ slateGhostBooking: false });
     },
   );
 
@@ -578,6 +591,6 @@ describe("placeholder bookings to Regal (#4204)", () => {
   it("reads a payload with no kind as routed", () => {
     const e = buildRegalEvent("booking.created", payload());
     expect(e.properties.slateGhostBooking).toBe(false);
-    expect(e.traits.customProperties).toBeUndefined();
+    expect(e.traits.customProperties).toEqual({ slateGhostBooking: false });
   });
 });

@@ -139,7 +139,12 @@ interface RegalEvent {
     phones?: Record<string, OptInTrait>;
     emails?: Record<string, OptInTrait>;
     /** #4204: sent only on a placeholder call, or one that just left the placeholder. */
-    customProperties?: { ai_agent_eligible: boolean };
+    /**
+     * #4204: `slateGhostBooking` on every routed event, so a journey that does not start
+     * on a Slate event can read it from the contact; `ai_agent_eligible` only on a
+     * placeholder call or the move that takes one off the placeholder.
+     */
+    customProperties?: { slateGhostBooking: boolean; ai_agent_eligible?: boolean };
   };
 }
 
@@ -337,7 +342,10 @@ export function buildRegalEvent(
     traits: contactTraits(p, event),
   };
   const eligible = aiAgentEligible(event, p);
-  if (eligible !== undefined) regal.traits.customProperties = { ai_agent_eligible: eligible };
+  regal.traits.customProperties = {
+    slateGhostBooking: onPlaceholder,
+    ...(eligible !== undefined ? { ai_agent_eligible: eligible } : {}),
+  };
 
   // #2659: the two join keys the landing page put on the booking URL, under the
   // GTM/GA4 tagging spec's OWN names (snake case, not camel cased to match the
