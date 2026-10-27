@@ -334,7 +334,8 @@ eq(anchorOf(ISSUE_3213_BODY), "d17f6524d4afc306b8ece8097308e77e851b1493", "the o
 eq(openingTextOf(ISSUE_3213_BODY), ISSUE_3213_BODY.trimEnd(), "a description with no list yet is all opening text");
 {
   // The backlog on 2026-10-27: 234 pushes after the opening one (227 commented on
-  // #3213, 5 on the closed #4089, 2 whose runs were cancelled in a burst).
+  // #3213, 5 named on the closed #4089, its opening push included, and 2 never named:
+  // one run failed on a GitHub API error, one has no run on record).
   const backlog = Array.from({ length: 234 }, (_, i) => sha(`backlog-${i}`));
   const body = bodyWithList(ISSUE_3213_BODY, backlog, REPO);
   assert(body.length <= ISSUE_BODY_LIMIT, `#3213's backlog fits the description (${body.length} of ${ISSUE_BODY_LIMIT} characters)`);
