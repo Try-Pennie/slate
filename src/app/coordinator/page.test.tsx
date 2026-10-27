@@ -3,8 +3,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 
 // The coordinator booking page's gate (#4205): only somebody who may use the desk (a
-// coordinator, or an admin who trains them) reaches it; a signed in advisor or manager is
-// answered not found, and somebody signed out is sent to sign in. The placeholder advisor
+// coordinator, or an admin who trains them) reaches it; anybody else, signed out or an
+// advisor or manager, is sent to sign in with a coordinator account. The placeholder advisor
 // can never be signed in at all: the session gate refuses its row before any page asks
 // (scripts/test-active-session-gate.ts, src/app/api/auth/callback/route.test.ts), so
 // `coordinatorDeskUser` never answers it. `?frame=` draws a design frame only behind the
@@ -42,10 +42,12 @@ describe("who reaches /coordinator (#4205)", () => {
     await expect(CoordinatorPage(params())).rejects.toThrow("NEXT_REDIRECT:/login");
   });
 
-  it("answers a signed in advisor or manager not found, so the page does not exist for them", async () => {
+  it("sends a signed in advisor or manager to sign in with a coordinator account, reading nothing", async () => {
+    // coordinatorDeskUser answers null for every role but a coordinator or an admin.
     auth.currentUser.mockResolvedValue({ id: "a1", role: "agent" });
-    await expect(CoordinatorPage(params())).rejects.toThrow("NEXT_NOT_FOUND");
+    await expect(CoordinatorPage(params())).rejects.toThrow("NEXT_REDIRECT:/login");
     expect(fixtureRead.readDesignFixture).not.toHaveBeenCalled();
+    expect(reasonOptions.loadReasonOptions).not.toHaveBeenCalled();
   });
 
   it("draws the page for a coordinator, empty and ready for a Lead", async () => {

@@ -1,15 +1,14 @@
-import { notFound, redirect } from "next/navigation";
-import { coordinatorDeskUser, currentUser } from "@/lib/auth";
+import { redirect } from "next/navigation";
+import { coordinatorDeskUser } from "@/lib/auth";
 import StandaloneTheme from "@/components/StandaloneTheme";
 import { PageShell } from "@/components/ui/PageShell";
 import { CoordinatorBooking } from "@/components/coordinator/CoordinatorBooking";
 import { readDesignFixture } from "@/lib/admin/design-fixture-read";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { initialPageState } from "@/lib/coordinator/booking-page";
-import { COORDINATOR_PAGE_COPY } from "@/lib/coordinator/booking-page-copy";
 import { coordinatorBookingFrame, type CoordinatorBookingDesignFixture } from "@/lib/coordinator/booking-page-fixture";
 
-export const metadata = { title: COORDINATOR_PAGE_COPY.page.title };
+export const metadata = { title: "Book a call" };
 
 export const dynamic = "force-dynamic";
 
@@ -19,11 +18,12 @@ export const dynamic = "force-dynamic";
  * Salesforce Lead, checks their time zone, picks one of the days and times Slate offers,
  * and books or moves the call, on the placeholder advisor when nobody is free.
  *
- * WHO: a coordinator, or an admin who trains them (`coordinatorDeskUser`). A signed in
- * advisor or manager is answered not found, so the page does not exist for them, and
- * somebody signed out is sent to sign in. Both server actions check the role
- * themselves, so this gate is presentation, not the control. WHOSE DATA: the customer
- * whose Lead was pasted, read from Salesforce on every lookup and every booking.
+ * WHO: a coordinator, or an admin who trains them (`coordinatorDeskUser`). Anybody else,
+ * signed out or signed in as an advisor or manager, is sent to sign in, where a
+ * coordinator account is the way in (the gate `scripts/test-staff-page-access.ts` holds
+ * every staff page to). Both server actions check the role themselves, so this gate is
+ * presentation, not the control. WHOSE DATA: the customer whose Lead was pasted, read
+ * from Salesforce on every lookup and every booking.
  *
  * `?frame=` draws one of the design's frames from its committed fixture, so the design
  * match score compares like with like; it answers only when the e2e run sets the flag and
@@ -31,10 +31,7 @@ export const dynamic = "force-dynamic";
  */
 export default async function CoordinatorPage({ searchParams }: { searchParams: Promise<{ frame?: string }> }) {
   const me = await coordinatorDeskUser();
-  if (!me) {
-    if (await currentUser()) notFound();
-    redirect("/login");
-  }
+  if (!me) redirect("/login");
   const sp = await searchParams;
 
   const fixture = await readDesignFixture<CoordinatorBookingDesignFixture>(sp.frame, "coordinator-booking");

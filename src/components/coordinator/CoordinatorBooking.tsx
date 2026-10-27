@@ -30,6 +30,16 @@ const PLACE_TIMEOUT_MS = 60_000;
 /** How often the customer's clock line is redrawn. */
 const CLOCK_TICK_MS = 15_000;
 
+/**
+ * BookerStrip's day chip, with the product's disabled look for a Closed day. The chosen
+ * chip is Sky with graphite text, which stays graphite in both themes; a chip at rest
+ * takes the theme's own text on the card.
+ */
+const DAY_CHIP =
+  "flex min-h-11 min-w-16 flex-1 flex-col items-center rounded-lg border px-3 py-2 tabular-nums transition-colors motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-60";
+const DAY_CHIP_CHOSEN = "border-pennie-sky bg-pennie-sky text-pennie-graphite";
+const DAY_CHIP_REST = "border-border text-fg hover:border-pennie-sky";
+
 /** Keys that move between or around controls, which are not an attempt on the locked card. */
 const NAV_KEYS = new Set(["Tab", "Shift", "Control", "Alt", "Meta", "CapsLock"]);
 
@@ -313,9 +323,7 @@ export function CoordinatorBooking({
                             aria-label={d.label}
                             disabled={d.disabled}
                             onClick={() => dispatch({ type: "dayChosen", date: d.date })}
-                            className={`flex min-h-11 min-w-16 flex-1 flex-col items-center rounded-lg border px-3 py-2 tabular-nums transition-colors motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-60 ${
-                              d.pressed ? "border-pennie-sky bg-pennie-sky text-pennie-graphite" : "border-border text-fg hover:border-pennie-sky"
-                            }`}
+                            className={`${DAY_CHIP} ${d.pressed ? DAY_CHIP_CHOSEN : DAY_CHIP_REST}`}
                           >
                             <span className={d.pressed ? "text-[11px] font-semibold" : "text-[11px] font-semibold text-fg-muted"}>{d.top}</span>
                             <span className="text-lg font-semibold leading-tight">{d.num}</span>
