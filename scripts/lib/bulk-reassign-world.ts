@@ -205,6 +205,9 @@ export class BulkReassignWorld {
         };
       },
 
+      // #4052: nobody in this world gets a tier back, so every demotion call still moves.
+      callsTakenAgain: async () => new Set<string>(),
+
       claimItem: async (itemId) => {
         const item = this.items.get(itemId);
         // WHERE id = $1 AND status = 'pending'. The row may have been stopped since

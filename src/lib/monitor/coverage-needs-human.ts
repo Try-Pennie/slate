@@ -200,6 +200,9 @@ export interface StrandedItemRead {
      * the window, so an in-pool holder there is still stranded and must keep paging.
      */
     fromRedistribute: boolean;
+    /** Whether this sweep was triggered by a Twilio DEMOTION (#4052). Only then does the holder
+     *  being able to take the call again (`holderTakesItAgain`) mean it is no longer stranded. */
+    fromDemotion?: boolean;
     /** Why this sweep's out agent will not be there (#3485), decoded from the job. */
     cause?: SweepCause;
   };
@@ -222,6 +225,12 @@ export interface StrandedItemRead {
    * DEPARTED agent (deactivated) is NOT in the pool, so their stranded calls still page.
    */
   assignedAgentInPool: boolean;
+  /**
+   * Whether the advisor holding it can take it again under their tiers now (#4052,
+   * `readCallsTakenAgain`): a demoted advisor whose tier came back. Read only for a demotion
+   * sweep's calls; absent reads as false, so the call stays counted, the loud side.
+   */
+  holderTakesItAgain?: boolean;
 }
 
 /**
@@ -354,6 +363,10 @@ export function countStranded(
     // STAYS in the pool but is away during the window, so an in-pool holder there is still
     // stranded. A departed agent is not in the pool, so their stranded calls still count.
     if (it.assignedAgentInPool && it.sweep.fromRedistribute) continue;
+    // #4052: the demoted advisor got the tier back and can take the call, so it is covered,
+    // and the move step settles it rather than moving it. Not `held`, for the reason above.
+    // Scoped to demotion sweeps: under time off the advisor's tiers are fine but they are away.
+    if (it.holderTakesItAgain && it.sweep.fromDemotion) continue;
     const at = countableAt(it, asOfMs, leadMs);
     if (at === false) {
       held.add(it.bookingId);
@@ -436,6 +449,9 @@ export interface StrandedSweepRow {
   status: BulkReassignJobStatus;
   updated_at: string;
   redistribute_marked_at: string | null;
+  /** Set on a demotion sweep (#4052), so its calls can be judged by whether the advisor takes
+   *  them again. Required so every read of the sweep row is named by `tsc`. */
+  demotion_marked_at: string | null;
 }
 
 /**
@@ -446,13 +462,15 @@ export interface StrandedSweepRow {
  * booking stands now; an item whose booking is not in `holderByBooking` (no longer
  * active and upcoming) or whose sweep was not read is dropped, never guessed.
  * `causeOf` is the page's own enrichment (#3485), absent for a reader that does not
- * say why.
+ * say why. `takenAgain` holds the demotion calls whose advisor can take them again
+ * (#4052, `readCallsTakenAgain`; `demotionCallsToAsk` names which to ask about).
  */
 export function strandedItemReads<J extends StrandedSweepRow>(
   items: readonly StrandedItemRow[],
   holderByBooking: ReadonlyMap<string, StrandedHolderNow>,
   jobById: ReadonlyMap<string, J>,
   causeOf?: (job: J) => SweepCause | undefined,
+  takenAgain: ReadonlySet<string> = new Set(),
 ): StrandedItemRead[] {
   return items.flatMap((it) => {
     const job = jobById.get(it.job_id);
@@ -470,13 +488,35 @@ export function strandedItemReads<J extends StrandedSweepRow>(
           status: job.status,
           updatedAt: job.updated_at,
           fromRedistribute: job.redistribute_marked_at != null,
+          fromDemotion: job.demotion_marked_at != null,
           ...(causeOf ? { cause: causeOf(job) } : {}),
         },
         startsAt: holder.startsAt,
         assignedUserId: holder.userId,
         assignedAgentInPool: holder.inPool,
+        holderTakesItAgain: takenAgain.has(it.booking_id),
       },
     ];
+  });
+}
+
+/**
+ * The calls to ask `readCallsTakenAgain` about (#4052): those a DEMOTION sweep gave up on that
+ * are still with that sweep's advisor. Every other call is judged without the read, so the
+ * coverage page pays for it only while a demoted advisor still holds a call.
+ */
+export function demotionCallsToAsk(
+  items: readonly StrandedItemRow[],
+  holderByBooking: ReadonlyMap<string, StrandedHolderNow>,
+  jobById: ReadonlyMap<string, StrandedSweepRow>,
+): { bookingId: string; outUserId: string }[] {
+  const seen = new Set<string>();
+  return items.flatMap((it) => {
+    const job = jobById.get(it.job_id);
+    const holder = holderByBooking.get(it.booking_id);
+    if (!job?.demotion_marked_at || !holder || holder.userId !== job.out_user_id || seen.has(it.booking_id)) return [];
+    seen.add(it.booking_id);
+    return [{ bookingId: it.booking_id, outUserId: job.out_user_id }];
   });
 }
 

@@ -142,6 +142,12 @@ export interface BulkReassignDeps {
    *  demotion sweep makes (#3615); see `demotionRerouteAudit`. */
   recordAudit(entry: AuditEntry): Promise<void>;
   /**
+   * Which of these calls the demoted advisor holding them can take again under their tiers NOW
+   * (#4052; `readCallsTakenAgain`, by the rule the sweep moved by). Asked only for a demotion
+   * sweep's call, right before a new advisor is chosen.
+   */
+  callsTakenAgain(calls: readonly { bookingId: string; outUserId: string }[]): Promise<Set<string>>;
+  /**
    * Persist an item's outcome and its new attempt count in one write.
    *
    * The lane lock serializes this against another TICK, but not against a
@@ -196,6 +202,16 @@ export function demotionRerouteAudit(job: BulkReassignJob, bookingId: string, to
       change: job.demotion_change ?? null,
     },
   };
+}
+
+/** Whether the demoted advisor can take this call again (#4052), false when that cannot be read. */
+async function takenAgain(bookingId: string, job: BulkReassignJob, deps: BulkReassignDeps): Promise<boolean> {
+  try {
+    return (await deps.callsTakenAgain([{ bookingId, outUserId: job.out_user_id }])).has(bookingId);
+  } catch (err) {
+    log.error("bulk-reassign", { msg: "could not read whether the advisor takes the call again", booking_id: bookingId }, err);
+    return false;
+  }
 }
 
 /**
@@ -257,6 +273,18 @@ export async function processBulkReassignItem(
       status: "moved",
       targetUserId: booking.assigned_user_id,
       detail: "Already reassigned off the out agent.",
+    };
+  }
+  // #4052: a demoted advisor whose tier came back can take the call again, so it stays with
+  // them. Asked here, where a call changes hands, so neither the hourly retry nor a tick that
+  // was already holding the item can move it after the tier returned. If Twilio takes the tier
+  // away again, that demotion opens a sweep of its own. A read that fails answers nothing and
+  // the move goes ahead as before: a wrong move has an undo, a wrong keep strands a customer.
+  if (job.demotion_marked_at && (await takenAgain(item.booking_id, job, deps))) {
+    return {
+      status: "skipped",
+      targetUserId: null,
+      detail: "The advisor can take this call again, so it stays with them.",
     };
   }
 

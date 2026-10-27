@@ -66,6 +66,7 @@ function fakeDeps(over: Partial<BulkReassignDeps> = {}) {
     },
     claimItem: async () => true,
     recordAudit: async () => {},
+    callsTakenAgain: async () => new Set<string>(),
     commitItemOutcome: async (itemId, outcome, attempts) => {
       log.push(`commit:${itemId}:${outcome.status}:${attempts}`);
     },
@@ -540,6 +541,65 @@ async function run() {
     const plain = buildBulkReassignProgress(demotion, movedItem, ctxFor("confirmed", "cov"));
     assert(plain.moved?.[0].canMoveBack === undefined, "without the planner's inputs, nothing is claimed either way");
     assert(!isBulkReassignProgress({ ...plain, moved: [{ ...plain.moved![0], canMoveBack: "yes" }] }), "a canMoveBack of the wrong type is refused");
+  }
+
+  // --- #4052: a demoted advisor who can take the call again keeps it ---
+  //
+  // 2026-10-21: an advisor lost Medium at 3 PM ET, a call was left unplaceable, Medium came back
+  // that evening, and the hourly retry kept re-arming the call to move it off an advisor who could
+  // take it again. The move step is where a call changes hands, so it asks there, right before
+  // choosing a new advisor, by the rule the sweep moved by. If Twilio takes the tier away again,
+  // the next demotion opens a sweep of its own, so leaving this one settled loses nothing.
+  {
+    const regainJob: BulkReassignJob = {
+      ...job,
+      created_by: null,
+      demotion_marked_at: "2026-10-21T19:00:00.000Z",
+      demotion_change: null,
+    };
+    const asked: { bookingId: string; outUserId: string }[][] = [];
+    let chose = false;
+    const { deps: d, log: l } = fakeDeps({
+      callsTakenAgain: async (calls) => {
+        asked.push([...calls]);
+        return new Set(["bk1"]);
+      },
+      selectTarget: async () => {
+        chose = true;
+        return { assignment: { userId: "cov", email: "cov@x.com" }, anyUnverified: false };
+      },
+    });
+    const out = await processBulkReassignItem(item(), regainJob, d);
+    assert(out.status === "skipped", `a call the demoted advisor can take again is settled, not moved (${out.status})`);
+    assert(/can take this call again/.test(out.detail ?? ""), `and says why (${out.detail})`);
+    assert(!chose && !l.some((e) => e.startsWith("reassign:")), "no new advisor is chosen and nothing is reassigned");
+    assert(JSON.stringify(asked) === JSON.stringify([[{ bookingId: "bk1", outUserId: "out" }]]), "asked about this call and its advisor");
+
+    // Still out of the tier: the move goes ahead exactly as before.
+    const still = fakeDeps({ callsTakenAgain: async () => new Set<string>() });
+    const moved = await processBulkReassignItem(item(), regainJob, still.deps);
+    assert(moved.status === "moved", "a call the advisor still cannot take moves");
+
+    // A read that fails is no answer: today's behaviour, the move goes ahead.
+    const failing = fakeDeps({
+      callsTakenAgain: async () => {
+        throw new Error("users read refused");
+      },
+    });
+    const afterFail = await processBulkReassignItem(item(), regainJob, failing.deps);
+    assert(afterFail.status === "moved", "an unreadable answer leaves the move as it was");
+
+    // Only a DEMOTION sweep asks: time off or an offboarding moves the call however the
+    // advisor's tiers stand, because the advisor is away or gone, not out of the pool.
+    let otherAsked = false;
+    const other = fakeDeps({
+      callsTakenAgain: async () => {
+        otherAsked = true;
+        return new Set(["bk1"]);
+      },
+    });
+    const otherOut = await processBulkReassignItem(item(), job, other.deps);
+    assert(otherOut.status === "moved" && !otherAsked, "any other sweep moves the call and never asks");
   }
 
   // --- #3615: an audit row for every call a DEMOTION sweep moves ---

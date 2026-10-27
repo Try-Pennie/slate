@@ -148,6 +148,7 @@ import {
   countPendingBulkReassignItems,
   loadRetryableUnplaceable,
   loadUserOrgId,
+  readCallsTakenAgain,
   markBulkReassignJobDoneIfDrained,
   reArmUnplaceableItems,
   type CoverageBookingRow,
@@ -4093,6 +4094,7 @@ function realBulkReassignDeps(): BulkReassignDeps {
     },
     claimItem: claimBulkReassignItem,
     recordAudit,
+    callsTakenAgain: readCallsTakenAgain,
     commitItemOutcome: commitBulkReassignItemOutcome,
     markJobDoneIfDrained: markBulkReassignJobDoneIfDrained,
     jobFinished: (job) =>
