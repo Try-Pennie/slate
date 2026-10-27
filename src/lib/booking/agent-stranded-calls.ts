@@ -1,10 +1,11 @@
 import { ACTIONABLE_ITEM_STATUSES, type BulkReassignActionableItem } from "@/lib/booking/bulk-reassign";
-import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
+import { ACTIVE_BOOKING_STATUSES, readCallsTakenAgain } from "@/lib/booking/bulk-reassign-store";
 import { POOL_STATE_COLUMNS, type PoolStateRow } from "@/lib/bookable/left-pool";
 import { unwrap } from "@/lib/db/result";
 import { inIdChunks } from "@/lib/db/id-batch";
 import {
   countStranded,
+  demotionCallsToAsk,
   strandedHolderNow,
   strandedItemReads,
   type StrandedItemRow,
@@ -31,6 +32,8 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
  * - and it is not a Redistribute flap whose agent is back in the pool (#3597).
  *   Approved time off moves calls out of an agent who stays in the pool, so an in
  *   pool holder there is still listed.
+ * - nor a demotion sweep's call the advisor can take again because the tier came
+ *   back (#4052).
  *
  * No paging lead window: the alert holds a call until an hour before it starts
  * while the hourly retry works it, but somebody who has opened this page wants
@@ -59,11 +62,13 @@ export interface AgentStrandedJobRow extends StrandedSweepRow {
   created_at: string;
 }
 
-/** The three reads, injectable so the assembly is tested without a database. */
+/** The reads, injectable so the assembly is tested without a database. */
 export interface AgentStrandedReads {
   upcomingBookings(agentId: string, nowIso: string): Promise<AgentStrandedBookingRow[]>;
   actionableItems(bookingIds: string[]): Promise<AgentStrandedItemRow[]>;
   jobs(jobIds: string[]): Promise<AgentStrandedJobRow[]>;
+  /** #4052: `readCallsTakenAgain`, asked only about demotion calls. */
+  callsTakenAgain(calls: readonly { bookingId: string; outUserId: string }[]): Promise<Set<string>>;
 }
 
 export interface AgentStrandedCalls {
@@ -86,10 +91,10 @@ export async function loadAgentStrandedCalls(
   const jobs = await reads.jobs([...new Set(items.map((it) => it.job_id))]);
   const jobById = new Map(jobs.map((j) => [j.id, j]));
   const bookingById = new Map(bookings.map((b) => [b.id, b]));
-  const counted = countStranded(
-    strandedItemReads(items, new Map(bookings.map((b) => [b.id, strandedHolderNow(b)])), jobById),
-    nowMs,
-  );
+  const holders = new Map(bookings.map((b) => [b.id, strandedHolderNow(b)]));
+  const ask = demotionCallsToAsk(items, holders, jobById);
+  const takenAgain = ask.length === 0 ? new Set<string>() : await reads.callsTakenAgain(ask);
+  const counted = countStranded(strandedItemReads(items, holders, jobById, undefined, takenAgain), nowMs);
   // Only this agent's: `countStranded` already keeps a call only while its holder is
   // the sweep's out agent, and every booking read here is held by this agent.
   const mine = counted.appointments.filter((a) => a.outUserId === agentId);
@@ -119,6 +124,7 @@ export async function loadAgentStrandedCalls(
 export function agentStrandedReads(): AgentStrandedReads {
   const db = supabaseAdmin();
   return {
+    callsTakenAgain: readCallsTakenAgain,
     upcomingBookings: (agentId, nowIso) =>
       selectAllPages<AgentStrandedBookingRow>("agent stranded calls: bookings", "id", () =>
         db
@@ -149,7 +155,7 @@ export function agentStrandedReads(): AgentStrandedReads {
             await db
               .from("bulk_reassign_jobs")
               // cap-safe: primary-key lookup, already split to the URL budget.
-              .select("id, out_user_id, status, created_at, updated_at, redistribute_marked_at")
+              .select("id, out_user_id, status, created_at, updated_at, redistribute_marked_at, demotion_marked_at")
               .in("id", batch),
             "agent stranded calls: jobs",
           ) ?? []) as AgentStrandedJobRow[],

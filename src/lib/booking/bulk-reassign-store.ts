@@ -15,6 +15,7 @@ import { coverageSelectionBounds } from "@/lib/booking/coverage-selection";
 import {
   assembleDemotionSnapshot,
   assembleRerouteCandidates,
+  callsTakenAgain,
   criteriaMapOrThrow,
   type DemotionCandidateRow,
   type DemotionSnapshotReaders,
@@ -289,6 +290,42 @@ export async function demotionBookings(
     ...demotionSnapshotReaders(outUserId, rangeStartIso, rangeEndIso),
     agentAttributes: async () => attributes ?? null,
   });
+}
+
+/**
+ * Which of these demotion sweep calls the advisor holding them can take again under their tiers
+ * NOW (#4052): one read of each distinct advisor's tiers, then the SAME filtered snapshot the
+ * sweep moved by (`demotionBookings`, L342), and `callsTakenAgain` decides. An advisor whose
+ * tiers or bookings cannot be read is logged and answers nothing, so their calls are treated as
+ * they always were. Never throws. Shared by the move step, the coverage page and the agent page,
+ * so the three cannot disagree about a call.
+ */
+export async function readCallsTakenAgain(
+  calls: readonly { bookingId: string; outUserId: string }[],
+): Promise<Set<string>> {
+  if (calls.length === 0) return new Set();
+  const nowIso = new Date().toISOString();
+  const unservedNow = new Map<string, ReadonlySet<string> | null>();
+  for (const userId of new Set(calls.map((c) => c.outUserId))) {
+    try {
+      const row = unwrap(
+        // cap-safe: primary-key lookup of one advisor.
+        await supabaseAdmin().from("users").select("attributes").eq("id", userId).maybeSingle(),
+        "calls-taken-again attributes",
+      ) as { attributes: Attributes | null } | null;
+      // No row, or no tiers on it, is not a reading: nothing is taken again.
+      if (!row?.attributes) {
+        unservedNow.set(userId, null);
+        continue;
+      }
+      const unserved = await demotionBookings(userId, nowIso, null, row.attributes);
+      unservedNow.set(userId, new Set(unserved.map((b) => b.id)));
+    } catch (err) {
+      log.error("bulk-reassign", { msg: "could not read whether an advisor takes their calls again", user_id: userId }, err);
+      unservedNow.set(userId, null);
+    }
+  }
+  return callsTakenAgain(calls, unservedNow);
 }
 
 /**

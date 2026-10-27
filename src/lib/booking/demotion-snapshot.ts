@@ -167,3 +167,25 @@ export async function assembleRerouteCandidates(
   ]);
   return toRerouteCandidates(candidates, criteriaByBucket, manualMemberBucketIds);
 }
+
+/**
+ * Which of a demotion sweep's calls the advisor holding them can take AGAIN (#4052), given the
+ * calls each advisor cannot serve under their tiers NOW (`unservedBookingIds`, the rule the sweep
+ * moved by, L342). Null for an advisor means their tiers could not be read, which answers
+ * nothing: their calls are not taken again, so the move, the count and the page behave as they
+ * always did. Pure.
+ *
+ * 2026-10-21: an advisor lost Medium at 3 PM ET, calls were left unplaceable, Medium came back
+ * that evening, and the hourly retry kept trying to move them off an advisor who could take them.
+ */
+export function callsTakenAgain(
+  calls: readonly { bookingId: string; outUserId: string }[],
+  unservedNowByUser: ReadonlyMap<string, ReadonlySet<string> | null>,
+): Set<string> {
+  const again = new Set<string>();
+  for (const c of calls) {
+    const unserved = unservedNowByUser.get(c.outUserId);
+    if (unserved != null && !unserved.has(c.bookingId)) again.add(c.bookingId);
+  }
+  return again;
+}

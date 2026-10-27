@@ -10,6 +10,7 @@
 import {
   assembleDemotionSnapshot,
   assembleRerouteCandidates,
+  callsTakenAgain,
   criteriaMapOrThrow,
   selectDemotionBookings,
   toRerouteCandidates,
@@ -299,6 +300,32 @@ function readers(over: Partial<DemotionSnapshotReaders>): DemotionSnapshotReader
     }),
   );
   assert(!asked, "an agent holding nothing costs no pinned read");
+}
+
+{
+  // #4052: a call a demotion sweep could not place stays with the demoted advisor, and the
+  // advisor can get the tier back (2026-10-21: Medium removed at 3 PM ET, restored that
+  // evening). The call is then theirs to take again and must not be moved, judged by the
+  // SAME unserved set the sweep moved by (L342): taken again means the advisor's tiers were
+  // read and the call is no longer among the ones they cannot serve.
+  const calls = [
+    { bookingId: "c1", outUserId: "regained" },
+    { bookingId: "c2", outUserId: "still-out" },
+    { bookingId: "c3", outUserId: "unread" },
+    { bookingId: "c4", outUserId: "never-asked" },
+  ];
+  const unservedNow = new Map<string, ReadonlySet<string> | null>([
+    ["regained", new Set<string>()],
+    ["still-out", new Set(["c2"])],
+    ["unread", null],
+  ]);
+  eq([...callsTakenAgain(calls, unservedNow)].join(","), "c1", "only the call its advisor can serve again is taken again");
+  assert(
+    !callsTakenAgain(calls, unservedNow).has("c3"),
+    "an advisor whose tiers could not be read keeps today's behaviour: the call is not taken again",
+  );
+  assert(!callsTakenAgain(calls, unservedNow).has("c4"), "nor is one whose advisor was never read");
+  eq(callsTakenAgain([], unservedNow).size, 0, "no calls, nothing taken again");
 }
 
 finish();

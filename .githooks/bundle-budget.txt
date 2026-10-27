@@ -2,4 +2,4 @@
 # Every push must carry the weight its own build measures, within 1 KB, so the change
 # that moves the bundle moves this line. The gate prints the command when it has to:
 #     pnpm bundle:record <total>
-total: 485951
+total: 487111

@@ -445,6 +445,7 @@ import { demotionSweepPending, storedDemotionStamp } from "@/lib/booking/demotio
 import { criteriaMapOrThrow, type DemotionCandidateRow } from "@/lib/booking/demotion-snapshot";
 import {
   countStranded,
+  demotionCallsToAsk,
   COVERAGE_PAGE_LEAD_MS,
   decodeSweepCause,
   loadTimeOffWindows,
@@ -470,7 +471,7 @@ import { ACTIONABLE_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
 import { unwrap } from "@/lib/db/result";
 import { parseStampMs } from "@/lib/date/stamp";
 import { countHumanOutcomesSince, type OutcomeCountDb } from "@/lib/monitor/regal-call-outcomes-store";
-import { ACTIVE_BOOKING_STATUSES, pinnedDemotionBookingIds } from "@/lib/booking/bulk-reassign-store";
+import { ACTIVE_BOOKING_STATUSES, pinnedDemotionBookingIds, readCallsTakenAgain } from "@/lib/booking/bulk-reassign-store";
 import { loadOooCoverageBookings, loadSnapshottedBookingIds } from "@/lib/monitor/ooo-coverage-bookings";
 import { inIdChunks } from "@/lib/db/id-batch";
 import { selectAllPages } from "@/lib/supabase/paginate";
@@ -3694,11 +3695,20 @@ export async function GET(req: NextRequest) {
             err instanceof Error ? err : undefined,
           ),
       );
+      // #4052: a demoted advisor whose tier came back can take their calls again, so those are
+      // not waiting for a person. Read only while a demotion sweep's call is still with its
+      // advisor; an unreadable advisor answers nothing and their calls stay counted.
+      const askTakenAgain = demotionCallsToAsk(live, holderByBooking, jobById);
+      const takenAgain = askTakenAgain.length === 0 ? new Set<string>() : await readCallsTakenAgain(askTakenAgain);
       // #3595: assembled by the helper the agent page's standing list also uses, so the
       // page and the alert hand `countStranded` the same facts.
-      const reads: StrandedItemRead[] = strandedItemReads(live, holderByBooking, jobById, (job) =>
+      const reads: StrandedItemRead[] = strandedItemReads(
+        live,
+        holderByBooking,
+        jobById,
         // #3485: why this agent will not be there, from the job's own columns.
-        decodeSweepCause(job, job.ooo_request_id ? oooById.get(job.ooo_request_id) ?? null : null),
+        (job) => decodeSweepCause(job, job.ooo_request_id ? oooById.get(job.ooo_request_id) ?? null : null),
+        takenAgain,
       );
       // #3485 part C: page only once a call is within the lead window; before that it is
       // held (waiting), the hourly bulk-reassign-retry lane re-attempts it.

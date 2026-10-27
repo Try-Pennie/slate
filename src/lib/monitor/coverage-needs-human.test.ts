@@ -44,6 +44,7 @@ import {
   type StrandedRead,
   type CoverageOutAgent,
   type SweepCause,
+  type StrandedSweepRow,
 } from "./coverage-needs-human";
 import { LANE_STALE_BOUNDS_MS } from "./health";
 import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
@@ -977,6 +978,7 @@ describe("strandedHolderNow and strandedItemReads (#3595)", () => {
     status: "done" as const,
     updated_at: "2026-10-12T00:02:00Z",
     redistribute_marked_at: "2026-10-11T23:57:00Z",
+    demotion_marked_at: null,
   };
   const item = { booking_id: "b1", status: "unplaceable", job_id: "j1", updated_at: "2026-10-11T23:55:00Z" };
 
@@ -1007,13 +1009,37 @@ describe("strandedHolderNow and strandedItemReads (#3595)", () => {
           status: "done",
           updatedAt: "2026-10-12T00:02:00Z",
           fromRedistribute: true,
+          fromDemotion: false,
           cause: { kind: "redistribute" },
         },
         startsAt: "2026-10-23T14:00:00Z",
         assignedUserId: "agent-a",
         assignedAgentInPool: false,
+        holderTakesItAgain: false,
       },
     ]);
+  });
+
+  // #4052: a demoted advisor who got the tier back can take the call again, so it is no
+  // longer waiting for a person. Judged only for a DEMOTION sweep: time off moves calls off an
+  // advisor whose tiers are fine but who is away, so the same flag means nothing there.
+  it("leaves out a demotion sweep's call its advisor can take again, and only a demotion sweep's", () => {
+    const holders = new Map([["b1", { userId: "agent-a", inPool: true, startsAt: "2026-10-23T14:00:00Z" }]]);
+    const asOf = Date.parse("2026-10-21T15:00:00Z");
+    const demotion = { ...job, redistribute_marked_at: null, demotion_marked_at: "2026-10-11T23:57:00Z" };
+    const timeOff = { ...job, redistribute_marked_at: null };
+    const count = (j: StrandedSweepRow, again: ReadonlySet<string>) =>
+      countStranded(strandedItemReads([item], holders, new Map([["j1", j]]), undefined, again), asOf);
+
+    const regained = count(demotion, new Set(["b1"]));
+    expect(regained.appointments).toHaveLength(0);
+    expect(regained.waiting).toBe(0);
+    expect(count(demotion, new Set()).appointments).toHaveLength(1);
+    expect(count(timeOff, new Set(["b1"])).appointments).toHaveLength(1);
+    expect(strandedItemReads([item], holders, new Map([["j1", demotion]]), undefined, new Set(["b1"]))[0]).toMatchObject({
+      sweep: { fromDemotion: true },
+      holderTakesItAgain: true,
+    });
   });
 
   it("drops an item whose booking is no longer active and upcoming, or whose sweep was not read", () => {

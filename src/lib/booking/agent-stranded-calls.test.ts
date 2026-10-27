@@ -48,6 +48,7 @@ function job(over: Partial<AgentStrandedJobRow> = {}): AgentStrandedJobRow {
     created_at: "2026-10-11T23:57:00Z",
     updated_at: "2026-10-12T00:02:00Z",
     redistribute_marked_at: "2026-10-11T23:57:00Z",
+    demotion_marked_at: null,
     ...over,
   };
 }
@@ -57,10 +58,27 @@ function readsOf(rows: {
   bookings?: AgentStrandedBookingRow[];
   items?: AgentStrandedItemRow[];
   jobs?: AgentStrandedJobRow[];
-}): AgentStrandedReads & { asked: { bookingsFor: string[]; itemsFor: string[][]; jobsFor: string[][] } } {
-  const asked = { bookingsFor: [] as string[], itemsFor: [] as string[][], jobsFor: [] as string[][] };
+  takenAgain?: string[];
+}): AgentStrandedReads & {
+  asked: {
+    bookingsFor: string[];
+    itemsFor: string[][];
+    jobsFor: string[][];
+    takenAgainFor: { bookingId: string; outUserId: string }[][];
+  };
+} {
+  const asked = {
+    bookingsFor: [] as string[],
+    itemsFor: [] as string[][],
+    jobsFor: [] as string[][],
+    takenAgainFor: [] as { bookingId: string; outUserId: string }[][],
+  };
   return {
     asked,
+    async callsTakenAgain(calls) {
+      asked.takenAgainFor.push([...calls]);
+      return new Set((rows.takenAgain ?? []).filter((id) => calls.some((c) => c.bookingId === id)));
+    },
     async upcomingBookings(agentId, nowIso) {
       asked.bookingsFor.push(`${agentId}@${nowIso}`);
       return rows.bookings ?? [];
@@ -139,6 +157,22 @@ describe("loadAgentStrandedCalls (#3595)", () => {
       jobs: [job({ redistribute_marked_at: null })],
     });
     expect((await loadAgentStrandedCalls(AGENT, NOW, reads)).calls).toHaveLength(1);
+  });
+
+  // #4052: the same rule the alert counts by.
+  it("drops a demotion sweep's call the advisor can take again, asking only about demotion calls", async () => {
+    const demotion = job({ redistribute_marked_at: null, demotion_marked_at: "2026-10-11T23:57:00Z" });
+    const inPool = { bookable: true, deactivated_at: null, bookable_pending_since: null };
+    const regained = readsOf({ bookings: [booking({ users: inPool })], items: [item()], jobs: [demotion], takenAgain: ["b1"] });
+    expect((await loadAgentStrandedCalls(AGENT, NOW, regained)).calls).toEqual([]);
+    expect(regained.asked.takenAgainFor).toEqual([[{ bookingId: "b1", outUserId: AGENT }]]);
+
+    const stillOut = readsOf({ bookings: [booking({ users: inPool })], items: [item()], jobs: [demotion] });
+    expect((await loadAgentStrandedCalls(AGENT, NOW, stillOut)).calls).toHaveLength(1);
+
+    const timeOff = readsOf({ bookings: [booking()], items: [item()], jobs: [job({ redistribute_marked_at: null })], takenAgain: ["b1"] });
+    expect((await loadAgentStrandedCalls(AGENT, NOW, timeOff)).calls).toHaveLength(1);
+    expect(timeOff.asked.takenAgainFor.flat()).toEqual([]);
   });
 
   it("drops a call now with this agent that a sweep of SOMEBODY ELSE gave up on", async () => {
