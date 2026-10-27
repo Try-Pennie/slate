@@ -60,7 +60,8 @@ export const HOUR_REMINDER_RETRY_FLOOR_MS = 30 * 60_000;
 const KIND_LABEL: Record<ReminderKind, string> = { day: "24 hour", hour: "1 hour" };
 
 /**
- * The 24 hour reminder lane's orchestration (#2359).
+ * The reminder lane's orchestration, for both emails: 24 hours before the call
+ * (#2359) and 1 hour before it (#4282), one run per kind.
  *
  * Every dependency is injected, so the property that makes this safe (the claim is
  * written BEFORE Gmail is called) is asserted by
@@ -85,8 +86,9 @@ const KIND_LABEL: Record<ReminderKind, string> = { day: "24 hour", hour: "1 hour
  * The exception is a failure that PROVES nothing was delivered and could pass: the
  * send threw an `EmailSendError` whose outcome is `never_sent` or `refused` and
  * which is `transient` (a token mint that timed out, a 429), while the call is still
- * more than `REMINDER_HOLD_FLOOR_MS` plus `REMINDER_RETRY_MARGIN_MS` away, so the
- * retry itself lands before the hour. Then the claim is handed back, by a
+ * more than its kind's floor plus `REMINDER_RETRY_MARGIN_MS` away, so the retry itself
+ * still lands in time: `REMINDER_HOLD_FLOOR_MS` for the 24 hour email, which must land
+ * before the hour, and `HOUR_REMINDER_RETRY_FLOOR_MS` for the 1 hour one. Then the claim is handed back, by a
  * compare and swap as exact as the claim itself, and the next tick sends it
  * (2026-10-05: a mint timeout cost a lead their reminder under the old rule, though
  * the mint runs before Gmail is ever called). Anything less certain, a plain Error
