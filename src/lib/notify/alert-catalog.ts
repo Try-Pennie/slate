@@ -974,8 +974,9 @@ export const ALERT_CATALOG: AlertEntry[] = [
     kind: "condition",
     why:
       "The placeholder advisor's Google Calendar or Gmail sending is failing while the seat is in use, " +
-      "so the invites and reminders of the calls placed on it may not go out (#4206). It ends when both " +
-      "probes answer on a measured tick, or as a stand down when the switch is off and no call sits on it.",
+      "so the invites and reminders of the calls placed on it may not go out (#4206), or its standing " +
+      "Gmail auto reply is off, restricted or no longer the decided text (#4265). It ends when every " +
+      "probe answers on a measured tick, or as a stand down when the switch is off and no call sits on it.",
   },
   {
     key: "placeholder_missing",

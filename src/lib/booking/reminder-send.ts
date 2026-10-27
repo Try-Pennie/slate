@@ -101,6 +101,12 @@ export interface DueBooking {
   gcalEventId: string | null;
   /** The assigned advisor's user id, whose photo goes on the card; null for none. */
   agentId: string | null;
+  /**
+   * The call sits on the placeholder advisor, Marcia (booking kind `staff_placed`,
+   * #4206): sent from the placeholder seat with its own copy, no number, no card and
+   * no calling number written into the invite (Dan, 2026-10-26).
+   */
+  onPlaceholder: boolean;
 }
 
 export interface ReminderDeps {
@@ -384,7 +390,13 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
   // number helps the lead, and the reminder itself is the promise.
   let callingNumbers = new Map<string, string | null>();
   const leadIds = [
-    ...new Set(sendable.map((r) => r.leadId).filter((id): id is string => !!id && isLeadId(id))),
+    // A placeholder call never uses its number (#4206), so it is not asked about.
+    ...new Set(
+      sendable
+        .filter((r) => !r.onPlaceholder)
+        .map((r) => r.leadId)
+        .filter((id): id is string => !!id && isLeadId(id)),
+    ),
   ];
   if (leadIds.length > 0) {
     // Under the lane's own deadline, so a hung Salesforce cannot hold every claim
@@ -402,8 +414,10 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
     );
     if (read) callingNumbers = read;
   }
+  // A placeholder call never carries a number (#4206): no card, no calling line, and
+  // its invite is not rewritten with one, so it is null here for every use below.
   const callingNumberOf = (row: DueBooking): string | null =>
-    row.leadId && isLeadId(row.leadId) ? (callingNumbers.get(leadIdKey(row.leadId)) ?? null) : null;
+    !row.onPlaceholder && row.leadId && isLeadId(row.leadId) ? (callingNumbers.get(leadIdKey(row.leadId)) ?? null) : null;
 
   // The advisor's photo for the card (Dan, 2026-10-01): one lookup for the tick and
   // at most ONE fetch per advisor, however many of their leads are reminded, only
@@ -436,6 +450,7 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
       // so "tomorrow" and "is this due" can never disagree about what day it is.
       nowMs,
       callingNumber,
+      onPlaceholder: row.onPlaceholder,
     };
     // Counted BEFORE the call, so a send that threw is in the denominator of its
     // own failure share rather than only in the numerator.

@@ -81,6 +81,8 @@ on:
       - "src/lib/snowflake/client.ts"
       - "src/lib/snowflake/jwt-cache.ts"
       - "src/lib/snowflake/mirror-credentials.ts"
+      # #4259: the missing busy block suite runs the pool exit backstop's own predicate.
+      - "src/lib/bookable/left-pool.ts"
       # Node reads its "type" to decide how to load a .ts file.
       - "package.json"
       - ".github/workflows/db-replay.yml"

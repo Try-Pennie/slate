@@ -9,6 +9,7 @@ const google = vi.hoisted(() => ({
 vi.mock("@/lib/google/dwd", () => ({
   getDelegatedToken: google.getDelegatedToken,
   GMAIL_SEND_SCOPE: "https://www.googleapis.com/auth/gmail.send",
+  GMAIL_SETTINGS_READ_SCOPE: "https://www.googleapis.com/auth/gmail.settings.basic",
 }));
 vi.mock("@/lib/google/reachability", () => ({
   classifyCalendarReachability: google.classifyCalendarReachability,
@@ -21,9 +22,11 @@ import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import {
   countFutureCallsOnPlaceholders,
   loadRealPlaceholders,
+  probePlaceholderAutoReply,
   probePlaceholderCalendar,
   probePlaceholderGmail,
 } from "./placeholder-seat-store";
+import { PLACEHOLDER_SEAT_AUTO_REPLY } from "./placeholder-seat";
 
 /** A query builder that records its filters and answers one canned result. */
 function fakeDb(result: { data?: unknown; count?: number | null; error: { message: string } | null }) {
@@ -79,6 +82,73 @@ describe("probePlaceholderGmail", () => {
   it("never throws: an unexpected error is transient, never reachable", async () => {
     google.getDelegatedToken.mockRejectedValue(new TypeError("fetch failed"));
     await expect(probePlaceholderGmail("m@x")).resolves.toBe("transient");
+  });
+});
+
+describe("probePlaceholderAutoReply (#4265)", () => {
+  const NOW = Date.UTC(2026, 9, 27, 15, 0, 0);
+  const answer = (status: number, body: unknown) =>
+    vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(body), { status }));
+  const decided = { enableAutoReply: true, responseBodyPlainText: PLACEHOLDER_SEAT_AUTO_REPLY };
+
+  it("reads the seat's vacation settings under its own settings token, never the send token", async () => {
+    google.getDelegatedToken.mockResolvedValue("settings-tok");
+    const fetchImpl = answer(200, decided);
+    expect(await probePlaceholderAutoReply("marcia@x.com", NOW, fetchImpl)).toBe("matches");
+    expect(google.getDelegatedToken).toHaveBeenCalledWith(
+      "marcia@x.com",
+      "https://www.googleapis.com/auth/gmail.settings.basic",
+      8000,
+    );
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe("https://gmail.googleapis.com/gmail/v1/users/marcia%40x.com/settings/vacation");
+    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer settings-tok");
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
+  it("judges what Gmail answered: off, restricted, another text", async () => {
+    google.getDelegatedToken.mockResolvedValue("tok");
+    expect(await probePlaceholderAutoReply("m@x", NOW, answer(200, { ...decided, enableAutoReply: false }))).toBe("off");
+    expect(await probePlaceholderAutoReply("m@x", NOW, answer(200, { ...decided, restrictToContacts: true }))).toBe("restricted");
+    expect(await probePlaceholderAutoReply("m@x", NOW, answer(200, { ...decided, responseBodyPlainText: "Away" }))).toBe("text-changed");
+  });
+
+  it("reads a scope the delegation does not grant as not granted yet, never as the seat failing", async () => {
+    google.getDelegatedToken.mockRejectedValue(
+      new GoogleHttpError("Delegated token failed: 401", 401, "unauthorized_client"),
+    );
+    const fetchImpl = answer(200, decided);
+    expect(await probePlaceholderAutoReply("m@x", NOW, fetchImpl)).toBe("not-granted");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("classifies any other refused mint as the read failing", async () => {
+    google.getDelegatedToken.mockRejectedValueOnce(new GoogleHttpError("token 400", 400, "invalid_grant"));
+    expect(await probePlaceholderAutoReply("m@x", NOW, answer(200, decided))).toBe("gone");
+    google.getDelegatedToken.mockRejectedValueOnce(new DeadlineExceededError("google token mint", 8000));
+    expect(await probePlaceholderAutoReply("m@x", NOW, answer(200, decided))).toBe("transient");
+  });
+
+  it("classifies a refused or failed read of the settings, and never throws", async () => {
+    google.getDelegatedToken.mockResolvedValue("tok");
+    const forbidden = { error: { errors: [{ reason: "forbidden" }] } };
+    expect(await probePlaceholderAutoReply("m@x", NOW, answer(403, forbidden))).toBe("gone");
+    expect(await probePlaceholderAutoReply("m@x", NOW, answer(503, {}))).toBe("transient");
+    const down = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    });
+    await expect(probePlaceholderAutoReply("m@x", NOW, down)).resolves.toBe("transient");
+    const garbled = vi.fn(async () => new Response("not json", { status: 200 }));
+    await expect(probePlaceholderAutoReply("m@x", NOW, garbled)).resolves.toBe("transient");
+  });
+});
+
+describe("the scopes today's mints ask for (#4265)", () => {
+  it("keep gmail.settings.basic out of every existing mint, so an ungranted scope breaks none of them", async () => {
+    const dwd = await vi.importActual<typeof import("@/lib/google/dwd")>("@/lib/google/dwd");
+    expect(dwd.GMAIL_SETTINGS_READ_SCOPE).toBe("https://www.googleapis.com/auth/gmail.settings.basic");
+    expect(dwd.CALENDAR_SCOPE).not.toContain("gmail");
+    expect(dwd.GMAIL_SEND_SCOPE).toBe("https://www.googleapis.com/auth/gmail.send");
   });
 });
 

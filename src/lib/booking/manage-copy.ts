@@ -133,6 +133,27 @@ export function callComesFrom(callingNumber: string | null): string | null {
   return `${CALL_COMES_FROM_PREFIX}${shown}. Save it to your contacts so your phone lets it through.`;
 }
 
+/**
+ * What a call on the placeholder advisor, Marcia, tells the customer about replies
+ * (#4206, Dan 2026-10-26 and 27). Its invite and its 24 hour reminder go out from the
+ * placeholder seat (scheduling@trypennie.com), whose inbox nobody reads, so neither
+ * may invite a reply to itself. Nor do they name a number to text: the number Pennie
+ * calls from reaches nobody by text, and the Sendblue line the texts come from lives
+ * only in Regal and changes often. So a question goes back to the thread they already
+ * have, the same instruction the seat's standing Gmail auto reply gives
+ * (`PLACEHOLDER_SEAT_AUTO_REPLY`, `src/lib/monitor/placeholder-seat.ts`).
+ *
+ * It does NOT offer to change the call, and neither surface carries the manage link
+ * (Dan, 2026-10-27: "I don't think we should encourage or say they can change the call.
+ * If they text in and ask to change it we'll handle it then.").
+ */
+export const REPLY_TO_OUR_TEXTS = "If you have a question, reply to one of our texts and someone will answer you there.";
+
+/** The placeholder's reply line, for the surface it is written on. */
+export function placeholderReplyLine(surface: "email" | "invite"): string {
+  return `Nobody reads replies to this ${surface}. ${REPLY_TO_OUR_TEXTS}`;
+}
+
 /** How the line starts, so an invite already carrying one can find it to replace. */
 export const CALL_COMES_FROM_PREFIX = "The call will come from ";
 

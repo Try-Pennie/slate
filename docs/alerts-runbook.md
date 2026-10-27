@@ -1175,20 +1175,52 @@ and links the booking.
 5. A page still open three days after the booked start closes as a stand down saying
    nothing was fixed, before the per booking prune would delete it with no message.
 
-**`placeholder_seat_failing`** says the placeholder's Google Calendar or its Gmail
-sending failed on consecutive ticks while the seat is in use (the switch is on, or a call
-still sits on it): twice in a row for a definitive failure, four times (twenty minutes)
-for a transient one. Calls still book, but their customers may get no invite and no
-reminder. The kind in the page decides the branch, as in "Google cannot be reached for an
-agent" above: `gone` is the Workspace account or domain wide delegation, `not-provisioned`
-is a Workspace admin giving the seat Calendar, `transient` is usually Google and heals.
-The Gmail probe mints the seat's `gmail.send` token, so it sees a removed account or a
-revoked grant within about an hour; it cannot see Gmail switched off for the seat (that
-fails at the send, under `booking_reminders_failing`) or the standing auto reply, which
-needs `gmail.settings.basic`, a scope Slate does not hold. Check the auto reply by hand in
-the seat's Gmail settings. While a definitive failure lasts, switch placing calls off
-(below). It closes when both probes answer, or as a stand down once the switch is off and
-no call sits on the seat.
+**`placeholder_seat_failing`** says the placeholder's Google Calendar, its Gmail sending
+or its standing Gmail auto reply failed on consecutive ticks while the seat is in use (the
+switch is on, or a call still sits on it): twice in a row for a definitive failure, four
+times (twenty minutes) for a transient one. While `google_calendar_breaker_open` is firing
+it waits (`ALERT_FOLDS`, #4265), because a Google outage fails the seat's probes by
+construction; it posts on its own twenty minutes after the breaker closes if it still
+fails. The words in the page decide the branch.
+
+- **Calendar or Gmail sending.** Calls still book, but their customers may get no invite
+  and no reminder. The kind decides, as in "Google cannot be reached for an agent" above:
+  `gone` is the Workspace account or domain wide delegation, `not-provisioned` is a
+  Workspace admin giving the seat Calendar, `transient` is usually Google and heals. The
+  Gmail probe mints the seat's `gmail.send` token, so it sees a removed account or a
+  revoked grant within about an hour. While a definitive failure lasts, switch placing
+  calls off (below).
+- **Gmail switched off for the seat is not seen here.** A Workspace admin turning Gmail
+  off for scheduling@trypennie.com still lets the send token mint, so this page stays
+  quiet; it surfaces only at send time, as failed reminders under
+  `booking_reminders_failing`. If that page names reminders from the seat, check the
+  seat's Gmail service in Google Admin first.
+- **The auto reply** (`users.settings.getVacation`, read under its own
+  `gmail.settings.basic` token). It pages, as definitive, when the responder is off (or
+  outside the dates it is set to run), answers only contacts or people inside Pennie, or
+  no longer says the decided text. To fix it, sign in to the seat's Gmail, Settings, See
+  all settings, General, Vacation responder: on, no end date, both "only send a response
+  to people in my Contacts" and "only send a response to people in Pennie" unticked, and
+  this text, word for word (Dan, 2026-10-27; line breaks and the apostrophe's style do not
+  matter):
+
+  > Hi, thanks for writing. Nobody reads this inbox, so we won't see your email. If you
+  > have a question, reply to one of our texts and someone will answer you there. Thank
+  > you, the Pennie team
+
+  The text lives in `PLACEHOLDER_SEAT_AUTO_REPLY` (`src/lib/monitor/placeholder-seat.ts`);
+  changing what the responder says means changing that constant in the same breath.
+- **"Its Gmail auto reply was not checked"** on a page or all clear means the service
+  account's domain wide delegation does not grant `gmail.settings.basic` yet, so the read
+  is refused as `unauthorized_client`. That is not the seat failing and pages nothing on
+  its own; the monitor's `placeholder seat` log line carries `auto_reply_unchecked` with
+  the seat's address every tick until it is granted. Granting it is a Google Admin step:
+  Security, Access and data control, API controls, Manage Domain Wide Delegation, edit
+  Slate's client and add the scope to the existing list without removing any.
+
+It closes when every probe answers (an ungranted auto reply read is named as unchecked in
+the all clear, never as fine), or as a stand down once the switch is off and no call sits
+on the seat.
 
 **`placeholder_missing`** says the switch is on and no usable placeholder exists (no row,
 a deactivated row, or no email address), so every customer a coordinator books while

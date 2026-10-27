@@ -43,6 +43,14 @@ const HELD_SCOPES: ReadonlySet<string> = new Set([CALENDAR_SCOPE]);
 const HOLDER_LABEL = "google token holder";
 /** Send-only Gmail scope for the daily OOO-approvals digest (no read access). */
 export const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
+/**
+ * Read the placeholder seat's Gmail settings, its vacation responder above all (#4265).
+ * Minted ALONE, by the seat check only, never joined to another scope: a JWT asking for
+ * a scope the delegation does not grant is refused whole, so adding this to the send or
+ * calendar scope string would break those mints until it is granted. Dan decided to
+ * grant it on 2026-10-26; until then the seat check reads the refusal as not granted.
+ */
+export const GMAIL_SETTINGS_READ_SCOPE = "https://www.googleapis.com/auth/gmail.settings.basic";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 /** The name a mint's deadline and its errors carry. */
 const MINT_LABEL = "google token mint";

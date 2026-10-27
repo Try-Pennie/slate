@@ -2416,6 +2416,15 @@ activation still does; a mixed batch names exactly what it inserted. The race is
 real: a second session holds a cancel's UPDATE open, the function returns only once that
 cancel has committed and writes no block, and a control booking nobody is cancelling is
 re-created without waiting. Neither browser role can execute it. Seen failing with `for
-share of b` taken out of 0204 (the stray block was written without waiting). It writes
+share of b` taken out of 0204 (the stray block was written without waiting).
+
+#4259: it also runs the two self heal sweeps that touch a booking's block TOGETHER over
+the placeholder advisor's stacked calls, four ticks in the lane's order: this function,
+then the pool exit backstop, whose own predicate (`hasLeftPool`) is imported and run over
+the rows it reads. The placeholder's blocks are pruned once and never re-created, and the
+later ticks write and delete nothing; beside it, a departed real advisor's block is still
+pruned and an in pool advisor's lost block is rebuilt once and left standing. Seen failing
+with the function redefined to include the placeholder: two blocks re-created and deleted
+on every tick, the fight the issue feared. It writes
 nothing outside the container. No Docker is exit 2, never a pass (L98); any failed check is
 exit 1. It runs in the DB replay workflow with the other `verify-*-sql.ts` suites.

@@ -35,7 +35,12 @@
  * firing marker, so `resolveAlert` sends nothing for it, and the explaining alert's
  * own all-clear speaks for the group.
  */
-import { CANARY_STALE_BOUNDS_MS, POOL_GROUPING_STALE_BOUNDS_MS, VERDICT_STALE_BOUNDS_MS } from "@/lib/monitor/health";
+import {
+  CANARY_STALE_BOUNDS_MS,
+  LANE_STALE_BOUNDS_MS,
+  POOL_GROUPING_STALE_BOUNDS_MS,
+  VERDICT_STALE_BOUNDS_MS,
+} from "@/lib/monitor/health";
 import { CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
 
 /** One alert held while its explainer fires. */
@@ -103,6 +108,20 @@ export const ALERT_FOLDS: readonly AlertFold[] = [
         key: staleLaneKey("pool-grouping"),
         label: "the pool grouping",
         graceMs: POOL_GROUPING_STALE_BOUNDS_MS["pool-grouping"],
+      },
+    ],
+  },
+  {
+    explainer: "google_calendar_breaker_open",
+    why:
+      "The placeholder seat check probes the seat's Google Calendar and Gmail, so when Google stops " +
+      "answering it fails by construction and one outage paged twice (#4265). The breaker's page is the " +
+      "cause; the seat posts on its own one monitor lane bound after the breaker closes if it still fails.",
+    explains: [
+      {
+        key: "placeholder_seat_failing",
+        label: "the placeholder advisor's Google seat check",
+        graceMs: LANE_STALE_BOUNDS_MS.monitor,
       },
     ],
   },

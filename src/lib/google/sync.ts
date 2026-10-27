@@ -1679,7 +1679,8 @@ export async function reconcileOrphanedPoolExits(
   // roster-bounded (a fixed 100-200 agent target), so this can't fill a page.
   const leftRows = (unwrap(
     // any-advisor-ok: everyone outside the pool, the placeholder included: it is never
-    // bookable, so its cached busy time is pruned like any non routable advisor's (#4201).
+    // bookable, so its cached busy time is pruned like any non routable advisor's (#4201),
+    // and the repair, asking the same rule, never rebuilds it (#4259, `hasLeftPool`).
     await db
       .from("users")
       .select(`id, ${POOL_STATE_COLUMNS}`)

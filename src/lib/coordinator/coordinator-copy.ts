@@ -88,6 +88,8 @@ const REFUSAL_TEXT: Record<Exclude<CoordinatorRefusal, "outside-calling-window">
   "outside-business-hours": "Pennie is closed at that time. Offer one of the hours shown for that day.",
   "no-placeholder": "No advisor is free then, and there is no placeholder advisor to hold the call, so nothing was booked. Let a Slate admin know.",
   "confirmed-call-changed": "The call you confirmed moving has changed since you looked, so nothing was moved. Look the customer up again.",
+  "customer-busy": "Someone else is booking a call for this customer right now, so nothing was booked. Wait a moment, then look the customer up again.",
+  "customer-lock-unavailable": "We could not check whether someone else is booking this customer right now, so nothing was booked. Try again in a moment.",
   // The page's own.
   "not-authorized": "Your account cannot book calls here. Sign in with your coordinator account.",
   "rate-limited": "That is a lot of requests in a short time. Wait a minute and try again.",
@@ -116,6 +118,8 @@ export const RETRYABLE_REFUSALS: ReadonlySet<CoordinatorRefusal> = new Set<Coord
   "bucket-unreadable",
   "switch-unreadable",
   "horizon-unreadable",
+  "customer-busy",
+  "customer-lock-unavailable",
   "rate-limited",
   "existing-call-unreadable",
   "calendar-unavailable",

@@ -115,8 +115,8 @@ export const PICKER_COPY = {
   failed: "Could not load available times. Check your connection.",
   dayEmpty: (day: string) => `Nothing left on ${day}. Pick another day above.`,
   /**
-   * #2310: the day has free times, and every one of them starts before 8 AM or
-   * at 8 PM or later on the lead's own clock, so none can be offered. Said
+   * #2310: the day has free times, and every one of them starts before 8:00am or
+   * at 8:00pm or later on the lead's own clock, so none can be offered. Said
    * rather than drawn as an empty day, which would read as fully booked. The
    * hours come from the rule's own constant, so the sentence cannot name a
    * window the gate does not enforce.

@@ -460,6 +460,8 @@ export function makeDeps(opts: FakeOpts) {
       previousPhone: string | null | undefined;
       /** #4204: true on the event of a move that took the call off the placeholder. */
       leftPlaceholder: boolean | undefined;
+      /** #4273: the whole payload as stored, for a test that builds the Regal event from it. */
+      payload: BookingEventPayload;
     }[],
     bookingEvents: [] as {
       booking_id: string;
@@ -1341,6 +1343,7 @@ export function makeDeps(opts: FakeOpts) {
         routing: (payload as { routing?: unknown }).routing,
         previousPhone: payload.previous_attendee_phone,
         leftPlaceholder: payload.left_placeholder,
+        payload,
       });
     },
     newManageToken: () => "tok-fixed",

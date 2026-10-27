@@ -212,6 +212,40 @@ assert(!desc.includes(" - ") && !desc.includes("\u2014"), "lead-facing copy has 
   assert(!desc.includes(TEST_MODE_COPY.line), "and never carries the test line");
 }
 
+// #4206 (Dan, 2026-10-26 and 27): a call on the placeholder advisor, Marcia, sends its
+// invite from the placeholder seat, whose inbox nobody reads. Its invite names no
+// number, offers no way to change the call (no manage link: a customer who asks to
+// change it by text is handled then), and sends a question to our texts. A routed
+// invite is unchanged.
+{
+  const placed = eventDescription("+12035615295", "https://x/m/t", { isTest: false, onPlaceholder: true });
+  assert(
+    placed ===
+      "Booked via Pennie. Phone: +12035615295\n" +
+        "Nobody reads replies to this invite. If you have a question, reply to one of our texts and someone will answer you there.",
+    "the placeholder invite is the dial line and the reply to our texts line, nothing else",
+  );
+  assert(!/Reschedule or cancel|https:\/\/x\/m\/t/.test(placed), "it carries no manage link");
+  assert(!/change/i.test(placed), "and never says the call can be changed");
+  assert(
+    eventDescription("+12035615295", "https://x/m/t", { isTest: false, onPlaceholder: false }) ===
+      eventDescription("+12035615295", "https://x/m/t"),
+    "a routed invite is exactly as before",
+  );
+  assert(!/reply to one of our texts/.test(eventDescription("+12035615295", "https://x/m/t")), "and never carries the line");
+  assert(
+    !eventDescription("+12035615295", "https://x/m/t", { isTest: false, onPlaceholder: true, callingNumber: "+12197588170" }).includes(
+      "(219) 758-8170",
+    ),
+    "the placeholder invite names no calling number even when one is known",
+  );
+  assert(
+    eventDescription(null, "https://x/m/t", { isTest: true, onPlaceholder: true }).startsWith(`${TEST_MODE_COPY.line}\n`),
+    "a test placeholder invite still opens with the test line",
+  );
+  assert(!placed.includes(" - ") && !/[\u2013\u2014]/.test(placed), "no dashes as punctuation");
+}
+
 // #1334: the invite names the number the call will come FROM when it is known, so it
 // sits on the lead's phone next to the appointment, and says nothing when it is not.
 {

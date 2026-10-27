@@ -101,7 +101,21 @@ export interface BookingEventPayload {
    * event, and on any payload stored before the field existed.
    */
   left_placeholder?: boolean;
+  /**
+   * #4273: set on a `booking.cancelled` whose contact flags must NOT reach Regal, and
+   * why. Regal applies an event's traits to the contact, so a cancel of an older
+   * booking would overwrite the flags the customer's newer, still live booking set
+   * (`another-live-booking`); and when that could not be checked, the flags are left
+   * out rather than risk it (`lookup-failed`). Decided when the payload is built and
+   * stored with it, so a resend and the dead letter replay send the same. Absent on
+   * every other event, on a cancel that left no live booking, and on any payload
+   * stored before the field existed, all of which send the flags as before.
+   */
+  contact_properties_withheld?: ContactPropertiesWithheld;
 }
+
+/** #4273: why a cancel's contact flags are left out of its Regal event. */
+export type ContactPropertiesWithheld = "another-live-booking" | "lookup-failed";
 
 /** The booking events, the family `buildRegalEvent` describes. */
 export type BookingWebhookEvent = Extract<WebhookEvent, `booking.${string}`>;

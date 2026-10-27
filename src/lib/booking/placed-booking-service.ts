@@ -16,6 +16,8 @@ import * as orchestration from "@/lib/booking/orchestration";
 import { realDeps, pageBookingFailure } from "@/lib/booking/service";
 import { readBookingHorizonDays, readPlaceholderBookingEnabled } from "@/lib/booking/settings";
 import { placeBooking, type PlacedBookingDeps, type PlacedBookingInput, type PlacedBookingOutcome } from "@/lib/booking/placed-booking";
+import { CUSTOMER_TURN_TTL_MS, type CustomerTurnDeps } from "@/lib/booking/customer-turn";
+import { claimSyncLock, releaseLock } from "@/lib/locks";
 
 /**
  * The org's placeholder advisor in one world, or null when it has none or it has left
@@ -41,11 +43,25 @@ export async function findPlaceholderAdvisor(orgId: string, isTest: boolean): Pr
   return row;
 }
 
+/** The customer's turn (#4261) over `sync_locks`, with real time between asks. */
+export function customerTurnDeps(): CustomerTurnDeps {
+  return {
+    // lock-overlap: a second placement for this customer may take the key only from a
+    // holder that has outlived CUSTOMER_TURN_TTL_MS, several times a placement's worst
+    // case, and the claim is released in a finally the moment the placement ends.
+    claim: (key) => claimSyncLock(key, CUSTOMER_TURN_TTL_MS),
+    release: releaseLock,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: () => Date.now(),
+  };
+}
+
 /** The real dependencies `placeBooking` runs on, over one booking deps object. */
 export function placedBookingDeps(): PlacedBookingDeps {
   const deps = realDeps(deferWebhookSend);
   return {
     now: () => Date.now(),
+    customerLock: customerTurnDeps(),
     manageUrl: (token) => orchestration.manageUrlFor(deps.appBaseUrl(), token),
     placeholderEnabled: readPlaceholderBookingEnabled,
     horizonDays: readBookingHorizonDays,

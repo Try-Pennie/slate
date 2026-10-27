@@ -16,6 +16,15 @@
 // waiting (seen failing that way when the clause was removed); the control beside
 // it shows a booking nobody is cancelling is never made to wait.
 //
+// #4259: the two self heal sweeps that touch a booking's block, run TOGETHER over the
+// placeholder advisor's calls, tick after tick. The pool exit backstop deletes the
+// cached busy time of everybody `hasLeftPool` names, and this function puts a block
+// back for an active booking that has none; asked different questions they would
+// delete and re-create the same rows for ever. The backstop's own predicate is
+// imported and run over the rows it reads, and its own delete is issued, so the half
+// that lives in TypeScript is the real rule too. Beside it, a departed real advisor's
+// call (still pruned, never rebuilt) and an in pool advisor's (rebuilt, never pruned).
+//
 // It writes nothing outside that container, which it removes on the way out. Not
 // named test-*.ts: it needs Docker. No Docker is exit 2, never a pass (L98).
 //
@@ -24,6 +33,7 @@ import { join } from "node:path";
 import { replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
 import { bookingInsertSql, eventTypesInsertSql } from "./lib/seed-sql.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { hasLeftPool } from "../src/lib/bookable/left-pool.ts";
 
 const DIR = join(import.meta.dirname, "..", "supabase", "migrations");
 const IMAGE = process.env.RECREATE_MISSING_PG_IMAGE ?? "supabase/postgres:17.6.1.175";
@@ -39,6 +49,7 @@ const IN_POOL = "00000000-0000-0000-0000-00000000000a";
 const DEPARTED = "00000000-0000-0000-0000-00000000000b";
 const TAKEN_OUT = "00000000-0000-0000-0000-00000000000c";
 const OWED = "00000000-0000-0000-0000-00000000000d"; // not bookable yet, activation owed (#2302)
+const PLACEHOLDER = "00000000-0000-0000-0000-00000000000e"; // the placeholder advisor (#4200), never bookable
 
 /** A future day, so every booking is upcoming unless placed in the past on purpose. */
 const DAY = "2031-03-04";
@@ -50,7 +61,7 @@ function book(
   agent: string,
   start: string,
   end: string,
-  opts: { status?: string; createdAgo?: string; past?: boolean } = {},
+  opts: { status?: string; createdAgo?: string; past?: boolean; placeholder?: boolean } = {},
 ): string {
   seq++;
   const id = `10000000-0000-0000-0000-${String(seq).padStart(12, "0")}`;
@@ -60,7 +71,12 @@ function book(
   const endIso = opts.past ? new Date(Date.now() - HOUR_MS).toISOString() : at(end);
   // created_at is set by the database's own clock, since the grace it is judged against
   // is measured in seconds and taken from the same now().
-  sql(`${bookingInsertSql({ id, orgId: ORG, bucketId: BKT, eventTypeId: ET, assignedUserId: agent, startIso, endIso, status: opts.status })}
+  // A call on the placeholder is staff placed and stacks, or 0208's trigger refuses it.
+  const insert = bookingInsertSql({ id, orgId: ORG, bucketId: BKT, eventTypeId: ET, assignedUserId: agent, startIso, endIso, status: opts.status, kind: opts.placeholder ? "staff_placed" : undefined });
+  const row = opts.placeholder
+    ? insert.replace("insert into bookings (id,", "insert into bookings (allow_double_book, id,").replace("values ('", "values (true, '")
+    : insert;
+  sql(`${row}
        update bookings set created_at = now() - interval '${opts.createdAgo ?? "10 minutes"}' where id = '${id}';`);
   return id;
 }
@@ -92,6 +108,33 @@ async function untilCancelInFlight(): Promise<boolean> {
   return false;
 }
 const blockCount = (booking: string) => sql(`select count(*) from busy_blocks where booking_id = '${booking}';`);
+
+/** The block a booking's own create writes (`commit_fresh_booking`), on its own agent and window. */
+const writeOwnBlock = (booking: string) =>
+  sql(`insert into busy_blocks (user_id, starts_at, ends_at, source, booking_id)
+       select assigned_user_id, starts_at, ends_at, 'slate', id from bookings where id = '${booking}';`);
+
+/**
+ * One pool exit backstop pass (`reconcileOrphanedPoolExits`): its roster read, its own
+ * predicate over the rows, and its prune, scoped as the code scopes it. Answers how many
+ * rows it deleted.
+ */
+function poolExitPrune(): number {
+  const rows = sql(`select id || '|' || bookable::text || '|' || coalesce(deactivated_at::text, '') || '|' || coalesce(bookable_pending_since::text, '')
+                      from users where bookable = false or deactivated_at is not null;`)
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [id, bookable, deactivated, pending] = line.split("|");
+      return { id, bookable: bookable === "true", deactivated_at: deactivated || null, bookable_pending_since: pending || null };
+    });
+  const ids = rows.filter(hasLeftPool).map((r) => `'${r.id}'::uuid`);
+  if (ids.length === 0) return 0;
+  return Number(
+    sql(`with gone as (delete from busy_blocks where user_id = any(array[${ids.join(",")}]) and ooo_request_id is null returning 1)
+         select count(*) from gone;`),
+  );
+}
 
 try {
   const applied = replayEveryMigration(pg, DIR);
@@ -146,6 +189,35 @@ try {
   const m1 = book(IN_POOL, "19:00", "19:20");
   const m2 = book(IN_POOL, "19:30", "19:50", { status: "cancelled" });
   eq(recreate([m1, m2, missed]), `${m1}:${IN_POOL}`, "a mixed batch answers with exactly the rows it inserted");
+
+  // --- #4259: both sweeps over the placeholder's calls, tick after tick -----------------------
+  sql(`insert into users (id, org_id, email, role, bookable, is_placeholder) values
+         ('${PLACEHOLDER}', '${ORG}', 'marcia@example.com', 'agent', false, true);`);
+  // Two calls stacked at one time on the placeholder, a departed advisor's call and an in
+  // pool advisor's, each with the block its create wrote, then the in pool one's lost.
+  const stackedA = book(PLACEHOLDER, "13:00", "13:20", { placeholder: true });
+  const stackedB = book(PLACEHOLDER, "13:00", "13:20", { placeholder: true });
+  const departedCall = book(DEPARTED, "13:00", "13:20");
+  const inPoolCall = book(IN_POOL, "13:00", "13:20");
+  for (const id of [stackedA, stackedB, departedCall, inPoolCall]) writeOwnBlock(id);
+  sql(`delete from busy_blocks where booking_id = '${inPoolCall}';`);
+  const section = [stackedA, stackedB, departedCall, inPoolCall];
+  const pruned: number[] = [];
+  const rebuilt: string[] = [];
+  for (let tick = 0; tick < 4; tick++) {
+    // The self heal lane's order: the missing block repair, then the pool exit backstop.
+    // The repair is handed every call here, not only what its loader would pass it, so it
+    // is the function's own guard that is proved.
+    rebuilt.push(recreate(section));
+    pruned.push(poolExitPrune());
+  }
+  eq(rebuilt[0], `${inPoolCall}:${IN_POOL}`, "tick 1: the repair rebuilds the in pool advisor's lost block and nothing of the placeholder's");
+  eq(pruned[0], 3, "tick 1: the backstop prunes the two stacked placeholder blocks and the departed advisor's");
+  eq(rebuilt.slice(1).join(","), ",,", "ticks 2 to 4: the repair re-creates nothing, so there is nothing to fight over");
+  eq(pruned.slice(1).join(","), "0,0,0", "ticks 2 to 4: and the backstop deletes nothing (#4259: no churn)");
+  for (const id of [stackedA, stackedB]) eq(blockCount(id), "0", "the placeholder's call holds no block: it is in no pool, so nothing reads one");
+  eq(blockCount(departedCall), "0", "control: a departed real advisor's block is still pruned, and stays pruned");
+  eq(blockCount(inPoolCall), "1", "control: an in pool advisor's block is rebuilt once and then left standing");
 
   // --- the race: a cancel in flight while the function runs ----------------------------------
   const racing = book(IN_POOL, "20:00", "20:20");

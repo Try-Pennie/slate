@@ -230,8 +230,8 @@ describe("the lead's calling window on an admin move (#2310)", () => {
     expect(res.status).toBe(422);
     const body = await res.json();
     expect(body.code).toBe("OUTSIDE_CALLING_WINDOW");
-    expect(body.error).toContain("8 AM");
-    expect(body.error).toContain("8 PM");
+    expect(body.error).toContain("8:00am");
+    expect(body.error).toContain("8:00pm");
     expect(body.error).toContain("Pacific/Honolulu");
   });
 });

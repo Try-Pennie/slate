@@ -24,6 +24,7 @@ import {
   splitByLeadCallingWindow,
   callingWindowLabel,
 } from "../src/lib/booking/lead-calling-window.ts";
+import { formatTimeOfDay } from "../src/lib/date/parse.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // ------------------------------------------------------------- the constant
@@ -106,7 +107,14 @@ eq(withinLeadCallingWindow("not a time", NY), false, "an unreadable start is out
 // -------------------------------------------------------------- the label
 
 // Derived from the constant, so copy that names the hours cannot drift from the rule.
-eq(callingWindowLabel(), { from: "8 AM", to: "8 PM" }, "the window reads as 8 AM to 8 PM");
+// #4267: spelled the way every other Slate time is ("8:00am", the booker's and the
+// coordinator page's), by the one shared formatter, so a screen showing both reads alike.
+eq(callingWindowLabel(), { from: "8:00am", to: "8:00pm" }, "the window reads as 8:00am to 8:00pm");
+eq(
+  callingWindowLabel().from,
+  formatTimeOfDay(`${String(LEAD_CALLING_WINDOW.startMinute / 60).padStart(2, "0")}:00`),
+  "through the shared time formatter, never a spelling of its own",
+);
 assert(!/[\u2013\u2014]/.test(JSON.stringify(callingWindowLabel())), "no dashes in the label");
 
 finish();

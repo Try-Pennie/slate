@@ -157,7 +157,7 @@ import {
   raceOutcomeForRefusal,
   type RaceTallyOutcome,
 } from "../monitor/race-contention.ts";
-import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
+import type { BookingEventPayload, BookingReasonMeta, ContactPropertiesWithheld } from "@/lib/webhooks/types";
 import { routingMetaFromTrace } from "@/lib/webhooks/types";
 // Type-only (erased under --experimental-strip-types), so this never pulls the
 // emit module's runtime deps into the node-tested domain code.
@@ -3824,6 +3824,8 @@ interface WebhookExtras {
   previousPhone?: string | null;
   /** #4204: the move took the call off the placeholder (`OutboxPayload.leftPlaceholder`). */
   leftPlaceholder?: boolean;
+  /** #4273: a cancel's contact flags are left out of Regal (`contactPropertiesOnCancel`). */
+  contactPropertiesWithheld?: ContactPropertiesWithheld;
 }
 
 function webhookPayload(
@@ -3835,6 +3837,7 @@ function webhookPayload(
   previousAgentEmail: string | null,
   previousPhone?: string | null,
   leftPlaceholder = false,
+  contactPropertiesWithheld?: ContactPropertiesWithheld,
 ): BookingEventPayload {
   return {
     booking_id: booking.id,
@@ -3874,6 +3877,8 @@ function webhookPayload(
     booking_kind: booking.kind ?? "routed",
     // #4204: only on the move off the placeholder, so Regal stops Marcia texting.
     ...(leftPlaceholder ? { left_placeholder: true } : {}),
+    // #4273: only on a cancel whose contact flags must not reach Regal.
+    ...(contactPropertiesWithheld !== undefined ? { contact_properties_withheld: contactPropertiesWithheld } : {}),
   };
 }
 
@@ -3905,7 +3910,17 @@ async function fire(
   await deps.emitWebhook(
     booking.org_id,
     event,
-    webhookPayload(deps, booking, bucket, eventType, reason, extras.previousAgentEmail ?? null, extras.previousPhone, extras.leftPlaceholder === true),
+    webhookPayload(
+      deps,
+      booking,
+      bucket,
+      eventType,
+      reason,
+      extras.previousAgentEmail ?? null,
+      extras.previousPhone,
+      extras.leftPlaceholder === true,
+      extras.contactPropertiesWithheld,
+    ),
     webhookDedupeKey(event, { bookingId: booking.id, bookingEventId }),
     bucket.is_test,
     // #884: set only on user-facing requests, so the confirm/cancel/reschedule
@@ -4153,7 +4168,7 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
       bucket,
       eventType,
       reasonMeta(reason, initiator),
-      { bookingEventId: eventId },
+      { bookingEventId: eventId, contactPropertiesWithheld: await contactPropertiesOnCancel(deps, booking, bucket.is_test) },
     );
   },
 
@@ -4642,6 +4657,45 @@ export async function findDuplicateWarning(
     startsAt: match.booking.starts_at,
     manageUrl: manageUrl(deps, match.booking.manage_token),
   };
+}
+
+/**
+ * Whether a cancel's Regal event must leave the contact's flags out (#4273), and why;
+ * undefined to send them as every other event does.
+ *
+ * Regal applies an event's traits to the contact, and `slateGhostBooking` and
+ * `ai_agent_eligible` describe the customer's CURRENT call. So when the customer still
+ * has another active booking (journey #479 cancels the duplicate after the new booking
+ * lands; a coordinator's move can replace a call), the cancel of the older one must not
+ * speak for the contact: it would put a routed call's owner back behind Marcia, ring the
+ * old owner on a Marcia call, or switch Marcia off on a live one. Asked through the
+ * duplicate check's own lookup (`findDuplicateWarning`), any match counting, since
+ * Regal finds the contact by the same phone and email the looser matches share.
+ *
+ * A lookup that fails withholds them too. Overwriting is the harm that reaches a live
+ * call; leaving them out costs at worst a stale flag on a customer with no call, until
+ * their next event rewrites it. Logged, because it is a decision made blind.
+ */
+export async function contactPropertiesOnCancel(
+  deps: Pick<BookingDeps, "findActiveBookingsForPerson" | "appBaseUrl">,
+  booking: Booking,
+  isTest: boolean,
+): Promise<ContactPropertiesWithheld | undefined> {
+  try {
+    const other = await findDuplicateWarning(
+      {
+        excludeBookingId: booking.id,
+        salesforceId: booking.salesforce_id,
+        attendee: { email: booking.attendee_email ?? undefined, phone: booking.attendee_phone ?? undefined },
+        isTest,
+      },
+      deps,
+    );
+    return other === null ? undefined : "another-live-booking";
+  } catch (err) {
+    log.warn("booking", { msg: "whether the customer has another live call could not be read; leaving the contact's Regal flags out of the cancel", booking_id: booking.id }, err);
+    return "lookup-failed";
+  }
 }
 
 /** Max reservations completed at once when draining a backlog (AUD-062). Rows are
@@ -6454,7 +6508,8 @@ export async function createPlaceholderBooking(
   };
   const event: ReservationPayload["event"] = {
     summary: eventSummary({ eventType: eventType.name, advisor: placeholder.name, lead: input.attendee.name ?? null }),
-    description: eventDescription(phone, manageUrl(deps, manageToken), { isTest: bucket.is_test }),
+    // #4206: sent from the placeholder seat, whose inbox nobody reads.
+    description: eventDescription(phone, manageUrl(deps, manageToken), { isTest: bucket.is_test, onPlaceholder: true }),
     location: eventLocation(phone),
     start: startIso,
     end: endIso,
@@ -8728,7 +8783,11 @@ async function applyReschedule(
   // always does, and the two must describe the same call the same way.
   const movedEvent = {
     summary: eventSummary({ eventType: eventType.name, advisor: agentName, lead: booking.attendee_name }),
-    description: eventDescription(booking.attendee_phone, manageUrl(deps, token), { isTest: bucket.is_test }),
+    // #4206: a move that lands on the placeholder is written as the placeholder's invite.
+    description: eventDescription(booking.attendee_phone, manageUrl(deps, token), {
+      isTest: bucket.is_test,
+      onPlaceholder: ontoPlaceholderCommit,
+    }),
     location: eventLocation(booking.attendee_phone) ?? undefined,
     start: startIso,
     end: endIso,

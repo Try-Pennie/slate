@@ -972,7 +972,14 @@ coverage move without reading the booking.
   resend or a dead letter replay sends the same). A routed booking never sends
   `ai_agent_eligible`, so a lead's own AI eligibility is never cleared. Every routed
   event also writes `customProperties.slateGhostBooking` onto the contact, so a
-  journey that does not start on a Slate event can read it. Regal's side:
+  journey that does not start on a Slate event can read it. A `booking.cancelled`
+  whose customer still has another active booking (the duplicate check's own lookup)
+  leaves `customProperties` out entirely, so the cancel of an older call never
+  rewrites the flags the newer one set; a lookup that fails leaves them out too. The
+  decision is stored on the payload as `contact_properties_withheld`
+  (`another-live-booking` or `lookup-failed`, #4273), so a resend or a dead letter
+  replay sends the same. The event's own `properties` still describe the cancelled
+  call. Regal's side:
   every journey on these events branches on `slateGhostBooking`, sends those
   calls straight to the pool (nobody dials as the placeholder), and still copies
   `slateBookingLink` into the Lead's `calBookingLink__c`, which is how coordinators

@@ -318,17 +318,33 @@ is still booked, and a confirmed move to one still moves.
    and the stack flag that `commit_reschedule` deliberately clears (0206).
 4. **One call per customer**, matched on the Salesforce Lead id alone. An existing call
    is shown, and moved (the same booking and manage link) only once the coordinator
-   confirms; a match on email or phone only is shown and refused.
+   confirms; a match on email or phone only is shown and refused. Two coordinators
+   booking one Lead at the same moment make one call (#4261): the whole placement runs
+   holding a per customer claim in `sync_locks` (`src/lib/booking/customer-turn.ts`), so
+   the second waits for the first and is answered with the call it made. A claim still
+   held after 10 seconds is refused as somebody else booking the customer; a claim that
+   could not be made is refused as an outage.
 5. **The switch.** `booking_settings.placeholder_booking_enabled` (0207), false by
    default. Off, nothing is placed on the placeholder; an unreadable switch is refused,
    never read as on.
+
+**Its busy time.** Each call writes its busy block at create like any booking, and the
+pool exit backstop prunes it on the next self heal tick, because the placeholder has left
+the pool by construction (`hasLeftPool`). The missing busy block repair asks that same
+rule, so it never rebuilds one and the two sweeps never fight (#4259). Nothing reads the
+placeholder's busy time: it is in no pool.
 
 **What happens at the call's time.** Nobody dials as the placeholder. Every Regal
 journey on Slate's events branches on `slateGhostBooking` (#4204, docs/api.md) and sends
 the call straight to the pool, and Marcia texts the customer. The placeholder's own
 Google seat sends the invite and the 24 hour reminder from its Calendar and Gmail, and
 its inbox is a no reply mailbox with a standing auto reply that tells customers to text
-Pennie. A coordinator moves or cancels a call from the manage link Regal copies into the
+Pennie. Neither the invite nor the reminder names a number (Dan, 2026-10-26: the number
+Pennie calls from reaches nobody by text, and the Sendblue line lives only in Regal), and
+both send a question to our texts (`placeholderReplyLine` in `manage-copy.ts`, through
+`eventDescription` and `reminderBody`; no contact card). Neither carries the manage link
+or offers to change the call (Dan, 2026-10-27): a customer who texts asking to change it
+is handled then. A coordinator moves or cancels a call from the manage link Regal copies into the
 Lead's `calBookingLink__c`.
 
 **What watches it** (#4206, all in the monitor lane, runbook "A call on the placeholder
@@ -342,8 +358,12 @@ advisor is at risk"):
   call only when it completes.
 - `placeholder_seat_failing`: the seat's Calendar (`calendarList.list`) or Gmail (a
   `gmail.send` token mint) failing while the seat is in use, classified with
-  `isDefinitiveFailure` (`src/lib/monitor/placeholder-seat.ts`). The vacation responder
-  is NOT checked: reading it needs `gmail.settings.basic`, which Slate does not hold.
+  `isDefinitiveFailure` (`src/lib/monitor/placeholder-seat.ts`), or its vacation
+  responder (`users.settings.getVacation`, #4265) off, restricted or no longer the
+  decided text. That read mints its own `gmail.settings.basic` token, joined to no other
+  scope; until the delegation grants it (Dan decided to, 2026-10-26) the refusal reads as
+  "not checked", never as the seat failing. Held while `google_calendar_breaker_open`
+  fires (`ALERT_FOLDS`).
 - `placeholder_missing`: the switch on with no usable placeholder (no row, deactivated,
   or no address).
 

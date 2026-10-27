@@ -3874,28 +3874,66 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "placeholder_seat_failing",
     state: "its calendar refused (gone)",
     channel: "alert",
-    text: formatPlaceholderSeatAlert([{ email: PREVIEW_SEAT, surface: "calendar", kind: "gone" }]),
+    text: formatPlaceholderSeatAlert([{ email: PREVIEW_SEAT, surface: "calendar", kind: "gone" }], { autoReplyUnchecked: false }),
   },
   {
     key: "placeholder_seat_failing",
     state: "its calendar has no Calendar licence and Gmail refused",
     channel: "alert",
-    text: formatPlaceholderSeatAlert([
-      { email: PREVIEW_SEAT, surface: "calendar", kind: "not-provisioned" },
-      { email: PREVIEW_SEAT, surface: "gmail", kind: "gone" },
-    ]),
+    text: formatPlaceholderSeatAlert(
+      [
+        { email: PREVIEW_SEAT, surface: "calendar", kind: "not-provisioned" },
+        { email: PREVIEW_SEAT, surface: "gmail", kind: "gone" },
+      ],
+      { autoReplyUnchecked: false },
+    ),
   },
   {
     key: "placeholder_seat_failing",
     state: "Gmail did not answer for twenty minutes (transient)",
     channel: "alert",
-    text: formatPlaceholderSeatAlert([{ email: PREVIEW_SEAT, surface: "gmail", kind: "transient" }]),
+    text: formatPlaceholderSeatAlert([{ email: PREVIEW_SEAT, surface: "gmail", kind: "transient" }], { autoReplyUnchecked: false }),
+  },
+  // #4265: the seat's standing Gmail auto reply, each way it can be wrong.
+  {
+    key: "placeholder_seat_failing",
+    state: "its auto reply is switched off",
+    channel: "alert",
+    text: formatPlaceholderSeatAlert([{ email: PREVIEW_SEAT, surface: "auto-reply", problem: "off" }], { autoReplyUnchecked: false }),
   },
   {
     key: "placeholder_seat_failing",
-    state: "both probes answer again",
+    state: "its auto reply answers only contacts",
+    channel: "alert",
+    text: formatPlaceholderSeatAlert([{ email: PREVIEW_SEAT, surface: "auto-reply", problem: "restricted" }], {
+      autoReplyUnchecked: false,
+    }),
+  },
+  {
+    key: "placeholder_seat_failing",
+    state: "its auto reply no longer says the decided text",
+    channel: "alert",
+    text: formatPlaceholderSeatAlert([{ email: PREVIEW_SEAT, surface: "auto-reply", problem: "text-changed" }], {
+      autoReplyUnchecked: false,
+    }),
+  },
+  {
+    key: "placeholder_seat_failing",
+    state: "Gmail refused while the auto reply read permission is not granted yet",
+    channel: "alert",
+    text: formatPlaceholderSeatAlert([{ email: PREVIEW_SEAT, surface: "gmail", kind: "gone" }], { autoReplyUnchecked: true }),
+  },
+  {
+    key: "placeholder_seat_failing",
+    state: "every probe answers again, the auto reply read and matching",
     channel: "recovery",
-    text: formatPlaceholderSeatRecovery([PREVIEW_SEAT]),
+    text: formatPlaceholderSeatRecovery([PREVIEW_SEAT], { autoReplyUnchecked: false }),
+  },
+  {
+    key: "placeholder_seat_failing",
+    state: "both probes answer again, the auto reply read permission not granted yet",
+    channel: "recovery",
+    text: formatPlaceholderSeatRecovery([PREVIEW_SEAT], { autoReplyUnchecked: true }),
   },
   {
     key: "placeholder_seat_failing",

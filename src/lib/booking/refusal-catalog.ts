@@ -342,7 +342,7 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
   {
     id: "outside_calling_window",
     surface: "embed booker",
-    outcome: "422 OUTSIDE_CALLING_WINDOW, told we only call between 8 AM and 8 PM their time",
+    outcome: "422 OUTSIDE_CALLING_WINDOW, told we only call between 8:00am and 8:00pm their time",
     counting: { kind: "error", code: "outside_calling_window" },
     rateSignal: { kind: "covered" },
     why:
@@ -720,7 +720,7 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
   {
     id: "reschedule_outside_calling_window",
     surface: "manage page",
-    outcome: "422, told we only call between 8 AM and 8 PM their time and to pick another time",
+    outcome: "422, told we only call between 8:00am and 8:00pm their time and to pick another time",
     counting: { kind: "error", code: "reschedule_outside_calling_window" },
     rateSignal: { kind: "covered" },
     why:
