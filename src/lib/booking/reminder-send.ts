@@ -7,6 +7,7 @@ import {
   hourReminderSubject,
   hourReminderBody,
   REMINDER_HOLD_FLOOR_MS,
+  HOUR_REMINDER_MIN_LEAD_MS,
 } from "./reminder.ts";
 import { classifyReminderSendFailure, type ReminderFailureCode, type ReminderSettlement } from "./reminder-rate.ts";
 import type { MimeMessage } from "@/lib/notify/email-mime";
@@ -56,7 +57,7 @@ export type ReminderKind = "day" | "hour";
  * about an hour" is mostly noise beside the lead's 15 minute text, so a send that did
  * not go out by then pages rather than trying again.
  */
-export const HOUR_REMINDER_RETRY_FLOOR_MS = 30 * 60_000;
+export const HOUR_REMINDER_RETRY_FLOOR_MS = HOUR_REMINDER_MIN_LEAD_MS;
 
 /** The words an alert uses for each kind, so a page always says which email it means. */
 const KIND_LABEL: Record<ReminderKind, string> = { day: "24 hour", hour: "1 hour" };

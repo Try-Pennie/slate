@@ -948,8 +948,8 @@ export function reminderCopyScreens(): CopyScreen[] {
       screen: "Reminder email: an hour before the call",
       purpose:
         "The second reminder (#4282), sent beside the lead's one hour text. It is skipped " +
-        "when the first reminder went out in the last two hours, and for a call booked " +
-        "less than an hour ahead, so a lead never gets the two back to back.",
+        "when the first reminder went out in the last two hours, for a call booked less " +
+        "than an hour ahead, and once the call is under 30 minutes away (#4287).",
       lines: [
         { state: "the subject line", text: hourReminderSubject(hourBefore) },
         { state: "the body, when the number we call from is known", text: hourReminderBody(hourBefore) },
