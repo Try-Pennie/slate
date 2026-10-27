@@ -1205,8 +1205,8 @@ fails. The words in the page decide the branch.
   matter):
 
   > Hi, thanks for writing. Nobody reads this inbox, so we won't see your email. If you
-  > have a question, reply to one of our texts and someone will answer you there. Thank
-  > you, the Pennie team
+  > have a question about your upcoming call, reply to one of our texts and someone will
+  > answer you there. Thank you, the Pennie team
 
   The text lives in `PLACEHOLDER_SEAT_AUTO_REPLY` (`src/lib/monitor/placeholder-seat.ts`);
   changing what the responder says means changing that constant in the same breath.
