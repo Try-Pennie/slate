@@ -7,7 +7,9 @@
  * any other record is refused as not a lead id, because every customer is a Lead
  * (Sam, 2026-10-23) and the booking path matches calls on the Lead id. Pure.
  */
-import { isLeadId } from "../salesforce/lead-xbc.ts";
+// The client safe module, not lead-xbc.ts, which reaches the Salesforce REST client: the
+// coordinator page parses a pasted reference in the browser (#4205).
+import { isLeadId } from "../salesforce/lead-id.ts";
 
 export type LeadReference = { ok: true; leadId: string } | { ok: false; refusal: "not-a-lead-id" };
 

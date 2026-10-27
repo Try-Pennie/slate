@@ -88,6 +88,29 @@ beforeEach(() => {
   logSpy.warn.mockClear();
 });
 
+describe("AppHeader section links for a coordinator (#4205, D32)", () => {
+  // Dan, design round 9: "this isn't what they'd see." A coordinator opens no staff page,
+  // so their header is the Pennie logo and the account menu, with no section links.
+  it("gives a coordinator no Me tabs and no section links", async () => {
+    render(await AppHeader({ ...props, email: "sc@trypennie.com", role: "coordinator" }));
+    expect(screen.queryByText("My Availability")).toBeNull();
+    expect(screen.queryByText("My Time Off")).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Slate sections" })).toBeNull();
+    expect(screen.getByRole("button", { name: /account and settings/ })).toBeTruthy();
+  });
+
+  it("draws the coordinator page's header with no section links, whoever opens it", async () => {
+    render(await AppHeader({ ...props, sections: false }));
+    expect(screen.queryByRole("navigation", { name: "Slate sections" })).toBeNull();
+  });
+
+  it("still gives everybody else their tabs (the control)", async () => {
+    render(await AppHeader(props));
+    expect(screen.getByRole("navigation", { name: "Slate sections" })).toBeTruthy();
+    expect(screen.getByText("My Availability")).toBeTruthy();
+  });
+});
+
 describe("AppHeader impersonation banners (#652)", () => {
   // #1836 made this the ONLY place in the app that explains what "view as" does.
   // A standing warning above the roster used to say it too, in worse form: shown

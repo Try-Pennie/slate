@@ -177,3 +177,30 @@ for (const theme of THEMES) {
     expect(failures, failures.join("\n\n")).toEqual([]);
   });
 }
+
+// --- the coordinator booking page (#4205) --------------------------------------------
+// Its customer comes from Salesforce, which this run cannot reach, so the moments worth
+// scanning (a customer found, the locked card and its pointer, the dialog, done) are the
+// settled design's frames, drawn by the real component from the committed fixture
+// (`?frame=`, behind this run's design fixture flag). Each frame carries its own theme.
+const COORDINATOR_FRAMES = [
+  "f-locked",
+  "f-pressed",
+  "f-unlocked",
+  "f-other",
+  "f-dialog-move",
+  "f-done-move",
+  "f-refusal",
+  "d-locked",
+  "d-other",
+  "d-dialog-move",
+  "d-done-move",
+];
+
+test("the coordinator booking page, at each moment the design settled", async ({ page }) => {
+  test.setTimeout(180_000);
+  await signIn(page, seed.users.coordinator.email);
+  for (const frame of COORDINATOR_FRAMES) {
+    await scan(page, `/coordinator?frame=${frame}`, frame.startsWith("d-") ? "dark" : "light", `/coordinator ${frame}`);
+  }
+});

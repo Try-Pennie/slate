@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { btnCls, btnSecondaryCls } from "@/components/ui/styles";
+import { ModalDialog } from "@/components/ui/ModalDialog";
 import { formSnapshot } from "./formSnapshot";
 import { entriesToRestored, stashForm } from "@/lib/form-restore";
 
@@ -31,7 +32,6 @@ export function UnsavedGuard({ what, formName }: { what: string; formName: strin
   /** Set when the browser would not keep the draft, so nothing promises it did. */
   const [couldNotKeep, setCouldNotKeep] = useState(false);
   const stayRef = useRef<HTMLButtonElement>(null);
-  const dialogRef = useRef<HTMLDialogElement>(null);
   /** The link that was stopped, so staying puts focus back where it was. */
   const stoppedAt = useRef<HTMLAnchorElement | null>(null);
 
@@ -131,27 +131,9 @@ export function UnsavedGuard({ what, formName }: { what: string; formName: strin
     };
   }, []);
 
-  // #3081: a NATIVE modal. The div this used to be carried aria-modal="true" and
-  // delivered none of what that promises: Tab walked out of it into the page
-  // behind, the page stayed clickable under the scrim, and closing it dropped
-  // focus on the body. showModal() puts the dialog in the top layer and makes
-  // everything else inert, so containing focus is the platform's job rather than
-  // a trap written here. A layout effect, so it is modal before the first paint.
-  //
-  // jsdom has the element and implements neither method; there it is merely
-  // marked open, which is all a test can observe anyway.
-  useLayoutEffect(() => {
-    const d = dialogRef.current;
-    if (!leavingTo || !d || d.open) return;
-    if (typeof d.showModal === "function") d.showModal();
-    else d.setAttribute("open", "");
-  }, [leavingTo]);
-
-  // Focus lands on STAYING, never on the button that discards the work, which is
-  // the same choice the erasure confirm makes.
-  useEffect(() => {
-    if (leavingTo) stayRef.current?.focus();
-  }, [leavingTo]);
+  // #3081: a NATIVE modal, now the shared ModalDialog (#4205), which opens it with
+  // showModal, contains focus and lands it on STAYING, never on the button that
+  // discards the work, which is the same choice the erasure confirm makes.
 
   /** Close without leaving, and hand focus back to the link that was stopped,
    *  which is where the person was before the dialog interrupted them. */
@@ -167,104 +149,74 @@ export function UnsavedGuard({ what, formName }: { what: string; formName: strin
   return (
     <>
       <span ref={marker} hidden />
-      {leavingTo && (
-        <dialog
-          ref={dialogRef}
-          role="alertdialog"
-          aria-labelledby="unsaved-guard-title"
-          // The scrim is NAVY, not black. Slate has no hard black anywhere, in
-          // text or in a shadow, and 55% navy dims the page to within a few
-          // points of the 45% black it replaces (#1903).
-          //
-          // The dialog itself is the full screen scrim, as the div was, so the
-          // look is unchanged (#3081): every user agent default a modal dialog
-          // carries (its margin, border, padding, size caps, Canvas colours and a
-          // grey ::backdrop of its own) is reset here. `open:flex` rather than
-          // `flex`, which would override the closed dialog's display none.
-          className="fixed inset-0 z-50 m-0 h-full max-h-none w-full max-w-none items-center justify-center border-0 bg-[color-mix(in_srgb,var(--pennie-navy)_55%,transparent)] p-4 text-fg open:flex backdrop:bg-transparent"
-          onKeyDown={(e) => {
-            if (e.key !== "Escape") return;
-            // Handled here, so the dialog's own cancel never also fires.
-            e.preventDefault();
-            stay();
-          }}
-          // The platform's other way out (a phone's back gesture, or an Escape
-          // that reached the dialog some other way). Kept in React's hands, so
-          // the dialog never closes behind the state's back.
-          onCancel={(e) => {
-            e.preventDefault();
-            stay();
-          }}
-        >
-          <div className="w-full max-w-115 rounded-[var(--radius-lg)] border border-border bg-surface px-6 py-5 shadow-[var(--shadow-lg)]">
-            <h2 id="unsaved-guard-title" className="text-base font-semibold text-fg">
-              You have unsaved {what}
-            </h2>
-            <p className="mt-1 text-sm text-fg-muted">
-              {couldNotKeep
-                ? "Your browser would not let us keep what you typed, so nothing has been kept and you are still on this page. Copy anything you need before you leave."
-                : "Nothing has been saved yet. Leaving keeps what you typed, and it will be here when you come back to this page."}
-            </p>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                ref={stayRef}
-                type="button"
-                className={btnCls}
-                onClick={stay}
-              >
-                Stay on this page
-              </button>
-              <button
-                type="button"
-                className={btnSecondaryCls}
-                onClick={() => {
-                  const to = leavingTo;
-                  const form = marker.current?.closest("form");
-                  // #2077: KEPT, not discarded. A warning is still one click away
-                  // from losing the work, and Dan's framing was stronger than a
-                  // warning: "I should never be able to lose something I typed by
-                  // going to another page."
-                  //
-                  // Attempted BEFORE the navigation and checked, because the dialog
-                  // above has just promised it: a browser with storage full or
-                  // disabled would otherwise take them away on a promise nothing
-                  // kept (L12). On a refusal they stay where they are, with their
-                  // work, and the panel says so.
-                  if (form && typeof window !== "undefined") {
-                    const kept = stashForm(
-                      window.sessionStorage,
-                      window.location.pathname,
-                      formName,
-                      entriesToRestored(new FormData(form).entries()),
-                      "navigation",
-                    );
-                    if (!kept) {
-                      setCouldNotKeep(true);
-                      return;
-                    }
-                  }
-                  // Cleared BEFORE navigating, so neither half of the guard
-                  // catches its own departure: the click interceptor stands down
-                  // and `beforeunload` stays quiet on the way out.
-                  saved.current = null;
-                  setLeavingTo(null);
-                  // An ordinary navigation rather than the app router,
-                  // DELIBERATELY. `useRouter` would make every form that mounts
-                  // this guard require a mounted router, which broke six
-                  // existing test files at once and would have left "remember to
-                  // mock next/navigation" as a rule living only in a prompt
-                  // (L27). The cost is one full page load on a click whose whole
-                  // purpose is to leave and discard, which is the cheapest place
-                  // in the app to spend it.
-                  window.location.assign(to);
-                }}
-              >
-                {couldNotKeep ? "Leave and lose it" : "Leave, and keep it for later"}
-              </button>
-            </div>
-          </div>
-        </dialog>
-      )}
+      <ModalDialog open={leavingTo !== null} onClose={stay} labelledBy="unsaved-guard-title" initialFocusRef={stayRef}>
+        <h2 id="unsaved-guard-title" className="text-base font-semibold text-fg">
+          You have unsaved {what}
+        </h2>
+        <p className="mt-1 text-sm text-fg-muted">
+          {couldNotKeep
+            ? "Your browser would not let us keep what you typed, so nothing has been kept and you are still on this page. Copy anything you need before you leave."
+            : "Nothing has been saved yet. Leaving keeps what you typed, and it will be here when you come back to this page."}
+        </p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            ref={stayRef}
+            type="button"
+            className={btnCls}
+            onClick={stay}
+          >
+            Stay on this page
+          </button>
+          <button
+            type="button"
+            className={btnSecondaryCls}
+            onClick={() => {
+              const to = leavingTo;
+              if (to === null) return;
+              const form = marker.current?.closest("form");
+              // #2077: KEPT, not discarded. A warning is still one click away
+              // from losing the work, and Dan's framing was stronger than a
+              // warning: "I should never be able to lose something I typed by
+              // going to another page."
+              //
+              // Attempted BEFORE the navigation and checked, because the dialog
+              // above has just promised it: a browser with storage full or
+              // disabled would otherwise take them away on a promise nothing
+              // kept (L12). On a refusal they stay where they are, with their
+              // work, and the panel says so.
+              if (form && typeof window !== "undefined") {
+                const kept = stashForm(
+                  window.sessionStorage,
+                  window.location.pathname,
+                  formName,
+                  entriesToRestored(new FormData(form).entries()),
+                  "navigation",
+                );
+                if (!kept) {
+                  setCouldNotKeep(true);
+                  return;
+                }
+              }
+              // Cleared BEFORE navigating, so neither half of the guard
+              // catches its own departure: the click interceptor stands down
+              // and `beforeunload` stays quiet on the way out.
+              saved.current = null;
+              setLeavingTo(null);
+              // An ordinary navigation rather than the app router,
+              // DELIBERATELY. `useRouter` would make every form that mounts
+              // this guard require a mounted router, which broke six
+              // existing test files at once and would have left "remember to
+              // mock next/navigation" as a rule living only in a prompt
+              // (L27). The cost is one full page load on a click whose whole
+              // purpose is to leave and discard, which is the cheapest place
+              // in the app to spend it.
+              window.location.assign(to);
+            }}
+          >
+            {couldNotKeep ? "Leave and lose it" : "Leave, and keep it for later"}
+          </button>
+        </div>
+      </ModalDialog>
     </>
   );
 }

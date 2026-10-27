@@ -49,6 +49,15 @@ export const SEED = {
       name: "Riley Rolechange",
       role: "agent",
     },
+    // #4205: a scheduling coordinator, who opens the coordinator booking page and nothing
+    // else. The address starts "sc" because the header draws the first two letters of it,
+    // and the settled design's header was captured showing "SC".
+    coordinator: {
+      id: "00000000-0000-4000-8000-000000001005",
+      email: `scheduling.coordinator@${E2E_EMAIL_DOMAIN}`,
+      name: "Sky Coordinator",
+      role: "coordinator",
+    },
   },
 } as const;
 

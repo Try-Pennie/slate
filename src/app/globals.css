@@ -459,6 +459,16 @@ h1.pn-display {
 }
 .pn-btn[data-refused]:hover { background: transparent; }
 .pn-btn[data-refused]:active { transform: none; }
+/* A refused MAIN button is never Sky (#4205, Dan, walking the coordinator page: "It
+   shouldn't be blue if I still have to do something", and he chose it for every page).
+   The fill and label are --bg-alt and --fg-muted, a pair measured as text in
+   scripts/test-contrast.ts: 4.60:1 in light, 5.28:1 in dark. */
+.pn-btn--primary[data-refused],
+.pn-btn--primary[data-refused]:hover {
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  cursor: not-allowed;
+}
 
 /* A destructive control (#1875). An OUTLINE rather than a rose fill, and that is
    measured rather than a preference: a filled rose needs white text on light
@@ -530,6 +540,11 @@ h1.pn-display {
 .pn-skip-link:focus-visible,
 [data-focus-ring="on-accent"]:focus-visible {
   outline-color: var(--focus-ring-line-on-accent);
+}
+/* A refused main button wears no Sky (#4205), so its ring is the page's, not the one
+   drawn for a Sky fill. */
+.pn-btn--primary[data-refused]:focus-visible {
+  outline-color: var(--focus-ring-line);
 }
 /* The same flip for the working cue, on the same surfaces. Set as a custom
    property rather than as a colour so it INHERITS to the spinner drawn inside the

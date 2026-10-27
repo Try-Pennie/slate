@@ -12,6 +12,7 @@
  */
 import type { COORDINATOR_BOOKING_COPY } from "./coordinator-booking-copy.ts";
 import type { CoordinatorsRead } from "./coordinators.ts";
+import { designFixtureFrame } from "./design-fixture-frame.ts";
 
 type Copy = typeof COORDINATOR_BOOKING_COPY;
 
@@ -45,9 +46,7 @@ const SWITCH_STATES: readonly string[] = ["off", "confirm-on", "on"];
 
 /** One frame of the design, from the fixture. Refuses a frame or a state the fixture does not name. */
 export function coordinatorFrame(fixture: CoordinatorDesignFixture, frameId: string): CoordinatorFrame {
-  const frame = Object.prototype.hasOwnProperty.call(fixture.frames, frameId) ? fixture.frames[frameId] : undefined;
-  if (!frame) throw new Error(`the fixture names no frame "${frameId}"`);
-  if (frame.theme !== "light" && frame.theme !== "dark") throw new Error(`frame "${frameId}" has no theme named ${frame.theme}`);
+  const frame = designFixtureFrame(fixture.frames, frameId);
   if (!SWITCH_STATES.includes(frame.switch)) throw new Error(`frame "${frameId}" has no switch state named ${frame.switch}`);
   // The design's coordinators carry no id; the frame gives each a stable one by position.
   const rows = fixture.adminSwitch.coordinators.map((c, i) => ({ id: `design-${i}`, ...c }));

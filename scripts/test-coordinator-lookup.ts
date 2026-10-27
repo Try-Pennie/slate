@@ -7,12 +7,15 @@
 // and the hours a call may start that day in the customer's zone. Each missing piece is
 // its own refusal: not a lead id, no such lead, Salesforce unreadable, no bucket, zone
 // unknown. Every value is invented.
+import { readFileSync } from "node:fs";
 import { parseLeadReference } from "../src/lib/coordinator/lead-reference.ts";
 import { findCustomer, lookupCustomer, type CustomerDeps, type LookupDeps } from "../src/lib/coordinator/customer.ts";
-import { bookableHoursOn } from "../src/lib/coordinator/bookable-hours.ts";
+import { bookableHoursOn, offeredDays } from "../src/lib/coordinator/bookable-hours.ts";
+import { lastHorizonDay, withinHorizon } from "../src/lib/booking/placed-booking.ts";
 import type { SalesforceLeadWithPlace } from "../src/lib/salesforce/lead-contact.ts";
 import type { BusinessHoursRules } from "../src/lib/availability/compute.ts";
 import type { Booking, Bucket, EventType } from "../src/lib/db/types.ts";
+import { PARTNER_BUCKET_CODE } from "../src/lib/embed/public-test-bucket.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ID15 = "00QUi00000AbCdE";
@@ -31,10 +34,25 @@ eq(parseLeadReference(`https://pennie.lightning.force.com/lightning/r/Lead/${ID1
 for (const bad of ["", "   ", "003Ui00000AbCdEMAC", "https://pennie.lightning.force.com/lightning/r/Contact/003Ui00000AbCdEMAC/view", "Jane Doe", "00QUi00000AbC", "javascript:alert(1)"]) {
   eq(parseLeadReference(bad), { ok: false, refusal: "not-a-lead-id" }, `not a Lead id: ${JSON.stringify(bad)}`);
 }
+// The page parses a pasted reference in the BROWSER (find on paste, D22), so the parser
+// must reach nothing that reaches the Salesforce REST client: through lead-xbc.ts it
+// carried the deployment's Salesforce setting names into the client bundle, which
+// `pnpm cf:build` refused (#2335). Read from the source, both halves.
+{
+  const src = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
+  const imports = (p: string) => [...src(p).matchAll(/^import[^;]*?from\s+"([^"]+)"/gm)].map((m) => m[1]);
+  eq(imports("src/lib/coordinator/lead-reference.ts"), ["../salesforce/lead-id.ts"], "the reference parser imports only the client safe Lead id check");
+  eq(imports("src/lib/salesforce/lead-id.ts"), [], "which imports nothing");
+  assert(/import\("@\/lib\/salesforce\/rest"\)/.test(src("src/lib/salesforce/lead-xbc.ts")), "positive control: lead-xbc.ts really does reach the REST client");
+}
 
 // --- fakes ---------------------------------------------------------------------------
 const bucket = { id: "bkt1", org_id: "org1", code: "412", is_test: false } as unknown as Bucket;
 const catchall = { id: "bkt0", org_id: "org1", code: "100", is_test: false } as unknown as Bucket;
+const partner = { id: "bktP", org_id: "org1", code: PARTNER_BUCKET_CODE, is_test: true } as unknown as Bucket;
+/** Every coordinator but the drill account routes by the Lead's score. */
+const REAL = { testCoordinator: false } as const;
+const DRILL = { testCoordinator: true } as const;
 const eventType = { id: "et1", duration_min: 30 } as unknown as EventType;
 const LEAD: SalesforceLeadWithPlace = {
   id: ID18,
@@ -71,7 +89,7 @@ function deps(f: Fake = {}): CustomerDeps & { asked: string[] } {
       asked.push(`bucket:${code}`);
       if (f.bucketThrows) throw new Error("bucket read failed");
       if (f.noBucket) return null;
-      return { bucket: code === "100" ? catchall : bucket, eventType };
+      return { bucket: code === "100" ? catchall : code === PARTNER_BUCKET_CODE ? partner : bucket, eventType };
     },
   };
 }
@@ -79,7 +97,7 @@ function deps(f: Fake = {}): CustomerDeps & { asked: string[] } {
 async function run() {
   {
     const d = deps();
-    const out = await findCustomer(`https://pennie.lightning.force.com/lightning/r/Lead/${ID15}/view`, d);
+    const out = await findCustomer(`https://pennie.lightning.force.com/lightning/r/Lead/${ID15}/view`, d, REAL);
     assert(out.ok, "a readable lead is found");
     if (out.ok) {
       eq(out.customer.salesforceLeadId, ID18, "named by the id as Salesforce spells it, the 18 characters bookings store");
@@ -91,7 +109,7 @@ async function run() {
     eq(d.asked[0], `lead:${ID15}`, "the Lead is read by the id pasted");
   }
   {
-    const out = await findCustomer(ID18, deps({ xbc: "012" }));
+    const out = await findCustomer(ID18, deps({ xbc: "012" }), REAL);
     assert(out.ok && out.customer.bucketCode === "100" && out.customer.bucketSource === "catchall",
       "a score routing cannot use goes to the catch all, exactly as the booker routes it");
   }
@@ -107,13 +125,34 @@ async function run() {
     ["a malformed zip and no state", ID18, { lead: { ...LEAD, postalCode: "N/A", state: null } }, "zone-unknown"],
   ];
   for (const [label, ref, fake, refusal] of refusals) {
-    const out = await findCustomer(ref, deps(fake));
+    const out = await findCustomer(ref, deps(fake), REAL);
     eq(out.ok ? "found" : out.refusal, refusal, `${label} is refused as ${refusal}`);
   }
   {
     const d = deps();
-    await findCustomer("Jane Doe", d);
+    await findCustomer("Jane Doe", d, REAL);
     eq(d.asked, [], "a reference that is not a Lead id reads nothing from Salesforce");
+  }
+  // --- the drill coordinator always books the partner test bucket (Dan, 2026-10-27) ---------
+  // A coordinator whose own users row is is_test (the drill account) books on the partner test bucket whatever
+  // the Lead's score, so a drill booking never lands on a real bucket as a real lead. Decided
+  // from the signed in person on the server, never from anything the page sends.
+  {
+    const d = deps({ xbc: "412" });
+    const out = await findCustomer(ID18, d, DRILL);
+    assert(out.ok && out.customer.bucketCode === PARTNER_BUCKET_CODE && out.customer.bucketIsTest,
+      `a test coordinator books the partner test bucket for a Lead whose score routes to a real bucket (got ${out.ok ? out.customer.bucketCode : out.refusal})`);
+    assert(out.ok && out.customer.bucketSource === "test-coordinator", "and says the bucket came from the coordinator, not the Lead");
+    eq(d.asked.filter((a) => a.startsWith("bucket:")), [`bucket:${PARTNER_BUCKET_CODE}`], "only the partner test bucket is resolved");
+    assert(!d.asked.some((a) => a.startsWith("xbc:")), "and the Lead's score is never asked");
+  }
+  {
+    const out = await findCustomer(ID18, deps({ xbc: "412" }), REAL);
+    assert(out.ok && out.customer.bucketCode === "412" && out.customer.bucketSource === "salesforce", "a real coordinator gets the score's bucket");
+  }
+  {
+    const out = await findCustomer(ID18, deps({ leadThrows: true }), DRILL);
+    eq(out.ok ? "found" : out.refusal, "salesforce-unreadable", "a drill lookup still needs the Lead, and says so when Salesforce is down");
   }
 }
 
@@ -152,6 +191,39 @@ const MONDAY_MORNING = Date.parse("2026-06-08T12:00:00.000Z"); // 08:00 Eastern,
   eq(bookableHoursOn({ hours: HOURS, zone: "America/New_York", date: "June 9", durationMin: 30, nowMs: MONDAY_MORNING, horizonDays: 2 }), { ok: false, reason: "date-unreadable" }, "an unreadable day is refused");
 }
 
+// --- the days the page offers, and every bookable quarter hour start on each ----------
+// The page's day row runs from the customer's today through the last day Slate offers
+// (counted as `withinHorizon` counts open days), and its time buttons are the quarter hour
+// starts the SAME predicate as the hours accepts, so a button can never offer a time the
+// booking refuses.
+{
+  eq(lastHorizonDay(HOURS, MONDAY_MORNING, 3), "2026-06-10", "three open days from Monday morning end on Wednesday");
+  const fridayEvening = Date.parse("2026-06-12T22:30:00.000Z"); // 18:30 Eastern, after close
+  eq(lastHorizonDay(HOURS, fridayEvening, 2), "2026-06-16", "a day whose hours are over counts for nothing, nor does the weekend");
+  eq(lastHorizonDay(HOURS, MONDAY_MORNING, 0), null, "no open day is offered when the horizon is none");
+  assert(withinHorizon(HOURS, Date.parse("2026-06-16T14:00:00.000Z"), fridayEvening, 2) && !withinHorizon(HOURS, Date.parse("2026-06-17T14:00:00.000Z"), fridayEvening, 2),
+    "and withinHorizon agrees with it");
+
+  const chicago = offeredDays({ hours: HOURS, zone: "America/Chicago", durationMin: 30, nowMs: MONDAY_MORNING, horizonDays: 3 });
+  eq(chicago.map((d) => d.date), ["2026-06-08", "2026-06-09", "2026-06-10"], "Chicago: today through the last day Slate offers");
+  eq([chicago[0]!.starts[0], chicago[0]!.starts.at(-1), chicago[0]!.starts.length], ["2026-06-08T08:00:00.000-05:00", "2026-06-08T16:30:00.000-05:00", 35],
+    "every quarter hour from the org's opening to the last start a 30 minute call fits, in the customer's clock");
+  for (const day of chicago) {
+    const hours = bookableHoursOn({ hours: HOURS, zone: "America/Chicago", date: day.date, durationMin: 30, nowMs: MONDAY_MORNING, horizonDays: 3 });
+    assert(hours.ok && day.starts.every((t) => hours.windows.some((w) => Date.parse(w.firstStart) <= Date.parse(t) && Date.parse(t) <= Date.parse(w.lastStart))),
+      `${day.date}: every start offered sits inside the hours the same predicate gives`);
+  }
+
+  const weekend = offeredDays({ hours: HOURS, zone: "America/New_York", durationMin: 30, nowMs: fridayEvening, horizonDays: 2 });
+  eq(weekend.map((d) => [d.date, d.starts.length]), [["2026-06-12", 0], ["2026-06-13", 0], ["2026-06-14", 0], ["2026-06-15", 35], ["2026-06-16", 35]],
+    "Friday evening: today shown closed, the weekend closed, the row runs to the second open day");
+
+  const midday = offeredDays({ hours: HOURS, zone: "America/New_York", durationMin: 30, nowMs: Date.parse("2026-06-08T18:05:00.000Z"), horizonDays: 1 });
+  eq([midday.length, midday[0]!.starts[0]], [1, "2026-06-08T14:15:00.000-04:00"], "today offers only the quarter hours still ahead of now");
+
+  eq(offeredDays({ hours: HOURS, zone: "America/New_York", durationMin: 30, nowMs: MONDAY_MORNING, horizonDays: 0 }), [], "no horizon, no days");
+}
+
 // --- the lookup the page calls: the customer, their call, and the day's hours ----------
 function existing(over: Partial<Booking> = {}): Booking {
   return {
@@ -188,33 +260,37 @@ function lookupDeps(f: Fake & { calls?: Booking[]; callsThrow?: boolean; hoursTh
 }
 async function runLookup() {
   {
-    const out = await lookupCustomer({ reference: ID18, date: "2026-06-09" }, lookupDeps());
+    const out = await lookupCustomer({ reference: ID18, date: "2026-06-09" }, lookupDeps(), REAL);
     assert(out.ok && out.existingCall.kind === "none", "a customer with no call has none to move");
     assert(out.ok && out.hours.ok && out.hours.windows.length === 1 && out.hours.windows[0].firstStart.endsWith("-07:00"), "and the day's hours in Arizona's clock");
+    assert(out.ok && out.days.ok && out.days.days.length > 0 && out.days.days[0]!.date === "2026-06-08" && out.days.days.every((d) => d.starts.every((t) => t.endsWith("-07:00"))),
+      "and the days Slate offers, from the customer's today, every start in Arizona's clock");
   }
   {
-    const out = await lookupCustomer({ reference: ID18 }, lookupDeps({ calls: [existing()] }));
+    const out = await lookupCustomer({ reference: ID18 }, lookupDeps({ calls: [existing()] }), REAL);
     assert(out.ok && out.existingCall.kind === "found" && out.existingCall.happens === "moves-when-confirmed" && out.existingCall.call.bookingId === "bk1",
       "a call on the same Lead id is shown, and placing a call moves it once the coordinator confirms");
     assert(out.ok && out.hours.ok && out.hours.date === "2026-06-08", "with no day asked, the hours are today's in the customer's zone");
   }
   {
-    const out = await lookupCustomer({ reference: ID18 }, lookupDeps({ calls: [existing({ salesforce_id: "00QUi00000ZzZzZMAC" })] }));
+    const out = await lookupCustomer({ reference: ID18 }, lookupDeps({ calls: [existing({ salesforce_id: "00QUi00000ZzZzZMAC" })] }), REAL);
     assert(out.ok && out.existingCall.kind === "found" && out.existingCall.happens === "refused-loose-match" && out.existingCall.matchedOn === "email-and-phone",
       "a call matching only on email and phone is shown, and placing is refused rather than moving a stranger's call");
   }
   {
-    const out = await lookupCustomer({ reference: ID18 }, lookupDeps({ callsThrow: true }));
+    const out = await lookupCustomer({ reference: ID18 }, lookupDeps({ callsThrow: true }), REAL);
     assert(out.ok && out.existingCall.kind === "unreadable", "an unreadable call check is said as unreadable, never as no call");
   }
   {
-    const hours = await lookupCustomer({ reference: ID18 }, lookupDeps({ hoursThrow: true }));
+    const hours = await lookupCustomer({ reference: ID18 }, lookupDeps({ hoursThrow: true }), REAL);
     assert(hours.ok && !hours.hours.ok && hours.hours.reason === "hours-unreadable", "unreadable business hours are said as such, never as closed");
-    const horizon = await lookupCustomer({ reference: ID18 }, lookupDeps({ horizon: null }));
+    assert(hours.ok && !hours.days.ok && hours.days.reason === "hours-unreadable", "and the days too, never an empty row");
+    const horizon = await lookupCustomer({ reference: ID18 }, lookupDeps({ horizon: null }), REAL);
     assert(horizon.ok && !horizon.hours.ok && horizon.hours.reason === "horizon-unreadable", "and so is an unreadable horizon");
+    assert(horizon.ok && !horizon.days.ok && horizon.days.reason === "horizon-unreadable", "for the days as well");
   }
   {
-    const out = await lookupCustomer({ reference: "nope" }, lookupDeps());
+    const out = await lookupCustomer({ reference: "nope" }, lookupDeps(), REAL);
     assert(!out.ok && out.refusal === "not-a-lead-id", "a lookup refused for the customer is refused whole");
   }
 }

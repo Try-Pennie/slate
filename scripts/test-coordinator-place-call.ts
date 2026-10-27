@@ -11,7 +11,9 @@
 //     sentence, and every error it throws becomes a named refusal, never a raw message.
 // Every value is invented.
 import { placeCall, type PlaceCallDeps } from "../src/lib/coordinator/place-call.ts";
-import type { Customer, FoundCustomer } from "../src/lib/coordinator/customer.ts";
+import { findCustomer, type Customer, type CustomerDeps, type FoundCustomer } from "../src/lib/coordinator/customer.ts";
+import { PARTNER_BUCKET_CODE } from "../src/lib/embed/public-test-bucket.ts";
+import type { Bucket, EventType } from "../src/lib/db/types.ts";
 import {
   PlacedBookingRefusedError,
   type PlacedBookingInput,
@@ -27,6 +29,7 @@ import {
 } from "../src/lib/booking/orchestration.ts";
 import { AttendeeEmailRefusedError } from "../src/lib/booking/attendee-email-refused.ts";
 import type { Booking } from "../src/lib/db/types.ts";
+import type { CustomerRouting } from "../src/lib/coordinator/customer.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const SUBMISSION = "6f1c2d3e-0000-4000-8000-000000000001";
@@ -51,9 +54,11 @@ const booking = (over: Partial<Booking> = {}) =>
 function fake(f: { found?: FoundCustomer; answer?: PlacedBookingOutcome; throws?: () => unknown } = {}) {
   const placed: PlacedBookingInput[] = [];
   const references: string[] = [];
+  const routings: CustomerRouting[] = [];
   const deps: PlaceCallDeps = {
-    findCustomer: async (reference) => {
+    findCustomer: async (reference, routing) => {
       references.push(reference);
+      routings.push(routing);
       return f.found ?? { ok: true, customer: CUSTOMER };
     },
     place: async (input) => {
@@ -67,10 +72,11 @@ function fake(f: { found?: FoundCustomer; answer?: PlacedBookingOutcome; throws?
     ] as never,
     mintSubmissionId: () => MINTED,
   };
-  return { deps, placed, references };
+  return { deps, placed, references, routings };
 }
 
-const coordinator = { id: "coord-1" };
+const coordinator = { id: "coord-1", isTest: false };
+const drillCoordinator = { id: "coord-drill", isTest: true };
 
 async function run() {
   {
@@ -149,6 +155,31 @@ async function run() {
     const { deps } = fake({ throws: () => new OutsideCallingWindowError("America/Phoenix") });
     const out = await placeCall({ reference: "00QUi00000AbCdEMAC", startIso: START, submissionId: SUBMISSION }, coordinator, deps);
     assert(out.kind === "refused" && /Arizona/.test(out.sentence) && /8:00am and 8:00pm/.test(out.sentence), "the calling window refusal names the window and the customer's zone");
+  }
+  // --- the drill coordinator books the partner test bucket, re-derived on every submit (Dan, 2026-10-27) ------
+  {
+    const { deps, routings } = fake();
+    await placeCall({ reference: "00QUi00000AbCdEMAC", startIso: START, submissionId: SUBMISSION }, coordinator, deps);
+    await placeCall({ reference: "00QUi00000AbCdEMAC", startIso: START, submissionId: SUBMISSION }, drillCoordinator, deps);
+    eq(routings, [{ testCoordinator: false }, { testCoordinator: true }], "the customer is re-read with the routing the signed in coordinator decides");
+  }
+  {
+    // The real customer reader behind the submit, with Salesforce faked: the Lead's score maps to
+    // a real bucket, and the page sent a bucket code of its own. Neither reaches the booking.
+    const real = { id: "bkt1", org_id: "org1", code: "412", is_test: false } as unknown as Bucket;
+    const partner = { id: "bktP", org_id: "org1", code: PARTNER_BUCKET_CODE, is_test: true } as unknown as Bucket;
+    const customers: CustomerDeps = {
+      readLead: async () => ({ id: "00QUi00000AbCdEMAC", name: "Invented Customer", firstName: "Invented", email: "invented.customer@example.com", phone: "+15555550100", postalCode: "85001", state: "AZ" }),
+      readLeadXbc: async () => "412",
+      resolveBucketByCode: async (code) => ({ bucket: code === PARTNER_BUCKET_CODE ? partner : real, eventType: { id: "et1", duration_min: 30 } as unknown as EventType }),
+    };
+    const { deps, placed } = fake();
+    deps.findCustomer = (reference, routing) => findCustomer(reference, customers, routing);
+    const sent = { reference: "00QUi00000AbCdEMAC", startIso: START, submissionId: SUBMISSION, bucketCode: "999" } as never;
+    await placeCall(sent, drillCoordinator, deps);
+    eq(placed[0]?.bucketCode, PARTNER_BUCKET_CODE, "a test coordinator's call books the partner test bucket even when the page sent another code");
+    await placeCall(sent, coordinator, deps);
+    eq(placed[1]?.bucketCode, "412", "and a real coordinator's books the Lead's score's bucket, never the page's code either");
   }
 }
 

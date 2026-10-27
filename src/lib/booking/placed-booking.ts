@@ -241,19 +241,35 @@ export function placedCallSummary(booking: Booking): PlacedCallSummary {
  */
 export function withinHorizon(hours: BusinessHoursRules, startMs: number, nowMs: number, horizonDays: number): boolean {
   const startDay = DateTime.fromMillis(startMs, { zone: hours.zone }).toISODate();
+  for (const iso of openHorizonDays(hours, nowMs, horizonDays)) if (iso === startDay) return true;
+  return false;
+}
+
+/**
+ * The last day `withinHorizon` accepts, in the org's zone (YYYY-MM-DD), or null when it
+ * accepts none: where the coordinator page's day row ends (#4205). One walk with
+ * `withinHorizon`, so the row and the refusal cannot disagree about the span.
+ */
+export function lastHorizonDay(hours: BusinessHoursRules, nowMs: number, horizonDays: number): string | null {
+  let last: string | null = null;
+  for (const iso of openHorizonDays(hours, nowMs, horizonDays)) last = iso;
+  return last;
+}
+
+/** The first `horizonDays` days Pennie is open from today, in the org's zone, skipping a day whose hours are over. */
+function* openHorizonDays(hours: BusinessHoursRules, nowMs: number, horizonDays: number): Generator<string> {
   let day = DateTime.fromMillis(nowMs, { zone: hours.zone }).startOf("day");
   let open = 0;
   // Bounded: a long closure must not turn a far start into an unbounded walk.
   for (let i = 0; i < 366 && open < horizonDays; i++, day = day.plus({ days: 1 })) {
     const iso = day.toISODate();
-    if (iso === null) return false;
+    if (iso === null) return;
     const window = windowOnDate(hours, iso, day.weekday);
     if (!window) continue;
     if (day.plus({ minutes: window.end_minute }).toMillis() <= nowMs) continue;
     open++;
-    if (iso === startDay) return true;
+    yield iso;
   }
-  return false;
 }
 
 export async function placeBooking(input: PlacedBookingInput, deps: PlacedBookingDeps): Promise<PlacedBookingOutcome> {

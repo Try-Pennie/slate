@@ -48,7 +48,11 @@ export async function lookupCoordinatorCustomer(input: { reference: string; date
   }
   try {
     const date = text(input?.date).trim();
-    const out = await lookupCustomer({ reference: text(input?.reference), ...(date ? { date } : {}) }, lookupDeps());
+    // Routing is the signed in coordinator's own: a test account (the drill) books
+    // the partner test bucket whatever the Lead's score (Dan, 2026-10-27). Never read from the page.
+    const out = await lookupCustomer({ reference: text(input?.reference), ...(date ? { date } : {}) }, lookupDeps(), {
+      testCoordinator: me.is_test === true,
+    });
     if (out.ok) return out;
     log.info("coordinator", { msg: "customer lookup refused", reason: out.refusal, user_id: me.id });
     return refusedAnswer(out.refusal);
@@ -98,7 +102,7 @@ export async function placeCoordinatorCall(input: PlaceCallRequest): Promise<Pla
   try {
     const out = await placeCall(
       { reference: text(input?.reference), startIso: text(input?.startIso), ...(submissionId ? { submissionId } : {}), ...(move ? { move } : {}) },
-      { id: me.id },
+      { id: me.id, isTest: me.is_test === true },
       placeCallDeps(),
     );
     if (out.kind === "refused") {

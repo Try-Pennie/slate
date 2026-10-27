@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { PARTNER_BUCKET_CODE } from "@/lib/embed/public-test-bucket";
 
 // #4205: the coordinator page's server functions check the role THEMSELVES, rate limit
 // per person, and answer typed results rather than throwing. The operations behind them
@@ -11,13 +12,19 @@ const limiter = vi.hoisted(() => ({ allowRequest: vi.fn(async () => true) }));
 const live = vi.hoisted(() => {
   const place = vi.fn();
   const readLead = vi.fn();
+  const routings: unknown[] = [];
+  const lookupRoutings: unknown[] = [];
   return {
     place,
     readLead,
+    routings,
+    lookupRoutings,
     lookupDeps: () => ({
       readLead,
       readLeadXbc: async () => "412",
-      resolveBucketByCode: async () => ({ bucket: { code: "412", is_test: false, org_id: "org1" }, eventType: { duration_min: 30 } }),
+      // Any code but the score's is a test bucket here, so the drill case resolves the
+      // partner test bucket by the constant the product uses.
+      resolveBucketByCode: async (code: string) => ({ bucket: { code, is_test: code !== "412", org_id: "org1" }, eventType: { duration_min: 30 } }),
       findActiveBookingsForPerson: async () => [],
       businessHours: async () => ({ zone: "America/New_York", rules: [], exceptions: [] }),
       horizonDays: async () => 10,
@@ -31,7 +38,7 @@ const live = vi.hoisted(() => {
       },
     }),
     placeCallDeps: () => ({
-      findCustomer: async () => ({
+      findCustomer: async (_reference: string, routing: unknown) => (routings.push(routing), {
         ok: true,
         customer: {
           salesforceLeadId: "00QUi00000AbCdEMAC",
@@ -61,7 +68,8 @@ vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(
 
 import { countPlaceholderCalls, lookupCoordinatorCustomer, placeCoordinatorCall } from "./actions";
 
-const COORDINATOR = { id: "coord-1", role: "coordinator" };
+const COORDINATOR = { id: "coord-1", role: "coordinator", is_test: false };
+const DRILL_COORDINATOR = { id: "coord-drill", role: "coordinator", is_test: true };
 const SUBMISSION = "6f1c2d3e-0000-4000-8000-000000000001";
 const booked = {
   kind: "booked",
@@ -73,6 +81,8 @@ const booked = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  live.routings.length = 0;
+  live.place.mockReset();
   auth.coordinatorDeskUser.mockResolvedValue(COORDINATOR);
   limiter.allowRequest.mockResolvedValue(true);
 });
@@ -117,6 +127,16 @@ describe("placeCoordinatorCall (#4205)", () => {
     expect(out.sentence).not.toMatch(/connection reset/);
   });
 
+  it("routes by the signed in coordinator's own is_test, never by anything the page sent (Dan, 2026-10-27)", async () => {
+    live.place.mockResolvedValue(booked);
+    const sent = { reference: "00QUi00000AbCdEMAC", startIso: "2026-06-09T17:00:00.000Z", submissionId: SUBMISSION, bucketCode: "412", testCoordinator: false } as never;
+    auth.coordinatorDeskUser.mockResolvedValue(DRILL_COORDINATOR);
+    await placeCoordinatorCall(sent);
+    auth.coordinatorDeskUser.mockResolvedValue(COORDINATOR);
+    await placeCoordinatorCall({ ...(sent as object), testCoordinator: true } as never);
+    expect(live.routings).toEqual([{ testCoordinator: true }, { testCoordinator: false }]);
+  });
+
   it("ignores a payload that is not the shape the page sends, rather than throwing", async () => {
     const out = await placeCoordinatorCall({ reference: 42, startIso: null } as never);
     expect(out.kind).toBe("refused");
@@ -150,6 +170,16 @@ describe("lookupCoordinatorCustomer (#4205)", () => {
     });
     const out = await lookupCoordinatorCustomer({ reference: "00QUi00000AbCdEMAC" });
     expect(out.ok && out.customer.zone).toBe("America/Phoenix");
+  });
+
+  it("looks a drill coordinator's customer up on the partner test bucket, whatever the Lead's score (Dan, 2026-10-27)", async () => {
+    live.readLead.mockResolvedValue({ id: "00QUi00000AbCdEMAC", name: "Invented Customer", firstName: "Invented", email: null, phone: null, postalCode: "85001", state: "AZ" });
+    auth.coordinatorDeskUser.mockResolvedValue(DRILL_COORDINATOR);
+    const drill = await lookupCoordinatorCustomer({ reference: "00QUi00000AbCdEMAC", bucketCode: "412" } as never);
+    expect(drill.ok && drill.customer.bucketCode).toBe(PARTNER_BUCKET_CODE);
+    auth.coordinatorDeskUser.mockResolvedValue(COORDINATOR);
+    const real = await lookupCoordinatorCustomer({ reference: "00QUi00000AbCdEMAC", testCoordinator: true } as never);
+    expect(real.ok && real.customer.bucketCode).toBe("412");
   });
 });
 

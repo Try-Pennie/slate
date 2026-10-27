@@ -11,6 +11,7 @@
  * reads no clock. `scripts/test-coordinator-copy.ts` reads every sentence.
  */
 import { DateTime } from "luxon";
+import { COORDINATOR_PAGE_COPY } from "./booking-page-copy.ts";
 import { zoneLabel } from "../booking/timezones.ts";
 import { callingWindowLabel } from "../booking/lead-calling-window.ts";
 import { formatClockTime, formatLongDate } from "../date/parse.ts";
@@ -68,9 +69,9 @@ export function possibleMatchSentence(call: PlacedCallSummary, zone: string, mat
 }
 
 const REFUSAL_TEXT: Record<Exclude<CoordinatorRefusal, "outside-calling-window">, string> = {
-  // The lookup.
-  "not-a-lead-id": "That is not a Salesforce Lead link or ID. Paste the link to the customer's Lead, or the ID starting 00Q at the end of it.",
-  "no-such-lead": "Salesforce has no Lead with that ID. Check it was copied in full.",
+  // The lookup, in the settled page's own words (D31), so the page and the server say one thing.
+  "not-a-lead-id": COORDINATOR_PAGE_COPY.lead.notALeadId,
+  "no-such-lead": COORDINATOR_PAGE_COPY.lead.noSuchLead,
   "salesforce-unreadable": "We could not reach Salesforce just now, so nothing was looked up or booked. Try again in a moment.",
   "no-bucket": "We could not tell which team this customer belongs to, so nothing was booked. Let a Slate admin know.",
   "bucket-unreadable": "We could not look up this customer's team just now, so nothing was booked. Try again in a moment.",

@@ -1,0 +1,47 @@
+/* The coordinator booking page's layout (#4205), exactly as the settled design lays it out
+   (docs/design/coordinator-booking.html, its screen.css). Layout only, in the product's
+   tokens: every control's look comes from Slate's own classes. Unlayered, as the design's
+   own sheet is, so these win over the layered utilities in the same way. */
+
+.root { display: block; }
+
+/* Every field in a card the same gap apart (D33), with no reserved space. */
+.stack > * + * { margin-top: var(--space-5); }
+.stack > h2 + * { margin-top: var(--space-3); }
+
+.inline { display: flex; align-items: center; gap: var(--space-4); }
+.grow { flex: 1 1 auto; min-width: 0; }
+.noshrink { flex: none; }
+
+.details { display: grid; grid-template-columns: 7rem 1fr; column-gap: var(--space-5); row-gap: var(--space-1); margin-top: var(--space-2); }
+.details dd { margin: 0; }
+
+.confirm { padding-top: var(--space-2); }
+
+/* The booker's slot buttons sit in a grid inside the time's well, which keeps one row's
+   height while it has no times, so the Time control is there, disabled, before a day. */
+.slotWell { max-width: 46rem; min-height: 4.25rem; }
+.slotGroup + .slotGroup { margin-top: var(--space-5); }
+.slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr)); margin-top: var(--space-2); }
+.detail { max-width: 32rem; }
+
+/* The locked card holds its press catcher and the pointer, which take no room in the
+   stack, so the gaps between fields are the same locked and unlocked. */
+.booking { position: relative; }
+.stack > .catch, .stack > .overlay { margin-top: 0; }
+.catch { background: transparent; border: 0; padding: 0; }
+.overlay { top: var(--space-6); left: 50%; transform: translateX(-50%); }
+
+/* The product's focus ring, kept on the checkbox the page moved focus to, since focus
+   moved in script does not always earn :focus-visible. */
+.ring { outline: 2px solid var(--focus-ring-line); outline-offset: var(--focus-ring-offset); box-shadow: 0 0 0 4px var(--focus-ring); }
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes overlayIn { from { opacity: 0; transform: translate(-50%, -4px); } to { opacity: 1; transform: translate(-50%, 0); } }
+  .overlay { animation: overlayIn 150ms ease-out 1; }
+}
+
+/* The day row: one row of the days Slate offers, each chip the width it has in a week of
+   seven, so four days do not stretch across the card. */
+.dayRow { display: flex; gap: var(--space-2); }
+.dayRow > * { flex: 0 0 calc((100% - 6 * var(--space-2)) / 7); min-width: 0; }
