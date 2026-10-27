@@ -247,7 +247,7 @@ function mockDb(overrides: Record<string, Result> = {}) {
       const result = byTable[table] ?? { data: [], error: null };
       let single = false;
       const b: Record<string, unknown> = {};
-      for (const m of ["select", "in", "not", "gte", "lte", "order", "limit", "range"]) {
+      for (const m of ["select", "neq", "in", "not", "gte", "lte", "order", "limit", "range"]) {
         b[m] = () => b;
       }
       // A fresh group per `from(table)` call, so two reads of one table stay apart.

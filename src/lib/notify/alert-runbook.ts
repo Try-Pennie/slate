@@ -34,6 +34,7 @@ export const ALERT_FAMILIES = [
   "an-unexpected-fault-was-reported",
   "a-merge-has-not-shipped-or-ci-cannot-run",
   "the-database-is-running-low-on-memory",
+  "a-call-on-the-placeholder-advisor-is-at-risk",
   "something-was-measured-and-is-only-worth-knowing",
 ] as const;
 
@@ -355,6 +356,12 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // pool), and the first question is the same one: is this person meant to be
   // taking calls, and what does the roster say about them.
   regal_call_unroutable: "the-roster-or-routing-data-is-wrong",
+  // #4206. A call a coordinator placed on the placeholder advisor, Marcia: Regal never
+  // called the customer, the placeholder's Google seat is failing, or the switch is on
+  // with no placeholder to place calls on. One procedure: the placeholder path.
+  placeholder_call_unserved: "a-call-on-the-placeholder-advisor-is-at-risk",
+  placeholder_seat_failing: "a-call-on-the-placeholder-advisor-is-at-risk",
+  placeholder_missing: "a-call-on-the-placeholder-advisor-is-at-risk",
   salesforce_user_id_conflicts: "the-roster-or-routing-data-is-wrong",
   salesforce_manager_ambiguous: "the-roster-or-routing-data-is-wrong",
   salesforce_roster_divergence: "the-roster-or-routing-data-is-wrong",

@@ -43,7 +43,10 @@ function isStaffPath(pathname: string): boolean {
     pathname === "/admin" ||
     pathname === "/me" ||
     pathname.startsWith("/admin/") ||
-    pathname.startsWith("/me/")
+    pathname.startsWith("/me/") ||
+    // #4205: the coordinator booking page, a staff surface like the console.
+    pathname === "/coordinator" ||
+    pathname.startsWith("/coordinator/")
   );
 }
 

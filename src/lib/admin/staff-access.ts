@@ -42,8 +42,14 @@ import type { Role } from "../db/types.ts";
  *    gets its own refusal, in its own words.
  */
 
-/** The roles this surface may grant. Deliberately excludes agent and super admin. */
-export const GRANTABLE_STAFF_ROLES: Role[] = ["manager", "team_lead", "admin"];
+/**
+ * The roles this surface may grant. Deliberately excludes agent and super admin.
+ *
+ * `coordinator` (#4205): the scheduling coordinators are not debt team agents either,
+ * so nothing creates them, and granting the address before their first sign in is
+ * how one arrives a coordinator rather than an `agent` row.
+ */
+export const GRANTABLE_STAFF_ROLES: Role[] = ["manager", "team_lead", "admin", "coordinator"];
 
 /**
  * Every way this can end, success and refusal alike, as a runtime list so the
@@ -66,6 +72,7 @@ export const STAFF_ACCESS_OUTCOMES = [
   "write_failed",
   "admin_count_unreadable",
   "last_admin",
+  "in_pool",
 ] as const;
 
 export type StaffAccessOutcome = (typeof STAFF_ACCESS_OUTCOMES)[number];
@@ -80,6 +87,8 @@ export interface StaffAccessTarget {
   role: Role;
   deactivated_at: string | null;
   auth_user_id: string | null;
+  /** Whether the row is in the booking pool: a coordinator never is (#4205). */
+  bookable: boolean;
 }
 
 export type StaffAccessPlan =
@@ -224,6 +233,14 @@ export function planStaffAccess(input: StaffAccessInput): StaffAccessPlan {
     return { ok: false, outcome: "signed_in_demotion" };
   }
 
+  // #4205: a coordinator is never bookable (users_coordinator_never_bookable), so a
+  // row in the booking pool is refused by name rather than failing as a write that
+  // "could not be saved". Taking somebody out of the pool is a decision with its own
+  // gate (the activation and departure rules), made on their own page, never here.
+  if (next === "coordinator" && existing.bookable) {
+    return { ok: false, outcome: "in_pool" };
+  }
+
   // And last, the refusal that admits it measured nothing (#1165). Only reachable
   // where the count genuinely decides and could not be read.
   if (countDecides && adminCount === null) {
@@ -320,6 +337,11 @@ export function staffAccessMessage(
       return {
         tone: "error",
         text: "That would leave Pennie with no admin, so the role was left as it was.",
+      };
+    case "in_pool":
+      return {
+        tone: "error",
+        text: `${email} takes calls in the booking pool, and a coordinator never does, so nothing was changed. Take them out of the pool on their own page first.`,
       };
   }
 }

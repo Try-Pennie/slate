@@ -2541,11 +2541,12 @@ export async function setUserRole(form: FormData): Promise<void> {
   // anywhere said why. The read also feeds `canSetRole`, so guessing it is a
   // guess at an authorization input.
   const target = unwrap(
-    await db.from("users").select("role").eq("id", userId).maybeSingle(),
+    await db.from("users").select("role, bookable").eq("id", userId).maybeSingle(),
     "set-role target role",
   );
   const current = (target as { role: Role } | null)?.role;
   if (!current) return;
+  const inPool = (target as { bookable?: boolean } | null)?.bookable === true;
 
   // #2385: all four refusals below come back to this agent's own page as
   // sentences. Every one of them used to throw, so the reader met the generic
@@ -2560,6 +2561,14 @@ export async function setUserRole(form: FormData): Promise<void> {
   if (!canSetRole(admin.role, current, next)) {
     redirect(
       `${back}${refusedQuery(`Your own role cannot set somebody to ${roleLabel(next)}, so the role was left as ${roleLabel(current)}.`)}`,
+    );
+  }
+
+  // #4205: a coordinator is never bookable (users_coordinator_never_bookable), so the
+  // write would be refused by the database. Said here instead, naming what to do.
+  if (next === "coordinator" && inPool) {
+    redirect(
+      `${back}${refusedQuery("This person takes calls in the booking pool, and a coordinator never does, so the role was left unchanged. Take them out of the pool first.")}`,
     );
   }
 
@@ -2698,7 +2707,7 @@ export async function grantStaffAccess(form: FormData): Promise<void> {
   // here rather than falling through to the create path.
   const { data: existingRow, error: lookupError } = await db
     .from("users")
-    .select("id, org_id, role, deactivated_at, auth_user_id")
+    .select("id, org_id, role, deactivated_at, auth_user_id, bookable")
     .eq("email", email)
     .maybeSingle();
   if (lookupError) {
@@ -3157,7 +3166,7 @@ export async function addRegalCallIgnore(form: FormData): Promise<void> {
     ? (unwrap(
         await db
           .from("users")
-          .select(`id, name, email, role, deactivated_at, ${REAL_ADVISOR_COLUMNS}`)
+          .select(`id, name, email, deactivated_at, ${REAL_ADVISOR_COLUMNS}`)
           .eq("id", userId)
           .maybeSingle(),
         "regal ignore target",

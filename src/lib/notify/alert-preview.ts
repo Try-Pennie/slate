@@ -624,6 +624,19 @@ import {
 import type { HandoffKind } from "@/lib/handoffs/kinds";
 import { formatReminder } from "@/lib/notify/repeat-policy";
 import { marciaFailureAlert, marciaGatewayRefusedAlert, marciaTokenRefusedAlert } from "@/lib/mcp-booking/alert-copy";
+import {
+  formatPlaceholderCallAlert,
+  formatPlaceholderCallEnding,
+  type PlaceholderBookingRow,
+} from "@/lib/monitor/placeholder-calls";
+import {
+  formatPlaceholderSeatAlert,
+  formatPlaceholderSeatRecovery,
+  formatPlaceholderMissingAlert,
+  PLACEHOLDER_SEAT_STOOD_DOWN,
+  PLACEHOLDER_MISSING_RECOVERY,
+  PLACEHOLDER_MISSING_SWITCHED_OFF,
+} from "@/lib/monitor/placeholder-seat";
 import { formatSmokeCanaryRecovery } from "@/lib/monitor/smoke-canary-failure";
 // The canary's failure message is built by its bare node alerter, which may import
 // nothing outside scripts/ (#1598), so the preview reaches into scripts/ for it rather
@@ -779,6 +792,24 @@ const AGENT_MANY: FailingAgent[] = [
 // parse-ok: a hard-coded valid ISO literal in a fixture, not a stored stamp; if it
 // ever failed to parse the preview output would be visibly broken, not silently healthy.
 const NOW_MS = Date.parse("2026-07-29T12:00:00.000Z");
+
+// #4206. An invented placeholder call and Lead (L155): booked 2:00 to 2:30 PM ET.
+const PREVIEW_PLACEHOLDER_CALL: PlaceholderBookingRow = {
+  id: "8d2f4a61-3b7c-4e90-a1d5-6c0e9f2b7a43",
+  kind: "staff_placed",
+  status: "confirmed",
+  starts_at: "2026-07-29T18:00:00.000Z",
+  ends_at: "2026-07-29T18:30:00.000Z",
+  salesforce_id: "00Q5f00000ExAmPLEA",
+  agent_name: "Marcia",
+};
+const PREVIEW_PLACEHOLDER_URL = `https://slate.trypennie.app/admin/bookings/${PREVIEW_PLACEHOLDER_CALL.id}`;
+const PREVIEW_PLACEHOLDER_ENDING = {
+  bookingId: PREVIEW_PLACEHOLDER_CALL.id,
+  booking: PREVIEW_PLACEHOLDER_CALL,
+  url: PREVIEW_PLACEHOLDER_URL,
+};
+const PREVIEW_SEAT = "marcia.example@trypennie.com";
 
 /** #3037: the Ultra High tier's first offered time as of 2026-10-02, past the Friday,
  *  Saturday and Monday the booker shows (#3559): Tuesday Oct 6 at 11:30am ET. */
@@ -3769,6 +3800,138 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the user no longer exists",
     channel: "recovery",
     text: formatRegalCallEnding({ userId: "4b1e0c55-0000-4000-8000-000000000000", ending: "gone", user: null, ignoreReason: null }),
+  },
+  // #4206. A placeholder call Regal never called, and each way the page ends.
+  {
+    key: "placeholder_call_unserved:*",
+    state: "no Regal call to the customer after the booked time",
+    channel: "alert",
+    text: formatPlaceholderCallAlert(PREVIEW_PLACEHOLDER_CALL, PREVIEW_PLACEHOLDER_URL),
+  },
+  {
+    key: "placeholder_call_unserved:*",
+    state: "an advisor's call reached them",
+    channel: "recovery",
+    text: formatPlaceholderCallEnding({
+      ...PREVIEW_PLACEHOLDER_ENDING,
+      ending: "reached",
+      callMs: Date.UTC(2026, 6, 29, 18, 22),
+      callAi: false,
+    }),
+  },
+  {
+    key: "placeholder_call_unserved:*",
+    state: "Regal's AI agent called them",
+    channel: "recovery",
+    text: formatPlaceholderCallEnding({
+      ...PREVIEW_PLACEHOLDER_ENDING,
+      ending: "reached",
+      callMs: Date.UTC(2026, 6, 29, 18, 3),
+      callAi: true,
+    }),
+  },
+  {
+    key: "placeholder_call_unserved:*",
+    state: "the call was cancelled",
+    channel: "recovery",
+    text: formatPlaceholderCallEnding({ ...PREVIEW_PLACEHOLDER_ENDING, ending: "cancelled" }),
+  },
+  {
+    key: "placeholder_call_unserved:*",
+    state: "the call was moved onto a real advisor",
+    channel: "recovery",
+    text: formatPlaceholderCallEnding({
+      ...PREVIEW_PLACEHOLDER_ENDING,
+      booking: { ...PREVIEW_PLACEHOLDER_CALL, kind: "routed", agent_name: "Ada Example" },
+      ending: "moved-to-advisor",
+    }),
+  },
+  {
+    key: "placeholder_call_unserved:*",
+    state: "the call was moved to a later time",
+    channel: "recovery",
+    text: formatPlaceholderCallEnding({
+      ...PREVIEW_PLACEHOLDER_ENDING,
+      // The row a move leaves holds the NEW start.
+      booking: { ...PREVIEW_PLACEHOLDER_CALL, starts_at: "2026-07-30T15:00:00.000Z", ends_at: "2026-07-30T15:30:00.000Z" },
+      ending: "rescheduled",
+    }),
+  },
+  {
+    key: "placeholder_call_unserved:*",
+    state: "three days on with no call, the watch stands down",
+    channel: "recovery",
+    text: formatPlaceholderCallEnding({ ...PREVIEW_PLACEHOLDER_ENDING, ending: "stopped-watching" }),
+  },
+  {
+    key: "placeholder_call_unserved:*",
+    state: "the booking is no longer in Slate",
+    channel: "recovery",
+    text: formatPlaceholderCallEnding({ bookingId: PREVIEW_PLACEHOLDER_CALL.id, ending: "gone" }),
+  },
+  // #4206. The placeholder's Google seat.
+  {
+    key: "placeholder_seat_failing",
+    state: "its calendar refused (gone)",
+    channel: "alert",
+    text: formatPlaceholderSeatAlert([{ email: PREVIEW_SEAT, surface: "calendar", kind: "gone" }]),
+  },
+  {
+    key: "placeholder_seat_failing",
+    state: "its calendar has no Calendar licence and Gmail refused",
+    channel: "alert",
+    text: formatPlaceholderSeatAlert([
+      { email: PREVIEW_SEAT, surface: "calendar", kind: "not-provisioned" },
+      { email: PREVIEW_SEAT, surface: "gmail", kind: "gone" },
+    ]),
+  },
+  {
+    key: "placeholder_seat_failing",
+    state: "Gmail did not answer for twenty minutes (transient)",
+    channel: "alert",
+    text: formatPlaceholderSeatAlert([{ email: PREVIEW_SEAT, surface: "gmail", kind: "transient" }]),
+  },
+  {
+    key: "placeholder_seat_failing",
+    state: "both probes answer again",
+    channel: "recovery",
+    text: formatPlaceholderSeatRecovery([PREVIEW_SEAT]),
+  },
+  {
+    key: "placeholder_seat_failing",
+    state: "switched off with no call on it, so no longer checked",
+    channel: "recovery",
+    text: PLACEHOLDER_SEAT_STOOD_DOWN,
+  },
+  {
+    key: "placeholder_missing",
+    state: "the switch is on and there is no placeholder",
+    channel: "alert",
+    text: formatPlaceholderMissingAlert("no-row"),
+  },
+  {
+    key: "placeholder_missing",
+    state: "the switch is on and the placeholder is deactivated",
+    channel: "alert",
+    text: formatPlaceholderMissingAlert("deactivated"),
+  },
+  {
+    key: "placeholder_missing",
+    state: "the switch is on and the placeholder has no address",
+    channel: "alert",
+    text: formatPlaceholderMissingAlert("no-address"),
+  },
+  {
+    key: "placeholder_missing",
+    state: "a usable placeholder exists again",
+    channel: "recovery",
+    text: PLACEHOLDER_MISSING_RECOVERY,
+  },
+  {
+    key: "placeholder_missing",
+    state: "the switch was turned off",
+    channel: "recovery",
+    text: PLACEHOLDER_MISSING_SWITCHED_OFF,
   },
   {
     key: "regal_calls_quiet",

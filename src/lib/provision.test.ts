@@ -133,7 +133,7 @@ vi.mock("@/lib/supabase/admin", () => ({
 }));
 
 import { provisionUser } from "./provision";
-import { DeactivatedAccountError } from "@/lib/auth/active-session";
+import { DeactivatedAccountError, PlaceholderAccountError } from "@/lib/auth/active-session";
 
 const input = {
   authUserId: "auth-1",
@@ -346,5 +346,76 @@ describe("provisionUser refuses a deactivated account (#2378)", () => {
       existingByEmail: { id: "synced-1", email: input.email, deactivated_at: null },
     });
     expect((await provisionUser(input)).id).toBe("existing-user");
+  });
+});
+
+// #4205: nobody signs in as the placeholder advisor (Marcia, #4200). Its row holds real
+// customers' calls, and an address that matched it would be handed every one of them.
+// Refused before anything is written, on both branches that can find it.
+describe("provisionUser refuses the placeholder advisor (#4205)", () => {
+  beforeEach(() => {
+    db.current = null;
+  });
+
+  it("refuses a row already linked by auth_user_id, writing nothing", async () => {
+    db.current = makeDb({
+      org: { id: "org-1" },
+      adminExists: true,
+      linked: { id: "marcia", email: input.email, deactivated_at: null, google_sub: "sub-1", is_placeholder: true },
+    });
+    await expect(provisionUser(input)).rejects.toBeInstanceOf(PlaceholderAccountError);
+    expect(db.current.getUpdates()).toHaveLength(0);
+    expect(db.current.getInsertedPayload()).toBeNull();
+  });
+
+  it("refuses a row matched by email, and never links it", async () => {
+    db.current = makeDb({
+      org: { id: "org-1" },
+      adminExists: true,
+      existingByEmail: { id: "marcia", email: input.email, deactivated_at: null, is_placeholder: true },
+    });
+    await expect(provisionUser(input)).rejects.toBeInstanceOf(PlaceholderAccountError);
+    expect(db.current.getUpdates()).toHaveLength(0);
+    expect(db.current.getInsertedPayload()).toBeNull();
+  });
+
+  // The positive control in the same fixture (L159): the same row as a person signs in.
+  it("still signs in the same row when it is not the placeholder", async () => {
+    db.current = makeDb({
+      org: { id: "org-1" },
+      adminExists: true,
+      existingByEmail: { id: "synced-1", email: input.email, deactivated_at: null, is_placeholder: false },
+    });
+    expect((await provisionUser(input)).id).toBe("existing-user");
+  });
+});
+
+// #4205: a scheduling coordinator is granted on Team access before they sign in (a
+// row with role coordinator and bookable false). Their first sign in links that row
+// by email and decides nothing about role or bookable, so they arrive a coordinator
+// who is never bookable; one who signs in first gets the ordinary unbookable row.
+describe("provisionUser and a coordinator's first sign in (#4205)", () => {
+  beforeEach(() => {
+    db.current = null;
+  });
+
+  it("links a granted coordinator row without touching its role or bookable", async () => {
+    db.current = makeDb({
+      org: { id: "org-1" },
+      adminExists: true,
+      existingByEmail: { id: "coord-1", email: input.email, role: "coordinator", bookable: false, deactivated_at: null },
+    });
+    await provisionUser(input);
+    const updates = db.current.getUpdates();
+    expect(updates).toHaveLength(1);
+    expect("role" in updates[0]).toBe(false);
+    expect("bookable" in updates[0]).toBe(false);
+    expect(updates[0].auth_user_id).toBe("auth-1");
+  });
+
+  it("creates a coordinator who signed in before being granted as an unbookable row", async () => {
+    db.current = makeDb({ org: { id: "org-1" }, adminExists: true });
+    await provisionUser(input);
+    expect(db.current.getInsertedPayload()?.bookable).toBe(false);
   });
 });

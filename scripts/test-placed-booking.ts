@@ -2,12 +2,14 @@
 // written fakes of everything it reads and calls.
 //
 // The decided rules (Sam and Dan, 2026-10-23), each with its failure path:
-//   - kept: the go live switch (unreadable and off refused by name), the org's business
-//     hours, the customer's calling window in the zone given (missing zone refused, never
+//   - kept: the org's business hours, the customer's calling window in the zone given (missing zone refused, never
 //     defaulted), the horizon, and nothing in the past;
 //   - a free real advisor first, through the normal create; only a refusal for want of
 //     one falls to the placeholder, and a transient outage is reported as itself;
 //   - the placeholder of the bucket's own org and world, or a refusal naming its absence;
+//   - the go live switch gates ONLY the fall to the placeholder (Dan, 2026-10-26): off or
+//     unreadable, a free real advisor still books (and a confirmed move still moves to
+//     one); only a refusal for want of one is then refused by name, off or unreadable;
 //   - one call per customer, matched on the Salesforce id only: without a confirmation the
 //     call is shown, with one the SAME booking moves (a real advisor first, then the
 //     placeholder), and a looser match is shown and refused;
@@ -220,8 +222,6 @@ async function run() {
 
   // --- the kept gates, each refused by name before anything is read or written ---------------
   const gates: [string, Fake, Partial<PlacedBookingInput>, string][] = [
-    ["an unreadable switch", { enabled: null }, {}, "switch-unreadable"],
-    ["the switch off", { enabled: false }, {}, "switch-off"],
     ["no zone", {}, { timezone: "" }, "zone-missing"],
     ["a zone that is not a zone", {}, { timezone: "Central" }, "zone-missing"],
     ["no Lead id", {}, { salesforceLeadId: "  " }, "lead-id-missing"],
@@ -261,6 +261,40 @@ async function run() {
   {
     const { deps } = makeFake({ unknownBucket: true });
     assert((await refusal(() => placeBooking(base, deps))) instanceof UnknownBucketError, "an unknown bucket is the existing refusal");
+  }
+
+  // --- the go live switch gates only the fall to the placeholder (Dan, 2026-10-26) --------------
+  for (const [label, enabled] of [["off", false], ["unreadable", null]] as const) {
+    const { deps, calls } = makeFake({ enabled });
+    const out = await placeBooking(base, deps);
+    assert(out.kind === "booked" && out.on === "advisor", `switch ${label}, a free advisor: the advisor is booked (got ${out.kind})`);
+    assert(calls.create.length === 1 && calls.placeholderLookups.length === 0, `switch ${label}: through the normal create, never asking for the placeholder`);
+  }
+  for (const [label, enabled, reason] of [["off", false, "switch-off"], ["unreadable", null, "switch-unreadable"]] as const) {
+    const { deps, calls } = makeFake({ enabled, createThrows: () => new SlotUnavailableError() });
+    const out = await refusal(() => placeBooking(base, deps));
+    assert(refusedFor(out) === reason, `switch ${label}, nobody free: refused as ${reason} (got ${refusedFor(out)})`);
+    assert(calls.create.length === 1 && calls.placeholderCreate.length === 0 && calls.placeholderLookups.length === 0,
+      `switch ${label}: the advisor path was tried, and nothing goes on the placeholder`);
+  }
+  {
+    // A confirmed move with the switch off: a free advisor takes it; nobody free refuses.
+    const reason = { code: "other", detail: null };
+    const free = makeFake({ enabled: false, person: [booking()] });
+    const moved = await placeBooking({ ...base, move: { bookingId: "bk-existing", reason } }, free.deps);
+    assert(moved.kind === "moved" && moved.on === "advisor", "switch off, a confirmed move to a free advisor still moves the call");
+    const full = makeFake({ enabled: false, person: [booking()], rescheduleThrows: () => new NoEligibleAgentsError() });
+    const out = await refusal(() => placeBooking({ ...base, move: { bookingId: "bk-existing", reason } }, full.deps));
+    assert(refusedFor(out) === "switch-off" && full.calls.reschedule.length === 1,
+      `switch off, a move with nobody free is refused as switch-off, never moved onto the placeholder (got ${refusedFor(out)})`);
+  }
+  for (const enabled of [false, null] as const) {
+    const first = booking({ id: "bk-first", kind: "staff_placed", idempotency_key: key, assigned_user_id: "p" });
+    const { deps, calls } = makeFake({ enabled, replay: first });
+    const out = await placeBooking(base, deps);
+    assert(out.kind === "booked" && out.booking.id === "bk-first" && out.replayed === true,
+      `switch ${enabled === null ? "unreadable" : "off"}: a repeat of a submission that already booked answers that booking`);
+    assert(calls.create.length === 0, "and nothing is made again");
   }
 
   // --- a double submit books once and answers the same ---------------------------------------
@@ -341,6 +375,19 @@ async function run() {
     assert(out.kind === "possible-match" && out.matchedOn === matchedOn && out.call.bookingId === "bk-existing",
       `a call matching on ${label} but not the Lead id is shown (got ${out.kind})`);
     assert(calls.create.length === 0 && calls.reschedule.length === 0, `a ${label} match is refused: nothing booked or moved, even when confirmed`);
+  }
+  {
+    // #4205: Slate stores whichever spelling of the Lead id a caller sent, so the
+    // customer's call is found under the 15 character id and the 18 character one alike.
+    const LONG = "00Q000000000001EAA"; // the Q is uppercase, so the first block's checksum is E
+    for (const [label, stored, asked] of [
+      ["stored long, asked short", LONG, "00Q000000000001"],
+      ["stored short, asked long", "00Q000000000001", LONG],
+    ] as const) {
+      const { deps } = makeFake({ person: [booking({ salesforce_id: stored, attendee_email: "other@x.com", attendee_phone: null })] });
+      const out = await placeBooking({ ...base, salesforceLeadId: asked }, deps);
+      assert(out.kind === "existing-call", `${label}: the customer's call is their own, matched on the Lead id (got ${out.kind})`);
+    }
   }
   {
     const { deps, calls } = makeFake({ personThrows: true });

@@ -97,6 +97,17 @@ eq(
   "awaiting params, then notFound on null, passes",
 );
 eq(verdict(page(`  const me = await requireAdmin();\n  return <List />;`)), null, "a require guard passes");
+// #4205: the coordinator page's own gate, either form.
+eq(verdict(page(`  const me = await requireCoordinatorDesk();\n  return <Desk />;`)), null, "the coordinator page's require guard passes");
+eq(
+  verdict(page(`  const me = await coordinatorDeskUser();\n  if (!me) redirect("/login");\n  return <Desk />;`)),
+  null,
+  "the coordinator page's user read, refused on null, passes",
+);
+assert(
+  verdict(page(`  const me = await coordinatorDeskUser();\n  return <Desk me={me} />;`)) !== null,
+  "a coordinator page that never refuses null is caught",
+);
 eq(verdict(page(`  redirect("/admin");`)), null, "a page that only redirects passes: it renders nothing");
 eq(
   verdict(page(`  if (!devPreviewEnabled()) notFound();\n  throw new Error("probe");`)),

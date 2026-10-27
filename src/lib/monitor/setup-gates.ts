@@ -117,6 +117,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   regalCallOutcomes: SetupGate;
   offeredNobodyFree: SetupGate;
   bufferBreach: SetupGate;
+  placeholderCalls: SetupGate;
 } {
   return {
     // The scan compares every bucket's cached slot count against a live recompute,
@@ -236,5 +237,12 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // guessed longer one would page about calls past what the booker offers. The
     // bookings, event types and buckets it reads itself, inside its own step.
     bufferBreach: gate(readiness, ["horizonDays"]),
+    // #4206: a placeholder call past its time with no Regal call to the customer. The
+    // bucket list is what says which buckets are REAL, and a test bucket's placeholder
+    // call (the test bucket drill) must never page, so it skips without it: guessing every
+    // bucket real pages about every drill, and guessing none real silences the check.
+    // The bookings, the open pages and the call feed it reads itself. The placeholder
+    // seat check consumes no setup read and is deliberately not gated.
+    placeholderCalls: gate(readiness, ["buckets"]),
   };
 }

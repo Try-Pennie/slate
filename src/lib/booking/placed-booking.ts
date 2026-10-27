@@ -5,8 +5,7 @@
  *
  * The rules, as Sam and Dan decided them on 2026-10-23 (the issue's comments):
  *
- *  - KEPT, for every call this places: the go live switch (an unreadable one is refused,
- *    never read as on), Pennie's business hours (outside them nothing books), the
+ *  - KEPT, for every call this places: Pennie's business hours (outside them nothing books), the
  *    customer's calling window of 08:00 to before 20:00 in the zone GIVEN (required:
  *    never a device or Eastern default), the horizon, and nothing in the past.
  *  - A REAL ADVISOR FIRST: the normal create (slot predicate, verify on book, confirm
@@ -14,6 +13,10 @@
  *    one (`noFreeAdvisor`) falls to the placeholder; an outage is reported as itself.
  *  - THE PLACEHOLDER: the org's own, in the bucket's world, stacked with any others at
  *    that time (`createPlaceholderBooking`). None found is its own refusal.
+ *  - THE GO LIVE SWITCH gates ONLY the fall to the placeholder (Dan, 2026-10-26): off or
+ *    unreadable (never read as on), a free real advisor still books, and a confirmed move
+ *    still moves to one; only when nobody is free is it refused, `switch-off` or
+ *    `switch-unreadable`, instead of using the placeholder.
  *  - ONE CALL PER CUSTOMER, matched on the Salesforce id alone. Without a confirmation
  *    naming that call the call is shown so the page can ask; with one, the SAME booking
  *    moves (one Rescheduled event, the same manage link), to a real advisor first and
@@ -35,7 +38,8 @@ import { DateTime, IANAZone } from "luxon";
 import { windowOnDate } from "./business-hours.ts";
 import { isOrgOpen, type BusinessHoursRules } from "../availability/compute.ts";
 import { withinLeadCallingWindow } from "./lead-calling-window.ts";
-import { findPersonMatch, type PersonIdentity, type NamedWorld } from "./person-dedupe.ts";
+import { findPersonMatch, type MatchStrength, type PersonIdentity, type NamedWorld } from "./person-dedupe.ts";
+import { leadIdSpellings } from "../salesforce/lead-xbc.ts";
 import {
   ExistingCallCheckUnavailableError,
   NoEligibleAgentsError,
@@ -123,8 +127,8 @@ const REFUSAL_SENTENCE: Record<PlacedBookingRefusal, string> = {
   "zone-missing": "This customer has no usable time zone on their Lead, so the call cannot be placed.",
   "start-unreadable": "That time could not be read, so nothing was placed.",
   "start-in-past": "That time has already passed.",
-  "switch-unreadable": "Placing calls could not be checked as switched on, so nothing was placed. Try again in a moment.",
-  "switch-off": "Placing calls on the placeholder advisor is switched off.",
+  "switch-unreadable": "No advisor is free then, and placing calls on the placeholder advisor could not be checked as switched on, so nothing was placed. Try again in a moment.",
+  "switch-off": "No advisor is free then, and placing calls on the placeholder advisor is switched off.",
   "horizon-unreadable": "How far ahead calls can be booked could not be read, so nothing was placed. Try again in a moment.",
   "beyond-horizon": "That time is further ahead than calls can be booked.",
   "outside-business-hours": "Pennie is closed at that time.",
@@ -187,7 +191,29 @@ export function noFreeAdvisor(err: unknown): boolean {
 
 const placedOn = (booking: Booking): PlacedOn => (booking.kind === "staff_placed" ? "placeholder" : "advisor");
 
-function summary(booking: Booking): PlacedCallSummary {
+/**
+ * Who the customer is, for the one call per customer rule and the coordinator page's
+ * lookup alike (#4205), so the two cannot find different calls. The Lead id goes in
+ * BOTH spellings: Slate stores whichever a caller sent (memory: 15 against 18 on
+ * 2026-10-14), and a strong id may sit in either id column (`bookingMatchesLookupIds`),
+ * so the 15 character key rides in the second slot rather than being lost.
+ */
+export function placedIdentity(leadId: string, attendee: { email?: string; phone?: string }): PersonIdentity {
+  const { short, long } = leadIdSpellings(leadId);
+  return {
+    externalId: short === long ? null : short,
+    salesforceId: long,
+    email: attendee.email ?? null,
+    phone: attendee.phone ?? null,
+  };
+}
+
+/** How a call matching only on email or phone is named to the coordinator. */
+export function looseMatchKind(strength: Exclude<MatchStrength, "strong">): "email-and-phone" | "email-or-phone" {
+  return strength === "medium" ? "email-and-phone" : "email-or-phone";
+}
+
+export function placedCallSummary(booking: Booking): PlacedCallSummary {
   return {
     bookingId: booking.id,
     startsAt: booking.starts_at,
@@ -228,10 +254,6 @@ export async function placeBooking(input: PlacedBookingInput, deps: PlacedBookin
   const startMs = Date.parse(input.startIso);
   if (!Number.isFinite(startMs)) throw new PlacedBookingRefusedError("start-unreadable");
 
-  const enabled = await deps.placeholderEnabled();
-  if (enabled === null) throw new PlacedBookingRefusedError("switch-unreadable");
-  if (!enabled) throw new PlacedBookingRefusedError("switch-off");
-
   const key = coordinatorKeyFor(input.submissionId);
   const replay = await deps.findBookingByIdempotencyKey(key);
   if (replay) {
@@ -255,12 +277,7 @@ export async function placeBooking(input: PlacedBookingInput, deps: PlacedBookin
   if (horizon === null) throw new PlacedBookingRefusedError("horizon-unreadable");
   if (!withinHorizon(hours, startMs, nowMs, horizon)) throw new PlacedBookingRefusedError("beyond-horizon");
 
-  const identity: PersonIdentity = {
-    externalId: null,
-    salesforceId: leadId,
-    email: input.attendee.email ?? null,
-    phone: input.attendee.phone ?? null,
-  };
+  const identity = placedIdentity(leadId, input.attendee);
   let calls: Booking[];
   try {
     calls = await deps.findActiveBookingsForPerson(identity, { isTest: bucket.is_test });
@@ -270,10 +287,10 @@ export async function placeBooking(input: PlacedBookingInput, deps: PlacedBookin
   }
   const match = findPersonMatch(identity, calls);
   if (match && match.strength !== "strong") {
-    return { kind: "possible-match", call: summary(match.booking), matchedOn: match.strength === "medium" ? "email-and-phone" : "email-or-phone" };
+    return { kind: "possible-match", call: placedCallSummary(match.booking), matchedOn: looseMatchKind(match.strength) };
   }
   if (match) {
-    if (input.move?.bookingId !== match.booking.id) return { kind: "existing-call", call: summary(match.booking) };
+    if (input.move?.bookingId !== match.booking.id) return { kind: "existing-call", call: placedCallSummary(match.booking) };
     return moveExisting(match.booking, bucket, input, zone, deps);
   }
   if (input.move) throw new PlacedBookingRefusedError("confirmed-call-changed");
@@ -312,7 +329,14 @@ export async function placeBooking(input: PlacedBookingInput, deps: PlacedBookin
   return { kind: "booked", on: placedOn(booked.booking), booking: booked.booking, manageUrl: booked.manageUrl, replayed: booked.newlyInserted !== true };
 }
 
+/**
+ * The placeholder a call falls to when nobody real is free, behind the go live switch:
+ * the switch is read only here, so off or unreadable refuses the fall and nothing else.
+ */
 async function placeholderFor(bucket: Bucket, deps: PlacedBookingDeps): Promise<User> {
+  const enabled = await deps.placeholderEnabled();
+  if (enabled === null) throw new PlacedBookingRefusedError("switch-unreadable");
+  if (!enabled) throw new PlacedBookingRefusedError("switch-off");
   const placeholder = await deps.findPlaceholder(bucket.org_id, bucket.is_test);
   if (!placeholder) throw new PlacedBookingRefusedError("no-placeholder");
   return placeholder;

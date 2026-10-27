@@ -95,8 +95,12 @@ export const REGAL_CALL_WINDOW_MS = 30 * 60_000;
  * correctly not bookable in Slate, and leaving them in would page on them daily.
  * The cost, stated: somebody with a non agent role who genuinely should be taking
  * bookings is silently exempt.
+ *
+ * `coordinator` exempt (#4205): a scheduling coordinator places calls from Slate's
+ * booking page and is never routed one, so it makes no Regal calls to judge.
  */
 export const REGAL_ROLE_EXEMPT: Record<Role, boolean> = {
+  coordinator: true,
   super_admin: true,
   admin: true,
   manager: true,

@@ -15,6 +15,9 @@ import {
   isSelfDemotion,
   roleLabel,
   isRole,
+  ROLES,
+  opensStaffConsole,
+  canUseCoordinatorDesk,
 } from "../src/lib/auth/roles.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -180,5 +183,36 @@ assert(
   isRole("super_admin") && isRole("team_lead") && !isRole("superuser"),
   "isRole validates the enum",
 );
+
+// #4205: the coordinator role. It sits BELOW agent, so every rank gate in the repo
+// refuses it without naming it, and it is on no staff surface at all.
+assert(isRole("coordinator") && ROLES.includes("coordinator"), "coordinator is a role");
+assert(ROLE_RANK.coordinator < ROLE_RANK.agent, "a coordinator ranks below an agent");
+assert(
+  !atLeast("coordinator", "agent") && !canManageAgents("coordinator") && !canEditOrgSettings("coordinator"),
+  "no rank gate admits a coordinator",
+);
+assert(roleLabel("coordinator") === "coordinator", "a coordinator is labelled as such");
+assert(!opensStaffConsole("coordinator"), "a coordinator opens no staff page (admin or own pages)");
+assert(
+  (["agent", "manager", "team_lead", "admin", "super_admin"] as const).every((r) => opensStaffConsole(r)),
+  "every other role keeps the staff pages it has today",
+);
+assert(canUseCoordinatorDesk("coordinator"), "a coordinator opens the coordinator page");
+assert(
+  canUseCoordinatorDesk("admin") && canUseCoordinatorDesk("super_admin"),
+  "admins open it too, to train coordinators and to drill it",
+);
+assert(
+  !canUseCoordinatorDesk("agent") && !canUseCoordinatorDesk("manager") && !canUseCoordinatorDesk("team_lead"),
+  "an advisor, manager or team lead does not place calls from it",
+);
+assert(
+  canSetRole("admin", "agent", "coordinator") && canSetRole("admin", "coordinator", "agent"),
+  "an admin assigns the coordinator role like the other lower tiers",
+);
+assert(!canSetRole("manager", "agent", "coordinator"), "a manager never assigns it");
+assert(!canImpersonate("super_admin", "coordinator"), "nobody views as a coordinator: their page is not a view of a staff surface");
+assert(!canImpersonate("coordinator", "agent"), "and a coordinator impersonates nobody");
 
 finish();

@@ -94,6 +94,7 @@ export const PILL_LABEL_OPTICAL_NUDGE_PX = 1;
 const LABEL_OPTICAL_CLS = "relative top-[1px]";
 
 export type PillVariant =
+  | "role-coordinator"
   | "role-agent"
   | "role-manager"
   | "role-team_lead"
@@ -106,12 +107,16 @@ export type PillVariant =
 
 /**
  * WEIGHT LIVES HERE, NOT IN THE BASE (#1844). Every variant carries its own
- * `font-semibold` except `role-agent`, which is deliberately unweighted. Putting
+ * `font-semibold` except `role-agent` and `role-coordinator`, which are deliberately
+ * unweighted. Putting
  * it in the base and overriding it here would leave the winner to be decided by
  * the order Tailwind happens to emit the two utilities in, which is invisible at
  * the call site (L509).
  */
 const VARIANT_CLS: Record<PillVariant, string> = {
+  // #4205: a scheduling coordinator sits below agent, off the ladder, so it is no
+  // more elevated than the floor and draws exactly as agent does.
+  "role-coordinator": "text-fg-muted",
   // THE FLOOR OF THE ROLE LADDER, and the only member that draws no chrome
   // (#1844). Agent is "no elevation", and on a 117 person roster it is nearly
   // every row, so a bordered semibold pill gave the least informative value the

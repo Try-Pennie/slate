@@ -57,6 +57,8 @@ const from = vi.hoisted(() =>
     const q: Record<string, unknown> = {
       select: () => q,
       eq: () => q,
+      // #4205: the real advisor rule leaves coordinators out with a neq.
+      neq: () => q,
       order: () => q,
       limit: () => q,
       maybeSingle: async () => {

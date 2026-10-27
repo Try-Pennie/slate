@@ -85,7 +85,9 @@ export function bookingsToReroute(
  *
  * The same two fail-safes as `bookingsToReroute`: a null/undefined (unknown) attribute set
  * moves NOBODY, so a failed roster read can never mass-reroute (L214, L50); an `agent_link`
- * booking is never moved, because the lead chose that advisor by name. A manual member serves
+ * booking is never moved, because the lead chose that advisor by name, and neither is a
+ * `staff_placed` call (#4202), which sits on the placeholder advisor and is handed on by Regal
+ * itself at its time, so no advisor's demotion ever strands it. A manual member serves
  * every booking in their bucket, so none of theirs is ever in the snapshot.
  */
 export function unservedBookingIds(

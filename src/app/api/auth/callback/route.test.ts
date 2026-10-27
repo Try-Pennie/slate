@@ -59,6 +59,8 @@ import { GET } from "./route";
 import { ME_TABS } from "@/lib/me/nav";
 import { GoogleAccountMismatchError, SeveralGoogleAccountsError } from "@/lib/auth/google-identity";
 import { SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR } from "@/lib/auth/google-identity-copy";
+import { PlaceholderAccountError } from "@/lib/auth/active-session";
+import { PLACEHOLDER_ACCOUNT_LOGIN_ERROR } from "@/lib/auth/landing";
 
 const SESSION = {
   session: {
@@ -402,5 +404,29 @@ describe("auth callback session stamps (#3084)", () => {
 
     expect(res.cookies.get(SESSION_STARTED_COOKIE)).toBeUndefined();
     expect(res.cookies.get(SESSION_SEEN_COOKIE)).toBeUndefined();
+  });
+});
+
+// #4205: a scheduling coordinator lands on their one page, and nobody signs in as the
+// placeholder advisor. Each beside the ordinary sign in it differs from (L159).
+describe("auth callback for a coordinator, and for the placeholder advisor (#4205)", () => {
+  it("lands a coordinator on the coordinator page, never their own pages or the console", async () => {
+    provision.provisionUser.mockResolvedValue({ id: "coord-1", role: "coordinator", theme_preference: "system" });
+    const res = await GET(request());
+    expect(res.headers.get("location")).toBe("https://slate.trypennie.app/coordinator");
+
+    provision.provisionUser.mockResolvedValue({ id: "user-1", role: "agent", theme_preference: "system" });
+    expect((await GET(request())).headers.get("location")).toBe(`https://slate.trypennie.app${ME_TABS[0].href}`);
+  });
+
+  it("refuses a sign in on the placeholder advisor's address, ends the session, and says it plainly", async () => {
+    provision.provisionUser.mockRejectedValue(new PlaceholderAccountError());
+    google.ensureWatches.mockClear();
+    const res = await GET(request());
+    expect(res.headers.get("location")).toBe(
+      `https://slate.trypennie.app/login?error=${PLACEHOLDER_ACCOUNT_LOGIN_ERROR}`,
+    );
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(google.ensureWatches).not.toHaveBeenCalled();
   });
 });

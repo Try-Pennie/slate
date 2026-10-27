@@ -8,7 +8,12 @@ import type { RoutingCodeRecord } from "../routing/lead-code.ts";
 import type { RecordedRefusalStage } from "../booking/refusal-trace.ts";
 import type { DemotionChange } from "../booking/demotion-plan.ts";
 
-export type Role = "super_admin" | "admin" | "team_lead" | "manager" | "agent";
+/**
+ * A user's role. `coordinator` (#4205) is the scheduling coordinator: it opens the
+ * coordinator booking page and nothing else, is never routed calls, and ranks below
+ * `agent` so every rank gate refuses it (`src/lib/auth/roles.ts`).
+ */
+export type Role = "super_admin" | "admin" | "team_lead" | "manager" | "agent" | "coordinator";
 /** `hold` (#3248, migration 0167): written by a reroute hold's trigger, carrying
  *  `hold_id`, so the slot cache keeps a held advisor's time off the offer. */
 /** `ooo` (#3365, migration 0172): a time off's held window, owned by its request
@@ -896,8 +901,10 @@ export interface Booking {
   reminder_sent_for: string | null;
   /**
    * Set by the reassign API to stack a consult onto a busy owning agent, and on a
-   * staff placed booking, which stacks on the placeholder by design (#4200). Every
-   * reschedule clears it (#4199, migration 0206).
+   * staff placed booking, which stacks on the placeholder by design (#4200). A move
+   * onto the placeholder sets it true (`commit_reschedule_onto_placeholder`, migration
+   * 0208); every other reschedule clears it (#4199, migration 0206), and the trigger
+   * 0208 adds refuses a call on the placeholder without it.
    */
   allow_double_book: boolean;
   /**

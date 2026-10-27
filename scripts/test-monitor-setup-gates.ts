@@ -36,6 +36,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
   assert(g.offsiteOrigin.run, "a healthy tick runs the off site origin check");
   assert(g.offeredNobodyFree.run, "a healthy tick runs the served versus confirm check");
   assert(g.bufferBreach.run, "a healthy tick runs the buffer breach check");
+  assert(g.placeholderCalls.run, "a healthy tick runs the unserved placeholder call check");
 }
 
 // --- each read, alone, gates exactly the checks that depend on it --------------
@@ -102,6 +103,10 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     // types and buckets.
     const buffer = c.name !== "horizonDays";
     eq(g.bufferBreach.run, buffer, `${c.name} unreadable: buffer breach check runs = ${buffer}`);
+    // #4206: the unserved placeholder call check needs the bucket list to leave the test
+    // buckets' drill calls out, and nothing else.
+    const placeholder = c.name !== "buckets";
+    eq(g.placeholderCalls.run, placeholder, `${c.name} unreadable: unserved placeholder call check runs = ${placeholder}`);
   }
 }
 
@@ -232,6 +237,8 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     offeredNobodyFree: true,
     // #3040: no switch, only the coded daily repeat.
     bufferBreach: true,
+    // #4206: no switch, only the coded daily repeat.
+    placeholderCalls: true,
     // An armed switch (and, for the volume alarm, the floors) decides whether each
     // of these pages, so none may judge on a guessed one.
     availabilityTruth: false,

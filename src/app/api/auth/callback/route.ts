@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { provisionUser } from "@/lib/provision";
-import { DeactivatedAccountError } from "@/lib/auth/active-session";
+import { DeactivatedAccountError, PlaceholderAccountError } from "@/lib/auth/active-session";
 import {
   GoogleAccountMismatchError,
   SeveralGoogleAccountsError,
@@ -19,11 +19,10 @@ import {
   stampValue,
 } from "@/lib/auth/session-age";
 import { ensureWatches } from "@/lib/google/sync";
-import { canManageAgents } from "@/lib/auth/roles";
+import { landingPathFor, PLACEHOLDER_ACCOUNT_LOGIN_ERROR } from "@/lib/auth/landing";
 import { isAllowedEmail } from "@/lib/auth/domain";
 import { googleHostedDomain } from "@/lib/env";
 import { log } from "@/lib/log";
-import { ME_TABS } from "@/lib/me/nav";
 import {
   DEFAULT_THEME_PREFERENCE,
   THEME_COOKIE,
@@ -122,6 +121,13 @@ export async function GET(req: NextRequest) {
       await supabase.auth.signOut();
       return NextResponse.redirect(`${origin}/login?error=account_deactivated`);
     }
+    // #4205: the address is the placeholder advisor's, which holds real customers'
+    // calls and belongs to nobody. Settled like a deactivation, so its own message.
+    if (err instanceof PlaceholderAccountError) {
+      log.warn("auth-callback", { msg: "refused a sign in on the placeholder advisor", auth_user_id: user.id });
+      await supabase.auth.signOut();
+      return NextResponse.redirect(`${origin}/login?error=${PLACEHOLDER_ACCOUNT_LOGIN_ERROR}`);
+    }
     // #3526: the Google account is not the one this Slate account belongs to, so
     // this is a different person on that address (or the same person on a new
     // account). Settled like a deactivation, so it gets its own message rather
@@ -159,8 +165,9 @@ export async function GET(req: NextRequest) {
   // the busy-block cache within a minute, off the login hot path.
   await ensureWatches(slateUser.id); // never throws; returns a status
 
-  // Managers + admins get the admin console; agents land on their own page.
-  const dest = canManageAgents(slateUser.role) ? "/admin" : ME_TABS[0].href;
+  // Managers + admins get the admin console; agents land on their own page, and a
+  // coordinator on the coordinator page (#4205).
+  const dest = landingPathFor(slateUser.role);
   const res = NextResponse.redirect(`${origin}${dest}`);
   // Seed the theme cookie from the account so the preference follows the user
   // onto this device (the boot script reads it before first paint).

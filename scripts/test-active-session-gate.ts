@@ -11,6 +11,7 @@ import {
   gateSessionRow,
   isDeactivated,
   DeactivatedAccountError,
+  PlaceholderAccountError,
   type SessionGate,
 } from "../src/lib/auth/active-session.ts";
 import type { User } from "../src/lib/db/types.ts";
@@ -48,6 +49,14 @@ assert(live.admit && live.user.id === "u1", "the admitted row is handed back who
 eq(reason(gateSessionRow(row({ deactivated_at: LEFT }), null)), "deactivated", "a departed row is refused as deactivated");
 eq(reason(gateSessionRow(null, null)), "no-row", "no row at all is refused as no-row");
 eq(reason(gateSessionRow(null, { message: "connection reset" })), "unreadable", "a read error is refused as unreadable");
+// #4205: the placeholder advisor (Marcia, #4200) is an account nobody may act as. It
+// holds real customers' calls, so a session on it could cancel or move every one.
+eq(reason(gateSessionRow(row({ is_placeholder: true }), null)), "placeholder", "the placeholder advisor's row is refused");
+eq(
+  reason(gateSessionRow(row({ is_placeholder: true, deactivated_at: LEFT }), null)),
+  "deactivated",
+  "a departed placeholder is reported as departed, the settled answer either way",
+);
 
 // FAIL CLOSED both ways an error can arrive. A driver that returns an error
 // ALONGSIDE a row must not have the row answer for the error: the whole point of
@@ -70,8 +79,9 @@ const produced = new Set([
   reason(gateSessionRow(row({ deactivated_at: LEFT }), null)),
   reason(gateSessionRow(null, null)),
   reason(gateSessionRow(null, { message: "x" })),
+  reason(gateSessionRow(row({ is_placeholder: true }), null)),
 ]);
-eq(produced.size, 4, "all four outcomes are producible and distinct");
+eq(produced.size, 5, "all five outcomes are producible and distinct");
 
 // The stamp is what decides, not truthiness of the field being present.
 assert(isDeactivated({ deactivated_at: LEFT }), "a stamped row has left");
@@ -86,5 +96,9 @@ assert(gateSessionRow(row(), undefined).admit, "an undefined error is not an err
 const err = new DeactivatedAccountError();
 assert(err instanceof Error, "the sign in refusal is an Error");
 assert(err.name === "DeactivatedAccountError", "and carries its own name, so the callback can tell it from a retryable refusal");
+
+const placeholderErr = new PlaceholderAccountError();
+assert(placeholderErr instanceof Error, "the placeholder sign in refusal is an Error");
+assert(placeholderErr.name === "PlaceholderAccountError", "with its own name, so the callback can say it plainly");
 
 finish();

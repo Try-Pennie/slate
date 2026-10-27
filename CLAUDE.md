@@ -36,6 +36,12 @@ Tailwind v4, Luxon, pnpm.
 History and measurements behind these: `docs/architecture.md`, "The availability
 rules in full".
 
+## Placeholder bookings (milestone 75)
+
+A call no real advisor is free for goes on the one placeholder advisor as `staff_placed`,
+which nobody dials, so its own `placeholder_*` alerts watch it, never the advisor ones.
+Path, switch and runbook: `docs/architecture.md`, "The placeholder advisor path".
+
 ## Design
 
 UI follows the Pennie Design System: read `.impeccable.md` and the

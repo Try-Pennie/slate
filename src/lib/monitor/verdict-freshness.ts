@@ -864,4 +864,10 @@ export const GATED_CHECK_VERDICT_COVERAGE: Record<MonitorGatedCheck, DetectorVer
   regalCallOutcomes: { lane: REGAL_CALL_OUTCOMES_VERDICT_LANE },
   offeredNobodyFree: { lane: OFFERED_NOBODY_FREE_VERDICT_LANE },
   bufferBreach: { lane: BUFFER_BREACH_VERDICT_LANE },
+  placeholderCalls: {
+    exempt:
+      "every way it can stop concluding already pages (#4206): an unreadable read is thrown out of its " +
+      "step, so `monitor_step_failing:placeholder_calls` pages a sustained one, and its only gate is the " +
+      "bucket list, whose own failing read pages as `monitor_step_failing:setup_buckets`",
+  },
 };

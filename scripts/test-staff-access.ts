@@ -72,9 +72,12 @@ assert(
 );
 eq(
   GRANTABLE_STAFF_ROLES.length,
-  3,
-  "the grantable set is exactly the three elevated tiers below super admin",
+  4,
+  "the grantable set is the three elevated tiers below super admin, and the coordinator",
 );
+// #4205: scheduling coordinators are not debt team agents either, so nothing creates
+// them; this is where a super admin grants one before their first sign in.
+assert(isGrantableStaffRole("coordinator"), "a coordinator can be granted by email");
 
 // ---------------------------------------------------------------------------
 // requiresAdminCount: the count is read only where it decides something
@@ -110,8 +113,27 @@ function target(over: Partial<StaffAccessTarget> = {}): StaffAccessTarget {
     role: "agent",
     deactivated_at: null,
     auth_user_id: null,
+    bookable: false,
     ...over,
   };
+}
+
+// #4205: granting a coordinator. A new address is a grant; an unclaimed row moves; a
+// row in the booking pool is refused by name, because a coordinator is never bookable
+// (users_coordinator_never_bookable) and the write would fail as "could not be saved".
+{
+  const fresh = planStaffAccess({ ...SUPER, email: "coord@trypennie.com", requestedRole: "coordinator", existing: null, adminCount: null });
+  assert(fresh.ok && fresh.outcome === "granted" && fresh.role === "coordinator", "a new address is granted the coordinator role");
+  const unclaimed = planStaffAccess({ ...SUPER, email: "coord@trypennie.com", requestedRole: "coordinator", existing: target(), adminCount: null });
+  assert(unclaimed.ok && unclaimed.outcome === "updated", "an unclaimed, unbookable row becomes a coordinator");
+  const inPool = planStaffAccess({ ...SUPER, email: "coord@trypennie.com", requestedRole: "coordinator", existing: target({ bookable: true }), adminCount: null });
+  assert(!inPool.ok && inPool.outcome === "in_pool", "a row in the booking pool is refused, by name");
+  const inPoolManager = planStaffAccess({ ...SUPER, email: "coord@trypennie.com", requestedRole: "manager", existing: target({ bookable: true }), adminCount: null });
+  assert(inPoolManager.ok, "and only a coordinator grant is refused for it: a bookable agent may still be made a manager");
+  const claimed = planStaffAccess({ ...SUPER, email: "coord@trypennie.com", requestedRole: "coordinator", existing: target({ auth_user_id: "auth-9" }), adminCount: null });
+  assert(!claimed.ok && claimed.outcome === "signed_in_demotion", "a signed in agent is changed on their own page, as any lowering is");
+  const asAdmin = planStaffAccess({ ...SUPER, actorRole: "admin", email: "coord@trypennie.com", requestedRole: "coordinator", existing: null, adminCount: null });
+  assert(!asAdmin.ok && asAdmin.outcome === "not_authorized", "only a super admin grants it here");
 }
 
 const created = planStaffAccess({

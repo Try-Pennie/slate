@@ -1143,6 +1143,68 @@ lane family above: the memory figure is unknown, not healthy, until the read is 
 
 ---
 
+## A call on the placeholder advisor is at risk
+
+Keys: `placeholder_call_unserved:*`, `placeholder_seat_failing`, `placeholder_missing`.
+
+A coordinator booked a customer at the time they named, nobody real was free, and the
+call went on the placeholder advisor, Marcia (booking kind `staff_placed`). Nobody dials
+as the placeholder: Regal sends the call to the pool at its time, and Marcia texts the
+customer. The invite and the 24 hour reminder go out from the placeholder's own Google
+seat. How the path works: `docs/architecture.md`, "The placeholder advisor path".
+
+**`placeholder_call_unserved:<booking>`** says the call's booked end is more than 15
+minutes past and Regal's call feed holds no call to that customer's Lead, answered or
+not, from 15 minutes before the start. It judged only after the feed had received
+somebody's call past that time, so it is not a quiet feed. The page names the Lead id
+and links the booking.
+
+1. Reach the customer. Find the Lead in Salesforce by the id on the page and call them
+   from Regal. That call arriving in the feed closes the page as a recovery.
+2. If they want another time, or no call: open the manage link in the Lead's
+   `calBookingLink__c` and move or cancel it. A move to a later time, a move onto a real
+   advisor and a cancel each close the page in their own words, none as a recovery.
+3. **Several at once is Regal, not the customers.** Check that the journeys on Slate's
+   events still branch on `slateGhostBooking` and send those calls to the pool (the
+   Regal contract, `docs/api.md`, "Delivery formats"), and whether `regal_calls_quiet` or
+   `regal_call_outcomes_short` is firing too.
+4. What it cannot see: a call still in progress, because Regal posts a call only when it
+   completes. A conversation running past the booked end and the grace can page and then
+   recover by itself when it ends. Overnight the feed is quiet, so a late evening call is
+   judged once the next morning's first calls arrive.
+5. A page still open three days after the booked start closes as a stand down saying
+   nothing was fixed, before the per booking prune would delete it with no message.
+
+**`placeholder_seat_failing`** says the placeholder's Google Calendar or its Gmail
+sending failed on consecutive ticks while the seat is in use (the switch is on, or a call
+still sits on it): twice in a row for a definitive failure, four times (twenty minutes)
+for a transient one. Calls still book, but their customers may get no invite and no
+reminder. The kind in the page decides the branch, as in "Google cannot be reached for an
+agent" above: `gone` is the Workspace account or domain wide delegation, `not-provisioned`
+is a Workspace admin giving the seat Calendar, `transient` is usually Google and heals.
+The Gmail probe mints the seat's `gmail.send` token, so it sees a removed account or a
+revoked grant within about an hour; it cannot see Gmail switched off for the seat (that
+fails at the send, under `booking_reminders_failing`) or the standing auto reply, which
+needs `gmail.settings.basic`, a scope Slate does not hold. Check the auto reply by hand in
+the seat's Gmail settings. While a definitive failure lasts, switch placing calls off
+(below). It closes when both probes answer, or as a stand down once the switch is off and
+no call sits on the seat.
+
+**`placeholder_missing`** says the switch is on and no usable placeholder exists (no row,
+a deactivated row, or no email address), so every customer a coordinator books while
+nobody is free is refused. The placeholder is kept off every advisor screen, so restoring
+it is a database change through `/db-apply`, on the `users` row with
+`is_placeholder = true and is_test = false`: clear its `deactivated_at`, or set its
+`email` to the seat's address. Or switch placing calls off; the page then closes as
+switched off, not as fixed.
+
+**Turning the switch off.** There is no admin control for it yet, so through `/db-apply`:
+`update booking_settings set placeholder_booking_enabled = false where id = 1;` (one row).
+Nothing is placed on the placeholder from the next submission; calls already there stay,
+and their reminders still go out from the seat.
+
+---
+
 ## Something was measured and is only worth knowing
 
 Keys: `rate_limit_blocked:*`, `ooo_agent_dm`, `ooo_approvals_digest`,

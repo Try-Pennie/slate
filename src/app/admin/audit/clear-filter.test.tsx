@@ -41,7 +41,7 @@ function mockDb() {
   admin.supabaseAdmin.mockReturnValue({
     from: () => {
       const b: Record<string, unknown> = {};
-      for (const m of ["select", "eq", "in", "not", "gte", "lte", "order", "range", "limit"]) {
+      for (const m of ["select", "eq", "neq", "in", "not", "gte", "lte", "order", "range", "limit"]) {
         b[m] = () => b;
       }
       b.maybeSingle = () => b;

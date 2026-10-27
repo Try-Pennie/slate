@@ -881,7 +881,8 @@ no boolean AI flag is refused by name (`lead_id_unreadable`, `not_a_lead`,
 `talk_time_unreadable`, `started_at_unreadable`, `ai_flag_unreadable`), never stored
 with a zero, and logged under `tag=regal-call-outcomes`. The two rows are written
 independently, so either can fail without losing the other. Outcome rows are kept
-120 days.
+120 days. The placeholder call monitor (#4206) reads them too, by Lead id, as the
+evidence that Regal called a customer whose call sits on the placeholder advisor.
 
 ---
 
@@ -973,7 +974,11 @@ coverage move without reading the booking.
   every journey on these events branches on `slateGhostBooking`, sends those
   calls straight to the pool (nobody dials as the placeholder), and still copies
   `slateBookingLink` into the Lead's `calBookingLink__c`, which is how coordinators
-  open a placeholder call to move or cancel it.
+  open a placeholder call to move or cancel it. Slate checks the pool half (#4206):
+  a placeholder call whose customer's Lead gets no Regal `call.completed` by 15
+  minutes past its booked end pages `placeholder_call_unserved:*`, matched on the
+  Lead id Regal sends as the call's `userId` (`regal_call_outcomes`), so a journey
+  that stops branching on `slateGhostBooking` shows up as those pages.
 - `generic` (Cadence and any other subscriber): body `{ "event", "data" }` with
   headers `x-slate-event`, `x-slate-timestamp`, `x-slate-delivery-id`, and an
   HMAC `x-slate-signature` of `sha256=hex(hmac(secret, "<timestamp>.<body>"))`

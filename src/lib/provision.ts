@@ -2,7 +2,12 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isUniqueViolation, unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import { normalizeEmail } from "@/lib/auth/email";
-import { DeactivatedAccountError, isDeactivated } from "@/lib/auth/active-session";
+import {
+  DeactivatedAccountError,
+  PlaceholderAccountError,
+  isDeactivated,
+  isPlaceholderAccount,
+} from "@/lib/auth/active-session";
 import {
   GoogleAccountMismatchError,
   SeveralGoogleAccountsError,
@@ -103,6 +108,7 @@ type Resolution =
   | { kind: "user"; user: User }
   | { kind: "conflict"; reason: string }
   | { kind: "deactivated" }
+  | { kind: "placeholder" }
   | { kind: "different-person"; error: GoogleAccountMismatchError };
 
 /**
@@ -144,6 +150,9 @@ async function resolveOrCreateUser(
   // Google account still is. The refusal comes BEFORE the avatar refresh, so a
   // departed row is not written to on the way out.
   if (isDeactivated(linked)) return { kind: "deactivated" };
+  // #4205: nobody signs in as the placeholder advisor, whose row holds real
+  // customers' calls. Refused before any write, like a departure.
+  if (isPlaceholderAccount(linked)) return { kind: "placeholder" };
   if (linked) {
     // #3526: this branch needs the account check as much as the email one does.
     // Supabase links a new Google identity to an existing auth user with the same
@@ -220,6 +229,8 @@ async function resolveOrCreateUser(
   // WRITE `auth_user_id` onto a departed row, handing a leaver a live identity
   // the roster believes is gone.
   if (isDeactivated(byEmail)) return { kind: "deactivated" };
+  // #4205: and never LINKED to the placeholder, which would hand a person its calls.
+  if (isPlaceholderAccount(byEmail)) return { kind: "placeholder" };
   if (byEmail) {
     // #3526: the address found the row; the Google account says whose it is. A
     // different account is a different person on a reused address, refused here
@@ -330,6 +341,8 @@ export async function provisionUser(input: ProvisionInput): Promise<User> {
   // the same row and refuse again, and the second pass exists only to resolve a
   // lost insert.
   if (first.kind === "deactivated") throw new DeactivatedAccountError();
+  // #4205: the placeholder's row is settled the same way.
+  if (first.kind === "placeholder") throw new PlaceholderAccountError();
   // #3526: a different person is settled too. Retrying reads the same account id
   // and refuses again, and only an admin unlinking the old account changes it.
   if (first.kind === "different-person") throw first.error;
@@ -351,6 +364,7 @@ export async function provisionUser(input: ProvisionInput): Promise<User> {
   // The race was lost to a row belonging to somebody who has left: the same
   // refusal, reached the other way round.
   if (second.kind === "deactivated") throw new DeactivatedAccountError();
+  if (second.kind === "placeholder") throw new PlaceholderAccountError();
   // The race was lost to a sign in that recorded a different Google account on the
   // row this one found: the winner owns it now, so this one is somebody else.
   if (second.kind === "different-person") throw second.error;

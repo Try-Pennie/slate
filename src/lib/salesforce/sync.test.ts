@@ -1455,6 +1455,35 @@ describe("roster rows Salesforce no longer confirms (#1833)", () => {
     expect(result.rosterRowsReconciled).toBe(0);
   });
 
+  // #4206: the manager creation plan is handed the addresses Slate already holds. The
+  // placeholder's is left out of `byEmail` on purpose, so without passing it on
+  // separately an agent whose manager of record resolves to that address planned a
+  // brand new manager row for it, and the insert made a twin of the placeholder.
+  it("never plans a new manager for an address the placeholder advisor already holds", async () => {
+    marciaRows();
+    sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+      if (url.includes("oauth2/token")) {
+        return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
+      }
+      const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+      if (q.includes("IsActive = true AND Email != null AND (")) {
+        return sfResponse([
+          { Id: "005A", Email: "a@x.com", Name: "Agent A", Agent_Manager__c: "Marcia Lead", HighDebt__c: true },
+        ]);
+      }
+      if (q.includes("Name IN (")) return sfResponse([{ Id: "005M", Name: "Marcia Lead", Email: "marcia@x.com" }]);
+      return sfResponse([]);
+    });
+
+    const result = await syncSalesforceAgents();
+
+    const inserted = store.calls
+      .filter((c) => c.op === "insert")
+      .flatMap((c) => (Array.isArray(c.payload) ? c.payload : [c.payload]) as { email?: string }[]);
+    expect(inserted.map((r) => r.email)).not.toContain("marcia@x.com");
+    expect(result.managersCreated).toBe(0);
+  });
+
   it("never reaps or reports the placeholder advisor when Salesforce calls its address inactive", async () => {
     marciaRows();
     sfWorld({ roster: [], present: [{ Id: "005M", Email: "marcia@x.com", IsActive: false }] });

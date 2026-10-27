@@ -1,6 +1,11 @@
 import type { Role } from "@/lib/db/types";
 
-// Five fixed tiers (Slate is single-org, so no per-team membership/PBAC):
+// Five fixed tiers (Slate is single-org, so no per-team membership/PBAC), and one
+// role off the ladder:
+//   coordinator - #4205: a scheduling coordinator. Opens the coordinator booking
+//                 page and nothing else, and is never routed calls. Ranked BELOW
+//                 agent, so every `atLeast` gate in the repo refuses it without
+//                 having to name it; what it may open is `canUseCoordinatorDesk`.
 //   agent       - manage only their own settings/hours
 //   manager     - the above, plus edit ANY agent's settings/hours/bookable
 //   team_lead   - the above, plus approve/decline time off for ANY agent (not
@@ -10,6 +15,7 @@ import type { Role } from "@/lib/db/types";
 //   super_admin - the above, plus the only role that can grant or revoke
 //                 super_admin
 export const ROLE_RANK: Record<Role, number> = {
+  coordinator: -1,
   agent: 0,
   manager: 1,
   team_lead: 2,
@@ -17,6 +23,7 @@ export const ROLE_RANK: Record<Role, number> = {
   super_admin: 4,
 };
 export const ROLES: Role[] = [
+  "coordinator",
   "agent",
   "manager",
   "team_lead",
@@ -36,6 +43,42 @@ export const roleLabel = (role: Role): string =>
 
 export const atLeast = (role: Role, min: Role): boolean =>
   ROLE_RANK[role] >= ROLE_RANK[min];
+
+/**
+ * Which roles open the staff pages, `/admin` and a person's own `/me` (#4205). A
+ * table over the Role union rather than `role !== "coordinator"`, so the next role
+ * added makes `tsc` ask the question instead of inheriting an answer (L113).
+ *
+ * A coordinator opens none of them: `currentUser` (src/lib/auth.ts) answers null for
+ * one, which every staff page, server action and API route already treats as signed
+ * out, so no page has to remember to refuse them.
+ */
+const OPENS_STAFF_CONSOLE: Record<Role, boolean> = {
+  coordinator: false,
+  agent: true,
+  manager: true,
+  team_lead: true,
+  admin: true,
+  super_admin: true,
+};
+
+export const opensStaffConsole = (role: Role): boolean => OPENS_STAFF_CONSOLE[role];
+
+/**
+ * Who may open the coordinator booking page and place calls from it (#4205): the
+ * coordinators, and admins, who train them and drill the page. Advisors, managers
+ * and team leads do not; widening this is a decision, made here and nowhere else.
+ */
+const USES_COORDINATOR_DESK: Record<Role, boolean> = {
+  coordinator: true,
+  agent: false,
+  manager: false,
+  team_lead: false,
+  admin: true,
+  super_admin: true,
+};
+
+export const canUseCoordinatorDesk = (role: Role): boolean => USES_COORDINATOR_DESK[role];
 
 /** Managers and admins can manage the agent roster (hours/settings/bookable). */
 export const canManageAgents = (role: Role): boolean => atLeast(role, "manager");
@@ -93,9 +136,12 @@ export const canManageUser = (
  * admin could impersonate a rank-4 super_admin and inherit their powers. Mirrors
  * `canManageUser`'s strict-outrank rule; the "may impersonate at all" floor lives
  * in `resolveEffectiveUserId` too (which can't see the target's role).
+ *
+ * #4205: never a coordinator. "View as" shows a person's staff pages, and a
+ * coordinator has none, so the session would act as somebody `currentUser` refuses.
  */
 export const canImpersonate = (actor: Role, target: Role): boolean =>
-  atLeast(actor, "admin") && ROLE_RANK[actor] > ROLE_RANK[target];
+  atLeast(actor, "admin") && opensStaffConsole(target) && ROLE_RANK[actor] > ROLE_RANK[target];
 
 /**
  * Last-admin invariant: stripping org-config power from the final admin-or-above

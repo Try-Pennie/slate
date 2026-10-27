@@ -195,6 +195,7 @@ const GATE_NAMES: Record<keyof ReturnType<typeof monitorSetupGates>, string> = {
   regalCallOutcomes: "the missing Regal call outcomes alarm",
   offeredNobodyFree: "the served time the confirm refuses alarm",
   bufferBreach: "the calls inside an advisor's buffer check",
+  placeholderCalls: "the placeholder call nobody called check",
 };
 
 /**

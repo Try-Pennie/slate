@@ -151,6 +151,7 @@ describe("the role ladder (#1844)", () => {
     // The positive control on the derivation above. Without it a filter that
     // matched nothing would make every assertion below vacuously true (L98).
     expect(ROLE_VARIANTS).toEqual([
+      "role-coordinator",
       "role-agent",
       "role-manager",
       "role-team_lead",
@@ -170,8 +171,13 @@ describe("the role ladder (#1844)", () => {
     expect(cls, "agent must not paint a fill").not.toMatch(/\bbg-/);
   });
 
+  // #4205: a coordinator sits BELOW agent, off the ladder, and is drawn as plainly.
+  it("draws coordinator exactly as plainly as agent", () => {
+    expect(clsOf("role-coordinator")).toBe(clsOf("role-agent"));
+  });
+
   it("keeps every role ABOVE agent visibly elevated", () => {
-    for (const v of ROLE_VARIANTS.filter((r) => r !== "role-agent")) {
+    for (const v of ROLE_VARIANTS.filter((r) => r !== "role-agent" && r !== "role-coordinator")) {
       const cls = clsOf(v);
       expect(cls, `${v} sits above agent and must stay bold`).toMatch(/font-semibold/);
       expect(cls, `${v} must draw its own chrome, a fill or a border`).toMatch(

@@ -369,6 +369,8 @@ import { assert, eq, finish } from "./lib/harness.ts";
         select: () => q,
         eq: (col: string, v: unknown) => ((rows = rows.filter((r) => r[col] === v)), q),
         is: (col: string, v: unknown) => ((rows = rows.filter((r) => (r[col] ?? null) === v)), q),
+        // #4205: the real advisor rule leaves coordinators out by role.
+        neq: (col: string, v: unknown) => ((rows = rows.filter((r) => r[col] !== v)), q),
         in: (col: string, vs: unknown[]) => ((rows = rows.filter((r) => vs.includes(r[col]))), q),
         // The keyset filter a paged read cuts its next page with (2026-10-25).
         gt: (col: string, v: unknown) => ((rows = rows.filter((r) => String(r[col]) > String(v))), q),
