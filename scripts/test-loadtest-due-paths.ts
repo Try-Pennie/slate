@@ -1,5 +1,5 @@
 // The load run re-run rule (#3103): a push to main that changes the confirm path or a
-// cron lane opens (or comments on) one "load run due" issue, through
+// cron lane opens (or is recorded on) one "load run due" issue, through
 // .github/workflows/loadtest-due.yml.
 //
 // The rule is only as good as its path list, and a path list rots silently: rename a

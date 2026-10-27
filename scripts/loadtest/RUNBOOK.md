@@ -1516,13 +1516,16 @@ than reading it with a `??` fallback that an empty string would slip past (#1498
 ## The run record (#3103)
 
 **When a run is due.** A push to main that changes the confirm path or a cron lane
-opens one "Load run due" issue, or comments the push onto the one already open
-(`.github/workflows/loadtest-due.yml`, the paths in
-`scripts/lib/loadtest-due-paths.ts`). That issue closes from the pull request that
-adds a passing run below, and only once the run covers every push listed on it.
-Every qualifying push runs the nag, so every push is listed; when two open the issue
+opens one "Load run due" issue, or adds the push to the list in the description of
+the one already open, which notifies nobody (`.github/workflows/loadtest-due.yml`, the
+paths in `scripts/lib/loadtest-due-paths.ts`, #4286). That issue closes from the pull
+request that adds a passing run below, and only once the run covers every push listed
+on it. Each nag run rebuilds the whole list from main, so a push whose own run GitHub
+cancelled in a burst is listed by the next one; on a very long list the oldest pushes
+are summarised in one line with the command that lists them. When two issues are open
 at once, the higher numbered one is closed as a duplicate pointing at the lower, and
-its pushes count there too (`scripts/lib/loadtest-due-nag.ts`, #3553).
+its pushes count there too (`scripts/lib/loadtest-due-nag.ts`, #3553). Before #4286
+each push was a comment, so #3213 names its earlier pushes in comments as well.
 
 **What a row records.** The run id, the commit it ran, and the figures the judge
 printed, read from the judge job's own report (`gh api

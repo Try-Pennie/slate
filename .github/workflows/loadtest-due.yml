@@ -5,10 +5,12 @@ name: Load run due
 # `loadtest.yml` can only be dispatched by hand, and between 2026-09-15 and 2026-10-03
 # the confirm path and the minute tick both changed with no run recorded, because the
 # rule to re-run it lived in nobody's head (L27). This is the rule: a push to main that
-# changes the confirm path or a cron lane opens ONE issue saying a run is due, or adds a
-# comment naming the push to the one already open. Nothing here runs the load test; a
-# run needs a throwaway Supabase branch and a deployment somebody has to provision
-# (scripts/loadtest/RUNBOOK.md). Close the issue in the PR that records the run.
+# changes the confirm path or a cron lane opens ONE issue saying a run is due, which is
+# the one notification, or records the push in the description of the one already open,
+# which notifies nobody (#4286; it used to comment per push, 227 times on #3213).
+# Nothing here runs the load test; a run needs a throwaway Supabase branch and a
+# deployment somebody has to provision (scripts/loadtest/RUNBOOK.md). Close the issue
+# in the PR that records the run.
 #
 # The path list is `LOADTEST_DUE_PATHS` in scripts/lib/loadtest-due-paths.ts, and
 # scripts/test-loadtest-due-paths.ts holds the block below equal to it and checks that
@@ -31,14 +33,16 @@ on:
       - "worker/**"
       - "wrangler.jsonc"
 
-# Keyed on the push, so EVERY qualifying push runs (#3553, L1020). It used to be one
-# constant group, to stop two pushes each finding no issue and opening two, but GitHub
-# keeps one running and ONE pending run per group and a third arrival cancels the
-# pending one even with cancel-in-progress false, so in a burst of merges the middle
-# push was never named. Two runs that race now settle on the lowest numbered issue
-# afterwards (scripts/lib/loadtest-due-nag.ts). Pinned by scripts/test-loadtest-due-nag.ts.
+# ONE constant group, so runs edit the issue description one at a time and never
+# overwrite each other's list (#4286). GitHub keeps one running and ONE pending run per
+# group, and a third arrival cancels the pending one even with cancel-in-progress false
+# (L1020, #3553), so a burst's middle push gets no run of its own. Nothing is lost:
+# every run rebuilds the WHOLE list from main as it stands when the run starts, and the
+# last push of a burst is never the one cancelled, so its run lists the middle push.
+# Pinned by scripts/test-loadtest-due-nag.ts, which lists this as the second workflow
+# allowed a group not keyed on the event.
 concurrency:
-  group: loadtest-due-${{ github.sha }}
+  group: loadtest-due
   cancel-in-progress: false
 
 permissions:
@@ -51,13 +55,17 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The list is every commit on main since the issue's opening push, which can
+          # be weeks back, so the run needs main's whole history, not one commit.
+          fetch-depth: 0
       # No dependency install: the script imports nothing outside scripts/
       # (scripts/test-dependency-free-scripts.ts). setup-node pins the version the
       # type stripping flag needs.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-      - name: Name this push on the load run due issue
+      - name: Record this push on the load run due issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
