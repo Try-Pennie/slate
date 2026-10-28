@@ -64,14 +64,18 @@ its report before blaming the drill.
 2. Sign in as `smoketest4@`, open `/coordinator`, and paste the Lead id.
 3. Confirm the zone, pick that day and a time inside the busy hour, tick the notice and
    confirm. The page books it on Marcia.
-4. Check, on `/admin/bookings`: the booking is on the test placeholder, kind
-   `staff_placed`, bucket `PARTNER`. The invite reaches Dan's inbox from `smoketest3@`
-   and names no text number. Its webhook deliveries read "suppressed: is_test bucket".
-   No alert posts.
-5. Move it to a time `smoketest@` is free. It lands on `smoketest@`, kind routed, and the
-   placeholder's calendar event is gone.
-6. Book a second call on Marcia the same way, then cancel it. The booking reads cancelled
-   and both calendars are clear.
+4. Check the booking: it is on the test placeholder, kind `staff_placed`, bucket
+   `PARTNER`. Open it at `/admin/bookings/<booking id>`, or search the lookup by the
+   customer's name: the lookup does not search by Lead id (#4339). The invite reaches
+   Dan's inbox from `smoketest3@` and names no text number. Its webhook deliveries read
+   "suppressed: is_test bucket". No alert posts.
+5. On its booking page, Reschedule it to a time `smoketest@` is free. It lands on
+   `smoketest@`, kind routed, and the placeholder's calendar event is gone. Then cancel
+   it, so it does not stay booked on `smoketest@` and send reminder emails.
+6. Book another call on Marcia the same way, then cancel it. The booking reads cancelled
+   and both calendars are clear. This has to come after step 5's cancel: while the
+   customer still has a call, the coordinator page moves that call rather than booking a
+   second one.
 7. Delete the busy event, and turn the switch off again unless coordinators start that
    day.
 
