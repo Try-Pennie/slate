@@ -154,6 +154,10 @@ function judged(verdict: { ok: true } | { ok: false; why: string }, what: string
 }
 
 const made: string[] = [];
+function remember(answerData: unknown): void {
+  const id = (answerData as { booking?: { booking_id?: string } } | undefined)?.booking?.booking_id;
+  if (id && !made.includes(id)) made.push(id);
+}
 const reason = validateReason({ code: "other", detail: "rebook check" }, CANCEL_REASONS);
 let outcome: { outcome: RebookOutcome; detail?: string } = { outcome: "proven" };
 try {
@@ -164,16 +168,20 @@ try {
   const slot = times[0]!;
   step(`find_times offered ${times.length} times on ${PARTNER_BUCKET_CODE}; using ${slot.starts_at}`);
 
-  const first = await factsFor((await mcp("book", { slot_id: slot.slot_id })).data);
-  if (first.answer) made.push(first.answer.booking_id);
+  // Every booking the MCP names is recorded BEFORE it is read back, so a read that throws
+  // still leaves it for cleanup to cancel.
+  const firstData = (await mcp("book", { slot_id: slot.slot_id })).data;
+  remember(firstData);
+  const first = await factsFor(firstData);
   judged(bookVerdict(first), `first book: booking ${first.answer?.booking_id} confirmed, with a live calendar event`);
 
   const firstCancel = await factsFor((await mcp("cancel", { reason_code: reason.reason.code, reason_detail: reason.reason.detail })).data);
   judged(cancelVerdict(firstCancel), `cancel: booking ${first.answer!.booking_id} cancelled, and its calendar event gone`);
 
   // The point of the run: THE SAME slot, booked again now that the cancel freed it.
-  const second = await factsFor((await mcp("book", { slot_id: slot.slot_id }, "rebookRefused")).data);
-  if (second.answer && !made.includes(second.answer.booking_id)) made.push(second.answer.booking_id);
+  const secondData = (await mcp("book", { slot_id: slot.slot_id }, "rebookRefused")).data;
+  remember(secondData);
+  const second = await factsFor(secondData);
   judged(bookVerdict(second), `rebook: booking ${second.answer?.booking_id} confirmed, with a live calendar event`);
   judged(sameSlotVerdict(first, second), "the rebook holds the same time as a new booking with its own event");
 

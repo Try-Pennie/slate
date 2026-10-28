@@ -117,6 +117,9 @@ const cancelled = (over: Partial<CallFacts> = {}): CallFacts => ({
   assert((src.match(/mcp\("cancel"/g) ?? []).length >= 2, "both cancels go through the deployed booking MCP");
   assert(src.includes("slot_id: slot.slot_id") && !/slot_id: times\[1\]/.test(src), "the rebook uses the very slot the first book took");
   assert(src.includes("getEventOnPrimary("), "each event is asked of Google, never only of Slate's row");
+  // A book the MCP made is recorded for cleanup before its read back, which can throw.
+  assert(/remember\(firstData\);\s*\n\s*const first = await factsFor\(firstData\)/.test(src), "the first booking is recorded before it is read back");
+  assert(/remember\(secondData\);\s*\n\s*const second = await factsFor\(secondData\)/.test(src), "the rebook is recorded before it is read back");
   assert(src.includes('?? "unexpected"'), "a throw no step tagged is unexpected, never a refusal");
   assert(src.includes("rebookFinalOutcome(outcome, cleanup)"), "cleanup ends through rebookFinalOutcome, so the run's result is never dropped");
 }
