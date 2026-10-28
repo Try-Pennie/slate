@@ -1096,9 +1096,8 @@ the cap itself is not exposed by the management API, so this one genuinely canno
 checked from here.
 
 **Snowflake (warehouse guard, #3125).** Decided by Dan on 2026-10-03: the `SLATE_WH`
-warehouse carries a **monthly resource monitor that warns only**, notifying at 75% and
-at 100% of its quota and **never suspending**, plus **`STATEMENT_TIMEOUT_IN_SECONDS =
-600`**. Never suspend, because suspending the warehouse stops the 10 minute booking
+warehouse carries a **monthly resource monitor that warns only**, never suspending,
+plus **`STATEMENT_TIMEOUT_IN_SECONDS = 600`**. Never suspend, because suspending the warehouse stops the 10 minute booking
 mirror (`/api/cron/snowflake-export`), and that mirror is the booking backup: a spend
 cap must not be able to switch the backup off. The statements are in
 `docs/snowflake-setup.sql` under "Spend guard". Slate has no local Snowflake access,
