@@ -208,4 +208,12 @@ const nameOf = (id: string | null) => (id ? `Name(${id})` : "unassigned");
   eq(auditDetailText(row, nameOf), "Moved back to Name(out) from Name(cov).", "naming both advisors");
 }
 
+// --- #4299: a reminder email test send Gmail never answered for ---
+{
+  const sent = { action: "reminder_email.test_sent", actor_id: "admin1", details: { sample_call: "calling_known", gmail: "accepted" } };
+  eq(auditDetailText(sent), "", "a confirmed test send adds nothing to its label");
+  const unconfirmed = { ...sent, details: { ...sent.details, gmail: "unconfirmed" } };
+  assert(/may not have arrived/.test(auditDetailText(unconfirmed)), "an unconfirmed test send says it may not have arrived");
+}
+
 finish();

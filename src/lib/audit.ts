@@ -79,6 +79,10 @@ export const AUDIT_ACTIONS = [
   "reminder_email.updated",
   "reminder_email.toggled",
   "reminder_email.restored",
+  // #4299: an admin sending themselves a test of a reminder email, from and to their
+  // own mailbox with sample data. Not a change, but an outbound send on the org's
+  // Gmail grant, and the trail is the only record of one (like webhook.test_sent).
+  "reminder_email.test_sent",
   // #1951: an admin making the server POST at an address they typed. The trail
   // is where a privileged outbound fetch belongs, and it is the only record of
   // one, since a test send deliberately writes no webhook_deliveries row.

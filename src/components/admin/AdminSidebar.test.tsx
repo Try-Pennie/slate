@@ -63,27 +63,35 @@ describe("AdminSidebar", () => {
   // draws a heading. The sidebar puts a 24px gap above each group, and the
   // heading is the only thing that says what the gap is for, so a group without
   // one in the middle of the list is an empty space that reads as a mistake.
-  it("draws a heading over every group but the first, for a manager's real map", () => {
-    const groups = visibleAdminNav("manager");
-    render(<AdminSidebar groups={groups} />);
-    const drawn = screen.getAllByRole("heading").map((h) => h.textContent ?? "");
+  it("draws a heading over every group but the first, for a manager's and an admin's real map", () => {
+    // #4299: Reminder emails gave a manager's Bookings group a second entry, so the
+    // single entry groups this exists for are counted across both roles' maps.
+    let collapsedSeen = 0;
+    for (const role of ["manager", "admin"] as const) {
+      const groups = visibleAdminNav(role);
+      const { unmount } = render(<AdminSidebar groups={groups} />);
+      const drawn = screen.getAllByRole("heading").map((h) => h.textContent ?? "");
 
-    groups.forEach((group, i) => {
-      if (i === 0) return;
-      expect(group.title, `group ${i} (${group.items[0]!.href}) has no heading`).not.toBeNull();
-      expect(drawn, `heading for ${group.items[0]!.href}`).toContain(group.title);
-    });
+      groups.forEach((group, i) => {
+        if (i === 0) return;
+        expect(group.title, `group ${i} (${group.items[0]!.href}) has no heading`).not.toBeNull();
+        expect(drawn, `heading for ${group.items[0]!.href}`).toContain(group.title);
+      });
 
-    // Groups that hold ONE entry for a manager are the point of this: they draw
-    // a heading like any other. A positive control too, since a manager whose
-    // map happened to collapse nothing would prove nothing here (L98).
-    const collapsed = groups.filter((g, i) => i > 0 && g.items.length === 1);
-    expect(collapsed.length, "a manager really does see collapsed groups").toBeGreaterThan(0);
-    for (const g of collapsed) expect(drawn).toContain(g.title);
+      // Groups that hold ONE entry are the point of this: they draw a heading
+      // like any other.
+      const collapsed = groups.filter((g, i) => i > 0 && g.items.length === 1);
+      collapsedSeen += collapsed.length;
+      for (const g of collapsed) expect(drawn).toContain(g.title);
 
-    // An EMPTY heading is the shape the original defect took: the component drew
-    // an <h2> holding a null title, which a by-name check cannot see.
-    for (const text of drawn) expect(text.trim()).toBeTruthy();
+      // An EMPTY heading is the shape the original defect took: the component drew
+      // an <h2> holding a null title, which a by-name check cannot see.
+      for (const text of drawn) expect(text.trim()).toBeTruthy();
+      unmount();
+    }
+    // A positive control, since maps that happened to collapse nothing would
+    // prove nothing here (L98).
+    expect(collapsedSeen, "a real map really does hold single entry groups").toBeGreaterThan(0);
   });
 });
 

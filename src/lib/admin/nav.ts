@@ -124,6 +124,8 @@ export const ADMIN_NAV: AdminNavGroup[] = [
       // after Look up a booking, which is opened more often (D1).
       { href: "/admin/coordinator-booking", label: "Coordinator booking", gate: "super_admin" },
       { href: "/admin/booker-copy", label: "Booker copy", gate: "admin" },
+      // #4299: the emails a lead gets before the call. Managers read them; admins edit.
+      { href: "/admin/reminder-emails", label: "Reminder emails", gate: "manager" },
       { href: "/admin/booking-reasons", label: "Booking reasons", gate: "admin" },
       { href: "/admin/booking-outcomes", label: "API outcomes", gate: "admin" },
     ],

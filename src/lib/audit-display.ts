@@ -58,6 +58,7 @@ const ACTION_LABEL: Record<string, string> = {
   "reminder_email.updated": "changed a reminder email",
   "reminder_email.toggled": "switched a reminder email on or off",
   "reminder_email.restored": "restored an earlier version of a reminder email",
+  "reminder_email.test_sent": "sent themselves a test of a reminder email",
   "webhook.test_sent": "sent a test webhook to a URL they entered",
   "webhook.endpoint_set": "changed where booking events are sent",
   "webhook.resent": "resent a webhook delivery",
@@ -157,6 +158,11 @@ export function auditDetailText(row: AuditDisplayRow, nameOf?: (id: string | nul
     parts.push(`Moved to ${to === null ? "another advisor" : nameOf ? nameOf(to) : to}.`);
     parts.push(change ?? "What changed in Twilio was not recorded.");
     return parts.join(" ");
+  }
+  if (row.action === "reminder_email.test_sent" && row.details?.gmail === "unconfirmed") {
+    // #4299: Gmail gave no answer, so the test may or may not have arrived, and a row
+    // reading like a confirmed send would claim more than was measured (L11).
+    return "Gmail never confirmed it, so it may not have arrived.";
   }
   if (row.action === "role.set" && row.details?.from && row.details?.to) {
     parts.push(`${String(row.details.from)} to ${String(row.details.to)}`);
