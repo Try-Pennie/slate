@@ -1,10 +1,12 @@
 import { InPlaceLink } from "@/components/ui/InPlaceLink";
+import { ReminderEmailStatus } from "@/components/admin/reminder-emails/ReminderEmailStatus";
 import { Pill } from "@/components/ui/Pill";
 import { btnSecondaryCls } from "@/components/ui/styles";
 import { lateBookingLabel } from "@/lib/admin/reminder-email-form";
 import { REMINDER_COPY, reminderEmailPath } from "@/lib/admin/reminder-emails-copy";
 import { timingWords } from "@/lib/booking/reminder-preview";
 import type { ReminderLateBooking } from "@/lib/db/types";
+import type { ReminderStatusReading } from "@/lib/booking/reminder-status";
 
 export interface ListedEmail {
   id: string;
@@ -15,20 +17,22 @@ export interface ListedEmail {
 }
 
 /**
- * Every reminder email, earliest sent first (#4299): its name, timing, on or off, and
- * what it does for a call booked late. The name opens it in the editor below.
- *
- * Each row keeps a slot for the email's status (phase 5: what it sent, skipped and
- * failed). Nothing is drawn in it until that phase measures something to put there.
+ * Every reminder email, earliest sent first (#4299): its name, timing, on or off, what
+ * it does for a call booked late, and, in its own last column, what it did in the last
+ * 24 hours (#4300, settled design docs/design/reminder-email-status.html). The name
+ * opens it in the editor below. Every row is handed the page's one status reading, so a
+ * failed read shows the could not read notice in each cell rather than zeros.
  */
 export function ReminderEmailList({
   emails,
   openId,
   canAdd,
+  status,
 }: {
   emails: ListedEmail[];
   openId: string | null;
   canAdd: boolean;
+  status: ReminderStatusReading;
 }) {
   return (
     <div className="space-y-4">
@@ -48,8 +52,11 @@ export function ReminderEmailList({
                 <th scope="col" className="py-1 pr-4 font-semibold">
                   Sending
                 </th>
-                <th scope="col" className="py-1 font-semibold">
+                <th scope="col" className="py-1 pr-4 font-semibold">
                   A call booked after this time
+                </th>
+                <th scope="col" className="py-1 font-semibold">
+                  Last 24 hours
                 </th>
               </tr>
             </thead>
@@ -66,15 +73,16 @@ export function ReminderEmailList({
                         {e.name}
                       </InPlaceLink>
                       {isOpen && <span className="sr-only"> (open below)</span>}
-                      {/* Phase 5 of "Editable reminder emails" draws this email's status here. */}
-                      <div data-slot="reminder-email-status" />
                     </td>
                     <td className="py-2 pr-4 tabular-nums">{timingWords(e.minutesBefore)}</td>
                     <td className="py-2 pr-4">
                       {/* Off is the exception worth seeing, so it carries the mark. */}
                       {e.enabled ? <span className="text-fg-muted">On</span> : <Pill variant="outline" alignToColumn>Off</Pill>}
                     </td>
-                    <td className="py-2 text-fg-muted">{lateBookingLabel(e.lateBooking)}</td>
+                    <td className="py-2 pr-4 text-fg-muted">{lateBookingLabel(e.lateBooking)}</td>
+                    <td className="py-2">
+                      <ReminderEmailStatus reading={status} emailId={e.id} />
+                    </td>
                   </tr>
                 );
               })}

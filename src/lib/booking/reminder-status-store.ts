@@ -67,11 +67,13 @@ export function reminderStatusDeps(db: Db, nowMs: number): ReminderStatusDeps {
 }
 
 /**
- * Every listed email's status, read live, for the reminder emails page. Never throws: a
- * failed read is `unreadable`, logged here so the page's error state has its cause.
+ * Every listed email's status, read live, for the reminder emails page, as of now. The
+ * clock is read here, at the IO edge, so the page renders without one (the pure count
+ * takes it as an argument). Never throws: a failed read is `unreadable`, logged here so
+ * the page's error state has its cause.
  */
-export async function loadReminderEmailStatus(db: Db, emailIds: readonly string[], nowMs: number): Promise<ReminderStatusReading> {
-  const reading = await readReminderEmailStatus(emailIds, reminderStatusDeps(db, nowMs));
+export async function loadReminderEmailStatus(db: Db, emailIds: readonly string[]): Promise<ReminderStatusReading> {
+  const reading = await readReminderEmailStatus(emailIds, reminderStatusDeps(db, Date.now()));
   if (reading.status === "unreadable") {
     log.error("reminder-emails", { msg: "reminder email status unreadable", emails: emailIds.length }, new Error(reading.error));
   }
